@@ -16,7 +16,8 @@ const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
-const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
+// 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
+// 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe } = require('../utils/points')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const {
@@ -152,15 +153,16 @@ async function recalcCustomerType(client, clientUserId) {
  *   clientPhone: string,
  *   clientName: string,
  *   saleOrderType: '销售单' | '内部单',   // 直接使用 DB 枚举文本，无历史兼容
- *   items: [{ skuId, quantity, customPrice?, discount? }],
- *   paymentMethod: '微信'|'线下',
+ *   items: [{ skuId, quantity, received?: number }],   // received = 行实付金额；默认=行应付（priceLine - 摊到的券）
+ *   paymentMethod: '微信'|'支付宝'|'线下',
  *   preferredStaffWfId: string,
  *   couponId: string
  * }
  *
  * 行为：
- *   - 销售单：正常计价；customPrice 作为行级自定义单价；支持 couponId
- *   - 内部单：所有 SKU 半价（basePrice × 0.5）；禁用 customPrice；拒绝 couponId
+ *   - 销售单：正常计价；行应付金额 = 价格 - 订单级券按 priceLine 比例摊到的份额（不可手工编辑）
+ *   - 内部单：所有 SKU 半价（basePrice × 0.5）；拒绝 couponId
+ *   - 行实付金额：店长可向下调（0 ≤ received ≤ 行应付）；不传则默认 = 行应付
  */
 async function create(ctx) {
   await requireManager()(ctx, async () => {})
@@ -177,7 +179,6 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
-    receivedAmount: inputReceivedAmount,
   } = payload
 
   const storeId = ctx.auth.effectiveStoreId
@@ -200,9 +201,9 @@ async function create(ctx) {
   if (!paymentMethod) {
     throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
   }
-  // PR-D1：白名单守卫，与 createConversion 对齐（暂不支持支付宝，待业务确认）
-  // '无' 值由后端在 paid_amount=0 时强制覆盖，前端传值暂仅允许 微信/线下
-  if (!['微信', '线下'].includes(paymentMethod)) {
+  // 支付方式白名单（销售单 / 内部单）：微信 / 支付宝 / 线下
+  // '无' 值由后端在 paid_amount=0 时强制覆盖，前端不应主动传 '无'
+  if (!['微信', '支付宝', '线下'].includes(paymentMethod)) {
     throw new Error('INVALID_PARAMS: 非法的支付方式')
   }
   if (!storeId) {
@@ -224,13 +225,8 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 内部单不允许叠加优惠券')
   }
 
-  // 内部单守卫：不允许行级手工改价（与 admin 对齐）
-  if (saleOrderType === '内部单') {
-    const hasCustomPrice = items.some(it => it && it.customPrice !== undefined && it.customPrice !== null)
-    if (hasCustomPrice) {
-      throw new Error('INVALID_PARAMS: 内部单不允许手工改价')
-    }
-  }
+  // 历史 customPrice/discount 入参已废弃（前端按行不再传），后端不再处理
+  // 行级"应付金额"由订单级券摊算得出，不再可手工编辑
 
   // 查询顾客是否已注册客户端小程序并绑定门店
   const clientUsers = await pg.query(
@@ -256,7 +252,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                s.service_fee, s.is_shengmei, s.is_experience, s.is_recharge_card,
+                s.service_fee, s.is_shengmei, s.is_experience,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -271,35 +267,31 @@ async function create(ctx) {
       let unitPrice
       let sessionCount = null
       let salesCategory = sku.sales_category || null
-      // 优先使用特价（special_price），没有则用标准价
+      // 「价格」= 会员价优先（specialPrice），否则 price（两端统一）
       const basePrice = Number(sku.special_price || sku.price)
 
       if (saleOrderType === '内部单') {
-        // 内部单（员工消费）统一半价；不允许 customPrice（上方已拦截）
+        // 内部单（员工消费）统一半价
         unitPrice = Math.round(basePrice * 50) / 100
-        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
-      } else if (item.customPrice !== undefined && item.customPrice !== null) {
-        // 销售单 — 行级自定义单价（兜底店长改价；仅销售单生效）
-        unitPrice = Number(item.customPrice)
-        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       } else {
         unitPrice = basePrice
-        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       }
+      sessionCount = sku.session_count != null ? Number(sku.session_count) : null
 
       const quantity = item.quantity || 1
       // sale_items.session_count / remaining_sessions 是"次"维度（service.complete 按次扣减），
       // 应 = sku.session_count × quantity；之前漏乘 quantity 导致剩余次数显示 1/1 而非 N/N
       if (sessionCount != null) sessionCount = sessionCount * quantity
-      const saleAmount = unitPrice * quantity
+      // priceLine = 价格 × 数量（订单级券摊算的基准），暂存为 saleAmount；摊券后再覆盖
+      const priceLine = Math.round(unitPrice * quantity * 100) / 100
 
-      // 优惠金额
-      const discount = Number(item.discount) || 0
-      if (discount < 0 || discount > saleAmount) {
-        throw new Error('INVALID_PARAMS: 优惠金额不合法')
+      // 前端传入行实付（默认 = 应付金额，店长可向下调；这里先记录原始值，摊券后再做最终裁剪）
+      const inputReceived = item.received !== undefined && item.received !== null
+        ? Number(item.received)
+        : null
+      if (inputReceived !== null && (!Number.isFinite(inputReceived) || inputReceived < 0)) {
+        throw new Error('INVALID_PARAMS: 行实付金额必须为非负数')
       }
-      const unitRealPrice = quantity > 0 ? (unitPrice - discount / quantity) : unitPrice
-      const received = saleAmount - discount
 
       // 固定手工费快照：从 product_skus.service_fee 取值 × quantity
       // 即使现在是 0 也要明确快照，避免后续 sku 改价影响历史订单
@@ -315,14 +307,17 @@ async function create(ctx) {
         remainingSessions: sessionCount,
         unitPrice,
         quantity,
-        unitRealPrice,
-        saleAmount,
-        received,
+        // unitRealPrice / saleAmount / received 由后续摊券步骤一并计算（saleAmount 初值=priceLine）
+        unitRealPrice: unitPrice,
+        saleAmount: priceLine,
+        priceLine,
+        inputReceived,
+        // received 兜底先填 priceLine（摊券后会被覆盖；inputReceived 在裁剪步处理）
+        received: priceLine,
         salesCategory,
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
-        isRechargeCard: sku.is_recharge_card === true,
       }
     })
   )
@@ -339,29 +334,38 @@ async function create(ctx) {
       const n = d.quantity
       const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
       const perSaleAmount = Math.round((d.saleAmount * 100) / n) / 100
-      const perReceived = Math.round((d.received * 100) / n) / 100
+      const perPriceLine = Math.round((d.priceLine * 100) / n) / 100
       const perServiceFee = Math.round((d.serviceFee * 100) / n) / 100
+      // 入参 received（行实付）按 N 等分，最后一行吸收尾差；缺省时各行也 null
+      const perInputReceived = d.inputReceived !== null && d.inputReceived !== undefined
+        ? Math.round((d.inputReceived * 100) / n) / 100
+        : null
       for (let i = 0; i < n; i++) {
         const isLast = i === n - 1
         const saleAmountRow = isLast
           ? Math.round((d.saleAmount - perSaleAmount * (n - 1)) * 100) / 100
           : perSaleAmount
-        const receivedRow = isLast
-          ? Math.round((d.received - perReceived * (n - 1)) * 100) / 100
-          : perReceived
+        const priceLineRow = isLast
+          ? Math.round((d.priceLine - perPriceLine * (n - 1)) * 100) / 100
+          : perPriceLine
         const serviceFeeRow = isLast
           ? Math.round((d.serviceFee - perServiceFee * (n - 1)) * 100) / 100
           : perServiceFee
+        const inputReceivedRow = perInputReceived !== null
+          ? (isLast ? Math.round((d.inputReceived - perInputReceived * (n - 1)) * 100) / 100 : perInputReceived)
+          : null
         itemDataList.push({
           ...d,
           quantity: 1,
           sessionCount: perSession,
           remainingSessions: perSession,
+          priceLine: priceLineRow,
           saleAmount: saleAmountRow,
-          received: receivedRow,
+          // received / unitRealPrice 由后续摊券+inputReceived 裁剪步骤计算
+          received: saleAmountRow,
+          unitRealPrice: saleAmountRow,
+          inputReceived: inputReceivedRow,
           serviceFee: serviceFeeRow,
-          // unitRealPrice 保持原值（每行已是单张价）：received / 1
-          unitRealPrice: receivedRow,
         })
       }
     } else {
@@ -474,7 +478,8 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 分摊到各行 received（最后一项补差，避免分分钱精度丢失）
+    // 分摊到各行：先按 saleAmount(初值=priceLine) 比例摊，最后一行吸收尾差
+    // 新模型：行 saleAmount = priceLine - couponShare（应付小计含摊券）；行 received 在下一步按入参裁剪
     let distributedTotal = 0
     for (let i = 0; i < eligibleItems.length; i++) {
       const item = eligibleItems[i]
@@ -482,13 +487,22 @@ async function create(ctx) {
       if (i === eligibleItems.length - 1) {
         share = couponDiscount - distributedTotal
       } else {
-        share = Math.round(couponDiscount * (item.received / eligibleTotal) * 100) / 100
+        share = Math.round(couponDiscount * (item.saleAmount / eligibleTotal) * 100) / 100
         distributedTotal += share
       }
-      item.received -= share
-      item.received = Math.round(item.received * 100) / 100
-      // 同步更新 unitRealPrice
-      item.unitRealPrice = item.quantity > 0 ? item.received / item.quantity : 0
+      item.saleAmount = Math.max(0, Math.round((item.saleAmount - share) * 100) / 100)
+      // unitRealPrice 与 saleAmount 同口径（应付单价）
+      item.unitRealPrice = item.quantity > 0 ? Math.round((item.saleAmount / item.quantity) * 100) / 100 : 0
+    }
+  }
+
+  // 行 received 最终裁剪：默认 = saleAmount（应付小计），inputReceived 非空时取 min(inputReceived, saleAmount)
+  for (const d of itemDataList) {
+    if (d.inputReceived !== null && d.inputReceived !== undefined) {
+      d.received = Math.min(d.inputReceived, d.saleAmount)
+      d.received = Math.round(d.received * 100) / 100
+    } else {
+      d.received = d.saleAmount
     }
   }
 
@@ -496,9 +510,10 @@ async function create(ctx) {
   // saleOrderId 在事务内由 generateOrderNo(undefined, client) 生成，保证 advisory lock
   // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
   let saleOrderId
-  const totalAmount = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
+  // 订单应付合计 = Σ 行应付小计（saleAmount 已含订单级优惠券摊算）
+  const totalAmount = Math.round(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0) * 100) / 100
 
-  // ========== 储值卡预选（店长开单 = 预选，不扣卡）==========
+  // ========== 充值卡预选（店长开单 = 预选，不扣卡；DB 字段 prepaid_card_amount 命名保持不变）==========
   // 查询顾客当前余额（不加 FOR UPDATE，因为不写 balance）；仅店长预选为参考
   let prepaidCardAmount = 0
   if (useCard) {
@@ -508,19 +523,19 @@ async function create(ctx) {
     )
     const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
 
-    // 计算预选额上限 = totalAmount（优惠券已在 received 中扣除）
+    // 计算预选额上限 = totalAmount（券已在 saleAmount 中扣除）
     const maxPrepayable = totalAmount
 
     if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
       const inputAmount = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(inputAmount) || inputAmount < 0) {
-        throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
+        throw new Error('INVALID_PARAMS: 充值卡抵扣金额必须为非负数')
       }
       if (inputAmount > currentBalance) {
-        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+        throw new Error('INSUFFICIENT_BALANCE: 充值卡余额不足')
       }
       if (inputAmount > maxPrepayable) {
-        throw new Error('INVALID_PARAMS: 储值卡抵扣金额超过应抵上限')
+        throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过应抵上限')
       }
       prepaidCardAmount = Math.round(inputAmount * 100) / 100
     } else {
@@ -530,31 +545,21 @@ async function create(ctx) {
     }
   }
 
-  // ========== PR-2: 款项流水（sale_order_payments）语义 ==========
+  // ========== 款项流水（sale_order_payments）语义 ==========
   // payable_amount = total - prepaid_card_amount（扣卡后的"应付现金金额"冗余列）
   const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
 
-  // receivedAmount（本次现场实收）——
-  //   - 线下/储值卡/无：默认 payable_amount（保持全额现场收款回归行为）
-  //   - 微信/支付宝：默认 0（真正入账由后续 pay/alipayPay 回调写 payments 行，staff 侧 create 不写流水）
-  // 校验：0 <= receivedAmount <= payable_amount
-  //      线上（微信/支付宝）禁止非零 receivedAmount（MIXED_PAYMENT_NOT_SUPPORTED）
+  // receivedAmount（本次现场实收）= Σ 行实付（前端传入，默认 = 行应付）
+  //   - 充值卡抵扣 + 行实付汇总 不应超过 totalAmount；若超出（默认场景下勾上充值卡）自动 cap 至 payableAmount
+  //   - 线上（微信/支付宝）：禁止 staffApi 端写入 payments 流水；强制 0，由 payNotify 回调写
   const isOnlineMethod = paymentMethod === '微信' || paymentMethod === '支付宝'
+  const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
   let receivedAmount
-  if (inputReceivedAmount === undefined || inputReceivedAmount === null) {
-    receivedAmount = isOnlineMethod ? 0 : payableAmount
+  if (isOnlineMethod) {
+    receivedAmount = 0
   } else {
-    receivedAmount = Number(inputReceivedAmount)
-    if (!Number.isFinite(receivedAmount) || receivedAmount < 0) {
-      throw new Error('INVALID_PARAMS: 实收金额必须为非负数')
-    }
-    if (receivedAmount > payableAmount + 0.001) {
-      throw new Error('INVALID_PARAMS: 实收金额不能超过应付金额')
-    }
+    receivedAmount = Math.min(sumItemReceived, payableAmount)
     receivedAmount = Math.round(receivedAmount * 100) / 100
-  }
-  if (isOnlineMethod && receivedAmount > 0) {
-    throw new Error('INVALID_PARAMS: 微信/支付宝不支持部分线上支付，请改用线下或先下单后扫码')
   }
 
   // 落账部分（paid_amount 快照）：
@@ -707,8 +712,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_recharge_card, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+          sales_category, service_fee, is_shengmei, is_experience
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -718,7 +723,6 @@ async function create(ctx) {
           d.salesCategory || null,
           d.serviceFee || 0,
           d.isShengmei ?? null,
-          d.isRechargeCard === true,
           // is_experience 行级快照（capability 列，2026-04-26 ticket）：从 product_skus.is_experience
           // 拷贝；用于客户分类跃迁（per-order SUM FILTER WHERE si.is_experience）。
           d.isExperience === true,
@@ -726,18 +730,9 @@ async function create(ctx) {
       )
     }
 
-    // 严格独立 D4：充值卡与非充值卡不可混单（与体验卡 mixed-experience 守卫并列）
-    // 写入完成后立即校验，要求订单内 sale_items.is_recharge_card 必须全 true 或全 false
-    const mixedCheck = await client.query(
-      `SELECT bool_and(is_recharge_card) AS all_recharge,
-              bool_and(NOT is_recharge_card) AS all_normal
-       FROM sale_items WHERE sale_order_id = $1`,
-      [saleOrderId]
-    )
-    const row = mixedCheck.rows[0]
-    if (!(row.all_recharge === true || row.all_normal === true)) {
-      throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
-    }
+    // 充值卡剥离 SKU 化（2026-05-20）后，order.create 不再处理充值卡明细——
+    // 充值订单专用入口在 card.recharge（写 sale_orders type='充值单'，0 行 sale_items）。
+    // 故 D4 混单守卫废除（migration 0043 同步拆触发器）。
 
     // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
     // 按行级 floor 计算；部分支付订单 paid_sessions < session_count，限定后续 service.create 上限。
@@ -1056,57 +1051,34 @@ async function confirmOffline(ctx) {
       )
     }
 
-    // 充值卡入账：识别明细中 sale_items.is_recharge_card=true 的行，统一 UPSERT prepaid_cards
-    // - 虚拟 SKU（自定义金额路径）：面值从 product_name 的 "¥{n}" 解析
-    // - 真实档位 SKU：面值从 product_skus.price 读取
-    // 与 clientApi payNotify 侧的识别逻辑对称，二者均以 (ref_order_id) 幂等。
-    // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
-    // 2026-04-26 重构：判定从 product_kind='充值卡' 字面量改为 sale_items.is_recharge_card capability 列
-    // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
-    if (targetStatus === '已支付' && order.client_user_id) {
-      const rechargeRows = await client.query(
-        `SELECT si.sale_item_id, si.sku_id, si.product_name, sk.price AS sku_price
-         FROM sale_items si
-         LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
-         WHERE si.sale_order_id = $1 AND si.is_recharge_card = true`,
-        [saleOrderId]
-      )
-      if (rechargeRows.rows.length > 0) {
+    // 充值卡入账（2026-05-20 重构）：识别 sale_orders.sale_order_type='充值单'
+    // 面值直接读 order.total_amount（充值单专属语义，sale_items 0 行）
+    // 幂等键 'card-topup-{saleOrderId}'（与 payNotify 同源）
+    // PR-2: 仅在本次转为 '已支付' 时触发入账（部分支付不入账）
+    if (targetStatus === '已支付' && order.client_user_id && order.sale_order_type === '充值单') {
+      const faceValue = Number(order.total_amount)
+      if (faceValue > 0) {
         const dupCheck = await client.query(
           `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
           [saleOrderId]
         )
         if (dupCheck.rows.length === 0) {
-          for (const row of rechargeRows.rows) {
-            let faceValue
-            if (row.sku_id === RECHARGE_VIRTUAL_SKU_ID) {
-              const m = (row.product_name || '').match(/¥\s*(\d+(?:\.\d+)?)/)
-              if (!m) {
-                throw new Error(`INVALID_PARAMS: 充值订单 product_name 无法解析面值: ${row.product_name}`)
-              }
-              faceValue = parseFloat(m[1])
-            } else {
-              faceValue = Number(row.sku_price)
-            }
-            if (!(faceValue > 0)) continue
-
-            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
-            const upsertRes = await client.query(
-              `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
-               VALUES ($1, $2, $3, NOW(), NOW())
-               ON CONFLICT (user_id) DO UPDATE
-                 SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
-               RETURNING card_id`,
-              [newCardId, order.client_user_id, faceValue]
-            )
-            const cardId = upsertRes.rows[0].card_id
-            await client.query(
-              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-               VALUES ($1, '充值', $2, $3, $4, NOW())
-               ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-              [cardId, faceValue, saleOrderId, `card-recharge-${row.sale_item_id}`]
-            )
-          }
+          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+          const upsertRes = await client.query(
+            `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())
+             ON CONFLICT (user_id) DO UPDATE
+               SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+             RETURNING card_id`,
+            [newCardId, order.client_user_id, faceValue]
+          )
+          const cardId = upsertRes.rows[0].card_id
+          await client.query(
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+             VALUES ($1, '充值', $2, $3, $4, NOW())
+             ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+            [cardId, faceValue, saleOrderId, `card-topup-${saleOrderId}`]
+          )
         }
       }
     }
@@ -2150,7 +2122,6 @@ async function createConversion(ctx) {
               si.sales_category,
               si.service_fee,
               si.is_shengmei,
-              si.is_recharge_card,
               si.is_experience,
               so.client_user_id,
               so.status AS order_status,
@@ -3026,7 +2997,7 @@ async function createDeposit(ctx) {
     }
     const skuRows = await pg.query(
       `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-              s.service_fee, s.is_shengmei, s.is_experience, s.is_recharge_card,
+              s.service_fee, s.is_shengmei, s.is_experience,
               pc.sales_category, pc.product_kind
        FROM product_skus s
        JOIN product_categories pc ON s.category_id = pc.category_id
@@ -3037,9 +3008,7 @@ async function createDeposit(ctx) {
       throw new Error(`INVALID_PARAMS: 商品 ${item.skuId} 不存在`)
     }
     const sku = skuRows[0]
-    if (sku.is_recharge_card === true) {
-      throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许充值卡（无次数维度）')
-    }
+    // 寄存单仅承载次数初始化语义，充值卡剥离 SKU 化（2026-05-20）后不再有充值 SKU 可入参
     const quantity = Number(item.quantity) || 1
     if (quantity <= 0) {
       throw new Error('INVALID_PARAMS: quantity 必须为正')
@@ -3067,7 +3036,6 @@ async function createDeposit(ctx) {
       serviceFee: 0,
       isShengmei: sku.is_shengmei ?? null,
       isExperience: sku.is_experience === true,
-      isRechargeCard: false,
     }
   }))
 
@@ -3127,8 +3095,8 @@ async function createDeposit(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_recharge_card, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, false, $16)`,
+          sales_category, service_fee, is_shengmei, is_experience
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,

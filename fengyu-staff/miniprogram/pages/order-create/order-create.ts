@@ -1,7 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { calcCartTotal, calcHalfPriceTotal } from '../../utils/cart-calc';
+import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
 
@@ -18,10 +18,11 @@ const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充�
 type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
 
 /**
- * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐，仅使用前 3 值
- * - 销售单：默认，正常计价（支持 couponId / 行级 customPrice）
- * - 内部单：managerOnly，所有 SKU 半价（后端计算），禁优惠券/禁改价
- * - 转换单：managerOnly，调 order.createConversion；需要已注册 clientUserId
+ * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐
+ * - 销售单：默认，正常计价（支持订单级 couponId 按行均摊）
+ * - 内部单：managerOnly，所有 SKU 半价（后端计算），禁优惠券
+ * - 转换单：managerOnly，调 order.createConversion
+ * - 寄存单：剩余次数初始化
  */
 type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单';
 
@@ -30,22 +31,24 @@ interface CartItem {
   skuId: string;
   spuName: string;
   specName: string;
+  /** 单价（会员价优先 specialPrice，否则 price；由 skuToDisplay / SkuItem 决定） */
   price: number;
   quantity: number;
-  discount: number;
   sessionCount: number;
   productType: string;
   workfineItemId: string;
-  /** 预计算：price × quantity（避免 WXML 浮点精度问题） */
-  subtotal: string;
-  /** 预计算：price × quantity - discount */
-  itemTotal: string;
-  /** 预计算：内部单半价实付（price × 0.5 × quantity），仅 saleOrderType='内部单' 时展示 */
-  halfPriceItemTotal: string;
+  /** 预计算：price × quantity（"价格"列） */
+  priceLine: string;
+  /** 预计算：本行摊到的优惠券折扣（订单级券按行应付比例分摊；元，2 位精度） */
+  couponShare: string;
+  /** 预计算：行应付金额 = priceLine - couponShare（销售单 / 寄存单口径） */
+  saleAmount: string;
+  /** 预计算：内部单半价后行应付（price × 0.5 × quantity，再扣摊到的券） */
+  halfPriceSaleAmount: string;
+  /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
+  received: string;
   /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
   refBundleId?: string;
-  /** PR-C §C6：行级自定义单价（仅销售单可用；空字符串=不启用） */
-  customPrice?: string;
 }
 
 interface Category {
@@ -232,25 +235,29 @@ Page({
     customerSearching: false,
     customerInfo: null as null | CustomerInfo,
     recentCustomers: [] as CustomerInfo[],
-    // Step 2 顶部：订单类型 3 选 1（PR-C §C1）
+    // Step 2 顶部：订单类型 4 选 1（PR-C §C1）
     saleOrderType: '销售单' as SaleOrderType,
-    /** 内部单半价合计（原价 × 0.5 - 每行 discount；discount 禁用时实际始终为 原价 × 0.5） */
+    /** 内部单半价合计（行原价 × 0.5 之和） */
     halfPriceTotal: '0.00',
+    /** 应付合计：销售单/寄存单 = cartTotal - couponDiscount；内部单 = halfPriceTotal - couponDiscount */
+    payableTotal: '0.00',
+    /** 实付合计：Σ(cart[i].received)；店长可改行实付 → 此处即时更新 */
+    receivedTotal: '0.00',
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
     /**
-     * PR-D1：销售单 / 内部单的支付方式（默认微信）
+     * 销售单 / 内部单的支付方式（默认微信）
      * - 仅作用于 saleOrderType ∈ {销售单, 内部单}（转换单的支付方式由 ConversionPanel 内部管理）
-     * - 白名单：'微信' | '线下'（暂未支持支付宝，待业务确认）
+     * - 白名单：'微信' | '支付宝' | '线下'
      */
-    paymentMethod: '微信' as '微信' | '线下',
+    paymentMethod: '微信' as '微信' | '支付宝' | '线下',
     /**
-     * 储值卡抵扣（预选 Wave 3G）
+     * 充值卡抵扣（预选 Wave 3G；DB 字段 prepaid_card_amount 命名保持不变，UI 文案统一为「充值卡」）
      * - customerCardBalance：顾客当前余额（跨店统一），由 customer.customerBalance 加载
      * - useCard：店长预选开关，默认根据余额自动开（>0 开）
      * - prepaidCardAmount / paidAmount：computePrepaidDeduction 计算结果（不影响后端 balance，仅作 payload 与 UI 展示）
-     * - showPayMethodGroup：paid > 0 时展示支付方式按钮组；paid = 0 时隐藏 + 显示"全额抵扣"
+     * - showPayMethodGroup：paid > 0 时展示支付方式按钮组；paid = 0 时隐藏
      * - prepaidCardLoaded：避免重复请求；customerBalanceLoading：拉取中态
      */
     customerCardBalance: 0 as number,
@@ -326,11 +333,10 @@ Page({
           specName: pending.specName,
           price: pending.price,
           quantity: pending.quantity,
-          discount: 0,
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId || '',
-          subtotal: '', itemTotal: '', halfPriceItemTotal: '',
+          priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
         }];
         this.updateCart(cart);
       } else {
@@ -351,11 +357,10 @@ Page({
             specName: pending.specName,
             price: pending.price,
             quantity: pending.quantity,
-            discount: 0,
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
-            subtotal: '', itemTotal: '', halfPriceItemTotal: '',
+            priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
           });
         }
         this.updateCart(cart);
@@ -684,11 +689,10 @@ Page({
         specName: item.spuName,
         price: item.price,
         quantity: 1,
-        discount: 0,
         sessionCount: item.sessionCount || 0,
         productType: item.productKind || item.productType,
         workfineItemId: '',
-        subtotal: '', itemTotal: '', halfPriceItemTotal: '',
+        priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
       });
     }
     this.updateCart(cart);
@@ -730,60 +734,93 @@ Page({
     this.updateCart(cart);
   },
 
-  onDiscountChange(e: WechatMiniprogram.CustomEvent) {
-    // 内部单禁改 discount（UI 已 disabled，防御性再拒一次）
-    if (this.data.saleOrderType === '内部单') return;
-    const skuId = e.currentTarget.dataset.skuId as string;
-    const val = parseFloat(e.detail.value) || 0;
-    const cart = [...this.data.cart];
-    const idx = cart.findIndex(c => c.skuId === skuId);
-    if (idx >= 0) {
-      const max = cart[idx].price * cart[idx].quantity;
-      cart[idx].discount = val < 0 ? 0 : val > max ? max : val;
-    }
-    this.updateCart(cart);
-  },
-
   /**
-   * PR-C §C6：行级自定义单价（customPrice）。
-   * 仅销售单启用；内部单/转换单不显示该输入。空字符串=不启用，后端回落至 SKU 标价。
+   * 行级「实付金额」编辑（店长可向下调；区间 0 ≤ received ≤ 行应付金额）。
+   * - 销售单/寄存单：上限 = saleAmount（priceLine - couponShare）
+   * - 内部单：上限 = halfPriceSaleAmount
+   * - 空字符串等同于默认（=应付金额）
    */
-  onCustomPriceChange(e: WechatMiniprogram.CustomEvent) {
-    if (this.data.saleOrderType !== '销售单') return;
+  onReceivedChange(e: WechatMiniprogram.CustomEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
     const raw = (e.detail?.value ?? '') as string;
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx < 0) return;
+    const row = cart[idx];
+    const cap = parseFloat(
+      this.data.saleOrderType === '内部单' ? row.halfPriceSaleAmount : row.saleAmount
+    ) || 0;
     const parsed = parseFloat(raw);
     if (!raw || Number.isNaN(parsed) || parsed < 0) {
-      cart[idx].customPrice = '';
+      row.received = cap.toFixed(2);
     } else {
-      cart[idx].customPrice = String(Math.round(parsed * 100) / 100);
+      const clamped = Math.min(parsed, cap);
+      row.received = (Math.round(clamped * 100) / 100).toFixed(2);
     }
-    this.updateCart(cart);
+    this.updateCart(cart, { preserveReceived: true });
   },
 
-  updateCart(cart: CartItem[]) {
+  /**
+   * 重算 cart 行的预算字段（价格 / 摊到的券 / 应付 / 半价应付 / 实付默认）
+   * - opts.preserveReceived = true：保留用户手动改过的 received（仅在 saleAmount/halfPriceSaleAmount 因外部 input 变化时归一化裁剪到上限）
+   * - 否则 received 全部回归默认值（= 当前订单类型下的应付）
+   */
+  updateCart(cart: CartItem[], opts?: { preserveReceived?: boolean }) {
+    // 1) 先填 priceLine（"价格"列）
     for (const c of cart) {
-      c.subtotal = (c.price * c.quantity).toFixed(2);
-      c.itemTotal = (c.price * c.quantity - c.discount).toFixed(2);
-      // PR-C §C2：内部单半价行总计（与云函数 create 内部单分支口径对齐）
+      c.priceLine = (c.price * c.quantity).toFixed(2);
+    }
+    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = price × qty；内部单 = price × 0.5 × qty
+    const isInternal = this.data.saleOrderType === '内部单';
+    const baseLines = cart.map(c => {
+      if (isInternal) {
+        const halfUnit = Math.round(c.price * 50) / 100;
+        return halfUnit * c.quantity;
+      }
+      return c.price * c.quantity;
+    });
+    // 3) 按行应付比例摊订单级优惠券折扣（couponDiscount 已在 onCouponPick 时落到 data）
+    const shares = allocateCouponPerLine(baseLines, this.data.couponDiscount || 0);
+    for (let i = 0; i < cart.length; i++) {
+      const c = cart[i];
+      const share = shares[i] || 0;
+      c.couponShare = share.toFixed(2);
+      // 销售单/寄存单的应付金额（不走半价）
+      const saleAmountNum = Math.max(0, Math.round((c.price * c.quantity - share) * 100) / 100);
+      c.saleAmount = saleAmountNum.toFixed(2);
+      // 内部单专用的应付金额（先半价、再扣摊到的券）
       const halfUnit = Math.round(c.price * 50) / 100;
-      c.halfPriceItemTotal = (halfUnit * c.quantity - (c.discount || 0)).toFixed(2);
+      const halfSaleNum = Math.max(0, Math.round((halfUnit * c.quantity - (isInternal ? share : 0)) * 100) / 100);
+      c.halfPriceSaleAmount = halfSaleNum.toFixed(2);
+      // 实付默认 = 当前订单类型下的应付
+      const cap = (isInternal ? halfSaleNum : saleAmountNum);
+      if (opts?.preserveReceived && c.received) {
+        const prev = parseFloat(c.received) || 0;
+        c.received = Math.min(prev, cap).toFixed(2);
+      } else {
+        c.received = cap.toFixed(2);
+      }
     }
     const { count, total } = calcCartTotal(cart);
     const halfPriceTotal = calcHalfPriceTotal(cart);
+    // 应付合计 = Σ(行应付)；实付合计 = Σ(行实付)
+    let payableSum = 0, receivedSum = 0;
+    for (const c of cart) {
+      payableSum += parseFloat(isInternal ? c.halfPriceSaleAmount : c.saleAmount) || 0;
+      receivedSum += parseFloat(c.received) || 0;
+    }
     const update: Record<string, any> = {
       cart, cartCount: count, cartTotal: total, halfPriceTotal,
+      payableTotal: payableSum.toFixed(2),
+      receivedTotal: receivedSum.toFixed(2),
     };
     if (this.data.couponDiscount > 0) {
-      update.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
+      update.couponTotal = payableSum.toFixed(2);
     }
     this.setData(update);
     // cart 变动后重新评估已选优惠券（未选券时内部短路，零开销）
     void this.revalidateCoupon();
-    // cart 变动后重算储值卡预选（仅在弹层 Step 2 已加载余额时生效）
+    // cart 变动后重算充值卡预选（仅在弹层 Step 2 已加载余额时生效）
     this.recomputePrepaidAmounts();
   },
 
@@ -908,23 +945,19 @@ Page({
   },
 
   /**
-   * 重算储值卡抵扣额与实付额（与顾客端 checkout 算法口径一致）
+   * 重算充值卡抵扣额与实付额（与顾客端 checkout 算法口径一致）
    * - 仅当弹层处于 Step 2 且 saleOrderType ∈ {销售单, 内部单} 时生效
    *   （转换单走 ConversionPanel 内部金额管理；不参与本预选 UI）
-   * - 应抵部分 = totalAmount - couponDiscount（注意：内部单已半价，使用 halfPriceTotal 作为基础）
+   * - 应付合计已在 updateCart 中算好（payableTotal 字段，含券摊算与内部单半价）
    */
   recomputePrepaidAmounts() {
     if (this.data.saleOrderType === '转换单') {
       this.setData({ prepaidCardAmount: 0, paidAmount: '0.00', showPayMethodGroup: true });
       return;
     }
-    const baseTotalStr = this.data.saleOrderType === '内部单'
-      ? this.data.halfPriceTotal
-      : this.data.cartTotal;
-    const total = parseFloat(baseTotalStr) || 0;
+    const payable = parseFloat(this.data.payableTotal) || 0;
     const result = computePrepaidDeduction({
-      totalAmount: total,
-      couponDiscount: this.data.couponDiscount || 0,
+      payableAmount: payable,
       customerCardBalance: this.data.customerCardBalance || 0,
       useCard: !!this.data.useCard,
     });
@@ -986,18 +1019,10 @@ Page({
       update.useCard = false;
       update.prepaidCardAmount = 0;
     }
-    // 切到非销售单时清空行级 customPrice（后端内部单/转换单/寄存单均不接受 customPrice）
-    if (next !== '销售单') {
-      const cart = this.data.cart.map(c => ({ ...c, customPrice: '' }));
-      update.cart = cart;
-      this.setData(update);
-      this.updateCart(cart);
-      // updateCart 末尾已触发 recomputePrepaidAmounts，此处无需再次调用
-      return;
-    }
+    // saleOrderType 切换会改变行的 saleAmount（销售单/寄存单 vs 内部单），
+    // 需要重算应付/实付汇总（updateCart 末尾自动触发 recomputePrepaidAmounts）
     this.setData(update);
-    // 切回销售单（cart 未变）也需重算（基础 total 从 halfPriceTotal 切回 cartTotal）
-    this.recomputePrepaidAmounts();
+    this.updateCart(this.data.cart);
   },
 
   /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
@@ -1017,12 +1042,12 @@ Page({
   },
 
   /**
-   * PR-D1 — 支付方式切换（仅销售单/内部单生效；转换单的支付方式由 ConversionPanel 内部管理）
-   * 白名单：'微信' | '线下'
+   * 支付方式切换（仅销售单/内部单生效；转换单的支付方式由 ConversionPanel 内部管理）
+   * 白名单：'微信' | '支付宝' | '线下'
    */
   onPaymentMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const next = e.currentTarget.dataset.method as '微信' | '线下';
-    if (!next || (next !== '微信' && next !== '线下')) return;
+    const next = e.currentTarget.dataset.method as '微信' | '支付宝' | '线下';
+    if (!next || (next !== '微信' && next !== '支付宝' && next !== '线下')) return;
     if (next === this.data.paymentMethod) return;
     this.setData({ paymentMethod: next });
   },
@@ -1048,7 +1073,7 @@ Page({
       const items = cart.map(c => ({
         skuId: c.skuId,
         quantity: c.quantity,
-        amount: c.price * c.quantity - c.discount,
+        amount: c.price * c.quantity,
       }));
       const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
         clientPhone: customerInfo.phone,
@@ -1071,19 +1096,18 @@ Page({
       couponId: string; name: string; discount: number;
     };
     const d = Number(discount) || 0;
-    const couponTotal = (parseFloat(this.data.cartTotal) - d).toFixed(2);
     this.setData({
       selectedCoupon: { couponId, name, discount: d },
       couponDiscount: d,
-      couponTotal,
       showCouponPopup: false,
     });
-    this.recomputePrepaidAmounts();
+    // 券变化触发 cart 行 couponShare/saleAmount/received 全量重算
+    this.updateCart(this.data.cart);
   },
 
   onClearCoupon() {
     this.setData({ selectedCoupon: null, couponDiscount: 0, couponTotal: '', showCouponPopup: false });
-    this.recomputePrepaidAmounts();
+    this.updateCart(this.data.cart);
   },
 
   /**
@@ -1100,7 +1124,7 @@ Page({
       const items = cart.map(c => ({
         skuId: c.skuId,
         quantity: c.quantity,
-        amount: Math.round((c.price * c.quantity - c.discount) * 100) / 100,
+        amount: Math.round(c.price * c.quantity * 100) / 100,
       }));
       const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
         clientPhone: customerInfo.phone,
@@ -1117,13 +1141,15 @@ Page({
           couponDiscount: 0,
           couponTotal: '',
         });
+        // 券失效后需重算行 couponShare/saleAmount/received（updateCart 已含逻辑）
+        this.updateCart(this.data.cart);
         wx.showToast({ title: '商品已变动，原优惠券已失效', icon: 'none' });
       } else if (result.kind === 'updated') {
         this.setData({
           selectedCoupon: { ...selectedCoupon, discount: result.discount },
           couponDiscount: result.discount,
-          couponTotal: (parseFloat(this.data.cartTotal) - result.discount).toFixed(2),
         });
+        this.updateCart(this.data.cart);
       }
     } catch {
       // 评估失败保持原状，提交时由后端兜底拒绝
@@ -1184,7 +1210,7 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      // Wave 3G — 储值卡预选（不扣卡，仅作为后端写订单的预选值）
+      // Wave 3G — 充值卡预选（不扣卡，仅作为后端写订单的预选值）
       // 决策 #6：店长开单 = 预选；balance 不动，extraField useCard + prepaidCardAmount 透传给云函数
       const useCard = this.data.useCard && this.data.prepaidCardAmount > 0;
       const prepaidCardAmount = useCard ? this.data.prepaidCardAmount : 0;
@@ -1192,26 +1218,19 @@ Page({
         clientUserId: customerInfo.clientUserId,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
-        // PR-D1：使用 state（销售单 / 内部单可选 微信 / 线下）；转换单不走此分支
+        // 销售单 / 内部单可选 微信 / 支付宝 / 线下；转换单不走此分支
         // Wave 3G：实付=0 时由后端强制覆盖为 '无'，前端仍传 paymentMethod 作为建议通道
         paymentMethod: this.data.paymentMethod,
         saleOrderType,
-        items: cart.map(c => {
-          const payloadItem: Record<string, any> = {
-            skuId: c.skuId,
-            workfineItemId: c.workfineItemId,
-            spuName: c.spuName,
-            specName: c.specName,
-            quantity: c.quantity,
-            // 内部单 discount 前端禁用，但若有残值会被后端校验；销售单透传
-            discount: saleOrderType === '内部单' ? 0 : c.discount,
-          };
-          // PR-C §C6 — 行级自定义单价（仅销售单，后端字段名 customPrice）
-          if (saleOrderType === '销售单' && c.customPrice && parseFloat(c.customPrice) > 0) {
-            payloadItem.customPrice = parseFloat(c.customPrice);
-          }
-          return payloadItem;
-        }),
+        items: cart.map(c => ({
+          skuId: c.skuId,
+          workfineItemId: c.workfineItemId,
+          spuName: c.spuName,
+          specName: c.specName,
+          quantity: c.quantity,
+          // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
+          received: parseFloat(c.received) || 0,
+        })),
         remark,
         // 内部单不允许优惠券（云函数已守卫）
         couponId: saleOrderType === '销售单'
