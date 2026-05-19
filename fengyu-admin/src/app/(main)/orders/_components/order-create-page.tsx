@@ -17,7 +17,7 @@ import {
 } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
-import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
+import { getCustomerHeldCards, type HeldCardCandidate, type RechargeCardSku } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
@@ -116,9 +116,12 @@ function StepIndicator({ current }: { current: number }) {
 export default function OrderCreatePageClient({
   stores,
   employees,
+  rechargeCardSkus = [],
 }: {
   stores: Store[]
   employees: Employee[]
+  /** 真实 is_recharge_card=true 档位 SKU（SSR fetch；失败降级空数组） */
+  rechargeCardSkus?: RechargeCardSku[]
 }) {
   const [step, setStep] = useState(0)
   const [searchKeyword, setSearchKeyword] = useState("")
@@ -639,7 +642,7 @@ export default function OrderCreatePageClient({
                   />
                 )
               case '充值卡':
-                return <PrepaidCardPicker onAdd={addToCart} />
+                return <PrepaidCardPicker onAdd={addToCart} realSkus={rechargeCardSkus} />
             }
           })()}
 

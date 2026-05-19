@@ -1,17 +1,20 @@
 "use client"
 
 /**
- * 充值卡 picker（与 client `card.rechargeConfig` / `matchTier` 对齐）
+ * 充值卡 picker
  *
- * 不再依赖真实 SKU 列表；档位与折扣逻辑完全复用 `@/lib/recharge`（与 client
- * `cloudfunctions/clientApi/routes/card.js` 同源）。
+ * 两类档位来源：
+ *  A) 真实 SKU 档位 — 来自 `getRechargeCardSkus()`（is_recharge_card=true）：
+ *     - skuId = product_skus.sku_id（真实 SKU）
+ *     - productName / skuSpecName / productType / price 全部走 SKU 实际值
+ *     - 后端 createOrder 真实 SKU 分支查 DB 验 unitRealPrice 防篡改
+ *  B) 档位快选（虚拟 SKU） — 沿用 `@/lib/recharge` 静态 RECHARGE_TIERS：
+ *     - skuId 强制为 RECHARGE_VIRTUAL_SKU_ID
+ *     - productName = `预付充值卡 ¥{faceValue}` → payNotify / staff order.js /
+ *       admin applyRechargeOnOrderPaid 从该字段正则解析面值
+ *     - 后端 createOrder 虚拟 SKU 分支保留 matchTier 校验 + 字段强制覆盖
  *
- * 下单模型：
- * - skuId 强制为虚拟 SKU `sku-recharge-virtual`
- * - productName = `预付充值卡 ¥{faceValue}` → payNotify / applyRechargeOnOrderPaid
- *   从此字段解析面值
- * - price = specialPrice = unitPrice = payAmount（实付）
- * - 每单仅 1 笔（quantity 固定 1，混单校验在 order-create-page 侧）
+ * 每单仅 1 笔（quantity 固定 1，混单校验在 order-create-page 侧）。
  *
  * onAdd 沿用通用 (product, sku) 签名：父级 addToCart 将其作为 CartItem。
  */
@@ -28,9 +31,12 @@ import {
   matchTier,
 } from "@/lib/recharge"
 import type { Product, ProductSku } from "@/lib/types"
+import type { RechargeCardSku } from "@/actions/cards"
 
 export interface PrepaidCardPickerProps {
   onAdd: (product: Product, sku: ProductSku) => void
+  /** 真实 is_recharge_card=true SKU 档位（来自 SSR fetch；失败时父组件传空数组） */
+  realSkus?: RechargeCardSku[]
 }
 
 function buildRechargeAddPayload(faceValue: number): { product: Product; sku: ProductSku } {
@@ -75,9 +81,62 @@ function buildRechargeAddPayload(faceValue: number): { product: Product; sku: Pr
   return { product, sku }
 }
 
-export function PrepaidCardPicker({ onAdd }: PrepaidCardPickerProps) {
+/**
+ * 真实 SKU 路径 → (product, sku) payload
+ *
+ * 关键区别于虚拟 SKU 路径：
+ *  - skuId / productName / skuSpecName / productType 全部使用真实 SKU 字段
+ *  - 后端 createOrder 真实 SKU 分支查 DB 比对，不强制覆盖
+ *  - applyRechargeOnOrderPaid 从 product_skus.price 取面值（无需 product_name 兜底）
+ */
+function buildRealRechargePayload(realSku: RechargeCardSku): { product: Product; sku: ProductSku } {
+  const priceStr = realSku.payAmount.toFixed(2)
+  const faceValueStr = realSku.faceValue.toFixed(2)
+  const product: Product = {
+    productId: realSku.skuId,
+    categoryId: realSku.categoryId,
+    name: realSku.specName,
+    coverImage: null,
+    detailImages: null,
+    description: null,
+    isBundle: false,
+    price: faceValueStr,
+    specialPrice: realSku.bonus > 0 ? priceStr : null,
+    manageScope: null,
+    marketScope: null,
+    sortOrder: 0,
+    isVisible: true,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const sku: ProductSku = {
+    skuId: realSku.skuId,
+    categoryId: realSku.categoryId,
+    productType: realSku.productType as ProductSku['productType'],
+    specName: realSku.specName,
+    price: faceValueStr,
+    specialPrice: realSku.bonus > 0 ? priceStr : null,
+    sessionCount: null,
+    sortOrder: 0,
+    serviceFee: '0',
+    isShengmei: null,
+    isRechargeCard: true,
+    marketScope: null,
+    isEnabled: true,
+    createdAt: '',
+    updatedAt: '',
+  }
+  return { product, sku }
+}
+
+export function PrepaidCardPicker({ onAdd, realSkus = [] }: PrepaidCardPickerProps) {
   const [customAmount, setCustomAmount] = useState("")
   const [customError, setCustomError] = useState<string | null>(null)
+
+  const handleRealSkuClick = (realSku: RechargeCardSku) => {
+    const { product, sku } = buildRealRechargePayload(realSku)
+    onAdd(product, sku)
+  }
 
   const handleTierClick = (faceValue: number) => {
     const { product, sku } = buildRechargeAddPayload(faceValue)
@@ -109,8 +168,49 @@ export function PrepaidCardPicker({ onAdd }: PrepaidCardPickerProps) {
   return (
     <Card>
       <CardContent className="p-4 space-y-4">
-        <div>
-          <h3 className="text-sm font-semibold text-[#999999] mb-3">档位快选</h3>
+        {realSkus.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-[#999999] mb-3">真实 SKU 档位</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {realSkus.map((realSku) => (
+                <button
+                  key={realSku.skuId}
+                  type="button"
+                  onClick={() => handleRealSkuClick(realSku)}
+                  className="bg-[#FAFAFA] rounded-lg border border-[var(--border)] hover:border-[var(--primary)] hover:bg-[#FFF0EE] transition-colors p-4 flex flex-col items-center gap-1 relative"
+                >
+                  {realSku.bonus > 0 && (
+                    <span className="absolute top-1 right-1 text-[10px] font-medium text-white bg-[var(--primary)] rounded px-1.5 py-0.5">
+                      送 ¥{realSku.bonus}
+                    </span>
+                  )}
+                  <span className="text-xs text-[#999999] line-clamp-1 max-w-full">
+                    {realSku.specName}
+                  </span>
+                  <span className="text-2xl font-bold text-[var(--primary)]">
+                    ¥{realSku.faceValue}
+                  </span>
+                  <span className="text-xs text-[#666666]">
+                    实付 ¥{realSku.payAmount}
+                  </span>
+                  <span
+                    className={cn(
+                      buttonVariants({ size: "sm", variant: "outline" }),
+                      "h-6 text-xs px-2 mt-1 pointer-events-none"
+                    )}
+                  >
+                    加入
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className={realSkus.length > 0 ? 'border-t border-[var(--border)] pt-4' : undefined}>
+          <h3 className="text-sm font-semibold text-[#999999] mb-3">
+            {realSkus.length > 0 ? '档位快选（默认）' : '档位快选'}
+          </h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {RECHARGE_TIERS.map((tier) => {
               const { payAmount } = matchTier(tier.faceValue)

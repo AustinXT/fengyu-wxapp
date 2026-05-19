@@ -322,3 +322,85 @@ export const getCustomerHeldCards = withPermission(
   })
   },
 )
+
+// ============================================================================
+// 充值卡可售档位（admin 开单页 PrepaidCardPicker 数据源）
+// ============================================================================
+
+/**
+ * 充值卡 SKU 档位（与 fengyu-staff card.rechargeSkus 字面对齐）
+ *
+ * SQL 与字段映射均字面对齐 staffApi/routes/card.js L37-67，
+ * 跨端守护见 staff routes/card.js 同名结构。
+ */
+export interface RechargeCardSku {
+  skuId: string
+  /** spec_name（卡名） */
+  specName: string
+  /** 面值 = product_skus.price */
+  faceValue: number
+  /** 实付 = special_price ?? price */
+  payAmount: number
+  /** 赠送金额 = faceValue - payAmount（>=0） */
+  bonus: number
+  /** 折扣 = payAmount / faceValue（0~1） */
+  discount: number
+  productType: string
+  categoryId: string
+  categoryName: string
+}
+
+/**
+ * 拉 admin 开单页可选的充值卡档位（is_recharge_card=true 真实 SKU）
+ *
+ * 排除虚拟 SKU `sku-recharge-virtual`（自定义金额路径独占）；
+ * 排除停售 / 已删除 / 分类失效项。
+ *
+ * SQL 字面对齐 fengyu-staff/cloudfunctions/staffApi/routes/card.js 的 rechargeSkus。
+ * 权限：复用 sale_order:create —— 开单页 SSR 时一同 fetch。
+ */
+export const getRechargeCardSkus = withPermission(
+  'sale_order:create',
+  async (_session): Promise<RechargeCardSku[]> => {
+    const rowsRes = await db.execute(sql`
+      SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
+             pc.category_id, pc.category_name
+      FROM product_skus sk
+      JOIN product_categories pc ON sk.category_id = pc.category_id
+      WHERE sk.is_recharge_card = true
+        AND sk.is_enabled = true
+        AND sk.deleted_at IS NULL
+        AND pc.is_valid = true
+        AND sk.sku_id <> 'sku-recharge-virtual'
+      ORDER BY sk.price ASC, sk.sort_order ASC
+    `)
+    const rows = rowsRes as unknown as Array<{
+      sku_id: string
+      spec_name: string
+      price: string
+      special_price: string | null
+      sort_order: number | null
+      product_type: string
+      category_id: string
+      category_name: string
+    }>
+
+    return rows.map((r) => {
+      const price = Number(r.price)
+      const payAmount = r.special_price != null ? Number(r.special_price) : price
+      const bonus = Math.round((price - payAmount) * 100) / 100
+      const discount = price > 0 ? Math.round((payAmount / price) * 100) / 100 : 1
+      return {
+        skuId: r.sku_id,
+        specName: r.spec_name,
+        faceValue: price,
+        payAmount,
+        bonus,
+        discount,
+        productType: r.product_type,
+        categoryId: r.category_id,
+        categoryName: r.category_name,
+      }
+    })
+  },
+)

@@ -64,24 +64,45 @@ async function applyRechargeOnOrderPaid(
   // 查该订单是否含充值卡明细行（capability 列判定，2026-04-26 ticket：
   // 取代旧的 skuId = RECHARGE_VIRTUAL_SKU_ID 字面量；行级快照在开单时拷贝自
   // product_skus.is_recharge_card，admin 后续修改 SKU 不影响历史订单）
-  const rechargeItems = await tx
-    .select({ productName: saleItems.productName })
-    .from(saleItems)
-    .where(
-      and(
-        eq(saleItems.saleOrderId, saleOrderId),
-        eq(saleItems.isRechargeCard, true),
-      ),
-    )
-    .limit(1)
+  //
+  // 2026-05-19 ticket：面值解析双路径化，与 staff order.js / payNotify 字面一致：
+  //   - 真实档位 SKU（admin/staff 真实 SKU 路径）：faceValue = product_skus.price
+  //   - 虚拟 SKU（自定义金额路径，sku_id = RECHARGE_VIRTUAL_SKU_ID）：从
+  //     product_name "¥{n}" 正则解析（parseRechargeFaceValue）
+  // 跨端守护：staff routes/order.js L1064-1088 + payNotify index.js L357-379 同义。
+  const rechargeItems = await tx.execute(sql`
+    SELECT si.sku_id, si.product_name, sk.price AS sku_price
+    FROM sale_items si
+    LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
+    WHERE si.sale_order_id = ${saleOrderId}
+      AND si.is_recharge_card = true
+    LIMIT 1
+  `)
+  const rechargeRows = rechargeItems as unknown as Array<{
+    sku_id: string
+    product_name: string | null
+    sku_price: string | null
+  }>
 
-  if (rechargeItems.length === 0) return
+  if (rechargeRows.length === 0) return
 
-  const faceValue = parseRechargeFaceValue(rechargeItems[0].productName)
+  const rechargeRow = rechargeRows[0]
+  let faceValue: number | null = null
+  if (rechargeRow.sku_id && rechargeRow.sku_id !== RECHARGE_VIRTUAL_SKU_ID) {
+    // 真实 SKU：从 product_skus.price 读取面值（防 product_name 被改名失配）
+    const priceNum = Number(rechargeRow.sku_price)
+    if (Number.isFinite(priceNum) && priceNum > 0) {
+      faceValue = priceNum
+    }
+  }
+  if (faceValue == null) {
+    // 虚拟 SKU 或 真实 SKU 无法定位 sku.price（兜底）：从 product_name 解析
+    faceValue = parseRechargeFaceValue(rechargeRow.product_name)
+  }
   if (faceValue == null) {
     throw new ApiError(
       'INVALID_STATE',
-      `充值订单 product_name 无法解析面值: ${rechargeItems[0].productName}`,
+      `充值订单面值解析失败: sku_id=${rechargeRow.sku_id} product_name=${rechargeRow.product_name}`,
     )
   }
 
@@ -583,6 +604,67 @@ export const confirmOfflinePayment = withPermission(
           AND expire_date IS NULL
       `)
 
+      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
+      // admin createOrder 接受 prepaidCardAmount 写入 sale_orders 后，
+      // 此处事务内做实际扣卡：锁原单读 prepaid_card_amount + client_user_id → 锁余额 → 扣减 →
+      // 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
+      // 与 staff confirmOffline (routes/order.js L958-1004) 字面对齐
+      // 必须放在 applyRechargeOnOrderPaid 之前（先扣抵扣，再处理充值入账）
+      const lockRes = await tx.execute(sql`
+        SELECT prepaid_card_amount, client_user_id FROM sale_orders
+        WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+      `)
+      const lockedRows = lockRes as unknown as any[]
+      const prepaidAmount = Number(lockedRows[0]?.prepaid_card_amount || 0)
+      const clientUserId = lockedRows[0]?.client_user_id as string | null
+      if (prepaidAmount > 0 && clientUserId) {
+        // 幂等：已扣过则跳过整段（用 card_transactions.ref_order_id + type='扣款' 判定）
+        const dupRes = await tx.execute(sql`
+          SELECT 1 FROM card_transactions
+          WHERE ref_order_id = ${saleOrderId} AND type = '扣款' LIMIT 1
+        `)
+        const dupRows = dupRes as unknown as any[]
+        if (dupRows.length === 0) {
+          // 锁余额
+          const balRes = await tx.execute(sql`
+            SELECT card_id, balance FROM prepaid_cards
+            WHERE user_id = ${clientUserId} FOR UPDATE
+          `)
+          const balRows = balRes as unknown as any[]
+          if (balRows.length === 0) {
+            throw new Error('INSUFFICIENT_BALANCE:NO_CARD: 顾客无储值卡账户')
+          }
+          const currentBalance = Number(balRows[0].balance)
+          if (currentBalance + 0.001 < prepaidAmount) {
+            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${prepaidAmount}，实际 ${currentBalance}`)
+          }
+          const cardId = balRows[0].card_id as string
+          // 扣减 balance
+          await tx.execute(sql`
+            UPDATE prepaid_cards
+            SET balance = balance - ${prepaidAmount}::numeric,
+                updated_at = NOW()
+            WHERE card_id = ${cardId}
+          `)
+          // 写 card_transactions（带幂等 external_ref）
+          await tx.execute(sql`
+            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+            VALUES (${cardId}, '扣款', ${-prepaidAmount}::numeric, ${saleOrderId}, ${`card-deduct-${saleOrderId}`}, NOW())
+            ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+          `)
+          // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
+          await tx.execute(sql`
+            INSERT INTO sale_order_payments (
+              sale_order_id, change_type, payment_method, amount, status,
+              paid_at, source_end, operator_employee_id, note, created_at
+            ) VALUES (
+              ${saleOrderId}, '储值卡抵扣', '储值卡', ${prepaidAmount}::numeric, '已支付',
+              NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款-储值卡抵扣', NOW()
+            )
+          `)
+        }
+      }
+
       // 充值卡入账（若订单含虚拟 SKU）：UPSERT prepaid_cards + 记流水
       // 与 fengyu-client payNotify 的充值入账逻辑完全同义，幂等由 ref_order_id 去重保障
       await applyRechargeOnOrderPaid(tx, saleOrderId)
@@ -611,7 +693,13 @@ export const confirmOfflinePayment = withPermission(
     if (!txResult.matched) {
       return { success: false, message: '订单状态已变更，无法确认收款' }
     }
-  } catch {
+  } catch (err: any) {
+    // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）— 不再统一吞为"请稍后重试"
+    const msg: string = err?.message || ''
+    if (msg.startsWith('INSUFFICIENT_BALANCE')) {
+      const stripped = msg.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
+      return { success: false, message: stripped || '顾客储值卡余额不足' }
+    }
     return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
@@ -813,8 +901,12 @@ export const createOrder = withPermission(
   // 前端 cart 上的 isRechargeCard 仅作 UI hint；权威值在事务前批量查 product_skus 时拿到。
   // 与 client 虚拟 SKU 模型对齐（fengyu-client/cloudfunctions/clientApi/routes/card.js）：
   //   - 强制销售单、严格一件、无优惠券、必须实名顾客
-  //   - faceValue 经 matchTier 反推 payAmount，比对前端传入的 unitRealPrice（防篡改）
-  //   - sale_items 字段强制覆盖，保证 payNotify/applyRechargeOnOrderPaid 能正确识别面值
+  //
+  // 2026-05-19 ticket：picker 增加"真实 SKU 档位"路径后，校验分两支：
+  //   - 虚拟 SKU（自定义金额路径）：保留 parseRechargeFaceValue + matchTier 校验 +
+  //     sale_items 字段强制覆盖（兼容 staff card.js / client card.js 字面写入）
+  //   - 真实 SKU（is_recharge_card=true 档位 SKU）：DB 拉 price/special_price 验
+  //     unitRealPrice 防篡改，不强制覆盖 productName/skuSpecName/productType（已正确）
   const isRechargeOrder = data.items.some((i) => i.isRechargeCard === true)
   if (isRechargeOrder) {
     if (data.items.length !== 1) {
@@ -831,51 +923,84 @@ export const createOrder = withPermission(
     }
 
     const item = data.items[0]
-    const faceValue = parseRechargeFaceValue(item.productName)
-    if (faceValue == null) {
-      return { success: false, message: '充值卡面值解析失败，请重新选择档位' }
-    }
-
-    let expected: { discount: number; payAmount: number }
-    try {
-      expected = matchTier(faceValue)
-    } catch (err: any) {
-      const msg = err?.message?.startsWith('INVALID_PARAMS:')
-        ? err.message.replace(/^INVALID_PARAMS:\s*/, '')
-        : '充值金额不符合档位规则'
-      return { success: false, message: msg }
-    }
-
-    const clientPayAmount = Number(item.unitRealPrice)
-    if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expected.payAmount) > 0.01) {
-      return { success: false, message: '充值卡实付金额与档位不匹配，请刷新页面后重试' }
-    }
-
     if (item.quantity !== 1) {
       return { success: false, message: '充值卡每单仅限 1 笔' }
     }
 
-    // 字段强制覆盖：与 client card.js 写入的 sale_items 保持完全一致
-    // RECHARGE_VIRTUAL_SKU_ID 仍作为虚拟 SKU 行的 ID 值（D3=B 单一虚拟 SKU 模式），
-    // 但业务判定从此走 isRechargeCard 列。
-    data = {
-      ...data,
-      items: [
-        {
-          skuId: RECHARGE_VIRTUAL_SKU_ID,
-          productName: `预付充值卡 ¥${faceValue}`,
-          skuSpecName: '预付充值卡（虚拟）',
-          productType: '家居产品',
-          sessionCount: null,
-          unitPrice: expected.payAmount.toFixed(2),
-          unitRealPrice: expected.payAmount.toFixed(2),
-          quantity: 1,
-          saleAmount: expected.payAmount.toFixed(2),
-          received: expected.payAmount.toFixed(2),
-          salesCategory: null,
-          isRechargeCard: true,
-        },
-      ],
+    const isVirtualSku = item.skuId === RECHARGE_VIRTUAL_SKU_ID
+    if (isVirtualSku) {
+      // 虚拟 SKU 路径（自定义金额）：保留原 matchTier 校验 + 字段强制覆盖
+      const faceValue = parseRechargeFaceValue(item.productName)
+      if (faceValue == null) {
+        return { success: false, message: '充值卡面值解析失败，请重新选择档位' }
+      }
+
+      let expected: { discount: number; payAmount: number }
+      try {
+        expected = matchTier(faceValue)
+      } catch (err: any) {
+        const msg = err?.message?.startsWith('INVALID_PARAMS:')
+          ? err.message.replace(/^INVALID_PARAMS:\s*/, '')
+          : '充值金额不符合档位规则'
+        return { success: false, message: msg }
+      }
+
+      const clientPayAmount = Number(item.unitRealPrice)
+      if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expected.payAmount) > 0.01) {
+        return { success: false, message: '充值卡实付金额与档位不匹配，请刷新页面后重试' }
+      }
+
+      // 字段强制覆盖：与 client card.js 写入的 sale_items 保持完全一致
+      // RECHARGE_VIRTUAL_SKU_ID 仍作为虚拟 SKU 行的 ID 值（D3=B 单一虚拟 SKU 模式），
+      // 但业务判定从此走 isRechargeCard 列。
+      data = {
+        ...data,
+        items: [
+          {
+            skuId: RECHARGE_VIRTUAL_SKU_ID,
+            productName: `预付充值卡 ¥${faceValue}`,
+            skuSpecName: '预付充值卡（虚拟）',
+            productType: '家居产品',
+            sessionCount: null,
+            unitPrice: expected.payAmount.toFixed(2),
+            unitRealPrice: expected.payAmount.toFixed(2),
+            quantity: 1,
+            saleAmount: expected.payAmount.toFixed(2),
+            received: expected.payAmount.toFixed(2),
+            salesCategory: null,
+            isRechargeCard: true,
+          },
+        ],
+      }
+    } else {
+      // 真实 SKU 路径（is_recharge_card=true 档位 SKU）：拉 DB 验 unitRealPrice，
+      // 不覆盖前端字段（真实 SKU 的 productName / skuSpecName 已是 spec_name 正确值）
+      const skuRowsRes = await db.execute(sql`
+        SELECT price, special_price, is_recharge_card, is_enabled, deleted_at
+        FROM product_skus
+        WHERE sku_id = ${item.skuId}
+        LIMIT 1
+      `)
+      const skuRows = skuRowsRes as unknown as Array<{
+        price: string
+        special_price: string | null
+        is_recharge_card: boolean
+        is_enabled: boolean
+        deleted_at: Date | string | null
+      }>
+      if (skuRows.length === 0 || !skuRows[0].is_enabled || skuRows[0].deleted_at != null) {
+        return { success: false, message: '充值卡 SKU 不存在或未启用' }
+      }
+      if (!skuRows[0].is_recharge_card) {
+        return { success: false, message: '所选 SKU 不是充值卡，请刷新页面后重试' }
+      }
+      const expectedPayAmount = Number(skuRows[0].special_price ?? skuRows[0].price)
+      const clientPayAmount = Number(item.unitRealPrice)
+      if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expectedPayAmount) > 0.01) {
+        return { success: false, message: '充值卡实付金额与 SKU 配置不匹配，请刷新页面后重试' }
+      }
+      // 不覆盖 productName / skuSpecName / productType：真实 SKU 字段已经正确，
+      // 面值在 applyRechargeOnOrderPaid 时从 product_skus.price 读取，无需 product_name 兜底。
     }
   }
 

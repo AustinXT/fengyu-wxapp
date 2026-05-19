@@ -116,7 +116,18 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((col, arr) => ({ type: 'inArray', col, arr })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn() }),
+  // ticket 2026-05-19：sql 模板调用保留 strings.raw 副本，
+  // 便于 mockTxByKeyword 按 SQL 文本关键字（FOR UPDATE / SELECT 1 FROM card_transactions 等）路由
+  sql: Object.assign(
+    vi.fn((strings: any, ..._values: any[]) => ({
+      __sqlText: Array.isArray(strings?.raw)
+        ? strings.raw.join(' ? ')
+        : Array.isArray(strings)
+          ? strings.join(' ? ')
+          : String(strings ?? ''),
+    })),
+    { raw: vi.fn(), join: vi.fn() },
+  ),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
@@ -793,19 +804,48 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     mockSelectBefore([{ customerName: '顾客甲', totalAmount: '495.00' }])
   })
 
-  /** 构造含充值虚拟 SKU 的订单 tx mock，默认未重复入账 */
+  /**
+   * 按 SQL 关键字路由 tx.execute 返回值的 mock（ticket 2026-05-19）。
+   * 取代旧的 executeCall === N 计数版本（脆弱，每次新增 execute 都要重排序号）。
+   *
+   * 默认行为：
+   *   - SELECT prepaid_card_amount ... FOR UPDATE → 返回 [{ prepaid_card_amount, client_user_id }]
+   *   - SELECT 1 FROM card_transactions ... '扣款' → 扣卡幂等查（默认未命中）
+   *   - SELECT card_id, balance FROM prepaid_cards ... FOR UPDATE → 默认 [{ card_id, balance }]
+   *   - UPDATE prepaid_cards / INSERT card_transactions / INSERT sale_order_payments → {}
+   *   - UPDATE sale_items SET expire_date → {}（到期日设置）
+   *   - SELECT 1 FROM card_transactions ... LIMIT 1（applyRechargeOnOrderPaid dup 查）→ 命中/未命中由 opts.dupExists
+   *   - INSERT INTO prepaid_cards ... RETURNING → [{ card_id }]（充值卡 UPSERT）
+   *   - UPDATE sale_items SET paid_sessions → {}（paid_sessions 重算）
+   *   - SELECT sale_item_id ... paid_sessions（violation 查）→ []
+   */
   function mockRechargeTx(opts: {
     updateCount?: number
     clientUserId?: string | null
-    storeId?: string | null
+    /** 抵扣金额（写入 sale_orders.prepaid_card_amount）；默认 0 = 不进扣卡分支 */
+    deductAmount?: number
+    /** 卡余额；默认 1000（足够扣 deductAmount） */
+    cardBalance?: number
+    /** 卡是否存在；默认 true */
+    cardExists?: boolean
+    /** 已存在 '扣款' 流水（幂等命中） */
+    deductDupExists?: boolean
+    /** 充值订单的 productName（含面值的虚拟 SKU 行） */
     productName?: string | null
+    /** 充值入账幂等命中（card_transactions.ref_order_id 已存在） */
     dupExists?: boolean
     upsertCardId?: string
   } = {}) {
-    const captured: { executes: any[]; insertValues: any[] } = { executes: [], insertValues: [] }
+    const captured: { executes: Array<{ text: string; raw: any }>; insertValues: any[] } = {
+      executes: [],
+      insertValues: [],
+    }
+    const deductAmount = opts.deductAmount ?? 0
+    const clientUserId = 'clientUserId' in opts ? opts.clientUserId : 'user-1'
+    const cardBalance = opts.cardBalance ?? 1000
+    const cardExists = opts.cardExists !== false
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       let selectCall = 0
-      let executeCall = 0
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
@@ -813,12 +853,42 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
           }),
         }),
         execute: vi.fn().mockImplementation((sqlArg: any) => {
-          captured.executes.push(sqlArg)
-          executeCall++
-          // 1: 设置到期日；2: dup 检查；3: UPSERT prepaid_cards
-          if (executeCall === 1) return Promise.resolve({})
-          if (executeCall === 2) return Promise.resolve(opts.dupExists ? [{ '?column?': 1 }] : [])
-          if (executeCall === 3) return Promise.resolve([{ card_id: opts.upsertCardId ?? 'FY-CARD-TEST' }])
+          const text: string = sqlArg?.__sqlText ?? ''
+          captured.executes.push({ text, raw: sqlArg })
+          // 扣卡块：SELECT prepaid_card_amount ... FOR UPDATE（默认 0 = 不进扣卡分支）
+          if (/SELECT\s+prepaid_card_amount/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([{
+              prepaid_card_amount: deductAmount,
+              client_user_id: clientUserId,
+            }])
+          }
+          // 扣卡幂等：SELECT 1 FROM card_transactions ... '扣款'
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) {
+            return Promise.resolve(opts.deductDupExists ? [{ '?column?': 1 }] : [])
+          }
+          // 锁余额：SELECT card_id, balance FROM prepaid_cards ... FOR UPDATE
+          if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
+            return Promise.resolve(cardExists ? [{ card_id: 'FY-CARD-DEDUCT', balance: cardBalance }] : [])
+          }
+          // applyRechargeOnOrderPaid 的 rechargeItems 查询（is_recharge_card=true）
+          if (/SELECT\s+si\.sku_id[\s\S]*FROM\s+sale_items[\s\S]*is_recharge_card/i.test(text)) {
+            return Promise.resolve(opts.productName === null
+              ? []
+              : [{ sku_id: 'SKU-RECHARGE', product_name: opts.productName ?? '预付充值卡 ¥500', sku_price: null }])
+          }
+          // 充值入账幂等（applyRechargeOnOrderPaid）：SELECT 1 FROM card_transactions WHERE ref_order_id ... LIMIT 1
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && !/'扣款'/.test(text)) {
+            return Promise.resolve(opts.dupExists ? [{ '?column?': 1 }] : [])
+          }
+          // 充值 UPSERT：INSERT INTO prepaid_cards ... ON CONFLICT ... RETURNING card_id
+          if (/INSERT\s+INTO\s+prepaid_cards/i.test(text) && /RETURNING/i.test(text)) {
+            return Promise.resolve([{ card_id: opts.upsertCardId ?? 'FY-CARD-TEST' }])
+          }
+          // recalcCustomerType 内的 SELECT customer_type → 空（保护性路径）
+          if (/SELECT\s+customer_type/i.test(text)) {
+            return Promise.resolve([])
+          }
+          // 默认（到期日 UPDATE / paid_sessions UPDATE+SELECT / 扣卡 UPDATE / INSERT 等）→ {}
           return Promise.resolve({})
         }),
         select: vi.fn().mockImplementation(() => {
@@ -827,19 +897,8 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
           chain.where = vi.fn().mockReturnValue(chain)
           chain.limit = vi.fn().mockImplementation(() => {
             selectCall++
-            if (selectCall === 1) {
-              // 注意：不要用 ?? 覆盖显式传入的 null，otherwise clientUserId:null 分支失效
-              return Promise.resolve([{
-                clientUserId: 'clientUserId' in opts ? opts.clientUserId : 'user-1',
-                storeId: 'storeId' in opts ? opts.storeId : 'store-1',
-              }])
-            }
-            if (selectCall === 2) {
-              return Promise.resolve(opts.productName === null
-                ? []
-                : [{ productName: opts.productName ?? '预付充值卡 ¥500' }])
-            }
-            return Promise.resolve([])
+            // 所有 tx.select() 调用统一返回 clientUserId（applyRechargeOnOrderPaid + confirm 主流程 customer_type 跃迁前查询）
+            return Promise.resolve([{ clientUserId }])
           })
           return chain
         }),
@@ -860,44 +919,37 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const captured = mockRechargeTx({ productName: '预付充值卡 ¥500' })
     const result = await confirmOfflinePayment('order-recharge-1')
     expect(result.success).toBe(true)
-    // 期望事务内 execute 被调用 5 次（到期日 + dup 检查 + UPSERT + paid_sessions UPDATE + paid_sessions SELECT violation）
-    // ticket 2026-05-19：recalcPaidSessionsForOrder 增加 2 次 execute
-    expect(captured.executes.length).toBe(5)
     // card_transactions INSERT 捕获 amount=500.00, type=充值
-    expect(captured.insertValues.length).toBe(1)
-    expect(captured.insertValues[0]).toMatchObject({
+    const rechargeInsert = captured.insertValues.find((v) => v.type === '充值')
+    expect(rechargeInsert).toMatchObject({
       type: '充值',
       amount: '500.00',
       refOrderId: 'order-recharge-1',
       cardId: 'FY-CARD-TEST',
     })
+    // ticket 2026-05-19：扣卡块新增 SELECT prepaid_card_amount FOR UPDATE
+    expect(captured.executes.some((e) => /SELECT\s+prepaid_card_amount/i.test(e.text))).toBe(true)
   })
 
   it('订单无充值虚拟 SKU → 不触发 prepaid_cards 写入', async () => {
     const captured = mockRechargeTx({ productName: null })
     const result = await confirmOfflinePayment('order-normal-1')
     expect(result.success).toBe(true)
-    // ticket 2026-05-19：原 1 次（到期日）+ 2 次（recalcPaidSessionsForOrder UPDATE + SELECT）= 3 次
-    expect(captured.executes.length).toBe(3)
-    expect(captured.insertValues.length).toBe(0)
+    expect(captured.insertValues.find((v) => v.type === '充值')).toBeUndefined()
   })
 
   it('历史订单 client_user_id=null（新规前 manualPhone 遗留） → 充值入账跳过', async () => {
     const captured = mockRechargeTx({ clientUserId: null, productName: '预付充值卡 ¥500' })
     const result = await confirmOfflinePayment('order-legacy-null-client')
     expect(result.success).toBe(true)
-    // ticket 2026-05-19：原 1 次 + recalcPaidSessionsForOrder 2 次 = 3 次
-    expect(captured.executes.length).toBe(3)
-    expect(captured.insertValues.length).toBe(0)
+    expect(captured.insertValues.find((v) => v.type === '充值')).toBeUndefined()
   })
 
   it('充值入账幂等：card_transactions.ref_order_id 已存在 → 跳过 UPSERT/INSERT', async () => {
     const captured = mockRechargeTx({ productName: '预付充值卡 ¥500', dupExists: true })
     const result = await confirmOfflinePayment('order-recharge-dup')
     expect(result.success).toBe(true)
-    // ticket 2026-05-19：原 2 次（到期日 + dup 检查）+ recalcPaidSessionsForOrder 2 次 = 4 次
-    expect(captured.executes.length).toBe(4)
-    expect(captured.insertValues.length).toBe(0)
+    expect(captured.insertValues.find((v) => v.type === '充值')).toBeUndefined()
   })
 
   it('product_name 无法解析面值 → 抛错回滚', async () => {
@@ -909,15 +961,22 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
             where: vi.fn().mockResolvedValue({ count: 1 }),
           }),
         }),
-        execute: vi.fn().mockResolvedValue({}),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          // 扣卡块：默认 prepaid=0 → 直接跳过扣卡分支
+          if (/SELECT\s+prepaid_card_amount/i.test(text)) {
+            return Promise.resolve([{ prepaid_card_amount: 0, client_user_id: 'user-1' }])
+          }
+          return Promise.resolve({})
+        }),
         select: vi.fn().mockImplementation(() => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
           chain.where = vi.fn().mockReturnValue(chain)
           chain.limit = vi.fn().mockImplementation(() => {
             selectCall++
-            if (selectCall === 1) return Promise.resolve([{ clientUserId: 'user-1', storeId: 'store-1' }])
-            return Promise.resolve([{ productName: '坏数据：没有面值标识' }])
+            if (selectCall === 1) return Promise.resolve([{ clientUserId: 'user-1' }])
+            return Promise.resolve([{ productName: '坏数据：没有面值标识', sku_id: 'SKU-X', sku_price: null }])
           })
           return chain
         }),
@@ -928,6 +987,143 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const result = await confirmOfflinePayment('order-bad')
     expect(result.success).toBe(false)
     expect(result.message).toBe('确认收款失败，请稍后重试')
+  })
+})
+
+describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
+  })
+
+  /** 按 SQL 关键字路由 tx.execute 的扣卡测试 mock（不含充值入账逻辑） */
+  function mockDeductTx(opts: {
+    prepaidAmount: number
+    clientUserId?: string | null
+    cardBalance?: number
+    cardExists?: boolean
+    deductDupExists?: boolean
+  }) {
+    const captured: { executes: Array<{ text: string; raw: any }>; insertValues: any[] } = {
+      executes: [],
+      insertValues: [],
+    }
+    const clientUserId = 'clientUserId' in opts ? opts.clientUserId : 'user-1'
+    const cardBalance = opts.cardBalance ?? 1000
+    const cardExists = opts.cardExists !== false
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          captured.executes.push({ text, raw: sqlArg })
+          if (/SELECT\s+prepaid_card_amount/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([{
+              prepaid_card_amount: opts.prepaidAmount,
+              client_user_id: clientUserId,
+            }])
+          }
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) {
+            return Promise.resolve(opts.deductDupExists ? [{ '?column?': 1 }] : [])
+          }
+          if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
+            return Promise.resolve(cardExists ? [{ card_id: 'FY-CARD-DEDUCT', balance: cardBalance }] : [])
+          }
+          // applyRechargeOnOrderPaid 的 rechargeItems 查询（is_recharge_card=true）→ 空（非充值订单）
+          if (/SELECT\s+si\.sku_id[\s\S]*FROM\s+sale_items[\s\S]*is_recharge_card/i.test(text)) {
+            return Promise.resolve([])
+          }
+          // recalcCustomerType 内的 SELECT customer_type → 空（保护性路径）
+          if (/SELECT\s+customer_type/i.test(text)) {
+            return Promise.resolve([])
+          }
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            selectCall++
+            // applyRechargeOnOrderPaid 第 1 个 tx.select：查 clientUserId
+            // 之后再有 tx.select（confirmOfflinePayment 内 customer_type 跃迁前的查询）→ clientUserId
+            return Promise.resolve([{ clientUserId }])
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push(v)
+            return Promise.resolve({})
+          }),
+        }),
+      }
+      const result = await fn(tx)
+      return result
+    })
+    return captured
+  }
+
+  it('prepaidAmount=100, balance=200 → 进入扣卡分支：UPDATE prepaid_cards + INSERT card_transactions + INSERT sale_order_payments', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 100, cardBalance: 200 })
+    const result = await confirmOfflinePayment('order-deduct-1')
+    expect(result.success).toBe(true)
+    // 扣卡 SQL 都触发
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(true)
+    expect(captured.executes.some((e) => /INSERT\s+INTO\s+card_transactions/i.test(e.text))).toBe(true)
+    expect(captured.executes.some((e) => /INSERT\s+INTO\s+sale_order_payments/i.test(e.text))).toBe(true)
+  })
+
+  it('prepaidAmount=100, balance=50 → 抛 INSUFFICIENT_BALANCE，订单状态不变', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 100, cardBalance: 50 })
+    const result = await confirmOfflinePayment('order-deduct-fail-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('储值卡余额不足')
+    // 不应触发 UPDATE prepaid_cards / INSERT card_transactions
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /INSERT\s+INTO\s+card_transactions/i.test(e.text))).toBe(false)
+  })
+
+  it('prepaidAmount=100, 无卡 → 抛 INSUFFICIENT_BALANCE:NO_CARD', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 100, cardExists: false })
+    const result = await confirmOfflinePayment('order-deduct-no-card')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无储值卡账户')
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(false)
+  })
+
+  it('幂等：已存在 type=扣款 的 card_transactions → 跳过整段扣卡块', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 100, deductDupExists: true })
+    const result = await confirmOfflinePayment('order-deduct-dup')
+    expect(result.success).toBe(true)
+    // 跳过：不应触发后续的 SELECT card_id, balance / UPDATE / INSERT
+    expect(captured.executes.some((e) => /SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /INSERT\s+INTO\s+card_transactions/i.test(e.text))).toBe(false)
+  })
+
+  it('prepaidAmount=0 → 不进入扣卡分支', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 0 })
+    const result = await confirmOfflinePayment('order-no-deduct')
+    expect(result.success).toBe(true)
+    // 完全跳过：dup 查 / 余额查 / UPDATE 都不触发
+    expect(captured.executes.some((e) => /SELECT\s+1\s+FROM\s+card_transactions.*'扣款'/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(false)
+  })
+
+  it('client_user_id=null → 不进入扣卡分支（即使 prepaidAmount > 0）', async () => {
+    const captured = mockDeductTx({ prepaidAmount: 100, clientUserId: null })
+    const result = await confirmOfflinePayment('order-no-user')
+    expect(result.success).toBe(true)
+    expect(captured.executes.some((e) => /SELECT\s+1\s+FROM\s+card_transactions.*'扣款'/i.test(e.text))).toBe(false)
+    expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(false)
   })
 })
 
@@ -1788,6 +1984,318 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     })
     expect(result.success).toBe(true)
     expect(capturedOrder.totalAmount).toBe('980.00')
+  })
+})
+
+// ─── createOrder + 真实 is_recharge_card=true 档位 SKU（ticket 2026-05-19）──
+//
+// 与上面"虚拟 SKU"分支并列，覆盖 picker 真实 SKU 路径：
+//   - createOrder 真实 SKU 分支：查 product_skus 验 unitRealPrice 防篡改
+//   - applyRechargeOnOrderPaid 真实 SKU 分支：faceValue = product_skus.price
+
+describe('createOrder — 充值卡订单 真实 SKU 档位（ticket 2026-05-19）', () => {
+  const REAL_RECHARGE_SKU = 'sku-recharge-888'
+
+  /** 真实 SKU：888 面值 / 800 实付（赠 88） */
+  const realRechargeItem = {
+    skuId: REAL_RECHARGE_SKU,
+    productName: '888 元储值卡',
+    skuSpecName: '888 元储值卡',
+    productType: '家居产品' as const,
+    sessionCount: null,
+    unitPrice: '800.00',
+    unitRealPrice: '800.00',
+    quantity: 1,
+    salesCategory: null,
+    isRechargeCard: true,
+  }
+
+  const baseRealRechargeData = {
+    ...baseOrderData,
+    clientUserId: 'user-1',
+    clientPhone: '13800000000',
+    items: [realRechargeItem],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('合法真实 SKU + 正确 unitRealPrice → 成功，保留 spec_name 不强制覆盖', async () => {
+    // 真实 SKU 分支：db.execute 查 product_skus 返回正确 price/special_price
+    ;(db.execute as any).mockResolvedValueOnce([{
+      price: '888.00',
+      special_price: '800.00',
+      is_recharge_card: true,
+      is_enabled: true,
+      deleted_at: null,
+    }])
+
+    let capturedItem: any
+    let capturedOrder: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260519-RR01' }]),
+        insert: vi.fn().mockImplementation((_table: any) => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if ('saleItemId' in v) capturedItem = v
+            else if ('saleOrderId' in v && 'saleOrderType' in v) capturedOrder = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createOrder(baseRealRechargeData)
+    expect(result.success).toBe(true)
+    expect(capturedOrder.saleOrderType).toBe('销售单')
+    expect(capturedOrder.totalAmount).toBe('800.00')
+    // 真实 SKU：字段 NOT 强制覆盖（productName/skuSpecName 保留前端传入的真实值）
+    expect(capturedItem.skuId).toBe(REAL_RECHARGE_SKU)
+    expect(capturedItem.productName).toBe('888 元储值卡')
+    expect(capturedItem.skuSpecName).toBe('888 元储值卡')
+    expect(capturedItem.isRechargeCard).toBe(true)
+  })
+
+  it('篡改 unitRealPrice（DB special_price 800，前端传 100） → 拒绝', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([{
+      price: '888.00',
+      special_price: '800.00',
+      is_recharge_card: true,
+      is_enabled: true,
+      deleted_at: null,
+    }])
+    const result = await createOrder({
+      ...baseRealRechargeData,
+      items: [{ ...realRechargeItem, unitRealPrice: '100.00' }],
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实付金额与 SKU 配置不匹配')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('SKU 不存在（DB 查 0 行） → 拒绝', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([])
+    const result = await createOrder(baseRealRechargeData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('充值卡 SKU 不存在')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('SKU 被改成 is_recharge_card=false（前端来不及刷新） → 拒绝', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([{
+      price: '888.00',
+      special_price: '800.00',
+      is_recharge_card: false,
+      is_enabled: true,
+      deleted_at: null,
+    }])
+    const result = await createOrder(baseRealRechargeData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不是充值卡')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('special_price 为 null → 以 price 为实付', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([{
+      price: '500.00',
+      special_price: null,
+      is_recharge_card: true,
+      is_enabled: true,
+      deleted_at: null,
+    }])
+
+    let capturedOrder: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260519-RR02' }]),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if ('saleOrderId' in v && 'saleOrderType' in v) capturedOrder = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createOrder({
+      ...baseRealRechargeData,
+      items: [{
+        ...realRechargeItem,
+        skuId: 'sku-recharge-500',
+        productName: '500 元储值卡',
+        skuSpecName: '500 元储值卡',
+        unitPrice: '500.00',
+        unitRealPrice: '500.00',
+      }],
+    })
+    expect(result.success).toBe(true)
+    expect(capturedOrder.totalAmount).toBe('500.00')
+  })
+})
+
+// ─── applyRechargeOnOrderPaid 双路径面值（ticket 2026-05-19）───────────────
+
+describe('applyRechargeOnOrderPaid — 真实 SKU 路径面值取自 sku.price', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '800.00' }])
+  })
+
+  it('真实 SKU 行（sku_price=888） → INSERT card_transactions amount=888.00', async () => {
+    const captured: { executes: Array<{ text: string; raw: any }>; insertValues: any[] } = {
+      executes: [],
+      insertValues: [],
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          captured.executes.push({ text, raw: sqlArg })
+          if (/SELECT\s+prepaid_card_amount/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([{ prepaid_card_amount: 0, client_user_id: 'user-1' }])
+          }
+          // 真实 SKU 行：sku_price 非空（800.00 实付，888.00 面值）
+          if (/SELECT\s+si\.sku_id[\s\S]*FROM\s+sale_items[\s\S]*is_recharge_card/i.test(text)) {
+            return Promise.resolve([{
+              sku_id: 'sku-recharge-888',
+              product_name: '888 元储值卡',
+              sku_price: '888.00',
+            }])
+          }
+          // dup 检查（充值幂等）：空 = 未重放
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text)) {
+            return Promise.resolve([])
+          }
+          // UPSERT prepaid_cards
+          if (/INSERT\s+INTO\s+prepaid_cards/i.test(text) && /RETURNING/i.test(text)) {
+            return Promise.resolve([{ card_id: 'FY-CARD-REAL' }])
+          }
+          if (/SELECT\s+customer_type/i.test(text)) {
+            return Promise.resolve([])
+          }
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            selectCall++
+            if (selectCall === 1) return Promise.resolve([{ clientUserId: 'user-1' }])
+            return Promise.resolve([])
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push(v)
+            return Promise.resolve({})
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await confirmOfflinePayment('order-real-recharge-1')
+    expect(result.success).toBe(true)
+    // 真实 SKU 面值取自 sku.price=888，非 product_name 中"888 元储值卡"的"888"字符（同值但走的是 sku_price 路径）
+    const rechargeInsert = captured.insertValues.find((v) => v.type === '充值')
+    expect(rechargeInsert).toMatchObject({
+      type: '充值',
+      amount: '888.00',
+      refOrderId: 'order-real-recharge-1',
+      cardId: 'FY-CARD-REAL',
+    })
+  })
+
+  it('虚拟 SKU 行（sku_id=RECHARGE_VIRTUAL_SKU_ID） → 回归从 product_name 解析面值', async () => {
+    const captured: { executes: Array<{ text: string; raw: any }>; insertValues: any[] } = {
+      executes: [],
+      insertValues: [],
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          captured.executes.push({ text, raw: sqlArg })
+          if (/SELECT\s+prepaid_card_amount/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([{ prepaid_card_amount: 0, client_user_id: 'user-1' }])
+          }
+          // 虚拟 SKU 行：sku_id 命中 RECHARGE_VIRTUAL_SKU_ID + sku_price=null
+          if (/SELECT\s+si\.sku_id[\s\S]*FROM\s+sale_items[\s\S]*is_recharge_card/i.test(text)) {
+            return Promise.resolve([{
+              sku_id: 'sku-recharge-virtual',
+              product_name: '预付充值卡 ¥1000',
+              sku_price: null,
+            }])
+          }
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text)) {
+            return Promise.resolve([])
+          }
+          if (/INSERT\s+INTO\s+prepaid_cards/i.test(text) && /RETURNING/i.test(text)) {
+            return Promise.resolve([{ card_id: 'FY-CARD-VIRTUAL' }])
+          }
+          if (/SELECT\s+customer_type/i.test(text)) {
+            return Promise.resolve([])
+          }
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            selectCall++
+            if (selectCall === 1) return Promise.resolve([{ clientUserId: 'user-1' }])
+            return Promise.resolve([])
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push(v)
+            return Promise.resolve({})
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await confirmOfflinePayment('order-virtual-recharge-1')
+    expect(result.success).toBe(true)
+    const rechargeInsert = captured.insertValues.find((v) => v.type === '充值')
+    // 虚拟 SKU：面值从 product_name 正则解析 → 1000.00
+    expect(rechargeInsert).toMatchObject({
+      type: '充值',
+      amount: '1000.00',
+      refOrderId: 'order-virtual-recharge-1',
+      cardId: 'FY-CARD-VIRTUAL',
+    })
   })
 })
 
