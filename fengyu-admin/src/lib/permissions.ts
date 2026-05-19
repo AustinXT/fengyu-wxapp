@@ -53,6 +53,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   manager: [
     'dashboard:view',
+    // 引用读：列表页筛选器需要市场/门店列表（scopeCondition 已在 SQL 层兜底，不越权）
+    'org:list',
     'store:list',
     'employee:list',
     'customer:list', 'customer:update', 'customer:create',
@@ -78,6 +80,10 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   finance: [
     'dashboard:view',
+    // 引用读：列表页筛选器需要市场/门店/员工列表（scopeCondition 兜底）
+    'org:list',
+    'store:list',
+    'employee:list',
     'sale_order:list',
     'sale_order:refund_create',
     'sale_order:record_payment',
@@ -104,6 +110,9 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   product: [
     'dashboard:view',
+    // 引用读：列表页筛选器需要市场/门店列表（scopeCondition 兜底）
+    'org:list',
+    'store:list',
     'product:list', 'product:create', 'product:update',
     'coupon:list', 'coupon:create', 'coupon:update',
     'sale_order:refund_create',
@@ -112,6 +121,10 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   customer_mgr: [
     'dashboard:view',
+    // 引用读：顾客管理页/顾客详情页需要市场/门店/员工列表（scopeCondition 兜底，仅见 scope 内）
+    'org:list',
+    'store:list',
+    'employee:list',
     'customer:list', 'customer:update', 'customer:create',
     'sale_item:list',
     'sale_order:refund_create',
