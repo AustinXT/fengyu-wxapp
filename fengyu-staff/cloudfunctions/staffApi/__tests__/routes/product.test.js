@@ -291,6 +291,7 @@ describe('product.shopInit', () => {
       },
     ])
     pg.query.mockResolvedValueOnce([]) // 无 bundle 商品 → mallBundleGroups 早返回
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus（无 is_experience SKU）
 
     await productRoutes.shopInit(ctx)
 
@@ -298,6 +299,7 @@ describe('product.shopInit', () => {
     expect(ctx.result.skuList).toHaveLength(1)
     expect(ctx.result.skuList[0].skuId).toBe('sku-1')
     expect(ctx.result.mallBundleGroups).toEqual([])
+    expect(ctx.result.experienceSkus).toEqual([])
     // groupedCategories 契约
     expect(ctx.result.groupedCategories).toHaveLength(2)
     expect(ctx.result.groupedCategories[0].productKind).toBe('护理项目')
@@ -318,6 +320,8 @@ describe('product.shopInit', () => {
     pg.query.mockResolvedValueOnce([])
     // 4) _queryMallBundleGroups
     pg.query.mockResolvedValueOnce([])
+    // 5) _queryExperienceSkus
+    pg.query.mockResolvedValueOnce([])
 
     await productRoutes.shopInit(ctx)
 
@@ -330,6 +334,7 @@ describe('product.shopInit', () => {
 
     pg.query.mockResolvedValueOnce([]) // _queryCategoryRows（空 → 跳过 EXISTS + skuList 查询）
     pg.query.mockResolvedValueOnce([]) // _queryMallBundleGroups productRows
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus
 
     await productRoutes.shopInit(ctx)
 
@@ -337,6 +342,7 @@ describe('product.shopInit', () => {
     expect(ctx.result.groupedCategories).toEqual([])
     expect(ctx.result.skuList).toEqual([])
     expect(ctx.result.mallBundleGroups).toEqual([])
+    expect(ctx.result.experienceSkus).toEqual([])
   })
 
   // ===== D2.6 isBundle 字段 + mallBundleGroups 聚合 =====
@@ -367,6 +373,8 @@ describe('product.shopInit', () => {
       },
     ])
     // _queryMallBundleGroups → productRows（无 bundle 产品，早返回）
+    pg.query.mockResolvedValueOnce([])
+    // _queryExperienceSkus
     pg.query.mockResolvedValueOnce([])
 
     await productRoutes.shopInit(ctx)
@@ -410,6 +418,8 @@ describe('product.shopInit', () => {
       // 噪声：跨 product_id 的 link 不能混入
       { product_id: 'prod-b2', sku_id: 'sku-h1', bundle_group_id: 10, bundle_price: '200', sort_order: 2 },
     ])
+    // 5) _queryExperienceSkus
+    pg.query.mockResolvedValueOnce([])
 
     await productRoutes.shopInit(ctx)
 
@@ -456,6 +466,7 @@ describe('product.shopInit', () => {
     ])
     pg.query.mockResolvedValueOnce([]) // _queryFormattedSkuList（第一个分类的 SKU）
     pg.query.mockResolvedValueOnce([]) // _queryMallBundleGroups → productRows
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus
 
     await productRoutes.shopInit(ctx)
 
@@ -493,6 +504,7 @@ describe('product.shopInit', () => {
     ])
     pg.query.mockResolvedValueOnce([]) // skuList
     pg.query.mockResolvedValueOnce([]) // bundle productRows
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus
 
     await productRoutes.shopInit(ctx)
 
@@ -515,6 +527,7 @@ describe('product.shopInit', () => {
     pg.query.mockResolvedValueOnce([{ category_id: 'cat-h' }])
     pg.query.mockResolvedValueOnce([]) // skuList
     pg.query.mockResolvedValueOnce([]) // bundle productRows
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus
 
     await productRoutes.shopInit(ctx)
 
@@ -522,6 +535,47 @@ describe('product.shopInit', () => {
     expect(ctx.result.categories[0].id).toBe('cat-h')
     const welfareGroup = ctx.result.groupedCategories.find(g => g.productKind === '护理项目')
     expect(welfareGroup.items).toHaveLength(1)
+  })
+
+  test('experienceSkus：全量返回 is_experience=true SKU，与分类 EXISTS 过滤无关', async () => {
+    const ctx = createCtx()
+    // 1) _queryCategoryRows
+    pg.query.mockResolvedValueOnce([])
+    // 2) _queryMallBundleGroups
+    pg.query.mockResolvedValueOnce([])
+    // 3) _queryExperienceSkus — 返回两行体验卡 SKU
+    pg.query.mockResolvedValueOnce([
+      {
+        sku_id: 'exp-1', category_id: 'cat-trial', product_type: '单品',
+        spec_name: 'Fixture 体验卡 ¥99 1次', price: '99', special_price: null,
+        session_count: 1, sort_order: 1, service_fee: '0', is_shengmei: false,
+        is_experience: true, is_recharge_card: false,
+        category_name: '体验卡', product_kind: '体验卡', sales_category: null,
+        is_bundle: false,
+      },
+      {
+        sku_id: 'exp-2', category_id: 'cat-trial', product_type: '单品',
+        spec_name: '法米索呵护膏', price: '360', special_price: null,
+        session_count: 1, sort_order: 2, service_fee: '0', is_shengmei: false,
+        is_experience: true, is_recharge_card: false,
+        category_name: '体验卡', product_kind: '体验卡', sales_category: null,
+        is_bundle: false,
+      },
+    ])
+
+    await productRoutes.shopInit(ctx)
+
+    expect(ctx.result.experienceSkus).toHaveLength(2)
+    expect(ctx.result.experienceSkus[0].skuId).toBe('exp-1')
+    expect(ctx.result.experienceSkus[0].isExperience).toBe(true)
+    expect(ctx.result.experienceSkus[0].sessionCount).toBe(1)
+    expect(ctx.result.experienceSkus[1].specName).toBe('法米索呵护膏')
+
+    // 验证 SQL：is_experience=true 直接过滤，不依赖分类 EXISTS
+    const expSql = pg.query.mock.calls[2][0]
+    expect(expSql).toMatch(/sk\.is_experience = true/)
+    expect(expSql).toMatch(/sk\.is_enabled = true/)
+    expect(expSql).not.toMatch(/category_id = ANY/)
   })
 })
 

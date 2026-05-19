@@ -26,12 +26,14 @@ async function main() {
   const r = await invokeStaffApi('product.shopInit', { _testOpenid: TEST_MANAGER_OPENID })
   if (r.code !== 0) errors.push(`shopInit code=${r.code} msg=${r.message}`)
   else {
-    const { categories, skuList, bundleGroups } = r.data
+    const { categories, skuList, bundleGroups, experienceSkus } = r.data
     if (!Array.isArray(categories) || categories.length === 0) errors.push(`categories 应非空数组`)
     if (!Array.isArray(skuList)) errors.push(`skuList 应为数组`)
     // bundleGroups 可为 undefined（无套餐时）或数组（有套餐时）
     if (bundleGroups !== undefined && !Array.isArray(bundleGroups)) errors.push(`bundleGroups 应为数组或缺省`)
-    rec(`  ✓ categories=${categories.length} skuList=${skuList?.length} bundleGroups=${bundleGroups?.length ?? 'none'}`)
+    // experienceSkus 必须返回数组（即使为空）— 用于体验卡 Tab 扁平 SKU 列表
+    if (!Array.isArray(experienceSkus)) errors.push(`experienceSkus 应为数组（即使无 is_experience SKU 也应返回 []）`)
+    rec(`  ✓ categories=${categories.length} skuList=${skuList?.length} bundleGroups=${bundleGroups?.length ?? 'none'} experienceSkus=${experienceSkus?.length}`)
   }
 
   if (errors.length) {

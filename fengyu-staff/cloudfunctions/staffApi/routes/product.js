@@ -99,6 +99,31 @@ function _formatCategory(r) {
   }
 }
 
+/** 行映射：DB row → 前端 SKU 形状。
+ *
+ * 抽出独立 helper 以便 shopInit 的 experienceSkus 查询直接复用同一字段映射，
+ * 避免两处字符串字面量漂移。
+ */
+function _formatSkuRow(sk) {
+  return {
+    skuId: sk.sku_id,
+    specName: sk.spec_name,
+    categoryId: sk.category_id,
+    categoryName: sk.category_name,
+    productKind: sk.product_kind,
+    salesCategory: sk.sales_category,
+    price: Number(sk.price) || 0,
+    specialPrice: sk.special_price ? Number(sk.special_price) : null,
+    sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
+    productType: sk.product_type,
+    serviceFee: Number(sk.service_fee) || 0,
+    isShengmei: sk.is_shengmei,
+    isExperience: !!sk.is_experience,
+    isRechargeCard: !!sk.is_recharge_card,
+    isBundle: !!sk.is_bundle,
+  }
+}
+
 /** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories）
  *
  * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
@@ -155,23 +180,34 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
     ORDER BY sk.sort_order ASC
   `, params)
 
-  return skuRows.map(sk => ({
-    skuId: sk.sku_id,
-    specName: sk.spec_name,
-    categoryId: sk.category_id,
-    categoryName: sk.category_name,
-    productKind: sk.product_kind,
-    salesCategory: sk.sales_category,
-    price: Number(sk.price) || 0,
-    specialPrice: sk.special_price ? Number(sk.special_price) : null,
-    sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
-    productType: sk.product_type,
-    serviceFee: Number(sk.service_fee) || 0,
-    isShengmei: sk.is_shengmei,
-    isExperience: !!sk.is_experience,
-    isRechargeCard: !!sk.is_recharge_card,
-    isBundle: !!sk.is_bundle,
-  }))
+  return skuRows.map(_formatSkuRow)
+}
+
+/** 全量启用的体验卡 SKU 列表（不受 shopInit 分类 EXISTS 过滤影响）
+ *
+ * staff 开单页"体验卡 Tab"展示用：admin 端 getProductsByKind('体验卡') 走
+ * SKU 级 capability eq(is_experience,true) 直查；staff 端原先把体验卡硬塞进
+ * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT (is_recharge_card OR
+ * is_experience) EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
+ *
+ * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
+ */
+async function _queryExperienceSkus() {
+  const rows = await pg.query(`
+    SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
+           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.service_fee, sk.is_shengmei,
+           sk.is_experience, sk.is_recharge_card,
+           pc.category_name, pc.product_kind, pc.sales_category,
+           false AS is_bundle
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
+    WHERE sk.is_experience = true
+      AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
+    ORDER BY sk.sort_order ASC
+  `)
+  return rows.map(_formatSkuRow)
 }
 
 /**
@@ -307,7 +343,11 @@ async function shopInit(ctx) {
 
   const mallBundleGroups = await _queryMallBundleGroups()
 
-  ctx.result = { categories, groupedCategories, skuList, mallBundleGroups }
+  // 体验卡 Tab 走扁平 SKU 列表，不依赖分类元数据；
+  // 与 admin getProductsByKind('体验卡') 用 SKU 级 capability 判定保持一致。
+  const experienceSkus = await _queryExperienceSkus()
+
+  ctx.result = { categories, groupedCategories, skuList, mallBundleGroups, experienceSkus }
 }
 
 /**
