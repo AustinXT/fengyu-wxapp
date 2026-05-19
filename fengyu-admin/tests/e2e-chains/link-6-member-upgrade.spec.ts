@@ -47,9 +47,21 @@ const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
 const SKU1_NAME = '洗-无创纹身' // 缦之羽 SKU ¥100
 const SKU2_NAME = '假性皱纹管家' // 其他 SKU ¥100
 
-// 预期升级路径：beforeAll 补足 spend ≥ 1980 → 初钻
-const EXPECTED_LEVEL = '初钻'
-const IDEM_KEY = `member-upgrade-${FIXTURE_USER_ID}-${EXPECTED_LEVEL}`
+// 预期升级路径：根据补 spend 后的实际 12mo spend 动态判定（与 cron `determineMemberLevel` 同步）
+// 仅在 beforeAll 跑完才确定，因 fixture 顾客历史 spend 会随测试积累漂移
+// 阈值与 determineMemberLevel (src/cron/lib/member-level.ts) 对齐
+const SPEND_THRESHOLD_INIT = 1980
+function expectedLevelForSpend(spend: number): string {
+  if (spend >= 100000) return '黑钻'
+  if (spend >= 60000) return '金钻'
+  if (spend >= 30000) return '粉钻'
+  if (spend >= 10000) return '星钻'
+  if (spend >= SPEND_THRESHOLD_INIT) return '初钻'
+  return 'NULL'
+}
+// 这两个 let 在 beforeAll 里赋值（依赖动态算 spend）
+let EXPECTED_LEVEL = '初钻'
+let IDEM_KEY = `member-upgrade-${FIXTURE_USER_ID}-${EXPECTED_LEVEL}`
 
 // beforeAll 真实 admin createOrder 顶 spend 用 — ticket D1 决策 B
 // 现 fixture 顾客滚动 12 个月 spend 仅 ~¥1242 < 1980 阈值，
@@ -272,6 +284,10 @@ test.beforeAll(async () => {
       `[链路6 setup] 补 spend 后 12mo spend=${postTopupSpend} < 1980，beforeAll 失败`,
     )
   }
+  // 动态决定本次升级目标等级（fixture spend 可能因历史累积已超 ¥10000 → 星钻）
+  EXPECTED_LEVEL = expectedLevelForSpend(postTopupSpend)
+  IDEM_KEY = `member-upgrade-${FIXTURE_USER_ID}-${EXPECTED_LEVEL}`
+  console.log(`[链路6 setup] 预期升级到 ${EXPECTED_LEVEL}（spend=${postTopupSpend}）`)
 
   // ── 阶段 2：重置顾客等级到 NULL（cron 触发 NULL→初钻 升级路径） ─────────
   psql(
@@ -667,7 +683,7 @@ test('链路6：会员等级升级（cron 触发）', async ({ page }) => {
   expect(messagesRow).not.toBe('')
   expect(messagesRow).toContain('客户')
   expect(messagesRow).toContain(FIXTURE_USER_ID)
-  expect(messagesRow).toContain('初钻')
+  expect(messagesRow).toContain(EXPECTED_LEVEL)
 
   // point_transactions：初钻 points=0 → 不会插入
   const ptRows = psql(
