@@ -1516,10 +1516,11 @@ export const deleteMallCategory = withPermission(
 /**
  * 开单页 Step 2 数据源：按 kind 返回可加购的 SKU/套餐。
  *
- * 具名 kind（二级分类的 product_kind 值，例如 '体验卡' / '充值卡'）：
- *   返回 `product_skus JOIN product_categories WHERE pc.product_kind=$kind`
- *   的 categories（分类分组）+ skus 列表，过滤 isEnabled + 排除 bundle SKU。
- *   类型签名上用 string 表达（productKindEnum 已删除，运营可自由新建 kind）。
+具名 kind：平铺 categories + skus，过滤 isEnabled。
+ *   - '体验卡' → WHERE product_skus.is_experience=true（SKU 级 capability SSoT）
+ *   - '充值卡' → WHERE product_skus.is_recharge_card=true（SKU 级 capability SSoT）
+ *   - 其他字面量 kind → WHERE product_categories.product_kind=$kind（向后兼容）
+ *   类型签名用 string 表达（productKindEnum 已删除，运营可自由新建 kind）。
  *
  * 特殊 '__bundle__'：
  *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
@@ -1820,7 +1821,17 @@ export const getProductsByKind = withPermission(
     return { kind: '__normal__', groups }
   }
 
-  // 具名 kind（如 '体验卡' / '充值卡'）：平铺 categories
+  // 具名 kind：平铺 categories
+  // - '体验卡' / '充值卡' 用 SKU 级 capability 列判定（与 product_kind 字面量解耦，
+  //   即使某 SKU 错挂在非卡类分类下，capability=true 仍会进入对应 Tab；反之亦然）
+  // - 其他具名 kind 保留 product_kind 字面量匹配（向后兼容）
+  const capabilityCondition =
+    kind === '体验卡'
+      ? eq(productSkus.isExperience, true)
+      : kind === '充值卡'
+        ? eq(productSkus.isRechargeCard, true)
+        : eq(productCategories.productKind, kind)
+
   const rows = await db
     .select({
       category: productCategories,
@@ -1828,7 +1839,7 @@ export const getProductsByKind = withPermission(
     })
     .from(productSkus)
     .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-    .where(and(eq(productCategories.productKind, kind), eq(productSkus.isEnabled, true), eq(productCategories.isValid, true), isNull(productSkus.deletedAt)))
+    .where(and(capabilityCondition, eq(productSkus.isEnabled, true), eq(productCategories.isValid, true), isNull(productSkus.deletedAt)))
     // 例外：sortOrder 手工排序权重
     .orderBy(asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 

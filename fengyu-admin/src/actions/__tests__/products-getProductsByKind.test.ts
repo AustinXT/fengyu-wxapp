@@ -51,6 +51,9 @@ vi.mock('@db/product', () => ({
     serviceFee: 'service_fee',
     sortOrder: 'sort_order',
     isEnabled: 'is_enabled',
+    isExperience: 'is_experience',
+    isRechargeCard: 'is_recharge_card',
+    deletedAt: 'deleted_at',
   },
   mallCategories: {
     categoryId: 'category_id',
@@ -135,6 +138,8 @@ const mockSession = {
  * 构造 drizzle select 链式 mock：
  *   db.select().from().innerJoin().innerJoin().where().orderBy() → rows
  * 或                .from().where().orderBy() → rows
+ *
+ * 返回 `where` mock fn，便于断言 WHERE 子句结构。
  */
 function mockChain(rows: unknown[]) {
   const orderBy = vi.fn().mockResolvedValue(rows)
@@ -143,6 +148,7 @@ function mockChain(rows: unknown[]) {
   const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2, where, orderBy })
   const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1, where, orderBy })
   ;(db.select as any).mockReturnValueOnce({ from })
+  return where
 }
 
 describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
@@ -293,6 +299,77 @@ describe("getProductsByKind('充值卡') — 平铺结构保持不变", () => {
     if (!('categories' in result)) return
     expect(result.categories).toHaveLength(1)
     expect(result.categories[0].categoryName).toBe('储值卡')
+  })
+
+  it("'充值卡' 用 SKU capability is_recharge_card=true 过滤，不依赖 product_kind 字面量", async () => {
+    const where = mockChain([])
+
+    await getProductsByKind('充值卡')
+
+    const whereArg = where.mock.calls[0][0] as { type: string; args: Array<{ type: string; a: string; b: unknown }> }
+    expect(whereArg.type).toBe('and')
+    // 找出所有 eq 条件
+    const eqConditions = whereArg.args.filter((c) => c.type === 'eq')
+    // 必须包含 is_recharge_card = true
+    const hasRechargeFilter = eqConditions.some((c) => c.a === 'is_recharge_card' && c.b === true)
+    expect(hasRechargeFilter).toBe(true)
+    // 必须 NOT 包含 product_kind 字面量过滤
+    const hasProductKindFilter = eqConditions.some((c) => c.a === 'product_kind' && c.b === '充值卡')
+    expect(hasProductKindFilter).toBe(false)
+  })
+})
+
+describe("getProductsByKind('体验卡') — SKU capability 列过滤", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it("'体验卡' 用 SKU capability is_experience=true 过滤，不依赖 product_kind 字面量", async () => {
+    const where = mockChain([])
+
+    await getProductsByKind('体验卡')
+
+    const whereArg = where.mock.calls[0][0] as { type: string; args: Array<{ type: string; a: string; b: unknown }> }
+    expect(whereArg.type).toBe('and')
+    const eqConditions = whereArg.args.filter((c) => c.type === 'eq')
+    const hasExperienceFilter = eqConditions.some((c) => c.a === 'is_experience' && c.b === true)
+    expect(hasExperienceFilter).toBe(true)
+    const hasProductKindFilter = eqConditions.some((c) => c.a === 'product_kind' && c.b === '体验卡')
+    expect(hasProductKindFilter).toBe(false)
+  })
+
+  it("即使 SKU 所属分类的 productKind 非'体验卡'，is_experience=true 的 SKU 仍纳入结果", async () => {
+    // 边界场景：管理员把一个 is_experience=true SKU 错挂到 productKind='护理项目' 分类下
+    // capability 是 SSoT，'体验卡' Tab 应该展示该 SKU
+    mockChain([
+      {
+        category: {
+          categoryId: 'cat-hr-01',
+          categoryName: '面部护理',
+          productKind: '护理项目',
+          salesCategory: '自销自耗',
+          sortOrder: 1,
+        },
+        sku: {
+          skuId: 'SKU-MISPLACED-TRIAL',
+          categoryId: 'cat-hr-01',
+          productType: '单品',
+          specName: '体验单次',
+          price: '99',
+          specialPrice: null,
+          sessionCount: null,
+          serviceFee: '0',
+          sortOrder: 1,
+        },
+      },
+    ])
+
+    const result = await getProductsByKind('体验卡')
+    expect(result.kind).toBe('体验卡')
+    if (!('categories' in result)) throw new Error('expected flat categories')
+    expect(result.categories).toHaveLength(1)
+    expect(result.categories[0].skus[0].skuId).toBe('SKU-MISPLACED-TRIAL')
   })
 })
 

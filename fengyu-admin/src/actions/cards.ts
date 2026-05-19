@@ -225,7 +225,7 @@ export const getCardsPaginated = withPermission(
  *
  * 两类折抵对象：
  *   1. 疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
- *   2. 单品 (product_type='单品') AND product_category.product_kind='体验卡'
+ *   2. 单品 (product_type='单品') AND sale_items.is_experience=true
  *      AND quantity - COALESCE(picked_up_quantity,0) > 0
  *
  * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
