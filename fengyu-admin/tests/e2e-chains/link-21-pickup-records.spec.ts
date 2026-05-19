@@ -128,7 +128,7 @@ async function createOrderWithSku(page: import('@playwright/test').Page, skuName
   if (await skuText.count() > 0) {
     // 找最近含"加入"按钮的容器
     for (let lvl = 1; lvl <= 5; lvl++) {
-      const ancestor = skuText.first().locator(`xpath=${'ancestor::*[1]'.repeat(lvl)}`)
+      const ancestor = skuText.first().locator(`xpath=ancestor::*[${lvl}]`)
       const addBtn = ancestor.getByRole('button', { name: /加入/ })
       if (await addBtn.count() > 0) {
         await addBtn.click()

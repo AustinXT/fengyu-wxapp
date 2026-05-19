@@ -43,8 +43,8 @@ test.describe('登录页', () => {
 
   test('正确登录跳转到工作台', async ({ page }) => {
     await page.goto('/login')
-    await page.getByLabel('手机号').fill('13800138000')
-    await page.getByLabel('密码').fill('admin123')
+    await page.getByLabel('手机号').fill('13900139000')
+    await page.getByLabel('密码').fill('fengyu2026')
     await page.getByRole('button', { name: /登 录/ }).click()
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 10000 })
   })
