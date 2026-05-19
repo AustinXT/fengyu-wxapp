@@ -9,7 +9,7 @@
  *   - /services/create     storeId select + employee select（filteredEmployees 联动）
  *   - /allocations/[soid]  employee select（由 link-9 业务部分覆盖，本 spec 仅断言下拉范围）
  *   - /customers/[id]      "分配顾问"对话框中 employee select（assign 流程）
- *   - 反例 1：MGR 直接 GET `/employees/new` → 应被 menu / route guard 拒
+ *   - 反例 1：MGR 直接 GET `/employees/create` → 应被 menu / route guard 拒
  *   - 反例 2：MGR 直接 GET `/permissions` → 应被拒
  *
  * 数据依赖：FY-FIX-CLIENT-01（nc01 顾客）+ 链路 1 已留存的 sale_order；
@@ -35,38 +35,47 @@ import {
   type Verdict,
 } from './_helpers/scope-helpers'
 
-/** 进入 /services/create，找到「门店」select & 「负责美容师」select，返回 option labels */
+/**
+ * 进入 /services/create，跑完 3 步向导到达「服务配置」，返回 store/employee select 的 option labels。
+ *
+ * 流程：
+ *   Step 0: 输入手机号 → 搜索 → 自动 selectedCustomer（无需点"选择"）→ "下一步"
+ *   Step 1: 表格里点第一行（cursor-pointer，row 整体可点）→ "下一步"
+ *   Step 2: 出现两个 select（"门店" + "负责美容师"），抓 options
+ */
 async function readServiceCreateSelects(
   page: import('@playwright/test').Page,
 ): Promise<{ stores: string[]; employees: string[]; reachedStep1: boolean }> {
-  await page.goto(`${BASE}/services/create`)
-  await page.waitForLoadState('networkidle').catch(() => null)
+  await page.goto(`${BASE}/services/create`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(1500)
 
-  // 顾客搜索 → 选第一个 → 选第一个可服务项 → 下一步进入"服务配置"
-  const phoneIn = page.getByPlaceholder(/手机号/).first()
+  // Step 0: 搜索顾客（自动选中匹配的）
+  const phoneIn = page.locator('input[placeholder*="手机号"]').first()
   if (await phoneIn.count() === 0) {
     return { stores: [], employees: [], reachedStep1: false }
   }
   await phoneIn.fill('13800138000')
-  const searchBtn = page.getByRole('button', { name: /搜索/ }).first()
-  await searchBtn.click().catch(() => null)
-  await page.waitForFunction(() => /找到|未找到/.test(document.body.textContent || ''), { timeout: 15000 }).catch(() => null)
-  const firstCustomerBtn = page.locator('button:has-text("选择"), div.space-y-1 > button').first()
-  if (await firstCustomerBtn.count() === 0) {
+  await page.getByRole('button', { name: '搜索' }).first().click().catch(() => null)
+  // 等"会员等级"字样出现 = selectedCustomer 卡片渲染完成
+  await page.waitForFunction(() => /会员等级|未找到/.test(document.body.textContent || ''), { timeout: 15000 }).catch(() => null)
+  if (/未找到/.test((await page.textContent('body')) || '')) {
     return { stores: [], employees: [], reachedStep1: false }
   }
-  await firstCustomerBtn.click().catch(() => null)
-  await page.waitForTimeout(1500)
-
-  // 选第一个可服务项
-  const firstItem = page.locator('table tbody tr').first().locator('button, input[type="checkbox"]').first()
-  if (await firstItem.count() > 0) await firstItem.click().catch(() => null)
-  await page.waitForTimeout(800)
-
-  // 下一步进入"服务配置"
+  // Step 0 → Step 1：点"下一步"
   await page.getByRole('button', { name: '下一步' }).first().click().catch(() => null)
-  await page.waitForTimeout(1500)
+  await page.waitForTimeout(2500)
+
+  // Step 1: 选第一个可服务项（整行 cursor-pointer 可点）
+  const firstRow = page.locator('table tbody tr').first()
+  if (await firstRow.count() === 0) {
+    return { stores: [], employees: [], reachedStep1: false }
+  }
+  await firstRow.click().catch(() => null)
+  await page.waitForTimeout(500)
+
+  // Step 1 → Step 2：再点"下一步"
+  await page.getByRole('button', { name: '下一步' }).first().click().catch(() => null)
+  await page.waitForTimeout(2000)
 
   const allSelects = await page.locator('select').all()
   if (allSelects.length < 2) return { stores: [], employees: [], reachedStep1: false }
@@ -133,8 +142,8 @@ test('链路35c：表单 store/employee select 锁定（多页样本）', async 
       )
     }
     // 反例：MGR 直接访问 admin/hr 专属页
-    const deniedNewEmp = await expectDenied(pMgr, '/employees/new')
-    recordVerdict(verdicts, 'mgr_denied_employees_new', deniedNewEmp, `denied=${deniedNewEmp}`)
+    const deniedNewEmp = await expectDenied(pMgr, '/employees/create')
+    recordVerdict(verdicts, 'mgr_denied_employees_create', deniedNewEmp, `denied=${deniedNewEmp}`)
     const deniedPerm = await expectDenied(pMgr, '/permissions')
     recordVerdict(verdicts, 'mgr_denied_permissions', deniedPerm, `denied=${deniedPerm}`)
   } finally {
@@ -196,21 +205,21 @@ test('链路35c：表单 store/employee select 锁定（多页样本）', async 
         `stores=${realStores.length} dbTotal=${totalStores}`,
       )
     }
-    // ADM 可访问 /employees/new
-    const newEmpAccess = await expectDenied(pAdm, '/employees/new')
-    recordVerdict(verdicts, 'adm_can_access_employees_new', !newEmpAccess, `denied=${newEmpAccess}`)
+    // ADM 可访问 /employees/create
+    const newEmpAccess = await expectDenied(pAdm, '/employees/create')
+    recordVerdict(verdicts, 'adm_can_access_employees_create', !newEmpAccess, `denied=${newEmpAccess}`)
   } finally {
     await ctxAdm.close()
   }
 
-  // ── Case 4: HR — 可访问 /employees/new 且 storeId select 包含全部门店（hr 是总部 scope） ──
-  console.log('[链路35c] Case 4: HR /employees/new')
+  // ── Case 4: HR — 可访问 /employees/create 且 storeId select 包含全部门店（hr 是总部 scope） ──
+  console.log('[链路35c] Case 4: HR /employees/create')
   const ctxHr = await browser.newContext()
   const pHr = await ctxHr.newPage()
   try {
     await login(pHr, TEST_PHONES.HR)
-    const denied = await expectDenied(pHr, '/employees/new')
-    recordVerdict(verdicts, 'hr_can_access_employees_new', !denied, `denied=${denied}`)
+    const denied = await expectDenied(pHr, '/employees/create')
+    recordVerdict(verdicts, 'hr_can_access_employees_create', !denied, `denied=${denied}`)
     if (!denied) {
       await page_waitForStable(pHr)
       const selects = await pHr.locator('select').all()
@@ -226,7 +235,7 @@ test('链路35c：表单 store/employee select 锁定（多页样本）', async 
       // HR 是 HQ scope ⇒ 全部门店都应在下拉里
       recordVerdict(
         verdicts,
-        'hr_employees_new_stores_full',
+        'hr_employees_create_stores_full',
         storeOptions.length >= totalStores * 0.8, // 容许极少不可见冗余 option
         `hr stores=${storeOptions.length} dbTotal=${totalStores}`,
       )
