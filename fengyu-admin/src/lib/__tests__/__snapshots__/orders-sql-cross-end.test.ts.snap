@@ -1,0 +1,10 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`admin confirmOfflinePayment ↔ staff confirmOffline 储值卡扣款 6 段一致性 > Snapshot 守护：admin 6 段 SQL 文本快照（任一漂移立即可见） > admin confirmOfflinePayment 储值卡扣款 6 段 SQL 文本快照 1`] = `
+{
+  "dupGuard": "SELECT 1 FROM card_transactions WHERE ref_order_id = ? LIMIT 1",
+  "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
+  "lockOrder": "SELECT prepaid_card_amount, client_user_id FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
+  "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
+}
+`;
