@@ -136,6 +136,8 @@ interface ShopInitResponse {
   groupedCategories?: GroupedCategory[];
   skuList: SkuItem[];
   mallBundleGroups?: BundleSpu[];
+  /** 体验卡 Tab 扁平 SKU 列表（is_experience=true，全量，不受分类 EXISTS 过滤影响） */
+  experienceSkus?: SkuItem[];
 }
 
 interface OrderCreateResponse {
@@ -287,6 +289,8 @@ Page({
   _allGroupedCategories: [] as GroupedCategory[],
   // 所有 SKU（未过滤，shopInit 一次性返回全量）
   _allSkus: [] as SkuItem[],
+  /** 体验卡 Tab 扁平 SKU 列表（is_experience=true，不与 _allSkus 混用以免污染普通商品过滤语义） */
+  _experienceSkus: [] as SkuItem[],
   // SKU 缓存：按 `${productKindChoice}:${categoryId}` 缓存已加载的展示列表
   _spuCache: {} as Record<string, DisplayItem[]>,
 
@@ -373,14 +377,18 @@ Page({
       const groupedCategories: GroupedCategory[] = data.groupedCategories || [];
       const rawSkus: SkuItem[] = data.skuList || [];
       const bundleSpus: BundleSpu[] = data.mallBundleGroups || [];
+      const experienceSkus: SkuItem[] = data.experienceSkus || [];
 
       this._allCategories = categories;
       this._allGroupedCategories = groupedCategories;
       this._allSkus = rawSkus;
+      this._experienceSkus = experienceSkus;
       this._spuCache = {};
 
       const skuMap: Record<string, SkuItem> = {};
       for (const s of rawSkus) skuMap[s.skuId] = s;
+      // 体验卡 SKU 也写入 skuMap（购物车/详情页查 skuMap 时需要），但不并入 _allSkus 以保持其"非卡类首分类预取"语义。
+      for (const s of experienceSkus) skuMap[s.skuId] = s;
 
       this.setData({ bundleSpus, skuMap, catalogLoading: false });
       this.applyKindChoice(this.data.productKindChoice);
@@ -450,7 +458,21 @@ Page({
       return;
     }
 
-    // 体验卡 / 充值卡：保持平坦 <van-sidebar>
+    // 体验卡：扁平 SKU 列表（无分类侧边栏，参照 admin TrialCardPicker）
+    if (choice === '体验卡') {
+      const list = this._experienceSkus.map(skuToDisplay);
+      this.setData({
+        categories: [],
+        groupedCategories: [],
+        activeCategoryIndex: 0,
+        activeCategoryId: '',
+        spuList: list,
+        isCardType: false,
+      });
+      return;
+    }
+
+    // 充值卡：保留平坦 <van-sidebar>（实际由 onBigCategoryChange 截走跳转 card-recharge，不会真渲染）
     const filtered = filterCategoriesByKindChoice(this._allCategories, choice);
     if (filtered.length === 0) {
       this.setData({

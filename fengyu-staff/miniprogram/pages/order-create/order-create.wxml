@@ -26,6 +26,33 @@
       </view>
     </block>
 
+    <!-- 体验卡：扁平 SKU 卡片列表（无分类侧边栏，参照 admin TrialCardPicker） -->
+    <block wx:elif="{{productKindChoice === '体验卡'}}">
+      <scroll-view class="trial-card-scroll" scroll-y>
+        <view wx:if="{{spuList.length === 0}}" class="trial-card-empty">
+          <van-empty description="暂无可选体验卡" />
+        </view>
+        <view wx:else class="trial-card-list">
+          <view
+            wx:for="{{spuList}}"
+            wx:key="spuId"
+            class="trial-card-item"
+            bindtap="onSpuTap"
+            data-spu="{{item}}"
+          >
+            <view class="trial-card-main">
+              <text class="trial-card-name">{{item.spuName}}</text>
+              <text class="trial-card-meta">单品{{item.sessionCount ? ' · ' + item.sessionCount + '次' : ''}}</text>
+            </view>
+            <view class="trial-card-right">
+              <text class="trial-card-price">¥{{item.price}}</text>
+              <view class="trial-card-add-btn">加入</view>
+            </view>
+          </view>
+        </view>
+      </scroll-view>
+    </block>
+
     <!-- 其他类型：侧边栏 + SKU 列表 -->
     <block wx:else>
       <!-- 左侧：分类侧边栏 -->
@@ -157,8 +184,8 @@
     </block>
   </view>
 
-  <!-- 底部操作栏（组合套餐视图或普通分类有数据时显示）-->
-  <view class="bottom-bar" wx:if="{{categories.length > 0 || productKindChoice === '组合套餐'}}">
+  <!-- 底部操作栏（组合套餐视图、普通分类有数据、或体验卡扁平列表有数据时显示）-->
+  <view class="bottom-bar" wx:if="{{categories.length > 0 || productKindChoice === '组合套餐' || (productKindChoice === '体验卡' && spuList.length > 0)}}">
     <view class="bottom-bar-mid">
       <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
