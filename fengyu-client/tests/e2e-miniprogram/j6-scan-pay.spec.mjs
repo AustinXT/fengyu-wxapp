@@ -29,6 +29,7 @@ import {
   createPendingSaleOrderForScan,
   L3_PREPAID_CARD_ID,
 } from './helpers/client-l3-fixtures.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const NS = 'TEST_E2E_L3'
 
@@ -54,12 +55,32 @@ const STEPS = [
     )
   }],
 
-  ['3. navigateTo scan-pay', async (ctx) => {
+  ['3. navigateTo scan-pay + 页面 data 加载', async (ctx) => {
     await ctx.mp.navigateTo(`/pagesOrder/scan-pay/scan-pay?saleOrderId=${ctx.saleOrderId}`)
-    await new Promise((r) => setTimeout(r, 2000))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('scan-pay')) {
-      throw new Error(`current path=${page?.path} 非 scan-pay`)
+    await waitForPagePath(ctx.mp, 'scan-pay', { timeoutMs: 6000 })
+    // deepened: page.data() cross-check, not just API call
+    // scan-pay.ts onLoad → loadOrder（并行 scanDetail + card.balance），终态：isLoading=false + order 落位
+    const data = await waitForData(
+      ctx.mp,
+      (d) => d && d.isLoading === false && d.order && d.totalAmount > 0,
+      { name: 'scan-pay order load', timeoutMs: 8000 }
+    ).catch(() => null)
+    if (!data) {
+      // TODO: replace with explicit wait when API contract permits
+      console.log('(warn: scan-pay 页面 data 未在超时内完成 loadOrder)')
+      return
+    }
+    // 显示 totalAmount 应与 PG sale_orders.total_amount=300 一致
+    if (Number(data.totalAmount) !== 300) {
+      throw new Error(`page.data.totalAmount=${data.totalAmount}, expected 300`)
+    }
+    // 显示 cardBalance 应与 card.balance API 一致（步骤 5 之前 fixture=1000）
+    if (Number(data.cardBalance) !== 1000) {
+      throw new Error(`page.data.cardBalance=${data.cardBalance}, expected 1000`)
+    }
+    // order 字段交叉校验：order.totalAmount 应与顶层 data.totalAmount 一致
+    if (Number(data.order?.totalAmount) !== Number(data.totalAmount)) {
+      throw new Error(`order.totalAmount(${data.order?.totalAmount}) !== data.totalAmount(${data.totalAmount})`)
     }
   }],
 

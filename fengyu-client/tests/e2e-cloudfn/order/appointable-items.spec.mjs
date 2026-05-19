@@ -118,11 +118,67 @@ async function caseNoSaleOrderIdParam() {
   }
 }
 
+// 跨门店：路由实测仅按 client_user_id 过滤（line 1268-1276），不按 store_id 过滤
+//   → 顾客在不同门店有疗程卡，都会被返回。本 case 验证"两单都出现"为 documented behavior。
+//   TODO: 若后续业务规则改为"仅返回 bound_store_id"对应订单，需把断言改为 expectExactlyOne 并加上 storeId 过滤。
+async function caseAppointableItemsCrossStoreFilter() {
+  await createTestClient()  // 顾客 bound_store_id = TEST_STORE_ID
+
+  // 创建第二个 store
+  const STORE_X_ID = `${NS}_STORE_X`
+  const STORE_X_ORG = `${NS}_STORE_X_ORG`
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '门店',
+       (SELECT id FROM org_nodes WHERE id = $3),
+       1, true)
+     ON CONFLICT (id) DO NOTHING`,
+    [STORE_X_ORG, `${NS}_测试店X`, `${NS}_MARKET_ORG`]
+  )
+  await pgQuery(
+    `INSERT INTO stores (store_id, store_name, org_node_id, opening_date, is_closed)
+     VALUES ($1, $2, $3, CURRENT_DATE, false)
+     ON CONFLICT (store_id) DO NOTHING`,
+    [STORE_X_ID, `${NS}_测试店X`, STORE_X_ORG]
+  )
+
+  // 主店一单
+  const orderA = `${NS}_AP_XA`.slice(0, 30)
+  await newPaidCourseOrder({ orderNo: orderA, sessionCount: 3, remainingSessions: 3 })
+
+  // 副店一单：手工建（newPaidCourseOrder 写死 TEST_STORE_ID 经由 createTestPendingSaleOrder）
+  const orderB = `${NS}_AP_XB`.slice(0, 30)
+  // 直接 UPDATE orderA 的 store_id 的方式不行，需要一张属副店的单。
+  // 重用 newPaidCourseOrder 后 UPDATE store_id 到副店
+  await newPaidCourseOrder({ orderNo: orderB, sessionCount: 3, remainingSessions: 3 })
+  await pgQuery(
+    `UPDATE sale_orders SET store_id = $1 WHERE sale_order_id = $2`,
+    [STORE_X_ID, orderB]
+  )
+  await pgQuery(
+    `UPDATE sale_items SET store_id = $1 WHERE sale_order_id = $2`,
+    [STORE_X_ID, orderB]
+  )
+
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.appointableItems', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const orders = res.data?.orders || []
+  const hitA = orders.find(o => o.saleOrderId === orderA)
+  const hitB = orders.find(o => o.saleOrderId === orderB)
+  // documented behavior：两个 store 的订单都返回（路由不按 storeId 过滤）
+  if (!hitA) throw new Error(`expect orderA=${orderA} in result (主店)`)
+  if (!hitB) throw new Error(`expect orderB=${orderB} in result (副店, documented: route does not filter by storeId)`)
+  // 行级 storeId 字段确实反映各自门店
+  if (hitA.storeId !== TEST_STORE_ID) throw new Error(`hitA.storeId=${hitA.storeId}`)
+  if (hitB.storeId !== STORE_X_ID) throw new Error(`hitB.storeId=${hitB.storeId}`)
+}
+
 const CASES = [
   ['happy (paid + remaining>0) returns the order/item', caseHappyHasRemaining],
   ['remaining=0 excluded by default filter', caseZeroRemainingExcluded],
   ['product_type=家居产品 excluded (not in 疗程卡/单品)', caseNonAppointableProductTypeExcluded],
   ['no saleOrderId param → returns all (route does not require it)', caseNoSaleOrderIdParam],
+  ['cross-store: 两单都返回（documented: route 不按 storeId 过滤）', caseAppointableItemsCrossStoreFilter],
 ]
 
 let pass = 0, fail = 0

@@ -23,6 +23,7 @@ import {
 } from './helpers/fixtures.mjs'
 import { assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const NEW_NAME = 'TEST_E2E_L3_改名'
 
@@ -33,16 +34,12 @@ const TINY_JPEG_BASE64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'
 const STEPS = [
   ['1. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['2. navigateTo profile-edit', async (ctx) => {
     await ctx.mp.navigateTo('/pagesProfile/profile-edit/profile-edit')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('profile-edit')) {
-      throw new Error(`current path=${page?.path} 非 profile-edit`)
-    }
+    await waitForPagePath(ctx.mp, 'profile-edit', { timeoutMs: 6000 })
   }],
 
   ['3. auth.updateProfile 改昵称 + PG 断言', async (ctx) => {

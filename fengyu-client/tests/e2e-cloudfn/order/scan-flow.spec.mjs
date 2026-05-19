@@ -33,6 +33,7 @@ import {
 } from '../helpers/fixtures.mjs'
 import {
   createTestPrepaidCard, setCardBalance, createTestClient2,
+  forceUpdateOrderStatus,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
 
@@ -258,6 +259,35 @@ async function caseScanAdjustCrossUserDenied() {
 
 // ====== 2026-05-19 dirty-read 修复：余额快照 + 版本号校验 ======
 
+// 员工开单后被外部推到 '已支付'（payNotify 异步先到、或他端强制），scanAdjust 已不允许再调整
+// 路由 line 1442：status !== '待支付' → INVALID_PARAMS: 订单状态不允许调整
+async function caseScanAdjustStalePaidRejected() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  const orderNo = `${NS}_SCN_STP`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 200 })
+  // 模拟"他端已结算"：直接强推 '已支付'
+  await forceUpdateOrderStatus(orderNo, '已支付')
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.scanAdjust', {
+    saleOrderId: orderNo,
+    useCard: true,
+    prepaidCardAmount: 100,
+    paymentMethod: '微信',
+  })
+  // 路由 line 1442-1443 抛 "INVALID_PARAMS: 订单状态不允许调整"
+  expectError(res, 'INVALID_PARAMS', { messageIncludes: '状态' })
+  // 订单状态保持 '已支付'，prepaid_card_amount 未被 UPDATE 篡改（=0 即 createStaffOpenedPending 默认）
+  const rows = await pgQuery(
+    `SELECT status, prepaid_card_amount FROM sale_orders WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  if (rows[0].status !== '已支付') throw new Error(`status=${rows[0].status}, expect 已支付`)
+  if (Number(rows[0].prepaid_card_amount) !== 0) {
+    throw new Error(`prepaid_card_amount=${rows[0].prepaid_card_amount}, expect 0 (scanAdjust must not mutate)`)
+  }
+}
+
 async function caseScanAdjustReturnsBalanceSnapshot() {
   await createTestClient()
   await createTestStaff()
@@ -432,6 +462,7 @@ const CASES = [
   ['confirmPrepaidFull happy → 扣款 written + balance -300 + status=已支付', caseConfirmPrepaidFullHappy],
   ['confirmPrepaidFull insufficient balance → INSUFFICIENT_BALANCE, no write', caseConfirmPrepaidFullInsufficient],
   ['scanAdjust cross-user → PERMISSION_DENIED', caseScanAdjustCrossUserDenied],
+  ['scanAdjust stale-paid 订单（status 已变 已支付）→ INVALID_PARAMS, 状态/字段不变', caseScanAdjustStalePaidRejected],
   ['scanAdjust 返回 balanceSnapshot 含 updatedAt 字段', caseScanAdjustReturnsBalanceSnapshot],
   ['confirmPrepaidFull 用过期版本号 → CONFLICT，余额未变', caseConfirmPrepaidFullStaleVersionConflict],
   ['confirmPrepaidFull 用最新版本号 → 成功', caseConfirmPrepaidFullLatestVersionOK],

@@ -22,6 +22,7 @@ import {
   createClientMessages,
   createClientPointTxn,
 } from './helpers/client-l3-fixtures.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const STEPS = [
   ['1. 前置：积分 + 流水 + 消息', async (ctx) => {
@@ -48,12 +49,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo points → balance + history', async (ctx) => {
     await ctx.mp.navigateTo('/pagesProfile/points/points')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'points', { timeoutMs: 6000 })
 
     const balRes = await ctx.invoke('points.balance')
     if (!balRes || balRes.code !== 0) {
@@ -79,13 +80,10 @@ const STEPS = [
   ['4. navigateTo messages', async (ctx) => {
     // 切回 profile（avoid navigateTo 5 level limit）
     await ctx.mp.navigateBack().catch(() => {})
-    await new Promise((r) => setTimeout(r, 500))
+    // 短暂等待 navigateBack 完成（<200ms tactical wait，保留）
+    await new Promise((r) => setTimeout(r, 200))
     await ctx.mp.navigateTo('/pagesProfile/messages/messages')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('messages')) {
-      throw new Error(`current path=${page?.path} 非 messages`)
-    }
+    await waitForPagePath(ctx.mp, 'messages', { timeoutMs: 6000 })
   }],
 
   ['5. message.unreadCount → 2', async (ctx) => {

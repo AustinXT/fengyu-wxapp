@@ -8,7 +8,7 @@
  */
 import '../setup.mjs'
 import {
-  NS, closePool,
+  NS, closePool, pgQuery,
   TEST_MALL_CATEGORY_ID, TEST_PRODUCT_CATEGORY_ID,
   TEST_PRODUCT_ID, TEST_SKU_NORMAL_ID,
 } from '../setup.mjs'
@@ -75,12 +75,37 @@ async function caseShopInit() {
   if (!Array.isArray(spuList)) throw new Error('shopInit spuList not array')
 }
 
+// hotList 路由 line 286-290 用 EXISTS (... SKU_VALID_FILTER) 兜底；SKU_VALID_FILTER 要求 is_enabled=true。
+// 建一个 product 但其唯一 SKU 设 is_enabled=false → hotList 不应返回该 product。
+async function caseHotListEmptySkuMarketScope() {
+  await ensureTestCategories()
+  // 建 product
+  await createTestProduct({ productId: TEST_PRODUCT_ID })
+  // 建 SKU（is_enabled 默认 true）
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, linkToProduct: true })
+  // 把 SKU 禁用
+  await pgQuery(
+    `UPDATE product_skus SET is_enabled = false WHERE sku_id = $1`,
+    [TEST_SKU_NORMAL_ID]
+  )
+
+  const res = await invokePublic('product.hotList', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const list = res.data?.spuList || []
+  // 测试 product 不应在 hotList
+  const hit = list.find(p => p.product_id === TEST_PRODUCT_ID)
+  if (hit) {
+    throw new Error(`expect TEST_PRODUCT_ID excluded (no enabled SKU), but found with priceFrom=${hit.priceFrom}`)
+  }
+}
+
 const CASES = [
   ['categories returns array containing test mall category', caseCategoriesHasTest],
   ['spuList without categoryId returns test product', caseSpuListAll],
   ['spuList by categoryId scoped to that category', caseSpuListByCategory],
   ['spuList for unknown categoryId returns empty', caseSpuListEmptyCategory],
   ['shopInit returns { groups, categories, spuList }', caseShopInit],
+  ['hotList 排除 disabled SKU 的 product', caseHotListEmptySkuMarketScope],
 ]
 
 let pass = 0, fail = 0

@@ -23,7 +23,9 @@ import {
   ensureClientProductCatalog,
   L3_COUPON_ID,
   L3_SKU_NORMAL_ID,
+  L3_PRODUCT_ID,
 } from './helpers/client-l3-fixtures.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const STEPS = [
   ['1. 前置：商品 + 优惠券（满 100 减 10）', async (ctx) => {
@@ -38,16 +40,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo my-coupons', async (ctx) => {
     await ctx.mp.navigateTo('/pagesCoupon/my-coupons/my-coupons')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('my-coupons')) {
-      throw new Error(`current path=${page?.path} 非 my-coupons`)
-    }
+    await waitForPagePath(ctx.mp, 'my-coupons', { timeoutMs: 6000 })
   }],
 
   ['4. coupon.list → 1 张未使用', async (ctx) => {
@@ -98,6 +96,61 @@ const STEPS = [
       throw new Error(`coupon.available(50) 不应含 L3 测试券（min_spend=100），但返回了`)
     }
   }],
+
+  ['7. checkout 集成：选券 → 应用折扣 → 总价反映优惠', async (ctx) => {
+    // deepened: end-to-end coupon application path
+    // 先在 home 准备 checkoutItems，再 navigateTo checkout
+    await ctx.mp.reLaunch('/pages/home/home')
+    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    const item = {
+      skuId: L3_SKU_NORMAL_ID,
+      spuId: L3_PRODUCT_ID,
+      spuName: 'TEST_E2E_L3_测试商品',
+      skuDisplayName: 'TEST_E2E_L3_普通规格',
+      coverImage: '',
+      price: 100,
+      quantity: 1,
+    }
+    await ctx.mp.evaluate((it) => {
+      wx.setStorageSync('checkoutItems', [it])
+    }, item)
+
+    await ctx.mp.navigateTo('/pagesOrder/checkout/checkout?fromCart=1')
+    await waitForPagePath(ctx.mp, 'checkout', { timeoutMs: 6000 })
+    // 等 checkout init 落位（displayItems 已写入 = onLoad 完成）
+    await waitForData(
+      ctx.mp,
+      (d) => d && Array.isArray(d.displayItems) && d.displayItems.length > 0,
+      { name: 'checkout init', timeoutMs: 5000 }
+    ).catch(() => {
+      // TODO: replace with explicit wait when API contract permits
+    })
+
+    const page = await ctx.mp.currentPage()
+    // 直接调 onCouponPick 模拟选券（绕过 popup UI）
+    await page.callMethod('onCouponPick', {
+      currentTarget: {
+        dataset: {
+          couponId: L3_COUPON_ID,
+          name: 'TEST_E2E_L3_满100减10券',
+          discount: 10,
+        },
+      },
+    })
+    // 等 couponDiscount 落位 + recomputeAmounts 触发完毕
+    const after = await waitForData(
+      ctx.mp,
+      (d) => Number(d?.couponDiscount) === 10 && d?.selectedCoupon?.couponId === L3_COUPON_ID,
+      { name: 'coupon applied', timeoutMs: 3000 }
+    ).catch(() => null)
+    if (!after) {
+      throw new Error(`checkout 未应用券折扣（couponDiscount 未变为 10）`)
+    }
+    // netBeforeCard = totalAmount - couponDiscount = 100 - 10 = 90
+    if (Number(after.netBeforeCard) !== 90) {
+      throw new Error(`netBeforeCard=${after.netBeforeCard}, expected 90 (100-10)`)
+    }
+  }],
 ]
 
 let mp = null
@@ -121,7 +174,15 @@ try {
   console.error(`  FAIL: ${e.message}`)
   if (process.env.E2E_DEBUG) console.error(e.stack)
 } finally {
-  if (mp) await disconnect(mp)
+  if (mp) {
+    try {
+      await mp.evaluate(() => {
+        wx.removeStorageSync('cart')
+        wx.removeStorageSync('checkoutItems')
+      })
+    } catch {}
+    await disconnect(mp)
+  }
   await cleanupL3TestData()
   await closePool()
   console.log(`[j9-coupon] ${pass ? 'PASS' : 'FAIL'}`)

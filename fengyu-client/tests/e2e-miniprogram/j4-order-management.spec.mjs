@@ -27,6 +27,7 @@ import {
   L3_SKU_NORMAL_ID,
 } from './helpers/client-l3-fixtures.mjs'
 import { TEST_CLIENT_PHONE } from './helpers/constants.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const NS = 'TEST_E2E_L3'
 
@@ -82,20 +83,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('profile')) {
-      throw new Error(`current path=${page?.path} 非 profile`)
-    }
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo orders 列表', async (ctx) => {
     await ctx.mp.navigateTo('/pagesOrder/orders/orders')
-    await new Promise((r) => setTimeout(r, 2000))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('orders/orders')) {
-      throw new Error(`current path=${page?.path} 非 orders/orders`)
-    }
+    await waitForPagePath(ctx.mp, 'orders/orders', { timeoutMs: 6000 })
   }],
 
   ['4. order.list 含两单（A 待支付 + B 已关闭）', async (ctx) => {
@@ -112,11 +105,7 @@ const STEPS = [
 
   ['5. navigateTo order-detail + order.detail 校验字段', async (ctx) => {
     await ctx.mp.navigateTo(`/pagesOrder/order-detail/order-detail?saleOrderId=${ctx.orderA}`)
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('order-detail')) {
-      throw new Error(`current path=${page?.path} 非 order-detail`)
-    }
+    await waitForPagePath(ctx.mp, 'order-detail', { timeoutMs: 6000 })
 
     // 不依赖前端 data 结构（小程序页面 data 字段可能随版本变化），
     // 改为直接 callFunction 校验后端返回的详情字段稳定

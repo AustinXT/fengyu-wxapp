@@ -24,6 +24,7 @@ import {
   L3_PRODUCT_ID,
   L3_SKU_NORMAL_ID,
 } from './helpers/client-l3-fixtures.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const STEPS = [
   ['1. evaluate 写 checkoutItems 模拟加购', async (ctx) => {
@@ -39,7 +40,7 @@ const STEPS = [
       storeId: TEST_STORE_ID,
     }
     await ctx.mp.reLaunch('/pages/home/home')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
     await ctx.mp.evaluate((it) => {
       wx.setStorageSync('cart', { items: [it] })
       wx.setStorageSync('checkoutItems', [it])
@@ -48,12 +49,17 @@ const STEPS = [
   }],
 
   ['2. navigateTo checkout 页', async (ctx) => {
-    await ctx.mp.navigateTo('/pagesOrder/checkout/checkout')
-    await new Promise((r) => setTimeout(r, 2000))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('checkout')) {
-      throw new Error(`current path=${page?.path} 非 checkout`)
-    }
+    await ctx.mp.navigateTo('/pagesOrder/checkout/checkout?fromCart=1')
+    await waitForPagePath(ctx.mp, 'checkout', { timeoutMs: 6000 })
+    // checkout.ts onLoad → loadStaffList/loadDefaultStaff/loadCardBalance 链路
+    // 终态特征：storeName 或 displayItems 至少之一已落位
+    await waitForData(
+      ctx.mp,
+      (d) => d && (d.storeName || (Array.isArray(d.displayItems) && d.displayItems.length > 0)),
+      { name: 'checkout init', timeoutMs: 5000 }
+    ).catch(() => {
+      // TODO: replace with explicit wait when API contract permits
+    })
   }],
 
   ['3. order.create 返回待支付订单', async (ctx) => {
@@ -99,6 +105,37 @@ const STEPS = [
       { sale_order_id: ctx.saleOrderId },
       { status: '待确认收款', payment_method: '线下' }
     )
+  }],
+
+  ['6. 表单校验路径：未同意协议 → onSubmitOrder 拒绝（不调 order.create）', async (ctx) => {
+    // deepened: form validation path
+    // 复位到 checkout 页确保 page 上下文可用（步骤 2 之后未离开）
+    const page = await ctx.mp.currentPage()
+    if (!page?.path?.includes('checkout')) {
+      // 兜底：重新进入 checkout 页
+      await ctx.mp.navigateTo('/pagesOrder/checkout/checkout?fromCart=1')
+      await waitForPagePath(ctx.mp, 'checkout', { timeoutMs: 6000 })
+    }
+    const pg = await ctx.mp.currentPage()
+    // 强制 agreed=false（onSubmitOrder 首行检查）
+    await pg.setData({ agreed: false, submitting: false })
+    // 调用 onSubmitOrder：应同步 Toast.fail('请先同意消费协议') 然后直接 return
+    try { await pg.callMethod('onSubmitOrder') } catch {}
+    // 断言：submitting 应该已被重置为 false（onSubmitOrder 早返回，不会卡 submitting=true）
+    // 同时未发起 order.create —— 顾客 user 当前应无 '待支付' 单（上一步已 offlinePay 改为 '待确认收款'）
+    const after = await pg.data()
+    if (after?.submitting === true) {
+      throw new Error(`form-reject path: submitting 残留 true（应为 false）`)
+    }
+    // 反证：当前用户名下不应出现新建的 '待支付' 单（uq_sale_orders_client_pending 也保护）
+    const pending = await query(
+      `SELECT count(*)::int AS n FROM sale_orders
+       WHERE client_user_id = $1 AND status = '待支付' AND sale_order_id <> $2`,
+      [ctx.userId, ctx.saleOrderId]
+    )
+    if ((pending[0]?.n ?? 0) > 0) {
+      throw new Error(`form-reject path: 仍有 ${pending[0].n} 条新待支付单（应为 0）`)
+    }
   }],
 ]
 

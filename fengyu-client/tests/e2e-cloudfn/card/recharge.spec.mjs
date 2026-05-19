@@ -128,12 +128,46 @@ async function caseRechargePhoneRequired() {
   expectError(res, 'PHONE_REQUIRED', { code: -403 })
 }
 
+// 同一顾客第二次充值（之前的充值订单仍 '待支付'）应被路由 line 244 拦截，
+// 错误响应 data.pendingOrderNo 等于第一张的 saleOrderId（参考 order.create line 211-215 同款机制）
+//
+// NOTE: 现有 makeClient 默认 phone='1999909'+suffix；新增的 chk_cwu_phone_format 约束要求 ^1[3-9]\d{9}$，
+// 故本 case 显式传 11 位合法手机号，绕开此预存 bug。
+async function caseRechargeDuplicatePending() {
+  const { userId, openid } = await makeClient('R5A', { phone: '13800099500' })
+  // 第一次：建出待支付订单
+  const r1 = await invokeAs(openid, 'card.recharge', { faceValue: 1000 })
+  if (r1.code !== 0) throw new Error(`first recharge expect code=0, got ${r1.code}: ${r1.message}`)
+  const firstOrderId = r1.data?.saleOrderId
+  if (!firstOrderId) throw new Error(`missing saleOrderId in first response`)
+
+  // 第二次：仍未支付 → 路由抛 INVALID_PARAMS: 已有待支付订单，errorData.pendingOrderNo = firstOrderId
+  const r2 = await invokeAs(openid, 'card.recharge', { faceValue: 2000 })
+  expectError(r2, 'INVALID_PARAMS', { messageIncludes: '已有待支付订单' })
+  if (r2.data?.pendingOrderNo !== firstOrderId) {
+    throw new Error(`expect pendingOrderNo=${firstOrderId}, got ${r2.data?.pendingOrderNo}`)
+  }
+
+  // PG 端仍只有 1 行 sale_orders 属该顾客
+  const rows = await pgQuery(
+    `SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1`,
+    [userId]
+  )
+  if (rows.length !== 1) {
+    throw new Error(`expect 1 sale_orders row for user, got ${rows.length}: ${rows.map(r => r.sale_order_id).join(',')}`)
+  }
+  if (rows[0].sale_order_id !== firstOrderId) {
+    throw new Error(`sale_order_id mismatch: ${rows[0].sale_order_id} vs ${firstOrderId}`)
+  }
+}
+
 const CASES = [
   ['rechargeConfig returns tiers + min/max', caseConfig],
   ['recharge happy: 1000 → 980 + sale_orders + sale_items', caseRechargeHappy],
   ['recharge no boundStoreId → INVALID_PARAMS', caseRechargeNoStore],
   ['recharge invalid faceValue (-100) → INVALID_PARAMS', caseRechargeBadFaceValue],
   ['recharge without phone → PHONE_REQUIRED', caseRechargePhoneRequired],
+  ['recharge 重复 pending → INVALID_PARAMS, data.pendingOrderNo=第一张', caseRechargeDuplicatePending],
 ]
 
 let pass = 0, fail = 0

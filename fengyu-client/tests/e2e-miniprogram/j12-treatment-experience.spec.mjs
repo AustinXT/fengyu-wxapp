@@ -34,6 +34,7 @@ import {
   TEST_CLIENT_PHONE,
   TEST_STAFF_EMPLOYEE_ID,
 } from './helpers/constants.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const COURSE_ORDER_ID = 'TEST_E2E_L3_ORD_COURSE1'
 const COURSE_ITEM_ID = 'TEST_E2E_L3_ITM_COURSE1'
@@ -96,16 +97,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo treatment-cards + appointableItems 含该卡', async (ctx) => {
     await ctx.mp.navigateTo('/pagesOrder/treatment-cards/treatment-cards')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('treatment-cards')) {
-      throw new Error(`current path=${page?.path} 非 treatment-cards`)
-    }
+    await waitForPagePath(ctx.mp, 'treatment-cards', { timeoutMs: 6000 })
 
     const res = await ctx.invoke('order.appointableItems', {})
     if (!res || res.code !== 0) {
@@ -127,11 +124,7 @@ const STEPS = [
 
   ['4. navigateTo experience/list + experienceCardList 含 _SKU_E', async (ctx) => {
     await ctx.mp.navigateTo('/pagesExperience/list/list')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('pagesExperience/list')) {
-      throw new Error(`current path=${page?.path} 非 experience/list`)
-    }
+    await waitForPagePath(ctx.mp, 'pagesExperience/list', { timeoutMs: 6000 })
 
     const res = await ctx.invoke('product.experienceCardList')
     if (!res || res.code !== 0) {
@@ -146,11 +139,7 @@ const STEPS = [
 
   ['5. navigateTo experience/detail + skuDetail 返回 _SKU_E', async (ctx) => {
     await ctx.mp.navigateTo(`/pagesExperience/detail/detail?skuId=${L3_SKU_EXP_ID}`)
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('pagesExperience/detail')) {
-      throw new Error(`current path=${page?.path} 非 experience/detail`)
-    }
+    await waitForPagePath(ctx.mp, 'pagesExperience/detail', { timeoutMs: 6000 })
 
     const res = await ctx.invoke('product.skuDetail', { skuId: L3_SKU_EXP_ID })
     if (!res || res.code !== 0) {

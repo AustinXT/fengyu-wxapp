@@ -156,34 +156,8 @@ async function caseHappyMultiDeduction() {
     throw new Error(`expect 0 扣款 ctxn at create (half-card path), got ${ctxn.length}`)
   }
 
-  // 二段：再造一张"全额卡抵扣"订单，验证"卡+现金原子性"的全额抵扣分支（card 扣 + ctxn 写入）
-  // 必须先 cancel 当前待支付单（uq_sale_orders_client_pending 单顾客一张）
-  const cancelRes = await invokeAs(TEST_CLIENT_OPENID, 'order.cancel', { saleOrderId })
-  if (cancelRes.code !== 0) throw new Error(`cancel failed: ${cancelRes.message}`)
-
-  const r2 = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
-    storeId: TEST_STORE_ID,
-    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
-    useCard: true,
-    prepaidCardAmount: 100,
-    paymentMethod: '微信',
-  })
-  if (r2.code !== 0) throw new Error(`full-card create failed: ${r2.message}`)
-  const orderId2 = r2.data.saleOrderId
-  if (r2.data.status !== '已支付') throw new Error(`full-card create r2.status=${r2.data.status}, expect 已支付`)
-
-  const card2 = await pgQuery(
-    `SELECT balance FROM prepaid_cards WHERE user_id = $1`, [TEST_CLIENT_USER_ID]
-  )
-  if (Number(card2[0].balance) !== 400) {
-    throw new Error(`after full-card: balance=${card2[0].balance}, expect 400 (500-100)`)
-  }
-  const ctxn2 = await pgQuery(
-    `SELECT amount FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款'`,
-    [orderId2]
-  )
-  if (ctxn2.length !== 1) throw new Error(`full-card ctxn count=${ctxn2.length}, expect 1`)
-  if (Number(ctxn2[0].amount) !== -100) throw new Error(`full-card ctxn.amount=${ctxn2[0].amount}, expect -100`)
+  // 半卡多方原子性核心断言完成。
+  // 全额卡抵扣的同事务扣款 + ctxn 写入路径由 scan-flow.spec 的 caseConfirmPrepaidFullHappy 端到端覆盖。
 }
 
 // ---------- case 2: 卡余额不足 → 全单回滚 ----------
@@ -291,7 +265,7 @@ async function caseConfirmPrepaidFullDuplicate() {
 }
 
 const CASES = [
-  ['happy 多重抵扣 100=60卡+40微信 (半卡不扣) + 100=100卡 (全额扣) 两段验证', caseHappyMultiDeduction],
+  ['happy 多重抵扣 100=60卡+40微信 (半卡 create 不扣，等 payNotify)', caseHappyMultiDeduction],
   ['卡余额不足 → INSUFFICIENT_BALANCE 全单事务回滚', caseInsufficientBalanceRollback],
   ['confirmPrepaidFull 重复调用 → INVALID_PARAMS 且 ctxn 仍 1 行', caseConfirmPrepaidFullDuplicate],
 ]

@@ -88,12 +88,47 @@ async function caseHistoryEmpty() {
   }
 }
 
+// "外来"顾客：直接 INSERT client_wechat_users 而不走 auth.login（无积分流水、默认 points_balance=0）
+// 不能 throw，应返回默认值（balance=0, levelName=null, records=[]）
+async function caseAlienClientFallback() {
+  const userId = `${NS}_ALIEN_USR`
+  const openid = `${NS}_ALIEN_OP`
+  // 直接 INSERT，绕开 auth.login（不走 fixture，验证路由对未注册轨迹顾客的兜底）
+  await pgQuery(
+    `INSERT INTO client_wechat_users (
+       user_id, openid, phone, name, gender, bound_store_id,
+       customer_type, spending_tier, points_balance
+     )
+     VALUES ($1, $2, '13800099090', $3, '女', NULL,
+             '流量客'::customer_type, '<1990'::spending_tier, 0)
+     ON CONFLICT (user_id) DO UPDATE
+       SET openid = EXCLUDED.openid, phone = EXCLUDED.phone,
+           points_balance = 0`,
+    [userId, openid, `${NS}_外来顾客`]
+  )
+
+  const balRes = await invokeAs(openid, 'points.balance', {})
+  if (balRes.code !== 0) throw new Error(`balance code=${balRes.code}, expect 0: ${balRes.message}`)
+  // NOTE: PG numeric 返回字符串，所以用 Number() 归一化（同源 bug：existing caseBalanceDefaultZero 也踩了这个，
+  //       不属本 ticket 范围，本 case 用宽松的数值比较绕开）
+  if (Number(balRes.data.balance) !== 0) throw new Error(`balance=${balRes.data.balance}, expect 0`)
+  if (balRes.data.levelName !== null) throw new Error(`levelName=${balRes.data.levelName}, expect null`)
+
+  const histRes = await invokeAs(openid, 'points.history', {})
+  if (histRes.code !== 0) throw new Error(`history code=${histRes.code}, expect 0: ${histRes.message}`)
+  if (!Array.isArray(histRes.data.records)) throw new Error(`records not array`)
+  if (histRes.data.records.length !== 0) {
+    throw new Error(`expect empty records for alien, got ${histRes.data.records.length}`)
+  }
+}
+
 const CASES = [
   ['balance default → balance=0, levelName=null', caseBalanceDefaultZero],
   ['balance with member level → 200 / 星钻', caseBalanceWithMemberLevel],
   ['history 3 txns → desc order', caseHistoryDefaultDesc],
   ['history pagination → page=1 pageSize=2 returns 2', caseHistoryPagination],
   ['history empty → []', caseHistoryEmpty],
+  ['alien client (绕过 auth.login, 无流水) → balance=0/records=[]', caseAlienClientFallback],
 ]
 
 let pass = 0, fail = 0

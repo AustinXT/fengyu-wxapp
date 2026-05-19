@@ -24,6 +24,7 @@ import {
   ensureClientPrepaidCard,
   L3_PREPAID_CARD_ID,
 } from './helpers/client-l3-fixtures.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const STEPS = [
   ['1. 前置 fixture：充值卡 + 2 条流水', async (ctx) => {
@@ -44,16 +45,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo prepaid-cards', async (ctx) => {
     await ctx.mp.navigateTo('/pagesProfile/prepaid-cards/prepaid-cards')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('prepaid-cards')) {
-      throw new Error(`current path=${page?.path} 非 prepaid-cards`)
-    }
+    await waitForPagePath(ctx.mp, 'prepaid-cards', { timeoutMs: 6000 })
   }],
 
   ['4. card.list → 验证 1 张卡 balance=500', async (ctx) => {
@@ -93,7 +90,7 @@ const STEPS = [
 
   ['6. navigateTo card-recharge → card.recharge', async (ctx) => {
     await ctx.mp.navigateTo('/pagesProfile/card-recharge/card-recharge')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'card-recharge', { timeoutMs: 6000 })
 
     const res = await ctx.invoke('card.recharge', { faceValue: 1000 })
     if (!res || res.code !== 0) {

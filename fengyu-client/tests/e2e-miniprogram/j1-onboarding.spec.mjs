@@ -18,6 +18,7 @@ import {
 } from './helpers/fixtures.mjs'
 import { assertRowCount, assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const CLIENT_APPID = 'wx811eb4ded3dfba3f'
 
@@ -34,13 +35,17 @@ const STEPS = [
 
   ['2. reLaunch 到 home，验证当前路由', async (ctx) => {
     await ctx.mp.reLaunch('/pages/home/home')
-    const page = await ctx.mp.currentPage()
-    if (!page) throw new Error('currentPage() 返回空')
-    if (!page.path || !page.path.includes('home')) {
-      throw new Error(`current path=${page.path} 不是 home`)
+    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    // 等 onLaunch 完成：globalData.userId 写入是 onLaunch syncLoginState 的尾部副作用
+    const start = Date.now()
+    while (Date.now() - start < 5000) {
+      const gd = await ctx.mp.evaluate(() => {
+        const app = getApp()
+        return (app && app.globalData && app.globalData.userId) || null
+      })
+      if (gd) break
+      await new Promise((r) => setTimeout(r, 200))
     }
-    // 等首屏渲染（banner / shopInit 通过云函数拉，慢一点）
-    await new Promise((r) => setTimeout(r, 2000))
   }],
 
   ['3. evaluate globalData 验证 onLaunch 完成', async (ctx) => {
@@ -73,11 +78,7 @@ const STEPS = [
 
   ['5. switchTab 到 appointment', async (ctx) => {
     await ctx.mp.switchTab('/pages/appointment/appointment')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page || !page.path || !page.path.includes('appointment')) {
-      throw new Error(`switchTab 后 path=${page?.path} 非 appointment`)
-    }
+    await waitForPagePath(ctx.mp, 'appointment', { timeoutMs: 5000 })
   }],
 ]
 

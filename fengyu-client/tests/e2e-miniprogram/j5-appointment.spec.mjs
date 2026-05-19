@@ -32,6 +32,7 @@ import {
   L3_SKU_COURSE_ID,
 } from './helpers/client-l3-fixtures.mjs'
 import { TEST_CLIENT_PHONE } from './helpers/constants.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const NS = 'TEST_E2E_L3'
 
@@ -95,11 +96,7 @@ const STEPS = [
 
   ['2. switchTab appointment', async (ctx) => {
     await ctx.mp.switchTab('/pages/appointment/appointment')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('appointment')) {
-      throw new Error(`current path=${page?.path} 非 appointment`)
-    }
+    await waitForPagePath(ctx.mp, 'appointment', { timeoutMs: 5000 })
   }],
 
   ['3. order.appointableItems → 返回该 sale_item', async (ctx) => {
@@ -120,11 +117,7 @@ const STEPS = [
 
   ['4. navigateTo appointment-create', async (ctx) => {
     await ctx.mp.navigateTo('/pagesAppointment/appointment-create/appointment-create')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('appointment-create')) {
-      throw new Error(`current path=${page?.path} 非 appointment-create`)
-    }
+    await waitForPagePath(ctx.mp, 'appointment-create', { timeoutMs: 6000 })
   }],
 
   ['5. appointment.create → PG appointments +1 行 status=待确认', async (ctx) => {

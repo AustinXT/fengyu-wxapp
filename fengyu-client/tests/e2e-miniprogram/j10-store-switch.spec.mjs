@@ -21,6 +21,7 @@ import {
 } from './helpers/fixtures.mjs'
 import { assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
+import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const STORE_B_ORG_ID = 'TEST_E2E_L3_STORE_ORG_B'
 const STORE_B_ID = 'TEST_E2E_L3_STORE_B'
@@ -43,16 +44,12 @@ const STEPS = [
 
   ['2. switchTab profile', async (ctx) => {
     await ctx.mp.switchTab('/pages/profile/profile')
-    await new Promise((r) => setTimeout(r, 1500))
+    await waitForPagePath(ctx.mp, 'profile', { timeoutMs: 5000 })
   }],
 
   ['3. navigateTo store-select', async (ctx) => {
     await ctx.mp.navigateTo('/pagesStore/store-select/store-select')
-    await new Promise((r) => setTimeout(r, 1500))
-    const page = await ctx.mp.currentPage()
-    if (!page?.path?.includes('store-select')) {
-      throw new Error(`current path=${page?.path} 非 store-select`)
-    }
+    await waitForPagePath(ctx.mp, 'store-select', { timeoutMs: 6000 })
   }],
 
   ['4. store.list 返回 ≥2 个测试门店', async (ctx) => {

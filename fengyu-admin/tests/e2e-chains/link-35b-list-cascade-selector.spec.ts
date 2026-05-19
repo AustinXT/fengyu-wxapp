@@ -29,13 +29,26 @@ import {
   TEST_PHONES,
   TOPOLOGY,
   psql,
-  login,
-  getSelectOptionLabels,
   recordVerdict,
   summarize,
   writeContext,
   type Verdict,
 } from './_helpers/scope-helpers'
+
+/**
+ * 本 spec 内置 login —— 容忍 dev mode 首次 /login 冷编译的慢响应（最多 90s）。
+ * 共享 scope-helpers.login 的 timeout 20s 在 dev cold start 下太短。
+ */
+async function loginSlow(page: import('@playwright/test').Page, phone: string): Promise<void> {
+  await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
+  await page.locator('#phone').waitFor({ state: 'attached', timeout: 90_000 })
+  await page.locator('#phone').click()
+  await page.locator('#phone').pressSequentially(phone, { delay: 30 })
+  await page.locator('#password').click()
+  await page.locator('#password').pressSequentially('fengyu2026', { delay: 30 })
+  await page.getByRole('button', { name: /登\s*录/ }).click()
+  await page.waitForURL(/\/dashboard|\/change-password/, { timeout: 90_000 })
+}
 
 /**
  * 抓某列表页的「市场」「门店」两个 Select 的 option label 集合。
@@ -46,12 +59,12 @@ async function readCascadeSelects(
   listUrl: string,
 ): Promise<{ markets: string[]; stores: string[] } | null> {
   await page.goto(`${BASE}${listUrl}`, { waitUntil: 'domcontentloaded' })
-  // 等待两个级联 select 渲染出来（最多 12s）
+  // 等待两个级联 select 渲染出来（dev mode 首次编译耗时长，给 60s）
   const marketSel = page.locator('select:has(option:text-is("全部市场"))').first()
   const storeSel = page.locator('select:has(option:text-is("全部门店"))').first()
   try {
-    await marketSel.waitFor({ state: 'attached', timeout: 12_000 })
-    await storeSel.waitFor({ state: 'attached', timeout: 12_000 })
+    await marketSel.waitFor({ state: 'attached', timeout: 60_000 })
+    await storeSel.waitFor({ state: 'attached', timeout: 60_000 })
   } catch {
     return null
   }
@@ -74,7 +87,7 @@ async function readStoresAfterMarketPick(
   await page.goto(`${BASE}${listUrl}?market=${encodeURIComponent(marketId)}`, { waitUntil: 'domcontentloaded' })
   const storeSel = page.locator('select:has(option:text-is("全部门店"))').first()
   try {
-    await storeSel.waitFor({ state: 'attached', timeout: 12_000 })
+    await storeSel.waitFor({ state: 'attached', timeout: 60_000 })
   } catch {
     return null
   }
@@ -97,7 +110,7 @@ function dbBaselines(): { totalStores: number; ncStoreCount: number; nc2StoreCou
   return { totalStores, ncStoreCount, nc2StoreCount, totalMarkets }
 }
 
-test.setTimeout(300_000)
+test.setTimeout(900_000) // 15 分钟：dev mode 首次编译每个页面耗时长
 
 // 注：/employees 用 OrgTreeSelect 而非 market+store cascade，本 spec 不覆盖；
 // /cards、/customers、/points 是典型的 market+store 双 Select 级联结构。
@@ -112,12 +125,29 @@ test('链路35b：列表页市场→门店级联选择器锁定', async ({ brows
   const baseline = dbBaselines()
   console.log(`[链路35b] baseline: totalStores=${baseline.totalStores} ncStores=${baseline.ncStoreCount} nc2Stores=${baseline.nc2StoreCount} markets=${baseline.totalMarkets}`)
 
+  // ── 预热：先用 ADM 把 3 个页面跑一遍，避免 dev mode 首次编译卡 MGR/MKT 的 case ──
+  console.log('[链路35b] 预热页面编译 (ADM)')
+  const ctxWarm = await browser.newContext()
+  const pWarm = await ctxWarm.newPage()
+  try {
+    await loginSlow(pWarm, TEST_PHONES.ADM)
+    for (const sp of SAMPLE_PAGES) {
+      console.log(`  - warming ${sp.url}`)
+      await pWarm.goto(`${BASE}${sp.url}`, { waitUntil: 'domcontentloaded' })
+      await pWarm.locator('select:has(option:text-is("全部门店"))').first()
+        .waitFor({ state: 'attached', timeout: 120_000 })
+        .catch(() => null)
+    }
+  } finally {
+    await ctxWarm.close()
+  }
+
   // ── Case 1: MGR(nc01) — 门店下拉只见 1 店 ──
   console.log('[链路35b] Case 1: MGR(nc01)')
   const ctxMgr = await browser.newContext()
   const pMgr = await ctxMgr.newPage()
   try {
-    await login(pMgr, TEST_PHONES.MGR)
+    await loginSlow(pMgr, TEST_PHONES.MGR)
     for (const sp of SAMPLE_PAGES) {
       const got = await readCascadeSelects(pMgr, sp.url)
       if (!got) {
@@ -149,7 +179,7 @@ test('链路35b：列表页市场→门店级联选择器锁定', async ({ brows
   const ctxMkt = await browser.newContext()
   const pMkt = await ctxMkt.newPage()
   try {
-    await login(pMkt, TEST_PHONES.MKT)
+    await loginSlow(pMkt, TEST_PHONES.MKT)
     for (const sp of SAMPLE_PAGES) {
       const got = await readCascadeSelects(pMkt, sp.url)
       if (!got) {
@@ -184,7 +214,7 @@ test('链路35b：列表页市场→门店级联选择器锁定', async ({ brows
   const ctxAdm = await browser.newContext()
   const pAdm = await ctxAdm.newPage()
   try {
-    await login(pAdm, TEST_PHONES.ADM)
+    await loginSlow(pAdm, TEST_PHONES.ADM)
     for (const sp of SAMPLE_PAGES) {
       const got = await readCascadeSelects(pAdm, sp.url)
       if (!got) {
