@@ -3,7 +3,7 @@
  *
  * 不变量：prepaid_cards.balance == SUM(card_transactions.amount * sign(type))
  *
- * 执行环境（冷备库 5433，fixture 数据）：
+ * 执行环境（生产库 5434，fixture 数据）：
  *   fixture 顾客  : 13800138000 / FY-FIX-CLIENT-01
  *   fixture 储值卡: FY-FIX-CARD-01（初始余额 1000.00）
  *
@@ -45,11 +45,11 @@ const SKU_ORDINARY_PRICE = 100
 const RECHARGE_FACE_VALUE = 500
 const RECHARGE_PAY_AMOUNT = 495 // 500 * 0.99
 
-// DB helper: run psql against cold-backup 5433
+// DB helper: run psql against production 5434
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e: any) {
@@ -165,6 +165,45 @@ const verdicts: Array<{ check: string; actual: string; verdict: string }> = []
 // baseline 快照：测试开始前 fixture 卡的状态（用于 afterAll 严格回滚）
 let baselineBalance: number = 0
 const baselineCardTxnIds: Set<number> = new Set()
+
+// ticket D2 决策 A：afterEach 强制 reset
+//   - 跑批开始时记录"测试启动时刻"，afterEach DELETE 所有此时刻之后产生的 card_transactions
+//   - afterEach 把 balance UPDATE 回 1000（fixture baseline 余额）
+//   - Q2 答案：删除测试中产生的 card_transactions（不保留），下一次跑批从干净状态开始
+//   - 与 README 的 preserveCardTransactions=true 设计共存：preserve 仍只在 cleanupSaleOrder
+//     调用时生效（NULL 化 ref_order_id 而非删除 sale_orders 的子表 card_transactions），
+//     而 afterEach 是 fixture-level 强 reset 钩子，作用范围不同
+const SPEC_START_TS = new Date().toISOString()
+const FIXTURE_CARD_BASELINE_BALANCE = 1000
+
+// ============================================================
+// afterEach: 强制 reset fixture 卡到 baseline（ticket D2 决策 A）
+// ============================================================
+// 目的：spec 中段失败时不会污染下一次跑批的卡余额。
+// 行为：
+//   1. DELETE 所有 SPEC_START_TS 之后产生的 card_transactions（与 Q2 答案一致：
+//      不保留 link-10 跑测试产生的流水，下一次跑批从干净 baseline 开始）
+//   2. UPDATE prepaid_cards.balance 还原到 baselineBalance（fallback 到 1000）
+// 跨 test 协同：Step 1/2 内部用实测 preBalanceStepN 做相对断言，afterEach reset
+// 不破坏 Step 链路；afterAll 仍保留严格回滚（双重保险）。
+test.afterEach(() => {
+  try {
+    psql(
+      `DELETE FROM card_transactions WHERE card_id='${CARD_ID}' ` +
+        `AND created_at > '${SPEC_START_TS}'`,
+    )
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 afterEach] DELETE card_transactions 失败（非致命）: ${msg}`)
+  }
+  try {
+    const restoreBalance = baselineBalance > 0 ? baselineBalance : FIXTURE_CARD_BASELINE_BALANCE
+    psql(`UPDATE prepaid_cards SET balance=${restoreBalance}, updated_at=NOW() WHERE card_id='${CARD_ID}'`)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 afterEach] 还原 balance 失败（非致命）: ${msg}`)
+  }
+})
 
 // ============================================================
 // Step 0: read initial balance + sanity check + snapshot baseline txn ids

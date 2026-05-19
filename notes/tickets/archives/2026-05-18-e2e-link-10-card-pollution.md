@@ -80,3 +80,28 @@ test.afterEach(async () => {
 - `tests/e2e-chains/link-10-card-balance-check.spec.ts`
 - `tests/e2e-chains/_helpers/cleanup.ts`（preserveCardTransactions 选项）
 - `tests/e2e-chains/test-fixtures.json`（fixture 定义 + _cleanup.sql 段）
+
+---
+
+## 完成记录
+
+- **完成日期**：2026-05-19
+- **决策**：D2=A（afterEach SQL reset）；Q2=不保留 link-10 跑测试中产生的 card_transactions，下次跑批从干净 baseline 开始
+- **改动范围**（1 文件）：
+  - `fengyu-admin/tests/e2e-chains/link-10-card-balance-check.spec.ts` — 加 `SPEC_START_TS = new Date().toISOString()` 记录跑批启动时刻；加 `test.afterEach()`：
+    1. `DELETE FROM card_transactions WHERE card_id='FY-FIX-CARD-01' AND created_at > SPEC_START_TS`（仅删本次跑批产生的流水，保留 baseline）
+    2. `UPDATE prepaid_cards SET balance=baselineBalance, updated_at=NOW() WHERE card_id='FY-FIX-CARD-01'`（baseline fallback 到 1000）
+- **设计权衡**：
+  - afterEach 与已有 afterAll 双重保险共存：afterEach 防中段失败污染 Step 间，afterAll 防整 spec 异常退出污染下一次跑批
+  - 保留 README 的 `preserveCardTransactions=true` 设计语义：该选项仅在 `cleanupSaleOrder(soid, ...)` 调用路径下生效（NULL 化 ref_order_id 而非删 card_transactions 行），而 afterEach 是 fixture-level 强 reset 钩子，作用范围互不冲突
+  - Step 1/2/3 内部本就使用 `preBalanceStepN = SELECT balance` 做相对断言，afterEach reset 不会破坏 Step 之间的链路逻辑
+- **TypeScript 类型检查**：`npx tsc --noEmit` 全项目 0 错误
+- **Playwright 解析**：5 个 test 全部正确枚举
+- **DoD 偏差**：
+  - [x] afterEach 强制 reset balance ✓
+  - [x] afterEach DELETE 新增 card_transactions（Q2 答案）✓
+  - [x] README preserveCardTransactions=true 设计保留 ✓
+  - [⚠️] DoD 1 测试 PASS：**SKIP 执行验证**。原 spec psql 连 5433/fengyu_wxapp（fixture 所在地），后由 linter 同步切换至 5434/fengyu（admin dev server 实际连接的库）；FY-FIX-CARD-01 等 fixture 仅存在于 5433，5434 无对应 fixture → 全部 Step FAIL。afterEach 钩子已实际执行（Step 间未抛错）。环境数据库不一致问题归 ticket `2026-05-18-e2e-chains-test-db-mismatch.md`，本 agent 不动 admin/DB 配置
+- **关联引用**：
+  - 配套 ticket `2026-05-18-e2e-fixture-cron-member-upgrade-design.md`（D1）同批归档
+  - 待修 DB 配置：`2026-05-18-e2e-chains-test-db-mismatch.md`
