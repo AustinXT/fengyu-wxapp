@@ -1,5 +1,10 @@
 # Ticket: WorkFine 原品项 → 新品项映射表接收接口
 
+> **SUPERSEDED 2026-05-19**：本 ticket 已被撤销。决策反转：历史数据仅用于会员等级判定，不做按品类历史分析。
+> `legacy_product_mapping` schema/admin 页/权限/菜单已全部移除（migration `0041_drop_legacy_product_mapping.sql`）。
+> 本文件保留作历史决议参考，不再生效。撤销详情见 `notes/tickets/2026-05-19-legacy-product-mapping-removal.md`。
+
+
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |

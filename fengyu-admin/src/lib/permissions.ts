@@ -46,8 +46,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'sale_order:refund_create', 'sale_order:refund_approve',
     // 历史订单核对（WorkFine 导入的 status='未审核' 订单，仅 admin/manager 操作）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject', 'legacy_order:update_phone',
-    // 历史品项映射表（B10：WorkFine 原品项 → 新品项归一，CSV 上传 + 编辑）
-    'legacy_product_mapping:read', 'legacy_product_mapping:write',
     // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
@@ -99,8 +97,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'coupon:list', 'coupon:create', 'coupon:update',
     'sale_order:refund_create',
-    // 历史品项映射表（B10：商品域人员主理）
-    'legacy_product_mapping:read', 'legacy_product_mapping:write',
   ],
   customer_mgr: [
     'dashboard:view',

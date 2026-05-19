@@ -127,6 +127,8 @@
 ---
 
 #### Agent E — B10 PR-1 + PR-2 映射表 schema + admin 上传页
+> SUPERSEDED 2026-05-19：决策反转，历史数据仅用于会员等级判定，不做按品类历史分析。本段所述方案已全部移除（schema/admin/权限/菜单/migration 0041 DROP）。详见 `notes/tickets/2026-05-19-legacy-product-mapping-removal.md`。
+
 **Ticket**：`notes/tickets/2026-05-18-product-mapping-table-intake.md`
 **Skill**：admin-coding + db
 **Files**：

@@ -92,12 +92,6 @@ export const MENU_CONFIG: MenuGroup[] = [
 			{ label: "门店管理", icon: Store, href: "/stores", requiredRoles: ["admin", "hr"] },
 			{ label: "员工管理", icon: Users, href: "/employees", requiredRoles: ["admin", "hr"] },
 			{ label: "商品管理", icon: Package, href: "/products", requiredRoles: ["admin", "product"] },
-			{
-				label: "历史品项映射",
-				icon: History,
-				href: "/legacy-product-mapping",
-				requiredRoles: ["admin", "product"],
-			},
 			{ label: "商城管理", icon: ShoppingBag, href: "/mall", requiredRoles: ["admin", "product"] },
 			{ label: "提成矩阵", icon: Grid3x3, href: "/commission", requiredRoles: ["admin"] },
 			{

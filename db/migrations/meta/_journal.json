@@ -288,6 +288,13 @@
       "when": 1779163088843,
       "tag": "0040_add_paid_sessions_to_sale_items",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1779164053919,
+      "tag": "0041_drop_legacy_product_mapping",
+      "breakpoints": true
     }
   ]
 }
