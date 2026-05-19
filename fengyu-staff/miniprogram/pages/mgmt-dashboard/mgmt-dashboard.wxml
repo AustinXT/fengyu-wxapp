@@ -159,34 +159,25 @@
         </view>
       </mgmt-data-state>
 
-      <!-- C. 入口区：卡片宫格（永远显示，加载失败也能跳转） -->
+      <!-- C. 入口区：4 列原生 CSS Grid（永远显示，加载失败也能跳转） -->
+      <!-- 不用 van-grid：其 grid-item 通过 relation 异步取 columnNum，首帧 width=NaN% 会塌缩到左上 -->
       <view class="dash-entries">
-        <van-grid column-num="{{ 4 }}" gutter="{{ 16 }}" border="{{ false }}">
-          <van-grid-item use-slot>
-            <view class="dash-entry-card" data-entry="traffic" bindtap="onEntryTap">
-              <van-icon name="friends-o" size="56rpx" color="#C0322A" />
-              <text class="dash-entry-label">客量数据</text>
-            </view>
-          </van-grid-item>
-          <van-grid-item use-slot>
-            <view class="dash-entry-card" data-entry="sales" bindtap="onEntryTap">
-              <van-icon name="balance-o" size="56rpx" color="#C0322A" />
-              <text class="dash-entry-label">销售数据</text>
-            </view>
-          </van-grid-item>
-          <van-grid-item use-slot>
-            <view class="dash-entry-card" data-entry="products" bindtap="onEntryTap">
-              <van-icon name="gift-card-o" size="56rpx" color="#C0322A" />
-              <text class="dash-entry-label">品项数据</text>
-            </view>
-          </van-grid-item>
-          <van-grid-item use-slot>
-            <view class="dash-entry-card" data-entry="customers" bindtap="onEntryTap">
-              <van-icon name="contact-o" size="56rpx" color="#C0322A" />
-              <text class="dash-entry-label">顾客档案</text>
-            </view>
-          </van-grid-item>
-        </van-grid>
+        <view class="dash-entry-card" data-entry="traffic" bindtap="onEntryTap">
+          <van-icon name="friends-o" size="56rpx" color="#C0322A" />
+          <text class="dash-entry-label">客量数据</text>
+        </view>
+        <view class="dash-entry-card" data-entry="sales" bindtap="onEntryTap">
+          <van-icon name="balance-o" size="56rpx" color="#C0322A" />
+          <text class="dash-entry-label">销售数据</text>
+        </view>
+        <view class="dash-entry-card" data-entry="products" bindtap="onEntryTap">
+          <van-icon name="gift-card-o" size="56rpx" color="#C0322A" />
+          <text class="dash-entry-label">品项数据</text>
+        </view>
+        <view class="dash-entry-card" data-entry="customers" bindtap="onEntryTap">
+          <van-icon name="contact-o" size="56rpx" color="#C0322A" />
+          <text class="dash-entry-label">顾客档案</text>
+        </view>
       </view>
 
       <!-- 日历弹窗：主题色对齐 #C0322A；min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
