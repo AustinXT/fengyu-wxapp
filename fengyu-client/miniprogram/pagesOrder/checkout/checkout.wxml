@@ -134,8 +134,8 @@ module.exports.date = function(s) {
     <van-cell wx:else title="" label="全额抵扣，无需选择支付方式" label-class="pay-empty-hint" />
   </van-cell-group>
 
-  <!-- 消费协议 -->
-  <van-cell-group title="消费协议" inset>
+  <!-- 消费协议（充值单已在充值页底部展示充值条款，此处不再勾选） -->
+  <van-cell-group wx:if="{{!isRecharge}}" title="消费协议" inset>
     <van-cell>
       <view slot="title" class="agreement-row">
         <van-checkbox
