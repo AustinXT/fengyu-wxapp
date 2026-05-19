@@ -489,11 +489,11 @@ export async function createTestProduct({
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
        session_count, sort_order, service_fee, is_shengmei,
-       is_experience, is_recharge_card, is_enabled
+       is_experience, is_enabled
      )
      VALUES ($1, $2, $3::product_type, $4, $5,
              $6, 0, $7, $8,
-             $9, $10, true)
+             $9, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET category_id = EXCLUDED.category_id,
            product_type = EXCLUDED.product_type,
@@ -503,12 +503,11 @@ export async function createTestProduct({
            service_fee = EXCLUDED.service_fee,
            is_shengmei = EXCLUDED.is_shengmei,
            is_experience = EXCLUDED.is_experience,
-           is_recharge_card = EXCLUDED.is_recharge_card,
            is_enabled = true`,
     [
       skuId, subCatId, productType, specName, price,
       sessionCount, serviceFee, isShengmei,
-      isExperience, isRechargeCard,
+      isExperience,
     ]
   )
 
@@ -583,19 +582,19 @@ export async function createTestSaleOrder({
          sku_id, product_name, sku_spec_name, product_type,
          session_count, remaining_sessions,
          unit_price, quantity, unit_real_price, sale_amount, received,
-         is_experience, is_recharge_card, is_shengmei, sales_category
+         is_experience, is_shengmei, sales_category
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                $4, $5, '默认', $6::product_type,
                $7, $7,
                $8, $9, $8, $10, $10,
-               $11, $12, $13, $14::sales_category)`,
+               $11, $12, $13::sales_category)`,
       [
         itemId, saleOrderId, storeId,
         skuId, productName, productType,
         sessionCount,
         Number(totalAmount) / Number(quantity), quantity, totalAmount,
-        isExperience, isRechargeCard, isShengmei, salesCategory,
+        isExperience, isShengmei, salesCategory,
       ]
     )
 
@@ -655,19 +654,19 @@ export async function createTestSaleItem({
        sku_id, product_name, sku_spec_name, product_type,
        session_count, remaining_sessions,
        unit_price, quantity, unit_real_price, sale_amount, received,
-       is_experience, is_recharge_card, is_shengmei, sales_category
+       is_experience, is_shengmei, sales_category
      )
      VALUES ($1, $2, $3, '购买'::item_direction,
              $4, $5, '默认', $6::product_type,
              $7, $7,
              $8, $9, $8, $10, $10,
-             $11, $12, $13, $14::sales_category)`,
+             $11, $12, $13::sales_category)`,
     [
       saleItemId, saleOrderId, storeId,
       skuId, productName, productType,
       sessionCount,
       unitPrice, quantity, saleAmount,
-      isExperience, isRechargeCard, isShengmei, salesCategory,
+      isExperience, isShengmei, salesCategory,
     ]
   )
 

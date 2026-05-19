@@ -231,56 +231,34 @@ describe('ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护', () =
     payNotifySrc = readFile(FILES.payNotifyIndexJs)
   })
 
-  describe('§2.1 Recharge items SELECT 三端字面对齐（capability 列 + 双路径面值识别）', () => {
-    const MARKER = 'sk.price AS sku_price'
-
-    test('三端 SELECT 必须含 capability 列 is_recharge_card = true', () => {
-      const adminSql = normalizeSql(extractBacktickStringContaining(adminSrc, MARKER))
-      const staffSql = normalizeSql(extractBacktickStringContaining(staffSrc, MARKER))
-      const payNotifySql = normalizeSql(extractBacktickStringContaining(payNotifySrc, MARKER))
-
-      expect(adminSql).toMatch(/is_recharge_card\s*=\s*true/i)
-      expect(staffSql).toMatch(/is_recharge_card\s*=\s*true/i)
-      expect(payNotifySql).toMatch(/is_recharge_card\s*=\s*true/i)
+  describe('§2.1 Recharge identification 三端字面对齐（2026-05-20 充值卡剥离 SKU 化）', () => {
+    test('三端入账识别走 sale_order_type=充值单（替代旧 sale_items.is_recharge_card 标记）', () => {
+      expect(adminSrc).toMatch(/sale_order_type[\s\S]{0,80}'?充值单'?/i)
+      expect(staffSrc).toMatch(/sale_order_type\s*===?\s*'充值单'/)
+      expect(payNotifySrc).toMatch(/sale_order_type\s*===?\s*'充值单'/)
     })
 
-    test('三端 SELECT 必须 LEFT JOIN product_skus 取 sk.price AS sku_price（真实 SKU 路径）', () => {
-      const adminSql = normalizeSql(extractBacktickStringContaining(adminSrc, MARKER))
-      const staffSql = normalizeSql(extractBacktickStringContaining(staffSrc, MARKER))
-      const payNotifySql = normalizeSql(extractBacktickStringContaining(payNotifySrc, MARKER))
-
-      const joinRe = /LEFT JOIN product_skus sk ON si\.sku_id = sk\.sku_id/i
-      expect(adminSql).toMatch(joinRe)
-      expect(staffSql).toMatch(joinRe)
-      expect(payNotifySql).toMatch(joinRe)
-    })
-
-    test('双路径面值识别：三端代码必须同时含 RECHARGE_VIRTUAL_SKU_ID + sku_price 两条路径', () => {
+    test('三端不得残留 is_recharge_card 字段引用（除注释外）', () => {
+      const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       for (const [name, src] of [
         ['admin', adminSrc],
         ['staff', staffSrc],
         ['payNotify', payNotifySrc],
       ]) {
-        expect(src, `${name} 缺 RECHARGE_VIRTUAL_SKU_ID 虚拟 SKU 分支`).toMatch(/RECHARGE_VIRTUAL_SKU_ID/)
-        expect(src, `${name} 缺 sku_price 真实 SKU 分支`).toMatch(/sku_price/)
+        const cleaned = stripComments(src)
+        expect(cleaned, `${name} 不应再有 is_recharge_card 运行时引用`).not.toMatch(/is_recharge_card/)
+        expect(cleaned, `${name} 不应再有 RECHARGE_VIRTUAL_SKU_ID 引用`).not.toMatch(/RECHARGE_VIRTUAL_SKU_ID/)
       }
     })
 
-    test('Snapshot 守护：三端 SELECT recharge items 文本字面同义（容差：admin LIMIT 1 + 缺 sale_item_id）', () => {
-      const adminSql = normalizeSql(extractBacktickStringContaining(adminSrc, MARKER))
-      const staffSql = normalizeSql(extractBacktickStringContaining(staffSrc, MARKER))
-      const payNotifySql = normalizeSql(extractBacktickStringContaining(payNotifySrc, MARKER))
-
-      // staff 与 payNotify 必须字面一致（双端 pg 实现，同列集）
-      expect(staffSql).toBe(payNotifySql)
-      // admin vs staff 字面差异（已知）：
-      //   - admin 不读 si.sale_item_id（不用 external_ref 拼 sale_item_id；走 ref_order_id 唯一）
-      //   - admin 末尾追加 LIMIT 1（payNotify/staff 走 for-loop，admin 单行处理）
-      // 归一化后对齐：去掉 admin 的 LIMIT 1 + 添加 si.sale_item_id 列
-      const adminAligned = adminSql
-        .replace(/\s*LIMIT\s+1\s*$/i, '')
-        .replace(/SELECT\s+/, 'SELECT si.sale_item_id, ')
-      expect(adminAligned).toBe(staffSql)
+    test('三端入账幂等键统一为 card-topup-{saleOrderId}', () => {
+      for (const [name, src] of [
+        ['admin', adminSrc],
+        ['staff', staffSrc],
+        ['payNotify', payNotifySrc],
+      ]) {
+        expect(src, `${name} 缺 card-topup-{saleOrderId} 幂等键`).toMatch(/card-topup-/)
+      }
     })
   })
 
@@ -345,15 +323,14 @@ describe('ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护', () =
   })
 
   describe('Snapshot 守护：admin 关键 SQL 整体文本快照', () => {
-    test('admin 三端守护涉及的 4 段 SQL 快照（任一漂移立即可见）', () => {
-      const rechargeSelect = normalizeSql(extractBacktickStringContaining(adminSrc, 'sk.price AS sku_price'))
+    test('admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见）', () => {
       const lockOrder = normalizeSql(
         extractBacktickStringContaining(adminSrc, 'SELECT prepaid_card_amount, client_user_id FROM sale_orders'),
       )
       const lockCard = normalizeSql(extractBacktickStringContaining(adminSrc, 'SELECT card_id, balance FROM prepaid_cards'))
       const updBalance = normalizeSql(extractBacktickStringContaining(adminSrc, 'UPDATE prepaid_cards'))
 
-      expect({ rechargeSelect, lockOrder, lockCard, updBalance }).toMatchSnapshot()
+      expect({ lockOrder, lockCard, updBalance }).toMatchSnapshot()
     })
   })
 })

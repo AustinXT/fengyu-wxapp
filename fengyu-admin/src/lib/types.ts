@@ -278,12 +278,7 @@ export interface ProductSku {
    * 仅在 SKU 编辑/查询表单上下文需要，前端运行时按需读取。
    */
   isExperience?: boolean
-  /**
-   * 充值卡 capability 列（与 product_skus.is_recharge_card 同名同义）。
-   * 取代旧的 sku_id = RECHARGE_VIRTUAL_SKU_ID 字面量判定。
-   * 与 isExperience 互斥（DB CHECK 保护）。
-   */
-  isRechargeCard?: boolean
+  // 充值卡 capability 列已退出（2026-05-20 充值卡剥离 SKU 化，DB 列已 DROP）
   /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
   projectSeriesId?: number | null
   marketScope: string | null

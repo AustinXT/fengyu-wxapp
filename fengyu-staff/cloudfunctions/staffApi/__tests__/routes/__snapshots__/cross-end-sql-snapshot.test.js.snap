@@ -30,20 +30,18 @@ exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守
 }
 `;
 
-exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snapshot 守护：admin 关键 SQL 整体文本快照 > admin 三端守护涉及的 4 段 SQL 快照（任一漂移立即可见） 1`] = `
+exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snapshot 守护：admin 关键 SQL 整体文本快照 > admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
   "lockOrder": "SELECT prepaid_card_amount, client_user_id FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
-  "rechargeSelect": "SELECT si.sku_id, si.product_name, sk.price AS sku_price FROM sale_items si LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id WHERE si.sale_order_id = ? AND si.is_recharge_card = true LIMIT 1",
   "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
 }
 `;
 
-exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapshot 守护：admin 关键 SQL 整体文本快照 admin 三端守护涉及的 4 段 SQL 快照（任一漂移立即可见） 1`] = `
+exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapshot 守护：admin 关键 SQL 整体文本快照 admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
   "lockOrder": "SELECT prepaid_card_amount, client_user_id FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
-  "rechargeSelect": "SELECT si.sku_id, si.product_name, sk.price AS sku_price FROM sale_items si LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id WHERE si.sale_order_id = ? AND si.is_recharge_card = true LIMIT 1",
   "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
 }
 `;

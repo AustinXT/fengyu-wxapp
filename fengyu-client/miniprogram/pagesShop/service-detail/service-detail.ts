@@ -24,8 +24,7 @@ interface Sku {
   product_kind?: string;
   /** PR-D：一级 kind 行的 display_color HEX */
   kind_display_color?: string;
-  /** 2026-04-26 capability 化：充值卡 SKU 标志（云函数 SKU_VALID_FILTER 已排除，此处兜底） */
-  is_recharge_card?: boolean;
+  // 充值卡剥离 SKU 化（2026-05-20）：商城 SKU 不含充值卡
 }
 
 interface Staff {
@@ -216,7 +215,7 @@ Page({
       productKind: selectedSku.product_kind || undefined,
       kindDisplayColor: selectedSku.kind_display_color || undefined,
       // 2026-04-26 capability 化：充值卡 SKU 已在云函数侧过滤，此处兜底
-      isRechargeCard: !!selectedSku.is_recharge_card,
+      // 充值卡剥离 SKU 化（2026-05-20）：商城 SKU 已不含充值卡
     }, quantity);
 
     this.setData({ cartCount: getCartCount() });

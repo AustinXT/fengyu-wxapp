@@ -263,61 +263,8 @@ describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
   })
 })
 
-describe("getProductsByKind('充值卡') — 平铺结构保持不变", () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    ;(getSession as any).mockResolvedValue(mockSession)
-  })
-
-  it('返回平铺 categories，productKind 均为 充值卡', async () => {
-    mockChain([
-      {
-        category: {
-          categoryId: 'cat-cz-01',
-          categoryName: '储值卡',
-          productKind: '充值卡',
-          salesCategory: '自销自耗',
-          sortOrder: 1,
-        },
-        sku: {
-          skuId: 'SKU-CZ-1',
-          categoryId: 'cat-cz-01',
-          productType: '单品',
-          specName: '1000 元储值',
-          price: '1000',
-          specialPrice: null,
-          sessionCount: null,
-          serviceFee: '0',
-          sortOrder: 1,
-        },
-      },
-    ])
-
-    const result = await getProductsByKind('充值卡')
-    expect(result.kind).toBe('充值卡')
-    expect('categories' in result).toBe(true)
-    if (!('categories' in result)) return
-    expect(result.categories).toHaveLength(1)
-    expect(result.categories[0].categoryName).toBe('储值卡')
-  })
-
-  it("'充值卡' 用 SKU capability is_recharge_card=true 过滤，不依赖 product_kind 字面量", async () => {
-    const where = mockChain([])
-
-    await getProductsByKind('充值卡')
-
-    const whereArg = where.mock.calls[0][0] as { type: string; args: Array<{ type: string; a: string; b: unknown }> }
-    expect(whereArg.type).toBe('and')
-    // 找出所有 eq 条件
-    const eqConditions = whereArg.args.filter((c) => c.type === 'eq')
-    // 必须包含 is_recharge_card = true
-    const hasRechargeFilter = eqConditions.some((c) => c.a === 'is_recharge_card' && c.b === true)
-    expect(hasRechargeFilter).toBe(true)
-    // 必须 NOT 包含 product_kind 字面量过滤
-    const hasProductKindFilter = eqConditions.some((c) => c.a === 'product_kind' && c.b === '充值卡')
-    expect(hasProductKindFilter).toBe(false)
-  })
-})
+// 充值卡剥离 SKU 化（2026-05-20）：充值卡退出 SKU/商品域，getProductsByKind('充值卡')
+// 分支已删除，原测试组不再适用。后续 admin 若新增充值订单入口会另起独立 action。
 
 describe("getProductsByKind('体验卡') — SKU capability 列过滤", () => {
   beforeEach(() => {

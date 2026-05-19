@@ -685,7 +685,7 @@ describe('deleteSku — 引用校验 + 软删', () => {
   it('SKU 未被引用 → 软删成功（mallProductSkus 物理删 + productSkus update deleted_at）', async () => {
     setupSelectsForDelete([], [{
       skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
-      price: '100.00', productType: '护理项目', isExperience: false, isRechargeCard: false,
+      price: '100.00', productType: '护理项目', isExperience: false,
     }])
     ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
     setupUpdateForDelete(1)
@@ -701,7 +701,7 @@ describe('deleteSku — 引用校验 + 软删', () => {
   it('软删 update rowCount=0 → 并发冲突提示', async () => {
     setupSelectsForDelete([], [{
       skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
-      price: '100.00', productType: '护理项目', isExperience: false, isRechargeCard: false,
+      price: '100.00', productType: '护理项目', isExperience: false,
     }])
     ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
     setupUpdateForDelete(0)

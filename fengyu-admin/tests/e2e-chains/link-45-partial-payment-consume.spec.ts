@@ -188,20 +188,31 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
   }, { timeout: 20000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-45-10-step1-items.png` })
 
-  // 核心断言：注入的 PRE_SALE_ITEM_ID 应出现在可选列表（D2=A）
-  const bodyText = await page.textContent('body')
-  expect(bodyText).toContain(PRE_SALE_ITEM_ID)
+  // 核心断言：注入的 sale_item 应出现在可选列表（D2=A）
+  // 注：UI 表格不显示 sale_item_id，只显示商品名/规格/用量/单价；按 SKU 规格名定位
+  const mainText = (await page.locator('main').innerText().catch(() => '')) || ''
+  expect(mainText).toContain(MULTI_SESSION_SKU_NAME)
   console.log('[链路45] Step1 部分支付订单的 sale_item 出现在可选列表 ✓（D2=A 验证通过）')
 
-  // 选中我们注入的行
+  // 选中我们注入的行：按规格名 + paid_sessions=5 / session_count=10 (UI "已用/已付/共" 显示 "0/5/10") 双重定位
   const rows = page.locator('table tbody tr')
   const rowCount = await rows.count()
   let targetRowIdx = -1
   for (let i = 0; i < rowCount; i++) {
     const rowText = await rows.nth(i).textContent()
-    if (rowText?.includes(PRE_SALE_ITEM_ID)) {
+    if (rowText?.includes(MULTI_SESSION_SKU_NAME) && rowText?.includes('0/5/10')) {
       targetRowIdx = i
       break
+    }
+  }
+  // fallback：仅按 SKU 名匹配（若 fixture 顾客同名卡多张则取第一张匹配的）
+  if (targetRowIdx === -1) {
+    for (let i = 0; i < rowCount; i++) {
+      const rowText = await rows.nth(i).textContent()
+      if (rowText?.includes(MULTI_SESSION_SKU_NAME)) {
+        targetRowIdx = i
+        break
+      }
     }
   }
   expect(targetRowIdx).toBeGreaterThanOrEqual(0)

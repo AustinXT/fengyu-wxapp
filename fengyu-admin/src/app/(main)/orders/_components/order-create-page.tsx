@@ -17,7 +17,7 @@ import {
 } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
-import { getCustomerHeldCards, getCustomerCardBalance, type HeldCardCandidate, type RechargeCardSku } from "@/actions/cards"
+import { getCustomerHeldCards, getCustomerCardBalance, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
@@ -40,9 +40,8 @@ import type { Product } from "@/lib/types"
  * 2026-05-20：充值卡退出 SKU/商品域，admin 开单页不再含"充值卡" Tab；
  * 充值订单走员工端 card.recharge 入口，后续 admin 若需自建会另起独立页面。
  */
-type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡' | '充值卡'
+type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡'
 
-// 充值卡 Tab 已下线（2026-05-20 剥离 SKU 化），但 ProductKindChoice 类型保留 '充值卡' 让残存判定编译通过
 const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品', '体验卡']
 
 /** Step 3 订单类型 3 选 1（PR-C） */
@@ -142,12 +141,9 @@ function StepIndicator({ current }: { current: number }) {
 export default function OrderCreatePageClient({
   stores,
   employees,
-  rechargeCardSkus = [],
 }: {
   stores: Store[]
   employees: Employee[]
-  /** 真实 is_recharge_card=true 档位 SKU（SSR fetch；失败降级空数组） */
-  rechargeCardSkus?: RechargeCardSku[]
 }) {
   const [step, setStep] = useState(0)
   const [searchKeyword, setSearchKeyword] = useState("")
@@ -159,7 +155,7 @@ export default function OrderCreatePageClient({
   // PR-B: Step 1 商品类型 4 选 1（默认 普通商品），驱动 Step 2 数据源
   const [productKindChoice, setProductKindChoice] = useState<ProductKindChoice>('普通商品')
   // PR-B: 内存缓存 — choice → 已预拉数据，避免 Step 2 切换 kind 时重复请求
-  const [kindDataCache, setKindDataCache] = useState<Record<ProductKindChoice, PrefetchedKindData | undefined>>({
+  const [kindDataCache, setKindDataCache] = useState<Partial<Record<ProductKindChoice, PrefetchedKindData | undefined>>>({
     组合套餐: undefined,
     普通商品: undefined,
     体验卡: undefined,
@@ -301,10 +297,6 @@ export default function OrderCreatePageClient({
       setPriceOverrides({})
     }
     setProductKindChoice(choice)
-    // 充值卡仅支持销售单（与 client 对齐）；进入充值卡分支时强制回落
-    if (choice === '充值卡' && orderType !== '销售单') {
-      setOrderType('销售单')
-    }
     if (selectedCustomer) {
       void prefetchKindData(choice)
     }
@@ -346,13 +338,6 @@ export default function OrderCreatePageClient({
   }, [orderType])
 
   const addToCart = (product: Product, sku: ProductSku) => {
-    // 充值卡订单：每单仅 1 笔，点击档位/自定义金额时替换购物车（不累加数量）
-    // 2026-05-20：充值卡判定从 sku capability 改为 productKindChoice 选择项
-    if (productKindChoice === '充值卡') {
-      setCart([{ sku, product, quantity: 1 }])
-      setPriceOverrides({})
-      return
-    }
     setCart((prev) => {
       const existing = prev.find((i) => i.sku.skuId === sku.skuId)
       if (existing) {
@@ -817,12 +802,8 @@ export default function OrderCreatePageClient({
               <label className="text-sm text-[#999999] block mb-2">订单类型</label>
               <div className="flex flex-wrap gap-2">
                 {ORDER_TYPE_CHOICES.map((choice) => {
-                  // 充值卡订单仅支持销售单（与 client 模型对齐）
-                  const rechargeLocked = productKindChoice === '充值卡' && choice !== '销售单'
-                  const disabled = rechargeLocked || (choice === '转换单' && !conversionAllowed)
-                  const disabledReason = rechargeLocked
-                    ? "充值卡订单仅支持销售单"
-                    : (choice === '转换单' && !conversionAllowed ? "请先用搜索确认顾客身份" : undefined)
+                  const disabled = choice === '转换单' && !conversionAllowed
+                  const disabledReason = disabled ? "请先用搜索确认顾客身份" : undefined
                   return (
                     <button
                       key={choice}
@@ -846,9 +827,6 @@ export default function OrderCreatePageClient({
               </div>
               {orderType === '转换单' && !conversionAllowed && (
                 <p className="text-xs text-[#D94040] mt-1">请先用搜索确认顾客身份</p>
-              )}
-              {productKindChoice === '充值卡' && (
-                <p className="text-xs text-[#999999] mt-1">充值卡订单仅支持销售单</p>
               )}
               {isInternal && (
                 <p className="text-xs text-[#D4820A] mt-1">内部单 5 折，禁用手工改价 + 优惠券</p>
@@ -1235,8 +1213,6 @@ export default function OrderCreatePageClient({
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
                         salesCategory: null,
-                        // 2026-04-26 ticket：充值卡 capability hint（服务端会以 product_skus 权威值覆盖）
-                        isRechargeCard: false /* 充值卡剥离 SKU 化 */,
                       }
                     }),
                   })
