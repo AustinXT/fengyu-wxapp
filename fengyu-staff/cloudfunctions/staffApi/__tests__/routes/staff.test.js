@@ -32,7 +32,11 @@ describe('staff.list', () => {
   })
 
   test('payload.storeId 覆盖默认门店', async () => {
-    const ctx = createManagerCtx({ storeId: 'store-other' })
+    const ctx = createManagerCtx(
+      { storeId: 'store-other' },
+      // 多店店长管理层模式：scope 内含 store-other，payload.storeId 才不会被守卫拦截
+      { loginLevel: 'management', staffLevel: 'market', scopeStoreIds: ['store-001', 'store-other'] },
+    )
 
     pg.query.mockResolvedValueOnce([
       { employee_id: 'emp-010', name: '王五', position: '美容师', department: '美容部', store_name: '凤御B店', market_name: '华南市场' },
@@ -63,7 +67,8 @@ describe('staff.list', () => {
 // ============================================================
 describe('staff.departments', () => {
   test('返回按部门分组的员工（含 P2-14 skills）', async () => {
-    const ctx = createManagerCtx()
+    // 跨部门"市场维度其他部门"分支仅 headquarters / market 级可见
+    const ctx = createManagerCtx({}, { staffLevel: 'market' })
     pg.query.mockResolvedValueOnce([
       { employee_id: 'emp-001', name: '张三', position: '美容师', skills: ['美容师'], department: '美容部' },
       { employee_id: 'emp-002', name: '李四', position: '美容师', skills: ['美容师', '推广师'], department: '美容部' },
@@ -87,7 +92,8 @@ describe('staff.departments', () => {
   })
 
   test('无美容部时只返回其他部门', async () => {
-    const ctx = createManagerCtx()
+    // 跨部门"市场维度其他部门"分支仅 headquarters / market 级可见
+    const ctx = createManagerCtx({}, { staffLevel: 'market' })
     pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([
       { employee_id: 'emp-010', name: '赵六', position: '顾问', department: '咨询部', store_name: '凤御A店' },
@@ -233,7 +239,8 @@ describe('staff.todoList', () => {
 // ============================================================
 describe('staff.bindStore', () => {
   test('有效门店绑定成功并持久化 store_id', async () => {
-    const ctx = createManagerCtx({ storeId: 'store-new' })
+    // 总部账号可任意切店（绕过 scope guard）
+    const ctx = createManagerCtx({ storeId: 'store-new' }, { staffLevel: 'headquarters' })
     pg.query.mockResolvedValueOnce([{ store_id: 'store-new', store_name: '凤御C店' }])
     pg.query.mockResolvedValueOnce([]) // UPDATE staff_wechat_users
     await staffRoutes.bindStore(ctx)
@@ -248,7 +255,8 @@ describe('staff.bindStore', () => {
   })
 
   test('门店不存在或已关闭时拒绝', async () => {
-    const ctx = createManagerCtx({ storeId: 'store-invalid' })
+    // 总部账号可任意切店：scope 不拦，stores 表查空 → INVALID_PARAMS
+    const ctx = createManagerCtx({ storeId: 'store-invalid' }, { staffLevel: 'headquarters' })
     pg.query.mockResolvedValueOnce([])
     await expect(staffRoutes.bindStore(ctx)).rejects.toThrow(/INVALID_PARAMS.*门店不存在/)
   })

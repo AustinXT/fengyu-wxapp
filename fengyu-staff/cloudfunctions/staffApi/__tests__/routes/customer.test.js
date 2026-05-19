@@ -424,6 +424,7 @@ describe('customer.detail', () => {
       .mockResolvedValueOnce([{ total: '10000', year_total: '4000' }])  // single query
       .mockResolvedValueOnce([{ last_date: '2026-03-01', visit_count_90d: '3' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '精油SPA', cnt: '3' }])  // getTopProduct
+      .mockResolvedValueOnce([{ cnt: 0 }])  // legacy 历史订单待核对数（phone 非空时触发）
 
     await customerRoutes.detail(ctx)
 
@@ -434,8 +435,8 @@ describe('customer.detail', () => {
     // 验证 getConsumptionStats 使用 CASE WHEN
     const consumptionCall = pg.query.mock.calls[1]
     expect(consumptionCall[0]).toContain('CASE WHEN')
-    // 4 次 pg.query: detail + consumption + visitInfo + topProduct
-    expect(pg.query).toHaveBeenCalledTimes(4)
+    // 5 次 pg.query: detail + consumption + visitInfo + topProduct + legacyCount(phone 非空触发)
+    expect(pg.query).toHaveBeenCalledTimes(5)
   })
 
   test('到店频率分级：12次→一周一次以上，1次→偶尔到店', async () => {
@@ -532,6 +533,8 @@ describe('customer.detail', () => {
 describe('customer.paidOrders', () => {
   test('按 clientUserId 返回已支付订单及明细', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
+    // assertCustomerInScope 先 SELECT bound_store_id；store-001 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([
       { sale_order_id: 'SO-001', status: '已支付', paid_at: '2024-06-01T10:00:00Z' },
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
@@ -550,6 +553,8 @@ describe('customer.paidOrders', () => {
 
   test('无已支付订单时返回空数组', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-empty' })
+    // assertCustomerInScope 先 SELECT bound_store_id
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toEqual([])
@@ -579,6 +584,10 @@ describe('customer.paidOrders', () => {
     let ordersParams = []
     pg.query.mockImplementation(async (sql, params) => {
       const s = typeof sql === 'string' ? sql : ''
+      // assertCustomerInScope: SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1
+      if (/bound_store_id\s+FROM\s+client_wechat_users/.test(s)) {
+        return [{ bound_store_id: 'store-001' }]
+      }
       // 主订单查询：FROM sale_orders o
       if (/FROM\s+sale_orders\s+o\b/.test(s)) {
         ordersSql = s
@@ -1340,6 +1349,8 @@ describe('customer.customerBalance', () => {
   test('店长查询已有卡的顾客余额（跨店统一）', async () => {
     const ctx = createManagerCtx({ customerUserId: 'cu-001' })
 
+    // assertCustomerInScope 先 SELECT bound_store_id；store-001 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([
       { card_id: 'card-001', balance: '320.50' },
     ])
@@ -1348,8 +1359,8 @@ describe('customer.customerBalance', () => {
 
     expect(ctx.result.cardId).toBe('card-001')
     expect(ctx.result.balance).toBe(320.5)
-    // 查询仅按 user_id（无 store_id 条件）
-    const [sql, params] = pg.query.mock.calls[0]
+    // 查询仅按 user_id（无 store_id 条件），prepaid_cards 调用是第二次
+    const [sql, params] = pg.query.mock.calls[1]
     expect(sql).toMatch(/FROM prepaid_cards WHERE user_id = \$1/)
     expect(sql).not.toMatch(/store_id/)
     expect(params).toEqual(['cu-001'])
@@ -1357,6 +1368,8 @@ describe('customer.customerBalance', () => {
 
   test('无卡顾客返回 { cardId: null, balance: 0 }', async () => {
     const ctx = createManagerCtx({ customerUserId: 'cu-nocard' })
+    // assertCustomerInScope: 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.customerBalance(ctx)
 
@@ -1365,6 +1378,8 @@ describe('customer.customerBalance', () => {
 
   test('balance 返回为数字类型（Number 转换）', async () => {
     const ctx = createManagerCtx({ customerUserId: 'cu-002' })
+    // assertCustomerInScope: 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([{ card_id: 'card-002', balance: '1500.00' }])
     await customerRoutes.customerBalance(ctx)
 

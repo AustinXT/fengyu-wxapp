@@ -443,52 +443,20 @@ describe('coupon.available', () => {
     expect(ctx.result.coupons).toHaveLength(1)
   })
 
-  test('通过 storeName 解析 storeId', async () => {
-    const ctx = createManagerCtx(
-      {
-        clientPhone: '13800001111',
-        storeName: '凤御测试店',
-        items: baseItems,
-      },
-      { storeName: null } // auth 中无 storeName，强制走 payload.storeName 解析
-    )
-    // 不传 storeId，通过 storeName 解析
-    delete ctx.event.payload.storeId
+  // 2026-05-19: coupon.available 已删除 payload.storeName / payload.storeId 解析路径，
+  // storeId 强制取自 ctx.auth.effectiveStoreId。下面用例验证管理层模式（无
+  // effectiveStoreId）会被 PERMISSION_DENIED 拒绝。
+  test('管理层模式（无 effectiveStoreId）拒绝券查询', async () => {
+    const { createManagementCtx } = require('../helpers')
+    const ctx = createManagementCtx({
+      clientPhone: '13800001111',
+      items: baseItems,
+    })
 
-    // 1. 查找顾客
+    // 1. 查找顾客（先通过参数校验进入查询）
     pg.query.mockResolvedValueOnce([{ user_id: 'client-001' }])
-    // 2. storeName → storeId
-    pg.query.mockResolvedValueOnce([{ store_id: 'store-resolved' }])
-    // 3. 懒过期清扫
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
-    // 4. 券查询 — 返回门店限定券
-    pg.query.mockResolvedValueOnce([{
-      coupon_id: 'cp-store',
-      expire_at: '2027-12-31',
-      template_id: 'tpl-1',
-      name: '门店券',
-      coupon_type: '现金券',
-      discount_value: '10',
-      min_spend: '0',
-      max_discount: null,
-      applicable_category_ids: null,
-      applicable_store_ids: ['store-resolved'],
-      description: '',
-    }])
-    // 5. SKU → category
-    pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-1', category_id: 'cat-1' },
-      { sku_id: 'sku-2', category_id: 'cat-2' },
-    ])
 
-    await couponRoutes.available(ctx)
-
-    expect(ctx.result.coupons).toHaveLength(1)
-    expect(ctx.result.coupons[0].couponId).toBe('cp-store')
-    // 验证查询了 stores 表
-    const storeQuery = pg.query.mock.calls.find(
-      call => typeof call[0] === 'string' && call[0].includes('stores') && call[0].includes('store_name')
-    )
-    expect(storeQuery).toBeDefined()
+    await expect(couponRoutes.available(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*管理层模式不支持券查询/)
   })
 })
