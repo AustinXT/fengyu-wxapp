@@ -77,20 +77,16 @@ Page({
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
+          // 疗程卡 + 单品都可预约；必须本店可用 + 有已付未用次数
           const itemStoreId = order.storeId || '';
           const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
-          // ticket 2026-05-19 paid_sessions：可选条件升级为"还有已付未用的次数"
+          if (isCrossStore) continue;
           const total = Number(item.sessionCount ?? 0);
           const remaining = Number(item.remainingSessions ?? 0);
           const paid = Number(item.paidSessions ?? 0);
           const used = Math.max(0, total - remaining);
           const paidUnused = Math.max(0, paid - used);
-          const noPaidQuota = !(paid > 0 && paidUnused > 0);
-          // 禁用优先级：跨店 > 无已付未用次数
-          const disabled = isCrossStore || noPaidQuota;
-          const disabled_reason = isCrossStore
-            ? `仅在 ${order.storeName || itemStoreId} 可用`
-            : (noPaidQuota ? '无已付未用次数' : '');
+          if (!(paid > 0 && paidUnused > 0)) continue;
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
@@ -104,8 +100,8 @@ Page({
             sale_order_id: order.saleOrderId,
             store_id: itemStoreId,
             store_name: order.storeName,
-            disabled,
-            disabled_reason,
+            disabled: false,
+            disabled_reason: '',
           });
         }
       }
