@@ -1803,6 +1803,7 @@ async function repay(ctx) {
   const isPureCard = paymentMethod === '储值卡'
   const now = new Date()
   let finalStatus // 原单最新 status（pure-card 路径会推到 '已支付'/'部分支付'；线上路径不动）
+  let storeId    // 原单门店 id，回到事务外用于解析拉卡拉商户配置
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -1814,6 +1815,7 @@ async function repay(ctx) {
       throw new Error('INVALID_PARAMS: 订单不存在')
     }
     const origOrder = origRes.rows[0]
+    storeId = origOrder.store_id
     if (origOrder.client_user_id && origOrder.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
@@ -1932,36 +1934,32 @@ async function repay(ctx) {
     return
   }
 
-  // 线上通道：返回 mock 支付参数（payNotify 接入后用 sale_order_id 作 out_trade_no）
-  // TODO: 接入真实微信/支付宝统一下单 API
-  if (paymentMethod === '微信') {
-    ctx.result = {
-      saleOrderId,
-      status: '待支付',
-      paymentMethod: '微信',
-      repayAmount: repayAmountInput,
-      prepaidCardAmount: prepaidCardAmountInput,
-      mockMode: true,
-      paymentParams: {
-        timeStamp: String(Math.floor(Date.now() / 1000)),
-        nonceStr: Math.random().toString(36).substr(2),
-        package: `prepay_id=wx${Date.now()}`,
-        signType: 'MD5',
-        paySign: 'mock_sign',
-        totalFee: Math.round(repayAmountInput * 100),
-      },
-    }
-    return
+  // 线上通道：调拉卡拉收银台 special_create 拿 counter_url
+  const repayMerchant = await resolveLakalaMerchant(storeId)
+  if (!repayMerchant) {
+    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  // 支付宝
+  const { counterUrl: repayCounterUrl, payOrderNo: repayPayOrderNo } = await createLakalaCounterOrder({
+    orderNo: saleOrderId,
+    merchantNo: repayMerchant.merchantNo,
+    termNo: repayMerchant.termNo,
+    payAmountYuan: repayAmountInput,
+    payMode: paymentMethod === '微信' ? 'WECHAT' : 'ALIPAY',
+  })
+  const repayEnvCfg = lakalaConfig.readConfig()
   ctx.result = {
     saleOrderId,
     status: '待支付',
-    paymentMethod: '支付宝',
+    paymentMethod,
     repayAmount: repayAmountInput,
     prepaidCardAmount: prepaidCardAmountInput,
-    mockMode: true,
-    qrCodeUrl: `https://qr.alipay.com/mock_${saleOrderId}`,
+    lakala: {
+      counterUrl: repayCounterUrl,
+      payOrderNo: repayPayOrderNo,
+      appId: LAKALA_CASHIER_APPID,
+      envVersion: repayEnvCfg.env,
+      openMode: 'embedded',
+    },
   }
 }
 
