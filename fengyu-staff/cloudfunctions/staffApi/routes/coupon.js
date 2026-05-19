@@ -34,17 +34,10 @@ async function available(ctx) {
   }
   const clientUserId = clientRows[0].user_id
 
-  // 解析门店ID
-  let storeId = payload.storeId
+  // 门店 ID 必须来自 auth.effectiveStoreId（禁止 payload 注入绕过门店限定券）
+  const storeId = ctx.auth.effectiveStoreId
   if (!storeId) {
-    const storeName = payload.storeName || ctx.auth.storeName
-    if (storeName) {
-      const storeRows = await pg.query(
-        'SELECT store_id FROM stores WHERE store_name = $1 LIMIT 1',
-        [storeName]
-      )
-      if (storeRows.length > 0) storeId = storeRows[0].store_id
-    }
+    throw new Error('PERMISSION_DENIED: 管理层模式不支持券查询')
   }
 
   // 懒清扫过期券

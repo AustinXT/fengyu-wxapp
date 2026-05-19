@@ -449,15 +449,23 @@ async function paidOrders(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // 强制按本店过滤：员工只能看到顾客在本店购买的订单/卡，跨店卡不可见
+  // scope 守卫：传 clientUserId 时校验该顾客 bound_store_id ∈ 当前 scope
+  if (clientUserId) {
+    await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  }
+
+  // 强制按 scope 过滤：员工只能看到顾客在 scope 内购买的订单/卡，跨 scope 卡不可见
   let whereClause, params;
   if (clientUserId) {
-    whereClause = "o.status = '已支付' AND o.client_user_id = $1 AND o.store_id = $2";
-    params = [clientUserId, ctx.auth.effectiveStoreId];
+    whereClause = "o.status = '已支付' AND o.client_user_id = $1";
+    params = [clientUserId];
   } else {
-    whereClause = "o.status = '已支付' AND o.client_phone = $1 AND o.store_id = $2";
-    params = [clientPhone, ctx.auth.effectiveStoreId];
+    whereClause = "o.status = '已支付' AND o.client_phone = $1";
+    params = [clientPhone];
   }
+  const paidScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
+  whereClause += ` AND ${paidScope.sql}`
+  params.push(...paidScope.params)
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
@@ -526,13 +534,14 @@ async function paidOrders(ctx) {
 async function stats(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const storeId = ctx.auth.effectiveStoreId
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // 查询所有绑定到本店的顾客及其最近服务日期
+  // scope 过滤：兼容门店模式(单一)+管理层模式(多门店)
+  const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
+  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', 1 + cScope.params.length)
   const rows = await pg.query(`
     SELECT
       c.user_id,
@@ -542,10 +551,10 @@ async function stats(ctx) {
     LEFT JOIN service_orders so
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
-      AND so.store_id = $1
-    WHERE c.bound_store_id = $1
+      AND ${soScope.sql}
+    WHERE ${cScope.sql}
     GROUP BY c.user_id, c.birthday
-  `, [storeId])
+  `, [...cScope.params, ...soScope.params])
 
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
@@ -569,10 +578,11 @@ async function stats(ctx) {
   }
 
   // 会员客/流量客统计
+  const memberScope = buildStoreScopeCondition(ctx.auth, 'bound_store_id', 1)
   const memberRows = await pg.query(`
     SELECT COUNT(*) AS cnt FROM client_wechat_users
-    WHERE bound_store_id = $1 AND customer_id IS NOT NULL
-  `, [storeId])
+    WHERE ${memberScope.sql} AND customer_id IS NOT NULL
+  `, memberScope.params)
   const memberCount = Number(memberRows[0].cnt)
 
   ctx.result = {
@@ -595,15 +605,17 @@ async function listByTag(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 tag 参数')
   }
 
-  const storeId = ctx.auth.effectiveStoreId
   const isManagerRole = ctx.auth.roles.includes('manager')
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // 查询所有绑定本店的顾客及其最近服务日期 + 年消费金额
+  // 查询所有绑定本店的顾客及其最近服务日期 + 年消费金额（兼容门店/管理层 scope）
   const yearStart = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10)
+  const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
+  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', 1 + cScope.params.length)
+  const yearStartIdx = 1 + cScope.params.length + soScope.params.length
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
@@ -613,17 +625,17 @@ async function listByTag(ctx) {
     LEFT JOIN service_orders so
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
-      AND so.store_id = $1
+      AND ${soScope.sql}
     LEFT JOIN (
       SELECT o.client_user_id, SUM(si.received::numeric) AS year_total
       FROM sale_orders o
       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-      WHERE o.status = '已支付' AND o.paid_at >= $2::date
+      WHERE o.status = '已支付' AND o.paid_at >= $${yearStartIdx}::date
       GROUP BY o.client_user_id
     ) annual ON annual.client_user_id = c.user_id
-    WHERE c.bound_store_id = $1
+    WHERE ${cScope.sql}
     GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level, annual.year_total
-  `, [storeId, yearStart])
+  `, [...cScope.params, ...soScope.params, yearStart])
 
   // 按 tag 过滤
   const filtered = allRows.filter(r => {
@@ -972,6 +984,9 @@ async function customerBalance(ctx) {
   if (!customerUserId) {
     throw new Error('INVALID_PARAMS: 缺少 customerUserId')
   }
+
+  // scope 守卫：店长只能查 scope 内顾客余额（prepaid_cards 跨店共享，无 store_id 列）
+  await assertCustomerInScope(pg, ctx.auth, customerUserId)
 
   const rows = await pg.query(
     'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',

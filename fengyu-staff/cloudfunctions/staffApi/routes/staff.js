@@ -11,7 +11,7 @@ const crypto = require('crypto')
 const { URL } = require('url')
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
-const { assertEmployeeInScope } = require('../utils/scope')
+const { assertEmployeeInScope, isStoreInScope } = require('../utils/scope')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -71,6 +71,12 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
+  // Scope guard: 防止任意员工通过 payloadStoreId 枚举跨店员工
+  // admin/headquarters 永远放行；其他角色必须在自己 scopeStoreIds 内
+  if (!isStoreInScope(ctx.auth, targetStoreId)) {
+    throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
+  }
+
   // 严格按 skills 数组含 '美容师' 判定美容师身份 ——
   // 与 clientApi/routes/staff.js + admin orders/services/customers picker 单源对齐。
   // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
@@ -122,6 +128,11 @@ async function departments(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
+  // Scope guard: 同 list，防止跨店枚举
+  if (!isStoreInScope(ctx.auth, targetStoreId)) {
+    throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
+  }
+
   // 查询美容部
   const beautyRows = await pg.query(`
     SELECT
@@ -141,10 +152,12 @@ async function departments(ctx) {
   `, [targetStoreId])
 
   // 查询其他部门（按市场查询）
+  // 仅总部 / 市场级可见整个市场的人员名单；门店级（store_manager / store_staff）跳过
   const marketName = ctx.auth.marketName
+  const canSeeMarket = ctx.auth.staffLevel === 'headquarters' || ctx.auth.staffLevel === 'market'
   let otherDeptRows = []
 
-  if (marketName) {
+  if (marketName && canSeeMarket) {
     otherDeptRows = await pg.query(`
       SELECT
         u.employee_id,
@@ -461,6 +474,14 @@ async function bindStore(ctx) {
   const { storeId } = ctx.event.payload || {}
   if (!storeId) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
+  }
+
+  // Scope guard: 总部可任意切店；其他角色（market / store_manager / store_staff）
+  // 必须在自己 scopeStoreIds 内，禁止绕过 scope 切到任意门店
+  if (ctx.auth.staffLevel !== 'headquarters') {
+    if (!isStoreInScope(ctx.auth, storeId)) {
+      throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
+    }
   }
 
   const storeRows = await pg.query(

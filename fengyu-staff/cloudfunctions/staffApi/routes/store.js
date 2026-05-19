@@ -7,24 +7,50 @@
  */
 
 const pg = require('../db/pg')
-const { requireManager } = require('../middleware/auth')
+const { requireManager, requireStaffBound } = require('../middleware/auth')
 
 /**
  * 门店列表
  * 从 PG stores + org_nodes 查询营业中门店
+ * scope 过滤：headquarters 维持全量；其余按 auth.scopeStoreIds 过滤
  */
 async function list(ctx) {
-  const storeRows = await pg.query(`
-    SELECT
-      s.store_id,
-      s.store_name,
-      m.name AS market_name
-    FROM stores s
-    JOIN org_nodes so ON s.org_node_id = so.id
-    LEFT JOIN org_nodes m ON so.parent_id = m.id
-    WHERE s.is_closed = false
-    ORDER BY m.name, s.store_name
-  `)
+  await requireStaffBound()(ctx, async () => {})
+
+  const isHeadquarters = ctx.auth.staffLevel === 'headquarters'
+
+  let storeRows
+  if (isHeadquarters) {
+    storeRows = await pg.query(`
+      SELECT
+        s.store_id,
+        s.store_name,
+        m.name AS market_name
+      FROM stores s
+      JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m ON so.parent_id = m.id
+      WHERE s.is_closed = false
+      ORDER BY m.name, s.store_name
+    `)
+  } else {
+    const scopeIds = ctx.auth.scopeStoreIds || []
+    if (scopeIds.length === 0) {
+      ctx.result = []
+      return
+    }
+    storeRows = await pg.query(`
+      SELECT
+        s.store_id,
+        s.store_name,
+        m.name AS market_name
+      FROM stores s
+      JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m ON so.parent_id = m.id
+      WHERE s.is_closed = false
+        AND s.store_id = ANY($1::text[])
+      ORDER BY m.name, s.store_name
+    `, [scopeIds])
+  }
 
   ctx.result = storeRows.map(r => ({
     storeId: r.store_id,
