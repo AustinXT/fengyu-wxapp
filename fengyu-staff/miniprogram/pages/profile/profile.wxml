@@ -11,7 +11,7 @@
     <view class="profile-info">
       <text class="profile-name">{{staffName || '未登录'}}</text>
       <view class="profile-meta">
-        <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
+        <text class="profile-store" wx:if="{{currentStoreName}}">{{currentStoreName}}</text>
         <van-tag color="#C0322A" text-color="#FFFFFF">
           {{position || '职位待设置'}}
         </van-tag>
@@ -39,11 +39,19 @@
       </van-cell>
       <van-cell title="员工编号" value="{{staffWfId || '未关联'}}" icon="manager-o" />
       <van-cell
+        wx:if="{{hasMultiStore}}"
         title="所属门店"
-        value="{{boundStoreName || '请选择门店'}}"
+        value="{{currentStoreName || '请选择门店'}}"
+        label="点击切换 scope 内门店"
         icon="shop-o"
         is-link
-        bindtap="onBindStore"
+        bindtap="openStorePicker"
+      />
+      <van-cell
+        wx:else
+        title="所属门店"
+        value="{{currentStoreName || '未绑定'}}"
+        icon="shop-o"
       />
     </van-cell-group>
   </view>
@@ -70,18 +78,12 @@
   </view>
 </view>
 
-<!-- 门店选择弹出层 -->
-<van-popup
-  show="{{showStorePicker}}"
-  round
-  position="bottom"
+<!-- 门店切换 action sheet（仅 scope 内多店时启用） -->
+<van-action-sheet
+  show="{{storePickerVisible}}"
+  actions="{{storePickerActions}}"
+  cancel-text="取消"
+  bind:select="onStorePickerSelect"
   bind:close="onStorePickerClose"
->
-  <van-picker
-    title="选择门店"
-    show-toolbar
-    columns="{{storeColumns}}"
-    bind:confirm="onStoreConfirm"
-    bind:cancel="onStorePickerClose"
-  />
-</van-popup>
+  bind:cancel="onStorePickerClose"
+/>

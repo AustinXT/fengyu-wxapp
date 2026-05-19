@@ -2,6 +2,9 @@
 import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
 import { isManager, hasRole } from '../../utils/role';
+import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
+
+type ScopedStore = { storeId: string; storeName: string };
 
 const app = getApp<IAppOption>();
 
@@ -13,13 +16,27 @@ Page({
     phone: '',
     avatarUrl: '',
     avatarHttpUrl: '',
-    boundStoreName: '',
     isManager: false,
     canSeeInventory: false,
-    // 门店绑定
-    showStorePicker: false,
-    storeList: [] as Array<{ storeId: string; storeName: string }>,
-    storeColumns: [] as string[],
+    // scope 范围内门店切换（与 workbench 一致语义）
+    currentStoreName: '',
+    currentStoreId: '',
+    scopedStores: [] as ScopedStore[],
+    hasMultiStore: false,
+    storePickerVisible: false,
+    storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
+
+  onLoad() {
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, () => {
+      this.syncStoreContext();
+    });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
   },
 
   onShow() {
@@ -27,14 +44,28 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, position, staffWfId, phone, boundStoreName, avatarUrl } = app.globalData;
+    const { staffName, position, staffWfId, phone, avatarUrl } = app.globalData;
     const canSeeInventory = hasRole('manager', 'admin', 'finance');
     this.setData({
-      staffName, position, staffWfId, phone, boundStoreName,
+      staffName, position, staffWfId, phone,
       avatarUrl: avatarUrl || '',
       avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
       isManager: isManager(),
       canSeeInventory,
+    });
+    this.syncStoreContext();
+  },
+
+  syncStoreContext() {
+    const { scopedStores, currentStoreId, boundStoreName } = app.globalData;
+    const scoped = (scopedStores || []) as ScopedStore[];
+    const current = scoped.find((s) => s.storeId === currentStoreId);
+    const displayName = current?.storeName || boundStoreName || '';
+    this.setData({
+      currentStoreName: displayName,
+      currentStoreId: currentStoreId || '',
+      scopedStores: scoped,
+      hasMultiStore: scoped.length > 1,
     });
   },
 
@@ -95,13 +126,14 @@ Page({
     if (!e.detail.cloudID) return
     try {
       await bindPhone(e.detail.cloudID)
-      const { phone, staffWfId, staffName, position, boundStoreName, avatarUrl } = app.globalData
+      const { phone, staffWfId, staffName, position, avatarUrl } = app.globalData
       this.setData({
-        phone, staffWfId, staffName, position, boundStoreName,
+        phone, staffWfId, staffName, position,
         avatarUrl: avatarUrl || '',
         avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
         isManager: isManager(),
       })
+      this.syncStoreContext();
       wx.showToast({ title: '绑定成功', icon: 'success' })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '绑定失败';
@@ -109,40 +141,28 @@ Page({
     }
   },
 
-  async onBindStore() {
-    if (!this.data.storeList.length) {
-      try {
-        const data = await callStaffApi<Array<{ storeId: string; storeName: string }>>('store.list');
-        this.setData({
-          storeList: data || [],
-          storeColumns: (data || []).map(s => s.storeName),
-        });
-      } catch (err: unknown) {
-        wx.showToast({ title: '获取门店列表失败', icon: 'none' });
-        return;
-      }
-    }
-    this.setData({ showStorePicker: true });
+  openStorePicker() {
+    if (!this.data.hasMultiStore) return;
+    const actions = this.data.scopedStores.map((s) => ({
+      name: s.storeName,
+      storeId: s.storeId,
+      color: s.storeId === this.data.currentStoreId ? '#C0322A' : '',
+    }));
+    this.setData({ storePickerVisible: true, storePickerActions: actions });
   },
 
   onStorePickerClose() {
-    this.setData({ showStorePicker: false });
+    this.setData({ storePickerVisible: false });
   },
 
-  async onStoreConfirm(e: WechatMiniprogram.CustomEvent) {
-    const pickedName = e.detail.value as string;
-    const store = this.data.storeList.find(s => s.storeName === pickedName);
-    if (!store) return;
-    this.setData({ showStorePicker: false });
-    try {
-      await callStaffApi('staff.bindStore', { storeId: store.storeId });
-      app.setStaffInfo({ boundStoreName: store.storeName, boundStoreId: store.storeId });
-      this.setData({ boundStoreName: store.storeName });
-      wx.showToast({ title: '门店已切换', icon: 'success' });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '切换失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    }
+  onStorePickerSelect(e: WechatMiniprogram.CustomEvent<{ storeId: string; name: string }>) {
+    const { storeId } = e.detail || ({} as any);
+    this.setData({ storePickerVisible: false });
+    if (!storeId || storeId === this.data.currentStoreId) return;
+    app.setCurrentStoreId(storeId);
+    this.syncStoreContext();
+    emit(EVENT_STORE_CHANGED, storeId);
+    wx.showToast({ title: '已切换门店', icon: 'success' });
   },
 
   onNavOrders() {
