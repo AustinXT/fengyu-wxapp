@@ -264,16 +264,17 @@ test.describe('段 B：签到 → 新建服务单 → appointment_id 自动关�
     const checkbox = firstItemRow.locator('input[type="checkbox"]')
     await expect(checkbox).toBeChecked()
 
-    // 选择员工：选择"测试店长"
+    // 选择员工：取第一个非"请选择"的选项
     // 员工 select 位置在"负责美容师"标签下（第二个 select，第一个是门店）
+    // 注：UI 按 skills.includes('美容师') 过滤，FY-TEST-MGR 没"美容师"标签所以不会出现
     const employeeSelect = page.locator('select').nth(1)
-    // 获取所有 option 文本，找到含"测试店长"的那个值
     const empOptions = await employeeSelect.locator('option').all()
     let empValue = ''
     for (const opt of empOptions) {
       const text = await opt.textContent()
-      if (text && text.includes('测试店长')) {
-        empValue = (await opt.getAttribute('value')) ?? ''
+      const value = (await opt.getAttribute('value')) ?? ''
+      if (value && text && !text.includes('请选择')) {
+        empValue = value
         break
       }
     }

@@ -90,17 +90,25 @@ export async function logout(page: Page): Promise<void> {
  * 实现细节：
  *   - 访问 listUrl
  *   - 等页面 networkidle + 等到「无数据 / 第 1 页 / 共 X 条」等文案出现
- *   - 抓 body textContent，断言 keyword 是否出现
+ *   - 用 main innerText（排除 <script>，即 Next.js RSC flight payload 不会污染）
  *
  * 注意：keyword 应当是足够 unique 的字符串（如 sale_order_id、客户姓名）。
+ *
+ * 历史坑：早期实现用 `page.textContent('body')` 会把 `<script>self.__next_f.push(...)`
+ * 里序列化的 URL（含 ?q=keyword）一起算进来 → 即便表格"暂无数据"也会假阳性。
+ * innerText 只返回可见文本，绕开 script。
  */
 export async function pageContainsKeyword(page: Page, listUrl: string, keyword: string): Promise<boolean> {
   await page.goto(`${BASE}${listUrl}`)
   await page.waitForLoadState('networkidle')
   // 给 RSC streaming + 客户端 hydration 一点时间
   await page.waitForTimeout(1500)
-  const body = await page.textContent('body').catch(() => '')
-  return Boolean(body && body.includes(keyword))
+  // main innerText 跳过 <script>，避免 RSC flight payload 里 URL 假阳性
+  const main = await page.locator('main').innerText().catch(() => '')
+  if (main && main.includes(keyword)) return true
+  // fallback：少数页面无 <main>，退回 body 的可见 innerText
+  const visible = await page.locator('body').innerText().catch(() => '')
+  return Boolean(visible && visible.includes(keyword))
 }
 
 /** 试图访问详情页（如 /orders/[id]），断言是否被 scope 拦截（404 / 重定向 / 错误）。 */
@@ -108,13 +116,14 @@ export async function detailPageDenied(page: Page, detailUrl: string): Promise<b
   const resp = await page.goto(`${BASE}${detailUrl}`).catch(() => null)
   await page.waitForLoadState('networkidle').catch(() => null)
   await page.waitForTimeout(800)
-  const body = (await page.textContent('body').catch(() => '')) || ''
+  // innerText 排 <script>，避免 RSC flight payload 里 URL 干扰
+  const visible = (await page.locator('body').innerText().catch(() => '')) || ''
   // 命中以下任何一种即视为「被拒」：
   //   1) HTTP 404
   //   2) 页面文本包含 "未找到 / 不存在 / 无权 / 找不到"
   //   3) 重定向回 /orders 或 /dashboard 列表（URL 不再含 detail 路径）
   if (resp && resp.status() === 404) return true
-  if (/未找到|不存在|无权|无权限|没有权限|找不到|权限不足|404/.test(body)) return true
+  if (/未找到|不存在|无权|无权限|没有权限|找不到|权限不足|404/.test(visible)) return true
   const finalUrl = new URL(page.url())
   if (!finalUrl.pathname.includes(detailUrl.split('?')[0])) return true
   return false

@@ -209,8 +209,10 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
     return t.includes('姓名') || t.includes('手机') || t.includes('会员等级') || t.includes('未找到')
   }, { timeout: 15000 })
 
-  const bodyText3 = await page.textContent('body')
-  if (!bodyText3?.includes(FIXTURE_PHONE) || bodyText3?.includes('未找到')) {
+  // UI 显示脱敏手机号（138****8000），不能用完整号匹配；
+  // 只判定是否"未找到"即可——waitForFunction 已等到搜索结果区域出现
+  const mainText = (await page.locator('main').innerText().catch(() => '')) || ''
+  if (mainText.includes('未找到')) {
     throw new Error(`fixture 顾客 ${FIXTURE_PHONE} 未找到（service create）`)
   }
   console.log('[链路12] Step2 顾客已显示')

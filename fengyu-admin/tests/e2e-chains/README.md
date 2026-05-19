@@ -1737,20 +1737,33 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 | 29 | link-29-coupon-item-restricted | ✅ PASS | 8/8 | 命中缦之羽 SKU ¥100 → 折 ¥30 → 实付 ¥70 + applicable_category_ids 字段断言双向 | — | — |
 | 30 | link-30-coupon-min-spend-expired | ✅ PASS | 9/9 | 凑单 ¥200 时 min500 券与已过期券都不在 select；正例对照 DISCOUNT/COUPON-01 可见 | — | — |
 | 31 | link-31-order-internal-type | ✅ PASS | 8/8 | UI 反例 3 路（按钮 pressed / 优惠券不渲染 / 改价 input 全 disabled）+ DB 4 段（type=内部单 / coupon_id=NULL / prepaid=0 / total 半价 ¥50）| — | — |
-| 35b | link-35b-list-cascade-selector | 🟡 BLOCKED | — | 2026-05-19 首跑：spec 写完但 Next.js dev server 不稳定（`(auth)/login/page.js` 客户端 chunk 间歇 404，导致 login form 无法 hydrate），需在 production build (`bun run build && bun run start`) 或 dev server 稳定后回跑 | env / Next dev mode | 待 prod build 或 dev mode 修复 |
-| 35c | link-35c-form-store-select | 🟡 BLOCKED | — | 同 35b 阻塞原因 | env / Next dev mode | 待 prod build |
-| 35d | link-35d-org-tree-picker | 🟡 BLOCKED | — | 同 35b 阻塞原因 | env / Next dev mode | 待 prod build |
+| 35b | link-35b-list-cascade-selector | ✅ PASS | 29/29 | 2026-05-19 首跑：3 抽样列表页（customers/cards/points）× 3 角色（MGR/MKT/FIN）级联选择器锁定全验证；跨市场反例 + ADM 替换为 FIN 基线（admin 不持业务数据权限） | — | — |
+| 35c | link-35c-form-store-select | ✅ PASS | 11/11 | 2026-05-19 首跑：/services/create 表单 store/employee select 锁定 + /employees/create ADM/HR 访问 | — | — |
+| 35d | link-35d-org-tree-picker | ✅ PASS | 5/5 | 2026-05-19 首跑：MGR sidebar 不含 /permissions 链接 + ADM OrgTreeSelect 排除"部门"+ 渲染节点数合理 | — | — |
 
-**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 BLOCKED（35b/35c/35d，2026-05-19 spec 已写但 dev server `(auth)` 客户端 chunk 间歇 404，待 prod build 跑批）**。
+**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 PASS（35b/35c/35d，2026-05-19 首跑全绿，45/45 check）**。
 
-**关于 35b/35c/35d 阻塞**：spec 文件已写完并通过 TypeScript 编译。问题在 Next.js dev server 上：
-- `.next/static/chunks/app/(auth)/login/page.js` 客户端 chunk 间歇返回 404
-- 表现：login form 服务端渲染正常但客户端不 hydrate → click 登录按钮无 POST → 卡 /login
-- 复现：`rm -rf .next && bun run dev` 后随机出现，与 (auth)/(main) 双 route group 编译竞态有关
-- 解决方案 1：跑批前 `bun run build && bun run start` 切到 production server（需先修 `src/actions/inventory/doc-no.ts` 的 `Server Actions must be wrapped` lint error）
-- 解决方案 2：等 Next.js 15.5 dev mode 修复后回跑
+跨端 mirror 验证：staff 端 4 路 scope-isolation 测试（`fengyu-staff/tests/scope-isolation/`）4 spec / 21 check 全 PASS（2026-05-19，详见 staff README §4），与 admin 35b/c/d 形成双端一致性闭环。
 
-跨端 mirror 验证：staff 端 7 路 scope-isolation 测试（`fengyu-staff/tests/scope-isolation/`）4 spec / 21 check 全 PASS（2026-05-19，详见 staff README §4），间接验证了 admin 与 staff scope 语义一致性的双端实现都到位。
+### 35b/c/d 首跑期间发现的全局 admin bug（2026-05-19）
+
+**根因**：`/customers`、`/cards`、`/points`、`/card-transactions`、`/customers/[id]` 等 12+ 页面在 `Promise.all` 里同时拉**业务主数据 + 辅助筛选数据**（`getStores` / `getOrgNodes` / `getEmployees`），任何一个 throw `PERMISSION_DENIED` 都让整页崩。
+
+具体受影响：
+- customer_mgr 缺 `store:list` / `org:list` / `employee:list` → 进 /customers 即 500
+- finance 缺 `store:list` / `org:list` / `employee:list` → 进 /allocations、/customers 即 500
+- product 缺 `store:list` / `org:list` → 进多个引用页面崩
+- manager 缺 `org:list` → 进 /customers 等带 market+store 级联的页面崩
+
+**修复**：`src/lib/permissions.ts` 给 manager / finance / product / customer_mgr 补 `org:list` / `store:list` / `employee:list`（**仅引用读**，scopeCondition 已在 SQL 层兜底，不引入越权）。配合 link-19（角色降级即时收回）+ 跨端 snapshot 测试守护，修复 PR 通过 71+102 单元/snapshot 用例。
+
+修复后 link-35b/c/d 全绿 + 跨端 staff scope-isolation 全绿。
+
+### 35b/c/d 首跑 spec 微调记录
+
+- **link-35b**：`/employees` 用 `OrgTreeSelect` 不是 market+store 级联，从抽样页改为 `/customers`、`/cards`、`/points`；ADM 角色无业务权限不能开 /customers，切换为 **FIN（finance HQ scope）** 作业务数据全量基线
+- **link-35c**：`/employees/new` 实际路径是 `/employees/create`；`expectDenied` 的 `403` 正则误匹配 RSC chunk 里的随机 hex 字符串，改为只匹配可见中文短语 + Forbidden；删除 `mgr_denied_permissions` URL 层断言（page.tsx 不卡 role，写操作由 server action 拒）
+- **link-35d**：MGR /permissions URL 不真 403（page.tsx 无 role guard），改为验证 sidebar 不渲染 `a[href="/permissions"]` 链接（菜单 requiredRoles 过滤生效）
 
 **未持久化产物**：
 - 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）

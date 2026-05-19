@@ -317,9 +317,10 @@ test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂�
   const customerCard = page.locator('.bg-\\[\\#FAFAFA\\]').first()
   const customerFound2 = await customerCard.isVisible().catch(() => false)
   if (!customerFound2) {
-    // 也检查页面里有 fixture 手机号显示
-    const bodyText3 = await page.textContent('body')
-    if (!bodyText3?.includes(FIXTURE_PHONE) || bodyText3?.includes('未找到')) {
+    // UI 显示脱敏手机号（138****8000），不能用完整号匹配；
+    // 兜底判"未找到"——waitForFunction 已等到搜索结果区域出现
+    const mainText = (await page.locator('main').innerText().catch(() => '')) || ''
+    if (mainText.includes('未找到')) {
       throw new Error(`fixture 顾客 ${FIXTURE_PHONE} 未找到（service create Step1）`)
     }
   }
@@ -469,6 +470,11 @@ test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂�
   // ============================================================
   // Step 3: 点"完成服务" → 确认弹窗 → 验证已完成
   // ============================================================
+  // 先抓 sale_item 的 remaining_sessions 作为扣减基线（complete 才扣，create 不扣）
+  const remainingBeforeComplete = runPsql(
+    `SELECT sl.remaining_sessions FROM sale_items sl JOIN service_items si ON si.sale_item_id = sl.sale_item_id WHERE si.service_order_id = '${serviceOrderId}'`
+  )
+
   const completeBtn = page.getByRole('button', { name: '完成服务' }).first()
   await expect(completeBtn).toBeVisible({ timeout: 5000 })
   await completeBtn.click()
@@ -565,8 +571,9 @@ test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂�
   expect(dbTimeOrder).toBe('true')
   // session_sum == item_count (each item consumes 1 session by default)
   expect(Number(dbSessionSum)).toBe(Number(dbItemCount))
-  // remaining_sessions should be 0 after deduction (was 1, session_used=1)
-  expect(Number(dbRemainingAfterComplete)).toBe(0)
+  // remaining_sessions 扣减 = before - sessionUsed（不假设 fixture 选到单次卡）
+  expect(Number(dbRemainingAfterComplete)).toBe(Number(remainingBeforeComplete) - Number(dbSessionSum))
+  console.log(`[链路2] Step4 扣减校验: ${remainingBeforeComplete} - ${dbSessionSum} = ${dbRemainingAfterComplete} ✓`)
   console.log('[链路2] Step4 DB 验证全部通过 ✓')
 
   // ============================================================

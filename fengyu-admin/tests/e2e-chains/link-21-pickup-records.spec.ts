@@ -81,12 +81,14 @@ async function login(page: import('@playwright/test').Page, phone: string, pass:
 function atomicPickup(saleItemId: string, qty: number, storeId: string, clientUserId: string): { ok: boolean; reason?: string } {
   try {
     // 子查询保证 (picked_up_quantity + qty) <= quantity
+    // 注：psql -t -A 在 0 行更新时输出 "UPDATE 0"（非空），所以用 includes(saleItemId) 判断
+    // RETURNING 是否真返回行，而不是 !updRes
     const updRes = psql(
       `UPDATE sale_items SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + ${qty}, updated_at=NOW() ` +
         `WHERE sale_item_id='${saleItemId}' AND product_type='家居产品' AND item_direction='购买' ` +
         `AND (COALESCE(picked_up_quantity, 0) + ${qty}) <= quantity RETURNING sale_item_id`,
     )
-    if (!updRes) {
+    if (!updRes.includes(saleItemId)) {
       return { ok: false, reason: 'OVER_QUANTITY 或 item 不存在' }
     }
     psql(
