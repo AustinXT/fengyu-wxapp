@@ -72,6 +72,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  expandVisibleMarketIds: vi.fn().mockResolvedValue(null),
 }))
 
 vi.mock('@/lib/operation-log', () => ({

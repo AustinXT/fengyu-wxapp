@@ -10,6 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CouponTemplate, AvailableCoupon, IssuedCoupon, BatchCouponCustomer, OrgNode } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
+import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
@@ -57,14 +58,19 @@ function validateValidityFields(merged: {
 
 /**
  * 获取所有市场节点（type='市场'），用于优惠券市场作用域选择。
+ * 按当前账号 scope 过滤：总部全开；市场/门店级仅返回所在市场。
  */
 export const getMarkets = withPermission(
   'coupon:list',
-  async (_session): Promise<{ id: string; name: string }[]> => {
+  async (session): Promise<{ id: string; name: string }[]> => {
+    const visibleIds = await expandVisibleMarketIds(session)
+    if (visibleIds !== null && visibleIds.length === 0) return []
+
+    const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
     const rows = await db
       .select({ id: orgNodes.id, name: orgNodes.name })
       .from(orgNodes)
-      .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
+      .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true), scopeCond))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(orgNodes.sortOrder))
 

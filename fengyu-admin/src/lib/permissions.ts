@@ -229,6 +229,48 @@ export async function expandScopeStoreIds(
 }
 
 /**
+ * 根据 session.roles 展开当前账号可见的市场（org_nodes.type='市场'）ID 集合
+ *
+ * - 总部角色（任意一个）→ 返回 null，调用方按 null 解释为"不过滤，可见所有市场"
+ * - 市场角色 → scopeId 直接计入
+ * - 门店角色 → 通过 org_nodes.parent_id 反查所属市场计入
+ *
+ * 用于 admin /commission /products /coupons 三处 `getMarkets()` 下拉列表 scope 过滤。
+ */
+export async function expandVisibleMarketIds(
+  session: AuthSession,
+): Promise<string[] | null> {
+  // 任一总部角色即视为全开
+  if (session.roles.some(r => r.scopeType === '总部')) {
+    return null
+  }
+
+  const marketIds = new Set<string>()
+  const storeScopeIds: string[] = []
+
+  for (const r of session.roles) {
+    if (r.scopeType === '市场') {
+      marketIds.add(r.scopeId)
+    } else if (r.scopeType === '门店') {
+      storeScopeIds.push(r.scopeId)
+    }
+  }
+
+  if (storeScopeIds.length > 0) {
+    // 门店节点 → parent_id（市场节点）
+    const parentRows = await db
+      .select({ parentId: orgNodes.parentId })
+      .from(orgNodes)
+      .where(and(inArray(orgNodes.id, storeScopeIds), eq(orgNodes.type, '门店')))
+    for (const row of parentRows) {
+      if (row.parentId) marketIds.add(row.parentId)
+    }
+  }
+
+  return Array.from(marketIds)
+}
+
+/**
  * 构建 store_id 范围 SQL 条件
  *
  * 返回 SQL 条件片段，约束查询只返回用户权限范围内门店的数据。

@@ -3,10 +3,11 @@
 import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
-import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc } from 'drizzle-orm'
+import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
+import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 export interface MarketOption {
@@ -16,11 +17,16 @@ export interface MarketOption {
 
 export const getMarkets = withPermission(
   'commission:list',
-  async (): Promise<MarketOption[]> => {
+  async (session): Promise<MarketOption[]> => {
+  const visibleIds = await expandVisibleMarketIds(session)
+  // 非总部且无可见市场 → 直接返回空
+  if (visibleIds !== null && visibleIds.length === 0) return []
+
+  const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(eq(orgNodes.type, '市场'))
+    .where(and(eq(orgNodes.type, '市场'), scopeCond))
     // 例外：sortOrder 手工排序权重
     .orderBy(asc(orgNodes.sortOrder))
 
