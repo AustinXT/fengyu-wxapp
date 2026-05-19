@@ -60,12 +60,12 @@ function seed(): void {
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
       product_name, sku_spec_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
-      service_fee, is_recharge_card, is_experience, created_at, updated_at
+      service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID_A}', '${SOID}', '${STORE_ID}', '购买', 'FY-FIX-SKU-BUNDLE-A',
       'Fixture 套餐子 SKU A', 'Fixture 套餐子 SKU A', '疗程卡', 1, 1,
       100, 1, ${SUB_PRICE}, ${SUB_PRICE}, ${SUB_PRICE},
-      0, false, false, NOW(), NOW()
+      0, false, NOW(), NOW()
     )
   `)
 
@@ -75,12 +75,12 @@ function seed(): void {
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
       product_name, sku_spec_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
-      service_fee, is_recharge_card, is_experience, created_at, updated_at
+      service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID_B}', '${SOID}', '${STORE_ID}', '购买', 'FY-FIX-SKU-BUNDLE-B',
       'Fixture 套餐子 SKU B', 'Fixture 套餐子 SKU B', '疗程卡', 1, 1,
       100, 1, ${SUB_PRICE}, ${SUB_PRICE}, ${SUB_PRICE},
-      0, false, false, NOW(), NOW()
+      0, false, NOW(), NOW()
     )
   `)
 }

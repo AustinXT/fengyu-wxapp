@@ -184,12 +184,12 @@ export async function createTestSaleOrder({
          sale_item_id, sale_order_id, store_id, item_direction,
          sku_id, product_name, sku_spec_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                NULL, $4, '默认', '单品'::product_type,
                $5, 1, $5, $5, $5,
-               false, false)`,
+               false)`,
       [itemId, saleOrderId, storeId, `${NS}_测试商品`, totalAmount]
     )
 

@@ -143,9 +143,9 @@ export async function ensureCrossSku({
   await pgQuery(
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
-       sort_order, service_fee, is_experience, is_recharge_card, is_enabled
+       sort_order, service_fee, is_experience, is_enabled
      )
-     VALUES ($1, $2, '单品'::product_type, $3, $4::numeric, 0, 0, false, false, true)
+     VALUES ($1, $2, '单品'::product_type, $3, $4::numeric, 0, 0, false, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET price = EXCLUDED.price, is_enabled = true`,
     [skuId, productCategoryId, `${NS}_默认规格`, price]

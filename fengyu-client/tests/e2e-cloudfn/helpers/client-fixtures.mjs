@@ -104,7 +104,6 @@ export async function createTestProduct({
  * @param {string} opts.price
  * @param {number?} opts.sessionCount - 疗程次数（疗程卡 ≥ 2）
  * @param {boolean} opts.isExperience
- * @param {boolean} opts.isRechargeCard
  * @param {boolean} opts.linkToProduct - 是否插入 mall_product_skus 关联（默认 true）
  */
 export async function createTestSku({
@@ -115,7 +114,6 @@ export async function createTestSku({
   price = '100.00',
   sessionCount = null,
   isExperience = false,
-  isRechargeCard = false,
   linkToProduct = true,
 } = {}) {
   await ensureTestCategories()
@@ -123,18 +121,17 @@ export async function createTestSku({
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
        session_count, sort_order, service_fee,
-       is_experience, is_recharge_card, is_enabled
+       is_experience, is_enabled
      )
      VALUES ($1, $2, $3::product_type, $4, $5::numeric,
              $6, 0, 0,
-             $7, $8, true)
+             $7, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET price = EXCLUDED.price, spec_name = EXCLUDED.spec_name,
            session_count = EXCLUDED.session_count, is_enabled = true,
-           is_experience = EXCLUDED.is_experience,
-           is_recharge_card = EXCLUDED.is_recharge_card`,
+           is_experience = EXCLUDED.is_experience`,
     [skuId, TEST_PRODUCT_CATEGORY_ID, productType, specName, price,
-     sessionCount, isExperience, isRechargeCard]
+     sessionCount, isExperience]
   )
 
   if (linkToProduct) {
@@ -402,7 +399,6 @@ export async function createTestPendingSaleOrder({
   skuId = TEST_SKU_NORMAL_ID,
   productType = '单品',
   isExperience = false,
-  isRechargeCard = false,
   sessionCount = null,
   remainingCount = null,
 } = {}) {
@@ -414,7 +410,6 @@ export async function createTestPendingSaleOrder({
     productType,
     sessionCount,
     isExperience,
-    isRechargeCard,
     linkToProduct: false,  // 仅建 SKU 行，不需要建 mall_product_skus
   })
 
@@ -443,18 +438,18 @@ export async function createTestPendingSaleOrder({
          sku_id, product_name, sku_spec_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                $4, $5, '默认', $6::product_type,
                $7, 1, $7, $7, 0,
                $8, $9,
-               $10, $11)`,
+               $10)`,
       [itemId, saleOrderId, storeId,
        skuId, `${NS}_测试商品`, productType,
        totalAmount,
        sessionCount, remainingCount ?? sessionCount,
-       isExperience, isRechargeCard]
+       isExperience]
     )
     await client.query('COMMIT')
     return { saleOrderId, saleItemId: itemId }
@@ -596,14 +591,23 @@ export async function cleanupClientExtras(prefix = NS) {
     // 10) Appointments（FK → staff_wechat_users / stores）必须在 staff/stores 清理前清掉
     [`DELETE FROM appointments WHERE store_id LIKE $1 OR employee_id LIKE $1`, [like]],
 
-    // 11) 强清 staff_wechat_users 任何 org_node_id LIKE NS%（防 org_nodes FK 阻塞）
-    [`DELETE FROM staff_wechat_users WHERE org_node_id LIKE $1`, [like]],
-
-    // 12) 强清 stores 任何 org_node_id LIKE NS%
-    [`DELETE FROM stores WHERE org_node_id LIKE $1`, [like]],
-
-    // 13) 强清 permission_roles 任何 scope_id LIKE NS%
+    // 11) 强清 permission_roles —— FK 链：permission_roles.employee_id → staff_wechat_users.
+    //     必须先于 staff_wechat_users / stores 删除，否则会卡 FK 阻塞所有后续清理。
+    //     按 scope_id LIKE $1（命名空间 org_node）和按 employee_id IN(staff in NS) 双轨清扫。
     [`DELETE FROM permission_roles WHERE scope_id LIKE $1`, [like]],
+    [
+      `DELETE FROM permission_roles WHERE employee_id IN (
+         SELECT employee_id FROM staff_wechat_users
+         WHERE employee_id LIKE $1 OR org_node_id LIKE $1 OR store_id LIKE $1
+       )`,
+      [like],
+    ],
+
+    // 12) 强清 staff_wechat_users 任何 org_node_id LIKE NS%（防 org_nodes FK 阻塞）
+    [`DELETE FROM staff_wechat_users WHERE org_node_id LIKE $1 OR store_id LIKE $1`, [like]],
+
+    // 13) 强清 stores 任何 org_node_id LIKE NS%
+    [`DELETE FROM stores WHERE org_node_id LIKE $1`, [like]],
   ]
 
   for (const [sql, params] of stmts) {

@@ -83,13 +83,13 @@ function seed(): void {
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
       product_name, sku_spec_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
-      service_fee, is_recharge_card, is_experience, created_at, updated_at
+      service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID}', '${SOID}', '${STORE_ID}', '购买', '${SKU_ID}',
       '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '疗程卡',
       ${SESSION_COUNT}, ${SESSION_COUNT - COMPLETED_SESSIONS},
       ${UNIT_PRICE}, ${QUANTITY}, ${UNIT_REAL_PRICE}, ${PAID}, ${PAID},
-      0, false, false, NOW() - interval '2 day', NOW() - interval '2 day'
+      0, false, NOW() - interval '2 day', NOW() - interval '2 day'
     )
   `)
 

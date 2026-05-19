@@ -78,13 +78,13 @@ async function seedSaleOrder() {
            sku_id, product_name, sku_spec_name, product_type,
            session_count, remaining_sessions,
            unit_price, quantity, unit_real_price, sale_amount, received,
-           is_experience, is_recharge_card
+           is_experience
          )
          VALUES ($1, $2, $3, $4::item_direction,
                  NULL, $5, '默认', $6::product_type,
                  $7, $8,
                  100, 1, 100, 100, 100,
-                 false, false)`,
+                 false)`,
         [itemId, ORDER_ID, TEST_STORE_ID, c.itemDirection, `${NS}_测试卡_${c.suffix}`, c.productType, 10, c.remaining]
       )
     }

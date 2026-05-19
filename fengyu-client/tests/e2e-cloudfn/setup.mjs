@@ -88,7 +88,7 @@ export const TEST_PRODUCT_ID = `${NS}_PROD`           // 普通商品
 export const TEST_SKU_NORMAL_ID = `${NS}_SKU_N`        // 普通单品 SKU
 export const TEST_SKU_COURSE_ID = `${NS}_SKU_C`        // 疗程卡 SKU（sessionCount > 1）
 export const TEST_SKU_EXPERIENCE_ID = `${NS}_SKU_E`    // 体验卡 SKU（is_experience=true）
-export const TEST_SKU_RECHARGE_ID = `${NS}_SKU_R`      // 充值卡 SKU（is_recharge_card=true）
+export const TEST_SKU_RECHARGE_ID = `${NS}_SKU_R`      // 充值卡 SKU（兼容残留，2026-05-20 充值已剥离 SKU 化）
 
 // 储值卡（一户一账户）
 export const TEST_PREPAID_CARD_ID = `${NS}_CARD`

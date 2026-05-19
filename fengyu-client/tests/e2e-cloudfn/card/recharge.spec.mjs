@@ -4,8 +4,8 @@
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/card.js
  *   - rechargeConfig: 公开（PUBLIC_ACTIONS 列表），无需 auth
- *   - recharge: requirePhone + boundStoreId → INSERT sale_orders type='销售单' + 虚拟SKU sale_items
- *     注意：源码中 sale_order_type 实际是 '销售单'（非 '充值单'）；通过 is_recharge_card=true 行级标记区分。
+ *   - recharge: requirePhone + boundStoreId → INSERT sale_orders type='充值单'，不写 sale_items
+ *     2026-05-20 重构：total_amount=面值，payable_amount=实付，入账识别改为 sale_order_type='充值单'。
  *
  * 实付校验：源码 matchTier 强制 amount ≥ RECHARGE_MIN_AMOUNT=500，所以 faceValue=100 也会触发
  * INVALID_PARAMS（不仅是 ≤0）；测试覆盖 -100、50、0、faceValue 缺失四种异常。
@@ -87,7 +87,8 @@ async function caseRechargeHappy() {
   // 1000 × 0.98 = 980
   if (payAmount !== 980) throw new Error(`payAmount mismatch: ${payAmount}`)
 
-  // PG 断言：sale_orders 一行 + sale_items 一行（is_recharge_card=true）
+  // PG 断言：sale_orders 一行（type='充值单'，total_amount=面值，payable_amount=实付）
+  // 充值单不写 sale_items（0 明细行）
   const orders = await pgQuery(
     `SELECT status, sale_order_type, client_user_id, total_amount, payable_amount
      FROM sale_orders WHERE sale_order_id = $1`,
@@ -95,18 +96,21 @@ async function caseRechargeHappy() {
   )
   if (orders.length !== 1) throw new Error(`expect 1 order row, got ${orders.length}`)
   if (orders[0].status !== '待支付') throw new Error(`status: ${orders[0].status}`)
+  if (orders[0].sale_order_type !== '充值单') {
+    throw new Error(`sale_order_type mismatch: ${orders[0].sale_order_type}`)
+  }
   if (orders[0].client_user_id !== userId) throw new Error('client_user_id mismatch')
-  if (Number(orders[0].total_amount) !== 980) {
-    throw new Error(`total_amount mismatch: ${orders[0].total_amount}`)
+  if (Number(orders[0].total_amount) !== 1000) {
+    throw new Error(`total_amount mismatch: ${orders[0].total_amount} (expect 1000 face value)`)
+  }
+  if (Number(orders[0].payable_amount) !== 980) {
+    throw new Error(`payable_amount mismatch: ${orders[0].payable_amount} (expect 980)`)
   }
   const items = await pgQuery(
-    `SELECT is_recharge_card, sku_id, product_name FROM sale_items WHERE sale_order_id = $1`,
+    `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`,
     [saleOrderId]
   )
-  if (items.length !== 1) throw new Error(`expect 1 item, got ${items.length}`)
-  if (items[0].is_recharge_card !== true) {
-    throw new Error(`is_recharge_card should be true, got ${items[0].is_recharge_card}`)
-  }
+  if (items.length !== 0) throw new Error(`expect 0 sale_items for 充值单, got ${items.length}`)
 }
 
 async function caseRechargeNoStore() {

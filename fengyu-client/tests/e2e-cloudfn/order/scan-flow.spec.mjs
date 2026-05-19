@@ -78,13 +78,13 @@ async function createStaffOpenedPending({
          sku_id, product_name, sku_spec_name, product_type,
          session_count, remaining_sessions, paid_sessions,
          unit_price, quantity, unit_real_price, sale_amount, received,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                NULL, $4, '默认', $5::product_type,
                $6, $6, NULL,
                $7, 1, $7, $7, 0,
-               false, false)`,
+               false)`,
       [itemId, saleOrderId, storeId, `${NS}_员工单商品`, productType,
        isSessionCard ? sessionCount : null, totalAmount]
     )

@@ -184,12 +184,12 @@ export async function createTestSaleOrder({
          sale_item_id, sale_order_id, store_id, item_direction,
          sku_id, product_name, sku_spec_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                NULL, $4, '默认', '单品'::product_type,
                $5, 1, $5, $5, $5,
-               false, false)`,
+               false)`,
       [itemId, saleOrderId, storeId, `${NS}_测试商品`, totalAmount]
     )
 
@@ -241,7 +241,16 @@ export async function cleanupTestData(prefix = NS) {
          WHERE user_id IN (SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1)`,
       [like],
     ],
-    [`DELETE FROM permission_roles WHERE employee_id LIKE $1`, [like]],
+    // permission_roles FK → staff_wechat_users，必须在 staff 之前删；
+    // 双轨清扫：employee_id LIKE NS、scope_id LIKE NS，以及 employee_id IN(NS-staff)
+    [`DELETE FROM permission_roles WHERE employee_id LIKE $1 OR scope_id LIKE $1`, [like]],
+    [
+      `DELETE FROM permission_roles WHERE employee_id IN (
+         SELECT employee_id FROM staff_wechat_users
+         WHERE employee_id LIKE $1 OR org_node_id LIKE $1 OR store_id LIKE $1
+       )`,
+      [like],
+    ],
     [
       `DELETE FROM operation_logs
          WHERE operator_employee_id IN (SELECT employee_id FROM staff_wechat_users WHERE employee_id LIKE $1)`,
@@ -252,7 +261,8 @@ export async function cleanupTestData(prefix = NS) {
     [`DELETE FROM client_wechat_users WHERE user_id LIKE $1`, [like]],
     // 防御：也按已知测试手机号清理（处理 _testOpenid 命名空间漂移导致的残留）
     [`DELETE FROM client_wechat_users WHERE phone = ANY($1::text[])`, [testPhones]],
-    [`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [like]],
+    // staff 需要在 stores 之前删（staff.store_id FK → stores）
+    [`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1 OR store_id LIKE $1 OR org_node_id LIKE $1`, [like]],
     [`DELETE FROM staff_wechat_users WHERE phone = ANY($1::text[])`, [testPhones]],
     [`DELETE FROM stores WHERE store_id LIKE $1`, [like]],
 
