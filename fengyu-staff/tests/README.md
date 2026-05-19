@@ -25,18 +25,30 @@ npm run test -- routes/order.test.js  # 单文件
 
 ## L2 cloudfn smoke（推荐日常开发使用）
 
-35 个 smoke 覆盖 staffApi 全部 module × 状态分支。改一行代码 10 秒看结果。
+覆盖 staffApi 全部 module × 状态分支 × 角色/范围矩阵。改一行代码 10 秒看结果。
+
+四类用例（按文件名前缀过滤）：
+
+| 类别 | 数量 | 重点 | filter 关键字 |
+|------|------|------|---------------|
+| 业务功能 smoke | 35 | 单 action × 状态分支（store-level manager 视角） | order, service, alloc, customer, card, appointment, staff, store, product, auth, coupon, confirm |
+| **rbac 准入矩阵** | 4 文件 / 59 case | 7 种角色 × 3 种 scope（HQ/市场/门店）合法配对 + 多绑定归并 | `rbac` |
+| **deny 越权拒绝** | 3 文件 / 12 case | 跨店/跨市场/越级 mgmt-* / 部门 scope 拒绝路径 | `deny` |
+| **mgmt 三视角** | 4 文件 / 29 case | mgmtDashboard/Customer/Product/Traffic 在 all/market/store 三种 scope 下的可见性 + 跨范围拒绝 | `mgmt` |
+| **xend 跨端链** | 3 文件 / 12 case | staff confirmOffline → client card.history、refund 审批 → client 可见、同单 4 视角 | `xend` |
 
 ```bash
 # 全套
 bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs
 
-# 按 module 过滤（迭代时省时间）
+# 分组跑（迭代时省时间）
+bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter rbac
+bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter deny,mgmt
+bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter xend
 bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter order
-bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter alloc,service
 
 # 单个
-bun fengyu-staff/tests/e2e-cloudfn/smoke-order-create-sales.mjs
+bun fengyu-staff/tests/e2e-cloudfn/smoke-rbac-store-level.mjs
 
 # 清理残留命名空间
 bun fengyu-staff/tests/e2e-cloudfn/cleanup.mjs

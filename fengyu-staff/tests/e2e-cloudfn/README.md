@@ -54,16 +54,34 @@ E2E_DEBUG=1 bun tests/e2e-cloudfn/smoke-confirm-offline.mjs
 所有 fixture 数据强制以 **`TE2L2_`** 前缀（= "TEST_E2E_L2" 缩写，受 sale_order_id/employee_id
 `varchar(30)` 限制必须短）：
 
-| 项 | id |
-|----|----|
-| 测试门店 | `TE2L2_STORE` |
-| 测试组织节点 | `TE2L2_HQ_ORG` / `TE2L2_MARKET_ORG` / `TE2L2_STORE_ORG` |
-| 测试店长 | `TE2L2_MGR` (employee_id), `TE2L2_MGR_OPENID`, phone `19999099001` |
-| 测试顾客 | `TE2L2_CLI` (user_id), `TE2L2_CLI_OPENID`, phone `19999099002` |
-| 测试订单 | `TE2L2_OCO` / `TE2L2_RP` / `TE2L2_PN_ORDER`（每个 smoke 一个） |
+| 项 | id（单店 smoke） | id（多市场/多角色 smoke） |
+|----|------------------|---------------------------|
+| 测试总部 | `TE2L2_HQ_ORG` | `TE2L2_HQ_ORG`（共享） |
+| 测试市场 | `TE2L2_MARKET_ORG` | `TE2L2_MKT_A`, `TE2L2_MKT_B` |
+| 测试门店 | `TE2L2_STORE` / `TE2L2_STORE_ORG` | `TE2L2_STORE_A1/A2/B1/B2` + `TE2L2_STORE_ORG_A1/A2/B1/B2` |
+| 测试店长 | `TE2L2_MGR` + `TE2L2_MGR_OPENID` | rbac/deny/mgmt/xend smoke 用 `TE2L2_<SMOKE>_<ROLE>_<SCOPE>` 模式（如 `TE2L2_RBAC_M_MGR`） |
+| 测试顾客 | `TE2L2_CLI` + `TE2L2_CLI_OPENID` | `TE2L2_MGMT_CLI_A1/A2/B1/B2` 等 |
 
-`cleanupTestData()` 用 `LIKE 'TE2L2%'` 精确清理；额外按测试手机号 (199990990xx) 防御，
+**测试号段**：`19999099001 ~ 19999099020` — 1 是默认店长 phone、2 是默认顾客 phone、3~20 留给多角色员工
+（`setup.mjs` 的 `testPhone(idx)` helper 取号）。
+
+`cleanupTestData()` 用 `LIKE 'TE2L2%'` 精确清理；额外按 `phone IN (199990990xx)`（号段反查）防御，
 避免命名空间漂移导致残留。**绝不**碰非测试数据。
+
+## 角色 / 范围矩阵 fixtures
+
+新加四类 smoke 复用 `helpers/fixtures.mjs` 中的：
+
+- **`createTestOrg({ markets, stores })`** — 一次性建 1 总部 + N 市场 + M 门店（默认 2 市场 × 4 门店）
+- **`createTestStaffWithRoles({ employeeId, openid, phone, name, storeId, orgNodeId, bindings })`** —
+  用 `bindings: [{role, scopeId}]` 数组显式指定多角色，替代旧 `isManager` 布尔
+- **`createTestDeptNode({ deptId, parentId })`** — 建 type='部门' 的非法 scope 节点用于 deny smoke
+- **`invalidateStaffAuthCache(openids)`** — 同进程多次 smoke 修改 permission_roles 后必须调用，
+  否则 staffApi `AUTH_CACHE` 命中过期数据
+
+**屏障约定**：`createTestStaffWithRoles` + `invalidateStaffAuthCache` 之后建议先 `await pgQuery('SELECT 1')` 作为
+PG 连接池屏障，否则首次 `invokeStaffApi('auth.login')` 偶发拉到不完整的 binding（与连接池 timing 相关）。
+mgmt-* / xend-* smoke 都已加这个屏障。
 
 ## 已知生产 bug（已修复）
 
