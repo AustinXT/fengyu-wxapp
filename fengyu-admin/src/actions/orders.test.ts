@@ -857,10 +857,8 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
           if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
             return Promise.resolve(cardExists ? [{ card_id: 'FY-CARD-DEDUCT', balance: cardBalance }] : [])
           }
-          // applyRechargeOnOrderPaid 的 rechargeItems 查询（is_recharge_card=true）→ 空（非充值订单）
-          if (/SELECT\s+si\.sku_id[\s\S]*FROM\s+sale_items[\s\S]*is_recharge_card/i.test(text)) {
-            return Promise.resolve([])
-          }
+          // 充值卡剥离 SKU 化（2026-05-20）后，applyRechargeOnOrderPaid 不再扫 sale_items 行，
+          // 直接读 sale_orders.saleOrderType 走 drizzle ORM（不经过 tx.execute mock 分发）
           // recalcCustomerType 内的 SELECT customer_type → 空（保护性路径）
           if (/SELECT\s+customer_type/i.test(text)) {
             return Promise.resolve([])

@@ -42,6 +42,9 @@ const qrcodeCache = new Map()
  */
 async function refreshSpendingTier(client, clientUserId) {
   if (!clientUserId) return
+  // 与 admin refreshSpendingTierTx (refunds.ts) / payNotify 同名 SQL 跨端字面对齐：
+  // 仅纳入"销售单 + 转换单"做消费档位累计；
+  // 充值单（预收，2026-05-20 充值卡剥离 SKU 化新增）/ 内部单 / 寄存单不算消费。
   await client.query(
     `UPDATE client_wechat_users
      SET spending_tier = CASE
@@ -58,6 +61,7 @@ async function refreshSpendingTier(client, clientUserId) {
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
+         AND sale_order_type IN ('销售单','转换单')
      ) t
      WHERE user_id = $1`,
     [clientUserId]
@@ -87,6 +91,11 @@ async function recalcCustomerType(client, clientUserId) {
   // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
   // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
   // 守护，任一端漂移立即触发测试失败。
+  //
+  // 充值卡剥离 SKU 化（2026-05-20）后 sale_order_type 新增 '充值单'；本 CASE 全部三个分支
+  // 保持 `o.sale_order_type = '销售单'` 字面量过滤——充值单是预收（顾客把钱预先存到储值卡），
+  // 不算实际销售也不影响顾客类型跃迁；且 0 行 sale_items 也无法满足小美客/体验客的 JOIN
+  // 条件，保留过滤不会引入误判。
   const typeResult = await client.query(
     `SELECT CASE
        WHEN EXISTS (

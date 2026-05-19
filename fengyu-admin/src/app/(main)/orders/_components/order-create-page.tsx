@@ -189,8 +189,8 @@ export default function OrderCreatePageClient({
   /**
    * 充值卡抵扣（DB 字段 sale_orders.prepaid_card_amount 命名保持不变；UI 文案统一为「充值卡」）
    * - 顾客余额由 getCustomerCardBalance 查询（跨店）
-   * - 含任一 is_recharge_card SKU 时禁用（不可用充值卡余额买充值卡）
    * - 上限 = min(余额, 应付合计 - 券折扣)
+   * - 充值订单本身不进 admin 开单页（走员工端 card.recharge），故无需"不可用充值卡买充值卡"守卫
    */
   const [customerCardBalance, setCustomerCardBalance] = useState<number>(0)
   const [useCard, setUseCard] = useState<boolean>(false)
@@ -435,16 +435,13 @@ export default function OrderCreatePageClient({
   const isInternal = orderType === '内部单'
   const isConversion = orderType === '转换单'
   const isBundleOrder = productKindChoice === '组合套餐'
-  // 充值卡订单：payAmount 已由 matchTier 计算，禁止手工改价（与 client 对齐）
-  // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 sku.isRechargeCard capability 列
-  const isRechargeOrder = cart.some((item) => false /* 充值卡剥离 SKU 化 */)
   const internalRatio = isInternal ? 0.5 : 1
-  // 组合套餐 / 内部单 / 充值卡均禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
-  const suppressOverride = isInternal || isBundleOrder || isRechargeOrder
+  // 组合套餐 / 内部单禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
+  const suppressOverride = isInternal || isBundleOrder
 
   // 订单级优惠券（券按行均摊到「应付金额」，与 staff 同算法）
   const selectedCouponForCalc = availableCoupons.find((c) => c.couponId === selectedCouponId)
-  const couponDiscountTotal = !isInternal && !isConversion && !isRechargeOrder && selectedCouponForCalc
+  const couponDiscountTotal = !isInternal && !isConversion && selectedCouponForCalc
     ? Number(selectedCouponForCalc.discountAmount)
     : 0
 
@@ -488,8 +485,6 @@ export default function OrderCreatePageClient({
         saleAmount,
         received,
         defaultUnitPrice,
-        // 行级 isRechargeCard 用于 UI 显示
-        isRechargeItem: false /* 充值卡剥离 SKU 化 */,
       }
     })
   }, [cart, cartPriceLines, couponShares, priceOverrides, suppressOverride])
@@ -729,8 +724,6 @@ export default function OrderCreatePageClient({
                 <div className="space-y-2">
                   {cart.map((item) => {
                     const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
-                    // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 sku.isRechargeCard capability 列
-                    const isRechargeItem = false /* 充值卡剥离 SKU 化 */
                     return (
                       <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
                         <div className="flex-1 min-w-0">
@@ -741,16 +734,14 @@ export default function OrderCreatePageClient({
                           <div className="flex items-center border border-[var(--border)] rounded">
                             <button
                               onClick={() => updateCartQuantity(item.sku.skuId, -1)}
-                              disabled={isRechargeItem}
-                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors"
                             >
                               −
                             </button>
                             <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
                             <button
                               onClick={() => updateCartQuantity(item.sku.skuId, 1)}
-                              disabled={isRechargeItem}
-                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors"
                             >
                               +
                             </button>
@@ -878,8 +869,8 @@ export default function OrderCreatePageClient({
                 />
               </div>
 
-              {/* 优惠券（仅已注册顾客可选 + 非内部单 + 非充值卡） */}
-              {selectedCustomer?.userId && !isInternal && !isConversion && !isRechargeOrder && (
+              {/* 优惠券（仅已注册顾客可选 + 非内部单 + 非转换单） */}
+              {selectedCustomer?.userId && !isInternal && !isConversion && (
                 <div className="col-span-2 md:col-span-3">
                   <label className="text-sm text-[#999999]">优惠券（可选）</label>
                   {loadingCoupons ? (
@@ -1005,13 +996,12 @@ export default function OrderCreatePageClient({
                 </div>
                 {/* 充值卡抵扣 UI（admin 新增；商品清单下方） */}
                 {!isConversion && selectedCustomer?.userId && (() => {
-                  const cardDisabled = isRechargeOrder
                   const payableBeforeCard = totalSaleAmount
                   // 上限 = min(余额, 应付合计)
                   const maxCardAmount = Math.min(customerCardBalance, payableBeforeCard)
-                  const inputAmount = useCard && !cardDisabled && cardAmountInput.trim() !== ''
+                  const inputAmount = useCard && cardAmountInput.trim() !== ''
                     ? Math.max(0, Math.min(Number(cardAmountInput) || 0, maxCardAmount))
-                    : (useCard && !cardDisabled ? maxCardAmount : 0)
+                    : (useCard ? maxCardAmount : 0)
                   return (
                     <div className="mt-4 border border-[var(--border)] rounded p-3 bg-white">
                       <div className="flex items-center justify-between">
@@ -1024,20 +1014,17 @@ export default function OrderCreatePageClient({
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={useCard && !cardDisabled}
-                            disabled={cardDisabled || customerCardBalance <= 0}
+                            checked={useCard}
+                            disabled={customerCardBalance <= 0}
                             onChange={(e) => setUseCard(e.target.checked)}
                             className="h-4 w-4"
                           />
-                          <span className={`text-xs ${cardDisabled || customerCardBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>
+                          <span className={`text-xs ${customerCardBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>
                             启用
                           </span>
                         </label>
                       </div>
-                      {cardDisabled && (
-                        <p className="text-xs text-[#D4820A] mt-2">购买充值卡的订单不可使用充值卡抵扣</p>
-                      )}
-                      {useCard && !cardDisabled && customerCardBalance > 0 && (
+                      {useCard && customerCardBalance > 0 && (
                         <div className="mt-2 flex items-center gap-2">
                           <span className="text-xs text-[#999999]">抵扣金额</span>
                           <Input
@@ -1058,7 +1045,7 @@ export default function OrderCreatePageClient({
                 })()}
                 {/* 金额汇总（应付合计 = Σ saleAmount = Σ priceLine - 券折扣；订单总额 = 应付 - 充值卡抵扣） */}
                 {(() => {
-                  const cardAmount = useCard && !isRechargeOrder && customerCardBalance > 0
+                  const cardAmount = useCard && customerCardBalance > 0
                     ? (cardAmountInput.trim() !== ''
                       ? Math.max(0, Math.min(Number(cardAmountInput) || 0, Math.min(customerCardBalance, totalSaleAmount)))
                       : Math.min(customerCardBalance, totalSaleAmount))

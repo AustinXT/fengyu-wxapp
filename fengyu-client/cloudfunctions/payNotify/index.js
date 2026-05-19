@@ -511,6 +511,9 @@ exports.main = async (event) => {
       // 4. 重算顾客历史消费档位
       // spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随
       // system_configs.new_member_threshold 变化；门槛只影响 customer_type / member_level
+      // 与 admin refreshSpendingTierTx (refunds.ts) / staffApi refreshSpendingTier 跨端字面对齐：
+      // 仅纳入"销售单 + 转换单"做消费档位累计；
+      // 充值单（预收，2026-05-20 充值卡剥离 SKU 化新增）/ 内部单 / 寄存单不算消费。
       if (targetOrder.client_user_id) {
         await client.query(
           `UPDATE client_wechat_users
@@ -528,6 +531,7 @@ exports.main = async (event) => {
              FROM sale_orders
              WHERE client_user_id = $1
                AND status IN ('已支付', '已完成')
+               AND sale_order_type IN ('销售单','转换单')
            ) t
            WHERE user_id = $1`,
           [targetOrder.client_user_id]
