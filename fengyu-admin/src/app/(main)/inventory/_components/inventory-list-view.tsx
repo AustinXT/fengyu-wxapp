@@ -44,8 +44,8 @@ interface Props {
   stores: Store[]
   canCreate: boolean
   canDelete: boolean
-  /** Server Action 包装：createXxxOrder({...}) */
-  onCreate: (input: unknown) => Promise<{ id: string }>
+  /** Server Action 包装：createXxxOrder({...}) — 跨 4 模块共享，参数为各自的 *CreateInput，统一收 any */
+  onCreate: (input: any) => Promise<{ id: string }>
   /** Server Action：deleteXxxOrder(id) */
   onDelete: (id: string) => Promise<{ success: true }>
 }
