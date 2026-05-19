@@ -42,7 +42,6 @@
         wx:if="{{hasMultiStore}}"
         title="所属门店"
         value="{{currentStoreName || '请选择门店'}}"
-        label="点击切换 scope 内门店"
         icon="shop-o"
         is-link
         bindtap="openStorePicker"
