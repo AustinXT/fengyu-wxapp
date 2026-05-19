@@ -63,17 +63,20 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 
 ## 自动化测试
 
-三层覆盖，全部位于 `fengyu-client/tests/`：
+四层覆盖，全部位于 `fengyu-client/tests/`：
 
 | 层 | 路径 | 入口 | 速度 | IDE 依赖 |
 |----|------|------|------|----------|
 | L1 unit | `cloudfunctions/clientApi/__tests__/` | bun test | <1s/spec | 否 |
 | **L2 e2e-cloudfn** | `tests/e2e-cloudfn/` | bun .../run-all.mjs | ~8 分钟全套 | 否（本地 require + 真 PG） |
-| **L3 e2e-miniprogram** | `tests/e2e-miniprogram/` | bun .../run-all.mjs | ~10 分钟 12 journey | 是（automator + IDE 9420） |
+| **L2X e2e-cross-end** | `tests/e2e-cross-end/` | bun .../run-all.mjs | ~30 秒 5 spec | 否（同进程 require client + staff，PG 5434）|
+| **L3 e2e-miniprogram** | `tests/e2e-miniprogram/` | bun .../run-all.mjs | ~12 分钟 15 journey | 是（automator + IDE 9420） |
 
-**L2 覆盖**：29 spec / 132 用例，穷举所有 12 模块 ~54 个 action 的 happy + 边界 + 错误分支。命名空间 `TE2L2_*`。
+**L2 覆盖**：32 spec / ~155 用例，穷举所有 12 模块 ~54 个 action 的 happy + 边界 + 错误 + 并发 + 状态机 + 原子性分支。命名空间 `TE2L2_*`。
 
-**L3 覆盖**：12 条用户旅程（onboarding / shopping / checkout / order / appointment / scan-pay / prepaid-card / points-messages / coupon / store-switch / profile-edit / treatment-experience）。命名空间 `TEST_E2E_L3_*`。
+**L2X 覆盖**：5 spec / 16 用例 — 真跨端 staff→client 扫码支付链、HMAC HTTP 桥 7 项守卫矩阵、admin schema 桥 coupon 可见性、历史单 client 不可见、payNotify disabled guard。命名空间 `TE2X_*`。
+
+**L3 覆盖**：15 条用户旅程（onboarding / shopping / checkout / order / appointment / scan-pay / prepaid-card / points-messages / coupon / store-switch / profile-edit / treatment-experience / search-filter / staff-detail-appointment / store-detail）。固定 `setTimeout` 已替换为 `helpers/wait-for-page.mjs` 轮询。命名空间 `TEST_E2E_L3_*`。
 
 跑法见 `tests/README.md` 和各层 README。
 
@@ -83,8 +86,12 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
    ```bash
    bun fengyu-client/tests/e2e-cloudfn/run-all.mjs --module <模块名>
    ```
-2. 改 `miniprogram/pages/*` 后，跑对应 L3 journey（前提 IDE 装 fengyu-client + IPv6 9420 ready）
-3. 改 schema / 枚举：先全套 L2 (`bun ...run-all.mjs`) 跑一次防回归
+2. 改 `cloudfunctions/clientApi/index.js` HMAC 入口 / `auth.uploadStaffAvatar` 路由 → 跑 L2X：
+   ```bash
+   bun fengyu-client/tests/e2e-cross-end/hmac-bridge.spec.mjs
+   ```
+3. 改 `miniprogram/pages/*` 后，跑对应 L3 journey（前提 IDE 装 fengyu-client + IPv6 9420 ready）
+4. 改 schema / 枚举：先 L2 + L2X 全套跑一次防回归
 
 ## 子目录文档
 
