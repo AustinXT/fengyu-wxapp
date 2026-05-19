@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待修 spec |
+| 实施状态 | ✅ 已完成（2026-05-19，commit a94ce7a 上游 D3 fix；本 spec 改在 commit 2c82985 前）|
 | 优先级 | **P3**（纯 spec UI selector 问题；不阻塞业务）|
 | 端 | tests/e2e-chains |
 | 修复成本 | **S**（一行 locator 改写）|
@@ -48,3 +48,12 @@ await dialog.getByRole('button', { name: '批量发放' }).click()
 ## 4 关联引用
 
 - `tests/e2e-chains/link-20-coupon-batch-issue.spec.ts`
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 实际落地：
+  - `fengyu-admin/tests/e2e-chains/link-20-coupon-batch-issue.spec.ts` L136-150 — 用 `page.locator('div[role="dialog"], dialog[open]').first()` 作用域限定，避免与外层"打开 dialog"按钮歧义
+- 用户授权直接改 spec，跳过 ticket 流程

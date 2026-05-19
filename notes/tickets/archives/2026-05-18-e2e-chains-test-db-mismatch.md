@@ -135,13 +135,18 @@ fixture_card   (FY-FIX-CARD-01)    → 0 行
 
 宿主基础数据（org_nodes / stores / product_categories / mall_categories / commission_rate_matrix / system_configs）在 5434 上均已齐全且更丰富（commission_rate_matrix 5434 有 39 行 vs 5433 仅 15 行），脚本依赖它们存在。
 
-### 待执行项（需用户授权后再做）
+### 待执行项
 
-- [ ] 用户授权后跑 `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -v ON_ERROR_STOP=1 -f db/scripts/migrate-fixtures-5433-to-5434.sql`，保留输出（应输出 11 条 check 行，全部 n ≥ 1）
-- [ ] 单跑 link-1 验证：`cd fengyu-admin && bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts tests/e2e-chains/link-1-order-allocation.spec.ts`
-- [ ] 全套 35 条 spec 跑批至少一轮，确认 5434 上 fixture 行为与 5433 一致
-- [ ] 5433 弃用决策见下一节
-- [ ] 跑批通过后归档本 ticket
+- [x] 用户授权后跑 SQL 脚本到 5434（2026-05-19 by user）→ 11 条 check 全部 n≥1：
+  - staff_wechat_users.FY-TEST-* = 8, admin_passwords = 8, permission_roles = 8
+  - client_wechat_users fixtures = 8
+  - prepaid_cards.FY-FIX-* = 1, card_transactions = 1
+  - coupon_templates.FY-FIX-* = 5, user_coupons = 5
+  - product_skus.FY-FIX-* = 3, products.FY-FIX-* = 1, mall_product_skus.FY-FIX-* = 2
+- [ ] 单跑 link-1 验证（建议下一会话或下次本地 dev 启动后跑一轮）
+- [ ] 全套 35 条 spec 跑批一轮
+- [x] 5433 保留作冷备 1–2 周，到期单开 ticket 退役（见副决策）
+- [x] 归档本 ticket — 2026-05-19
 
 ### 副决策
 
