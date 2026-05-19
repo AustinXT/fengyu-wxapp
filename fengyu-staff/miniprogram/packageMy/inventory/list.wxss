@@ -73,15 +73,15 @@
   font-size: 24rpx;
 }
 
-.status-已完成 {
+.status-done {
   color: #3D8A5A;
 }
 
-.status-草稿 {
+.status-draft {
   color: #D4820A;
 }
 
-.status-已取消 {
+.status-cancelled {
   color: #999;
 }
 

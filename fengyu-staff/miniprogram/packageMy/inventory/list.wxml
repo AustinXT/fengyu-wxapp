@@ -35,7 +35,7 @@
     >
       <view class="item-head">
         <text class="item-id">{{item.id}}</text>
-        <text class="item-status status-{{item.status}}">{{item.status}}</text>
+        <text class="item-status status-{{item.statusKey}}">{{item.status}}</text>
       </view>
       <view class="item-meta">
         <text wx:if="{{item.docSubtype}}" class="meta-tag">{{item.docSubtype}}</text>

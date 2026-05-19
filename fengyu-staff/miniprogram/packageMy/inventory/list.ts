@@ -21,6 +21,7 @@ interface InventoryRow {
   id: string
   docSubtype: string | null
   status: string
+  statusKey?: string
   storeId: string
   storeName: string | null
   docDate: string
@@ -28,6 +29,16 @@ interface InventoryRow {
   customerName?: string | null
   counterpartStoreName?: string | null
   createdByName: string | null
+}
+
+const STATUS_KEY_MAP: Record<string, string> = {
+  '已完成': 'done',
+  '草稿': 'draft',
+  '已取消': 'cancelled',
+}
+
+function withStatusKey(row: InventoryRow): InventoryRow {
+  return { ...row, statusKey: STATUS_KEY_MAP[row.status] || 'unknown' }
 }
 
 Page({
@@ -77,7 +88,7 @@ Page({
         status: this.data.statusFilter || undefined,
         keyword: this.data.keyword || undefined,
       })
-      const merged = [...this.data.items, ...(res.items || [])]
+      const merged = [...this.data.items, ...((res.items || []).map(withStatusKey))]
       this.setData({
         items: merged,
         total: res.total,

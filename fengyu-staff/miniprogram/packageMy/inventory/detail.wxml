@@ -3,7 +3,7 @@
   <view class="head">
     <view class="head-line">
       <text class="doc-id">{{detail.id}}</text>
-      <text class="status status-{{detail.status}}">{{detail.status}}</text>
+      <text class="status status-{{detail.statusKey}}">{{detail.status}}</text>
     </view>
     <view class="meta-row">
       <text wx:if="{{detail.docSubtype}}" class="meta-tag">{{detail.docSubtype}}</text>

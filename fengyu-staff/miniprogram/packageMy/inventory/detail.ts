@@ -4,6 +4,12 @@ import { formatDateTime } from '../../utils/formatters'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'
 
+const STATUS_KEY_MAP: Record<string, string> = {
+  '已完成': 'done',
+  '草稿': 'draft',
+  '已取消': 'cancelled',
+}
+
 interface ItemRow {
   id: number
   productCode: string
@@ -22,6 +28,7 @@ interface InventoryDetail {
   id: string
   docSubtype: string | null
   status: string
+  statusKey?: string
   storeId: string
   storeName: string | null
   docDate: string
@@ -64,7 +71,13 @@ Page({
         docCategory: this.data.docCategory,
         id: this.data.id,
       })
-      const formatted = detail ? { ...detail, confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt } : detail
+      const formatted = detail
+        ? {
+            ...detail,
+            confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt,
+            statusKey: STATUS_KEY_MAP[detail.status] || 'unknown',
+          }
+        : detail
       this.setData({ detail: formatted, loading: false })
     } catch (err: any) {
       this.setData({ loading: false })
