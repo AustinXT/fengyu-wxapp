@@ -57,7 +57,8 @@ function matchTier(amount, cfg) {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误')
   }
-  if (Math.round(amount * 100) !== amount * 100) {
+  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
   }
   if (amount < cfg.minAmount) {
@@ -209,15 +210,20 @@ async function _closeExpiredPendingByUser(client, userId) {
 }
 
 /**
- * 创建充值订单（顾客端发起）
+ * 创建充值订单（顾客端发起，仅建单不触发支付）
  *
  * 2026-05-20 重构：
  *   - sale_orders.sale_order_type='充值单'，不写 sale_items
  *   - total_amount=面值，payable_amount=实付，prepaid_card_amount=0
  *   - 入账由 payNotify 在 status 翻 '已支付' 时触发
  *
+ * 2026-05-20 支付链路复用 order.*：
+ *   本函数只建单（status='待支付'，payment_method='微信' 占位），
+ *   前端拿到 saleOrderId 后按所选支付方式调用 order.pay / order.alipayPay / order.offlinePay
+ *   触发对应支付流程（payment_method 由这三个端点按需覆盖）
+ *
  * payload: { faceValue: number }   // 面值；实付按 system_configs 推导
- * 返回:    { saleOrderId, faceValue, payAmount, paymentParams, mockMode }
+ * 返回:    { saleOrderId, faceValue, payAmount, discount }
  */
 async function recharge(ctx) {
   await requirePhone()(ctx, async () => {})
@@ -293,6 +299,7 @@ async function recharge(ctx) {
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
     // 充值单：sale_order_type='充值单'、total_amount=面值、payable_amount=实付、不写 sale_items
+    // payment_method='微信' 只是占位，前端后续调 order.pay/alipayPay/offlinePay 会按所选方式覆盖
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -305,21 +312,11 @@ async function recharge(ctx) {
     )
   })
 
-  // mock 微信支付参数；TODO 接入真实统一下单
   ctx.result = {
     saleOrderId,
     faceValue: faceVal,
     payAmount,
     discount,
-    paymentMethod: '微信',
-    mockMode: true,
-    paymentParams: {
-      timeStamp: String(Math.floor(Date.now() / 1000)),
-      nonceStr: Math.random().toString(36).substr(2),
-      package: `prepay_id=wx${Date.now()}`,
-      signType: 'MD5',
-      paySign: 'mock_sign',
-    },
   }
 }
 

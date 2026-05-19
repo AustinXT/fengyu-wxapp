@@ -64,9 +64,9 @@
       <view class="tier-grid">
         <view
           wx:for="{{tiers}}"
-          wx:key="skuId"
-          class="tier-card {{selectedSkuId === item.skuId && !customMode ? 'tier-card--active' : ''}}"
-          data-sku-id="{{item.skuId}}"
+          wx:key="faceValue"
+          class="tier-card {{selectedFaceValue === item.faceValue && !customMode ? 'tier-card--active' : ''}}"
+          data-face-value="{{item.faceValue}}"
           bindtap="onTierTap"
         >
           <view class="tier-face">¥{{item.faceValue}}</view>
@@ -74,7 +74,6 @@
           <view wx:else class="tier-discount tier-discount--plain">原价</view>
           <view class="tier-pay">实付 ¥{{item.payAmountLabel}}</view>
           <view wx:if="{{item.bonus > 0}}" class="tier-bonus">送 ¥{{item.bonusLabel}}</view>
-          <view class="tier-spec">{{item.specName}}</view>
         </view>
       </view>
     </block>

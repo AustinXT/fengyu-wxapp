@@ -112,15 +112,15 @@ Page({
       customInput: '',
       customError: '',
       customPayAmount: 0,
-      ctaText: `立即充值 ¥${tier.payAmountLabel}`,
-      ctaDisabled: false,
     });
+    this.updateCta();
   },
 
   // ============ 自定义金额 ============
 
   onCustomFocus() {
     this.setData({ customMode: true, selectedTier: 0 });
+    this.updateCta();
   },
 
   onCustomInput(e: WechatMiniprogram.InputEvent) {
@@ -135,9 +135,8 @@ Page({
         customPayAmountLabel: '',
         customBonus: 0,
         customBonusLabel: '',
-        ctaText: '请输入充值金额',
-        ctaDisabled: true,
       });
+      this.updateCta();
       return;
     }
 
@@ -152,8 +151,6 @@ Page({
         customPayAmountLabel: formatAmount(payAmount),
         customBonus: bonus,
         customBonusLabel: formatAmount(bonus),
-        ctaText: `立即充值 ¥${formatAmount(payAmount)}`,
-        ctaDisabled: false,
       });
     } catch (err: any) {
       const msg = (err?.message || '').replace(/^INVALID_PARAMS:\s*/, '') || '金额不合法';
@@ -164,10 +161,39 @@ Page({
         customPayAmountLabel: '',
         customBonus: 0,
         customBonusLabel: '',
-        ctaText: '请输入有效金额',
-        ctaDisabled: true,
       });
     }
+    this.updateCta();
+  },
+
+  /** 综合当前金额选择刷新 CTA 文案/可用态 */
+  updateCta() {
+    const { customMode, customInput, customPayAmount, customError, selectedTier, tiers } = this.data;
+
+    let payAmount = 0;
+    if (customMode) {
+      if (!customInput) {
+        this.setData({ ctaText: '请输入充值金额', ctaDisabled: true });
+        return;
+      }
+      if (customError || customPayAmount <= 0) {
+        this.setData({ ctaText: '请输入有效金额', ctaDisabled: true });
+        return;
+      }
+      payAmount = customPayAmount;
+    } else if (selectedTier) {
+      const tier = tiers.find(t => t.faceValue === selectedTier);
+      if (!tier) {
+        this.setData({ ctaText: '请选择充值金额', ctaDisabled: true });
+        return;
+      }
+      payAmount = tier.payAmount;
+    } else {
+      this.setData({ ctaText: '请选择充值金额', ctaDisabled: true });
+      return;
+    }
+
+    this.setData({ ctaText: `立即充值 ¥${formatAmount(payAmount)}`, ctaDisabled: false });
   },
 
   // ============ 提交充值 ============
@@ -209,34 +235,14 @@ Page({
   async doRecharge(faceValue: number) {
     this.setData({ submitting: true });
     try {
-      const data = await callClientApi<{
-        saleOrderId: string;
-        payAmount: number;
-        paymentParams: WechatMiniprogram.RequestPaymentOption;
-      }>('card.recharge', { faceValue });
+      // 仅建单，付款方式选择 + 支付触发由 checkout 页统一处理
+      const created = await callClientApi<{ saleOrderId: string }>('card.recharge', { faceValue });
+      const saleOrderId = created?.saleOrderId;
+      if (!saleOrderId) throw new Error('创建充值订单失败');
 
-      const saleOrderId = data?.saleOrderId;
-      const paymentParams = data?.paymentParams;
-      if (!saleOrderId || !paymentParams) {
-        throw new Error('创建充值订单失败');
-      }
-
-      try {
-        await wx.requestPayment(paymentParams);
-      } catch (payErr: any) {
-        if ((payErr?.errMsg || '').toLowerCase().includes('cancel')) {
-          // 用户主动取消支付，不报错（订单仍处待支付，后续可在订单页重新支付）
-          this.setData({ submitting: false });
-          return;
-        }
-        throw payErr;
-      }
-
-      Toast.success('充值成功');
-      // 跳回充值卡列表查看新余额
-      setTimeout(() => {
-        wx.redirectTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
-      }, 1200);
+      wx.redirectTo({
+        url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}`,
+      });
     } catch (err: any) {
       if (err?.errorType === 'PHONE_REQUIRED') {
         this.setData({ showPhoneBind: true, submitting: false });
@@ -246,11 +252,11 @@ Page({
         Dialog.confirm({
           title: '您有待支付订单',
           message: '请先完成或取消上一笔订单后再充值',
-          confirmButtonText: '去查看',
+          confirmButtonText: '去支付',
           cancelButtonText: '我知道了',
         }).then(() => {
-          wx.navigateTo({
-            url: `/pagesOrder/order-detail/order-detail?saleOrderId=${err.data.pendingOrderNo}`,
+          wx.redirectTo({
+            url: `/pagesOrder/checkout/checkout?saleOrderId=${err.data.pendingOrderNo}`,
           });
         }).catch(() => {});
         this.setData({ submitting: false });

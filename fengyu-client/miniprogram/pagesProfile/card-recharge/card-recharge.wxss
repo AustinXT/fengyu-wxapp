@@ -183,6 +183,74 @@
   color: var(--color-primary);
 }
 
+/* ===== 支付方式 ===== */
+
+.pay-method-card {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  overflow: hidden;
+  margin-bottom: 32rpx;
+}
+
+.pay-icon {
+  width: 40rpx;
+  height: 40rpx;
+  margin-right: 16rpx;
+}
+
+/* ===== 支付宝二维码弹窗 ===== */
+
+.alipay-qr-popup {
+  padding: 48rpx 40rpx calc(48rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.alipay-qr-popup__title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 32rpx;
+}
+
+.alipay-qr-popup__image {
+  width: 400rpx;
+  height: 400rpx;
+  border-radius: 16rpx;
+  background: var(--color-bg-section);
+  margin-bottom: 24rpx;
+}
+
+.alipay-qr-popup__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  margin-bottom: 16rpx;
+}
+
+.alipay-qr-popup__symbol {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__price {
+  font-size: 52rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__tips {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 40rpx;
+}
+
+.alipay-qr-popup__btn {
+  width: 100% !important;
+}
+
 /* ===== 底部说明 ===== */
 
 .footer-note {

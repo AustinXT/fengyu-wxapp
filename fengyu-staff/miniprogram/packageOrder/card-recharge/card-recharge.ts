@@ -3,21 +3,15 @@ import { callStaffApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
-/** 档位 SKU（来自 card.rechargeSkus，沿用 product_skus 现状） */
-interface TierSku {
-  skuId: string;
-  productName: string;
-  specName: string;
+/** 档位（来自 card.rechargeTiers，剥离 SKU 化后唯一标识改为 faceValue） */
+interface Tier {
   faceValue: number;
   payAmount: number;
   bonus: number;
   discount: number;
-  productType: string;
-  categoryId: string;
-  categoryName: string;
 }
 
-interface TierVM extends TierSku {
+interface TierVM extends Tier {
   discountLabel: string;
   payAmountLabel: string;
   bonusLabel: string;
@@ -35,8 +29,8 @@ interface CustomConfig {
   tierBreakpoints: TierBreakpoint[];
 }
 
-interface RechargeSkusResponse {
-  tiers: TierSku[];
+interface RechargeTiersResponse {
+  tiers: Tier[];
   customConfig: CustomConfig;
 }
 
@@ -52,7 +46,6 @@ interface CustomerInfo {
 interface RechargeResponse {
   saleOrderId: string;
   saleItemId: string;
-  skuId: string;
   faceValue: number;
   payAmount: number;
   paymentMethod: '线下' | '微信';
@@ -74,7 +67,8 @@ function formatDiscountLabel(d: number): string {
 /** 前端本地 tier 匹配（逻辑与后端 matchTier 一致，用 customConfig.tierBreakpoints 作断点） */
 function matchTierLocal(amount: number, config: CustomConfig): { discount: number; payAmount: number } | { error: string } {
   if (!Number.isFinite(amount)) return { error: '金额格式错误' };
-  if (Math.round(amount * 100) !== amount * 100) return { error: '最多保留 2 位小数' };
+  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) return { error: '最多保留 2 位小数' };
   if (amount < config.minAmount) return { error: `最低 ¥${config.minAmount}` };
   if (amount > config.maxAmount) return { error: `上限 ¥${config.maxAmount}` };
   const breakpoints = [...(config.tierBreakpoints || [])].sort((a, b) => a.faceValue - b.faceValue);
@@ -102,7 +96,7 @@ Page({
     minAmount: 500,
     maxAmount: 100000,
 
-    selectedSkuId: '',       // 选中的档位 SKU id
+    selectedFaceValue: 0,    // 选中的档位面值（faceValue，剥离 SKU 化后唯一标识）
     customMode: false,       // 是否处于自定义金额模式
     customInput: '',
     customPayAmount: 0,
@@ -157,7 +151,7 @@ Page({
   async loadConfig() {
     try {
       this.setData({ configLoading: true });
-      const data = await callStaffApi<RechargeSkusResponse>('card.rechargeSkus', {});
+      const data = await callStaffApi<RechargeTiersResponse>('card.rechargeTiers', {});
       const tiers: TierVM[] = (data?.tiers || []).map(t => ({
         ...t,
         discountLabel: formatDiscountLabel(t.discount),
@@ -223,13 +217,14 @@ Page({
   // ============ 档位 ============
 
   onTierTap(e: WechatMiniprogram.TouchEvent) {
-    const skuId = e.currentTarget.dataset.skuId as string;
-    if (!skuId) return;
-    const tier = this.data.tiers.find(t => t.skuId === skuId);
+    const faceValueRaw = e.currentTarget.dataset.faceValue;
+    const faceValue = Number(faceValueRaw);
+    if (!faceValue || !Number.isFinite(faceValue)) return;
+    const tier = this.data.tiers.find(t => t.faceValue === faceValue);
     if (!tier) return;
 
     this.setData({
-      selectedSkuId: skuId,
+      selectedFaceValue: faceValue,
       customMode: false,
       customInput: '',
       customError: '',
@@ -241,12 +236,12 @@ Page({
   // ============ 自定义金额 ============
 
   onCustomFocus() {
-    this.setData({ customMode: true, selectedSkuId: '' });
+    this.setData({ customMode: true, selectedFaceValue: 0 });
   },
 
   onCustomInput(e: WechatMiniprogram.CustomEvent) {
     const raw = ((e.detail as { value?: string })?.value || '').trim();
-    this.setData({ customInput: raw, customMode: true, selectedSkuId: '' });
+    this.setData({ customInput: raw, customMode: true, selectedFaceValue: 0 });
 
     if (!raw) {
       this.setData({
@@ -309,7 +304,7 @@ Page({
   // ============ CTA 文案 ============
 
   updateCta() {
-    const { customerInfo, selectedSkuId, customMode, customInput, customPayAmount, paymentMethod, tiers } = this.data;
+    const { customerInfo, selectedFaceValue, customMode, customInput, customPayAmount, paymentMethod, tiers } = this.data;
 
     if (!customerInfo) {
       this.setData({ ctaText: '请先选择顾客', ctaDisabled: true });
@@ -326,8 +321,8 @@ Page({
       }
       faceValue = amt;
       payAmount = customPayAmount;
-    } else if (selectedSkuId) {
-      const tier = tiers.find(t => t.skuId === selectedSkuId);
+    } else if (selectedFaceValue) {
+      const tier = tiers.find(t => t.faceValue === selectedFaceValue);
       if (!tier) {
         this.setData({ ctaText: '请选择档位', ctaDisabled: true });
         return;
@@ -350,30 +345,23 @@ Page({
 
   async onSubmit() {
     if (this.data.submitting || this.data.ctaDisabled) return;
-    const { customerInfo, selectedSkuId, customMode, customInput, paymentMethod } = this.data;
+    const { customerInfo, selectedFaceValue, customMode, customInput, paymentMethod } = this.data;
     if (!customerInfo?.clientUserId) {
       wx.showToast({ title: '请选择顾客', icon: 'none' });
       return;
     }
 
+    const faceValue = customMode ? Number(customInput) : selectedFaceValue;
+    if (!faceValue || faceValue <= 0) {
+      wx.showToast({ title: customMode ? '请输入充值金额' : '请选择档位', icon: 'none' });
+      return;
+    }
+
     const payload: Record<string, unknown> = {
       clientUserId: customerInfo.clientUserId,
+      faceValue,
       paymentMethod,
     };
-    if (customMode) {
-      const amt = Number(customInput);
-      if (!amt || amt <= 0) {
-        wx.showToast({ title: '请输入充值金额', icon: 'none' });
-        return;
-      }
-      payload.customAmount = amt;
-    } else {
-      if (!selectedSkuId) {
-        wx.showToast({ title: '请选择档位', icon: 'none' });
-        return;
-      }
-      payload.skuId = selectedSkuId;
-    }
 
     this.setData({ submitting: true });
     try {
