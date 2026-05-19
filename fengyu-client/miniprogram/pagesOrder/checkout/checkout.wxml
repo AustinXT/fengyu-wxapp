@@ -15,8 +15,15 @@ module.exports.date = function(s) {
 
 <view class="container">
 
-  <!-- 商品明细 -->
-  <van-cell-group title="商品明细" inset>
+  <!-- 充值卡摘要（仅 sale_order_type='充值单' 时展示） -->
+  <van-cell-group wx:if="{{isRecharge}}" title="充值卡" inset>
+    <van-cell title="充值面值" value="¥{{price.fmt(rechargeFaceValue)}}" />
+    <van-cell wx:if="{{rechargeBonus > 0}}" title="活动优惠" value="{{rechargeDiscountLabel}}（送 ¥{{price.fmt(rechargeBonus)}}）" value-class="coupon-selected-value" />
+    <van-cell title="充值至门店" value="{{storeName}}" />
+  </van-cell-group>
+
+  <!-- 商品明细（充值单不显示） -->
+  <van-cell-group wx:if="{{!isRecharge}}" title="商品明细" inset>
     <view class="checkout-items">
       <view wx:for="{{displayItems}}" wx:key="skuId" class="checkout-item">
         <image
@@ -51,8 +58,8 @@ module.exports.date = function(s) {
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
 
-  <!-- 订单总额 -->
-  <van-cell-group title="订单总额" inset>
+  <!-- 订单总额（充值单不显示，由"充值卡"摘要替代） -->
+  <van-cell-group wx:if="{{!isRecharge}}" title="订单总额" inset>
     <van-cell title="{{fromCart ? '商品合计' : '服务单价'}}" value="¥{{price.fmt(unitPrice)}}" />
     <van-cell wx:if="{{!fromCart && quantity > 1}}" title="数量" value="x{{quantity}}" />
     <van-cell title="订单总额" class="total-row">
@@ -63,8 +70,8 @@ module.exports.date = function(s) {
     </van-cell>
   </van-cell-group>
 
-  <!-- 抵扣（优惠券 + 储值卡，与"支付方式"严格分开） -->
-  <van-cell-group title="抵扣" inset>
+  <!-- 抵扣（优惠券 + 储值卡，与"支付方式"严格分开；充值单本身不允许抵扣，整块隐藏） -->
+  <van-cell-group wx:if="{{!isRecharge}}" title="抵扣" inset>
     <!-- 优惠券选择（扫码场景不展示） -->
     <van-cell
       wx:if="{{!existingOrderNo}}"
