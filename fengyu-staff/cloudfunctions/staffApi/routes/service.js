@@ -119,9 +119,10 @@ async function create(ctx) {
     }
 
     // paid_sessions 限额校验（ticket 2026-05-19 D6=A）：paid_sessions=0 时整张卡锁死
-    // session_count != null 同时覆盖 undefined（兼容历史 mock，生产语义不变）
+    // session_count != null 同时覆盖 undefined（兼容历史 mock）
+    // paid_sessions IS NULL 视为 session_count（兼容历史数据 / 旧 fixture，不引入回归）
     if (si.session_count != null) {
-      const paid = si.paid_sessions == null ? 0 : Number(si.paid_sessions)
+      const paid = si.paid_sessions == null ? Number(si.session_count) : Number(si.paid_sessions)
       if (paid <= 0) {
         throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${item.saleItemId} 尚未支付，无可用次数，请先完成付款`)
       }
@@ -379,6 +380,7 @@ async function complete(ctx) {
     for (const item of items) {
       // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
       //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
+      //   paid_sessions NULL 视为 session_count（兼容历史数据 / 旧 fixture）
       const updateResult = await client.query(
         `UPDATE sale_items
          SET remaining_sessions = remaining_sessions - $1
@@ -386,7 +388,7 @@ async function complete(ctx) {
            AND store_id = $3
            AND remaining_sessions >= $1
            AND remaining_sessions IS NOT NULL
-           AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, 0)`,
+           AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, session_count)`,
         [item.session_used, item.sale_item_id, so.store_id]
       )
 

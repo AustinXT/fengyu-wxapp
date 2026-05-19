@@ -389,7 +389,7 @@ export const completeServiceOrder = withPermission(
         WHERE sale_items.sale_item_id = si.sale_item_id
           AND si.service_order_id = ${serviceOrderId}
           AND sale_items.remaining_sessions >= si.session_used
-          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, 0)
+          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
       ),
@@ -545,7 +545,8 @@ export const createServiceOrder = withPermission(
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
     }
     if (saleItem.sessionCount != null) {
-      const paid = saleItem.paidSessions == null ? 0 : Number(saleItem.paidSessions)
+      // paid_sessions NULL 视为 session_count（兼容历史数据 / 旧 fixture）
+      const paid = saleItem.paidSessions == null ? Number(saleItem.sessionCount) : Number(saleItem.paidSessions)
       if (paid <= 0) {
         return { success: false, message: `销售明细 ${item.saleItemId} 尚未支付，无可用次数，请先完成付款` }
       }
