@@ -12,7 +12,7 @@
  *       user_coupons.coupon_id = 'bday-${year}-${userId}-${templateId}'  自然主键唯一
  *   - 仅当 client_wechat_users.member_level IS NOT NULL 才进入循环
  *   - benefit 配置来自 system_configs['birthday_benefits']（JSON per member_level）
- *     现网（5433）此配置 5 等级 points=0 + 无 coupon + 无 message → 实际不会发放任何东西
+ *     现网（5434）此配置 5 等级 points=0 + 无 coupon + 无 message → 实际不会发放任何东西
  *
  * 为产生可测的发放结果，spec 临时把"初钻"等级的配置改为有意义值：
  *   {"points": 10, "couponTemplateIds": ["FY-FIX-CT-01"], "messageTitle": "测试生日权益"}
@@ -25,15 +25,32 @@
  *   5. afterAll 还原所有 fixture / config
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, chromium, type Browser, type Page } from '@playwright/test'
 import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
+const BASE = 'http://localhost:3000'
 const ADMIN_DIR = path.resolve(__dirname, '../..')
 const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
+const FIXTURE_PHONE = '13800138000'
 const CONFIG_KEY = 'birthday_benefits'
 const TEMPLATE_ID = 'FY-FIX-CT-01'
+
+// beforeAll 真实 admin createOrder 顶 spend 用 — ticket D1 决策 B
+// 现 fixture 顾客滚动 12 个月 spend 仅 ~¥1242 < 1980 阈值，
+// cron STEP 2 看 spend < 1980 → 把 member_level 强降为 NULL → STEP 3 按
+// "member_level IS NOT NULL" 过滤 → 跳过 fixture → 生日权益 0 发放 → 全部 FAIL。
+// 解决：beforeAll 真开一单 ≥ ¥1980（20 件 ¥100 SKU = ¥2000）+ 收款，
+// 让 STEP 2 看到 spend ≥ 1980 保留 member_level='初钻'，STEP 3 才会发放。
+// afterAll 用 cleanupSaleOrder 完整回滚。
+const MGR_PHONE = '13900139001'
+const MGR_PASS = 'fengyu2026'
+const SKU1_NAME = '洗-无创纹身' // 缦之羽 SKU ¥100
+const SETUP_TOPUP_QUANTITY = 20 // 20 件 × ¥100 = ¥2000
+
+let setupTopupOrderId = ''
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
 const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
@@ -43,7 +60,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -91,7 +108,166 @@ const TEST_CONFIG = {
   '黑钻': { points: 0, couponTemplateIds: [], messageTitle: '', messageBody: '' },
 }
 
-test.beforeAll(() => {
+// ── beforeAll helper：登录 + 真实 admin createOrder 补 spend ────────────────
+async function doSetupLogin(page: Page) {
+  await page.goto(`${BASE}/login`)
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByRole('button', { name: /登\s*录/ })).toBeVisible({ timeout: 20000 })
+  await page.waitForTimeout(400)
+  await page.locator('#phone').click()
+  await page.locator('#phone').pressSequentially(MGR_PHONE, { delay: 30 })
+  await page.locator('#password').click()
+  await page.locator('#password').pressSequentially(MGR_PASS, { delay: 30 })
+  await page.getByRole('button', { name: /登\s*录/ }).click()
+  await page.waitForURL(/\/dashboard/, { timeout: 20000 })
+}
+
+async function doSetupCreateTopupOrder(page: Page): Promise<string> {
+  await page.goto(`${BASE}/orders/create`)
+  await expect(page.getByRole('heading', { name: '新建订单' })).toBeVisible({ timeout: 15000 })
+
+  await page.getByPlaceholder(/手机号/).fill(FIXTURE_PHONE)
+  await page.getByRole('button', { name: /搜索/ }).click()
+  await page.waitForFunction(
+    () => {
+      const t = document.body.textContent || ''
+      return t.includes('找到') || t.includes('未找到')
+    },
+    { timeout: 15000 },
+  )
+  const firstCustomerBtn = page.locator('div.space-y-1 > button').first()
+  await expect(firstCustomerBtn).toBeVisible({ timeout: 5000 })
+  await firstCustomerBtn.click()
+  await expect(page.getByText('已选择顾客')).toBeVisible({ timeout: 5000 })
+  await page.getByRole('button', { name: '下一步' }).click()
+
+  await page.waitForTimeout(2000)
+  for (let retry = 0; retry < 3; retry++) {
+    const bodyText = await page.textContent('body')
+    if (bodyText?.includes('数据未加载') || bodyText?.includes('重试')) {
+      const retryBtn = page.getByRole('button', { name: '重试' })
+      if ((await retryBtn.count()) > 0) {
+        await retryBtn.click()
+        await page.waitForTimeout(3000)
+      }
+    } else if (bodyText?.includes('商品分类') || bodyText?.includes('加入')) {
+      break
+    } else {
+      await page.waitForTimeout(2000)
+    }
+  }
+  await page.waitForFunction(
+    () => {
+      const t = document.body.textContent || ''
+      return (
+        (t.includes('商品分类') || t.includes('暂无可选品类') || t.includes('加入')) &&
+        !t.includes('正在加载')
+      )
+    },
+    { timeout: 30000 },
+  )
+
+  const cat1Btn = page.getByRole('button', { name: '缦之羽', exact: true }).first()
+  if ((await cat1Btn.count()) > 0) {
+    await cat1Btn.click()
+    await page.waitForTimeout(500)
+  }
+
+  const skuNameEl = page.getByText(SKU1_NAME, { exact: false })
+  let addBtn = page.getByRole('button', { name: /加入/ }).first()
+  if ((await skuNameEl.count()) > 0) {
+    const skuCard = skuNameEl.first().locator('..').locator('..')
+    const scopedAdd = skuCard.getByRole('button', { name: /加入/ })
+    if ((await scopedAdd.count()) > 0) addBtn = scopedAdd.first()
+  }
+  for (let i = 0; i < SETUP_TOPUP_QUANTITY; i++) {
+    await addBtn.click()
+    await page.waitForTimeout(150)
+  }
+  console.log(`[链路22 setup] 已加件 SKU1 ${SETUP_TOPUP_QUANTITY} 次（凑 ¥${SETUP_TOPUP_QUANTITY * 100}）`)
+
+  const nextBtn = page.getByRole('button', { name: '下一步' })
+  await expect(nextBtn).toBeEnabled({ timeout: 5000 })
+  await nextBtn.click()
+  await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({
+    timeout: 10000,
+  })
+
+  const paySelect = page.locator('select').first()
+  if ((await paySelect.count()) > 0) {
+    const opts = await paySelect.locator('option').allTextContents()
+    if (opts.some((o) => o.includes('线下'))) {
+      await paySelect.selectOption({ label: '线下支付' })
+    }
+  }
+
+  const submitBtn = page.getByRole('button', { name: /提交订单|下一步|确认提交/ }).last()
+  await expect(submitBtn).toBeEnabled({ timeout: 5000 })
+  await submitBtn.click()
+
+  await expect(page.getByText(/订单已创建|开单成功|FY-XSD-WX/)).toBeVisible({ timeout: 20000 })
+  let saleOrderId = ''
+  const orderIdEl = page.locator('p.font-mono, p:has-text("FY-XSD-WX")').first()
+  if ((await orderIdEl.count()) > 0) {
+    const text = await orderIdEl.textContent()
+    const m = text?.match(/FY-XSD-WX-\d{10}/)
+    if (m) saleOrderId = m[0]
+  }
+  if (!saleOrderId) {
+    const bodyText = await page.textContent('body')
+    const m = bodyText?.match(/FY-XSD-WX-\d{10}/)
+    if (m) saleOrderId = m[0]
+  }
+  if (!saleOrderId) throw new Error('[链路22 setup] 提取补 spend 订单号失败')
+
+  const confirmPayBtn = page.getByRole('button', { name: '确认收款' })
+  await expect(confirmPayBtn).toBeVisible({ timeout: 10000 })
+  await confirmPayBtn.click()
+  await expect(page.getByText(/收款确认成功|已确认收款|已更新为已支付/).first()).toBeVisible({
+    timeout: 15000,
+  })
+
+  return saleOrderId
+}
+
+test.beforeAll(async () => {
+  // ── 阶段 1：补 spend — 真实 admin UI 开一单 ≥ ¥1980 + 确认收款 ───────────
+  // ticket D1 决策 B：cron STEP 2 看 spend ≥ 1980 才不会把 member_level 降回 NULL，
+  // STEP 3 grant-birthday-benefits 才会处理 fixture 顾客。
+  const browser: Browser = await chromium.launch({ headless: true })
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  try {
+    await doSetupLogin(page)
+    setupTopupOrderId = await doSetupCreateTopupOrder(page)
+    console.log(`[链路22 setup] 补 spend 订单已创建并收款: ${setupTopupOrderId}`)
+    const orderStatus = psql(
+      `SELECT status::text FROM sale_orders WHERE sale_order_id='${setupTopupOrderId}'`,
+    )
+    if (orderStatus !== '已支付') {
+      throw new Error(`[链路22 setup] 补 spend 订单状态非已支付: ${orderStatus}`)
+    }
+  } finally {
+    await ctx.close()
+    await browser.close()
+  }
+
+  const postTopupSpend = parseFloat(
+    psql(
+      `SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) ` +
+        `FROM sale_orders WHERE client_user_id='${FIXTURE_USER_ID}' ` +
+        `AND sale_order_type IN ('销售单','转换单') ` +
+        `AND paid_at >= (NOW() - INTERVAL '12 months')`,
+    ),
+  )
+  console.log(`[链路22 setup] 补 spend 后 12mo spend = ${postTopupSpend}`)
+  if (postTopupSpend < 1980) {
+    throw new Error(
+      `[链路22 setup] 补 spend 后 12mo spend=${postTopupSpend} < 1980，beforeAll 失败`,
+    )
+  }
+
+  // ── 阶段 2：原有备份 + 注入测试配置 ─────────────────────────────────────
   // 备份
   origConfig = psql(`SELECT value::text FROM system_configs WHERE key='${CONFIG_KEY}'`)
   origBirthday = psql(`SELECT COALESCE(birthday::text,'NULL') FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
@@ -105,6 +281,7 @@ test.beforeAll(() => {
   console.log('[链路22 setup] 已注入测试 birthday_benefits 配置')
 
   // 设置 fixture.birthday=今天 + member_level=初钻
+  // 补 spend 阶段保证了 cron STEP 2 不会再把 member_level 降回 NULL
   psql(
     `UPDATE client_wechat_users SET birthday=CURRENT_DATE, member_level='初钻'::member_level, updated_at=NOW() ` +
       `WHERE user_id='${FIXTURE_USER_ID}'`,
@@ -158,6 +335,14 @@ test.afterAll(() => {
       psql(`UPDATE system_configs SET value='${origConfig.replace(/'/g, "''")}'::jsonb, updated_at=NOW() WHERE key='${CONFIG_KEY}'`)
     }
   } catch (e) { console.log(`[teardown] 还原 config 出错: ${e}`) }
+
+  // 清理 beforeAll 补 spend 订单（含 sale_items / sale_allocations / payments / 自引用回款单）
+  // — ticket D1 决策 B：beforeAll 引入的 sale_order 在 afterAll 一并清，保持 fixture spend 不永久膨胀。
+  if (setupTopupOrderId) {
+    try {
+      cleanupSaleOrder(setupTopupOrderId, psql, { logPrefix: '[链路22 teardown topup]' })
+    } catch (e) { console.log(`[teardown] 清理补 spend 订单 ${setupTopupOrderId} 出错: ${e}`) }
+  }
 
   // 重算 points_balance（cron 写入的 +10 已被上面 DELETE 抵消，需复算缓存避免漂移）
   try {

@@ -97,7 +97,7 @@ documents and moves on; spec 标 `.skip()` 直到 fixture 拍板。
   - [x] beforeAll 校验 12mo spend ≥ 1980 ✓
   - [x] Q2 答案：link-22 同步把 member_level 顶到 '初钻'（link-6 仍走 NULL→初钻 升级路径，因为 link-6 测的就是升级行为本身）✓
   - [x] afterAll cleanupSaleOrder 清补 spend 订单 ✓
-  - [⚠️] DoD 1 测试 PASS：**SKIP 执行验证**。当前 `fengyu-admin/.env.local` 的 `DATABASE_URL` 指向 5434/fengyu（生产业务库），而 e2e-chains spec 的 psql 仍连 5433/fengyu_wxapp（测试库）；FY-TEST-MGR (13900139001) 测试账号仅存在于 5433。admin dev server login 因 5434 无此账号 → 测试超时。此 DB 不一致是已知问题，归属 ticket `2026-05-18-e2e-chains-test-db-mismatch.md`（用户指令"以当前 README 写的连接串为准，B1 fixture 迁移在另一个 agent 中进行"，本 agent 不动 admin 配置）
+  - [⚠️] DoD 1 测试 PASS：**SKIP 执行验证**。本 agent 实施期间另一并行 agent 把 e2e-chains 全部 spec 的 psql 连接从 5433/fengyu_wxapp 切换到 5434/fengyu（与 admin dev server 实际连接的库对齐），同时本 agent 在 link-6 / link-22 加 setup createOrder 改动。但 fixture（FY-TEST-MGR 测试账号 / FY-FIX-CLIENT-01 顾客 / FY-FIX-CARD-01 储值卡等）目前仅存在于 5433，5434 上缺失（fixture 迁移属 B1 agent 工作），导致 admin login + UI 流程因找不到测试账号 → 超时 FAIL。spec 改动语义已写完并通过 `npx tsc --noEmit` + `bunx playwright --list`；待 5434 fixture 迁移完成后跑批即可 PASS。此 DB 一致性问题归 ticket `2026-05-18-e2e-chains-test-db-mismatch.md`
 - **关联引用**：
   - 配套 ticket `2026-05-18-e2e-link-10-card-pollution.md`（D2）同批归档
   - 关联 memory：`project_test_fixture_resting_state.md`、`project_member_level_rules.md`

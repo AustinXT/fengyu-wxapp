@@ -17,7 +17,7 @@
  *   6. 清理：删除测试销售单、删除 cron 产出的 messages/point_transactions，
  *      恢复 fixture 顾客等级为 NULL（与 beforeAll 起点一致）
  *
- * Schema 注（已与 5433 实际表结构核对，2026-05-17）：
+ * Schema 注（已与 5434 实际表结构核对，2026-05-17）：
  *   - messages 表使用 (recipient_type, recipient_id)，不是 recipient_user_id
  *   - point_transactions.external_ref = `member-upgrade-${userId}-${toLevel}`
  *     （uq_point_txns_external_ref 是幂等键；本目录 README.md 写的
@@ -30,7 +30,7 @@
  *     link-6-member-upgrade.spec.ts --project=chromium --reporter=list
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, chromium, type Browser, type Page } from '@playwright/test'
 import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
@@ -47,9 +47,15 @@ const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
 const SKU1_NAME = '洗-无创纹身' // 缦之羽 SKU ¥100
 const SKU2_NAME = '假性皱纹管家' // 其他 SKU ¥100
 
-// 预期升级路径：当前 spend 2703.80 + ¥200 = 2903.80 ≥ 1980 → 初钻
+// 预期升级路径：beforeAll 补足 spend ≥ 1980 → 初钻
 const EXPECTED_LEVEL = '初钻'
 const IDEM_KEY = `member-upgrade-${FIXTURE_USER_ID}-${EXPECTED_LEVEL}`
+
+// beforeAll 真实 admin createOrder 顶 spend 用 — ticket D1 决策 B
+// 现 fixture 顾客滚动 12 个月 spend 仅 ~¥1242 < 1980 阈值，
+// beforeAll 真开一单 ≥ ¥1980（20 件 ¥100 SKU = ¥2000）+ 收款 把 spend 推过门槛。
+// afterAll 用 cleanupSaleOrder 完整回滚（含 sale_items / sale_allocations）。
+const SETUP_TOPUP_QUANTITY = 20 // 20 件 × ¥100 = ¥2000
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
 
@@ -57,7 +63,7 @@ const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -92,8 +98,182 @@ let baselinePointTxnCount = 0
 let baselineMessagesCount = 0
 let baselineUserCouponsCount = 0
 
-test.beforeAll(() => {
-  // 重置顾客等级到 NULL（不动 sale_orders；既有 rolling-12mo spend ≈ 2700+ 仍生效）
+// beforeAll 期间真实 admin createOrder 创建的"补 spend"销售单号
+// （afterAll cleanupSaleOrder 回滚，避免 fixture 顾客 spend 永久膨胀）
+let setupTopupOrderId = ''
+
+// ── beforeAll helper：登录 + 真实 admin createOrder 补 spend ────────────────
+async function doSetupLogin(page: Page) {
+  await page.goto(`${BASE}/login`)
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByRole('button', { name: /登\s*录/ })).toBeVisible({ timeout: 20000 })
+  await page.waitForTimeout(400)
+  await page.locator('#phone').click()
+  await page.locator('#phone').pressSequentially(MGR_PHONE, { delay: 30 })
+  await page.locator('#password').click()
+  await page.locator('#password').pressSequentially(MGR_PASS, { delay: 30 })
+  await page.getByRole('button', { name: /登\s*录/ }).click()
+  await page.waitForURL(/\/dashboard/, { timeout: 20000 })
+}
+
+async function doSetupCreateTopupOrder(page: Page): Promise<string> {
+  await page.goto(`${BASE}/orders/create`)
+  await expect(page.getByRole('heading', { name: '新建订单' })).toBeVisible({ timeout: 15000 })
+
+  // Step 1：选 fixture 顾客
+  await page.getByPlaceholder(/手机号/).fill(FIXTURE_PHONE)
+  await page.getByRole('button', { name: /搜索/ }).click()
+  await page.waitForFunction(
+    () => {
+      const t = document.body.textContent || ''
+      return t.includes('找到') || t.includes('未找到')
+    },
+    { timeout: 15000 },
+  )
+  const firstCustomerBtn = page.locator('div.space-y-1 > button').first()
+  await expect(firstCustomerBtn).toBeVisible({ timeout: 5000 })
+  await firstCustomerBtn.click()
+  await expect(page.getByText('已选择顾客')).toBeVisible({ timeout: 5000 })
+  await page.getByRole('button', { name: '下一步' }).click()
+
+  // Step 2：选商品 — 缦之羽分类下 SKU1（¥100），加件 SETUP_TOPUP_QUANTITY 次凑 ¥2000
+  await page.waitForTimeout(2000)
+  for (let retry = 0; retry < 3; retry++) {
+    const bodyText = await page.textContent('body')
+    if (bodyText?.includes('数据未加载') || bodyText?.includes('重试')) {
+      const retryBtn = page.getByRole('button', { name: '重试' })
+      if ((await retryBtn.count()) > 0) {
+        await retryBtn.click()
+        await page.waitForTimeout(3000)
+      }
+    } else if (bodyText?.includes('商品分类') || bodyText?.includes('加入')) {
+      break
+    } else {
+      await page.waitForTimeout(2000)
+    }
+  }
+  await page.waitForFunction(
+    () => {
+      const t = document.body.textContent || ''
+      return (
+        (t.includes('商品分类') || t.includes('暂无可选品类') || t.includes('加入')) &&
+        !t.includes('正在加载')
+      )
+    },
+    { timeout: 30000 },
+  )
+
+  // 切到缦之羽分类
+  const cat1Btn = page.getByRole('button', { name: '缦之羽', exact: true }).first()
+  if ((await cat1Btn.count()) > 0) {
+    await cat1Btn.click()
+    await page.waitForTimeout(500)
+  }
+
+  // 定位 SKU1 卡片的"加入"按钮
+  const skuNameEl = page.getByText(SKU1_NAME, { exact: false })
+  let addBtn = page.getByRole('button', { name: /加入/ }).first()
+  if ((await skuNameEl.count()) > 0) {
+    const skuCard = skuNameEl.first().locator('..').locator('..')
+    const scopedAdd = skuCard.getByRole('button', { name: /加入/ })
+    if ((await scopedAdd.count()) > 0) addBtn = scopedAdd.first()
+  }
+  // 累加点 SETUP_TOPUP_QUANTITY 次：同一 SKU 重复"加入"会 quantity++（见 order-create-page.tsx L323）
+  for (let i = 0; i < SETUP_TOPUP_QUANTITY; i++) {
+    await addBtn.click()
+    await page.waitForTimeout(150)
+  }
+  console.log(`[链路6 setup] 已加件 SKU1 ${SETUP_TOPUP_QUANTITY} 次（凑 ¥${SETUP_TOPUP_QUANTITY * 100}）`)
+
+  // Step 3：下一步 → 选线下支付 → 提交
+  const nextBtn = page.getByRole('button', { name: '下一步' })
+  await expect(nextBtn).toBeEnabled({ timeout: 5000 })
+  await nextBtn.click()
+
+  await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({
+    timeout: 10000,
+  })
+
+  const paySelect = page.locator('select').first()
+  if ((await paySelect.count()) > 0) {
+    const opts = await paySelect.locator('option').allTextContents()
+    if (opts.some((o) => o.includes('线下'))) {
+      await paySelect.selectOption({ label: '线下支付' })
+    }
+  }
+
+  const submitBtn = page.getByRole('button', { name: /提交订单|下一步|确认提交/ }).last()
+  await expect(submitBtn).toBeEnabled({ timeout: 5000 })
+  await submitBtn.click()
+
+  // Step 4：抓订单号
+  await expect(page.getByText(/订单已创建|开单成功|FY-XSD-WX/)).toBeVisible({ timeout: 20000 })
+  let saleOrderId = ''
+  const orderIdEl = page.locator('p.font-mono, p:has-text("FY-XSD-WX")').first()
+  if ((await orderIdEl.count()) > 0) {
+    const text = await orderIdEl.textContent()
+    const m = text?.match(/FY-XSD-WX-\d{10}/)
+    if (m) saleOrderId = m[0]
+  }
+  if (!saleOrderId) {
+    const bodyText = await page.textContent('body')
+    const m = bodyText?.match(/FY-XSD-WX-\d{10}/)
+    if (m) saleOrderId = m[0]
+  }
+  if (!saleOrderId) throw new Error('[链路6 setup] 提取补 spend 订单号失败')
+
+  // 确认收款
+  const confirmPayBtn = page.getByRole('button', { name: '确认收款' })
+  await expect(confirmPayBtn).toBeVisible({ timeout: 10000 })
+  await confirmPayBtn.click()
+  await expect(page.getByText(/收款确认成功|已确认收款|已更新为已支付/).first()).toBeVisible({
+    timeout: 15000,
+  })
+
+  return saleOrderId
+}
+
+test.beforeAll(async () => {
+  // ── 阶段 1：补 spend — 真实 admin UI 开一单 ≥ ¥1980 + 确认收款 ───────────
+  // ticket D1 决策 B：用真实 admin createOrder + confirmOfflinePayment 路径
+  // 把 fixture 顾客滚动 12 个月 spend 顶过 1980 阈值，避免 cron STEP 2
+  // 把 member_level 降回 NULL → STEP 3 跳过生日权益。
+  const browser: Browser = await chromium.launch({ headless: true })
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  try {
+    await doSetupLogin(page)
+    setupTopupOrderId = await doSetupCreateTopupOrder(page)
+    console.log(`[链路6 setup] 补 spend 订单已创建并收款: ${setupTopupOrderId}`)
+    // DB 确认订单已支付（cron 才会计入 spend）
+    const orderStatus = psql(
+      `SELECT status::text FROM sale_orders WHERE sale_order_id='${setupTopupOrderId}'`,
+    )
+    if (orderStatus !== '已支付') {
+      throw new Error(`[链路6 setup] 补 spend 订单状态非已支付: ${orderStatus}`)
+    }
+  } finally {
+    await ctx.close()
+    await browser.close()
+  }
+
+  // 校验补 spend 后滚动 12 个月已 ≥ 1980（不达标说明 fixture 漂移，立刻报错）
+  const postTopupSpend = parseFloat(
+    psql(
+      `SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) ` +
+        `FROM sale_orders WHERE client_user_id='${FIXTURE_USER_ID}' ` +
+        `AND sale_order_type IN ('销售单','转换单') ` +
+        `AND paid_at >= (NOW() - INTERVAL '12 months')`,
+    ),
+  )
+  console.log(`[链路6 setup] 补 spend 后 12mo spend = ${postTopupSpend}`)
+  if (postTopupSpend < 1980) {
+    throw new Error(
+      `[链路6 setup] 补 spend 后 12mo spend=${postTopupSpend} < 1980，beforeAll 失败`,
+    )
+  }
+
+  // ── 阶段 2：重置顾客等级到 NULL（cron 触发 NULL→初钻 升级路径） ─────────
   psql(
     `UPDATE client_wechat_users SET member_level=NULL, old_member_level=NULL, ` +
       `member_level_upgraded_at=NULL, member_level_locked_until=NULL ` +
@@ -202,6 +382,17 @@ test.afterAll(() => {
   } catch (e) {
     console.error(`[链路6 teardown] 删 operation_logs 出错（非致命）: ${e}`)
   }
+
+  // 清理 beforeAll 补 spend 订单（含 sale_items / sale_allocations / payments / 自引用回款单）
+  // — ticket D1 决策 B：beforeAll 引入的 sale_order 在 afterAll 一并清，保持 fixture spend 不永久膨胀。
+  if (setupTopupOrderId) {
+    try {
+      cleanupSaleOrder(setupTopupOrderId, psql, { logPrefix: '[链路6 teardown topup]' })
+    } catch (e) {
+      console.error(`[链路6 teardown] 清理补 spend 订单 ${setupTopupOrderId} 出错（非致命）: ${e}`)
+    }
+  }
+
   console.log('[链路6 teardown] 已清理 cron 产出，复位 fixture 顾客状态为 NULL')
 })
 
