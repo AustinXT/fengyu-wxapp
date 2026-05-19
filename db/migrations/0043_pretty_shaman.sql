@@ -58,6 +58,28 @@ DELETE FROM "sale_orders"
 
 DROP TABLE _recharge_items_cleanup;--> statement-breakpoint
 
+-- 先清商城关联：mall_product_skus 是 products ↔ product_skus 的 M:N 桥表
+-- 删充值卡 SKU 前必须先把这些关联行删掉（FK NO ACTION 会报错）
+CREATE TEMPORARY TABLE _recharge_mall_products_cleanup AS
+  SELECT DISTINCT mps.product_id
+  FROM "mall_product_skus" mps
+  JOIN "product_skus" sk ON mps.sku_id = sk.sku_id
+  WHERE sk.is_recharge_card = true;--> statement-breakpoint
+
+DELETE FROM "mall_product_skus"
+  WHERE sku_id IN (SELECT sku_id FROM "product_skus" WHERE is_recharge_card = true);--> statement-breakpoint
+
+-- 现在判定哪些 mall_products 已 0 SKU（仅曾挂充值卡 SKU），整商品下线
+DELETE FROM "mall_bundle_groups"
+  WHERE product_id IN (SELECT product_id FROM _recharge_mall_products_cleanup)
+    AND product_id NOT IN (SELECT DISTINCT product_id FROM "mall_product_skus");--> statement-breakpoint
+
+DELETE FROM "products"
+  WHERE product_id IN (SELECT product_id FROM _recharge_mall_products_cleanup)
+    AND product_id NOT IN (SELECT DISTINCT product_id FROM "mall_product_skus");--> statement-breakpoint
+
+DROP TABLE _recharge_mall_products_cleanup;--> statement-breakpoint
+
 -- 删充值卡 SKU（含真实档位 SKU + 'sku-recharge-virtual' 虚拟 SKU）
 DELETE FROM "product_skus" WHERE is_recharge_card = true;--> statement-breakpoint
 
