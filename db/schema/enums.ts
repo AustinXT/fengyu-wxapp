@@ -132,3 +132,48 @@ export const customerStatusEnum = pgEnum("customer_status", [
   "冰冻",
   "休眠",
 ]);
+
+/**
+ * 库存单据通用状态（4 张主表共用）
+ */
+export const inventoryDocStatusEnum = pgEnum("inventory_doc_status", [
+  "草稿",
+  "已完成",
+  "已取消",
+]);
+
+/**
+ * 采购入库类子类型（inventory_procurement_orders.doc_subtype）
+ *
+ * 院报货：店内向供应链/市场提需求
+ * 院入库：实际收货入库（可能引用对应的院报货 / 市场出库单 SCCKD）
+ * 退货出库：店内退货回供应商（库存减少；归在采购域因为是与供应商互动）
+ */
+export const inventoryProcurementSubtypeEnum = pgEnum(
+  "inventory_procurement_subtype",
+  ["院报货", "院入库", "退货出库"],
+);
+
+/**
+ * 销售出库类子类型（inventory_sale_orders.doc_subtype）
+ *
+ * 销售出库：顾客领取家居产品（库存减少）
+ * 顾客退货：顾客退回家居产品（库存增加；负向出库）
+ */
+export const inventorySaleSubtypeEnum = pgEnum("inventory_sale_subtype", [
+  "销售出库",
+  "顾客退货",
+]);
+
+/**
+ * 调拨类子类型（inventory_transfer_orders.doc_subtype）
+ *
+ * 调拨出库：本门店发出货物给对方门店
+ * 调拨入库：本门店从对方门店接收货物
+ *
+ * 物理上同一条调拨单两端视图通过 is_dispatcher 区分；不同视图可生成两条业务记录或共享同一条。
+ */
+export const inventoryTransferSubtypeEnum = pgEnum(
+  "inventory_transfer_subtype",
+  ["调拨出库", "调拨入库"],
+);

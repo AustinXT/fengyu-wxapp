@@ -52,6 +52,9 @@ export * from './service-commission'
 // 提货记录
 export * from './pickup'
 
+// 门店库存域（采购/销售/调拨/报损 4 对主+明细表）
+export * from './inventory'
+
 // 系统配置
 export * from './system-config'
 

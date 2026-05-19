@@ -295,6 +295,13 @@
       "when": 1779164053919,
       "tag": "0041_drop_legacy_product_mapping",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1779190584157,
+      "tag": "0042_curvy_piledriver",
+      "breakpoints": true
     }
   ]
 }
