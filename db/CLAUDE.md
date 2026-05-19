@@ -118,6 +118,38 @@ docker rm -f drizzle-migrate-test
 这个临时容器**只用于验证**，不要承载任何业务数据。`docker/docker-compose.yml` 里定义的
 `fengyu-postgres` 容器是历史遗留，团队不使用。
 
+### 新机器从零 apply（绕过历史 bug）
+
+新机器 / CI / 临时 docker PG **不要直接跑** `npm run db:migrate`，因为存在 3 个已知历史 bug 会让从零 apply 失败：
+
+1. **0018_black_madrox.sql**：同事务 `ALTER TYPE payment_flow_status ADD VALUE '待审批'` + 后续 `WHERE status='待审批'` 谓词 → PG 错误码 55P04（"New enum values must be committed before they can be used"）
+2. **0023_keen_freak.sql L44-L47**：与 0022 重复 `ADD CONSTRAINT chk_sale_alloc_ratio` 等 4 个约束（baseline reset 时这两个 migration 在生产是手工 INSERT 的，从未真正 apply）
+3. **0028_fine_maelstrom.sql 末尾**：硬编码 `ALTER DATABASE fengyu SET timezone=...`（生产库名）
+
+使用 bootstrap 脚本一键解决：
+
+```bash
+docker run -d --name pg-from-zero \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+  -p 54399:5432 postgres:16
+sleep 5
+
+DATABASE_URL="postgresql://postgres:test@localhost:54399/test" \
+  bash db/scripts/bootstrap-from-zero.sh
+
+# bootstrap 完成后，后续增量 migration 用普通 db:migrate 即可（hash 已对齐）
+docker rm -f pg-from-zero
+```
+
+脚本特性：
+- 纯 psql 全程 apply（不依赖 drizzle migrate 整体大事务）
+- 对 0018 / 0023 / 0028 三个特殊 migration 做兜底
+- 每条 migration apply 后手动 INSERT `drizzle.__drizzle_migrations`（hash 用 sha256(SQL 全文)，与 drizzle 算法对齐）
+- 幂等：再跑一次会全 SKIP
+- 与后续 `npm run db:migrate` 完全兼容
+
+**生产 5434 / 冷备 5433 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
+
 ## 同步脚本
 
 `scripts/` 目录下的同步脚本将 WorkFine（SQL Server）数据单向同步到 PostgreSQL：
