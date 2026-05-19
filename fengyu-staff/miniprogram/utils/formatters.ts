@@ -19,7 +19,7 @@ export const ORDER_TYPE_LABEL: Record<string, string> = {
 }
 
 /**
- * 格式化时间戳为 YYYY-MM-DD HH:mm:ss
+ * 格式化时间戳为 YYYY-MM-DD HH:mm:ss（默认带秒）
  */
 export function formatDateTime(v: any): string {
   if (!v) return ''
@@ -27,6 +27,17 @@ export function formatDateTime(v: any): string {
   if (isNaN(d.getTime())) return String(v)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/**
+ * 格式化时间戳为 YYYY-MM-DD HH:mm（不含秒，用于明确不需要秒的展示位置）
+ */
+export function formatDateTimeShort(v: any): string {
+  if (!v) return ''
+  const d = new Date(typeof v === 'string' ? (v.includes('T') ? v : v.replace(/-/g, '/')) : v)
+  if (isNaN(d.getTime())) return String(v)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 /**

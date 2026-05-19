@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTime, calculateTriProgress } from '../../utils/format';
+import { formatDateTimeShort, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {
   sale_item_id: string;
@@ -195,7 +195,7 @@ Page({
           is_refund: isRefund,
           payment_method: p.payment_method,
           status: p.status,
-          time_fmt: timeSrc ? formatDateTime(timeSrc) : '',
+          time_fmt: timeSrc ? formatDateTimeShort(timeSrc) : '',
           note: p.note,
           refund_reason: p.refund_reason ?? null,
           audit_remark: p.audit_remark ?? null,
@@ -220,7 +220,7 @@ Page({
         order: {
           ...order,
           items: itemsWithProgress,
-          order_time_fmt: formatDateTime(order.sale_order_datetime),
+          order_time_fmt: formatDateTimeShort(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
           outstanding_fmt: outstanding.toFixed(2),
           refunded_fmt: refundedFmt,

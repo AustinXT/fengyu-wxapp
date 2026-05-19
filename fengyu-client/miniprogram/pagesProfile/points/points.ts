@@ -1,7 +1,7 @@
 // pagesProfile/points/points.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTimeShort } from '../../utils/format';
 
 const PAGE_SIZE = 20;
 
@@ -56,7 +56,7 @@ Page({
   _mapRecords(raw: any[]) {
     return raw.map((r: any) => ({
       ...r,
-      displayDate: formatDateTime(r.createdAt),
+      displayDate: formatDateTimeShort(r.createdAt),
       displayAmount: r.amount > 0 ? `+${r.amount}` : `${r.amount}`,
       isEarn: r.amount > 0,
     }));

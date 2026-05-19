@@ -12,6 +12,7 @@ import {
   getStatusClass,
   formatOrderDate,
   formatDateTime,
+  formatDateTimeShort,
   formatShortDate,
   formatRelativeTime,
   formatAmount,
@@ -173,20 +174,36 @@ describe('formatOrderDate', () => {
 })
 
 describe('formatDateTime', () => {
-  test('ISO 日期时间', () => {
-    // 使用本地时间构造以避免时区问题
-    const d = new Date(2025, 2, 14, 10, 30); // 2025-03-14 10:30 local
-    expect(formatDateTime(d.toISOString())).toBe('2025-03-14 10:30')
+  test('ISO 日期时间（带秒）', () => {
+    const d = new Date(2025, 2, 14, 10, 30, 42); // 2025-03-14 10:30:42 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-03-14 10:30:42')
   })
   test('补零', () => {
-    const d = new Date(2025, 0, 5, 8, 5); // 2025-01-05 08:05 local
-    expect(formatDateTime(d.toISOString())).toBe('2025-01-05 08:05')
+    const d = new Date(2025, 0, 5, 8, 5, 9); // 2025-01-05 08:05:09 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-01-05 08:05:09')
   })
   test('空字符串', () => {
     expect(formatDateTime('')).toBe('')
   })
   test('无效日期', () => {
     expect(formatDateTime('not-a-date')).toBe('')
+  })
+})
+
+describe('formatDateTimeShort', () => {
+  test('ISO 日期时间（不带秒）', () => {
+    const d = new Date(2025, 2, 14, 10, 30); // 2025-03-14 10:30 local
+    expect(formatDateTimeShort(d.toISOString())).toBe('2025-03-14 10:30')
+  })
+  test('补零', () => {
+    const d = new Date(2025, 0, 5, 8, 5); // 2025-01-05 08:05 local
+    expect(formatDateTimeShort(d.toISOString())).toBe('2025-01-05 08:05')
+  })
+  test('空字符串', () => {
+    expect(formatDateTimeShort('')).toBe('')
+  })
+  test('无效日期', () => {
+    expect(formatDateTimeShort('not-a-date')).toBe('')
   })
 })
 

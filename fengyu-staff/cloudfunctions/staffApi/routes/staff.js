@@ -597,6 +597,7 @@ async function performanceDetail(ctx) {
       si.sales_category,
       so.service_order_id,
       so.service_date,
+      so.created_at AS service_created_at,
       so.store_id,
       cu.name AS customer_name,
       cu.phone AS client_phone
@@ -666,7 +667,7 @@ async function performanceDetail(ctx) {
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.service_order_id,
-    date: r.service_date,
+    date: r.service_created_at || r.service_date,
   }))
 
   let allItems

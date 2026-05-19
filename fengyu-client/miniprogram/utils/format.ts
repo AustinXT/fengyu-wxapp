@@ -121,8 +121,21 @@ export function safeParseDate(dateStr: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** 日期时间格式化："2025-03-14 10:30" */
+/** 日期时间格式化（带秒）："2025-03-14 10:30:42" */
 export function formatDateTime(dateStr: string): string {
+  const d = safeParseDate(dateStr);
+  if (!d) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const sec = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${sec}`;
+}
+
+/** 日期时间格式化（不带秒）："2025-03-14 10:30"（用于列表/卡片等紧凑展示位置） */
+export function formatDateTimeShort(dateStr: string): string {
   const d = safeParseDate(dateStr);
   if (!d) return '';
   const y = d.getFullYear();

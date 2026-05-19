@@ -6,6 +6,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatCount } from '../../utils/number';
+import { formatDateTime } from '../../utils/formatters';
 
 // ===== 数据接口 =====
 
@@ -384,10 +385,10 @@ Page({
   async loadPurchaseHistory() {
     if (!this._clientUserId) return;
     try {
-      const orders = await callStaffApi<PaidOrder[]>('mgmtCustomer.paidOrders', {
+      const orders = (await callStaffApi<PaidOrder[]>('mgmtCustomer.paidOrders', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
-      }) || [];
+      }) || []).map(o => ({ ...o, paidAt: formatDateTime(o.paidAt) }));
       this.setData({ purchaseOrders: orders, purchaseLoaded: true });
     } catch (_) {}
   },
@@ -451,7 +452,11 @@ Page({
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
       });
-      this.setData({ giftData: data, giftLoaded: true });
+      const formatted: GiftData = {
+        promoOrders: (data?.promoOrders || []).map(o => ({ ...o, paidAt: o.paidAt ? formatDateTime(o.paidAt) : o.paidAt, createdAt: formatDateTime(o.createdAt) })),
+        giftItems: (data?.giftItems || []).map(g => ({ ...g, createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt })),
+      };
+      this.setData({ giftData: formatted, giftLoaded: true });
     } catch (_) {
       this.setData({ giftData: { promoOrders: [], giftItems: [] }, giftLoaded: true });
     }
@@ -461,10 +466,10 @@ Page({
   async loadRefundHistory() {
     if (!this._clientUserId) return;
     try {
-      const records = await callStaffApi<RefundRecord[]>('mgmtCustomer.refundHistory', {
+      const records = (await callStaffApi<RefundRecord[]>('mgmtCustomer.refundHistory', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
-      }) || [];
+      }) || []).map(r => ({ ...r, createdAt: formatDateTime(r.createdAt) }));
       this.setData({ refundRecords: records, refundLoaded: true });
     } catch (_) {
       this.setData({ refundRecords: [], refundLoaded: true });

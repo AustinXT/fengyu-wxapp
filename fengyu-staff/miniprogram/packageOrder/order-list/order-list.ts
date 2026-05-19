@@ -1,5 +1,6 @@
 // pages/order-list/order-list.ts — 订单列表
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
@@ -123,8 +124,8 @@ Page({
         orderType: r.sale_order_type,
         payType: r.payment_method,
         totalAmount: r.total_amount,
-        createdAt: r.created_at,
-        paidAt: r.paid_at,
+        createdAt: formatDateTime(r.created_at),
+        paidAt: r.paid_at ? formatDateTime(r.paid_at) : r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
         openedBy: r.opened_by || null,
         hasRefund: !!r.has_refund,

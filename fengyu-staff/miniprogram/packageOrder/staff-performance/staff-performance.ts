@@ -1,6 +1,7 @@
 // packageOrder/staff-performance/staff-performance.ts — 员工绩效
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { formatDateTimeShort } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -199,7 +200,11 @@ Page({
         pageSize: 20,
       });
 
-      const newItems = reset ? (res.items || []) : [...this.data.items, ...(res.items || [])];
+      const formattedItems = (res.items || []).map((it) => ({
+        ...it,
+        date: formatDateTimeShort(it.date),
+      }));
+      const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       this.setData({

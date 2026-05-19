@@ -1,5 +1,6 @@
 // pages/unbind-requests/unbind-requests.ts — 顾客解绑申请审批
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/formatters';
 
 interface UnbindRequest {
   requestId: string;
@@ -30,7 +31,7 @@ Page({
       const data = await callStaffApi<{ requests: UnbindRequest[] }>('store.unbindRequests');
       const requests = ((data as any).requests || []).map((r: UnbindRequest) => ({
         ...r,
-        createdAt: this.formatDate(r.createdAt),
+        createdAt: formatDateTime(r.createdAt),
       }));
       this.setData({ requests });
     } catch (err: unknown) {
@@ -93,9 +94,4 @@ Page({
     }
   },
 
-  formatDate(dateStr: string): string {
-    if (!dateStr) return '';
-    const d = new Date(dateStr.replace(/-/g, '/'));
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  },
 });

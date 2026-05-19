@@ -1,5 +1,6 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
@@ -226,6 +227,7 @@ Page({
       // 可消费次数 = min(remaining, paid - used)；其中 used = total - remaining
       const filtered = (orders || []).map(o => ({
         ...o,
+        paidAt: formatDateTime(o.paidAt),
         items: o.items
           .map(i => {
             const total = Number(i.totalSessions || i.sessionCount || 0);
