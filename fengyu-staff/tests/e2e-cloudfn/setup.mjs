@@ -53,6 +53,28 @@ export const TEST_CLIENT_USER_ID = `${NS}_CLI`
 export const TEST_CLIENT_OPENID = `${NS}_CLI_OPENID`
 export const TEST_CLIENT_PHONE = '19999099002'
 
+// ─── 多市场 / 多门店常量（用于 rbac / deny / mgmt / xend smoke）───
+// 命名规则：${NS}_MKT_<X> / ${NS}_STORE_<X><N> / ${NS}_STORE_ORG_<X><N>
+// 测试号段 19999099003 ~ 19999099020 预留给多角色员工
+export const TEST_MARKETS = {
+  A: { orgId: `${NS}_MKT_A`, name: `${NS}_华东` },
+  B: { orgId: `${NS}_MKT_B`, name: `${NS}_华北` },
+}
+export const TEST_STORES_MULTI = {
+  A1: { storeId: `${NS}_STORE_A1`, orgId: `${NS}_STORE_ORG_A1`, name: `${NS}_华东1店`, marketKey: 'A' },
+  A2: { storeId: `${NS}_STORE_A2`, orgId: `${NS}_STORE_ORG_A2`, name: `${NS}_华东2店`, marketKey: 'A' },
+  B1: { storeId: `${NS}_STORE_B1`, orgId: `${NS}_STORE_ORG_B1`, name: `${NS}_华北1店`, marketKey: 'B' },
+  B2: { storeId: `${NS}_STORE_B2`, orgId: `${NS}_STORE_ORG_B2`, name: `${NS}_华北2店`, marketKey: 'B' },
+}
+// 多角色测试电话号段（不与 TEST_MANAGER_PHONE / TEST_CLIENT_PHONE 冲突）
+export const TEST_PHONE_RANGE_START = 19999099001
+export const TEST_PHONE_RANGE_END = 19999099020
+export function testPhone(idx) {
+  // idx ∈ [1..20]，1=manager, 2=client, 3..20=扩展员工
+  const n = TEST_PHONE_RANGE_START + (idx - 1)
+  return String(n)
+}
+
 // 共享 pg 池（懒初始化）
 import pgPkg from 'pg'
 const { Pool } = pgPkg

@@ -27,6 +27,8 @@ import {
   TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_HQ_ORG_ID, TEST_MARKET_ORG_ID,
   TEST_MANAGER_EMP_ID, TEST_MANAGER_OPENID, TEST_MANAGER_PHONE,
   TEST_CLIENT_USER_ID, TEST_CLIENT_OPENID, TEST_CLIENT_PHONE,
+  TEST_MARKETS, TEST_STORES_MULTI,
+  TEST_PHONE_RANGE_START, TEST_PHONE_RANGE_END,
   pgQuery, getPool,
 } from '../setup.mjs'
 
@@ -66,6 +68,101 @@ export async function ensureTestStore() {
   )
 
   return { storeId: TEST_STORE_ID, storeOrgId: TEST_STORE_ORG_ID, marketOrgId: TEST_MARKET_ORG_ID, hqOrgId: TEST_HQ_ORG_ID }
+}
+
+/**
+ * 创建"多市场 / 多门店"测试组织（用于 rbac / deny / mgmt / xend smoke）
+ *
+ * 默认：1 总部 + 2 市场（A=华东 / B=华北）× 各 2 门店（A1/A2/B1/B2）
+ * 沿用 setup.mjs 的 TEST_MARKETS / TEST_STORES_MULTI 常量，幂等 INSERT。
+ *
+ * @param {object} opts
+ * @param {Array<'A'|'B'>} opts.markets - 想建的市场 key（默认 ['A','B']）
+ * @param {Array<keyof typeof TEST_STORES_MULTI>} opts.stores - 想建的门店 key（默认 ['A1','A2','B1','B2']）
+ * @returns {Promise<{hqOrgId, markets: Array<{key, orgId, name, stores: Array<{key, storeId, orgId, name}>}>}>}
+ */
+export async function createTestOrg({
+  markets = ['A', 'B'],
+  stores = ['A1', 'A2', 'B1', 'B2'],
+} = {}) {
+  // 1) 总部（沿用 TEST_HQ_ORG_ID）
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '总部', NULL, 0, true)
+     ON CONFLICT (id) DO NOTHING`,
+    [TEST_HQ_ORG_ID, `${NS}_总部`]
+  )
+
+  // 2) 市场
+  for (const key of markets) {
+    const m = TEST_MARKETS[key]
+    if (!m) throw new Error(`createTestOrg: 未知 market key=${key}`)
+    await pgQuery(
+      `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+       VALUES ($1, $2, '市场', $3, 0, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [m.orgId, m.name, TEST_HQ_ORG_ID]
+    )
+  }
+
+  // 3) 门店（org_nodes type='门店' + stores 行）
+  for (const key of stores) {
+    const s = TEST_STORES_MULTI[key]
+    if (!s) throw new Error(`createTestOrg: 未知 store key=${key}`)
+    const market = TEST_MARKETS[s.marketKey]
+    if (!markets.includes(s.marketKey)) {
+      throw new Error(`createTestOrg: store=${key} 所属市场 ${s.marketKey} 未在 markets 列表中`)
+    }
+    await pgQuery(
+      `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+       VALUES ($1, $2, '门店', $3, 0, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [s.orgId, s.name, market.orgId]
+    )
+    await pgQuery(
+      `INSERT INTO stores (store_id, store_name, org_node_id, opening_date, is_closed)
+       VALUES ($1, $2, $3, CURRENT_DATE, false)
+       ON CONFLICT (store_id) DO NOTHING`,
+      [s.storeId, s.name, s.orgId]
+    )
+  }
+
+  const result = {
+    hqOrgId: TEST_HQ_ORG_ID,
+    markets: markets.map((key) => {
+      const m = TEST_MARKETS[key]
+      const myStores = stores
+        .filter((k) => TEST_STORES_MULTI[k].marketKey === key)
+        .map((k) => {
+          const s = TEST_STORES_MULTI[k]
+          return { key: k, storeId: s.storeId, orgId: s.orgId, name: s.name }
+        })
+      return { key, orgId: m.orgId, name: m.name, stores: myStores }
+    }),
+  }
+  return result
+}
+
+/**
+ * 创建一个测试 type='部门' 的 org_nodes（用于 deny-dept-scope-rejected）
+ *
+ * @param {object} opts
+ * @param {string} opts.deptId - 部门 org_node_id（默认 `${NS}_DEPT_X`）
+ * @param {string} opts.parentId - 父节点 ID（默认 TEST_HQ_ORG_ID）
+ * @returns {Promise<{deptId}>}
+ */
+export async function createTestDeptNode({
+  deptId = `${NS}_DEPT_X`,
+  parentId = TEST_HQ_ORG_ID,
+  name = `${NS}_部门_X`,
+} = {}) {
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '部门', $3, 0, true)
+     ON CONFLICT (id) DO NOTHING`,
+    [deptId, name, parentId]
+  )
+  return { deptId }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -206,6 +303,101 @@ export async function createTestPermissionRole({
     [employeeId, role, scopeId, createdBy]
   )
   return { employeeId, role, scopeId }
+}
+
+/**
+ * 创建测试员工 + 显式 bindings 数组（替代 isManager 布尔）
+ *
+ * 与 createTestStaff 不同：
+ *   - 完全不预设角色（manager 不再默认绑定）
+ *   - bindings: [{role, scopeId}] — 调用方手动指定每个绑定的 role + scope（多绑定支持）
+ *   - bindings 为空数组 = 仅插 staff_wechat_users，无 permission_roles 行（用于 no-binding smoke）
+ *
+ * @param {object} opts
+ * @param {string} opts.employeeId
+ * @param {string} opts.openid
+ * @param {string} opts.phone
+ * @param {string} opts.name
+ * @param {string|null} opts.storeId - staff_wechat_users.store_id（员工档案默认门店）
+ * @param {string|null} opts.orgNodeId - staff_wechat_users.org_node_id（部门或门店）
+ * @param {string} opts.positionName
+ * @param {string[]} opts.skills
+ * @param {Array<{role: string, scopeId: string}>} opts.bindings
+ * @returns {Promise<{employeeId, openid, phone, bindings}>}
+ */
+export async function createTestStaffWithRoles({
+  employeeId,
+  openid,
+  phone,
+  name,
+  storeId = null,
+  orgNodeId = null,
+  positionName = '测试岗',
+  skills = [],
+  bindings = [],
+} = {}) {
+  if (!employeeId) throw new Error('createTestStaffWithRoles: employeeId required')
+  if (!openid) throw new Error('createTestStaffWithRoles: openid required')
+  if (!phone) throw new Error('createTestStaffWithRoles: phone required')
+  if (!name) throw new Error('createTestStaffWithRoles: name required')
+
+  await pgQuery(
+    `INSERT INTO staff_wechat_users (
+       employee_id, openid, phone, name, gender, store_id, org_node_id,
+       position_name, skills, is_resigned, hired_at
+     )
+     VALUES ($1, $2, $3, $4, '女', $5, $6, $7,
+             $8::text[], false, CURRENT_DATE)
+     ON CONFLICT (employee_id) DO UPDATE
+       SET openid = EXCLUDED.openid,
+           phone = EXCLUDED.phone,
+           name = EXCLUDED.name,
+           store_id = EXCLUDED.store_id,
+           org_node_id = EXCLUDED.org_node_id,
+           position_name = EXCLUDED.position_name,
+           skills = EXCLUDED.skills,
+           is_resigned = false`,
+    [employeeId, openid, phone, name, storeId, orgNodeId, positionName, skills]
+  )
+
+  for (const b of bindings) {
+    if (!b.role || !b.scopeId) {
+      throw new Error(`createTestStaffWithRoles: binding 必须含 role + scopeId, 收到 ${JSON.stringify(b)}`)
+    }
+    await pgQuery(
+      `INSERT INTO permission_roles (employee_id, role, scope_id, created_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (employee_id, role, scope_id) DO NOTHING`,
+      [employeeId, b.role, b.scopeId, 'e2e-fixture']
+    )
+  }
+
+  return { employeeId, openid, phone, bindings: [...bindings] }
+}
+
+/**
+ * 清除 staffApi 的 AUTH_CACHE（在同进程内 smoke 修改了 permission_roles 后必须调用）。
+ *
+ * 注意：dynamic require 会加载 staffApi 模块；调用方必须在 invoke.mjs 已经 patch
+ * 过 wx-server-sdk 之后调用（一般 import './setup.mjs' 后即可）。
+ *
+ * @param {string|string[]} openids
+ */
+export async function invalidateStaffAuthCache(openids) {
+  const list = Array.isArray(openids) ? openids : [openids]
+  if (list.length === 0) return
+  const { createRequire } = await import('node:module')
+  const path = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  const STAFF_API_DIR = path.resolve(__dirname, '..', '..', '..', 'cloudfunctions', 'staffApi')
+  const req = createRequire(path.join(STAFF_API_DIR, 'package.json'))
+  // helpers/invoke.mjs 已确保 wx-server-sdk mock 安装；此处 require 是幂等的
+  const authMod = req(path.join(STAFF_API_DIR, 'middleware', 'auth.js'))
+  for (const oid of list) {
+    if (oid) authMod.invalidateAuthCache(oid)
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -755,7 +947,11 @@ export async function createTestCoupon({
  */
 export async function cleanupTestData(prefix = NS) {
   const like = `${prefix}%`
-  const testPhones = [TEST_MANAGER_PHONE, TEST_CLIENT_PHONE]
+  // 多角色 / 多市场场景下，员工号段扩展到 19999099001 ~ 19999099020
+  const testPhones = []
+  for (let n = TEST_PHONE_RANGE_START; n <= TEST_PHONE_RANGE_END; n++) {
+    testPhones.push(String(n))
+  }
 
   const stmts = [
     // ─── 1) service / appointment（独立链） ───
@@ -910,9 +1106,10 @@ export async function cleanupTestData(prefix = NS) {
     // ─── 12) 提成矩阵（FK → org_nodes，必须先于 org_nodes 删）───
     [`DELETE FROM commission_rate_matrix WHERE org_id LIKE $1`, [like]],
 
-    // ─── 13) 门店 / 组织（门店 → 市场 → 总部）───
+    // ─── 13) 门店 / 组织（门店/部门 → 市场 → 总部）───
     [`DELETE FROM stores WHERE store_id LIKE $1 OR org_node_id LIKE $1`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '门店'`, [like]],
+    [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '部门'`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '市场'`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '总部'`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1`, [like]],
