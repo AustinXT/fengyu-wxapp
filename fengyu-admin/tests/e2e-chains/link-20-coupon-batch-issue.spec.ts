@@ -133,14 +133,17 @@ test('链路20：优惠券模板批量发放（数量对账）', async ({ page }
   await phoneTextarea.fill(phoneText)
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-20-03-phones-filled.png` })
 
-  // 提交按钮 — 一般文案"批量发放" / "确认发放" / "提交"
+  // 提交按钮 — 必须在 dialog 作用域内查找，避免与外层"打开 dialog"触发按钮歧义
+  // README §1.B link-20：dialog backdrop 拦截 outer button click → 30+ 重试超时
+  const dialog = page.locator('div[role="dialog"], dialog[open]').first()
+  await expect(dialog).toBeVisible({ timeout: 5000 })
   let submitOK = false
   for (const name of ['批量发放', '确认发放', '确认', '提交']) {
-    const btn = page.getByRole('button', { name }).last()
+    const btn = dialog.getByRole('button', { name })
     if (await btn.count() > 0 && await btn.isEnabled()) {
       await btn.click()
       submitOK = true
-      console.log(`[链路20] 点击了"${name}"按钮提交`)
+      console.log(`[链路20] 点击了"${name}"按钮提交（dialog 作用域内）`)
       break
     }
   }
