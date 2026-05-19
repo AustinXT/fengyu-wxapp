@@ -26,6 +26,7 @@ import {
 	SlidersHorizontal,
 	Unlink,
 	History,
+	Boxes,
 	type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -83,6 +84,13 @@ export const MENU_CONFIG: MenuGroup[] = [
 				readonlyRoles: ["finance"],
 			},
 			{ label: "门店解绑", icon: Unlink, href: "/store-unbind", requiredRoles: ["manager"] },
+			{
+				label: "门店库存",
+				icon: Boxes,
+				href: "/inventory",
+				requiredRoles: ["manager"],
+				readonlyRoles: ["finance", "product"],
+			},
 		],
 	},
 	{
