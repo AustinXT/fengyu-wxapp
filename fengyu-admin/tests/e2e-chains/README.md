@@ -1650,6 +1650,19 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 - ADM：services/create 全部门店；可访问 `/employees/new`
 - HR：可访问 `/employees/new`，store 下拉含全部门店（HR 是 HQ scope）
 
+### 链路 audit-1 / audit-2：全角色权限可达性双层 audit（2026-05-19 补完）
+
+**spec**：`audit-menu-access.spec.ts` + `audit-click-through.spec.ts`
+**主题**：执行用户原则——「**理论上能够点击进入的页面应该都是有访问权限的**」。区别于业务链路（link-N），audit 是**覆盖矩阵测试**而非场景测试，每次 PR 改动 menu.ts / permissions.ts / page.tsx 的 Promise.all 数据流时回跑作回归。
+
+**audit-1 维度**（URL 直访）：6 角色 × menu.ts 显示的所有页面 (requiredRoles + readonlyRoles) + 典型详情子路由 (/employees/[id]、/employees/create、/stores/[id]/edit、/stores/create、/customers/[id]、/orders/create) — 共 64 对 (role, path)，每对断言：HTTP 200 + 无 ErrorBoundary ("服务异常 + 错误编号:") + 无可见拒绝文案。
+
+**audit-2 维度**（点击穿透）：6 角色 × 10 list page (/customers、/orders、/services、/employees、/stores、/products、/allocations、/coupons、/mall、/cards) — 在每个 list 抓真实第一行的"详情/编辑"`<a href>`链接 + 顶部"新增/新建/分类"操作按钮，goto 真实落地 URL（用真 fixture ID）后断言落地页可达。共 40 对 (role, list, button)，每对断言：URL 跳转 + 落地页 200 + 无 ErrorBoundary + 无拒绝文案。
+
+**补完背景**：跑批途中发现 admin 仓库的根本性 bug —— 多个 list page 在 `Promise.all` 里同时拉业务主数据 + 辅助筛选数据（`getStores` / `getOrgNodes` / `getEmployees`），任何一个 throw `PERMISSION_DENIED` 都让整页 500。已通过补 `manager / finance / product / customer_mgr` 的引用读权限（`store:list` / `org:list` / `employee:list`）修复，scope 隔离仍由 SQL 层 `scopeCondition` 兜底。修复后 audit 全 104/104 PASS。
+
+**回归触发**：menu.ts / permissions.ts / page.tsx 任意改动须回跑这两个 audit；admin 任一 list page 新增 `<Link href>` 或顶部操作按钮须将 list 加入 audit-click-through 的 `LISTS` 配置。
+
 ### 链路 35d：OrgTreeSelect 与 /permissions scope 守卫（2026-05-19 补完）
 
 **spec**：`link-35d-org-tree-picker.spec.ts`
@@ -1740,8 +1753,10 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 | 35b | link-35b-list-cascade-selector | ✅ PASS | 29/29 | 2026-05-19 首跑：3 抽样列表页（customers/cards/points）× 3 角色（MGR/MKT/FIN）级联选择器锁定全验证；跨市场反例 + ADM 替换为 FIN 基线（admin 不持业务数据权限） | — | — |
 | 35c | link-35c-form-store-select | ✅ PASS | 11/11 | 2026-05-19 首跑：/services/create 表单 store/employee select 锁定 + /employees/create ADM/HR 访问 | — | — |
 | 35d | link-35d-org-tree-picker | ✅ PASS | 5/5 | 2026-05-19 首跑：MGR sidebar 不含 /permissions 链接 + ADM OrgTreeSelect 排除"部门"+ 渲染节点数合理 | — | — |
+| audit-1 | audit-menu-access | ✅ PASS | 64/64 | 2026-05-19 首跑：6 角色 × menu 显示页 + 典型详情页全 URL 直访 200，无 ErrorBoundary。"能点击进入就有访问权限" 第一层守护。| — | — |
+| audit-2 | audit-click-through | ✅ PASS | 40/40 | 2026-05-19 首跑：6 角色 × 10 列表页 × 行内"详情/编辑"按钮 + 顶部"新建/新增/分类"按钮真实点击穿透，每条都拿真 ID 落地。第二层守护。| — | — |
 
-**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 PASS（35b/35c/35d，2026-05-19 首跑全绿，45/45 check）**。
+**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 PASS（35b/35c/35d，2026-05-19 首跑全绿，45/45 check）** + **2 audit spec PASS（audit-menu-access 64/64 + audit-click-through 40/40 = 104/104，2026-05-19 双层守护）**。
 
 跨端 mirror 验证：staff 端 4 路 scope-isolation 测试（`fengyu-staff/tests/scope-isolation/`）4 spec / 21 check 全 PASS（2026-05-19，详见 staff README §4），与 admin 35b/c/d 形成双端一致性闭环。
 
@@ -2102,3 +2117,5 @@ SQL
 | 链路 35b | `link-35b-list-cascade-selector.spec.ts` | 已实现（2026-05-19，3 抽样列表页 + 跨市场反例） |
 | 链路 35c | `link-35c-form-store-select.spec.ts` | 已实现（2026-05-19，services/create 联动 + MGR 路由拒） |
 | 链路 35d | `link-35d-org-tree-picker.spec.ts` | 已实现（2026-05-19，OrgTreeSelect excludeTypes + MGR 路由拒） |
+| audit-1 | `audit-menu-access.spec.ts` | 已实现（2026-05-19，6 角色 × menu 显示页 URL 直访 64/64） |
+| audit-2 | `audit-click-through.spec.ts` | 已实现（2026-05-19，6 角色 × 10 列表页行内 + 顶部按钮真实点击穿透 40/40） |
