@@ -32,6 +32,9 @@ require.cache[pgPath] = {
       connect: (...args) => mockConnect(...args),
       on: vi.fn(),
     })),
+    types: {
+      setTypeParser: vi.fn(),
+    },
   },
 }
 
@@ -59,6 +62,51 @@ require.cache[configPath] = {
     FALLBACK_THRESHOLD: 1980,
   },
 }
+
+// ====== Mock: ./utils/lakala-config（让 isPayNotifyEnabled() 走 ENABLED 分支）======
+const lakalaConfigPath = require.resolve('../utils/lakala-config')
+require.cache[lakalaConfigPath] = {
+  id: lakalaConfigPath,
+  filename: lakalaConfigPath,
+  loaded: true,
+  exports: {
+    REQUIRED_VARS: [],
+    readConfig: () => ({
+      apiBase: 'https://test.wsmsd.cn/sit/api',
+      appid: 'OP00000003',
+      serialNo: 'test-serial',
+      privateKeyPem: '',
+      platformCertPem: '',
+      defaultMerchantNo: '822290059430BFA',
+      defaultTermNo: 'D9261078',
+      notifyUrl: '',
+      ipWhitelist: [],
+      ipWhitelistOpen: true,
+      sm4Key: '',
+      env: 'trial',
+    }),
+    isReady: () => true,
+    missingVars: () => [],
+    assertReady: () => {},
+  },
+}
+
+// ====== Mock: ./utils/lakala-sign（验签默认通过；HTTP 入口测试单独覆盖）======
+const lakalaSignPath = require.resolve('../utils/lakala-sign')
+require.cache[lakalaSignPath] = {
+  id: lakalaSignPath,
+  filename: lakalaSignPath,
+  loaded: true,
+  exports: {
+    verifyAsyncNotification: vi.fn(() => ({ ok: true })),
+    verifyResponseSignature: vi.fn(() => true),
+    buildRequestAuthorization: vi.fn(() => ({ authorization: 'mock' })),
+    parseAuthorizationHeader: vi.fn(() => ({ timestamp: '0', nonceStr: '0', signature: '0' })),
+  },
+}
+
+// 全局启用 payNotify（测试需要业务逻辑生效）
+process.env.PAYNOTIFY_ENABLED = 'true'
 
 function loadFreshIndex() {
   const p = require.resolve('../index')
@@ -161,7 +209,7 @@ describe('payNotify index.js', () => {
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240001' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240001', transactionId: 'wx-txn-001' })
     expect(res.code).toBe('SUCCESS')
 
     // 不应触发消费扣款
@@ -206,7 +254,7 @@ describe('payNotify index.js', () => {
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240002' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240002', transactionId: 'wx-txn-002' })
     expect(res.code).toBe('SUCCESS')
 
     const calls = mockClientQuery.mock.calls
@@ -237,7 +285,7 @@ describe('payNotify index.js', () => {
       rows: [makeOrder({ status: '已支付', prepaid_card_amount: '300.00', total_amount: '300.00' })],
     })
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240003' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240003', transactionId: 'wx-txn-003' })
     expect(res.code).toBe('SUCCESS')
     expect(res.message).toBe('已处理')
 
@@ -268,7 +316,7 @@ describe('payNotify index.js', () => {
       },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240004' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240004', transactionId: 'wx-txn-004' })
     expect(res.code).toBe('SUCCESS')
 
     const calls = mockClientQuery.mock.calls
@@ -302,7 +350,7 @@ describe('payNotify index.js', () => {
       },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240005' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240005', transactionId: 'wx-txn-005' })
     expect(res.code).toBe('FAIL')
     expect(res.message).toMatch(/INSUFFICIENT_BALANCE/)
 
@@ -350,7 +398,7 @@ describe('payNotify index.js', () => {
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240006' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240006', transactionId: 'wx-txn-006' })
     expect(res.code).toBe('SUCCESS')
 
     // 验证 UPSERT SQL 和参数
@@ -397,7 +445,7 @@ describe('payNotify index.js', () => {
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240007' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240007', transactionId: 'wx-txn-007' })
     expect(res.code).toBe('SUCCESS')
 
     const qs = mockClientQuery.mock.calls.map((c) => c[0])
@@ -419,7 +467,7 @@ describe('payNotify index.js', () => {
       rows: [makeOrder({ status: '已完成', prepaid_card_amount: '100.00' })],
     })
 
-    const res = await main({ orderNo: 'FY-XSD-WX-2604240008' })
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240008', transactionId: 'wx-txn-008' })
     expect(res.code).toBe('SUCCESS')
     expect(res.message).toBe('已处理')
     expect(mockConnect).not.toHaveBeenCalled()

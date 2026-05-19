@@ -24,6 +24,23 @@
 > | **payNotify is_recharge_card 切行级快照** | E9 R2 待 | ✅ **已修复** — L325 改用 `si.is_recharge_card`；L504/513 用 `si.is_experience` |
 > | 其余 P0/P1 | — | 未复核 |
 >
+> ### 🟢 2026-05-20 复核状态（拉卡拉接入完成）
+>
+> | 问题 ID | 2026-05-20 复核 |
+> |---------|-----------------|
+> | **P0-04v2-01** 守卫可绕过（硬编码常量） | ✅ **已修复** — 改 `function isPayNotifyEnabled()` 双层校验：`process.env.PAYNOTIFY_ENABLED === 'true'` + `lakalaConfig.isReady()`（7 项必填环境变量齐全）|
+> | **P0-04v2-02** 守卫解除后仍无签名校验 | ✅ **已修复** — HTTP 触发器入口实现 IP 白名单 + 3 行异步通知验签（RSA-SHA256，原始 body 字节，platformCertPem 验签）|
+> | **P0-04v2-03** schema drift：`wechat_transaction_id` 引用 | ✅ **已修复** — L130 SELECT、L344 / L363 UPDATE 全部移除 `wechat_transaction_id` 引用；三方流水号下沉到 `sale_order_payments.external_txn_id` |
+> | **P0-04v2-04** isRepaymentCredential 死代码 | ✅ **已修复** — 整段判别逻辑删除，回款由 `sale_order_payments.change_type='回款'` 维护 |
+> | **P0-04v2-05** payAmount 超限无上限 | ✅ **已修复** — 加 `if (thisPayAmount > remaining + 0.001)` 上限校验，错误前缀改 `INVALID_PARAMS` |
+> | **P0-04v2-06** transactionId fallback mock_txn_ | ✅ **已修复** — 缺 transactionId 直接 FAIL，不再 fallback 到 `mock_txn_${Date.now()}` |
+> | **P2-04v2-17** 全量 event JSON.stringify 日志 | ✅ **已修复** — 精简为 `{ orderNo, txn: txnId.slice(0,8), isHttpEntry }` |
+> | **P1-04v2-11** FAIL 响应暴露 SQL error | ✅ **已修复** — 用 `parseErrorPrefix` 提取白名单前缀的 displayMessage，非白名单错误统一返回 `'内部错误'` |
+> | **P1-04v2-07** 13 测试全 FAIL | 🟡 **部分修复** — 基线 0/13 → 当前 5/13 通过；剩余 8 个 fixture mock SQL matcher 需对齐新 SQL fingerprint，作为独立 follow-up |
+> | **P1-04v2-09** customer_type/spending_tier 无 SAVEPOINT | ⏳ **未修复** — 留作独立 ticket（不阻断 P0 上线）|
+> | **P1-04v2-10** 事务过重 | ⏳ **未修复** — 长期优化，留作独立 ticket |
+>
+> 实现详见 `docs/changes/arch/003_lakala-payment-integration.md`。
 
 > **注 (2026-04-27 domain refactor)**：payNotify 仍被 `PAYNOTIFY_DISABLED = true` 守卫拦截（D-Q1）。`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），`回款单`/`退款单` 已移除。退款改为基于 payment 流水（`sale_order_payments` change_type='退款', amount<0）+ `sale_order_payment_details` 子表。`paymentFlowStatusEnum` 已更新为 5 值（'待支付'/'待审批'/'已支付'/'已作废'/'已退款'）。payNotify 代码中 `paid_amount` 列引用和 `回款单` 逻辑均为确认死代码，解禁前必须清除。
 

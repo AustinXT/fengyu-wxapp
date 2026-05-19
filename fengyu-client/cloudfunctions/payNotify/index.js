@@ -12,6 +12,8 @@ const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
 const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
+const lakalaSign = require('./utils/lakala-sign')
+const lakalaConfig = require('./utils/lakala-config')
 
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU 或 product_name 正则解析面值。
@@ -34,27 +36,106 @@ function getPg() {
 }
 
 /**
- * D-Q1-2026-04-26 决策：payNotify 立即停用直到补完拉卡拉签名校验
- * 详见 notes/tickets/2026-04-26-sale-order-domain-refactor.md
- *      docs/audit/audit-04-pay-notify.md (P0-04-01)
+ * payNotify 启用开关（2026-05-20 改为环境变量控制，替代硬编码常量守卫）
  *
- * 拉卡拉对接前线上支付走"线下/储值卡"通道（admin/staff 路径），
- * payNotify 完全不应被任何客户端/小程序/外部回调触发。
+ * 启用条件（两者皆需）：
+ *   1. 环境变量 PAYNOTIFY_ENABLED=true
+ *   2. lakalaConfig.isReady() = true（即 LAKALA_APPID / SERIAL_NO / PRIVATE_KEY_PEM / PLATFORM_CERT_PEM /
+ *      DEFAULT_MERCHANT_NO / DEFAULT_TERM_NO / API_BASE 7 项必填环境变量齐全）
  *
- * 任何 invocation 都直接拒绝 + 写 operation_logs 告警，
- * 等拉卡拉对接完成且签名校验补完后才解除此守卫。
+ * 不通过条件：HTTP 入口返回 503，wx.cloud.callFunction 入口返回 -403，不会进入业务逻辑。
  *
- * 关闭守卫的条件（缺一不可）：
- * 1. 拉卡拉商户配置完成 + APIv3 密钥/平台证书托管到环境变量
- * 2. 实现 verifyLakalaSignature(headers, body, secret) helper
- * 3. 实现 IP 白名单（拉卡拉回调来源段）
- * 4. 实现 transactionId 幂等键
- * 5. operation_logs 'cron.audit_invariants' 跑 1 周无 violations 后才允许解除
- *
- * 解除时：将 PAYNOTIFY_DISABLED 改为 false，并实现完整 V3 签名校验链路。
- * 原有业务逻辑保留在守卫之后（不删除），作为后续拉卡拉对接的参考。
+ * 历史背景：D-Q1-2026-04-26 引入硬编码常量守卫等待拉卡拉对接；2026-05-20 拉卡拉接入完成后切换为 env 控制。
  */
-const PAYNOTIFY_DISABLED = true
+function isPayNotifyEnabled() {
+  if (process.env.PAYNOTIFY_ENABLED !== 'true') return false
+  if (!lakalaConfig.isReady()) return false
+  return true
+}
+
+/**
+ * 解析拉卡拉 HTTP 触发器回调，校验 IP 白名单 + 3 行异步通知签名，转换为内部 event 格式。
+ *
+ * 拉卡拉回调约定（详见 sources/documents/拉卡拉接口规范-补充.md）：
+ *   - HTTP POST，event.body = 原始 JSON 字符串（验签必须用原始字节，禁止 JSON.parse 再 stringify）
+ *   - event.headers.authorization = 'LKLAPI-SHA256withRSA timestamp="...",nonce_str="...",signature="..."'
+ *   - body 为扁平 JSON：{ pay_order_no, out_order_no, order_status, total_amount, order_trade_info:{...} }
+ *
+ * 返回：
+ *   - null              非 HTTP 入口（走原 callFunction 路径）
+ *   - { _lakalaCallbackAcked: true, ackBody: {...} }   退款回调 / 非成功状态，已 ack
+ *   - { orderNo, transactionId, payAmount, paymentMethod, _httpEntry: true }  成功支付回调，待业务处理
+ * 抛错：签名 / IP 白名单失败，由 main 转 403 响应
+ */
+function parseHttpTriggerEvent(event) {
+  if (!event || typeof event !== 'object') return null
+  if (event.httpMethod !== 'POST') return null
+
+  const cfg = lakalaConfig.readConfig()
+  const rawHeaders = event.headers || {}
+  const headers = {}
+  for (const k of Object.keys(rawHeaders)) headers[k.toLowerCase()] = rawHeaders[k]
+
+  // IP 白名单（LAKALA_CALLBACK_IP_WHITELIST=* 跳过）
+  if (!cfg.ipWhitelistOpen) {
+    const xff = headers['x-forwarded-for'] || headers['x-real-ip'] || event.sourceIp || ''
+    const clientIp = String(xff).split(',')[0].trim()
+    if (!clientIp || !cfg.ipWhitelist.includes(clientIp)) {
+      const err = new Error('PERMISSION_DENIED: LAKALA_CALLBACK_IP_NOT_ALLOWED')
+      err._statusCode = 403
+      throw err
+    }
+  }
+
+  // 异步通知验签（3 行：timestamp\nnonce_str\nbody\n，body 必须是原始字节）
+  const authorizationHeader = headers['authorization'] || ''
+  const rawBody = typeof event.body === 'string' ? event.body : ''
+  const verifyResult = lakalaSign.verifyAsyncNotification({
+    authorizationHeader,
+    rawBody,
+    platformCertPem: cfg.platformCertPem,
+  })
+  if (!verifyResult.ok) {
+    const err = new Error(`PERMISSION_DENIED: LAKALA_CALLBACK_SIGN_FAIL: ${verifyResult.reason}`)
+    err._statusCode = 403
+    throw err
+  }
+
+  let body
+  try {
+    body = JSON.parse(rawBody)
+  } catch (parseErr) {
+    const err = new Error('INVALID_PARAMS: LAKALA_CALLBACK_BODY_NOT_JSON')
+    err._statusCode = 400
+    throw err
+  }
+
+  const tradeInfo = body.order_trade_info || {}
+  const payOrderNo = body.pay_order_no
+  const outOrderNo = body.out_order_no
+  const orderStatus = body.order_status
+  const totalAmountFen = Number(body.total_amount || 0)
+
+  // 退款回调 / 非成功状态：ack 让拉卡拉停重试，退款流程由 admin 退款 cron 推进（Phase 5）
+  if (orderStatus === '6' || tradeInfo.trade_type === 'REFUND') {
+    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
+  }
+  if (orderStatus !== '2' && tradeInfo.trade_status !== 'S') {
+    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${orderStatus} ack` } }
+  }
+
+  // 推断付款方式
+  const payMode = String(tradeInfo.pay_mode || '').toUpperCase()
+  const paymentMethod = payMode === 'ALIPAY' ? '支付宝' : '微信'
+
+  return {
+    orderNo: outOrderNo,
+    transactionId: payOrderNo,
+    payAmount: Math.round(totalAmountFen) / 100,
+    paymentMethod,
+    _httpEntry: true,
+  }
+}
 
 /**
  * 云函数入口
@@ -62,72 +143,59 @@ const PAYNOTIFY_DISABLED = true
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
-  // ========== D-Q1-2026-04-26 守卫：payNotify 全锁 ==========
-  // 必须最先执行，在任何业务逻辑、签名校验、解密之前。
-  // 必须 return（不能 throw），避免被外层 try/catch 吞掉而继续走旧逻辑。
-  if (PAYNOTIFY_DISABLED) {
+  // ========== 启用开关：env PAYNOTIFY_ENABLED=true + lakalaConfig.isReady() ==========
+  if (!isPayNotifyEnabled()) {
     const safeEvent = event && typeof event === 'object' ? event : {}
-    const isLikelyExternalCall = !!(safeEvent.transactionId || safeEvent.out_trade_no || safeEvent.signature)
-    const severity = isLikelyExternalCall ? 'HIGH' : 'INFO'
-    const eventKeys = Object.keys(safeEvent)
-
-    console.warn(
-      '[payNotify] DISABLED invocation rejected',
-      JSON.stringify({ severity, isLikelyExternalCall, eventKeys })
-    )
-
-    // 写 operation_logs 告警（best-effort，失败不阻塞拒绝响应）
-    try {
-      let wxContext = null
-      try {
-        wxContext = typeof cloud.getWXContext === 'function' ? cloud.getWXContext() : null
-      } catch (ctxErr) {
-        wxContext = null
-      }
-
-      const targetId = isLikelyExternalCall ? 'EXTERNAL' : 'INTERNAL'
-      const detail = {
-        _v: 1,
-        severity,
-        event_keys: eventKeys,
-        wxContext,
-        timestamp: new Date().toISOString(),
-        reason: 'PAYNOTIFY_DISABLED (D-Q1-2026-04-26)',
-      }
-
-      const pg = getPg()
-      await pg.query(
-        `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-         VALUES ('paynotify.disabled_invocation', 'security_event', $1, $2::jsonb, 'payNotify', NOW())`,
-        [targetId, JSON.stringify(detail)]
-      )
-    } catch (logErr) {
-      console.error('[payNotify disabled] log failure:', logErr && logErr.message)
+    console.warn('[payNotify] disabled invocation rejected',
+      JSON.stringify({ reason: 'NOT_ENABLED_OR_NOT_READY', httpMethod: safeEvent.httpMethod || null }))
+    if (safeEvent.httpMethod === 'POST') {
+      return { statusCode: 503, body: JSON.stringify({ code: 'FAIL', message: 'NOT_READY' }) }
     }
-
-    return {
-      code: -403,
-      message: 'PERMISSION_DENIED: PAYNOTIFY_DISABLED',
-      data: null,
-    }
+    return { code: -403, message: 'PERMISSION_DENIED: PAYNOTIFY_DISABLED', data: null }
   }
-  // ========== 守卫结束。以下为原有业务逻辑（保留为参考，等拉卡拉对接时启用） ==========
 
-  console.log('[payNotify] received event:', JSON.stringify(event))
+  // ========== HTTP 触发器入口（拉卡拉异步通知）：IP 白名单 + 3 行验签 + 字段映射 ==========
+  let httpEntryResult = null
+  try {
+    httpEntryResult = parseHttpTriggerEvent(event)
+  } catch (httpErr) {
+    const statusCode = httpErr._statusCode || 400
+    console.warn('[payNotify] HTTP entry rejected:', httpErr.message)
+    return { statusCode, body: JSON.stringify({ code: 'FAIL', message: httpErr.message }) }
+  }
+  // 退款回调 / 非成功状态：拉卡拉只需收到 SUCCESS 终止重试
+  if (httpEntryResult && httpEntryResult._lakalaCallbackAcked) {
+    return { statusCode: 200, body: JSON.stringify(httpEntryResult.ackBody) }
+  }
+
+  // 业务事件归一化：HTTP 入口 → 映射结果；callFunction 入口 → 直接用 event
+  const businessEvent = httpEntryResult || event
+  const isHttpEntry = !!httpEntryResult
 
   try {
-    // ========== Mock 模式：手动触发测试 ==========
-    const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput } = event
+    const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput } = businessEvent
+    // PII 精简日志：不打全 event，仅 orderNo + txn 前 8 位
+    const txnSummary = transactionId ? String(transactionId).slice(0, 8) : 'null'
+    console.log('[payNotify] received', JSON.stringify({ orderNo, txn: txnSummary, isHttpEntry }))
+
     if (!orderNo) {
-      return { code: 'FAIL', message: '缺少 orderNo' }
+      return isHttpEntry
+        ? { statusCode: 400, body: JSON.stringify({ code: 'FAIL', message: '缺少 orderNo' }) }
+        : { code: 'FAIL', message: '缺少 orderNo' }
+    }
+    // 移除 mock_txn_${Date.now()} fallback（P0-04v2-06），缺 transactionId 直接拒绝
+    if (!transactionId) {
+      return isHttpEntry
+        ? { statusCode: 400, body: JSON.stringify({ code: 'FAIL', message: '缺少 transactionId' }) }
+        : { code: 'FAIL', message: '缺少 transactionId' }
     }
 
     const pg = getPg()
 
     // 幂等检查：订单是否已支付
-    // 读 sale_order_type + ref_sale_order_id 以支持"回款凭证单"场景（Ticket 2026-04-24 PR-C）
+    // 注：wechat_transaction_id 列已在 migration 0018 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
     const orderResult = await pg.query(
-      `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
+      `SELECT status, payment_method, preferred_employee_id,
               total_amount, client_user_id, store_id, prepaid_card_amount,
               sale_order_type, ref_sale_order_id
        FROM sale_orders WHERE sale_order_id = $1`,
@@ -141,26 +209,11 @@ exports.main = async (event) => {
 
     const order = orderResult.rows[0]
 
-    // 回款单场景：payments 行应写到 ref_sale_order_id（原销售单）；
-    // 凭证单自身仅状态翻 '已支付'，业务动作（次数到期/业绩/充值/消费扣款/档位）以原单为准。
-    const isRepaymentCredential = order.sale_order_type === '回款单' && order.ref_sale_order_id
-    let targetOrderNo = orderNo
-    let targetOrder = order
-    if (isRepaymentCredential) {
-      const origRes = await pg.query(
-        `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
-                total_amount, client_user_id, store_id, prepaid_card_amount,
-                sale_order_type, ref_sale_order_id
-         FROM sale_orders WHERE sale_order_id = $1`,
-        [order.ref_sale_order_id]
-      )
-      if (origRes.rows.length === 0) {
-        console.error('[payNotify] 回款凭证单对应的原单不存在:', orderNo, '->', order.ref_sale_order_id)
-        return { code: 'FAIL', message: '原销售单不存在' }
-      }
-      targetOrderNo = order.ref_sale_order_id
-      targetOrder = origRes.rows[0]
-    }
+    // 回款单已在 2026-04-26 sale-order-domain-refactor 从 sale_order_type 枚举移除（合并到 sale_order_payments.change_type='回款'）。
+    // 这里不再判别 isRepaymentCredential，所有支付都按原单推进；回款由 change_type 区分。
+    const targetOrderNo = orderNo
+    const targetOrder = order
+    const isRepaymentCredential = false  // 兼容下方未清理的引用（如有），后续整体重构时移除
 
     // 幂等：凭证单自身或原单已终态 → 再写一次 payments（ON CONFLICT DO NOTHING）后返回
     if (order.status === '已支付' || order.status === '已完成') {
@@ -175,7 +228,8 @@ exports.main = async (event) => {
     }
 
     const now = new Date()
-    const txnId = transactionId || `mock_txn_${Date.now()}`
+    // P0-04v2-06：transactionId 必须真实存在（上面已校验），不再 fallback 到 mock_txn_${Date.now()}
+    const txnId = transactionId
     // payment_method：默认沿用订单上记录的支付方式（pay/alipayPay 发起时已写入），
     // 允许回调事件显式覆盖（方便 staff 端走同一 payNotify 通道）。
     const paymentMethod = paymentMethodInput
@@ -214,7 +268,11 @@ exports.main = async (event) => {
         : remaining
 
       if (!(thisPayAmount > 0)) {
-        throw new Error(`INVALID_PAY_AMOUNT: ${thisPayAmount}`)
+        throw new Error(`INVALID_PARAMS: 本次支付金额无效 ${thisPayAmount}`)
+      }
+      // P0-04v2-05 上限校验：本次支付金额不得超过剩余应付（+0.001 元浮点容差）
+      if (thisPayAmount > remaining + 0.001) {
+        throw new Error(`INVALID_PARAMS: 本次支付金额超过订单剩余应付 (${thisPayAmount} > ${remaining})`)
       }
 
       // change_type：
@@ -283,16 +341,16 @@ exports.main = async (event) => {
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
       // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付/待确认收款 翻转
+      // 注：wechat_transaction_id 列已 DROP，三方流水号由上面 INSERT sale_order_payments.external_txn_id 承担
       const updResult = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
-             wechat_transaction_id = COALESCE(wechat_transaction_id, $4),
              updated_at = $3
-         WHERE sale_order_id = $5
+         WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付', '待确认收款')`,
-        [newStatus, newPaidSum, now, txnId, targetOrderNo]
+        [newStatus, newPaidSum, now, targetOrderNo]
       )
       if (updResult.rowCount === 0) {
         // 主单已被其他事务先翻至终态（已支付/已关闭等），回滚 payment 插入并幂等 ack 微信
@@ -301,17 +359,16 @@ exports.main = async (event) => {
         return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
       }
 
-      // 1b. 回款凭证单：同步翻 '已支付' + 记录 paid_at + 记录 txn
+      // 1b. 回款凭证单：已在 2026-04-26 sale-order-domain-refactor 重构（回款下沉到 sale_order_payments.change_type='回款'），下方分支永远 false 走不到
       if (isRepaymentCredential) {
         const credUpd = await client.query(
           `UPDATE sale_orders
            SET status = '已支付'::order_status,
                paid_at = COALESCE(paid_at, $1),
-               wechat_transaction_id = COALESCE(wechat_transaction_id, $2),
                updated_at = $1
-           WHERE sale_order_id = $3
+           WHERE sale_order_id = $2
              AND status IN ('待支付', '部分支付', '待确认收款')`,
-          [now, txnId, orderNo]
+          [now, orderNo]
         )
         if (credUpd.rowCount === 0) {
           // 凭证单允许延迟一致，仅记 warn 不 rollback
@@ -595,12 +652,21 @@ exports.main = async (event) => {
       client.release()
     }
 
+    // 成功响应：HTTP 入口必须返回 {statusCode, body} 才能让 CloudBase HTTP 触发器透传给拉卡拉
+    if (isHttpEntry) {
+      return { statusCode: 200, body: JSON.stringify({ code: 'SUCCESS', message: '执行成功' }) }
+    }
     return { code: 'SUCCESS', message: '成功' }
   } catch (err) {
     // [CC5] 用 parseErrorPrefix 给错误日志做归类（ops 按 errorType 监控告警）
     // 响应仍保持微信支付/拉卡拉协议要求的 {code: 'SUCCESS'|'FAIL', message} 外壳
+    // P1-04v2-11：FAIL 响应不暴露内部 SQL / schema 错误细节
     const parsed = parseErrorPrefix(err && err.message)
     console.error('[payNotify] Error:', err, parsed ? { errorType: parsed.prefix } : { errorType: null })
-    return { code: 'FAIL', message: err.message }
+    const safeMessage = parsed ? parsed.displayMessage : '内部错误'
+    if (isHttpEntry) {
+      return { statusCode: 500, body: JSON.stringify({ code: 'FAIL', message: safeMessage }) }
+    }
+    return { code: 'FAIL', message: safeMessage }
   }
 }
