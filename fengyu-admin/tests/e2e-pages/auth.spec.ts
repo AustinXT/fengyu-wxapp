@@ -38,7 +38,8 @@ test.describe('登录页', () => {
     await page.getByLabel('手机号').fill('13800138000')
     await page.getByLabel('密码').fill('wrongpassword')
     await page.getByRole('button', { name: /登 录/ }).click()
-    await expect(page.getByText('手机号或密码错误')).toBeVisible()
+    // 表单 inline 错误 + sonner toast 都展示同一文案，取 first 避免 strict 冲突
+    await expect(page.getByText('手机号或密码错误').first()).toBeVisible()
   })
 
   test('正确登录跳转到工作台', async ({ page }) => {

@@ -3,15 +3,16 @@ import { test, expect } from '@playwright/test'
 test.describe('全局布局', () => {
   test('Topbar 渲染品牌标识', async ({ page }) => {
     await page.goto('/dashboard')
-    // Topbar 有用户名显示
-    await expect(page.getByText('张明').first()).toBeVisible()
+    // Topbar 有用户名显示（fixture: FY-TEST-ADM 名为 '测试管理员'）
+    await expect(page.getByText('测试管理员').first()).toBeVisible()
   })
 
   test('Sidebar 显示菜单分组', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByText('业务管理')).toBeVisible()
-    await expect(page.getByText('数据管理')).toBeVisible()
-    await expect(page.getByText('系统管理')).toBeVisible()
+    // exact=true 避免 '系统管理' 误命中 '系统管理员' 角色显示
+    await expect(page.getByText('业务管理', { exact: true })).toBeVisible()
+    await expect(page.getByText('数据管理', { exact: true })).toBeVisible()
+    await expect(page.getByText('系统管理', { exact: true })).toBeVisible()
   })
 
   test('面包屑导航正确', async ({ page }) => {

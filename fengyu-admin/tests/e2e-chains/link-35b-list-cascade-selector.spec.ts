@@ -7,7 +7,7 @@
  *   验证 3 角色场景下：
  *     - MGR(nc01)：stores 下拉只见 1 店；非 scope 市场被选后 filteredStores=空
  *     - MKT(南昌)：stores 下拉 = 南昌市场旗下 N 店；选择"南昌市场2"后 filteredStores=空
- *     - ADM    ：stores 下拉 = 全部门店；可自由级联
+ *     - FIN    ：stores 下拉 = 全部门店；可自由级联
  *
  *   本 spec 抽样 3 个页面（/customers, /employees, /cards）验证模式一致；
  *   其余 4 页（/stores, /coupons, /points, /card-transactions）走同一份 getStores+getOrgNodes 数据
@@ -125,12 +125,12 @@ test('链路35b：列表页市场→门店级联选择器锁定', async ({ brows
   const baseline = dbBaselines()
   console.log(`[链路35b] baseline: totalStores=${baseline.totalStores} ncStores=${baseline.ncStoreCount} nc2Stores=${baseline.nc2StoreCount} markets=${baseline.totalMarkets}`)
 
-  // ── 预热：先用 ADM 把 3 个页面跑一遍，避免 dev mode 首次编译卡 MGR/MKT 的 case ──
-  console.log('[链路35b] 预热页面编译 (ADM)')
+  // ── 预热：先用 FIN 把 3 个页面跑一遍，避免 dev mode 首次编译卡 MGR/MKT 的 case ──
+  console.log('[链路35b] 预热页面编译 (FIN)')
   const ctxWarm = await browser.newContext()
   const pWarm = await ctxWarm.newPage()
   try {
-    await loginSlow(pWarm, TEST_PHONES.ADM)
+    await loginSlow(pWarm, TEST_PHONES.FIN)
     for (const sp of SAMPLE_PAGES) {
       console.log(`  - warming ${sp.url}`)
       await pWarm.goto(`${BASE}${sp.url}`, { waitUntil: 'domcontentloaded' })
@@ -209,46 +209,49 @@ test('链路35b：列表页市场→门店级联选择器锁定', async ({ brows
     await ctxMkt.close()
   }
 
-  // ── Case 3: ADM — 门店下拉 = 全部门店 ──
-  console.log('[链路35b] Case 3: ADM')
-  const ctxAdm = await browser.newContext()
-  const pAdm = await ctxAdm.newPage()
+  // ── Case 3: FIN(总部 finance, HQ scope) — 门店下拉 = 全部门店（业务数据全量基线）──
+  // 用 finance 而非 admin：admin 按设计不持业务数据权限（customer:list 等），不能开 /customers /cards；
+  //                       finance HQ scope + customer:list / point_transaction:list / card_transaction:list 全持，
+  //                       是这些业务列表页的"全量基线"角色。
+  console.log('[链路35b] Case 3: FIN (全量基线)')
+  const ctxFin = await browser.newContext()
+  const pFin = await ctxFin.newPage()
   try {
-    await loginSlow(pAdm, TEST_PHONES.ADM)
+    await loginSlow(pFin, TEST_PHONES.FIN)
     for (const sp of SAMPLE_PAGES) {
-      const got = await readCascadeSelects(pAdm, sp.url)
+      const got = await readCascadeSelects(pFin, sp.url)
       if (!got) {
-        recordVerdict(verdicts, `adm_${sp.name}_load`, false, '无法读取下拉')
+        recordVerdict(verdicts, `fin_${sp.name}_load`, false, '无法读取下拉')
         continue
       }
       const realStores = got.stores.filter((s) => !s.includes('全部'))
       recordVerdict(
         verdicts,
-        `adm_${sp.name}_store_count_close_to_total`,
+        `fin_${sp.name}_store_count_close_to_total`,
         Math.abs(realStores.length - baseline.totalStores) <= 5,
         `realStores=${realStores.length} dbTotal=${baseline.totalStores}`,
       )
       const realMarkets = got.markets.filter((s) => !s.includes('全部'))
       recordVerdict(
         verdicts,
-        `adm_${sp.name}_market_count_close_to_total`,
+        `fin_${sp.name}_market_count_close_to_total`,
         Math.abs(realMarkets.length - baseline.totalMarkets) <= 2,
         `realMarkets=${realMarkets.length} dbTotalMarkets=${baseline.totalMarkets}`,
       )
     }
-    // 级联：ADM 选南昌市场后门店应等于 ncStoreCount
-    const ncStores = await readStoresAfterMarketPick(pAdm, '/customers', TOPOLOGY.MARKET_NC)
+    // 级联：FIN 选南昌市场后门店应等于 ncStoreCount
+    const ncStores = await readStoresAfterMarketPick(pFin, '/customers', TOPOLOGY.MARKET_NC)
     if (ncStores) {
       const real = ncStores.filter((s) => !s.includes('全部'))
       recordVerdict(
         verdicts,
-        'adm_pick_market_nc_cascade',
+        'fin_pick_market_nc_cascade',
         Math.abs(real.length - baseline.ncStoreCount) <= 2,
         `picked NC, realStores=${real.length} expected≈${baseline.ncStoreCount}`,
       )
     }
   } finally {
-    await ctxAdm.close()
+    await ctxFin.close()
   }
 
   const overall = summarize(35.5, verdicts, baseline)
