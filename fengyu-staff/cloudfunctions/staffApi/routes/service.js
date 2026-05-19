@@ -231,10 +231,16 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 unit_real_price、is_shengmei、sales_category（全部快照拷贝到 service_items）
+      // sale_items → product_skus + product_categories fallback：
+      // 历史 sale_items（WorkFine migration 进入）这两列常为 NULL，导致看板"项目数 / 生美实耗"为 0。
+      // 优先取 sale_items 上已快照值；为 NULL 时回退到 product_skus + product_categories。
       const siRows = await client.query(
-        `SELECT si.unit_real_price, si.is_shengmei, si.sales_category
+        `SELECT si.unit_real_price,
+                COALESCE(si.is_shengmei, ps.is_shengmei) AS is_shengmei,
+                COALESCE(si.sales_category, pc.sales_category) AS sales_category
          FROM sale_items si
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+         LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )

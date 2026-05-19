@@ -359,6 +359,70 @@ describe('service.create', () => {
     expect(capturedInsertParams[7]).toBeNull()
     expect(capturedInsertParams[8]).toBeNull()
   })
+
+  test('sale_items 上为 NULL 但 product_skus + product_categories fallback 命中时写入回退值', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      assignedStaffWfId: 'emp-beautician-001',
+      items: [{ saleItemId: 'item-legacy-with-sku', sessionUsed: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-legacy-with-sku',
+        remaining_sessions: 5,
+        unit_real_price: '100',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: 'client-001',
+        client_phone: '138',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null }])
+
+    let capturedSiSelectSql = ''
+    let capturedInsertParams = null
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /SELECT[\s\S]+FROM sale_items\b/.test(sql)) {
+            capturedSiSelectSql = sql
+            // 模拟 COALESCE 后回退到 product_skus + product_categories 取到的值
+            return {
+              rows: [{
+                unit_real_price: '100',
+                is_shengmei: true,           // 来自 ps.is_shengmei
+                sales_category: '自销自耗',  // 来自 pc.sales_category
+              }],
+              rowCount: 1,
+            }
+          }
+          if (typeof sql === 'string' && /INSERT INTO service_items/.test(sql)) {
+            capturedInsertParams = params
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    // 守护 fallback SQL 形状：LEFT JOIN product_skus + product_categories + COALESCE
+    expect(capturedSiSelectSql).toMatch(/LEFT JOIN product_skus/)
+    expect(capturedSiSelectSql).toMatch(/LEFT JOIN product_categories/)
+    expect(capturedSiSelectSql).toMatch(/COALESCE\(si\.is_shengmei,\s*ps\.is_shengmei\)/)
+    expect(capturedSiSelectSql).toMatch(/COALESCE\(si\.sales_category,\s*pc\.sales_category\)/)
+    expect(capturedInsertParams[7]).toBe(true)
+    expect(capturedInsertParams[8]).toBe('自销自耗')
+  })
 })
 
 describe('service.start', () => {

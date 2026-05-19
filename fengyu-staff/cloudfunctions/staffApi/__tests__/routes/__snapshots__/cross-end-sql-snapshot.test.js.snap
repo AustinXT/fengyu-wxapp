@@ -1,4 +1,4 @@
-// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
 {
