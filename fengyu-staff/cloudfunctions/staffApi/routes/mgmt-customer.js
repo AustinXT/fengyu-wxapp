@@ -542,13 +542,20 @@ async function calendar(ctx) {
   params.push(...sc.params)
   const whereClause = `${whereCore} AND ${sc.sql}`
 
+  // 2026-05-20 P0-5/P1-8 修复：
+  //   1. dailySummary 原 INNER JOIN sale_items 会漏掉 sale_orders.received>0 但无 sale_items 行的订单
+  //      （如 FY-XSD-WX-2605190001/0002/9103/0003 这类测试数据/缺明细订单），整日在日历中消失。
+  //   2. dailySummary 取 SUM(si.received) 与 orderRows 取 o.total_amount 双口径不一致。
+  //   现统一改为 sale_orders.received - refunded_amount（与 storeRevenue / salesData 同口径），
+  //   不再 JOIN sale_items；明细行展示由 paidOrders action 单独提供。
+  const netRevExpr = `(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric)`
+
   const rows = await pg.query(
     `SELECT
        DATE(o.paid_at AT TIME ZONE 'Asia/Shanghai') AS pay_date,
        COUNT(DISTINCT o.sale_order_id) AS order_count,
-       COALESCE(SUM(si.received), 0) AS total_received
+       COALESCE(SUM(${netRevExpr}), 0) AS total_received
      FROM sale_orders o
-     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
      WHERE ${whereClause}
      GROUP BY DATE(o.paid_at AT TIME ZONE 'Asia/Shanghai')
      ORDER BY pay_date`,
@@ -560,7 +567,7 @@ async function calendar(ctx) {
        o.sale_order_id, o.sale_order_type, o.store_id, o.payment_method,
        o.paid_at, o.client_phone, o.customer_name,
        DATE(o.paid_at AT TIME ZONE 'Asia/Shanghai') AS pay_date,
-       o.total_amount AS total_received
+       ${netRevExpr} AS total_received
      FROM sale_orders o
      WHERE ${whereClause}
      ORDER BY o.paid_at DESC`,
