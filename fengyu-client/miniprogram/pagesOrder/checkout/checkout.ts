@@ -577,11 +577,16 @@ Page({
       await this.jumpLakalaCashier(saleOrderId, data.lakala);
       return;
     }
+    // 充值单 total_amount 是面值（¥1000），paidAmount 才是实付（¥980）；用 paidAmount 避免弹窗金额与实付不符
+    // 普通订单 fallback 到 totalAmount，保留原行为
+    const displayAmount = this.data.isRecharge
+      ? Number(data?.paidAmount || 0)
+      : Number(data?.totalAmount || 0);
     // 兜底：mock 二维码
     this.setData({
       showAlipayQr: true,
       alipayQrUrl: data?.qrCodeUrl || '',
-      alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
+      alipayAmount: displayAmount.toFixed(2),
       alipayOrderNo: saleOrderId,
     });
   },
