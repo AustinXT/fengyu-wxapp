@@ -1,7 +1,7 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
-import { isManager } from '../../utils/role';
+import { isManager, hasRole } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
@@ -28,8 +28,7 @@ Page({
       return
     }
     const { staffName, position, staffWfId, phone, boundStoreName, avatarUrl } = app.globalData;
-    const roles = app.globalData.roles ?? [];
-    const canSeeInventory = ['manager', 'admin', 'finance'].some(r => roles.includes(r));
+    const canSeeInventory = hasRole('manager', 'admin', 'finance');
     this.setData({
       staffName, position, staffWfId, phone, boundStoreName,
       avatarUrl: avatarUrl || '',

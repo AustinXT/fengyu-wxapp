@@ -51,6 +51,22 @@ export function isBeautician(): boolean {
 }
 
 /**
+ * 判定当前用户是否拥有任一指定角色。
+ * roles 来源：globalData.roles（permission_roles 表 + 后端 staffApi.auth.login 下发）。
+ *
+ * 与 isManager() 的区别：isManager() 基于 staffLevel（store_manager），与 roles 解耦；
+ * hasRole 用于"按角色字符串数组"判定的场景（如菜单显隐、跨角色复合权限）。
+ *
+ * @example
+ *   hasRole('manager')             // 单角色
+ *   hasRole('manager', 'finance')  // 任一即可
+ */
+export function hasRole(...roleNames: string[]): boolean {
+  const roles = app().globalData.roles ?? [];
+  return roleNames.some(r => roles.includes(r));
+}
+
+/**
  * 要求店长身份，否则 toast 提示
  */
 export function requireManager(tipMsg = '该操作仅限店长'): boolean {
