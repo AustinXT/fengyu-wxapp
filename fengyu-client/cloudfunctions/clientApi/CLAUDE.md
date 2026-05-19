@@ -26,7 +26,7 @@ clientApi/
     ├── coupon.js     # list, available
     ├── points.js     # balance, history
     ├── message.js    # list, read, unreadCount
-    ├── card.js       # list, history
+    ├── card.js       # list, history, balance, rechargeConfig, recharge
     └── config.js     # banners, fengyuguan
 ```
 

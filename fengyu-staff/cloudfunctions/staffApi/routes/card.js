@@ -27,7 +27,7 @@ const {
 /**
  * 返回店长可售的充值卡档位 + 自定义金额配置
  *
- * tiers 来自 product_skus（product_kind='充值卡'），price=面值，special_price=实付。
+ * tiers 来自 product_skus.is_recharge_card=true 行（capability 列 SSoT），price=面值，special_price=实付。
  * customConfig 提供前端即时校验所需的边界 + tier 断点。
  */
 async function rechargeSkus(ctx) {

@@ -27,6 +27,7 @@ staffApi/
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
 │   ├── service.js    # create, start, complete, cancel, list, detail, counts
+│   ├── card.js       # rechargeSkus, recharge（充值卡独立开单路由）
 │   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
 └── utils/
 ```

@@ -32,7 +32,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | coupon | list, available |
 | points | balance, history |
 | message | list, read, unreadCount |
-| card | list, history, balance |
+| card | list, history, balance, rechargeConfig, recharge |
 | config | banners, fengyuguan |
 
 ### 储值卡抵扣相关接口说明
