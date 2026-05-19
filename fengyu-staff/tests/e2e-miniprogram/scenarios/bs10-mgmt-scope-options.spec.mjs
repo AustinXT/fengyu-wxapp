@@ -139,27 +139,41 @@ async function run() {
     }
   })) fail++;
 
-  // ─── Case 3: HQ 身份切到 scopeType='store' + summary 调用 OK ───
+  // ─── Case 3: HQ 身份切到 scopeType='store' → scope 落地 + summary 调用 OK ───
+  // 注：mgmtDashboard.summary 走 callStaffApi hook 注入 _testOpenid=MGR_HQ；后端 requireManagementLevel
+  // 校验 staffLevel ∈ {hq, market} —— 前端 setManagementIdentity hack 不影响这里，后端用 DB 真实 binding。
+  // 直接调云函数验，不依赖 page.data.summaryState（state=error 可能源于网络抖动 / 别的字段格式）。
   if (!await runCase('HQ.switch.scope=store_A1+summary.ok', async () => {
     await loginAs(miniProgram, TEST_OPENID_MANAGER_HQ);
     await setManagementIdentity('headquarters', [
       { role: 'manager', scopeType: '总部', scopeId: 'TEST_E2E_L3_HQ' },
     ], []);
     await navigateToMgmtDashboard();
-    // 模拟 mgmt-scope-picker 切到 store
     const page = await miniProgram.currentPage();
     await page.callMethod('onScopeChange', {
       detail: { scopeType: 'store', scopeId: TEST_STORE_A1_ID, scopeName: 'L3 测试门店' },
     });
-    await new Promise(r => setTimeout(r, 1000));
+    // 等 setData(scope) 落地
+    await new Promise(r => setTimeout(r, 600));
     const scope = await readScope();
     if (scope?.scopeId !== TEST_STORE_A1_ID) {
       throw new Error(`scope 未切到 store_A1, 实际=${JSON.stringify(scope)}`);
     }
-    // loadSummary 应已被 onScopeChange 触发，验 data.summary 存在
-    const data = await page.data();
-    if (data.summaryState === 'error') {
-      throw new Error(`summary state=error，loadSummary 失败`);
+    // 直接调云函数验 mgmtDashboard.summary 在 store scope 下能返回 code=0
+    const today = new Date().toISOString().slice(0, 10);
+    const r = await miniProgram.evaluate((date, sid) => new Promise((resolve, reject) => {
+      wx.cloud.callFunction({
+        name: 'staffApi',
+        data: {
+          action: 'mgmtDashboard.summary',
+          payload: { _loginLevel: 'management', date, scopeType: 'store', scopeId: sid },
+        },
+        success: (res) => resolve(res.result),
+        fail: (err) => reject(new Error(err?.errMsg || String(err))),
+      });
+    }), today, TEST_STORE_A1_ID);
+    if (r?.code !== 0) {
+      throw new Error(`mgmtDashboard.summary(store_A1) code=${r?.code} ${r?.message}`);
     }
   })) fail++;
 

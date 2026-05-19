@@ -17,7 +17,7 @@ import { loginAs, callStaffApiWithTestOpenid } from '../helpers/login.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
 import { closePool, query } from '../helpers/pg.mjs';
 import {
-  createTestPersonnelMatrix, cleanupL3TestData,
+  createTestPersonnelMatrix, createTestClient, cleanupL3TestData,
 } from '../helpers/fixtures.mjs';
 import {
   TEST_OPENID_MANAGER, TEST_OPENID_MANAGER_B1,
@@ -78,8 +78,9 @@ async function run() {
   resetSnapshots();
   try { await cleanupL3TestData(); } catch (e) { console.warn('[start-cleanup]', e.message); }
 
-  // 建多市场组织 + B 市场店长，再造一笔 B 店订单
+  // 建多市场组织 + B 市场店长 + 默认顾客（B 单 client_user_id FK 依赖），再造一笔 B 店订单
   await createTestPersonnelMatrix();
+  await createTestClient();
   const { orderId } = await createTestOrderInStoreB();
   console.log(`  ✓ fixture: B 店订单 ${orderId}`);
 

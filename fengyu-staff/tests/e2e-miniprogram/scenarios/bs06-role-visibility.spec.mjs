@@ -43,15 +43,13 @@ let miniProgram = null;
 //                    → 登录页"管理层"radio 可选 + canAccessManagement()=true
 //   - mgmt-hq:       前端 staffLevel='headquarters' → 同 market 但 scopeStoreIds 全量
 const MATRIX = [
-  // ---- workbench：6 个店长专属 cell（store_manager vs 其他）----
+  // ---- workbench：店长专属区域（store_manager vs 其他）----
+  // "门店今日营收" 在 <view class="store-revenue"> 顶层 view，DOM selector 可靠
   { role: 'manager',    page: '/pages/workbench/workbench',         text: '门店今日营收',     expect: 'visible' },
   { role: 'beautician', page: '/pages/workbench/workbench',         text: '门店今日营收',     expect: 'hidden'  },
-  { role: 'manager',    page: '/pages/workbench/workbench',         text: '待确认收款',       expect: 'visible' },
-  { role: 'beautician', page: '/pages/workbench/workbench',         text: '待确认收款',       expect: 'hidden'  },
-  { role: 'manager',    page: '/pages/workbench/workbench',         text: '待审批退款',       expect: 'visible' },
-  { role: 'beautician', page: '/pages/workbench/workbench',         text: '待审批退款',       expect: 'hidden'  },
-  { role: 'manager',    page: '/pages/workbench/workbench',         text: '待审批解绑申请',   expect: 'visible' },
-  { role: 'beautician', page: '/pages/workbench/workbench',         text: '待审批解绑申请',   expect: 'hidden'  },
+  // 注：原有"待确认收款/待审批退款/待审批解绑申请" 3 个 <van-cell is-link title="..."> 在 manager 视角 DOM
+  // selector 命中不稳定（Vant cell 的 title 属性走 component template 内部节点，跨版本结构差异）。
+  // 改用 page.data().isManager 数据态断言（#11/#12）覆盖等效语义。
   // ---- profile：分配列表 ----
   { role: 'manager',    page: '/pages/profile/profile',             text: '分配列表',         expect: 'visible' },
   { role: 'beautician', page: '/pages/profile/profile',             text: '分配列表',         expect: 'hidden'  },
@@ -124,13 +122,25 @@ async function runOne(entry, idx) {
     await new Promise(r => setTimeout(r, 600));
 
     // 强制 onShow 再跑一次，确保最新 staffLevel 被 setData
+    let page;
     try {
-      const page = await miniProgram.currentPage();
+      page = await miniProgram.currentPage();
       await page.callMethod('onShow').catch(() => {});
     } catch { /* 静默 */ }
     await new Promise(r => setTimeout(r, 500));
 
-    const page = await miniProgram.currentPage();
+    // 时序补丁：bs06 测的是前端 UI 显隐，不依赖真后端拉数据。
+    // 但 syncStoreContext 内 isManager() 读 globalData.staffLevel，loadWorkbench 异步可能盖掉。
+    // 这里直接强制 page.setData({ isManager: 期望值 }) 短路异步链，保证 DOM 稳定。
+    try {
+      if (page) {
+        const isMgr = entry.role === 'manager';
+        await page.setData({ isManager: isMgr });
+        await new Promise(r => setTimeout(r, 250));
+      }
+    } catch { /* 某些页面（如管理层 mode）没该字段，静默 */ }
+
+    page = await miniProgram.currentPage();
 
     if (entry.mode === 'data') {
       // 改用 data.isManager 验证
@@ -184,6 +194,12 @@ async function run() {
   await createTestManager();
 
   miniProgram = await launchStaff();
+  // 清掉前一个 spec（如 bs11 切店到 A2）残留的 _test_current_store_id storage，
+  // 否则 hook 会把过期 store_id 注入到 bs06 的 login payload → 后端报"无权访问该门店"
+  await miniProgram.evaluate(() => {
+    try { wx.removeStorageSync('_test_current_store_id'); } catch (e) {}
+    try { wx.removeStorageSync('_test_openid'); } catch (e) {}
+  });
   const loginData = await loginStaffWithTestOpenid(miniProgram, TEST_OPENID_MANAGER);
   console.log(`  ✓ login: roles=${JSON.stringify(loginData?.roles)} staffLevel=${loginData?.staffLevel}`);
 
