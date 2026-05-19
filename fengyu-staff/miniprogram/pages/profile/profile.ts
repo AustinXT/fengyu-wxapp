@@ -177,6 +177,10 @@ Page({
     wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 
+  onNavPickup() {
+    wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
+  },
+
   onLogout() {
     wx.showModal({
       title: '退出登录',

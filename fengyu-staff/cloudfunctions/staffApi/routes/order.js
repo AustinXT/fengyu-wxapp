@@ -2602,6 +2602,173 @@ async function createPickup(ctx) {
   }
 }
 
+/**
+ * 列出顾客可提货的家居产品销售明细
+ *
+ * 仅店长可调用（与 createPickup 鉴权一致）。
+ */
+async function availablePickupItems(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+
+  const rows = await pg.query(
+    `SELECT si.sale_item_id,
+            si.sale_order_id,
+            si.product_name,
+            si.spec_name,
+            si.quantity,
+            COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+            si.unit_real_price,
+            o.store_id,
+            o.paid_at,
+            s.store_name
+       FROM sale_items si
+ INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+  LEFT JOIN stores s ON s.store_id = o.store_id
+      WHERE o.client_user_id = $1
+        AND o.status = '已支付'
+        AND si.item_direction = '购买'
+        AND si.product_type = '家居产品'
+        AND si.quantity > COALESCE(si.picked_up_quantity, 0)
+   ORDER BY o.paid_at DESC, si.sale_item_id`,
+    [clientUserId],
+  )
+
+  ctx.result = rows.map((r) => ({
+    saleItemId: r.sale_item_id,
+    saleOrderId: r.sale_order_id,
+    productName: r.product_name || null,
+    specName: r.spec_name || null,
+    quantity: Number(r.quantity),
+    pickedUpQuantity: Number(r.picked_up_quantity || 0),
+    remaining: Number(r.quantity) - Number(r.picked_up_quantity || 0),
+    unitRealPrice: r.unit_real_price ?? '0',
+    storeId: r.store_id,
+    storeName: r.store_name || null,
+    paidAt: r.paid_at,
+  }))
+}
+
+/**
+ * 提货记录分页列表
+ *
+ * 默认按 ctx.auth.effectiveStoreId 过滤本门店；admin 端的全量视图由 admin/pickup-records 提供。
+ */
+async function pickupRecordsList(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const {
+    page = 1,
+    pageSize = 20,
+    storeId,
+    startDate,
+    endDate,
+    clientUserId,
+  } = ctx.event.payload || {}
+
+  const limit = Math.max(1, Math.min(50, parseInt(pageSize, 10) || 20))
+  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+
+  const conditions = []
+  const params = []
+  let idx = 1
+
+  const scopeIds = ctx.auth.scopeStoreIds || []
+  if (scopeIds.length === 0) {
+    ctx.result = { items: [], total: 0, page: 1, pageSize: limit }
+    return ctx.result
+  }
+  conditions.push(`pr.store_id = ANY($${idx}::text[])`)
+  params.push(scopeIds)
+  idx++
+
+  if (storeId) {
+    conditions.push(`pr.store_id = $${idx}`)
+    params.push(storeId)
+    idx++
+  }
+  if (clientUserId) {
+    conditions.push(`pr.client_user_id = $${idx}`)
+    params.push(clientUserId)
+    idx++
+  }
+  if (startDate) {
+    conditions.push(`pr.created_at >= $${idx}`)
+    params.push(startDate)
+    idx++
+  }
+  if (endDate) {
+    conditions.push(`pr.created_at <= ($${idx}::date + INTERVAL '1 day')`)
+    params.push(endDate)
+    idx++
+  }
+
+  const whereSql = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+
+  const dataSql = `
+    SELECT pr.id,
+           pr.sale_item_id,
+           pr.pickup_quantity,
+           pr.store_id,
+           pr.client_user_id,
+           pr.confirmed_by,
+           pr.remark,
+           pr.created_at,
+           s.store_name,
+           cw.name AS client_name,
+           cw.phone AS client_phone,
+           sw.name AS confirmed_by_name,
+           si.product_name,
+           si.spec_name,
+           si.quantity AS item_quantity,
+           si.picked_up_quantity AS item_picked_up_quantity,
+           si.sale_order_id
+      FROM pickup_records pr
+ LEFT JOIN stores s ON s.store_id = pr.store_id
+ LEFT JOIN client_wechat_users cw ON cw.user_id = pr.client_user_id
+ LEFT JOIN staff_wechat_users sw ON sw.employee_id = pr.confirmed_by
+ LEFT JOIN sale_items si ON si.sale_item_id = pr.sale_item_id
+       ${whereSql}
+  ORDER BY pr.created_at DESC
+     LIMIT ${limit} OFFSET ${offset}
+  `
+  const countSql = `SELECT COUNT(*)::int AS cnt FROM pickup_records pr ${whereSql}`
+
+  const [rows, countRow] = await Promise.all([
+    pg.query(dataSql, params),
+    pg.query(countSql, params),
+  ])
+
+  ctx.result = {
+    items: rows.map((r) => ({
+      id: r.id,
+      saleItemId: r.sale_item_id,
+      pickupQuantity: r.pickup_quantity,
+      storeId: r.store_id,
+      storeName: r.store_name || null,
+      clientUserId: r.client_user_id,
+      clientName: r.client_name || null,
+      clientPhone: r.client_phone || null,
+      confirmedBy: r.confirmed_by,
+      confirmedByName: r.confirmed_by_name || null,
+      remark: r.remark,
+      createdAt: r.created_at,
+      productName: r.product_name || null,
+      specName: r.spec_name || null,
+      itemQuantity: r.item_quantity == null ? null : Number(r.item_quantity),
+      itemPickedUpQuantity:
+        r.item_picked_up_quantity == null ? null : Number(r.item_picked_up_quantity),
+      saleOrderId: r.sale_order_id || null,
+    })),
+    total: countRow[0]?.cnt ?? 0,
+    page: Math.max(1, parseInt(page, 10) || 1),
+    pageSize: limit,
+  }
+  return ctx.result
+}
+
 // ========== 辅助函数 ==========
 
 /**
@@ -3026,4 +3193,6 @@ module.exports = {
   customerHeldCards,
   createPickup,
   createDeposit,
+  availablePickupItems,
+  pickupRecordsList,
 }

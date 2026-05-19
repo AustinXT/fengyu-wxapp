@@ -1,4 +1,6 @@
 {
-  "usingComponents": {},
-  "navigationBarTitleText": "库存管理"
+  "navigationBarTitleText": "库存管理",
+  "usingComponents": {
+    "van-icon": "@vant/weapp/icon/index"
+  }
 }

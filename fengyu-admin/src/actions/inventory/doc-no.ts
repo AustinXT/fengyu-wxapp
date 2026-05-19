@@ -22,7 +22,11 @@ const TABLE_BY_CATEGORY: Record<InventoryDocCategory, string> = {
  *
  * advisory_xact_lock 按 category 隔离，避免跨类别串行；当天序号按当日（doc_date 不参与）。
  * 与 sale_orders/employees 现有模式同构。
+ *
+ * 注：这是事务内工具函数（接受 tx 作为参数），不是顶层 Server Action；
+ * 不需要 withPermission 包裹。eslint rule 仅按目录匹配，需显式豁免。
  */
+// eslint-disable-next-line no-restricted-syntax
 export async function generateInventoryDocNo(
   tx: PgTransaction<any, any, any>,
   category: InventoryDocCategory,

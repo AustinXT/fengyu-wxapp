@@ -26,6 +26,7 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 | prepaid-card | prepaid_cards, card_transactions | 充值卡 + 流水 |
 | service-commission | service_commissions | 服务提成（手工费/卡数提成） |
 | pickup | pickup_records | 家居产品提货记录 |
+| inventory | inventory_procurement_orders/_items, inventory_sale_orders/_items, inventory_transfer_orders/_items, inventory_scrap_orders/_items | 门店库存 4 类单据（采购/销售/调拨/报损）|
 | system-config | system_configs | 系统配置（键值对） |
 | enums | — | TypeScript 枚举定义 |
 

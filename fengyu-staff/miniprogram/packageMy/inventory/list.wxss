@@ -1,0 +1,139 @@
+/* packageMy/inventory/list.wxss */
+.container {
+  background-color: #F5F5F5;
+  min-height: 100vh;
+  padding-bottom: 32rpx;
+}
+
+.filters {
+  background: #FFFFFF;
+  padding: 16rpx 24rpx;
+  border-bottom: 1rpx solid #EEE;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-bottom: 16rpx;
+}
+
+.filter-chip {
+  padding: 8rpx 20rpx;
+  border-radius: 24rpx;
+  background: #F5F5F5;
+  color: #666;
+  font-size: 24rpx;
+}
+
+.filter-chip.active {
+  background: #C0322A;
+  color: #FFFFFF;
+}
+
+.search-row {
+  display: flex;
+}
+
+.search-input {
+  flex: 1;
+  background: #F5F5F5;
+  border-radius: 12rpx;
+  padding: 12rpx 20rpx;
+  font-size: 26rpx;
+}
+
+.list {
+  padding: 16rpx 24rpx;
+}
+
+.item {
+  background: #FFFFFF;
+  border-radius: 12rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.03);
+}
+
+.item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12rpx;
+}
+
+.item-id {
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #1A1A1A;
+  font-family: 'Courier New', monospace;
+}
+
+.item-status {
+  font-size: 24rpx;
+}
+
+.status-已完成 {
+  color: #3D8A5A;
+}
+
+.status-草稿 {
+  color: #D4820A;
+}
+
+.status-已取消 {
+  color: #999;
+}
+
+.item-meta {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  margin-bottom: 12rpx;
+}
+
+.meta-tag {
+  background: #FFF0EE;
+  color: #C0322A;
+  padding: 2rpx 12rpx;
+  border-radius: 4rpx;
+  font-size: 22rpx;
+}
+
+.meta-text {
+  font-size: 24rpx;
+  color: #999;
+}
+
+.item-body {
+  font-size: 26rpx;
+  color: #333;
+  margin-bottom: 12rpx;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.counterpart {
+  color: #5E8BB3;
+}
+
+.customer {
+  color: #C0322A;
+}
+
+.item-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 22rpx;
+  color: #999;
+}
+
+.empty,
+.loading,
+.no-more {
+  text-align: center;
+  padding: 40rpx;
+  color: #999;
+  font-size: 26rpx;
+}

@@ -57,7 +57,11 @@
       "root": "packageMy",
       "name": "我的子页",
       "pages": [
-        "inventory/inventory"
+        "inventory/inventory",
+        "inventory/list",
+        "inventory/detail",
+        "pickup/pickup-by-customer",
+        "pickup/pickup-list"
       ]
     }
   ],

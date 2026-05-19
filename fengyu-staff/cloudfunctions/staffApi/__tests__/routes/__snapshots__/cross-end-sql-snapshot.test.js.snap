@@ -39,10 +39,6 @@ exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snaps
 }
 `;
 
-exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > Snapshot 守护（任一字符漂移即可见） > paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
-
-exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 Snapshot 守护（任一字符漂移即可见） paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
-
 exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapshot 守护：admin 关键 SQL 整体文本快照 admin 三端守护涉及的 4 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
@@ -51,3 +47,7 @@ exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapsho
   "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
 }
 `;
+
+exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > Snapshot 守护（任一字符漂移即可见） > paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
+
+exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 Snapshot 守护（任一字符漂移即可见） paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;

@@ -73,6 +73,12 @@ const routes = {
   'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
   'order.createPickup':   () => require('./routes/order').createPickup,
   'order.createDeposit':  () => require('./routes/order').createDeposit,
+  'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
+  'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
+
+  // 库存（只读）
+  'inventory.list':       () => require('./routes/inventory').list,
+  'inventory.detail':     () => require('./routes/inventory').detail,
 
   // 营业额分配
   'allocation.save':         () => require('./routes/allocation').save,

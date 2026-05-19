@@ -1,0 +1,37 @@
+<!-- packageMy/pickup/pickup-list.wxml -->
+<view class="container">
+  <view class="filters">
+    <picker mode="date" value="{{startDate}}" bindchange="onDateFromChange">
+      <view class="date-chip">{{startDate || '起始日期'}}</view>
+    </picker>
+    <picker mode="date" value="{{endDate}}" bindchange="onDateToChange">
+      <view class="date-chip">{{endDate || '结束日期'}}</view>
+    </picker>
+    <view wx:if="{{startDate || endDate}}" class="clear" bindtap="clearDates">清除</view>
+  </view>
+
+  <view class="list">
+    <view wx:for="{{items}}" wx:key="id" class="card">
+      <view class="card-head">
+        <text class="card-time">{{item.createdAt}}</text>
+        <text class="card-qty">×{{item.pickupQuantity}}</text>
+      </view>
+      <view class="card-body">
+        <text class="card-product">{{item.productName || '商品'}} {{item.specName || ''}}</text>
+      </view>
+      <view class="card-meta">
+        <text>{{item.clientName || '—'}}</text>
+        <text wx:if="{{item.itemQuantity}}">进度 {{item.itemPickedUpQuantity}}/{{item.itemQuantity}}</text>
+        <text class="store">{{item.storeName || '—'}}</text>
+      </view>
+      <view wx:if="{{item.confirmedByName}}" class="card-foot">
+        确认人：{{item.confirmedByName}}
+      </view>
+      <view wx:if="{{item.remark}}" class="card-remark">备注：{{item.remark}}</view>
+    </view>
+
+    <view wx:if="{{!loading && items.length === 0}}" class="empty">暂无提货记录</view>
+    <view wx:if="{{loading}}" class="loading">加载中...</view>
+    <view wx:if="{{!hasMore && items.length > 0}}" class="no-more">没有更多数据</view>
+  </view>
+</view>

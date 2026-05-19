@@ -15,6 +15,7 @@
 | 编号 | 日期 | 标题 |
 |------|------|------|
 | [001](arch/001_legacy-orders-manual-pull-pivot.md) | 2026-05-19 | admin /legacy-orders 改为按顾客手动拉取（弃用全量 bulk 导入） |
+| [002](arch/002_inventory-domain-v1.md) | 2026-05-19 | 门店库存域 v1（PG 4 对表 + admin 主写 + 员工端只读 + 提货流程 UI） |
 
 ## ops — 生产操作
 

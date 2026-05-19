@@ -22,12 +22,13 @@ staffApi/
 │   ├── staff.js      # list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard
 │   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign
 │   ├── product.js    # shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans
-│   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup
+│   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup, availablePickupItems, pickupRecordsList
 │   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList, suggest
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
 │   ├── service.js    # create, start, complete, cancel, list, detail, counts
 │   ├── card.js       # rechargeSkus, recharge（充值卡独立开单路由）
+│   ├── inventory.js  # list, detail（只读；门店库存 4 类单据：procurement/sale/transfer/scrap）
 │   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
 └── utils/
 ```

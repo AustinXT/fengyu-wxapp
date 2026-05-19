@@ -1,0 +1,96 @@
+/* packageMy/pickup/pickup-list.wxss */
+.container {
+  background-color: #F5F5F5;
+  min-height: 100vh;
+  padding-bottom: 32rpx;
+}
+
+.filters {
+  background: #FFFFFF;
+  padding: 16rpx 24rpx;
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  border-bottom: 1rpx solid #EEE;
+}
+
+.date-chip {
+  background: #F5F5F5;
+  padding: 8rpx 16rpx;
+  border-radius: 8rpx;
+  font-size: 24rpx;
+  color: #666;
+}
+
+.clear {
+  font-size: 24rpx;
+  color: #C0322A;
+  margin-left: auto;
+}
+
+.list {
+  padding: 16rpx 24rpx;
+}
+
+.card {
+  background: #FFFFFF;
+  padding: 24rpx;
+  border-radius: 12rpx;
+  margin-bottom: 16rpx;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8rpx;
+}
+
+.card-time {
+  font-size: 24rpx;
+  color: #999;
+}
+
+.card-qty {
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #C0322A;
+}
+
+.card-body {
+  margin-bottom: 8rpx;
+}
+
+.card-product {
+  font-size: 28rpx;
+  color: #333;
+}
+
+.card-meta {
+  display: flex;
+  gap: 16rpx;
+  font-size: 22rpx;
+  color: #666;
+  margin-bottom: 8rpx;
+  flex-wrap: wrap;
+}
+
+.store {
+  margin-left: auto;
+}
+
+.card-foot,
+.card-remark {
+  font-size: 22rpx;
+  color: #999;
+  margin-top: 4rpx;
+}
+
+.empty,
+.loading,
+.no-more {
+  text-align: center;
+  padding: 40rpx;
+  color: #999;
+  font-size: 26rpx;
+}
