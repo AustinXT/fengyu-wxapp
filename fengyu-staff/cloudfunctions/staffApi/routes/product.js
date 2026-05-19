@@ -104,8 +104,17 @@ function _formatCategory(r) {
  * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
  * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
  * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
+ *
+ * 卡类 capability 列下发：is_experience / is_recharge_card 透传给前端，
+ * 让"普通商品"过滤等业务逻辑按 SKU capability 判定，而非 product_kind 字面量。
+ *
+ * @param {string|null} categoryId
+ * @param {string|null} productKind
+ * @param {Object} [opts]
+ * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience/is_recharge_card SKU
  */
-async function _queryFormattedSkuList(categoryId, productKind) {
+async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
+  const { excludeCards = false } = opts || {}
   const params = []
   const conditions = [
     `sk.is_enabled = true`,
@@ -122,12 +131,17 @@ async function _queryFormattedSkuList(categoryId, productKind) {
     conditions.push(`pc.product_kind = $${params.length}`)
   }
 
+  if (excludeCards) {
+    conditions.push(`NOT (sk.is_recharge_card OR sk.is_experience)`)
+  }
+
   const whereClause = 'WHERE ' + conditions.join(' AND ')
 
   const skuRows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
+           sk.is_experience, sk.is_recharge_card,
            pc.category_name, pc.product_kind, pc.sales_category,
            COALESCE((
              SELECT bool_or(p.is_bundle)
@@ -154,6 +168,8 @@ async function _queryFormattedSkuList(categoryId, productKind) {
     productType: sk.product_type,
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
+    isExperience: !!sk.is_experience,
+    isRechargeCard: !!sk.is_recharge_card,
     isBundle: !!sk.is_bundle,
   }))
 }
@@ -286,7 +302,7 @@ async function shopInit(ctx) {
 
   let skuList = []
   if (categories.length > 0) {
-    skuList = await _queryFormattedSkuList(categories[0].id, null)
+    skuList = await _queryFormattedSkuList(categories[0].id, null, { excludeCards: true })
   }
 
   const mallBundleGroups = await _queryMallBundleGroups()
@@ -310,11 +326,14 @@ async function categories(ctx) {
 
 /**
  * SKU 列表（按品项分类）
+ *
+ * payload.excludeCards 透传到底层查询：true 时排除 is_experience/is_recharge_card SKU。
+ * 默认 false 以保持向后兼容（其他调用方未传则行为不变）。
  */
 async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const { categoryId, productKind } = ctx.event.payload || {}
-  ctx.result = await _queryFormattedSkuList(categoryId, productKind)
+  const { categoryId, productKind, excludeCards } = ctx.event.payload || {}
+  ctx.result = await _queryFormattedSkuList(categoryId, productKind, { excludeCards: !!excludeCards })
 }
 
 /**

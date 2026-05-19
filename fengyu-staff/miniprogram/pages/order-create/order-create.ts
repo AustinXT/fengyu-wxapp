@@ -10,19 +10,12 @@ const app = getApp<IAppOption>();
 /**
  * 顶部商品类型 4 选 1（PR-B 改版）
  * - 组合套餐：走 BundlePicker 子视图（products.is_bundle=true）
- * - 普通商品：productKind ∉ CARD_PRODUCT_KINDS AND isBundle != true（排除法）
- * - 体验卡 / 充值卡：productKind='体验卡' / '充值卡'（grid 布局）
+ * - 普通商品：!isExperience && !isRechargeCard && !isBundle（SKU 级 capability 过滤）
+ * - 体验卡：isExperience=true（capability，与 product_kind 字面量解耦）
+ * - 充值卡：isRechargeCard=true（capability，与 product_kind 字面量解耦）
  */
 const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充值卡'] as const;
 type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
-
-/**
- * 卡类一级 kind 名单（"普通商品" Tab 的排除项）。
- *
- * is_card_kind 列已下线（2026-05-18 product-domain cleanup）。
- * "充值卡" / "体验卡" 是稳定的一级 kind 名称约定，新增卡类需同步本常量。
- */
-const CARD_PRODUCT_KINDS = ['充值卡', '体验卡'] as const;
 
 /**
  * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐，仅使用前 3 值
@@ -75,6 +68,10 @@ interface SkuItem {
   productType: string;
   serviceFee: number;
   isShengmei: boolean | null;
+  /** 体验卡 capability（product_skus.is_experience，与 isRechargeCard 互斥） */
+  isExperience?: boolean;
+  /** 充值卡 capability（product_skus.is_recharge_card，与 isExperience 互斥） */
+  isRechargeCard?: boolean;
   /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
   isBundle?: boolean;
 }
@@ -170,26 +167,33 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
 }
 
 /**
- * 商品类型过滤器（PR-B：排除法）
- * - 普通商品：productKind ∉ CARD_PRODUCT_KINDS 且非 bundle
- * - 体验卡 / 充值卡：按 productKind 精确匹配
+ * 商品类型过滤器（按 SKU 级 capability 判定，与 product_kind 字面量解耦）
+ * - 普通商品：非体验卡、非充值卡、非套餐
+ * - 体验卡：isExperience=true
+ * - 充值卡：isRechargeCard=true
  * - 组合套餐：不走 SKU 列表，由 BundlePicker 接管
  */
 function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): SkuItem[] {
   if (choice === '组合套餐') return [];
   if (choice === '普通商品') {
-    return skus.filter(s => !CARD_PRODUCT_KINDS.includes(s.productKind as typeof CARD_PRODUCT_KINDS[number]) && !s.isBundle);
+    return skus.filter(s => !s.isExperience && !s.isRechargeCard && !s.isBundle);
   }
-  // 体验卡 / 充值卡：精确匹配
-  return skus.filter(s => s.productKind === choice);
+  if (choice === '体验卡') {
+    return skus.filter(s => s.isExperience === true);
+  }
+  // 充值卡
+  return skus.filter(s => s.isRechargeCard === true);
 }
 
-/** 分类过滤器（按选中商品类型裁剪侧边栏候选分类） */
+/**
+ * 分类过滤器（按选中商品类型裁剪侧边栏候选分类）
+ *
+ * Category 行只有 productKind 字面量（分类层），没有 SKU capability。
+ * 普通商品 Tab 走 groupedCategories 渲染（后端已 EXISTS 过滤过卡类 SKU），
+ * 不调用本函数。本函数仅服务于体验卡/充值卡 Tab，按分类名匹配。
+ */
 function filterCategoriesByKindChoice(categories: Category[], choice: ProductKindChoice): Category[] {
-  if (choice === '组合套餐') return [];
-  if (choice === '普通商品') {
-    return categories.filter(c => !CARD_PRODUCT_KINDS.includes(c.productKind as typeof CARD_PRODUCT_KINDS[number]));
-  }
+  if (choice === '组合套餐' || choice === '普通商品') return [];
   return categories.filter(c => c.productKind === choice);
 }
 
@@ -597,10 +601,13 @@ Page({
       return;
     }
 
-    // 本地无缓存兜底：发请求（补 productKind 参数）
+    // 本地无缓存兜底：发请求（普通商品传 excludeCards 让后端按 capability 排除卡类 SKU）
     this.setData({ catalogLoading: true });
     try {
-      const skus = await callStaffApi<SkuItem[]>('product.skuList', { categoryId });
+      const skus = await callStaffApi<SkuItem[]>('product.skuList', {
+        categoryId,
+        excludeCards: productKindChoice === '普通商品',
+      });
       // 追加到 _allSkus（便于后续缓存命中）
       this._allSkus = this._allSkus.concat(skus || []);
       const list = filterSkusByKindChoice(skus || [], productKindChoice).map(skuToDisplay);

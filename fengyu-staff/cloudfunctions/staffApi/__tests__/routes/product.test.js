@@ -100,6 +100,62 @@ describe('product.skuList', () => {
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain('product_kind')
   })
+
+  test('透传 SKU 级 capability：isExperience / isRechargeCard 映射自原始列', async () => {
+    const ctx = createCtx({ payload: { categoryId: 'cat-card' } })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        sku_id: 'sku-trial', category_id: 'cat-card', product_type: '疗程卡',
+        spec_name: '体验10次卡', price: '999', special_price: null,
+        session_count: 10, sort_order: 1, service_fee: '0', is_shengmei: false,
+        is_experience: true, is_recharge_card: false,
+        category_name: '体验项目', product_kind: '体验卡', sales_category: null,
+        is_bundle: false,
+      },
+      {
+        sku_id: 'sku-recharge', category_id: 'cat-card', product_type: '单品',
+        spec_name: '储值卡', price: '5000', special_price: null,
+        session_count: null, sort_order: 2, service_fee: '0', is_shengmei: false,
+        is_experience: false, is_recharge_card: true,
+        category_name: '充值', product_kind: '充值卡', sales_category: null,
+        is_bundle: false,
+      },
+    ])
+
+    await productRoutes.skuList(ctx)
+
+    expect(ctx.result[0].isExperience).toBe(true)
+    expect(ctx.result[0].isRechargeCard).toBe(false)
+    expect(ctx.result[1].isExperience).toBe(false)
+    expect(ctx.result[1].isRechargeCard).toBe(true)
+    // SQL 必须 SELECT capability 列
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toMatch(/sk\.is_experience/)
+    expect(sql).toMatch(/sk\.is_recharge_card/)
+  })
+
+  test('excludeCards=true 在 WHERE 增加排除卡类 SKU 条件', async () => {
+    const ctx = createCtx({ payload: { categoryId: 'cat-1', excludeCards: true } })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.skuList(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toMatch(/NOT \(sk\.is_recharge_card OR sk\.is_experience\)/)
+  })
+
+  test('excludeCards 缺省/false 不加排除条件（向后兼容）', async () => {
+    const ctx = createCtx({ payload: { categoryId: 'cat-1' } })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.skuList(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).not.toMatch(/NOT \(sk\.is_recharge_card OR sk\.is_experience\)/)
+  })
 })
 
 // ============================================================
@@ -247,6 +303,26 @@ describe('product.shopInit', () => {
     expect(ctx.result.groupedCategories[0].productKind).toBe('护理项目')
     expect(ctx.result.groupedCategories[0].items).toHaveLength(1)
     expect(ctx.result.groupedCategories[1].productKind).toBe('家居产品')
+  })
+
+  test('shopInit 首个分类 skuList 调用带 excludeCards=true（capability 排除卡类）', async () => {
+    const ctx = createCtx()
+
+    // 1) _queryCategoryRows
+    pg.query.mockResolvedValueOnce([
+      { category_id: 'cat-1', category_name: '面部护理', product_kind: '护理项目', sales_category: null, sort_order: 1, kind_name: '护理项目', kind_sort_order: 1 },
+    ])
+    // 2) nonEmptyRows EXISTS
+    pg.query.mockResolvedValueOnce([{ category_id: 'cat-1' }])
+    // 3) _queryFormattedSkuList — 验证此 SQL 含 NOT 卡类
+    pg.query.mockResolvedValueOnce([])
+    // 4) _queryMallBundleGroups
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.shopInit(ctx)
+
+    const skuListSql = pg.query.mock.calls[2][0]
+    expect(skuListSql).toMatch(/NOT \(sk\.is_recharge_card OR sk\.is_experience\)/)
   })
 
   test('无分类时返回空 SKU 列表', async () => {
