@@ -53,17 +53,6 @@ async function run() {
   })
   await invalidateStaffAuthCache(employees.map((e) => e.oid))
 
-  // 调试：确认 binding 真插
-  const { pgQuery } = await import('./setup.mjs')
-  const bindings = await pgQuery(
-    `SELECT pr.employee_id, pr.role, pr.scope_id, o.type AS scope_type
-     FROM permission_roles pr
-     LEFT JOIN org_nodes o ON o.id = pr.scope_id
-     WHERE pr.employee_id LIKE $1`,
-    [`${NS}_RBAC_H%`]
-  )
-  console.log(`  [debug] HQ bindings inserted: ${bindings.length} | sample: ${JSON.stringify(bindings.slice(0, 2))}`)
-
   const results = []
 
   // 1) auth.login: staffLevel=headquarters + scopedStores 含 4 个测试店 + availableLoginLevels 两档
@@ -109,7 +98,7 @@ async function run() {
   const today = new Date().toISOString().slice(0, 10)
   for (const e of employees) {
     results.push(await expectOk('mgmtDashboard.summary',
-      { _testOpenid: e.oid, _loginLevel: 'management', scopeType: 'all', selectedDate: today },
+      { _testOpenid: e.oid, _loginLevel: 'management', scopeType: 'all', date: today },
       `${e.key}.mgmtDashboard.summary(all)`))
   }
 
