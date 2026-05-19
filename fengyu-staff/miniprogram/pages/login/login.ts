@@ -20,22 +20,17 @@ Page({
   },
 
   onLoad() {
-    // 场景 B：已登录热启动（storage 有缓存）→ 快速路径直跳上次 tab，不重新授权
-    if (app.globalData.staffWfId) {
-      this.jumpByLoginLevel()
-      return
-    }
     this.checkAuth()
   },
 
   async checkAuth() {
-    // 等 onLaunch 的 syncLoginState 完成（场景 A 下会返回 isNewUser）
+    // 即使缓存里有 staffWfId 也要等 syncLoginState 用最新服务端结果覆盖；
+    // 否则 storage 残留 loginLevel='management' 的用户会被甩进未授权的管理层页。
     await app._loginReady
     if (app.globalData.staffWfId) {
       this.jumpByLoginLevel()
       return
     }
-    // 进入 initial 阶段等用户授权手机号
     this.setData({ checking: false, phase: 'initial' })
   },
 
