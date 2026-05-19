@@ -157,15 +157,28 @@ async function caseHighSeqRollsToFiveDigits() {
 
   const seedOrderId = `${todayPrefix()}9999`
   // 先清理可能残留的同前缀污染（前次 run 异常退出留下的）
+  // FK 到 sale_orders.sale_order_id 的表清单（必须反向先清）：
+  //   card_transactions / point_transactions / user_coupons / sale_order_payments
+  //   sale_items / sale_allocations / appointments(sale_item_id) / service_items(sale_item_id)
+  // 5 位序号在生产几乎不存在，影响面仅限当日序号污染。
   const todayLike = `${todayPrefix()}%`
-  await pgQuery(
-    `DELETE FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '[0-9]{5}$'`,
-    [todayLike]
-  )
-  await pgQuery(
-    `DELETE FROM sale_orders WHERE sale_order_id LIKE $1 AND sale_order_id ~ '[0-9]{5}$'`,
-    [todayLike]
-  )
+  const fiveDigitRe = `[0-9]{5}$`
+  const cleanups = [
+    `DELETE FROM card_transactions WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM point_transactions WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM user_coupons WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM sale_allocations WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM appointments WHERE sale_item_id IN (
+       SELECT sale_item_id FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'
+     )`,
+    `DELETE FROM service_items WHERE sale_item_id IN (
+       SELECT sale_item_id FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'
+     )`,
+    `DELETE FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM sale_orders WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
+  ]
+  for (const sql of cleanups) await pgQuery(sql, [todayLike])
 
   // 种 9999：client_user_id 绑到 TE2L2_CCL_0 让命名空间 cleanup 能回收
   await pgQuery(

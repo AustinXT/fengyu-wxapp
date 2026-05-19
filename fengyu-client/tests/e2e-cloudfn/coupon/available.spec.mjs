@@ -21,7 +21,7 @@ import {
 import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
   createTestSku, createTestCoupon, createTestCouponTemplate,
-  cleanupClientExtras,
+  cleanupClientExtras, suffixToPhone,
 } from '../helpers/client-fixtures.mjs'
 import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
@@ -37,7 +37,7 @@ async function makeClient(suffix) {
      VALUES ($1, $2, $3, $4, '女', $5, '流量客'::customer_type, '<1990'::spending_tier, 0)
      ON CONFLICT (user_id) DO UPDATE
        SET openid = EXCLUDED.openid, phone = EXCLUDED.phone`,
-    [userId, openid, `1999909${suffix.slice(-4).padStart(4, '0')}`, `${NS}_顾客${suffix}`, TEST_STORE_ID]
+    [userId, openid, suffixToPhone(`coupon-avail:${suffix}`), `${NS}_顾客${suffix}`, TEST_STORE_ID]
   )
   return { userId, openid }
 }

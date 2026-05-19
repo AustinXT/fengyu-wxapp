@@ -27,7 +27,8 @@ async function caseBalanceDefaultZero() {
   await createTestClient()
   const res = await invokeAs(TEST_CLIENT_OPENID, 'points.balance', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (res.data.balance !== 0) throw new Error(`expect balance=0, got ${res.data.balance}`)
+  // PG bigint 经原生 pg 驱动返回字符串，spec 端用 Number() 归一化（同 caseAlienClientFallback / caseBalanceWithMemberLevel）
+  if (Number(res.data.balance) !== 0) throw new Error(`expect balance=0, got ${res.data.balance}`)
   if (res.data.levelName !== null) throw new Error(`expect levelName=null, got ${res.data.levelName}`)
 }
 
@@ -39,7 +40,8 @@ async function caseBalanceWithMemberLevel() {
   )
   const res = await invokeAs(TEST_CLIENT_OPENID, 'points.balance', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (res.data.balance !== 200) throw new Error(`expect balance=200, got ${res.data.balance}`)
+  // PG bigint 经原生 pg 驱动返回字符串，spec 端用 Number() 归一化（与 caseAlienClientFallback 同源）
+  if (Number(res.data.balance) !== 200) throw new Error(`expect balance=200, got ${res.data.balance}`)
   if (res.data.levelName !== '星钻') throw new Error(`expect levelName=星钻, got ${res.data.levelName}`)
 }
 
@@ -47,7 +49,8 @@ async function caseHistoryDefaultDesc() {
   await createTestClient()
   await createTestPointTxn({ type: '消费赠送', amount: 10 })
   await new Promise(r => setTimeout(r, 5))
-  await createTestPointTxn({ type: '使用扣减', amount: -3 })
+  // chk_pt_amount_sign 约束：amount<0 只允许 type='消费冲销'（其他 type 必须正数）
+  await createTestPointTxn({ type: '消费冲销', amount: -3 })
   await new Promise(r => setTimeout(r, 5))
   await createTestPointTxn({ type: '人工调整', amount: 100, remark: 'NS_admin_adjust' })
 
@@ -58,10 +61,10 @@ async function caseHistoryDefaultDesc() {
     throw new Error(`expect 3 records, got ${records?.length}`)
   }
   // 验证倒序：第一条应该是最新的（人工调整 amount=100）
-  if (records[0].amount !== 100) {
+  if (Number(records[0].amount) !== 100) {
     throw new Error(`expect first record amount=100 (newest), got ${records[0].amount}`)
   }
-  if (records[2].amount !== 10) {
+  if (Number(records[2].amount) !== 10) {
     throw new Error(`expect last record amount=10 (oldest), got ${records[2].amount}`)
   }
 }

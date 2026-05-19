@@ -16,10 +16,10 @@ import {
   TEST_STORE_ID,
 } from '../setup.mjs'
 import { invokeAs, invokePublic, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
-import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
+import { cleanupClientExtras, suffixToPhone } from '../helpers/client-fixtures.mjs'
 import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
-async function makeClient(suffix, { phone = `1999909${suffix}`, withStore = true } = {}) {
+async function makeClient(suffix, { phone = suffixToPhone(`recharge:${suffix}`), withStore = true } = {}) {
   const userId = `${NS}_CLI_${suffix}`
   const openid = `${NS}_CLI_OPENID_${suffix}`
   await ensureTestStore()

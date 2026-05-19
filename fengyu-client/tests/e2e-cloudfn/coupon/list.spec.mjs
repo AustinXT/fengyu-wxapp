@@ -17,7 +17,7 @@ import {
 import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
   createTestCoupon, createTestCouponTemplate,
-  cleanupClientExtras,
+  cleanupClientExtras, suffixToPhone,
 } from '../helpers/client-fixtures.mjs'
 import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
@@ -35,7 +35,7 @@ async function makeClient(suffix, { withPhone = true } = {}) {
        SET openid = EXCLUDED.openid, phone = EXCLUDED.phone`,
     [
       userId, openid,
-      withPhone ? `1999909${suffix.slice(-4).padStart(4, '0')}` : null,
+      withPhone ? suffixToPhone(`coupon-list:${suffix}`) : null,
       `${NS}_顾客${suffix}`,
       TEST_STORE_ID,
     ]

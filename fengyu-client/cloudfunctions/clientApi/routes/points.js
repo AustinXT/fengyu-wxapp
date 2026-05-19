@@ -24,7 +24,7 @@ async function balance(ctx) {
   `, [userId])
 
   ctx.result = {
-    balance: rows[0]?.balance || 0,
+    balance: Number(rows[0]?.balance) || 0,
     levelName: rows[0]?.level_name || null,
     levelBenefits: null,
     nextLevel: null,
@@ -51,7 +51,7 @@ async function history(ctx) {
     records: records.map(r => ({
       id: r.id,
       type: r.type,
-      amount: r.amount,
+      amount: Number(r.amount),
       refOrderId: r.ref_order_id,
       createdAt: r.created_at,
     }))

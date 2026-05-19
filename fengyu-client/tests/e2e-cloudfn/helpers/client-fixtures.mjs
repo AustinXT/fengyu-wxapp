@@ -26,6 +26,18 @@ import {
   TEST_CLIENT2_USER_ID, TEST_CLIENT2_OPENID, TEST_CLIENT2_PHONE,
 } from '../setup.mjs'
 
+// ─── 工具：手机号 ────────────────────────────────────
+/**
+ * 把任意 suffix（可含字母）哈希到一个合法手机号字符串
+ * chk_cwu_phone_format / chk_swu_phone_format 约束 `^1[3-9][0-9]{9}$`
+ * 拼法：固定前缀 `1999909` (7 位) + 4 位 hash (0000-9999) = 11 位
+ */
+export function suffixToPhone(suffix) {
+  let h = 0
+  for (const c of String(suffix)) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return '1999909' + String(h % 10000).padStart(4, '0')
+}
+
 // ─── 商品分类 ─────────────────────────────────────────
 /**
  * 同时确保两个分类系统的测试行：

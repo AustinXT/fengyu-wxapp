@@ -16,7 +16,7 @@ import {
 } from '../setup.mjs'
 import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
-  createTestPrepaidCard, cleanupClientExtras,
+  createTestPrepaidCard, cleanupClientExtras, suffixToPhone,
 } from '../helpers/client-fixtures.mjs'
 import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
@@ -32,7 +32,7 @@ async function makeClient(suffix) {
      VALUES ($1, $2, $3, $4, '女', $5, '流量客'::customer_type, '<1990'::spending_tier, 0)
      ON CONFLICT (user_id) DO UPDATE
        SET openid = EXCLUDED.openid, phone = EXCLUDED.phone`,
-    [userId, openid, `19999099${suffix.slice(0, 3)}`, `${NS}_顾客${suffix}`, TEST_STORE_ID]
+    [userId, openid, suffixToPhone(`history:${suffix}`), `${NS}_顾客${suffix}`, TEST_STORE_ID]
   )
   return { userId, openid }
 }

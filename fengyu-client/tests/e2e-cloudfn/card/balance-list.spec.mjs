@@ -15,7 +15,7 @@ import {
 } from '../setup.mjs'
 import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
-  createTestPrepaidCard, cleanupClientExtras,
+  createTestPrepaidCard, cleanupClientExtras, suffixToPhone,
 } from '../helpers/client-fixtures.mjs'
 import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
@@ -23,7 +23,7 @@ import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
  * 独立 fixture：建一个带 openid/phone 的顾客，避开根 createTestClient 的全局常量
  * 让每个用例用独立 user 避开 AUTH_CACHE。
  */
-async function makeClient(suffix, { phone = `19999099${suffix}` } = {}) {
+async function makeClient(suffix, { phone = suffixToPhone(`balance-list:${suffix}`) } = {}) {
   const userId = `${NS}_CLI_${suffix}`
   const openid = `${NS}_CLI_OPENID_${suffix}`
   await ensureTestStore()

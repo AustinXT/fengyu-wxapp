@@ -120,6 +120,8 @@ async function caseListPagination() {
   await ensureTestStore()
   await createTestStaff()
   await createTestClient()
+  // uq_so_client_active 约束：同一 client_user_id 在 (待服务,服务中) 状态下唯一，
+  // 故 3 单中前 2 单标记为 '已完成'，保留最后 1 单为 '待服务'（list 路由不按状态过滤，分页 3 条仍可返）
   for (let i = 0; i < 3; i++) {
     const orderId = `${NS}_ORD_PAGE_${i}`
     const { saleItemId } = await createTestSaleOrder({
@@ -129,6 +131,7 @@ async function caseListPagination() {
     await createTestServiceOrder({
       serviceOrderId: `${NS}_SVC_PAGE_${i}`,
       saleItemId,
+      status: i < 2 ? '已完成' : '待服务',
     })
     await new Promise(r => setTimeout(r, 3))
   }
