@@ -62,6 +62,8 @@ const FILES = {
   clientPaidSessionsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js'),
   payNotifyPaidSessionsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/paid-sessions.js'),
   adminPaidSessionsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/paid-sessions.ts'),
+  // 同一公式的第 5 个副本：维护脚本 fix-sale-items-session-count.js 改 session_count 后内联 recalc
+  scriptPaidSessionsFix: path.resolve(__dirname, '../../../../../db/scripts/fix-sale-items-session-count.js'),
 
   // SUMMARY v3 §2 #11 — face_value_override 五处读取
   staffCouponJs: path.resolve(__dirname, '../../routes/coupon.js'),
@@ -912,45 +914,50 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_PAID_SESSIONS)),
       payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_PAID_SESSIONS)),
       adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_PAID_SESSIONS)),
+      scriptFix: normalizeSql(extractBacktickStringContaining(readFile(FILES.scriptPaidSessionsFix), MARKER_PAID_SESSIONS)),
     }
   })
 
   describe("公式特征守护（防止公式漂移成不安全形态）", () => {
-    test("四端公式必须使用 GREATEST(0, received - COALESCE(refunded_amount, 0)) 作 settled", () => {
+    test("五端公式必须使用 GREATEST(0, received - COALESCE(refunded_amount, 0)) 作 settled", () => {
       const pattern = /GREATEST\(0,\s*received\s*-\s*COALESCE\(refunded_amount,\s*0\)\)/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
       expect(paidSessionsSqls.adminTs).toMatch(pattern)
+      expect(paidSessionsSqls.scriptFix).toMatch(pattern)
     })
 
-    test("四端必须用 FLOOR 取整（D1=A 保守策略），不得改 round/ceil", () => {
+    test("五端必须用 FLOOR 取整（D1=A 保守策略），不得改 round/ceil", () => {
       expect(paidSessionsSqls.staff).toContain("FLOOR(")
       expect(paidSessionsSqls.client).toContain("FLOOR(")
       expect(paidSessionsSqls.payNotify).toContain("FLOOR(")
       expect(paidSessionsSqls.adminTs).toContain("FLOOR(")
+      expect(paidSessionsSqls.scriptFix).toContain("FLOOR(")
       // 反向：不能误用 round/ceil
       expect(paidSessionsSqls.staff).not.toMatch(/ROUND\(/i)
       expect(paidSessionsSqls.staff).not.toMatch(/CEIL\(/i)
     })
 
-    test("四端必须用 LEAST(session_count, ...) 兜底防 CHECK 越界（D4=A）", () => {
+    test("五端必须用 LEAST(session_count, ...) 兜底防 CHECK 越界（D4=A）", () => {
       expect(paidSessionsSqls.staff).toMatch(/LEAST\(sale_items\.session_count,/i)
       expect(paidSessionsSqls.client).toMatch(/LEAST\(sale_items\.session_count,/i)
       expect(paidSessionsSqls.payNotify).toMatch(/LEAST\(sale_items\.session_count,/i)
       expect(paidSessionsSqls.adminTs).toMatch(/LEAST\(sale_items\.session_count,/i)
+      expect(paidSessionsSqls.scriptFix).toMatch(/LEAST\(sale_items\.session_count,/i)
     })
 
-    test("四端必须有 total_amount <= 0 → session_count 兜底（免单/寄存单全付）", () => {
+    test("五端必须有 total_amount <= 0 → session_count 兜底（免单/寄存单全付）", () => {
       const pattern = /op\.total_amount\s*<=\s*0\s*THEN\s*sale_items\.session_count/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
       expect(paidSessionsSqls.adminTs).toMatch(pattern)
+      expect(paidSessionsSqls.scriptFix).toMatch(pattern)
     })
   })
 
-  describe("四端镜像比对（任一端字符漂移立即可见，提示同步其它端）", () => {
+  describe("五端镜像比对（任一端字符漂移立即可见，提示同步其它端）", () => {
     test("staff vs client（pg 实现）", () => {
       expect(paidSessionsSqls.client).toBe(paidSessionsSqls.staff)
     })
@@ -959,6 +966,9 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
     })
     test("staff vs admin（pg 与 Drizzle 占位符归一化后等价）", () => {
       expect(paidSessionsSqls.adminTs).toBe(paidSessionsSqls.staff)
+    })
+    test("staff vs db/scripts/fix-sale-items-session-count（维护脚本内联副本）", () => {
+      expect(paidSessionsSqls.scriptFix).toBe(paidSessionsSqls.staff)
     })
   })
 

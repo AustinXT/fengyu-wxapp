@@ -119,6 +119,11 @@ async function main() {
 
     // 4. COMMIT 模式：UPDATE（CAS 守卫旧值未被并发改）
     if (COMMIT) {
+      // 收集受影响订单号，UPDATE 完成后统一重算 paid_sessions
+      // 必要性：本脚本放大 session_count（×quantity），旧的 paid_sessions 是按未放大值算出的
+      // → 公式 floor(min(1, settled/total) × session_count) 中 session_count 变大但
+      //   settled/total 不变，旧值会"低估"已付次数，需重算以恢复一致。
+      const affectedOrderIds = new Set()
       for (const r of rows) {
         const q = Number(r.quantity)
         const oldSc = Number(r.session_count)
@@ -136,9 +141,27 @@ async function main() {
         if (upd.rowCount !== 1) {
           throw new Error(`CAS 失败 ${r.sale_item_id}（并发修改，rowCount=${upd.rowCount}）`)
         }
+        affectedOrderIds.add(r.sale_order_id)
       }
+
+      // 4b. 重算 paid_sessions（与 fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js
+      //     PAID_SESSIONS_RECALC_SQL 字面同义；4 端工具函数同源，snapshot 守护）
+      // 注意：此脚本是 node 独立进程，直接内联 SQL，避免依赖云函数目录
+      const RECALC_SQL = `UPDATE sale_items
+SET paid_sessions = CASE
+  WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer)
+END,
+updated_at = NOW()
+FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = $1) op
+WHERE sale_items.sale_order_id = $1`
+      for (const orderId of affectedOrderIds) {
+        await client.query(RECALC_SQL, [orderId])
+      }
+
       await client.query('COMMIT')
-      console.log(`✓ 已修复 ${rows.length} 行`)
+      console.log(`✓ 已修复 ${rows.length} 行（含 ${affectedOrderIds.size} 个订单的 paid_sessions 重算）`)
     } else {
       await client.query('ROLLBACK')
       console.log('（dry-run，未写入。加 --commit 真实执行）')
