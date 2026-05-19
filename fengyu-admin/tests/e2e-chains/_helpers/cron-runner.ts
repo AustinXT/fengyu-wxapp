@@ -60,8 +60,10 @@ export function runCronStep(stepName: string, options: RunCronOptions = {}): str
  *   [cron-worker] birthday: {"total":1,"sentCount":1,"skippedNoConfig":0,"errorCount":0} (123ms)
  */
 export function parseStepSummary<T = unknown>(output: string, stepName: string): T | null {
-  const re = new RegExp(`\\[cron-worker\\]\\s+${stepName}:\\s+(\\{[^}]*\\}|\\[[^\\]]*\\]|\\S+)`, 'm')
-  const m = output.match(re)
+  // 输出形如 `[cron-worker] <stepName>: <JSON> (<ms>ms)`
+  // 用 `(<digit>ms)` 锚定结尾 — 整个行匹配到 `(\d+ms)` 之前的最长可解析 JSON
+  const lineRe = new RegExp(`\\[cron-worker\\]\\s+${stepName}:\\s+(.*)\\s+\\(\\d+ms\\)`, 'm')
+  const m = output.match(lineRe)
   if (!m) return null
   try {
     return JSON.parse(m[1]) as T

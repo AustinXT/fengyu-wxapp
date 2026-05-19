@@ -61,7 +61,7 @@ export function listUserCouponsByPrefix(
 
 export function getClientLevelAndLock(userId: string): { level: string | null; lockedUntil: string | null } {
   const out = psql(
-    `SELECT COALESCE(member_level, '') || '|' || COALESCE(member_level_locked_until::text, '')
+    `SELECT COALESCE(member_level::text, '') || '|' || COALESCE(member_level_locked_until::text, '')
      FROM client_wechat_users WHERE user_id = '${esc(userId)}'`,
   )
   if (!out) return { level: null, lockedUntil: null }

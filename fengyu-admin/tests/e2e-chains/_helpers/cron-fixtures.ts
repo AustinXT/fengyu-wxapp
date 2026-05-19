@@ -150,16 +150,19 @@ export function insertSaleOrder(suffix: string, opt: InsertSaleOrderOptions): st
   const saleOrderType = opt.saleOrderType ?? '销售单'
   const status = opt.status ?? '已支付'
   const refunded = opt.refundedAmount ?? 0
+  // sale_orders.market_name NOT NULL，从已有数据取一个 fallback
+  const market = psql(`SELECT market_name FROM sale_orders WHERE market_name IS NOT NULL LIMIT 1`)
+  const marketName = market.replace(/'/g, "''")
   psql(`
     INSERT INTO sale_orders (
-      sale_order_id, store_id, client_user_id, sale_order_type,
-      received, refunded_amount, total_amount, payable_amount, paid_amount,
-      paid_at, status, created_at, updated_at
+      sale_order_id, store_id, market_name, client_user_id, sale_order_type,
+      received, refunded_amount, total_amount, payable_amount, prepaid_card_amount,
+      paid_at, sale_order_datetime, payment_method, status, created_at, updated_at
     )
     VALUES (
-      '${soid}', '${opt.storeId}', '${opt.clientUserId}', '${saleOrderType}',
-      ${opt.received}, ${refunded}, ${opt.received}, ${opt.received}, ${opt.received},
-      '${opt.paidAt}'::timestamptz, '${status}', NOW(), NOW()
+      '${soid}', '${opt.storeId}', '${marketName}', '${opt.clientUserId}', '${saleOrderType}',
+      ${opt.received}, ${refunded}, ${opt.received}, ${opt.received}, 0,
+      '${opt.paidAt}'::timestamptz, '${opt.paidAt}'::timestamptz, '微信', '${status}', NOW(), NOW()
     )
     ON CONFLICT (sale_order_id) DO UPDATE SET
       received = EXCLUDED.received,

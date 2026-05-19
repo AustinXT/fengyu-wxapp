@@ -93,9 +93,11 @@ test.describe.serial('cron-04 grantBirthdayBenefits', () => {
     expect(coupons[0].template_id).toBe('FY-FIX-CT-DISCOUNT')
     expect(coupons[0].user_id).toBe(uid)
     expect(coupons[0].status).toBe('未使用')
-    // 有效期：FY-FIX-CT-DISCOUNT 是 days=90 模板，referenceDate=2026-11-20 → expire 应为 2027-02-18
+    // 有效期：FY-FIX-CT-DISCOUNT 是 days=90 模板。
+    // referenceDate=2026-11-20（+0800 锚到 03:00）→ baseMs = 2026-11-19 19:00 UTC
+    // +90d = 2027-02-17 19:00 UTC（PG timestamp 列存 UTC 字面量）
     const expireYmd = coupons[0].expire_at.slice(0, 10)
-    expect(expireYmd).toBe('2027-02-18')
+    expect(expireYmd).toBe('2027-02-17')
   })
 
   test('4.2 闰年 2/29 非闰年（2026-02-28）→ 跳过', () => {
