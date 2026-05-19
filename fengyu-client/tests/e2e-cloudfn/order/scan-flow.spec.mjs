@@ -47,6 +47,7 @@ async function createStaffOpenedPending({
   storeId = TEST_STORE_ID,
   totalAmount = 300,
   prepaidCardAmount = 0,
+  sessionCount = null,
 } = {}) {
   const payable = totalAmount - prepaidCardAmount
   const pool = getPool()
@@ -69,18 +70,23 @@ async function createStaffOpenedPending({
        totalAmount, prepaidCardAmount, payable, TEST_MANAGER_EMP_ID]
     )
     const itemId = `${saleOrderId}_I1`.slice(0, 30)
+    const isSessionCard = sessionCount != null && sessionCount > 0
+    const productType = isSessionCard ? '疗程卡' : '单品'
     await conn.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
          sku_id, product_name, sku_spec_name, product_type,
+         session_count, remaining_sessions, paid_sessions,
          unit_price, quantity, unit_real_price, sale_amount, received,
          is_experience, is_recharge_card
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               NULL, $4, '默认', '单品'::product_type,
-               $5, 1, $5, $5, 0,
+               NULL, $4, '默认', $5::product_type,
+               $6, $6, NULL,
+               $7, 1, $7, $7, 0,
                false, false)`,
-      [itemId, saleOrderId, storeId, `${NS}_员工单商品`, totalAmount]
+      [itemId, saleOrderId, storeId, `${NS}_员工单商品`, productType,
+       isSessionCard ? sessionCount : null, totalAmount]
     )
     await conn.query('COMMIT')
     return { saleOrderId, saleItemId: itemId }
@@ -214,6 +220,41 @@ async function caseConfirmPrepaidFullHappy() {
   // 订单 status='已支付'
   const ord = await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id = $1`, [orderNo])
   if (ord[0].status !== '已支付') throw new Error(`PG status=${ord[0].status}`)
+}
+
+/**
+ * 回归 ticket 2026-05-19 paid_sessions：confirmPrepaidFull 全额抵扣后必须重算 paid_sessions
+ *
+ * 公式 floor(min(1, settled/total) × session_count)：
+ *   settled = received - refunded_amount = 300 - 0 = 300
+ *   total = 300 → ratio=1 → paid_sessions = floor(1 × 12) = 12
+ *
+ * 漏调 recalcPaidSessionsForOrder 时，paid_sessions 保持 create 时的 NULL/0，
+ * 后续 service.create 受 D6 限额阻塞，顾客无法预约消费已付的 12 次卡。
+ */
+async function caseConfirmPrepaidFullRecalcPaidSessions() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '1000.00' })
+  const orderNo = `${NS}_SCN_PS`.slice(0, 30)
+  const { saleItemId } = await createStaffOpenedPending({
+    saleOrderId: orderNo, totalAmount: 300, prepaidCardAmount: 300, sessionCount: 12,
+  })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.confirmPrepaidFull', {
+    saleOrderId: orderNo,
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const items = await pgQuery(
+    `SELECT session_count, paid_sessions FROM sale_items WHERE sale_item_id = $1`,
+    [saleItemId]
+  )
+  if (items.length !== 1) throw new Error(`expect 1 row, got ${items.length}`)
+  if (Number(items[0].session_count) !== 12) {
+    throw new Error(`expect session_count=12, got: ${items[0].session_count}`)
+  }
+  if (Number(items[0].paid_sessions) !== 12) {
+    throw new Error(`expect paid_sessions=12 after full prepaid, got: ${items[0].paid_sessions}`)
+  }
 }
 
 async function caseConfirmPrepaidFullInsufficient() {
@@ -460,6 +501,7 @@ const CASES = [
   ['scanAdjust full prepaid (300 from 1000 balance, payable→0)', caseScanAdjustFullPrepaid],
   ['scanAdjust partial prepaid (100 card + 200 wechat)', caseScanAdjustPartialPrepaid],
   ['confirmPrepaidFull happy → 扣款 written + balance -300 + status=已支付', caseConfirmPrepaidFullHappy],
+  ['confirmPrepaidFull 12次卡全额抵扣 → paid_sessions = session_count = 12（回归 ticket 2026-05-19）', caseConfirmPrepaidFullRecalcPaidSessions],
   ['confirmPrepaidFull insufficient balance → INSUFFICIENT_BALANCE, no write', caseConfirmPrepaidFullInsufficient],
   ['scanAdjust cross-user → PERMISSION_DENIED', caseScanAdjustCrossUserDenied],
   ['scanAdjust stale-paid 订单（status 已变 已支付）→ INVALID_PARAMS, 状态/字段不变', caseScanAdjustStalePaidRejected],

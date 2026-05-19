@@ -25,7 +25,7 @@ import {
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
 import { createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
-  createTestPendingSaleOrder, createTestClient2, cleanupClientExtras,
+  createTestPendingSaleOrder, createTestClient2, createTestPrepaidCard, cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
 
 async function caseCancelHappy() {
@@ -87,6 +87,57 @@ async function caseRepayHappy() {
   }
 }
 
+/**
+ * 回归 ticket 2026-05-19 paid_sessions：repay 储值卡通道部分回款后 paid_sessions 按比例 floor
+ *
+ * 场景：12 次疗程卡，total=300，初始 received=100（部分支付），sessionCount=12
+ *   储值卡再回款 100 → received=200 → ratio=200/300=0.6666
+ *   paid_sessions = floor(0.6666 × 12) = 8
+ *
+ * 漏调 recalcPaidSessionsForOrder 时 paid_sessions 仍卡在 0（或初始预存值），
+ * 导致顾客已付 67% 却仍无法预约任何次数。
+ */
+async function caseRepayPureCardPartialRecalcPaidSessions() {
+  await createTestClient()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  const orderNo = `${NS}_RP_PS`.slice(0, 30)
+  const { saleItemId } = await createTestPendingSaleOrder({
+    saleOrderId: orderNo, totalAmount: 300, productType: '疗程卡', sessionCount: 12,
+  })
+  // 制造 '部分支付' 起点：received=100；payments 同步写 1 行首次支付，保证 received 不变量
+  await pgQuery(
+    `UPDATE sale_orders SET status = '部分支付', received = 100, payable_amount = 300
+     WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, external_txn_id,
+       status, source_end, paid_at, created_at
+     ) VALUES ($1, '首次支付', 100, '微信', $2, '已支付', 'client', NOW(), NOW())`,
+    [orderNo, `${NS}_RP_PS_TXN`]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
+    saleOrderId: orderNo,
+    paymentMethod: '储值卡',
+    repayAmount: 0,
+    prepaidCardAmount: 100,
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const items = await pgQuery(
+    `SELECT session_count, paid_sessions FROM sale_items WHERE sale_item_id = $1`,
+    [saleItemId]
+  )
+  if (items.length !== 1) throw new Error(`expect 1 row, got ${items.length}`)
+  if (Number(items[0].session_count) !== 12) {
+    throw new Error(`expect session_count=12, got: ${items[0].session_count}`)
+  }
+  // floor(200/300 × 12) = floor(8.0) = 8
+  if (Number(items[0].paid_sessions) !== 8) {
+    throw new Error(`expect paid_sessions=8 after partial repay (200/300×12), got: ${items[0].paid_sessions}`)
+  }
+}
+
 async function caseRepayAlreadyPaidRejected() {
   await createTestClient()
   const orderNo = `${NS}_RP_P1`.slice(0, 30)
@@ -110,6 +161,7 @@ const CASES = [
   ['cancel on 已支付 → INVALID_PARAMS', caseCancelAlreadyPaidRejected],
   ['cancel cross-user → INVALID_PARAMS/订单不存在', caseCancelCrossUserDenied],
   ['repay (微信) on 部分支付 → paymentParams returned', caseRepayHappy],
+  ['repay (储值卡) 部分回款 12次卡 → paid_sessions = floor(2/3 × 12) = 8（回归 ticket 2026-05-19）', caseRepayPureCardPartialRecalcPaidSessions],
   ['repay on 已支付 → INVALID_STATE', caseRepayAlreadyPaidRejected],
 ]
 

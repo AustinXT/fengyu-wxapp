@@ -1649,6 +1649,10 @@ async function confirmPrepaidFull(ctx) {
       [userId, saleOrderId]
     )
 
+    // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
+    // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
+    await recalcPaidSessionsForOrder(client, saleOrderId)
+
     // 积分结算（订单链净额差值法，幂等）
     // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
     // 保留调用以保证"所有状态转已支付的触发点"都走同一入口
@@ -1841,6 +1845,9 @@ async function repay(ctx) {
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)
       }
+      // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
+      // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
+      await recalcPaidSessionsForOrder(client, saleOrderId)
       // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
       await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
     }

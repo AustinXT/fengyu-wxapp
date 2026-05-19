@@ -148,11 +148,26 @@ async function caseCrossStoreSharedSequence() {
 async function caseHighSeqRollsToFiveDigits() {
   // 文档化用例：手动种下 seq=9999 → 下一张 create 应生成 5 位 seq（'10000'）
   // 注：此后再 create 会因 LIKE+DESC 文本排序回到 10000 触发 PK 冲突；本 case 只验首张产出。
+  //
+  // 重要：seed 订单的 client_user_id **必须**指向命名空间内顾客 (TE2L2_CCL_0)，
+  // 否则 cleanupClientExtras / cleanupTestData 按命名空间清理时会漏掉这一行，
+  // 导致 9999 + 10000 永久污染 FY-XSD-WX-{today} 序列，破坏所有后续 order/create 测试。
   const [c1] = await createNClients(1)
   await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, price: '100.00' })
 
   const seedOrderId = `${todayPrefix()}9999`
-  // 直接 INSERT 一行 '已支付' 的 9999 号订单作为种子（不占 uq_sale_orders_client_pending）
+  // 先清理可能残留的同前缀污染（前次 run 异常退出留下的）
+  const todayLike = `${todayPrefix()}%`
+  await pgQuery(
+    `DELETE FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '[0-9]{5}$'`,
+    [todayLike]
+  )
+  await pgQuery(
+    `DELETE FROM sale_orders WHERE sale_order_id LIKE $1 AND sale_order_id ~ '[0-9]{5}$'`,
+    [todayLike]
+  )
+
+  // 种 9999：client_user_id 绑到 TE2L2_CCL_0 让命名空间 cleanup 能回收
   await pgQuery(
     `INSERT INTO sale_orders (
        sale_order_id, status, sale_order_type, market_name, store_id,
@@ -161,11 +176,11 @@ async function caseHighSeqRollsToFiveDigits() {
        allocation_status
      )
      VALUES ($1, '已支付'::order_status, '销售单'::sale_order_type, $2, $3,
-             NOW(), NULL, NULL, $4,
+             NOW(), $5, NULL, $4,
              1, 0, 1, 1, '微信'::payment_method,
              '待分配'::allocation_status)
      ON CONFLICT (sale_order_id) DO NOTHING`,
-    [seedOrderId, `${NS}_市场`, TEST_STORE_ID, `${NS}_种子`]
+    [seedOrderId, `${NS}_市场`, TEST_STORE_ID, `${NS}_种子`, c1.userId]
   )
 
   const r = await invokeAs(c1.openid, 'order.create', {
