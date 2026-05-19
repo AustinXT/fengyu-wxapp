@@ -85,7 +85,12 @@ async function readServiceCreateSelects(
   return { stores, employees, reachedStep1: true }
 }
 
-/** 直接访问 path，断言 1500ms 内被重定向 / 403 / 渲染空 */
+/**
+ * 直接访问 path，断言 1500ms 内被重定向 / 403 / 渲染空。
+ *
+ * 注意：避免用裸 '403' 作为正则，因为 RSC 内联的 chunk ID 也会出现 '403' 子串。
+ * 只用可见文案（中文短语 + 'Forbidden'）+ URL 重定向 + HTTP status 三档判定。
+ */
 async function expectDenied(page: import('@playwright/test').Page, path: string): Promise<boolean> {
   const resp = await page.goto(`${BASE}${path}`).catch(() => null)
   await page.waitForLoadState('networkidle').catch(() => null)
@@ -93,7 +98,8 @@ async function expectDenied(page: import('@playwright/test').Page, path: string)
   if (resp && resp.status() === 404) return true
   if (resp && resp.status() === 403) return true
   const body = (await page.textContent('body').catch(() => '')) || ''
-  if (/无权|无权限|没有权限|403|权限不足|Forbidden/.test(body)) return true
+  // 仅匹配可见的拒绝文案（避免裸 '403' 误匹配 RSC chunk 里的 hex 子串）
+  if (/无权执行|无权限|没有权限|权限不足|访问受限|Forbidden/.test(body)) return true
   // 若 URL 重定向到非目标路径（如 /dashboard）也视为被拒
   const finalPath = new URL(page.url()).pathname
   if (!finalPath.includes(path.split('?')[0].split('/').slice(0, 3).join('/'))) return true
