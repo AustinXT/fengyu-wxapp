@@ -16,6 +16,7 @@
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
 import { loadJsonConfig } from '../lib/benefits-loader'
+import { type CronContext, dateSqlOf, nowOf } from '../lib/cron-context'
 
 interface BenefitItem {
   messageTitle?: string
@@ -34,14 +35,18 @@ export interface BirthdayResult {
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-export async function grantBirthdayBenefits(db: Db): Promise<BirthdayResult> {
+export async function grantBirthdayBenefits(
+  db: Db,
+  ctx?: CronContext,
+): Promise<BirthdayResult> {
   const benefitsConfig = await loadJsonConfig<BirthdayConfig>(db, 'birthday_benefits')
   if (!benefitsConfig) {
     return { total: 0, sentCount: 0, skippedNoConfig: 0, errorCount: 0 }
   }
 
+  const dateSql = dateSqlOf(ctx)
   const yearRows = (await db.execute(sql`
-    SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int AS year
+    SELECT EXTRACT(YEAR FROM ${dateSql})::int AS year
   `)) as Array<{ year: number }>
   const year = yearRows[0].year
 
@@ -50,8 +55,8 @@ export async function grantBirthdayBenefits(db: Db): Promise<BirthdayResult> {
     FROM client_wechat_users
     WHERE birthday IS NOT NULL
       AND member_level IS NOT NULL
-      AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
-      AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM CURRENT_DATE)
+      AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM ${dateSql})
+      AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM ${dateSql})
   `)) as Array<{ user_id: string; member_level: string }>
 
   let sentCount = 0
@@ -67,7 +72,7 @@ export async function grantBirthdayBenefits(db: Db): Promise<BirthdayResult> {
 
     try {
       await db.transaction(async (tx) => {
-        await grantOneBirthday(tx, row.user_id, year, cfg)
+        await grantOneBirthday(tx, row.user_id, year, cfg, ctx)
         const detail = JSON.stringify({
           _v: 1,
           _t: 'birthday',
@@ -104,6 +109,7 @@ async function grantOneBirthday(
   userId: string,
   year: number,
   config: BenefitItem,
+  ctx?: CronContext,
 ): Promise<void> {
   // 1) 消息
   if (config.messageTitle) {
@@ -157,13 +163,14 @@ async function grantOneBirthday(
         continue
       }
 
+      const baseMs = nowOf(ctx).getTime()
       let expireAt: Date
       if (tpl.validity_mode === 'days' && tpl.valid_days) {
-        expireAt = new Date(Date.now() + tpl.valid_days * 86400000)
+        expireAt = new Date(baseMs + tpl.valid_days * 86400000)
       } else if (tpl.valid_to) {
         expireAt = new Date(tpl.valid_to)
       } else {
-        expireAt = new Date(Date.now() + 365 * 86400000)
+        expireAt = new Date(baseMs + 365 * 86400000)
       }
 
       const couponId = `bday-${year}-${userId}-${templateId}`

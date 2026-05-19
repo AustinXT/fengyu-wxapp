@@ -16,6 +16,7 @@
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
 import { loadJsonConfig } from '../lib/benefits-loader'
+import { type CronContext, dateSqlOf, nowOf } from '../lib/cron-context'
 
 interface BenefitItem {
   messageTitle?: string
@@ -35,10 +36,15 @@ export interface ThanksgivingResult {
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-export async function grantThanksgivingBenefits(db: Db): Promise<ThanksgivingResult> {
+export async function grantThanksgivingBenefits(
+  db: Db,
+  ctx?: CronContext,
+): Promise<ThanksgivingResult> {
+  const dateSql = dateSqlOf(ctx)
+
   // 非 20 号短路返回（避免无谓扫表日志噪音）
   const dayRows = (await db.execute(sql`
-    SELECT EXTRACT(DAY FROM CURRENT_DATE)::int AS d
+    SELECT EXTRACT(DAY FROM ${dateSql})::int AS d
   `)) as Array<{ d: number }>
   if (dayRows[0].d !== 20) {
     return {
@@ -56,7 +62,7 @@ export async function grantThanksgivingBenefits(db: Db): Promise<ThanksgivingRes
   }
 
   const ymRows = (await db.execute(sql`
-    SELECT TO_CHAR(CURRENT_DATE, 'YYYY-MM') AS ym
+    SELECT TO_CHAR(${dateSql}, 'YYYY-MM') AS ym
   `)) as Array<{ ym: string }>
   const yearMonth = ymRows[0].ym
 
@@ -64,7 +70,7 @@ export async function grantThanksgivingBenefits(db: Db): Promise<ThanksgivingRes
     SELECT DISTINCT cwu.user_id, cwu.member_level
     FROM service_orders so
     JOIN client_wechat_users cwu ON cwu.user_id = so.client_user_id
-    WHERE so.service_date = CURRENT_DATE
+    WHERE so.service_date = ${dateSql}
       AND so.status IN ('已完成', '服务中')
       AND so.client_user_id IS NOT NULL
       AND cwu.member_level IS NOT NULL
@@ -83,7 +89,7 @@ export async function grantThanksgivingBenefits(db: Db): Promise<ThanksgivingRes
 
     try {
       await db.transaction(async (tx) => {
-        await grantOneThanksgiving(tx, row.user_id, yearMonth, cfg)
+        await grantOneThanksgiving(tx, row.user_id, yearMonth, cfg, ctx)
         const detail = JSON.stringify({
           _v: 1,
           _t: 'thanksgiving',
@@ -120,6 +126,7 @@ async function grantOneThanksgiving(
   userId: string,
   yearMonth: string,
   config: BenefitItem,
+  ctx?: CronContext,
 ): Promise<void> {
   // 1) 消息
   if (config.messageTitle) {
@@ -167,7 +174,7 @@ async function grantOneThanksgiving(
         continue
       }
 
-      const expireAt = new Date(Date.now() + 10 * 86400000)
+      const expireAt = new Date(nowOf(ctx).getTime() + 10 * 86400000)
       const couponId = `thx-${yearMonth}-${userId}-${templateId}`
       const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
       await tx.execute(sql`

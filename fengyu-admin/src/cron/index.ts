@@ -20,10 +20,15 @@ import cron from 'node-cron'
 import { runDailyJobs } from './run'
 
 const ONCE = process.argv.includes('--once')
+const ONLY = process.argv
+  .find((a) => a.startsWith('--only='))
+  ?.split('=')[1]
+  ?.trim()
 
 if (ONCE) {
   // 本地开发 / 部署后冒烟测试：跑一次立即退出
-  runDailyJobs()
+  // 支持 --only=<stepName> 只跑指定 STEP（e2e 测试用，单 STEP 5-30s）
+  runDailyJobs(ONLY ? { only: ONLY } : undefined)
     .then((result) => {
       console.log('[cron-worker] one-shot done:', JSON.stringify(result))
       process.exit(result.ok ? 0 : 1)

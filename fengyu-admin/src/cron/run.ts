@@ -22,6 +22,7 @@
  */
 
 import { db } from '@/db'
+import type { CronContext } from './lib/cron-context'
 import { refreshCustomerStatus } from './steps/refresh-customer-status'
 import { refreshMemberLevels } from './steps/refresh-member-levels'
 import { grantBirthdayBenefits } from './steps/grant-birthday-benefits'
@@ -41,7 +42,16 @@ export interface DailyJobsResult {
   summary: Record<string, unknown>
 }
 
-const STEPS: ReadonlyArray<readonly [string, (db: Db) => Promise<unknown>]> = [
+/**
+ * STEP 函数签名：
+ *   - 写入类 STEP（前 5 个）：(db, ctx?) 支持时间注入
+ *   - 审计类 STEP（后 5 个，只读）：(db) 不依赖时间窗口，签名兼容（额外 ctx 参数忽略）
+ *
+ * TypeScript 上声明为统一类型，运行时审计 STEP 忽略 ctx。
+ */
+type StepFn = (db: Db, ctx?: CronContext) => Promise<unknown>
+
+const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   // —— 业务清扫（写入）——
   ['closeExpiredAppointments', closeExpiredAppointments],
   // —— 状态/等级重算 ——
@@ -50,23 +60,58 @@ const STEPS: ReadonlyArray<readonly [string, (db: Db) => Promise<unknown>]> = [
   // —— 权益发放 ——
   ['birthday', grantBirthdayBenefits],
   ['thanksgiving', grantThanksgivingBenefits],
-  // —— 数据完整性审计（只读，放在末尾）——
-  ['pointsAudit', auditPointsBalance],
-  ['roleTypeNullsAudit', auditRoleTypeNulls],
-  ['paymentInvariants', auditPaymentInvariants],
-  ['refundCascadeCoverage', auditRefundCascadeCoverage],
-  ['storeUnbindOrphans', auditStoreUnbindOrphans],
+  // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
+  ['pointsAudit', auditPointsBalance as StepFn],
+  ['roleTypeNullsAudit', auditRoleTypeNulls as StepFn],
+  ['paymentInvariants', auditPaymentInvariants as StepFn],
+  ['refundCascadeCoverage', auditRefundCascadeCoverage as StepFn],
+  ['storeUnbindOrphans', auditStoreUnbindOrphans as StepFn],
 ] as const
 
-export async function runDailyJobs(): Promise<DailyJobsResult> {
+export interface RunOptions {
+  /** 只跑指定 STEP（CI/e2e 用）。生产留空跑全套 */
+  only?: string
+}
+
+/**
+ * 解析 env CRON_REFERENCE_DATE 为 Date（Asia/Shanghai 03:00 锚点）。
+ * 仅测试链路设置此 env；生产不设。
+ */
+function parseReferenceDate(): Date | undefined {
+  const raw = process.env.CRON_REFERENCE_DATE
+  if (!raw) return undefined
+  // 接受 'YYYY-MM-DD' 或完整 ISO 字符串；前者锚定到当日 03:00 +0800
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(raw + 'T03:00:00+08:00')
+    : new Date(raw)
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`CRON_REFERENCE_DATE 解析失败: ${raw}`)
+  }
+  return d
+}
+
+export async function runDailyJobs(opts?: RunOptions): Promise<DailyJobsResult> {
   console.log('[cron-worker] start daily jobs at', new Date().toISOString())
   const summary: Record<string, unknown> = {}
   let errorStepCount = 0
 
-  for (const [name, fn] of STEPS) {
+  const referenceDate = parseReferenceDate()
+  const ctx: CronContext | undefined = referenceDate ? { referenceDate } : undefined
+  if (ctx) {
+    console.log(`[cron-worker] CRON_REFERENCE_DATE=${ctx.referenceDate?.toISOString()}`)
+  }
+
+  const targetSteps = opts?.only ? STEPS.filter(([n]) => n === opts.only) : STEPS
+  if (opts?.only && targetSteps.length === 0) {
+    throw new Error(
+      `--only=${opts.only} 未匹配任何 STEP。可用：${STEPS.map(([n]) => n).join(', ')}`,
+    )
+  }
+
+  for (const [name, fn] of targetSteps) {
     const startedAt = Date.now()
     try {
-      summary[name] = await fn(db)
+      summary[name] = await fn(db, ctx)
       console.log(
         `[cron-worker] ${name}: ${JSON.stringify(summary[name])} (${Date.now() - startedAt}ms)`,
       )

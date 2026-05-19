@@ -11,12 +11,28 @@ export function paramsOf(sqlObj: unknown): unknown[] {
   if (!sqlObj || typeof sqlObj !== 'object') return []
   const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks
   if (!Array.isArray(chunks)) return []
-  return chunks.filter(
-    (c) => !(c && typeof c === 'object' && 'value' in (c as Record<string, unknown>)),
-  )
+  // 嵌套 SQL 对象不算参数（它们是 SQL 片段），递归提取其内部参数
+  const out: unknown[] = []
+  for (const c of chunks) {
+    if (c && typeof c === 'object' && 'value' in (c as Record<string, unknown>)) {
+      continue // 字面量片段
+    }
+    if (c && typeof c === 'object' && 'queryChunks' in (c as Record<string, unknown>)) {
+      out.push(...paramsOf(c))
+      continue
+    }
+    out.push(c)
+  }
+  return out
 }
 
-/** 把 sql 模板对象的字符串片段拼成完整 SQL（不含参数值，用于 SQL 形态断言） */
+/**
+ * 把 sql 模板对象的字符串片段拼成完整 SQL（不含参数值，用于 SQL 形态断言）。
+ *
+ * 嵌套 SQL chunk（如 `sql\`a${someSqlFragment}b\`` 中的 someSqlFragment 是另一个 SQL 对象）
+ * 会被递归展开为其内部字面量，保留 SQL 形态可见性。
+ * 参数值（非 SQL 对象的标量）渲染为 `?` 占位符。
+ */
 export function sqlTextOf(sqlObj: unknown): string {
   if (!sqlObj || typeof sqlObj !== 'object') return ''
   const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks
@@ -26,6 +42,10 @@ export function sqlTextOf(sqlObj: unknown): string {
       if (c && typeof c === 'object' && 'value' in (c as Record<string, unknown>)) {
         const v = (c as { value: unknown }).value
         return Array.isArray(v) ? v.join('') : String(v)
+      }
+      // 嵌套 SQL 对象（如 sql.raw('NOW()') 或 sql`...`）递归展开
+      if (c && typeof c === 'object' && 'queryChunks' in (c as Record<string, unknown>)) {
+        return sqlTextOf(c)
       }
       return '?'
     })

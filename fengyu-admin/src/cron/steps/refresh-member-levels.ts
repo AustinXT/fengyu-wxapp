@@ -21,6 +21,7 @@ import type { Db } from '../run'
 import { determineMemberLevel, isUpgrade, isDowngrade } from '../lib/member-level'
 import { loadJsonConfig } from '../lib/benefits-loader'
 import { getMemberThreshold } from '../config'
+import { type CronContext, nowSqlOf, nowOf } from '../lib/cron-context'
 
 export interface BenefitItem {
   messageTitle?: string
@@ -41,9 +42,13 @@ export interface MemberLevelsResult {
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
+export async function refreshMemberLevels(
+  db: Db,
+  ctx?: CronContext,
+): Promise<MemberLevelsResult> {
   const benefitsConfig = await loadJsonConfig<BenefitsConfig>(db, 'member_level_benefits')
   const memberThreshold = await getMemberThreshold(db)
+  const nowSql = nowSqlOf(ctx)
 
   // 2026-05-17 perf: 把"每个用户一次 SELECT spend"折叠成单次 JOIN+GROUP BY，
   // 1647 用户 × 142k sale_orders 实测 ~136ms（vs 原 ~210s，~1500× 提速）。
@@ -61,7 +66,7 @@ export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
       cwu.member_level_locked_until,
       COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
         WHERE so.sale_order_type IN ('销售单','转换单')
-          AND so.paid_at >= (NOW() - INTERVAL '12 months')
+          AND so.paid_at >= (${nowSql} - INTERVAL '12 months')
       ), 0) AS spend
     FROM client_wechat_users cwu
     LEFT JOIN sale_orders so ON so.client_user_id = cwu.user_id
@@ -92,7 +97,7 @@ export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
       }
 
       if (isUpgrade(oldLevel as never, newLevel)) {
-        await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig)
+        await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig, ctx)
         upgradeCount++
       } else if (isDowngrade(oldLevel as never, newLevel)) {
         const held = await processDowngrade(
@@ -102,6 +107,7 @@ export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
           newLevel,
           spend,
           row.member_level_locked_until,
+          ctx,
         )
         if (held) heldCount++
         else downgradeCount++
@@ -140,15 +146,17 @@ export async function processUpgrade(
   newLevel: string | null,
   spend: number,
   benefitsConfig: BenefitsConfig | null,
+  ctx?: CronContext,
 ): Promise<void> {
+  const nowSql = nowSqlOf(ctx)
   await db.transaction(async (tx) => {
     await tx.execute(sql`
       UPDATE client_wechat_users
          SET old_member_level = member_level,
              member_level = ${newLevel},
-             member_level_upgraded_at = NOW(),
-             member_level_locked_until = NOW() + INTERVAL '150 days',
-             updated_at = NOW()
+             member_level_upgraded_at = ${nowSql},
+             member_level_locked_until = ${nowSql} + INTERVAL '150 days',
+             updated_at = ${nowSql}
        WHERE user_id = ${userId}
          AND member_level IS DISTINCT FROM ${newLevel}
     `)
@@ -171,7 +179,7 @@ export async function processUpgrade(
     `)
 
     if (newLevel && benefitsConfig?.[newLevel]) {
-      await grantUpgradeBenefits(tx, userId, newLevel, benefitsConfig[newLevel])
+      await grantUpgradeBenefits(tx, userId, newLevel, benefitsConfig[newLevel], ctx)
     }
   })
 }
@@ -189,8 +197,9 @@ export async function processDowngrade(
   newLevel: string | null,
   spend: number,
   lockedUntil: Date | string | null,
+  ctx?: CronContext,
 ): Promise<boolean> {
-  if (lockedUntil && new Date(lockedUntil) > new Date()) {
+  if (lockedUntil && new Date(lockedUntil) > nowOf(ctx)) {
     const detail = JSON.stringify({
       _v: 3,
       _t: 'hold',
@@ -242,6 +251,7 @@ async function grantUpgradeBenefits(
   userId: string,
   toLevel: string,
   config: BenefitItem,
+  ctx?: CronContext,
 ): Promise<void> {
   const idemKey = `member-upgrade-${userId}-${toLevel}`
 
@@ -296,13 +306,14 @@ async function grantUpgradeBenefits(
         continue
       }
 
+      const baseMs = nowOf(ctx).getTime()
       let expireAt: Date
       if (tpl.validity_mode === 'days' && tpl.valid_days) {
-        expireAt = new Date(Date.now() + tpl.valid_days * 86400000)
+        expireAt = new Date(baseMs + tpl.valid_days * 86400000)
       } else if (tpl.valid_to) {
         expireAt = new Date(tpl.valid_to)
       } else {
-        expireAt = new Date(Date.now() + 365 * 86400000)
+        expireAt = new Date(baseMs + 365 * 86400000)
       }
 
       const couponId = `cpn-up-${userId}-${toLevel}-${templateId}`

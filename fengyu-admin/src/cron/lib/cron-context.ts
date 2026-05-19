@@ -22,22 +22,22 @@ export interface CronContext {
 
 /**
  * 返回 SQL date 片段。
- *   ctx.referenceDate 为 undefined → sql`CURRENT_DATE`
+ *   ctx.referenceDate 为 undefined → sql.raw('CURRENT_DATE')（生产路径，保留字面量以兼容单元测试形态断言）
  *   定义 → sql`('YYYY-MM-DD'::date)`
  */
 export function dateSqlOf(ctx?: CronContext): SQL {
-  if (!ctx?.referenceDate) return sql`CURRENT_DATE`
+  if (!ctx?.referenceDate) return sql.raw('CURRENT_DATE')
   const dateStr = formatDateStamp(ctx.referenceDate)
   return sql`(${dateStr}::date)`
 }
 
 /**
  * 返回 SQL timestamptz 片段。
- *   ctx.referenceDate 为 undefined → sql`NOW()`
+ *   ctx.referenceDate 为 undefined → sql.raw('NOW()')（生产路径，保留字面量）
  *   定义 → sql`('ISO timestamptz'::timestamptz)`
  */
 export function nowSqlOf(ctx?: CronContext): SQL {
-  if (!ctx?.referenceDate) return sql`NOW()`
+  if (!ctx?.referenceDate) return sql.raw('NOW()')
   const iso = ctx.referenceDate.toISOString()
   return sql`(${iso}::timestamptz)`
 }

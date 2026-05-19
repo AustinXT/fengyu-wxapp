@@ -19,6 +19,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
+import { type CronContext, nowSqlOf, dateStampOf } from '../lib/cron-context'
 
 export interface CloseExpiredAppointmentsResult {
   closed: number
@@ -27,13 +28,17 @@ export interface CloseExpiredAppointmentsResult {
 
 const ID_LOG_LIMIT = 100
 
-export async function closeExpiredAppointments(db: Db): Promise<CloseExpiredAppointmentsResult> {
+export async function closeExpiredAppointments(
+  db: Db,
+  ctx?: CronContext,
+): Promise<CloseExpiredAppointmentsResult> {
+  const nowSql = nowSqlOf(ctx)
   const rows = (await db.execute(sql`
     UPDATE appointments
        SET status = '已关闭',
-           updated_at = NOW()
+           updated_at = ${nowSql}
      WHERE status IN ('待确认', '已确认')
-       AND appointment_time < NOW() - INTERVAL '1 day'
+       AND appointment_time < ${nowSql} - INTERVAL '1 day'
     RETURNING appointment_id
   `)) as Array<{ appointment_id: string }>
 
@@ -48,10 +53,10 @@ export async function closeExpiredAppointments(db: Db): Promise<CloseExpiredAppo
     })
     // operation_logs.target_type 用 'appointment'（与原 admin appointment action 日志一致），
     // target_id 写当日日期戳（便于按日期检索"今日批处理"）；逐条写 N 行成本过高，聚合一行。
-    const dateStamp = new Date().toISOString().slice(0, 10)
+    const dateStamp = dateStampOf(ctx)
     await db.execute(sql`
       INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-      VALUES ('cron.close_expired_appointments', 'appointment', ${dateStamp}, ${detail}::jsonb, 'cronTask', NOW())
+      VALUES ('cron.close_expired_appointments', 'appointment', ${dateStamp}, ${detail}::jsonb, 'cronTask', ${nowSql})
     `)
   }
 

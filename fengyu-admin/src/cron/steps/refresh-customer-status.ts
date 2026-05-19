@@ -16,6 +16,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
+import { type CronContext, dateSqlOf } from '../lib/cron-context'
 
 export const RESET_NON_MEMBER_STATUS_SQL = `
 UPDATE client_wechat_users
@@ -24,6 +25,10 @@ UPDATE client_wechat_users
    AND customer_type != '会员客'
 `
 
+/**
+ * 段 2 SQL：含 CURRENT_DATE 时间引用。
+ * ctx=undefined 时与原 raw SQL 等价（生产路径 + Vitest 形态断言）。
+ */
 export const UPDATE_CUSTOMER_STATUS_SQL = `
 WITH visit_stats AS (
   SELECT so.client_user_id,
@@ -61,6 +66,23 @@ UPDATE client_wechat_users u
    )
 `
 
+/**
+ * 动态构造段 2 SQL：将 raw 中的 `CURRENT_DATE` 替换为 ctx.referenceDate 注入的字面量。
+ * 仅替换 `CURRENT_DATE` 三处（90 days / 6 months / 12 months 各 1），不影响 `NOW()`（updated_at 仍真实时间）。
+ */
+function buildUpdateCustomerStatusSql(ctx?: CronContext): string {
+  if (!ctx?.referenceDate) return UPDATE_CUSTOMER_STATUS_SQL
+  const dateStr = formatYmd(ctx.referenceDate)
+  // 用字面量替换（参数化此处复杂度高且 PG 不缓存查询计划差异）
+  return UPDATE_CUSTOMER_STATUS_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`)
+}
+
+function formatYmd(d: Date): string {
+  // Asia/Shanghai 日历日期（与 PG CURRENT_DATE 在 +0800 时区一致）
+  const shanghaiMs = d.getTime() + 8 * 60 * 60 * 1000
+  return new Date(shanghaiMs).toISOString().slice(0, 10)
+}
+
 export interface CustomerStatusResult {
   clearedNonMember: number
   updatedMember: number
@@ -68,12 +90,19 @@ export interface CustomerStatusResult {
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
 
-export async function refreshCustomerStatus(db: Db): Promise<CustomerStatusResult> {
+export async function refreshCustomerStatus(
+  db: Db,
+  ctx?: CronContext,
+): Promise<CustomerStatusResult> {
+  // dateSqlOf 仅用于 stats 聚合处（无需），段 1/3 无时间引用，段 2 用 buildUpdateCustomerStatusSql
+  void dateSqlOf
+  const updateSql = buildUpdateCustomerStatusSql(ctx)
+
   return await db.transaction(async (tx) => {
     const cleared = (await tx.execute(sql.raw(RESET_NON_MEMBER_STATUS_SQL))) as unknown as {
       count?: number
     }
-    const updated = (await tx.execute(sql.raw(UPDATE_CUSTOMER_STATUS_SQL))) as unknown as {
+    const updated = (await tx.execute(sql.raw(updateSql))) as unknown as {
       count?: number
     }
     const reset = (await tx.execute(sql.raw(RESET_NO_VISITS_SQL))) as unknown as { count?: number }
