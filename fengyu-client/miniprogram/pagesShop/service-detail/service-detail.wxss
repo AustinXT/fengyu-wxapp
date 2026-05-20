@@ -284,7 +284,7 @@
   height: 72rpx;
   line-height: 72rpx;
   padding: 0 28rpx;
-  border-radius: 36rpx;
+  border-radius: 12rpx;
   font-size: 26rpx;
   font-weight: 600;
   text-align: center;
@@ -309,4 +309,109 @@
 
 .action-bar__btn--full {
   width: 100%;
+}
+
+/* ===== 套餐多选 ===== */
+.sku-popup__bundle {
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+  margin-bottom: 24rpx;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.sku-popup__group {
+  background: var(--color-bg-section);
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+}
+
+.sku-popup__group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 16rpx;
+  padding-bottom: 12rpx;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sku-popup__group-name {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.sku-popup__group-hint {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
+.sku-popup__group-skus {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.bundle-sku-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 16rpx 20rpx;
+  background: var(--color-bg-card);
+  border-radius: 12rpx;
+  border: 1px solid var(--color-border);
+}
+
+.bundle-sku-row--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.bundle-sku-row--locked {
+  opacity: 0.85;
+}
+
+.bundle-sku-row__check {
+  flex-shrink: 0;
+  width: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bundle-sku-row__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.bundle-sku-row__name {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.bundle-sku-row--active .bundle-sku-row__name {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.bundle-sku-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.bundle-sku-row__price {
+  font-size: 24rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.bundle-sku-row__sessions {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
 }

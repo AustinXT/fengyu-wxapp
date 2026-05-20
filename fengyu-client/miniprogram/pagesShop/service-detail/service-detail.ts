@@ -12,6 +12,8 @@ interface Spu {
   cover_image: string;
   description: string;
   is_bundle: boolean;
+  price: number;
+  special_price: number | null;
 }
 
 interface Sku {
@@ -25,6 +27,41 @@ interface Sku {
   /** PR-D：一级 kind 行的 display_color HEX */
   kind_display_color?: string;
   // 充值卡剥离 SKU 化（2026-05-20）：商城 SKU 不含充值卡
+}
+
+interface BundleSku {
+  sku_id: string;
+  spec_name: string;
+  bundle_price: number;       // mall_product_skus.bundle_price (套餐价)
+  list_price: number;         // 原价（special_price ?? price）兜底展示
+  session_count: number | null;
+  product_type: string;
+  group_id: number | null;
+}
+
+interface BundleGroupRaw {
+  id: number;
+  groupName: string;
+  pickCount: number | null;
+  skuIds: string[];
+}
+
+interface BundleViewSku {
+  skuId: string;
+  specName: string;
+  bundlePrice: number;
+  sessionCount: number | null;
+  selected: boolean;
+}
+
+interface BundleViewGroup {
+  id: number;
+  groupName: string;
+  pickCount: number | null;
+  isAllSelect: boolean;
+  selectedCount: number;
+  hint: string;
+  skus: BundleViewSku[];
 }
 
 interface Staff {
@@ -50,6 +87,14 @@ Page({
     isLoading: true,
     loadError: false,
     cartCount: 0,
+    // 组合套餐多选状态
+    bundleGroupsRaw: [] as BundleGroupRaw[],
+    bundleSkuMap: {} as Record<string, BundleSku>,
+    bundleSelections: {} as Record<number, string[]>,
+    bundleViewGroups: [] as BundleViewGroup[],
+    bundleCanSubmit: false,
+    bundleTotalPrice: 0,
+    bundleSelectedCount: 0,
   },
 
   _productId: '',
@@ -81,6 +126,9 @@ Page({
         throw new Error('商品不存在');
       }
 
+      const isBundle = !!spu.is_bundle;
+      const rawSkuList = spu.skuList || [];
+
       this.setData({
         spu: {
           product_id: spu.product_id,
@@ -88,9 +136,11 @@ Page({
           category_name: spu.category_name || '',
           cover_image: spu.cover_image,
           description: spu.description || '',
-          is_bundle: !!spu.is_bundle,
+          is_bundle: isBundle,
+          price: Number(spu.price || 0),
+          special_price: spu.special_price != null ? Number(spu.special_price) : null,
         },
-        skuList: (spu.skuList || []).map((sku: any) => ({
+        skuList: rawSkuList.map((sku: any) => ({
           sku_id: sku.sku_id,
           spec_name: sku.spec_name,
           price: Number(sku.special_price || sku.price || 0),
@@ -98,6 +148,11 @@ Page({
           product_type: sku.product_type
         }))
       });
+
+      if (isBundle) {
+        this._initBundleState(spu.bundleGroups || [], rawSkuList);
+      }
+
       wx.setNavigationBarTitle({ title: spu.name || '服务详情' });
     } catch {
       Toast.fail('加载失败');
@@ -105,6 +160,92 @@ Page({
     } finally {
       this.setData({ isLoading: false });
     }
+  },
+
+  /** 初始化套餐多选状态：从 skuList 抽 bundle_price 建 map；全选组 pickCount=null 预填所有 SKU */
+  _initBundleState(bundleGroups: BundleGroupRaw[], rawSkuList: any[]) {
+    const skuMap: Record<string, BundleSku> = {};
+    for (const s of rawSkuList) {
+      const bundlePrice = s.bundle_price != null
+        ? Number(s.bundle_price)
+        : Number(s.special_price || s.price || 0);
+      skuMap[s.sku_id] = {
+        sku_id: s.sku_id,
+        spec_name: s.spec_name,
+        bundle_price: bundlePrice,
+        list_price: Number(s.special_price || s.price || 0),
+        session_count: s.session_count,
+        product_type: s.product_type,
+        group_id: s.bundle_group_id != null ? Number(s.bundle_group_id) : null,
+      };
+    }
+
+    const selections: Record<number, string[]> = {};
+    for (const g of bundleGroups) {
+      // 全选组（pick_count IS NULL）→ 默认全选；N 选 M → 空数组
+      selections[g.id] = g.pickCount == null ? [...g.skuIds] : [];
+    }
+
+    this.setData({
+      bundleGroupsRaw: bundleGroups,
+      bundleSkuMap: skuMap,
+      bundleSelections: selections,
+    });
+    this._refreshBundleView();
+  },
+
+  /** 根据当前 selections 重算视图 + canSubmit + totalPrice */
+  _refreshBundleView() {
+    const { bundleGroupsRaw, bundleSelections, bundleSkuMap } = this.data;
+    const viewGroups: BundleViewGroup[] = [];
+    let canSubmit = true;
+    let total = 0;
+    let totalSelected = 0;
+
+    for (const g of bundleGroupsRaw) {
+      const picked = bundleSelections[g.id] || [];
+      const skus: BundleViewSku[] = g.skuIds.map(skuId => {
+        const sku = bundleSkuMap[skuId];
+        return {
+          skuId,
+          specName: sku?.spec_name || skuId,
+          bundlePrice: sku?.bundle_price ?? 0,
+          sessionCount: sku?.session_count ?? null,
+          selected: picked.includes(skuId),
+        };
+      });
+      const isAllSelect = g.pickCount == null;
+      const selectedCount = picked.length;
+      totalSelected += selectedCount;
+      total += picked.reduce((s, id) => s + (bundleSkuMap[id]?.bundle_price ?? 0), 0);
+
+      let hint = '';
+      if (isAllSelect) {
+        hint = `全选 ${g.skuIds.length} 项`;
+      } else {
+        hint = `请选 ${g.pickCount} 项（已选 ${selectedCount}/${g.pickCount}）`;
+        if (selectedCount !== g.pickCount) canSubmit = false;
+      }
+      // 全选组要求至少 1 个（防止后台配错空组）
+      if (isAllSelect && g.skuIds.length === 0) canSubmit = false;
+
+      viewGroups.push({
+        id: g.id,
+        groupName: g.groupName,
+        pickCount: g.pickCount,
+        isAllSelect,
+        selectedCount,
+        hint,
+        skus,
+      });
+    }
+
+    this.setData({
+      bundleViewGroups: viewGroups,
+      bundleCanSubmit: canSubmit && bundleGroupsRaw.length > 0,
+      bundleTotalPrice: Math.round(total * 100) / 100,
+      bundleSelectedCount: totalSelected,
+    });
   },
 
   onPullDownRefresh() {
@@ -165,6 +306,31 @@ Page({
     this.setData({ selectedSku: sku, quantity: 1 });
   },
 
+  /** 套餐 SKU 勾选切换 */
+  onBundleSkuToggle(e: WechatMiniprogram.TouchEvent) {
+    const { groupId, skuId } = e.currentTarget.dataset as { groupId: number | string; skuId: string };
+    const gid = Number(groupId);
+    const group = this.data.bundleGroupsRaw.find(g => g.id === gid);
+    if (!group) return;
+    // 全选组不允许手动切换
+    if (group.pickCount == null) return;
+
+    const current = this.data.bundleSelections[gid] ? [...this.data.bundleSelections[gid]] : [];
+    const idx = current.indexOf(skuId);
+    if (idx >= 0) {
+      current.splice(idx, 1);
+    } else {
+      if (current.length >= group.pickCount) {
+        Toast(`该组最多选 ${group.pickCount} 项`);
+        return;
+      }
+      current.push(skuId);
+    }
+    const next = { ...this.data.bundleSelections, [gid]: current };
+    this.setData({ bundleSelections: next });
+    this._refreshBundleView();
+  },
+
   onQuantityChange(e: WxEvent<number>) {
     this.setData({ quantity: e.detail });
   },
@@ -192,13 +358,13 @@ Page({
 
   onAddToCart() {
     const { selectedSku, spu, quantity } = this.data;
-    if (!selectedSku) {
-      Toast.fail('请先选择规格');
-      return;
-    }
-    // 套餐商品直接下单，不进购物车
+    // 套餐：复用 onSubmit 直接下单（不走购物车）
     if (spu.is_bundle) {
       this.onSubmit();
+      return;
+    }
+    if (!selectedSku) {
+      Toast.fail('请先选择规格');
       return;
     }
 
@@ -227,17 +393,71 @@ Page({
   },
 
   onSubmit() {
-    const { selectedSku, selectedStaffWfId, selectedStaffName, spu, quantity } = this.data;
+    const { spu, selectedStaffWfId, selectedStaffName } = this.data;
+
+    // 套餐分支：校验所有组配额满足，装配 items 后跳 checkout
+    if (spu.is_bundle) {
+      if (!this.data.bundleCanSubmit) {
+        // 未满足配额：打开弹层让用户继续选
+        this.setData({ showSkuPopup: true });
+        Toast.fail('请完成套餐选择');
+        return;
+      }
+      const items = this._collectBundleItems();
+      if (items.length === 0) {
+        Toast.fail('请完成套餐选择');
+        return;
+      }
+      wx.setStorageSync('bundleCheckoutItems', items);
+      const url = `/pagesOrder/checkout/checkout`
+        + `?bundleProductId=${encodeURIComponent(spu.product_id)}`
+        + `&spuName=${encodeURIComponent(spu.name)}`
+        + `&staffWfId=${selectedStaffWfId}`
+        + `&staffName=${encodeURIComponent(selectedStaffName)}`;
+      this.setData({ showSkuPopup: false });
+      wx.navigateTo({ url });
+      return;
+    }
+
+    // 非套餐分支：保持原有单 SKU 流
+    const { selectedSku, quantity } = this.data;
     if (!selectedSku) {
       Toast.fail('请先选择规格');
       return;
     }
-    let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
-    // 套餐使用特殊订单类型
-    if (spu.is_bundle) {
-      url += '&orderType=promo';
-    }
+    const url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
     wx.navigateTo({ url });
+  },
+
+  /** 收集套餐选中的所有 SKU 装配成 checkout items */
+  _collectBundleItems() {
+    const { bundleSelections, bundleSkuMap, spu } = this.data;
+    const items: Array<{
+      skuId: string;
+      spuName: string;
+      skuDisplayName: string;
+      coverImage: string;
+      price: number;
+      quantity: number;
+      sessionCount: number | null;
+    }> = [];
+    for (const groupId of Object.keys(bundleSelections)) {
+      const picked = bundleSelections[Number(groupId)] || [];
+      for (const skuId of picked) {
+        const sku = bundleSkuMap[skuId];
+        if (!sku) continue;
+        items.push({
+          skuId,
+          spuName: spu.name,
+          skuDisplayName: sku.spec_name,
+          coverImage: spu.cover_image,
+          price: sku.bundle_price,
+          quantity: 1,
+          sessionCount: sku.session_count,
+        });
+      }
+    }
+    return items;
   },
 
   onShareAppMessage() {

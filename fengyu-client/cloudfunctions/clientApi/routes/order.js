@@ -102,6 +102,94 @@ async function closeExpiredOrdersByUser(userId) {
 }
 
 /**
+ * 组合套餐校验 + 定价 map
+ *
+ * 仅当 order.create payload 含 bundleProductId 时调用：
+ *   - 校验该 productId 存在且 is_bundle = true
+ *   - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为"必须全选"）
+ *   - 校验所有 items.skuId 都属于该 bundle（mall_product_skus.product_id 等值）
+ *
+ * 返回 Map<skuId, bundlePrice|null>；调用方据此把 unit_real_price 切换到 bundle_price。
+ * bundleProductId 为空返回 null（普通商品路径），上层兼容。
+ */
+async function _loadAndValidateBundle(bundleProductId, items) {
+  if (!bundleProductId) return null
+
+  // 1. 校验商品是套餐
+  const productRows = await pg.query(
+    `SELECT product_id, is_bundle FROM products
+     WHERE product_id = $1 AND deleted_at IS NULL AND is_visible = true`,
+    [bundleProductId]
+  )
+  if (productRows.length === 0 || !productRows[0].is_bundle) {
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已下架')
+  }
+
+  // 2. 取分组定义
+  const groupRows = await pg.query(
+    `SELECT id, group_name, pick_count
+     FROM mall_bundle_groups WHERE product_id = $1`,
+    [bundleProductId]
+  )
+  // 3. 取套餐 SKU 关联（含 bundle_price + group_id）
+  const mpsRows = await pg.query(
+    `SELECT sku_id, bundle_group_id, bundle_price
+     FROM mall_product_skus WHERE product_id = $1`,
+    [bundleProductId]
+  )
+
+  // 构建 sku→bundlePrice / group_id 索引
+  const skuToBundlePrice = new Map()
+  const skuToGroupId = new Map()
+  for (const r of mpsRows) {
+    skuToBundlePrice.set(r.sku_id, r.bundle_price)
+    skuToGroupId.set(r.sku_id, r.bundle_group_id != null ? Number(r.bundle_group_id) : null)
+  }
+
+  // 4. 校验所有 items.skuId 都属于该 bundle
+  for (const item of items) {
+    if (!skuToBundlePrice.has(item.skuId)) {
+      throw new Error(`INVALID_PARAMS: BUNDLE_SKU_NOT_BELONG: SKU ${item.skuId} 不属于该套餐`)
+    }
+  }
+
+  // 5. 按 group_id 统计 items 勾选数 + 校验配额
+  const pickedByGroup = new Map() // groupId → Set<skuId>
+  for (const item of items) {
+    const gid = skuToGroupId.get(item.skuId)
+    if (gid == null) continue // 未分组 SKU，直接通过（mall_product_skus.bundle_group_id 为 NULL 的 SKU）
+    if (!pickedByGroup.has(gid)) pickedByGroup.set(gid, new Set())
+    pickedByGroup.get(gid).add(item.skuId)
+  }
+
+  // 每组 SKU 总数（pick_count IS NULL 时校验"全选"用）
+  const totalSkusByGroup = new Map()
+  for (const r of mpsRows) {
+    if (r.bundle_group_id == null) continue
+    const gid = Number(r.bundle_group_id)
+    totalSkusByGroup.set(gid, (totalSkusByGroup.get(gid) || 0) + 1)
+  }
+
+  for (const g of groupRows) {
+    const gid = Number(g.id)
+    const pickedCount = pickedByGroup.has(gid) ? pickedByGroup.get(gid).size : 0
+    if (g.pick_count == null) {
+      // 全选组：必须等于该组 SKU 总数
+      const total = totalSkusByGroup.get(gid) || 0
+      if (pickedCount !== total) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${pickedCount} 项`)
+      }
+    } else {
+      if (pickedCount !== Number(g.pick_count)) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 项，实际 ${pickedCount} 项`)
+      }
+    }
+  }
+
+  return skuToBundlePrice
+}
+
+/**
  * 扫码查看订单详情（员工开单订单专用）
  * 不要求 client_user_id 匹配，仅限员工开单（opened_by IS NOT NULL）的订单
  *
@@ -224,6 +312,7 @@ async function create(ctx) {
   const {
     storeId,
     items, // [{ skuId, quantity }]
+    bundleProductId, // 可选, 组合套餐 productId（service-detail bundle 流）
     preferredStaffWfId, // 可选,指定美容师
     paymentMethod, // '微信' | '线下' | '支付宝'
     orderType: orderTypeParam, // 可选, 'promo' | undefined
@@ -298,6 +387,14 @@ async function create(ctx) {
     }
   }
 
+  // ========== 组合套餐校验 + 定价 ==========
+  // bundleProductId 出现时：
+  // - 校验该商品 is_bundle=true
+  // - 校验 items 中每个 skuId 都在 mall_product_skus 里属于该 bundle
+  // - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为全选）
+  // - 返回每个 skuId 对应的 bundle_price，下面用作 unit_real_price
+  const bundlePriceMap = await _loadAndValidateBundle(bundleProductId, items)
+
   // 预计算明细数据
   // 浮点 round 兜底（与 staff order.js L446 聚合点 round 对齐；行级 + 累加后双 round）
   // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md
@@ -305,7 +402,11 @@ async function create(ctx) {
   const itemsData = items.map(item => {
     const sku = skuMap[item.skuId]
     const unitPrice = Number(sku.price)
-    const unitRealPrice = Number(sku.special_price || sku.price)
+    // 套餐场景：用 mall_product_skus.bundle_price 作为成交价；fallback special_price → price
+    const bundlePrice = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
+    const unitRealPrice = bundlePrice != null
+      ? Number(bundlePrice)
+      : Number(sku.special_price || sku.price)
     const quantity = item.quantity || 1
     const saleAmount = Math.round(unitRealPrice * quantity * 100) / 100
     totalAmount += saleAmount
@@ -1412,6 +1513,22 @@ async function alipayPay(ctx) {
 
   const totalAmount = Number(order.total_amount || 0)
 
+  // 全额储值卡抵扣短路：payable_amount=0 → 不应进入拉卡拉，返回 isPrepaidFull 让前端跳详情页
+  // （与 pay 行为对齐；防御性兜底——理论上前端已在 onSubmitOrder 提前走 confirmPrepaidFull）
+  const prepaidCardAmountAli = Number(order.prepaid_card_amount || 0)
+  const payableAmountAli = Number(order.payable_amount || 0) > 0
+    ? Number(order.payable_amount)
+    : Math.round((totalAmount - prepaidCardAmountAli) * 100) / 100
+  if (payableAmountAli === 0 && order.status === '待支付') {
+    ctx.result = {
+      orderNo,
+      status: '已支付',
+      reason: 'prepaid_card_full',
+      paymentParams: null,
+    }
+    return
+  }
+
   // 计算剩余应付 = payable_amount - 净到账（received - refunded_amount），逻辑同 pay
   const { remaining } = await calcPaymentRemaining(orderNo, order)
   const effectiveRemaining = remaining
@@ -1470,10 +1587,13 @@ async function alipayPay(ctx) {
 }
 
 /**
- * 顾客扫码后调整店长预选的抵扣方案
+ * 顾客在支付前调整抵扣方案（员工扫码 + 顾客自助下单两类入口共用）
  * payload: { saleOrderId, useCard, prepaidCardAmount?, paymentMethod? }
- * 仅限员工开单（opened_by IS NOT NULL）且状态='待支付'
- * balance 不动；本端点只重算订单的 prepaid_card_amount/payable_amount/payment_method
+ * 订单状态必须='待支付'；balance 不动，本端点只重算订单的 prepaid_card_amount/payable_amount/payment_method
+ *
+ * 归属规则：
+ *   - 员工开单（opened_by IS NOT NULL）：允许 client_user_id 为空（首次扫码绑定）或等于当前用户
+ *   - 自助下单（opened_by IS NULL）：必须 client_user_id 已绑定且等于当前用户
  *
  * 2026-04-26 sale-order-domain-refactor：
  *   - paid_amount 列已 DROP；本端点改写 payable_amount（应付实金），而非 paid_amount
@@ -1500,13 +1620,13 @@ async function scanAdjust(ctx) {
   }
   const order = orders[0]
 
-  if (!order.opened_by) {
-    throw new Error('INVALID_PARAMS: 非员工开单订单不支持此操作')
-  }
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许调整')
   }
-  // 归属校验：允许 client_user_id 为空（首次扫码绑定）或等于当前用户
+  // 归属校验：自助下单必须已绑定 client_user_id；员工开单允许 client_user_id 为空（首次扫码绑定）
+  if (!order.opened_by && !order.client_user_id) {
+    throw new Error('INVALID_PARAMS: 订单归属未确定')
+  }
   if (order.client_user_id && order.client_user_id !== userId) {
     throw new Error('PERMISSION_DENIED: 无权操作该订单')
   }

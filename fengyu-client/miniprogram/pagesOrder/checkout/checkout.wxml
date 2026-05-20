@@ -23,21 +23,21 @@ module.exports.date = function(s) {
   </van-cell-group>
 
   <!-- 商品明细（充值单不显示） -->
-  <van-cell-group wx:if="{{!isRecharge}}" title="商品明细" inset>
+  <van-cell-group wx:if="{{!isRecharge}}" title="{{bundleProductId ? '套餐内容（' + spuName + '）' : '商品明细'}}" inset>
     <view class="checkout-items">
       <view wx:for="{{displayItems}}" wx:key="skuId" class="checkout-item">
         <image
-          wx:if="{{item.coverImage}}"
+          wx:if="{{item.coverImage && !bundleProductId}}"
           src="{{item.coverImage}}"
           class="checkout-item__cover"
           mode="aspectFill"
         />
-        <view wx:else class="checkout-item__cover checkout-item__cover--empty" />
+        <view wx:elif="{{!bundleProductId}}" class="checkout-item__cover checkout-item__cover--empty" />
         <view class="checkout-item__info">
-          <text class="checkout-item__name">{{item.spuName}}</text>
-          <text class="checkout-item__spec" wx:if="{{item.skuDisplayName}}">{{item.skuDisplayName}}</text>
+          <text class="checkout-item__name">{{bundleProductId ? item.skuDisplayName : item.spuName}}</text>
+          <text class="checkout-item__spec" wx:if="{{!bundleProductId && item.skuDisplayName}}">{{item.skuDisplayName}}</text>
           <view class="checkout-item__meta">
-            <text class="checkout-item__price">¥{{price.fmt(item.price)}}</text>
+            <text class="checkout-item__price">{{bundleProductId ? '套餐价 ¥' + price.fmt(item.price) : '¥' + price.fmt(item.price)}}</text>
             <text class="checkout-item__qty">×{{item.quantity}}</text>
           </view>
         </view>
@@ -60,12 +60,12 @@ module.exports.date = function(s) {
 
   <!-- 订单总额（充值单不显示，由"充值卡"摘要替代） -->
   <van-cell-group wx:if="{{!isRecharge}}" title="订单总额" inset>
-    <van-cell title="{{fromCart ? '商品合计' : '服务单价'}}" value="¥{{price.fmt(unitPrice)}}" />
-    <van-cell wx:if="{{!fromCart && quantity > 1}}" title="数量" value="x{{quantity}}" />
+    <van-cell title="{{bundleProductId ? '套餐合计' : (fromCart ? '商品合计' : '服务单价')}}" value="¥{{price.fmt(unitPrice)}}" />
+    <van-cell wx:if="{{!fromCart && !bundleProductId && quantity > 1}}" title="数量" value="x{{quantity}}" />
     <van-cell title="订单总额" class="total-row">
       <view slot="right-icon" class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{price.fmt(fromCart ? totalPrice : (unitPrice * quantity))}}</text>
+        <text class="total-value">{{price.fmt((fromCart || bundleProductId) ? totalPrice : (unitPrice * quantity))}}</text>
       </view>
     </van-cell>
   </van-cell-group>
@@ -191,7 +191,7 @@ module.exports.date = function(s) {
       <text class="alipay-qr-popup__price">{{alipayAmount}}</text>
     </view>
     <view class="alipay-qr-popup__tips">长按保存图片，打开支付宝扫码支付</view>
-    <van-button type="primary" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
+    <van-button type="primary" block custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
   </view>
 </van-popup>
 
