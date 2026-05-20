@@ -23,6 +23,7 @@ import { invokeAs, expectError } from '../helpers/invoke-client.mjs'
 import { createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
   createTestPendingSaleOrder,
+  createTestPrepaidCard,
   forceUpdateOrderStatus,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
@@ -95,16 +96,28 @@ async function caseCancelPrepaidFullPaidAllowed() {
 
 async function caseRepayHappyPartialPaid() {
   await createTestClient()
+  // 拉卡拉 2026-05-20 上线后 repay 微信/支付宝通道必须 lakala 配置；
+  // L2 改用储值卡通道走 happy 路径（不依赖拉卡拉）。
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
   const orderNo = `${NS}_SM_RPP`.slice(0, 30)
   // 部分支付：total=200, payable=200, received=50 → remaining=150 → repay 50 应成功
   await seedOrder({
     saleOrderId: orderNo, status: '部分支付',
     totalAmount: 200, prepaidCardAmount: 0, received: 50,
   })
+  // 种一行"首次支付"撑住 repay STEP 5 的 received 重算（同 cancel-repay 注释逻辑）
+  await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, external_txn_id,
+       status, source_end, paid_at, created_at
+     ) VALUES ($1, '首次支付', 50, '微信', $2, '已支付', 'client', NOW(), NOW())`,
+    [orderNo, `${NS}_SM_RPP_TXN`]
+  )
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
     saleOrderId: orderNo,
-    paymentMethod: '微信',
-    repayAmount: 50,
+    paymentMethod: '储值卡',
+    repayAmount: 0,
+    prepaidCardAmount: 50,
   })
   if (res.code !== 0) throw new Error(`expect repay ok, got ${res.code} ${res.message}`)
 }

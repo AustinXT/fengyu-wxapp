@@ -65,8 +65,11 @@ async function caseCancelCrossUserDenied() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '订单不存在' })
 }
 
+// 拉卡拉对接 2026-05-20 上线后，repay 微信/支付宝通道需 lakalaConfig + store.lakala_enabled。
+// L2 环境无拉卡拉 env，改用 paymentMethod='储值卡'（不依赖拉卡拉）覆盖 repay happy 路径。
 async function caseRepayHappy() {
   await createTestClient()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
   // 制造 status='部分支付' 的单子：total=200，已 received 80 → 还欠 120
   const orderNo = `${NS}_RP_OK1`.slice(0, 30)
   await createTestPendingSaleOrder({ saleOrderId: orderNo, totalAmount: 200 })
@@ -75,15 +78,37 @@ async function caseRepayHappy() {
      WHERE sale_order_id = $1`,
     [orderNo]
   )
+  // repay 内会按 sale_order_payments 已支付总额回填 received；
+  // 必须先种一行"首次支付"代表前置 80 元，否则 received 会被重算为 50（仅本次回款）。
+  await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, external_txn_id,
+       status, source_end, paid_at, created_at
+     ) VALUES ($1, '首次支付', 80, '微信', $2, '已支付', 'client', NOW(), NOW())`,
+    [orderNo, `${NS}_RP_OK1_TXN`]
+  )
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
     saleOrderId: orderNo,
-    paymentMethod: '微信',
-    repayAmount: 50,
+    paymentMethod: '储值卡',
+    repayAmount: 0,
+    prepaidCardAmount: 50,
   })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  // mock 模式应返回 paymentParams 或 mockMode=true
-  if (!res.data?.paymentParams && !res.data?.mockMode) {
-    throw new Error(`expect mock paymentParams/mockMode, got: ${JSON.stringify(res.data).slice(0,200)}`)
+  // 储值卡通道：事务内已扣款 + 写入 payments 行（回款/储值卡）
+  // 断言：received 推进到 130（80+50）、卡余额 -50、payments 多一行
+  const rows = await pgQuery(
+    `SELECT received, status FROM sale_orders WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  if (Number(rows[0].received) !== 130) {
+    throw new Error(`expect received=130, got: ${rows[0].received}`)
+  }
+  const cardRows = await pgQuery(
+    `SELECT balance FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  if (Number(cardRows[0].balance) !== 450) {
+    throw new Error(`expect card balance=450, got: ${cardRows[0].balance}`)
   }
 }
 
