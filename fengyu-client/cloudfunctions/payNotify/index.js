@@ -196,7 +196,7 @@ exports.main = async (event) => {
     // 注：wechat_transaction_id 列已在 migration 0018 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
     const orderResult = await pg.query(
       `SELECT status, payment_method, preferred_employee_id,
-              total_amount, client_user_id, store_id, prepaid_card_amount,
+              total_amount, payable_amount, client_user_id, store_id, prepaid_card_amount,
               sale_order_type, ref_sale_order_id
        FROM sale_orders WHERE sale_order_id = $1`,
       [orderNo]
@@ -250,9 +250,14 @@ exports.main = async (event) => {
       // 先决定本次金额 payAmount：优先取 event.payAmount，否则按目标订单剩余应付推算
       //   remaining = (total_amount - prepaid_card_amount) - Σ payments.amount (已支付, 首次/回款/退款)
       // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount（即全单线上应付）
-      const payableAmount = Math.round(
-        (Number(targetOrder.total_amount || 0) - Number(targetOrder.prepaid_card_amount || 0)) * 100
-      ) / 100
+      // 线上应付现金基准 = payable_amount 列（已编码充值折扣），旧单 NULL 用 total - prepaid 兜底。
+      // 普通单 payable_amount == total - prepaid（不变）；充值单 payable(实付 980) ≠ total(面额 1000)，
+      // 不用 payable 则 980 回调永远判为「部分支付」且储值卡不入账。
+      const payableAmount = targetOrder.payable_amount != null
+        ? Math.round(Number(targetOrder.payable_amount) * 100) / 100
+        : Math.round(
+            (Number(targetOrder.total_amount || 0) - Number(targetOrder.prepaid_card_amount || 0)) * 100
+          ) / 100
       const sumRes = await client.query(
         `SELECT COALESCE(SUM(amount), 0) AS paid_sum
          FROM sale_order_payments
