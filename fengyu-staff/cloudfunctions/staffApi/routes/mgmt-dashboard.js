@@ -328,6 +328,12 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
+// 「员工收入」口径约定（既定混合口径，勿误改）：
+//   销售部分 = SUM(sale_allocations.total_amount) — 销售【营业额份额】（业绩，非提成）
+//   服务部分 = SUM(service_commissions.commission_amount) — 真实【服务提成】
+//   收入 = 两者相加（见 staffRankingIncome）。销售用业绩份额、服务用真实提成，单位刻意混合，
+//   与 staffApi/routes/staff.js performanceDetail 三处自洽。
+//   注意区分 staffRankingRevenue（纯销售营业额份额，= 门店视图首卡「今日分成（营业额）」口径）。
 async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(

@@ -220,6 +220,13 @@ async function departments(ctx) {
 
 /**
  * 今日分成
+ *
+ * 口径约定（勿误改）：首卡「今日分成（营业额）」金额 = SUM(sale_allocations.total_amount)
+ *   = 员工分到的【销售营业额份额】（= 实收 × 分账比例，见 allocation.js），是【业绩】而非提成；
+ *   服务在卡上只做计数（serviceCount），不并入金额。
+ *   本口径与 mgmt-dashboard.staffRankingRevenue（员工业绩排行）一致，spec 标题即「今日分成（营业额）」。
+ *   ⚠️ 不要为了"对齐绩效页合计"而把服务提成（service_commissions.commission_amount）加进来——
+ *      绩效页是【提成】维度、本卡是【营业额】维度，两者本就不应相等（详见 performanceDetail 注释）。
  */
 async function todayCommission(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -513,6 +520,15 @@ async function bindStore(ctx) {
  * 员工绩效明细
  * 返回指定时段的分配明细 + 服务提成明细
  * payload: { startDate, endDate, employeeId? (店长可查他人), salesCategory?, page, pageSize }
+ *
+ * 口径约定（既定混合口径，勿误改）：
+ *   totalSalesAlloc       = SUM(sale_allocations.total_amount) — 销售【营业额份额】（业绩，非提成）
+ *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
+ *   totalCommission（合计）= 两者相加 —— 销售侧用业绩份额、服务侧用真实提成，单位刻意混合。
+ *   前端 wxml 把 totalSalesAlloc 标作「销售提成」是历史措辞，与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径，三处自洽。
+ *   ⚠️ 不要"修正"为纯提成（销售侧再乘提成率）或把它与首卡「今日分成（营业额）」强行对齐——
+ *      首卡是【营业额】维度（= staffRankingRevenue），本页合计是【混合收入】维度，二者本就不等。
+ *      若日后要落地 spec §3.15 双维度模型（业绩合计/提成合计分列 + 真实销售提成率），属独立工单。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
