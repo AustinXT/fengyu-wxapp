@@ -3,6 +3,7 @@ import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
 import { isManager, hasRole } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
+import { APP_VERSION } from '../../utils/version';
 
 type ScopedStore = { storeId: string; storeName: string };
 
@@ -25,6 +26,7 @@ Page({
     hasMultiStore: false,
     storePickerVisible: false,
     storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
+    appVersion: APP_VERSION,
   },
 
   _unsubscribeStoreChange: null as (() => void) | null,

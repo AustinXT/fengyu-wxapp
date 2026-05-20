@@ -498,6 +498,10 @@ async function main() {
   fs.removeSync(DELIVERY)
   fs.ensureDirSync(DELIVERY)
 
+  // Phase 0.5: 固化版本号（最新 git tag → 两端 utils/version.ts）
+  console.log('🏷  写入版本号...')
+  execSync('node ' + path.join(__dirname, 'gen-version.js'), { stdio: 'inherit' })
+
   // Phase 1: 云函数
   for (const cfg of CLOUD_FUNCTIONS) {
     fs.ensureDirSync(cfg.dest)

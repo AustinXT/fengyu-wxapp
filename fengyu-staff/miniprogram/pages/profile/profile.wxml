@@ -72,6 +72,7 @@
 
   <view class="section-card">
     <van-cell-group title="其他">
+      <van-cell title="版本" icon="setting-o" value="{{appVersion}}" />
       <van-cell title="退出登录" icon="revoke" bindtap="onLogout" />
     </van-cell-group>
   </view>

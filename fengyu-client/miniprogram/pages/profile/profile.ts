@@ -1,6 +1,7 @@
 // pages/profile/profile.ts
 import { maskPhone } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
+import { APP_VERSION } from '../../utils/version';
 
 const app = getApp<IAppOption>();
 
@@ -12,6 +13,7 @@ Page({
     boundStoreName: '',
     avatarUrl: '',
     unreadCount: 0,
+    appVersion: APP_VERSION,
   },
 
   onLoad() {
