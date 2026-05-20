@@ -928,9 +928,18 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       expect(paidSessionsSqls.scriptFix).toMatch(/LEAST\(sale_items\.session_count,/i)
     })
 
-    test("五端必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单/寄存行全付）", () => {
-      // 新公式：行级判定（基于 sale_items.sale_amount），不是订单级（op.total_amount）
+    test("五端必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单行全付）", () => {
+      // 行级判定（基于 sale_items.sale_amount）：单行免单
       const pattern = /sale_items\.sale_amount\s*<=\s*0\s*THEN\s*sale_items\.session_count/i
+      expect(paidSessionsSqls.staff).toMatch(pattern)
+      expect(paidSessionsSqls.client).toMatch(pattern)
+      expect(paidSessionsSqls.payNotify).toMatch(pattern)
+      expect(paidSessionsSqls.adminTs).toMatch(pattern)
+      expect(paidSessionsSqls.scriptFix).toMatch(pattern)
+    })
+
+    test("五端必须有 op.total_amount <= 0 → session_count 订单级兜底（寄存/转换零差额单全付，防 total=0 时 NULL 传播归零）", () => {
+      const pattern = /op\.total_amount\s*<=\s*0\s*THEN\s*sale_items\.session_count/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)

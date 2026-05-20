@@ -1,0 +1,122 @@
+#!/usr/bin/env bun
+/**
+ * order.createDeposit 寄存单冒烟
+ *
+ * 验证（核心：寄存卡可消费 —— paid_sessions 全付兜底回归守护）：
+ *   1. 寄存单 sale_orders：total_amount=0 / status='已支付' / payment_method='无'
+ *   2. sale_items：session_count/remaining_sessions 正常写、received=0
+ *   3. **paid_sessions = session_count**（total<=0 订单级兜底；曾因 5df8192 公式漂移归零，
+ *      导致寄存卡 service.create 时被 D6 限额挡住完全不可消费 —— 本测试守护回归）
+ *   4. unit_real_price = per-session 单次价（sale_amount / session_count）
+ */
+import './setup.mjs'
+import {
+  NS,
+  TEST_MANAGER_OPENID,
+  TEST_CLIENT_USER_ID,
+  pgQuery, closePool,
+} from './setup.mjs'
+import { invokeStaffApi } from './helpers/invoke.mjs'
+import {
+  ensureTestStore, createTestStaff, createTestClient,
+  createTestProduct, cleanupTestData, invalidateStaffAuthCache,
+} from './helpers/fixtures.mjs'
+
+let pass = false
+let exitCode = 1
+function rec(line) { console.log(line) }
+
+async function main() {
+  rec(`[smoke-order-deposit] start | ${new Date().toISOString()}`)
+
+  await cleanupTestData(NS)
+  await ensureTestStore()
+  await createTestStaff()
+  await createTestClient()
+  // 同进程内刚改了 permission_roles，必须清 staffApi AUTH_CACHE，否则 requireManager 看不到 manager 角色
+  await invalidateStaffAuthCache(TEST_MANAGER_OPENID)
+
+  // 疗程卡 SKU：10 次 × ¥100 单价（整卡 ¥1000）
+  const sku = await createTestProduct({
+    suffix: 'DEP',
+    productKind: '护理项目',
+    productType: '疗程卡',
+    salesCategory: '他销他耗',
+    price: 1000,
+    sessionCount: 10,
+  })
+  rec(`  ✓ fixture: 疗程卡 ${sku.skuId} (10次×¥1000)`)
+
+  // ─── 调用 createDeposit ───
+  const result = await invokeStaffApi('order.createDeposit', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+    items: [{ skuId: sku.skuId, quantity: 1 }],
+    remark: 'e2e-deposit',
+  })
+  if (result.code !== 0) {
+    rec(`  ✗ FAIL: createDeposit code=${result.code} msg=${result.message}`)
+    return
+  }
+  const saleOrderId = result.data?.saleOrderId
+  rec(`  result: order=${saleOrderId}`)
+
+  const errors = []
+
+  // 1. 订单主表：total=0 / 已支付
+  const orders = await pgQuery(
+    `SELECT sale_order_type, status, total_amount, payment_method FROM sale_orders WHERE sale_order_id = $1`,
+    [saleOrderId]
+  )
+  if (orders.length !== 1) errors.push(`sale_orders 行数=${orders.length}`)
+  else {
+    const o = orders[0]
+    if (Number(o.total_amount) !== 0) errors.push(`total_amount 应=0，实际=${o.total_amount}`)
+    if (o.status !== '已支付') errors.push(`status 应='已支付'，实际='${o.status}'`)
+    if (o.payment_method !== '无') errors.push(`payment_method 应='无'，实际='${o.payment_method}'`)
+  }
+
+  // 2 + 3 + 4. sale_items：次数 + received=0 + paid_sessions=session_count + per-session 单价
+  const items = await pgQuery(
+    `SELECT session_count, remaining_sessions, paid_sessions, received, sale_amount, unit_real_price
+     FROM sale_items WHERE sale_order_id = $1`,
+    [saleOrderId]
+  )
+  if (items.length !== 1) errors.push(`sale_items 应=1 行，实际=${items.length}`)
+  else {
+    const it = items[0]
+    if (Number(it.session_count) !== 10) errors.push(`session_count 应=10，实际=${it.session_count}`)
+    if (Number(it.remaining_sessions) !== 10) errors.push(`remaining_sessions 应=10，实际=${it.remaining_sessions}`)
+    if (Number(it.received) !== 0) errors.push(`received 应=0，实际=${it.received}`)
+    // 核心断言：寄存卡 paid_sessions 必须 = session_count（全付兜底），否则完全不可消费
+    if (Number(it.paid_sessions) !== 10) {
+      errors.push(`paid_sessions 应=10（total<=0 全付兜底；=0 则寄存卡不可消费），实际=${it.paid_sessions}`)
+    }
+    // per-session 单价 = sale_amount / session_count = 1000/10 = 100
+    if (Number(it.unit_real_price) !== 100) {
+      errors.push(`unit_real_price 应=100（per-session=1000/10），实际=${it.unit_real_price}`)
+    }
+  }
+
+  if (errors.length) {
+    rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
+    for (const e of errors) rec(`    - ${e}`)
+    return
+  }
+
+  pass = true
+  exitCode = 0
+  rec(`  ✅ PASS — 寄存单 total=0 + paid_sessions=session_count（可消费）+ per-session 单价正确`)
+}
+
+try {
+  await main()
+} catch (e) {
+  console.error('[smoke-order-deposit] EXCEPTION:', e.message)
+  if (e?.stack) console.error(e.stack)
+} finally {
+  try { await cleanupTestData(NS) } catch (e) { console.error('[cleanup error]', e.message) }
+  await closePool()
+  console.log(`[smoke-order-deposit] end | ${pass ? 'PASS' : 'FAIL'} | exit=${exitCode}`)
+  process.exit(exitCode)
+}

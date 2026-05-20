@@ -34,6 +34,7 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
   const sa = Number(itemSaleAmount) || 0
   if (sa <= 0) return Number(itemSessionCount)
   const tot = Number(orderTotal) || 0
+  if (tot <= 0) return Number(itemSessionCount)
   const itemRefundShare = tot > 0 ? (Number(orderRefunded) || 0) * sa / tot : 0
   const itemSettled = Math.max(0, (Number(itemReceived) || 0) - itemRefundShare)
   const ratio = Math.min(1, itemSettled / sa)
@@ -66,6 +67,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `UPDATE sale_items
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
 END,
