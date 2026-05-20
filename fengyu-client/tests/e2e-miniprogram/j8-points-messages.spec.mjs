@@ -35,9 +35,11 @@ const STEPS = [
       [ctx.userId]
     )
     // 3 条积分流水
+    // 注：chk_pt_amount_sign 约束要求 amount<0 时 type 必须是 '消费冲销'。
+    // 普通消费扣减走 '消费冲销'（负数），这是当前唯一允许负值的类型。
     await createClientPointTxn({ userId: ctx.userId, type: '获取', amount: 100 })
     await createClientPointTxn({ userId: ctx.userId, type: '获取', amount: 50 })
-    await createClientPointTxn({ userId: ctx.userId, type: '消费', amount: -30 })
+    await createClientPointTxn({ userId: ctx.userId, type: '消费冲销', amount: -30 })
     // 消息：2 未读 + 1 已读
     const ids = await createClientMessagesForUser(ctx.userId, [
       { title: 'L3-未读-1', isRead: false },
@@ -72,8 +74,16 @@ const STEPS = [
       throw new Error(`points.history failed: ${JSON.stringify(histRes)}`)
     }
     const records = histRes.data?.records || []
-    if (records.length !== 3) {
-      throw new Error(`points.history records.length=${records.length}, expected 3`)
+    // 仅断言本次插入的三条具体记录都返回了（PROBE 模式 FYGK 真实用户可能有历史积分流水）
+    const testAmounts = [100, 50, -30]
+    const found = testAmounts.filter(a =>
+      records.some(r => Number(r.amount) === a)
+    )
+    if (found.length !== testAmounts.length) {
+      throw new Error(
+        `points.history 缺失本次插入记录：want=${testAmounts.join(',')}, ` +
+        `got=${records.map(r => r.amount).slice(0, 10).join(',')}`
+      )
     }
   }],
 
