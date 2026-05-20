@@ -127,7 +127,7 @@
     <!-- 操作按钮 -->
     <view class="action-bar">
       <van-button
-        wx:if="{{isManager && (order.status === '待确认收款' || (order.status === '待支付' && order.payType === 'offline'))}}"
+        wx:if="{{isManager && order.status === '待支付' && order.payType === 'offline'}}"
         block type="primary"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"

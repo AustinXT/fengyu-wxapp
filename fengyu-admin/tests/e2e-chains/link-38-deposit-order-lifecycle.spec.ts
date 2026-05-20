@@ -131,8 +131,8 @@ test('链路38：寄存单完整生命周期', async ({ browser }) => {
   const page = await ctx.newPage()
 
   try {
-    // ── 登录 admin（绕过 scope 校验） ──
-    await login(page, TEST_PHONES.ADM)
+    // ── 登录 manager（admin 角色不持有 service:list；seed 的 store=store-nc01 在 MGR scope 内） ──
+    await login(page, TEST_PHONES.MGR)
 
     // ── 访问 /services 列表确认订单存在 ──
     await page.goto(`${BASE}/services?q=${SVC_ID}`)
@@ -142,30 +142,38 @@ test('链路38：寄存单完整生命周期', async ({ browser }) => {
     const inList = (listBody || '').includes(SVC_ID)
     recordVerdict(verdicts, 'service_in_list', inList, `inList=${inList}`)
 
-    // ── 进入服务单详情页并点击「完成服务」 ──
-    await page.goto(`${BASE}/services/${SVC_ID}`)
+    // ── 进入服务单列表页（详情页是只读视图，没有「完成服务」按钮；
+    //    操作按钮在列表行内，参考 link-45 同款做法）──
+    await page.goto(`${BASE}/services?q=${SVC_ID}`)
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(1200)
+    await page.waitForTimeout(1500)
 
-    const completeBtn = page.getByRole('button', { name: /完成服务|完成/ }).first()
+    // 等"完成服务"按钮渲染（status=服务中 时该按钮才出现）
+    const completeBtn = page.getByRole('button', { name: '完成服务' }).first()
     let clicked = false
     if (await completeBtn.count() > 0) {
       await completeBtn.click().catch(() => null)
-      // 可能有 confirm dialog
-      const confirmBtn = page.getByRole('button', { name: /确认完成|确定|确认/ }).last()
+      // AlertDialog 「确认完成服务？」-> 「确认完成」
+      const confirmBtn = page.getByRole('button', { name: /^确认完成$/ }).first()
+      await confirmBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => null)
       if (await confirmBtn.count() > 0) {
         await confirmBtn.click().catch(() => null)
       }
-      await page.waitForTimeout(2500)
       clicked = true
     }
     recordVerdict(verdicts, 'complete_clicked', clicked, `btnFound=${clicked}`)
 
-    // ── DB invariant: remaining_sessions 已扣减 ──
-    const remaining = parseInt(psql(`SELECT remaining_sessions::text FROM sale_items WHERE sale_item_id='${SIID}'`), 10)
+    // ── DB invariant: remaining_sessions 已扣减（poll 等 server action commit + refresh） ──
+    let remaining = INITIAL_SESSIONS
+    const expectedRemaining = INITIAL_SESSIONS - SESSION_USED
+    for (let i = 0; i < 20; i++) {
+      remaining = parseInt(psql(`SELECT remaining_sessions::text FROM sale_items WHERE sale_item_id='${SIID}'`), 10)
+      if (remaining === expectedRemaining) break
+      await page.waitForTimeout(500)
+    }
     recordVerdict(verdicts, 'remaining_sessions_decremented',
-      remaining === INITIAL_SESSIONS - SESSION_USED,
-      `expected=${INITIAL_SESSIONS - SESSION_USED} actual=${remaining}`)
+      remaining === expectedRemaining,
+      `expected=${expectedRemaining} actual=${remaining}`)
 
     // ── DB invariant: service_orders.status='已完成' ──
     const svcStatus = psql(`SELECT status FROM service_orders WHERE service_order_id='${SVC_ID}'`).trim()

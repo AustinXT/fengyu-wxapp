@@ -4,7 +4,6 @@ export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "�
 
 export const orderStatusEnum = pgEnum("order_status", [
   "待支付",
-  "待确认收款",
   "已支付",
   "已完成",
   "支付失败",

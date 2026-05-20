@@ -14,6 +14,7 @@ import { test, expect } from '@playwright/test'
 import path from 'path'
 import fs from 'fs'
 import { execSync } from 'child_process'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu'
@@ -24,6 +25,15 @@ const FIX_STORE_ID = 'store-nc01'
 const FIX_EMP_ID = 'FY-TEST-MGR'
 const FIX_EMP_NAME = '测试店长'
 const FIX_CLIENT_NAME = 'Fixture测试客'
+
+// 段 B2 需要 FY-FIX-CLIENT-01 名下有一张「已支付 / 疗程卡 / remaining_sessions>0」的 sale_item
+// 才能进入 /services/create Step 2 看到可选行。Fixture 不保证留存（数据可能被其它清理流程移除），
+// 故本 spec 自管理一笔 10 次卡注入单（ID 与 link-12 等错开避免冲突）。
+const PRE_SALE_ORDER_ID = 'FY-XSD-WX-2604039903'
+const PRE_SALE_ITEM_ID = 'FY-XSD-WX-2604039903-01'
+const PRE_SALE_SKU_ID = 'sku-001-02'
+const PRE_SALE_SKU_NAME = '蜜语水润嫩肤护理 10次卡'
+const PRE_SALE_PRODUCT_NAME = '蜜语水润嫩肤护理'
 
 function dbQuery(sql: string): string {
   return execSync(`${PG_CMD} -t -A -c "${sql.replace(/"/g, '\\"')}"`).toString().trim()
@@ -79,8 +89,64 @@ async function insertAppointmentFixture() {
   )
 }
 
+/**
+ * 注入一张已支付 / 疗程卡 / remaining_sessions>0 的 sale_item，供段 B2 在 /services/create 选中。
+ * 若 fixture 顾客名下已经存在可用 sale_item（remaining_sessions>0 + paid_sessions 充足 + 已支付），
+ * 则跳过注入，afterAll 也不清理。
+ */
+let injectedSaleItem = false
+async function ensurePaidSaleItemFixture() {
+  const existing = dbQuery(
+    `SELECT si.sale_item_id FROM sale_items si JOIN sale_orders so ON so.sale_order_id = si.sale_order_id ` +
+    `WHERE so.client_user_id='${FIX_CLIENT_ID}' AND so.status IN ('已支付','部分支付') ` +
+    `AND si.item_direction='购买' AND si.product_type IN ('疗程卡','单品') ` +
+    `AND si.remaining_sessions > 0 ` +
+    `AND COALESCE(si.paid_sessions, 0) >= si.session_count - si.remaining_sessions + 1 ` +
+    `AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE) ` +
+    `LIMIT 1`,
+  )
+  if (existing) {
+    console.log(`[link-3 beforeAll] 复用已有 sale_item=${existing}，跳过注入`)
+    return
+  }
+  console.log('[link-3 beforeAll] 未找到可用 sale_item，SQL 注入一笔 10 次卡（已支付）')
+  // 清理可能的遗留（幂等）
+  cleanupSaleOrder(PRE_SALE_ORDER_ID, dbQuery, { logPrefix: '[link-3 beforeAll]' })
+
+  const marketName = dbQuery(
+    `SELECT DISTINCT market_name FROM sale_orders WHERE store_id='${FIX_STORE_ID}' LIMIT 1`,
+  ) || '南昌市场'
+
+  dbExec(
+    `INSERT INTO sale_orders ` +
+    `(sale_order_id, status, sale_order_type, market_name, store_id, sale_order_datetime, ` +
+    ` client_user_id, client_phone, customer_name, total_amount, payment_method, ` +
+    ` opened_by, paid_at, created_at, updated_at) ` +
+    `VALUES ` +
+    `('${PRE_SALE_ORDER_ID}', '已支付', '销售单', '${marketName}', '${FIX_STORE_ID}', NOW(), ` +
+    ` '${FIX_CLIENT_ID}', '13800138000', '${FIX_CLIENT_NAME}', 1999.00, '线下', ` +
+    ` '${FIX_EMP_ID}', NOW(), NOW(), NOW()) ` +
+    `ON CONFLICT (sale_order_id) DO NOTHING`,
+  )
+  dbExec(
+    `INSERT INTO sale_items ` +
+    `(sale_item_id, sale_order_id, item_direction, sku_id, session_count, remaining_sessions, paid_sessions, ` +
+    ` unit_price, quantity, unit_real_price, sale_amount, received, ` +
+    ` product_name, sku_spec_name, product_type, store_id, created_at, updated_at) ` +
+    `VALUES ` +
+    `('${PRE_SALE_ITEM_ID}', '${PRE_SALE_ORDER_ID}', '购买', '${PRE_SALE_SKU_ID}', ` +
+    ` 10, 10, 10, ` +
+    ` 1999.00, 1, 1999.00, 1999.00, 1999.00, ` +
+    ` '${PRE_SALE_PRODUCT_NAME}', '${PRE_SALE_SKU_NAME}', '疗程卡', '${FIX_STORE_ID}', NOW(), NOW()) ` +
+    `ON CONFLICT (sale_item_id) DO NOTHING`,
+  )
+  injectedSaleItem = true
+  console.log(`[link-3 beforeAll] 已注入 ${PRE_SALE_ORDER_ID} / ${PRE_SALE_ITEM_ID}`)
+}
+
 test.beforeAll(async () => {
   await insertAppointmentFixture()
+  await ensurePaidSaleItemFixture()
 })
 
 test.afterAll(async () => {
@@ -94,6 +160,10 @@ test.afterAll(async () => {
   } catch (e) {
     const msg = e instanceof Error ? e.message.split('\n')[0] : String(e)
     console.error(`[link-3 afterAll cleanup] appointment fixture: skipped (${msg})`)
+  }
+  // 注入的 sale_order 一并回收（若 B2 选中并使用过它，会有 service_items 引用——cleanupSaleOrder 会按 FK 顺序清干净）
+  if (injectedSaleItem) {
+    cleanupSaleOrder(PRE_SALE_ORDER_ID, dbQuery, { logPrefix: '[link-3 afterAll]' })
   }
 })
 

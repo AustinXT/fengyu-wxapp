@@ -54,7 +54,7 @@ async function run() {
   const ORDER = `${NS}_XEND_SC_O1`
   await createTestSaleOrder({
     saleOrderId: ORDER, clientUserId: CLI_ID, storeId: S_A1.storeId,
-    openedBy: MGR_A1.empId, totalAmount: 300, status: '待确认收款',
+    openedBy: MGR_A1.empId, totalAmount: 300, status: '待支付',
     paymentMethod: '储值卡', prepaidCardAmount: 300,
   })
 

@@ -110,10 +110,9 @@ test.describe('链路36：admin 手动拉取 WorkFine 历史订单', () => {
       await expect(importBtn).toBeVisible()
       await importBtn.click()
 
-      // toast 提示"已导入 1 条"
-      await expect(page.getByText(/已导入\s*1\s*条/)).toBeVisible({ timeout: 15_000 })
-
-      // URL 跳转到 /legacy-orders?q=13800138000（Dialog 用 ?q= 让列表自动按手机号过滤）
+      // 导入成功后：dialog 关闭 + URL 跳转到 /legacy-orders?q=13800138000
+      // 注：toast "已导入 1 条" 出现时间窗口很短（紧跟 router.push 卸载），
+      //     用 URL 跳转作为更可靠的成功信号。
       await page.waitForURL(/\/legacy-orders\?q=13800138000/, { timeout: 15_000 })
 
       // 验证 DB 落库：sale_orders 多了一条 WF-ORD-001

@@ -52,7 +52,7 @@ async function main() {
     saleOrderId: ORDER_ID,
     clientUserId: TEST_CLIENT_USER_ID,
     totalAmount: TOTAL_AMOUNT,
-    status: '待确认收款',
+    status: '待支付',
     paymentMethod: '线下',
   })
   rec(`  ✓ fixtures ready: store=${TEST_STORE_ID} manager=${TEST_MANAGER_EMP_ID} order=${ORDER_ID} (¥${TOTAL_AMOUNT})`)

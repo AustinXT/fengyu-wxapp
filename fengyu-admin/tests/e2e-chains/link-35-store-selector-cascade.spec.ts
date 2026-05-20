@@ -137,17 +137,32 @@ test('链路35：级联下拉选择器约束', async ({ browser }) => {
     await ctxMkt.close()
   }
 
-  // ── Case 3: admin ── 下拉应见全部门店（含其他市场）
-  console.log('[链路35] Case 3: admin')
+  // ── Case 3: admin ── 改在 /employees/create 表单验证 store 下拉全开
+  // 历史：admin 角色按设计不持业务数据权限（无 sale_order:create），无法走 /orders/create 向导，
+  //       Step3 永远到不了。改为 /employees/create（admin 有 employee:create），等价验证
+  //       "总部 scope → 全部门店命中"。与 link-35c Case 4 (HR) 同一模式。
+  console.log('[链路35] Case 3: admin /employees/create')
   const ctxAdm = await browser.newContext()
   const pAdm = await ctxAdm.newPage()
   try {
     await login(pAdm, TEST_PHONES.ADM)
-    const admLabels = await readStoreSelectAtStep3(pAdm, '13800138000')
-    if (admLabels === null) {
-      recordVerdict(verdicts, 'adm_reaches_step3', false, '无法到达 Step3')
+    await pAdm.goto(`http://localhost:3000/employees/create`)
+    await pAdm.waitForLoadState('networkidle').catch(() => null)
+    await pAdm.waitForTimeout(1500)
+    // 找含"店"字 option 的 select（"所属门店"选择器）
+    const allSelects = await pAdm.locator('select').all()
+    let admLabels: string[] = []
+    for (const sel of allSelects) {
+      const opts = (await sel.locator('option').allTextContents()).map((o) => o.trim()).filter(Boolean)
+      if (opts.some((o) => o.includes('店') || o.includes('南昌'))) {
+        admLabels = opts
+        break
+      }
+    }
+    if (admLabels.length === 0) {
+      recordVerdict(verdicts, 'adm_employees_create_store_select_found', false, '未找到门店 select')
     } else {
-      recordVerdict(verdicts, 'adm_reaches_step3', true, `option count=${admLabels.length}`)
+      recordVerdict(verdicts, 'adm_employees_create_store_select_found', true, `option count=${admLabels.length}`)
       const seesNc01 = admLabels.some((l) => l.includes('南昌旗舰店'))
       const seesNc02 = admLabels.some((l) => l.includes('青山湖店'))
       const seesOther = admLabels.some((l) => l.includes('龙珠店') || l.includes('天街店'))
@@ -155,6 +170,7 @@ test('链路35：级联下拉选择器约束', async ({ browser }) => {
       recordVerdict(verdicts, 'adm_sees_nc01', seesNc01, `seesNc01=${seesNc01}`)
       recordVerdict(verdicts, 'adm_sees_nc02', seesNc02, `seesNc02=${seesNc02}`)
       recordVerdict(verdicts, 'adm_sees_other_market', seesOther, `seesOther=${seesOther}`)
+      // 容许"请选择"占位 option，总数应接近 stores 表全量
       recordVerdict(
         verdicts, 'adm_option_count_close_to_total',
         Math.abs(admLabels.length - totalStores) <= 5,

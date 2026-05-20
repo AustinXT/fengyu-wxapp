@@ -100,8 +100,8 @@ describe('order.create', () => {
     expect(ctx.result).toBeDefined()
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
     expect(ctx.result.totalAmount).toBe(1000)
-    // PR-2：线下全额现场 → 订单 '待确认收款'（店长 confirmOffline 再转 '已支付'）；首次支付 payments 流水同事务写入
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下全额现场 → 订单 '待支付'（店长 confirmOffline 再转 '已支付'）；首次支付 payments 流水同事务写入
+    expect(ctx.result.status).toBe('待支付')
     expect(ctx.result.message).toBe('开单成功')
   })
 
@@ -463,8 +463,8 @@ describe('order.create', () => {
 
     // 1000 - 200 = 800（couponDiscount=200，满足 min_spend=500）
     expect(ctx.result.totalAmount).toBe(800)
-    // PR-2：线下全额现场 → 订单 '待确认收款'
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下全额现场 → 订单 '待支付'
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('J3 拒绝数组形式 couponId（一张订单仅支持 1 张券）', async () => {
@@ -807,8 +807,8 @@ describe('order.create', () => {
 
     // 内部单半价：Math.round(1000 * 50) / 100 = 500
     expect(ctx.result.totalAmount).toBe(500)
-    // PR-2：线下全额现场 → 订单 '待确认收款'
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下全额现场 → 订单 '待支付'
+    expect(ctx.result.status).toBe('待支付')
   })
 
   // 已废弃：'promotion'/'组合套餐' 订单类型在 PR-C（commit 4966b67/fb618ea）重构中移除
@@ -906,8 +906,8 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    // PR-2: 线下全额现场 → '待确认收款'
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2: 线下全额现场 → '待支付'
+    expect(ctx.result.status).toBe('待支付')
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
   })
 
@@ -995,7 +995,7 @@ describe('order.create', () => {
       }])
   }
 
-  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 待确认收款 + 1 行 首次支付/已支付', async () => {
+  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 待支付 + 1 行 首次支付/已支付', async () => {
     const ctx = mockCreateCtxOk({ receivedAmount: 200 })
     mockPgForCreate()
 
@@ -1014,7 +1014,7 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.status).toBe('待确认收款')
+    expect(ctx.result.status).toBe('待支付')
     expect(ctx.result.paidAmount).toBe(200)
     expect(ctx.result.payableAmount).toBe(200)
     expect(ctx.result.prepaidCardAmount).toBe(0)
@@ -1213,7 +1213,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-XSD-WX-2401010001',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         total_amount: '500',
@@ -1251,7 +1251,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         total_amount: '100',
@@ -1357,7 +1357,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-CZ-001',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-001',
@@ -1418,7 +1418,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-CZ-002',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-002',
@@ -1476,7 +1476,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-CZ-003',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-003',
@@ -1525,7 +1525,7 @@ describe('order.confirmOffline', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-NORMAL',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-100',
@@ -2284,7 +2284,7 @@ describe('order.qrcode', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-QR-001', status: '待支付', sale_order_type: '销售单',
-        client_phone: '138', customer_name: '张三', payment_method: '线下',
+        client_phone: '138', customer_name: '张三', payment_method: '微信',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([
@@ -2322,13 +2322,13 @@ describe('order.qrcode', () => {
     expect(wxacode.generateWxacode).not.toHaveBeenCalled()
   })
 
-  test('待确认收款状态映射', async () => {
+  test('待确认收款状态映射（status=待支付 + payment_method=线下 → qrCodeStatus 待确认收款 UI 标签）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-003' })
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-QR-003', status: '待确认收款', sale_order_type: '销售单',
-        client_phone: '138', customer_name: '张三', payment_method: '微信',
+        sale_order_id: 'FY-QR-003', status: '待支付', sale_order_type: '销售单',
+        client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([])
@@ -3647,7 +3647,7 @@ describe('order.createRepayment', () => {
 describe('order.createConversion', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('创建转换单成功（差额>0 → 待确认收款，新 API 入参）', async () => {
+  test('创建转换单成功（差额>0 → 待支付，新 API 入参）', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       convertOutSaleItemIds: ['item-001'],
@@ -3704,7 +3704,7 @@ describe('order.createConversion', () => {
 
     // totalOut=1000*1=1000, totalIn=1500*10=15000, priceDiff=14000
     expect(ctx.result.priceDiff).toBe(14000)
-    expect(ctx.result.status).toBe('待确认收款') // priceDiff>0 + 线下
+    expect(ctx.result.status).toBe('待支付') // priceDiff>0 + 线下
     expect(ctx.result.message).toContain('转换单已创建')
   })
 
@@ -4050,7 +4050,7 @@ describe('order.createConversion', () => {
     expect(ctx.result.totalOut).toBe(600)
     expect(ctx.result.totalIn).toBe(1000)
     expect(ctx.result.priceDiff).toBe(400)
-    expect(ctx.result.status).toBe('待确认收款') // priceDiff>0 + 线下
+    expect(ctx.result.status).toBe('待支付') // priceDiff>0 + 线下
 
     // 验证走的是单品分支：UPDATE 语句包含 picked_up_quantity = quantity，不含 remaining_sessions = 0
     // 注：generateOrderNo 内 advisory lock + SELECT sale_order_id LIKE 占 [0..1]，业务调用 +1 偏移
@@ -4366,8 +4366,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     expect(ctx.result.prepaidCardAmount).toBe(0)
     expect(ctx.result.paidAmount).toBe(1000)
     expect(ctx.result.paymentMethod).toBe('线下')
-    // PR-2: 线下全额现场 + receivedAmount 默认 payable → '待确认收款' + 1 行 首次支付 payments（confirmOffline 再转 '已支付'）
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2: 线下全额现场 + receivedAmount 默认 payable → '待支付' + 1 行 首次支付 payments（confirmOffline 再转 '已支付'）
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('前端传 prepaidCardAmount > 余额 → INSUFFICIENT_BALANCE', async () => {
@@ -4491,7 +4491,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-PD-001',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
@@ -4545,7 +4545,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-PD-002',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
@@ -4591,7 +4591,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-PD-003',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
@@ -4629,7 +4629,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-NP-001',
-        status: '待确认收款',
+        status: '待支付',
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
@@ -4957,9 +4957,9 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
 
     await orderRoutes.createConversion(ctx)
 
-    // priceDiff = 2000 - 500 = 1500（>0，线下）→ 待确认收款
+    // priceDiff = 2000 - 500 = 1500（>0，线下）→ 待支付
     expect(ctx.result.priceDiff).toBe(1500)
-    expect(ctx.result.status).toBe('待确认收款')
+    expect(ctx.result.status).toBe('待支付')
     // 不应触发 prepaid_cards 入账（正差额走预选链路）
     const hasUpsert = txCalls.some(c => c.sql.includes('INSERT INTO prepaid_cards'))
     const hasDeduct = txCalls.some(c => c.sql.includes('INSERT INTO card_transactions'))

@@ -80,7 +80,6 @@ interface OrderPaymentView {
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
-  '待确认收款': { icon: 'clock-o',   color: '#C9986A' },
   '已支付':     { icon: 'passed',    color: '#52C41A' },
   '已完成':     { icon: 'success',   color: '#8C8C8C' },
   '支付失败':   { icon: 'close',     color: '#FF4D4F' },

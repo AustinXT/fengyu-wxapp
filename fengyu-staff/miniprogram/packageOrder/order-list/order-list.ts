@@ -5,7 +5,7 @@ import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-type OrderStatus = '全部' | '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭';
+type OrderStatus = '全部' | '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭';
 
 interface OrderItem {
   id: string;
@@ -47,7 +47,6 @@ interface OrderListResponse {
 
 const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
-  '待确认收款': 'pending',
   '已支付': 'success',
   '已完成': 'done',
   '支付失败': 'error',
@@ -73,7 +72,7 @@ Page({
     this.setData({ isManager: isManager(), currentStaffId: app.globalData.staffWfId || '' });
     if (options.status) {
       const statusMap: Record<string, OrderStatus> = {
-        pendingOffline: '待确认收款',
+        pendingOffline: '待支付',
         pendingCreate: '待支付',
       };
       const tab = statusMap[options.status] || '全部';

@@ -94,7 +94,7 @@ export default function OrderDetailPageClient({
   const canShowRecordPayment =
     canRecordPayment &&
     remainingPayable > 0 &&
-    (order.status === "部分支付" || order.status === "待支付" || order.status === "待确认收款")
+    (order.status === "部分支付" || order.status === "待支付")
 
   const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false)
   const [refundFormOpen, setRefundFormOpen] = useState(false)

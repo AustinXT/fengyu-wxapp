@@ -40,7 +40,6 @@ function Badge({ className, variant, ...props }: BadgeProps) {
 export const STATUS_BADGE_MAP: Record<string, string> = {
   // 订单状态
   '待支付':       'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
-  '待确认收款':   'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
   '已支付':       'border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]',
   '已完成':       'border-[#888888] text-[#888888] bg-[#F5F5F5]',
   '支付失败':     'border-[#D94040] text-[#D94040] bg-[#FFF0F0]',

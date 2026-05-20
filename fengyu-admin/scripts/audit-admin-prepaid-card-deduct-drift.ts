@@ -3,7 +3,7 @@
  * 数据审计脚本（ticket 2026-05-19）：admin confirmOfflinePayment 缺扣卡逻辑导致的存量漂移
  *
  * 修复 admin orders.ts confirmOfflinePayment 扣卡逻辑前，可能存在如下漂移：
- *   sale_orders.prepaid_card_amount > 0  + status ∈ {已支付,部分支付,已完成,待确认收款}
+ *   sale_orders.prepaid_card_amount > 0  + status ∈ {已支付,部分支付,已完成,待支付}
  *   但对应的 card_transactions 没有 type='扣款' ref_order_id 命中 → 顾客余额从未被扣减
  *
  * 用法：
@@ -60,7 +60,7 @@ async function main() {
            so.opened_by
       FROM sale_orders so
      WHERE so.prepaid_card_amount > 0
-       AND so.status IN ('已支付', '部分支付', '已完成', '待确认收款')
+       AND so.status IN ('已支付', '部分支付', '已完成')
        AND NOT EXISTS (
          SELECT 1 FROM card_transactions ct
           WHERE ct.ref_order_id = so.sale_order_id AND ct.type = '扣款'

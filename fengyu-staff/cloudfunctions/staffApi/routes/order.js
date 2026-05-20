@@ -641,8 +641,8 @@ async function create(ctx) {
     // 线下/储值卡/无：按 paid + prepaid 与 total 的比较落地
     //   paid + prepaid == 0                    → '待支付'（纯挂账，无 payments 行）
     //   0 < paid + prepaid < total_amount      → '部分支付'
-    //   paid + prepaid == total_amount         → '待确认收款'（店长二次确认 → confirmOffline 转 '已支付'；
-    //                                              保留原 staff 流程：全额现场收款不跳过确认步骤）
+    //   paid + prepaid == total_amount         → '待支付'（线下全额仍待店长 confirmOffline 入账；
+    //                                              通过 payment_method='线下' 识别"已选线下、待确认"）
     const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
     let initialStatus
     if (isOnlineMethod) {
@@ -652,10 +652,10 @@ async function create(ctx) {
     } else if (settledAmount + 0.001 < totalAmount) {
       initialStatus = '部分支付'
     } else {
-      initialStatus = '待确认收款'
+      initialStatus = '待支付'
     }
     // paid_at 语义：payments 行已支付即"有钱到账"时间，冗余到 sale_orders.paid_at；
-    // 挂账订单无入账 → NULL。'待确认收款' 订单 payments 已写'已支付'，paid_at 可落 now。
+    // 挂账订单无入账 → NULL。线下全额订单 payments 已写'已支付'，paid_at 可落 now。
     const paidAtValue = paidAmount > 0 ? now : null
     await client.query(
       `INSERT INTO sale_orders (
@@ -749,7 +749,7 @@ async function create(ctx) {
   })
 
   // PR-2: status 与事务内 initialStatus 决策树保持一致
-  //   线上 → '待支付'；paid+prepaid=0 → '待支付'；部分 → '部分支付'；全额 → '待确认收款'
+  //   线上 → '待支付'；paid+prepaid=0 → '待支付'；部分 → '部分支付'；全额 → '待支付'（线下待店长 confirmOffline）
   const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
   let resolvedStatus
   if (isOnlineMethod) {
@@ -759,7 +759,7 @@ async function create(ctx) {
   } else if (resolvedSettled + 0.001 < totalAmount) {
     resolvedStatus = '部分支付'
   } else {
-    resolvedStatus = '待确认收款'
+    resolvedStatus = '待支付'
   }
 
   ctx.result = {
@@ -820,11 +820,13 @@ async function qrcode(ctx) {
 
   const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
-  // 推导二维码显示状态
+  // 推导二维码显示状态（UI-only 标签，不写库）
+  //   待支付 + payment_method='线下' → 顾客已选线下，待店长确认收款（UI 标签 '待确认收款'）
+  //   待支付 + 其它 → 等顾客扫码（'待扫码'）
   let qrCodeStatus
   if (['已支付', '已完成'].includes(order.status)) {
     qrCodeStatus = '已支付'
-  } else if (order.status === '待确认收款') {
+  } else if (order.status === '待支付' && order.payment_method === '线下') {
     qrCodeStatus = '待确认收款'
   } else if (order.status === '待支付') {
     qrCodeStatus = '待扫码'
@@ -900,8 +902,8 @@ async function confirmOffline(ctx) {
   if (order.status === '待支付' && order.payment_method !== '线下') {
     throw new Error(`INVALID_PARAMS: 非线下支付订单不可直接确认收款`)
   }
-  // PR-2: 允许对 '待支付' / '待确认收款' / '部分支付' 订单确认收款
-  if (!['待确认收款', '待支付', '部分支付'].includes(order.status)) {
+  // PR-2: 允许对 '待支付' / '部分支付' 订单确认收款
+  if (!['待支付', '部分支付'].includes(order.status)) {
     throw new Error(`INVALID_PARAMS: 订单当前状态为"${order.status}"，不可确认收款`)
   }
 
@@ -1173,7 +1175,7 @@ async function close(ctx) {
   const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
   if (isManagerRole) {
-    if (!['待支付', '待确认收款', '支付失败'].includes(order.status)) {
+    if (!['待支付', '支付失败'].includes(order.status)) {
       throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
     }
   } else if (isCreator) {
@@ -1909,7 +1911,7 @@ async function createRepayment(ctx) {
     if (lockRes.rows.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在')
     const locked = lockRes.rows[0]
 
-    if (!['部分支付', '待支付', '待确认收款'].includes(locked.status)) {
+    if (!['部分支付', '待支付'].includes(locked.status)) {
       throw new Error(`INVALID_STATE: 订单当前状态"${locked.status}"不允许回款`)
     }
 
@@ -2051,7 +2053,7 @@ async function createRepayment(ctx) {
  * 与 admin 侧 createConversionOrder 语义对齐：
  *   - 按 client_user_id + store_id 跨订单聚合候选卡（不再绑定单一原订单）
  *   - 整张卡折抵（疗程卡全部 remaining_sessions / 单品体验卡全部剩余数量）
- *   - 差额>0：total_amount=差额，status 按支付方式（微信→待支付，线下→待确认收款）
+ *   - 差额>0：total_amount=差额，status='待支付'（线下走 confirmOffline 入账，线上走 payNotify）
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
  *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
@@ -2246,10 +2248,8 @@ async function createConversion(ctx) {
 
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
-    // 差额>0：按支付方式决定；其它：已支付
-    const orderStatus = priceDiff > 0
-      ? (paymentMethod === '线下' ? '待确认收款' : '待支付')
-      : '已支付'
+    // 差额>0：'待支付'（线下走 confirmOffline 入账，线上走 payNotify）；其它：已支付
+    const orderStatus = priceDiff > 0 ? '待支付' : '已支付'
 
     // 3. document_type 快照：会员客 → 售后，否则按 totalIn 与阈值比较
     let documentType = client.customer_type === '会员客' ? '售后' : '售前'

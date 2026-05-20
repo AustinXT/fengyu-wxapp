@@ -340,7 +340,7 @@ exports.main = async (event) => {
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
-      // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付/待确认收款 翻转
+      // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付 翻转
       // 注：wechat_transaction_id 列已 DROP，三方流水号由上面 INSERT sale_order_payments.external_txn_id 承担
       const updResult = await client.query(
         `UPDATE sale_orders
@@ -349,7 +349,7 @@ exports.main = async (event) => {
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
              updated_at = $3
          WHERE sale_order_id = $4
-           AND status IN ('待支付', '部分支付', '待确认收款')`,
+           AND status IN ('待支付', '部分支付')`,
         [newStatus, newPaidSum, now, targetOrderNo]
       )
       if (updResult.rowCount === 0) {
@@ -367,7 +367,7 @@ exports.main = async (event) => {
                paid_at = COALESCE(paid_at, $1),
                updated_at = $1
            WHERE sale_order_id = $2
-             AND status IN ('待支付', '部分支付', '待确认收款')`,
+             AND status IN ('待支付', '部分支付')`,
           [now, orderNo]
         )
         if (credUpd.rowCount === 0) {

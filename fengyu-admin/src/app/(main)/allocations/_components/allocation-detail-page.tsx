@@ -256,17 +256,28 @@ export default function AllocationDetailPageClient({
       </Card>
 
       {/* 逐 SKU 分配卡片 */}
-      {items.map((item) => (
-        <ItemAllocationCard
-          key={item.saleItemId}
-          item={item}
-          entries={itemAllocs[item.saleItemId] || []}
-          getFilteredEmployees={getFilteredEmployees}
-          onAdd={addEntry}
-          onUpdate={updateEntry}
-          onRemove={removeEntry}
-        />
-      ))}
+      {items.length > 0 ? (
+        items.map((item) => (
+          <ItemAllocationCard
+            key={item.saleItemId}
+            item={item}
+            entries={itemAllocs[item.saleItemId] || []}
+            getFilteredEmployees={getFilteredEmployees}
+            onAdd={addEntry}
+            onUpdate={updateEntry}
+            onRemove={removeEntry}
+          />
+        ))
+      ) : (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base text-[#999999]">分配明细</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-[#999999] py-2">该订单暂无可分配的销售明细</p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 保存 */}
       <Card>

@@ -14,7 +14,7 @@ Page({
     qrcodeUrl: '',
     qrcodeError: '',
     retryCount: 0,
-    status: '待扫码',    // '待扫码' | '待确认收款' | '已支付' | '已关闭'
+    status: '待扫码',    // UI-only 标签：'待扫码' | '待确认收款' | '已支付' | '已关闭'（不直接是 DB order_status）
     isManager: false,
     isCreator: false,
   },

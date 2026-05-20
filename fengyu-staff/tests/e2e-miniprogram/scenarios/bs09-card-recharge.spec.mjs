@@ -137,8 +137,8 @@ async function run() {
     [saleOrderId],
   );
   if (orderRow.length !== 1) throw new Error(`sale_orders 行不存在: ${saleOrderId}`);
-  if (orderRow[0].status !== '待确认收款') {
-    throw new Error(`线下充值订单初始 status 应为 '待确认收款'，实际 '${orderRow[0].status}'`);
+  if (orderRow[0].status !== '待支付') {
+    throw new Error(`线下充值订单初始 status 应为 '待支付'，实际 '${orderRow[0].status}'`);
   }
   const itemRows = await query(
     `SELECT is_recharge_card, sku_id, sale_amount FROM sale_items WHERE sale_order_id = $1`,

@@ -5,14 +5,14 @@
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/order.js
  *   - pay      (line 689)  → mock 模式直接返回支付参数，不发起真实微信下单
  *   - alipayPay(line 1298) → mock 模式返回 mock qrCodeUrl，不发起真实支付宝下单
- *   - offlinePay(line 817) → 切换 status='待确认收款' + payment_method='线下'
+ *   - offlinePay(line 817) → 切换 status='待支付' + payment_method='线下'
  *
  * 重要发现/差异：
  *   - pay/alipayPay 处于 mock 阶段，不会发外网。无需 SKIP helper
  *   - 已支付状态 → INVALID_PARAMS: 订单状态不允许支付
  *   - 已关闭状态 → INVALID_PARAMS: 订单状态不允许支付（'已关闭' 同样被拒）
  *   - 跨用户：client_user_id 不匹配 → PERMISSION_DENIED: 无权操作该订单
- *   - offlinePay 把待支付订单状态改为 '待确认收款'（不是保留待支付）
+ *   - offlinePay 把待支付订单状态改为 '待支付'（不是保留待支付）
  */
 import '../setup.mjs'
 import {
@@ -102,13 +102,13 @@ async function caseOfflinePay() {
   const orderNo = await newPendingOrder('OFF1')
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.offlinePay', { saleOrderId: orderNo })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  // 路由把状态切到 '待确认收款'，payment_method = '线下'
+  // 路由把状态切到 '待支付'，payment_method = '线下'
   const rows = await pgQuery(
     `SELECT status, payment_method FROM sale_orders WHERE sale_order_id = $1`,
     [orderNo]
   )
-  if (rows[0].status !== '待确认收款') {
-    throw new Error(`expect status=待确认收款, got: ${rows[0].status}`)
+  if (rows[0].status !== '待支付') {
+    throw new Error(`expect status=待支付, got: ${rows[0].status}`)
   }
   if (rows[0].payment_method !== '线下') {
     throw new Error(`expect payment_method=线下, got: ${rows[0].payment_method}`)
@@ -144,7 +144,7 @@ async function caseCrossUserPayDenied() {
 const CASES = [
   ['wx pay (mock) → paymentParams + paymentMethod=微信', caseWxPayHappy],
   ['alipay pay (mock) → paymentMethod=支付宝 + DB updated', caseAlipayPay],
-  ['offline pay → status=待确认收款 + payment_method=线下', caseOfflinePay],
+  ['offline pay → status=待支付 + payment_method=线下', caseOfflinePay],
   ['pay on 已支付 → INVALID_PARAMS', casePayAlreadyPaidRejected],
   ['pay on 已关闭 → INVALID_PARAMS', casePayCancelledRejected],
   ['cross-user pay → PERMISSION_DENIED', caseCrossUserPayDenied],

@@ -1,24 +1,33 @@
 /**
- * 链路 36：调店后旧 session 快照行为
+ * 链路 36：调店后已登录 session 的 scope 实时更新
  *
- * 主题：scope 是在登录构建 session 时由 expandScopeStoreIds() 计算并 snapshot 进 cookie 的；
- *       调店操作只改 DB（permission_roles.scope_id + staff_wechat_users.store_id），
- *       不会主动注销已登录 session。本链路守护这一行为：
- *         1. 已登录 session 在调店后**仍按旧 scope** 显示数据（session 是快照，不实时）
- *         2. logout + login 后 scope 切换生效
+ * 主题：scope 是在每次请求时由 getSessionFromCookie() → expandScopeStoreIds() 实时计算的
+ *       （getSessionFromCookie 每请求 re-query permission_roles + 重算 scopeStoreIds，
+ *        参见 actions/auth.ts:165-219）。
+ *       调店操作改 DB（permission_roles.scope_id + staff_wechat_users.store_id）后，
+ *       即使不重新登录，下次请求就按新 scope 渲染数据。本链路守护这一行为：
+ *         1. 已登录 session 在调店后**立即按新 scope** 显示数据（live, not snapshot）
+ *         2. logout + 重新 login 后仍按新 scope（一致性双保险）
+ *
+ *       这与 link-19 已确立的「权限即时收回」是同一架构原则：
+ *       JWT cookie 只承载 employeeId，roles + actions + scopeStoreIds 每请求实时查 DB。
+ *
+ * 历史背景：早期版本错误地把这条链路写成「session 是登录时 snapshot，调店不影响当前 cookie」，
+ *           跑出来发现 admin 后台从未实现 JWT 内嵌 scope，与 link-19 设计冲突。已纠正。
  *
  * 实现：
  *   1. 新建临时员工 FY-TEST-RELOC36（绑 store-nc01, manager scope=org-store-nc01）+ 设密码
  *   2. seed 1 笔 store-nc01 订单 + 1 笔 store-nc02 订单（验证两端可见性切换）
  *   3. 浏览器 A：以 FY-TEST-RELOC36 登录 → /orders 见 nc01 订单，不见 nc02 订单
- *   4. 浏览器 B（admin 操作 DB / 直调）：把 RELOC36 的 store_id + scope 改为 store-nc02
- *   5. 浏览器 A 刷新 /orders → 仍按旧 scope（仍见 nc01，不见 nc02）— SESSION SNAPSHOT 验证
- *   6. 浏览器 A logout → 再 login → /orders 切换为新 scope（见 nc02，不见 nc01）
+ *   4. DB 直改：把 RELOC36 的 store_id + scope 改为 store-nc02
+ *   5. 浏览器 A 不退出，直接刷新 /orders → 立即按新 scope（见 nc02，不见 nc01）— LIVE 验证
+ *   6. 浏览器 A logout → 再 login → /orders 仍按新 scope（见 nc02，不见 nc01）
  *   7. cleanup
  *
  * 关键引用：
- *   - actions/auth.ts:207 getSessionFromCookie + expandScopeStoreIds（session 构造时计算 scopeStoreIds）
- *   - actions/employees.ts updateEmployee 同步 permission_roles.scope_id
+ *   - actions/auth.ts:165 getSessionFromCookie — 每请求实时查 permission_roles
+ *   - actions/auth.ts:207 expandScopeStoreIds — 每请求重算 scopeStoreIds
+ *   - link-19-permission-revoke-immediate.spec.ts — 同一 live-session 原则的姐妹用例
  */
 
 import { test, expect } from '@playwright/test'
@@ -27,6 +36,8 @@ import {
   TEST_PHONES, SCOPE_CLIENTS, TOPOLOGY,
   psql, login, logout, pageContainsKeyword, recordVerdict, summarize, writeContext, type Verdict,
 } from './_helpers/scope-helpers'
+
+void TEST_PHONES // 仍 import 以兼容 helpers 类型，未直接使用
 
 const EID = 'FY-TEST-RELOC36'
 const PHONE = '13900139036'
@@ -93,7 +104,7 @@ function cleanup(): void {
 
 test.setTimeout(240_000)
 
-test('链路36：调店后旧 session 快照行为', async ({ browser }) => {
+test('链路36：调店后已登录 session 的 scope 实时更新', async ({ browser }) => {
   const verdicts: Verdict[] = []
   setup()
 
@@ -120,15 +131,15 @@ test('链路36：调店后旧 session 快照行为', async ({ browser }) => {
     recordVerdict(verdicts, 'db_store_updated', dbStore === TOPOLOGY.STORE_NC02, `dbStore=${dbStore}`)
     recordVerdict(verdicts, 'db_scope_updated', dbScope === TOPOLOGY.ORG_NC02, `dbScope=${dbScope}`)
 
-    // ── Step 3: 同一 session 刷新 → 仍按旧 scope ──
-    console.log('[链路36] Step 3: 刷新同一 session — 验证 scope snapshot')
-    const seeASnap = await pageContainsKeyword(page, `/orders?q=${SOID_A}`, SOID_A)
-    const seeBSnap = await pageContainsKeyword(page, `/orders?q=${SOID_B}`, SOID_B)
-    // 因为 session 是登录时 snapshot 的，调店不影响当前 cookie，故仍按旧 scope
-    recordVerdict(verdicts, 'snapshot_still_sees_nc01', seeASnap, `${SOID_A} visible=${seeASnap}（snapshot 期望可见）`)
-    recordVerdict(verdicts, 'snapshot_still_not_sees_nc02', !seeBSnap, `${SOID_B} visible=${seeBSnap}（snapshot 期望不可见）`)
+    // ── Step 3: 同一 session 刷新 → 立即按新 scope（live session）──
+    console.log('[链路36] Step 3: 刷新同一 session — 验证 scope live 即时生效')
+    const seeALive = await pageContainsKeyword(page, `/orders?q=${SOID_A}`, SOID_A)
+    const seeBLive = await pageContainsKeyword(page, `/orders?q=${SOID_B}`, SOID_B)
+    // session 每请求实时查 DB（与 link-19 同模型），调店后 cookie 不变但 scopeStoreIds 已切换
+    recordVerdict(verdicts, 'live_session_sees_nc02', seeBLive, `${SOID_B} visible=${seeBLive}（live 期望可见）`)
+    recordVerdict(verdicts, 'live_session_not_sees_nc01', !seeALive, `${SOID_A} visible=${seeALive}（live 期望不可见）`)
 
-    // ── Step 4: logout + login → 新 scope 生效 ──
+    // ── Step 4: logout + login → 仍按新 scope（一致性双保险）──
     console.log('[链路36] Step 4: logout + login')
     await logout(page)
     await login(page, PHONE)

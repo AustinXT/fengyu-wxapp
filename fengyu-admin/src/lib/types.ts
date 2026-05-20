@@ -190,7 +190,7 @@ export interface SkillTag {
  */
 export type ProductKind = string
 export type ProductType = '疗程卡' | '单品' | '家居产品'
-export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
+export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
 /**
  * 销售单据类型（saleOrders.sale_order_type）
  *

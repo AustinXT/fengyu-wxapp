@@ -11,8 +11,8 @@
 // 2) "加入购物车"不是按钮——onSpuTap 直接 +1。直接 tap .spu-card 在 Vant + scroll-view 嵌套下脆性高，
 //    本 spec 用 page.evaluate 直接调 onSpuTap 模拟点击（更稳）。
 // 3) 提交按钮文字是 "生成付款码"（不是设计的"提交"），且 navigateTo 跳子包 packageOrder/order-qrcode。
-// 4) 线下 + paidAmount>0 时 sale_orders.status = '待确认收款'（route/order.js line 587），
-//    本 fixture 顾客无储值卡余额，paidAmount = payable，所以期望 '待确认收款'（非 '待支付'）。
+// 4) 线下 + paidAmount>0 时 sale_orders.status = '待支付'（route/order.js line 587），
+//    本 fixture 顾客无储值卡余额，paidAmount = payable，所以期望 '待支付'（非 '待支付'）。
 // 5) L3 命名空间临时造 product_categories + 2 SKU + coupon_template + user_coupon，
 //    比 smoke 那种"找第一个生产 SKU"更可控；cleanup 在 finally 双删。
 //
@@ -238,7 +238,7 @@ async function step9_verifyQrcodeAndPg() {
     `SELECT status, total_amount, payable_amount, coupon_id, payment_method, allocation_status
        FROM sale_orders WHERE sale_order_id = $1`,
     [saleOrderId],
-    (rows) => rows.length === 1 && rows[0].status === '待确认收款',
+    (rows) => rows.length === 1 && rows[0].status === '待支付',
     { timeoutMs: 4000 },
   );
   const row = rows[0];

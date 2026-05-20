@@ -199,7 +199,6 @@ Page({
           '已关闭': '订单已超时关闭',
           '已支付': '订单已完成支付',
           '已完成': '订单已完成',
-          '待确认收款': '订单正在等待确认收款',
           '支付失败': '订单支付失败，请联系店员',
         };
         Toast.fail(msgMap[order.status] || `订单状态：${order.status}`);
@@ -515,10 +514,10 @@ Page({
         }
 
         if (this.data.paymentMethod === '线下') {
-          // 线下：余额需等店长 confirmOffline 后才到账，充值单跳 order-detail 看"待确认收款"状态
+          // 线下：余额需等店长 confirmOffline 后才到账，跳 order-detail 看"待支付"状态
           // （跳 prepaid-cards 会展示未更新的旧余额，造成"我刚充值怎么没到账"的困惑）
           await callClientApi('order.offlinePay', { saleOrderId: existingId });
-          Toast.success('已提交，等待店长确认收款');
+          Toast.success('已选择线下支付，请到店付款');
           setTimeout(() => {
             if (this.data.isRecharge) {
               wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${existingId}` });

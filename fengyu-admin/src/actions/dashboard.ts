@@ -113,7 +113,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
           THEN client_user_id
         END) AS today_opened_customers,
         COUNT(CASE
-          WHEN status IN ('待支付', '待确认收款')
+          WHEN status = '待支付'
           THEN 1
         END) AS pending_orders,
         COUNT(CASE

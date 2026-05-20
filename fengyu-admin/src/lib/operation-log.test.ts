@@ -202,7 +202,7 @@ describe('logTransition', () => {
 
   it('写入 _v:3 _t:transition detail', async () => {
     const session = mockSession()
-    await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待确认收款', '已支付', {
+    await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待支付', '已支付', {
       customerName: '张三', totalAmount: '1980.00',
     })
     expect(mockInsert).toHaveBeenCalled()
@@ -219,7 +219,7 @@ describe('logTransition', () => {
 
   it('context.phone 字段被脱敏', async () => {
     const session = mockSession()
-    await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待确认收款', '已支付', {
+    await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待支付', '已支付', {
       phone: '13812345678', amount: '100.00',
     })
     const detail = capturedValues[0]!.detail as { context: { phone: string; amount: string } }

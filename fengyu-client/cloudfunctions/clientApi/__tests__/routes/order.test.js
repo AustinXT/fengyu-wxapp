@@ -685,7 +685,7 @@ describe('order.offlinePay', () => {
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.offlinePay(ctx)
 
-    expect(ctx.result.status).toBe('待确认收款')
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('全额抵扣（paid_amount=0）直接短路返回已支付', async () => {

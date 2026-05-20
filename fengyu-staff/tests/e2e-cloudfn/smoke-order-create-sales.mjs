@@ -6,7 +6,7 @@
  *   1. 店长用真实 SKU 开销售单（线下支付）
  *   2. sale_order_id = 'FY-XSD-WX-{YYMMDD}{4位}' 格式（advisory lock 路径）
  *   3. sale_items quantity / unit_price / received 计算正确
- *   4. payment_method = '线下' + 全额支付 → status = '待确认收款'
+ *   4. payment_method = '线下' + 全额支付 → status = '待支付'
  *   5. sale_order_payments 立即写一行 change_type='首次支付' status='已支付'
  *   6. ref_order 写入 client_user_id 快照
  *
@@ -78,9 +78,9 @@ async function main() {
   if (Math.abs(Number(totalAmount) - 1000) > 0.001) {
     errors.push(`totalAmount 应=1000（500×2），实际=${totalAmount}`)
   }
-  // 3.3 全额线下 + 无储值卡 → 状态 '待确认收款'
-  if (status !== '待确认收款') {
-    errors.push(`status 应='待确认收款'，实际='${status}'`)
+  // 3.3 全额线下 + 无储值卡 → 状态 '待支付'
+  if (status !== '待支付') {
+    errors.push(`status 应='待支付'，实际='${status}'`)
   }
   if (paymentMethod !== '线下') {
     errors.push(`paymentMethod 应='线下'，实际='${paymentMethod}'`)

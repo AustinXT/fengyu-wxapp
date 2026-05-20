@@ -197,7 +197,9 @@ test.afterEach(() => {
     console.error(`[link-10 afterEach] DELETE card_transactions 失败（非致命）: ${msg}`)
   }
   try {
-    const restoreBalance = baselineBalance > 0 ? baselineBalance : FIXTURE_CARD_BASELINE_BALANCE
+    // baselineBalance=0 时按 Step 0 实测值还原（fixture 卡可能本来就是空卡），
+    // 不再 fallback 到 FIXTURE_CARD_BASELINE_BALANCE 写一个无 txn 对应的 balance —— 会让 reconcile FAIL
+    const restoreBalance = baselineBalance
     psql(`UPDATE prepaid_cards SET balance=${restoreBalance}, updated_at=NOW() WHERE card_id='${CARD_ID}'`)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -237,114 +239,47 @@ test('Step 0: 读初始余额 + 初始余额对账 + 快照 baseline 流水', as
 // ============================================================
 // Step 1: 充值流 — 充值卡订单 ¥500 → confirmOfflinePayment
 // ============================================================
-test('Step 1: 充值流 — 开充值卡订单 ¥500 → 确认收款 → 余额+500', async ({ page }) => {
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') console.log(`[browser-error] ${msg.text()}`)
-  })
+test('Step 1: 充值流 — SQL seed 充值订单 ¥500 → 余额+500（admin 不再走 UI）', async () => {
+  // 2026-05-20 充值卡 SKU 化后，admin 开单页不再含"充值卡" Tab
+  // （order-create-page.tsx:40 注释明确）。充值订单只能由员工端 staff card.recharge 创建。
+  // 本测试不验证创建路径（覆盖在 staff 端 smoke），仅验证"充值入账后 admin 看到的 balance + card_transactions 对账不变量"。
+  // 因此 Step 1 由 UI 流程改为 SQL 直接 seed：sale_orders(充值单) + card_transactions(充值) + balance +500。
 
-  // 实测充值前余额（不依赖 Step 0 写入的 module 变量，规避跨 sub-test 状态漂移）
   const preBalanceStep1 = parseFloat(
     psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`),
   ) || 0
   console.log(`[link-10 Step1] 充值前 baseline: ${preBalanceStep1}`)
 
-  await login(page)
+  // 生成符合规范的 sale_order_id（FY-XSD-WX-{YYMMDD}{4位}）
+  const now = new Date()
+  const yymmdd = `${String(now.getFullYear() % 100).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  const seq = String(Date.now() % 10000).padStart(4, '0')
+  rechargeOrderId = `FY-XSD-WX-${yymmdd}${seq}`
 
-  // ---------- 进入开单向导 ----------
-  await page.goto(`${BASE}/orders/create`)
-  await expect(page.getByRole('heading', { name: '新建订单' })).toBeVisible({ timeout: 15000 })
+  // 1) sale_orders — 充值单
+  psql(`INSERT INTO sale_orders (
+    sale_order_id, sale_order_type, status, market_name, store_id,
+    sale_order_datetime, total_amount, payment_method,
+    client_user_id, payable_amount, received, paid_at,
+    opened_by, document_type, allocation_status
+  ) VALUES (
+    '${rechargeOrderId}', '充值单', '已支付', '南昌市场', 'store-nc01',
+    NOW(), ${RECHARGE_FACE_VALUE}, '线下',
+    '${CLIENT_USER_ID}', ${RECHARGE_FACE_VALUE}, ${RECHARGE_FACE_VALUE}, NOW(),
+    'FY-TEST-MGR', '售后', '已分配'
+  )`)
 
-  // Step 1: 选顾客
-  await selectFixtureCustomer(page)
+  // 2) card_transactions — 充值 +500
+  psql(`INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
+        VALUES ('${CARD_ID}', '充值', ${RECHARGE_FACE_VALUE}, '${rechargeOrderId}')`)
 
-  // 选"充值卡"商品类型
-  const rechargeTypeBtn = page.getByRole('button', { name: '充值卡', exact: true }).first()
-  if (await rechargeTypeBtn.count() > 0) {
-    await rechargeTypeBtn.click()
-    await page.waitForTimeout(300)
-    console.log('[link-10 Step1] 已点击"充值卡"类型')
-  } else {
-    // 可能作为 radio/tab 呈现
-    const rechargeTab = page.locator('button, label').filter({ hasText: /^充值卡$/ }).first()
-    await expect(rechargeTab).toBeVisible({ timeout: 5000 })
-    await rechargeTab.click()
-    await page.waitForTimeout(300)
-  }
+  // 3) prepaid_cards.balance += 500
+  psql(`UPDATE prepaid_cards SET balance = balance + ${RECHARGE_FACE_VALUE}
+        WHERE card_id='${CARD_ID}'`)
 
-  await page.getByRole('button', { name: '下一步' }).click()
+  console.log(`[link-10 Step1] SQL seed 完成: order=${rechargeOrderId}`)
 
-  // Step 2: 选商品（充值卡档位选择器）
-  await waitForProductList(page)
-
-  // 找到 ¥500 档位按钮并点击
-  const tier500 = page.locator('button').filter({ hasText: /¥500/ }).first()
-  if (await tier500.count() > 0) {
-    await tier500.click()
-    console.log('[link-10 Step1] 已点击 ¥500 档位')
-  } else {
-    // 降级：自定义金额
-    const customInput = page.locator('input[type="number"]').first()
-    await customInput.fill('500')
-    await page.getByRole('button', { name: '加入' }).first().click()
-    console.log('[link-10 Step1] 降级：自定义金额 500')
-  }
-  await page.waitForTimeout(500)
-
-  // 购物车有商品 → 下一步
-  const nextBtn = page.getByRole('button', { name: '下一步' })
-  await expect(nextBtn).toBeEnabled({ timeout: 5000 })
-  await nextBtn.click()
-
-  // Step 3: 确认订单（收银）
-  // 充值卡只支持销售单，支付方式选"线下"
-  await page.waitForTimeout(2000)
-  const bodyText3 = await page.textContent('body')
-  console.log('[link-10 Step1] Step3 页面包含文本（前300）:', bodyText3?.substring(0, 300))
-
-  // 支付方式选线下
-  const paySelect = page.locator('select').filter({ hasText: /线下|微信|支付宝/ }).first()
-  if (await paySelect.count() > 0) {
-    const opts = await paySelect.locator('option').allTextContents()
-    if (opts.some((o) => o.includes('线下'))) {
-      await paySelect.selectOption({ label: '线下支付' })
-    }
-  }
-
-  // receivedAmount 留空（全额）
-  // 提交订单
-  const submitBtn = page.getByRole('button', { name: /提交订单|下一步|确认提交/ }).last()
-  await expect(submitBtn).toBeEnabled({ timeout: 5000 })
-  await submitBtn.click()
-
-  // Step 4: 订单已创建
-  await expect(page.getByText(/订单已创建|开单成功|FY-XSD-WX/)).toBeVisible({ timeout: 30000 })
-
-  rechargeOrderId = await extractOrderId(page)
-  console.log(`[link-10 Step1] 充值订单号: ${rechargeOrderId}`)
-
-  // 确认收款（"待确认收款"状态下出现该按钮）
-  const confirmPayBtn = page.getByRole('button', { name: '确认收款' })
-  if (await confirmPayBtn.isVisible({ timeout: 10000 })) {
-    await confirmPayBtn.click()
-    // 等待页面状态文案变为"收款已确认"（paymentConfirmed=true 后渲染，比 toast 更稳定）
-    await expect(page.getByText(/收款已确认|收款确认成功|订单已确认收款/).first()).toBeVisible({ timeout: 20000 })
-    console.log('[link-10 Step1] 已点击确认收款，页面已显示收款已确认')
-  } else {
-    // 订单可能已直接进入已支付（全额线下 receivedAmount = totalAmount 时）
-    // 检查已支付文字
-    const isPaid = await page.getByText('已支付').first().isVisible({ timeout: 5000 }).catch(() => false)
-    if (!isPaid) throw new Error('Step 1: 无法找到"确认收款"按钮且订单未显示已支付')
-    console.log('[link-10 Step1] 订单已直接进入已支付状态')
-  }
-
-  // 提取 rechargeOrderId（如果还没拿到）
-  if (!rechargeOrderId) {
-    rechargeOrderId = await extractOrderId(page)
-    console.log(`[link-10 Step1] 充值订单号（重新提取）: ${rechargeOrderId}`)
-  }
-
-  // DB 验证：balance 应增加了 500（相对充值前实测 baseline 算，避免跨 sub-test 状态漂移）
-  await page.waitForTimeout(1000)
+  // DB 验证：balance 应增加了 500
   const r1 = reconcile()
   const expectedBalance1 = Math.round((preBalanceStep1 + RECHARGE_FACE_VALUE) * 100) / 100
   console.log(`[link-10 Step1] preBalance=${preBalanceStep1} 对账: book=${r1.bookBalance} calc=${r1.calcBalance} expected=${expectedBalance1} verdict=${r1.verdict}`)
@@ -362,6 +297,28 @@ test('Step 1: 充值流 — 开充值卡订单 ¥500 → 确认收款 → 余额
 // Step 2: 扣款流 — 普通订单 receivedAmount=0 → 录入回款(储值卡) ¥100
 // ============================================================
 test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值卡抵扣 ¥100', async ({ page }) => {
+  // 前置清理：上一次跑测时若 Step 2 中段失败、Step 4 拿不到 deductOrderId，
+  // 会在 fixture 顾客身上留下 `待支付` 订单 → 触发 createSaleOrder 的
+  // "该顾客已有待支付订单" 业务规则（ApiError CONFLICT），后续测试一直被卡住。
+  // 这里直接 DELETE 同顾客所有 `待支付` 状态的脏数据（仅清测试 fixture 自身的残留）。
+  try {
+    const stale = psql(
+      `SELECT sale_order_id FROM sale_orders WHERE client_user_id='${CLIENT_USER_ID}' AND status='待支付'`,
+    )
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (stale.length > 0) {
+      console.log(`[link-10 Step2] 发现 ${stale.length} 条上次跑批遗留的待支付订单: ${stale.join(',')} — 强制清理`)
+      for (const sid of stale) {
+        cleanupSaleOrder(sid, psql, { logPrefix: '[link-10 Step2 pre-clean]', preserveCardTransactions: true })
+      }
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 Step2] 前置清理失败（非致命）: ${msg}`)
+  }
+
   // 实测扣款前余额（不依赖 Step 0/1 的 module 状态）
   const preBalanceStep2 = parseFloat(
     psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`),
@@ -457,8 +414,10 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
   await expect(submitBtn2).toBeEnabled({ timeout: 5000 })
   await submitBtn2.click()
 
-  // Step 4: 订单已创建
-  await expect(page.getByText(/订单已创建|开单成功|FY-XSD-WX/)).toBeVisible({ timeout: 30000 })
+  // Step 4: 订单创建成功 — 完成卡片展示 "订单创建成功" 标题 + FY-XSD-WX-... 订单号
+  // （order-create-page.tsx step===3 渲染：<h2>订单创建成功</h2> + <p class="font-mono">{orderId}</p>）
+  // 用 .first() 避开标题/订单号/Notifications 三处同时命中的 strict mode 冲突。
+  await expect(page.getByText(/订单创建成功|FY-XSD-WX-\d+/).first()).toBeVisible({ timeout: 30000 })
 
   deductOrderId = await extractOrderId(page)
   console.log(`[link-10 Step2] 扣款订单号: ${deductOrderId}`)

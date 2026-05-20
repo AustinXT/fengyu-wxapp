@@ -180,6 +180,19 @@ test('链路17：数据看板三角色聚合一致性', async ({ browser }) => {
 
   let saleOrderId = ''
 
+  // ── Step 0: 预清理 — 删除 fixture 顾客残留的 待支付 订单 ──
+  // createOrder 内有 D1 守卫："该顾客已有待支付订单 X，请先关闭后再创建新订单"
+  // 上一轮测试若在 saleOrderId 解析前异常退出，会留下孤儿 待支付 行阻塞本轮 Step 1。
+  // 必须在登录前直 SQL 清理（spec 自身无法靠 UI 关闭因为它还没拿到 orderId）。
+  const orphanIdsRaw = psql(
+    `SELECT sale_order_id FROM sale_orders WHERE client_user_id='FY-FIX-CLIENT-01' AND status='待支付' AND sale_order_type IN ('销售单','转换单')`,
+  )
+  const orphanIds = orphanIdsRaw.split('\n').map((s) => s.trim()).filter(Boolean)
+  for (const oid of orphanIds) {
+    console.log(`[链路17/preclean] 清理残留 待支付 订单 ${oid}`)
+    cleanupSaleOrder(oid, psql, { logPrefix: '[链路17/preclean]' })
+  }
+
   // ── Step 1: MGR 开一单 ¥100 贡献当日营业额 ──
   console.log('[链路17] Step 1: MGR 开一单贡献当日营业额')
   const mgrSetupCtx = await browser.newContext()
@@ -217,11 +230,16 @@ test('链路17：数据看板三角色聚合一致性', async ({ browser }) => {
     console.log(`[链路17] revenue: admin=${admRev} market=${mktRev} store=${mgrRev}`)
 
     // SQL 直查 store-nc01 今日 received - refunded_amount（管理员视角下的应见数字）
+    // 与 getDashboardStats (src/actions/dashboard.ts:83-143) 完全对齐：
+    //   - paid_at AT TIME ZONE 'Asia/Shanghai'（非 created_at::date）
+    //   - status IN ('已支付','已完成')（不含'部分支付'）
+    //   - sale_order_type IN ('销售单','转换单')
     const dbStoreRevenue = parseFloat(psql(
       `SELECT COALESCE(SUM(received::numeric - refunded_amount::numeric), 0)::text ` +
         `FROM sale_orders ` +
-        `WHERE store_id='store-nc01' AND created_at::date = CURRENT_DATE ` +
-        `AND sale_order_type IN ('销售单','转换单') AND status IN ('已支付','已完成','部分支付')`,
+        `WHERE store_id='store-nc01' ` +
+        `AND (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (NOW() AT TIME ZONE 'Asia/Shanghai')::date ` +
+        `AND sale_order_type IN ('销售单','转换单') AND status IN ('已支付','已完成')`,
     )) || 0
     console.log(`[链路17] SQL: store-nc01 当日 SUM(received-refunded)=${dbStoreRevenue}`)
 

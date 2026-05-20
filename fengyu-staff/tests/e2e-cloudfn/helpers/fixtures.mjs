@@ -528,7 +528,7 @@ export async function createTestSaleOrder({
   storeId = TEST_STORE_ID,
   openedBy = TEST_MANAGER_EMP_ID,
   totalAmount = 300,
-  status = '待确认收款',
+  status = '待支付',
   saleOrderType = '销售单',
   paymentMethod = '线下',
   skuId = null,

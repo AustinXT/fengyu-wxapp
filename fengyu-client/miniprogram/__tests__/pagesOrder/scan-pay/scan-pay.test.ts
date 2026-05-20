@@ -228,7 +228,7 @@ describe('scan-pay 页面行为', () => {
       }
       if (action === 'card.balance') return Promise.resolve({ balance: 100, cardId: 'c1' });
       if (action === 'order.scanAdjust') return Promise.resolve({});
-      if (action === 'order.offlinePay') return Promise.resolve({ status: '待确认收款' });
+      if (action === 'order.offlinePay') return Promise.resolve({ status: '待支付' });
       return Promise.resolve({});
     });
 

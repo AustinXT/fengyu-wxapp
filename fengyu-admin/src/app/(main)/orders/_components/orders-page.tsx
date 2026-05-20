@@ -116,12 +116,12 @@ function OrderActions({ order }: { order: SaleOrder }) {
   return (
     <>
       <div className="flex gap-1">
-        {order.status === "待确认收款" && (
+        {order.status === "待支付" && order.paymentMethod === "线下" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog("confirm")} disabled={pending}>
             确认收款
           </Button>
         )}
-        {order.status === "待支付" && (
+        {order.status === "待支付" && order.paymentMethod !== "线下" && (
           <>
             <Button size="sm" variant="outline" onClick={handleShowQrcode} disabled={pending}>
               查看二维码
@@ -300,7 +300,7 @@ export default function OrdersPageClient({
           <div className="flex flex-wrap gap-3">
             <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
-              {(["待支付", "待确认收款", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
+              {(["待支付", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>

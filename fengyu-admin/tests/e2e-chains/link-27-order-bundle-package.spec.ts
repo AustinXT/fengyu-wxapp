@@ -16,8 +16,8 @@
  *   sale_orders.total_amount      = 180.00
  *   sale_orders.status            = '已支付'
  *
- * 反例：Step 3 提交不应允许手工改价（line 422、895 priceOverrides 被锁）。
- *      （UI 上无改价输入框；本 spec 由 server-side 落库的 unit_real_price 反推已被锁）
+ * 默认行为：组合套餐 priceLine 用 bundle_price，本 spec 走默认（不手工改价）；
+ *           组合套餐已开放向下调实付金额（saleAmount 仍是 bundle_price，符合套餐打包语义）。
  */
 
 import { test, expect } from '@playwright/test'
@@ -107,10 +107,12 @@ test('链路 27：组合套餐下单', async ({ page }) => {
     }
   }
 
-  // 找 fixture 套餐卡片
-  const bundleCard = page.locator('div').filter({ hasText: BUNDLE_NAME }).first()
-  await expect(bundleCard).toBeVisible({ timeout: 15000 })
-  const addBundleBtn = bundleCard.locator('xpath=ancestor::*[.//button[contains(text(), "加入套餐")]][1]').getByRole('button', { name: '加入套餐' }).first()
+  // 找 fixture 套餐卡片：以 h4 标题为锚点（每张套餐卡的 BundleRow 顶部是 <h4>{bundle.name}</h4>），
+  // 再向上找到包含"加入套餐"按钮的最近祖先容器，确保只点本套餐的按钮。
+  const bundleHeading = page.locator('h4', { hasText: BUNDLE_NAME }).first()
+  await expect(bundleHeading).toBeVisible({ timeout: 15000 })
+  const addBundleBtn = bundleHeading.locator('xpath=ancestor::*[.//button[contains(normalize-space(.), "加入套餐")]][1]').getByRole('button', { name: '加入套餐' }).first()
+  await expect(addBundleBtn).toBeVisible({ timeout: 5000 })
   await addBundleBtn.click()
   console.log('[链路27] 已点击"加入套餐"')
 
@@ -119,10 +121,7 @@ test('链路 27：组合套餐下单', async ({ page }) => {
   await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({ timeout: 10000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-27-02-step3-auto.png` })
 
-  // ---- Step 3 反例：手工改价应被禁用（套餐价锁定提示） ----
-  // line 766: "组合套餐按打包价销售，禁用手工改价"
-  const lockHint = await page.getByText(/打包价销售|禁用手工改价/).count()
-  const lockHintShown = lockHint > 0
+  // ---- Step 3：组合套餐默认按打包价提交（已开放手工调实付金额，本 spec 走默认路径，不调价） ----
 
   // 线下支付
   const paySelect = page.locator('select').filter({ hasText: /微信|支付宝|线下/ }).first()
@@ -154,12 +153,6 @@ test('链路 27：组合套餐下单', async ({ page }) => {
 
   // ---- DB 验证 ----
   const verdicts: Array<{ check: string; verdict: 'PASS' | 'FAIL'; actual: string }> = []
-
-  verdicts.push({
-    check: 'UI 提示"打包价销售/禁用手工改价"可见',
-    verdict: lockHintShown ? 'PASS' : 'FAIL',
-    actual: String(lockHintShown),
-  })
 
   const orderRow = psql(
     `SELECT status, total_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`,

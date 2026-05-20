@@ -140,7 +140,7 @@
         </van-cell>
         <van-cell
           wx:if="{{isManager}}"
-          title="待确认收款"
+          title="待确认线下收款"
           value="{{pendingOfflineOrderCount}}条"
           is-link
           bind:click="goOrderListOffline"

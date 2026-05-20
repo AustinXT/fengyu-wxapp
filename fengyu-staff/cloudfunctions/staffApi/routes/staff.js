@@ -428,7 +428,7 @@ async function todoList(ctx) {
   // 店长专属
   if (isManager) {
     const offlineRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待确认收款'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND payment_method = '线下'`,
       [storeId]
     )
     const createRows = await pg.query(

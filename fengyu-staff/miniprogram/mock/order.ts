@@ -53,7 +53,7 @@ const MOCK_ORDERS = [
     customerPhone: '13955550000',
     customerPhoneMasked: '139****5000',
     clientUserId: 'client-wx-002',
-    status: '待确认收款',
+    status: '待支付',
     orderType: 'normal',
     payType: '线下',
     totalAmount: '3200.00',
@@ -119,7 +119,7 @@ export const orderHandlers: Record<string, (payload: Record<string, any>) => any
     let list = [...MOCK_ORDERS]
     if (payload.status) {
       if (payload.status === 'pendingOffline') {
-        list = list.filter(o => o.status === '待确认收款')
+        list = list.filter(o => o.status === '待支付' && o.payType === '线下')
       } else if (payload.status === 'pendingCreate') {
         list = list.filter(o => o.status === '待支付')
       } else {

@@ -1,5 +1,6 @@
 // utils/formatters.ts — 通用格式化工具
 
+// '待确认收款' 不再是 DB enum，仅 order-qrcode 用作"线下已选、待确认"的 UI-only 计算标签
 export const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
   '待确认收款': 'pending',

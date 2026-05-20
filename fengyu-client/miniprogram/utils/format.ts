@@ -94,7 +94,6 @@ export function searchProducts<T extends { product_id: string; name: string }>(
 /** 订单状态 → CSS class */
 const STATUS_CLASS: Record<string, string> = {
   '待支付':     'status-pending',
-  '待确认收款': 'status-confirm',
   '已支付':     'status-paid',
   '已完成':     'status-completed',
   '支付失败':   'status-failed',

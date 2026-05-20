@@ -106,6 +106,13 @@ test('链路18：操作日志完整性 + 审计', async ({ page }) => {
   ]
 
   for (let i = 0; i < 3; i++) {
+    // 每轮强制 reload 顾客详情页，避免 customer.updatedAt 因 router.refresh() 异步未完成
+    // 而 stale，进而被 updateCustomer 乐观锁拒绝（"数据已被其他人修改"）。
+    // i=0 时页面已在详情页，仍 reload 一次保持一致路径。
+    await page.goto(`${BASE}/customers/${FIXTURE_USER_ID}`)
+    await page.waitForLoadState('networkidle')
+    await expect(page.getByText('顾客详情').first()).toBeVisible({ timeout: 20000 })
+
     // 进入编辑态（基本档案 卡片右上"编辑"按钮）
     // 页面有多个"编辑"按钮（手机号一个、基本档案一个），用 .first() 拿基本档案那个
     const editBtn = page.getByRole('button', { name: '编辑' }).first()
@@ -126,15 +133,10 @@ test('链路18：操作日志完整性 + 审计', async ({ page }) => {
     await expect(saveBtn).toBeVisible({ timeout: 5000 })
     await saveBtn.click()
 
-    // 等成功 toast 或编辑态退出
-    await page.waitForFunction(() => {
-      const t = document.body.textContent || ''
-      return t.includes('保存成功') || t.includes('已更新')
-    }, { timeout: 15000 }).catch(() => {})
+    // 等"保存"按钮消失（最可靠的退出编辑态信号；toast 文本会跨轮残留导致 false-positive）
+    // handleSave 成功后调 setIsEditing(false) 让保存按钮卸载；失败则保留→在这里会超时
+    await expect(saveBtn).toBeHidden({ timeout: 15000 })
 
-    // 退出编辑态后"编辑"按钮重新出现
-    await expect(page.getByRole('button', { name: '编辑' }).first()).toBeVisible({ timeout: 10000 })
-    await page.waitForTimeout(800)
     console.log(`[链路18] 第 ${i + 1} 次保存完成: notes="${newNotes[i]}"`)
   }
 

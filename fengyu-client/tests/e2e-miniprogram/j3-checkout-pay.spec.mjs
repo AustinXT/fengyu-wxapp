@@ -8,7 +8,7 @@
 //   3. navigateTo /pagesOrder/checkout/checkout 验证页面打开
 //   4. 直接 callFunction order.create（绕过 UI 提交），断言返回 saleOrderId + status='待支付'
 //   5. PG 断言：sale_orders 行存在且 status='待支付'
-//   6. callFunction order.offlinePay，PG 断言 status='待确认收款' + payment_method='线下'
+//   6. callFunction order.offlinePay，PG 断言 status='待支付' + payment_method='线下'
 
 import { launchClient, disconnect } from './helpers/automator.mjs'
 import { closePool, query } from './helpers/pg.mjs'
@@ -95,7 +95,7 @@ const STEPS = [
     if (items.length === 0) throw new Error('sale_items 0 行')
   }],
 
-  ['5. order.offlinePay 切换为待确认收款', async (ctx) => {
+  ['5. order.offlinePay 锁定线下支付方式（status 保持待支付）', async (ctx) => {
     const res = await ctx.invoke('order.offlinePay', { saleOrderId: ctx.saleOrderId })
     if (!res || res.code !== 0) {
       throw new Error(`order.offlinePay failed: ${JSON.stringify(res)}`)
@@ -103,7 +103,7 @@ const STEPS = [
     await assertColumnValue(
       'sale_orders',
       { sale_order_id: ctx.saleOrderId },
-      { status: '待确认收款', payment_method: '线下' }
+      { status: '待支付', payment_method: '线下' }
     )
   }],
 
@@ -122,7 +122,7 @@ const STEPS = [
     // 调用 onSubmitOrder：应同步 Toast.fail('请先同意消费协议') 然后直接 return
     try { await pg.callMethod('onSubmitOrder') } catch {}
     // 断言：submitting 应该已被重置为 false（onSubmitOrder 早返回，不会卡 submitting=true）
-    // 同时未发起 order.create —— 顾客 user 当前应无 '待支付' 单（上一步已 offlinePay 改为 '待确认收款'）
+    // 同时未发起 order.create —— 顾客 user 当前应无 '待支付' 单（上一步已 offlinePay 改为 '待支付'）
     const after = await pg.data()
     if (after?.submitting === true) {
       throw new Error(`form-reject path: submitting 残留 true（应为 false）`)

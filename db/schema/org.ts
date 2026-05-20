@@ -61,6 +61,11 @@ export const stores = pgTable(
     description: text('description'),
     announcement: text('announcement'),
     parkingInfo: text('parking_info'),
+    // 拉卡拉聚合支付配置（WIP，commit 02f2176 引入；保留以匹配 migration 0044）
+    lakalaMerchantNo: text('lakala_merchant_no'),
+    lakalaTermNo: text('lakala_term_no'),
+    lakalaSubAppid: text('lakala_sub_appid'),
+    lakalaEnabled: boolean('lakala_enabled').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },

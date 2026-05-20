@@ -21,12 +21,14 @@ const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 // ================= 路由 =================
 
 /**
- * 返回店长可售的充值卡档位 + 自定义金额配置（替代 rechargeSkus）
+ * 返回充值卡档位 + 自定义金额配置（替代 rechargeSkus）
  *
  * 数据来源：system_configs（admin 后台 system-configs 编辑入口维护）
+ *
+ * 权限：登录态可读（非店长也可浏览面值/折扣表）；真正下单走 card.recharge 仍 manager-only。
  */
 async function rechargeTiers(ctx) {
-  await requireManager()(ctx, async () => {})
+  await requireStaffBound()(ctx, async () => {})
 
   const cfg = await loadRechargeConfig(pg)
   ctx.result = {
@@ -125,8 +127,8 @@ async function recharge(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    // 线下 → 待确认收款；微信 → 待支付（等 payNotify 回调入账）
-    const initialStatus = paymentMethod === '线下' ? '待确认收款' : '待支付'
+    // 线下/微信 → 统一 '待支付'；线下走 confirmOffline 入账，微信走 payNotify 回调入账
+    const initialStatus = '待支付'
 
     // 充值单：total_amount=面值，payable_amount=实付，prepaid_card_amount=0（充值单本身不允许储值卡支付）
     await client.query(
@@ -152,7 +154,7 @@ async function recharge(ctx) {
     faceValue: faceVal,
     payAmount,
     paymentMethod,
-    status: paymentMethod === '线下' ? '待确认收款' : '待支付',
+    status: '待支付',
     message: '开单成功',
   }
 }

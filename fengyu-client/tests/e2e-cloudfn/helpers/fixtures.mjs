@@ -139,7 +139,7 @@ export async function createTestClient({
  * @param {string} opts.storeId - 默认测试门店
  * @param {string} opts.openedBy - 员工 employee_id（开单店长）
  * @param {number} opts.totalAmount - 含一行 sale_items received 之和（默认 300）
- * @param {string} opts.status - 初始状态（默认 '待确认收款'）
+ * @param {string} opts.status - 初始状态（默认 '待支付'）
  */
 export async function createTestSaleOrder({
   saleOrderId,
@@ -147,7 +147,7 @@ export async function createTestSaleOrder({
   storeId = TEST_STORE_ID,
   openedBy = TEST_MANAGER_EMP_ID,
   totalAmount = 300,
-  status = '待确认收款',
+  status = '待支付',
   paymentMethod = '线下',
 } = {}) {
   if (!saleOrderId) throw new Error('createTestSaleOrder: saleOrderId required')

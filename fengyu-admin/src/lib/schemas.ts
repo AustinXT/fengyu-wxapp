@@ -86,7 +86,7 @@ export const createOrderSchema = z.object({
    * - 未传 / undefined → 视为全额收款（= payable_amount）
    * - 0 → 纯挂账（status='待支付'，不写 payments 行）
    * - 0 < v < payable_amount → 部分支付（status='部分支付'）
-   * - = payable_amount → 全额（status='已支付' 或 '待确认收款'）
+   * - = payable_amount → 全额（线上 → status='已支付'；线下 → status='待支付'，confirmOffline 入账）
    * 上界校验由 action 层在计算出 payable_amount 后做（schema 只保障非负数）。
    */
   receivedAmount: z.number().min(0, '本次收款金额不能为负').optional(),
