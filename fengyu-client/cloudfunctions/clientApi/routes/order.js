@@ -1066,7 +1066,7 @@ async function offlinePay(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
+  const { status, statuses, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
 
   // 分页参数（默认 20 条/页，上限 50）
   const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
@@ -1081,7 +1081,12 @@ async function list(ctx) {
   let whereClause = 'WHERE o.client_user_id = $1'
   const params = [userId]
 
-  if (status) {
+  // 状态过滤：statuses 数组优先（多状态，如「待支付」Tab 同时纳入 待支付 + 部分支付），
+  // 否则回退到单值 status（保持原语义）
+  if (Array.isArray(statuses) && statuses.length > 0) {
+    params.push(statuses)
+    whereClause += ` AND o.status = ANY($${params.length})`
+  } else if (status) {
     params.push(status)
     whereClause += ` AND o.status = $${params.length}`
   }
@@ -1105,6 +1110,8 @@ async function list(ctx) {
       o.payment_method,
       o.preferred_employee_id,
       o.total_amount,
+      o.payable_amount,
+      o.prepaid_card_amount,
       o.received,
       o.refunded_amount,
       o.created_at

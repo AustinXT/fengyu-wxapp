@@ -80,6 +80,7 @@ interface OrderPaymentView {
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
+  '部分支付':   { icon: 'clock-o',   color: '#D48806' },
   '已支付':     { icon: 'passed',    color: '#52C41A' },
   '已完成':     { icon: 'success',   color: '#8C8C8C' },
   '支付失败':   { icon: 'close',     color: '#FF4D4F' },
@@ -108,6 +109,8 @@ Page({
   },
 
   _countdownTimer: null as ReturnType<typeof setInterval> | null,
+  // 从列表「继续支付」跳入（?repay=1）：详情加载完成后自动唤起回款弹层，触发一次后清除
+  _autoRepay: false,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -115,7 +118,8 @@ Page({
     const enabled = !!(app.globalData as any).continuePayEnabled;
     this.setData({ continuePayEnabled: enabled });
 
-    const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
+    const { saleOrderId, orderNo, repay } = options as { saleOrderId?: string; orderNo?: string; repay?: string };
+    this._autoRepay = repay === '1';
     const id = saleOrderId || orderNo;
     if (id) this.loadDetail(id);
   },
@@ -234,6 +238,14 @@ Page({
 
       // 启动倒计时
       this.startCountdown(order);
+
+      // 从列表「继续支付」跳入：自动唤起回款弹层（仅触发一次）
+      if (this._autoRepay) {
+        this._autoRepay = false;
+        if (order.status === '部分支付' && this.data.continuePayEnabled && outstanding > 0) {
+          this.onContinuePayTap();
+        }
+      }
     } catch {
       Toast.fail('加载失败');
     } finally {

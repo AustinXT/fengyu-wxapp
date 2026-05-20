@@ -81,6 +81,29 @@ async function caseListStatusFilter() {
   }
 }
 
+async function caseListStatusesArray() {
+  await createTestClient()
+  const ids = await createN(3, 'SS')
+  // createN: ids[0]/ids[1]='已支付'，ids[2]='待支付'
+  // 把 ids[1] 改成 '部分支付'，制造 待支付 + 部分支付 共存（uq 仅约束 待支付）
+  await forceUpdateOrderStatus(ids[1], '部分支付')
+  // 「待支付」Tab：statuses 数组同时纳入 待支付 + 部分支付
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.list', { statuses: ['待支付', '部分支付'] })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const orders = res.data?.orders || []
+  const mine = orders.filter(o => ids.includes(o.sale_order_id))
+  // 期待 2 条：ids[1]='部分支付' + ids[2]='待支付'（ids[0]='已支付' 应被排除）
+  if (mine.length !== 2) throw new Error(`expect 2 (待支付+部分支付), got ${mine.length}`)
+  for (const o of mine) {
+    if (o.status !== '待支付' && o.status !== '部分支付') {
+      throw new Error(`unexpected status in result: ${o.status}`)
+    }
+    // 列表行需返回 payable_amount / prepaid_card_amount（前端算待付额）
+    if (!('payable_amount' in o)) throw new Error(`missing payable_amount on list row ${o.sale_order_id}`)
+    if (!('prepaid_card_amount' in o)) throw new Error(`missing prepaid_card_amount on list row ${o.sale_order_id}`)
+  }
+}
+
 async function caseListPagination() {
   await createTestClient()
   // createN 会把前 N-1 改成 '已支付'；3 条总数足够分页测试
@@ -131,6 +154,7 @@ async function caseDetailCrossUserDenied() {
 const CASES = [
   ['list returns all 3 pending orders in created_at DESC', caseListAll],
   ['list filtered by status returns only matching', caseListStatusFilter],
+  ['list filtered by statuses array (待支付+部分支付) + payable fields', caseListStatusesArray],
   ['list paginates with hasMore flag', caseListPagination],
   ['detail returns { order, items, payments }', caseDetailHappy],
   ['detail cross-user denied (WHERE not matched)', caseDetailCrossUserDenied],

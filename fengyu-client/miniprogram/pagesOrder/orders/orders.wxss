@@ -215,6 +215,26 @@
   color: var(--color-primary);
 }
 
+/* 部分支付待付提示行 */
+.order-outstanding-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8rpx;
+  padding: 0 28rpx 12rpx;
+}
+
+.order-outstanding-label {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.order-outstanding-value {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-status-confirm);
+}
+
 /* ===== 操作区 ===== */
 .order-card__actions {
   display: flex;

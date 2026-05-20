@@ -78,6 +78,7 @@ page {
 
 /* ===== 状态标签色 ===== */
 .status-pending    { color: var(--color-status-pending); }
+.status-partial    { color: var(--color-status-confirm); }
 .status-confirm    { color: var(--color-status-confirm); }
 .status-paid       { color: var(--color-status-paid); }
 .status-completed  { color: var(--color-status-done); }
