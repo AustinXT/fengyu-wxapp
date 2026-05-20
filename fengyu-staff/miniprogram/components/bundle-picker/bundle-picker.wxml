@@ -61,7 +61,7 @@
         </view>
         <view class="bundle-group-skus">
           <view
-            class="bundle-sku-item {{groupSelections[g.id].indexOf(sku.skuId) >= 0 ? 'bundle-sku-item--active' : ''}}"
+            class="bundle-sku-item {{sku.selected ? 'bundle-sku-item--active' : ''}}"
             wx:for="{{g.skus}}"
             wx:for-item="sku"
             wx:key="skuId"
@@ -71,9 +71,9 @@
           >
             <view class="bundle-sku-check">
               <van-icon
-                name="{{groupSelections[g.id].indexOf(sku.skuId) >= 0 ? 'checked' : 'circle'}}"
+                name="{{sku.selected ? 'checked' : 'circle'}}"
                 size="40rpx"
-                color="{{groupSelections[g.id].indexOf(sku.skuId) >= 0 ? '#C0322A' : '#CCC'}}"
+                color="{{sku.selected ? '#C0322A' : '#CCC'}}"
               />
             </view>
             <view class="bundle-sku-info">
@@ -94,7 +94,7 @@
         custom-class="btn-primary-brand"
         custom-style="border-radius:40rpx;padding:0 40rpx;"
         bind:click="onAddToCart"
-      >加入购物车</van-button>
+      >去下单</van-button>
     </view>
   </view>
 

@@ -78,11 +78,23 @@ interface SkuItem {
 }
 
 /** 套餐分组（PR-A 云函数 product.shopInit 返回 mallBundleGroups[]） */
+interface BundleGroupSku {
+  skuId: string;
+  specName: string;
+  sessionCount: number | null;
+  productType: string;
+  isShengmei: boolean;
+  bundlePrice: number;
+  listPrice: number;
+  listSpecialPrice: number | null;
+  sortOrder: number;
+}
+
 interface BundleGroup {
   id: number;
   groupName: string;
   pickCount: number | null;
-  skuIds: string[];
+  skus: BundleGroupSku[];
 }
 
 /** 套餐商品（bundle SPU） */
@@ -518,11 +530,8 @@ Page({
 
     // 充值卡 Tab 走独立流程：不进购物车/结算弹层，直接跳 card-recharge 页
     // 点完后保留原 Tab 选择（让 Tab 组件视觉上"弹回"），避免切换后的 SKU 列表被清空
+    // 所有员工均可浏览充值卡面板；真正提交时在 card-recharge.onSubmit 处统一校验店长权限
     if (nextChoice === '充值卡') {
-      if (!this.data.isManager) {
-        wx.showToast({ title: '仅店长可开充值卡', icon: 'none' });
-        return;
-      }
       const customer = this.data.customerInfo;
       const params: string[] = [];
       if (customer?.clientUserId) {
@@ -643,18 +652,15 @@ Page({
     }
   },
 
-  // ===== BundlePicker 选完后覆盖购物车 =====
+  // ===== BundlePicker 选完后覆盖购物车并直接进入下单流程 =====
+  // 组合套餐独占：不进共享购物车（避免与普通商品混单），点 "去下单" 一步到结算
 
   onBundlePickerSelect(e: WechatMiniprogram.CustomEvent) {
-    const { cartItems, bundleName } = (e.detail || {}) as { cartItems?: CartItem[]; bundleName?: string };
+    const { cartItems } = (e.detail || {}) as { cartItems?: CartItem[]; bundleName?: string };
     if (!cartItems || cartItems.length === 0) return;
-    // 组合套餐独占：直接覆盖 cart（保留 §2.1 决策）
     this.updateCart(cartItems);
-    wx.showToast({
-      title: bundleName ? `${bundleName} 已加入` : '已加入购物车',
-      icon: 'success',
-      duration: 1000,
-    });
+    // 与 admin 一致：选完直接弹结算面板（Step 0：选顾客）
+    this.onOpenCheckout();
   },
 
   // ===== SPU 点击 → 跳转详情页 =====
@@ -980,19 +986,15 @@ Page({
   },
 
   /**
-   * PR-C §C1 / §C5 — 订单类型 3 选 1 切换
-   * - managerOnly 守卫：内部单 / 转换单仅店长可切（前端 UI 也按 isManager 显示 disabled 态）
-   * - 转换单守卫：clientUserId 必填（未注册顾客禁用转换单 tab）
+   * PR-C §C1 / §C5 — 订单类型 4 选 1 切换
+   * - 所有员工均可选中任一订单类型；店长权限只在 onSubmitOrder 入口统一校验
+   * - 转换单/寄存单守卫：clientUserId 必填（未注册顾客禁用对应 tab）
    * - 切走销售单/转换单后清空优惠券（内部单/转换单均不允许券）
    * - 切出转换单清空转换 state
    */
   onSelectSaleOrderType(e: WechatMiniprogram.TouchEvent) {
     const next = e.currentTarget.dataset.type as SaleOrderType;
     if (!next || next === this.data.saleOrderType) return;
-    if ((next === '内部单' || next === '转换单' || next === '寄存单') && !this.data.isManager) {
-      wx.showToast({ title: '仅店长可用', icon: 'none' });
-      return;
-    }
     if ((next === '转换单' || next === '寄存单') && !this.data.customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
       return;
@@ -1196,6 +1198,12 @@ Page({
   async onSubmitOrder() {
     const { customerInfo, saleOrderType, cart, remark, submitting } = this.data;
     if (!customerInfo || submitting) return;
+
+    // 统一店长权限网关：所有订单类型（销售单/内部单/转换单/寄存单）的最终提交都走此处
+    if (!this.data.isManager) {
+      wx.showToast({ title: '您无开单权限，请联系店长', icon: 'none', duration: 2500 });
+      return;
+    }
 
     // PR-C §C4 — 分支到 createConversion
     if (saleOrderType === '转换单') {

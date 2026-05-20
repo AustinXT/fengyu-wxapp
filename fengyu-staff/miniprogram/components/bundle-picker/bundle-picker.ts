@@ -3,12 +3,28 @@
 // 左侧：bundle SPU 列表（is_bundle=true）
 // 右侧：选中套餐后展开 mall_bundle_groups，每组 pickCount 控制多选上限
 // 底部"加入购物车"：组装 cartItems（每行带 refBundleId），触发 select 事件
+//
+// 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐：
+// 每个 group 内嵌完整 SKU 详情，组件不依赖任何外部 skuMap 字典。
+
+interface BundleGroupSku {
+  skuId: string;
+  specName: string;
+  sessionCount: number | null;
+  productType: string;
+  isShengmei: boolean;
+  /** mall_product_skus.bundle_price — 套餐内单价（落 unit_real_price） */
+  bundlePrice: number;
+  listPrice: number;
+  listSpecialPrice: number | null;
+  sortOrder: number;
+}
 
 interface BundleGroup {
   id: number;
   groupName: string;
   pickCount: number | null; // null = 全选
-  skuIds: string[];
+  skus: BundleGroupSku[];
 }
 
 interface BundleSpu {
@@ -19,16 +35,6 @@ interface BundleSpu {
   price: number;
   specialPrice: number | null;
   groups: BundleGroup[];
-}
-
-interface SkuMini {
-  skuId: string;
-  specName: string;
-  productKind: string;
-  productType: string;
-  price: number;
-  specialPrice: number | null;
-  sessionCount: number | null;
 }
 
 interface CartItemOut {
@@ -48,13 +54,22 @@ interface CartItemOut {
   refBundleId: string;
 }
 
-/** 展示用分组（groupSkus 已解析为 sku 对象） */
+/** 展示用 SKU（带选中态） */
+interface DisplaySku {
+  skuId: string;
+  specName: string;
+  sessionCount: number | null;
+  bundlePrice: number;
+  selected: boolean;
+}
+
+/** 展示用分组 */
 interface DisplayGroup {
   id: number;
   groupName: string;
   pickCount: number | null;
   pickCountLabel: string;
-  skus: SkuMini[];
+  skus: DisplaySku[];
 }
 
 /** 选中套餐展示视图 */
@@ -67,15 +82,10 @@ interface SelectedBundleView {
 
 Component({
   properties: {
-    /** 套餐 SPU 列表 */
+    /** 套餐 SPU 列表（每个 group 内嵌完整 SKU 详情） */
     bundles: {
       type: Array,
       value: [] as BundleSpu[],
-    },
-    /** SKU 字典（spuId 按 sku_id 索引；由父页面传入） */
-    skuMap: {
-      type: Object,
-      value: {} as Record<string, SkuMini>,
     },
   },
 
@@ -98,7 +108,7 @@ Component({
       for (const g of bundle.groups) {
         groupSelections[g.id] = [];
       }
-      const selectedView = this._buildView(bundle);
+      const selectedView = this._buildView(bundle, groupSelections);
       this.setData({
         selectedBundleId: productId,
         groupSelections,
@@ -141,7 +151,8 @@ Component({
         cur.push(skuId);
       }
       selections[group.id] = cur;
-      this.setData({ groupSelections: selections });
+      const selectedView = this._buildView(bundle, selections);
+      this.setData({ groupSelections: selections, selectedView });
       this._refreshCanSubmit(bundle, selections);
     },
 
@@ -149,40 +160,31 @@ Component({
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === this.data.selectedBundleId);
       if (!bundle || !this.data.canSubmit) return;
 
-      const skuMap = this.data.skuMap as Record<string, SkuMini>;
-      const allSkuIds: string[] = [];
+      // 按"组 → 选中 sku"展平，每行 unitPrice = sku.bundlePrice（与 client/admin 一致）
+      const cartItems: CartItemOut[] = [];
       for (const g of bundle.groups) {
         const picked = this.data.groupSelections[g.id] || [];
-        allSkuIds.push(...picked);
+        for (const skuId of picked) {
+          const sku = g.skus.find(s => s.skuId === skuId);
+          if (!sku) continue;
+          cartItems.push({
+            spuId: skuId,
+            skuId,
+            spuName: sku.specName,
+            specName: sku.specName,
+            price: sku.bundlePrice,
+            quantity: 1,
+            discount: 0,
+            sessionCount: sku.sessionCount || 0,
+            productType: sku.productType || '组合套餐',
+            workfineItemId: '',
+            subtotal: '',
+            itemTotal: '',
+            refBundleId: bundle.productId,
+          });
+        }
       }
-      if (allSkuIds.length === 0) return;
-
-      // TODO(PR-C 对齐云函数): 当前按"套餐价 / 选中SKU数 平均分"占位摊价；
-      //   云函数 create 收到 refBundleId 分组后应按反比例分摊到 unit_real_price。
-      const bundlePrice = Number(bundle.specialPrice ?? bundle.price) || 0;
-      const n = allSkuIds.length;
-      const base = Math.floor((bundlePrice / n) * 100) / 100;
-      const remainder = Math.round((bundlePrice - base * n) * 100) / 100;
-
-      const cartItems: CartItemOut[] = allSkuIds.map((skuId, i) => {
-        const sku = skuMap[skuId];
-        const unitPrice = base + (i === 0 ? remainder : 0);
-        return {
-          spuId: skuId,
-          skuId,
-          spuName: sku?.specName || '',
-          specName: sku?.specName || '',
-          price: unitPrice,
-          quantity: 1,
-          discount: 0,
-          sessionCount: sku?.sessionCount || 0,
-          productType: sku?.productType || '组合套餐',
-          workfineItemId: '',
-          subtotal: '',
-          itemTotal: '',
-          refBundleId: bundle.productId,
-        };
-      });
+      if (cartItems.length === 0) return;
 
       this.triggerEvent('select', { cartItems, bundleName: bundle.name });
     },
@@ -204,10 +206,10 @@ Component({
       this.setData({ canSubmit: ok && total > 0, totalSelected: total });
     },
 
-    _buildView(bundle: BundleSpu): SelectedBundleView {
-      const skuMap = this.data.skuMap as Record<string, SkuMini>;
+    _buildView(bundle: BundleSpu, selections: Record<number, string[]>): SelectedBundleView {
       const groups: DisplayGroup[] = bundle.groups.map(g => {
-        const total = g.skuIds.length;
+        const total = g.skus.length;
+        const picked = selections[g.id] || [];
         return {
           id: g.id,
           groupName: g.groupName,
@@ -215,9 +217,13 @@ Component({
           pickCountLabel: g.pickCount == null
             ? `全选 ${total} 项`
             : `${total} 选 ${g.pickCount}`,
-          skus: g.skuIds
-            .map(id => skuMap[id])
-            .filter((s): s is SkuMini => !!s),
+          skus: g.skus.map(s => ({
+            skuId: s.skuId,
+            specName: s.specName,
+            sessionCount: s.sessionCount,
+            bundlePrice: s.bundlePrice,
+            selected: picked.indexOf(s.skuId) >= 0,
+          })),
         };
       });
       return {

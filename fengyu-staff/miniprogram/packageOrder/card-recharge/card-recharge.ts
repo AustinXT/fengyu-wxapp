@@ -1,37 +1,28 @@
 // packageOrder/card-recharge/card-recharge.ts — 店长替顾客充值
 import { callStaffApi } from '../../utils/cloud';
+import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-/** 档位（来自 card.rechargeTiers，剥离 SKU 化后唯一标识改为 faceValue） */
+/** 档位（来自 card.rechargeConfig，剥离 SKU 化后唯一标识改为 faceValue） */
 interface Tier {
   faceValue: number;
   payAmount: number;
-  bonus: number;
   discount: number;
 }
 
 interface TierVM extends Tier {
+  bonus: number;
   discountLabel: string;
   payAmountLabel: string;
   bonusLabel: string;
 }
 
-interface TierBreakpoint {
-  faceValue: number;
-  discount: number;
-  payAmount: number;
-}
-
-interface CustomConfig {
+/** 与 client/admin 同 shape：{ tiers, minAmount, maxAmount } */
+interface RechargeConfig {
+  tiers: Tier[];
   minAmount: number;
   maxAmount: number;
-  tierBreakpoints: TierBreakpoint[];
-}
-
-interface RechargeTiersResponse {
-  tiers: Tier[];
-  customConfig: CustomConfig;
 }
 
 interface CustomerInfo {
@@ -64,27 +55,39 @@ function formatDiscountLabel(d: number): string {
   return t.toFixed(1).replace(/\.0$/, '') + ' 折';
 }
 
-/** 前端本地 tier 匹配（逻辑与后端 matchTier 一致，用 customConfig.tierBreakpoints 作断点） */
-function matchTierLocal(amount: number, config: CustomConfig): { discount: number; payAmount: number } | { error: string } {
+/**
+ * 前端本地 tier 匹配（与三端后端 matchTier 字节同义）
+ *
+ * 精确命中 → 取 tier.payAmount；非命中 → 找最大 faceValue ≤ amount 的档位，按 payAmount/faceValue 比例算
+ */
+function matchTierLocal(amount: number, cfg: RechargeConfig): { discount: number; payAmount: number } | { error: string } {
   if (!Number.isFinite(amount)) return { error: '金额格式错误' };
   // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
   if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) return { error: '最多保留 2 位小数' };
-  if (amount < config.minAmount) return { error: `最低 ¥${config.minAmount}` };
-  if (amount > config.maxAmount) return { error: `上限 ¥${config.maxAmount}` };
-  const breakpoints = [...(config.tierBreakpoints || [])].sort((a, b) => a.faceValue - b.faceValue);
-  let discount = breakpoints.length > 0 ? breakpoints[0].discount : 1;
-  for (const tier of breakpoints) {
-    if (amount >= tier.faceValue) discount = tier.discount;
+  if (amount < cfg.minAmount) return { error: `最低 ¥${cfg.minAmount}` };
+  if (amount > cfg.maxAmount) return { error: `上限 ¥${cfg.maxAmount}` };
+  const hit = cfg.tiers.find(t => t.faceValue === amount);
+  if (hit) {
+    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1;
+    return { discount, payAmount: hit.payAmount };
   }
-  const payAmount = Math.round(amount * discount * 100) / 100;
+  let baseTier = cfg.tiers[0];
+  for (const t of cfg.tiers) {
+    if (amount >= t.faceValue) baseTier = t;
+  }
+  const ratio = baseTier.payAmount / baseTier.faceValue;
+  const payAmount = Math.round(amount * ratio * 100) / 100;
+  const discount = Math.round(ratio * 100) / 100;
   return { discount, payAmount };
 }
 
 Page({
   data: {
     configLoading: true,
+    configLoadFailed: false,
     boundStoreName: '',
     boundStoreId: '',
+    isManager: false, // 是否店长 — 仅店长可真正提交充值，非店长可浏览面值/折扣表
 
     // 顾客
     customerPhone: '',
@@ -117,12 +120,12 @@ Page({
     submitting: false,
   },
 
-  _customConfig: null as CustomConfig | null,
+  _config: null as RechargeConfig | null,
 
   onLoad(query: Record<string, string>) {
     const storeId = app.globalData.boundStoreId || '';
     const storeName = app.globalData.boundStoreName || '';
-    this.setData({ boundStoreId: storeId, boundStoreName: storeName });
+    this.setData({ boundStoreId: storeId, boundStoreName: storeName, isManager: isManager() });
 
     // 可选：从 URL 参数预填顾客
     if (query?.clientUserId && query?.customerName) {
@@ -150,29 +153,31 @@ Page({
 
   async loadConfig() {
     try {
-      this.setData({ configLoading: true });
-      const data = await callStaffApi<RechargeTiersResponse>('card.rechargeTiers', {});
-      const tiers: TierVM[] = (data?.tiers || []).map(t => ({
+      this.setData({ configLoading: true, configLoadFailed: false });
+      const data = await callStaffApi<RechargeConfig>('card.rechargeConfig', {});
+      if (!data || !Array.isArray(data.tiers) || !Number.isFinite(data.minAmount) || !Number.isFinite(data.maxAmount)) {
+        throw new Error('档位配置返回为空');
+      }
+      this._config = data;
+      const tiers: TierVM[] = data.tiers.map(t => ({
         ...t,
+        bonus: Math.round((t.faceValue - t.payAmount) * 100) / 100,
         discountLabel: formatDiscountLabel(t.discount),
         payAmountLabel: formatAmount(t.payAmount),
-        bonusLabel: formatAmount(t.bonus),
+        bonusLabel: formatAmount(Math.round((t.faceValue - t.payAmount) * 100) / 100),
       }));
-      this._customConfig = data?.customConfig || {
-        minAmount: 500,
-        maxAmount: 100000,
-        tierBreakpoints: [],
-      };
       this.setData({
         tiers,
-        minAmount: this._customConfig.minAmount,
-        maxAmount: this._customConfig.maxAmount,
+        minAmount: data.minAmount,
+        maxAmount: data.maxAmount,
         configLoading: false,
       });
       this.updateCta();
     } catch (err: any) {
-      this.setData({ configLoading: false });
-      wx.showToast({ title: err?.message || '加载档位失败', icon: 'none' });
+      const msg = (err?.message || '加载档位失败').replace(/^[A-Z_]+:\s*/, '');
+      this._config = null;
+      this.setData({ configLoading: false, configLoadFailed: true });
+      wx.showToast({ title: msg, icon: 'none', duration: 2500 });
     }
   },
 
@@ -257,8 +262,20 @@ Page({
     }
 
     const amount = Number(raw);
-    const config = this._customConfig;
-    if (!config) return;
+    const config = this._config;
+    if (!config) {
+      // 配置未加载（loadConfig 失败）：显式 surface 错误，避免静默卡死在"请输入有效金额"
+      this.setData({
+        customError: '档位配置加载失败，请下拉刷新或重新进入页面',
+        customPayAmount: 0,
+        customDiscountLabel: '',
+        customPayAmountLabel: '',
+        customBonus: 0,
+        customBonusLabel: '',
+      });
+      this.updateCta();
+      return;
+    }
     const result = matchTierLocal(amount, config);
     if ('error' in result) {
       this.setData({
@@ -345,6 +362,11 @@ Page({
 
   async onSubmit() {
     if (this.data.submitting || this.data.ctaDisabled) return;
+    // 统一店长权限网关：非店长可浏览面值/折扣表，但不能提交充值
+    if (!this.data.isManager) {
+      wx.showToast({ title: '您无开单权限，请联系店长', icon: 'none', duration: 2500 });
+      return;
+    }
     const { customerInfo, selectedFaceValue, customMode, customInput, paymentMethod } = this.data;
     if (!customerInfo?.clientUserId) {
       wx.showToast({ title: '请选择顾客', icon: 'none' });

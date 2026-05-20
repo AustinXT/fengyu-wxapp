@@ -20,7 +20,6 @@
       <view class="bundle-picker-wrap">
         <bundle-picker
           bundles="{{bundleSpus}}"
-          skuMap="{{skuMap}}"
           bind:select="onBundlePickerSelect"
         />
       </view>
@@ -184,8 +183,9 @@
     </block>
   </view>
 
-  <!-- 底部操作栏（组合套餐视图、普通分类有数据、或体验卡扁平列表有数据时显示）-->
-  <view class="bottom-bar" wx:if="{{categories.length > 0 || productKindChoice === '组合套餐' || (productKindChoice === '体验卡' && spuList.length > 0)}}">
+  <!-- 底部操作栏（普通分类有数据 / 体验卡有数据时显示）
+       组合套餐独占下单流程，由 bundle-picker 自带的"去下单"按钮直接进入结算 → 不显示页面级底栏 -->
+  <view class="bottom-bar" wx:if="{{productKindChoice !== '组合套餐' && (categories.length > 0 || (productKindChoice === '体验卡' && spuList.length > 0))}}">
     <view class="bottom-bar-mid">
       <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
@@ -280,27 +280,27 @@
             <text class="order-type-card-desc">正常计价</text>
           </view>
           <view
-            class="order-type-card {{saleOrderType === '内部单' ? 'order-type-card--active' : ''}} {{!isManager ? 'order-type-card--disabled' : ''}}"
+            class="order-type-card {{saleOrderType === '内部单' ? 'order-type-card--active' : ''}}"
             data-type="内部单"
             bindtap="onSelectSaleOrderType"
           >
-            <text class="order-type-card-name {{!isManager ? 'order-type-card-name--gray' : ''}}">内部单</text>
+            <text class="order-type-card-name">内部单</text>
             <text class="order-type-card-desc">员工半价</text>
           </view>
           <view
-            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{(!isManager || !customerInfo.id) ? 'order-type-card--disabled' : ''}}"
+            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{!customerInfo.id ? 'order-type-card--disabled' : ''}}"
             data-type="转换单"
             bindtap="onSelectSaleOrderType"
           >
-            <text class="order-type-card-name {{(!isManager || !customerInfo.id) ? 'order-type-card-name--gray' : ''}}">转换单</text>
+            <text class="order-type-card-name {{!customerInfo.id ? 'order-type-card-name--gray' : ''}}">转换单</text>
             <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '卡折抵换购'}}</text>
           </view>
           <view
-            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{(!isManager || !customerInfo.id) ? 'order-type-card--disabled' : ''}}"
+            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{!customerInfo.id ? 'order-type-card--disabled' : ''}}"
             data-type="寄存单"
             bindtap="onSelectSaleOrderType"
           >
-            <text class="order-type-card-name {{(!isManager || !customerInfo.id) ? 'order-type-card-name--gray' : ''}}">寄存单</text>
+            <text class="order-type-card-name {{!customerInfo.id ? 'order-type-card-name--gray' : ''}}">寄存单</text>
             <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '剩余次数寄存'}}</text>
           </view>
         </view>

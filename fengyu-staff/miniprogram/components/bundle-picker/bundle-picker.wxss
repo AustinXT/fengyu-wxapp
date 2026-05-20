@@ -1,9 +1,22 @@
 /* components/bundle-picker/bundle-picker.wxss */
 
+/* host：让自定义组件元素作为 .bundle-picker-wrap 的 flex 子项撑满宽高，
+   否则默认 inline 行为会导致右侧空白 + 内层 scroll 不受高度约束而溢出。 */
+:host {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
 .bundle-picker {
   display: flex;
   flex-direction: column;
+  width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   background: var(--color-bg-page, #F5F2EE);
 }
 
@@ -118,6 +131,8 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   background: #FFFFFF;
 }
 
@@ -152,7 +167,9 @@
 
 .bundle-groups-scroll {
   flex: 1;
+  min-height: 0;
   padding: 16rpx;
+  box-sizing: border-box;
 }
 
 .bundle-group {
@@ -160,20 +177,28 @@
   border-radius: 12rpx;
   padding: 16rpx;
   margin-bottom: 16rpx;
+  box-sizing: border-box;
 }
 
 .bundle-group-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12rpx;
   margin-bottom: 12rpx;
 }
 .bundle-group-name {
+  flex: 1;
+  min-width: 0;
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary, #2A2A2A);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .bundle-group-hint {
+  flex-shrink: 0;
   font-size: 22rpx;
   color: var(--color-primary, #C0322A);
 }
@@ -191,6 +216,7 @@
   background: #FFFFFF;
   border-radius: 8rpx;
   border: 2rpx solid transparent;
+  box-sizing: border-box;
 }
 .bundle-sku-item--active {
   border-color: var(--color-primary, #C0322A);
@@ -204,12 +230,15 @@
 
 .bundle-sku-info {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
 .bundle-sku-name {
   font-size: 26rpx;
   color: var(--color-text-primary, #2A2A2A);
+  line-height: 1.4;
+  word-break: break-all;
 }
 .bundle-sku-meta {
   font-size: 22rpx;
@@ -221,6 +250,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   padding: 16rpx 24rpx;
   padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #FFFFFF;
