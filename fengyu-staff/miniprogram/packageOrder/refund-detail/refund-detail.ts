@@ -1,6 +1,7 @@
 // packageOrder/refund-detail/refund-detail.ts — 退款凭证单详情 + 审批操作
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { formatDateTimeShort } from '../../utils/formatters';
 
 interface RawPayment {
   change_type: string;
@@ -95,13 +96,6 @@ const STATUS_META: Record<string, { label: string; cls: DisplayRefund['statusCla
   '已关闭': { label: '已驳回', cls: 'rejected' },
 };
 
-function fmtTime(s: string | null): string {
-  if (!s) return '';
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 Page({
   data: {
@@ -139,8 +133,8 @@ Page({
         ...r,
         refund_abs: Math.abs(Number(r.total_amount || 0)).toFixed(2),
         handling_fee_display: fee > 0 ? fee.toFixed(2) : '',
-        created_at_display: fmtTime(r.created_at),
-        approved_at_display: fmtTime(r.approved_at),
+        created_at_display: formatDateTimeShort(r.created_at),
+        approved_at_display: formatDateTimeShort(r.approved_at),
         statusLabel: meta.label,
         statusClass: meta.cls,
       };
@@ -160,7 +154,7 @@ Page({
         change_type: p.change_type,
         payment_method: p.payment_method,
         status: p.status,
-        timeFmt: fmtTime(p.paid_at || p.created_at),
+        timeFmt: formatDateTimeShort(p.paid_at || p.created_at),
         amountAbs: Math.abs(Number(p.amount || 0)).toFixed(2),
         note: p.note,
       }));

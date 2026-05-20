@@ -129,8 +129,8 @@ Page({
   },
 
   formatTime(dateStr: string): string {
-    if (!dateStr) return '';
-    const d = new Date(dateStr.replace(/-/g, '/'));
+    const d = safeParseDate(dateStr);
+    if (!d) return '';
     const m = d.getMonth() + 1;
     const day = d.getDate();
     const h = String(d.getHours()).padStart(2, '0');
@@ -139,8 +139,8 @@ Page({
   },
 
   formatDate(dateStr: string): string {
-    if (!dateStr) return '';
-    const d = new Date(dateStr.replace(/-/g, '/'));
+    const d = safeParseDate(dateStr);
+    if (!d) return '';
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');

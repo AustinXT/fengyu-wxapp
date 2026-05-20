@@ -1,5 +1,6 @@
 // packageOrder/refund-list/refund-list.ts — 退款单列表
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTimeShort } from '../../utils/formatters';
 
 type TabStatus = '待审批' | '已支付' | '已关闭';
 
@@ -41,13 +42,6 @@ const STATUS_META: Record<TabStatus, { label: string; cls: DisplayRefund['status
   '已关闭': { label: '已驳回', cls: 'rejected' },
 };
 
-function fmtTime(s: string | null): string {
-  if (!s) return '';
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 Page({
   data: {
@@ -101,7 +95,7 @@ Page({
           ...r,
           refund_abs: total.toFixed(2),
           handling_fee_display: fee > 0 ? fee.toFixed(2) : '',
-          created_at_display: fmtTime(r.created_at),
+          created_at_display: formatDateTimeShort(r.created_at),
           statusLabel: meta.label,
           statusClass: meta.cls,
         };

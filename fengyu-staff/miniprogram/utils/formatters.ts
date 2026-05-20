@@ -20,12 +20,23 @@ export const ORDER_TYPE_LABEL: Record<string, string> = {
 }
 
 /**
+ * iOS-safe 日期解析：ISO 串（含 T）原样传入，dash-space 串（YYYY-MM-DD HH:mm:ss）
+ * 先把 '-' 换成 '/' 再解析（iOS 微信 new Date('YYYY-MM-DD HH:mm:ss') 会失败）。
+ * 解析失败返回 null，避免 NaN 透传到 UI。
+ */
+export function safeParseDate(v: any): Date | null {
+  if (!v) return null
+  const d = new Date(typeof v === 'string' ? (v.includes('T') ? v : v.replace(/-/g, '/')) : v)
+  return isNaN(d.getTime()) ? null : d
+}
+
+/**
  * 格式化时间戳为 YYYY-MM-DD HH:mm:ss（默认带秒）
  */
 export function formatDateTime(v: any): string {
   if (!v) return ''
-  const d = new Date(typeof v === 'string' ? (v.includes('T') ? v : v.replace(/-/g, '/')) : v)
-  if (isNaN(d.getTime())) return String(v)
+  const d = safeParseDate(v)
+  if (!d) return String(v)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
@@ -35,8 +46,8 @@ export function formatDateTime(v: any): string {
  */
 export function formatDateTimeShort(v: any): string {
   if (!v) return ''
-  const d = new Date(typeof v === 'string' ? (v.includes('T') ? v : v.replace(/-/g, '/')) : v)
-  if (isNaN(d.getTime())) return String(v)
+  const d = safeParseDate(v)
+  if (!d) return String(v)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
@@ -55,8 +66,8 @@ export function formatTime(timeStr: string | null): string {
  * @param now 可选，覆盖"当前时间"（测试用）
  */
 export function getElapsedTime(startTime: string | null, now?: Date): string {
-  if (!startTime) return ''
-  const start = new Date(startTime.replace(/-/g, '/'))
+  const start = safeParseDate(startTime)
+  if (!start) return ''
   const current = now || new Date()
   const diffMin = Math.floor((current.getTime() - start.getTime()) / 60000)
   if (diffMin < 60) return `进行中 ${diffMin}分钟`
