@@ -440,11 +440,10 @@ async function complete(ctx) {
 
     // ========== 计算并写入服务提成（service_commissions）==========
     // 双字段模型：fixed_fee = service_fee × session_used
-    //            consume_amount = (unit_real_price × quantity / session_count) × session_used × commission_rate
+    //            consume_amount = unit_real_price × session_used × commission_rate
     //            commission_amount = fixed_fee + consume_amount
-    // 说明：sale_items.unit_real_price 是 per-card 单价（如 5次卡=3500），
-    //       per-session = unit_real_price × quantity / session_count（如 3500×2/10=700）；
-    //       非卡场景 session_count=quantity，自然退化为 unit_real_price。
+    // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
+    //       直接作为每次消耗基准，无需再 ÷session_count。
     // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
     // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞 service.complete
     for (const row of items) {
@@ -452,10 +451,7 @@ async function complete(ctx) {
       const roleType = skills[0] || '美容师'
 
       const fixedFee = Math.round(Number(row.service_fee || 0) * row.session_used * 100) / 100
-      const unitReal = Number(row.unit_real_price || 0)
-      const sc = Number(row.session_count || 0)
-      const qty = Number(row.quantity || 1)
-      const perSession = sc > 0 ? (unitReal * qty) / sc : unitReal
+      const perSession = Number(row.unit_real_price || 0)
       const consumeBase = Math.round(perSession * row.session_used * 100) / 100
 
       const rateRows = await client.query(

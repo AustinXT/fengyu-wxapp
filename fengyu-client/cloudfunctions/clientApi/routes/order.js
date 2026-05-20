@@ -405,23 +405,29 @@ async function create(ctx) {
   let totalAmount = 0
   const itemsData = items.map(item => {
     const sku = skuMap[item.skuId]
-    const unitPrice = Number(sku.price)
+    const listUnit = Number(sku.price)                 // per-card 标价
     // 套餐场景：用 mall_product_skus.bundle_price 作为成交价；fallback special_price → price
     const bundlePrice = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
-    const unitRealPrice = bundlePrice != null
+    const basePrice = bundlePrice != null              // per-card 优惠后价
       ? Number(bundlePrice)
       : Number(sku.special_price || sku.price)
     const quantity = item.quantity || 1
-    const saleAmount = Math.round(unitRealPrice * quantity * 100) / 100
+    // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
+    const sessionCount = sku.session_count != null ? Number(sku.session_count) * quantity : null
+    const saleAmount = Math.round(basePrice * quantity * 100) / 100   // 行应付总额（权威）
+    const listTotal = Math.round(listUnit * quantity * 100) / 100     // 行标价总额
+    // per-session 派生：卡 = 行总额 / 总次数；非卡 = 行总额 / 数量（即 per-unit，退化）
+    const denom = (sessionCount != null && sessionCount > 0) ? sessionCount : quantity
+    const unitRealPrice = denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount
+    const unitPrice = denom > 0 ? Math.round((listTotal / denom) * 100) / 100 : listTotal
     totalAmount += saleAmount
     return {
       skuId: item.skuId,
       productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
-      // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
-      sessionCount: sku.session_count != null ? Number(sku.session_count) * quantity : null,
-      remainingSessions: sku.session_count != null ? Number(sku.session_count) * quantity : null,
+      sessionCount,
+      remainingSessions: sessionCount,
       unitPrice,
       unitRealPrice,
       quantity,

@@ -258,7 +258,7 @@ async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
 async function queryStoreConsume(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS v
+    `SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
        FROM service_orders so
        JOIN service_items sit ON sit.service_order_id = so.service_order_id
        JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
@@ -273,7 +273,7 @@ async function queryStoreConsume(scopeType, scopeId, date, mode) {
 async function queryShengmeiConsume(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS v
+    `SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
        FROM service_orders so
        JOIN service_items sit ON sit.service_order_id = so.service_order_id
        JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
@@ -767,7 +767,7 @@ async function rankingConsume(period, storeFilter) {
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS value
+       COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
@@ -1027,7 +1027,7 @@ async function staffRankingConsume(period, storeFilter) {
 consume_by_emp AS (
   SELECT
     sit.employee_id,
-    COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS v
+    COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
   FROM service_items sit
   JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
   JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
@@ -1332,7 +1332,7 @@ async function salesData(ctx) {
       ),
       // SQL 3: 总实耗
       pg.query(
-        `SELECT COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS v
+        `SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
            FROM service_items sit
            JOIN service_orders so ON so.service_order_id = sit.service_order_id
            JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
@@ -1344,14 +1344,14 @@ async function salesData(ctx) {
       // SQL 4: 分客型项目实耗（2026-05-20 P0-3 修复：became_member_at NULL 兜底归老会员）
       pg.query(
         `SELECT
-            COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
             ), 0) AS old_member

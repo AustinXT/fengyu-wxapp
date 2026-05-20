@@ -64,15 +64,10 @@ function sortByPosition(employees: Employee[]): Employee[] {
 /**
  * 单次（per-session）价格。
  * service_items.unit_real_price 是 sale_items.unit_real_price 的快照，
- * 而 sale_items.unit_real_price 是 per-card 价格；
- * 单次价格 = unit_real_price × quantity / session_count。
- * 非卡场景 sessionCount=quantity → 自然退化为 unitRealPrice。
+ * 已是 per-session 单次价，直接取用（不再 ÷session_count）。
  */
 function perSessionPrice(item: ServiceItemDetail): number {
-  const unit = Number(item.unitRealPrice ?? 0)
-  const sc = item.sessionCount ?? 0
-  const qty = item.quantity ?? 1
-  return sc > 0 ? (unit * qty) / sc : unit
+  return Number(item.unitRealPrice ?? 0)
 }
 
 /** 本次服务可分配金额基底 = perSessionPrice × sessionUsed */

@@ -183,6 +183,7 @@ export const saleItems = pgTable(
     skuSpecName: text("sku_spec_name"),
     /** 商品类型快照（疗程卡/单品/家居产品） */
     productType: productTypeEnum("product_type"),
+    /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),
     /**
@@ -193,13 +194,31 @@ export const saleItems = pgTable(
      * NULL 表示非次数卡（单品/家居等 session_count 为 NULL 的行）。
      */
     paidSessions: integer("paid_sessions"),
-    /** 原价快照（开单时持久化） */
+    /**
+     * 单次售价标价快照（per-session，开单时持久化）。
+     * 疗程卡：= round(标价行总额 / session_count, 2)（标价行总额 = sku.price × quantity）；
+     * 非次数卡：= round(标价行总额 / quantity, 2)（即 per-unit 原价）。
+     * 取整张卡/整行标价请用 unit_price × session_count（卡）/ × quantity（非卡）。
+     */
     unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
+    /** 该 sale_item 购买数量（卡张数 / 件数）。 */
     quantity: integer("quantity").notNull().default(1),
-    /** 优惠后单价金额 */
+    /**
+     * 单次优惠后价（per-session，"一次疗程的价"）。
+     * 疗程卡：= round(sale_amount / session_count, 2)；非次数卡：= round(sale_amount / quantity, 2)。
+     * 是"价"非"实收"（实收看 received）。提成 per_session 直接取此值；service_items.unit_real_price 是它的快照。
+     */
     unitRealPrice: numeric("unit_real_price", { precision: 10, scale: 2 }).notNull(),
+    /**
+     * 该行应付金额（摊券后的权威行总额）。恒等式：疗程卡 sale_amount = unit_real_price × session_count；
+     * 非卡 sale_amount = unit_real_price × quantity。unit_price/unit_real_price 均由 sale_amount 派生。
+     */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
-    /** 实收金额（convert_out/refund_out 行为负数） */
+    /**
+     * 实收金额加总（该行权威累计实收；convert_out/refund_out 行为负数）。
+     * 由 recalcPaidSessionsForOrder 的 STEP 1 分摊器从 sale_orders.received 按 sale_amount 比例重算，
+     * 保证 Σ received = sale_orders.received。**不是行单价**（行价看 sale_amount）。
+     */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
     expireDate: date("expire_date"),
     /** 已提货数量（家居产品用，原子累加，可提 = quantity - picked_up_quantity） */

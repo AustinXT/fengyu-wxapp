@@ -1862,13 +1862,15 @@ export const createConversionOrder = withPermission(
       for (const inRow of inItems) {
         const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
         seq++
-        const unitPrice = inRow.sku.price
         // sessionCount 以服务端查到的 productSkus.session_count 为权威，
         // 组合套餐前端 payload 里疗程卡会丢失该字段（bundleSkuToProductSku 硬编码 null），
         // 这里兜底保证 remaining_sessions 正确，否则卡永远无法核销。
         // 同 createOrder：sale_items.session_count 是行总次数维度，需 × quantity。
         const skuSessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * inRow.item.quantity : null
+        // per-session 单价（转入无折扣：unit_price = unit_real_price = amount/总次数；非卡 = amount/qty）
+        const inDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : inRow.item.quantity
+        const unitPrice = inDenom > 0 ? (inRow.amount / inDenom).toFixed(2) : Number(inRow.sku.price).toFixed(2)
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId,
@@ -2176,6 +2178,10 @@ export const createDepositOrder = withPermission(
           const sc = sku.productType === '家居产品'
             ? null
             : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
+          const depSaleAmount = (Math.round(basePrice * quantity * 100) / 100).toFixed(2)
+          // per-session 单价：卡 = sale_amount/总次数；非卡 = sale_amount/quantity（per-unit 退化）
+          const depDenom = (sc != null && sc > 0) ? sc : quantity
+          const depUnit = depDenom > 0 ? (Number(depSaleAmount) / depDenom).toFixed(2) : depSaleAmount
 
           await tx.insert(saleItems).values({
             saleItemId,
@@ -2188,10 +2194,10 @@ export const createDepositOrder = withPermission(
             productType: sku.productType,
             sessionCount: sc,
             remainingSessions: sc,
-            unitPrice: String(basePrice),
+            unitPrice: depUnit,
             quantity,
-            unitRealPrice: String(basePrice),
-            saleAmount: (Math.round(basePrice * quantity * 100) / 100).toFixed(2),
+            unitRealPrice: depUnit,
+            saleAmount: depSaleAmount,
             received: '0',
             salesCategory: sku.salesCategory ?? null,
             serviceFee: '0',

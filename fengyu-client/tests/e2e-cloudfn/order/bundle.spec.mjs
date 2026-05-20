@@ -137,7 +137,8 @@ async function caseHappy() {
   })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const orderNo = res.data?.saleOrderId
-  // sale_items 三行，unit_real_price 必须取 bundle_price
+  // sale_items 三行：sale_amount = bundle_price × quantity（行总额，权威）；
+  // unit_real_price 为 per-session 单次价 = sale_amount / session_count（卡）/ quantity（非卡）。
   const items = await pgQuery(
     `SELECT sku_id, unit_price, unit_real_price, sale_amount, quantity, session_count
      FROM sale_items WHERE sale_order_id = $1 ORDER BY sku_id`,
@@ -145,11 +146,13 @@ async function caseHappy() {
   )
   if (items.length !== 3) throw new Error(`expect 3 sale_items, got ${items.length}`)
   const byKey = Object.fromEntries(items.map(i => [i.sku_id, i]))
+  // SKU_A：单品（session_count=null），bundle_price=40，per-session 退化为 per-unit = 40
   if (Number(byKey[SKU_A_ID].unit_real_price) !== 40) {
     throw new Error(`SKU_A unit_real_price expect 40, got ${byKey[SKU_A_ID].unit_real_price}`)
   }
-  if (Number(byKey[SKU_C_ID].unit_real_price) !== 300) {
-    throw new Error(`SKU_C unit_real_price expect 300, got ${byKey[SKU_C_ID].unit_real_price}`)
+  // SKU_C：10次疗程卡，bundle_price=300 → sale_amount=300，per-session = 300/10 = 30
+  if (Number(byKey[SKU_C_ID].unit_real_price) !== 30) {
+    throw new Error(`SKU_C unit_real_price expect 30 (per-session 300/10), got ${byKey[SKU_C_ID].unit_real_price}`)
   }
   if (Number(byKey[SKU_D_ID].unit_real_price) !== 0) {
     throw new Error(`SKU_D unit_real_price expect 0, got ${byKey[SKU_D_ID].unit_real_price}`)

@@ -242,15 +242,14 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
     return insertedValues
   }
 
-  it('5次卡 × 2 (3500/10/quantity=2) + sessionUsed=1 → consumeBase = 700', async () => {
-    // ground truth from 5434/fengyu FY-XSD-WX-2604230008-01:
-    //   unit_real_price=3500, quantity=2, session_count=10
-    //   per_session = 3500 × 2 / 10 = 700
+  it('5次卡 × 2 → unit_real_price 已是 per-session 700 + sessionUsed=1 → consumeBase = 700', async () => {
+    // per-session 模型：service_items.unit_real_price 存单次价（整卡 3500 × 2 / 10次 = 700/次）。
+    //   per_session = unit_real_price = 700（直接取用，不再 ÷session_count）
     //   consumeBase = 700 × sessionUsed(1) = 700
     //   consumeAmount = 700 × 0.30 = 210, fixedFee=0, commissionAmount=210
     const inserted = setupCardScenario({
       serviceItemId: 'si-card',
-      unitRealPrice: '3500',
+      unitRealPrice: '700',
       sessionUsed: 1,
       salesCategory: '护理项目',
       serviceFee: '0',
@@ -268,10 +267,10 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
     expect(Number(inserted[0].commissionAmount)).toBeCloseTo(210, 2) // fixedFee=0 + 210
   })
 
-  it('5次卡 × 2 + sessionUsed=2 → consumeBase = 1400', async () => {
+  it('5次卡 per-session 700 + sessionUsed=2 → consumeBase = 1400', async () => {
     const inserted = setupCardScenario({
       serviceItemId: 'si-card-2',
-      unitRealPrice: '3500',
+      unitRealPrice: '700',
       sessionUsed: 2,
       salesCategory: '护理项目',
       serviceFee: '0',

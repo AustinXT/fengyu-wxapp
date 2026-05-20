@@ -331,10 +331,7 @@ export default function ServiceCreatePageClient({
                                 : "-"}
                             </td>
                             <td className="px-4 py-3 text-right">
-                              ¥{(item.sessionCount && item.sessionCount > 0
-                                ? Number(item.unitRealPrice) / item.sessionCount
-                                : Number(item.unitRealPrice)
-                              ).toFixed(2)}
+                              ¥{Number(item.unitRealPrice).toFixed(2)}
                             </td>
                             <td className="px-4 py-3">{item.expireDate || "永久"}</td>
                             <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>

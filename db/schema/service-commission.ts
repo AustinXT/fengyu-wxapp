@@ -9,8 +9,7 @@ import { staffWechatUsers } from './user'
  * 服务单完成时触发，按"固定手工费 + 消耗比例"双字段模型计算。
  * 计算口径：
  *   fixed_fee      = sale_items.service_fee × service_items.session_used
- *   per_session    = sale_items.unit_real_price × sale_items.quantity / sale_items.session_count
- *                    （unit_real_price 是 per-card；卡多次需还原到 per-session；非卡 session_count=quantity 自然退化）
+ *   per_session    = sale_items.unit_real_price （已是 per-session 单次价，直接取用，不再 ÷session_count）
  *   consume_amount = per_session × session_used × commission_rate
  *   commission_amount = fixed_fee + consume_amount
  * 与 sale_allocations（销售提成）独立追踪。

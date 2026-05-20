@@ -199,11 +199,8 @@ export const batchSaveServiceCommissions = withPermission(
           }
 
           const fixedFee = Math.round(Number(pricing.serviceFee) * pricing.sessionUsed * 100) / 100
-          // per-session 价格：sale_items.unit_real_price 是 per-card，需还原到 per-session
-          // 公式：unit_real_price × quantity / session_count；非卡场景 sessionCount=quantity 自然退化
-          const perSession = pricing.sessionCount && pricing.sessionCount > 0
-            ? (Number(pricing.unitRealPrice) * pricing.quantity) / pricing.sessionCount
-            : Number(pricing.unitRealPrice)
+          // per-session 价格：service_items.unit_real_price 已是 per-session 单次价，直接取用（不再 ÷session_count）
+          const perSession = Number(pricing.unitRealPrice)
           const consumeBase = Math.round(perSession * pricing.sessionUsed * 100) / 100
 
           // Look up commission rate from matrix

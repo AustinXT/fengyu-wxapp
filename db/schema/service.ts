@@ -79,7 +79,7 @@ export const serviceItems = pgTable(
     saleItemId: varchar('sale_item_id', { length: 30 })
       .notNull()
       .references(() => saleItems.saleItemId),
-    /** sale_items.unit_real_price 快照 */
+    /** sale_items.unit_real_price 快照（per-session 单次优惠后价；提成 per_session 直接取此值，无需再 ÷session_count） */
     unitRealPrice: numeric('unit_real_price', { precision: 10, scale: 2 }),
     /** sale_items.is_shengmei 快照（从 sale_items 拷贝，避免 sku 改动后语义漂移） */
     isShengmei: boolean('is_shengmei'),
