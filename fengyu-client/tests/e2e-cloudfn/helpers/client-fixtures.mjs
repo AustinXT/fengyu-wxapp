@@ -514,6 +514,34 @@ export async function cleanupClientExtras(prefix = NS) {
     ],
     [`DELETE FROM service_orders WHERE service_order_id LIKE $1`, [like]],
 
+    // 4.5) FY-XSD-WX-* 路由生成订单残留（card.recharge / order.create 用 advisory lock 生成的订单号
+    //      不带 TE2L2 前缀，仅 client_user_id 在 NS 范围或 openid LIKE NS 可定位）。
+    //      ⚠️ 必须在下方"商品/SKU"清理之前删除：这些订单的 sale_items.sku_id FK → product_skus，
+    //      若晚于 product_skus 删除，会卡 FK 导致 product_skus / product_categories 清理被 skip，
+    //      残留累积污染后续 spec（曾导致 order / staff / service spec 概率性 FK 失败）。
+    [
+      `DELETE FROM card_transactions WHERE ref_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_items WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_orders WHERE client_user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+       )`,
+      [like],
+    ],
+
     // 5) 商品 / SKU / 分类（最后清，FK：mall_product_skus → products/skus；mall_bundle_groups → products）
     [
       `DELETE FROM mall_product_skus WHERE sku_id LIKE $1 OR product_id LIKE $1`,
@@ -554,30 +582,8 @@ export async function cleanupClientExtras(prefix = NS) {
        )`,
       [like],
     ],
-    // 8) FY-XSD-WX-* 命名空间订单残留（card.recharge / order.create 用 advisory lock 生成的订单号
-    //    不带 TE2L2 前缀，但 client_user_id 在 NS 范围或 openid LIKE NS）
-    [
-      `DELETE FROM card_transactions WHERE ref_order_id IN (
-         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
-           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
-         )
-       )`,
-      [like],
-    ],
-    [
-      `DELETE FROM sale_items WHERE sale_order_id IN (
-         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
-           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
-         )
-       )`,
-      [like],
-    ],
-    [
-      `DELETE FROM sale_orders WHERE client_user_id IN (
-         SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
-       )`,
-      [like],
-    ],
+    // 8) 顾客行（openid LIKE NS）—— 此时其名下 sale_orders 已在 4.5) 清完，可安全删除。
+    //    其余按 user_id LIKE NS 的顾客由根 cleanupTestData 兜底删除。
     [`DELETE FROM client_wechat_users WHERE openid LIKE $1`, [like]],
 
     // 9) 解绑申请（独立表）
