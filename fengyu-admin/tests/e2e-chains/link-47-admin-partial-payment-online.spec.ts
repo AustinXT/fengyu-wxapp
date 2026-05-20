@@ -245,10 +245,11 @@ test('链路 47：admin 微信限额支付 — 提交时落 first_payment_amount
   // Step 4: 模拟 payNotify 落账
   // ============================================================
   console.log(`[链路47] Step4 模拟 payNotify 写入首次支付 ¥${FIRST_PAYMENT}...`)
+  // 微信/支付宝走 chk_sop_method_txn 约束必须传 external_txn_id（真实 payNotify 用 wx 交易号）
   psql(
     `INSERT INTO sale_order_payments ` +
-      `(sale_order_id, change_type, amount, payment_method, status, source_end, created_at, paid_at) ` +
-      `VALUES ('${saleOrderId}', '首次支付', ${FIRST_PAYMENT.toFixed(2)}, '微信', '已支付', 'client', NOW(), NOW())`,
+      `(sale_order_id, change_type, amount, payment_method, external_txn_id, status, source_end, created_at, paid_at) ` +
+      `VALUES ('${saleOrderId}', '首次支付', ${FIRST_PAYMENT.toFixed(2)}, '微信', 'WX-LINK47-${Date.now()}', '已支付', 'client', NOW(), NOW())`,
   )
   psql(
     `UPDATE sale_orders SET status='部分支付', received=${FIRST_PAYMENT.toFixed(2)}, ` +
