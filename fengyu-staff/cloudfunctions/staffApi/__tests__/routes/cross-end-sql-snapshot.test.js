@@ -970,3 +970,57 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Block 7b: STEP 1 received 分摊 SQL 四端字节同义
+//   recalcPaidSessionsForOrder 在跑 paid_sessions 公式前，先按 sale_amount 比例把
+//   sale_orders.received 摊到各 sale_items.received（仅 item_direction='购买' 行；
+//   转出/转入/退出行 received 由业务逻辑权威设置 total=0 时不被清零）。
+//   admin（Drizzle）+ staff/client/payNotify（pg）四端必须字节同义。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
+  const MARKER_ALLOC = "received = CASE"
+  let allocSqls
+
+  beforeAll(() => {
+    allocSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_ALLOC)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_ALLOC)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_ALLOC)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_ALLOC)),
+    }
+  })
+
+  describe("特征守护", () => {
+    test("四端按 sale_amount 比例分摊且 ROUND 2 位", () => {
+      const pattern = /ROUND\(op\.received::numeric\s*\*\s*sale_items\.sale_amount::numeric\s*\/\s*op\.total_amount::numeric,\s*2\)/i
+      expect(allocSqls.staff).toMatch(pattern)
+      expect(allocSqls.client).toMatch(pattern)
+      expect(allocSqls.payNotify).toMatch(pattern)
+      expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端仅分摊 item_direction='购买' 行（转出/转入 received 不被清零）", () => {
+      const pattern = /item_direction\s*=\s*'购买'/
+      expect(allocSqls.staff).toMatch(pattern)
+      expect(allocSqls.client).toMatch(pattern)
+      expect(allocSqls.payNotify).toMatch(pattern)
+      expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端 total_amount > 0 守卫（防寄存单 total=0 除零）", () => {
+      expect(allocSqls.staff).toMatch(/op\.total_amount\s*>\s*0/i)
+      expect(allocSqls.adminTs).toMatch(/op\.total_amount\s*>\s*0/i)
+    })
+  })
+
+  describe("四端镜像比对", () => {
+    test("staff vs client", () => { expect(allocSqls.client).toBe(allocSqls.staff) })
+    test("staff vs payNotify", () => { expect(allocSqls.payNotify).toBe(allocSqls.staff) })
+    test("staff vs admin（归一化后等价）", () => { expect(allocSqls.adminTs).toBe(allocSqls.staff) })
+  })
+
+  describe("Snapshot 守护", () => {
+    test("STEP 1 分摊 SQL 文本快照", () => {
+      expect(allocSqls.staff).toMatchSnapshot()
+    })
+  })
+})
+
