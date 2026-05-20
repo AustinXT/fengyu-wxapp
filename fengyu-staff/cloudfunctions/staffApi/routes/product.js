@@ -212,11 +212,15 @@ async function _queryExperienceSkus() {
 /**
  * 查询套餐商品（bundle SPU）及其 N 选 M 分组
  *
- * 返回结构：
+ * 返回结构（每个 group 内嵌完整 SKU 详情，前端无需外部 skuMap 查询）：
  *   [{ productId, name, coverImage, price, specialPrice, description,
- *      groups: [{ id, groupName, pickCount, skuIds:[...] }] }]
+ *      groups: [{ id, groupName, pickCount,
+ *                 skus: [{ skuId, specName, sessionCount, productType,
+ *                          isShengmei, bundlePrice, listPrice, listSpecialPrice,
+ *                          sortOrder }] }] }]
  *
  * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
+ * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
  */
 async function _queryMallBundleGroups() {
   const productRows = await pg.query(`
@@ -240,10 +244,17 @@ async function _queryMallBundleGroups() {
   `, [productIds])
 
   const skuLinkRows = await pg.query(`
-    SELECT product_id, sku_id, bundle_group_id, bundle_price, sort_order
-    FROM mall_product_skus
-    WHERE product_id = ANY($1)
-    ORDER BY sort_order ASC
+    SELECT mps.product_id, mps.sku_id, mps.bundle_group_id,
+           mps.bundle_price, mps.sort_order,
+           sk.spec_name, sk.session_count,
+           sk.product_type, sk.is_shengmei,
+           sk.price AS list_price, sk.special_price AS list_special_price
+    FROM mall_product_skus mps
+    JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    WHERE mps.product_id = ANY($1)
+      AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
+    ORDER BY mps.sort_order ASC
   `, [productIds])
 
   return productRows.map(p => {
@@ -253,9 +264,19 @@ async function _queryMallBundleGroups() {
         id: g.id,
         groupName: g.group_name,
         pickCount: g.pick_count,
-        skuIds: skuLinkRows
+        skus: skuLinkRows
           .filter(s => s.product_id === p.product_id && s.bundle_group_id === g.id)
-          .map(s => s.sku_id),
+          .map(s => ({
+            skuId: s.sku_id,
+            specName: s.spec_name,
+            sessionCount: s.session_count,
+            productType: s.product_type,
+            isShengmei: !!s.is_shengmei,
+            bundlePrice: s.bundle_price != null ? Number(s.bundle_price) : 0,
+            listPrice: Number(s.list_price) || 0,
+            listSpecialPrice: s.list_special_price != null ? Number(s.list_special_price) : null,
+            sortOrder: s.sort_order,
+          })),
       }))
     return {
       productId: p.product_id,

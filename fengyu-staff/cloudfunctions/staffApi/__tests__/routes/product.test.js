@@ -386,7 +386,7 @@ describe('product.shopInit', () => {
     expect(ctx.result.skuList[1].isBundle).toBe(false)
   })
 
-  test('mallBundleGroups 聚合：bundle 商品关联分组 + pickCount + skuIds', async () => {
+  test('mallBundleGroups 聚合：bundle 商品关联分组 + pickCount + 内嵌 skus 详情', async () => {
     const ctx = createCtx()
 
     // 1) _queryCategoryRows — 不影响本测试，返回空便于跳过 skuList
@@ -408,15 +408,27 @@ describe('product.shopInit', () => {
       { id: 11, product_id: 'prod-b1', group_name: '家居产品组', pick_count: 1, sort_order: 2 },
       { id: 20, product_id: 'prod-b2', group_name: '单组', pick_count: null, sort_order: 1 },
     ])
-    // 4) skuLinkRows
+    // 4) skuLinkRows（JOIN product_skus 后含 SKU 详情字段）
     pg.query.mockResolvedValueOnce([
-      { product_id: 'prod-b1', sku_id: 'sku-h1', bundle_group_id: 10, bundle_price: '200', sort_order: 1 },
-      { product_id: 'prod-b1', sku_id: 'sku-h2', bundle_group_id: 10, bundle_price: '200', sort_order: 2 },
-      { product_id: 'prod-b1', sku_id: 'sku-h3', bundle_group_id: 10, bundle_price: '200', sort_order: 3 },
-      { product_id: 'prod-b1', sku_id: 'sku-home1', bundle_group_id: 11, bundle_price: '300', sort_order: 1 },
-      { product_id: 'prod-b2', sku_id: 'sku-only', bundle_group_id: 20, bundle_price: '999', sort_order: 1 },
+      { product_id: 'prod-b1', sku_id: 'sku-h1', bundle_group_id: 10, bundle_price: '200', sort_order: 1,
+        spec_name: 'H1 单次', session_count: 1, product_type: '疗程卡', is_shengmei: false,
+        list_price: '300', list_special_price: null },
+      { product_id: 'prod-b1', sku_id: 'sku-h2', bundle_group_id: 10, bundle_price: '200', sort_order: 2,
+        spec_name: 'H2 单次', session_count: 1, product_type: '疗程卡', is_shengmei: false,
+        list_price: '300', list_special_price: null },
+      { product_id: 'prod-b1', sku_id: 'sku-h3', bundle_group_id: 10, bundle_price: '200', sort_order: 3,
+        spec_name: 'H3 单次', session_count: 1, product_type: '疗程卡', is_shengmei: true,
+        list_price: '300', list_special_price: '280' },
+      { product_id: 'prod-b1', sku_id: 'sku-home1', bundle_group_id: 11, bundle_price: '300', sort_order: 1,
+        spec_name: '家居 1', session_count: null, product_type: '家居产品', is_shengmei: false,
+        list_price: '350', list_special_price: null },
+      { product_id: 'prod-b2', sku_id: 'sku-only', bundle_group_id: 20, bundle_price: '999', sort_order: 1,
+        spec_name: '单组 SKU', session_count: 5, product_type: '疗程卡', is_shengmei: false,
+        list_price: '1200', list_special_price: null },
       // 噪声：跨 product_id 的 link 不能混入
-      { product_id: 'prod-b2', sku_id: 'sku-h1', bundle_group_id: 10, bundle_price: '200', sort_order: 2 },
+      { product_id: 'prod-b2', sku_id: 'sku-h1', bundle_group_id: 10, bundle_price: '200', sort_order: 2,
+        spec_name: 'H1 单次', session_count: 1, product_type: '疗程卡', is_shengmei: false,
+        list_price: '300', list_special_price: null },
     ])
     // 5) _queryExperienceSkus
     pg.query.mockResolvedValueOnce([])
@@ -435,16 +447,28 @@ describe('product.shopInit', () => {
 
     const careGroup = b1.groups.find(g => g.groupName === '护理服务组')
     expect(careGroup.pickCount).toBe(2)
-    expect(careGroup.skuIds).toEqual(['sku-h1', 'sku-h2', 'sku-h3'])
+    expect(careGroup.skus.map(s => s.skuId)).toEqual(['sku-h1', 'sku-h2', 'sku-h3'])
+    // SKU 详情内嵌：specName / bundlePrice / sessionCount / productType / isShengmei
+    expect(careGroup.skus[0]).toMatchObject({
+      skuId: 'sku-h1', specName: 'H1 单次', bundlePrice: 200,
+      sessionCount: 1, productType: '疗程卡', isShengmei: false,
+      listPrice: 300, listSpecialPrice: null,
+    })
+    expect(careGroup.skus[2].isShengmei).toBe(true)
+    expect(careGroup.skus[2].listSpecialPrice).toBe(280)
 
     const homeGroup = b1.groups.find(g => g.groupName === '家居产品组')
     expect(homeGroup.pickCount).toBe(1)
-    expect(homeGroup.skuIds).toEqual(['sku-home1'])
+    expect(homeGroup.skus.map(s => s.skuId)).toEqual(['sku-home1'])
+    expect(homeGroup.skus[0]).toMatchObject({
+      specName: '家居 1', bundlePrice: 300, sessionCount: null, productType: '家居产品',
+    })
 
     const b2 = groups.find(g => g.productId === 'prod-b2')
     expect(b2.groups).toHaveLength(1)
     expect(b2.groups[0].pickCount).toBeNull() // null=全选
-    expect(b2.groups[0].skuIds).toEqual(['sku-only']) // 跨 product_id 的噪声被过滤
+    expect(b2.groups[0].skus.map(s => s.skuId)).toEqual(['sku-only']) // 跨 product_id 的噪声被过滤
+    expect(b2.groups[0].skus[0].bundlePrice).toBe(999)
     expect(b2.specialPrice).toBeNull()
     expect(b2.coverImage).toBeNull()
   })

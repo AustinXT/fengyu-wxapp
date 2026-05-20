@@ -21,35 +21,24 @@ const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 // ================= 路由 =================
 
 /**
- * 返回充值卡档位 + 自定义金额配置（替代 rechargeSkus）
+ * 返回充值卡档位 + 自定义金额边界（与 clientApi.card.rechargeConfig 字节同义）
  *
  * 数据来源：system_configs（admin 后台 system-configs 编辑入口维护）
  *
  * 权限：登录态可读（非店长也可浏览面值/折扣表）；真正下单走 card.recharge 仍 manager-only。
  */
-async function rechargeTiers(ctx) {
+async function rechargeConfig(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const cfg = await loadRechargeConfig(pg)
   ctx.result = {
-    tiers: cfg.tiers.map(t => {
-      const discount = t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1
-      return {
-        faceValue: t.faceValue,
-        payAmount: t.payAmount,
-        bonus: Math.round((t.faceValue - t.payAmount) * 100) / 100,
-        discount,
-      }
-    }),
-    customConfig: {
-      minAmount: cfg.minAmount,
-      maxAmount: cfg.maxAmount,
-      tierBreakpoints: cfg.tiers.map(t => ({
-        faceValue: t.faceValue,
-        payAmount: t.payAmount,
-        discount: t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1,
-      })),
-    },
+    tiers: cfg.tiers.map(t => ({
+      faceValue: t.faceValue,
+      payAmount: t.payAmount,
+      discount: t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1,
+    })),
+    minAmount: cfg.minAmount,
+    maxAmount: cfg.maxAmount,
   }
 }
 
@@ -375,4 +364,4 @@ async function rejectRefund(ctx) {
   ctx.result = { paymentId, status: '已作废' }
 }
 
-module.exports = { rechargeTiers, recharge, createRefund, approveRefund, rejectRefund }
+module.exports = { rechargeConfig, recharge, createRefund, approveRefund, rejectRefund }

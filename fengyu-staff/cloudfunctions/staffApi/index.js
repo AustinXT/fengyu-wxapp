@@ -97,7 +97,7 @@ const routes = {
   'coupon.available':     () => require('./routes/coupon').available,
 
   // 充值卡（店长替顾客充值 + 退款审批流）
-  'card.rechargeTiers':   () => require('./routes/card').rechargeTiers,
+  'card.rechargeConfig':  () => require('./routes/card').rechargeConfig,
   'card.recharge':        () => require('./routes/card').recharge,
   'card.createRefund':    () => require('./routes/card').createRefund,
   'card.approveRefund':   () => require('./routes/card').approveRefund,

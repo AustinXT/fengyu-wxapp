@@ -8,7 +8,22 @@ exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > 
 }
 `;
 
+exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
+{
+  "adminTs": "INSERT INTO prepaid_cards (card_id, user_id, balance) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
+  "payNotify": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
+  "staff": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
+}
+`;
+
 exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 > Snapshot 守护（提交后任一字符漂移立即可见） > settlePoints 关键 SQL 文本快照 1`] = `
+{
+  "granted": "SELECT COALESCE(SUM(amount), 0)::int AS granted FROM point_transactions WHERE ref_order_id = ?",
+  "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
+}
+`;
+
+exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 Snapshot 守护（提交后任一字符漂移立即可见） settlePoints 关键 SQL 文本快照 1`] = `
 {
   "granted": "SELECT COALESCE(SUM(amount), 0)::int AS granted FROM point_transactions WHERE ref_order_id = ?",
   "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
@@ -23,4 +38,14 @@ exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snaps
 }
 `;
 
+exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapshot 守护：admin 关键 SQL 整体文本快照 admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
+{
+  "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
+  "lockOrder": "SELECT prepaid_card_amount, client_user_id FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
+  "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
+}
+`;
+
 exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > Snapshot 守护（任一字符漂移即可见） > paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
+
+exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 Snapshot 守护（任一字符漂移即可见） paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
