@@ -1358,9 +1358,9 @@ describe('prepaid card deduction - order.scanAdjust', () => {
     await expect(routes.scanAdjust(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许调整/)
   })
 
-  test('非员工开单订单（opened_by=null）→ 拒绝', async () => {
+  test('匿名自助下单（opened_by=null + client_user_id=null）→ 拒绝订单归属未确定', async () => {
     pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: null,
       opened_by: null, total_amount: 300,
     }])
 
@@ -1369,7 +1369,26 @@ describe('prepaid card deduction - order.scanAdjust', () => {
       useCard: false,
       paymentMethod: '微信',
     })
-    await expect(routes.scanAdjust(ctx)).rejects.toThrow(/INVALID_PARAMS.*非员工开单/)
+    await expect(routes.scanAdjust(ctx)).rejects.toThrow(/INVALID_PARAMS.*订单归属未确定/)
+  })
+
+  test('自助下单 + client_user_id=userId（顾客本人调整自己的待支付订单）→ 通过', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+      opened_by: null, total_amount: 300, prepaid_card_amount: 0, paid_amount: 300,
+    }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-1', balance: '500', updated_at: '2026-05-20T00:00:00Z' }])
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-001',
+      useCard: true,
+      prepaidCardAmount: 300,
+    })
+    await routes.scanAdjust(ctx)
+    expect(ctx.result.prepaidCardAmount).toBe(300)
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(ctx.result.paymentMethod).toBe('无')
   })
 
   test('抵扣金额超余额 → INSUFFICIENT_BALANCE', async () => {
