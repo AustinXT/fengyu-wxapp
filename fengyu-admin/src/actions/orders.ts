@@ -721,10 +721,10 @@ export const confirmOfflinePayment = withPermission(
       const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
 
-      // 结清判定基准 = payable_amount + prepaid（newReceived 含储值卡抵扣，故 RHS 也含 prepaid）。
-      // 普通单 payable + prepaid === total（行为不变）；充值单 payable(实付) ≠ total(面额)，
+      // 结清判定基准 = payable_amount + 原始 prepaid 快照（orderPrepaid，锁单时的预选抵扣额）。
+      // 普通单 payable + 快照 === total（行为不变）；充值单 payable(实付) ≠ total(面额)，
       // 须用 payable 否则全额付款仍判为「部分支付」（与 staff confirmOffline / payNotify 跨端对齐）。
-      const settleTarget = Math.round((orderPayable + newPrepaid) * 100) / 100
+      const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
       const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
       const paidAtIso = targetStatus === '已支付' ? new Date().toISOString() : null
       const updRes = await tx.execute(sql`
@@ -2621,9 +2621,11 @@ export const recordPayment = withPermission(
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
       const settled = newReceived
-      // 结清判定基准 = payable_amount + prepaid（settled 含储值卡抵扣，故 RHS 也含 prepaid）。
-      // 普通单 payable + prepaid === total（不变）；充值单用 payable(实付) 修正面额 ≠ 实付场景。
-      const settleTarget = Math.round((origPayable + newPrepaid) * 100) / 100
+      // 结清判定基准 = payable_amount + 原始 prepaid 快照（origPrepaidSnapshot）。
+      // 用快照而非 newPrepaid：回款可新增储值卡抵扣，settled(含新抵扣) 增长应推进结清，
+      // 故 RHS 须锚定原始 prepaid 才恒 == total。
+      // 普通单 payable + 快照 === total（不变）；充值单 payable(实付) ≠ total(面额)，修正。
+      const settleTarget = Math.round((origPayable + origPrepaidSnapshot) * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
       // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
       // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。

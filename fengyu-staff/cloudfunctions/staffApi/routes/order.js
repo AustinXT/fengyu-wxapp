@@ -2186,9 +2186,11 @@ async function createRepayment(ctx) {
     const newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     const settled = newReceived
-    // 结清判定基准 = payable_amount + prepaid（settled 含储值卡抵扣，故 RHS 也含 prepaid）。
-    // 普通单 payable + prepaid === total（不变）；充值单用 payable(实付) 修正面额 ≠ 实付场景。
-    const settleTarget = Math.round((origPayable + newPrepaid) * 100) / 100
+    // 结清判定基准 = payable_amount + 原始 prepaid 快照（origPrepaidSnapshot）。
+    // 用快照而非 newPrepaid：回款可新增储值卡抵扣，settled(含新抵扣) 增长应推进结清，
+    // 故 RHS 须锚定原始 prepaid 才恒 == total。
+    // 普通单 payable + 快照 === total（行为不变）；充值单 payable(实付) ≠ total(面额)，修正。
+    const settleTarget = Math.round((origPayable + origPrepaidSnapshot) * 100) / 100
     const targetStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
