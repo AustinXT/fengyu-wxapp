@@ -54,3 +54,47 @@ export function computeServiceLine(
   const commissionAmount = round2(fixedFee + consumeAmount)
   return { allocAmount: allocAmount.toFixed(2), commissionAmount: commissionAmount.toFixed(2) }
 }
+
+interface SummaryLine {
+  staffWfId: string
+  staffName: string
+  roleType: string
+  commissionAmount: string
+}
+
+interface SummaryDisplayItem {
+  allocLines: SummaryLine[]
+}
+
+/**
+ * 汇总服务提成：按员工+技能标签聚合**提成额**，合计为提成额合计。
+ * 对齐销售侧 allocation-calc.computeSummary。
+ */
+export function computeServiceSummary(displayItems: SummaryDisplayItem[]): {
+  summary: Array<{ staffName: string; department: string; total: string }>
+  grandTotal: string
+} {
+  const map = new Map<string, { staffName: string; department: string; total: number }>()
+  let grand = 0
+  for (const di of displayItems) {
+    for (const l of di.allocLines) {
+      const amt = parseFloat(l.commissionAmount) || 0
+      grand += amt
+      if (l.staffWfId) {
+        const key = `${l.staffWfId}_${l.roleType}`
+        const existing = map.get(key)
+        if (existing) {
+          existing.total += amt
+        } else {
+          map.set(key, { staffName: l.staffName, department: l.roleType, total: amt })
+        }
+      }
+    }
+  }
+  const summary = Array.from(map.values()).map(s => ({
+    staffName: s.staffName,
+    department: s.department,
+    total: s.total.toFixed(2),
+  }))
+  return { summary, grandTotal: grand.toFixed(2) }
+}
