@@ -47,6 +47,22 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
  * 实现策略：FROM 子句把订单级（total_amount/refunded_amount）拉出来，sale_items 行内按 sale_amount 比例下分订单级 refund；
  * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
  */
+/**
+ * STEP 1 分摊 SQL（pg 风格 $1 = saleOrderId）：按 sale_amount 比例把 sale_orders.received
+ * 摊到各 sale_items.received，保证 Σ sale_items.received = sale_orders.received。
+ * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
+ * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
+ */
+const SALE_ITEMS_RECEIVED_ALLOC_SQL = `UPDATE sale_items
+    SET received = CASE
+      WHEN op.total_amount > 0
+        THEN ROUND(op.received::numeric * sale_items.sale_amount::numeric / op.total_amount::numeric, 2)
+      ELSE 0
+    END,
+    updated_at = NOW()
+    FROM (SELECT received, total_amount FROM sale_orders WHERE sale_order_id = $1) op
+    WHERE sale_items.sale_order_id = $1`
+
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
@@ -66,6 +82,10 @@ WHERE sale_items.sale_order_id = $1`
  * @param {string} saleOrderId
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
+  // STEP 1：按 sale_amount 比例把 sale_orders.received 摊到 sale_items.received
+  // （paid_sessions 公式以 sale_items.received 为分子；不同步会让回款后 paid_sessions 停在建单快照）
+  await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
+  // STEP 2：行级公式重算 paid_sessions
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])
   const violation = await client.query(
     `SELECT sale_item_id, session_count, remaining_sessions, paid_sessions
@@ -88,6 +108,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
 
 module.exports = {
   computePaidSessionsForItem,
+  SALE_ITEMS_RECEIVED_ALLOC_SQL,
   PAID_SESSIONS_RECALC_SQL,
   recalcPaidSessionsForOrder,
 }
