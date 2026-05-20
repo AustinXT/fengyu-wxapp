@@ -281,8 +281,4 @@ Page({
     const range = e.currentTarget.dataset.range || 'today';
     wx.navigateTo({ url: `/packageOrder/staff-performance/staff-performance?range=${range}` });
   },
-
-  goCustomerList() {
-    wx.switchTab({ url: '/pages/customer-list/customer-list' });
-  },
 });

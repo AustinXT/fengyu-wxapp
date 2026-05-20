@@ -171,14 +171,6 @@ Page({
     wx.navigateTo({ url: '/packageOrder/order-list/order-list' });
   },
 
-  onNavServices() {
-    wx.switchTab({ url: '/pages/service/service' });
-  },
-
-  onNavCustomers() {
-    wx.switchTab({ url: '/pages/customer-list/customer-list' });
-  },
-
   onNavAppointments() {
     wx.navigateTo({ url: '/packageService/appointment/appointment' });
   },
