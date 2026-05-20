@@ -66,10 +66,12 @@ Component({
       type: Number,
       value: 0,
       observer(this: any, val: number) {
-        // 余额首次到达且 > 0 时默认开启抵扣（与销售单"能抵多少抵多少"口径一致）
-        if (!this._cardInit) {
+        // 余额「首次 > 0」时默认开启抵扣（与销售单"能抵多少抵多少"口径一致）；
+        // 仅在 val>0 时 init，避免余额异步加载前以 0 触发 observer 把默认开锁死。
+        // 之后尊重店长手动开关（_cardInit 已置 true 不再覆盖）。
+        if (!this._cardInit && Number(val) > 0) {
           this._cardInit = true;
-          this.setData({ useCard: Number(val) > 0 });
+          this.setData({ useCard: true });
         }
         this.recalcCard();
       },
