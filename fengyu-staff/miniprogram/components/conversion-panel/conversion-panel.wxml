@@ -40,7 +40,7 @@
         <view class="conv-card-meta">
           <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} 次</text>
           <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
-          <text class="conv-card-unit">· 单价 ¥{{item.unitRealPrice}}</text>
+          <text class="conv-card-unit">· 单次价 ¥{{item.unitRealPrice}}</text>
         </view>
       </view>
       <view class="conv-card-amount">

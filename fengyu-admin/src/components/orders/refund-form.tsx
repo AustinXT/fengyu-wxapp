@@ -190,7 +190,7 @@ export function RefundForm({
                   <th className="px-3 py-2 text-left font-medium text-gray-500 w-10">选</th>
                   <th className="px-3 py-2 text-left font-medium text-gray-500">名称</th>
                   <th className="px-3 py-2 text-left font-medium text-gray-500">规格</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-500">单价</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-500">单次价</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">可退</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500 w-28">退款数量</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">小计</th>

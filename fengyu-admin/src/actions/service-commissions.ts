@@ -143,13 +143,12 @@ export const batchSaveServiceCommissions = withPermission(
   }
 
   // ---------- Pre-fetch pricing data for server-side calculation ----------
+  // per_session 已是 unit_real_price 直接取用，不再需要 quantity/session_count（per-session 重构后）
   const pricingByItemId = new Map<string, {
     unitRealPrice: string
     sessionUsed: number
     salesCategory: string | null
     serviceFee: string
-    sessionCount: number | null
-    quantity: number
   }>()
 
   if (commissions.length > 0) {
@@ -161,8 +160,6 @@ export const batchSaveServiceCommissions = withPermission(
         sessionUsed: serviceItems.sessionUsed,
         salesCategory: serviceItems.salesCategory,
         serviceFee: saleItems.serviceFee,
-        sessionCount: saleItems.sessionCount,
-        quantity: saleItems.quantity,
       })
       .from(serviceItems)
       .innerJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
@@ -174,8 +171,6 @@ export const batchSaveServiceCommissions = withPermission(
         sessionUsed: row.sessionUsed,
         salesCategory: row.salesCategory,
         serviceFee: row.serviceFee ?? '0',
-        sessionCount: row.sessionCount,
-        quantity: row.quantity,
       })
     }
   }

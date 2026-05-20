@@ -134,7 +134,7 @@ export function ConversionPanel({
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
-                        <span>单价 ¥{c.unitRealPrice}</span>
+                        <span>单次价 ¥{c.unitRealPrice}</span>
                       </div>
                     </div>
                   </label>
