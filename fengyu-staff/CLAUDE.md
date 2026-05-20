@@ -24,7 +24,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 |------|------|
 | auth | login, bindPhone |
 | store | list, unbindRequests, approveUnbind, rejectUnbind |
-| staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard |
+| staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail |
 | customer | search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign, customerBalance |
 | product | shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans |
 | order | create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup |

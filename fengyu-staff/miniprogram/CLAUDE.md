@@ -73,4 +73,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 分包补充
 
-- `packageOrder` 还包含 `dashboard`（数据看板）、`staff-performance`（绩效明细）
+- `packageOrder` 还包含 `staff-performance`（绩效明细，仅从工作台首卡进入）

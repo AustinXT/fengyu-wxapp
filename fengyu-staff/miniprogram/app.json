@@ -19,7 +19,6 @@
         "revenue-allocation/revenue-allocation",
         "allocation-list/allocation-list",
         "staff-performance/staff-performance",
-        "dashboard/dashboard",
         "card-recharge/card-recharge",
         "refund-list/refund-list",
         "refund-detail/refund-detail"

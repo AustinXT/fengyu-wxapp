@@ -179,14 +179,6 @@ Page({
     wx.switchTab({ url: '/pages/customer-list/customer-list' });
   },
 
-  onNavDashboard() {
-    wx.navigateTo({ url: '/packageOrder/dashboard/dashboard' });
-  },
-
-  onNavPerformance() {
-    wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
-  },
-
   onNavAppointments() {
     wx.navigateTo({ url: '/packageService/appointment/appointment' });
   },

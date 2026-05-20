@@ -63,8 +63,6 @@
       <van-cell title="预约管理" icon="clock-o" is-link bindtap="onNavAppointments" />
       <van-cell title="顾客档案" icon="friends-o" is-link bindtap="onNavCustomers" />
       <van-cell wx:if="{{isManager}}" title="分配列表" icon="balance-o" is-link bindtap="onNavAllocationList" />
-      <van-cell title="数据看板" icon="chart-trending-o" is-link bindtap="onNavDashboard" />
-      <van-cell title="员工绩效" icon="balance-list-o" is-link bindtap="onNavPerformance" />
       <van-cell wx:if="{{canSeeInventory}}" title="库存管理" icon="goods-collect-o" is-link bindtap="onNavInventory" />
       <van-cell wx:if="{{isManager}}" title="提货核销" icon="cart-o" is-link bindtap="onNavPickup" />
     </van-cell-group>
