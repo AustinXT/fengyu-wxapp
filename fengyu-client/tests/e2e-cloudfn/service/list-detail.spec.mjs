@@ -122,11 +122,15 @@ async function caseListPagination() {
   await createTestClient()
   // uq_so_client_active 约束：同一 client_user_id 在 (待服务,服务中) 状态下唯一，
   // 故 3 单中前 2 单标记为 '已完成'，保留最后 1 单为 '待服务'（list 路由不按状态过滤，分页 3 条仍可返）
+  // uq_sale_orders_client_pending 约束：同一 client_user_id 仅允许 1 张 '待支付' 销售单，
+  // 故底层 sale_order 必须用非待支付状态（'已支付'）；本用例只需 sale_item 作为 service_items 的 FK 锚点，
+  // 销售单状态与分页断言无关。
   for (let i = 0; i < 3; i++) {
     const orderId = `${NS}_ORD_PAGE_${i}`
     const { saleItemId } = await createTestSaleOrder({
       saleOrderId: orderId,
       clientUserId: TEST_CLIENT_USER_ID,
+      status: '已支付',
     })
     await createTestServiceOrder({
       serviceOrderId: `${NS}_SVC_PAGE_${i}`,
