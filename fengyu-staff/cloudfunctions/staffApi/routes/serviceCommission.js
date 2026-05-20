@@ -26,7 +26,7 @@ function round2(n) {
 
 /**
  * 服务提成订单列表（店长专用）
- * commissionStatus 默认「待分配」，支持「已分配」用于「营业额分类」页状态切换。
+ * commissionStatus 默认「待分配」，支持「已分配」用于「营业额分配」页状态切换。
  */
 async function pendingList(ctx) {
   await requireManager()(ctx, async () => {})

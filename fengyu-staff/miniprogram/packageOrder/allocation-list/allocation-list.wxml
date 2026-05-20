@@ -1,4 +1,4 @@
-<!-- packageOrder/allocation-list/allocation-list.wxml — 营业额分类（销售提成 / 服务提成） -->
+<!-- packageOrder/allocation-list/allocation-list.wxml — 营业额分配（销售提成 / 服务提成） -->
 <view class="container">
 
   <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" line-width="40rpx">
