@@ -86,6 +86,11 @@ const routes = {
   'allocation.pendingList':  () => require('./routes/allocation').pendingList,
   'allocation.suggest':      () => require('./routes/allocation').suggest,
 
+  // 服务提成（营业额分类 - 服务提成 Tab）
+  'serviceCommission.pendingList': () => require('./routes/serviceCommission').pendingList,
+  'serviceCommission.detail':      () => require('./routes/serviceCommission').detail,
+  'serviceCommission.save':        () => require('./routes/serviceCommission').save,
+
   // 预约
   'appointment.list':     () => require('./routes/appointment').list,
   'appointment.confirm':  () => require('./routes/appointment').confirm,

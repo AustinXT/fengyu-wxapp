@@ -527,6 +527,28 @@ describe('allocation.pendingList', () => {
     expect(ctx.result.page).toBe(1)
   })
 
+  test('支持 allocationStatus=已分配（状态切换）', async () => {
+    const ctx = createManagerCtx({ page: 1, pageSize: 10, allocationStatus: '已分配' })
+
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'FY-001', status: '已支付', allocation_status: '已分配' },
+    ])
+
+    await allocationRoutes.pendingList(ctx)
+
+    expect(ctx.result.orders).toHaveLength(1)
+    // store + status 进入 SQL 参数
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toContain('已分配')
+    expect(params).toContain('store-001')
+  })
+
+  test('非法 allocationStatus 拒绝', async () => {
+    const ctx = createManagerCtx({ allocationStatus: '乱填' })
+    await expect(allocationRoutes.pendingList(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*allocationStatus/)
+  })
+
   test('非店长拒绝查看', async () => {
     const ctx = createBeauticianCtx({ page: 1 })
 

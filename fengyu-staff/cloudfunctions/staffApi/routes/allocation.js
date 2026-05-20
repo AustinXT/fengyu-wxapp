@@ -313,12 +313,16 @@ async function getCommissionRates(ctx) {
 }
 
 /**
- * 待分配订单列表（店长专用）
+ * 销售提成订单列表（店长专用）
+ * allocationStatus 默认「待分配」，支持「已分配」用于「营业额分类」页状态切换。
  */
 async function pendingList(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const { page = 1, pageSize = 20, allocationStatus = '待分配' } = ctx.event.payload || {}
+  if (!['待分配', '已分配'].includes(allocationStatus)) {
+    throw new Error('INVALID_PARAMS: allocationStatus 必须为 待分配 或 已分配')
+  }
   const offset = (page - 1) * pageSize
 
   const orders = await pg.query(`
@@ -329,10 +333,10 @@ async function pendingList(ctx) {
     FROM sale_orders o
     WHERE o.store_id = $1
       AND o.status = '已支付'
-      AND o.allocation_status = '待分配'
+      AND o.allocation_status = $2
     ORDER BY o.paid_at DESC
-    LIMIT $2 OFFSET $3
-  `, [ctx.auth.effectiveStoreId, pageSize, offset])
+    LIMIT $3 OFFSET $4
+  `, [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset])
 
   ctx.result = { orders, page, pageSize }
 }

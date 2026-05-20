@@ -29,6 +29,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | product | shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans |
 | order | create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup |
 | allocation | save, deleteAllocation, getCommissionRates, pendingList, suggest |
+| serviceCommission | pendingList, detail, save |
 | appointment | list, detail, confirm, checkin |
 | coupon | available |
 | service | create, start, complete, cancel, list, detail, counts |

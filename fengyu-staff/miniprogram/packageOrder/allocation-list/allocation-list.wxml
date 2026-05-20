@@ -1,47 +1,103 @@
-<!-- packageOrder/allocation-list/allocation-list.wxml — 待分配订单列表 -->
+<!-- packageOrder/allocation-list/allocation-list.wxml — 营业额分类（销售提成 / 服务提成） -->
 <view class="container">
+
+  <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" line-width="40rpx">
+    <van-tab title="销售提成" name="sale" />
+    <van-tab title="服务提成" name="service" />
+  </van-tabs>
+
+  <view class="status-switch">
+    <view
+      class="status-btn {{(activeTab==='sale'?saleStatus:serviceStatus)==='待分配' ? 'active' : ''}}"
+      data-status="待分配"
+      bindtap="onStatusChange"
+    >待分配</view>
+    <view
+      class="status-btn {{(activeTab==='sale'?saleStatus:serviceStatus)==='已分配' ? 'active' : ''}}"
+      data-status="已分配"
+      bindtap="onStatusChange"
+    >已分配</view>
+  </view>
 
   <view wx:if="{{loading && orders.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <van-empty wx:elif="{{!loading && orders.length === 0}}" description="暂无待分配订单" />
+  <van-empty wx:elif="{{!loading && orders.length === 0}}" description="暂无数据" />
 
   <block wx:else>
-    <view
-      class="order-card"
-      wx:for="{{orders}}"
-      wx:key="sale_order_id"
-      data-sale-order-id="{{item.sale_order_id}}"
-      bindtap="onTapOrder"
-    >
-      <view class="card-header">
-        <text class="order-no">{{item.sale_order_id}}</text>
-        <view class="tag-group">
-          <van-tag wx:if="{{!item.opened_by}}" color="#1976D2" plain>客户自助</van-tag>
-          <van-tag wx:if="{{item.preferred_employee_id}}" color="#7B1FA2" plain>已指定美容师</van-tag>
-          <van-tag color="#D4820A" plain>待分配</van-tag>
+    <!-- 销售提成卡片 -->
+    <block wx:if="{{activeTab === 'sale'}}">
+      <view
+        class="order-card"
+        wx:for="{{orders}}"
+        wx:key="sale_order_id"
+        data-id="{{item.sale_order_id}}"
+        bindtap="onTapOrder"
+      >
+        <view class="card-header">
+          <text class="order-no">{{item.sale_order_id}}</text>
+          <view class="tag-group">
+            <van-tag wx:if="{{item.preferred_employee_id}}" color="#7B1FA2" plain>已指定美容师</van-tag>
+            <van-tag color="{{item.allocation_status === '已分配' ? '#3D8A5A' : '#D4820A'}}" plain>{{item.allocation_status}}</van-tag>
+          </view>
+        </view>
+        <view class="card-body">
+          <view class="info-row">
+            <text class="info-label">顾客</text>
+            <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">金额</text>
+            <text class="info-value amount">¥{{item.total_amount}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">支付时间</text>
+            <text class="info-value">{{item.time_display || item.paid_at}}</text>
+          </view>
+        </view>
+        <view class="card-footer">
+          <text class="action-hint">{{item.allocation_status === '已分配' ? '点击查看 / 调整' : '点击分配提成'}}</text>
+          <van-icon name="arrow" size="28rpx" color="#999" />
         </view>
       </view>
-      <view class="card-body">
-        <view class="info-row">
-          <text class="info-label">顾客</text>
-          <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
+    </block>
+
+    <!-- 服务提成卡片 -->
+    <block wx:else>
+      <view
+        class="order-card"
+        wx:for="{{orders}}"
+        wx:key="service_order_id"
+        data-id="{{item.service_order_id}}"
+        bindtap="onTapOrder"
+      >
+        <view class="card-header">
+          <text class="order-no">{{item.service_order_id}}</text>
+          <view class="tag-group">
+            <van-tag color="{{item.commission_status === '已分配' ? '#3D8A5A' : '#D4820A'}}" plain>{{item.commission_status}}</van-tag>
+          </view>
         </view>
-        <view class="info-row">
-          <text class="info-label">金额</text>
-          <text class="info-value amount">¥{{item.total_amount}}</text>
+        <view class="card-body">
+          <view class="info-row">
+            <text class="info-label">顾客</text>
+            <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">美容师</text>
+            <text class="info-value">{{item.employee_name || '-'}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">服务日期</text>
+            <text class="info-value">{{item.time_display || item.service_date}}</text>
+          </view>
         </view>
-        <view class="info-row">
-          <text class="info-label">支付时间</text>
-          <text class="info-value">{{item.paid_at_display || item.paid_at}}</text>
+        <view class="card-footer">
+          <text class="action-hint">{{item.commission_status === '已分配' ? '点击查看 / 调整' : '点击分配提成'}}</text>
+          <van-icon name="arrow" size="28rpx" color="#999" />
         </view>
       </view>
-      <view class="card-footer">
-        <text class="action-hint">点击分配提成</text>
-        <van-icon name="arrow" size="28rpx" color="#999" />
-      </view>
-    </view>
+    </block>
   </block>
 
   <view wx:if="{{loading && orders.length > 0}}" class="loading-more">

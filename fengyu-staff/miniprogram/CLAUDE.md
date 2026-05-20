@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 分包 | 页面 |
 |------|------|
-| packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list |
+| packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list, service-commission |
 | packageCustomer | customer-detail |
 | packageService | service-list, service-detail, service-create, appointment, appointment-detail, product-detail, unbind-requests |
 

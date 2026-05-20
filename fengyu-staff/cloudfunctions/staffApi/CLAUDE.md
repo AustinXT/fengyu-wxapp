@@ -23,7 +23,8 @@ staffApi/
 │   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign
 │   ├── product.js    # shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans
 │   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup, availablePickupItems, pickupRecordsList
-│   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList, suggest
+│   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList(支持 allocationStatus), suggest
+│   ├── serviceCommission.js # pendingList(已完成服务单), detail, save（服务提成手动分配，按 ratio 拆分）
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
 │   ├── service.js    # create, start, complete, cancel, list, detail, counts

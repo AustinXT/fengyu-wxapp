@@ -1,6 +1,29 @@
 /* packageOrder/allocation-list/allocation-list.wxss */
 
+.loading-wrap { display: flex; justify-content: center; padding: 80rpx 0; }
 .loading-more { display: flex; justify-content: center; padding: 32rpx 0; }
+
+.status-switch {
+  display: flex;
+  gap: 16rpx;
+  padding: 20rpx 32rpx 4rpx;
+}
+.status-btn {
+  flex: 1;
+  text-align: center;
+  font-size: 26rpx;
+  color: #666;
+  background: #FFFFFF;
+  border: 1rpx solid #E5E5E5;
+  border-radius: 999rpx;
+  padding: 12rpx 0;
+}
+.status-btn.active {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: rgba(192, 50, 42, 0.06);
+  font-weight: 600;
+}
 
 .order-card {
   background: #FFFFFF;

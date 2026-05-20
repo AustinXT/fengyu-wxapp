@@ -18,6 +18,7 @@
         "order-detail/order-detail",
         "revenue-allocation/revenue-allocation",
         "allocation-list/allocation-list",
+        "service-commission/service-commission",
         "staff-performance/staff-performance",
         "card-recharge/card-recharge",
         "refund-list/refund-list",

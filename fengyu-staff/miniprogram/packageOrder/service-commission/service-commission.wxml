@@ -1,0 +1,141 @@
+<!-- packageOrder/service-commission/service-commission.wxml — 服务提成分配 -->
+<wxs module="fmt">
+module.exports.pct = function(rate) {
+  return (rate * 100).toFixed(1);
+}
+</wxs>
+<view class="container">
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <block wx:else>
+    <!-- 服务单摘要 -->
+    <view class="order-header">
+      <text class="order-no">{{serviceOrderId}}</text>
+      <view class="header-info">
+        <text class="customer-name">{{order.customer_name || '未知顾客'}}</text>
+        <text class="paid-at" wx:if="{{order.service_date}}">服务日期 {{order.service_date}}</text>
+      </view>
+      <view class="header-info" wx:if="{{order.employee_name}}">
+        <text class="paid-at">美容师 {{order.employee_name}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{isAllocated}}" class="status-notice status-notice--allocated">
+      <van-icon name="passed" size="28rpx" color="#3D8A5A" />
+      <text class="status-text">该服务单已分配，可修改后重新保存</text>
+    </view>
+
+    <!-- 按服务明细分组 -->
+    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="service_item_id">
+      <view class="item-header">
+        <view class="item-name-row">
+          <text class="item-name">{{dItem.product_name || dItem.sku_spec_name}}</text>
+          <van-tag wx:if="{{dItem.sales_category}}" plain color="#666" size="medium">{{dItem.sales_category}}</van-tag>
+        </view>
+        <text class="item-amount">¥{{dItem.consumeBase}}</text>
+      </view>
+      <view class="item-sub">核销 {{dItem.session_used}} 次 · 单次价基数 ¥{{dItem.consumeBase}}</view>
+
+      <!-- 分配行 -->
+      <view
+        class="comm-row"
+        wx:for="{{dItem.allocLines}}"
+        wx:for-item="line"
+        wx:for-index="lineIdx"
+        wx:key="lineIdx"
+      >
+        <view class="comm-main">
+          <text class="person-name">{{line.staffName}}</text>
+          <van-tag color="#1976D2" plain size="medium">{{line.roleType}}</van-tag>
+        </view>
+        <view class="comm-metrics">
+          <view class="metric">
+            <text class="metric-label">提成</text>
+            <text class="metric-value {{line.commissionRate <= 0 ? 'metric-warn' : ''}}">{{fmt.pct(line.commissionRate)}}%</text>
+          </view>
+          <view class="metric">
+            <text class="metric-label">分配</text>
+            <picker
+              mode="selector"
+              range="{{ratioOptions}}"
+              value="{{line.ratioPercent / 10 - 1}}"
+              data-item-idx="{{itemIdx}}"
+              data-line-idx="{{lineIdx}}"
+              bindchange="onRatioChange"
+            >
+              <view class="ratio-picker">{{line.ratioPercent}}% <van-icon name="arrow-down" size="20rpx" color="#999" /></view>
+            </picker>
+          </view>
+          <view class="metric">
+            <text class="metric-label">分配额</text>
+            <text class="metric-value">¥{{line.allocAmount}}</text>
+          </view>
+          <view class="metric">
+            <text class="metric-label">提成额</text>
+            <text class="metric-value amount">¥{{line.commissionAmount}}</text>
+          </view>
+          <view class="remove-btn" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="onRemovePerson">
+            <van-icon name="cross" size="28rpx" color="#999" />
+          </view>
+        </view>
+      </view>
+
+      <!-- 池汇总 -->
+      <view class="pool-summary" wx:if="{{dItem.poolSummary.length > 0}}">
+        <text
+          wx:for="{{dItem.poolSummary}}"
+          wx:for-item="pool"
+          wx:key="role"
+          class="pool-tag {{pool.percent > 100 ? 'pool-over' : ''}}"
+        >{{pool.role}}: {{pool.percent}}% / 100%</text>
+      </view>
+
+      <view class="add-person-btn" data-service-item-id="{{dItem.service_item_id}}" bindtap="onAddPerson">
+        <van-icon name="plus" size="28rpx" color="#C0322A" />
+        <text class="add-person-text">添加分配</text>
+      </view>
+    </view>
+
+    <view class="action-bar">
+      <van-button
+        type="primary"
+        block
+        loading="{{submitting}}"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;"
+        bind:click="onSave"
+      >保存提成方案</van-button>
+    </view>
+  </block>
+
+  <!-- 选人弹窗 -->
+  <van-popup show="{{pickerVisible}}" position="bottom" round bind:close="onPickerClose">
+    <view class="picker-header">
+      <text class="picker-title">选择员工</text>
+      <view bindtap="onPickerClose">
+        <van-icon name="cross" size="36rpx" color="#999" />
+      </view>
+    </view>
+    <scroll-view class="picker-scroll" scroll-y>
+      <view class="picker-group" wx:for="{{pickerGroups}}" wx:for-item="group" wx:key="department">
+        <view class="picker-group-title">{{group.department}}</view>
+        <view
+          class="picker-member"
+          wx:for="{{group.members}}"
+          wx:for-item="member"
+          wx:key="staffWfId"
+          data-staff-wf-id="{{member.staffWfId}}"
+          data-department="{{group.department}}"
+          bindtap="onStaffSelected"
+        >
+          <text class="picker-member-name">{{member.staffName}}</text>
+        </view>
+      </view>
+    </scroll-view>
+  </van-popup>
+
+  <view class="safe-area-bottom" />
+</view>
