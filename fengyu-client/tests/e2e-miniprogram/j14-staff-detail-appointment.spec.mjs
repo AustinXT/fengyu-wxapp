@@ -66,13 +66,13 @@ async function insertPaidCourseOrder({ userId }) {
          sku_id, product_name, sku_spec_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions, paid_sessions,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                $4, $5, '5次卡', '疗程卡'::product_type,
                500, 1, 500, 500, 500,
                5, 5, 5,
-               false, false)`,
+               false)`,
       [COURSE_ITEM_ID, COURSE_ORDER_ID, TEST_STORE_ID, L3_SKU_COURSE_ID, `${NS}_疗程卡商品`]
     )
   })
