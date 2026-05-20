@@ -163,7 +163,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         type="default"
         block
         round
-        size="large"
+        size="normal"
         bindtap="onCancel"
         class="cancel-btn"
       >取消订单</van-button>
@@ -171,7 +171,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         type="primary"
         block
         round
-        size="large"
+        size="normal"
         bindtap="onPay"
         class="pay-btn"
       >去支付</van-button>
@@ -186,7 +186,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         type="primary"
         block
         round
-        size="large"
+        size="normal"
         bindtap="onContinuePayTap"
         class="pay-btn"
       >继续支付 ¥{{order.outstanding_fmt}}</van-button>
@@ -199,7 +199,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           type="primary"
           block
           round
-          size="large"
+          size="normal"
           bindtap="onCreateAppointment"
           class="appt-btn"
         >发起预约</van-button>
@@ -208,7 +208,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           block
           round
           plain
-          size="large"
+          size="normal"
           custom-style="color:#C0322A;border-color:#C0322A;"
           bindtap="onViewTreatmentCards"
           class="treatment-btn"
@@ -220,7 +220,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         block
         round
         plain
-        size="large"
+        size="normal"
         custom-style="color:#C0322A;border-color:#C0322A;"
         bindtap="onViewTreatmentCards"
       >查看疗程卡</van-button>
@@ -233,7 +233,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       block
       round
       plain
-      size="large"
+      size="normal"
       custom-style="color:#C0322A;border-color:#C0322A;"
       bindtap="onBackToHome"
     >返回首页</van-button>
