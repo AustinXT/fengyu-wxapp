@@ -846,7 +846,11 @@ export default function OrderCreatePageClient({
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
-                <p className="font-medium">线下收款</p>
+                <Select className="mt-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                  <option value="微信">微信支付</option>
+                  <option value="支付宝">支付宝</option>
+                  <option value="线下">线下支付</option>
+                </Select>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">入账门店</label>
@@ -883,7 +887,9 @@ export default function OrderCreatePageClient({
             </div>
 
             <p className="text-xs text-[#999999]">
-              · 充值订单创建后为「待支付」，入账由店长在小程序确认收款 / admin 录入回款触发，到账后储值卡余额 +¥{formatRechargeAmount(rechargeResolved.faceValue)}（按面额入账）
+              {paymentMethod === '线下'
+                ? `· 线下支付：创建后在完成页「确认收款」即入账，储值卡余额 +¥${formatRechargeAmount(rechargeResolved.faceValue)}（按面额入账）`
+                : `· 在线支付：创建后展示二维码给顾客扫码支付，支付成功后储值卡自动 +¥${formatRechargeAmount(rechargeResolved.faceValue)}（按面额入账）`}
             </p>
 
             <div className="flex justify-between">
@@ -901,6 +907,7 @@ export default function OrderCreatePageClient({
                     clientUserId: selectedCustomer.userId,
                     storeId: selectedStoreId,
                     faceValue: resolved.faceValue,
+                    paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     remark: remark.trim() || null,
                   })
                   if (res.success && res.saleOrderId) {
@@ -1369,10 +1376,10 @@ export default function OrderCreatePageClient({
               </div>
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">
-              {rechargeResult
-                ? '充值订单已创建'
-                : paymentConfirmed
+              {paymentConfirmed
                 ? '收款已确认'
+                : rechargeResult
+                ? '充值订单已创建'
                 : conversionResult
                   ? '转换单已创建'
                   : createdStatus === '部分支付'
@@ -1389,9 +1396,17 @@ export default function OrderCreatePageClient({
                 <p className="text-[#666666]">
                   面额 ¥{formatRechargeAmount(rechargeResult.faceValue)} ｜ 实付 ¥{formatRechargeAmount(rechargeResult.payAmount)}
                 </p>
-                <p className="text-[#D4820A]">
-                  待入账：店长在小程序确认收款 / admin 录入回款后，储值卡余额 +¥{formatRechargeAmount(rechargeResult.faceValue)}
-                </p>
+                {paymentConfirmed ? (
+                  <p className="text-[#3D8A5A]">储值卡已入账 +¥{formatRechargeAmount(rechargeResult.faceValue)}</p>
+                ) : paymentMethod === '线下' ? (
+                  <p className="text-[#D4820A]">
+                    线下充值：请点击下方「确认收款」完成入账，储值卡余额将 +¥{formatRechargeAmount(rechargeResult.faceValue)}
+                  </p>
+                ) : (
+                  <p className="text-[#D4820A]">
+                    请将二维码展示给顾客扫码支付，支付成功后储值卡自动 +¥{formatRechargeAmount(rechargeResult.faceValue)}
+                  </p>
+                )}
               </div>
             ) : conversionResult ? (
               <div className="text-sm space-y-1">
@@ -1432,15 +1447,15 @@ export default function OrderCreatePageClient({
               </p>
             )}
 
-            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景；部分支付/充值单不显示二维码）*/}
-            {!rechargeResult && paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
+            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额 + 充值单在线支付场景；部分支付不显示二维码）*/}
+            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
-            {/* 线下支付：确认收款按钮（仅 待支付 状态显示；部分支付订单已记录首次收款，不再走 confirmOffline；充值单入账走 confirmOffline/录入回款，此处不显示）*/}
-            {!rechargeResult && paymentMethod === '线下' && createdOrderId && !paymentConfirmed
+            {/* 线下支付：确认收款按钮（待支付状态显示；充值单线下亦走 confirmOffline 触发入账；部分支付订单已记录首次收款不再走 confirmOffline）*/}
+            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <div className="pt-2">

@@ -417,14 +417,17 @@ export const getRechargeConfig = withPermission(
 /**
  * admin 自建充值订单
  *
- * 与 staff card.recharge 字节同义（仅 paymentMethod 限定为 '线下'）：
+ * 与 staff card.recharge 同义：
  *   - 校验顾客 + 门店 scope
  *   - 拒绝并发待支付订单
  *   - 事务内 advisory lock → 生成 saleOrderId → INSERT sale_orders type='充值单'，0 sale_items
  *   - total_amount = faceValue，payable_amount = matchTier(faceValue).payAmount
  *
- * 后续入账走 staff order.confirmOffline（或 admin recordPayment）触发 applyRechargeOnOrderPaid，
- * UPSERT prepaid_cards.balance += faceValue + INSERT card_transactions(type='充值')。
+ * paymentMethod 支持 线下 / 微信 / 支付宝：
+ *   - 线下：创建后由 admin 在完成页「确认收款」(confirmOfflinePayment) 触发入账
+ *   - 微信/支付宝：创建后展示小程序码，顾客扫码支付 → payNotify 回调触发入账
+ * 三条路径统一走 applyRechargeOnOrderPaid（UPSERT prepaid_cards.balance += faceValue +
+ * INSERT card_transactions(type='充值')，幂等键 card-topup-{saleOrderId}）。
  */
 export const createRechargeOrder = withPermission(
   'sale_order:create',
@@ -434,6 +437,7 @@ export const createRechargeOrder = withPermission(
       clientUserId: string
       storeId: string
       faceValue: number
+      paymentMethod: '微信' | '支付宝' | '线下'
       remark?: string | null
     },
   ): Promise<{ success: boolean; message: string; saleOrderId?: string; payAmount?: number }> => {
@@ -441,6 +445,9 @@ export const createRechargeOrder = withPermission(
     if (!data.storeId) return { success: false, message: '请选择入账门店' }
     if (!Number.isFinite(data.faceValue) || data.faceValue <= 0) {
       return { success: false, message: '充值金额无效' }
+    }
+    if (!['微信', '支付宝', '线下'].includes(data.paymentMethod)) {
+      return { success: false, message: '支付方式无效' }
     }
     if (!isInScope(session, data.storeId)) {
       return { success: false, message: '无权在该门店创建充值订单' }
@@ -534,7 +541,7 @@ export const createRechargeOrder = withPermission(
           firstPaymentAmount: null,
           couponId: null,
           couponDiscount: '0',
-          paymentMethod: '线下',
+          paymentMethod: data.paymentMethod,
           openedBy: session.employeeId,
           preferredEmployeeId: null,
           allocationStatus: '待分配',
@@ -554,6 +561,7 @@ export const createRechargeOrder = withPermission(
       storeId: data.storeId,
       faceValue: data.faceValue,
       payAmount,
+      paymentMethod: data.paymentMethod,
     })
 
     revalidatePath('/orders')
