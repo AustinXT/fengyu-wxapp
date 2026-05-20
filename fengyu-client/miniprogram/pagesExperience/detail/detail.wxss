@@ -159,10 +159,10 @@
   width: 100%;
   background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
   color: #FFFFFF;
-  font-size: 32rpx;
-  font-weight: 600;
-  border-radius: 48rpx;
-  padding: 22rpx 0;
+  font-size: 30rpx;
+  font-weight: 500;
+  border-radius: 40rpx;
+  padding: 12rpx 0;
   border: none;
 }
 

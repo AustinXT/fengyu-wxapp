@@ -66,14 +66,14 @@
 
 .phone-bind-btn {
   width: 100%;
-  height: 88rpx;
+  height: 72rpx;
   background: var(--color-primary);
   color: #FFFFFF;
-  font-size: 30rpx;
-  font-weight: 600;
+  font-size: 28rpx;
+  font-weight: 500;
   border: none;
-  border-radius: 44rpx;
-  line-height: 88rpx;
+  border-radius: 36rpx;
+  line-height: 72rpx;
 }
 
 .phone-bind-btn::after {

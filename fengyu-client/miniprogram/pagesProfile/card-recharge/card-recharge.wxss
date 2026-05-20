@@ -287,10 +287,10 @@
   width: 100%;
   background: var(--color-primary);
   color: #FFFFFF;
-  font-size: 32rpx;
-  font-weight: 600;
-  border-radius: 48rpx;
-  padding: 22rpx 0;
+  font-size: 30rpx;
+  font-weight: 500;
+  border-radius: 40rpx;
+  padding: 12rpx 0;
   border: none;
 }
 
