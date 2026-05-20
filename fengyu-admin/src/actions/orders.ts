@@ -960,12 +960,13 @@ export const createOrder = withPermission(
     }),
   }
 
-  // 计算商品总金额（基于 received 实收）
-  // 浮点 round 兜底（行级 + 累加后），与 staff order.js L446 / client order.js L267 对齐
-  // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
+  // 计算商品总金额（应付，基于 saleAmount/unitRealPrice，不依赖 item.received）
+  // 与 sale_items.sale_amount 落库口径一致（L1286-1287），跨端与 staff order.js L523 /
+  // client order.js L405-416 对齐。item.received（部分支付实收）不参与 total_amount。
+  // 浮点 round 兜底（行级 + 累加后），见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
   const rawTotal = Math.round(data.items.reduce((sum, item) => {
     const computed = Number(item.unitRealPrice) * item.quantity
-    const itemAmount = item.received ? Number(item.received) : (item.saleAmount ? Number(item.saleAmount) : computed)
+    const itemAmount = item.saleAmount ? Number(item.saleAmount) : computed
     return sum + Math.round(itemAmount * 100) / 100
   }, 0) * 100) / 100
 
@@ -2170,8 +2171,10 @@ export const recordPayment = withPermission(
       }
       const locked = lockedRows[0]
 
-      // scope 保护：非 admin 的 record_payment 由权限矩阵拒绝，此处 admin 默认可跨门店；
-      // 若未来扩展该权限到 scoped 角色，需要在此处做 isInScope(session, locked.store_id) 校验。
+      // scope 保护：admin 跨门店免检；manager / finance 等 scoped 角色按 storeId 校验
+      if (!isInScope(session, locked.store_id)) {
+        throw new ApiError('PERMISSION_DENIED', 'OUT_OF_SCOPE: 该订单不在你的可见门店范围内')
+      }
 
       if (!['部分支付', '待支付'].includes(locked.status)) {
         throw new Error(`INVALID_STATE:${locked.status}`)

@@ -37,6 +37,7 @@ interface CustomerDetailPageProps {
   orphanProfiles: OrphanProfile[]
   canEditPhone?: boolean
   canPullLegacy?: boolean
+  canRecharge?: boolean
 }
 
 export default function CustomerDetailPage({
@@ -49,6 +50,7 @@ export default function CustomerDetailPage({
   orphanProfiles,
   canEditPhone = false,
   canPullLegacy = false,
+  canRecharge = false,
 }: CustomerDetailPageProps) {
   const router = useRouter()
   const [merging, setMerging] = useState<string | null>(null)
@@ -351,16 +353,25 @@ export default function CustomerDetailPage({
             {customer.memberLevel}
           </Badge>
         )}
-        {canPullLegacy && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto"
-            onClick={() => setPullLegacyOpen(true)}
-          >
-            拉取 WorkFine 历史订单
-          </Button>
-        )}
+        <div className="ml-auto flex gap-2">
+          {canRecharge && (
+            <Button
+              size="sm"
+              onClick={() => router.push(`/customers/${customer.userId}/recharge`)}
+            >
+              为顾客充值
+            </Button>
+          )}
+          {canPullLegacy && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPullLegacyOpen(true)}
+            >
+              拉取 WorkFine 历史订单
+            </Button>
+          )}
+        </div>
       </div>
 
       <PullWorkfineDialog

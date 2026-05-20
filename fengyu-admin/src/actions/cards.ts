@@ -331,7 +331,10 @@ export const getCustomerHeldCards = withPermission(
 // admin / staff / client 三端均通过同步读取相同的 system_configs 行保持一致。
 // ============================================================================
 
-import { loadRechargeConfig, type RechargeTier } from '@/lib/recharge'
+import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
+import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
+import { revalidatePath } from 'next/cache'
 
 /**
  * 充值档位（system_configs 驱动；admin 开单页可选档位）
@@ -392,5 +395,174 @@ export const getCustomerCardBalance = withPermission(
     if (!rows.length) return 0
     const n = Number(rows[0].balance)
     return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0
+  },
+)
+
+/**
+ * 拉充值档位配置（含 minAmount/maxAmount）—— 自建充值页表单实时校验用
+ *
+ * 与 staff card.rechargeConfig + client card.rechargeConfig 同 shape。
+ */
+export const getRechargeConfig = withPermission(
+  'sale_order:create',
+  async (_session): Promise<RechargeConfig> => {
+    const cfg = await loadRechargeConfig()
+    return {
+      tiers: cfg.tiers.map((t: RechargeTier) => ({
+        faceValue: t.faceValue,
+        payAmount: t.payAmount,
+      })),
+      minAmount: cfg.minAmount,
+      maxAmount: cfg.maxAmount,
+    }
+  },
+)
+
+/**
+ * admin 自建充值订单
+ *
+ * 与 staff card.recharge 字节同义（仅 paymentMethod 限定为 '线下'）：
+ *   - 校验顾客 + 门店 scope
+ *   - 拒绝并发待支付订单
+ *   - 事务内 advisory lock → 生成 saleOrderId → INSERT sale_orders type='充值单'，0 sale_items
+ *   - total_amount = faceValue，payable_amount = matchTier(faceValue).payAmount
+ *
+ * 后续入账走 staff order.confirmOffline（或 admin recordPayment）触发 applyRechargeOnOrderPaid，
+ * UPSERT prepaid_cards.balance += faceValue + INSERT card_transactions(type='充值')。
+ */
+export const createRechargeOrder = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
+      clientUserId: string
+      storeId: string
+      faceValue: number
+      remark?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; saleOrderId?: string; payAmount?: number }> => {
+    if (!data.clientUserId) return { success: false, message: '请选择顾客' }
+    if (!data.storeId) return { success: false, message: '请选择入账门店' }
+    if (!Number.isFinite(data.faceValue) || data.faceValue <= 0) {
+      return { success: false, message: '充值金额无效' }
+    }
+    if (!isInScope(session, data.storeId)) {
+      return { success: false, message: '无权在该门店创建充值订单' }
+    }
+
+    let payAmount: number
+    try {
+      const cfg = await loadRechargeConfig()
+      const matched = matchTier(data.faceValue, cfg)
+      payAmount = matched.payAmount
+    } catch (err: any) {
+      return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
+    }
+
+    // 顾客 + market_name + documentType 快照
+    const [client] = await db
+      .select({
+        userId: clientWechatUsers.userId,
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+        customerType: clientWechatUsers.customerType,
+      })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (!client) return { success: false, message: '顾客不存在' }
+    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+
+    // 门店 + marketName 快照（与 staff card.recharge 同口径：跨两级 org_nodes 取上级 market）
+    const storeRows = (await db.execute(sql`
+      SELECT s.store_id, pm.name AS market_name
+      FROM stores s
+      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+      WHERE s.store_id = ${data.storeId}
+      LIMIT 1
+    `)) as unknown as Array<{ store_id: string; market_name: string | null }>
+    if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
+    const marketName = storeRows[0].market_name || ''
+
+    // 拒绝并发待支付订单（uq_sale_orders_client_pending 兜底）
+    const existing = await db
+      .select({ saleOrderId: saleOrders.saleOrderId })
+      .from(saleOrders)
+      .where(and(eq(saleOrders.clientUserId, data.clientUserId), eq(saleOrders.status, '待支付')))
+      .limit(1)
+    if (existing.length > 0) {
+      return {
+        success: false,
+        message: `该顾客已有待支付订单 ${existing[0].saleOrderId}，请先完成或关闭后再充值`,
+      }
+    }
+
+    // 事务：advisory lock → 生成 saleOrderId → INSERT sale_orders（type='充值单'，0 items）
+    let saleOrderId: string
+    try {
+      saleOrderId = await db.transaction(async (tx) => {
+        const idRows = await tx.execute(sql`
+          WITH lock AS (
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          )
+          SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+            LPAD(
+              (SELECT COALESCE(MAX(
+                CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+              ), 0) + 1
+              FROM sale_orders
+              WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+              )::TEXT, 4, '0'
+            ) AS id
+          FROM lock
+        `)
+        const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
+        if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+
+        await tx.insert(saleOrders).values({
+          saleOrderId: id,
+          status: '待支付',
+          saleOrderType: '充值单',
+          documentType,
+          marketName,
+          storeId: data.storeId,
+          saleOrderDatetime: new Date(),
+          clientUserId: data.clientUserId,
+          clientPhone: client.phone || '',
+          customerName: client.name || '',
+          totalAmount: data.faceValue.toFixed(2),
+          prepaidCardAmount: '0',
+          payableAmount: payAmount.toFixed(2),
+          received: '0',
+          firstPaymentAmount: null,
+          couponId: null,
+          couponDiscount: '0',
+          paymentMethod: '线下',
+          openedBy: session.employeeId,
+          preferredEmployeeId: null,
+          allocationStatus: '待分配',
+          remark: data.remark || null,
+          paidAt: null,
+        })
+
+        return id
+      })
+    } catch (err: any) {
+      const msg = err?.message || '充值订单创建失败'
+      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+    }
+
+    await logOperation(session, 'sale_order.create_recharge', 'sale_order', saleOrderId, {
+      clientUserId: data.clientUserId,
+      storeId: data.storeId,
+      faceValue: data.faceValue,
+      payAmount,
+    })
+
+    revalidatePath('/orders')
+    revalidatePath(`/customers/${data.clientUserId}`)
+
+    return { success: true, message: '充值订单已创建', saleOrderId, payAmount }
   },
 )

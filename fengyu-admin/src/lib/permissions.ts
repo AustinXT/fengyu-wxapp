@@ -61,6 +61,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list',
     'coupon:list',
     'sale_order:list', 'sale_order:create', 'sale_order:update',
+    // 部分支付回款：店长在前台收尾款（与 manager 创建订单的现金流入口对齐）
+    'sale_order:record_payment',
     // 退款：店长可发起申请 + 审批（含 reject）— 唯一持 approve 的角色
     'sale_order:refund_create', 'sale_order:refund_approve',
     'sale_item:list',

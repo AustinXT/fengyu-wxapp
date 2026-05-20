@@ -68,6 +68,22 @@ WHERE sale_items.sale_order_id = $1`
  * 抛 CONFLICT，提示调用方先取消已生成的服务单。
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
+  // STEP 1: 按 sale_amount 比例把 sale_orders.received 摊到 sale_items.received
+  // recordPayment 只更新 sale_orders.received；paid_sessions 公式以 sale_items.received 为分子，
+  // 不在此处同步会让回款后 paid_sessions 停在创建时的快照。摊分保证 sum(sale_items.received) = sale_orders.received。
+  await tx.execute(sql`
+    UPDATE sale_items
+    SET received = CASE
+      WHEN op.total_amount > 0
+        THEN ROUND(op.received::numeric * sale_items.sale_amount::numeric / op.total_amount::numeric, 2)
+      ELSE 0
+    END,
+    updated_at = NOW()
+    FROM (SELECT received, total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
+    WHERE sale_items.sale_order_id = ${saleOrderId}
+  `)
+
+  // STEP 2: 按行级公式重算 paid_sessions（公式守 cross-end-sql-snapshot，不改字面）
   await tx.execute(sql`
     UPDATE sale_items
     SET paid_sessions = CASE

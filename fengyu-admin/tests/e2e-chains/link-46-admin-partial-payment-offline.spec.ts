@@ -321,8 +321,9 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
 
   await page.getByRole('button', { name: '确认录入' }).click()
   // 等弹窗关闭 + 详情页 refresh
+  // 等原生 <dialog> 关闭（项目 Dialog 用 <dialog> 元素，关闭后 DOM 仍在但 [open] 属性移除）
   await page.waitForFunction(
-    () => !document.body.textContent?.includes('储值卡抵扣金额（可选）'),
+    () => !document.querySelector('dialog[open]'),
     { timeout: 15000 },
   )
   await page.waitForTimeout(1500)
@@ -373,8 +374,9 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await page.getByPlaceholder(/BANK-/).fill(`E2E-LINK46-REPAY2-${Date.now()}`)
 
   await page.getByRole('button', { name: '确认录入' }).click()
+  // 等原生 <dialog> 关闭（项目 Dialog 用 <dialog> 元素，关闭后 DOM 仍在但 [open] 属性移除）
   await page.waitForFunction(
-    () => !document.body.textContent?.includes('储值卡抵扣金额（可选）'),
+    () => !document.querySelector('dialog[open]'),
     { timeout: 15000 },
   )
   await page.waitForTimeout(1500)
