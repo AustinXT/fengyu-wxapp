@@ -58,12 +58,26 @@ function writeContext(data: Record<string, unknown>) {
 
 test.setTimeout(200000)
 
+const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
+
 test('链路 28：折扣券触发封顶', async ({ page }) => {
   ensureDir(TEST_RESULTS_DIR)
   page.on('console', (m) => { if (m.type() === 'error') console.log(`[browser-error] ${m.text()}`) })
 
   // ---- 前置：重置 user_coupon 状态 ----
   psql(`UPDATE user_coupons SET status='未使用', used_sale_order_id=NULL, used_at=NULL WHERE coupon_id='${FIXTURE_COUPON_ID}'`)
+
+  // ── 预清理 — 删除 fixture 顾客残留的 待支付 订单 ──
+  // createOrder D1 守卫："该顾客已有待支付订单 X，请先关闭后再创建新订单"
+  // 上一轮测试若在 saleOrderId 解析前异常退出，会留下孤儿 待支付 行阻塞本轮 Step 1。
+  const orphanIdsRaw = psql(
+    `SELECT sale_order_id FROM sale_orders WHERE client_user_id='${FIXTURE_USER_ID}' AND status='待支付' AND sale_order_type IN ('销售单','转换单')`,
+  )
+  const orphanIds = orphanIdsRaw.split('\n').map((s) => s.trim()).filter(Boolean)
+  for (const oid of orphanIds) {
+    console.log(`[链路28/preclean] 清理残留 待支付 订单 ${oid}`)
+    cleanupSaleOrder(oid, psql, { logPrefix: '[链路28/preclean]' })
+  }
 
   // ---- 登录 ----
   await page.goto(`${BASE}/login`)

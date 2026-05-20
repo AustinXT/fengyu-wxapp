@@ -144,6 +144,31 @@ test('链路23：服务单"待服务"取消 → session 不回退（未曾扣减
   let serviceOrderId = ''
   let serviceItemId = ''
 
+  // ── Step 0: 预清理 — 删除 fixture 顾客残留的 待支付 订单 + 残留待服务单 ──
+  // createOrder 内有 D1 守卫："该顾客已有待支付订单 X，请先关闭后再创建新订单"
+  // 上一轮测试若在 saleOrderId 解析前异常退出，会留下孤儿 待支付 行阻塞本轮 Step 1。
+  // 同时清理本 spec 命名空间的残留 service_order（FY-FW-LINK23-*）避免重复 ID。
+  const orphanIdsRaw = psql(
+    `SELECT sale_order_id FROM sale_orders WHERE client_user_id='${FIXTURE_USER_ID}' AND status='待支付' AND sale_order_type IN ('销售单','转换单')`,
+  )
+  const orphanIds = orphanIdsRaw.split('\n').map((s) => s.trim()).filter(Boolean)
+  for (const oid of orphanIds) {
+    console.log(`[链路23/preclean] 清理残留 待支付 订单 ${oid}`)
+    cleanupSaleOrder(oid, psql, { logPrefix: '[链路23/preclean]' })
+  }
+  // 残留 LINK23 service_order/items/logs
+  const orphanSvcRaw = psql(
+    `SELECT service_order_id FROM service_orders WHERE service_order_id LIKE 'FY-FW-LINK23-%'`,
+  )
+  const orphanSvcIds = orphanSvcRaw.split('\n').map((s) => s.trim()).filter(Boolean)
+  for (const sid of orphanSvcIds) {
+    console.log(`[链路23/preclean] 清理残留 service_order ${sid}`)
+    psql(`DELETE FROM service_commissions WHERE service_item_id LIKE '${sid}-%'`)
+    psql(`DELETE FROM service_items WHERE service_order_id='${sid}'`)
+    psql(`DELETE FROM service_orders WHERE service_order_id='${sid}'`)
+    psql(`DELETE FROM operation_logs WHERE target_id='${sid}'`)
+  }
+
   try {
     // ── Step 1: 开订单 ──
     console.log('[链路23] Step 1: MGR 开订单')
