@@ -1,7 +1,6 @@
 // pages/profile/profile.ts
-import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
-import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -46,11 +45,6 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/orders/orders' });
   },
 
-  onOrdersByStatus(e: WechatMiniprogram.TouchEvent) {
-    const { status } = e.currentTarget.dataset as { status: string };
-    wx.navigateTo({ url: `/pagesOrder/orders/orders?status=${encodeURIComponent(status)}` });
-  },
-
   onTreatmentCards() {
     wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
   },
@@ -86,43 +80,6 @@ Page({
 
   onPrepaidCards() {
     wx.navigateTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
-  },
-
-  /**
-   * 处理微信手机号授权
-   * 使用 CloudID 方式，云函数自动解密
-   */
-  async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
-    const { cloudID, errMsg } = e.detail;
-
-    // 用户拒绝授权
-    if (!cloudID) {
-      if (errMsg?.includes('auth deny')) {
-        Toast.fail('您拒绝了授权');
-      } else if (errMsg) {
-        Toast.fail(errMsg);
-      }
-      return;
-    }
-
-    try {
-      const { updatedOrdersCount } = await bindPhoneWithCloudID(cloudID as string);
-      this.refreshData();
-
-      const tips = updatedOrdersCount > 0
-        ? `已同步 ${updatedOrdersCount} 笔历史订单`
-        : '';
-
-      Toast.success(tips || '绑定成功');
-
-    } catch (err: any) {
-      console.error('绑定手机号失败:', err);
-      Toast.fail(err.message || '绑定失败，请重试');
-    }
-  },
-
-  onSwitchStore() {
-    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
   },
 
   onAbout() {

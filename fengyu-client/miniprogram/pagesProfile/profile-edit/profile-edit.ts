@@ -26,6 +26,15 @@ Page({
     });
   },
 
+  onShow() {
+    const app = getApp<IAppOption>();
+    this.setData({ boundStoreName: app.globalData.boundStoreName || '' });
+  },
+
+  onSwitchStore() {
+    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+  },
+
   async onChooseAvatar() {
     try {
       const res = await wx.chooseMedia({

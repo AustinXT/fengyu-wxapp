@@ -72,8 +72,10 @@
       value="{{userId}}"
     />
     <van-cell
-      title="注册门店"
-      value="{{boundStoreName || '未绑定'}}"
+      title="切换门店"
+      value="{{boundStoreName || '未选择'}}"
+      is-link
+      bindtap="onSwitchStore"
     />
   </van-cell-group>
 
