@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
-import { matchTier, formatAmount } from './recharge';
+import { matchTier, formatAmount, RechargeConfig } from './recharge';
 
 const app = getApp<IAppOption>();
 
@@ -13,12 +13,6 @@ interface TierVM {
   discountLabel: string;
   payAmountLabel: string;
   bonusLabel: string;
-}
-
-interface RechargeConfig {
-  tiers: { faceValue: number; discount: number; payAmount: number }[];
-  minAmount: number;
-  maxAmount: number;
 }
 
 /** 折扣 0.99 → "9.9 折" */
@@ -58,6 +52,8 @@ Page({
     pendingFaceValue: 0,    // 手机绑定流程后自动重提交
   },
 
+  _config: null as RechargeConfig | null,
+
   onLoad() {
     const storeId = app.globalData.boundStoreId || '';
     const storeName = app.globalData.boundStoreName || '';
@@ -78,7 +74,11 @@ Page({
     try {
       this.setData({ configLoading: true });
       const data = await callClientApi<RechargeConfig>('card.rechargeConfig', {});
-      const tiers: TierVM[] = (data?.tiers || []).map(t => ({
+      if (!data || !Array.isArray(data.tiers) || !Number.isFinite(data.minAmount) || !Number.isFinite(data.maxAmount)) {
+        throw new Error('档位配置返回为空');
+      }
+      this._config = data;
+      const tiers: TierVM[] = data.tiers.map(t => ({
         faceValue: t.faceValue,
         discount: t.discount,
         payAmount: t.payAmount,
@@ -88,13 +88,14 @@ Page({
       }));
       this.setData({
         tiers,
-        minAmount: data?.minAmount || 500,
-        maxAmount: data?.maxAmount || 100000,
+        minAmount: data.minAmount,
+        maxAmount: data.maxAmount,
         configLoading: false,
       });
     } catch (err: any) {
+      this._config = null;
       this.setData({ configLoading: false });
-      Toast.fail(err?.message || '加载档位失败');
+      Toast.fail((err?.message || '加载档位失败').replace(/^[A-Z_]+:\s*/, ''));
     }
   },
 
@@ -141,8 +142,21 @@ Page({
     }
 
     const amount = Number(raw);
+    const cfg = this._config;
+    if (!cfg) {
+      this.setData({
+        customError: '档位配置加载失败，请下拉刷新',
+        customPayAmount: 0,
+        customDiscountLabel: '',
+        customPayAmountLabel: '',
+        customBonus: 0,
+        customBonusLabel: '',
+      });
+      this.updateCta();
+      return;
+    }
     try {
-      const { discount, payAmount } = matchTier(amount);
+      const { discount, payAmount } = matchTier(amount, cfg);
       const bonus = Math.round((amount - payAmount) * 100) / 100;
       this.setData({
         customError: '',

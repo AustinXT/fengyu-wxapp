@@ -4,26 +4,21 @@
  * 后端是权威方：本前端函数仅用于实时展示（折扣、实付预览），
  * 实际生效的实付金额以 card.recharge 接口返回的 payAmount 为准。
  *
- * 档位（区间左闭右开）：
- *   500–999   → 9.9 折
- *   1000–4999 → 9.8 折
- *   ≥5000     → 9.5 折
- * 边界：min=500, max=100000, 小数位 ≤ 2
+ * 2026-05-21 三端统一：档位/边界从 system_configs 经 API 注入，前端不再硬编码 RECHARGE_TIERS。
+ * 算法与 staff/admin/backend `matchTier` 字节同义。
  */
 
 export interface RechargeTier {
   faceValue: number;
+  payAmount: number;
   discount: number;
 }
 
-export const RECHARGE_TIERS: RechargeTier[] = [
-  { faceValue: 500, discount: 0.99 },
-  { faceValue: 1000, discount: 0.98 },
-  { faceValue: 5000, discount: 0.95 },
-];
-
-export const RECHARGE_MIN_AMOUNT = 500;
-export const RECHARGE_MAX_AMOUNT = 100000;
+export interface RechargeConfig {
+  tiers: RechargeTier[];
+  minAmount: number;
+  maxAmount: number;
+}
 
 export interface MatchTierResult {
   discount: number;
@@ -32,9 +27,12 @@ export interface MatchTierResult {
 
 /**
  * 按充值面值匹配折扣并算出实付金额
+ *
+ * 精确命中 → 取 tier.payAmount；非命中 → 找最大 faceValue ≤ amount 的档位，按 payAmount/faceValue 比例算
+ *
  * @throws Error('INVALID_PARAMS: ...') 校验失败时抛错
  */
-export function matchTier(amount: number): MatchTierResult {
+export function matchTier(amount: number, cfg: RechargeConfig): MatchTierResult {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误');
   }
@@ -42,19 +40,24 @@ export function matchTier(amount: number): MatchTierResult {
   if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数');
   }
-  if (amount < RECHARGE_MIN_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${RECHARGE_MIN_AMOUNT}`);
+  if (amount < cfg.minAmount) {
+    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${cfg.minAmount}`);
   }
-  if (amount > RECHARGE_MAX_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${RECHARGE_MAX_AMOUNT}`);
+  if (amount > cfg.maxAmount) {
+    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${cfg.maxAmount}`);
   }
-
-  let discount = RECHARGE_TIERS[0].discount;
-  for (const tier of RECHARGE_TIERS) {
-    if (amount >= tier.faceValue) discount = tier.discount;
+  const hit = cfg.tiers.find(t => t.faceValue === amount);
+  if (hit) {
+    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1;
+    return { discount, payAmount: hit.payAmount };
   }
-
-  const payAmount = Math.round(amount * discount * 100) / 100;
+  let baseTier = cfg.tiers[0];
+  for (const t of cfg.tiers) {
+    if (amount >= t.faceValue) baseTier = t;
+  }
+  const ratio = baseTier.payAmount / baseTier.faceValue;
+  const payAmount = Math.round(amount * ratio * 100) / 100;
+  const discount = Math.round(ratio * 100) / 100;
   return { discount, payAmount };
 }
 
