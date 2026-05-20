@@ -480,15 +480,14 @@ async function suggest(ctx) {
   }
 
   // 8. 生成分配行：对每个 (item × skill) 生成一条 allocLine，roleType 必填
-  // commRate 按 totalAmount 命中 tier，amount = item.received × commRate
+  // 新流程（技能→员工→比例）：预建行只携带 roleType + 指定员工 + 默认 100% 分配比例，
+  // 金额由前端按 (实收 × 分配比例) 计算，不再下发以「提成额」为值的 amount。
   const allocLines = []
   if (beauticianInfo && beauticianInfo.skills.length > 0) {
     for (const item of items) {
       const salesCat = item.sales_category || '自销自耗'
-      const received = Number(item.received) || 0
       for (const role of beauticianInfo.skills) {
         const commRate = lookupTierRate(role, salesCat, totalAmount)
-        const amount = (received * commRate).toFixed(2)
         allocLines.push({
           saleItemId: item.sale_item_id,
           roleType: role,        // P2-14：必填
@@ -497,12 +496,39 @@ async function suggest(ctx) {
           staffName: beauticianInfo.name,
           salesCategory: salesCat,
           commissionRate: commRate,
-          amount,
-          autoAmount: amount,
+          allocationRatio: 1.00, // 默认 100%，店长可下调
           autoFilled: true,
         })
       }
     }
+  }
+
+  // 9. 候选员工（admin 式按技能筛选用）：订单所属市场内全部在职员工，含 store_id / skills。
+  //    前端按规则筛选：美容师 → 订单所属门店；养生师/推广师 → 市场内任意门店。
+  //    本 action 已 requireManager() 门控，与 admin 让分配人看到市场级员工口径一致。
+  let candidateEmployees = []
+  if (order.market_name) {
+    const empRows = await pg.query(`
+      SELECT u.employee_id, u.name, u.store_id, u.skills,
+             d.name AS department, s.store_name
+      FROM staff_wechat_users u
+      LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m  ON so.parent_id = m.id
+      LEFT JOIN org_nodes d  ON u.org_node_id = d.id
+      WHERE u.is_resigned = false
+        AND m.name = $1
+        AND u.employee_id IS NOT NULL
+      ORDER BY u.name
+    `, [order.market_name])
+    candidateEmployees = empRows.map(r => ({
+      staffWfId: r.employee_id,
+      name: r.name || '',
+      storeId: r.store_id || '',
+      storeName: r.store_name || '',
+      skills: Array.isArray(r.skills) ? r.skills : [],
+      department: r.department || '',
+    }))
   }
 
   ctx.result = {
@@ -511,7 +537,9 @@ async function suggest(ctx) {
     deptAnomalous,      // 向后兼容：员工无 skills 时为 true
     beauticianRequired, // 向后兼容：员工有可用 skills 时为 true
     ratesByRole,        // P2-14：以 role_type 为键的提成比例索引（替代 beautyRates）
-    allocLines,         // 每条含 roleType（P2-14 必填）
+    allocLines,         // 每条含 roleType（P2-14 必填）+ 默认 allocationRatio
+    candidateEmployees, // admin 式按技能筛选的候选员工（市场内）
+    orderStoreId: order.store_id,
     items,
     totalAmount,
     rates,

@@ -10,8 +10,8 @@ interface RateRow {
 interface AllocLine {
   staffWfId: string
   staffName: string
-  department: string
-  amount: string
+  roleType: string
+  commissionAmount: string
 }
 
 interface DisplayItem {
@@ -63,6 +63,9 @@ export function lookupRate(
 
 /**
  * 汇总提成分配
+ *
+ * 页面语义为「提成分配」，汇总按员工聚合**提成额**（commissionAmount = 分配额 × 提成比例），
+ * 合计为提成额合计。入库的 total_amount（=实收×分配比例）是「分配额」，与此处展示口径不同。
  */
 export function computeSummary(displayItems: DisplayItem[]): {
   summary: Array<{ staffName: string; department: string; total: string }>
@@ -72,15 +75,15 @@ export function computeSummary(displayItems: DisplayItem[]): {
   let grand = 0
   for (const di of displayItems) {
     for (const l of di.allocLines) {
-      const amt = parseFloat(l.amount) || 0
+      const amt = parseFloat(l.commissionAmount) || 0
       grand += amt
       if (l.staffWfId) {
-        const key = `${l.staffWfId}_${l.department}`
+        const key = `${l.staffWfId}_${l.roleType}`
         const existing = map.get(key)
         if (existing) {
           existing.total += amt
         } else {
-          map.set(key, { staffName: l.staffName, department: l.department, total: amt })
+          map.set(key, { staffName: l.staffName, department: l.roleType, total: amt })
         }
       }
     }
