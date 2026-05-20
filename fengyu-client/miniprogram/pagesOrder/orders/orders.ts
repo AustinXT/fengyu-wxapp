@@ -81,6 +81,7 @@ Page({
         hasAppointable,
         itemCount,
         has_refund: hasRefund,
+        isRecharge: item.sale_order_type === '充值单',
       };
     });
   },
