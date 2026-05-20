@@ -481,8 +481,12 @@ async function create(ctx) {
     }
 
     // 查询 SKU 的 category_id 和 product_id（用于品项/商品维度过滤）
+    // product_id 不在 product_skus 表，需 LEFT JOIN mall_product_skus 取（与 staff order.js L520-526 同义）
     const skuMeta = await pg.query(
-      `SELECT sku_id, category_id, product_id FROM product_skus WHERE sku_id = ANY($1) AND deleted_at IS NULL`,
+      `SELECT ps.sku_id, ps.category_id, mps.product_id
+       FROM product_skus ps
+       LEFT JOIN mall_product_skus mps ON ps.sku_id = mps.sku_id
+       WHERE ps.sku_id = ANY($1) AND ps.deleted_at IS NULL`,
       [skuIds]
     )
     const skuCatMap = new Map()
@@ -678,20 +682,6 @@ async function create(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 原子 claim 优惠券（在事务内防并发重用）
-    if (inputCouponId) {
-      const claimResult = await client.query(
-        `UPDATE user_coupons
-         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
-         WHERE coupon_id = $2 AND user_id = $3
-           AND status = '未使用' AND expire_at > NOW()`,
-        [orderNo, inputCouponId, userId]
-      )
-      if (claimResult.rowCount !== 1) {
-        throw new Error('INVALID_PARAMS: 优惠券已失效')
-      }
-    }
-
     // 创建订单主表（全额抵扣时直接 '已支付' + paid_at）
     // 2026-04-26 sale-order-domain-refactor:
     //   - paid_amount 列已 DROP；统一改用 received（已到账金额，初始 0；全额储值卡抵扣时 = prepaidCardAmount）
@@ -715,6 +705,21 @@ async function create(ctx) {
         prepaidFullPaid ? now : null
       ]
     )
+
+    // 原子 claim 优惠券（在事务内防并发重用）
+    // 必须在 INSERT sale_orders 之后：used_sale_order_id 有 FK → sale_orders（非 deferrable，立即校验）
+    if (inputCouponId) {
+      const claimResult = await client.query(
+        `UPDATE user_coupons
+         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
+         WHERE coupon_id = $2 AND user_id = $3
+           AND status = '未使用' AND expire_at > NOW()`,
+        [orderNo, inputCouponId, userId]
+      )
+      if (claimResult.rowCount !== 1) {
+        throw new Error('INVALID_PARAMS: 优惠券已失效')
+      }
+    }
 
     // 创建订单明细（流水号递增）
     for (let i = 0; i < itemsData.length; i++) {
