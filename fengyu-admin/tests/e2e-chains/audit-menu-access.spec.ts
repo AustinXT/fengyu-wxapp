@@ -19,7 +19,7 @@ const MENU: Record<string, string[]> = {
     '/dashboard',
     '/legacy-orders',
     '/org', '/stores', '/employees', '/products', '/mall', '/commission',
-    '/coupons', '/member-benefits', '/share-gift',
+    '/coupons', '/member-benefits',
     '/points', '/card-transactions',
     '/permissions', '/settings/permission-matrix', '/messages', '/logs', '/settings',
   ],

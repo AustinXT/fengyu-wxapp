@@ -19,7 +19,6 @@ import {
 	Coins,
 	Wallet,
 	Gift,
-	Share2,
 	MessageSquare,
 	ScrollText,
 	Settings,
@@ -118,7 +117,6 @@ export const MENU_CONFIG: MenuGroup[] = [
 			},
 			{ label: "优惠券管理", icon: Ticket, href: "/coupons", requiredRoles: ["admin", "product"] },
 			{ label: "会员权益", icon: Gift, href: "/member-benefits", requiredRoles: ["admin"] },
-			{ label: "分享礼", icon: Share2, href: "/share-gift", requiredRoles: ["admin"] },
 			{
 				label: "积分流水",
 				icon: Coins,

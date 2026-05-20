@@ -1,12 +1,19 @@
 import MemberBenefitsPageClient from './_components/member-benefits-page'
-import { getMemberBenefits, listActiveCouponTemplates } from '@/actions/settings'
+import { getMemberBenefits, getShareGiftConfig, listActiveCouponTemplates } from '@/actions/settings'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const [bundle, couponTemplates] = await Promise.all([
+  const [bundle, shareConfig, couponTemplates] = await Promise.all([
     getMemberBenefits(),
+    getShareGiftConfig(),
     listActiveCouponTemplates(),
   ])
-  return <MemberBenefitsPageClient initialBundle={bundle} couponTemplates={couponTemplates} />
+  return (
+    <MemberBenefitsPageClient
+      initialBundle={bundle}
+      initialShareConfig={shareConfig}
+      couponTemplates={couponTemplates}
+    />
+  )
 }
