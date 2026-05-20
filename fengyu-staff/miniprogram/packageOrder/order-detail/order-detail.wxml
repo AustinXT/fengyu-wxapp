@@ -241,9 +241,10 @@
     closeable
   >
     <view class="repay-popup">
-      <view class="repay-title">发起回款</view>
+      <view class="repay-title">按子项回款</view>
       <view class="repay-debt">
         欠款金额：<text class="repay-debt-hot">¥{{order.remainingPayable}}</text>
+        <text class="repay-debt-tip">（可只对部分子项回款，不要求一次性付清）</text>
       </view>
 
       <van-field
@@ -254,28 +255,45 @@
         <view slot="input" class="repay-method-row">
           <van-radio-group value="{{repayMethod}}" bind:change="onRepayMethodChange" direction="horizontal">
             <van-radio name="线下" checked-color="#C0322A">现金/扫码回执</van-radio>
-            <van-radio name="储值卡" checked-color="#C0322A">储值卡付清</van-radio>
+            <van-radio name="储值卡" checked-color="#C0322A">储值卡</van-radio>
             <van-radio name="微信" checked-color="#C0322A" disabled>微信（开发中）</van-radio>
           </van-radio-group>
         </view>
       </van-field>
 
-      <van-field
-        wx:if="{{repayMethod !== '储值卡'}}"
-        label="回款金额"
-        type="digit"
-        placeholder="0.00"
-        value="{{repayAmountInput}}"
-        bind:change="onRepayAmountChange"
-      />
+      <!-- 按子项金额表 -->
+      <view class="repay-lines">
+        <view wx:for="{{repayLines}}" wx:key="saleItemId" class="repay-line">
+          <view class="repay-line-info">
+            <text class="repay-line-name">{{item.itemName}}</text>
+            <text class="repay-line-sub">可回款 ¥{{item.repayable}}</text>
+          </view>
+          <van-field
+            wx:if="{{repayMethod !== '储值卡'}}"
+            type="digit"
+            placeholder="现金"
+            value="{{item.cash}}"
+            data-index="{{index}}"
+            data-col="cash"
+            bind:change="onRepayLineChange"
+            custom-class="repay-line-input"
+          />
+          <van-field
+            type="digit"
+            placeholder="储值卡"
+            value="{{item.card}}"
+            data-index="{{index}}"
+            data-col="card"
+            bind:change="onRepayLineChange"
+            custom-class="repay-line-input"
+          />
+        </view>
+      </view>
 
-      <van-field
-        label="储值卡抵扣"
-        type="digit"
-        placeholder="0.00（可选）"
-        value="{{repayPrepaidCardInput}}"
-        bind:change="onRepayPrepaidCardChange"
-      />
+      <view class="repay-debt">
+        本次合计：<text class="repay-debt-hot">¥{{repayGrandTotal}}</text>
+        <text class="repay-line-sub">现金 ¥{{repayCashTotal}} · 储值卡 ¥{{repayCardTotal}}</text>
+      </view>
 
       <van-field
         label="备注"

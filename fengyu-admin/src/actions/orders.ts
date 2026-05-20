@@ -721,8 +721,11 @@ export const confirmOfflinePayment = withPermission(
       const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
 
-      // received（含储值卡抵扣）≥ total → '已支付'，否则 '部分支付'
-      const targetStatus: OrderStatus = newReceived + 0.005 >= orderTotal ? '已支付' : '部分支付'
+      // 结清判定基准 = payable_amount + prepaid（newReceived 含储值卡抵扣，故 RHS 也含 prepaid）。
+      // 普通单 payable + prepaid === total（行为不变）；充值单 payable(实付) ≠ total(面额)，
+      // 须用 payable 否则全额付款仍判为「部分支付」（与 staff confirmOffline / payNotify 跨端对齐）。
+      const settleTarget = Math.round((orderPayable + newPrepaid) * 100) / 100
+      const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
       const paidAtIso = targetStatus === '已支付' ? new Date().toISOString() : null
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
@@ -2265,16 +2268,84 @@ export const createDepositOrder = withPermission(
 // 注：'use server' 文件不允许 export type/const 非函数（Next.js 限制）。
 // 原 RecordPaymentResult 类型直接内联到 recordPayment 返回类型上。
 
+// getRepayable：查询原单各购买子项的应付/已收/可回款额，供 record-payment-dialog 按子项录入。
+export const getRepayable = withPermission(
+  'sale_order:record_payment',
+  async (
+    session,
+    saleOrderId: string,
+  ): Promise<{
+    items: Array<{ saleItemId: string; productName: string; skuSpecName: string; saleAmount: string; received: string; remaining: string }>
+    remainingPayable: number
+    cardBalance: number | null
+    clientUserId: string | null
+  }> => {
+    const [order] = await db
+      .select({
+        storeId: saleOrders.storeId,
+        status: saleOrders.status,
+        totalAmount: saleOrders.totalAmount,
+        prepaidCardAmount: saleOrders.prepaidCardAmount,
+        payableAmount: saleOrders.payableAmount,
+        received: saleOrders.received,
+        clientUserId: saleOrders.clientUserId,
+      })
+      .from(saleOrders)
+      .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
+      .limit(1)
+    if (!order) throw new Error('NOT_FOUND: 订单不存在或无权访问')
+    if (!['部分支付', '待支付'].includes(order.status)) {
+      throw new Error(`INVALID_STATE: 当前状态"${order.status}"不允许回款`)
+    }
+
+    const rows = await db
+      .select()
+      .from(saleItems)
+      .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
+    const items = rows.map((r) => {
+      const remaining = Math.round((Number(r.saleAmount) - Number(r.received)) * 100) / 100
+      return {
+        saleItemId: r.saleItemId,
+        productName: r.productName || '-',
+        skuSpecName: r.skuSpecName || '',
+        saleAmount: r.saleAmount,
+        received: r.received,
+        remaining: Math.max(0, remaining).toFixed(2),
+      }
+    })
+
+    const payable = Number(order.payableAmount) > 0
+      ? Number(order.payableAmount)
+      : Math.round((Number(order.totalAmount) - Number(order.prepaidCardAmount)) * 100) / 100
+    const remainingPayable = Math.round((payable - Number(order.received)) * 100) / 100
+
+    let cardBalance: number | null = null
+    if (order.clientUserId) {
+      const [card] = await db
+        .select({ balance: prepaidCards.balance })
+        .from(prepaidCards)
+        .where(eq(prepaidCards.userId, order.clientUserId))
+        .limit(1)
+      cardBalance = card ? Number(card.balance) : 0
+    }
+
+    return { items, remainingPayable, cardBalance, clientUserId: order.clientUserId ?? null }
+  },
+)
+
 export const recordPayment = withPermission(
   'sale_order:record_payment',
   async (
     session,
     input: {
   saleOrderId: string
-  repayAmount: number
+  repayAmount?: number
   paymentMethod: '线下' | '储值卡'
   externalTxnId?: string
   prepaidCardAmount?: number
+  // 按子项定向回款：每行现金 repayAmount + 储值卡 prepaidCardAmount，写带 ref_sale_item_id 的 payment 行。
+  // 未传时退回订单级单行（ref=null，按比例分摊），向后兼容。
+  items?: Array<{ saleItemId: string; repayAmount?: number; prepaidCardAmount?: number }>
   note?: string
     },
   ): Promise<
@@ -2291,8 +2362,24 @@ export const recordPayment = withPermission(
     return { success: false, error: { code: 'INVALID_PARAMS', message: '支付方式仅支持 线下 / 储值卡' } }
   }
 
-  const repayAmount = Math.round(Number(input.repayAmount || 0) * 100) / 100
-  const prepaidCardAmount = Math.round(Number(input.prepaidCardAmount || 0) * 100) / 100
+  // items[] 优先：归一化各子项金额并合计为订单级 repayAmount / prepaidCardAmount
+  const repayItems = Array.isArray(input.items) && input.items.length > 0
+    ? input.items
+        .map((it) => ({
+          saleItemId: String(it.saleItemId || ''),
+          repayAmount: Math.round(Number(it.repayAmount || 0) * 100) / 100,
+          prepaidCardAmount: Math.round(Number(it.prepaidCardAmount || 0) * 100) / 100,
+        }))
+        .filter((it) => it.saleItemId && (it.repayAmount > 0 || it.prepaidCardAmount > 0))
+    : null
+  const hasItems = !!(repayItems && repayItems.length > 0)
+
+  const repayAmount = hasItems
+    ? Math.round(repayItems!.reduce((s, it) => s + it.repayAmount, 0) * 100) / 100
+    : Math.round(Number(input.repayAmount || 0) * 100) / 100
+  const prepaidCardAmount = hasItems
+    ? Math.round(repayItems!.reduce((s, it) => s + it.prepaidCardAmount, 0) * 100) / 100
+    : Math.round(Number(input.prepaidCardAmount || 0) * 100) / 100
   if (!Number.isFinite(repayAmount) || repayAmount < 0) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '回款金额无效' } }
   }
@@ -2369,6 +2456,25 @@ export const recordPayment = withPermission(
         throw new ApiError('CONFLICT', `OVERPAY:${remainingPayable.toFixed(2)}: 本次回款金额超过订单欠款`)
       }
 
+      // 3b) 按子项校验：逐项 (现金+储值卡) ≤ 该行可回款额(sale_amount - received)
+      if (hasItems) {
+        const itemRowsRes = await tx.execute(sql`
+          SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
+            FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买'
+        `)
+        const itemRows = itemRowsRes as unknown as any[]
+        const itemMap = new Map(itemRows.map((r) => [r.sale_item_id, r]))
+        for (const it of repayItems!) {
+          const row = itemMap.get(it.saleItemId)
+          if (!row) throw new Error(`OVERPAY_ITEM:${it.saleItemId}:NOT_FOUND`)
+          const itemRemaining = Math.round((Number(row.sale_amount) - Number(row.received)) * 100) / 100
+          const itemThis = Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100
+          if (itemThis > itemRemaining + 0.001) {
+            throw new Error(`OVERPAY_ITEM:${it.saleItemId}:${itemRemaining.toFixed(2)}`)
+          }
+        }
+      }
+
       // 4) 生成 FY-HKD 凭证单号（advisory lock + 当日序号，前缀 FY-HKD-WX-YYMMDDNNNN）
       const idRows = await tx.execute(sql`
         WITH lock AS (
@@ -2425,35 +2531,71 @@ export const recordPayment = withPermission(
       const now = new Date()
 
       // 7) 向原销售单写 payments 流水
-      //    - 线下现金/转账部分（repayAmount > 0）
-      //    - 储值卡抵扣部分（prepaidCardAmount > 0）
-      if (repayAmount > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId,
-          changeType: '回款',
-          amount: repayAmount.toFixed(2),
-          paymentMethod,
-          externalTxnId,
-          status: '已支付',
-          sourceEnd: 'admin',
-          paidAt: now,
-          operatorEmployeeId: session.employeeId,
-          note: input.note?.trim() || '管理后台录入回款',
-        })
-      }
-      if (prepaidCardAmount > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId,
-          changeType: '储值卡抵扣',
-          amount: prepaidCardAmount.toFixed(2),
-          paymentMethod: '储值卡',
-          externalTxnId: null,
-          status: '已支付',
-          sourceEnd: 'admin',
-          paidAt: now,
-          operatorEmployeeId: session.employeeId,
-          note: '管理后台录入回款-储值卡抵扣',
-        })
+      //    items[] → 逐子项写带 ref_sale_item_id 的 '回款'(现金)/'储值卡抵扣' 行（定向回款，
+      //              paid-sessions STEP 1 据此独立解锁该行）；否则订单级单行（ref=null，按比例分摊）。
+      //    储值卡余额已在上方一次性扣减；此处仅写 payments 归属流水。
+      if (hasItems) {
+        for (const it of repayItems!) {
+          if (it.repayAmount > 0) {
+            await tx.insert(saleOrderPayments).values({
+              saleOrderId,
+              changeType: '回款',
+              amount: it.repayAmount.toFixed(2),
+              paymentMethod,
+              externalTxnId,
+              status: '已支付',
+              sourceEnd: 'admin',
+              paidAt: now,
+              operatorEmployeeId: session.employeeId,
+              refSaleItemId: it.saleItemId,
+              note: input.note?.trim() || '管理后台录入回款',
+            })
+          }
+          if (it.prepaidCardAmount > 0) {
+            await tx.insert(saleOrderPayments).values({
+              saleOrderId,
+              changeType: '储值卡抵扣',
+              amount: it.prepaidCardAmount.toFixed(2),
+              paymentMethod: '储值卡',
+              externalTxnId: null,
+              status: '已支付',
+              sourceEnd: 'admin',
+              paidAt: now,
+              operatorEmployeeId: session.employeeId,
+              refSaleItemId: it.saleItemId,
+              note: '管理后台录入回款-储值卡抵扣',
+            })
+          }
+        }
+      } else {
+        if (repayAmount > 0) {
+          await tx.insert(saleOrderPayments).values({
+            saleOrderId,
+            changeType: '回款',
+            amount: repayAmount.toFixed(2),
+            paymentMethod,
+            externalTxnId,
+            status: '已支付',
+            sourceEnd: 'admin',
+            paidAt: now,
+            operatorEmployeeId: session.employeeId,
+            note: input.note?.trim() || '管理后台录入回款',
+          })
+        }
+        if (prepaidCardAmount > 0) {
+          await tx.insert(saleOrderPayments).values({
+            saleOrderId,
+            changeType: '储值卡抵扣',
+            amount: prepaidCardAmount.toFixed(2),
+            paymentMethod: '储值卡',
+            externalTxnId: null,
+            status: '已支付',
+            sourceEnd: 'admin',
+            paidAt: now,
+            operatorEmployeeId: session.employeeId,
+            note: '管理后台录入回款-储值卡抵扣',
+          })
+        }
       }
 
       // 8) 重算原单 received / refunded_amount / prepaid_card_amount + status
@@ -2479,7 +2621,10 @@ export const recordPayment = withPermission(
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
       const settled = newReceived
-      const targetStatus: OrderStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
+      // 结清判定基准 = payable_amount + prepaid（settled 含储值卡抵扣，故 RHS 也含 prepaid）。
+      // 普通单 payable + prepaid === total（不变）；充值单用 payable(实付) 修正面额 ≠ 实付场景。
+      const settleTarget = Math.round((origPayable + newPrepaid) * 100) / 100
+      const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
       // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
       // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。
       const paidAtIso: string | null =
@@ -2543,6 +2688,17 @@ export const recordPayment = withPermission(
     }
     if (msg?.includes('CLIENT_NOT_REGISTERED')) {
       return { success: false, error: { code: 'CLIENT_NOT_REGISTERED', message: '顾客未注册小程序，无法使用储值卡抵扣' } }
+    }
+    const overpayItemMatch = msg?.match(/OVERPAY_ITEM:([^:]+):(.+)/)
+    if (overpayItemMatch) {
+      const itemId = overpayItemMatch[1]
+      const detail = overpayItemMatch[2]
+      return {
+        success: false,
+        error: detail === 'NOT_FOUND'
+          ? { code: 'INVALID_PARAMS', message: `子项 ${itemId} 不属于本订单` }
+          : { code: 'OVERPAY', message: `子项 ${itemId} 回款额超过该行可回款额（剩余 ¥${detail}）` },
+      }
     }
     const overpayMatch = msg?.match(/OVERPAY:([\d.]+)/)
     if (overpayMatch) {

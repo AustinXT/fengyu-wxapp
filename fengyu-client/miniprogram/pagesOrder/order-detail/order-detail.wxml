@@ -262,12 +262,11 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       <text class="repay-outstanding-value">¥{{order.outstanding_fmt}}</text>
     </view>
 
-    <view class="repay-field-label">支付金额</view>
+    <view class="repay-field-label">支付金额（需全额付清）</view>
     <van-field
       value="{{repayAmountInput}}"
       type="digit"
-      placeholder="请输入支付金额"
-      bind:change="onRepayAmountInput"
+      readonly
       border="{{false}}"
       custom-class="repay-amount-input"
     />

@@ -100,7 +100,8 @@ async function caseRepayHappyPartialPaid() {
   // L2 改用储值卡通道走 happy 路径（不依赖拉卡拉）。
   await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
   const orderNo = `${NS}_SM_RPP`.slice(0, 30)
-  // 部分支付：total=200, payable=200, received=50 → remaining=150 → repay 50 应成功
+  // 部分支付：total=200, payable=200, received=50 → remaining=150
+  // 顾客端强制全额（ticket 2026-05-21）：必须付清 150 才成功
   await seedOrder({
     saleOrderId: orderNo, status: '部分支付',
     totalAmount: 200, prepaidCardAmount: 0, received: 50,
@@ -117,7 +118,7 @@ async function caseRepayHappyPartialPaid() {
     saleOrderId: orderNo,
     paymentMethod: '储值卡',
     repayAmount: 0,
-    prepaidCardAmount: 50,
+    prepaidCardAmount: 150,
   })
   if (res.code !== 0) throw new Error(`expect repay ok, got ${res.code} ${res.message}`)
 }

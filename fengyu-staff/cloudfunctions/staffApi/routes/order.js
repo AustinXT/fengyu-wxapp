@@ -917,7 +917,8 @@ async function qrcode(ctx) {
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
-            o.payment_method, o.paid_at, o.store_id, o.opened_by
+            o.payment_method, o.paid_at, o.store_id, o.opened_by,
+            o.total_amount, o.prepaid_card_amount, o.payable_amount
      FROM sale_orders o
      WHERE o.sale_order_id = $1`,
     [saleOrderId]
@@ -944,7 +945,9 @@ async function qrcode(ctx) {
     WHERE si.sale_order_id = $1
   `, [saleOrderId])
 
-  const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
+  // 订单应付金额取 sale_orders.total_amount（权威）：待支付订单 received 全为 0，
+  // 不能用 sum(received) 否则金额显示为空（前端 totalAmount || '' 会把 0 吞成空串）
+  const totalAmount = Number(order.total_amount || 0)
 
   // 推导二维码显示状态（UI-only 标签，不写库）
   //   待支付 + payment_method='线下' → 顾客已选线下，待店长确认收款（UI 标签 '待确认收款'）
@@ -1073,8 +1076,11 @@ async function confirmOffline(ctx) {
 
   const newReceived = Math.round((orderReceived + confirmAmount) * 100) / 100
   const newSettled = Math.round((newReceived + orderPrepaid) * 100) / 100
-  // received + prepaid >= total → '已支付'，否则 '部分支付'
-  const targetStatus = newSettled + 0.001 >= orderTotal ? '已支付' : '部分支付'
+  // 结清判定基准 = payable_amount + prepaid（顾客应付现金 + 储值卡抵扣），不用 total_amount。
+  // 普通单 payable = total - prepaid，故 payable + prepaid === total（行为不变）；
+  // 充值单 payable(实付 980) ≠ total(面额 1000)，须用 payable 否则永远判为部分支付。
+  const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
+  const targetStatus = newSettled + 0.001 >= settleTarget ? '已支付' : '部分支付'
 
   // 仅在本次"确认现金到账"(confirmAmount > 0) 时写 payments 行
   // 已有 payments 则本次为"回款"，否则为"首次支付"
@@ -1985,21 +1991,34 @@ async function createRepayment(ctx) {
     throw new Error('INVALID_PARAMS: 微信扫码回款暂未开放')
   }
 
-  // 推导 repayAmount：优先显式入参，否则按 items 合计
-  let repayAmount
-  if (inputRepayAmount !== undefined && inputRepayAmount !== null) {
-    repayAmount = Number(inputRepayAmount)
-  } else if (Array.isArray(items) && items.length > 0) {
-    repayAmount = items.reduce((s, it) => s + (Number(it.repayAmount) || 0), 0)
+  // 按子项回款明细（items[]）：每行可含现金 repayAmount + 储值卡 prepaidCardAmount，
+  // 写带 ref_sale_item_id 的 payment 行（定向回款）。未传 items[] 退回订单级单行（ref=null，比例分摊），向后兼容。
+  let repayItems = null
+  if (Array.isArray(items) && items.length > 0) {
+    repayItems = items
+      .map((it) => ({
+        saleItemId: String(it.saleItemId || ''),
+        repayAmount: Math.max(0, Math.round((Number(it.repayAmount) || 0) * 100) / 100),
+        prepaidCardAmount: Math.max(0, Math.round((Number(it.prepaidCardAmount) || 0) * 100) / 100),
+      }))
+      .filter((it) => it.saleItemId && (it.repayAmount > 0 || it.prepaidCardAmount > 0))
+    if (repayItems.length === 0) repayItems = null
+  }
+
+  // 推导订单级 repayAmount / prepaidCardAmount：items[] 优先合计，否则取显式入参
+  let repayAmount, prepaidCardAmount
+  if (repayItems) {
+    repayAmount = repayItems.reduce((s, it) => s + it.repayAmount, 0)
+    prepaidCardAmount = repayItems.reduce((s, it) => s + it.prepaidCardAmount, 0)
   } else {
-    repayAmount = 0
+    repayAmount = (inputRepayAmount !== undefined && inputRepayAmount !== null) ? Number(inputRepayAmount) : 0
+    prepaidCardAmount = Number(inputPrepaidCard) || 0
   }
   if (!Number.isFinite(repayAmount) || repayAmount < 0) {
     throw new Error('INVALID_PARAMS: 还款金额必须为非负数')
   }
   repayAmount = Math.round(repayAmount * 100) / 100
-
-  const prepaidCardAmount = Math.max(0, Math.round((Number(inputPrepaidCard) || 0) * 100) / 100)
+  prepaidCardAmount = Math.max(0, Math.round(prepaidCardAmount * 100) / 100)
   const totalThisTime = Math.round((repayAmount + prepaidCardAmount) * 100) / 100
   if (totalThisTime <= 0) {
     throw new Error('INVALID_PARAMS: 回款金额必须大于0')
@@ -2055,6 +2074,25 @@ async function createRepayment(ctx) {
       throw new Error('INVALID_PARAMS: 本次回款金额超过订单欠款')
     }
 
+    // 3b) 按子项校验：逐项 (现金+储值卡) ≤ 该行可回款额(sale_amount - received)
+    if (repayItems) {
+      const itemRows = await client.query(
+        `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
+           FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
+        [refSaleOrderId]
+      )
+      const itemMap = new Map(itemRows.rows.map((r) => [r.sale_item_id, r]))
+      for (const it of repayItems) {
+        const row = itemMap.get(it.saleItemId)
+        if (!row) throw new Error(`INVALID_PARAMS: 子项 ${it.saleItemId} 不属于本订单`)
+        const itemRemaining = Math.round((Number(row.sale_amount) - Number(row.received)) * 100) / 100
+        const itemThis = Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100
+        if (itemThis > itemRemaining + 0.001) {
+          throw new Error(`INVALID_PARAMS: 子项 ${it.saleItemId} 回款额超过该行可回款额`)
+        }
+      }
+    }
+
     // 4) 储值卡抵扣：锁余额 → 扣减 → 写流水
     if (prepaidCardAmount > 0) {
       const balRes = await client.query(
@@ -2083,27 +2121,51 @@ async function createRepayment(ctx) {
       )
     }
 
-    // 5) 向原销售单写 payments 流水：'回款' + 可选 '储值卡抵扣'
-    //    （不再写 sale_orders[type='回款单'] 行）
-    if (repayAmount > 0) {
-      const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
-      const paidAtValue = isOnlinePaymentMethod(paymentMethod) ? null : now
-      await client.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
-        [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, paidAtValue]
-      )
-    }
-    if (prepaidCardAmount > 0) {
-      await client.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
-        [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
-      )
+    // 5) 向原销售单写 payments 流水：'回款'(现金) + 可选 '储值卡抵扣'(储值卡)
+    //    items[] → 逐子项写带 ref_sale_item_id 的行（定向回款，paid-sessions STEP 1 据此独立解锁该行）；
+    //    否则订单级单行（ref=null，按比例分摊）。储值卡余额已在上方一次性扣减。
+    const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
+    const repayPaidAt = isOnlinePaymentMethod(paymentMethod) ? null : now
+    if (repayItems) {
+      for (const it of repayItems) {
+        if (it.repayAmount > 0) {
+          await client.query(
+            `INSERT INTO sale_order_payments (
+              sale_order_id, change_type, amount, payment_method, external_txn_id,
+              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
+            ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8, $9)`,
+            [refSaleOrderId, it.repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, it.saleItemId, note || '店长发起回款', now, repayPaidAt]
+          )
+        }
+        if (it.prepaidCardAmount > 0) {
+          await client.query(
+            `INSERT INTO sale_order_payments (
+              sale_order_id, change_type, amount, payment_method, external_txn_id,
+              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
+            ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
+            [refSaleOrderId, it.prepaidCardAmount, ctx.auth.staffWfId, it.saleItemId, '店长发起回款-储值卡抵扣', now]
+          )
+        }
+      }
+    } else {
+      if (repayAmount > 0) {
+        await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method, external_txn_id,
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
+          [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
+        )
+      }
+      if (prepaidCardAmount > 0) {
+        await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method, external_txn_id,
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
+        )
+      }
     }
 
     // 6) 重算原单 received / prepaid_card_amount（SUM payments 已支付行）+ status
@@ -2124,8 +2186,10 @@ async function createRepayment(ctx) {
     const newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     const settled = newReceived
-    // received ≥ total → '已支付'；否则 '部分支付'
-    const targetStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
+    // 结清判定基准 = payable_amount + prepaid（settled 含储值卡抵扣，故 RHS 也含 prepaid）。
+    // 普通单 payable + prepaid === total（不变）；充值单用 payable(实付) 修正面额 ≠ 实付场景。
+    const settleTarget = Math.round((origPayable + newPrepaid) * 100) / 100
+    const targetStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
     const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at || null)

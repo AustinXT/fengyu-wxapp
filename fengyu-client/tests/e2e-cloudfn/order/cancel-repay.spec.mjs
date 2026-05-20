@@ -87,29 +87,60 @@ async function caseRepayHappy() {
      ) VALUES ($1, '首次支付', 80, '微信', $2, '已支付', 'client', NOW(), NOW())`,
     [orderNo, `${NS}_RP_OK1_TXN`]
   )
+  // 顾客端继续支付强制全额（ticket 2026-05-21）：必须付清全部欠款 120
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
     saleOrderId: orderNo,
     paymentMethod: '储值卡',
     repayAmount: 0,
-    prepaidCardAmount: 50,
+    prepaidCardAmount: 120,
   })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   // 储值卡通道：事务内已扣款 + 写入 payments 行（回款/储值卡）
-  // 断言：received 推进到 130（80+50）、卡余额 -50、payments 多一行
+  // 断言：received 推进到 200（80+120，付清）、卡余额 -120、订单转「已支付」
   const rows = await pgQuery(
     `SELECT received, status FROM sale_orders WHERE sale_order_id = $1`,
     [orderNo]
   )
-  if (Number(rows[0].received) !== 130) {
-    throw new Error(`expect received=130, got: ${rows[0].received}`)
+  if (Number(rows[0].received) !== 200) {
+    throw new Error(`expect received=200, got: ${rows[0].received}`)
+  }
+  if (rows[0].status !== '已支付') {
+    throw new Error(`expect status=已支付 after full repay, got: ${rows[0].status}`)
   }
   const cardRows = await pgQuery(
     `SELECT balance FROM prepaid_cards WHERE user_id = $1`,
     [TEST_CLIENT_USER_ID]
   )
-  if (Number(cardRows[0].balance) !== 450) {
-    throw new Error(`expect card balance=450, got: ${cardRows[0].balance}`)
+  if (Number(cardRows[0].balance) !== 380) {
+    throw new Error(`expect card balance=380, got: ${cardRows[0].balance}`)
   }
+}
+
+// 顾客端部分回款被拒（ticket 2026-05-21 REQ1）：欠款 120，只付 50 → INVALID_PARAMS
+async function caseRepayPartialRejected() {
+  await createTestClient()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  const orderNo = `${NS}_RP_PART`.slice(0, 30)
+  await createTestPendingSaleOrder({ saleOrderId: orderNo, totalAmount: 200 })
+  await pgQuery(
+    `UPDATE sale_orders SET status = '部分支付', received = 80, payable_amount = 200
+     WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, external_txn_id,
+       status, source_end, paid_at, created_at
+     ) VALUES ($1, '首次支付', 80, '微信', $2, '已支付', 'client', NOW(), NOW())`,
+    [orderNo, `${NS}_RP_PART_TXN`]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
+    saleOrderId: orderNo,
+    paymentMethod: '储值卡',
+    repayAmount: 0,
+    prepaidCardAmount: 50, // 欠 120，只付 50 → 部分，应被拒
+  })
+  expectError(res, 'INVALID_PARAMS', { messageIncludes: '全部未付金额' })
 }
 
 /**
@@ -142,11 +173,13 @@ async function caseRepayPureCardPartialRecalcPaidSessions() {
      ) VALUES ($1, '首次支付', 100, '微信', $2, '已支付', 'client', NOW(), NOW())`,
     [orderNo, `${NS}_RP_PS_TXN`]
   )
+  // 顾客端强制全额（ticket 2026-05-21）：欠 200 必须付清 → received=300 → paid_sessions=12（全解锁）
+  // （部分回款解锁的按比例 paid_sessions 由 staff/admin 按子项回款覆盖）
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
     saleOrderId: orderNo,
     paymentMethod: '储值卡',
     repayAmount: 0,
-    prepaidCardAmount: 100,
+    prepaidCardAmount: 200,
   })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const items = await pgQuery(
@@ -157,9 +190,9 @@ async function caseRepayPureCardPartialRecalcPaidSessions() {
   if (Number(items[0].session_count) !== 12) {
     throw new Error(`expect session_count=12, got: ${items[0].session_count}`)
   }
-  // floor(200/300 × 12) = floor(8.0) = 8
-  if (Number(items[0].paid_sessions) !== 8) {
-    throw new Error(`expect paid_sessions=8 after partial repay (200/300×12), got: ${items[0].paid_sessions}`)
+  // 付清 300/300 × 12 = 12（全解锁）
+  if (Number(items[0].paid_sessions) !== 12) {
+    throw new Error(`expect paid_sessions=12 after full repay (300/300×12), got: ${items[0].paid_sessions}`)
   }
 }
 
@@ -185,8 +218,9 @@ const CASES = [
   ['cancel happy → status=已关闭', caseCancelHappy],
   ['cancel on 已支付 → INVALID_PARAMS', caseCancelAlreadyPaidRejected],
   ['cancel cross-user → INVALID_PARAMS/订单不存在', caseCancelCrossUserDenied],
-  ['repay (微信) on 部分支付 → paymentParams returned', caseRepayHappy],
-  ['repay (储值卡) 部分回款 12次卡 → paid_sessions = floor(2/3 × 12) = 8（回归 ticket 2026-05-19）', caseRepayPureCardPartialRecalcPaidSessions],
+  ['repay (储值卡) on 部分支付 全额付清 → received=200/已支付', caseRepayHappy],
+  ['repay 部分金额被拒 → INVALID_PARAMS/全部未付金额（ticket 2026-05-21 REQ1）', caseRepayPartialRejected],
+  ['repay (储值卡) 全额付清 12次卡 → paid_sessions=12（回归 ticket 2026-05-19）', caseRepayPureCardPartialRecalcPaidSessions],
   ['repay on 已支付 → INVALID_STATE', caseRepayAlreadyPaidRejected],
 ]
 

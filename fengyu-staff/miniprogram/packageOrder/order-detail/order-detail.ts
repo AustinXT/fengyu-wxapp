@@ -37,6 +37,7 @@ interface RawOrderItem {
   sale_item_id: string;
   product_name?: string;
   sku_spec_name?: string;
+  sale_amount?: string;
   received?: string;
   session_count?: number;
   remaining_sessions?: number;
@@ -86,6 +87,10 @@ interface DisplayOrderItem {
   itemName: string;
   spec: string;
   totalPrice: string;
+  /** 行应付（sale_amount）/ 已收（received）/ 可回款（应付-已收），按子项回款用 */
+  saleAmount: string;
+  received: string;
+  repayable: string;
   sessionCount: number | undefined;
   remainingSessions: number | undefined;
   paidSessions: number | undefined;
@@ -148,12 +153,15 @@ Page({
     showRefundDialog: false,
     refundReason: '',
     submitting: false,
-    // Ticket 2: 回款弹层
+    // Ticket 2026-05-21: 按子项回款弹层
     showRepayPopup: false,
-    repayAmountInput: '',
-    repayPrepaidCardInput: '',
+    // 每个购买子项一行：{ saleItemId, itemName, repayable, cash, card }
+    repayLines: [] as Array<{ saleItemId: string; itemName: string; repayable: string; cash: string; card: string }>,
     repayMethod: '线下' as '线下' | '微信' | '储值卡',
     repayNote: '',
+    repayCashTotal: '0.00',
+    repayCardTotal: '0.00',
+    repayGrandTotal: '0.00',
     // 当前订单欠款（弹层内引用）
     currentRemainingPayable: 0,
   },
@@ -180,11 +188,17 @@ Page({
         const remain = rs;
         const unpaid = Math.max(sc - ps, 0);
         const pct = (n: number) => (sc > 0 ? Math.round((n / sc) * 1000) / 10 : 0);
+        const saleAmt = Number(it.sale_amount || 0);
+        const recv = Number(it.received || 0);
+        const repayable = Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
           itemName: it.product_name || it.sku_spec_name || '—',
           spec: it.sku_spec_name || '',
           totalPrice: it.received || '0',
+          saleAmount: saleAmt.toFixed(2),
+          received: recv.toFixed(2),
+          repayable: repayable.toFixed(2),
           sessionCount: it.session_count,
           remainingSessions: it.remaining_sessions,
           paidSessions: it.paid_sessions == null ? undefined : Number(it.paid_sessions),
@@ -460,46 +474,52 @@ Page({
     });
   },
 
-  // ===== Ticket 2 PR-A：发起回款 =====
+  // ===== Ticket 2026-05-21：按子项发起回款 =====
+  // 合计当前各行金额（线下=cash 列，储值卡=card 列）
+  _recalcRepayTotals(lines: Array<{ cash: string; card: string }>) {
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const isCard = this.data.repayMethod === '储值卡';
+    const cash = r2(lines.reduce((s, l) => s + (Number(l.cash) || 0), 0));
+    const card = r2(lines.reduce((s, l) => s + (Number(l.card) || 0), 0));
+    const grand = isCard ? card : r2(cash + card);
+    this.setData({ repayCashTotal: cash.toFixed(2), repayCardTotal: card.toFixed(2), repayGrandTotal: grand.toFixed(2) });
+  },
+
   onRepayTap() {
     const o = this.data.order;
     if (!o || !o.hasDebt) return;
-    this.setData({
-      showRepayPopup: true,
-      repayAmountInput: o.remainingPayable,
-      repayPrepaidCardInput: '',
-      repayMethod: '线下',
-      repayNote: '',
-    });
+    // 默认线下、每行现金 = 该行可回款额（操作员可改小或清零，不要求全额）
+    const lines = (o.items || [])
+      .filter((it) => Number(it.repayable) > 0)
+      .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, cash: it.repayable, card: '0.00' }));
+    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '' });
+    this._recalcRepayTotals(lines);
   },
 
   onCloseRepayPopup() {
     this.setData({ showRepayPopup: false });
   },
 
-  onRepayAmountChange(e: WechatMiniprogram.CustomEvent) {
+  // 子项金额输入：data-index 指定行，data-col 指定 cash/card
+  onRepayLineChange(e: WechatMiniprogram.CustomEvent) {
+    const idx = Number(e.currentTarget.dataset.index);
+    const col = e.currentTarget.dataset.col as 'cash' | 'card';
     const val = (e.detail as unknown as string) || '';
-    this.setData({ repayAmountInput: val });
-  },
-
-  onRepayPrepaidCardChange(e: WechatMiniprogram.CustomEvent) {
-    const val = (e.detail as unknown as string) || '';
-    this.setData({ repayPrepaidCardInput: val });
+    const lines = this.data.repayLines.slice();
+    if (!lines[idx]) return;
+    lines[idx] = { ...lines[idx], [col]: val };
+    this.setData({ repayLines: lines });
+    this._recalcRepayTotals(lines);
   },
 
   onRepayMethodChange(e: WechatMiniprogram.CustomEvent) {
     const val = (e.detail as unknown as string) as '线下' | '微信' | '储值卡';
-    // 微信扫码暂未开放：UI 层也拦截一次（后端兜底）
     if (val === '微信') {
       wx.showToast({ title: '微信扫码回款开发中', icon: 'none' });
       return;
     }
-    // 储值卡：清空 repayAmountInput，仅让用户填 prepaidCard
-    if (val === '储值卡') {
-      this.setData({ repayMethod: val, repayAmountInput: '0' });
-      return;
-    }
     this.setData({ repayMethod: val });
+    this._recalcRepayTotals(this.data.repayLines);
   },
 
   onRepayNoteChange(e: WechatMiniprogram.CustomEvent) {
@@ -509,37 +529,52 @@ Page({
 
   async onConfirmRepay() {
     if (this.data.submitting) return;
-    const { order, repayAmountInput, repayPrepaidCardInput, repayMethod, repayNote, currentRemainingPayable } = this.data;
+    const { order, repayLines, repayMethod, repayNote, currentRemainingPayable } = this.data;
     if (!order || !order.saleOrderId) return;
-
-    const repayAmount = Math.round((Number(repayAmountInput) || 0) * 100) / 100;
-    const prepaidCardAmount = Math.round((Number(repayPrepaidCardInput) || 0) * 100) / 100;
-    const total = Math.round((repayAmount + prepaidCardAmount) * 100) / 100;
-
-    if (total <= 0) {
-      wx.showToast({ title: '回款金额需大于 0', icon: 'none' });
+    if (repayMethod === '微信') {
+      wx.showToast({ title: '微信扫码回款开发中', icon: 'none' });
       return;
     }
+    const isCard = repayMethod === '储值卡';
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    // 逐项归一为 { saleItemId, repayAmount(现金), prepaidCardAmount(储值卡) }
+    // 储值卡方式 → 金额进 card 列；线下 → 进 cash 列（仍可叠加 card 列储值卡抵扣）
+    const items = repayLines
+      .map((l) => {
+        const entered = r2(Number((isCard ? l.card : l.cash)) || 0);
+        const cardExtra = isCard ? 0 : r2(Number(l.card) || 0);
+        return {
+          saleItemId: l.saleItemId,
+          repayAmount: isCard ? 0 : entered,
+          prepaidCardAmount: isCard ? entered : cardExtra,
+          repayable: Number(l.repayable),
+        };
+      })
+      .filter((it) => it.repayAmount > 0 || it.prepaidCardAmount > 0);
+
+    if (items.length === 0) {
+      wx.showToast({ title: '请至少为一个子项填写金额', icon: 'none' });
+      return;
+    }
+    const total = r2(items.reduce((s, it) => s + it.repayAmount + it.prepaidCardAmount, 0));
     if (total > currentRemainingPayable + 0.001) {
       wx.showToast({ title: `超出欠款 ¥${currentRemainingPayable.toFixed(2)}`, icon: 'none' });
       return;
     }
-    if (repayMethod === '储值卡' && repayAmount > 0) {
-      wx.showToast({ title: '储值卡方式下现金回款应为 0', icon: 'none' });
-      return;
-    }
-    if (repayMethod === '微信') {
-      wx.showToast({ title: '微信扫码回款开发中', icon: 'none' });
-      return;
+    for (const it of items) {
+      if (r2(it.repayAmount + it.prepaidCardAmount) > it.repayable + 0.001) {
+        wx.showToast({ title: '某子项金额超过该行可回款额', icon: 'none' });
+        return;
+      }
     }
 
     this.setData({ submitting: true });
     try {
       await callStaffApi('order.createRepayment', {
         refSaleOrderId: order.saleOrderId,
-        repayAmount,
-        prepaidCardAmount,
         paymentMethod: repayMethod,
+        items: items.map((it) => ({ saleItemId: it.saleItemId, repayAmount: it.repayAmount, prepaidCardAmount: it.prepaidCardAmount })),
         note: repayNote || undefined,
       });
       wx.showToast({ title: '回款成功', icon: 'success' });

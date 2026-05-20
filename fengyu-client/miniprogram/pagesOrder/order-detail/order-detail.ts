@@ -394,24 +394,22 @@ Page({
     const fromDataset = e?.currentTarget?.dataset?.name || '';
     const v = (fromDetail || fromDataset) as '微信' | '支付宝' | '储值卡';
     if (v === '微信' || v === '支付宝' || v === '储值卡') {
-      // 储值卡余额不足则禁用
-      if (v === '储值卡' && this.data.cardBalance <= 0) return;
+      // 顾客端继续支付强制全额：储值卡通道需余额 ≥ 全部欠款才可选
+      if (v === '储值卡' && this.data.cardBalance + 0.001 < this.data.outstandingAmount) {
+        Toast.fail('储值卡余额不足以付清全部欠款');
+        return;
+      }
       this.setData({
         repayMethod: v,
-        // 切到储值卡时，输入额度=min(欠款, 余额)；其他方式=欠款额
-        repayAmountInput:
-          v === '储值卡'
-            ? Math.min(this.data.outstandingAmount, this.data.cardBalance).toFixed(2)
-            : this.data.outstandingAmount.toFixed(2),
+        // 强制全额：金额恒为欠款额，不可改小
+        repayAmountInput: this.data.outstandingAmount.toFixed(2),
       });
     }
   },
 
-  onRepayAmountInput(e: any) {
-    // van-field bind:change → e.detail 直接是字符串值
-    const detail = e?.detail;
-    const v = (typeof detail === 'string' ? detail : detail?.value) as string;
-    this.setData({ repayAmountInput: v || '' });
+  onRepayAmountInput() {
+    // 顾客端继续支付强制全额：金额锁定为欠款额，忽略任何编辑
+    this.setData({ repayAmountInput: this.data.outstandingAmount.toFixed(2) });
   },
 
   async onRepayConfirm() {
@@ -419,19 +417,16 @@ Page({
     const order = this.data.order;
     if (!order) return;
 
-    const amt = Number(this.data.repayAmountInput);
+    // 顾客端继续支付强制全额：始终按全部欠款提交，不接受部分金额
     const outstanding = this.data.outstandingAmount;
+    const amt = outstanding;
     if (!(amt > 0)) {
-      Toast.fail('请输入有效金额');
-      return;
-    }
-    if (amt > outstanding + 0.001) {
-      Toast.fail('金额超过欠款');
+      Toast.fail('订单无欠款');
       return;
     }
     const method = this.data.repayMethod;
     if (method === '储值卡' && amt > this.data.cardBalance + 0.001) {
-      Toast.fail('储值卡余额不足');
+      Toast.fail('储值卡余额不足以付清全部欠款');
       return;
     }
 

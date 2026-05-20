@@ -1987,6 +1987,11 @@ async function repay(ctx) {
     if (totalNew > remaining + 0.001) {
       throw new Error('INVALID_PARAMS: 回款金额超过剩余应付')
     }
+    // 顾客端继续支付强制全额：只能一次性付清全部未付金额，不允许部分回款
+    // （按子项部分回款仅 admin/staff 可做；client 一律全额）
+    if (totalNew + 0.001 < remaining) {
+      throw new Error('INVALID_PARAMS: 继续支付必须支付全部未付金额')
+    }
 
     // 3. 储值卡扣款（若有）：校验 + 扣减 + INSERT payments(回款/储值卡)
     if (prepaidCardAmountInput > 0) {

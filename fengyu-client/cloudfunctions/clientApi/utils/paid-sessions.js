@@ -49,20 +49,46 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
  * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
  */
 /**
- * STEP 1 分摊 SQL（pg 风格 $1 = saleOrderId）：按 sale_amount 比例把 sale_orders.received
- * 摊到各 sale_items.received，保证 Σ sale_items.received = sale_orders.received。
+ * STEP 1 分摊 SQL（pg 风格 $1 = saleOrderId）：把 sale_orders.received 摊到各 sale_items.received，
+ * 保证 Σ sale_items.received = sale_orders.received。
+ * 「定向 + 剩余产能比例」混合（ticket 2026-05-21 按子项定向回款）：
+ *   targeted_i = Σ(已支付 payments WHERE ref_sale_item_id=i AND change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
+ *   untargeted = order.received - Σtargeted；cap_i = sale_amount_i - targeted_i；
+ *   received_i = targeted_i + untargeted × cap_i / Σcap。
+ * 定向行精确拿到 targeted；其余按剩余产能比例铺开（已满行 cap=0 不再分得，Σ 守恒）。
+ * 无定向时（ref 仅退款写 → targeted=0）退化为按 sale_amount 比例 = 旧 STEP 1，向后兼容。
  * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
  * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
  */
-const SALE_ITEMS_RECEIVED_ALLOC_SQL = `UPDATE sale_items
+const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
+      SELECT ref_sale_item_id, SUM(amount) AS targeted
+      FROM sale_order_payments
+      WHERE sale_order_id = $1 AND status = '已支付'
+        AND change_type IN ('首次支付','回款','储值卡抵扣') AND ref_sale_item_id IS NOT NULL
+      GROUP BY ref_sale_item_id
+    ),
+    caps AS (
+      SELECT si.sale_item_id,
+             GREATEST(0, si.sale_amount::numeric - COALESCE(tg.targeted, 0)::numeric) AS cap,
+             COALESCE(tg.targeted, 0)::numeric AS targeted
+      FROM sale_items si
+      LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
+      WHERE si.sale_order_id = $1 AND si.item_direction = '购买'
+    ),
+    agg AS (
+      SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = $1)::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
+             COALESCE(SUM(cap), 0)::numeric AS cap_total
+      FROM caps
+    )
+    UPDATE sale_items si
     SET received = CASE
-      WHEN op.total_amount > 0
-        THEN ROUND(op.received::numeric * sale_items.sale_amount::numeric / op.total_amount::numeric, 2)
-      ELSE 0
-    END,
-    updated_at = NOW()
-    FROM (SELECT received, total_amount FROM sale_orders WHERE sale_order_id = $1) op
-    WHERE sale_items.sale_order_id = $1 AND sale_items.item_direction = '购买'`
+          WHEN agg.cap_total > 0
+            THEN caps.targeted + ROUND(agg.untargeted * caps.cap / agg.cap_total, 2)
+          ELSE caps.targeted
+        END,
+        updated_at = NOW()
+    FROM caps, agg
+    WHERE si.sale_item_id = caps.sale_item_id`
 
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
@@ -84,7 +110,7 @@ WHERE sale_items.sale_order_id = $1`
  * @param {string} saleOrderId
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
-  // STEP 1：按 sale_amount 比例把 sale_orders.received 摊到 sale_items.received
+  // STEP 1：定向回款落到指定行 + 其余按剩余产能比例摊到 sale_items.received
   // （paid_sessions 公式以 sale_items.received 为分子；不同步会让回款后 paid_sessions 停在建单快照）
   await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
   // STEP 2：行级公式重算 paid_sessions

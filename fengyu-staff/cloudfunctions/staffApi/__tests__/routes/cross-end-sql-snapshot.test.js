@@ -999,12 +999,24 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
     }
   })
 
-  describe("特征守护", () => {
-    test("四端按 sale_amount 比例分摊且 ROUND 2 位", () => {
-      const pattern = /ROUND\(op\.received::numeric\s*\*\s*sale_items\.sale_amount::numeric\s*\/\s*op\.total_amount::numeric,\s*2\)/i
+  describe("特征守护（定向 + 剩余产能比例混合，ticket 2026-05-21）", () => {
+    test("四端定向回款按 ref_sale_item_id 汇总（退款 change_type 排除）", () => {
+      const pattern = /ref_sale_item_id IS NOT NULL[\s\S]*change_type IN\s*\('首次支付','回款','储值卡抵扣'\)|change_type IN\s*\('首次支付','回款','储值卡抵扣'\)[\s\S]*ref_sale_item_id IS NOT NULL/i
       expect(allocSqls.staff).toMatch(pattern)
       expect(allocSqls.client).toMatch(pattern)
       expect(allocSqls.payNotify).toMatch(pattern)
+      expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端未定向额按剩余产能 cap 比例分摊且 ROUND 2 位", () => {
+      const pattern = /ROUND\(agg\.untargeted\s*\*\s*caps\.cap\s*\/\s*agg\.cap_total,\s*2\)/i
+      expect(allocSqls.staff).toMatch(pattern)
+      expect(allocSqls.client).toMatch(pattern)
+      expect(allocSqls.payNotify).toMatch(pattern)
+      expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端 cap_i = GREATEST(0, sale_amount - targeted)（剩余产能，已满行 cap=0）", () => {
+      const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)/i
+      expect(allocSqls.staff).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
     test("四端仅分摊 item_direction='购买' 行（转出/转入 received 不被清零）", () => {
@@ -1013,10 +1025,6 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.client).toMatch(pattern)
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
-    })
-    test("四端 total_amount > 0 守卫（防寄存单 total=0 除零）", () => {
-      expect(allocSqls.staff).toMatch(/op\.total_amount\s*>\s*0/i)
-      expect(allocSqls.adminTs).toMatch(/op\.total_amount\s*>\s*0/i)
     })
   })
 
