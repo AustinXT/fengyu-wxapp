@@ -1,5 +1,6 @@
 // app.ts — 凤御员工端小程序
 import { MOCK_ENABLED } from './utils/dev-config'
+import { getCloudEnv } from './utils/cloud-env'
 
 App<IAppOption>({
   globalData: {
@@ -23,7 +24,7 @@ App<IAppOption>({
   _loginReady: undefined as unknown as Promise<void>,
 
   onLaunch() {
-    wx.cloud.init({ traceUser: true });
+    wx.cloud.init({ env: getCloudEnv(), traceUser: true });
     this.restoreFromCache();
     if (MOCK_ENABLED) {
       // Mock 模式：使用模拟用户数据，跳过真实 auth.login

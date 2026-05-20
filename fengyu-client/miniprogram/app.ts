@@ -1,5 +1,6 @@
 // app.ts — 凤御客户端小程序
 import { callClientApi } from './utils/cloud';
+import { getCloudEnv } from './utils/cloud-env';
 
 App<IAppOption>({
   globalData: {
@@ -18,7 +19,7 @@ App<IAppOption>({
   },
 
   onLaunch(options: WechatMiniprogram.App.LaunchShowOption) {
-    wx.cloud.init({ traceUser: true });
+    wx.cloud.init({ env: getCloudEnv(), traceUser: true });
     // 解析分享礼 inv 参数（邀请人 userId）
     this.capturePendingInviter(options);
     // 计算导航栏高度（需在 UI 渲染前完成）
