@@ -61,7 +61,8 @@ staffApi/
   roles,                   // string[] 去重角色名（兼容字段）
   roleBindings,            // [{role, scopeId, scopeType}] 原始绑定
   staffLevel,              // headquarters / market / store_manager / store_staff / null
-  scopeStoreIds,           // 当前账号有权见的全部 store_id
+  scopeStoreIds,           // 当前账号有权见的全部 store_id（全角色并集）
+  managerStoreIds,         // 仅 manager 角色绑定展开的 store_id；店长写操作授权用
   loginLevel,              // 'store' | 'management' — 从请求 payload._loginLevel 读（中间件兜底）
   currentStoreId,          // 门店模式下当前选中的门店
   effectiveStoreId,        // **业务 SQL 必须使用此字段作为门店过滤值**；管理层模式 = null
@@ -78,7 +79,7 @@ staffApi/
 ### 守卫中间件
 
 - `requireStaffBound()` — 必须已绑定手机号 + 关联员工档案
-- `requireManager()` — 必须有 `(role='manager', scopeType='门店')` 绑定（含多店店长），兼容无 scopeType 的旧数据
+- `requireManager()` — 必须有 `role='manager'` 绑定（总部/市场/门店任一层级）；门店模式下还要求 `effectiveStoreId ∈ managerStoreIds`（即 manager 角色覆盖的门店），兼容无 roleBindings 的旧缓存
 - `requireManagementLevel()` — 必须 staffLevel ∈ {headquarters, market} 且 loginLevel='management'
 
 ## 关键业务流程

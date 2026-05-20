@@ -14,6 +14,8 @@
  *   - 以 management 模式调 mgmtDashboard.scopeOptions 应返回 staffLevel=headquarters + 2 markets
  *   - mgmtDashboard.summary(scopeType='all') 期望 code=0
  *   - finance/customer_mgr/hr/product 调 order.create 仍被 requireManager 拒
+ *   - 总部 manager 调 order.create 应通过 requireManager（A1 在其 managerStoreIds=全部门店 内）
+ *     —— 用不存在 sku，仅断言「非 PERMISSION_DENIED」即证明过了角色门
  */
 import './setup.mjs'
 import {
@@ -115,6 +117,19 @@ async function run() {
       { ...minimalCreate, _testOpenid: e.oid, _loginLevel: 'store', _currentStoreId: STORE_A1.storeId },
       'PERMISSION_DENIED',
       `${k}.order.create.deny`))
+  }
+
+  // 5) 总部 manager 调 order.create 应通过 requireManager（A1 在其管辖门店内）
+  //    用不存在的 sku → 期望非 PERMISSION_DENIED（证明已过角色门，卡在后续业务校验）
+  {
+    const e = employees.find((x) => x.key === 'mgr')
+    const r = await invokeStaffApi('order.create',
+      { ...minimalCreate, _testOpenid: e.oid, _loginLevel: 'store', _currentStoreId: STORE_A1.storeId })
+    if (r.errorType === 'PERMISSION_DENIED') {
+      results.push({ ok: false, label: 'mgr.order.create.pass-guard', reason: `被 requireManager 拦: ${r.message}` })
+    } else {
+      results.push({ ok: true, label: `mgr.order.create.pass-guard(errorType=${r.errorType ?? 'none'})` })
+    }
   }
 
   return results

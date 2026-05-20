@@ -357,7 +357,7 @@ describe('requireManager 基于 roleBindings', () => {
     expect(called).toBe(true)
   })
 
-  test('(manager, 市场) 不通过（市场非门店）', async () => {
+  test('(manager, 市场) 通过（无选定门店 → 仅校验角色）', async () => {
     const ctx = {
       auth: {
         staffWfId: 'e1',
@@ -365,9 +365,50 @@ describe('requireManager 基于 roleBindings', () => {
         roles: [],
       },
     }
+    let called = false
+    await requireManager()(ctx, async () => { called = true })
+    expect(called).toBe(true)
+  })
+
+  test('(manager, 总部) 通过', async () => {
+    const ctx = {
+      auth: {
+        staffWfId: 'e1',
+        roleBindings: [{ role: 'manager', scopeId: 'hq1', scopeType: '总部' }],
+        roles: [],
+      },
+    }
+    let called = false
+    await requireManager()(ctx, async () => { called = true })
+    expect(called).toBe(true)
+  })
+
+  test('门店模式：effectiveStoreId 不在 managerStoreIds → 拒绝（精确版越权防护）', async () => {
+    const ctx = {
+      auth: {
+        staffWfId: 'e1',
+        roleBindings: [{ role: 'manager', scopeId: 'nA', scopeType: '门店' }],
+        managerStoreIds: ['A'],
+        effectiveStoreId: 'B',
+      },
+    }
     await expect(requireManager()(ctx, async () => {})).rejects.toThrow(
-      /PERMISSION_DENIED/
+      /PERMISSION_DENIED.*管辖范围/
     )
+  })
+
+  test('门店模式：effectiveStoreId 在 managerStoreIds → 通过', async () => {
+    const ctx = {
+      auth: {
+        staffWfId: 'e1',
+        roleBindings: [{ role: 'manager', scopeId: 'nA', scopeType: '门店' }],
+        managerStoreIds: ['A', 'B'],
+        effectiveStoreId: 'B',
+      },
+    }
+    let called = false
+    await requireManager()(ctx, async () => { called = true })
+    expect(called).toBe(true)
   })
 
   test('旧缓存兼容：无 roleBindings + roles 含 manager → 通过', async () => {

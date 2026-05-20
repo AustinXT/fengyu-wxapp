@@ -14,6 +14,9 @@
  *   3. (manager, market_A) + (manager, market_B)  → market + scopeStoreIds=[A1,A2,B1,B2]
  *   4. (finance, HQ) + (manager, A1)              → headquarters（HQ 覆盖一切）
  *   5. (finance, A1) + (customer_mgr, A2)         → store_staff + scopeStoreIds=[A1,A2]（多店非 manager）
+ *
+ * 越权回归（精确版 managerStoreIds）：
+ *   6. (manager, A1) + (finance, B1) → 选 B1 开单被 requireManager 拒，选 A1 过角色门
  */
 import './setup.mjs'
 import {
@@ -128,6 +131,41 @@ async function run() {
     }
 
     results.push({ ok: true, label: `${e.key}: ${lvl} + ${scopedIds.length} stores` })
+  }
+
+  // 越权回归（精确版 managerStoreIds）：manager@A1 + finance@B1
+  //   scopeStoreIds={A1,B1}（并集）但 managerStoreIds={A1}（仅 manager 绑定）
+  //   → 选 B1 应被 requireManager 拒（在 B1 仅财务）；选 A1 应过角色门（非 PERMISSION_DENIED）
+  const escOid = `${NS}_RBAC_MB_ESC_OPENID`
+  await createTestStaffWithRoles({
+    employeeId: `${NS}_RBAC_MB_ESC`, openid: escOid, phone: testPhone(20),
+    name: `${NS}_越权_mgrA1_finB1`,
+    storeId: TEST_STORES_MULTI.A1.storeId, orgNodeId: TEST_STORES_MULTI.A1.orgId,
+    bindings: [
+      { role: 'manager', scopeId: TEST_STORES_MULTI.A1.orgId },
+      { role: 'finance', scopeId: TEST_STORES_MULTI.B1.orgId },
+    ],
+  })
+  await invalidateStaffAuthCache(escOid)
+  await pgQuery(`SELECT 1`)
+  const escCreate = { items: [{ skuId: 'no-such-sku', quantity: 1 }], customerId: `${NS}_NOPE` }
+  {
+    const r = await invokeStaffApi('order.create',
+      { ...escCreate, storeId: TEST_STORES_MULTI.B1.storeId, _testOpenid: escOid, _loginLevel: 'store', _currentStoreId: TEST_STORES_MULTI.B1.storeId })
+    if (r.errorType === 'PERMISSION_DENIED') {
+      results.push({ ok: true, label: `esc.order.create@B1.deny(${r.message})` })
+    } else {
+      results.push({ ok: false, label: 'esc.order.create@B1.deny', reason: `expected PERMISSION_DENIED, got errorType=${r.errorType} message=${r.message}` })
+    }
+  }
+  {
+    const r = await invokeStaffApi('order.create',
+      { ...escCreate, storeId: TEST_STORES_MULTI.A1.storeId, _testOpenid: escOid, _loginLevel: 'store', _currentStoreId: TEST_STORES_MULTI.A1.storeId })
+    if (r.errorType === 'PERMISSION_DENIED') {
+      results.push({ ok: false, label: 'esc.order.create@A1.pass-guard', reason: `被 requireManager 拦: ${r.message}` })
+    } else {
+      results.push({ ok: true, label: `esc.order.create@A1.pass-guard(errorType=${r.errorType ?? 'none'})` })
+    }
   }
 
   return results

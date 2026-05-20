@@ -89,7 +89,8 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
  *   roles,                   // string[]（兼容字段，去重后的 role 名）
  *   roleBindings,            // [{role, scopeId, scopeType}]
  *   staffLevel,              // headquarters | market | store_manager | store_staff | null
- *   scopeStoreIds,           // string[] — 有权可见的全部 store_id
+ *   scopeStoreIds,           // string[] — 有权可见的全部 store_id（全角色并集）
+ *   managerStoreIds,         // string[] — 仅 manager 角色绑定展开的门店；店长写操作授权用
  *   loginLevel,              // store | management | null
  *   currentStoreId,          // 门店模式下的当前门店
  *   effectiveStoreId,        // 业务 SQL 应该使用的门店过滤值；管理层模式 = null
@@ -169,6 +170,7 @@ async function loadAuthBase(effectiveOpenid) {
   let roleBindings = []
   let staffLevel = null
   let scopeStoreIds = []
+  let managerStoreIds = []
 
   if (users.length === 0) {
     // 未注册员工
@@ -181,6 +183,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings: [],
       staffLevel: null,
       scopeStoreIds: [],
+      managerStoreIds: [],
       position: null,
       storeName: null,
       marketName: null,
@@ -206,6 +209,11 @@ async function loadAuthBase(effectiveOpenid) {
       }))
       staffLevel = deriveStaffLevel(roleBindings)
       scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
+      // 仅展开 manager 角色绑定 → 店长写操作可达的门店集（区别于全角色并集 scopeStoreIds）
+      const managerBindings = roleBindings.filter((r) => r.role === 'manager')
+      managerStoreIds = managerBindings.length > 0
+        ? await expandScopeStoreIds(managerBindings, pg)
+        : []
     }
 
     const roles = [...new Set(roleBindings.map(r => r.role))]
@@ -219,6 +227,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings,
       staffLevel,
       scopeStoreIds,
+      managerStoreIds,
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,
       marketName: isActive ? user.market_name : null,
@@ -251,8 +260,10 @@ function requireStaffBound() {
 }
 
 /**
- * 要求拥有 (manager, 门店) 角色绑定
- * 语义不变：只要在某个门店是店长，即可通过（不强制当前 loginLevel）
+ * 要求拥有 manager 角色（总部 / 市场 / 门店 任一层级均可）。
+ * 门店模式下（已选定 effectiveStoreId）还要求该门店落在 manager 角色覆盖的门店集
+ * （managerStoreIds，仅展开 manager 绑定）内，从而把市场/总部 manager 精确限定到本人管辖门店，
+ * 并拦掉「manager@门店A + finance@门店B 在 B 越权做店长操作」的情形。
  */
 function requireManager() {
   return async (ctx, next) => {
@@ -260,17 +271,19 @@ function requireManager() {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
     const bindings = ctx.auth.roleBindings || []
-    const hasStoreManager = bindings.some(
-      (r) => r.role === 'manager' && r.scopeType === '门店'
-    )
-    // 兼容：旧缓存或旧测试数据可能整份 bindings 都没 scopeType，此时退化到 roles 判定
-    const hasAnyScopeType = bindings.some((r) => r.scopeType)
-    const legacyFallback =
-      !hasAnyScopeType &&
-      Array.isArray(ctx.auth.roles) &&
-      ctx.auth.roles.includes('manager')
-    if (!hasStoreManager && !legacyFallback) {
+    // manager 角色在任意层级（总部/市场/门店）均可；旧缓存无 roleBindings 时退化到 roles 判定
+    const hasManagerRole =
+      bindings.some((r) => r.role === 'manager') ||
+      (Array.isArray(ctx.auth.roles) && ctx.auth.roles.includes('manager'))
+    if (!hasManagerRole) {
       throw new Error('PERMISSION_DENIED: 仅店长可执行此操作')
+    }
+    // 已选定门店（门店模式）时，该门店必须落在 manager 角色覆盖的门店集内。
+    // managerStoreIds 为空（旧缓存 / 数据缺失）则退化为仅校验角色，避免误拦真实店长。
+    const managerStoreIds = ctx.auth.managerStoreIds || []
+    const eff = ctx.auth.effectiveStoreId
+    if (eff && managerStoreIds.length > 0 && !managerStoreIds.includes(eff)) {
+      throw new Error('PERMISSION_DENIED: 当前门店不在您的店长管辖范围内')
     }
     await next()
   }

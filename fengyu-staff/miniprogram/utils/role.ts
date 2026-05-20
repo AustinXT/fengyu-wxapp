@@ -35,12 +35,15 @@ export function canAccessStore(): boolean {
 }
 
 /**
- * 当前身份是否为门店店长
- * 语义变化：原基于 roles.includes('manager')；新基于归并后的 staffLevel。
- * 对单店店长等价；对"HQ admin + 门店 manager"组合会判为 headquarters，不再走店长分支。
+ * 当前身份是否可执行门店店长操作。
+ * - 门店店长（staffLevel='store_manager'）始终为真；
+ * - 总部 / 市场 manager 切到门店模式后等同店长（管理层模式走独立 mgmt 导航，
+ *   不暴露门店店长 UI，故用 loginLevel==='store' 收口）。
+ * 与后端 requireManager 对齐：后端按 managerStoreIds 把高层 manager 精确限定到管辖门店。
  */
 export function isManager(): boolean {
-  return getStaffLevel() === 'store_manager';
+  if (getStaffLevel() === 'store_manager') return true;
+  return getLoginLevel() === 'store' && hasRole('manager');
 }
 
 /**
