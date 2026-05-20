@@ -101,7 +101,7 @@ const STEPS = [
     // deepened: end-to-end coupon application path
     // 先在 home 准备 checkoutItems，再 navigateTo checkout
     await ctx.mp.reLaunch('/pages/home/home')
-    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    await waitForPagePath(ctx.mp, 'pages/home/home', { timeoutMs: 8000 })
     const item = {
       skuId: L3_SKU_NORMAL_ID,
       spuId: L3_PRODUCT_ID,

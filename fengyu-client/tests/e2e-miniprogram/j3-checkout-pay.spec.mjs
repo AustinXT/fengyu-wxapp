@@ -40,7 +40,7 @@ const STEPS = [
       storeId: TEST_STORE_ID,
     }
     await ctx.mp.reLaunch('/pages/home/home')
-    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    await waitForPagePath(ctx.mp, 'pages/home/home', { timeoutMs: 8000 })
     await ctx.mp.evaluate((it) => {
       wx.setStorageSync('cart', { items: [it] })
       wx.setStorageSync('checkoutItems', [it])

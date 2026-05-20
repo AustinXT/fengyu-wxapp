@@ -31,7 +31,7 @@ import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 const STEPS = [
   ['1. reLaunch home + 等首屏', async (ctx) => {
     await ctx.mp.reLaunch('/pages/home/home')
-    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    await waitForPagePath(ctx.mp, 'pages/home/home', { timeoutMs: 8000 })
     // home 首屏 shopInit 加载（spuList / banner 落位）；个别版本字段不一致，宽松谓词
     await waitForData(
       ctx.mp,

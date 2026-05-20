@@ -35,7 +35,8 @@ const STEPS = [
 
   ['2. reLaunch 到 home，验证当前路由', async (ctx) => {
     await ctx.mp.reLaunch('/pages/home/home')
-    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
+    // 注：currentPage().path 不带前导 '/'，必须用 'pages/home/home' 形式（与其他 step 一致）
+    await waitForPagePath(ctx.mp, 'pages/home/home', { timeoutMs: 8000 })
     // 等 onLaunch 完成：globalData.userId 写入是 onLaunch syncLoginState 的尾部副作用
     const start = Date.now()
     while (Date.now() - start < 5000) {
