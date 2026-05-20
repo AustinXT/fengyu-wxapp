@@ -17,15 +17,20 @@ import {
 } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
-import { getCustomerHeldCards, getCustomerCardBalance, type HeldCardCandidate } from "@/actions/cards"
+import { getCustomerHeldCards, getCustomerCardBalance, createRechargeOrder, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
+import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
   BundlePicker,
   NormalSkuPicker,
   TrialCardPicker,
   ConversionPanel,
+  RechargePicker,
+  resolveRecharge,
+  formatAmount as formatRechargeAmount,
+  formatDiscountLabel,
   type CartItem,
   type ItemPriceOverride,
   type BundleAddPayload,
@@ -37,12 +42,12 @@ import type { Product } from "@/lib/types"
  * - "组合套餐" → 后端 `__bundle__`（products.is_bundle=true）
  * - "普通商品" → 后端 `__normal__`（排除体验卡 + 非 bundle，分组结构）
  * - "体验卡" → 精确 SKU.is_experience=true 匹配（平铺结构）
- * 2026-05-20：充值卡退出 SKU/商品域，admin 开单页不再含"充值卡" Tab；
- * 充值订单走员工端 card.recharge 入口，后续 admin 若需自建会另起独立页面。
+ * - "充值卡" → 无 SKU 数据，走 RechargePicker 档位选择 → createRechargeOrder（2026-05-21
+ *   充值入口收敛到开单页，与 staff order-create 的「充值卡」Tab 对齐）
  */
-type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡'
+type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡' | '充值卡'
 
-const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品', '体验卡']
+const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品', '体验卡', '充值卡']
 
 /** Step 3 订单类型 3 选 1（PR-C） */
 type OrderTypeChoice = '销售单' | '内部单' | '转换单'
@@ -141,9 +146,11 @@ function StepIndicator({ current }: { current: number }) {
 export default function OrderCreatePageClient({
   stores,
   employees,
+  rechargeConfig,
 }: {
   stores: Store[]
   employees: Employee[]
+  rechargeConfig: RechargeConfig | null
 }) {
   const [step, setStep] = useState(0)
   const [searchKeyword, setSearchKeyword] = useState("")
@@ -201,6 +208,10 @@ export default function OrderCreatePageClient({
   const [createdReceived, setCreatedReceived] = useState<number>(0)
   // 本次应付合计快照（= totalSaleAmount），用于 Step 4 计算剩余
   const [createdPayable, setCreatedPayable] = useState<number>(0)
+  // 充值卡子流程（productKindChoice='充值卡'）：档位选择 + 创建结果
+  const [rechargeSelectedFace, setRechargeSelectedFace] = useState<number>(0)
+  const [rechargeCustomInput, setRechargeCustomInput] = useState<string>("")
+  const [rechargeResult, setRechargeResult] = useState<{ saleOrderId: string; payAmount: number; faceValue: number } | null>(null)
 
   const handleSearch = async () => {
     const kw = searchKeyword.trim()
@@ -232,6 +243,8 @@ export default function OrderCreatePageClient({
    * - 失败仅静默 toast 提示，不阻断 Step 1 → Step 2 流程（Step 2 自己会兜底）。
    */
   const prefetchKindData = useCallback(async (choice: ProductKindChoice) => {
+    // 充值卡无 SKU 数据，不走 getProductsByKind（Step 2 渲染 RechargePicker）
+    if (choice === '充值卡') return
     if (kindDataCache[choice]) return
     setPrefetching(true)
     try {
@@ -434,6 +447,11 @@ export default function OrderCreatePageClient({
     const price = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
     return sum + price * item.quantity
   }, 0)
+
+  // 充值卡子流程（无购物车/优惠券/转换单，独立 Step 1/2/3 分支）
+  const isRecharge = productKindChoice === '充值卡'
+  const rechargeResolved = resolveRecharge(rechargeConfig, rechargeSelectedFace, rechargeCustomInput)
+  const rechargeValid = rechargeResolved.faceValue > 0 && rechargeResolved.payAmount > 0 && !rechargeResolved.error
 
   // 应付合计 & 实付合计（含手动覆盖）— 内部单走半价显示分支
   const isInternal = orderType === '内部单'
@@ -665,8 +683,25 @@ export default function OrderCreatePageClient({
         </Card>
       )}
 
+      {/* Step 2（充值卡分支）：档位选择 */}
+      {step === 1 && isRecharge && (
+        <div className="space-y-4">
+          <RechargePicker
+            config={rechargeConfig}
+            selectedFace={rechargeSelectedFace}
+            customInput={rechargeCustomInput}
+            onSelectFace={(face) => { setRechargeSelectedFace(face); setRechargeCustomInput("") }}
+            onCustomChange={(v) => { setRechargeCustomInput(v); setRechargeSelectedFace(0) }}
+          />
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
+            <Button onClick={() => setStep(2)} disabled={!rechargeValid}>下一步</Button>
+          </div>
+        </div>
+      )}
+
       {/* Step 2: 选择商品（PR-C：4 类 picker 渲染分支） */}
-      {step === 1 && (
+      {step === 1 && !isRecharge && (
         <div className="space-y-4">
           {(() => {
             const data = kindDataCache[productKindChoice]
@@ -785,8 +820,114 @@ export default function OrderCreatePageClient({
         </div>
       )}
 
+      {/* Step 3（充值卡分支）：确认充值订单 */}
+      {step === 2 && isRecharge && (
+        <Card>
+          <CardContent className="p-6 space-y-6">
+            <h2 className="text-base font-semibold">确认充值订单</h2>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-sm text-[#999999]">顾客</label>
+                <p className="font-medium">{selectedCustomer?.name ?? "-"}</p>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">充值面额</label>
+                <p className="font-medium">¥{formatRechargeAmount(rechargeResolved.faceValue)}</p>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">实付金额</label>
+                <p className="font-medium text-[var(--primary)]">
+                  ¥{formatRechargeAmount(rechargeResolved.payAmount)}
+                  {rechargeResolved.faceValue - rechargeResolved.payAmount > 0 && (
+                    <span className="ml-1 text-xs">{formatDiscountLabel(rechargeResolved.discount)}</span>
+                  )}
+                </p>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">支付方式</label>
+                <p className="font-medium">线下收款</p>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">入账门店</label>
+                <Select className="mt-1" value={selectedStoreId} onChange={(e) => setSelectedStoreId(e.target.value)}>
+                  {stores.map((s) => (
+                    <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 md:col-span-3">
+                <label className="text-sm text-[#999999]">备注（可选）</label>
+                <Input
+                  className="mt-1"
+                  placeholder="例如：现金充值 / 微信转账"
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                  maxLength={200}
+                />
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="text-right space-y-1">
+              <div className="text-sm text-[#999999]">充值面额: ¥{formatRechargeAmount(rechargeResolved.faceValue)}</div>
+              {rechargeResolved.faceValue - rechargeResolved.payAmount > 0 && (
+                <div className="text-sm text-[#3D8A5A]">
+                  赠送: ¥{formatRechargeAmount(rechargeResolved.faceValue - rechargeResolved.payAmount)}
+                </div>
+              )}
+              <div className="font-bold text-xl text-[var(--primary)]">
+                实付金额: ¥{formatRechargeAmount(rechargeResolved.payAmount)}
+              </div>
+            </div>
+
+            <p className="text-xs text-[#999999]">
+              · 充值订单创建后为「待支付」，入账由店长在小程序确认收款 / admin 录入回款触发，到账后储值卡余额 +¥{formatRechargeAmount(rechargeResolved.faceValue)}（按面额入账）
+            </p>
+
+            <div className="flex justify-between">
+              <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
+              <Button loading={submitting} onClick={async () => {
+                if (!selectedStoreId) { toast.error("请选择门店"); return }
+                if (!selectedCustomer?.userId) { toast.error("请先选择顾客"); return }
+                const resolved = resolveRecharge(rechargeConfig, rechargeSelectedFace, rechargeCustomInput)
+                if (resolved.faceValue <= 0 || resolved.payAmount <= 0 || resolved.error) {
+                  toast.error(resolved.error || "请选择充值金额"); return
+                }
+                setSubmitting(true)
+                try {
+                  const res = await createRechargeOrder({
+                    clientUserId: selectedCustomer.userId,
+                    storeId: selectedStoreId,
+                    faceValue: resolved.faceValue,
+                    remark: remark.trim() || null,
+                  })
+                  if (res.success && res.saleOrderId) {
+                    toast.success(res.message)
+                    setCreatedOrderId(res.saleOrderId)
+                    setRechargeResult({
+                      saleOrderId: res.saleOrderId,
+                      payAmount: res.payAmount ?? resolved.payAmount,
+                      faceValue: resolved.faceValue,
+                    })
+                    setStep(3)
+                  } else {
+                    toast.error(res.message)
+                  }
+                } catch {
+                  toast.error("创建充值订单失败，请稍后重试")
+                } finally {
+                  setSubmitting(false)
+                }
+              }}>提交充值订单</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Step 3: 确认订单（PR-C：订单类型 3 选 1 + 内部单/转换单分支） */}
-      {step === 2 && (
+      {step === 2 && !isRecharge && (
         <Card>
           <CardContent className="p-6 space-y-6">
             <h2 className="text-base font-semibold">确认订单</h2>
@@ -1228,7 +1369,9 @@ export default function OrderCreatePageClient({
               </div>
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">
-              {paymentConfirmed
+              {rechargeResult
+                ? '充值订单已创建'
+                : paymentConfirmed
                 ? '收款已确认'
                 : conversionResult
                   ? '转换单已创建'
@@ -1240,8 +1383,17 @@ export default function OrderCreatePageClient({
               <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
             )}
 
-            {/* 转换单成功文案分支 */}
-            {conversionResult ? (
+            {/* 充值单成功文案分支 */}
+            {rechargeResult ? (
+              <div className="text-sm space-y-1">
+                <p className="text-[#666666]">
+                  面额 ¥{formatRechargeAmount(rechargeResult.faceValue)} ｜ 实付 ¥{formatRechargeAmount(rechargeResult.payAmount)}
+                </p>
+                <p className="text-[#D4820A]">
+                  待入账：店长在小程序确认收款 / admin 录入回款后，储值卡余额 +¥{formatRechargeAmount(rechargeResult.faceValue)}
+                </p>
+              </div>
+            ) : conversionResult ? (
               <div className="text-sm space-y-1">
                 <p className="text-[#666666]">
                   转入 ¥{conversionResult.totalIn.toFixed(2)} ｜ 折抵 ¥{conversionResult.totalOut.toFixed(2)}
@@ -1280,15 +1432,15 @@ export default function OrderCreatePageClient({
               </p>
             )}
 
-            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景；部分支付不显示二维码）*/}
-            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
+            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景；部分支付/充值单不显示二维码）*/}
+            {!rechargeResult && paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
-            {/* 线下支付：确认收款按钮（仅 待支付 状态显示；部分支付订单已记录首次收款，不再走 confirmOffline）*/}
-            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
+            {/* 线下支付：确认收款按钮（仅 待支付 状态显示；部分支付订单已记录首次收款，不再走 confirmOffline；充值单入账走 confirmOffline/录入回款，此处不显示）*/}
+            {!rechargeResult && paymentMethod === '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <div className="pt-2">
@@ -1335,6 +1487,7 @@ export default function OrderCreatePageClient({
                 setHeldCards([])
                 setSelectedHeldCardIds([])
                 setConversionResult(null)
+                setRechargeSelectedFace(0); setRechargeCustomInput(""); setRechargeResult(null)
               }}>
                 继续开单
               </Button>

@@ -371,10 +371,6 @@ export const getRechargeCardTiers = withPermission(
   },
 )
 
-// 向后兼容旧函数名（如有调用方未及时切换）
-export const getRechargeCardSkus = getRechargeCardTiers
-export type RechargeCardSku = RechargeCardTier
-
 /**
  * 查询顾客充值卡余额（跨店统一；admin 新增开单页"充值卡抵扣"使用）
  *

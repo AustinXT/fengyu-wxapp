@@ -39,7 +39,6 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     : false
 
   const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
-  const canRecharge = session ? hasPermission(session, 'sale_order:create') : false
 
   return (
     <CustomerDetailPage
@@ -52,7 +51,6 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       orphanProfiles={orphanProfiles}
       canEditPhone={canEditPhone}
       canPullLegacy={canPullLegacy}
-      canRecharge={canRecharge}
     />
   )
 }
