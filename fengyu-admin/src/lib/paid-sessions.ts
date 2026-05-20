@@ -1,15 +1,16 @@
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
  *
- * 语义：净已支付金额按比例可换到的次数，行级 floor。
- * 公式：paid_sessions = floor( min(1, settled / total_amount) × session_count )
- *   - settled = max(0, received - refunded_amount)
- *   - sale_orders.received 不变量已含 '储值卡抵扣' change_type 行
- *     （admin confirmOfflinePayment / recordPayment SUM 公式跨端对齐 staff/order.js），不能重复加 prepaid_card_amount
- *   - total_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
+ * 语义：净已支付金额按比例可换到的次数，**行级**比例 floor。
+ * 公式：paid_sessions = floor( min(1, (item.received - item_refund_share) / item.sale_amount) × session_count )
+ *   - item_refund_share = order.refunded × item.sale_amount / order.total （订单级退款按 sale_amount 按比例下分到行）
+ *     之所以按订单级而非行级是因为目前没有行级退款追踪
+ *   - sale_items.received 已含 '储值卡抵扣' change_type 行
+ *     （admin confirmOfflinePayment / recordPayment SUM 公式跨端对齐 staff/order.js），不重复计 prepaid_card_amount
+ *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
  *
- * D3=A 退款扣减：refunded_amount 增加 → settled 下降 → paid_sessions 自动倒退；
+ * D3=A 退款扣减：order.refunded 增加 → 行下分 refund_share 增加 → item_settled 下降 → paid_sessions 自动倒退；
  * 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，
  * recalcPaidSessionsForOrder 抛 CONFLICT 阻止退款，保护"已消费次数不可撤销"不变量。
  *
@@ -25,23 +26,26 @@ import { db } from '@/db'
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
 export function computePaidSessionsForItem({
-  saleOrderReceived,
-  saleOrderRefunded,
-  saleOrderTotal,
+  itemReceived,
+  itemSaleAmount,
   itemSessionCount,
+  orderTotal,
+  orderRefunded,
 }: {
-  saleOrderReceived: number | string
-  saleOrderRefunded?: number | string
-  saleOrderTotal: number | string
+  itemReceived: number | string
+  itemSaleAmount: number | string
   itemSessionCount: number | null
+  orderTotal: number | string
+  orderRefunded?: number | string
 }): number | null {
   if (itemSessionCount == null) return null
-  const total = Number(saleOrderTotal) || 0
-  if (total <= 0) return Number(itemSessionCount)
-  const settled = Math.max(0, (Number(saleOrderReceived) || 0) - (Number(saleOrderRefunded) || 0))
-  const ratio = Math.min(1, settled / total)
-  const v = Math.floor(ratio * Number(itemSessionCount))
-  return Math.max(0, Math.min(Number(itemSessionCount), v))
+  const sa = Number(itemSaleAmount) || 0
+  if (sa <= 0) return Number(itemSessionCount)
+  const tot = Number(orderTotal) || 0
+  const itemRefundShare = tot > 0 ? (Number(orderRefunded) || 0) * sa / tot : 0
+  const itemSettled = Math.max(0, (Number(itemReceived) || 0) - itemRefundShare)
+  const ratio = Math.min(1, itemSettled / sa)
+  return Math.max(0, Math.min(Number(itemSessionCount), Math.floor(ratio * Number(itemSessionCount))))
 }
 
 /**
@@ -51,11 +55,11 @@ export function computePaidSessionsForItem({
 export const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
-  WHEN op.total_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer)
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = $1) op
+FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
 
 /**
@@ -68,11 +72,11 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     UPDATE sale_items
     SET paid_sessions = CASE
       WHEN sale_items.session_count IS NULL THEN NULL
-      WHEN op.total_amount <= 0 THEN sale_items.session_count
-      ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer)
+      WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+      ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
     END,
     updated_at = NOW()
-    FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
+    FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
     WHERE sale_items.sale_order_id = ${saleOrderId}
   `)
   const violation = await tx.execute(sql`

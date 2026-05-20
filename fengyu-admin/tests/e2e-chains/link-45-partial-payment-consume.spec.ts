@@ -263,10 +263,17 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
   console.log('[链路45] Step1 服务单完成 ✓')
 
   // SQL 验证 used=1 / remaining=9 / paid_sessions=5（未变）
-  const afterStep1 = runPsql(
-    `SELECT session_count, remaining_sessions, COALESCE(paid_sessions, 0) FROM sale_items WHERE sale_item_id='${PRE_SALE_ITEM_ID}'`
-  )
-  const [sc1, rem1, paid1] = afterStep1.split('|')
+  // 注：UI 文案"已完成"出现的瞬间不一定等于 SQL 已 commit + revalidate 完成，
+  //    用短轮询等真值出现，避免观测过早的竞态。
+  let sc1 = '', rem1 = '', paid1 = ''
+  for (let i = 0; i < 20; i++) {
+    const row = runPsql(
+      `SELECT session_count, remaining_sessions, COALESCE(paid_sessions, 0) FROM sale_items WHERE sale_item_id='${PRE_SALE_ITEM_ID}'`
+    )
+    ;[sc1, rem1, paid1] = row.split('|')
+    if (parseInt(rem1) === MULTI_SESSION_COUNT - 1) break
+    await page.waitForTimeout(500)
+  }
   expect(parseInt(rem1)).toBe(MULTI_SESSION_COUNT - 1)  // 10 - 1 = 9
   expect(parseInt(paid1)).toBe(INITIAL_PAID_SESSIONS)   // 5（未变）
   expect(parseInt(sc1) - parseInt(rem1)).toBeLessThanOrEqual(parseInt(paid1))  // used=1 <= paid=5
@@ -350,14 +357,20 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
     `WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`
   )
 
-  // 调用与 PAID_SESSIONS_RECALC_SQL 等价的 UPDATE（模拟 recalcPaidSessionsForOrder）
+  // 行级公式：sale_items.received 也需同步到全额（模拟 admin recordPayment 链路把入账金额下分到行）
+  runPsql(
+    `UPDATE sale_items SET received=10000.00, updated_at=NOW() ` +
+    `WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`
+  )
+
+  // 调用与 PAID_SESSIONS_RECALC_SQL 等价的 UPDATE（模拟 recalcPaidSessionsForOrder，行级公式）
   runPsql(
     `UPDATE sale_items SET paid_sessions = CASE ` +
     `WHEN sale_items.session_count IS NULL THEN NULL ` +
-    `WHEN op.total_amount <= 0 THEN sale_items.session_count ` +
-    `ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) ` +
+    `WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ` +
+    `ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer) ` +
     `END, updated_at = NOW() ` +
-    `FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id='${PRE_SALE_ORDER_ID}') op ` +
+    `FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id='${PRE_SALE_ORDER_ID}') op ` +
     `WHERE sale_items.sale_order_id='${PRE_SALE_ORDER_ID}'`
   )
 
@@ -397,8 +410,11 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
   }, { timeout: 20000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-45-50-step5-items.png` })
 
+  // UI 表格不渲染 sale_item_id（只显示商品名/规格/已用/已付/共/单价/到期日）。
+  // 回款后 paid_sessions=10, 之前用过 5 次 -> 三段显示 5/10/10。
   const bodyStep5 = await page.textContent('body')
-  expect(bodyStep5).toContain(PRE_SALE_ITEM_ID)
+  expect(bodyStep5).toContain(MULTI_SESSION_SKU_NAME)
+  expect(bodyStep5).toContain('5/10/10')
   console.log('[链路45] Step5 回款后 sale_item 重新可选 ✓')
 
   // ============================================================

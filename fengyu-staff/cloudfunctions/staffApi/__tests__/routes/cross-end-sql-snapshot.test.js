@@ -896,8 +896,9 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
   })
 
   describe("公式特征守护（防止公式漂移成不安全形态）", () => {
-    test("五端公式必须使用 GREATEST(0, received - COALESCE(refunded_amount, 0)) 作 settled", () => {
-      const pattern = /GREATEST\(0,\s*received\s*-\s*COALESCE\(refunded_amount,\s*0\)\)/i
+    test("五端公式必须按 sale_amount 比例下分订单级 refund（item_refund_share）", () => {
+      // 新公式行级 settled = GREATEST(0, sale_items.received - op.refunded_amount × sale_amount / total_amount)
+      const pattern = /GREATEST\(0,\s*sale_items\.received::numeric\s*-\s*\(\s*op\.refunded_amount::numeric\s*\*\s*sale_items\.sale_amount::numeric\s*\/\s*NULLIF\(op\.total_amount::numeric,\s*0\)\)\)/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
@@ -924,8 +925,18 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       expect(paidSessionsSqls.scriptFix).toMatch(/LEAST\(sale_items\.session_count,/i)
     })
 
-    test("五端必须有 total_amount <= 0 → session_count 兜底（免单/寄存单全付）", () => {
-      const pattern = /op\.total_amount\s*<=\s*0\s*THEN\s*sale_items\.session_count/i
+    test("五端必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单/寄存行全付）", () => {
+      // 新公式：行级判定（基于 sale_items.sale_amount），不是订单级（op.total_amount）
+      const pattern = /sale_items\.sale_amount\s*<=\s*0\s*THEN\s*sale_items\.session_count/i
+      expect(paidSessionsSqls.staff).toMatch(pattern)
+      expect(paidSessionsSqls.client).toMatch(pattern)
+      expect(paidSessionsSqls.payNotify).toMatch(pattern)
+      expect(paidSessionsSqls.adminTs).toMatch(pattern)
+      expect(paidSessionsSqls.scriptFix).toMatch(pattern)
+    })
+
+    test("五端必须用 NULLIF(op.total_amount, 0) 防 total=0 时除零", () => {
+      const pattern = /NULLIF\(op\.total_amount::numeric,\s*0\)/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)

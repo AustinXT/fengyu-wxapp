@@ -1,14 +1,15 @@
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
  *
- * 语义：净已支付金额按比例可换到的次数，行级 floor。
- * 公式：paid_sessions = floor( min(1, settled / total_amount) × session_count )
- *   - settled = max(0, received - refunded_amount)
- *   - sale_orders.received 不变量已含 '储值卡抵扣' change_type 行（见 staff/order.js L1991-1994），不能重复加 prepaid_card_amount
- *   - total_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
+ * 语义：净已支付金额按比例可换到的次数，**行级**比例 floor。
+ * 公式：paid_sessions = floor( min(1, (item.received - item_refund_share) / item.sale_amount) × session_count )
+ *   - item_refund_share = order.refunded × item.sale_amount / order.total （订单级退款按 sale_amount 按比例下分到行）
+ *     之所以按订单级而非行级是因为目前没有行级退款追踪
+ *   - sale_items.received 已含 '储值卡抵扣' change_type 行（见 staff/order.js L1991-1994 跨端同义），不重复计 prepaid_card_amount
+ *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
  *
- * D3=A 退款扣减：refunded_amount 增加 → settled 下降 → paid_sessions 自动倒退；
+ * D3=A 退款扣减：order.refunded 增加 → 行下分 refund_share 增加 → item_settled 下降 → paid_sessions 自动倒退；
  * 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，
  * recalcPaidSessionsForOrder 抛 CONFLICT 阻止退款，保护"已消费次数不可撤销"不变量。
  *
@@ -21,37 +22,39 @@
 
 /**
  * @param {object} args
- * @param {number|string} args.saleOrderReceived  - sale_orders.received（已含储值卡抵扣已支付部分）
- * @param {number|string} [args.saleOrderRefunded] - sale_orders.refunded_amount
- * @param {number|string} args.saleOrderTotal
+ * @param {number|string} args.itemReceived       - sale_items.received（已含储值卡抵扣已支付部分）
+ * @param {number|string} args.itemSaleAmount     - sale_items.sale_amount（行小计，折扣后）
  * @param {number|null} args.itemSessionCount
+ * @param {number|string} args.orderTotal         - sale_orders.total_amount（用于下分订单级退款）
+ * @param {number|string} [args.orderRefunded]    - sale_orders.refunded_amount（订单级累计退款）
  * @returns {number|null}
  */
-function computePaidSessionsForItem({ saleOrderReceived, saleOrderRefunded, saleOrderTotal, itemSessionCount }) {
+function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionCount, orderTotal, orderRefunded }) {
   if (itemSessionCount == null) return null
-  const total = Number(saleOrderTotal) || 0
-  if (total <= 0) return Number(itemSessionCount)
-  const settled = Math.max(0, (Number(saleOrderReceived) || 0) - (Number(saleOrderRefunded) || 0))
-  const ratio = Math.min(1, settled / total)
-  const v = Math.floor(ratio * Number(itemSessionCount))
-  return Math.max(0, Math.min(Number(itemSessionCount), v))
+  const sa = Number(itemSaleAmount) || 0
+  if (sa <= 0) return Number(itemSessionCount)
+  const tot = Number(orderTotal) || 0
+  const itemRefundShare = tot > 0 ? (Number(orderRefunded) || 0) * sa / tot : 0
+  const itemSettled = Math.max(0, (Number(itemReceived) || 0) - itemRefundShare)
+  const ratio = Math.min(1, itemSettled / sa)
+  return Math.max(0, Math.min(Number(itemSessionCount), Math.floor(ratio * Number(itemSessionCount))))
 }
 
 /**
  * SQL 模板（pg 风格 $1 占位符 = saleOrderId）。
- * 调用方在事务内执行，紧随 sale_orders.received/prepaid_card_amount 变更后。
+ * 调用方在事务内执行，紧随 sale_orders.received/prepaid_card_amount/refunded_amount 或 sale_items.received 变更后。
  *
- * 实现策略：FROM 子句把订单级聚合提到外面，sale_items 行内只做 LEAST/FLOOR；
+ * 实现策略：FROM 子句把订单级（total_amount/refunded_amount）拉出来，sale_items 行内按 sale_amount 比例下分订单级 refund；
  * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
  */
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
-  WHEN op.total_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer)
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = $1) op
+FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
 
 /**

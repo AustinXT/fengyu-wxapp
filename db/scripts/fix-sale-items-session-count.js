@@ -145,16 +145,18 @@ async function main() {
       }
 
       // 4b. 重算 paid_sessions（与 fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js
-      //     PAID_SESSIONS_RECALC_SQL 字面同义；4 端工具函数同源，snapshot 守护）
+      //     PAID_SESSIONS_RECALC_SQL 字面同义；5 端工具函数同源，snapshot 守护）
+      // 行级比例公式：paid_sessions = floor(min(1, (item.received - item_refund_share) / item.sale_amount) × session_count)
+      //   item_refund_share = order.refunded × item.sale_amount / order.total （订单级退款按 sale_amount 下分）
       // 注意：此脚本是 node 独立进程，直接内联 SQL，避免依赖云函数目录
       const RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
-  WHEN op.total_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer)
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = $1) op
+FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
       for (const orderId of affectedOrderIds) {
         await client.query(RECALC_SQL, [orderId])

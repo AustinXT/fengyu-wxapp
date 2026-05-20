@@ -1,128 +1,175 @@
 /**
  * paid_sessions 公式单测 — ticket 2026-05-19-cuddly-pancake
  *
+ * 行级公式：paid_sessions = floor(min(1, (item.received - item_refund_share) / item.sale_amount) × session_count)
+ *   item_refund_share = order.refunded × item.sale_amount / order.total
+ *
  * 守护语义：
- *   - settled = max(0, received - refunded)；received 已含 '储值卡抵扣'
- *   - 储值卡全额支付订单 (received = total, prepaid_card_amount = total) → paid_sessions = session_count
- *   - 部分支付 → paid_sessions = floor(received/total × session_count)
- *   - total = 0（免单/寄存）→ paid_sessions = session_count
+ *   - item.received 已含 '储值卡抵扣'
+ *   - 储值卡全额支付订单 (item.received = item.sale_amount) → paid_sessions = session_count
+ *   - 部分支付 → paid_sessions = floor(item.received/item.sale_amount × session_count)
+ *   - sale_amount = 0（免单/寄存行）→ paid_sessions = session_count
  *   - session_count = NULL（非次数卡）→ paid_sessions = NULL
- *   - refund 单调下降
+ *   - refund 下分后单调下降
  */
 import { describe, it, expect } from 'vitest'
 import { computePaidSessionsForItem } from '@/lib/paid-sessions'
 
-describe('computePaidSessionsForItem', () => {
-  it('储值卡全额抵扣订单：received 含抵扣 = total → paid_sessions = session_count', () => {
-    // admin confirmOfflinePayment 修复后：储值卡 10 元全付订单 received=10, total=10
+describe('computePaidSessionsForItem 行级', () => {
+  it('储值卡全额抵扣订单：item.received 含抵扣 = item.sale_amount → paid_sessions = session_count', () => {
+    // admin confirmOfflinePayment 修复后：储值卡 10 元全付行 received=10, sale_amount=10
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 10,
-      saleOrderTotal: 10,
+      itemReceived: 10,
+      itemSaleAmount: 10,
       itemSessionCount: 10,
+      orderTotal: 10,
+      orderRefunded: 0,
     })
     expect(v).toBe(10)
   })
 
-  it('线下现金 + 储值卡混合全付：received 累计 = total → paid_sessions = session_count', () => {
-    // 现金 60 + 储值卡 40 = 100, total = 100
+  it('线下现金 + 储值卡混合全付：item.received 累计 = item.sale_amount → paid_sessions = session_count', () => {
+    // 行 received=100, sale_amount=100
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 100,
-      saleOrderTotal: 100,
+      itemReceived: 100,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 0,
     })
     expect(v).toBe(10)
   })
 
-  it('部分支付：received = 50% total → paid_sessions = floor(50% × session_count)', () => {
+  it('部分支付：item.received = 50% sale_amount → paid_sessions = floor(50% × session_count)', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 50,
-      saleOrderTotal: 100,
+      itemReceived: 50,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 0,
     })
     expect(v).toBe(5)
   })
 
-  it('部分支付带 floor：received 33% × session_count=10 → 3', () => {
+  it('部分支付带 floor：item.received 33% × session_count=10 → 3', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 33,
-      saleOrderTotal: 100,
+      itemReceived: 33,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 0,
     })
     expect(v).toBe(3)
   })
 
-  it('免单订单 total=0 → paid_sessions = session_count（兜底全付）', () => {
+  it('免单行 sale_amount=0 → paid_sessions = session_count（兜底全付）', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 0,
-      saleOrderTotal: 0,
+      itemReceived: 0,
+      itemSaleAmount: 0,
       itemSessionCount: 5,
+      orderTotal: 0,
+      orderRefunded: 0,
     })
     expect(v).toBe(5)
   })
 
-  it('寄存单 total=0 → paid_sessions = session_count', () => {
+  it('寄存行 sale_amount=0 → paid_sessions = session_count', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 0,
-      saleOrderTotal: '0',
+      itemReceived: 0,
+      itemSaleAmount: '0',
       itemSessionCount: 8,
+      orderTotal: '0',
+      orderRefunded: 0,
     })
     expect(v).toBe(8)
   })
 
-  it('退款单调下降：received=100、refunded=30、total=100 → settled=70 → paid_sessions=7', () => {
+  it('退款单调下降（单行订单）：received=100、refunded=30、total=100 → item_refund_share=30 → settled=70 → paid_sessions=7', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 100,
-      saleOrderRefunded: 30,
-      saleOrderTotal: 100,
+      itemReceived: 100,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 30,
     })
     expect(v).toBe(7)
   })
 
   it('退款全额：received=100、refunded=100 → settled=0 → paid_sessions=0', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 100,
-      saleOrderRefunded: 100,
-      saleOrderTotal: 100,
+      itemReceived: 100,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 100,
     })
     expect(v).toBe(0)
   })
 
   it('refunded 大于 received（不该发生但兜底）→ paid_sessions=0', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 50,
-      saleOrderRefunded: 80,
-      saleOrderTotal: 100,
+      itemReceived: 50,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 80,
     })
     expect(v).toBe(0)
   })
 
   it('非次数卡 session_count = null → paid_sessions = null', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 100,
-      saleOrderTotal: 100,
+      itemReceived: 100,
+      itemSaleAmount: 100,
       itemSessionCount: null,
+      orderTotal: 100,
+      orderRefunded: 0,
     })
     expect(v).toBeNull()
   })
 
-  it('字符串入参（drizzle numeric 返回 string）：received="200.00", total="100.00" → 上限封顶 session_count', () => {
+  it('字符串入参（drizzle numeric 返回 string）：received="200.00", sale_amount="100.00" → 上限封顶 session_count', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: '200.00',
-      saleOrderTotal: '100.00',
+      itemReceived: '200.00',
+      itemSaleAmount: '100.00',
       itemSessionCount: 10,
+      orderTotal: '100.00',
+      orderRefunded: '0.00',
     })
     expect(v).toBe(10)
   })
 
-  it('settled > total（过度回款，理论不该发生）→ paid_sessions 封顶 session_count', () => {
+  it('item_settled > sale_amount（过度回款，理论不该发生）→ paid_sessions 封顶 session_count', () => {
     const v = computePaidSessionsForItem({
-      saleOrderReceived: 150,
-      saleOrderTotal: 100,
+      itemReceived: 150,
+      itemSaleAmount: 100,
       itemSessionCount: 10,
+      orderTotal: 100,
+      orderRefunded: 0,
     })
     expect(v).toBe(10)
+  })
+
+  it('多行订单退款按 sale_amount 下分（行1：sale_amount=100, 行2: sale_amount=200, 退款=60）', () => {
+    // 行 1：refund_share = 60×100/300 = 20，settled=80，80%×10=8
+    expect(
+      computePaidSessionsForItem({
+        itemReceived: 100,
+        itemSaleAmount: 100,
+        itemSessionCount: 10,
+        orderTotal: 300,
+        orderRefunded: 60,
+      }),
+    ).toBe(8)
+    // 行 2：refund_share = 60×200/300 = 40，settled=160，80%×20=16
+    expect(
+      computePaidSessionsForItem({
+        itemReceived: 200,
+        itemSaleAmount: 200,
+        itemSessionCount: 20,
+        orderTotal: 300,
+        orderRefunded: 60,
+      }),
+    ).toBe(16)
   })
 })
