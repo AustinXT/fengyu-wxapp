@@ -288,27 +288,27 @@
             <text class="order-type-card-desc">员工半价</text>
           </view>
           <view
-            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{!customerInfo.id ? 'order-type-card--disabled' : ''}}"
+            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{!customerInfo ? 'order-type-card--disabled' : ''}}"
             data-type="转换单"
             bindtap="onSelectSaleOrderType"
           >
-            <text class="order-type-card-name {{!customerInfo.id ? 'order-type-card-name--gray' : ''}}">转换单</text>
-            <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '卡折抵换购'}}</text>
+            <text class="order-type-card-name {{!customerInfo ? 'order-type-card-name--gray' : ''}}">转换单</text>
+            <text class="order-type-card-desc">{{!customerInfo ? '需已注册顾客' : '卡折抵换购'}}</text>
           </view>
           <view
-            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{!customerInfo.id ? 'order-type-card--disabled' : ''}}"
+            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{!customerInfo ? 'order-type-card--disabled' : ''}}"
             data-type="寄存单"
             bindtap="onSelectSaleOrderType"
           >
-            <text class="order-type-card-name {{!customerInfo.id ? 'order-type-card-name--gray' : ''}}">寄存单</text>
-            <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '剩余次数寄存'}}</text>
+            <text class="order-type-card-name {{!customerInfo ? 'order-type-card-name--gray' : ''}}">寄存单</text>
+            <text class="order-type-card-desc">{{!customerInfo ? '需已注册顾客' : '剩余次数寄存'}}</text>
           </view>
         </view>
 
         <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
         <block wx:if="{{saleOrderType === '转换单'}}">
           <conversion-panel
-            clientUserId="{{customerInfo.id}}"
+            clientUserId="{{customerInfo.clientUserId}}"
             convertInAmount="{{cartTotal}}"
             cardBalance="{{customerCardBalance}}"
             bind:change="onConversionPanelChange"
