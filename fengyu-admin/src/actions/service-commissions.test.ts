@@ -196,8 +196,9 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
 
 // ============================================================
 // batchSaveServiceCommissions — per-session consumeBase 计算
-// Bug 修复：sale_items.unit_real_price 是 per-card 价格，
-// per-session = unit_real_price × quantity / session_count
+// service_items.unit_real_price 已是 per-session 单次价（schema 恒等式
+// 疗程卡 sale_amount = unit_real_price × session_count），直接取用不再 ÷session_count。
+// 金额按 allocationRatio 拆分：consumeAmount = consumeBase × ratio × rate。
 // ============================================================
 describe('batchSaveServiceCommissions — per-session consumeBase', () => {
   beforeEach(() => {
@@ -324,5 +325,51 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
 
     expect(result.success).toBe(true)
     expect(Number(inserted[0].consumeAmount)).toBeCloseTo(30, 2) // 100 × 0.30
+  })
+
+  it('按 allocationRatio 拆分：ratio=0.30 → consumeAmount = consumeBase × 0.30 × rate', async () => {
+    // consumeBase = 888 × 1 = 888（tier 命中用整池基数，不乘 ratio）
+    // allocAmount = 888 × 0.30 = 266.4；consumeAmount = 266.4 × 0.12 = 31.97
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-ratio',
+      unitRealPrice: '888',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 1,
+      quantity: 1,
+    }, '0.1200')
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-ratio', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.30', commissionRate: '0.12', commissionAmount: '31.97' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(31.97, 2) // 888 × 0.30 × 0.12
+    expect(Number(inserted[0].commissionAmount)).toBeCloseTo(31.97, 2) // fixedFee=0 + 31.97
+    expect(String(inserted[0].allocationRatio)).toBe('0.30')
+  })
+
+  it('fixed_fee 也按 ratio 拆分', async () => {
+    // serviceFee=20, sessionUsed=2 → fixedFeeBase=40；ratio=0.50 → fixedFee=20
+    // consumeBase = 100 × 2 = 200；consumeAmount = 200 × 0.50 × 0.30 = 30；commissionAmount = 20 + 30 = 50
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-fee',
+      unitRealPrice: '100',
+      sessionUsed: 2,
+      salesCategory: '护理项目',
+      serviceFee: '20',
+      sessionCount: 1,
+      quantity: 1,
+    }, '0.3000')
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-fee', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.50', commissionRate: '0.30', commissionAmount: '50.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(Number(inserted[0].fixedFee)).toBeCloseTo(20, 2) // 20 × 2 × 0.50
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(30, 2) // 200 × 0.50 × 0.30
+    expect(Number(inserted[0].commissionAmount)).toBeCloseTo(50, 2) // 20 + 30
   })
 })

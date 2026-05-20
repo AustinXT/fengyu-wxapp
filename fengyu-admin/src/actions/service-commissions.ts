@@ -198,9 +198,12 @@ export const batchSaveServiceCommissions = withPermission(
             throw new Error(`INVALID_PARAMS: 服务明细 ${c.serviceItemId} 不存在或缺少价格数据`)
           }
 
-          const fixedFee = Math.round(Number(pricing.serviceFee) * pricing.sessionUsed * 100) / 100
+          const ratio = Number(c.allocationRatio)
+          // fixed_fee 与 consume_amount 均按 allocationRatio 拆分（多人同池各取份额，对齐前端展示 + 销售提成侧）
+          const fixedFee = Math.round(Number(pricing.serviceFee) * pricing.sessionUsed * ratio * 100) / 100
           // per-session 价格：service_items.unit_real_price 已是 per-session 单次价，直接取用（不再 ÷session_count）
           const perSession = Number(pricing.unitRealPrice)
+          // consumeBase 为整池基数（不乘 ratio），仅用于 rate tier 命中；金额再按 ratio 拆分
           const consumeBase = Math.round(perSession * pricing.sessionUsed * 100) / 100
 
           // Look up commission rate from matrix
@@ -226,7 +229,7 @@ export const batchSaveServiceCommissions = withPermission(
             )
           }
 
-          const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+          const consumeAmount = Math.round(consumeBase * ratio * rate * 100) / 100
           const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
           values.push({
