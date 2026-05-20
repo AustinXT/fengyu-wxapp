@@ -10,18 +10,18 @@
  *       现金/微信：剩余 payable_amount 走 paymentMethod
  *   - confirmPrepaidFull (line 1535)：第二次调用时 status='已支付' → INVALID_PARAMS: 订单状态不允许支付
  *
- * 已知差异（与原 ticket 描述不一致——以 route 源码为准）：
- *   1) order.create 在传 couponId 时会 `SELECT sku_id, category_id, product_id FROM product_skus`，
- *      但当前 schema 的 product_skus 表没有 product_id 列（SKU→product 关联在 mall_product_skus 中）。
- *      凡走"优惠券抵扣"路径的 order.create 调用都会以 "column product_id does not exist" 失败。
- *      本 spec 因此把 case1/case2 改成"卡 + 现金"二方原子性（不带 coupon），把"券"作为后续 ticket
- *      修复后再补的扩展点。多方原子性的核心断言（事务回滚 + 余额快照 + 流水 1 行）仍能完整覆盖。
- *   2) 积分扣减在 create 时不发生（payNotify 才触发），本 spec 不测积分。
+ * ticket 2026-05-21（已修复，case 4 守护）：
+ *   order.create 带 couponId 旧版会双重崩溃返回 -1：
+ *     (a) `SELECT ... product_id FROM product_skus` — product_skus 无 product_id 列（SKU→product 关联在 mall_product_skus）；
+ *     (b) 券 claim UPDATE 早于 INSERT sale_orders — used_sale_order_id FK（非 deferrable）立即校验失败。
+ *   修复：(a) 改 LEFT JOIN mall_product_skus 取 product_id；(b) 券 claim 移到 INSERT sale_orders 之后。
+ *   积分扣减在 create 时不发生（payNotify 才触发），本 spec 不测积分。
  *
  * 路径覆盖：
  *   case 1 happy：100 元订单 = 60 卡 + 40 微信。卡 500→440、card_transactions 一行 -60、order 一行 prepaid=60/payable=40
  *   case 2 卡余额不足：卡 50 < 抵扣 60 → INSUFFICIENT_BALANCE，卡余额不动、无 sale_orders（全单回滚）
  *   case 3 confirmPrepaidFull 重复幂等：第二次调用应抛 INVALID_PARAMS（status 已=已支付），card_transactions 仍 1 行
+ *   case 4 券 + 卡 + 微信：限定商品现金券满100减10 → total=90/prepaid=60/payable=30，券原子 claim 指向本单
  */
 import '../setup.mjs'
 import {
@@ -35,6 +35,7 @@ import { createTestClient, createTestStaff, cleanupTestData } from '../helpers/f
 import {
   createTestSku, createTestProduct,
   createTestPrepaidCard,
+  createTestCoupon, createTestCouponTemplate,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
 
@@ -94,8 +95,7 @@ async function createStaffOpenedPending({
 }
 
 // ---------- case 1: 二方原子性（卡 + 现金/微信）------------------
-//   NOTE: 原 ticket 设计含优惠券；当前 order.js 在 coupon 分支引用了 product_skus.product_id 列（不存在），
-//         "卡+券+现金"端到端无法走通，本 case 退化为不带券。
+//   本 case 专注"卡 + 微信"半卡路径；含券的端到端由 case 4 覆盖。
 //
 //   实测发现 (route line 599)：order.create 仅在 prepaidFullPaid（payable_amount===0）时才同事务扣卡；
 //   payable>0 的"半卡半微信"订单：储值卡列只是 prepaid_card_amount 预留快照，真正扣减在 payNotify 回调。
@@ -264,10 +264,73 @@ async function caseConfirmPrepaidFullDuplicate() {
   }
 }
 
+// ---------- case 4: 优惠券 + 卡 + 微信（回归 ticket 2026-05-21：product_id 列 + 券 claim FK 顺序）----------
+//   修复前 order.create 带 couponId 双重崩溃返回 -1（详见文件头注释）。
+//   用"限定商品的现金券"端到端验证：商品维度过滤（skuProductMap）+ 券原子 claim（FK 顺序）均已修复。
+async function caseCouponDeductionHappy() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestProduct({ productId: TEST_PRODUCT_ID, price: '100.00' })
+  await createTestSku({
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+    price: '100.00',
+    productType: '单品',
+  })
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  // 满100减10 现金券，限定 TEST_PRODUCT_ID → 强制走商品维度过滤（skuProductMap）
+  await createTestCouponTemplate({ applicableProductIds: [TEST_PRODUCT_ID] })
+  const { couponId } = await createTestCoupon({})
+
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    couponId,
+    useCard: true,
+    prepaidCardAmount: 60,
+    paymentMethod: '微信',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const saleOrderId = res.data?.saleOrderId
+  if (!saleOrderId) throw new Error(`missing saleOrderId: ${JSON.stringify(res.data)}`)
+
+  // 订单：total=90(100-10券)、prepaid=60、payable=30、coupon_discount=10、coupon_id=本券、待支付
+  const rows = await pgQuery(
+    `SELECT total_amount, prepaid_card_amount, payable_amount, coupon_discount, coupon_id, status
+       FROM sale_orders WHERE sale_order_id = $1`,
+    [saleOrderId]
+  )
+  if (rows.length !== 1) throw new Error(`expect 1 order row, got ${rows.length}`)
+  const r = rows[0]
+  if (Number(r.total_amount) !== 90) throw new Error(`total_amount=${r.total_amount}, expect 90`)
+  if (Number(r.prepaid_card_amount) !== 60) throw new Error(`prepaid_card_amount=${r.prepaid_card_amount}, expect 60`)
+  if (Number(r.payable_amount) !== 30) throw new Error(`payable_amount=${r.payable_amount}, expect 30`)
+  if (Number(r.coupon_discount) !== 10) throw new Error(`coupon_discount=${r.coupon_discount}, expect 10`)
+  if (r.coupon_id !== couponId) throw new Error(`coupon_id=${r.coupon_id}, expect ${couponId}`)
+  if (r.status !== '待支付') throw new Error(`status=${r.status}, expect 待支付（payable>0）`)
+
+  // 券原子 claim：status='已使用' + used_sale_order_id 指向本单（FK 顺序回归点）
+  const uc = await pgQuery(
+    `SELECT status, used_sale_order_id FROM user_coupons WHERE coupon_id = $1`,
+    [couponId]
+  )
+  if (uc[0]?.status !== '已使用') throw new Error(`coupon status=${uc[0]?.status}, expect 已使用`)
+  if (uc[0]?.used_sale_order_id !== saleOrderId) {
+    throw new Error(`used_sale_order_id=${uc[0]?.used_sale_order_id}, expect ${saleOrderId}`)
+  }
+
+  // 半卡半微信：create 时卡余额未变（=500），扣减留待 payNotify
+  const card = await pgQuery(
+    `SELECT balance FROM prepaid_cards WHERE user_id = $1`, [TEST_CLIENT_USER_ID]
+  )
+  if (Number(card[0].balance) !== 500) throw new Error(`card balance=${card[0].balance}, expect 500`)
+}
+
 const CASES = [
   ['happy 多重抵扣 100=60卡+40微信 (半卡 create 不扣，等 payNotify)', caseHappyMultiDeduction],
   ['卡余额不足 → INSUFFICIENT_BALANCE 全单事务回滚', caseInsufficientBalanceRollback],
   ['confirmPrepaidFull 重复调用 → INVALID_PARAMS 且 ctxn 仍 1 行', caseConfirmPrepaidFullDuplicate],
+  ['券 + 卡 + 微信 → total=90/prepaid=60/payable=30 + 券原子 claim 指向本单', caseCouponDeductionHappy],
 ]
 
 let pass = 0, fail = 0
