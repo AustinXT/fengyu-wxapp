@@ -105,7 +105,6 @@
       type="primary"
       block
       round
-      size="large"
       loading="{{submitting}}"
       disabled="{{!appointmentDate || !appointmentTimeSlot || submitting}}"
       bindtap="onSubmit"

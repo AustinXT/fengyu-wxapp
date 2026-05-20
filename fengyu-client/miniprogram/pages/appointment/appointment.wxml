@@ -83,7 +83,6 @@
       type="primary"
       block
       round
-      size="large"
       bindtap="onCreateAppointment"
     >发起预约</van-button>
   </view>
