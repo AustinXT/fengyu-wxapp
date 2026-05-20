@@ -38,7 +38,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 ### 储值卡抵扣相关接口说明
 
 - `card.balance` — 查当前用户储值卡余额（跨店统一，一户一账户；不接受 `storeId` 参数），下单页抵扣用
-- `order.scanAdjust` — 员工开单生成二维码后，顾客扫码可调整预选抵扣方案（`useCard / prepaidCardAmount / paymentMethod`），后端重算 `prepaid_card_amount / paid_amount / payment_method`，订单保持 `'待支付'`，`prepaid_cards.balance` 不动
+- `order.scanAdjust` — 员工生成二维码后，顾客扫码可调整预选抵扣方案（`useCard / prepaidCardAmount / paymentMethod`），后端重算 `prepaid_card_amount / paid_amount / payment_method`，订单保持 `'待支付'`，`prepaid_cards.balance` 不动
 - `order.confirmPrepaidFull` — 顾客扫码确认支付且实付 = 0（全额抵扣）时调用；事务内扣 balance + INSERT `card_transactions(type='扣款')` + 置 `'已支付'`；不足返回 `INSUFFICIENT_BALANCE`
 
 ## 错误前缀约定
