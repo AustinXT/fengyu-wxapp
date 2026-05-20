@@ -59,42 +59,55 @@ module.exports.pct = function(rate) {
         <text class="item-amount">¥{{dItem.received}}</text>
       </view>
 
-      <!-- 已分配人员列表 -->
+      <!-- 分配行：技能标签 → 员工 → 分配比例 -->
       <view
-        class="person-row"
+        class="alloc-line"
         wx:for="{{dItem.allocLines}}"
         wx:for-item="line"
         wx:for-index="lineIdx"
         wx:key="lineIdx"
       >
-        <view class="person-info">
-          <text class="person-name">{{line.staffName}}</text>
-          <van-tag color="#1976D2" plain size="medium">{{line.department}}</van-tag>
-          <text wx:if="{{line.commissionRate > 0}}" class="rate-badge">{{fmt.pct(line.commissionRate)}}%</text>
-          <text wx:if="{{line.allocationRatio !== 1 && line.allocationRatio !== undefined}}" class="alloc-ratio-badge">分成{{fmt.pct(line.allocationRatio)}}%</text>
-        </view>
-        <view class="person-actions">
-          <view class="amount-input-wrap">
-            <text class="currency-symbol">¥</text>
-            <input
-              class="amount-input"
-              type="digit"
-              value="{{line.amount}}"
-              data-item-idx="{{itemIdx}}"
-              data-line-idx="{{lineIdx}}"
-              bindinput="onAmountChange"
-            />
+        <view class="line-fields">
+          <!-- 技能标签 -->
+          <view class="field" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openSkillPicker">
+            <text class="field-label">技能标签</text>
+            <view class="field-value {{line.roleType ? '' : 'placeholder'}}">
+              <text>{{line.roleType || '选择'}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
           </view>
-          <view class="remove-btn" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="onRemovePerson">
+          <!-- 员工 -->
+          <view class="field" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openEmployeePicker">
+            <text class="field-label">员工</text>
+            <view class="field-value {{line.staffName ? '' : 'placeholder'}}">
+              <text>{{line.staffName || (line.roleType ? '选择' : '先选标签')}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
+          </view>
+          <!-- 分配比例 -->
+          <view class="field field--ratio" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openRatioPicker">
+            <text class="field-label">分配</text>
+            <view class="field-value {{line.ratioPercent ? '' : 'placeholder'}}">
+              <text>{{line.ratioPercent ? line.ratioPercent + '%' : '选择'}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
+          </view>
+          <view class="remove-btn" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="onRemoveLine">
             <van-icon name="cross" size="28rpx" color="#999" />
           </view>
         </view>
+        <!-- 只读派生：提成% / 分配额 / 提成额 -->
+        <view class="line-derived">
+          <text class="derived-item">提成 <text class="{{line.commissionRate > 0 ? 'derived-strong' : 'derived-warn'}}">{{fmt.pct(line.commissionRate)}}%</text></text>
+          <text class="derived-item">分配额 ¥{{line.allocAmount}}</text>
+          <text class="derived-item derived-primary">提成额 ¥{{line.commissionAmount}}</text>
+        </view>
       </view>
 
-      <!-- 添加人员按钮 -->
-      <view class="add-person-btn" data-sale-item-id="{{dItem.sale_item_id}}" bindtap="onAddPerson">
+      <!-- 添加分配按钮 -->
+      <view class="add-person-btn" data-item-idx="{{itemIdx}}" bindtap="onAddLine">
         <van-icon name="plus" size="28rpx" color="#C0322A" />
-        <text class="add-person-text">添加人员</text>
+        <text class="add-person-text">添加分配</text>
       </view>
     </view>
 
@@ -131,28 +144,47 @@ module.exports.pct = function(rate) {
     </view>
   </block>
 
-  <!-- 选人弹窗 -->
-  <van-popup show="{{pickerVisible}}" position="bottom" round bind:close="onPickerClose">
+  <!-- 技能标签选择 -->
+  <van-action-sheet
+    show="{{skillSheetVisible}}"
+    actions="{{skillSheetActions}}"
+    cancel-text="取消"
+    bind:select="onSkillSelect"
+    bind:cancel="closeSkillSheet"
+    bind:close="closeSkillSheet"
+  />
+
+  <!-- 分配比例选择 -->
+  <van-action-sheet
+    show="{{ratioSheetVisible}}"
+    actions="{{ratioSheetActions}}"
+    cancel-text="取消"
+    bind:select="onRatioSelect"
+    bind:cancel="closeRatioSheet"
+    bind:close="closeRatioSheet"
+  />
+
+  <!-- 员工选择弹窗 -->
+  <van-popup show="{{empPopupVisible}}" position="bottom" round bind:close="closeEmpPopup">
     <view class="picker-header">
-      <text class="picker-title">选择员工</text>
-      <view bindtap="onPickerClose">
+      <text class="picker-title">{{empPopupTitle}}</text>
+      <view bindtap="closeEmpPopup">
         <van-icon name="cross" size="36rpx" color="#999" />
       </view>
     </view>
     <scroll-view class="picker-scroll" scroll-y>
-      <view class="picker-group" wx:for="{{pickerGroups}}" wx:for-item="group" wx:key="department">
-        <view class="picker-group-title">{{group.department}}</view>
-        <view
-          class="picker-member"
-          wx:for="{{group.members}}"
-          wx:for-item="member"
-          wx:key="staffWfId"
-          data-staff-wf-id="{{member.staffWfId}}"
-          data-department="{{group.department}}"
-          bindtap="onStaffSelected"
-        >
-          <text class="picker-member-name">{{member.staffName}}</text>
-        </view>
+      <view wx:if="{{empPopupList.length === 0}}" class="picker-empty">该技能标签下暂无可选员工</view>
+      <view
+        class="picker-member"
+        wx:for="{{empPopupList}}"
+        wx:for-item="member"
+        wx:key="staffWfId"
+        data-staff-wf-id="{{member.staffWfId}}"
+        data-name="{{member.name}}"
+        bindtap="onEmployeeSelect"
+      >
+        <text class="picker-member-name">{{member.name}}</text>
+        <text wx:if="{{member.storeName}}" class="picker-member-store">{{member.storeName}}</text>
       </view>
     </scroll-view>
   </van-popup>

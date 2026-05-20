@@ -4,9 +4,10 @@
  *
  * 验证：
  *   A. 单 SKU + 单 sales_category，双 skill 员工 → 每个 skill 1 条 allocLine，
- *      rate 来自 commission_rate_matrix，amount = received × rate
+ *      rate 来自 commission_rate_matrix，allocationRatio 默认 1.00（金额由前端按 实收×比例 算）
+ *      + candidateEmployees / orderStoreId 字段下发
  *   B. 多 SKU + 多 sales_category 同订单 → 每个 sale_item 各 1 条 allocLine，
- *      rate / amount 按 sales_category 切换
+ *      rate 按 sales_category 切换，allocationRatio 默认 1.00
  *   C. 跨市场隔离 → market_name 不命中矩阵时 rates=[] / allocLines.commRate=0
  *   D. tier 阶梯切换 → 同 sales_category 不同 totalAmount 命中不同 tier rate
  *
@@ -120,9 +121,8 @@ async function main() {
     for (const l of lines) {
       if (l.salesCategory !== '他销自耗') errors.push(`A.salesCategory 应=他销自耗，实际=${l.salesCategory}`)
       const rate = Number(l.commissionRate)
-      const amt = Number(l.amount)
       if (Math.abs(rate - 0.06) > 0.0001) errors.push(`A.${l.roleType}.rate 应=0.06，实际=${rate}`)
-      if (Math.abs(amt - 30.00) > 0.01) errors.push(`A.${l.roleType}.amount 应=30.00，实际=${amt}`)
+      if (Math.abs(Number(l.allocationRatio) - 1.00) > 0.0001) errors.push(`A.${l.roleType}.allocationRatio 应=1.00，实际=${l.allocationRatio}`)
     }
     const roles = new Set(lines.map(l => l.roleType))
     if (!roles.has('美容师') || !roles.has('养生师')) {
@@ -130,6 +130,9 @@ async function main() {
     }
     if (sugA.data.beauticianRequired !== true) errors.push(`A.beauticianRequired 应=true`)
     if (sugA.data.deptAnomalous === true) errors.push(`A.deptAnomalous 应=false`)
+    // 新字段：候选员工 + 订单门店（admin 式按技能筛选用）
+    if (!Array.isArray(sugA.data.candidateEmployees)) errors.push(`A.candidateEmployees 应为数组`)
+    if (!sugA.data.orderStoreId) errors.push(`A.orderStoreId 应非空`)
   }
 
   // ─── 用例 B：多 SKU 多 sales_category 同订单 ───
@@ -179,12 +182,12 @@ async function main() {
     if (!l1) errors.push(`B 缺少 自销自耗 allocLine`)
     else {
       if (Math.abs(Number(l1.commissionRate) - 0.08) > 0.0001) errors.push(`B.自销自耗.rate 应=0.08，实际=${l1.commissionRate}`)
-      if (Math.abs(Number(l1.amount) - 16.00) > 0.01) errors.push(`B.自销自耗.amount 应=16.00（200×0.08），实际=${l1.amount}`)
+      if (Math.abs(Number(l1.allocationRatio) - 1.00) > 0.0001) errors.push(`B.自销自耗.allocationRatio 应=1.00，实际=${l1.allocationRatio}`)
     }
     if (!l2) errors.push(`B 缺少 他销他耗 allocLine`)
     else {
       if (Math.abs(Number(l2.commissionRate) - 0.05) > 0.0001) errors.push(`B.他销他耗.rate 应=0.05，实际=${l2.commissionRate}`)
-      if (Math.abs(Number(l2.amount) - 15.00) > 0.01) errors.push(`B.他销他耗.amount 应=15.00（300×0.05），实际=${l2.amount}`)
+      if (Math.abs(Number(l2.allocationRatio) - 1.00) > 0.0001) errors.push(`B.他销他耗.allocationRatio 应=1.00，实际=${l2.allocationRatio}`)
     }
   }
 
@@ -218,9 +221,8 @@ async function main() {
     if (lines.length !== 1) errors.push(`C.allocLines 应=1（单 skill），实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
-      const amt = Number(lines[0].amount)
       if (rate !== 0) errors.push(`C.commRate 应=0（无矩阵规则），实际=${rate}`)
-      if (amt !== 0) errors.push(`C.amount 应=0（无矩阵规则），实际=${amt}`)
+      if (Math.abs(Number(lines[0].allocationRatio) - 1.00) > 0.0001) errors.push(`C.allocationRatio 应=1.00，实际=${lines[0].allocationRatio}`)
     }
   }
 
@@ -260,9 +262,8 @@ async function main() {
     if (lines.length !== 1) errors.push(`D1.allocLines 应=1，实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
-      const amt = Number(lines[0].amount)
       if (Math.abs(rate - 0.08) > 0.0001) errors.push(`D1.rate 应=0.08（tier1），实际=${rate}`)
-      if (Math.abs(amt - 160.00) > 0.01) errors.push(`D1.amount 应=160.00（2000×0.08），实际=${amt}`)
+      if (Math.abs(Number(lines[0].allocationRatio) - 1.00) > 0.0001) errors.push(`D1.allocationRatio 应=1.00，实际=${lines[0].allocationRatio}`)
     }
   }
 
@@ -291,9 +292,8 @@ async function main() {
     if (lines.length !== 1) errors.push(`D2.allocLines 应=1，实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
-      const amt = Number(lines[0].amount)
       if (Math.abs(rate - 0.10) > 0.0001) errors.push(`D2.rate 应=0.10（tier2），实际=${rate}`)
-      if (Math.abs(amt - 800.00) > 0.01) errors.push(`D2.amount 应=800.00（8000×0.10），实际=${amt}`)
+      if (Math.abs(Number(lines[0].allocationRatio) - 1.00) > 0.0001) errors.push(`D2.allocationRatio 应=1.00，实际=${lines[0].allocationRatio}`)
     }
   }
 

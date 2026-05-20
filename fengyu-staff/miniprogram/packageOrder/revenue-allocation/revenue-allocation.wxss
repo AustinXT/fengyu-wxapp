@@ -64,80 +64,63 @@
 .item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
 .item-amount { font-size: 28rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; margin-left: 16rpx; }
 
-/* 人员行 */
-.person-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16rpx;
-  margin-bottom: 12rpx;
+/* 分配行 */
+.alloc-line {
   background: #FAFAFA;
   border-radius: 12rpx;
+  padding: 16rpx;
+  margin-bottom: 12rpx;
 }
-.person-info {
+.line-fields {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 12rpx;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
   flex: 1;
   min-width: 0;
 }
-.person-name {
-  font-size: 26rpx;
-  font-weight: 600;
-  color: #2D2017;
-  flex-shrink: 0;
-}
-.rate-badge {
-  font-size: 22rpx;
-  color: #D4820A;
-  background: #FFF8E1;
-  padding: 4rpx 12rpx;
-  border-radius: 8rpx;
-  flex-shrink: 0;
-}
-.alloc-ratio-badge {
-  font-size: 22rpx;
-  color: #1976D2;
-  background: #E3F2FD;
-  padding: 4rpx 12rpx;
-  border-radius: 8rpx;
-  flex-shrink: 0;
-}
-.person-actions {
+.field--ratio { flex: 0 0 150rpx; }
+.field-label { font-size: 20rpx; color: #999; }
+.field-value {
   display: flex;
   align-items: center;
-  gap: 12rpx;
-  flex-shrink: 0;
+  justify-content: space-between;
+  gap: 4rpx;
+  background: #FFFFFF;
+  border: 1rpx solid #E0E0E0;
+  border-radius: 10rpx;
+  padding: 0 12rpx;
+  height: 60rpx;
+  font-size: 26rpx;
+  color: #2D2017;
 }
+.field-value.placeholder { color: #BBB; }
 .remove-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 56rpx;
-  height: 56rpx;
-  border-radius: 28rpx;
-  background: #F5F5F5;
+  height: 60rpx;
+  flex-shrink: 0;
 }
 
-/* 金额输入 */
-.amount-input-wrap {
+/* 只读派生：提成% / 分配额 / 提成额 */
+.line-derived {
   display: flex;
   align-items: center;
-  background: #FFFFFF;
-  border: 1rpx solid #E0E0E0;
-  border-radius: 12rpx;
-  padding: 0 16rpx;
-  height: 64rpx;
-  width: 200rpx;
+  gap: 24rpx;
+  margin-top: 14rpx;
+  padding-top: 12rpx;
+  border-top: 1rpx dashed #ECECEC;
 }
-.currency-symbol { font-size: 26rpx; color: var(--color-primary); font-weight: 600; margin-right: 4rpx; }
-.amount-input {
-  flex: 1;
-  height: 64rpx;
-  font-size: 28rpx;
-  font-weight: 600;
-  color: #2D2017;
-}
+.derived-item { font-size: 24rpx; color: #666; }
+.derived-strong { color: #2D2017; font-weight: 600; }
+.derived-warn { color: #D4820A; font-weight: 600; }
+.derived-primary { color: var(--color-primary); font-weight: 600; margin-left: auto; }
 
 /* 添加人员按钮 */
 .add-person-btn {
@@ -187,6 +170,7 @@
 .picker-member {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 24rpx 16rpx;
   border-bottom: 1rpx solid #F5F5F5;
 }
@@ -196,6 +180,16 @@
 .picker-member-name {
   font-size: 28rpx;
   color: #2D2017;
+}
+.picker-member-store {
+  font-size: 22rpx;
+  color: #999;
+}
+.picker-empty {
+  text-align: center;
+  font-size: 26rpx;
+  color: #999;
+  padding: 80rpx 0;
 }
 
 /* 汇总 */
