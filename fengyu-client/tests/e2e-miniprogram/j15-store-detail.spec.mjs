@@ -72,6 +72,24 @@ const STEPS = [
   }],
 
   ['2. navigateTo store-select + 等列表加载', async (ctx) => {
+    // IDE 的 wx.getFuzzyLocation 默认会返回一个真实城市（e.g. 北京/广州），
+    // store-select 拿 city 做 LIKE 过滤，而测试 market 命名为 `TEST_E2E_L3_市场`，
+    // 任何真实城市都会 mismatch → allStores 永远 []。
+    // 这里先 mock wx.getFuzzyLocation 走 fail 分支，让页面进入 locationFailed=true 路径，
+    // 预加载全量门店（不带 city 过滤）。
+    await ctx.mp.evaluate(() => {
+      const orig = wx.getFuzzyLocation
+      wx.getFuzzyLocation = (opts) => {
+        setTimeout(() => {
+          if (opts && typeof opts.fail === 'function') {
+            opts.fail({ errMsg: 'getFuzzyLocation:fail mocked-by-test' })
+          }
+        }, 10)
+      }
+      // 暴露原方法以备恢复
+      // @ts-ignore
+      wx.__origGetFuzzyLocation = orig
+    })
     await ctx.mp.navigateTo('/pagesStore/store-select/store-select')
     await waitForPagePath(ctx.mp, 'store-select', { timeoutMs: 8000 })
     // 等 allStores 加载完 — 定位失败时仍会预加载（loadStores 永远跑），所以等任意非空

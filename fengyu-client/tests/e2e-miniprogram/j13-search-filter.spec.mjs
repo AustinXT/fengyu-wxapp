@@ -40,14 +40,17 @@ const STEPS = [
     await ensureClientProductCatalog()
   }],
 
-  ['2. switchTab /pages/home/home + 等待 spuList 加载', async (ctx) => {
-    await ctx.mp.switchTab('/pages/home/home')
-    await waitForPagePath(ctx.mp, '/pages/home/home', { timeoutMs: 8000 })
-    // 等首屏 shopInit 数据回来（home.ts: data.spuList / data.categories）
+  ['2. reLaunch home → 触发 onLoad 加载 shopInit（避免上一个 spec 的 IDE cache 漏掉本测产品）', async (ctx) => {
+    // 直接 reLaunch home 会触发 onLoad（switchTab 仅触发 onShow，且只在 boundStoreName 变化时刷新数据；
+    // 而 boundStoreName 是 IDE 全局态，上一个 spec 已读到则不会再刷新，导致 _spuCache 漏掉本次 fixture）
+    await ctx.mp.reLaunch('/pages/home/home')
+    await waitForPagePath(ctx.mp, 'pages/home/home', { timeoutMs: 8000 })
+    // 等首屏 shopInit 数据回来 — home.ts 把 categories 存到实例字段 _allCategories，
+    // setData 写入的是 sidebarItems（侧边栏可见列表）。
     await waitForData(
       ctx.mp,
-      (d) => Array.isArray(d?.categories) && d.categories.length > 0,
-      { timeoutMs: 8000, name: 'home.categories 加载完' }
+      (d) => Array.isArray(d?.sidebarItems) && d.sidebarItems.length > 0,
+      { timeoutMs: 8000, name: 'home.sidebarItems 加载完' }
     )
   }],
 

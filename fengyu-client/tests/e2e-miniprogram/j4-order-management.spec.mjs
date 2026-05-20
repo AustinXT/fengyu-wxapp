@@ -57,11 +57,11 @@ async function insertPendingOrder({ userId, saleOrderId, quantity = 1, unitPrice
        sale_item_id, sale_order_id, store_id, item_direction,
        sku_id, product_name, sku_spec_name, product_type,
        unit_price, quantity, unit_real_price, sale_amount, received,
-       is_experience, is_recharge_card
+       is_experience
      )
      VALUES ($1, $2, $3, '购买'::item_direction,
              $4, $5, '默认', '单品'::product_type,
-             $6, $7, $6, $8, 0, false, false)`,
+             $6, $7, $6, $8, 0, false)`,
     [itemId, saleOrderId, TEST_STORE_ID, L3_SKU_NORMAL_ID,
      `${NS}_测试商品`, unitPrice, quantity, totalAmount]
   )
@@ -77,8 +77,10 @@ const STEPS = [
     await insertPendingOrder({ userId: ctx.userId, saleOrderId: ctx.orderA, quantity: 1, unitPrice: 100, status: '待支付' })
     // 第二单直接 INSERT 已关闭状态，避开 uq_sale_orders_client_pending（同顾客唯一待支付）
     await insertPendingOrder({ userId: ctx.userId, saleOrderId: ctx.orderB, quantity: 2, unitPrice: 100, status: '已关闭' })
-    await assertRowCount('sale_orders', { client_user_id: ctx.userId, status: '待支付' }, 1)
-    await assertRowCount('sale_orders', { client_user_id: ctx.userId, status: '已关闭' }, 1)
+    // 仅断言本次测试单存在；不按 client_user_id+status 全量计数，PROBE 模式真实
+    // IDE 用户可能有历史订单（已关闭/已支付）会引入噪声。
+    await assertRowCount('sale_orders', { sale_order_id: ctx.orderA, status: '待支付' }, 1)
+    await assertRowCount('sale_orders', { sale_order_id: ctx.orderB, status: '已关闭' }, 1)
   }],
 
   ['2. switchTab profile', async (ctx) => {

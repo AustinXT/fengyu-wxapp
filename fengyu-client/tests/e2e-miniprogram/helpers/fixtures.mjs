@@ -151,6 +151,15 @@ export async function cleanupL3TestData(prefix = NS) {
   const like = `${prefix}%`
   const testPhones = [TEST_MANAGER_PHONE, TEST_CLIENT_PHONE, '13900000002']
 
+  // PROBE 模式下 loginAsTestClient 把真实 IDE 用户（FYGK-*）"升级"为测试态——
+  // phone=TEST_CLIENT_PHONE + bound_store_id=TEST_STORE_ID。
+  // 命名空间 LIKE 'TEST_E2E_L3%' 不会匹配 FYGK 用户，但他们留下的 sale_orders /
+  // point_transactions / prepaid_cards / card_transactions / messages 都需要清理。
+  // 用 phone 二轨清扫覆盖这条路径。
+  const probePhoneFilter = `client_user_id IN (
+    SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+  )`
+
   const stmts = [
     // 0a) 复位真实 IDE 用户的 bound_store_id（PROBE 模式 loginAsTestClient 曾把它改成
     //     TEST_E2E_L3_* 门店；测试结束必须清，否则真实用户绑了不存在的门店）
@@ -164,14 +173,55 @@ export async function cleanupL3TestData(prefix = NS) {
          )
        )`, [like],
     ],
+    // 二轨：phone 命中的 FYGK 用户
+    [
+      `DELETE FROM card_transactions WHERE card_id IN (
+         SELECT card_id FROM prepaid_cards WHERE user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+         )
+       )`, [testPhones],
+    ],
     [`DELETE FROM card_transactions WHERE ref_order_id LIKE $1`, [like]],
     [
       `DELETE FROM point_transactions WHERE user_id IN (
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
        )`, [like],
     ],
+    // 二轨：phone 命中
+    [
+      `DELETE FROM point_transactions WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+       )`, [testPhones],
+    ],
     [`DELETE FROM operation_logs WHERE target_id LIKE $1`, [like]],
+    // appointments / service_items FK → sale_items.sale_item_id；必须在 sale_items 之前删
+    // 兼覆盖 j14 PROBE 模式：appointments.client_user_id=FYGK-*，但 sale_item_id 在 NS 范围
+    [
+      `DELETE FROM appointments
+         WHERE client_user_id LIKE $1
+            OR employee_id LIKE $1
+            OR sale_item_id LIKE $1
+            OR store_id LIKE $1`, [like],
+    ],
+    [
+      `DELETE FROM appointments WHERE sale_item_id IN (
+         SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
+       )`, [like],
+    ],
+    [
+      `DELETE FROM service_items WHERE sale_item_id IN (
+         SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
+       )`, [like],
+    ],
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],
+    // 二轨：sale_order_payments 按 phone 命中订单
+    [
+      `DELETE FROM sale_order_payments WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+         )
+       )`, [testPhones],
+    ],
     [`DELETE FROM sale_allocations WHERE sale_item_id LIKE $1`, [like]],
     [
       `DELETE FROM sale_items WHERE sale_order_id IN (
@@ -180,13 +230,53 @@ export async function cleanupL3TestData(prefix = NS) {
          )
        )`, [like],
     ],
+    // 二轨：sale_items 按 phone 命中订单
+    [
+      `DELETE FROM sale_items WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE ${probePhoneFilter}
+       )`, [testPhones],
+    ],
     [`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [like]],
     [
       `DELETE FROM sale_orders WHERE client_user_id IN (
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
        )`, [like],
     ],
+    // 二轨：sale_orders by phone
+    [`DELETE FROM sale_orders WHERE ${probePhoneFilter}`, [testPhones]],
     [`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [like]],
+    // 三轨：sale_orders by test store_id（PROBE 真实 IDE 用户的孤儿订单，
+    // user_id=FYGK-* 不在 NS、phone 也不是 testPhones，但订单 store_id 始终在 NS 范围）
+    // 同样需要先清依赖子表
+    [
+      `DELETE FROM sale_order_payments WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
+       )`, [like],
+    ],
+    [
+      `DELETE FROM sale_allocations WHERE sale_item_id IN (
+         SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1
+       )`, [like],
+    ],
+    [
+      `DELETE FROM card_transactions WHERE ref_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
+       )`, [like],
+    ],
+    // point_transactions 也 FK → sale_orders.sale_order_id（积分赠送/冲销 ref），必须先清
+    [
+      `DELETE FROM point_transactions WHERE ref_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
+       )`, [like],
+    ],
+    // user_coupons 也 FK → sale_orders（used_sale_order_id），先清避免阻塞
+    [
+      `DELETE FROM user_coupons WHERE used_sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
+       )`, [like],
+    ],
+    [`DELETE FROM sale_items WHERE store_id LIKE $1`, [like]],
+    [`DELETE FROM sale_orders WHERE store_id LIKE $1`, [like]],
 
     // 预约 / 服务单
     [`DELETE FROM appointments WHERE client_user_id LIKE $1 OR employee_id LIKE $1`, [like]],
@@ -203,13 +293,31 @@ export async function cleanupL3TestData(prefix = NS) {
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
        )`, [like],
     ],
+    // 二轨：prepaid_cards by phone
+    [
+      `DELETE FROM prepaid_cards WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+       )`, [testPhones],
+    ],
 
     // 消息 / 优惠券
     [`DELETE FROM messages WHERE recipient_id LIKE $1`, [like]],
+    // 二轨：messages by phone (recipient_id 也是 user_id)
+    [
+      `DELETE FROM messages WHERE recipient_id IN (
+         SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+       )`, [testPhones],
+    ],
     [
       `DELETE FROM user_coupons WHERE user_id IN (
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
        )`, [like],
+    ],
+    // 二轨：user_coupons by phone
+    [
+      `DELETE FROM user_coupons WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+       )`, [testPhones],
     ],
     [`DELETE FROM user_coupons WHERE coupon_id LIKE $1`, [like]],
     [`DELETE FROM coupon_templates WHERE template_id LIKE $1`, [like]],

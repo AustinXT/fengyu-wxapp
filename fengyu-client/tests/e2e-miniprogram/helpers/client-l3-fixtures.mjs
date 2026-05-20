@@ -34,9 +34,12 @@ export const L3_COUPON_ID = `${NS}_CPN`
 
 // ─── 商品分类 + 商品 + SKU ────────────────────────────
 export async function ensureClientCategories() {
+  // mall_category 必须挂在某个一级 group 下，否则 home.buildSidebarItems 会丢掉它，
+  // 导致 _allCategoryKeys 不含本测产品 → 搜索找不到。挂"护理项目"既稳定又匹配测试品类。
   await query(
-    `INSERT INTO mall_categories (category_id, category_name, sort_order)
-     VALUES ($1, $2, 0) ON CONFLICT (category_id) DO NOTHING`,
+    `INSERT INTO mall_categories (category_id, category_name, sort_order, category_group)
+     VALUES ($1, $2, 0, '护理项目')
+     ON CONFLICT (category_id) DO UPDATE SET category_group = '护理项目'`,
     [L3_MALL_CATEGORY_ID, `${NS}_商城分类`]
   )
   await query(
@@ -61,10 +64,10 @@ export async function ensureClientProductCatalog() {
   await query(
     `INSERT INTO products (
        product_id, category_id, name, price, is_bundle,
-       sort_order, is_enabled, is_visible
+       sort_order, is_visible
      )
-     VALUES ($1, $2, $3, '100.00'::numeric, false, 0, true, true)
-     ON CONFLICT (product_id) DO UPDATE SET is_enabled = true, is_visible = true`,
+     VALUES ($1, $2, $3, '100.00'::numeric, false, 0, true)
+     ON CONFLICT (product_id) DO UPDATE SET is_visible = true`,
     [L3_PRODUCT_ID, L3_MALL_CATEGORY_ID, `${NS}_测试商品`]
   )
 
@@ -78,10 +81,10 @@ export async function ensureClientProductCatalog() {
       `INSERT INTO product_skus (
          sku_id, category_id, product_type, spec_name, price,
          session_count, sort_order, service_fee,
-         is_experience, is_recharge_card, is_enabled
+         is_experience, is_enabled
        )
        VALUES ($1, $2, $3::product_type, $4, $5::numeric,
-               $6, 0, 0, $7, false, true)
+               $6, 0, 0, $7, true)
        ON CONFLICT (sku_id) DO UPDATE
          SET price = EXCLUDED.price, spec_name = EXCLUDED.spec_name,
              session_count = EXCLUDED.session_count, is_enabled = true`,
@@ -102,15 +105,25 @@ export async function ensureClientProductCatalog() {
 }
 
 // ─── 储值卡 ────────────────────────────────────────────
+// PROBE 模式下 ctx.userId 是真实 IDE openid 对应的 FYGK-* 用户，往往已经存在
+// CARD-* 历史卡。`ON CONFLICT (user_id) DO UPDATE` 会保留旧 card_id，导致 j7
+// 后续 INSERT card_transactions(card_id=L3_PREPAID_CARD_ID) 撞 FK。
+// 这里改成先删（含依赖 card_transactions），再插入测试 card_id，保证一致。
 export async function ensureClientPrepaidCard({
   userId = TEST_CLIENT_USER_ID,
   cardId = L3_PREPAID_CARD_ID,
   balance = '1000.00',
 } = {}) {
   await query(
+    `DELETE FROM card_transactions WHERE card_id IN (
+       SELECT card_id FROM prepaid_cards WHERE user_id = $1
+     )`,
+    [userId]
+  )
+  await query(`DELETE FROM prepaid_cards WHERE user_id = $1`, [userId])
+  await query(
     `INSERT INTO prepaid_cards (card_id, user_id, balance)
-     VALUES ($1, $2, $3::numeric)
-     ON CONFLICT (user_id) DO UPDATE SET balance = EXCLUDED.balance`,
+     VALUES ($1, $2, $3::numeric)`,
     [cardId, userId, balance]
   )
   return { cardId, userId, balance: Number(balance) }
@@ -217,11 +230,11 @@ export async function createPendingSaleOrderForScan({
          sale_item_id, sale_order_id, store_id, item_direction,
          sku_id, product_name, sku_spec_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
-         is_experience, is_recharge_card
+         is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
                $4, $5, '默认', '单品'::product_type,
-               $6, 1, $6, $6, 0, false, false)`,
+               $6, 1, $6, $6, 0, false)`,
       [itemId, saleOrderId, TEST_STORE_ID, skuId, `${NS}_测试商品`, totalAmount]
     )
     return { saleOrderId, saleItemId: itemId }
