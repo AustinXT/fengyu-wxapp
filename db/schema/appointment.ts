@@ -26,10 +26,9 @@ export const appointments = pgTable(
       .notNull()
       .references(() => clientWechatUsers.userId),
     clientName: varchar('client_name', { length: 50 }).notNull(),
-    employeeId: varchar('employee_id', { length: 30 })
-      .notNull()
-      .references(() => staffWechatUsers.employeeId),
-    employeeName: varchar('employee_name', { length: 50 }).notNull(),
+    /** 预约美容师（可选）：顾客可不指定，由门店后续分配 */
+    employeeId: varchar('employee_id', { length: 30 }).references(() => staffWechatUsers.employeeId),
+    employeeName: varchar('employee_name', { length: 50 }),
     saleItemId: varchar('sale_item_id', { length: 30 }).references(() => saleItems.saleItemId),
     appointmentTime: timestamp('appointment_time').notNull(),
     /** 确认时间（员工确认预约时记录） */

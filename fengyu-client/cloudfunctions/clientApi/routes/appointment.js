@@ -115,7 +115,7 @@ async function create(ctx) {
       ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
     `, [
       appointmentId, storeId,
-      userId, clientName, staffWfId || null, inputStaffName || '',
+      userId, clientName, staffWfId || null, inputStaffName || null,
       parsedTime, notes || '', saleItemId || null, now
     ])
   } catch (err) {

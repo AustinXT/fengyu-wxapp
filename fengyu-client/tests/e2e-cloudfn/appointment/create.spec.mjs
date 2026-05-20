@@ -85,8 +85,9 @@ async function newPaidCourseOrder({ orderNo, sessionCount = 5, remainingSessions
 
 async function caseHappy() {
   await createTestClient()
-  // appointments.employee_id 是 NOT NULL FK → staff_wechat_users。
-  // 路由 INSERT 用 staffWfId || null，故必须传 staffWfId（实参为 employee_id）
+  // appointments.employee_id 现为 nullable FK → staff_wechat_users（migration 0048）。
+  // 本 case 仍传 staffWfId（实参为 employee_id）覆盖「指定美容师」分支；
+  // 不指定美容师的分支见 caseNoStaffWalkin
   const { employeeId } = await createTestBeautician({
     employeeId: `${NS}_APTC_BEAUT`,
     openid: `${NS}_APTC_BEAUT_OPENID`,
@@ -110,6 +111,28 @@ async function caseHappy() {
   )
   if (rows.length !== 1) throw new Error(`expect 1 appointment row, got ${rows.length}`)
   if (rows[0].status !== '待确认') throw new Error(`PG status=${rows[0].status}`)
+}
+
+// 不指定美容师 + 不关联 saleItemId 的「到店预约」：走 bound_store_id 分支，employee_id 留空
+async function caseNoStaffWalkin() {
+  await createTestClient()
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: null, appointmentTime: tomorrowSlot(),
+    staffWfId: null, staffName: null,
+  })
+  expectSuccess(res)
+  if (res.data?.status !== '待确认') {
+    throw new Error(`expect status=待确认, got: ${res.data?.status}`)
+  }
+  const rows = await pgQuery(
+    `SELECT employee_id, employee_name, store_id, sale_item_id
+       FROM appointments WHERE appointment_id = $1 AND client_user_id = $2`,
+    [res.data.appointmentId, TEST_CLIENT_USER_ID]
+  )
+  if (rows.length !== 1) throw new Error(`expect 1 appointment row, got ${rows.length}`)
+  if (rows[0].employee_id !== null) throw new Error(`expect employee_id NULL, got ${rows[0].employee_id}`)
+  if (rows[0].sale_item_id !== null) throw new Error(`expect sale_item_id NULL, got ${rows[0].sale_item_id}`)
+  if (rows[0].store_id !== TEST_STORE_ID) throw new Error(`expect store_id=${TEST_STORE_ID}, got ${rows[0].store_id}`)
 }
 
 async function caseNoRemainingRejected() {
@@ -180,6 +203,7 @@ async function caseMissingAppointmentTime() {
 
 const CASES = [
   ['happy → appointments row inserted with status=待确认', caseHappy],
+  ['no staff + no saleItemId (walk-in) → appointment inserted, employee_id NULL', caseNoStaffWalkin],
   ['remaining_sessions=0 → INVALID_PARAMS 剩余次数不足', caseNoRemainingRejected],
   ['duplicate pending for same saleItemId → INVALID_PARAMS', caseDuplicatePendingRejected],
   ['no phone → PHONE_REQUIRED', casePhoneRequired],
