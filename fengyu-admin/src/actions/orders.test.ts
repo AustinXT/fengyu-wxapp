@@ -225,6 +225,14 @@ function mockTransactionSuccess(orderId = 'FY-XSD-WX-260315001') {
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }),
+      // 待支付订单 partial unique index 检查（line 1194-1207）使用 tx.select；空结果绕过 conflict
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
     }
     return fn(tx)
   })
@@ -553,6 +561,14 @@ function mockTransactionCaptureInserts(orderId = 'FY-XSD-WX-260518001') {
       })),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
+      // 待支付订单 partial unique index 检查（line 1194-1207）；空结果绕过 conflict
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
       }),
     }
     return fn(tx)
@@ -1600,6 +1616,11 @@ describe('createOrder — 内部单半价 + 禁用优惠券', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
         }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
       }
       return fn(tx)
     })
@@ -1788,7 +1809,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(capturedOrder.status).toBe('已支付')
   })
 
-  it('priceDiff > 0：补现，total_amount=差额，status=待确认收款（线下）', async () => {
+  it('priceDiff > 0：补现，total_amount=差额，status=待支付（线下走 confirmOffline 入账）', async () => {
     let capturedOrder: any
     mockConvTx({
       heldRows: [{
@@ -1813,7 +1834,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.totalOut).toBe(300)
     expect(result.priceDiff).toBe(200)
     expect(capturedOrder.totalAmount).toBe('200.00')
-    expect(capturedOrder.status).toBe('待确认收款')
+    expect(capturedOrder.status).toBe('待支付')
     expect(result.prepaidCardCredit).toBe(0)
   })
 
@@ -1972,11 +1993,11 @@ describe('createConversionOrder — 异常路径', () => {
 // ticket: 2026-04-24-order-partial-payment-foundation.md
 //
 // 覆盖：
-//   1. 全额现场 → 订单 '已支付'（线下走 '待确认收款'） + 1 行首次支付 payments
+//   1. 全额现场 → 订单 '已支付'（线下保持 '待支付'，复合判定 payment_method='线下'） + 1 行首次支付 payments
 //   2. 部分收款 → 订单 '部分支付' + 1 行首次支付 payments
 //   3. 纯挂账（receivedAmount=0） → 订单 '待支付' + 无 payments 行
 //   4. receivedAmount > payable_amount → 业务校验错
-//   5. paymentMethod=微信 + receivedAmount>0 → MIXED_PAYMENT_NOT_SUPPORTED
+//   5. paymentMethod=微信 + 0 < receivedAmount < payable → first_payment_amount 落库 + status='待支付' + 不写 payments 行
 //   6. 储值卡抵扣 + 部分现场 → 订单 '部分支付' + 2 行 payments（首次支付 + 储值卡抵扣）
 //   7. 双写不变量：paid_amount = Σ(已支付 + 首次支付/回款/退款) amount
 
@@ -2032,7 +2053,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     ;(db.select as any).mockImplementation(mockSelectEmpty())
   })
 
-  it('1) 全额现场（线下）→ 订单 "待确认收款" + 1 行首次支付 payments', async () => {
+  it('1) 全额现场（线下）→ 订单 "待支付" + 1 行首次支付 payments（confirmOffline 再翻 已支付）', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P001', bag)
 
@@ -2043,8 +2064,8 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     })
 
     expect(result.success).toBe(true)
-    // 线下全额：status='待确认收款'，paid_amount=受款金额（200），写 1 行首次支付
-    expect(bag.order.status).toBe('待确认收款')
+    // 线下全额：status='待支付'，paid_amount=受款金额（200），写 1 行首次支付
+    expect(bag.order.status).toBe('待支付')
     expect(bag.order.payableAmount).toBe('200.00')
     expect(bag.order.received).toBe('200.00')
     expect(bag.payments).toHaveLength(1)
@@ -2109,16 +2130,39 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('5) paymentMethod=微信 + receivedAmount>0 → 不支持混合支付', async () => {
+  it('5) paymentMethod=微信 + 0<receivedAmount<payable → first_payment_amount 落库，status=待支付，不写 payments 行', async () => {
+    // 2026-05-20 partial-payment-online ticket：放开线上调低，使用 first_payment_amount 让 QR 仅收首付
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260520-P005', bag)
+
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '微信',
-      receivedAmount: 100,
+      receivedAmount: 100, // < payable=200
     })
 
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('系统管理员开单不支持线上支付')
-    expect(db.transaction).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('待支付')
+    expect(bag.order.status).toBe('待支付')
+    expect(bag.order.received).toBe('0.00') // 线上 create 时不进 received
+    expect(bag.order.firstPaymentAmount).toBe('100.00')
+    expect(bag.payments).toHaveLength(0) // 线上首付不写 payments 行，等 payNotify
+  })
+
+  it('5b) paymentMethod=微信 + receivedAmount=payable (全额) → 不落 first_payment_amount，走全额 QR', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260520-P005B', bag)
+
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '微信',
+      receivedAmount: 200, // = payable
+    })
+
+    expect(result.success).toBe(true)
+    expect(bag.order.status).toBe('待支付')
+    expect(bag.order.firstPaymentAmount).toBeNull()
+    expect(bag.payments).toHaveLength(0)
   })
 
   it('6) 储值卡抵扣 + 部分现场 → 订单 "部分支付"，create 仅 1 行首次支付（储值卡抵扣 payments 行 + 扣卡归 confirmOffline）', async () => {
@@ -2596,6 +2640,11 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
         })),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
         }),
       }
       return fn(tx)

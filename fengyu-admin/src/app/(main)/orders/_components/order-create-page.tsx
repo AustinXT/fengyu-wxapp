@@ -195,8 +195,12 @@ export default function OrderCreatePageClient({
   const [customerCardBalance, setCustomerCardBalance] = useState<number>(0)
   const [useCard, setUseCard] = useState<boolean>(false)
   const [cardAmountInput, setCardAmountInput] = useState<string>("")
-  // 本次收款金额输入（空 = 默认应付全额；非空 = 部分支付）
-  const [receivedAmountInput, setReceivedAmountInput] = useState<string>("")
+  // 创建订单返回的 status，用于 Step 4 文案分支（部分支付 / 待支付 / 已支付）
+  const [createdStatus, setCreatedStatus] = useState<'待支付' | '部分支付' | '已支付' | null>(null)
+  // 本次实际收款金额（= totalReceived，逐行 received 之和），用于 Step 4 提示
+  const [createdReceived, setCreatedReceived] = useState<number>(0)
+  // 本次应付合计快照（= totalSaleAmount），用于 Step 4 计算剩余
+  const [createdPayable, setCreatedPayable] = useState<number>(0)
 
   const handleSearch = async () => {
     const kw = searchKeyword.trim()
@@ -434,10 +438,9 @@ export default function OrderCreatePageClient({
   // 应付合计 & 实付合计（含手动覆盖）— 内部单走半价显示分支
   const isInternal = orderType === '内部单'
   const isConversion = orderType === '转换单'
-  const isBundleOrder = productKindChoice === '组合套餐'
   const internalRatio = isInternal ? 0.5 : 1
-  // 组合套餐 / 内部单禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
-  const suppressOverride = isInternal || isBundleOrder
+  // 内部单禁用手工改价（5 折规则后端再计算）；组合套餐允许向下调实付金额
+  const suppressOverride = isInternal
 
   // 订单级优惠券（券按行均摊到「应付金额」，与 staff 同算法）
   const selectedCouponForCalc = availableCoupons.find((c) => c.couponId === selectedCouponId)
@@ -822,9 +825,6 @@ export default function OrderCreatePageClient({
               {isInternal && (
                 <p className="text-xs text-[#D4820A] mt-1">内部单 5 折，禁用手工改价 + 优惠券</p>
               )}
-              {isBundleOrder && !isConversion && (
-                <p className="text-xs text-[#D4820A] mt-1">组合套餐按打包价销售，禁用手工改价</p>
-              )}
             </div>
 
             <Separator />
@@ -1138,7 +1138,7 @@ export default function OrderCreatePageClient({
                 }
 
                 // 销售单 / 内部单 — 走原 createOrder
-                // 校验手动金额（内部单 / 组合套餐跳过 priceOverrides，因为禁用了改价）
+                // 校验手动金额（内部单跳过 priceOverrides，因为禁用了改价）
                 if (!suppressOverride) {
                   for (const item of cart) {
                     const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
@@ -1153,20 +1153,13 @@ export default function OrderCreatePageClient({
                     }
                   }
                 }
-                // ticket 2026-04-24 PR-3 §3.4 — 本次收款解析与前端校验
-                // 空字符串 → undefined（后端按 payable_amount 全额处理）；
-                // 非空 → number，后端做 0 ≤ v ≤ payable 的最终校验。
-                let receivedAmountArg: number | undefined
-                if (paymentMethod === '微信' || paymentMethod === '支付宝') {
-                  // 线上支付：admin 不支持与 receivedAmount 共存，强制 undefined（后端也会拒绝 >0）
-                  receivedAmountArg = undefined
-                } else if (receivedAmountInput.trim() !== '') {
-                  const parsed = Number(receivedAmountInput)
-                  if (!Number.isFinite(parsed) || parsed < 0) {
-                    toast.error('本次收款金额无效'); return
-                  }
-                  receivedAmountArg = Math.round(parsed * 100) / 100
-                }
+                // 本次收款金额 = 逐行 received 之和（perItemAmounts → totalReceived）
+                // - 内部单：suppressOverride=true，所有 received 默认 = saleAmount，totalReceived = totalSaleAmount（全额）
+                // - 销售单非套餐：admin 通过逐行 received Input 可向下调（覆盖默认 = saleAmount）
+                // - 销售单 + 组合套餐：admin 同样可逐行向下调
+                // - 线上支付（微信/支付宝）+ totalReceived < totalSaleAmount → 后端落 first_payment_amount，QR 收限额
+                // - 线下 + totalReceived < totalSaleAmount → 后端落 部分支付（写首次支付 payments 行）
+                const receivedAmountArg = totalReceived
 
                 setSubmitting(true)
                 try {
@@ -1185,7 +1178,7 @@ export default function OrderCreatePageClient({
                     receivedAmount: receivedAmountArg,
                     items: cart.map((item) => {
                       // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
-                      // 组合套餐：priceOverrides 被 UI 锁死不会有值，这里 suppressOverride 兜底
+                      // 组合套餐：sku.specialPrice 已是 bundlePrice，priceLine 即套餐打包价；用户可向下调实付金额
                       const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
                       const amounts = getItemAmounts(item, override)
                       return {
@@ -1206,6 +1199,9 @@ export default function OrderCreatePageClient({
                   if (res.success) {
                     toast.success(res.message)
                     setCreatedOrderId(res.saleOrderId || "")
+                    setCreatedStatus(res.status ?? null)
+                    setCreatedReceived(totalReceived)
+                    setCreatedPayable(totalSaleAmount)
                     setConversionResult(null)
                     setStep(3)
                   } else {
@@ -1232,7 +1228,13 @@ export default function OrderCreatePageClient({
               </div>
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">
-              {paymentConfirmed ? '收款已确认' : conversionResult ? '转换单已创建' : '订单创建成功'}
+              {paymentConfirmed
+                ? '收款已确认'
+                : conversionResult
+                  ? '转换单已创建'
+                  : createdStatus === '部分支付'
+                    ? '已记录首次收款'
+                    : '订单创建成功'}
             </h2>
             {createdOrderId && (
               <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
@@ -1258,6 +1260,16 @@ export default function OrderCreatePageClient({
                   </p>
                 )}
               </div>
+            ) : createdStatus === '部分支付' ? (
+              // 部分支付分支：显示已收 / 剩余 + 引导跳订单详情录入回款
+              <div className="text-sm space-y-1">
+                <p className="text-[#666666]">
+                  本次已收 ¥{createdReceived.toFixed(2)} ｜ 剩余 ¥{Math.max(0, createdPayable - createdReceived).toFixed(2)} 待收
+                </p>
+                <p className="text-[#D4820A]">
+                  请点击「查看订单」继续录入回款（或在客户端/员工端继续支付）
+                </p>
+              </div>
             ) : (
               <p className="text-sm text-[#999999]">
                 {paymentConfirmed
@@ -1268,14 +1280,16 @@ export default function OrderCreatePageClient({
               </p>
             )}
 
-            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景） */}
+            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景；部分支付不显示二维码）*/}
             {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
+              && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
-            {/* 线下支付：确认收款按钮（销售/内部单 + 转换单正差额场景） */}
+            {/* 线下支付：确认收款按钮（仅 待支付 状态显示；部分支付订单已记录首次收款，不再走 confirmOffline）*/}
             {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
+              && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
               <div className="pt-2">
                 <Button
@@ -1314,7 +1328,8 @@ export default function OrderCreatePageClient({
                 </Link>
               )}
               <Button onClick={() => {
-                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单"); setReceivedAmountInput("")
+                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
+                setCreatedStatus(null); setCreatedReceived(0); setCreatedPayable(0)
                 setProductKindChoice('普通商品')
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined })
                 setHeldCards([])

@@ -508,7 +508,7 @@ export const getOrderPayments = withAnyPermission(
   },
 )
 
-/** C4: 确认线下收款 — WHERE status = '待确认收款' + scope 保障幂等 */
+/** C4: 确认线下收款 — WHERE status = '待支付' AND payment_method = '线下' + scope 保障幂等 */
 export const confirmOfflinePayment = withPermission(
   'sale_order:update',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
@@ -532,7 +532,8 @@ export const confirmOfflinePayment = withPermission(
         })
         .where(and(
           eq(saleOrders.saleOrderId, saleOrderId),
-          eq(saleOrders.status, '待确认收款'),
+          eq(saleOrders.status, '待支付'),
+          eq(saleOrders.paymentMethod, '线下'),
           scopeCondition(session, saleOrders.storeId),
         ))
 
@@ -674,7 +675,7 @@ export const confirmOfflinePayment = withPermission(
     return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
-  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待确认收款', '已支付', {
+  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待支付', '已支付', {
     customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
   })
 
@@ -805,12 +806,17 @@ export const createOrder = withPermission(
   /** 可选：顾客选择使用的优惠券实例ID */
   couponId?: string | null
   /**
-   * 本次收款金额（ticket §2.1 决策树）
-   * - undefined → 视为全额收款（payable_amount）
-   * - 0 → 纯挂账 status='待支付'；不写 payments 流水
-   * - 0 < v < payable_amount → 部分支付 status='部分支付'；写 1 行首次支付
-   * - = payable_amount → 全额 status='已支付'（线下为'待确认收款'）；写 1 行首次支付
-   * 校验：0 ≤ v ≤ payable_amount；微信/支付宝 + v>0 禁止（MIXED_PAYMENT_NOT_SUPPORTED）
+   * 本次收款金额（ticket §2.1 决策树 + 2026-05-20 partial-payment-online）
+   * - 线下：
+   *   - undefined → 全额（payable_amount）；线下走 confirmOffline 翻终态
+   *   - 0 → 纯挂账 status='待支付'；不写 payments 流水
+   *   - 0 < v < payable_amount → 部分支付 status='部分支付'；写 1 行首次支付
+   *   - = payable_amount → 全额 status='待支付'（线下保持，由 confirmOffline 入账）；写 1 行首次支付
+   * - 微信/支付宝：
+   *   - undefined / 0 / = payable_amount → 全额 QR（status='待支付' 等 payNotify 回调）
+   *   - 0 < v < payable_amount → 首付限额（写 sale_orders.first_payment_amount，QR 收限额，
+   *     payNotify 入账后落 部分支付 + 清 first_payment_amount）
+   * 校验：0 ≤ v ≤ payable_amount
    */
   receivedAmount?: number
   /** 储值卡抵扣金额（> 0 时额外写 1 行 change_type='储值卡抵扣' payments 流水） */
@@ -831,7 +837,13 @@ export const createOrder = withPermission(
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
     },
-  ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
+  ): Promise<{
+    success: boolean
+    message: string
+    saleOrderId?: string
+    /** 订单初始 status，前端 Step 4 据此分支文案：'部分支付' / '待支付' / '已支付' */
+    status?: '待支付' | '部分支付' | '已支付'
+  }> => {
   // 2026-04-26 sale-order-domain-refactor: saleOrderType 5→3 运行时硬校验
   // 静态联合类型已限定在 createOrder data 入参；此处再做一次 runtime 兜底防绕过
   // （旧前端/外部调用可能传入 '回款单'/'退款单'，统一拒绝）
@@ -1071,10 +1083,10 @@ export const createOrder = withPermission(
   }
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
 
-  // 本次收款校验：
-  // - 微信/支付宝：admin 不走线上支付。未显式传 receivedAmount 时默认 0（订单落"待支付"等回调，保持既有行为）；
-  //   若显式传了 >0，按 MIXED_PAYMENT_NOT_SUPPORTED 拒绝。
+  // 本次收款校验（2026-05-20 partial-payment-online ticket — 放开线上调低）：
   // - 线下：未传时默认 = payable_amount（全额）；传了按决策树走。
+  // - 微信/支付宝：传 0 < v < payable → 线上首付（写 first_payment_amount，QR 收限额）；
+  //   v = payable 或 undefined → 全额 QR（保持既有行为）；v = 0 显式表示挂账等扫码（少见，与 undefined 等价处理）。
   const isOnlinePay = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
   const hasReceivedAmountInput = data.receivedAmount !== undefined
   const receivedAmount = hasReceivedAmountInput
@@ -1086,20 +1098,20 @@ export const createOrder = withPermission(
   if (receivedAmount > payableAmount + 0.005) {
     return { success: false, message: '本次收款金额不能超过应付实金' }
   }
-  if (isOnlinePay && receivedAmount > 0) {
-    return {
-      success: false,
-      message: '系统管理员开单不支持线上支付，请使用线下方式录入收款',
-    }
-  }
 
-  // 决策树（ticket §2.1，三端对齐）：
-  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账）
-  //   - 线下/储值卡/无：按 paid+prepaid vs total：
+  // 线上 + receivedAmount < payable → 把"首付限额"写入 sale_orders.first_payment_amount
+  // （线下场景该列保持 NULL）。
+  const firstPaymentAmount: number | null =
+    isOnlinePay && receivedAmount > 0 && receivedAmount + 0.005 < payableAmount
+      ? Math.min(receivedAmount, payableAmount)
+      : null
+
+  // 决策树（ticket §2.1，三端对齐，含线上首付分支）：
+  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
+  //   - 线下：按 paid+prepaid vs total：
   //       0 → '待支付'（挂账）
   //       0 < paid+prepaid < total → '部分支付'
-  //       paid+prepaid = total → '待确认收款'（店长 confirmOffline 再次确认 → '已支付'；
-  //                                            全额储值卡抵扣同样走此路径，扣卡发生在 confirmOffline）
+  //       paid+prepaid = total → '待支付'（线下走 confirmOffline 入账）
   let initialStatus: typeof saleOrders.$inferInsert['status']
   const settledAmount = Math.round((receivedAmount + prepaidCardAmount) * 100) / 100
   if (isOnlinePay) {
@@ -1109,11 +1121,11 @@ export const createOrder = withPermission(
   } else if (settledAmount + 0.005 < totalAmount) {
     initialStatus = '部分支付'
   } else {
-    initialStatus = '待确认收款'
+    initialStatus = '待支付'
   }
 
   // received 双写（应用层保障不变量；2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP）
-  // 首次支付 + 线下直接计入 received（status='已支付'/'待确认收款'/'部分支付'）；
+  // 首次支付 + 线下直接计入 received（status='已支付'/'待支付'/'部分支付'）；
   // 线上（微信/支付宝）在 create 时 received=0，payNotify 回调时累加；
   // 待支付（挂账）received = 0；此处统一按 receivedAmount（线下场景）落盘。
   const paidAmountSnapshot = isOnlinePay ? 0 : receivedAmount
@@ -1221,6 +1233,7 @@ export const createOrder = withPermission(
         prepaidCardAmount: prepaidCardAmount.toFixed(2),
         payableAmount: payableAmount.toFixed(2),
         received: paidAmountSnapshot.toFixed(2),
+        firstPaymentAmount: firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
         paymentMethod: data.paymentMethod,
@@ -1234,7 +1247,7 @@ export const createOrder = withPermission(
       // ── 款项流水写入（ticket 2026-04-24 PR-3，与 staff order.create 对齐） ────
       // 规则：
       //   - 线下/储值卡/无 + receivedAmount > 0 → 写 1 行 payments change_type='首次支付' status='已支付'
-      //     （线下现场现金部分立即落账；订单 status 可能是 '待确认收款'/'部分支付'）
+      //     （线下现场现金部分立即落账；订单 status 保持 '待支付' 或 '部分支付'，由 confirmOffline 翻终态）
       //   - 线上（微信/支付宝）：不写 payments，由 payNotify 回调写入
       //   - 储值卡抵扣：prepaid_card_amount 仅写入 sale_orders 作为"预选"金额；
       //     扣卡余额 + 写 '储值卡抵扣' payments 行统一由 staff 端 confirmOffline 执行
@@ -1361,7 +1374,12 @@ export const createOrder = withPermission(
   })
 
   revalidatePath('/orders')
-  return { success: true, message: '订单创建成功', saleOrderId }
+  return {
+    success: true,
+    message: '订单创建成功',
+    saleOrderId,
+    status: initialStatus as '待支付' | '部分支付' | '已支付',
+  }
   },
 )
 
@@ -1375,7 +1393,7 @@ export const createOrder = withPermission(
  *    - 单品：quantity - COALESCE(picked_up_quantity, 0)
  * 3. 计算转入应付金额 totalIn = sum(sku.price × quantity)
  * 4. priceDiff = totalIn - totalOut
- *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'/'待确认收款'
+ *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'
  *    - priceDiff = 0：不收款，status='已支付'
  *    - priceDiff < 0：差额 UPSERT 到 prepaid_cards，INSERT card_transactions('充值')
  * 5. 原子标记转出行已耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
@@ -1627,7 +1645,7 @@ export const createConversionOrder = withPermission(
       // 其他：total_amount=0 & status='已支付'
       const orderTotal = Math.max(0, priceDiff).toFixed(2)
       const orderStatus: typeof saleOrders.$inferInsert['status'] =
-        priceDiff > 0 ? (data.paymentMethod === '线下' ? '待确认收款' : '待支付') : '已支付'
+        priceDiff > 0 ? '待支付' : '已支付'
 
       await tx.insert(saleOrders).values({
         saleOrderId,
@@ -2155,7 +2173,7 @@ export const recordPayment = withPermission(
       // scope 保护：非 admin 的 record_payment 由权限矩阵拒绝，此处 admin 默认可跨门店；
       // 若未来扩展该权限到 scoped 角色，需要在此处做 isInScope(session, locked.store_id) 校验。
 
-      if (!['部分支付', '待支付', '待确认收款'].includes(locked.status)) {
+      if (!['部分支付', '待支付'].includes(locked.status)) {
         throw new Error(`INVALID_STATE:${locked.status}`)
       }
 

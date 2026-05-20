@@ -77,6 +77,19 @@ export const saleOrders = pgTable(
      * 由应用层每次退款审批通过后同事务双写维护。
      */
     refundedAmount: numeric("refunded_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    /**
+     * 首付金额上限（仅线上分期场景使用，nullable）。
+     *
+     * 语义：admin 开单时若 paymentMethod ∈ {微信, 支付宝} 且实付 < 应付，
+     * 把"本次 QR 应收金额"写入此字段。scan-pay 读取后传给 order.pay() 的 payAmount，
+     * 让微信/支付宝 QR 只收首付额；payNotify 回调入账后清空此字段（=NULL）。
+     *
+     * 线下/储值卡场景：始终为 NULL（线下首次收款直接写入 sale_order_payments[change_type='首次支付']，
+     * 由 sale_orders.received 反映；不需要单独首付字段）。
+     *
+     * 不变量：first_payment_amount IS NULL OR (0 < first_payment_amount <= payable_amount)
+     */
+    firstPaymentAmount: numeric("first_payment_amount", { precision: 10, scale: 2 }),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     preferredEmployeeId: varchar("preferred_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
@@ -129,6 +142,11 @@ export const saleOrders = pgTable(
     index("idx_legacy_source_status")
       .on(table.legacySource, table.status)
       .where(sql`legacy_source IS NOT NULL`),
+    /** first_payment_amount 不变量：NULL 或 0 < v <= payable_amount */
+    check(
+      "chk_first_payment_amount",
+      sql`${table.firstPaymentAmount} IS NULL OR (${table.firstPaymentAmount} > 0 AND ${table.firstPaymentAmount} <= ${table.payableAmount})`,
+    ),
   ],
 );
 
