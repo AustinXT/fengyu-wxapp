@@ -22,6 +22,8 @@ interface ScanOrder {
   payableAmount: number;
   received: number;
   refundedAmount: number;
+  // admin 在线上分次开单写入；为 NULL 表示按剩余应付全额收
+  firstPaymentAmount: number | null;
   paymentMethod: PayMethod;
   couponDiscount: number;
 }
@@ -53,6 +55,10 @@ Page({
     paidAmount: 0,
     couponDiscount: 0,
     totalAmount: 0,
+    // 首付金额（admin 线上分次开单）；为 0 表示无约束（按剩余应付走）
+    firstPaymentAmount: 0,
+    // 当前扫码是否是首次扫（received === 0 && firstPaymentAmount > 0）
+    isFirstPartialScan: false,
     showPayMethodGroup: true,
     // 2026-05-19 dirty-read 修复：余额版本号（来自 scanAdjust.balanceSnapshot.updatedAt）
     // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
@@ -104,7 +110,13 @@ Page({
         ? Number(orderData.payableAmount)
         : Math.round((totalAmount - prepaid) * 100) / 100;
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const paid = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      const remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      const firstPaymentAmount = Number(orderData.firstPaymentAmount || 0);
+      // 首次扫码（received === 0）且 admin 设置了 firstPaymentAmount：本次只收首付
+      const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
+      const paid = isFirstPartialScan
+        ? Math.min(firstPaymentAmount, remaining)
+        : remaining;
       const couponDiscount = Number(orderData.couponDiscount || 0);
       const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
@@ -119,6 +131,7 @@ Page({
           payableAmount: payable,
           received,
           refundedAmount,
+          firstPaymentAmount: firstPaymentAmount > 0 ? firstPaymentAmount : null,
           paymentMethod: restoredMethod,
           couponDiscount,
         },
@@ -130,6 +143,8 @@ Page({
         paymentMethod: restoredMethod,
         couponDiscount,
         totalAmount,
+        firstPaymentAmount,
+        isFirstPartialScan,
         showPayMethodGroup: paid > 0,
       });
     } catch (err: any) {
@@ -232,7 +247,7 @@ Page({
 
   /** 根据当前 paid/method 路由到对应支付端点 */
   async executeConfirm(): Promise<void> {
-    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt } = this.data;
+    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt, firstPaymentAmount, isFirstPartialScan } = this.data;
     const route = decideConfirmRoute(paidAmount, paymentMethod);
 
     if (route === 'confirmPrepaidFull') {
@@ -257,8 +272,13 @@ Page({
       return;
     }
 
-    // wechatPay
-    const data = await callClientApi<{ paymentParams?: any }>('order.pay', { saleOrderId: orderNo });
+    // wechatPay：首付场景下显式传 payAmount，后端按约束扣款 + 清空 first_payment_amount；
+    // 后续扫码默认按剩余应付走
+    const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
+    if (isFirstPartialScan && firstPaymentAmount > 0) {
+      payPayload.payAmount = firstPaymentAmount;
+    }
+    const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
     const payParams = data.paymentParams || {};
     await wx.requestPayment(payParams);
     Toast.success('支付成功');

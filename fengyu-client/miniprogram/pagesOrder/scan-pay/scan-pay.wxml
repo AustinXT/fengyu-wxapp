@@ -122,6 +122,10 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
           <text class="paid-section__value">{{fmt.price(paidAmount)}}</text>
         </view>
       </view>
+      <!-- 首付提示：admin 设置了 first_payment_amount 且本次扫码为首次（received=0） -->
+      <view wx:if="{{isFirstPartialScan}}" class="paid-section__hint">
+        本次支付 ¥{{fmt.price(firstPaymentAmount)}}（首付），剩余款项可后续扫码支付
+      </view>
 
       <!-- 支付方式：仅 paid > 0 时展示 -->
       <view wx:if="{{showPayMethodGroup}}" class="pay-method-wrap">

@@ -236,7 +236,6 @@ async function scanDetail(ctx) {
     const statusMsgMap = {
       '已支付': '该订单已完成支付',
       '已完成': '该订单已完成',
-      '待确认收款': '该订单正在等待店长确认收款',
       '已关闭': '该订单已关闭',
       '支付失败': '该订单支付失败，请联系店员'
     }
@@ -269,6 +268,10 @@ async function scanDetail(ctx) {
     : Math.round((totalAmount - prepaidCardAmount) * 100) / 100
   const received = Number(order.received || 0)
   const refundedAmount = Number(order.refunded_amount || 0)
+  // 首付金额（admin 在线上分次开单时写入；NULL 表示按剩余应付全额收）
+  const firstPaymentAmount = order.first_payment_amount != null
+    ? Number(order.first_payment_amount)
+    : null
 
   ctx.result = {
     order: {
@@ -283,6 +286,7 @@ async function scanDetail(ctx) {
       payableAmount,
       received,
       refundedAmount,
+      firstPaymentAmount,
       paymentMethod: order.payment_method || '微信',
       couponDiscount: Number(order.coupon_discount || 0)
     },
@@ -954,6 +958,12 @@ async function pay(ctx) {
     payAmountYuan: thisPayAmount,
     payMode: 'WECHAT',
   })
+  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
+  // 仅清空非空值，避免无谓写；不影响 NULL 默认（全额）订单
+  await pg.query(
+    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
+    [now, orderNo]
+  )
   const envCfg = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
@@ -973,11 +983,9 @@ async function pay(ctx) {
 /**
  * 选择线下付款
  *
- * 业务语义：客户端"确认选择线下付款"，订单状态置 '待确认收款'，等员工店长（staff 端 confirmOffline）
- * 确认实收。本 PR 保持此语义：不在此函数里写 payments 流水行——真正的款项落账由
- * staff 端 confirmOffline 在 PR-2 实现时插入 payments 行。
- *
- * 保留原行为（仅切换状态 + 记录付款方式），但新增 note 说明与 payments 表解耦。
+ * 业务语义：客户端"确认选择线下付款"，订单保持 '待支付'，仅写入 payment_method='线下'
+ * 与 client_user_id；通过 (status='待支付' AND payment_method='线下') 复合判定识别
+ * "用户已选线下、待店长 confirmOffline 入账"。真正的款项落账由 staff 端 confirmOffline 处理。
  */
 async function offlinePay(ctx) {
   const { userId } = ctx.auth
@@ -1036,20 +1044,20 @@ async function offlinePay(ctx) {
 
   const now = new Date()
   const offlineUpd = await pg.query(
-    "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3 AND status = '待支付'",
+    "UPDATE sale_orders SET client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3 AND status = '待支付'",
     [userId, now, orderNo]
   )
   if (offlineUpd.rowCount === 0) {
-    throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${orderNo}:待支付→待确认收款`)
+    throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${orderNo}:待支付→线下锁定`)
   }
 
-  // 备注：不在本 PR 写 payments 行。staff 端 confirmOffline 在 PR-2 落地时
-  // 会插入 change_type='首次支付' / payment_method='线下' / status='已支付' 的流水行。
+  // 备注：不在本函数写 payments 行。staff 端 confirmOffline 会插入
+  // change_type='首次支付' / payment_method='线下' / status='已支付' 的流水行并翻订单状态。
 
   ctx.result = {
     orderNo,
-    status: '待确认收款',
-    message: '已提交,等待店长确认收款'
+    status: '待支付',
+    message: '已选择线下支付,请到店付款'
   }
 }
 
@@ -1323,7 +1331,7 @@ async function cancel(ctx) {
     }
 
     // audit-02 P0：cancel CAS 守卫——只在 status ∈ 允许列表 且 client_user_id 匹配时更新一行
-    // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付'/'待确认收款' 时本端不可越权关闭
+    // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = $1
@@ -1569,6 +1577,11 @@ async function alipayPay(ctx) {
     payAmountYuan: thisPayAmount,
     payMode: 'ALIPAY',
   })
+  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
+  await pg.query(
+    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
+    [now, orderNo]
+  )
   const envCfgAli = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
@@ -2027,7 +2040,7 @@ async function repay(ctx) {
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
          WHERE sale_order_id = $5
-           AND status IN ('待支付', '部分支付', '待确认收款')`,
+           AND status IN ('待支付', '部分支付')`,
         [finalStatus, newReceived, newRefunded, now, saleOrderId]
       )
       if (repayUpd.rowCount === 0) {
