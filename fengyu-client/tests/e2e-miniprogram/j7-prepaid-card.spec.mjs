@@ -104,23 +104,26 @@ const STEPS = [
       throw new Error(`payAmount=${payAmount}, expected 980`)
     }
 
-    // PG 断言：sale_orders 新增 1 行（status='待支付'）
+    // PG 断言：sale_orders 新增 1 行（status='待支付'，sale_order_type='充值单'）
+    // 2026-05-20 重构：充值订单不再写 sale_items，入账识别改用 sale_order_type='充值单'
     await assertRowCount('sale_orders', { sale_order_id: saleOrderId }, 1)
     await assertColumnValue(
       'sale_orders',
       { sale_order_id: saleOrderId },
-      { status: '待支付', client_user_id: ctx.userId, store_id: TEST_STORE_ID }
+      {
+        status: '待支付',
+        sale_order_type: '充值单',
+        client_user_id: ctx.userId,
+        store_id: TEST_STORE_ID,
+      }
     )
-    // PG 断言：sale_items 新增 1 行 is_recharge_card=true
+    // 充值单不写 sale_items（路由 card.recharge 已明示）
     const items = await query(
-      `SELECT sale_item_id, is_recharge_card FROM sale_items WHERE sale_order_id = $1`,
+      `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`,
       [saleOrderId]
     )
-    if (items.length !== 1) {
-      throw new Error(`sale_items count=${items.length}, expected 1`)
-    }
-    if (items[0].is_recharge_card !== true) {
-      throw new Error(`is_recharge_card=${items[0].is_recharge_card}, expected true`)
+    if (items.length !== 0) {
+      throw new Error(`sale_items count=${items.length}, expected 0（充值单不写 sale_items）`)
     }
   }],
 ]
