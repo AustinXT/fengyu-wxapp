@@ -154,3 +154,18 @@
   color: var(--color-text-primary);
 }
 .conv-payment-placeholder { color: var(--color-text-hint); }
+
+.conv-card-row {
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed var(--color-border);
+}
+.conv-card-row-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2rpx;
+}
+.conv-card-balance {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}

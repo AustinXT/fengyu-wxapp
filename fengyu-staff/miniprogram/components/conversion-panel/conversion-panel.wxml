@@ -60,10 +60,10 @@
       <text class="conv-summary-label">折抵总额</text>
       <text class="conv-summary-value conv-summary-value--discount">-¥{{deductibleSumDisplay}}</text>
     </view>
-    <view class="conv-summary-row conv-summary-row--diff">
+    <view class="conv-summary-row">
       <text class="conv-summary-label">差额</text>
       <block wx:if="{{priceDiff > 0}}">
-        <text class="conv-summary-diff conv-summary-diff--positive">还需支付 ¥{{priceDiffDisplay}}</text>
+        <text class="conv-summary-value">¥{{priceDiffDisplay}}</text>
       </block>
       <block wx:elif="{{priceDiff === 0}}">
         <text class="conv-summary-diff conv-summary-diff--zero">无需补差额</text>
@@ -73,9 +73,39 @@
       </block>
     </view>
 
-    <!-- 差额>0 时选支付方式 -->
+    <!-- 充值卡抵扣（仅补差额 > 0 时显示） -->
+    <view wx:if="{{priceDiff > 0}}" class="conv-summary-row conv-card-row">
+      <view class="conv-card-row-left">
+        <text class="conv-summary-label">充值卡抵扣</text>
+        <text class="conv-card-balance">余额 ¥{{cardBalance}}</text>
+      </view>
+      <van-switch
+        checked="{{useCard}}"
+        disabled="{{cardBalance <= 0}}"
+        size="40rpx"
+        active-color="#C0322A"
+        bind:change="onToggleUseCard"
+      />
+    </view>
+    <view wx:if="{{priceDiff > 0 && useCard && cardAmount > 0}}" class="conv-summary-row">
+      <text class="conv-summary-label">实际抵扣</text>
+      <text class="conv-summary-value conv-summary-value--discount">-¥{{cardAmountDisplay}}</text>
+    </view>
+
+    <!-- 抵扣后应付提示 -->
+    <view wx:if="{{priceDiff > 0}}" class="conv-summary-row conv-summary-row--diff">
+      <text class="conv-summary-label">还需支付</text>
+      <block wx:if="{{remaining > 0}}">
+        <text class="conv-summary-diff conv-summary-diff--positive">¥{{remainingDisplay}}</text>
+      </block>
+      <block wx:else>
+        <text class="conv-summary-diff conv-summary-diff--zero">储值卡全额抵扣，无需补款</text>
+      </block>
+    </view>
+
+    <!-- 抵扣后仍需补现金时选支付方式 -->
     <view
-      wx:if="{{priceDiff > 0}}"
+      wx:if="{{priceDiff > 0 && remaining > 0}}"
       class="conv-payment-row"
       bindtap="onOpenPaymentPicker"
     >

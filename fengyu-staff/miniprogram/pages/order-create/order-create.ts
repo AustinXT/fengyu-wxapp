@@ -282,6 +282,10 @@ Page({
     conversionDeductibleSum: 0,
     conversionPriceDiff: 0,
     conversionPaymentMethod: null as null | '微信' | '线下',
+    /** 转换单补差额充值卡抵扣额（ConversionPanel 反馈） */
+    conversionPrepaidCardAmount: 0,
+    /** 转换单抵扣后仍需付现金（priceDiff - prepaidCardAmount） */
+    conversionRemaining: 0,
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
@@ -844,6 +848,8 @@ Page({
       conversionDeductibleSum: 0,
       conversionPriceDiff: 0,
       conversionPaymentMethod: null,
+      conversionPrepaidCardAmount: 0,
+      conversionRemaining: 0,
       // 重置储值卡预选 state（避免上次 customer 残值；进入 Step 2 时再加载）
       customerCardBalance: 0,
       useCard: false,
@@ -1010,6 +1016,8 @@ Page({
       update.conversionDeductibleSum = 0;
       update.conversionPriceDiff = 0;
       update.conversionPaymentMethod = null;
+      update.conversionPrepaidCardAmount = 0;
+      update.conversionRemaining = 0;
     } else {
       // PR-D1：切到转换单时重置销售/内部单的 paymentMethod，避免脏值（转换单走 ConversionPanel 内部 picker）
       update.paymentMethod = '微信';
@@ -1027,17 +1035,21 @@ Page({
 
   /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
   onConversionPanelChange(e: WechatMiniprogram.CustomEvent) {
-    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod } = (e.detail || {}) as {
+    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod, prepaidCardAmount, remaining } = (e.detail || {}) as {
       selectedSaleItemIds?: string[];
       deductibleSum?: number;
       priceDiff?: number;
       paymentMethod?: '微信' | '线下' | null;
+      prepaidCardAmount?: number;
+      remaining?: number;
     };
     this.setData({
       conversionSelectedSaleItemIds: selectedSaleItemIds || [],
       conversionDeductibleSum: Number(deductibleSum) || 0,
       conversionPriceDiff: Number(priceDiff) || 0,
       conversionPaymentMethod: paymentMethod ?? null,
+      conversionPrepaidCardAmount: Number(prepaidCardAmount) || 0,
+      conversionRemaining: Number(remaining) || 0,
     });
   },
 
@@ -1277,6 +1289,7 @@ Page({
     const {
       customerInfo, cart, remark, submitting,
       conversionSelectedSaleItemIds, conversionPriceDiff, conversionPaymentMethod,
+      conversionPrepaidCardAmount, conversionRemaining,
     } = this.data;
     if (!customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
@@ -1286,22 +1299,25 @@ Page({
       wx.showToast({ title: '请选择折抵卡', icon: 'none' });
       return;
     }
-    if (conversionPriceDiff > 0 && !conversionPaymentMethod) {
+    // 抵扣后仍需付现金（remaining > 0）才必选支付方式；全额储值卡抵扣无需选
+    if (conversionRemaining > 0 && !conversionPaymentMethod) {
       wx.showToast({ title: '请选择支付方式', icon: 'none' });
       return;
     }
     if (submitting) return;
     this.setData({ submitting: true });
     try {
+      // remaining > 0 用所选方式；否则（全额抵扣 / 差额<=0）后端忽略但需合法值，默认 '微信'
       const paymentMethod: '微信' | '线下' =
-        conversionPriceDiff > 0 ? (conversionPaymentMethod as '微信' | '线下') : '微信';
+        conversionRemaining > 0 ? (conversionPaymentMethod as '微信' | '线下') : '微信';
       const res = await callStaffApi<{
-        saleOrderId: string; priceDiff: number; prepaidCardCredit: number; status: string;
+        saleOrderId: string; priceDiff: number; prepaidCardCredit: number; prepaidCardAmount: number; status: string;
       }>('order.createConversion', {
         clientUserId: customerInfo.clientUserId,
         convertOutSaleItemIds: conversionSelectedSaleItemIds,
         convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
         paymentMethod,
+        prepaidCardAmount: conversionPrepaidCardAmount > 0 ? conversionPrepaidCardAmount : undefined,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
         remark: remark || undefined,
       });
@@ -1314,21 +1330,27 @@ Page({
         conversionDeductibleSum: 0,
         conversionPriceDiff: 0,
         conversionPaymentMethod: null,
+        conversionPrepaidCardAmount: 0,
+        conversionRemaining: 0,
       });
       // Toast 差异化
       const diff = Number(res.priceDiff) || 0;
+      const card = Number(res.prepaidCardAmount) || 0;
+      const remaining = Math.max(0, Math.round((diff - card) * 100) / 100);
       let title = '转换成功';
-      if (diff > 0) {
+      if (diff > 0 && remaining > 0) {
         title = paymentMethod === '微信'
-          ? `请微信支付差额 ¥${diff.toFixed(2)}`
-          : `请确认补差额收款 ¥${diff.toFixed(2)}`;
+          ? `请微信支付差额 ¥${remaining.toFixed(2)}`
+          : `请确认补差额收款 ¥${remaining.toFixed(2)}`;
+      } else if (diff > 0 && remaining <= 0) {
+        title = `储值卡全额抵扣 ¥${card.toFixed(2)}，已结清`;
       } else if (diff < 0) {
         const credit = Math.abs(diff).toFixed(2);
         title = `差额 ¥${credit} 已充入储值卡`;
       }
       wx.showToast({ title, icon: 'none', duration: 2500 });
-      // 差额>0 → 跳订单码继续收款；差额<=0 直接完成，返回即可
-      if (diff > 0) {
+      // 抵扣后仍需付现金 → 跳订单码继续收款；否则（全额抵扣 / 差额<=0）直接完成
+      if (remaining > 0) {
         wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
       }
     } catch (err: unknown) {

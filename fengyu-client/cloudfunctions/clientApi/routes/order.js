@@ -1134,6 +1134,7 @@ async function list(ctx) {
         si.sale_item_id,
         si.quantity,
         si.received,
+        si.sale_amount,
         si.session_count,
         si.remaining_sessions,
         si.paid_sessions,

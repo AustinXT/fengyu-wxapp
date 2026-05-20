@@ -30,6 +30,18 @@ export interface ConversionPanelProps {
   onChange: (ids: string[]) => void
   /** 当前购物车应付合计（人民币元） */
   totalIn: number
+  /** 顾客充值卡余额（> 0 时在补差额场景渲染抵扣控件） */
+  cardBalance?: number
+  /** 是否启用充值卡抵扣 */
+  useCard?: boolean
+  /** 抵扣金额输入框值（受控；留空 = 全额抵扣到上限） */
+  cardAmountInput?: string
+  /** 实际生效抵扣额（父组件 clamp 后传入，用于"还需支付"展示） */
+  cardAmount?: number
+  /** 启用/停用抵扣 */
+  onToggleCard?: (checked: boolean) => void
+  /** 抵扣金额输入变化 */
+  onCardAmountChange?: (v: string) => void
 }
 
 export function ConversionPanel({
@@ -38,6 +50,12 @@ export function ConversionPanel({
   selectedIds,
   onChange,
   totalIn,
+  cardBalance = 0,
+  useCard = false,
+  cardAmountInput = "",
+  cardAmount = 0,
+  onToggleCard,
+  onCardAmountChange,
 }: ConversionPanelProps) {
   // heldCards 变化时清掉不在新列表里的旧选择（如换顾客 / 换门店）
   useEffect(() => {
@@ -144,10 +162,51 @@ export function ConversionPanel({
               </div>
             </div>
 
+            {/* 充值卡抵扣（仅补差额 > 0 时显示） */}
+            {priceDiff > 0 && (
+              <div className="bg-white rounded border border-[var(--border)] p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-[var(--foreground)]">充值卡抵扣</div>
+                    <div className="text-xs text-[#999999] mt-0.5">余额 ¥{cardBalance.toFixed(2)}</div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useCard}
+                      disabled={cardBalance <= 0}
+                      onChange={(e) => onToggleCard?.(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    <span className={`text-xs ${cardBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>启用</span>
+                  </label>
+                </div>
+                {useCard && cardBalance > 0 && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-xs text-[#999999]">抵扣金额</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max={Math.min(cardBalance, priceDiff)}
+                      step="0.01"
+                      className="h-8 text-sm w-32 border border-[var(--border)] rounded px-2"
+                      placeholder={`留空=¥${Math.min(cardBalance, priceDiff).toFixed(2)}`}
+                      value={cardAmountInput}
+                      onChange={(e) => onCardAmountChange?.(e.target.value)}
+                    />
+                    <span className="text-xs text-[#3D8A5A]">实际抵扣 ¥{cardAmount.toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="text-sm text-center">
-              {priceDiff > 0 && (
+              {priceDiff > 0 && cardAmount > 0 && priceDiff - cardAmount <= 0.005 && (
+                <p className="text-[#3D8A5A] font-semibold">储值卡全额抵扣 ¥{cardAmount.toFixed(2)}，无需补款</p>
+              )}
+              {priceDiff > 0 && priceDiff - cardAmount > 0.005 && (
                 <p className="text-[#D94040] font-semibold">
-                  还需支付 ¥{priceDiff.toFixed(2)}
+                  {cardAmount > 0 ? `储值卡抵扣 ¥${cardAmount.toFixed(2)}，` : ''}还需支付 ¥{(priceDiff - cardAmount).toFixed(2)}
                 </p>
               )}
               {priceDiff === 0 && (

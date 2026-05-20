@@ -74,7 +74,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
             <text class="oi-qty">×{{item.quantity}}</text>
           </view>
           <view class="order-item__right">
-            <text class="oi-price">¥{{fmt.price(item.received)}}</text>
+            <text class="oi-price">¥{{fmt.price(item.sale_amount)}}</text>
             <view class="oi-sessions" wx:if="{{item.remaining_sessions !== null}}">
               <text class="oi-sessions-text">已用 {{item.used_sessions}} / 已付 {{item.paid_sessions}} / 共 {{item.session_count}} 次</text>
               <!-- 三段进度条：已用(浅灰) + 已付未用(主色) + 未付(斜纹) -->

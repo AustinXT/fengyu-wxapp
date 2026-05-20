@@ -61,6 +61,19 @@ Component({
         this.recalcDiff();
       },
     },
+    /** 顾客储值卡余额（跨店统一）；> 0 时在补差额场景渲染抵扣开关 */
+    cardBalance: {
+      type: Number,
+      value: 0,
+      observer(this: any, val: number) {
+        // 余额首次到达且 > 0 时默认开启抵扣（与销售单"能抵多少抵多少"口径一致）
+        if (!this._cardInit) {
+          this._cardInit = true;
+          this.setData({ useCard: Number(val) > 0 });
+        }
+        this.recalcCard();
+      },
+    },
   },
 
   data: {
@@ -78,11 +91,17 @@ Component({
     priceDiffAbs: '0.00',
     /** 折抵总额展示值（保留 2 位小数） */
     deductibleSumDisplay: '0.00',
-    /** 支付方式（差额>0 时必选） */
+    /** 支付方式（抵扣后仍需补现金时必选） */
     paymentMethod: null as null | PaymentMethod,
     paymentMethodOptions: PAYMENT_METHODS as unknown as string[],
     showPaymentPicker: false,
     errorMsg: '',
+    /** 充值卡抵扣（仅补差额 > 0 时可用）：开关 + 实际抵扣额 + 抵扣后应付 */
+    useCard: false,
+    cardAmount: 0,
+    cardAmountDisplay: '0.00',
+    remaining: 0,
+    remainingDisplay: '0.00',
   },
 
   /**
@@ -93,6 +112,7 @@ Component({
   lifetimes: {
     attached(this: any) {
       this._requestSeq = 0;
+      this._cardInit = false;
     },
   },
 
@@ -163,21 +183,54 @@ Component({
       const inAmount = this._parseConvertInAmount();
       const sum = deductibleSum != null ? deductibleSum : this.data.deductibleSum;
       const diff = Math.round((inAmount - sum) * 100) / 100;
-      // 差额<=0 时清空 paymentMethod（不需要）
-      const update: Record<string, any> = {
+      this.setData({
         priceDiff: diff,
         priceDiffDisplay: Math.max(0, diff).toFixed(2),
         priceDiffAbs: Math.abs(diff).toFixed(2),
+      });
+      // 充值卡抵扣 + 剩余应付随差额变化重算（recalcCard 内统一 setData + emit）
+      this.recalcCard();
+    },
+
+    /**
+     * 重算充值卡抵扣额（仅补差额 priceDiff > 0 时生效）：
+     *   card = useCard && balance > 0 ? min(balance, priceDiff) : 0（能抵多少抵多少）
+     *   remaining = priceDiff - card（抵扣后仍需付现金）
+     * remaining <= 0（全额抵扣）时清空 paymentMethod（无需选）。
+     */
+    recalcCard(this: any) {
+      const diff = this.data.priceDiff as number;
+      const balance = Number(this.properties.cardBalance) || 0;
+      const card = (diff > 0 && this.data.useCard && balance > 0)
+        ? Math.min(balance, diff)
+        : 0;
+      const cardRounded = Math.round(card * 100) / 100;
+      const remaining = Math.max(0, Math.round((Math.max(0, diff) - cardRounded) * 100) / 100);
+      const update: Record<string, any> = {
+        cardAmount: cardRounded,
+        cardAmountDisplay: cardRounded.toFixed(2),
+        remaining,
+        remainingDisplay: remaining.toFixed(2),
       };
-      if (diff <= 0 && this.data.paymentMethod) {
+      // 抵扣后无需付现金 → 清空支付方式
+      if (remaining <= 0 && this.data.paymentMethod) {
         update.paymentMethod = null;
       }
       this.setData(update);
       this._emitChange();
     },
 
+    /** 切换充值卡抵扣开关 */
+    onToggleUseCard(this: any, e: WechatMiniprogram.CustomEvent) {
+      const next = !!e.detail;
+      if (next === this.data.useCard) return;
+      if (next && (Number(this.properties.cardBalance) || 0) <= 0) return;
+      this.setData({ useCard: next });
+      this.recalcCard();
+    },
+
     onOpenPaymentPicker() {
-      if (this.data.priceDiff <= 0) return;
+      if (this.data.remaining <= 0) return;
       this.setData({ showPaymentPicker: true });
     },
 
@@ -201,6 +254,8 @@ Component({
         deductibleSum: this.data.deductibleSum,
         priceDiff: this.data.priceDiff,
         paymentMethod: this.data.paymentMethod,
+        prepaidCardAmount: this.data.cardAmount,
+        remaining: this.data.remaining,
       });
     },
   },

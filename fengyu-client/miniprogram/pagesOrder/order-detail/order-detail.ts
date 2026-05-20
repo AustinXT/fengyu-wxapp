@@ -14,6 +14,7 @@ interface OrderDetailItem {
   unit_price: number;
   quantity: number;
   received: number;
+  sale_amount: number;
   expire_date: string | null;
   // 视图字段（前端计算注入）
   used_sessions?: number;

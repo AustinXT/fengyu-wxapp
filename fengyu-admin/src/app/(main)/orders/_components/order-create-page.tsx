@@ -185,6 +185,7 @@ export default function OrderCreatePageClient({
     totalOut: number
     priceDiff: number
     prepaidCardCredit: number
+    prepaidCardAmount: number
   } | null>(null)
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -523,6 +524,33 @@ export default function OrderCreatePageClient({
       totalReceived: Math.round(rc * 100) / 100,
     }
   }, [perItemAmounts])
+
+  // 转换单：折抵合计 totalOut（已选卡）与补差额 priceDiff（与 ConversionPanel 同算法）。
+  const conversionTotalOut = useMemo(() => {
+    if (!isConversion) return 0
+    const set = new Set(selectedHeldCardIds)
+    let sum = 0
+    for (const c of heldCards) {
+      if (set.has(c.saleItemId)) sum += Number(c.deductibleAmount)
+    }
+    return Math.round(sum * 100) / 100
+  }, [isConversion, heldCards, selectedHeldCardIds])
+  const conversionPriceDiff = Math.round((totalSaleAmount - conversionTotalOut) * 100) / 100
+  // 转换单充值卡抵扣：仅补差额 > 0 时可抵扣，上限 = min(余额, 补差额)
+  const conversionCardMax = Math.min(customerCardBalance, Math.max(0, conversionPriceDiff))
+  const conversionCardAmount = isConversion && conversionPriceDiff > 0 && useCard && customerCardBalance > 0
+    ? (cardAmountInput.trim() !== ''
+        ? Math.max(0, Math.min(Number(cardAmountInput) || 0, conversionCardMax))
+        : conversionCardMax)
+    : 0
+
+  // 销售单/内部单充值卡抵扣：上限 = min(余额, 应付合计)；salePayable = 抵扣后应付现金
+  const saleCardAmount = !isConversion && useCard && customerCardBalance > 0
+    ? (cardAmountInput.trim() !== ''
+        ? Math.max(0, Math.min(Number(cardAmountInput) || 0, Math.min(customerCardBalance, totalSaleAmount)))
+        : Math.min(customerCardBalance, totalSaleAmount))
+    : 0
+  const salePayable = Math.max(0, Math.round((totalSaleAmount - saleCardAmount) * 100) / 100)
 
   // 转换单候选按钮可用性（ticket §5 表格最后两行）
   const conversionAllowed = !!selectedCustomer?.userId
@@ -1062,10 +1090,13 @@ export default function OrderCreatePageClient({
                 heldCards={heldCards}
                 selectedIds={selectedHeldCardIds}
                 onChange={setSelectedHeldCardIds}
-                totalIn={cart.reduce((s, item) => {
-                  const amt = getItemAmounts(item)
-                  return s + amt.saleAmount
-                }, 0)}
+                totalIn={totalSaleAmount}
+                cardBalance={customerCardBalance}
+                useCard={useCard}
+                cardAmountInput={cardAmountInput}
+                cardAmount={conversionCardAmount}
+                onToggleCard={setUseCard}
+                onCardAmountChange={setCardAmountInput}
               />
             ) : (
               <div>
@@ -1275,6 +1306,7 @@ export default function OrderCreatePageClient({
                         unitPrice: item.sku.price,
                         quantity: item.quantity,
                       })),
+                      prepaidCardAmount: conversionCardAmount > 0 ? conversionCardAmount : undefined,
                     })
                     if (res.success && res.saleOrderId) {
                       toast.success(res.message)
@@ -1284,6 +1316,7 @@ export default function OrderCreatePageClient({
                         totalOut: res.totalOut ?? 0,
                         priceDiff: res.priceDiff ?? 0,
                         prepaidCardCredit: res.prepaidCardCredit ?? 0,
+                        prepaidCardAmount: res.prepaidCardAmount ?? 0,
                       })
                       setStep(3)
                     } else {
@@ -1314,9 +1347,9 @@ export default function OrderCreatePageClient({
                   }
                 }
                 // 本次收款金额：
-                // - 线上（微信/支付宝）：= 逐行 received 之和（totalReceived）；< 全额时后端落 first_payment_amount，QR 收限额
+                // - 线上（微信/支付宝）：= min(逐行 received 之和, 抵扣后应付现金 salePayable)；< 全额时后端落 first_payment_amount，QR 收限额
                 // - 线下：传 0 —— 开单不收款，实收金额在 Step 4「确认收款」环节登记（后端对线下亦强制忽略此值）
-                const receivedAmountArg = paymentMethod === '线下' ? 0 : totalReceived
+                const receivedAmountArg = paymentMethod === '线下' ? 0 : Math.min(totalReceived, salePayable)
 
                 setSubmitting(true)
                 try {
@@ -1333,6 +1366,7 @@ export default function OrderCreatePageClient({
                     remark: remark.trim() || null,
                     couponId: !isInternal ? (selectedCouponId || null) : null,
                     receivedAmount: receivedAmountArg,
+                    prepaidCardAmount: saleCardAmount > 0 ? saleCardAmount : undefined,
                     items: cart.map((item) => {
                       // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
                       // 组合套餐：sku.specialPrice 已是 bundlePrice，priceLine 即套餐打包价；用户可向下调实付金额
@@ -1357,9 +1391,9 @@ export default function OrderCreatePageClient({
                     toast.success(res.message)
                     setCreatedOrderId(res.saleOrderId || "")
                     setCreatedStatus(res.status ?? null)
-                    setCreatedPayable(totalSaleAmount)
-                    // 线下：预填确认金额 = 应付合计（顾客若现场只付一部分，可在确认收款时下调）
-                    setConfirmAmountInput(paymentMethod === '线下' ? totalSaleAmount.toFixed(2) : "")
+                    setCreatedPayable(salePayable)
+                    // 线下：预填确认金额 = 抵扣后应付现金（顾客若现场只付一部分，可在确认收款时下调）
+                    setConfirmAmountInput(paymentMethod === '线下' ? salePayable.toFixed(2) : "")
                     setConfirmResultStatus(null)
                     setConversionResult(null)
                     setStep(3)
@@ -1422,19 +1456,32 @@ export default function OrderCreatePageClient({
                 <p className="text-[#666666]">
                   转入 ¥{conversionResult.totalIn.toFixed(2)} ｜ 折抵 ¥{conversionResult.totalOut.toFixed(2)}
                 </p>
-                {conversionResult.priceDiff > 0 && (
-                  <p className="text-[#D94040] font-semibold">
-                    请确认补差额收款 ¥{conversionResult.priceDiff.toFixed(2)}
+                {conversionResult.prepaidCardAmount > 0 && (
+                  <p className="text-[#3D8A5A]">
+                    储值卡抵扣 ¥{conversionResult.prepaidCardAmount.toFixed(2)}
                   </p>
                 )}
-                {conversionResult.priceDiff === 0 && (
-                  <p className="text-[#3D8A5A] font-semibold">折抵完成，无需收款</p>
-                )}
-                {conversionResult.priceDiff < 0 && (
-                  <p className="text-[#5E8BB3] font-semibold">
-                    差额 ¥{conversionResult.prepaidCardCredit.toFixed(2)} 已充入储值卡
-                  </p>
-                )}
+                {(() => {
+                  const remaining = Math.max(0, Math.round((conversionResult.priceDiff - conversionResult.prepaidCardAmount) * 100) / 100)
+                  if (conversionResult.priceDiff > 0 && remaining > 0) {
+                    return (
+                      <p className="text-[#D94040] font-semibold">请确认补差额收款 ¥{remaining.toFixed(2)}</p>
+                    )
+                  }
+                  if (conversionResult.priceDiff > 0 && remaining <= 0) {
+                    return (
+                      <p className="text-[#3D8A5A] font-semibold">储值卡全额抵扣，差额已结清</p>
+                    )
+                  }
+                  if (conversionResult.priceDiff === 0) {
+                    return <p className="text-[#3D8A5A] font-semibold">折抵完成，无需收款</p>
+                  }
+                  return (
+                    <p className="text-[#5E8BB3] font-semibold">
+                      差额 ¥{conversionResult.prepaidCardCredit.toFixed(2)} 已充入储值卡
+                    </p>
+                  )
+                })()}
               </div>
             ) : (
               <p className="text-sm text-[#999999]">
@@ -1442,23 +1489,28 @@ export default function OrderCreatePageClient({
                   ? (confirmResultStatus === '部分支付'
                       ? `已确认收款 ¥${Number(confirmAmountInput || 0).toFixed(2)}，剩余 ¥${Math.max(0, createdPayable - Number(confirmAmountInput || 0)).toFixed(2)} 待收，请到订单详情「录入回款」补齐`
                       : '订单已确认收款，状态已更新为已支付')
-                  : paymentMethod === '线下'
-                    ? '线下支付订单：开单时未收款，请在下方核对实收金额后点击「确认收款」'
-                    : '请将二维码展示给顾客，扫码进入小程序完成支付'}
+                  : createdStatus === '已支付'
+                    ? `订单已由储值卡全额抵扣 ¥${saleCardAmount.toFixed(2)}，已结清`
+                    : paymentMethod === '线下'
+                      ? '线下支付订单：开单时未收款，请在下方核对实收金额后点击「确认收款」'
+                      : '请将二维码展示给顾客，扫码进入小程序完成支付'}
               </p>
             )}
 
-            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额 + 充值单在线支付场景；部分支付不显示二维码）*/}
+            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单仍需补现金 + 充值单在线支付场景；
+                部分支付 / 全额储值卡抵扣已结清 不显示二维码）*/}
             {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
-              && createdStatus !== '部分支付'
-              && (!conversionResult || conversionResult.priceDiff > 0) && (
+              && createdStatus !== '部分支付' && createdStatus !== '已支付'
+              && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
             {/* 线下支付：确认收款（待支付状态显示）。
-                普通销售/内部单可下调本次确认金额做部分确认；充值单 / 转换单走全额确认（all-or-nothing）。*/}
+                普通销售/内部单可下调本次确认金额做部分确认；充值单 / 转换单走全额确认（all-or-nothing）。
+                转换单全额储值卡抵扣已结清（无剩余应付）则不显示确认收款。*/}
             {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
-              && (!conversionResult || conversionResult.priceDiff > 0) && (
+              && createdStatus !== '已支付'
+              && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <div className="pt-2 space-y-2 max-w-xs mx-auto">
                 {!rechargeResult && !conversionResult && (
                   <>

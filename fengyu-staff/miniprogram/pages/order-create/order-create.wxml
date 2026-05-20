@@ -310,6 +310,7 @@
           <conversion-panel
             clientUserId="{{customerInfo.id}}"
             convertInAmount="{{cartTotal}}"
+            cardBalance="{{customerCardBalance}}"
             bind:change="onConversionPanelChange"
           />
         </block>
