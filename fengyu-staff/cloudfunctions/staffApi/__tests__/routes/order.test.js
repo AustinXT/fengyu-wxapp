@@ -4260,7 +4260,7 @@ describe('order.createPickup', () => {
 describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡）', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('useCard=true + 余额充足：全额预选抵扣 → 订单 待支付，payment_method=无，balance 未变，无 card_transactions', async () => {
+  test('useCard=true + 余额充足：全额抵扣（payable=0）→ 订单 已支付，payment_method=无，创建即扣卡 + 写储值卡抵扣流水（2026-05-21）', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -4277,13 +4277,25 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
         price: '1000.00', special_price: null, session_count: 10,
         product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
-      .mockResolvedValueOnce([{ balance: '2000.00' }])  // 储值卡余额足够
+      .mockResolvedValueOnce([{ balance: '2000.00' }])  // 储值卡余额足够（create 前预选校验读余额）
 
     let txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
           txCalls.push({ sql, params })
+          // 扣卡块：SELECT card_id, balance FROM prepaid_cards ... FOR UPDATE → 返回足额账户
+          if (typeof sql === 'string' && /SELECT card_id, balance FROM prepaid_cards/i.test(sql)) {
+            return { rows: [{ card_id: 'card-stub-1', balance: '2000.00' }], rowCount: 1 }
+          }
+          // 结算副作用 recalcCustomerType 的 computed_type 查询
+          if (typeof sql === 'string' && /AS computed_type/i.test(sql)) {
+            return { rows: [{ computed_type: '流量客' }], rowCount: 1 }
+          }
+          // recalcCustomerType 的 UPDATE ... RETURNING customer_type
+          if (typeof sql === 'string' && /RETURNING customer_type/i.test(sql)) {
+            return { rows: [{ customer_type: '流量客' }], rowCount: 1 }
+          }
           return defaultQueryResult(sql)
         }),
       }
@@ -4294,14 +4306,15 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     expect(ctx.result.totalAmount).toBe(1000)
     expect(ctx.result.prepaidCardAmount).toBe(1000)
-    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.paymentMethod).toBe('无')  // 后端强制覆盖
-    expect(ctx.result.status).toBe('待支付')
+    // 2026-05-21：全额储值卡抵扣（payable=0）创建时即扣卡 + 结清
+    expect(ctx.result.status).toBe('已支付')
 
-    // 断言：事务内未发生 prepaid_cards UPDATE 或 card_transactions INSERT
+    // 断言：事务内发生 prepaid_cards 扣减 + card_transactions 扣款 + 储值卡抵扣 payments 行
     const allSql = txCalls.map(c => c.sql).join('\n')
-    expect(allSql).not.toMatch(/UPDATE prepaid_cards/)
-    expect(allSql).not.toMatch(/INSERT INTO card_transactions/)
+    expect(allSql).toMatch(/UPDATE prepaid_cards/)
+    expect(allSql).toMatch(/INSERT INTO card_transactions/)
+    expect(allSql).toMatch(/储值卡抵扣/)
   })
 
   test('useCard=true + 余额不足以抵全额：部分抵扣 → 订单 待支付，payment_method=微信', async () => {
@@ -4449,7 +4462,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     expect(ctx.result.paymentMethod).toBe('线下')
   })
 
-  test('SELECT balance 不带 FOR UPDATE（预选不写）', async () => {
+  test('SELECT balance 不带 FOR UPDATE（部分抵扣预选不写）', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -4466,7 +4479,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
         price: '1000.00', special_price: null, session_count: 10,
         product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
-      .mockResolvedValueOnce([{ balance: '2000.00' }])
+      // 余额 300 < 总额 1000 → 部分抵扣（payable>0），仍走"预选不扣卡"延后路径
+      .mockResolvedValueOnce([{ balance: '300.00' }])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = { query: makeClientQueryMock({ rows: [], rowCount: 1 }) }
@@ -4475,10 +4489,12 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     await orderRoutes.create(ctx)
 
-    // pg.query 的第4个调用是 SELECT balance；不应含 FOR UPDATE
+    // pg.query 的第4个调用是 create 前的预选余额读取（SELECT balance）；不应含 FOR UPDATE
     const balanceSqlCall = pg.query.mock.calls[3]
     expect(balanceSqlCall[0]).toMatch(/SELECT balance FROM prepaid_cards/)
     expect(balanceSqlCall[0]).not.toMatch(/FOR UPDATE/)
+    // 部分抵扣 → 待支付，事务内不扣卡（延后到 confirmOffline/payNotify）
+    expect(ctx.result.status).toBe('待支付')
   })
 })
 

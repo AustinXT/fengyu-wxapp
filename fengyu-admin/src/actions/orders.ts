@@ -172,6 +172,69 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   }
 }
 
+/**
+ * 开单时即时扣储值卡（全额抵扣场景：payable==0、无需付现金）。
+ *
+ * 与 confirmOfflinePayment 的扣卡块字面对齐：锁余额 → 校验 → UPDATE prepaid_cards.balance
+ * → card_transactions(type='扣款') → sale_order_payments(change_type='储值卡抵扣')。
+ * 幂等键 external_ref='card-deduct-{saleOrderId}'；余额不足抛 INSUFFICIENT_BALANCE。
+ *
+ * 仅在订单全额由储值卡抵扣（payable_amount==0 且 prepaid>0）时于创建事务内调用，
+ * 是对「先付款后记账」不变量的有意例外（用户 2026-05-21 拍板）：无现金可收，挂"待支付"
+ * 反而会卡死（payment_method='无' 无法走 confirmOfflinePayment），故创建时直接扣卡 + 结清。
+ *
+ * 注意：此扣卡块需与 staff order.js deductPrepaidCardAtCreation + confirmOffline / payNotify
+ * 字面对齐，跨端 snapshot 测试守护。
+ */
+async function deductPrepaidCardAtCreation(
+  tx: AdminTx,
+  args: { saleOrderId: string; clientUserId: string; amount: number; employeeId: string; note: string },
+): Promise<void> {
+  const { saleOrderId, clientUserId, amount, employeeId, note } = args
+  if (!(amount > 0) || !clientUserId) return
+
+  // 幂等：已扣过则跳过
+  const dupRes = await tx.execute(sql`
+    SELECT 1 FROM card_transactions
+    WHERE ref_order_id = ${saleOrderId} AND type = '扣款' LIMIT 1
+  `)
+  if ((dupRes as unknown as any[]).length > 0) return
+
+  const balRes = await tx.execute(sql`
+    SELECT card_id, balance FROM prepaid_cards
+    WHERE user_id = ${clientUserId} FOR UPDATE
+  `)
+  const balRows = balRes as unknown as any[]
+  if (balRows.length === 0) {
+    throw new Error('INSUFFICIENT_BALANCE:NO_CARD: 顾客无储值卡账户')
+  }
+  const currentBalance = Number(balRows[0].balance)
+  if (currentBalance + 0.001 < amount) {
+    throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
+  }
+  const cardId = balRows[0].card_id as string
+  await tx.execute(sql`
+    UPDATE prepaid_cards
+    SET balance = balance - ${amount}::numeric,
+        updated_at = NOW()
+    WHERE card_id = ${cardId}
+  `)
+  await tx.execute(sql`
+    INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+    VALUES (${cardId}, '扣款', ${-amount}::numeric, ${saleOrderId}, ${`card-deduct-${saleOrderId}`}, NOW())
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+  `)
+  await tx.execute(sql`
+    INSERT INTO sale_order_payments (
+      sale_order_id, change_type, payment_method, amount, status,
+      paid_at, source_end, operator_employee_id, note, created_at
+    ) VALUES (
+      ${saleOrderId}, '储值卡抵扣', '储值卡', ${amount}::numeric, '已支付',
+      NOW(), 'admin', ${employeeId}, ${note}, NOW()
+    )
+  `)
+}
+
 export const getOrders = withPermission(
   'sale_order:list',
   async (session): Promise<SaleOrder[]> => {
@@ -1152,15 +1215,24 @@ export const createOrder = withPermission(
       ? Math.min(receivedAmount, payableAmount)
       : null
 
-  // 决策树（三端对齐"先付款、后转态记账"不变量）：
-  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
-  //   - 线下：'待支付'（开单不记款；现金 + 储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
-  // createOrder 不再产出 '部分支付'/'已支付'，款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
-  const initialStatus: typeof saleOrders.$inferInsert['status'] = '待支付'
+  // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，挂"待支付"会卡死
+  //   （payment_method='无' 走不了 confirmOfflinePayment），故创建事务内直接扣卡 + 结清。
+  //   用户 2026-05-21 拍板：销售单/转换单全额抵扣均在提交订单时即时抵扣。
+  const isFullCardCoverage = prepaidCardAmount > 0 && payableAmount === 0
 
-  // received 创建时一律 0：线上等 payNotify 回调累加，线下等 confirmOfflinePayment 入账。
+  // 决策树（三端对齐"先付款、后转态记账"不变量）：
+  //   - 全额储值卡抵扣：'已支付'（事务内即时扣卡 + 结算）
+  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
+  //   - 线下：'待支付'（开单不记款；现金 + 部分储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
+  // createOrder 仅全额抵扣场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
+  const initialStatus: typeof saleOrders.$inferInsert['status'] = isFullCardCoverage ? '已支付' : '待支付'
+
+  // 全额抵扣时 payment_method 落 '无'（现金通道无需使用，与 staff order.create 对齐）。
+  const effectivePaymentMethod = isFullCardCoverage ? '无' : data.paymentMethod
+
+  // received 创建时：全额抵扣 = prepaid（已结清）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
-  const paidAmountSnapshot = 0
+  const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
 
   // 计算 document_type（售前/售后快照）
   let documentType: '售前' | '售后' = '售前'
@@ -1268,12 +1340,12 @@ export const createOrder = withPermission(
         firstPaymentAmount: firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
-        paymentMethod: data.paymentMethod,
+        paymentMethod: effectivePaymentMethod,
         openedBy: data.openedBy || session.employeeId,
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
-        paidAt: null,
+        paidAt: isFullCardCoverage ? new Date() : null,
       })
 
       // 开单时不写款项流水（统一"先付款、后记账"不变量）：
@@ -1300,9 +1372,6 @@ export const createOrder = withPermission(
         const computedSaleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
         const saleAmount = item.saleAmount ?? computedSaleAmount
         const received = item.received ?? saleAmount
-        const unitRealPrice = item.saleAmount
-          ? (Number(item.saleAmount) / item.quantity).toFixed(2)
-          : item.unitRealPrice
 
         // 固定手工费快照 = product_skus.service_fee × quantity
         const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
@@ -1314,6 +1383,13 @@ export const createOrder = withPermission(
         // 漏乘 quantity 会导致剩余次数显示 1/1 而非 N/N，且核销超过 1 次即被扣减守护卡住。
         const skuSessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * item.quantity : null
+
+        // per-session 派生：unit_real_price/unit_price 存单次价（sale_amount 为权威行总额）；
+        //   卡 = 行总额 / 总次数；非卡 = 行总额 / 数量（per-unit 退化）。入参 unitPrice/unitRealPrice 是 per-card 表单值。
+        const psDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : item.quantity
+        const listTotalRow = Number(item.unitPrice) * item.quantity
+        const unitRealPrice = psDenom > 0 ? (Number(saleAmount) / psDenom).toFixed(2) : Number(saleAmount).toFixed(2)
+        const unitPrice = psDenom > 0 ? (listTotalRow / psDenom).toFixed(2) : Number(item.unitPrice).toFixed(2)
 
         // is_experience 行级快照：以服务端 product_skus.is_experience 为权威。
         // 用于客户分类跃迁 SQL（SUM(received) FILTER WHERE si.is_experience）。
@@ -1330,7 +1406,7 @@ export const createOrder = withPermission(
           productType: item.productType,
           sessionCount,
           remainingSessions: sessionCount,
-          unitPrice: item.unitPrice,
+          unitPrice,
           quantity: item.quantity,
           unitRealPrice,
           saleAmount,
@@ -1343,8 +1419,28 @@ export const createOrder = withPermission(
 
       // 充值卡剥离 SKU 化（2026-05-20）后 D4 事后兜底校验已删除（migration 0043 拆触发器）
 
-      // paid_sessions 初始写入（ticket 2026-05-19）：admin createOrder 通常 received=0 → paid_sessions=0
+      // 全额储值卡抵扣：事务内即时扣卡 + 写 '储值卡抵扣' 流水（与 confirmOfflinePayment 已支付分支对齐）
+      if (isFullCardCoverage && data.clientUserId) {
+        await deductPrepaidCardAtCreation(tx, {
+          saleOrderId: id,
+          clientUserId: data.clientUserId,
+          amount: prepaidCardAmount,
+          employeeId: session.employeeId,
+          note: '管理后台开单-储值卡全额抵扣',
+        })
+      }
+
+      // paid_sessions 初始写入（ticket 2026-05-19）：admin createOrder 通常 received=0 → paid_sessions=0；
+      // 全额抵扣时 received=prepaid → paid_sessions 按已结清推进。
       await recalcPaidSessionsForOrder(tx, id)
+
+      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      if (isFullCardCoverage) {
+        await settlePointsSafe(tx, id, 'admin.createOrder')
+        if (data.clientUserId) {
+          await recalcCustomerType(tx, data.clientUserId)
+        }
+      }
 
       return id
     })
@@ -1352,6 +1448,11 @@ export const createOrder = withPermission(
     // 事务内业务异常 → 友好消息
     if (err?.message === '订单号生成失败') {
       return { success: false, message: '订单号生成失败，请稍后重试' }
+    }
+    // 全额储值卡抵扣扣卡失败（余额不足 / 无卡）
+    if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
+      const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
+      return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     if (err?.message?.startsWith('该顾客已有待支付订单')) {
       return { success: false, message: err.message }
@@ -1439,6 +1540,8 @@ export const createConversionOrder = withPermission(
     quantity: number
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
+  /** 储值卡抵扣金额（仅补差额 priceDiff > 0 时有效；clamp 到 [0, priceDiff]） */
+  prepaidCardAmount?: number
     },
   ): Promise<{
   success: boolean
@@ -1448,6 +1551,8 @@ export const createConversionOrder = withPermission(
   totalOut?: number
   priceDiff?: number
   prepaidCardCredit?: number
+  /** 本单实际充值卡抵扣额（priceDiff > 0 时 = clamp 后的抵扣额） */
+  prepaidCardAmount?: number
   }> => {
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
@@ -1484,6 +1589,7 @@ export const createConversionOrder = withPermission(
     totalOut: number
     priceDiff: number
     prepaidCardCredit: number
+    prepaidCardAmount: number
   }
 
   try {
@@ -1628,6 +1734,14 @@ export const createConversionOrder = withPermission(
 
       const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
 
+      // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
+      // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则创建事务内即时扣卡 + 结清。
+      const card = priceDiff > 0
+        ? Math.min(Math.max(0, Math.round((data.prepaidCardAmount ?? 0) * 100) / 100), priceDiff)
+        : 0
+      const payable = Math.max(0, Math.round((Math.max(0, priceDiff) - card) * 100) / 100)
+      const isFullCardCoverage = card > 0 && payable === 0
+
       // 3. 生成订单号（advisory lock + 当日序号）
       const idRows = await tx.execute(sql`
         WITH lock AS (
@@ -1655,11 +1769,15 @@ export const createConversionOrder = withPermission(
       }
 
       // 5. 插入订单主表
-      // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按支付方式决定
-      // 其他：total_amount=0 & status='已支付'
+      // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
+      //   - payable > 0（仍需付现金）：'待支付'，扣卡延后到 confirmOffline / payNotify
+      //   - payable == 0 且有抵扣（全额抵扣）：事务内即时扣卡 → '已支付'，payment_method='无'
+      // 其他（priceDiff <= 0）：total_amount=0 & status='已支付'
       const orderTotal = Math.max(0, priceDiff).toFixed(2)
       const orderStatus: typeof saleOrders.$inferInsert['status'] =
-        priceDiff > 0 ? '待支付' : '已支付'
+        priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
+      const orderPaid = priceDiff <= 0 || isFullCardCoverage
+      const effectivePaymentMethod = isFullCardCoverage ? '无' : data.paymentMethod
 
       await tx.insert(saleOrders).values({
         saleOrderId,
@@ -1673,12 +1791,15 @@ export const createConversionOrder = withPermission(
         clientPhone: client.phone ?? null,
         customerName: client.name ?? null,
         totalAmount: orderTotal,
-        paymentMethod: data.paymentMethod,
+        prepaidCardAmount: card.toFixed(2),
+        payableAmount: payable.toFixed(2),
+        received: isFullCardCoverage ? card.toFixed(2) : '0',
+        paymentMethod: effectivePaymentMethod,
         openedBy: session.employeeId,
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
-        paidAt: priceDiff > 0 ? null : new Date(),
+        paidAt: orderPaid ? new Date() : null,
       })
 
       // 6. 转出行 + 原子扣减原卡余量
@@ -1800,8 +1921,26 @@ export const createConversionOrder = withPermission(
         })
       }
 
+      // 8b. 补差额全额抵扣（priceDiff > 0 且 payable==0）：事务内即时扣卡 + 写 '储值卡抵扣' 流水。
+      //     与 8（负差额充值）互斥（全额抵扣要求 priceDiff > 0）。
+      if (isFullCardCoverage) {
+        await deductPrepaidCardAtCreation(tx, {
+          saleOrderId,
+          clientUserId: data.clientUserId,
+          amount: card,
+          employeeId: session.employeeId,
+          note: '管理后台转换单-储值卡全额抵扣',
+        })
+      }
+
       // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
       await recalcPaidSessionsForOrder(tx, saleOrderId)
+
+      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      if (isFullCardCoverage) {
+        await settlePointsSafe(tx, saleOrderId, 'admin.createConversion')
+        await recalcCustomerType(tx, data.clientUserId)
+      }
 
       return {
         saleOrderId,
@@ -1809,6 +1948,7 @@ export const createConversionOrder = withPermission(
         totalOut: Math.round(totalOut * 100) / 100,
         priceDiff,
         prepaidCardCredit,
+        prepaidCardAmount: card,
       }
     })
   } catch (err: any) {
@@ -1823,6 +1963,11 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
     if (m?.includes('PREPAID_CARD_UPSERT_FAILED')) return { success: false, message: '储值卡入账失败，请稍后重试' }
+    // 全额抵扣即时扣卡失败（余额不足 / 无卡）
+    if (m?.startsWith('INSUFFICIENT_BALANCE')) {
+      const stripped = m.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
+      return { success: false, message: stripped || '顾客储值卡余额不足' }
+    }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (err?.code === '23503') {
       console.error('[createConversionOrder] fk_violation:', err)
@@ -1845,14 +1990,19 @@ export const createConversionOrder = withPermission(
     totalOut: result.totalOut,
     priceDiff: result.priceDiff,
     prepaidCardCredit: result.prepaidCardCredit,
+    prepaidCardAmount: result.prepaidCardAmount,
   })
 
   revalidatePath('/orders')
+  // 补差额抵扣后实际仍需付现金 = priceDiff - 抵扣额
+  const remainingPayable = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
   return {
     success: true,
     message:
       result.priceDiff > 0
-        ? `转换单已创建，请收款 ¥${result.priceDiff.toFixed(2)}`
+        ? remainingPayable > 0
+          ? `转换单已创建，储值卡抵扣 ¥${result.prepaidCardAmount.toFixed(2)}，请收款 ¥${remainingPayable.toFixed(2)}`
+          : `转换单已完成，储值卡全额抵扣 ¥${result.prepaidCardAmount.toFixed(2)}`
         : result.priceDiff < 0
           ? `转换单已完成，差额 ¥${result.prepaidCardCredit.toFixed(2)} 已充入储值卡`
           : '转换单已完成',
@@ -1861,6 +2011,7 @@ export const createConversionOrder = withPermission(
     totalOut: result.totalOut,
     priceDiff: result.priceDiff,
     prepaidCardCredit: result.prepaidCardCredit,
+    prepaidCardAmount: result.prepaidCardAmount,
   }
   },
 )

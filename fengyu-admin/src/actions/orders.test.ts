@@ -544,6 +544,89 @@ describe('createOrder — 事务异常捕获', () => {
   })
 })
 
+describe('createOrder — 全额储值卡抵扣即时扣卡（2026-05-21）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('prepaidCardAmount==totalAmount（payable=0）→ 即时扣卡 + status=已支付 + payment_method=无 + received=prepaid', async () => {
+    let capturedOrder: any
+    let execTexts: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          execTexts.push(text)
+          if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0009' }])
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
+          if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
+            return Promise.resolve([{ card_id: 'FY-CARD-DEDUCT', balance: 1000 }])
+          }
+          if (/SELECT\s+customer_type/i.test(text)) return Promise.resolve([])
+          return Promise.resolve({})
+        }),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if (v && 'saleOrderId' in v && 'saleOrderType' in v) capturedOrder = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    // totalAmount=200（unitRealPrice 200 × 1），prepaidCardAmount=200 → payable=0 全额抵扣
+    const result = await createOrder({ ...baseOrderData, paymentMethod: '微信', prepaidCardAmount: 200 })
+
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('已支付')
+    expect(capturedOrder.status).toBe('已支付')
+    expect(capturedOrder.paymentMethod).toBe('无')
+    expect(capturedOrder.prepaidCardAmount).toBe('200.00')
+    expect(capturedOrder.payableAmount).toBe('0.00')
+    expect(capturedOrder.received).toBe('200.00')
+    expect(execTexts.some((t) => /UPDATE\s+prepaid_cards/i.test(t))).toBe(true)
+    expect(execTexts.some((t) => /INSERT\s+INTO\s+sale_order_payments/i.test(t) && /储值卡抵扣/.test(t))).toBe(true)
+    expect(settlePointsSafe).toHaveBeenCalledTimes(1)
+  })
+
+  it('余额不足 → 抛 INSUFFICIENT_BALANCE，订单创建失败', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0010' }])
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
+          if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
+            return Promise.resolve([{ card_id: 'FY-CARD-DEDUCT', balance: 50 }])
+          }
+          return Promise.resolve({})
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createOrder({ ...baseOrderData, paymentMethod: '微信', prepaidCardAmount: 200 })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('储值卡余额不足')
+  })
+})
+
 /**
  * B2 拆行专用 mock：捕获 tx.insert().values(...) 的所有调用，按表名分组。
  * ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
@@ -1912,6 +1995,125 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.prepaidCardCredit).toBe(300)
     expect(capturedOrder.totalAmount).toBe('0.00')
     expect(capturedOrder.status).toBe('已支付')
+  })
+
+  /**
+   * 补差额全额储值卡抵扣（2026-05-21）：priceDiff>0 且 prepaidCardAmount==priceDiff →
+   * 创建事务内即时扣卡 + 写 '储值卡抵扣' 流水 → status='已支付'、payment_method='无'、received=card。
+   * 关键字路由 tx.execute（扣卡块需返回余额行）。
+   */
+  function mockConvDeductTx(opts: {
+    heldRows: any[]
+    skuRows: any[]
+    cardBalance?: number
+    onInsertOrder?: (v: any) => void
+  }) {
+    const captured: { execTexts: string[]; insertValues: any[] } = { execTexts: [], insertValues: [] }
+    const cardBalance = opts.cardBalance ?? 1000
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          captured.execTexts.push(text)
+          if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) return Promise.resolve(opts.heldRows)
+          if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0001' }])
+          if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
+          if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
+            return Promise.resolve([{ card_id: 'FY-CARD-DEDUCT', balance: cardBalance }])
+          }
+          if (/SELECT\s+customer_type/i.test(text)) return Promise.resolve([])
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(opts.skuRows) }),
+          }),
+        }),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push(v)
+            if (v && 'saleOrderId' in v && 'saleOrderType' in v) opts.onInsertOrder?.(v)
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+    return captured
+  }
+
+  it('priceDiff > 0 且储值卡全额抵扣 → 即时扣卡 + status=已支付 + payment_method=无 + received=card', async () => {
+    let capturedOrder: any
+    const captured = mockConvDeductTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+      cardBalance: 1000,
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    // totalIn=500, totalOut=300 → priceDiff=200；prepaidCardAmount=200 → 全额抵扣
+    const result = await createConversionOrder({ ...baseConvData, prepaidCardAmount: 200 })
+
+    expect(result.success).toBe(true)
+    expect(result.priceDiff).toBe(200)
+    expect(result.prepaidCardAmount).toBe(200)
+    expect(capturedOrder.totalAmount).toBe('200.00')
+    expect(capturedOrder.payableAmount).toBe('0.00')
+    expect(capturedOrder.prepaidCardAmount).toBe('200.00')
+    expect(capturedOrder.received).toBe('200.00')
+    expect(capturedOrder.status).toBe('已支付')
+    expect(capturedOrder.paymentMethod).toBe('无')
+    // 即时扣卡 SQL 都触发
+    expect(captured.execTexts.some((t) => /UPDATE\s+prepaid_cards/i.test(t))).toBe(true)
+    expect(captured.execTexts.some((t) => /INSERT\s+INTO\s+card_transactions/i.test(t))).toBe(true)
+    expect(captured.execTexts.some((t) => /INSERT\s+INTO\s+sale_order_payments/i.test(t) && /储值卡抵扣/.test(t))).toBe(true)
+    // 已支付 → 触发积分结算
+    expect(settlePointsSafe).toHaveBeenCalledTimes(1)
+  })
+
+  it('priceDiff > 0 部分储值卡抵扣（payable>0）→ 待支付，不即时扣卡（延后到 confirmOffline/payNotify）', async () => {
+    let capturedOrder: any
+    const captured = mockConvDeductTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    // priceDiff=200，抵扣 50 → payable=150 > 0
+    const result = await createConversionOrder({ ...baseConvData, prepaidCardAmount: 50 })
+
+    expect(result.success).toBe(true)
+    expect(result.prepaidCardAmount).toBe(50)
+    expect(capturedOrder.prepaidCardAmount).toBe('50.00')
+    expect(capturedOrder.payableAmount).toBe('150.00')
+    expect(capturedOrder.received).toBe('0')
+    expect(capturedOrder.status).toBe('待支付')
+    // 不即时扣卡（延后入账）
+    expect(captured.execTexts.some((t) => /UPDATE\s+prepaid_cards/i.test(t))).toBe(false)
+    expect(settlePointsSafe).not.toHaveBeenCalled()
   })
 })
 

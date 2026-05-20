@@ -157,6 +157,89 @@ async function recalcCustomerType(client, clientUserId) {
 }
 
 /**
+ * 开单时即时扣储值卡（全额抵扣场景：payable==0、无现金可收）。
+ *
+ * 与 confirmOffline 的扣卡块字面对齐：锁余额 → 校验 → UPDATE prepaid_cards.balance
+ * → card_transactions(type='扣款') → sale_order_payments(change_type='储值卡抵扣')。
+ * 幂等键 external_ref='card-deduct-{saleOrderId}'；余额不足抛 INSUFFICIENT_BALANCE。
+ *
+ * 仅在订单全额由储值卡抵扣（payable==0 且 prepaid>0）时于创建事务内调用——无现金可收，
+ * 挂"待支付"会卡死（payment_method='无' 走不了 confirmOffline），故创建时直接扣卡 + 结清
+ * （用户 2026-05-21 拍板；销售单/转换单同规则）。跨端与 admin orders.ts 同名 helper 对齐。
+ */
+async function deductPrepaidCardAtCreation(client, { saleOrderId, clientUserId, amount, staffWfId, note, now }) {
+  if (!(amount > 0) || !clientUserId) return
+  // 幂等：已扣过则跳过
+  const dupCheck = await client.query(
+    `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+    [saleOrderId]
+  )
+  if (dupCheck.rows.length > 0) return
+
+  const balRes = await client.query(
+    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
+    [clientUserId]
+  )
+  if (balRes.rows.length === 0) {
+    throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+  }
+  const currentBalance = Number(balRes.rows[0].balance)
+  if (currentBalance + 0.001 < amount) {
+    throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+  }
+  const cardId = balRes.rows[0].card_id
+  await client.query(
+    `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+    [amount, cardId]
+  )
+  await client.query(
+    `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '扣款', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+    [cardId, -amount, saleOrderId, `card-deduct-${saleOrderId}`]
+  )
+  await client.query(
+    `INSERT INTO sale_order_payments (
+      sale_order_id, change_type, amount, payment_method, external_txn_id,
+      status, source_end, operator_employee_id, note, created_at, paid_at
+    ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+    [saleOrderId, amount, staffWfId, note, now]
+  )
+}
+
+/**
+ * 全额储值卡抵扣订单"创建即结清"后的统一结算副作用，对齐 confirmOffline 的已支付分支：
+ * 单品到期日 + 消费档位 + 客户分类 + 积分 + 分享礼。
+ * （paid_sessions 由各调用点已有的 recalcPaidSessionsForOrder 负责，此处不重复。）
+ */
+async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, receivedAmount, now }) {
+  // 单品到期日（paid_at + 1 年；卡确认即生效）
+  await client.query(
+    `UPDATE sale_items
+       SET expire_date = ($1::date + INTERVAL '1 year')
+     WHERE sale_order_id = $2 AND product_type = '单品' AND expire_date IS NULL`,
+    [now, saleOrderId]
+  )
+  if (clientUserId) {
+    await refreshSpendingTier(client, clientUserId)
+    await recalcCustomerType(client, clientUserId)
+  }
+  await settlePointsSafe(client, saleOrderId, 'staffApi.createPaidByCard')
+  // 分享礼（首单结清；savepoint 隔离，非致命）
+  if (clientUserId) {
+    try {
+      await client.query('SAVEPOINT sp_share_gift')
+      const { grantShareGift } = require('../share-gift')
+      await grantShareGift(client, { saleOrderId, clientUserId, paidAmount: receivedAmount, source: 'staffApi' })
+      await client.query('RELEASE SAVEPOINT sp_share_gift')
+    } catch (sgErr) {
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_share_gift') } catch (e) {}
+      console.error('[staffApi/share-gift] error (non-fatal):', sgErr)
+    }
+  }
+}
+
+/**
  * 员工开单（店长专用）
  * payload: {
  *   clientPhone: string,
@@ -515,6 +598,16 @@ async function create(ctx) {
     }
   }
 
+  // per-session 派生（sale_amount 为权威行总额）：
+  //   unit_real_price = 卡? round(sale_amount/session_count) : round(sale_amount/quantity)（非卡 per-unit 退化）
+  //   unit_price      = 卡? round(标价行总额/session_count) : per-unit 标价；标价行总额 = (原 per-card unit_price) × quantity
+  for (const d of itemDataList) {
+    const denom = (d.sessionCount != null && d.sessionCount > 0) ? d.sessionCount : (d.quantity || 1)
+    const listTotalRow = Math.round(Number(d.unitPrice || 0) * (d.quantity || 1) * 100) / 100
+    d.unitRealPrice = denom > 0 ? Math.round((Number(d.saleAmount || 0) / denom) * 100) / 100 : Number(d.saleAmount || 0)
+    d.unitPrice = denom > 0 ? Math.round((listTotalRow / denom) * 100) / 100 : listTotalRow
+  }
+
   const now = new Date()
   // saleOrderId 在事务内由 generateOrderNo(undefined, client) 生成，保证 advisory lock
   // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
@@ -643,9 +736,14 @@ async function create(ctx) {
     //   0 < paid + prepaid < total_amount      → '部分支付'
     //   paid + prepaid == total_amount         → '待支付'（线下全额仍待店长 confirmOffline 入账；
     //                                              通过 payment_method='线下' 识别"已选线下、待确认"）
+    // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，事务内即时扣卡 + 结清。
+    // 优先于线上判定——线上全额抵扣同样无需等 payNotify。
+    const isFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
     const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
     let initialStatus
-    if (isOnlineMethod) {
+    if (isFullCardCoverage) {
+      initialStatus = '已支付'
+    } else if (isOnlineMethod) {
       initialStatus = '待支付'
     } else if (settledAmount === 0) {
       initialStatus = '待支付'
@@ -654,9 +752,11 @@ async function create(ctx) {
     } else {
       initialStatus = '待支付'
     }
+    // received 列：全额抵扣 = prepaid（已结清，与 '储值卡抵扣' 流水一致）；其余 = 本次现金 paidAmount。
+    const receivedColumn = isFullCardCoverage ? prepaidCardAmount : paidAmount
     // paid_at 语义：payments 行已支付即"有钱到账"时间，冗余到 sale_orders.paid_at；
-    // 挂账订单无入账 → NULL。线下全额订单 payments 已写'已支付'，paid_at 可落 now。
-    const paidAtValue = paidAmount > 0 ? now : null
+    // 挂账订单无入账 → NULL。线下全额 / 全额储值卡抵扣订单已结清，paid_at 落 now。
+    const paidAtValue = (paidAmount > 0 || isFullCardCoverage) ? now : null
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -674,7 +774,7 @@ async function create(ctx) {
         inputCouponId || null, couponDiscount,
         orderRemark || null,
         initialStatus,
-        prepaidCardAmount, paidAmount, payableAmount,
+        prepaidCardAmount, receivedColumn, payableAmount,
         paidAtValue,
       ]
     )
@@ -743,16 +843,42 @@ async function create(ctx) {
     // 充值订单专用入口在 card.recharge（写 sale_orders type='充值单'，0 行 sale_items）。
     // 故 D4 混单守卫废除（migration 0043 同步拆触发器）。
 
+    // 全额储值卡抵扣：事务内即时扣卡 + 写 '储值卡抵扣' 流水（与 confirmOffline 已支付分支对齐）。
+    if (isFullCardCoverage) {
+      await deductPrepaidCardAtCreation(client, {
+        saleOrderId,
+        clientUserId,
+        amount: prepaidCardAmount,
+        staffWfId: ctx.auth.staffWfId,
+        note: '店长开单-储值卡全额抵扣',
+        now,
+      })
+    }
+
     // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
     // 按行级 floor 计算；部分支付订单 paid_sessions < session_count，限定后续 service.create 上限。
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
+    if (isFullCardCoverage) {
+      await settlePaidByCardAtCreation(client, {
+        saleOrderId,
+        clientUserId,
+        receivedAmount: prepaidCardAmount,
+        now,
+      })
+    }
   })
 
   // PR-2: status 与事务内 initialStatus 决策树保持一致
-  //   线上 → '待支付'；paid+prepaid=0 → '待支付'；部分 → '部分支付'；全额 → '待支付'（线下待店长 confirmOffline）
+  //   全额储值卡抵扣 → '已支付'（创建即扣卡结清）；线上 → '待支付'；paid+prepaid=0 → '待支付'；
+  //   部分 → '部分支付'；线下全额（现金）→ '待支付'（待店长 confirmOffline）
+  const resolvedFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
   const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
   let resolvedStatus
-  if (isOnlineMethod) {
+  if (resolvedFullCardCoverage) {
+    resolvedStatus = '已支付'
+  } else if (isOnlineMethod) {
     resolvedStatus = '待支付'
   } else if (resolvedSettled === 0) {
     resolvedStatus = '待支付'
@@ -2078,6 +2204,7 @@ async function createConversion(ctx) {
     paymentMethod,
     preferredStaffWfId,
     remark,
+    prepaidCardAmount: inputPrepaidCardAmount,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
@@ -2229,14 +2356,18 @@ async function createConversion(ctx) {
       const amount = Math.round(Number(sku.price) * qty * 100) / 100
       totalIn += amount
       const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
+      // 同 create：session_count 是"次"维度，需 × qty
+      const inSessionCount = sku.session_count != null ? Number(sku.session_count) * qty : null
+      const inDenom = (inSessionCount != null && inSessionCount > 0) ? inSessionCount : qty
+      // per-session 单价（转入无折扣：unit_price = unit_real_price = amount / 总次数；非卡 = amount/qty）
+      const inPerSessionUnit = inDenom > 0 ? Math.round((amount / inDenom) * 100) / 100 : amount
       inItems.push({
         skuId: sku.sku_id,
         productName: sku.spec_name,
         skuSpecName: sku.spec_name,
         productType: sku.product_type,
-        // 同 create：session_count 是"次"维度，需 × qty
-        sessionCount: sku.session_count != null ? Number(sku.session_count) * qty : null,
-        unitPrice: Number(sku.price),
+        sessionCount: inSessionCount,
+        unitPrice: inPerSessionUnit,
         quantity: qty,
         amount,
         salesCategory: sku.sales_category,
@@ -2248,8 +2379,23 @@ async function createConversion(ctx) {
 
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
-    // 差额>0：'待支付'（线下走 confirmOffline 入账，线上走 payNotify）；其它：已支付
-    const orderStatus = priceDiff > 0 ? '待支付' : '已支付'
+
+    // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
+    // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则事务内即时扣卡 + 结清。
+    let card = 0
+    if (priceDiff > 0 && inputPrepaidCardAmount != null) {
+      const v = Number(inputPrepaidCardAmount)
+      if (!Number.isFinite(v) || v < 0) throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
+      card = Math.min(Math.round(v * 100) / 100, priceDiff)
+    }
+    const payable = Math.max(0, Math.round((orderTotal - card) * 100) / 100)
+    const isFullCardCoverage = card > 0 && payable === 0
+    // 差额>0 且仍需付现金：'待支付'（线下走 confirmOffline，线上走 payNotify）；
+    // 差额>0 全额抵扣 或 差额<=0：'已支付'
+    const orderStatus = priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
+    const orderPaid = priceDiff <= 0 || isFullCardCoverage
+    // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
+    const effectivePaymentMethod = isFullCardCoverage ? '无' : paymentMethod
 
     // 3. document_type 快照：会员客 → 售后，否则按 totalIn 与阈值比较
     let documentType = client.customer_type === '会员客' ? '售后' : '售前'
@@ -2264,17 +2410,20 @@ async function createConversion(ctx) {
         sale_order_id, status, sale_order_type, document_type,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payable_amount, payment_method, opened_by,
+        total_amount, payable_amount, prepaid_card_amount, received,
+        payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
-        orderTotal.toFixed(2), paymentMethod, ctx.auth.staffWfId,
+        orderTotal.toFixed(2), payable.toFixed(2), card.toFixed(2),
+        (isFullCardCoverage ? card : 0).toFixed(2),
+        effectivePaymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
         remark || null,
-        priceDiff > 0 ? null : now,
+        orderPaid ? now : null,
       ]
     )
 
@@ -2341,7 +2490,7 @@ async function createConversion(ctx) {
       }
     }
 
-    // 7. 转入行 × M（新卡；unit_real_price = unit_price = sku.price 全价）
+    // 7. 转入行 × M（新卡；unit_real_price = unit_price = per-session 单价 = amount/总次数；无折扣两者相等）
     for (const d of inItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
@@ -2393,13 +2542,37 @@ async function createConversion(ctx) {
       )
     }
 
+    // 8b. 补差额全额抵扣（priceDiff > 0 且 payable==0）：事务内即时扣卡 + 写 '储值卡抵扣' 流水。
+    //     与 8（负差额充值）互斥（全额抵扣要求 priceDiff > 0）。
+    if (isFullCardCoverage) {
+      await deductPrepaidCardAtCreation(tx, {
+        saleOrderId: convOrderId,
+        clientUserId,
+        amount: card,
+        staffWfId: ctx.auth.staffWfId,
+        note: '店长转换单-储值卡全额抵扣',
+        now,
+      })
+    }
+
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
     await recalcPaidSessionsForOrder(tx, convOrderId)
 
-    return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit }
+    // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
+    if (isFullCardCoverage) {
+      await settlePaidByCardAtCreation(tx, {
+        saleOrderId: convOrderId,
+        clientUserId,
+        receivedAmount: card,
+        now,
+      })
+    }
+
+    return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit, prepaidCardAmount: card }
   })
 
+  const convRemaining = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
   ctx.result = {
     saleOrderId: convOrderId,
     status: result.orderStatus,
@@ -2407,7 +2580,15 @@ async function createConversion(ctx) {
     totalOut: Math.round(result.totalOut * 100) / 100,
     priceDiff: result.priceDiff,
     prepaidCardCredit: result.prepaidCardCredit,
-    message: '转换单已创建',
+    prepaidCardAmount: result.prepaidCardAmount,
+    message:
+      result.priceDiff > 0
+        ? (convRemaining > 0
+            ? (result.prepaidCardAmount > 0
+                ? `转换单已创建，储值卡抵扣 ¥${result.prepaidCardAmount.toFixed(2)}，请收款 ¥${convRemaining.toFixed(2)}`
+                : '转换单已创建')
+            : `转换单已完成，储值卡全额抵扣 ¥${result.prepaidCardAmount.toFixed(2)}`)
+        : '转换单已创建',
   }
 }
 
@@ -3028,6 +3209,10 @@ async function createDeposit(ctx) {
     const sessionCount = sku.session_count != null
       ? Number(sku.session_count) * quantity
       : null
+    const saleAmount = Math.round(basePrice * quantity * 100) / 100
+    // per-session 单价：卡 = sale_amount/总次数；非卡 = sale_amount/quantity（per-unit 退化）
+    const denom = (sessionCount != null && sessionCount > 0) ? sessionCount : quantity
+    const perSessionUnit = denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount
     return {
       skuId: item.skuId,
       productName: sku.spec_name,
@@ -3036,10 +3221,10 @@ async function createDeposit(ctx) {
       productKind: sku.product_kind,
       sessionCount,
       remainingSessions: sessionCount,
-      unitPrice: basePrice,
-      unitRealPrice: basePrice,
+      unitPrice: perSessionUnit,
+      unitRealPrice: perSessionUnit,
       quantity,
-      saleAmount: Math.round(basePrice * quantity * 100) / 100,
+      saleAmount,
       received: 0,
       salesCategory: sku.sales_category || null,
       serviceFee: 0,
