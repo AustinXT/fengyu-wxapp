@@ -262,11 +262,14 @@ describe('ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护', () =
     })
   })
 
-  describe('§2.2 confirmOfflinePayment 储值卡扣款 6 段（admin 独立锁块字面对齐 staff 内联块）', () => {
-    test('admin 必须 SELECT prepaid_card_amount + client_user_id FROM sale_orders FOR UPDATE', () => {
-      expect(adminSrc).toMatch(
-        /SELECT\s+prepaid_card_amount,\s*client_user_id\s+FROM\s+sale_orders[\s\S]{0,200}FOR\s+UPDATE/i,
-      )
+  describe('§2.2 confirmOfflinePayment 储值卡扣款 6 段（admin 入口单锁字面对齐 staff 内联块）', () => {
+    test('admin 必须在 FOR UPDATE 锁单时读取 prepaid_card_amount + client_user_id', () => {
+      // admin confirmOfflinePayment 入口用单条 SELECT ... FOR UPDATE 锁单并读全部决策列
+      const lockSql = normalizeSql(extractBacktickStringContaining(adminSrc, 'SELECT status, payment_method, store_id'))
+      expect(lockSql).toMatch(/FROM sale_orders/i)
+      expect(lockSql).toMatch(/FOR UPDATE/i)
+      expect(lockSql).toMatch(/prepaid_card_amount/)
+      expect(lockSql).toMatch(/client_user_id/)
     })
 
     test("admin/staff 扣款幂等：SELECT 1 FROM card_transactions WHERE ref_order_id AND type='扣款'", () => {
@@ -325,7 +328,7 @@ describe('ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护', () =
   describe('Snapshot 守护：admin 关键 SQL 整体文本快照', () => {
     test('admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见）', () => {
       const lockOrder = normalizeSql(
-        extractBacktickStringContaining(adminSrc, 'SELECT prepaid_card_amount, client_user_id FROM sale_orders'),
+        extractBacktickStringContaining(adminSrc, 'SELECT status, payment_method, store_id'),
       )
       const lockCard = normalizeSql(extractBacktickStringContaining(adminSrc, 'SELECT card_id, balance FROM prepaid_cards'))
       const updBalance = normalizeSql(extractBacktickStringContaining(adminSrc, 'UPDATE prepaid_cards'))

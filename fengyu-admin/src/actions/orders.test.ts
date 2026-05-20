@@ -735,24 +735,37 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
+    ;(isInScope as any).mockReturnValue(true)
   })
 
-  /** tx mock：支持 update + execute + select + insert 链（applyRechargeOnOrderPaid 依赖 select/insert） */
-  function mockConfirmTx(count: number, selectRows: any[][] = [[], []]) {
+  // 入口锁单返回行（默认线下待支付、全额应付 200、未收）
+  function lockRow(over: Record<string, any> = {}) {
+    return {
+      status: '待支付', payment_method: '线下', store_id: 'store-1',
+      total_amount: '200.00', payable_amount: '200.00', received: '0',
+      prepaid_card_amount: '0', client_user_id: null, customer_name: '顾客甲',
+      ...over,
+    }
+  }
+
+  /**
+   * confirmOfflinePayment 重构后：入口 SELECT ... FOR UPDATE 锁单 → 写现金流水 → SUM 重算 →
+   * UPDATE sale_orders SET status（带 WHERE status='待支付' 守卫，rowCount=0 视为并发变更）。
+   */
+  function mockConfirmTx(opts: { updateRowCount?: number; lock?: Record<string, any>; sumReceived?: string } = {}) {
+    const updateRowCount = opts.updateRowCount ?? 1
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      let selectCall = 0
       const tx = {
-        update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ count }),
-          }),
-        }),
         execute: vi.fn().mockImplementation((sqlArg: any) => {
           const text: string = sqlArg?.__sqlText ?? ''
-          // ticket 2026-05-19-cuddly-pancake：confirmOfflinePayment 新增 SUM 重算 received
+          if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([lockRow(opts.lock)])
+          }
           if (/AS\s+new_received/i.test(text)) {
-            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+            return Promise.resolve([{ new_received: opts.sumReceived ?? '0', new_prepaid: '0' }])
+          }
+          if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
+            return Promise.resolve({ rowCount: updateRowCount })
           }
           return Promise.resolve({})
         }),
@@ -760,11 +773,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
           chain.where = vi.fn().mockReturnValue(chain)
-          chain.limit = vi.fn().mockImplementation(() => {
-            const rows = selectRows[selectCall] ?? []
-            selectCall++
-            return Promise.resolve(rows)
-          })
+          chain.limit = vi.fn().mockResolvedValue([])
           return chain
         }),
         insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
@@ -773,25 +782,35 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     })
   }
 
-  it('订单状态已变更（rowCount=0）→ 失败', async () => {
-    mockConfirmTx(0)
+  it('终态 UPDATE rowCount=0（并发已变更）→ 失败', async () => {
+    mockConfirmTx({ updateRowCount: 0 })
     const result = await confirmOfflinePayment('order-1')
     expect(result.success).toBe(false)
     expect(result.message).toContain('状态已变更')
   })
 
-  it('正常确认收款（rowCount=1）→ 事务内各步均执行', async () => {
+  it('锁单非"线下待支付"（如已支付）→ 失败', async () => {
+    mockConfirmTx({ lock: { status: '已支付' } })
+    const result = await confirmOfflinePayment('order-x')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('状态已变更')
+  })
+
+  it('正常确认收款（全额）→ 已支付 + 事务内写现金流水 + 翻态', async () => {
+    const capturedExecutes: string[] = []
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
-        update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ count: 1 }),
-          }),
-        }),
         execute: vi.fn().mockImplementation((sqlArg: any) => {
           const text: string = sqlArg?.__sqlText ?? ''
+          capturedExecutes.push(text)
+          if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([lockRow()])
+          }
           if (/AS\s+new_received/i.test(text)) {
-            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+            return Promise.resolve([{ new_received: '200', new_prepaid: '0' }])
+          }
+          if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
+            return Promise.resolve({ rowCount: 1 })
           }
           return Promise.resolve({})
         }),
@@ -799,23 +818,38 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
           chain.where = vi.fn().mockReturnValue(chain)
-          // 非充值订单：order 查询返回无 clientUserId，applyRechargeOnOrderPaid 提前 return
           chain.limit = vi.fn().mockResolvedValue([])
           return chain
         }),
         insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
       }
       const result = await fn(tx)
-      expect(tx.update).toHaveBeenCalledOnce()
-      // ticket 2026-05-19：recalcPaidSessionsForOrder 也走 tx.execute，原本期望 1 次 → 现在含 update+select 共 3 次
-      expect(tx.execute).toHaveBeenCalled()
+      // 写了现金首次支付流水 + 翻态 UPDATE
+      expect(capturedExecutes.some((t) => /INSERT INTO sale_order_payments/i.test(t))).toBe(true)
+      expect(capturedExecutes.some((t) => /UPDATE\s+sale_orders\s+SET\s+status/i.test(t))).toBe(true)
       return result
     })
 
     const result = await confirmOfflinePayment('order-1')
     expect(result.success).toBe(true)
     expect(result.message).toContain('确认收款成功')
+    expect(result.status).toBe('已支付')
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('部分确认（confirmAmount < 应付）→ 部分支付', async () => {
+    mockConfirmTx({ sumReceived: '80' }) // SUM 重算后 received=80 < total 200
+    const result = await confirmOfflinePayment('order-1', 80)
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('部分支付')
+    expect(result.message).toContain('部分')
+  })
+
+  it('confirmAmount 超过剩余应付 → INVALID_PARAMS 校验错', async () => {
+    mockConfirmTx({})
+    const result = await confirmOfflinePayment('order-1', 300) // > payable 200
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能超过剩余应付')
   })
 
   it('事务异常 → 返回友好错误', async () => {
@@ -832,7 +866,7 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
+    ;(isInScope as any).mockReturnValue(true)
   })
 
   /** 按 SQL 关键字路由 tx.execute 的扣卡测试 mock（不含充值入账逻辑） */
@@ -861,11 +895,18 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
         execute: vi.fn().mockImplementation((sqlArg: any) => {
           const text: string = sqlArg?.__sqlText ?? ''
           captured.executes.push({ text, raw: sqlArg })
-          if (/SELECT\s+prepaid_card_amount/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+          // 入口锁单（含 prepaid_card_amount + client_user_id）
+          if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
             return Promise.resolve([{
+              status: '待支付', payment_method: '线下', store_id: 'store-1',
+              total_amount: '200.00', payable_amount: '200.00', received: '0',
               prepaid_card_amount: opts.prepaidAmount,
               client_user_id: clientUserId,
+              customer_name: '顾客甲',
             }])
+          }
+          if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
+            return Promise.resolve({ rowCount: 1 })
           }
           if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) {
             return Promise.resolve(opts.deductDupExists ? [{ '?column?': 1 }] : [])
@@ -971,21 +1012,26 @@ describe('P0-15-01 修复：admin 两触发点必须调用 settlePointsSafe', ()
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '300.00' }])
+    ;(isInScope as any).mockReturnValue(true)
   })
 
   it('confirmOfflinePayment 成功路径 → settlePointsSafe 以 admin.confirmOffline 调用', async () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
-        update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ count: 1 }),
-          }),
-        }),
         execute: vi.fn().mockImplementation((sqlArg: any) => {
           const text: string = sqlArg?.__sqlText ?? ''
+          if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([{
+              status: '待支付', payment_method: '线下', store_id: 'store-1',
+              total_amount: '300.00', payable_amount: '300.00', received: '0',
+              prepaid_card_amount: '0', client_user_id: null, customer_name: '顾客甲',
+            }])
+          }
           if (/AS\s+new_received/i.test(text)) {
-            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+            return Promise.resolve([{ new_received: '300', new_prepaid: '0' }])
+          }
+          if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
+            return Promise.resolve({ rowCount: 1 })
           }
           return Promise.resolve({})
         }),
@@ -2001,7 +2047,7 @@ describe('createConversionOrder — 异常路径', () => {
 //   6. 储值卡抵扣 + 部分现场 → 订单 '部分支付' + 2 行 payments（首次支付 + 储值卡抵扣）
 //   7. 双写不变量：paid_amount = Σ(已支付 + 首次支付/回款/退款) amount
 
-describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流水）', () => {
+describe('createOrder — 线下开单不记款 + 线上首付（receivedAmount + 款项流水）', () => {
   /** 捕获本轮事务内的 saleOrders insert + saleOrderPayments insert 清单 */
   interface CaptureBag {
     order: any
@@ -2053,53 +2099,38 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     ;(db.select as any).mockImplementation(mockSelectEmpty())
   })
 
-  it('1) 全额现场（线下）→ 订单 "待支付" + 1 行首次支付 payments（confirmOffline 再翻 已支付）', async () => {
+  it('1) 线下开单（未传 receivedAmount）→ 订单 "待支付" + received=0 + 无 payments 行（确认收款时才记账）', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P001', bag)
 
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '线下',
-      // 未传 receivedAmount → 视为全额 = payable_amount = totalAmount
     })
 
     expect(result.success).toBe(true)
-    // 线下全额：status='待支付'，paid_amount=受款金额（200），写 1 行首次支付
+    // 线下：开单不收款，待支付 + received=0 + 无流水（实收在 confirmOfflinePayment 登记）
     expect(bag.order.status).toBe('待支付')
     expect(bag.order.payableAmount).toBe('200.00')
-    expect(bag.order.received).toBe('200.00')
-    expect(bag.payments).toHaveLength(1)
-    expect(bag.payments[0]).toMatchObject({
-      changeType: '首次支付',
-      amount: '200.00',
-      paymentMethod: '线下',
-      status: '已支付',
-      sourceEnd: 'admin',
-    })
+    expect(bag.order.received).toBe('0.00')
+    expect(bag.payments).toHaveLength(0)
   })
 
-  it('2) 部分收款 → 订单 "部分支付" + 1 行首次支付 payments', async () => {
+  it('2) 线下开单 + 传 receivedAmount（被后端忽略）→ 仍 "待支付" + received=0 + 无 payments', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P002', bag)
 
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '线下',
-      receivedAmount: 80, // < 200 应付
+      receivedAmount: 80, // 线下忽略，不在创建时记款
     })
 
     expect(result.success).toBe(true)
-    expect(bag.order.status).toBe('部分支付')
+    expect(bag.order.status).toBe('待支付')
     expect(bag.order.payableAmount).toBe('200.00')
-    expect(bag.order.received).toBe('80.00')
-    expect(bag.payments).toHaveLength(1)
-    expect(bag.payments[0]).toMatchObject({
-      changeType: '首次支付',
-      amount: '80.00',
-      paymentMethod: '线下',
-      status: '已支付',
-      sourceEnd: 'admin',
-    })
+    expect(bag.order.received).toBe('0.00')
+    expect(bag.payments).toHaveLength(0)
   })
 
   it('3) 纯挂账（receivedAmount=0） → 订单 "待支付"，无 payments 行', async () => {
@@ -2118,10 +2149,10 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(bag.payments).toHaveLength(0)
   })
 
-  it('4) receivedAmount > payable_amount → 业务校验错', async () => {
+  it('4) 线上 receivedAmount > payable_amount → 业务校验错（线下忽略入参，仅线上校验）', async () => {
     const result = await createOrder({
       ...baseOrderData,
-      paymentMethod: '线下',
+      paymentMethod: '微信',
       receivedAmount: 300, // payable = 200
     })
 
@@ -2165,53 +2196,41 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(bag.payments).toHaveLength(0)
   })
 
-  it('6) 储值卡抵扣 + 部分现场 → 订单 "部分支付"，create 仅 1 行首次支付（储值卡抵扣 payments 行 + 扣卡归 confirmOffline）', async () => {
+  it('6) 线下 + 储值卡抵扣预选 → 订单 "待支付"，received=0，无 payments（扣卡 + 记账归 confirmOffline）', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P006', bag)
 
-    // total=200；prepaidCard=60 → payable=140；received=50 → 部分
+    // total=200；prepaidCard=60 → payable=140（仅作预选写入，扣卡在确认收款时执行）
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '线下',
       prepaidCardAmount: 60,
-      receivedAmount: 50,
+      receivedAmount: 50, // 线下忽略
     })
 
     expect(result.success).toBe(true)
-    expect(bag.order.status).toBe('部分支付')
+    expect(bag.order.status).toBe('待支付')
     expect(bag.order.prepaidCardAmount).toBe('60.00')
     expect(bag.order.payableAmount).toBe('140.00')
-    expect(bag.order.received).toBe('50.00')
-    expect(bag.payments).toHaveLength(1)
-    // 仅 1 行：首次支付（线下/50）—— 储值卡抵扣 payments 行由 confirmOffline 同事务扣卡时写入
-    const firstPay = bag.payments.find((p) => p.changeType === '首次支付')
-    expect(firstPay).toMatchObject({
-      changeType: '首次支付',
-      amount: '50.00',
-      paymentMethod: '线下',
-      status: '已支付',
-      sourceEnd: 'admin',
-    })
-    const cardPay = bag.payments.find((p) => p.changeType === '储值卡抵扣')
-    expect(cardPay).toBeUndefined()
+    expect(bag.order.received).toBe('0.00')
+    expect(bag.payments).toHaveLength(0)
   })
 
-  it('7) 双写不变量（create 阶段）：paid_amount = Σ(已支付 + 首次支付/回款/退款).amount', async () => {
+  it('7) 双写不变量（create 阶段）：线下 received=0 且无 payments；prepaid_card_amount 仅作预选写入', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P007', bag)
 
-    // 场景：total=200 + prepaidCard=60 → payable=140；received=120 → 部分支付
+    // 场景：total=200 + prepaidCard=60 → payable=140
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '线下',
       prepaidCardAmount: 60,
-      receivedAmount: 120,
+      receivedAmount: 120, // 线下忽略
     })
 
     expect(result.success).toBe(true)
-    // 计算不变量左侧：sale_orders.paid_amount
+    // 不变量：received == Σ(已支付 首次支付/回款/退款) == 0（创建时不记款）
     const received = Number(bag.order.received)
-    // 计算不变量右侧：Σ(payments WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
     const paymentsSum = bag.payments
       .filter(
         (p) =>
@@ -2220,15 +2239,12 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
       )
       .reduce((s, p) => s + Number(p.amount), 0)
     expect(received).toBe(paymentsSum)
-    expect(received).toBe(120)
+    expect(received).toBe(0)
 
-    // create 阶段 sale_orders.prepaid_card_amount 是"预选"冗余；payments 储值卡抵扣行 + 扣卡由 confirmOffline 完成
+    // prepaid_card_amount 是"预选"冗余；扣卡 + 储值卡抵扣 payments 行均由 confirmOffline 完成
     const prepaidSnapshot = Number(bag.order.prepaidCardAmount)
-    const cardSum = bag.payments
-      .filter((p) => p.status === '已支付' && p.changeType === '储值卡抵扣')
-      .reduce((s, p) => s + Number(p.amount), 0)
     expect(prepaidSnapshot).toBe(60) // 预选金额已写入 sale_orders 列
-    expect(cardSum).toBe(0) // 但 payments 尚未产生储值卡抵扣行
+    expect(bag.payments).toHaveLength(0) // 创建时尚无任何 payments 行
   })
 
   it('8) 线上支付（微信）+ receivedAmount 未传 → 订单 "待支付"，无 payments 行（admin 不走线上，保留既有语义）', async () => {

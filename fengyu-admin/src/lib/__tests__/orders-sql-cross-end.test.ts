@@ -16,8 +16,8 @@
  *     - INSERT card_transactions type='充值'（admin Drizzle ORM insert / pg INSERT SQL）
  *
  *   §2.2 confirmOfflinePayment 储值卡抵扣扣款 6 段（admin ↔ staff 字面对齐）：
- *     1. SELECT prepaid_card_amount, client_user_id FROM sale_orders ... FOR UPDATE
- *        (admin 端独立加锁；staff 端使用早先 SELECT 出的 order 行 + 后续 FOR UPDATE 锁余额)
+ *     1. 入口锁单 SELECT ... FROM sale_orders ... FOR UPDATE（含 prepaid_card_amount + client_user_id）
+ *        (admin 端入口单锁读全部决策列；staff 端使用早先 SELECT 出的 order 行 + 后续 FOR UPDATE 锁余额)
  *     2. SELECT 1 FROM card_transactions WHERE ref_order_id AND type='扣款' LIMIT 1 (幂等)
  *     3. SELECT card_id, balance FROM prepaid_cards WHERE user_id FOR UPDATE
  *     4. UPDATE prepaid_cards SET balance = balance - ? WHERE card_id
@@ -89,14 +89,18 @@ describe('admin confirmOfflinePayment ↔ staff confirmOffline 储值卡扣款 6
     staffSrc = readFile(FILES.staffOrderJs)
   })
 
-  describe('1. 锁原单读 prepaid_card_amount + client_user_id（admin 独立加锁，staff 复用早期查询）', () => {
-    // admin 端独立 SELECT FOR UPDATE；staff 端在 confirmOffline 入口已 SELECT * FROM sale_orders。
-    // 两端都必须读 prepaid_card_amount 字段（capability 守护）。
-    test('admin 必须 SELECT prepaid_card_amount + client_user_id FROM sale_orders FOR UPDATE', () => {
-      // admin 端的独立锁块
-      expect(adminSrc).toMatch(
-        /SELECT\s+prepaid_card_amount,\s*client_user_id\s+FROM\s+sale_orders[\s\S]{0,200}FOR\s+UPDATE/i,
+  describe('1. 锁原单读 prepaid_card_amount + client_user_id（admin 入口单锁，staff 复用早期查询）', () => {
+    // admin 端在 confirmOfflinePayment 入口用单条 SELECT ... FOR UPDATE 锁单并读取全部决策列
+    // （含 prepaid_card_amount + client_user_id）；staff 端在 confirmOffline 入口已 SELECT * FROM sale_orders。
+    // 两端都必须在锁内读 prepaid_card_amount + client_user_id（capability + 扣卡守护）。
+    test('admin 必须在 FOR UPDATE 锁单时读取 prepaid_card_amount + client_user_id', () => {
+      const lockSql = normalizeSql(
+        extractBacktickContaining(adminSrc, 'SELECT status, payment_method, store_id'),
       )
+      expect(lockSql).toMatch(/FROM sale_orders/i)
+      expect(lockSql).toMatch(/FOR UPDATE/i)
+      expect(lockSql).toMatch(/prepaid_card_amount/)
+      expect(lockSql).toMatch(/client_user_id/)
     })
     test('staff 必须读 order.prepaid_card_amount + order.client_user_id', () => {
       // staff 在 confirmOffline 内通过外层 order 行（早先 SELECT *）拿到这两列
@@ -185,7 +189,7 @@ describe('admin confirmOfflinePayment ↔ staff confirmOffline 储值卡扣款 6
     test('admin confirmOfflinePayment 储值卡扣款 6 段 SQL 文本快照', () => {
       // 提取 admin 端 6 段关键 SQL 的归一化文本，做整体快照
       const lockOrder = normalizeSql(
-        extractBacktickContaining(adminSrc, 'SELECT prepaid_card_amount, client_user_id FROM sale_orders'),
+        extractBacktickContaining(adminSrc, 'SELECT status, payment_method, store_id'),
       )
       const dupGuard = normalizeSql(
         extractBacktickContaining(adminSrc, "SELECT 1 FROM card_transactions"),

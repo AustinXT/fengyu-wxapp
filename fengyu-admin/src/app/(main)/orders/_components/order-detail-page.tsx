@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types"
 import { RecordPaymentDialog } from "./record-payment-dialog"
+import { ConfirmOfflineDialog } from "./confirm-offline-dialog"
 import { RefundForm } from "@/components/orders/refund-form"
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
@@ -59,6 +60,7 @@ export default function OrderDetailPageClient({
   logs,
   payments,
   canRecordPayment = false,
+  canConfirmOffline = false,
   canRefund = false,
   cardBalance = null,
   canListAllocations = true,
@@ -69,6 +71,8 @@ export default function OrderDetailPageClient({
   payments?: SaleOrderPayment[]
   /** ticket 2026-04-24 多次回款 PR-B — 是否展示"录入回款"按钮 */
   canRecordPayment?: boolean
+  /** 是否展示"确认收款"按钮（线下待支付首次收款入账，权限 sale_order:update） */
+  canConfirmOffline?: boolean
   /** ticket 2026-04-24 退款 PR-Y — 是否展示"创建退款"按钮 */
   canRefund?: boolean
   /** 顾客当前储值卡余额（元，null=未查询或无账户） */
@@ -91,12 +95,22 @@ export default function OrderDetailPageClient({
   const totalAmount = Number(order.totalAmount ?? "0")
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100)
+  // 确认收款：线下「待支付」订单的首次收款入账入口
+  const canShowConfirmOffline =
+    canConfirmOffline &&
+    order.paymentMethod === "线下" &&
+    order.status === "待支付"
+
+  // 录入回款：用于已开始收款的订单补尾款。
+  // 与确认收款互斥——线下「待支付」走确认收款，避免双按钮歧义（录入回款写'回款'且不自动扣预选卡）。
   const canShowRecordPayment =
     canRecordPayment &&
     remainingPayable > 0 &&
-    (order.status === "部分支付" || order.status === "待支付")
+    (order.status === "部分支付" || order.status === "待支付") &&
+    !canShowConfirmOffline
 
   const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false)
+  const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false)
   const [refundFormOpen, setRefundFormOpen] = useState(false)
 
   // 退款按钮仅对销售单 + 已支付/已完成/部分支付 可见
@@ -285,6 +299,11 @@ export default function OrderDetailPageClient({
               </p>
             )}
           </div>
+          {canShowConfirmOffline && (
+            <Button size="sm" className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white" onClick={() => setConfirmOfflineDialogOpen(true)}>
+              确认收款
+            </Button>
+          )}
           {canShowRecordPayment && (
             <Button size="sm" onClick={() => setRepaymentDialogOpen(true)}>
               录入回款
@@ -455,6 +474,17 @@ export default function OrderDetailPageClient({
         <RecordPaymentDialog
           open={repaymentDialogOpen}
           onOpenChange={setRepaymentDialogOpen}
+          saleOrderId={order.saleOrderId}
+          remainingPayable={remainingPayable}
+          cardBalance={cardBalance}
+        />
+      )}
+
+      {/* 确认收款弹层（线下待支付首次收款入账） */}
+      {canShowConfirmOffline && (
+        <ConfirmOfflineDialog
+          open={confirmOfflineDialogOpen}
+          onOpenChange={setConfirmOfflineDialogOpen}
           saleOrderId={order.saleOrderId}
           remainingPayable={remainingPayable}
           cardBalance={cardBalance}

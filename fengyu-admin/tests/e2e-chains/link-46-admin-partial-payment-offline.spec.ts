@@ -1,39 +1,32 @@
 /**
- * 链路 46：admin 开单 — 线下部分支付 + 多次回款 + paid_sessions 逐行进阶
+ * 链路 46：admin 开单 — 线下确认收款（部分确认）+ 多次回款 + paid_sessions 逐行进阶
  *
- * 主题：验证"在 admin 开单页把某行 sale_item 实付金额下调，订单提交后立即落
- *       status='部分支付'、写首次支付 payments 行"的端到端流程，再通过订单详情
- *       页的"录入回款"两次补齐尾款，期间 sale_items.paid_sessions 按逐行公式
- *       floor(min(1, received / sale_amount) * session_count) 进阶。
+ * 主题：验证"线下开单不记款"新流程：
+ *       1) admin 开单选线下 → 提交后订单为 '待支付'、received=0、**无任何款项流水**；
+ *       2) 在完成页「确认收款」输入部分金额 → 订单转 '部分支付'、写 1 行首次支付流水；
+ *       3) 再通过订单详情页「录入回款」两次补齐尾款 → '已支付'。
+ *       期间 sale_items.paid_sessions 按逐行公式 floor(min(1, received/sale_amount)*session_count) 进阶。
  *
  * 角色：FY-TEST-MGR
  * Fixture 顾客：FY-FIX-CLIENT-01（手机 13800138000）
  *
- * SKU：动态发现一张 session_count=2 + 启用 + 非体验 + 非删除的 2 次疗程卡。
- *       目前 5434 fixture 库存在 4 张（520一生一世卡 / 皱纹管家 / 剥离除皱 /
- *       抗衰仪器），按 price ASC 取最便宜的一张以最小化 e2e 金额波动。
+ * SKU：动态发现一张 session_count=2 + 启用 + 非体验 + 非删除的 2 次疗程卡（按 price ASC 取最便宜）。
  *
- * 实付分布（按 SKU 单价动态计算，下面以 ¥52 卡为例的 share）：
- *   first  = round(price / 2)        ← Step 3 下调实付（floor(1/2 * 2) = 1）
- *   repay1 = round(price / 4)        ← 第 1 笔回款（仍处 paid=1，不应进阶）
- *   repay2 = price - first - repay1  ← 第 2 笔回款（凑齐到 price，paid 升至 2）
+ * 金额分布（按 SKU 价格 P / 次数 N=2 表达）：
+ *   first  = round(P / 2)        ← 确认收款输入的部分金额（floor(1/2 * 2) = 1）
+ *   repay1 = round(P / 4)        ← 第 1 笔回款（仍处 paid=1，不应进阶）
+ *   repay2 = P - first - repay1  ← 第 2 笔回款（凑齐到 P，paid 升至 2）
  *
- * 关键不变量（按 SKU 价格 P / 次数 N=2 表达）：
- *   Step 3 提交后:
- *     sale_orders.status            = '部分支付'
- *     sale_orders.received          = first
- *     sale_orders.total_amount      = P
- *     sale_items.received           = first
- *     sale_items.paid_sessions      = floor(min(1, first/P) * 2) = 1
+ * 关键不变量：
+ *   提交后（确认前）:
+ *     sale_orders.status = '待支付'；received = 0；total_amount = P
+ *     sale_order_payments 0 行（开单不记款）
+ *   确认收款（输入 first）后:
+ *     sale_orders.status = '部分支付'；received = first
+ *     sale_items.paid_sessions = floor(min(1, first/P) * 2) = 1
  *     sale_order_payments 存在 1 行 change_type='首次支付', amount=first, status='已支付'
- *   第 1 次回款后:
- *     sale_orders.status            = '部分支付'
- *     sale_orders.received          = first + repay1
- *     sale_items.paid_sessions      = 1（不进阶）
- *   第 2 次回款后:
- *     sale_orders.status            = '已支付'
- *     sale_orders.received          = P
- *     sale_items.paid_sessions      = 2
+ *   第 1 次回款后: status = '部分支付'；received = first + repay1；paid_sessions = 1（不进阶）
+ *   第 2 次回款后: status = '已支付'；received = P；paid_sessions = 2
  */
 
 import { test, expect } from '@playwright/test'
@@ -182,44 +175,30 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await page.getByRole('button', { name: '下一步' }).click()
 
   // ============================================================
-  // Step 3: 选线下支付 + 下调实付金额 → 提交
+  // Step 3: 选线下支付 → 提交（线下开单不收款，逐行实付不可改）
   // ============================================================
   await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({
     timeout: 10000,
   })
-  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-02-step3-default.png` })
+  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-02-step3.png` })
 
   // 默认支付方式是"微信支付"，改成"线下支付"
   const paySelect = page.locator('select').filter({ hasText: /微信|支付宝|线下/ }).first()
   await paySelect.selectOption({ label: '线下支付' })
-
-  // 下调"实付金额"input —— 商品清单行的最右侧 number input（表头列名"实付金额"）
-  // 实付金额 input 在 col-span-2 容器里，是唯一可编辑（非 disabled）的 number input
-  // 选择策略：filter type=number 且非 disabled，min=0；首次只有一行
-  const receivedInput = page.locator('input[type="number"]:not([disabled])').first()
-  await expect(receivedInput).toBeVisible({ timeout: 5000 })
-  await receivedInput.click()
-  await receivedInput.fill('')
-  await receivedInput.fill(FIRST_RECEIVED.toFixed(2))
   await page.waitForTimeout(300)
 
-  // 校验汇总区显示"实付合计"
-  await expect(page.getByText(`实付合计: ¥${FIRST_RECEIVED.toFixed(2)}`)).toBeVisible({ timeout: 5000 })
-  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-03-step3-lowered.png` })
+  // 线下：商品清单逐行"实付金额" number input 应禁用（开单不收款，实收在确认收款环节登记）
+  const receivedInput = page.locator('input[type="number"]').first()
+  await expect(receivedInput).toBeVisible({ timeout: 5000 })
+  await expect(receivedInput).toBeDisabled()
 
   // 提交
   await page.getByRole('button', { name: /提交订单/ }).click()
 
-  // 等 Step 4 出现「已记录首次收款」标题
-  await expect(page.getByRole('heading', { name: '已记录首次收款' })).toBeVisible({ timeout: 20000 })
-  // 文案：本次已收 + 剩余
-  await expect(
-    page.getByText(new RegExp(`本次已收 ¥${FIRST_RECEIVED.toFixed(2)}`)),
-  ).toBeVisible({ timeout: 5000 })
-  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-04-step4.png` })
-
-  // 部分支付分支不应出现"确认收款"按钮、不应出现二维码（无 OrderQRCode 标记）
-  await expect(page.getByRole('button', { name: '确认收款' })).toHaveCount(0)
+  // 线下创建 → 待支付：Step 4 标题"订单创建成功"，并出现确认收款金额输入 + 按钮
+  await expect(page.getByRole('heading', { name: '订单创建成功' })).toBeVisible({ timeout: 20000 })
+  await expect(page.getByRole('button', { name: '确认收款' })).toBeVisible({ timeout: 5000 })
+  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-03-step4-created.png` })
 
   // 提取订单号
   const bodyText = (await page.textContent('body')) || ''
@@ -228,29 +207,72 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   const saleOrderId = m[0]
   console.log(`[链路46] Step3 saleOrderId=${saleOrderId} ✓`)
 
-  // ============================================================
-  // DB 验证：创建后状态
-  // ============================================================
   const verdicts: Array<{ check: string; verdict: 'PASS' | 'FAIL'; actual: string }> = []
 
-  const orderRow = psql(
+  // ============================================================
+  // DB 验证：确认收款前 —— 待支付 + received=0 + 0 条款项流水
+  // ============================================================
+  const createdRow = psql(
     `SELECT status, received, total_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`,
   )
-  const [oStatus, oReceived, oTotal] = orderRow.split('|')
+  const [cStatus, cReceived, cTotal] = createdRow.split('|')
   verdicts.push({
-    check: '创建后 sale_orders.status = 部分支付',
+    check: '创建后（确认前）sale_orders.status = 待支付',
+    verdict: cStatus === '待支付' ? 'PASS' : 'FAIL',
+    actual: cStatus,
+  })
+  verdicts.push({
+    check: '创建后（确认前）sale_orders.received = 0',
+    verdict: Number(cReceived) === 0 ? 'PASS' : 'FAIL',
+    actual: cReceived,
+  })
+  verdicts.push({
+    check: `创建后 sale_orders.total_amount = ${SKU_PRICE.toFixed(2)}`,
+    verdict: Number(cTotal) === SKU_PRICE ? 'PASS' : 'FAIL',
+    actual: cTotal,
+  })
+  const createdPayCount = psql(
+    `SELECT COUNT(*) FROM sale_order_payments WHERE sale_order_id='${saleOrderId}'`,
+  )
+  verdicts.push({
+    check: '创建后（确认前）无任何款项流水（开单不记款）',
+    verdict: Number(createdPayCount) === 0 ? 'PASS' : 'FAIL',
+    actual: createdPayCount,
+  })
+
+  // ============================================================
+  // 确认收款：在 Step 4 输入部分金额 FIRST_RECEIVED → 部分支付
+  // ============================================================
+  const confirmInput = page.locator('input[type="number"]').first()
+  await expect(confirmInput).toBeVisible({ timeout: 5000 })
+  await confirmInput.fill('')
+  await confirmInput.fill(FIRST_RECEIVED.toFixed(2))
+  await page.getByRole('button', { name: '确认收款' }).click()
+  // 部分确认 → 标题切换为「已确认部分收款」
+  await expect(page.getByRole('heading', { name: '已确认部分收款' })).toBeVisible({ timeout: 20000 })
+  await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-04-confirmed-partial.png` })
+
+  // ============================================================
+  // DB 验证：确认收款后 —— 部分支付 + received=FIRST + 1 行首次支付 + paid_sessions 进阶
+  // ============================================================
+  let afterConfirm = ''
+  for (let i = 0; i < 20; i++) {
+    afterConfirm = psql(
+      `SELECT status, received, total_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`,
+    )
+    if (Number(afterConfirm.split('|')[1]) >= FIRST_RECEIVED - 0.005) break
+    await page.waitForTimeout(500)
+  }
+  const [oStatus, oReceived] = afterConfirm.split('|')
+  verdicts.push({
+    check: '确认后 sale_orders.status = 部分支付',
     verdict: oStatus === '部分支付' ? 'PASS' : 'FAIL',
     actual: oStatus,
   })
   verdicts.push({
-    check: `创建后 sale_orders.received = ${FIRST_RECEIVED.toFixed(2)}`,
-    verdict: Number(oReceived) === FIRST_RECEIVED ? 'PASS' : 'FAIL',
+    check: `确认后 sale_orders.received = ${FIRST_RECEIVED.toFixed(2)}`,
+    verdict: Math.abs(Number(oReceived) - FIRST_RECEIVED) < 0.005 ? 'PASS' : 'FAIL',
     actual: oReceived,
-  })
-  verdicts.push({
-    check: `创建后 sale_orders.total_amount = ${SKU_PRICE.toFixed(2)}`,
-    verdict: Number(oTotal) === SKU_PRICE ? 'PASS' : 'FAIL',
-    actual: oTotal,
   })
 
   const itemRow = psql(
@@ -259,39 +281,39 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   )
   const [iReceived, iPaidSessions, iSessionCount, iSaleAmount] = itemRow.split('|')
   verdicts.push({
-    check: `创建后 sale_items.received = ${FIRST_RECEIVED.toFixed(2)}`,
-    verdict: Number(iReceived) === FIRST_RECEIVED ? 'PASS' : 'FAIL',
+    check: `确认后 sale_items.received = ${FIRST_RECEIVED.toFixed(2)}`,
+    verdict: Math.abs(Number(iReceived) - FIRST_RECEIVED) < 0.005 ? 'PASS' : 'FAIL',
     actual: iReceived,
   })
   verdicts.push({
-    check: `创建后 sale_items.session_count = 2`,
+    check: `确认后 sale_items.session_count = 2`,
     verdict: Number(iSessionCount) === 2 ? 'PASS' : 'FAIL',
     actual: iSessionCount,
   })
   verdicts.push({
-    check: `创建后 sale_items.paid_sessions = ${EXPECTED_PAID_SESSIONS_AFTER_FIRST}（floor(${FIRST_RECEIVED}/${SKU_PRICE} × 2)）`,
+    check: `确认后 sale_items.paid_sessions = ${EXPECTED_PAID_SESSIONS_AFTER_FIRST}（floor(${FIRST_RECEIVED}/${SKU_PRICE} × 2)）`,
     verdict: Number(iPaidSessions) === EXPECTED_PAID_SESSIONS_AFTER_FIRST ? 'PASS' : 'FAIL',
     actual: iPaidSessions,
   })
   verdicts.push({
-    check: `创建后 sale_items.sale_amount = ${SKU_PRICE.toFixed(2)}`,
+    check: `确认后 sale_items.sale_amount = ${SKU_PRICE.toFixed(2)}`,
     verdict: Number(iSaleAmount) === SKU_PRICE ? 'PASS' : 'FAIL',
     actual: iSaleAmount,
   })
 
-  // sale_order_payments：仅 1 行首次支付，amount=first，status=已支付
+  // sale_order_payments：1 行首次支付（确认收款写入），amount=first，status=已支付
   const firstPayRow = psql(
     `SELECT change_type, status, amount FROM sale_order_payments ` +
       `WHERE sale_order_id='${saleOrderId}' AND change_type='首次支付'`,
   )
   const [fpType, fpStatus, fpAmount] = firstPayRow.split('|')
   verdicts.push({
-    check: '创建后 sale_order_payments 存在首次支付行（已支付）',
+    check: '确认后 sale_order_payments 存在首次支付行（已支付）',
     verdict: fpType === '首次支付' && fpStatus === '已支付' ? 'PASS' : 'FAIL',
     actual: `change_type=${fpType} status=${fpStatus}`,
   })
   verdicts.push({
-    check: `创建后 首次支付.amount = ${FIRST_RECEIVED.toFixed(2)}`,
+    check: `确认后 首次支付.amount = ${FIRST_RECEIVED.toFixed(2)}`,
     verdict: Number(fpAmount) === FIRST_RECEIVED ? 'PASS' : 'FAIL',
     actual: fpAmount,
   })

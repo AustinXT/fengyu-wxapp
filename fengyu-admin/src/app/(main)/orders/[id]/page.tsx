@@ -39,10 +39,12 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   // 录入回款权限 + 顾客储值卡余额（ticket 2026-04-24 多次回款 PR-B）
   const canRecordPayment = !!(session && hasPermission(session, 'sale_order:record_payment'))
+  // 确认线下收款权限（与 confirmOfflinePayment action 同权限 sale_order:update）
+  const canConfirmOffline = !!(session && hasPermission(session, 'sale_order:update'))
   // 「创建退款」按钮：仅提单权限（所有 admin 角色都有）；审批走 /refunds 流程
   const canRefund = !!(session && hasPermission(session, 'sale_order:refund_create'))
   let cardBalance: number | null = null
-  if (canRecordPayment && order.clientUserId) {
+  if ((canRecordPayment || canConfirmOffline) && order.clientUserId) {
     const [row] = await db
       .select({ balance: prepaidCards.balance })
       .from(prepaidCards)
@@ -58,6 +60,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       logs={logs}
       payments={payments}
       canRecordPayment={canRecordPayment}
+      canConfirmOffline={canConfirmOffline}
       canRefund={canRefund}
       cardBalance={cardBalance}
       canListAllocations={canListAllocations}

@@ -508,40 +508,64 @@ export const getOrderPayments = withAnyPermission(
   },
 )
 
-/** C4: 确认线下收款 — WHERE status = '待支付' AND payment_method = '线下' + scope 保障幂等 */
+/**
+ * C4: 确认线下收款 — 仅匹配 status='待支付' AND payment_method='线下' + scope。
+ *
+ * 支持部分确认（confirmAmount，对齐员工端 staffApi confirmOffline）：
+ *   - confirmAmount 缺省 = 剩余应付现金（payable_amount - received）；可下调做部分收款。
+ *   - 写 1 行现金流水（首次/回款）+ 扣全额预选储值卡（写'储值卡抵扣'行）。
+ *   - 重算 received 后：received ≥ total → '已支付'，否则 '部分支付'，剩余走「录入回款」补齐。
+ * 并发：FOR UPDATE 锁原单 + 终态 UPDATE 仍带 WHERE status='待支付' 守卫 + 扣卡幂等键 card-deduct-${id}。
+ * 因创建时不再写款项流水，首次确认恒写'首次支付'；双击/并发再次进入会因 status≠待支付 被拦下。
+ */
 export const confirmOfflinePayment = withPermission(
   'sale_order:update',
-  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
-  // 获取上下文用于日志
-  const [orderCtx] = await db
-    .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
-    .from(saleOrders)
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
-    .limit(1)
-
-  // 事务：确认收款 + 设置到期日，原子提交（AC-13）
+  async (
+    session,
+    saleOrderId: string,
+    confirmAmount?: number,
+  ): Promise<{ success: boolean; message: string; status?: OrderStatus; received?: string }> => {
+  let txResult:
+    | { matched: false }
+    | { matched: true; targetStatus: OrderStatus; newReceived: number; customerName: string | null; totalAmount: string | null }
+    | null = null
   try {
-    const txResult = await db.transaction(async (tx) => {
-      const result = await tx
-        .update(saleOrders)
-        .set({
-          status: '已支付',
-          paidAt: new Date(),
-          offlineConfirmedBy: session.employeeId,
-          offlineConfirmedAt: new Date(),
-        })
-        .where(and(
-          eq(saleOrders.saleOrderId, saleOrderId),
-          eq(saleOrders.status, '待支付'),
-          eq(saleOrders.paymentMethod, '线下'),
-          scopeCondition(session, saleOrders.storeId),
-        ))
+    txResult = await db.transaction(async (tx) => {
+      // 锁原单 + 校验状态/支付方式/scope
+      const lockRes = await tx.execute(sql`
+        SELECT status, payment_method, store_id, total_amount, payable_amount,
+               received, prepaid_card_amount, client_user_id, customer_name
+        FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+      `)
+      const lockedRows = lockRes as unknown as any[]
+      if (lockedRows.length === 0) return { matched: false as const }
+      const locked = lockedRows[0]
+      if (locked.status !== '待支付' || locked.payment_method !== '线下') return { matched: false as const }
+      if (!isInScope(session, locked.store_id)) return { matched: false as const }
 
-      if ((result as any).count === 0) {
-        return { matched: false }
+      const orderTotal = Number(locked.total_amount || 0)
+      const orderPrepaid = Number(locked.prepaid_card_amount || 0)
+      const orderReceived = Number(locked.received || 0)
+      const orderPayable = locked.payable_amount != null
+        ? Number(locked.payable_amount)
+        : Math.round((orderTotal - orderPrepaid) * 100) / 100
+      const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
+
+      // 本次确认现金金额：缺省 = 剩余应付现金；传入则校验 0 ≤ v ≤ remainingPayable
+      let cashAmount: number
+      if (confirmAmount === undefined || confirmAmount === null) {
+        cashAmount = remainingPayable
+      } else {
+        cashAmount = Math.round(Number(confirmAmount) * 100) / 100
+        if (!Number.isFinite(cashAmount) || cashAmount < 0) {
+          throw new ApiError('INVALID_PARAMS', '本次确认金额必须为非负数')
+        }
+        if (cashAmount > remainingPayable + 0.005) {
+          throw new ApiError('INVALID_PARAMS', '本次确认金额不能超过剩余应付金额')
+        }
       }
 
-      // 设置单品到期日（支付成功后 1 年）
+      // 设置单品到期日（确认收款即视为卡生效，1 年有效期；部分确认也设置，避免后续补款无触发点）
       await tx.execute(sql`
         UPDATE sale_items
         SET expire_date = (NOW() + INTERVAL '1 year')::date,
@@ -551,27 +575,16 @@ export const confirmOfflinePayment = withPermission(
       `)
 
       // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
-      // admin createOrder 接受 prepaidCardAmount 写入 sale_orders 后，
-      // 此处事务内做实际扣卡：锁原单读 prepaid_card_amount + client_user_id → 锁余额 → 扣减 →
-      // 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
-      // 与 staff confirmOffline (routes/order.js L958-1004) 字面对齐
-      // 必须放在 applyRechargeOnOrderPaid 之前（先扣抵扣，再处理充值入账）
-      const lockRes = await tx.execute(sql`
-        SELECT prepaid_card_amount, client_user_id FROM sale_orders
-        WHERE sale_order_id = ${saleOrderId} FOR UPDATE
-      `)
-      const lockedRows = lockRes as unknown as any[]
-      const prepaidAmount = Number(lockedRows[0]?.prepaid_card_amount || 0)
-      const clientUserId = lockedRows[0]?.client_user_id as string | null
-      if (prepaidAmount > 0 && clientUserId) {
-        // 幂等：已扣过则跳过整段（用 card_transactions.ref_order_id + type='扣款' 判定）
+      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
+      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
+      const clientUserId = locked.client_user_id as string | null
+      if (orderPrepaid > 0 && clientUserId) {
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions
           WHERE ref_order_id = ${saleOrderId} AND type = '扣款' LIMIT 1
         `)
         const dupRows = dupRes as unknown as any[]
         if (dupRows.length === 0) {
-          // 锁余额
           const balRes = await tx.execute(sql`
             SELECT card_id, balance FROM prepaid_cards
             WHERE user_id = ${clientUserId} FOR UPDATE
@@ -581,42 +594,57 @@ export const confirmOfflinePayment = withPermission(
             throw new Error('INSUFFICIENT_BALANCE:NO_CARD: 顾客无储值卡账户')
           }
           const currentBalance = Number(balRows[0].balance)
-          if (currentBalance + 0.001 < prepaidAmount) {
-            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${prepaidAmount}，实际 ${currentBalance}`)
+          if (currentBalance + 0.001 < orderPrepaid) {
+            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${orderPrepaid}，实际 ${currentBalance}`)
           }
           const cardId = balRows[0].card_id as string
-          // 扣减 balance
           await tx.execute(sql`
             UPDATE prepaid_cards
-            SET balance = balance - ${prepaidAmount}::numeric,
+            SET balance = balance - ${orderPrepaid}::numeric,
                 updated_at = NOW()
             WHERE card_id = ${cardId}
           `)
-          // 写 card_transactions（带幂等 external_ref）
           await tx.execute(sql`
             INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-            VALUES (${cardId}, '扣款', ${-prepaidAmount}::numeric, ${saleOrderId}, ${`card-deduct-${saleOrderId}`}, NOW())
+            VALUES (${cardId}, '扣款', ${-orderPrepaid}::numeric, ${saleOrderId}, ${`card-deduct-${saleOrderId}`}, NOW())
             ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
           `)
-          // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
           await tx.execute(sql`
             INSERT INTO sale_order_payments (
               sale_order_id, change_type, payment_method, amount, status,
               paid_at, source_end, operator_employee_id, note, created_at
             ) VALUES (
-              ${saleOrderId}, '储值卡抵扣', '储值卡', ${prepaidAmount}::numeric, '已支付',
+              ${saleOrderId}, '储值卡抵扣', '储值卡', ${orderPrepaid}::numeric, '已支付',
               NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款-储值卡抵扣', NOW()
             )
           `)
         }
       }
 
-      // 重算 received / prepaid_card_amount（与 staff confirmOffline routes/order.js L2005-2030 字面对齐）：
+      // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
+      // change_type：已存在非储值卡 payments → '回款'，否则 '首次支付'（正常路径恒为首次支付）。
+      if (cashAmount > 0) {
+        const existRes = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
+            AND change_type IN ('首次支付','回款','退款') LIMIT 1
+        `)
+        const existRows = existRes as unknown as any[]
+        const cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
+        await tx.execute(sql`
+          INSERT INTO sale_order_payments (
+            sale_order_id, change_type, payment_method, amount, status,
+            paid_at, source_end, operator_employee_id, note, created_at
+          ) VALUES (
+            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
+            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
+          )
+        `)
+      }
+
+      // 重算 received / prepaid_card_amount（跨端字面对齐 staff confirmOffline / recordPayment）：
       //   received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
       //   prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
-      // admin createOrder 时已写入现金/线下部分到 received（L1383）；本步把本次新增的 '储值卡抵扣'
-      // payments 行合并进 received，恢复"received 含全部已支付金额"的跨端不变量，让 paid_sessions
-      // 重算公式 settled = received - refunded 能算到 session_count 上限。
       const sumRes = await tx.execute(sql`
         SELECT
           COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
@@ -629,44 +657,50 @@ export const confirmOfflinePayment = withPermission(
       const sumRow = (sumRes as unknown as any[])[0]
       const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
-      await tx.execute(sql`
+
+      // received（含储值卡抵扣）≥ total → '已支付'，否则 '部分支付'
+      const targetStatus: OrderStatus = newReceived + 0.005 >= orderTotal ? '已支付' : '部分支付'
+      const paidAtIso = targetStatus === '已支付' ? new Date().toISOString() : null
+      const updRes = await tx.execute(sql`
         UPDATE sale_orders
-        SET received = ${newReceived.toFixed(2)}::numeric,
+        SET status = ${targetStatus}::order_status,
+            received = ${newReceived.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
+            paid_at = ${paidAtIso},
+            offline_confirmed_by = ${session.employeeId},
+            offline_confirmed_at = NOW(),
             updated_at = NOW()
-        WHERE sale_order_id = ${saleOrderId}
+        WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
       `)
-
-      // 充值卡入账（若订单含虚拟 SKU）：UPSERT prepaid_cards + 记流水
-      // 与 fengyu-client payNotify 的充值入账逻辑完全同义，幂等由 ref_order_id 去重保障
-      await applyRechargeOnOrderPaid(tx, saleOrderId)
-
-      // 积分发放（修复 audit-15 P0-15-01：admin confirmOfflinePayment 触发点缺失）
-      // 与 staff confirmOffline / payNotify / client confirmPrepaidFull 三端对齐
-      await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
-
-      // paid_sessions 重算：received 已含储值卡抵扣，settled = received - refunded 即可
-      await recalcPaidSessionsForOrder(tx, saleOrderId)
-
-      // customer_type 跃迁（仅在订单有顾客归属时触发）
-      // 与 recordPayment / staff / payNotify 三端对齐
-      const [orderUser] = await tx
-        .select({ clientUserId: saleOrders.clientUserId })
-        .from(saleOrders)
-        .where(eq(saleOrders.saleOrderId, saleOrderId))
-        .limit(1)
-      if (orderUser?.clientUserId) {
-        await recalcCustomerType(tx, orderUser.clientUserId)
+      if ((updRes as any).rowCount === 0) {
+        // 并发：状态在本事务可见性内已变更
+        return { matched: false as const }
       }
 
-      return { matched: true }
-    })
+      // 充值卡入账 + 客户分类跃迁：仅订单结清（已支付）时触发
+      if (targetStatus === '已支付') {
+        await applyRechargeOnOrderPaid(tx, saleOrderId)
+      }
+      // 积分发放 + paid_sessions 重算：始终执行（净额/幂等；部分支付也要按比例推进 paid_sessions）
+      await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
+      if (targetStatus === '已支付' && clientUserId) {
+        await recalcCustomerType(tx, clientUserId)
+      }
 
-    if (!txResult.matched) {
-      return { success: false, message: '订单状态已变更，无法确认收款' }
-    }
+      return {
+        matched: true as const,
+        targetStatus,
+        newReceived,
+        customerName: locked.customer_name ?? null,
+        totalAmount: locked.total_amount ?? null,
+      }
+    })
   } catch (err: any) {
-    // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）— 不再统一吞为"请稍后重试"
+    if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
+      return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
+    }
+    // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
     const msg: string = err?.message || ''
     if (msg.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = msg.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
@@ -675,12 +709,22 @@ export const confirmOfflinePayment = withPermission(
     return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
-  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待支付', '已支付', {
-    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  if (!txResult || !txResult.matched) {
+    return { success: false, message: '订单状态已变更，无法确认收款' }
+  }
+
+  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待支付', txResult.targetStatus, {
+    customerName: txResult.customerName, totalAmount: txResult.totalAmount,
   })
 
   revalidatePath('/orders')
-  return { success: true, message: '确认收款成功' }
+  revalidatePath(`/orders/${saleOrderId}`)
+  return {
+    success: true,
+    message: txResult.targetStatus === '已支付' ? '确认收款成功' : '已确认部分收款',
+    status: txResult.targetStatus,
+    received: txResult.newReceived.toFixed(2),
+  }
   },
 )
 
@@ -1084,15 +1128,16 @@ export const createOrder = withPermission(
   }
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
 
-  // 本次收款校验（2026-05-20 partial-payment-online ticket — 放开线上调低）：
-  // - 线下：未传时默认 = payable_amount（全额）；传了按决策树走。
+  // 本次收款校验：
+  // - 线下：开单时一律不记款，effectiveReceived 恒为 0，**忽略入参 receivedAmount**
+  //   （实际款项在「确认收款」时才写流水 + 扣储值卡）。这样既统一了"先付款后转态"不变量，
+  //   也避免前端传未扣卡的应付合计在有储值卡抵扣时误触 receivedAmount > payable 的超额报错。
   // - 微信/支付宝：传 0 < v < payable → 线上首付（写 first_payment_amount，QR 收限额）；
-  //   v = payable 或 undefined → 全额 QR（保持既有行为）；v = 0 显式表示挂账等扫码（少见，与 undefined 等价处理）。
+  //   v = payable 或 undefined → 全额 QR（保持既有行为）；v = 0 显式表示挂账等扫码（与 undefined 等价处理）。
   const isOnlinePay = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
-  const hasReceivedAmountInput = data.receivedAmount !== undefined
-  const receivedAmount = hasReceivedAmountInput
-    ? Math.round(Number(data.receivedAmount) * 100) / 100
-    : (isOnlinePay ? 0 : payableAmount)
+  const receivedAmount = isOnlinePay
+    ? (data.receivedAmount !== undefined ? Math.round(Number(data.receivedAmount) * 100) / 100 : 0)
+    : 0
   if (!Number.isFinite(receivedAmount) || receivedAmount < 0) {
     return { success: false, message: '本次收款金额无效' }
   }
@@ -1107,29 +1152,15 @@ export const createOrder = withPermission(
       ? Math.min(receivedAmount, payableAmount)
       : null
 
-  // 决策树（ticket §2.1，三端对齐，含线上首付分支）：
+  // 决策树（三端对齐"先付款、后转态记账"不变量）：
   //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
-  //   - 线下：按 paid+prepaid vs total：
-  //       0 → '待支付'（挂账）
-  //       0 < paid+prepaid < total → '部分支付'
-  //       paid+prepaid = total → '待支付'（线下走 confirmOffline 入账）
-  let initialStatus: typeof saleOrders.$inferInsert['status']
-  const settledAmount = Math.round((receivedAmount + prepaidCardAmount) * 100) / 100
-  if (isOnlinePay) {
-    initialStatus = '待支付'
-  } else if (settledAmount === 0) {
-    initialStatus = '待支付'
-  } else if (settledAmount + 0.005 < totalAmount) {
-    initialStatus = '部分支付'
-  } else {
-    initialStatus = '待支付'
-  }
+  //   - 线下：'待支付'（开单不记款；现金 + 储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
+  // createOrder 不再产出 '部分支付'/'已支付'，款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
+  const initialStatus: typeof saleOrders.$inferInsert['status'] = '待支付'
 
-  // received 双写（应用层保障不变量；2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP）
-  // 首次支付 + 线下直接计入 received（status='已支付'/'待支付'/'部分支付'）；
-  // 线上（微信/支付宝）在 create 时 received=0，payNotify 回调时累加；
-  // 待支付（挂账）received = 0；此处统一按 receivedAmount（线下场景）落盘。
-  const paidAmountSnapshot = isOnlinePay ? 0 : receivedAmount
+  // received 创建时一律 0：线上等 payNotify 回调累加，线下等 confirmOfflinePayment 入账。
+  // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
+  const paidAmountSnapshot = 0
 
   // 计算 document_type（售前/售后快照）
   let documentType: '售前' | '售后' = '售前'
@@ -1242,31 +1273,13 @@ export const createOrder = withPermission(
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
-        paidAt: paidAmountSnapshot > 0 ? new Date() : null,
+        paidAt: null,
       })
 
-      // ── 款项流水写入（ticket 2026-04-24 PR-3，与 staff order.create 对齐） ────
-      // 规则：
-      //   - 线下/储值卡/无 + receivedAmount > 0 → 写 1 行 payments change_type='首次支付' status='已支付'
-      //     （线下现场现金部分立即落账；订单 status 保持 '待支付' 或 '部分支付'，由 confirmOffline 翻终态）
-      //   - 线上（微信/支付宝）：不写 payments，由 payNotify 回调写入
-      //   - 储值卡抵扣：prepaid_card_amount 仅写入 sale_orders 作为"预选"金额；
-      //     扣卡余额 + 写 '储值卡抵扣' payments 行统一由 staff 端 confirmOffline 执行
-      //     （admin 开单的订单由店长在小程序 confirmOffline 时扣卡）
-      if (!isOnlinePay && receivedAmount > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId: id,
-          changeType: '首次支付',
-          amount: receivedAmount.toFixed(2),
-          paymentMethod: data.paymentMethod,
-          externalTxnId: null,
-          status: '已支付',
-          sourceEnd: 'admin',
-          paidAt: new Date(),
-          operatorEmployeeId: session.employeeId,
-          note: '管理后台开单首次收款',
-        })
-      }
+      // 开单时不写款项流水（统一"先付款、后记账"不变量）：
+      //   - 线上（微信/支付宝）：由 payNotify 回调写入并翻态
+      //   - 线下：由 confirmOfflinePayment「确认收款」写入现金/储值卡抵扣流水并翻态
+      //   - prepaid_card_amount 仅作为订单上的"预选"金额，确认收款时才扣卡 + 写 '储值卡抵扣' 行
 
       // 原子核销优惠券：WHERE coupon_id = X AND status = '未使用' 防止重用
       // 必须在 insert sale_orders 之后，因为 used_sale_order_id 有外键约束

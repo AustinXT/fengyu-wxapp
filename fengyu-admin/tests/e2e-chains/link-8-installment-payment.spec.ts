@@ -308,14 +308,21 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
     // 更新 received + status，payable_amount 保持不变（系统语义：payable = total - prepaid）
     dbQuery(`UPDATE sale_orders SET received=${initialPaid}, status='部分支付' WHERE sale_order_id='${saleOrderId}'`)
 
-    // 更新 sale_order_payments 中第一条记录的金额（若有）
+    // 同步 sale_order_payments：有则更金额，无则补一行首次支付。
+    // 线下"开单不记款"改造后（2026-05-21），createOrder 不再写款项流水，
+    // 故此处需 INSERT 首次支付，保证 received == Σ(已支付 payments) 不变量成立。
     const existingPayment = dbQuery(`SELECT id FROM sale_order_payments WHERE sale_order_id='${saleOrderId}' LIMIT 1`)
-    if (existingPayment) {
+    if (existingPayment.trim()) {
       const payId = existingPayment.trim()
-      if (payId) {
-        dbQuery(`UPDATE sale_order_payments SET amount=${initialPaid} WHERE id=${payId}`)
-        console.log(`[链路8] 降级：更新 payment 流水金额为 ${initialPaid}`)
-      }
+      dbQuery(`UPDATE sale_order_payments SET amount=${initialPaid} WHERE id=${payId}`)
+      console.log(`[链路8] 降级：更新 payment 流水金额为 ${initialPaid}`)
+    } else {
+      dbQuery(
+        `INSERT INTO sale_order_payments ` +
+          `(sale_order_id, change_type, amount, payment_method, status, source_end, paid_at, created_at) ` +
+          `VALUES ('${saleOrderId}', '首次支付', ${initialPaid}, '线下', '已支付', 'admin', NOW(), NOW())`,
+      )
+      console.log(`[链路8] 降级：补写首次支付流水 ¥${initialPaid}`)
     }
 
     orderRow = dbQuery(`SELECT status, total_amount, received, payable_amount, prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)

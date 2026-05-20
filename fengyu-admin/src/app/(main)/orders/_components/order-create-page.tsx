@@ -189,6 +189,10 @@ export default function OrderCreatePageClient({
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
+  // 线下「确认收款」本次确认金额（受控，仅普通销售/内部单可下调做部分确认；充值/转换单走全额）
+  const [confirmAmountInput, setConfirmAmountInput] = useState<string>("")
+  // 确认收款结果状态（驱动 Step 4 文案：部分支付 vs 已支付）
+  const [confirmResultStatus, setConfirmResultStatus] = useState<'部分支付' | '已支付' | null>(null)
   const [availableCoupons, setAvailableCoupons] = useState<AvailableCoupon[]>([])
   const [selectedCouponId, setSelectedCouponId] = useState<string>("")
   const [loadingCoupons, setLoadingCoupons] = useState(false)
@@ -204,8 +208,6 @@ export default function OrderCreatePageClient({
   const [cardAmountInput, setCardAmountInput] = useState<string>("")
   // 创建订单返回的 status，用于 Step 4 文案分支（部分支付 / 待支付 / 已支付）
   const [createdStatus, setCreatedStatus] = useState<'待支付' | '部分支付' | '已支付' | null>(null)
-  // 本次实际收款金额（= totalReceived，逐行 received 之和），用于 Step 4 提示
-  const [createdReceived, setCreatedReceived] = useState<number>(0)
   // 本次应付合计快照（= totalSaleAmount），用于 Step 4 计算剩余
   const [createdPayable, setCreatedPayable] = useState<number>(0)
   // 充值卡子流程（productKindChoice='充值卡'）：档位选择 + 创建结果
@@ -984,11 +986,19 @@ export default function OrderCreatePageClient({
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
-                <Select className="mt-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                <Select className="mt-1" value={paymentMethod} onChange={(e) => {
+                  const v = e.target.value
+                  setPaymentMethod(v)
+                  // 切到线下：开单不收款，逐行"实付金额"不可改，清掉已设的实付覆盖避免汇总歧义
+                  if (v === '线下') setPriceOverrides({})
+                }}>
                   <option value="微信">微信支付</option>
                   <option value="支付宝">支付宝</option>
                   <option value="线下">线下支付</option>
                 </Select>
+                {paymentMethod === '线下' && (
+                  <p className="text-xs text-[#999999] mt-1">开单不收款，提交后在「确认收款」环节登记实收</p>
+                )}
               </div>
               <div>
                 <label className="text-sm text-[#999999]">门店</label>
@@ -1073,8 +1083,10 @@ export default function OrderCreatePageClient({
                   {cart.map((item, idx) => {
                     const a = perItemAmounts[idx]
                     if (!a) return null
-                    const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
-                    const hasReceivedOverride = !suppressOverride && override?.received != null && override.received !== ''
+                    // 线下：开单不收款，逐行实付不可改（实收在「确认收款」登记）；内部单同样锁定
+                    const lockReceived = suppressOverride || paymentMethod === '线下'
+                    const override = lockReceived ? undefined : priceOverrides[item.sku.skuId]
+                    const hasReceivedOverride = !lockReceived && override?.received != null && override.received !== ''
 
                     return (
                       <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
@@ -1106,11 +1118,11 @@ export default function OrderCreatePageClient({
                             min="0"
                             max={a.saleAmount}
                             step="0.01"
-                            disabled={suppressOverride}
+                            disabled={lockReceived}
                             className="h-8 text-sm text-right"
                             value={hasReceivedOverride ? (override!.received as string) : a.saleAmount.toFixed(2)}
                             onChange={(e) => {
-                              if (suppressOverride) return
+                              if (lockReceived) return
                               setPriceOverrides(prev => ({
                                 ...prev,
                                 [item.sku.skuId]: {
@@ -1301,13 +1313,10 @@ export default function OrderCreatePageClient({
                     }
                   }
                 }
-                // 本次收款金额 = 逐行 received 之和（perItemAmounts → totalReceived）
-                // - 内部单：suppressOverride=true，所有 received 默认 = saleAmount，totalReceived = totalSaleAmount（全额）
-                // - 销售单非套餐：admin 通过逐行 received Input 可向下调（覆盖默认 = saleAmount）
-                // - 销售单 + 组合套餐：admin 同样可逐行向下调
-                // - 线上支付（微信/支付宝）+ totalReceived < totalSaleAmount → 后端落 first_payment_amount，QR 收限额
-                // - 线下 + totalReceived < totalSaleAmount → 后端落 部分支付（写首次支付 payments 行）
-                const receivedAmountArg = totalReceived
+                // 本次收款金额：
+                // - 线上（微信/支付宝）：= 逐行 received 之和（totalReceived）；< 全额时后端落 first_payment_amount，QR 收限额
+                // - 线下：传 0 —— 开单不收款，实收金额在 Step 4「确认收款」环节登记（后端对线下亦强制忽略此值）
+                const receivedAmountArg = paymentMethod === '线下' ? 0 : totalReceived
 
                 setSubmitting(true)
                 try {
@@ -1348,8 +1357,10 @@ export default function OrderCreatePageClient({
                     toast.success(res.message)
                     setCreatedOrderId(res.saleOrderId || "")
                     setCreatedStatus(res.status ?? null)
-                    setCreatedReceived(totalReceived)
                     setCreatedPayable(totalSaleAmount)
+                    // 线下：预填确认金额 = 应付合计（顾客若现场只付一部分，可在确认收款时下调）
+                    setConfirmAmountInput(paymentMethod === '线下' ? totalSaleAmount.toFixed(2) : "")
+                    setConfirmResultStatus(null)
                     setConversionResult(null)
                     setStep(3)
                   } else {
@@ -1377,14 +1388,12 @@ export default function OrderCreatePageClient({
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">
               {paymentConfirmed
-                ? '收款已确认'
+                ? (confirmResultStatus === '部分支付' ? '已确认部分收款' : '收款已确认')
                 : rechargeResult
                 ? '充值订单已创建'
                 : conversionResult
                   ? '转换单已创建'
-                  : createdStatus === '部分支付'
-                    ? '已记录首次收款'
-                    : '订单创建成功'}
+                  : '订单创建成功'}
             </h2>
             {createdOrderId && (
               <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
@@ -1427,22 +1436,14 @@ export default function OrderCreatePageClient({
                   </p>
                 )}
               </div>
-            ) : createdStatus === '部分支付' ? (
-              // 部分支付分支：显示已收 / 剩余 + 引导跳订单详情录入回款
-              <div className="text-sm space-y-1">
-                <p className="text-[#666666]">
-                  本次已收 ¥{createdReceived.toFixed(2)} ｜ 剩余 ¥{Math.max(0, createdPayable - createdReceived).toFixed(2)} 待收
-                </p>
-                <p className="text-[#D4820A]">
-                  请点击「查看订单」继续录入回款（或在客户端/员工端继续支付）
-                </p>
-              </div>
             ) : (
               <p className="text-sm text-[#999999]">
                 {paymentConfirmed
-                  ? '订单已确认收款，状态已更新为已支付'
+                  ? (confirmResultStatus === '部分支付'
+                      ? `已确认收款 ¥${Number(confirmAmountInput || 0).toFixed(2)}，剩余 ¥${Math.max(0, createdPayable - Number(confirmAmountInput || 0)).toFixed(2)} 待收，请到订单详情「录入回款」补齐`
+                      : '订单已确认收款，状态已更新为已支付')
                   : paymentMethod === '线下'
-                    ? '线下支付订单，可直接确认收款'
+                    ? '线下支付订单：开单时未收款，请在下方核对实收金额后点击「确认收款」'
                     : '请将二维码展示给顾客，扫码进入小程序完成支付'}
               </p>
             )}
@@ -1454,21 +1455,47 @@ export default function OrderCreatePageClient({
               <OrderQRCode orderId={createdOrderId} />
             )}
 
-            {/* 线下支付：确认收款按钮（待支付状态显示；充值单线下亦走 confirmOffline 触发入账；部分支付订单已记录首次收款不再走 confirmOffline）*/}
+            {/* 线下支付：确认收款（待支付状态显示）。
+                普通销售/内部单可下调本次确认金额做部分确认；充值单 / 转换单走全额确认（all-or-nothing）。*/}
             {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
-              && createdStatus !== '部分支付'
               && (!conversionResult || conversionResult.priceDiff > 0) && (
-              <div className="pt-2">
+              <div className="pt-2 space-y-2 max-w-xs mx-auto">
+                {!rechargeResult && !conversionResult && (
+                  <>
+                    <label className="block text-sm text-[#999999] text-left">本次确认收款金额（¥）</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className="text-right"
+                      value={confirmAmountInput}
+                      onChange={(e) => setConfirmAmountInput(e.target.value)}
+                    />
+                    <p className="text-xs text-[#999999] text-left">
+                      默认全额；可下调做部分确认，剩余在订单详情「录入回款」补齐
+                    </p>
+                  </>
+                )}
                 <Button
                   loading={confirming}
-                  className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white"
+                  className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white w-full"
                   onClick={async () => {
+                    // 普通销售/内部单：传本次确认金额（空 → 全额）；充值/转换单：全额（undefined）
+                    const isPlainSale = !rechargeResult && !conversionResult
+                    const amt = isPlainSale && confirmAmountInput.trim() !== ''
+                      ? Math.round(Number(confirmAmountInput) * 100) / 100
+                      : undefined
+                    if (amt !== undefined && (!Number.isFinite(amt) || amt < 0)) {
+                      toast.error('确认金额无效')
+                      return
+                    }
                     setConfirming(true)
                     try {
-                      const res = await confirmOfflinePayment(createdOrderId)
+                      const res = await confirmOfflinePayment(createdOrderId, amt)
                       if (res.success) {
-                        toast.success('收款确认成功')
+                        toast.success(res.message)
                         setPaymentConfirmed(true)
+                        setConfirmResultStatus(res.status === '部分支付' ? '部分支付' : '已支付')
                       } else {
                         toast.error(res.message)
                       }
@@ -1496,7 +1523,8 @@ export default function OrderCreatePageClient({
               )}
               <Button onClick={() => {
                 setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
-                setCreatedStatus(null); setCreatedReceived(0); setCreatedPayable(0)
+                setCreatedStatus(null); setCreatedPayable(0)
+                setConfirmAmountInput(""); setConfirmResultStatus(null)
                 setProductKindChoice('普通商品')
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined })
                 setHeldCards([])
