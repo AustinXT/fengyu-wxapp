@@ -13,17 +13,12 @@
 import { db } from '@/db'
 import { systemConfigs } from '@db/system-config'
 import { inArray } from 'drizzle-orm'
+import { matchTier, type RechargeTier, type RechargeConfig } from './recharge-tier'
 
-export interface RechargeTier {
-  faceValue: number
-  payAmount: number
-}
-
-export interface RechargeConfig {
-  tiers: RechargeTier[]
-  minAmount: number
-  maxAmount: number
-}
+// 类型 + matchTier 纯逻辑迁至 ./recharge-tier（客户端组件可安全导入，不拖 DB 驱动）；
+// 这里 re-export 以保持现有 `@/lib/recharge` 导入路径不变。
+export { matchTier }
+export type { RechargeTier, RechargeConfig }
 
 /**
  * 从 system_configs 读取充值档位配置
@@ -62,38 +57,4 @@ export async function loadRechargeConfig(): Promise<RechargeConfig> {
     throw new Error('INVALID_STATE: recharge.minAmount/maxAmount 配置无效')
   }
   return { tiers, minAmount, maxAmount }
-}
-
-/**
- * 按面值匹配档位实付（精确命中或按最大 ≤ amount 的档位折扣比换算）
- *
- * @throws Error 前缀 INVALID_PARAMS
- */
-export function matchTier(amount: number, cfg: RechargeConfig): { discount: number; payAmount: number } {
-  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
-    throw new Error('INVALID_PARAMS: 充值金额格式错误')
-  }
-  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
-  if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
-    throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
-  }
-  if (amount < cfg.minAmount) {
-    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${cfg.minAmount}`)
-  }
-  if (amount > cfg.maxAmount) {
-    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${cfg.maxAmount}`)
-  }
-  const hit = cfg.tiers.find(t => t.faceValue === amount)
-  if (hit) {
-    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1
-    return { discount, payAmount: hit.payAmount }
-  }
-  let baseTier = cfg.tiers[0]
-  for (const t of cfg.tiers) {
-    if (amount >= t.faceValue) baseTier = t
-  }
-  const ratio = baseTier.payAmount / baseTier.faceValue
-  const payAmount = Math.round(amount * ratio * 100) / 100
-  const discount = Math.round(ratio * 100) / 100
-  return { discount, payAmount }
 }

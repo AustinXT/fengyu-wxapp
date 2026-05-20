@@ -27,6 +27,9 @@ const REPO_ROOT = path.resolve(__dirname, '../../../..')
 
 const FILES = {
   adminRecharge: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge.ts'),
+  // 2026-05-21：matchTier + 类型纯逻辑拆到 recharge-tier.ts（客户端组件可安全导入，不拖 DB 驱动）；
+  // recharge.ts 仅保留 loadRechargeConfig 并 re-export。matchTier 字面断言改读此文件。
+  adminRechargeTier: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge-tier.ts'),
   staffRecharge: path.resolve(REPO_ROOT, 'fengyu-staff/cloudfunctions/staffApi/utils/recharge.js'),
   clientCard: path.resolve(REPO_ROOT, 'fengyu-client/cloudfunctions/clientApi/routes/card.js'),
 }
@@ -65,8 +68,8 @@ describe('跨端 recharge config key 引用守护', () => {
 })
 
 describe('跨端 matchTier 错误信息字面一致性', () => {
-  test.each(EXPECTED_ERROR_MESSAGES)('admin lib/recharge.ts 含 "%s"', (msg) => {
-    expect(readFile(FILES.adminRecharge)).toContain(msg)
+  test.each(EXPECTED_ERROR_MESSAGES)('admin lib/recharge-tier.ts 含 "%s"', (msg) => {
+    expect(readFile(FILES.adminRechargeTier)).toContain(msg)
   })
 
   test.each(EXPECTED_ERROR_MESSAGES)('staff utils/recharge.js 含 "%s"', (msg) => {

@@ -171,3 +171,25 @@ export const recordPaymentInputSchema = z.object({
   { message: '线下回款必须填写外部交易号（银行回执号/流水号）', path: ['externalTxnId'] },
 )
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
+
+// ─── 充值卡档位配置（系统配置 → 充值卡配置 Tab） ───
+export const rechargeTierSchema = z.object({
+  faceValue: z.number().positive('面额必须 > 0'),
+  payAmount: z.number().min(0, '实付金额不能为负'),
+}).refine((t) => t.payAmount <= t.faceValue + 1e-6, {
+  message: '实付金额不能高于面额',
+  path: ['payAmount'],
+})
+
+export const rechargeCardConfigSchema = z.object({
+  tiers: z.array(rechargeTierSchema).min(1, '至少配置一个充值档位'),
+  minAmount: z.number().positive('最低充值金额必须 > 0'),
+  maxAmount: z.number().positive('单次上限必须 > 0'),
+}).refine((c) => c.maxAmount >= c.minAmount, {
+  message: '单次上限不能低于最低充值金额',
+  path: ['maxAmount'],
+}).refine((c) => new Set(c.tiers.map((t) => t.faceValue)).size === c.tiers.length, {
+  message: '充值档位面额不能重复',
+  path: ['tiers'],
+})
+export type RechargeCardConfigInput = z.infer<typeof rechargeCardConfigSchema>

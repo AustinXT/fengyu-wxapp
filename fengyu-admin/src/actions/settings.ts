@@ -11,8 +11,10 @@ import {
   DEFAULT_SHARE_GIFT_CONFIG,
   normalizeShareGiftConfig,
 } from '@/lib/share-gift-config'
+import { rechargeCardConfigSchema, type RechargeCardConfigInput } from '@/lib/schemas'
 
 export type { ShareGiftConfig }
+export type { RechargeCardConfigInput }
 
 /**
  * 单个等级的权益配置
@@ -423,6 +425,122 @@ export const saveMemberBenefits = withPermission(
     return { success: true, message: '会员权益保存成功' }
   } catch (err) {
     console.error('Save member benefits error:', err)
+    return { success: false, message: '保存失败，请稍后重试' }
+  }
+  },
+)
+
+// ─── 充值卡档位配置（系统配置 → 充值卡配置 Tab；存 system_configs.recharge.*） ───
+
+const DEFAULT_RECHARGE_CARD_CONFIG: RechargeCardConfigInput = {
+  tiers: [],
+  minAmount: 100,
+  maxAmount: 50000,
+}
+
+/**
+ * 读取充值卡档位配置（faceValue/payAmount 列表 + min/max）。
+ * 缺失或 JSON 损坏静默降级为默认空配置（不抛错，保证设置页可渲染）。
+ */
+export const getRechargeCardConfig = withPermission(
+  'system:config',
+  async (): Promise<RechargeCardConfigInput> => {
+  try {
+    const rows = await db.execute<{ key: string; value: string }>(sql`
+      SELECT key, value FROM system_configs
+      WHERE key IN ('recharge.tiers', 'recharge.minAmount', 'recharge.maxAmount')
+    `)
+    const cfg: Record<string, string> = {}
+    for (const row of rows as any[]) cfg[row.key] = row.value
+
+    const result: RechargeCardConfigInput = { ...DEFAULT_RECHARGE_CARD_CONFIG, tiers: [] }
+    if (cfg['recharge.tiers']) {
+      try {
+        const parsed = JSON.parse(cfg['recharge.tiers'])
+        if (Array.isArray(parsed)) {
+          result.tiers = parsed
+            .filter((t) => t && typeof t.faceValue === 'number' && typeof t.payAmount === 'number')
+            .map((t) => ({ faceValue: t.faceValue, payAmount: t.payAmount }))
+            .sort((a, b) => a.faceValue - b.faceValue)
+        }
+      } catch { /* keep empty */ }
+    }
+    if (cfg['recharge.minAmount']) {
+      const n = Number(cfg['recharge.minAmount'])
+      if (Number.isFinite(n) && n > 0) result.minAmount = n
+    }
+    if (cfg['recharge.maxAmount']) {
+      const n = Number(cfg['recharge.maxAmount'])
+      if (Number.isFinite(n) && n > 0) result.maxAmount = n
+    }
+    return result
+  } catch {
+    return { ...DEFAULT_RECHARGE_CARD_CONFIG, tiers: [] }
+  }
+  },
+)
+
+/**
+ * 保存充值卡档位配置（Zod 校验 + 规范化 + UPSERT 三个键 + 审计日志）。
+ * 三端（admin/staff/client）读同源 system_configs.recharge.* 行保持一致。
+ */
+export const saveRechargeCardConfig = withPermission(
+  'system:config',
+  async (
+    session,
+    config: RechargeCardConfigInput,
+  ): Promise<{ success: boolean; message: string }> => {
+  try {
+    const parsed = rechargeCardConfigSchema.safeParse(config)
+    if (!parsed.success) {
+      return { success: false, message: parsed.error.issues[0]?.message || '配置校验失败' }
+    }
+
+    // 规范化：金额保留 2 位小数 + 按面额升序
+    const round2 = (n: number) => Math.round(n * 100) / 100
+    const tiers = parsed.data.tiers
+      .map((t) => ({ faceValue: round2(t.faceValue), payAmount: round2(t.payAmount) }))
+      .sort((a, b) => a.faceValue - b.faceValue)
+    const minAmount = round2(parsed.data.minAmount)
+    const maxAmount = round2(parsed.data.maxAmount)
+
+    const oldConfig = await getRechargeCardConfig()
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS system_configs (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    const entries: Array<{ key: string; value: string }> = [
+      { key: 'recharge.tiers', value: JSON.stringify(tiers) },
+      { key: 'recharge.minAmount', value: String(minAmount) },
+      { key: 'recharge.maxAmount', value: String(maxAmount) },
+    ]
+    for (const entry of entries) {
+      await db.execute(sql`
+        INSERT INTO system_configs (key, value, updated_at)
+        VALUES (${entry.key}, ${entry.value}, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = ${entry.value}, updated_at = NOW()
+      `)
+    }
+
+    await logUpdate(
+      session,
+      'system.saveRechargeConfig',
+      'system_config',
+      'recharge',
+      oldConfig as unknown as Record<string, unknown>,
+      { tiers, minAmount, maxAmount } as unknown as Record<string, unknown>,
+    )
+
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/settings')
+    return { success: true, message: '充值卡配置保存成功' }
+  } catch (err) {
+    console.error('Save recharge card config error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
   },

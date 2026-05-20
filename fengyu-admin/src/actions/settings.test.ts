@@ -45,6 +45,8 @@ import {
   saveMemberBenefits,
   getShareGiftConfig,
   saveShareGiftConfig,
+  getRechargeCardConfig,
+  saveRechargeCardConfig,
 } from './settings'
 import {
   normalizeShareGiftConfig,
@@ -529,5 +531,125 @@ describe('saveShareGiftConfig — 分享礼配置保存', () => {
     const result = await saveShareGiftConfig(DEFAULT_SHARE_GIFT_CONFIG)
     expect(result.success).toBe(false)
     expect(result.message).toContain('保存失败')
+  })
+})
+
+// ── getRechargeCardConfig ─────────────────────────────────────────────────────
+
+describe('getRechargeCardConfig — 充值卡档位读取', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('DB 无记录 → 返回默认（空档位 + 默认 min/max）', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await getRechargeCardConfig()
+    expect(result.tiers).toEqual([])
+    expect(result.minAmount).toBe(100)
+    expect(result.maxAmount).toBe(50000)
+  })
+
+  it('三 key 齐全 → 解析 + 按面额升序', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { key: 'recharge.tiers', value: JSON.stringify([{ faceValue: 2000, payAmount: 1700 }, { faceValue: 1000, payAmount: 900 }]) },
+      { key: 'recharge.minAmount', value: '200' },
+      { key: 'recharge.maxAmount', value: '30000' },
+    ])
+    const result = await getRechargeCardConfig()
+    expect(result.tiers).toEqual([
+      { faceValue: 1000, payAmount: 900 },
+      { faceValue: 2000, payAmount: 1700 },
+    ])
+    expect(result.minAmount).toBe(200)
+    expect(result.maxAmount).toBe(30000)
+  })
+
+  it('tiers JSON 损坏 → 档位降级为空，min/max 仍解析', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { key: 'recharge.tiers', value: '{bad' },
+      { key: 'recharge.minAmount', value: '100' },
+      { key: 'recharge.maxAmount', value: '9999' },
+    ])
+    const result = await getRechargeCardConfig()
+    expect(result.tiers).toEqual([])
+    expect(result.maxAmount).toBe(9999)
+  })
+
+  it('DB 异常 → 返回默认（静默降级）', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('conn lost'))
+    const result = await getRechargeCardConfig()
+    expect(result.tiers).toEqual([])
+    expect(result.minAmount).toBe(100)
+  })
+})
+
+// ── saveRechargeCardConfig ────────────────────────────────────────────────────
+
+describe('saveRechargeCardConfig — 充值卡档位保存', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('正常保存 → 规范化排序 + 写日志 system.saveRechargeConfig', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveRechargeCardConfig({
+      tiers: [{ faceValue: 2000, payAmount: 1700 }, { faceValue: 1000, payAmount: 900 }],
+      minAmount: 100,
+      maxAmount: 50000,
+    })
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('保存成功')
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession, 'system.saveRechargeConfig', 'system_config', 'recharge',
+      expect.anything(),
+      expect.objectContaining({
+        tiers: [{ faceValue: 1000, payAmount: 900 }, { faceValue: 2000, payAmount: 1700 }],
+        minAmount: 100,
+        maxAmount: 50000,
+      }),
+    )
+  })
+
+  it('实付高于面额 → Zod 校验失败，返回失败消息且不写库', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveRechargeCardConfig({
+      tiers: [{ faceValue: 1000, payAmount: 1200 }],
+      minAmount: 100,
+      maxAmount: 50000,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实付金额不能高于面额')
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+
+  it('面额重复 → 校验失败', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveRechargeCardConfig({
+      tiers: [{ faceValue: 1000, payAmount: 900 }, { faceValue: 1000, payAmount: 950 }],
+      minAmount: 100,
+      maxAmount: 50000,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('面额不能重复')
+  })
+
+  it('上限低于最低 → 校验失败', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveRechargeCardConfig({
+      tiers: [{ faceValue: 1000, payAmount: 900 }],
+      minAmount: 5000,
+      maxAmount: 100,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('单次上限不能低于最低充值金额')
+  })
+
+  it('空档位 → 校验失败', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveRechargeCardConfig({ tiers: [], minAmount: 100, maxAmount: 50000 })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('至少配置一个充值档位')
   })
 })
