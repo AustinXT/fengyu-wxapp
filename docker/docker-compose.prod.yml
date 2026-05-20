@@ -1,0 +1,31 @@
+# docker-compose.prod.yml — PROD override
+#
+# 用法：
+#   cd docker && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker
+#
+# 说明：
+#   - admin / cron-worker 改连远程 PG 5433（绕开 base 的 internal postgres:5432）
+#   - base 的 postgres 服务用 profile 禁用（prod 不启本地 PG 容器）
+#   - 远程 docker/.env 需提供 ADMIN_DATABASE_URL + ADMIN_JWT_SECRET
+#
+# 远程 docker/.env 追加：
+#   ADMIN_DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp
+#   ADMIN_JWT_SECRET=<openssl rand -hex 32>
+
+name: fengyu-wxapp
+services:
+  admin:
+    environment:
+      DATABASE_URL: ${ADMIN_DATABASE_URL}
+      COOKIE_SECURE: "true"
+      JWT_SECRET: ${ADMIN_JWT_SECRET}
+    depends_on: !reset []
+
+  cron-worker:
+    environment:
+      DATABASE_URL: ${ADMIN_DATABASE_URL}
+    depends_on: !reset []
+
+  # prod 不启本地 postgres 容器（远程 5433 是独立运行的服务）
+  postgres:
+    profiles: ["disabled"]
