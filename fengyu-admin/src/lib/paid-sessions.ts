@@ -80,7 +80,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     END,
     updated_at = NOW()
     FROM (SELECT received, total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
-    WHERE sale_items.sale_order_id = ${saleOrderId}
+    WHERE sale_items.sale_order_id = ${saleOrderId} AND sale_items.item_direction = '购买'
   `)
 
   // STEP 2: 按行级公式重算 paid_sessions（公式守 cross-end-sql-snapshot，不改字面）

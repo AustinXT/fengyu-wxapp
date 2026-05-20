@@ -61,7 +61,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `UPDATE sale_items
     END,
     updated_at = NOW()
     FROM (SELECT received, total_amount FROM sale_orders WHERE sale_order_id = $1) op
-    WHERE sale_items.sale_order_id = $1`
+    WHERE sale_items.sale_order_id = $1 AND sale_items.item_direction = '购买'`
 
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
