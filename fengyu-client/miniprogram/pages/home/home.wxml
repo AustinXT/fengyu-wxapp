@@ -43,8 +43,8 @@ module.exports.min = function(n) {
     </view>
   </view>
 
-  <!-- 顶部区域：轮播图 + 功能宫格 -->
-  <view class="top-section">
+  <!-- 顶部区域：轮播图 + 功能宫格（搜索时隐藏，腾出空间给结果列表） -->
+  <view class="top-section" wx:if="{{!isSearching}}">
 
     <!-- ===== 1. 轮播图 ===== -->
     <view class="section-banner" wx:if="{{banners.length > 0}}">

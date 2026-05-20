@@ -40,7 +40,7 @@ page {
   --button-primary-background-color: var(--color-primary);
   --button-primary-border-color:     var(--color-primary);
   --button-primary-color:            #FFFFFF;
-  --button-border-radius:            44rpx;
+  --button-border-radius:            12rpx;
   --sidebar-active-color:            var(--color-primary);
   --sidebar-selected-color:          var(--color-primary);
   --sidebar-selected-font-weight:    600;
@@ -57,6 +57,12 @@ page {
   --submit-bar-button-color:         #FFFFFF;
   --loading-color:                   var(--color-primary);
   --empty-image-size:                200rpx;
+}
+
+/* ===== 按钮形状统一 ===== */
+/* Vant plain button 边框统一为 1px 细边 */
+.van-button--plain {
+  border-width: 1px !important;
 }
 
 /* ===== 安全区 ===== */

@@ -230,7 +230,10 @@
 
 .search-results-scroll {
   flex: 1;
+  height: 0;
+  min-height: 0;
   padding: 16rpx;
+  box-sizing: border-box;
   background: var(--color-bg-page);
 }
 
@@ -306,6 +309,8 @@
   border-radius: 12rpx;
   overflow: hidden;
   margin-bottom: 12rpx;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .spu-cover {
@@ -326,11 +331,13 @@
 
 .spu-body {
   flex: 1;
+  min-width: 0;
   padding: 16rpx 16rpx 14rpx;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   min-height: 160rpx;
+  box-sizing: border-box;
 }
 
 
@@ -343,6 +350,8 @@
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  word-break: break-all;
+  min-width: 0;
 }
 
 .spu-footer {
