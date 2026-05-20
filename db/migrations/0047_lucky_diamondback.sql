@@ -1,0 +1,1 @@
+ALTER TABLE "sale_orders" ADD CONSTRAINT "chk_first_payment_amount" CHECK ("sale_orders"."first_payment_amount" IS NULL OR ("sale_orders"."first_payment_amount" > 0 AND "sale_orders"."first_payment_amount" <= "sale_orders"."payable_amount"));
