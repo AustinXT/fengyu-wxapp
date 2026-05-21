@@ -50,10 +50,11 @@ admin 远程部署用 `docker/docker-compose.prod.yml` override，详见根目�
 小程序代码 `fengyu-{client,staff}/miniprogram/utils/cloud-env.ts` 是 git tracked
 静态文件，通过 `wx.getAccountInfoSync().miniProgram.envVersion` 运行时区分：
 
-- `'release'` → prod envId
-- `'develop'` / `'trial'` → dev envId
+- `'release'` / `'trial'` → prod envId（5433）
+- `'develop'` → dev envId（5434）
+- 异常兜底（取不到 envVersion）→ dev envId，避免误判进 prod
 
-所以**切换 envs/.active 不会影响小程序代码**。开发版永远 dev，正式版永远 prod。
+所以**切换 envs/.active 不会影响小程序代码**。仅开发者工具开发版留在 dev，体验版/正式版都走 prod。
 
 ## 添加新变量
 
