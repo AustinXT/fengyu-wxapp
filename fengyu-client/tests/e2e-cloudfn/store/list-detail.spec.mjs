@@ -64,6 +64,9 @@ async function caseDetailByStoreId() {
   if (typeof res.data.store.customer_count !== 'number') {
     throw new Error(`expect customer_count number, got ${typeof res.data.store.customer_count}`)
   }
+  if (!Array.isArray(res.data.store.images)) {
+    throw new Error(`expect images array, got ${typeof res.data.store.images}`)
+  }
 }
 
 async function caseDetailByStoreName() {

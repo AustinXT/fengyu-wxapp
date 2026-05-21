@@ -8,6 +8,7 @@
     "van-empty": "@vant/weapp/empty/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-icon": "@vant/weapp/icon/index"
+    "van-icon": "@vant/weapp/icon/index",
+    "van-tag": "@vant/weapp/tag/index"
   }
 }

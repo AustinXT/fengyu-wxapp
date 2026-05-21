@@ -80,6 +80,7 @@ async function detail(ctx) {
       s.bed_count AS available_beds,
       s.district AS store_region,
       s.cover_image,
+      s.images,
       s.street_address,
       s.latitude,
       s.longitude,
@@ -101,6 +102,7 @@ async function detail(ctx) {
 
   const store = storeResult[0]
   store.open_date = formatOpenDate(store.open_date)
+  store.images = Array.isArray(store.images) ? store.images : []
 
   // 用确定的 store_id 并行查询员工数和顾客数
   const actualStoreId = store.store_id

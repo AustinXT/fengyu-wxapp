@@ -1,6 +1,7 @@
 // pages/store-detail/store-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { formatStoreAddress } from '../utils/distance';
 
 const app = getApp<IAppOption>();
 
@@ -14,6 +15,7 @@ interface StoreInfo {
   staff_count: number;
   customer_count: number;
   cover_image: string;
+  images: string[];
   street_address: string;
   latitude: number | null;
   longitude: number | null;
@@ -22,6 +24,8 @@ interface StoreInfo {
   parking_info: string;
   description: string;
   announcement: string;
+  // 派生字段：省市区+地址
+  fullAddress?: string;
 }
 
 interface UnbindRequest {
@@ -85,8 +89,15 @@ Page({
       // 从 API 返回的 store 获取真实 storeId
       const realStoreId = detailData?.store?.store_id || storeId;
       const bindState = this.computeBindState(realStoreId, pendingRequest);
+      const store: StoreInfo | null = detailData?.store
+        ? {
+            ...detailData.store,
+            images: Array.isArray(detailData.store.images) ? detailData.store.images : [],
+            fullAddress: formatStoreAddress(detailData.store.store_region, detailData.store.street_address),
+          }
+        : null;
       this.setData({
-        store: detailData?.store || null,
+        store,
         storeId: realStoreId,
         pendingRequest,
         boundStoreName,
@@ -228,6 +239,13 @@ Page({
       wx.setClipboardData({ data: store.street_address });
       Toast.success('地址已复制');
     }
+  },
+
+  onPreviewImage(e: WechatMiniprogram.TouchEvent) {
+    const urls = this.data.store?.images || [];
+    if (!urls.length) return;
+    const { index } = e.currentTarget.dataset as { index: number };
+    wx.previewImage({ current: urls[index], urls });
   },
 
   onShareAppMessage() {
