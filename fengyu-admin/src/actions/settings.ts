@@ -174,6 +174,12 @@ export const saveSettings = withPermission(
       `)
     }
 
+    // 凤御馆图 reupload 到固定路径，确保落到当前环境桶（与 banner 一致）。
+    // 配合 reuploadToFixedPath 的整 URL 跳过逻辑：源指向别的桶（如 dev）时会重传到本环境桶。
+    if (settings.fengyuguanImage) {
+      await reuploadToFixedPath(settings.fengyuguanImage, 'images/fengyuguan.jpg')
+    }
+
     // 将轮播图重新上传到固定 CDN 路径 (banner1.jpg, banner2.jpg, ...)
     const bannerUrls = settings.bannerImages || []
     const newCount = bannerUrls.length

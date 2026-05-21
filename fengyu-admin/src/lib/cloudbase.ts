@@ -1,7 +1,10 @@
 import cloudbase from "@cloudbase/node-sdk"
 import { ApiError } from "@/lib/api-error"
 
+// CDN 基址随环境切换（dev/prod 桶前缀不同，建桶时分配，不能从 envId 推算）。
+// 由 env 注入：prod → 6665-fengyu-client-prod-…，dev → 636c-cloud1-…；缺省兜底 dev 保本地行为。
 export const CDN_BASE =
+  process.env.CDN_BASE ??
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
 let app: ReturnType<typeof cloudbase.init> | null = null
@@ -52,7 +55,9 @@ export async function reuploadToFixedPath(
   targetPath: string
 ): Promise<void> {
   const cleanUrl = sourceUrl.split("?")[0]
-  if (cleanUrl.endsWith(`/${targetPath}`)) return
+  // 整 URL 比对当前环境桶：仅当源已是「本环境桶 + 目标路径」才跳过。
+  // 只比路径后缀会漏判跨桶（如 dev→prod）场景，导致 prod 桶永远拿不到文件。
+  if (cleanUrl === `${CDN_BASE}/${targetPath}`) return
   const res = await fetch(cleanUrl)
   if (!res.ok) throw new ApiError("INVALID_STATE", `资源下载失败 (HTTP ${res.status})`)
   const buffer = Buffer.from(await res.arrayBuffer())

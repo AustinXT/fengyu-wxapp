@@ -55,7 +55,7 @@ import {
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
-import { callClientFunction } from '@/lib/cloudbase'
+import { callClientFunction, reuploadToFixedPath } from '@/lib/cloudbase'
 import { invalidateMemberThreshold } from '@/lib/member-threshold'
 
 const mockSession = {
@@ -166,6 +166,37 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('保存失败')
+  })
+
+  it('凤御馆图非空 → reupload 到固定路径 images/fengyuguan.jpg（落当前环境桶）', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/images/fengyuguan.jpg',
+    })
+
+    expect(result.success).toBe(true)
+    expect(reuploadToFixedPath).toHaveBeenCalledWith(
+      'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/images/fengyuguan.jpg',
+      'images/fengyuguan.jpg',
+    )
+  })
+
+  it('凤御馆图为空 → 不触发 reupload', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: '',
+    })
+
+    expect(result.success).toBe(true)
+    expect(reuploadToFixedPath).not.toHaveBeenCalled()
   })
 
   it('newMemberThreshold 变化 → 广播 invalidate 到 admin 自身 + clientApi', async () => {
