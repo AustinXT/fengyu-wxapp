@@ -90,7 +90,7 @@ describe('order.create', () => {
     pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([])  // check pending
     pg.query.mockResolvedValueOnce([{   // SKU query
-      sku_id: 'sku-1', product_id: 'p1', product_type: '单品',
+      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
       spec_name: '标准', price: '100', special_price: null,
       session_count: 1, product_name: '护理A', sales_category: null,
     }])
@@ -204,7 +204,7 @@ describe('order.create', () => {
     pg.query.mockResolvedValueOnce([])
     // mock 4: SKU 信息
     pg.query.mockResolvedValueOnce([{
-      sku_id: 'sku-1', product_id: 'p1', product_type: '单品',
+      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
       spec_name: '标准', price: '200', special_price: null,
       session_count: 1, product_name: '护理A', sales_category: null,
       ...skuOverrides,
@@ -355,7 +355,7 @@ describe('order.create', () => {
     pg.query.mockResolvedValueOnce([])
     // mock 4: SKU 信息（2个 SKU）
     pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-a', product_id: 'pa', product_type: '单品', spec_name: '标准', price: '300', special_price: null, session_count: 1, product_name: '护理A', sales_category: null },
+      { sku_id: 'sku-a', product_id: 'pa', product_type: '疗程卡', spec_name: '标准', price: '300', special_price: null, session_count: 1, product_name: '护理A', sales_category: null },
       { sku_id: 'sku-b', product_id: 'pb', product_type: '疗程卡', spec_name: '5次卡', price: '200', special_price: null, session_count: 5, product_name: '护理B', sales_category: null },
     ])
     // mock 5: 优惠券
@@ -933,7 +933,7 @@ describe('prepaid card deduction - order.create', () => {
     pg.query.mockResolvedValueOnce([]) // closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([]) // check pending
     pg.query.mockResolvedValueOnce([{ // SKU
-      sku_id: 'sku-1', product_id: 'p1', product_type: '单品',
+      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
       spec_name: '标准', price, special_price: null,
       session_count: 1, product_name: '护理A', sales_category: null,
     }])

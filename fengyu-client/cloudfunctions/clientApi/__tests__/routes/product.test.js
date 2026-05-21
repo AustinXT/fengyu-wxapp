@@ -200,8 +200,8 @@ describe('product.shopInit', () => {
 describe('product.experienceCardList', () => {
   test('按 sortOrder ASC 返回 is_experience = true 的 SKU 列表', async () => {
     pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-exp-1', product_type: '单品', spec_name: '体验装', price: 99, special_price: 1, session_count: 1, service_fee: 0, sort_order: 1, product_id: 'p-trial-A', product_name: '焕活面部体验', cover_image: 'https://img/a.jpg', description: '新人专享' },
-      { sku_id: 'sku-exp-2', product_type: '单品', spec_name: '体验装', price: 199, special_price: 9, session_count: 1, service_fee: 0, sort_order: 2, product_id: 'p-trial-B', product_name: '小气泡体验', cover_image: 'https://img/b.jpg', description: null },
+      { sku_id: 'sku-exp-1', product_type: '疗程卡', spec_name: '体验装', price: 99, special_price: 1, session_count: 1, service_fee: 0, sort_order: 1, product_id: 'p-trial-A', product_name: '焕活面部体验', cover_image: 'https://img/a.jpg', description: '新人专享' },
+      { sku_id: 'sku-exp-2', product_type: '疗程卡', spec_name: '体验装', price: 199, special_price: 9, session_count: 1, service_fee: 0, sort_order: 2, product_id: 'p-trial-B', product_name: '小气泡体验', cover_image: 'https://img/b.jpg', description: null },
     ])
 
     const ctx = createBoundCtx()

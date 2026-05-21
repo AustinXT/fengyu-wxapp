@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import type { Employee, OrgNode, Position, SkillTag } from "@/lib/types";
+import type { Employee, OrgNode, SkillTag } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -13,7 +13,6 @@ import { Pagination } from "@/components/ui/pagination";
 import { toHttpUrl } from "@/components/ui/image-upload";
 import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import PositionManagementDialog from "./position-management-dialog";
 import SkillTagManagementDialog from "./skill-tag-management-dialog";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
@@ -27,16 +26,13 @@ export default function EmployeesPage({
   employees,
   total,
   orgNodes,
-  positions,
   skillTags,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
-  positions: Position[];
   skillTags: SkillTag[];
 }) {
-  const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
 
@@ -150,9 +146,6 @@ export default function EmployeesPage({
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">员工管理</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setPositionDialogOpen(true)}>
-            职位管理
-          </Button>
           <Button variant="outline" onClick={() => setSkillTagDialogOpen(true)}>
             标签管理
           </Button>
@@ -194,11 +187,6 @@ export default function EmployeesPage({
         onPageSizeChange={(size) => setMany({ size: String(size), page: "" })}
       />
 
-      <PositionManagementDialog
-        open={positionDialogOpen}
-        onOpenChange={setPositionDialogOpen}
-        positions={positions}
-      />
       <SkillTagManagementDialog
         open={skillTagDialogOpen}
         onOpenChange={setSkillTagDialogOpen}

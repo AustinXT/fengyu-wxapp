@@ -17,19 +17,13 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
-import { formatDate, buildOrgPath, findAncestorMarketId, getPositionScope } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
 import { ROLE_LABELS } from "@/lib/types"
-import type { Employee, PermissionRole, Store, OrgNode, RoleType, Position, SkillTag } from "@/lib/types"
-
-const SCOPE_LABELS: Record<string, string> = {
-  headquarters: "总部职位",
-  market: "市场职位",
-  store: "门店职位",
-}
+import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } from "@/lib/types"
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
 
@@ -38,11 +32,10 @@ interface Props {
   roles: PermissionRole[]
   stores: Store[]
   orgNodes: OrgNode[]
-  positions: Position[]
   skillTags: SkillTag[]
 }
 
-export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, positions, skillTags }: Props) {
+export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, skillTags }: Props) {
   const router = useRouter()
 
   // Edit info state
@@ -72,13 +65,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   // Password reset state
   const [resetPwdDialogOpen, setResetPwdDialogOpen] = useState(false)
   const [resettingPwd, setResettingPwd] = useState(false)
-
-  // 根据所属组织推断职位 scope，过滤可选职位
-  const positionScope = useMemo(() => getPositionScope(form.orgNodeId || null, orgNodes), [form.orgNodeId, orgNodes])
-  const filteredPositions = useMemo(() => {
-    if (!positionScope) return positions
-    return positions.filter((p) => p.scope === positionScope)
-  }, [positionScope, positions])
 
   // 根据所属组织的市场过滤门店
   const filteredStores = useMemo(() => {
@@ -126,7 +112,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         idCard: form.idCard || null,
         storeId: form.storeId || null,
         orgNodeId: form.orgNodeId || null,
-        positionName: form.positionName || null,
+        positionName: form.positionName.trim() || null,
         avatarUrl: form.avatarUrl || null,
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
@@ -386,7 +372,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       orgNodes={orgNodes}
                       value={form.orgNodeId}
                       onChange={(id) => {
-                        const prevScope = getPositionScope(form.orgNodeId || null, orgNodes)
                         handleFormChange("orgNodeId", id)
                         // 组织变更时，若当前门店不在新市场下则清空
                         const newMarketId = findAncestorMarketId(id, orgNodes)
@@ -396,11 +381,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                         )
                         if (newMarketId !== storeMarketId) {
                           handleFormChange("storeId", "")
-                        }
-                        // 组织 scope 变更时清空职位
-                        const newScope = getPositionScope(id, orgNodes)
-                        if (newScope !== prevScope) {
-                          handleFormChange("positionName", "")
                         }
                       }}
                       placeholder="请选择所属组织"
@@ -430,23 +410,11 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 <div className="space-y-2">
                   <label className="text-sm font-medium">职位</label>
                   {isEditing ? (
-                    <Select
+                    <Input
                       value={form.positionName}
                       onChange={(e) => handleFormChange("positionName", e.target.value)}
-                    >
-                      <option value="">
-                        {positionScope ? `请选择${SCOPE_LABELS[positionScope] ?? "职位"}` : "请先选择所属组织"}
-                      </option>
-                      {/* 若当前值不在选项中（旧数据），显示为额外选项 */}
-                      {form.positionName && !filteredPositions.some((p) => p.name === form.positionName) && (
-                        <option value={form.positionName}>{form.positionName}（旧）</option>
-                      )}
-                      {filteredPositions.map((p) => (
-                        <option key={p.id} value={p.name}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </Select>
+                      placeholder="请输入职位"
+                    />
                   ) : (
                     <Input value={employee.positionName ?? ""} disabled />
                   )}

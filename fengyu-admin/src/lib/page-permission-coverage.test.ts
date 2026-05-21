@@ -22,7 +22,7 @@ import type { RoleType } from './types'
  *   - 吞错加载：`getRates().catch(() => [])`（如 /allocations/[orderId|serviceOrderId] 的提成比例）。
  *
  * 闸门来源已逐个 grep 核实（action 文件的 withPermission 第一参）：
- *   getStores→store:list, getOrgNodes→org:list, getEmployees(Paginated)/getPositions/getSkillTags→employee:list,
+ *   getStores→store:list, getOrgNodes→org:list, getEmployees(Paginated)/getSkillTags→employee:list,
  *   getMarkets 三份各异（commission.ts→commission:list / products.ts→product:list / coupons.ts→coupon:list），
  *   getCustomerById/Orders/Appointments→customer:list（刻意非 sale_order/appointment，让 customer_mgr 可看），
  *   getOrderById/listRefunds→withAny(sale_order:list|refund_create|refund_approve)。
@@ -47,7 +47,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   // —— 数据管理 ——
   '/org': ['org:list'],
   '/stores': ['store:list'],
-  '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getPositions/getSkillTags
+  '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
   '/products': ['product:list'],
   '/mall': ['product:list'],
   '/commission': ['commission:list', 'employee:list'], // getRates/getMarkets(commission:list)+getActiveSkillTags(employee:list)

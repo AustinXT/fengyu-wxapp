@@ -113,8 +113,6 @@ export const messageRecipientTypeEnum = pgEnum("message_recipient_type", ["客�
 
 export const cardTransactionTypeEnum = pgEnum("card_transaction_type", ["充值", "扣款"]);
 
-export const positionScopeEnum = pgEnum("position_scope", ["总部", "市场", "门店"]);
-
 export const memberLevelEnum = pgEnum("member_level", ["初钻", "星钻", "粉钻", "金钻", "黑钻"]);
 
 export const customerSourceEnum = pgEnum("customer_source", [

@@ -161,18 +161,6 @@ export interface CardTransactionSummary {
   userCount: number
 }
 
-export type PositionScope = '总部' | '市场' | '门店'
-
-export interface Position {
-  id: string
-  name: string
-  scope: PositionScope
-  sortOrder: number
-  isValid: boolean
-  createdAt: string
-  updatedAt: string
-}
-
 export interface SkillTag {
   id: string
   name: string

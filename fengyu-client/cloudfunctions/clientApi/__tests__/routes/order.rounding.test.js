@@ -51,7 +51,7 @@ function mockNoCouponCreate(specialPrice) {
   pg.query.mockResolvedValueOnce([])
   // mock 4: SKU 信息（无券路径用 special_price 注入纯小数驱动值，绕过业务价档）
   pg.query.mockResolvedValueOnce([{
-    sku_id: 'sku-float', product_id: 'p-float', product_type: '单品',
+    sku_id: 'sku-float', product_id: 'p-float', product_type: '疗程卡',
     spec_name: '浮点驱动 SKU', price: String(specialPrice), special_price: String(specialPrice),
     session_count: 1, sales_category: null,
     is_recharge_card: false, is_experience: false,
@@ -188,7 +188,7 @@ describe('order.create 浮点 round 兜底（R2 真漂移 case）', () => {
     pg.query.mockResolvedValueOnce([])
     // mock 4: SKU（0.29 × 7 = 2.0299999999999994 ─ 漂移基线）
     pg.query.mockResolvedValueOnce([{
-      sku_id: 'sku-float', product_id: 'p-float', product_type: '单品',
+      sku_id: 'sku-float', product_id: 'p-float', product_type: '疗程卡',
       spec_name: '浮点 SKU', price: '0.29', special_price: '0.29',
       session_count: 1, sales_category: null,
       is_recharge_card: false, is_experience: false,
