@@ -443,8 +443,8 @@ export interface Appointment {
   storeId: string
   clientUserId: string
   clientName: string
-  employeeId: string
-  employeeName: string
+  employeeId: string | null
+  employeeName: string | null
   saleItemId: string | null
   appointmentTime: string
   checkinAt: string | null
