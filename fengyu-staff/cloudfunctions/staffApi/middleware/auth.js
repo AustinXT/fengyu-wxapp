@@ -271,10 +271,13 @@ function requireManager() {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
     const bindings = ctx.auth.roleBindings || []
-    // manager 角色在任意层级（总部/市场/门店）均可；旧缓存无 roleBindings 时退化到 roles 判定
-    const hasManagerRole =
-      bindings.some((r) => r.role === 'manager') ||
-      (Array.isArray(ctx.auth.roles) && ctx.auth.roles.includes('manager'))
+    // manager 角色须落在合法 scope（总部/市场/门店）；部门级 manager 绑定被 scope.js 忽略
+    // （staffLevel=null），此处一并拒绝，避免「manager@部门」越过店长门禁（纵深防御，
+    // 即便 admin UI 已禁止该配对）。旧缓存无 roleBindings 时退化到 roles 判定。
+    const VALID_MANAGER_SCOPES = ['总部', '市场', '门店']
+    const hasManagerRole = bindings.length > 0
+      ? bindings.some((r) => r.role === 'manager' && VALID_MANAGER_SCOPES.includes(r.scopeType))
+      : (Array.isArray(ctx.auth.roles) && ctx.auth.roles.includes('manager'))
     if (!hasManagerRole) {
       throw new Error('PERMISSION_DENIED: 仅店长可执行此操作')
     }
