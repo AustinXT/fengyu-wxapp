@@ -42,9 +42,9 @@ async function ensureProductFixture() {
   await query(
     `INSERT INTO product_skus (sku_id, category_id, product_type, spec_name, price,
                                session_count, sort_order, service_fee, is_shengmei,
-                               is_experience, is_recharge_card, is_enabled)
+                               is_experience, is_enabled)
      VALUES ($1, $2, '疗程卡'::product_type, 'L3 源卡 5x500', 500,
-             5, 0, 0, true, false, false, true)
+             5, 0, 0, true, false, true)
      ON CONFLICT (sku_id) DO UPDATE SET is_enabled = true, price = EXCLUDED.price,
        session_count = EXCLUDED.session_count`,
     [SRC_SKU_ID, SRC_CAT_ID],
@@ -52,9 +52,9 @@ async function ensureProductFixture() {
   await query(
     `INSERT INTO product_skus (sku_id, category_id, product_type, spec_name, price,
                                session_count, sort_order, service_fee, is_shengmei,
-                               is_experience, is_recharge_card, is_enabled)
+                               is_experience, is_enabled)
      VALUES ($1, $2, '单品'::product_type, 'L3 目标项目 ¥200', 200,
-             1, 0, 0, true, false, false, true)
+             1, 0, 0, true, false, true)
      ON CONFLICT (sku_id) DO UPDATE SET is_enabled = true, price = EXCLUDED.price`,
     [TGT_SKU_ID, TGT_CAT_ID],
   );
@@ -80,12 +80,12 @@ async function ensureSourceSaleOrder({ storeId, clientUserId, managerEmpId }) {
        product_name, sku_spec_name, product_type,
        session_count, remaining_sessions,
        unit_price, quantity, unit_real_price, sale_amount, received,
-       sales_category, is_shengmei, is_experience, is_recharge_card)
+       sales_category, is_shengmei, is_experience)
      VALUES ($1, $2, $3, '购买'::item_direction, $4,
              'L3 源卡 5x500', 'L3 源卡 5x500', '疗程卡'::product_type,
              5, 5,
              500, 1, 500, 500, 500,
-             '他销他耗'::sales_category, true, false, false)
+             '他销他耗'::sales_category, true, false)
      ON CONFLICT (sale_item_id) DO NOTHING`,
     [SOURCE_ITEM_ID, SOURCE_ORDER_ID, storeId, SRC_SKU_ID],
   );

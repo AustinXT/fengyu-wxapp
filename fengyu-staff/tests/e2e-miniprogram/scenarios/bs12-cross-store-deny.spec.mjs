@@ -50,12 +50,12 @@ async function createTestOrderInStoreB() {
        (sale_item_id, sale_order_id, store_id, item_direction,
         product_name, sku_spec_name, product_type,
         unit_price, quantity, unit_real_price, sale_amount, received,
-        service_fee, is_shengmei, is_experience, is_recharge_card)
+        service_fee, is_shengmei, is_experience)
      VALUES
        ($1, $2, $3, '购买',
         'L3 B 店商品', '标准', '单品',
         500, 1, 500, 500, 500,
-        0, false, false, false)`,
+        0, false, false)`,
     [itemId, orderId, TEST_STORE_B1_ID],
   );
   return { orderId, itemId };

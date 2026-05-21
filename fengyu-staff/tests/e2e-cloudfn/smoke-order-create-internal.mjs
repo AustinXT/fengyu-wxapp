@@ -90,24 +90,9 @@ async function main() {
     rec(`  ✓ 内部单 + 优惠券被拒（${couponResult.message}）`)
   }
 
-  // ─── 3. 内部单不允许 customPrice ───
-  const customPriceResult = await invokeStaffApi('order.create', {
-    _testOpenid: TEST_MANAGER_OPENID,
-    clientPhone: TEST_CLIENT_PHONE,
-    clientName: `${NS}_顾客`,
-    items: [{ skuId, quantity: 1, customPrice: 100 }],
-    paymentMethod: '线下',
-    saleOrderType: '内部单',
-  })
-  if (customPriceResult.code === 0) {
-    errors.push(`内部单 customPrice 应被拒，实际成功`)
-  } else if (!String(customPriceResult.message || '').includes('改价')) {
-    errors.push(`内部单 + customPrice 应得 INVALID_PARAMS:'内部单不允许手工改价'，实际 ${customPriceResult.message}`)
-  } else {
-    rec(`  ✓ 内部单 customPrice 被拒（${customPriceResult.message}）`)
-  }
+  // 注：行级 customPrice/discount 入参已于 order.js 废弃（静默忽略，不再报错），故不再断言其被拒。
 
-  // ─── 4. 店长成功开内部单 → 5 折 ───
+  // ─── 3. 店长成功开内部单 → 5 折 ───
   const result = await invokeStaffApi('order.create', {
     _testOpenid: TEST_MANAGER_OPENID,
     clientPhone: TEST_CLIENT_PHONE,
@@ -144,6 +129,24 @@ async function main() {
     }
   }
 
+  // ─── 4. 同顾客已有待支付订单时，再开单必拒（一顾客一待支付单守卫）───
+  // 步骤 3 已为 TEST_CLIENT 留下一张 '待支付' 内部单，此处再开单应被显式拒绝。
+  const dupResult = await invokeStaffApi('order.create', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientPhone: TEST_CLIENT_PHONE,
+    clientName: `${NS}_顾客`,
+    items: [{ skuId, quantity: 1 }],
+    paymentMethod: '线下',
+    saleOrderType: '内部单',
+  })
+  if (dupResult.code === 0) {
+    errors.push(`顾客已有待支付订单时再开单应被拒，实际成功 saleOrderId=${dupResult.data?.saleOrderId}`)
+  } else if (!String(dupResult.message || '').includes('待支付订单')) {
+    errors.push(`再开单应得 INVALID_PARAMS:'该顾客已有待支付订单…'，实际 code=${dupResult.code} msg=${dupResult.message}`)
+  } else {
+    rec(`  ✓ 顾客已有待支付订单时再开单被拒（${dupResult.message}）`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -152,7 +155,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 内部单 5 折 + 4 项守卫（权限/优惠券/改价）全部正确`)
+  rec(`  ✅ PASS — 内部单 5 折 + 守卫（非店长拒/优惠券拒/一顾客一待支付单拒）全部正确`)
 }
 
 try {

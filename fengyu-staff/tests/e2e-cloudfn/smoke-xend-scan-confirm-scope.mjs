@@ -4,8 +4,10 @@
  *
  * 完整链路：
  *   1. 顾客（client_wechat_users）已绑 A1 店 + 储值卡余额 1000
- *   2. 店长（manager@A1）创建一笔 prepaid_card_amount=300 的待确认收款单
- *   3. **staffApi.order.confirmOffline** → 扣储值卡 + 写 card_transactions(type='扣款')
+ *   2. 店长（manager@A1）创建一笔混合支付待确认收款单（total=500，储值卡抵 300 + 现金应付 200，
+ *      payment_method='线下'）。注：全额储值卡单（payable=0）在 order.create 即扣卡结清、不走 confirmOffline，
+ *      故此处用混合单验证 confirmOffline 的扣卡分支。
+ *   3. **staffApi.order.confirmOffline** → 扣储值卡 300 + 确认现金 200 + 写 card_transactions(type='扣款')
  *   4. **clientApi.card.history**（用顾客 _testOpenid）→ 应能查到刚才那笔扣款记录
  *
  * 还顺带测一个"反向边界"：
@@ -50,12 +52,12 @@ async function run() {
   })
   const { cardId } = await createTestPrepaidCard({ userId: CLI_ID, initialBalance: 1000 })
 
-  // 待确认收款单（prepaid_card_amount=300，total=300，paid=0）
+  // 混合支付待确认收款单（total=500，储值卡抵 300 + 现金应付 200，payment_method='线下'）
   const ORDER = `${NS}_XEND_SC_O1`
   await createTestSaleOrder({
     saleOrderId: ORDER, clientUserId: CLI_ID, storeId: S_A1.storeId,
-    openedBy: MGR_A1.empId, totalAmount: 300, status: '待支付',
-    paymentMethod: '储值卡', prepaidCardAmount: 300,
+    openedBy: MGR_A1.empId, totalAmount: 500, status: '待支付',
+    paymentMethod: '线下', prepaidCardAmount: 300,
   })
 
   await invalidateStaffAuthCache([MGR_A1.oid, MGR_MB.oid])

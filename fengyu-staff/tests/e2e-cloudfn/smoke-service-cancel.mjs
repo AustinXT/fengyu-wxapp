@@ -30,7 +30,14 @@ async function main() {
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
-  await createTestClient()
+  await createTestClient() // 默认顾客（so3 已完成单复用，非活跃不受约束）
+
+  // uq_so_client_active：每顾客仅一张 待服务/服务中 活跃单。
+  // so1(待服务) 与 so2(服务中) 须挂在不同顾客，否则建第二张时违反唯一索引。
+  const CLI_W = `${NS}_SVC_CN_CLIW`
+  const CLI_I = `${NS}_SVC_CN_CLII`
+  await createTestClient({ userId: CLI_W, openid: `${NS}_SVC_CN_CLIW_OID`, phone: '19999099007' })
+  await createTestClient({ userId: CLI_I, openid: `${NS}_SVC_CN_CLII_OID`, phone: '19999099008' })
 
   const orderId = `${NS}_SVC_CN`
   await createTestSaleOrder({
@@ -41,13 +48,13 @@ async function main() {
   const items = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderId])
   const saleItemId = items[0].sale_item_id
 
-  // 准备三张不同状态的服务单
+  // 准备三张不同状态的服务单（活跃单分属不同顾客以满足 uq_so_client_active）
   const so1 = `${NS}_SVC_CN_W`  // 待服务
   const so2 = `${NS}_SVC_CN_I`  // 服务中
   const so3 = `${NS}_SVC_CN_C`  // 已完成
-  for (const [id, status] of [[so1, '待服务'], [so2, '服务中'], [so3, '已完成']]) {
+  for (const [id, status, cli] of [[so1, '待服务', CLI_W], [so2, '服务中', CLI_I], [so3, '已完成', TEST_CLIENT_USER_ID]]) {
     await createTestServiceOrder({
-      serviceOrderId: id, status,
+      serviceOrderId: id, status, clientUserId: cli,
       items: [{ saleItemId, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID }],
     })
   }

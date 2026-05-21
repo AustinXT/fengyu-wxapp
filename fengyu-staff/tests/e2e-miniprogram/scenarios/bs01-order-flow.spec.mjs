@@ -72,10 +72,10 @@ async function setupProductsAndCoupon() {
   await query(
     `INSERT INTO product_skus
        (sku_id, category_id, product_type, spec_name, price, session_count,
-        sort_order, service_fee, is_experience, is_recharge_card, is_enabled)
+        sort_order, service_fee, is_experience, is_enabled)
      VALUES
-       ($1, $2, '单品', 'L3 BS01 单品 600', $3, 1, 0, 0, false, false, true),
-       ($4, $2, '疗程卡', 'L3 BS01 疗程卡 1500x5', $5, 5, 0, 0, false, false, true)
+       ($1, $2, '单品', 'L3 BS01 单品 600', $3, 1, 0, 0, false, true),
+       ($4, $2, '疗程卡', 'L3 BS01 疗程卡 1500x5', $5, 5, 0, 0, false, true)
      ON CONFLICT (sku_id) DO UPDATE SET is_enabled = true, price = EXCLUDED.price`,
     [L3_SKU_A_ID, L3_CATEGORY_ID, SKU_A_PRICE, L3_SKU_B_ID, SKU_B_PRICE],
   );

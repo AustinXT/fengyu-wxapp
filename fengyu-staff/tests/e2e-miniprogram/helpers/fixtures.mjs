@@ -365,12 +365,12 @@ export async function createTestPendingOfflineOrder({ amount = 100 } = {}) {
          (sale_item_id, sale_order_id, store_id, item_direction,
           product_name, sku_spec_name, product_type,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          service_fee, is_shengmei, is_experience, is_recharge_card)
+          service_fee, is_shengmei, is_experience)
        VALUES
          ($1, $2, $3, '购买',
           'L3 测试商品', '标准规格', '单品',
           $4, 1, $4, $4, 0,
-          0, false, false, false)`,
+          0, false, false)`,
       [itemId, orderId, client.storeId, amount],
     );
   });

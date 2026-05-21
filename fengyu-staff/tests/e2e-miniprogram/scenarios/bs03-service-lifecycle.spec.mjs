@@ -78,13 +78,13 @@ async function createTreatmentCardAndServiceOrder() {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          service_fee, is_shengmei, is_experience, is_recharge_card)
+          service_fee, is_shengmei, is_experience)
        VALUES
          ($1, $2, $3, '购买',
           'L3 测试疗程卡', '5次卡', '疗程卡',
           5, 5,
           1500, 1, 1500, 1500, 1500,
-          0, false, false, false)`,
+          0, false, false)`,
       [saleItemId, saleOrderId, TEST_STORE_ID],
     );
 
