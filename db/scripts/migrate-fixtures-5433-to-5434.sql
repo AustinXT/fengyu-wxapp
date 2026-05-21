@@ -212,7 +212,7 @@ INSERT INTO product_skus
    category_id, is_shengmei, market_scope, is_enabled, is_experience, is_recharge_card,
    created_at, updated_at)
 VALUES
-  ('FY-FIX-SKU-TRIAL',    '单品',  'Fixture 体验卡 ¥99 1次',     99.00, NULL, 1, 0, 0,
+  ('FY-FIX-SKU-TRIAL',    '疗程卡', 'Fixture 体验卡 ¥99 1次',     99.00, NULL, 1, 0, 0,
     'b8299c9a-42d9-4933-a2ab-629902fff514', NULL, NULL, true, true,  false, NOW(), NOW()),
   ('FY-FIX-SKU-BUNDLE-A', '疗程卡','Fixture 套餐子 SKU A ¥100', 100.00, NULL, 1, 0, 0,
     'd303ac8871eafd97',                     NULL, NULL, true, false, false, NOW(), NOW()),

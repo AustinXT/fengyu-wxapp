@@ -64,7 +64,7 @@ export const productSkus = pgTable(
     /** 标价/零售价（开单时快照到 sale_items.unit_price） */
     price: numeric("price", { precision: 10, scale: 2 }).notNull(),
     specialPrice: numeric("special_price", { precision: 10, scale: 2 }),
-    /** 疗程次数：疗程卡≥2，单品=1，家居产品=null */
+    /** 疗程次数：疗程卡≥1（含原单次=1），家居产品=null */
     sessionCount: integer("session_count"),
     sortOrder: integer("sort_order").notNull().default(0),
     serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),

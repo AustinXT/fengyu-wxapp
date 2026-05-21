@@ -628,7 +628,7 @@ export const confirmOfflinePayment = withPermission(
         }
       }
 
-      // 设置单品到期日（确认收款即视为卡生效，1 年有效期；部分确认也设置，避免后续补款无触发点）
+      // 设置卡到期日（确认收款即视为卡生效，1 年有效期；部分确认也设置，避免后续补款无触发点）
       await tx.execute(sql`
         UPDATE sale_items
         SET expire_date = (NOW() + INTERVAL '1 year')::date,
@@ -935,7 +935,7 @@ export const createOrder = withPermission(
     skuId: string
     productName: string
     skuSpecName: string
-    productType: '疗程卡' | '单品' | '家居产品'
+    productType: '疗程卡' | '家居产品'
     sessionCount: number | null
     unitPrice: string
     unitRealPrice: string
@@ -1506,15 +1506,14 @@ export const createOrder = withPermission(
  *
  * 业务流程：
  * 1. 锁住 convertOutSaleItemIds 对应 sale_items 行（FOR UPDATE），校验 store_id / item_direction / 状态
- * 2. 计算转出折抵金额 totalOut = sum(unit_real_price × 可折抵数量)
- *    - 疗程卡：remaining_sessions
- *    - 单品：quantity - COALESCE(picked_up_quantity, 0)
+ * 2. 计算转出折抵金额 totalOut = sum(unit_real_price × remaining_sessions)
+ *    - 仅疗程卡可折抵（含原"体验卡单品"=1 次卡）；放开后不再要求 is_experience
  * 3. 计算转入应付金额 totalIn = sum(sku.price × quantity)
  * 4. priceDiff = totalIn - totalOut
  *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'
  *    - priceDiff = 0：不收款，status='已支付'
  *    - priceDiff < 0：差额 UPSERT 到 prepaid_cards，INSERT card_transactions('充值')
- * 5. 原子标记转出行已耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
+ * 5. 原子标记转出行已耗尽：疗程卡 remaining_sessions=0
  * 6. INSERT 转出行（sale_amount/received 为负折抵，item_direction='转出'，ref_sale_item_id）
  * 7. INSERT 转入行（item_direction='转入'，sale_amount/received=转入金额）
  */
@@ -1537,7 +1536,7 @@ export const createConversionOrder = withPermission(
     skuId: string
     productName: string
     skuSpecName: string
-    productType: '疗程卡' | '单品' | '家居产品'
+    productType: '疗程卡' | '家居产品'
     sessionCount: number | null
     unitPrice: string
     quantity: number
@@ -1597,7 +1596,7 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 锁住转出候选行（FOR UPDATE）并 JOIN product_categories 以识别"体验卡单品"
+      // 1. 锁住转出候选行（FOR UPDATE）
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -1641,7 +1640,7 @@ export const createConversionOrder = withPermission(
         skuId: string | null
         productName: string | null
         skuSpecName: string | null
-        productType: '疗程卡' | '单品' | '家居产品' | null
+        productType: '疗程卡' | '家居产品' | null
         sessionCount: number | null
         unitPrice: string
         unitRealPrice: string
@@ -1665,15 +1664,12 @@ export const createConversionOrder = withPermission(
         const unit = Number(row.unit_real_price)
         const productType = row.product_type as string
 
+        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
           if (rem <= 0) throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
           qty = rem
-        } else if (productType === '单品' && row.is_experience === true) {
-          const remQty = Number(row.quantity) - Number(row.picked_up_quantity ?? 0)
-          if (remQty <= 0) throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
-          qty = remQty
         } else {
           throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
@@ -1833,7 +1829,7 @@ export const createConversionOrder = withPermission(
           isExperience: out.isExperience,
         })
 
-        // 原子标记耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
+        // 原子标记耗尽：疗程卡 remaining_sessions=0（单品合并后转出行恒为疗程卡）
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
@@ -1843,18 +1839,6 @@ export const createConversionOrder = withPermission(
                 eq(saleItems.saleItemId, out.refSaleItemId),
                 eq(saleItems.storeId, data.storeId),
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
-              ),
-            )
-          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
-        } else if (out.productType === '单品') {
-          const upd = await tx
-            .update(saleItems)
-            .set({ pickedUpQuantity: sql`${saleItems.quantity}` })
-            .where(
-              and(
-                eq(saleItems.saleItemId, out.refSaleItemId),
-                eq(saleItems.storeId, data.storeId),
-                sql`${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0) >= ${out.quantity}`,
               ),
             )
           if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')

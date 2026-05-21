@@ -595,7 +595,7 @@ export const getSkusByProductId = withPermission(
   },
 )
 
-const VALID_PRODUCT_TYPES = ['疗程卡', '单品', '家居产品'] as const
+const VALID_PRODUCT_TYPES = ['疗程卡', '家居产品'] as const
 
 export const createSku = withPermission(
   'product:create',
@@ -1504,7 +1504,7 @@ export interface OrderPickerSku {
   skuId: string
   categoryId: string
   categoryName: string
-  productType: '疗程卡' | '单品' | '家居产品'
+  productType: '疗程卡' | '家居产品'
   specName: string
   price: string
   specialPrice: string | null
@@ -1524,7 +1524,7 @@ export interface OrderPickerCategory {
 export interface OrderPickerBundleSkuRef {
   skuId: string
   specName: string
-  productType: '疗程卡' | '单品' | '家居产品'
+  productType: '疗程卡' | '家居产品'
   /** 疗程卡次数（非疗程卡为 null），开单时需快照到 sale_items.session_count */
   sessionCount: number | null
   price: string

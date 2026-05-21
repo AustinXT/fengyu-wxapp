@@ -135,7 +135,7 @@
       "spec_name": "Fixture 体验卡 ¥99 1次",
       "price": 99.00,
       "session_count": 1,
-      "product_type": "单品",
+      "product_type": "疗程卡",
       "is_experience": true,
       "_use": "链路 25 体验卡下单（trial-card-picker）"
     },

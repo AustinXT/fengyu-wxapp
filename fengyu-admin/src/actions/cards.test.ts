@@ -373,26 +373,27 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(row.deductibleAmount).toBe('1000.00')
   })
 
-  it('体验卡单品：deductibleAmount = unitRealPrice × (quantity - pickedUp)，remainingSessions=null', async () => {
+  it('原体验卡单品（合并后=疗程卡 1 次）：按 remaining_sessions 折抵，remainingQty=null', async () => {
+    // 2026-05-21 单品合并：原"体验卡单品"已并入疗程卡，统一走 remaining_sessions 口径
     mockSelectRows([{
       saleItemId: 'si-2',
       productName: '体验项目',
       skuSpecName: '单次',
-      productType: '单品',
-      remainingSessions: null,
-      quantity: 3,
-      pickedUpQuantity: 1,
+      productType: '疗程卡',
+      remainingSessions: 2,
+      quantity: 1,
+      pickedUpQuantity: 0,
       unitRealPrice: '99.00',
       productKind: '体验卡',
     }])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
-    expect(row.productType).toBe('单品')
-    expect(row.remainingSessions).toBeNull()
-    expect(row.remainingQty).toBe(2)
+    expect(row.productType).toBe('疗程卡')
+    expect(row.remainingSessions).toBe(2)
+    expect(row.remainingQty).toBeNull()
     expect(row.deductibleAmount).toBe('198.00')
   })
 
-  it('疗程卡 + 体验卡单品合并列表：两种卡同时返回', async () => {
+  it('多张疗程卡合并列表：均按 remaining_sessions 返回', async () => {
     mockSelectRows([
       {
         saleItemId: 'si-1', productName: '疗程A', skuSpecName: '10次',
@@ -401,13 +402,14 @@ describe('getCustomerHeldCards — 数据映射', () => {
       },
       {
         saleItemId: 'si-2', productName: '体验B', skuSpecName: '单次',
-        productType: '单品', remainingSessions: null, quantity: 2,
+        productType: '疗程卡', remainingSessions: 2, quantity: 1,
         pickedUpQuantity: 0, unitRealPrice: '99.00', productKind: '体验卡',
       },
     ])
     const rows = await getCustomerHeldCards('user-1', 'store-1')
     expect(rows).toHaveLength(2)
-    expect(rows.map((r) => r.productType).sort()).toEqual(['单品', '疗程卡'])
+    expect(rows.map((r) => r.productType)).toEqual(['疗程卡', '疗程卡'])
+    expect(rows.map((r) => r.deductibleAmount).sort()).toEqual(['1000.00', '198.00'])
   })
 
   it('空结果：顾客无可折抵卡 → 返回空数组', async () => {
@@ -416,14 +418,15 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(rows).toEqual([])
   })
 
-  it('pickedUpQuantity = null 时按 0 处理（remainingQty = quantity）', async () => {
+  it('remainingSessions = null 时按 0 处理（deductibleAmount=0.00）', async () => {
     mockSelectRows([{
-      saleItemId: 'si-3', productName: '体验C', skuSpecName: '单次',
-      productType: '单品', remainingSessions: null, quantity: 5,
-      pickedUpQuantity: null, unitRealPrice: '100.00', productKind: '体验卡',
+      saleItemId: 'si-3', productName: '疗程C', skuSpecName: '单次',
+      productType: '疗程卡', remainingSessions: null, quantity: 1,
+      pickedUpQuantity: null, unitRealPrice: '100.00', productKind: '护理项目',
     }])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
-    expect(row.remainingQty).toBe(5)
-    expect(row.deductibleAmount).toBe('500.00')
+    expect(row.remainingSessions).toBe(0)
+    expect(row.remainingQty).toBeNull()
+    expect(row.deductibleAmount).toBe('0.00')
   })
 })

@@ -181,7 +181,7 @@ export const saleItems = pgTable(
     productName: text("product_name"),
     /** 规格名称快照 */
     skuSpecName: text("sku_spec_name"),
-    /** 商品类型快照（疗程卡/单品/家居产品） */
+    /** 商品类型快照（疗程卡/家居产品） */
     productType: productTypeEnum("product_type"),
     /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
     sessionCount: integer("session_count"),

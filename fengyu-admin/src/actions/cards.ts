@@ -224,10 +224,9 @@ export const getCardsPaginated = withPermission(
  * 来源口径：sale_items 上 item_direction='购买'，且归属该顾客（通过 sale_orders
  * 反向 JOIN client_user_id）、归属指定 store_id；状态为"已支付/已完成"的订单。
  *
- * 两类折抵对象：
- *   1. 疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
- *   2. 单品 (product_type='单品') AND sale_items.is_experience=true
- *      AND quantity - COALESCE(picked_up_quantity,0) > 0
+ * 折抵对象（2026-05-21 单品合并后放开）：
+ *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
+ *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
  *
  * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
  */
@@ -235,13 +234,13 @@ export interface HeldCardCandidate {
   saleItemId: string
   productName: string | null
   skuSpecName: string | null
-  productType: '疗程卡' | '单品' | '家居产品'
-  /** 剩余次数（疗程卡）；单品返回 null */
+  productType: '疗程卡' | '家居产品'
+  /** 剩余次数（疗程卡） */
   remainingSessions: number | null
-  /** 剩余可提货数量（单品）；疗程卡返回 null */
+  /** 剩余可提货数量；疗程卡返回 null */
   remainingQty: number | null
   unitRealPrice: string
-  /** 折抵金额 = unitRealPrice × (疗程卡:remainingSessions | 单品:remainingQty) */
+  /** 折抵金额 = unitRealPrice × remainingSessions */
   deductibleAmount: string
 }
 
@@ -278,47 +277,25 @@ export const getCustomerHeldCards = withPermission(
         eq(saleOrders.clientUserId, clientUserId),
         eq(saleItems.itemDirection, '购买'),
         or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
-        or(
-          and(
-            eq(saleItems.productType, '疗程卡'),
-            sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
-          ),
-          and(
-            eq(saleItems.productType, '单品'),
-            // capability 列判定（2026-04-26 ticket）：取代旧的 join product_categories
-            // + productKind = '体验卡' 字面量；行级快照在开单时拷贝自 product_skus.is_experience
-            eq(saleItems.isExperience, true),
-            sql`${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0) > 0`,
-          ),
-        ),
+        // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
+        eq(saleItems.productType, '疗程卡'),
+        sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
       ),
     )
 
+  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
-    if (r.productType === '疗程卡') {
-      const remSess = r.remainingSessions ?? 0
-      return {
-        saleItemId: r.saleItemId,
-        productName: r.productName,
-        skuSpecName: r.skuSpecName,
-        productType: '疗程卡' as const,
-        remainingSessions: remSess,
-        remainingQty: null,
-        unitRealPrice: r.unitRealPrice,
-        deductibleAmount: (unit * remSess).toFixed(2),
-      }
-    }
-    const remQty = r.quantity - (r.pickedUpQuantity ?? 0)
+    const remSess = r.remainingSessions ?? 0
     return {
       saleItemId: r.saleItemId,
       productName: r.productName,
       skuSpecName: r.skuSpecName,
-      productType: r.productType as HeldCardCandidate['productType'],
-      remainingSessions: null,
-      remainingQty: remQty,
+      productType: '疗程卡' as const,
+      remainingSessions: remSess,
+      remainingQty: null,
       unitRealPrice: r.unitRealPrice,
-      deductibleAmount: (unit * remQty).toFixed(2),
+      deductibleAmount: (unit * remSess).toFixed(2),
     }
   })
   },

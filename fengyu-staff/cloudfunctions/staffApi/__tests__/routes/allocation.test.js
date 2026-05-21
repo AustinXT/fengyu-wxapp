@@ -723,7 +723,7 @@ describe('allocation.suggest', () => {
       }])
       .mockResolvedValueOnce([{ cnt: 3 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
       ])
       .mockResolvedValueOnce([])  // 无提成配置
 
@@ -747,7 +747,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{ employee_id: 'emp-b2', name: '王五', department: '咨询部' }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
       ])
       .mockResolvedValueOnce([])
 
@@ -788,7 +788,7 @@ describe('allocation.suggest', () => {
       }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
       ])
 
     await allocationRoutes.suggest(ctx)

@@ -1410,7 +1410,7 @@ async function cancel(ctx) {
 
 /**
  * 获取可预约项目列表
- * 查询已支付订单中有剩余次数的项目(疗程卡/单品)
+ * 查询已支付订单中有剩余次数的项目(疗程卡)
  */
 async function appointableItems(ctx) {
   const { userId } = ctx.auth
@@ -1446,7 +1446,7 @@ async function appointableItems(ctx) {
     WHERE o.client_user_id = $1
       AND o.status = '已支付'
       ${activeFilter}
-      AND si.product_type IN ('疗程卡', '单品')
+      AND si.product_type = '疗程卡'
     ORDER BY o.paid_at DESC, si.sale_item_id
   `, [userId])
 

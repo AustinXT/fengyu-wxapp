@@ -114,7 +114,7 @@ describe('product.skuList', () => {
         is_bundle: false,
       },
       {
-        sku_id: 'sku-recharge', category_id: 'cat-card', product_type: '单品',
+        sku_id: 'sku-recharge', category_id: 'cat-card', product_type: '疗程卡',
         spec_name: '储值卡', price: '5000', special_price: null,
         session_count: null, sort_order: 2, service_fee: '0', is_shengmei: false,
         is_experience: false, is_recharge_card: true,
@@ -570,7 +570,7 @@ describe('product.shopInit', () => {
     // 3) _queryExperienceSkus — 返回两行体验卡 SKU
     pg.query.mockResolvedValueOnce([
       {
-        sku_id: 'exp-1', category_id: 'cat-trial', product_type: '单品',
+        sku_id: 'exp-1', category_id: 'cat-trial', product_type: '疗程卡',
         spec_name: 'Fixture 体验卡 ¥99 1次', price: '99', special_price: null,
         session_count: 1, sort_order: 1, service_fee: '0', is_shengmei: false,
         is_experience: true, is_recharge_card: false,
@@ -578,7 +578,7 @@ describe('product.shopInit', () => {
         is_bundle: false,
       },
       {
-        sku_id: 'exp-2', category_id: 'cat-trial', product_type: '单品',
+        sku_id: 'exp-2', category_id: 'cat-trial', product_type: '疗程卡',
         spec_name: '法米索呵护膏', price: '360', special_price: null,
         session_count: 1, sort_order: 2, service_fee: '0', is_shengmei: false,
         is_experience: true, is_recharge_card: false,

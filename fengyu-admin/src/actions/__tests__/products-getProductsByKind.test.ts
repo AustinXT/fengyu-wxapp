@@ -177,7 +177,7 @@ describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
       sku: {
         skuId: overrides.skuId,
         categoryId: overrides.categoryId,
-        productType: '单品',
+        productType: '家居产品',
         specName: overrides.specName,
         price: '100',
         specialPrice: null,
@@ -301,7 +301,7 @@ describe("getProductsByKind('体验卡') — SKU capability 列过滤", () => {
         sku: {
           skuId: 'SKU-MISPLACED-TRIAL',
           categoryId: 'cat-hr-01',
-          productType: '单品',
+          productType: '家居产品',
           specName: '体验单次',
           price: '99',
           specialPrice: null,

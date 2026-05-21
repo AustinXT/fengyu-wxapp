@@ -76,7 +76,7 @@ function seed(): void {
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID}', '${SOID}', '${STORE_ID}', '购买', '${SKU_ID}',
-      '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '单品', ${INITIAL_SESSIONS}, ${INITIAL_SESSIONS},
+      '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '疗程卡', ${INITIAL_SESSIONS}, ${INITIAL_SESSIONS},
       100, ${QUANTITY}, 100, 1000, 0,
       0, false, NOW(), NOW()
     )

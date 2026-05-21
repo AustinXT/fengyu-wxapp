@@ -177,7 +177,7 @@ export async function createTestSaleOrder({
       ]
     )
 
-    // sale_items 一行：单品 productType / sale_amount=received=totalAmount
+    // sale_items 一行：疗程卡 productType / sale_amount=received=totalAmount
     const itemId = `${saleOrderId}_ITEM_1`
     await client.query(
       `INSERT INTO sale_items (
@@ -187,7 +187,7 @@ export async function createTestSaleOrder({
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               NULL, $4, '默认', '单品'::product_type,
+               NULL, $4, '默认', '疗程卡'::product_type,
                $5, 1, $5, $5, $5,
                false)`,
       [itemId, saleOrderId, storeId, `${NS}_测试商品`, totalAmount]

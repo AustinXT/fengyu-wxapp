@@ -147,7 +147,6 @@ export default function SkuCreatePageClient({
               <Select name="productType" defaultValue="">
                 <option value="" disabled>请选择</option>
                 <option value="疗程卡">疗程卡</option>
-                <option value="单品">单品</option>
                 <option value="家居产品">家居产品</option>
               </Select>
             </div>
@@ -217,7 +216,7 @@ export default function SkuCreatePageClient({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">次数</label>
-              <Input name="sessionCount" type="number" min={1} placeholder="疗程卡必填，单品默认1" />
+              <Input name="sessionCount" type="number" min={1} placeholder="疗程卡必填（单次填 1）" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">排序</label>

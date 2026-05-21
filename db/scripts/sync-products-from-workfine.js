@@ -42,18 +42,19 @@ function generateId(...parts) {
 function generateSkuDisplayName(productType, sessionCount, specification = null) {
   if (productType === "家居产品") {
     return specification || "院装";
-  } else if (productType === "单品") {
-    return "单次体验";
   } else {
-    return sessionCount ? `${sessionCount}次卡` : "疗程卡";
+    // 疗程卡（含原"单品"=1次）：有次数显示"N次卡"，否则按单次体验
+    if (sessionCount && sessionCount > 1) return `${sessionCount}次卡`;
+    return "单次体验";
   }
 }
 
 // 映射产品类型
+// 2026-05-21 单品合并：WorkFine "单品" → 疗程卡（1 次），上游不再产出 '单品' 枚举值
 function mapProductType(productTypeRaw) {
   if (!productTypeRaw) return "家居产品";
   if (productTypeRaw.includes("疗程卡")) return "疗程卡";
-  if (productTypeRaw.includes("单品")) return "单品";
+  if (productTypeRaw.includes("单品")) return "疗程卡";
   return "疗程卡";
 }
 

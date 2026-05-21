@@ -180,7 +180,7 @@ export async function cascadeRefund(
 
   // ── 5) sale_items.picked_up_quantity 反向恢复 ─────────────────────
   // 退款不删除 pickup_records 历史行（审计保留），仅按 sessionCount 反向减少 sale_items 累计列。
-  // 单品/家居：sessionCount 通常 = 退款数量；疗程卡走 remaining_sessions（不在此处理）
+  // 家居产品：sessionCount 通常 = 退款数量；疗程卡走 remaining_sessions（不在此处理）
   let rolledBackPickups = 0
   {
     const qty = sessionCount && sessionCount > 0 ? sessionCount : 1

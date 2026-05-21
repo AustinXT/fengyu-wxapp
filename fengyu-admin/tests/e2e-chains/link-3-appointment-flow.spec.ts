@@ -99,7 +99,7 @@ async function ensurePaidSaleItemFixture() {
   const existing = dbQuery(
     `SELECT si.sale_item_id FROM sale_items si JOIN sale_orders so ON so.sale_order_id = si.sale_order_id ` +
     `WHERE so.client_user_id='${FIX_CLIENT_ID}' AND so.status IN ('已支付','部分支付') ` +
-    `AND si.item_direction='购买' AND si.product_type IN ('疗程卡','单品') ` +
+    `AND si.item_direction='购买' AND si.product_type = '疗程卡' ` +
     `AND si.remaining_sessions > 0 ` +
     `AND COALESCE(si.paid_sessions, 0) >= si.session_count - si.remaining_sessions + 1 ` +
     `AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE) ` +

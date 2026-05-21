@@ -221,7 +221,7 @@ test('链路 25：体验卡下单', async ({ page }) => {
     actual: iSess,
   })
   verdicts.push({
-    check: 'sale_items.product_type 落库（trial 走"单品"路径）',
+    check: 'sale_items.product_type 落库（trial 走"疗程卡"路径，单品已合并）',
     verdict: iPType ? 'PASS' : 'FAIL',
     actual: iPType,
   })

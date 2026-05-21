@@ -42,11 +42,6 @@
             color="rgba(255,255,255,0.2)"
             text-color="#FFF"
           >疗程卡</van-tag>
-          <van-tag
-            wx:elif="{{item.productType === '单品'}}"
-            color="rgba(255,255,255,0.2)"
-            text-color="#FFF"
-          >单品</van-tag>
         </view>
         <text class="tc-card__sku">{{item.skuSpecName}}</text>
       </view>

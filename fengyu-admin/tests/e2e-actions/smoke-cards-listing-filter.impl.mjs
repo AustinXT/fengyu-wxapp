@@ -4,8 +4,8 @@
  * 必须由 `bun --preload _admin-preload.mjs` 在 cwd=fengyu-admin/ 下运行。
  *
  * 断言（基础过滤口径，admin 视角无 scope）：
- *   [A] 疗程卡 + 购买 + remaining=10  → 出现在 /cards
- *   [B] 单品   + 购买 + remaining=10  → 不出现（productType 过滤）
+ *   [A] 疗程卡   + 购买 + remaining=10  → 出现在 /cards
+ *   [B] 家居产品 + 购买 + remaining=10  → 不出现（productType 过滤）
  *   [C] 疗程卡 + 转出 + remaining=10  → 不出现（itemDirection 过滤）
  *   [D] 疗程卡 + 购买 + remaining=NULL → 不出现（isNotNull 过滤）
  *   [E] 疗程卡 + 购买 + remaining=0   → 出现（基础过滤含已耗尽；状态筛选才区分）
@@ -41,7 +41,7 @@ process.env.TEST_ADMIN_EMP_ID = TEST_MANAGER_EMP_ID
 const ORDER_ID = `${NS}_CARDS` // 短前缀；sale_order_id 最多 30 字符
 const CASES = [
   { suffix: 'A', productType: '疗程卡', itemDirection: '购买', remaining: 10, expectVisible: true },
-  { suffix: 'B', productType: '单品',   itemDirection: '购买', remaining: 10, expectVisible: false },
+  { suffix: 'B', productType: '家居产品', itemDirection: '购买', remaining: 10, expectVisible: false },
   { suffix: 'C', productType: '疗程卡', itemDirection: '转出', remaining: 10, expectVisible: false },
   { suffix: 'D', productType: '疗程卡', itemDirection: '购买', remaining: null, expectVisible: false },
   { suffix: 'E', productType: '疗程卡', itemDirection: '购买', remaining: 0,  expectVisible: true },

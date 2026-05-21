@@ -161,18 +161,19 @@ function processItems(rows, existingItemIds, customerMap, storeMap) {
     let sessionCount = null
     let remainingSessions = null
 
+    // 2026-05-21 单品合并：单品并入疗程卡（1 次卡），不再产出 '单品' 枚举值
     if (rawType === '疗程卡' || rawType === '自定义-疗程') {
       productType = '疗程卡'
       sessionCount = Math.round(parseFloat(row.total_sessions) || 0)
       const computed = sessionCount - (parseFloat(row.used_sessions) || 0)
       remainingSessions = Math.max(0, Math.round(computed))
     } else if (rawType === '单品' || rawType === '自定义-单品') {
-      productType = '单品'
+      productType = '疗程卡'
       sessionCount = 1
       remainingSessions = 0
     } else {
-      // NULL 或其他类型，作为单品处理
-      productType = '单品'
+      // NULL 或其他类型，作为 1 次疗程卡处理
+      productType = '疗程卡'
       sessionCount = 1
       remainingSessions = 0
     }

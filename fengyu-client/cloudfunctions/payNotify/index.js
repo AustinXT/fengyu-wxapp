@@ -235,7 +235,7 @@ exports.main = async (event) => {
     const paymentMethod = paymentMethodInput
       || (order.payment_method === '支付宝' ? '支付宝' : '微信')
 
-    // 开启事务：更新订单 + 设置单品到期日 + 自动创建业绩分配
+    // 开启事务：更新订单 + 充值入账 + 自动创建业绩分配
     const client = await pg.connect()
     try {
       await client.query('BEGIN')
@@ -385,7 +385,7 @@ exports.main = async (event) => {
       // 部分支付也需要触发：让顾客刚回款的部分立即可消费
       await recalcPaidSessionsForOrder(client, targetOrderNo)
 
-      // 后续业务动作（单品到期日 / 充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
+      // 后续业务动作（充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
       // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
       if (!fullyPaid) {
         await client.query('COMMIT')
@@ -393,15 +393,7 @@ exports.main = async (event) => {
         return { code: 'SUCCESS', message: '部分支付已到账' }
       }
 
-      // 2. 设置单品到期日（paid_at + 1 year）——以原销售单为准
-      await client.query(
-        `UPDATE sale_items
-         SET expire_date = ($1::date + interval '1 year')::date
-         WHERE sale_order_id = $2
-           AND product_type = '单品'
-           AND expire_date IS NULL`,
-        [now, targetOrderNo]
-      )
+      // 2. 2026-05-21 单品合并：单品 1 年有效期自动赋值已移除（原在此按 product_type='单品' 写 expire_date）
 
       // 3a. 充值卡入账（2026-05-20 重构）
       // 识别 sale_orders.sale_order_type='充值单'；面值直接取 sale_orders.total_amount，

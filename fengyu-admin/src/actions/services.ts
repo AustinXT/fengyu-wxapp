@@ -241,7 +241,7 @@ export const getServiceItems = withPermission(
   },
 )
 
-/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡/单品） */
+/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡） */
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
@@ -275,7 +275,7 @@ export const getAvailableSaleItems = withPermission(
     WHERE o.client_user_id = ${clientUserId}
       AND o.status IN ('已支付', '部分支付')
       AND si.item_direction = '购买'
-      AND si.product_type IN ('疗程卡', '单品')
+      AND si.product_type = '疗程卡'
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
       AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)

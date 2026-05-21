@@ -6,9 +6,9 @@
  *   total_refundable    = Σ(refundable_per_item)
  *   final_refund_amount = max(0, total_refundable − handling_fee)
  *
- * 未使用数量按 sale_items.product_type 区分：
- *   疗程卡：remaining_sessions
- *   单品 / 家居产品：quantity − picked_up_quantity
+ * 未使用数量按 sale_items.product_type 区分（2026-05-21 单品合并后）：
+ *   疗程卡（含原单品=1 次卡）：remaining_sessions
+ *   家居产品：quantity − picked_up_quantity
  */
 
 /**

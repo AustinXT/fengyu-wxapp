@@ -278,7 +278,7 @@ export default function ServiceCreatePageClient({
               {availableItems.length === 0 ? (
                 <div className="text-center py-8 text-[#999999]">
                   <p>该顾客暂无可用服务项目</p>
-                  <p className="text-xs mt-1">需先有已支付订单的疗程卡或单品项目</p>
+                  <p className="text-xs mt-1">需先有已支付订单的疗程卡项目</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">

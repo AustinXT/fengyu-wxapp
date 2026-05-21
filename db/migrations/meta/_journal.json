@@ -351,6 +351,13 @@
       "when": 1779369332543,
       "tag": "0049_clammy_marvel_boy",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1779372539624,
+      "tag": "0050_green_tyrannus",
+      "breakpoints": true
     }
   ]
 }

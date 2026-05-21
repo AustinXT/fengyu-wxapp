@@ -191,7 +191,6 @@ export default function SkuDetailPageClient({
                 <Select name="productType" defaultValue={sku.productType}>
                   <option value="" disabled>请选择</option>
                   <option value="疗程卡">疗程卡</option>
-                  <option value="单品">单品</option>
                   <option value="家居产品">家居产品</option>
                 </Select>
               </div>
@@ -277,7 +276,7 @@ export default function SkuDetailPageClient({
                   type="number"
                   min={1}
                   defaultValue={sku.sessionCount ?? ""}
-                  placeholder="疗程卡必填，单品默认1"
+                  placeholder="疗程卡必填（单次填 1）"
                 />
               </div>
               <div className="space-y-2">

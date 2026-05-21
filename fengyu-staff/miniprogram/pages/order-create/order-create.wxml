@@ -41,7 +41,7 @@
           >
             <view class="trial-card-main">
               <text class="trial-card-name">{{item.spuName}}</text>
-              <text class="trial-card-meta">单品{{item.sessionCount ? ' · ' + item.sessionCount + '次' : ''}}</text>
+              <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + '次卡' : '单次'}}</text>
             </view>
             <view class="trial-card-right">
               <text class="trial-card-price">¥{{item.price}}</text>

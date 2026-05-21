@@ -77,7 +77,7 @@ Page({
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
-          // 疗程卡 + 单品都可预约；必须本店可用 + 有已付未用次数
+          // 疗程卡（含原单品=1 次卡）可预约；必须本店可用 + 有已付未用次数
           const itemStoreId = order.storeId || '';
           const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
           if (isCrossStore) continue;

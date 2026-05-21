@@ -33,7 +33,7 @@ const MOCK_ORDERS = [
       {
         saleItemId: 'XSLSH-WX-20260205002',
         itemName: '安吉丽眼部护理',
-        spec: '单品',
+        spec: '单次',
         unitPrice: '1200.00',
         quantity: 1,
         totalPrice: '1200.00',
@@ -68,7 +68,7 @@ const MOCK_ORDERS = [
       {
         saleItemId: 'XSLSH-WX-20260210001',
         itemName: '明眸祛皱疗程',
-        spec: '单品',
+        spec: '单次',
         unitPrice: '3200.00',
         quantity: 1,
         totalPrice: '3200.00',

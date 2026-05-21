@@ -268,7 +268,7 @@ export default function OrderDetailPageClient({
                   // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
                   const sessionCell = item.sessionCount !== null
                     ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
-                    : "单品"
+                    : "家居产品"
                   return (
                   <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "-"}</td>

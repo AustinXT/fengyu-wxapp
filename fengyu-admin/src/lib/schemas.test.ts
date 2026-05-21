@@ -178,7 +178,7 @@ describe('createOrderSchema', () => {
   it('多件商品通过', () => {
     const items = [
       validItem,
-      { ...validItem, skuId: 'sku-002', productType: '单品' as const, sessionCount: null, quantity: 2 },
+      { ...validItem, skuId: 'sku-002', productType: '家居产品' as const, sessionCount: null, quantity: 2 },
     ]
     expect(createOrderSchema.safeParse({ ...validOrder, items }).success).toBe(true)
   })

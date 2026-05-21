@@ -787,11 +787,11 @@ function mapProductKind(raw) {
   return '护理项目'
 }
 
-/** 映射产品类型 */
+/** 映射产品类型（2026-05-21 单品合并：单品 → 疗程卡 1 次，不再产出 '单品'） */
 function mapProductType(raw) {
   if (!raw) return '家居产品'
   if (raw.includes('疗程')) return '疗程卡'
-  if (raw.includes('单品')) return '单品'
+  if (raw.includes('单品')) return '疗程卡'
   return '疗程卡'
 }
 
@@ -958,8 +958,9 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       // 创建 SKU
       for (const sku of group.skus) {
         const productType = mapProductType(trim(sku.product_type_raw))
-        const sessionCount = productType === '单品' ? 1 : (parseInt(sku.session_count) || null)
-        const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : (productType === '单品' ? '单次体验' : '疗程卡')
+        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        const sessionCount = productType === '家居产品' ? null : (parseInt(sku.session_count) || 1)
+        const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : '单次体验'
         const skuId = hashId('sku', productId, trim(sku.wf_item_id))
 
         await client.query(`
@@ -1062,7 +1063,8 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
         const isGift = toBool(item.is_gift_raw)
         const itemPrice = isGift ? 0 : (parseFloat(item.item_price) || 0)
         const productType = mapProductType(trim(item.product_type_raw))
-        const sessionCount = productType === '单品' ? 1 : (parseInt(item.session_count) || null)
+        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        const sessionCount = productType === '家居产品' ? null : (parseInt(item.session_count) || 1)
         const specName = trim(item.item_name) || '促销项'
         const skuId = hashId('sku', productId, trim(item.wf_item_id))
 

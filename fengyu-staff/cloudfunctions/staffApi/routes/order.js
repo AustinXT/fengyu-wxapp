@@ -209,17 +209,11 @@ async function deductPrepaidCardAtCreation(client, { saleOrderId, clientUserId, 
 
 /**
  * 全额储值卡抵扣订单"创建即结清"后的统一结算副作用，对齐 confirmOffline 的已支付分支：
- * 单品到期日 + 消费档位 + 客户分类 + 积分 + 分享礼。
+ * 消费档位 + 客户分类 + 积分 + 分享礼。
  * （paid_sessions 由各调用点已有的 recalcPaidSessionsForOrder 负责，此处不重复。）
+ * 2026-05-21 单品合并：单品 1 年有效期自动赋值已移除。
  */
 async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, receivedAmount, now }) {
-  // 单品到期日（paid_at + 1 年；卡确认即生效）
-  await client.query(
-    `UPDATE sale_items
-       SET expire_date = ($1::date + INTERVAL '1 year')
-     WHERE sale_order_id = $2 AND product_type = '单品' AND expire_date IS NULL`,
-    [now, saleOrderId]
-  )
   if (clientUserId) {
     await refreshSpendingTier(client, clientUserId)
     await recalcCustomerType(client, clientUserId)
@@ -1184,17 +1178,7 @@ async function confirmOffline(ctx) {
       }
     }
 
-    // 单品到期日写入（paid_at + 1年）——仅在本次转为 '已支付' 时触发
-    if (targetStatus === '已支付') {
-      await client.query(
-        `UPDATE sale_items
-         SET expire_date = ($1::date + INTERVAL '1 year')
-         WHERE sale_order_id = $2
-           AND product_type = '单品'
-           AND expire_date IS NULL`,
-        [now, saleOrderId]
-      )
-    }
+    // 2026-05-21 单品合并：单品 1 年有效期自动赋值已移除（原在此按 product_type='单品' 写 expire_date）
 
     // 充值卡入账（2026-05-20 重构）：识别 sale_orders.sale_order_type='充值单'
     // 面值直接读 order.total_amount（充值单专属语义，sale_items 0 行）
@@ -2246,7 +2230,7 @@ async function createRepayment(ctx) {
  *
  * 与 admin 侧 createConversionOrder 语义对齐：
  *   - 按 client_user_id + store_id 跨订单聚合候选卡（不再绑定单一原订单）
- *   - 整张卡折抵（疗程卡全部 remaining_sessions / 单品体验卡全部剩余数量）
+ *   - 整张卡折抵（疗程卡全部 remaining_sessions；单品已合并入疗程卡）
  *   - 差额>0：total_amount=差额，status='待支付'（线下走 confirmOffline 入账，线上走 payNotify）
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
@@ -2366,15 +2350,12 @@ async function createConversion(ctx) {
 
       const unit = Number(row.unit_real_price)
       const productType = row.product_type
+      // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
       let qty = 0
       if (productType === '疗程卡') {
         const rem = Number(row.remaining_sessions || 0)
         if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = rem
-      } else if (productType === '单品' && row.is_experience === true) {
-        const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
-        if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
-        qty = remQty
       } else {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
@@ -2507,7 +2488,7 @@ async function createConversion(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 6. 转出行 × N + 原子标记耗尽（疗程卡 remaining_sessions=0 / 单品 picked_up_quantity=quantity）
+    // 6. 转出行 × N + 原子标记耗尽（疗程卡 remaining_sessions=0；单品已合并入疗程卡）
     for (const d of outItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
@@ -2531,6 +2512,7 @@ async function createConversion(ctx) {
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
+      // 单品合并后转出行恒为疗程卡，统一置 remaining_sessions=0
       if (d.productType === '疗程卡') {
         const upd = await tx.query(
           `UPDATE sale_items
@@ -2538,18 +2520,6 @@ async function createConversion(ctx) {
            WHERE sale_item_id = $2
              AND store_id = $3
              AND COALESCE(remaining_sessions, 0) >= $4`,
-          [now, d.refSaleItemId, storeId, d.quantity]
-        )
-        if (upd.rowCount === 0) {
-          throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
-        }
-      } else if (d.productType === '单品') {
-        const upd = await tx.query(
-          `UPDATE sale_items
-             SET picked_up_quantity = quantity, updated_at = $1
-           WHERE sale_item_id = $2
-             AND store_id = $3
-             AND (quantity - COALESCE(picked_up_quantity, 0)) >= $4`,
           [now, d.refSaleItemId, storeId, d.quantity]
         )
         if (upd.rowCount === 0) {
@@ -2667,10 +2637,8 @@ async function createConversion(ctx) {
  * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, skuSpecName, productType,
  *                    remainingSessions, remainingQuantity, unitRealPrice, deductibleAmount }] }
  *
- * 口径与 admin getCustomerHeldCards 保持一致：
- *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
- *   - 体验类单品卡：product_type='单品' AND si.is_experience=true
- *     AND (quantity - picked_up_quantity) > 0
+ * 口径与 admin getCustomerHeldCards 保持一致（2026-05-21 单品合并后放开）：
+ *   - 疗程卡（含原"体验卡单品"=1 次卡）：product_type='疗程卡' AND remaining_sessions > 0
  */
 async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
@@ -2692,8 +2660,6 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              WHEN si.product_type = '单品' AND si.is_experience = true
-                THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
      FROM sale_items si
@@ -2702,11 +2668,8 @@ async function customerHeldCards(ctx) {
        AND si.store_id = $2
        AND si.item_direction = '购买'
        AND so.status IN ('已支付', '已完成')
-       AND (
-            (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '单品' AND si.is_experience = true
-              AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
-       )
+       AND si.product_type = '疗程卡'
+       AND COALESCE(si.remaining_sessions, 0) > 0
      ORDER BY si.sale_order_id DESC`,
     [clientUserId, storeId]
   )

@@ -559,7 +559,8 @@ describe('payNotify index.js', () => {
     expect(statusUpd[1][0]).toBe('部分支付')
     expect(Number(statusUpd[1][1])).toBe(100)
 
-    // 不应走到单品到期日 / 业绩分配（fullyPaid=false 提前 COMMIT）
+    // 不应走到到期日 / 业绩分配（fullyPaid=false 提前 COMMIT）
+    // 注：2026-05-21 单品合并后 expire_date 自动赋值整体移除，此守卫恒成立
     const expireUpd = mockClientQuery.mock.calls.find(
       (c) => /UPDATE sale_items[\s\S]*SET expire_date/.test(c[0])
     )

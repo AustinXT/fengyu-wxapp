@@ -100,7 +100,7 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
 export function bundleSkuToProductSku(args: {
   skuId: string
   specName: string
-  productType: '疗程卡' | '单品' | '家居产品'
+  productType: '疗程卡' | '家居产品'
   /** 疗程卡次数：必须透传到 ProductSku → cart → 开单 payload，
    *  否则服务端写 sale_items 时 remaining_sessions 为 null 会导致该卡永远无法核销 */
   sessionCount: number | null
