@@ -39,7 +39,10 @@ describe('staffApi 入口', () => {
         market_name: '测试市场',
         department: '美容部',
       }])
-      .mockResolvedValueOnce([{ role: 'manager' }]) // permission_roles
+      // permission_roles：manager 须落在合法 scope（门店），否则 requireManager 拒绝
+      .mockResolvedValueOnce([{ role: 'manager', scope_id: 'store-001', scope_type: '门店' }])
+      .mockResolvedValueOnce([{ store_id: 'store-001' }]) // expandScopeStoreIds（全角色）
+      .mockResolvedValueOnce([{ store_id: 'store-001' }]) // expandScopeStoreIds（manager 绑定）
   })
 
   test('缺少 action 返回 code: -1', async () => {
