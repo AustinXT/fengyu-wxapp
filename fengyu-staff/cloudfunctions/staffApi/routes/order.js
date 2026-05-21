@@ -715,20 +715,6 @@ async function create(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 原子 claim 优惠券
-    if (inputCouponId && clientUserId) {
-      const claimResult = await client.query(
-        `UPDATE user_coupons
-         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
-         WHERE coupon_id = $2 AND user_id = $3
-           AND status = '未使用' AND expire_at > NOW()`,
-        [saleOrderId, inputCouponId, clientUserId]
-      )
-      if (claimResult.rowCount !== 1) {
-        throw new Error('INVALID_PARAMS: 优惠券已失效')
-      }
-    }
-
     // ========== PR-2 状态机落地 ==========
     // 线上支付（微信/支付宝）保留原 '待支付'（不写 payments，等 pay/alipayPay 回调）
     // 线下/储值卡/无：按 paid + prepaid 与 total 的比较落地
@@ -778,6 +764,22 @@ async function create(ctx) {
         paidAtValue,
       ]
     )
+
+    // 原子 claim 优惠券
+    // 必须在 INSERT sale_orders 之后：user_coupons.used_sale_order_id → sale_orders.sale_order_id
+    // 的 FK 非 deferrable（立即校验），早于 INSERT 会因引用的订单尚不存在而 FK 违约。
+    if (inputCouponId && clientUserId) {
+      const claimResult = await client.query(
+        `UPDATE user_coupons
+         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
+         WHERE coupon_id = $2 AND user_id = $3
+           AND status = '未使用' AND expire_at > NOW()`,
+        [saleOrderId, inputCouponId, clientUserId]
+      )
+      if (claimResult.rowCount !== 1) {
+        throw new Error('INVALID_PARAMS: 优惠券已失效')
+      }
+    }
 
     // ========== PR-2 写 sale_order_payments 流水 ==========
     // 规则：
