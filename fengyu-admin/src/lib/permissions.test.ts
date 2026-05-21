@@ -26,7 +26,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
@@ -66,14 +66,32 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(adminActions).toContain('card_transaction:list')
   })
 
-  it('admin 不碰业务数据（无 sale_order:list/service/appointment 权限）', () => {
+  it('admin 拥有全部权限（== ALL_ACTIONS，含业务数据）', () => {
+    // 2026-05-21：admin 从"不碰业务数据"改为全开，修复单 admin 角色访问业务页
+    // 因 PERMISSION_DENIED 被生产构建脱敏后误显示 500 的问题。
     const adminActions = DEFAULT_PERMISSION_MATRIX.admin
-    expect(adminActions).not.toContain('sale_order:list')
-    expect(adminActions).not.toContain('sale_order:create')
-    expect(adminActions).not.toContain('service:list')
-    expect(adminActions).not.toContain('appointment:list')
-    expect(adminActions).not.toContain('customer:list')
-    expect(adminActions).not.toContain('sale_item:list')
+    // 业务数据权限现已具备
+    expect(adminActions).toContain('sale_order:list')
+    expect(adminActions).toContain('sale_order:create')
+    expect(adminActions).toContain('service:list')
+    expect(adminActions).toContain('appointment:list')
+    expect(adminActions).toContain('customer:list')
+    expect(adminActions).toContain('sale_item:list')
+    expect(adminActions).toContain('pickup_record:list')
+    expect(adminActions).toContain('allocation:save')
+    // admin 必须等于全量 action 集合（守护：新增 action 时勿漏 admin）
+    expect(new Set(adminActions)).toEqual(new Set(ALL_ACTIONS))
+  })
+
+  it('ALL_ACTIONS 是各角色的并集，且 admin 为所有角色的超集', () => {
+    const union = new Set(Object.values(DEFAULT_PERMISSION_MATRIX).flat())
+    expect(new Set(ALL_ACTIONS)).toEqual(union)
+    const adminSet = new Set(DEFAULT_PERMISSION_MATRIX.admin)
+    for (const [role, actions] of Object.entries(DEFAULT_PERMISSION_MATRIX)) {
+      for (const a of actions) {
+        expect(adminSet, `admin 缺少 ${role} 的 ${a}`).toContain(a)
+      }
+    }
   })
 
   it('manager 拥有业务操作权限', () => {
@@ -93,8 +111,11 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('allocation:list')
     expect(actions).toContain('sale_item:list')
     expect(actions).toContain('card_transaction:list')
+    // service:list：营业额分配页只读对账需看服务提成（2026-05-21 修 menu/page 不一致）
+    expect(actions).toContain('service:list')
     expect(actions).not.toContain('sale_order:create')
     expect(actions).not.toContain('allocation:save')
+    expect(actions).not.toContain('service:create')
   })
 
   it('hr 管理组织和员工', () => {
@@ -326,6 +347,19 @@ describe('requirePermission', () => {
     })
     expect(() => requirePermission(session, 'employee:create'))
       .toThrow('PERMISSION_DENIED: 无权执行 employee:create')
+  })
+
+  it('抛出的是 PermissionError 且 digest=PERMISSION_DENIED（生产脱敏后供 error.tsx 渲染 403）', () => {
+    const session = mockSession({
+      permissions: { actions: ['dashboard:view'], scopeStoreIds: [] },
+    })
+    try {
+      requirePermission(session, 'employee:create')
+      throw new Error('should have thrown')
+    } catch (e) {
+      expect(e).toBeInstanceOf(PermissionError)
+      expect((e as PermissionError).digest).toBe('PERMISSION_DENIED')
+    }
   })
 })
 

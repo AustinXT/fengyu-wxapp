@@ -21,6 +21,12 @@ import type { AuthSession, RoleType } from './types'
  * 而是吃 session.permissions.actions（已在 getSessionFromCookie 内由 computeActions 摊平）。
  */
 export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
+  // admin = 全部权限（系统管理员持有 ALL_ACTIONS，含业务数据）。
+  // 2026-05-21 改：原先 admin 不带业务数据权限（订单/分配/服务/预约/顾客），
+  // 导致 admin 单角色访问业务页 requirePermission 抛 PERMISSION_DENIED，
+  // 生产构建脱敏 error.message 后误显示为 500。现 admin 全开，与 DB 覆盖矩阵对齐。
+  // 维护：本数组必须是所有其它角色的并集（ALL_ACTIONS）；
+  // permissions.test.ts 的 "admin == ALL_ACTIONS" 守护，新增 action 时勿漏。
   admin: [
     'dashboard:view',
     // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
@@ -30,8 +36,16 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
-    // 营业额分配（只读，便于审批退款时核对）
-    'allocation:list',
+    // 业务数据（订单/明细/分配/服务/预约/顾客/疗程卡/提货/数据中心）
+    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:record_payment',
+    'sale_item:list',
+    'allocation:list', 'allocation:save',
+    'service:list', 'service:create', 'service:update',
+    'appointment:list', 'appointment:confirm', 'appointment:checkin',
+    'customer:list', 'customer:create', 'customer:update',
+    'pickup_record:list', 'pickup_record:create',
+    'data_center:dashboard',
+    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
     // 系统管理（权限/日志/消息/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
     'operation_log:list',
@@ -42,14 +56,12 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // 重置员工密码（admin 专属，取代原 isAdmin 旁路）
     'admin:reset_password',
     // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
-    // admin 既可发起退款，也可审批（与 manager 并列为审批角色，manager 缺位时救场）
     'sale_order:refund_create', 'sale_order:refund_approve',
     // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
     'dashboard:view',
@@ -91,6 +103,9 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'sale_order:record_payment',
     'sale_item:list',
     'allocation:list',
+    // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全
+    // （2026-05-21：修 menu(readonlyRoles:finance) 与 /allocations 页 service:list 需求不一致）
+    'service:list',
     'customer:list',
     'point_transaction:list',
     'card_transaction:list',
@@ -135,6 +150,17 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   staff: [],
 }
+
+/**
+ * ALL_ACTIONS：全仓所有 distinct 权限 action（各角色数组并集）。
+ *
+ * - admin 即持有 ALL_ACTIONS（系统管理员全开）。
+ * - 供权限矩阵编辑器列全量、page-permission-coverage 测试、admin 完整性守护使用。
+ * - 由于 admin 已是并集，这里 = sorted(unique(admin ∪ 其它角色))。
+ */
+export const ALL_ACTIONS: string[] = [
+  ...new Set(Object.values(DEFAULT_PERMISSION_MATRIX).flat()),
+].sort()
 
 /**
  * 进程级权限矩阵缓存
@@ -361,16 +387,31 @@ export function hasPermission(session: AuthSession, action: string): boolean {
 }
 
 /**
+ * 权限/认证错误：把错误类型写进 `digest`。
+ *
+ * 关键：Next.js 生产构建会脱敏 Server Component 抛出的 `error.message`
+ * （客户端只剩通用文案），但**会原样转发开发者自设的 `error.digest`**。
+ * 故 error.tsx 用 digest 判定 403/401，message 仅作 dev 兜底。
+ */
+export class PermissionError extends Error {
+  readonly digest = 'PERMISSION_DENIED'
+  constructor(message: string) {
+    super(message)
+    this.name = 'PermissionError'
+  }
+}
+
+/**
  * 权限校验：检查当前 session 是否拥有指定 action
  *
- * 如果权限不足，抛出 Error（由 server action 边界捕获）
+ * 如果权限不足，抛出 PermissionError（digest='PERMISSION_DENIED'，由 error.tsx 渲染 403）
  */
 export function requirePermission(session: AuthSession | null, action: string): asserts session is AuthSession {
   if (!session) {
     redirect('/login?expired=1')
   }
   if (!session.permissions.actions.includes(action)) {
-    throw new Error(`PERMISSION_DENIED: 无权执行 ${action}`)
+    throw new PermissionError(`PERMISSION_DENIED: 无权执行 ${action}`)
   }
 }
 
@@ -390,6 +431,6 @@ export function requireAnyPermission(
   }
   const has = actions.some((a) => session.permissions.actions.includes(a))
   if (!has) {
-    throw new Error(`PERMISSION_DENIED: 无权执行 ${actions.join(' 或 ')}`)
+    throw new PermissionError(`PERMISSION_DENIED: 无权执行 ${actions.join(' 或 ')}`)
   }
 }
