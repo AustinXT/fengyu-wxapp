@@ -43,6 +43,38 @@
   color: var(--color-text-primary);
 }
 
+/* 门店公告 */
+.announcement {
+  margin: 24rpx 32rpx 0;
+  padding: 24rpx 28rpx;
+  background: var(--color-primary-light);
+  border: 1rpx solid #F5C6C2;
+  border-left: 8rpx solid var(--color-primary);
+  border-radius: 12rpx;
+}
+
+.announcement-head {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin-bottom: 12rpx;
+}
+
+.announcement-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.announcement-body {
+  display: block;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .store-desc {
   display: block;
   font-size: 26rpx;

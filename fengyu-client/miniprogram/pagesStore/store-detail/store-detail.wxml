@@ -36,6 +36,15 @@
       </view>
     </view>
 
+    <!-- 门店公告（有内容时置顶显眼展示） -->
+    <view wx:if="{{store.announcement}}" class="announcement">
+      <view class="announcement-head">
+        <van-icon name="volume-o" size="32rpx" color="#C0322A" />
+        <text class="announcement-title">门店公告</text>
+      </view>
+      <text class="announcement-body">{{store.announcement}}</text>
+    </view>
+
     <!-- 门店信息 -->
     <van-cell-group inset title="门店信息">
       <van-cell title="所属市场" value="{{store.market_name || '—'}}" />
