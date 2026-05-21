@@ -9,7 +9,7 @@ const crypto = require('crypto')
 /**
  * 门店列表
  * 从 PG stores + org_nodes 查询，排除已停业的门店
- * @param {string} ctx.event.payload.city - 可选，按城市（市场名）筛选
+ * @param {string} ctx.event.payload.city - 可选，按城市筛选
  */
 async function list(ctx) {
   const { city } = ctx.event.payload || {}
@@ -17,10 +17,11 @@ async function list(ctx) {
   const params = []
   let whereClause = 'WHERE s.is_closed = false'
 
-  // 如果传入 city 参数，按市场名筛选
+  // 如果传入 city 参数，按门店自身 district 筛选
+  // （admin 录入的「省/市/区」，门店真实城市来源；不依赖市场节点命名）
   if (city) {
-    params.push(`${city}%`)
-    whereClause += ` AND pm.name LIKE $${params.length}`
+    params.push(`%${city}%`)
+    whereClause += ` AND s.district LIKE $${params.length}`
   }
 
   const stores = await pg.query(`
