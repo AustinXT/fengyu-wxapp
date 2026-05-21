@@ -33,9 +33,9 @@ test.describe('品项分类', () => {
     await expect(page.getByRole('heading', { name: /品项分类/ })).toBeVisible()
   })
 
-  test('5 个 product_kind Tab 完整', async ({ page }) => {
+  test('product_kind Tab 完整（4 个标准品类）', async ({ page }) => {
     await page.goto('/products/categories')
-    await expect(page.getByRole('tab', { name: /组合套餐/ })).toBeVisible()
+    // 「组合套餐」已于 2026-04-10 baseline reset 从 product_kind 枚举移除（改由 products.is_bundle 表达）
     await expect(page.getByRole('tab', { name: /护理项目/ })).toBeVisible()
     await expect(page.getByRole('tab', { name: /家居产品/ })).toBeVisible()
     await expect(page.getByRole('tab', { name: /充值卡/ })).toBeVisible()
@@ -50,7 +50,8 @@ test.describe('品项分类', () => {
 
   test('新增分类按钮可见', async ({ page }) => {
     await page.goto('/products/categories')
-    await expect(page.getByRole('button', { name: /新增分类/ })).toBeVisible()
+    // 按钮已更名为「新增二级分类」
+    await expect(page.getByRole('button', { name: /新增二级分类/ })).toBeVisible()
   })
 })
 

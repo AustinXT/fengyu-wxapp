@@ -32,8 +32,9 @@ test.describe('工作台', () => {
     await page.goto('/dashboard')
     // 如果当前用户有业务权限，应看到待办事项区域
     // 如果是系统角色，快捷入口包含管理链接
-    const hasBusiness = await page.getByText('待办事项').isVisible().catch(() => false)
-    const hasSystem = await page.getByText('组织架构').isVisible().catch(() => false)
+    // 「待办事项」「组织架构」可能同时出现在侧边栏与主内容区，用 .first() 避免 strict-mode 冲突误判
+    const hasBusiness = await page.getByText('待办事项').first().isVisible().catch(() => false)
+    const hasSystem = await page.getByText('组织架构').first().isVisible().catch(() => false)
     // 至少命中一种看板模式
     expect(hasBusiness || hasSystem).toBeTruthy()
   })

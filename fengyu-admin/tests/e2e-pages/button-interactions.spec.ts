@@ -111,7 +111,8 @@ test.describe('商品按钮交互', () => {
 
   test('品项分类: "新增分类" 按钮打开 Dialog', async ({ page }) => {
     await page.goto('/products/categories')
-    await page.getByRole('button', { name: /新增分类/ }).click()
+    // 按钮已更名为「新增二级分类」（配套「品项一级分类管理」）
+    await page.getByRole('button', { name: /新增二级分类/ }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
     await expect(dialog.getByText('分类名称')).toBeVisible()
@@ -119,7 +120,7 @@ test.describe('商品按钮交互', () => {
 
   test('品项分类: Dialog 取消关闭', async ({ page }) => {
     await page.goto('/products/categories')
-    await page.getByRole('button', { name: /新增分类/ }).click()
+    await page.getByRole('button', { name: /新增二级分类/ }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: '取消' }).click()
@@ -128,7 +129,8 @@ test.describe('商品按钮交互', () => {
 
   test('品项分类: Tab 全部可切换', async ({ page }) => {
     await page.goto('/products/categories')
-    for (const kind of ['组合套餐', '护理项目', '家居产品', '充值卡', '体验卡']) {
+    // 「组合套餐」已从 product_kind 移除（2026-04-10 baseline reset）
+    for (const kind of ['护理项目', '家居产品', '充值卡', '体验卡']) {
       const tab = page.getByRole('tab', { name: new RegExp(kind) })
       await tab.click()
       await expect(tab).toHaveAttribute('aria-selected', 'true')
@@ -308,13 +310,14 @@ test.describe('预约按钮交互', () => {
 test.describe('权限按钮交互', () => {
   test('"分配角色" 打开 Dialog', async ({ page }) => {
     await page.goto('/permissions')
-    await page.getByRole('button', { name: '分配角色' }).click()
+    // 页面存在多个「分配角色」按钮（页头 + 角色行），取第一个（页头按钮）
+    await page.getByRole('button', { name: '分配角色', exact: true }).first().click()
     await expect(page.getByRole('dialog')).toBeVisible()
   })
 
   test('Dialog 取消关闭', async ({ page }) => {
     await page.goto('/permissions')
-    await page.getByRole('button', { name: '分配角色' }).click()
+    await page.getByRole('button', { name: '分配角色', exact: true }).first().click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: '取消' }).click()
@@ -396,10 +399,11 @@ test.describe('系统配置按钮交互', () => {
 
   test('输入框可编辑', async ({ page }) => {
     await page.goto('/settings')
+    // 首个输入框是 type=number（如「新会员消费门槛」），只接受数字，不能 fill 文本
     const input = page.locator('input').first()
     await input.clear()
-    await input.fill('TEST')
-    await expect(input).toHaveValue('TEST')
+    await input.fill('9999')
+    await expect(input).toHaveValue('9999')
   })
 })
 

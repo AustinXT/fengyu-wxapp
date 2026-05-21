@@ -8,7 +8,8 @@ test.describe('系统配置', () => {
 
   test('基础配置卡片可见', async ({ page }) => {
     await page.goto('/settings')
-    await expect(page.getByText('基础配置')).toBeVisible()
+    // 「基础配置」同时是 Tab 与卡片标题，取第一个
+    await expect(page.getByText('基础配置').first()).toBeVisible()
   })
 
   test('配置字段完整', async ({ page }) => {

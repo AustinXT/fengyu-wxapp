@@ -62,14 +62,8 @@ function reconcile(): { bookBalance: number; calcBalance: number; verdict: strin
   const raw = psql(`
     SELECT
       pc.balance,
-      COALESCE(SUM(ct.amount * CASE
-        WHEN ct.type::text = '充值' THEN 1
-        WHEN ct.type::text = '扣款' THEN -1
-        ELSE 0 END), 0),
-      CASE WHEN pc.balance = COALESCE(SUM(ct.amount * CASE
-        WHEN ct.type::text = '充值' THEN 1
-        WHEN ct.type::text = '扣款' THEN -1
-        ELSE 0 END), 0) THEN 'PASS' ELSE 'FAIL' END
+      COALESCE(SUM(ct.amount), 0),
+      CASE WHEN pc.balance = COALESCE(SUM(ct.amount), 0) THEN 'PASS' ELSE 'FAIL' END
     FROM prepaid_cards pc
     LEFT JOIN card_transactions ct ON ct.card_id = pc.card_id
     WHERE pc.card_id='${CARD_ID}'
@@ -320,9 +314,19 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
   }
 
   // 实测扣款前余额（不依赖 Step 0/1 的 module 状态）
-  const preBalanceStep2 = parseFloat(
+  // 注意：afterEach 会把 balance reset 回 Step 0 实测的 baselineBalance（空卡 fixture = 0），
+  // 因此 Step 1 充值的 +500 不会跨 test 存活。Step 2 自带充值 seed 以保证有余额可扣，
+  // 充值流水(+TOPUP)与扣款流水(-100)成对写入，对账不变量(balance == SUM(amount))保持成立。
+  let preBalanceStep2 = parseFloat(
     psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`),
   ) || 0
+  if (preBalanceStep2 < SKU_ORDINARY_PRICE) {
+    const topup = SKU_ORDINARY_PRICE * 5 // 充足余额，留足扣款空间
+    psql(`INSERT INTO card_transactions (card_id, type, amount, ref_order_id) VALUES ('${CARD_ID}', '充值', ${topup}, NULL)`)
+    psql(`UPDATE prepaid_cards SET balance = balance + ${topup}, updated_at=NOW() WHERE card_id='${CARD_ID}'`)
+    preBalanceStep2 = parseFloat(psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`)) || 0
+    console.log(`[link-10 Step2] 自带充值 seed +${topup} → 当前余额 ${preBalanceStep2}`)
+  }
   console.log(`[link-10 Step2] 扣款前 baseline: ${preBalanceStep2}`)
 
   /**
@@ -404,7 +408,7 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
   }
 
   // 本次收款填 0（不付）
-  const receivedInput = page.locator('input[type="number"]').filter({ hasNot: page.locator('[disabled]') }).first()
+  const receivedInput = page.locator('input[type="number"]:not([disabled])').first()
   if (await receivedInput.count() > 0) {
     await receivedInput.fill('0')
   }
@@ -442,7 +446,9 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
   psql(`UPDATE prepaid_cards SET balance = balance - ${SKU_ORDINARY_PRICE}, updated_at=NOW() WHERE card_id='${CARD_ID}'`)
 
   // 3. 写 card_transactions 扣款流水（等价于 INSERT card_transactions）
-  psql(`INSERT INTO card_transactions (card_id, type, amount, ref_order_id) VALUES ('${CARD_ID}', '扣款', ${SKU_ORDINARY_PRICE}, '${deductOrderId}')`)
+  // 扣款流水金额必须为负（DB CHECK chk_card_tx_amount_sign：充值>0 / 扣款<0），
+  // reconcile() 已改为直接 SUM(amount)，与有符号约定一致
+  psql(`INSERT INTO card_transactions (card_id, type, amount, ref_order_id) VALUES ('${CARD_ID}', '扣款', -${SKU_ORDINARY_PRICE}, '${deductOrderId}')`)
 
   console.log(`[link-10 Step2] 已通过 SQL 降级执行储值卡扣款 ¥${SKU_ORDINARY_PRICE}`)
   console.log('[link-10 Step2] UI 路径：manager 创建待支付订单 → admin 在订单详情页"录入回款"弹层 → 选储值卡 → 填抵扣金额 → 确认录入')

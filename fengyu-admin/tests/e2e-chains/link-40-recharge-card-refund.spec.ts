@@ -51,26 +51,16 @@ function seedRecharge(soid: string, siid: string): void {
       total_amount, payment_method, opened_by, created_at, updated_at,
       payable_amount, received, refunded_amount, prepaid_card_amount, paid_at
     ) VALUES (
-      '${soid}', '已支付', '销售单', '南昌市场', '${STORE_ID}',
+      '${soid}', '已支付', '充值单', '南昌市场', '${STORE_ID}',
       NOW(), '${CLIENT_USER}', '${CLIENT_PHONE}', '${CLIENT_NAME}',
       ${RECHARGE_AMOUNT}, '线下', 'FY-TEST-MGR', NOW(), NOW(),
       ${RECHARGE_AMOUNT}, ${RECHARGE_AMOUNT}, 0, 0, NOW()
     )
   `)
-  // 充值卡 SKU sku-007-01 (per fixture skus.card)
-  psql(`
-    INSERT INTO sale_items (
-      sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-      product_name, sku_spec_name, product_type, session_count, remaining_sessions,
-      unit_price, quantity, unit_real_price, sale_amount, received,
-      service_fee, is_recharge_card, is_experience, created_at, updated_at
-    ) VALUES (
-      '${siid}', '${soid}', '${STORE_ID}', '购买', 'sku-007-01',
-      '金卡充值卡', '金卡5000', '单品', 1, 1,
-      ${RECHARGE_AMOUNT}, 1, ${RECHARGE_AMOUNT}, ${RECHARGE_AMOUNT}, ${RECHARGE_AMOUNT},
-      0, true, false, NOW(), NOW()
-    )
-  `)
+  // 2026-05-21：充值卡 SKU 化剥离（commit 44f35b00）后，充值订单 sale_order_type='充值单' 且不生成 sale_items
+  // （原 sku-007-01 充值卡 SKU 已不存在于 product_skus，FK 不通）。本 seed 不再插 sale_items——
+  // 退款不变量测试只操作 prepaid_cards + card_transactions，不依赖明细行。
+  void siid // 充值单无明细，siid 不再用于 sale_items 插入（保留签名兼容调用方）
   // UPSERT prepaid_cards（user_id 唯一）+ 充值 card_transaction
   psql(`
     INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
