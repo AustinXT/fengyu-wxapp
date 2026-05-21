@@ -109,17 +109,21 @@ async function main() {
      FROM sale_items WHERE sale_order_id = $1`,
     [saleOrderId]
   )
-  if (items.length !== 1) errors.push(`sale_items 行数应=1，实际=${items.length}`)
+  // B2 拆行（ticket 2026-05-18）：疗程卡 quantity>1 → N 行 quantity=1（每张卡独立实体）。
+  // 故 quantity=2 的疗程卡应落成 2 行，每行 quantity=1 / session_count=5（=sku.session_count）。
+  if (items.length !== 2) errors.push(`sale_items 行数应=2（疗程卡 B2 拆行：quantity=2 → 2 行），实际=${items.length}`)
   else {
-    const i = items[0]
-    if (!/^XSLSH-WX-\d{8}\d{4}$/.test(i.sale_item_id)) errors.push(`sale_item_id 格式不对（应 XSLSH-WX-YYYYMMDD####）: ${i.sale_item_id}`)
-    if (i.sku_id !== skuId) errors.push(`sku_id 应=${skuId}, 实际=${i.sku_id}`)
-    if (Number(i.quantity) !== 2) errors.push(`quantity 应=2，实际=${i.quantity}`)
-    if (Number(i.unit_price) !== 500) errors.push(`unit_price 应=500，实际=${i.unit_price}`)
-    if (Number(i.unit_real_price) !== 500) errors.push(`unit_real_price 应=500（无优惠），实际=${i.unit_real_price}`)
-    // 疗程卡 session_count = sku.session_count = 5
-    if (Number(i.session_count) !== 5) errors.push(`session_count 应=5（疗程卡），实际=${i.session_count}`)
-    if (i.is_shengmei !== true) errors.push(`is_shengmei 应=true（快照），实际=${i.is_shengmei}`)
+    for (const i of items) {
+      if (!/^XSLSH-WX-\d{8}\d{4}$/.test(i.sale_item_id)) errors.push(`sale_item_id 格式不对（应 XSLSH-WX-YYYYMMDD####）: ${i.sale_item_id}`)
+      if (i.sku_id !== skuId) errors.push(`sku_id 应=${skuId}, 实际=${i.sku_id}`)
+      if (Number(i.quantity) !== 1) errors.push(`quantity 应=1（拆行后每行一张卡），实际=${i.quantity}`)
+      // 卡类：unit_price / unit_real_price = per-session 单次价 = 标价行总额 / session_count = 500/5 = 100
+      if (Number(i.unit_price) !== 100) errors.push(`unit_price 应=100（per-session：500/5），实际=${i.unit_price}`)
+      if (Number(i.unit_real_price) !== 100) errors.push(`unit_real_price 应=100（per-session，无优惠），实际=${i.unit_real_price}`)
+      // 疗程卡每行 session_count = sku.session_count = 5
+      if (Number(i.session_count) !== 5) errors.push(`session_count 应=5（疗程卡），实际=${i.session_count}`)
+      if (i.is_shengmei !== true) errors.push(`is_shengmei 应=true（快照），实际=${i.is_shengmei}`)
+    }
   }
 
   // 3.6 PG: sale_order_payments 立即写"首次支付/已支付"
