@@ -43,7 +43,8 @@ export const stores = pgTable(
   {
     storeId: text('store_id').primaryKey(),
     storeName: text('store_name').unique().notNull(),
-    orgNodeId: text('org_node_id').references(() => orgNodes.id),
+    // 1:1 — 一个门店组织节点最多一条 stores 详情行（门店实体以组织树门店节点为权威）
+    orgNodeId: text('org_node_id').references(() => orgNodes.id).unique(),
     openingDate: date('opening_date'),
     bedCount: integer('bed_count'),
     isClosed: boolean('is_closed').notNull().default(false),

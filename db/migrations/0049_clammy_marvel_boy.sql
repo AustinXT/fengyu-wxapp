@@ -1,0 +1,1 @@
+ALTER TABLE "stores" ADD CONSTRAINT "stores_org_node_id_unique" UNIQUE("org_node_id");

@@ -4,7 +4,6 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import type { OrgNode } from "@/lib/types"
 import { createStore } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,24 +14,22 @@ import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { RegionSelect } from "@/components/ui/region-select"
 
-export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
+type StoreNode = { id: string; name: string; marketName: string }
+
+export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[] }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
+  const [orgNodeId, setOrgNodeId] = useState("")
   const [coverImage, setCoverImage] = useState("")
   const [storeImages, setStoreImages] = useState<string[]>([])
 
-  const handleSave = async (formData: FormData) => {
-    const storeName = (formData.get("storeName") as string).trim()
-    if (!storeName) {
-      toast.error("请输入门店名称")
-      return
-    }
+  const selectedNode = storeNodes.find((n) => n.id === orgNodeId)
 
-    const marketId = formData.get("marketId") as string
-    if (!marketId) {
-      toast.error("请选择所属市场")
+  const handleSave = async (formData: FormData) => {
+    if (!orgNodeId) {
+      toast.error("请选择门店节点")
       return
     }
 
@@ -40,11 +37,10 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
     try {
       const storeId = `store-${Date.now()}`
 
-      // createStore 内部会自动创建对应的 org_node (type=store)
+      // 门店名以组织树节点为权威，由 createStore 取节点名；此处只传 orgNodeId
       const result = await createStore({
         storeId,
-        storeName,
-        marketId,
+        orgNodeId,
         openingDate: (formData.get("openingDate") as string) || null,
         bedCount: formData.get("bedCount") ? Number(formData.get("bedCount")) : null,
         phone: (formData.get("phone") as string) || null,
@@ -67,7 +63,8 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
       setFormDirty(false)
       toast.success(result.message)
       router.push("/stores")
-    } catch {
+    } catch (e) {
+      console.error("createStore failed", e)
       toast.error("创建失败")
     } finally {
       setSaving(false)
@@ -91,38 +88,55 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
           <CardTitle className="text-base">基本信息</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">门店名称</label>
-              <Input name="storeName" required />
+          {storeNodes.length === 0 ? (
+            <div className="rounded-[var(--radius)] border border-dashed border-[var(--input)] p-4 text-sm text-[var(--muted-foreground)]">
+              当前没有可创建门店信息的门店节点。请先到【组织架构】新增「门店」类型的节点，再回此页为其补充门店信息。
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">联系电话</label>
-              <Input name="phone" />
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2 space-y-2">
+                <label className="text-sm font-medium">门店节点</label>
+                <Select
+                  name="orgNodeId"
+                  placeholder="请选择门店节点"
+                  required
+                  value={orgNodeId}
+                  onChange={(e) => {
+                    setOrgNodeId(e.target.value)
+                    setFormDirty(true)
+                  }}
+                >
+                  {storeNodes.map((n) => (
+                    <SelectOption key={n.id} value={n.id}>
+                      {n.marketName ? `${n.marketName} / ${n.name}` : n.name}
+                    </SelectOption>
+                  ))}
+                </Select>
+                {selectedNode && (
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    将创建门店：<span className="font-medium text-[var(--foreground)]">{selectedNode.name}</span>
+                    （门店名以组织节点为准）
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">联系电话</label>
+                <Input name="phone" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">开业日期</label>
+                <Input name="openingDate" type="date" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">床位数</label>
+                <Input name="bedCount" type="number" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">营业时间</label>
+                <Input name="businessHours" placeholder="如: 09:00-21:00" />
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">开业日期</label>
-              <Input name="openingDate" type="date" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">床位数</label>
-              <Input name="bedCount" type="number" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">营业时间</label>
-              <Input name="businessHours" placeholder="如: 09:00-21:00" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">所属市场</label>
-              <Select name="marketId" placeholder="请选择市场" required>
-                {markets.map((m) => (
-                  <SelectOption key={m.id} value={m.id}>
-                    {m.name}
-                  </SelectOption>
-                ))}
-              </Select>
-            </div>
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -200,7 +214,7 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         <Button type="button" variant="outline" onClick={() => router.back()}>
           取消
         </Button>
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" disabled={saving || !orgNodeId}>
           {saving ? "创建中..." : "创建"}
         </Button>
       </div>

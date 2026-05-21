@@ -6,10 +6,11 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { scopeCondition, isAdminScope } from '@/lib/permissions'
+import { scopeCondition } from '@/lib/permissions'
+import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
-import type { AuthSession } from '@/lib/types'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -74,14 +75,44 @@ export const getStoreById = withPermission(
   },
 )
 
+/**
+ * 可挂载门店信息的组织节点（type='门店' 且尚无 stores 行），供创建门店页选择。
+ * 门店实体以组织树门店节点为权威：/org 建节点，/stores 给节点补详情。
+ */
+export const getAvailableStoreNodes = withPermission(
+  'store:create',
+  async (session): Promise<Array<{ id: string; name: string; marketName: string }>> => {
+    const rows = await db
+      .select({
+        id: storeNode.id,
+        name: storeNode.name,
+        marketName: marketNode.name,
+        parentId: storeNode.parentId,
+      })
+      .from(storeNode)
+      .leftJoin(stores, eq(stores.orgNodeId, storeNode.id))
+      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+      .where(and(eq(storeNode.type, '门店'), sql`${stores.storeId} IS NULL`))
+      .orderBy(asc(marketNode.name), asc(storeNode.name))
+
+    // scope 过滤：非 admin 只看自己 scope（含其下市场）内的门店节点
+    const visible: Array<{ id: string; name: string; marketName: string }> = []
+    for (const r of rows) {
+      if (await isNodeInScope(session, r.id)) {
+        visible.push({ id: r.id, name: r.name, marketName: r.marketName ?? '' })
+      }
+    }
+    return visible
+  },
+)
+
 export const createStore = withPermission(
   'store:create',
   async (
     session,
     data: {
       storeId: string
-      storeName: string
-      marketId: string  // 所属市场的 org_node id（必填）
+      orgNodeId: string  // 所挂载的门店节点 id（type='门店'，必填）
       openingDate?: string | null
       bedCount?: number | null
       isClosed?: boolean
@@ -98,54 +129,55 @@ export const createStore = withPermission(
       parkingInfo?: string | null
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // scope 隔离：非 admin 只能在自己 scope 的市场下创建门店
-  if (!isAdminScope(session)) {
-    const scopeIds = new Set(session.roles.map((r: AuthSession['roles'][number]) => r.scopeId))
-    if (!scopeIds.has(data.marketId)) {
-      return { success: false, message: '无权在该市场下创建门店' }
-    }
+  // 1. 校验目标节点存在且为门店类型，门店名以节点名为准
+  const [node] = await db
+    .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, data.orgNodeId))
+    .limit(1)
+  if (!node) return { success: false, message: '门店节点不存在，请刷新后重试' }
+  if (node.type !== '门店') return { success: false, message: '只能为「门店」类型的组织节点创建门店信息' }
+
+  // 2. scope 隔离：非 admin 只能在自己 scope（含其下市场）的门店节点上创建
+  if (!(await isNodeInScope(session, data.orgNodeId))) {
+    return { success: false, message: '无权在该门店节点下创建门店信息' }
   }
 
-  // 事务：org_node + stores 原子创建，失败则全部回滚
-  const orgNodeId = `store-${data.storeId}`
+  // 3. 仅插入 stores 详情行，org_node_id 指向权威门店节点（不再自造节点）
   try {
-    await db.transaction(async (tx) => {
-      await tx.insert(orgNodes).values({
-        id: orgNodeId,
-        name: data.storeName,
-        type: '门店',
-        parentId: data.marketId,
-        sortOrder: 0,
-        isActive: true,
-      })
-
-      await tx.insert(stores).values({
-        storeId: data.storeId,
-        storeName: data.storeName,
-        orgNodeId,
-        openingDate: data.openingDate ?? null,
-        bedCount: data.bedCount ?? null,
-        isClosed: data.isClosed ?? false,
-        coverImage: data.coverImage ?? null,
-        images: data.images ?? null,
-        district: data.district ?? null,
-        streetAddress: data.streetAddress ?? null,
-        latitude: data.latitude ?? null,
-        longitude: data.longitude ?? null,
-        phone: data.phone ?? null,
-        businessHours: data.businessHours ?? null,
-        description: data.description ?? null,
-        announcement: data.announcement ?? null,
-        parkingInfo: data.parkingInfo ?? null,
-      })
+    await db.insert(stores).values({
+      storeId: data.storeId,
+      storeName: node.name,
+      orgNodeId: data.orgNodeId,
+      openingDate: data.openingDate ?? null,
+      bedCount: data.bedCount ?? null,
+      isClosed: data.isClosed ?? false,
+      coverImage: data.coverImage ?? null,
+      images: data.images ?? null,
+      district: data.district ?? null,
+      streetAddress: data.streetAddress ?? null,
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
+      phone: data.phone ?? null,
+      businessHours: data.businessHours ?? null,
+      description: data.description ?? null,
+      announcement: data.announcement ?? null,
+      parkingInfo: data.parkingInfo ?? null,
     })
-  } catch (err: any) {
-    if (err?.code === '23505') return { success: false, message: '门店编号已存在' }
-    if (err?.code === '23503') return { success: false, message: '所属市场不存在，请刷新后重试' }
+  } catch (err: unknown) {
+    const code = pgErrorCode(err)
+    if (code === '23505') {
+      // org_node_id 唯一 → 该节点已挂过门店；store_name 唯一 → 同名门店已存在
+      if (pgErrorConstraint(err) === 'stores_org_node_id_unique') {
+        return { success: false, message: '该门店节点已创建过门店信息' }
+      }
+      return { success: false, message: '门店名称已被占用' }
+    }
+    if (code === '23503') return { success: false, message: '门店节点不存在，请刷新后重试' }
     throw err
   }
 
-  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
+  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: node.name, orgNodeId: data.orgNodeId })
   revalidatePath('/stores')
   return { success: true, message: '门店创建成功' }
   },
@@ -158,7 +190,6 @@ export const updateStore = withPermission(
     storeId: string,
     data: Partial<{
       storeName: string
-      orgNodeId: string | null
       openingDate: string | null
       bedCount: number | null
       isClosed: boolean
@@ -199,8 +230,22 @@ export const updateStore = withPermission(
 
   let result: any
   try {
-    result = await db.update(stores).set(updateData).where(whereConditions)
-  } catch (err: any) {
+    result = await db.transaction(async (tx) => {
+      const r: any = await tx.update(stores).set(updateData).where(whereConditions)
+      // 门店名以组织节点为权威：改名时同步 org_nodes.name，保持两者一致
+      if (
+        r.count > 0 &&
+        data.storeName !== undefined &&
+        before?.orgNodeId &&
+        data.storeName !== before.storeName
+      ) {
+        await tx.update(orgNodes).set({ name: data.storeName }).where(eq(orgNodes.id, before.orgNodeId))
+      }
+      return r
+    })
+  } catch (err: unknown) {
+    // 同步节点名可能撞 uq_org_nodes_parent_name（同市场同名）
+    if (pgErrorCode(err) === '23505') return { success: false, message: '同市场下已有同名门店' }
     throw err
   }
 

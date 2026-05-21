@@ -7,35 +7,11 @@ import { permissionRoles } from '@db/permission'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
-import { isAdminScope } from '@/lib/permissions'
+import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
-import type { AuthSession } from '@/lib/types'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
-
-/**
- * 校验 org_node 是否在用户 scope 内（admin 始终通过）。
- * 从目标节点沿 parentId 向上遍历（最多 5 层），
- * 任一祖先命中 session.roles[].scopeId 即视为在 scope 内。
- */
-async function isNodeInScope(session: AuthSession, nodeId: string): Promise<boolean> {
-  if (isAdminScope(session)) return true
-  const scopeIds = new Set(session.roles.map((r) => r.scopeId))
-  if (scopeIds.size === 0) return false
-
-  let currentId: string | null = nodeId
-  for (let depth = 0; depth < 5 && currentId; depth++) {
-    if (scopeIds.has(currentId)) return true
-    const [node] = await db
-      .select({ parentId: orgNodes.parentId })
-      .from(orgNodes)
-      .where(eq(orgNodes.id, currentId))
-      .limit(1)
-    currentId = node?.parentId ?? null
-  }
-  return false
-}
 
 export const getOrgNodes = withPermission(
   'org:list',
