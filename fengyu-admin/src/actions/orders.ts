@@ -2450,11 +2450,11 @@ export const recordPayment = withPermission(
         const itemMap = new Map(itemRows.map((r) => [r.sale_item_id, r]))
         for (const it of repayItems!) {
           const row = itemMap.get(it.saleItemId)
-          if (!row) throw new Error(`OVERPAY_ITEM:${it.saleItemId}:NOT_FOUND`)
+          if (!row) throw new ApiError('INVALID_PARAMS', `OVERPAY_ITEM:${it.saleItemId}:NOT_FOUND: 回款明细行不存在于该订单`)
           const itemRemaining = Math.round((Number(row.sale_amount) - Number(row.received)) * 100) / 100
           const itemThis = Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100
           if (itemThis > itemRemaining + 0.001) {
-            throw new Error(`OVERPAY_ITEM:${it.saleItemId}:${itemRemaining.toFixed(2)}`)
+            throw new ApiError('CONFLICT', `OVERPAY_ITEM:${it.saleItemId}:${itemRemaining.toFixed(2)}: 该明细行回款金额超过可回款额`)
           }
         }
       }
