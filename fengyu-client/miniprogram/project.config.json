@@ -40,7 +40,9 @@
     "disableUseStrict": false,
     "minifyWXML": true,
     "showES6CompileOption": false,
-    "useCompilerPlugins": ["typescript"]
+    "useCompilerPlugins": [
+      "typescript"
+    ]
   },
   "appid": "wx811eb4ded3dfba3f",
   "projectname": "fengyu-client",
@@ -53,12 +55,31 @@
   "packOptions": {
     "include": [],
     "ignore": [
-      { "type": "file", "value": "README.md" },
-      { "type": "file", "value": ".eslintrc.js" },
-      { "type": "folder", "value": ".git" },
-      { "type": "folder", "value": "node_modules" },
-      { "type": "folder", "value": "__tests__" },
-      { "type": "folder", "value": "minitest" }
+      {
+        "type": "file",
+        "value": "README.md"
+      },
+      {
+        "type": "file",
+        "value": ".eslintrc.js"
+      },
+      {
+        "type": "folder",
+        "value": ".git"
+      },
+      {
+        "type": "folder",
+        "value": "node_modules"
+      },
+      {
+        "type": "folder",
+        "value": "__tests__"
+      },
+      {
+        "type": "folder",
+        "value": "minitest"
+      }
     ]
-  }
+  },
+  "cloudfunctionTemplateRoot": "cloudfunctionTemplate/"
 }
