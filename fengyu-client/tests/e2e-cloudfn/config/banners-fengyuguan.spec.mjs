@@ -8,7 +8,8 @@
  *   - 三个接口都是公开（无 auth 中间件） → 全部用 invokePublic
  *   - banners 返回 { count, v }（不再返回 URL 列表）：count/v 取自 system_configs.key='banner_count'
  *     （admin saveSettings 写入，updated_at 当版本号 v）；无 banner_count 时按 banner_images 数组长度兜底
- *   - fengyuguan 读 system_configs.key='fengyuguan_image'，value 是裸字符串 URL；行不存在返回 url=''
+ *   - fengyuguan 读 system_configs.key='fengyuguan_image'，返回 { url, v }：value 是裸字符串 URL，
+ *     v 取自 updated_at（缓存版本号，client 防缓存用）；行不存在返回 url='' / v=0
  *   - invalidateConfig 只清进程内 utils/config 缓存（getMemberThreshold 用），副作用不可直接观测；
  *     仅断言 code=0 + success=true
  *   - banners 路由 **本身没缓存**（utils/config 缓存是 getMemberThreshold 的，与 banners 无关），
@@ -97,6 +98,9 @@ async function caseFengyuguanWithData() {
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   if (res.data.url !== url) {
     throw new Error(`url mismatch: expected ${url}, got ${res.data.url}`)
+  }
+  if (typeof res.data.v !== 'number' || res.data.v <= 0) {
+    throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
   }
 }
 

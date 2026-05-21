@@ -40,14 +40,22 @@ async function banners(ctx) {
 }
 
 /**
- * 获取凤御馆宣传图 URL
- * 无需认证，公开接口
+ * 获取凤御馆宣传图 URL + 缓存版本号。
+ *
+ * 返回 { url, v }：v 取自 system_configs.fengyuguan_image 的 updated_at（admin saveSettings 每次写入），
+ * 客户端用 v 给自己 env-aware CDN_BASE 拼出的固定路径长图做防缓存（换图后强制刷新），
+ * 不直接用 url（url 指向 admin 上传时所在桶，未必是本环境桶）。
+ * 无需认证，公开接口。
  */
 async function fengyuguan(ctx) {
   const rows = await pg.query(
-    "SELECT value FROM system_configs WHERE key = 'fengyuguan_image'"
+    `SELECT value, EXTRACT(EPOCH FROM updated_at) * 1000 AS v
+     FROM system_configs WHERE key = 'fengyuguan_image'`
   )
-  ctx.result = { url: rows.length > 0 ? (rows[0].value || '') : '' }
+  ctx.result = {
+    url: rows.length > 0 ? (rows[0].value || '') : '',
+    v: rows.length > 0 ? (Math.floor(Number(rows[0].v)) || 0) : 0,
+  }
 }
 
 /**
