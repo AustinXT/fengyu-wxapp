@@ -338,27 +338,26 @@ Page({
 
   // ===== 数据加载 =====
 
-  loadBanners() {
-    wx.request({
-      url: `${CDN_BASE}/banner/config.json?t=${Date.now()}`,
-      success: (res: WechatMiniprogram.RequestSuccessCallbackResult) => {
-        const data = res.data as { count?: number; v?: number };
-        const count = data?.count || 0;
-        const v = data?.v || '';
-        if (count > 0) {
-          this.setData({
-            banners: Array.from({ length: count }, (_, i) => ({
-              id: String(i + 1),
-              title: "",
-              desc: "",
-              bgColor: "",
-              image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
-              link: "",
-            })),
-          });
-        }
-      },
-    });
+  async loadBanners() {
+    // 走云函数取 count/v（不受 wx.request 域名白名单限制），图片仍用 CDN_BASE 拼固定路径。
+    try {
+      const { count, v } = await callClientApi<{ count: number; v: number }>("config.banners", {});
+      if (count > 0) {
+        this.setData({
+          banners: Array.from({ length: count }, (_, i) => ({
+            id: String(i + 1),
+            title: "",
+            desc: "",
+            bgColor: "",
+            image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
+            link: "",
+          })),
+        });
+      }
+    } catch (err) {
+      // 轮播图非关键路径，静默失败即可
+      console.warn("[home] loadBanners failed", err);
+    }
   },
 
   async loadShopInit() {

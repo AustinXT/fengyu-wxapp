@@ -6,7 +6,8 @@
  *
  * 实测要点：
  *   - 三个接口都是公开（无 auth 中间件） → 全部用 invokePublic
- *   - banners 读 system_configs.key='banner_images'，value 是 JSON 字符串数组；解析失败兜底空数组
+ *   - banners 返回 { count, v }（不再返回 URL 列表）：count/v 取自 system_configs.key='banner_count'
+ *     （admin saveSettings 写入，updated_at 当版本号 v）；无 banner_count 时按 banner_images 数组长度兜底
  *   - fengyuguan 读 system_configs.key='fengyuguan_image'，value 是裸字符串 URL；行不存在返回 url=''
  *   - invalidateConfig 只清进程内 utils/config 缓存（getMemberThreshold 用），副作用不可直接观测；
  *     仅断言 code=0 + success=true
@@ -14,8 +15,8 @@
  *     所以多次调用每次都查 DB；本 spec 不再测"内存缓存"那一项
  *
  * 用例：
- *   1. banners 有数据         — INSERT system_configs(banner_images, JSON 数组) → 返回 banners 数组
- *   2. banners 无数据         — DELETE 该行 → 返回 banners=[]
+ *   1. banners 有数据         — INSERT system_configs(banner_count='2') → 返回 { count:2, v:number }
+ *   2. banners 无数据         — DELETE banner_count + banner_images → 返回 { count:0 }
  *   3. fengyuguan 有数据      — INSERT → 返回 url
  *   4. invalidateConfig       — code=0, success=true
  */
@@ -26,6 +27,7 @@ import { cleanupTestData } from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 const BANNER_KEY = 'banner_images'
+const BANNER_COUNT_KEY = 'banner_count'
 const FENGYUGUAN_KEY = 'fengyuguan_image'
 
 /**
@@ -61,31 +63,29 @@ async function upsertConfig(key, value) {
 
 // ─── 测试前后保护原 system_configs 行 ────────────────────────
 let _bannerBackup = null
+let _bannerCountBackup = null
 let _fengyuguanBackup = null
 
 async function caseBannersWithData() {
-  const urls = [
-    `https://example.com/${NS}/banner1.jpg`,
-    `https://example.com/${NS}/banner2.jpg`,
-  ]
-  await upsertConfig(BANNER_KEY, JSON.stringify(urls))
+  await upsertConfig(BANNER_COUNT_KEY, '2')
 
   const res = await invokePublic('config.banners', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (!Array.isArray(res.data.banners)) {
-    throw new Error(`expect banners array, got ${typeof res.data.banners}`)
+  if (res.data.count !== 2) {
+    throw new Error(`expect count=2, got ${JSON.stringify(res.data)}`)
   }
-  if (res.data.banners.length !== 2 || !res.data.banners[0].includes(NS)) {
-    throw new Error(`banners content mismatch: ${JSON.stringify(res.data.banners)}`)
+  if (typeof res.data.v !== 'number' || res.data.v <= 0) {
+    throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
   }
 }
 
 async function caseBannersEmpty() {
+  await pgQuery('DELETE FROM system_configs WHERE key = $1', [BANNER_COUNT_KEY])
   await pgQuery('DELETE FROM system_configs WHERE key = $1', [BANNER_KEY])
   const res = await invokePublic('config.banners', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (!Array.isArray(res.data.banners) || res.data.banners.length !== 0) {
-    throw new Error(`expect empty banners array, got ${JSON.stringify(res.data.banners)}`)
+  if (res.data.count !== 0) {
+    throw new Error(`expect count=0, got ${JSON.stringify(res.data)}`)
   }
 }
 
@@ -121,6 +121,7 @@ console.log(`[config/banners-fengyuguan.spec] start | ${CASES.length} cases | ${
 try {
   // 备份生产配置（system_configs 是全局表，不在 NS 范围内）
   _bannerBackup = await snapshotConfigRow(BANNER_KEY)
+  _bannerCountBackup = await snapshotConfigRow(BANNER_COUNT_KEY)
   _fengyuguanBackup = await snapshotConfigRow(FENGYUGUAN_KEY)
 
   for (const [name, fn] of CASES) {
@@ -141,6 +142,7 @@ try {
   // 恢复生产配置
   try {
     await restoreConfigRow(BANNER_KEY, _bannerBackup)
+    await restoreConfigRow(BANNER_COUNT_KEY, _bannerCountBackup)
     await restoreConfigRow(FENGYUGUAN_KEY, _fengyuguanBackup)
   } catch (e) {
     console.warn(`[config] restore failed: ${e.message}`)
