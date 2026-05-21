@@ -24,6 +24,7 @@ docs/
 | 编号 | 日期 | 标题 |
 |------|------|------|
 | [001](changes/arch/001_legacy-orders-manual-pull-pivot.md) | 2026-05-19 | admin /legacy-orders 改为按顾客手动拉取（弃用全量 bulk 导入） |
+| [004](changes/arch/004_merge-danpin-into-liaochengka.md) | 2026-05-21 | 单品合并入疗程卡（product_type 枚举 3→2 值） |
 
 ### ops — 生产操作
 

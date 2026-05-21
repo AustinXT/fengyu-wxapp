@@ -150,11 +150,11 @@
 |------|------|------|
 | `sku_id` | text | 主键 |
 | `product_id` | text | FK → `products.product_id` |
-| `product_type` | product_type enum | 疗程卡 / 单品 / 家居产品；决定核销流程（"家居产品"原称"院装产品"，2026-04-25 重命名） |
+| `product_type` | product_type enum | 疗程卡 / 家居产品；决定核销流程（"家居产品"原称"院装产品"，2026-04-25 重命名；2026-05-21 原"单品"并入疗程卡=1 次卡，枚举 3→2 值） |
 | `spec_name` | text | 规格名（如"10次卡"、"单次体验"） |
 | `price` | numeric(10,2) | 标价/零售价（套餐组件中 0 表示赠品），**开单时快照到 sale_items.unit_price** |
 | `special_price` | numeric(10,2) \| null | 会员价 |
-| `session_count` | integer \| null | 疗程次数：疗程卡≥2，单品=1，家居产品=null |
+| `session_count` | integer \| null | 疗程次数：疗程卡≥1（含原单品=1），家居产品=null |
 | `is_bundle_sku` | boolean | 是否为套餐组成部分，NOT NULL DEFAULT false |
 | `sort_order` | integer | 排序序号 |
 | `service_fee` | numeric(10,2) | 手工费，NOT NULL DEFAULT 0 |
@@ -682,7 +682,7 @@ login 返回中包含 `permissions` 字段：
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 N 倍）；**MVP 阶段不支持优惠/折扣，应收金额 = 实收金额**
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
-5. **混购完成规则**：`已完成` 以**所有疗程卡行与单品行的 remaining_sessions 全部归零**为触发条件；家居产品支付即视为已交付
+5. **混购完成规则**：`已完成` 以**所有疗程卡行（含原单品=1 次卡）的 remaining_sessions 全部归零**为触发条件；家居产品支付即视为已交付
 6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 7. 支付成功触发条件统一为**订单进入已支付**
 8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建

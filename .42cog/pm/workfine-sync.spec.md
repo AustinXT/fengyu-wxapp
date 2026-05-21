@@ -336,7 +336,7 @@ UDT_S_311（顾客档案主表）
 | 字段名 | 含义 | 类型 | → PG 导入目标 |
 |--------|------|------|------|
 | UDF_M_14503 | **疗程项目编号** | 文本 | 导入参考（不保留在 PG 中） |
-| UDF_M_14502 | 产品库 | 文本 | `product_skus.product_type`（疗程卡/单品） |
+| UDF_M_14502 | 产品库 | 文本 | `product_skus.product_type`（2026-05-21 单品合并：上游"单品"→`疗程卡` session_count=1） |
 | UDF_M_14504 | 品项分类 | 文本 | → 匹配 `product_categories.category_name` → `products.category_id` |
 | UDF_M_14505 | 项目名称 | 文本 | `products.name` |
 | UDF_M_14506 | 疗程服务次数 | 整数 | `product_skus.session_count` |
@@ -346,7 +346,7 @@ UDT_S_311（顾客档案主表）
 
 **导入规则**:
 - 产品库 = "疗程卡" → `product_type='疗程卡'`，核销流程
-- 产品库 = "单品" → `product_type='单品'`，支付即结束
+- 产品库 = "单品" → `product_type='疗程卡'` + `session_count=1`（2026-05-21 单品并入疗程卡）；实物零售品（无次数）→ `product_type='家居产品'`
 - 同一品项分类+项目名称可合并为一条 `products`，不同规格（次数/价格）各生成一条 `product_skus`
 
 ### 7.4 门店自定义项目（UDT_S_1382 主表 + UDT_M_1383 子表 → PG `products` + `product_skus`）
@@ -526,7 +526,7 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 |---------------|-------------------|---------|
 | `UDF_M_852`（销售流水号） | `sale_item_id` | PG 加 `-WX-` 后缀：`XSLSH-WX-{YYYYMMDD}{序号}` |
 | `UDF_M_14495`（疗程项目编号） | `sku_id` | 通过 `product_skus` 匹配 |
-| `UDF_M_4728`（产品类型） | — | 辅助推断 `session_count`（疗程卡≥2，单品=1） |
+| `UDF_M_4728`（产品类型） | — | 辅助推断 `session_count`（疗程卡≥1；上游"单品"→疗程卡 session_count=1） |
 | `UDF_M_394`（疗程服务次数） | `session_count` / `remaining_sessions` | 初始 remaining_sessions = session_count |
 | `UDF_M_4949`（原价） | `unit_price` | — |
 | `UDF_M_14494`（销售数量） | `quantity` | — |
