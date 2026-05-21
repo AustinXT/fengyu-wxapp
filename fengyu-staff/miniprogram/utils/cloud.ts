@@ -1,30 +1,27 @@
 // utils/cloud.ts — staffApi 调用封装（含 Mock 拦截 + 自动附加登录层级参数）
 import { mockCallApi } from './mock-api'
+import { getCosBase } from './cloud-env'
 
 /**
- * 客户端 env 的 COS CDN base（兼容历史 cloud:// fileID 渲染兜底；
- * 新链路头像已由云函数 getTempFileURL 入库为 HTTPS，不再依赖前端转换）。
- * 与 admin `src/lib/cloudbase.ts.CDN_BASE` 同源。
- */
-const CLIENT_ENV_CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la'
-
-/**
- * 将 cloud:// 协议的 fileID 转换为 HTTPS CDN URL（兼容兜底）。
+ * 将 cloud:// 协议的 fileID 转换为 HTTPS CDN URL（兼容历史 fileID 兜底；
+ * 新链路头像已由云函数 getTempFileURL 入库为 HTTPS，对其原样返回，不依赖此转换）。
+ * 桶 base 随 env 切换（staff dev/prod），由 getCosBase() 提供。
  *
- * 标准格式: cloud://envId.bucketSuffix/path → CDN_BASE/path（第一段含 . 则为 envId，跳过）
- * 简化格式: cloud://staff-avatars/xxx.jpg  → CDN_BASE/staff-avatars/xxx.jpg
+ * 标准格式: cloud://envId.bucketSuffix/path → base/path（第一段含 . 则为 envId，跳过）
+ * 简化格式: cloud://staff-avatars/xxx.jpg  → base/staff-avatars/xxx.jpg
  * HTTPS / 空：原样返回
  */
 export function toHttpUrl(url: string): string {
   if (!url || !url.startsWith('cloud://')) return url
+  const base = getCosBase()
   const withoutProtocol = url.slice('cloud://'.length)
   const slashIndex = withoutProtocol.indexOf('/')
   if (slashIndex === -1) return url
   const firstSegment = withoutProtocol.slice(0, slashIndex)
   if (firstSegment.includes('.')) {
-    return `${CLIENT_ENV_CDN_BASE}/${withoutProtocol.slice(slashIndex + 1)}`
+    return `${base}/${withoutProtocol.slice(slashIndex + 1)}`
   }
-  return `${CLIENT_ENV_CDN_BASE}/${withoutProtocol}`
+  return `${base}/${withoutProtocol}`
 }
 
 /**
