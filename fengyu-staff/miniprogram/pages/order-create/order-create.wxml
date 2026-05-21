@@ -233,14 +233,27 @@
           </van-cell-group>
         </view>
         <van-search
-          value="{{customerPhone}}"
-          placeholder="输入手机号搜索顾客"
+          value="{{customerKeyword}}"
+          placeholder="搜索姓名或手机号"
           bind:search="onSearchCustomer"
-          bind:change="onCustomerPhoneChange"
+          bind:change="onCustomerKeywordChange"
           use-action-slot
         >
           <view slot="action" bindtap="onSearchCustomer">搜索</view>
         </van-search>
+        <view wx:if="{{customerResults.length > 0 && !customerInfo}}" class="customer-results">
+          <van-cell-group>
+            <van-cell
+              wx:for="{{customerResults}}"
+              wx:key="clientUserId"
+              title="{{item.name || '未命名'}}"
+              label="{{item.phoneMasked || item.phone}}"
+              is-link
+              data-customer="{{item}}"
+              bind:click="onSelectCustomer"
+            />
+          </van-cell-group>
+        </view>
         <view wx:if="{{customerInfo}}" class="customer-found">
           <van-cell-group>
             <van-cell

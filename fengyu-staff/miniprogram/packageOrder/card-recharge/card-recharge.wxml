@@ -32,19 +32,31 @@
       <view class="customer-input-row">
         <input
           class="customer-input"
-          type="number"
-          maxlength="11"
-          placeholder="输入顾客手机号"
+          type="text"
+          placeholder="搜索姓名或手机号"
           placeholder-style="color:#BBBBBB"
-          value="{{customerPhone}}"
-          bindinput="onCustomerPhoneInput"
+          value="{{customerKeyword}}"
+          bindinput="onCustomerKeywordInput"
+          bindconfirm="onSearchCustomer"
         />
         <view
-          class="customer-search-btn {{customerPhone.length >= 11 && !customerSearching ? '' : 'customer-search-btn--disabled'}}"
+          class="customer-search-btn {{customerKeyword && !customerSearching ? '' : 'customer-search-btn--disabled'}}"
           bindtap="onSearchCustomer"
         >
           <van-loading wx:if="{{customerSearching}}" size="16px" color="#FFFFFF" />
           <text wx:else>查找</text>
+        </view>
+      </view>
+      <view wx:if="{{customerResults.length > 0}}" class="customer-results">
+        <view
+          wx:for="{{customerResults}}"
+          wx:key="clientUserId"
+          class="customer-result-item"
+          data-customer="{{item}}"
+          bindtap="onSelectCustomer"
+        >
+          <view class="customer-result-name">{{item.name || '未命名'}}</view>
+          <view class="customer-result-phone">{{item.phoneMasked || item.phone}}</view>
         </view>
       </view>
       <view class="customer-hint">仅已注册小程序的顾客可充值</view>

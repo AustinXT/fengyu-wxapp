@@ -243,9 +243,10 @@ Page({
     showCheckout: false,
     checkoutStep: 0,   // 0=选顾客 2=确认（Step 1 历史遗留编号，已废弃）
     // Step 0: 顾客
-    customerPhone: '',
+    customerKeyword: '',
     customerSearching: false,
     customerInfo: null as null | CustomerInfo,
+    customerResults: [] as CustomerInfo[],
     recentCustomers: [] as CustomerInfo[],
     // Step 2 顶部：订单类型 4 选 1（PR-C §C1）
     saleOrderType: '销售单' as SaleOrderType,
@@ -867,25 +868,27 @@ Page({
   },
 
   // Step 0: 选顾客
-  onCustomerPhoneChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ customerPhone: e.detail as unknown as string, customerInfo: null });
+  onCustomerKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ customerKeyword: e.detail as unknown as string, customerInfo: null, customerResults: [] });
   },
 
   async onSearchCustomer() {
-    const phone = this.data.customerPhone.trim();
-    if (!phone || phone.length < 11) {
-      wx.showToast({ title: '请输入完整手机号', icon: 'none' });
+    const keyword = this.data.customerKeyword.trim();
+    if (!keyword) {
+      wx.showToast({ title: '请输入顾客姓名或手机号', icon: 'none' });
       return;
     }
     this.setData({ customerSearching: true });
     try {
-      const results = await callStaffApi<CustomerInfo[]>('customer.search', { phone });
-      const found = results && results[0];
-      if (found) {
-        this.setData({ customerInfo: found });
+      // 跨门店模糊检索：绑定任意门店的顾客均可开单
+      const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
+      if (!results || results.length === 0) {
+        this.setData({ customerInfo: null, customerResults: [] });
+        wx.showToast({ title: '未找到该顾客（需已绑定门店）', icon: 'none' });
+      } else if (results.length === 1) {
+        this.setData({ customerInfo: results[0], customerResults: [] });
       } else {
-        this.setData({ customerInfo: null });
-        wx.showToast({ title: '该手机号未注册或未绑定门店', icon: 'none' });
+        this.setData({ customerInfo: null, customerResults: results });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '查询失败';
@@ -895,9 +898,14 @@ Page({
     }
   },
 
+  onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
+    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    this.setData({ customerInfo: customer, customerResults: [], customerKeyword: customer.phone || customer.name });
+  },
+
   onSelectRecentCustomer(e: WechatMiniprogram.TouchEvent) {
     const customer = e.currentTarget.dataset.customer as CustomerInfo;
-    this.setData({ customerInfo: customer, customerPhone: customer.phone });
+    this.setData({ customerInfo: customer, customerKeyword: customer.phone, customerResults: [] });
   },
 
   onStep0Next() {

@@ -139,6 +139,30 @@ describe('customer.search', () => {
     expect(params[1]).toBe(ctx.auth.storeId)
   })
 
+  test('crossStore=true 时关键词模糊跨门店检索（开单/充值卡用）', async () => {
+    const ctx = createManagerCtx({ keyword: '张', crossStore: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    // 模糊匹配手机号 + 姓名
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    // 跨门店：绑定任意门店即可见，不按 effectiveStoreId 过滤
+    expect(sql).toContain('c.bound_store_id IS NOT NULL')
+    expect(sql).not.toContain('c.bound_store_id = $2')
+    expect(params[0]).toBe('%张%')
+    expect(params[1]).toBe(20) // LIMIT，无门店参数占位
+  })
+
+  test('不带 crossStore 的关键词仍走门店内过滤（回归）', async () => {
+    const ctx = createManagerCtx({ keyword: '张' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    expect(sql).toContain('c.bound_store_id = $2')
+    expect(params[1]).toBe(ctx.auth.storeId)
+  })
+
   test('默认列表按 bound_store_id 过滤', async () => {
     const ctx = createManagerCtx({})
     pg.query.mockResolvedValueOnce([])

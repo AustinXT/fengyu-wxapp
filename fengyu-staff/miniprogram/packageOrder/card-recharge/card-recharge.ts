@@ -90,9 +90,10 @@ Page({
     isManager: false, // 是否店长 — 仅店长可真正提交充值，非店长可浏览面值/折扣表
 
     // 顾客
-    customerPhone: '',
+    customerKeyword: '',
     customerSearching: false,
     customerInfo: null as CustomerInfo | null,
+    customerResults: [] as CustomerInfo[],
 
     // 档位 + 自定义
     tiers: [] as TierVM[],
@@ -183,29 +184,33 @@ Page({
 
   // ============ 顾客选择 ============
 
-  onCustomerPhoneInput(e: WechatMiniprogram.CustomEvent) {
+  onCustomerKeywordInput(e: WechatMiniprogram.CustomEvent) {
     const value = (e.detail as { value?: string })?.value || '';
-    this.setData({ customerPhone: value });
+    this.setData({ customerKeyword: value, customerResults: [] });
   },
 
   async onSearchCustomer() {
-    const phone = (this.data.customerPhone || '').trim();
-    if (!phone || phone.length < 11 || this.data.customerSearching) return;
+    const keyword = (this.data.customerKeyword || '').trim();
+    if (!keyword || this.data.customerSearching) return;
 
     this.setData({ customerSearching: true });
     try {
-      const results = await callStaffApi<CustomerInfo[]>('customer.search', { phone });
-      const found = results && results[0];
-      if (found && found.clientUserId) {
-        this.setData({ customerInfo: found });
-        this.updateCta();
-      } else {
+      // 跨门店模糊检索：储值卡跨店统一，绑定任意门店的顾客均可充值
+      const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
+      const valid = (results || []).filter(r => r.clientUserId);
+      if (valid.length === 0) {
+        this.setData({ customerInfo: null, customerResults: [] });
         wx.showModal({
           title: '顾客未绑定门店',
-          content: '该手机号尚未绑定本系统门店，请先引导顾客本人登录小程序并绑定门店后再充值。',
+          content: '未找到已绑定本系统门店的顾客，请先引导顾客本人登录小程序并绑定门店后再充值。',
           showCancel: false,
           confirmColor: '#C0322A',
         });
+      } else if (valid.length === 1) {
+        this.setData({ customerInfo: valid[0], customerResults: [] });
+        this.updateCta();
+      } else {
+        this.setData({ customerInfo: null, customerResults: valid });
       }
     } catch (err: any) {
       wx.showToast({ title: err?.message || '查询失败', icon: 'none' });
@@ -214,8 +219,14 @@ Page({
     }
   },
 
+  onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
+    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    this.setData({ customerInfo: customer, customerResults: [] });
+    this.updateCta();
+  },
+
   onClearCustomer() {
-    this.setData({ customerInfo: null, customerPhone: '' });
+    this.setData({ customerInfo: null, customerKeyword: '', customerResults: [] });
     this.updateCta();
   },
 

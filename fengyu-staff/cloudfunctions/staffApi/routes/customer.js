@@ -25,7 +25,7 @@ const { maskPhone } = require("../utils/pii");
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, customerType } = ctx.event.payload || {};
+  const { keyword, phone, customerType, crossStore } = ctx.event.payload || {};
 
   const isManagerRole = ctx.auth.roles.includes("manager");
 
@@ -49,15 +49,30 @@ async function search(ctx) {
       [phone.trim()],
     );
   } else if (keyword && keyword.trim()) {
-    rows = await pg.query(
-      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
-              c.bound_store_id, s.store_name
-       FROM client_wechat_users c
-       LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${typeFilter}
-       LIMIT $3`,
-      [`%${keyword.trim()}%`, ctx.auth.effectiveStoreId, limit],
-    );
+    const kw = `%${keyword.trim()}%`;
+    if (crossStore) {
+      // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，绑定任意门店即可见）
+      rows = await pg.query(
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+                c.bound_store_id, s.store_name
+         FROM client_wechat_users c
+         LEFT JOIN stores s ON s.store_id = c.bound_store_id
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id IS NOT NULL${typeFilter}
+         LIMIT $2`,
+        [kw, limit],
+      );
+    } else {
+      // 门店内模糊检索：顾客 Tab / 服务单选顾客用
+      rows = await pg.query(
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+                c.bound_store_id, s.store_name
+         FROM client_wechat_users c
+         LEFT JOIN stores s ON s.store_id = c.bound_store_id
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${typeFilter}
+         LIMIT $3`,
+        [kw, ctx.auth.effectiveStoreId, limit],
+      );
+    }
   } else {
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
