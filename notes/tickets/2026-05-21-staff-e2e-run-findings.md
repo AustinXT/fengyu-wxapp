@@ -25,34 +25,29 @@
 
 ---
 
-## ⏳ 待决策（未改，等统一处理）
+## ✅ 决策后已落实（2026-05-21 第二轮）
 
-### A. smoke-staff-dashboard — action `staff.dashboard` 已被移除
-- 现状：路由表无 `staff.dashboard`，已重构为 `mgmtDashboard.{summary,storeRanking,staffRanking,salesData}`（`smoke-mgmt-dashboard.mjs` 已覆盖且 PASS）。
-- 冲突：MEMORY.md 仍写「staff: …dashboard（数据看板5指标）」，已过时。
-- **决策**：删除 `smoke-staff-dashboard.mjs`（已被 mgmt-dashboard 覆盖，建议）/ 还是员工端仍需一个非管理层 dashboard 端点？同步更新 MEMORY.md。
+按用户拍板逐项处理：
 
-### B. smoke-order-create-internal — 两处
-1. 第 3 步期望「内部单 customPrice 被拒」，但 `order.js:320` 已废弃 customPrice/discount 入参（**静默忽略**，不报错），故下单成功（5 折）。
-2. 因第 3 步现在成功（建了待支付单），第 4 步撞上新守卫 `order.js:339`「该顾客已有待支付订单」→ -400。
-- **决策**：(1) customPrice 该静默忽略（现状）还是显式拒绝？ (2) 该 smoke 给同一顾客连开多单，与「一顾客一待支付单」守卫冲突——需重构（步骤间关单 / 用不同顾客）。建议：删 customPrice 拒绝步骤 + 第 4 步换新顾客。
+1. **删 `smoke-staff-dashboard.mjs`** — staff.dashboard 已并入 mgmtDashboard，run-all 自动发现无需改列表；MEMORY.md staffApi 列表已更正。
+2. **一顾客一待支付单 = 显式拒绝（保留现有守卫）** — 生产代码已是该行为；改 `smoke-order-create-internal`：删废弃的 customPrice 拒绝步骤，新增「同顾客二次开单被拒」断言。PASS。
+3. **每顾客仅一张 待服务/服务中** — 确认 `uq_so_client_active` 不变量；改 `smoke-service-cancel` fixture，so1(待服务)/so2(服务中) 分属不同顾客。PASS。
+4. **加固 requireManager（生产代码）** — `middleware/auth.js`：manager 绑定须落在合法 scope（总部/市场/门店），部门级 manager 绑定一并拒绝。`smoke-deny-non-manager` 4/4 PASS；rbac 4 套 63 case 全过；L1 回到基线 32（index.test.js mock 同步补 scope_type + expandScope）；scope-isolation 4/4。
+5. **xend 改混合单（方案 b）** — `smoke-xend-scan-confirm-scope` fixture 改为 total=500/储值卡 300+现金 200/payment_method='线下'，confirmOffline 扣卡 300+确认现金 200，保留 client card.history 跨端断言。4/4 PASS。
 
-### C. smoke-service-cancel — 撞 `uq_so_client_active`
-- fixture 给**同一顾客**建 待服务 + 服务中 两张服务单，违反唯一索引 `uq_so_client_active`（service_orders：每顾客仅一张 待服务/服务中 活跃单）。
-- **决策**：确认该 invariant 是否预期（已是 committed DB index，应为预期）。若是，fixture 改为给 so1/so2 用**不同顾客**（so3 已完成不算活跃，无所谓）。建议：拆顾客。
+> 改动文件：生产 1（`middleware/auth.js` requireManager）+ 测试若干（见 git）。生产改动经 L1 全量 + rbac/scope-isolation/confirm-offline/card-recharge 验证零回归。
 
-### D. smoke-deny-non-manager — requireManager 对「部门 scope 上的 manager 绑定」放行（**唯一涉及生产代码**）
-- case 4：员工绑定 `{role:'manager', scopeId=部门节点}`，`requireManager()`（auth.js:271）只按**角色名**判定 `r.role==='manager'` 即放行，未校验绑定 scope 类型合法性 → 落入 order.create → 因缺 clientPhone 报 INVALID_PARAMS，而非期望的 PERMISSION_DENIED。
-- 背景：[role-scope-pairing] manager 不允许配在 type=部门；admin UI 已阻止该配对，生产不会出现（仅纵深防御缺口）。
-- **决策**：(a) 加固 requireManager——要求 manager 绑定落在合法 scope（或 staffLevel≠null）；还是 (b) 放宽测试（非法配对不会发生）。
+## ⏳ 仍待你决定（本轮未处理）
 
-### E. smoke-xend-scan-confirm-scope — fixture 造了 order.create 不会产生的状态
-- fixture 建「待支付 + payment_method='储值卡' + total 全由储值卡覆盖」的单，对它调 confirmOffline。
-- 但 `order.js:160-167` 明确：全额储值卡抵扣单（payable==0 && prepaid>0）在**创建时即扣卡结清**，因为 payment_method='无' 走不了 confirmOffline；且新守卫 `order.js:1033` 拒绝 payment_method≠'线下' 的待支付单。故该场景在真实链路不存在。
-- **决策**：重设该 smoke——(a) 测创建时全额扣卡结清路径；或 (b) 用「储值卡 300 + 现金应付」混合单（payment_method='线下'）再 confirmOffline 确认现金+扣卡，保留 staff→client card.history 跨端断言。建议 (b)。
-
-### F. smoke-card-balance — flake（非 bug）
+### smoke-card-balance — flake（非 bug）
 - 全套跑时失败，单独跑 PASS。属已知 TE2L2 命名空间并发污染（见 memory e2e-shared-namespace-contention）。无需改代码；如要消除，给它独立命名空间或串行隔离。
+
+### L3 run-scenarios 余下失败（见下方 L3 段）
+- bs01/02/03/05/06：文档化 spec vs 页面文案/接口契约 mismatch（KNOWN-ISSUES-2026-05-17 有逐条修正指引）。
+- bs04/07/09：L3 topology/scope seed + system_configs 不稳定（cleanup 清掉 staff scope 绑定，per-spec setup 没全重建）。
+
+### L1 unit 32 fail（非 tests/ 范围）
+- 跨端 snapshot 漂移（admin recharge.ts 文案、mgmt-dashboard SQL 形态、admin orders SQL）+ mock 漂移（order.test.js 幂等守卫先于校验）+ `product.test.js` 对已删 `is_recharge_card` 列的滞后断言。建议另开工单。
 
 ---
 
