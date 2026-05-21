@@ -3,11 +3,12 @@ import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { searchProducts } from "../../utils/format";
+import { getCosBase } from "../../utils/cloud-env";
 
 const app = getApp<IAppOption>();
 
-// CloudBase CDN 基础 URL
-const CDN_BASE = "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/fengyu-client";
+// CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
+const CDN_BASE = `${getCosBase()}/fengyu-client`;
 
 interface Banner {
   id: string;

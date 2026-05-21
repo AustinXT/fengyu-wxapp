@@ -1,6 +1,7 @@
 // pages/cart/cart.ts
+import { getCosBase } from '../../utils/cloud-env';
 
-const CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la';
+const CDN_BASE = getCosBase();
 const DEFAULT_IMAGE_PATH = '/images/fengyuguan.jpg';
 const IMAGE_WIDTH = 2480;
 const IMAGE_HEIGHT = 34960;
