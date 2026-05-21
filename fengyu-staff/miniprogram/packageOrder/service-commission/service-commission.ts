@@ -1,7 +1,16 @@
 // packageOrder/service-commission/service-commission.ts — 服务提成分配
+// 交互对齐 admin / 销售提成：每行「先选技能标签 → 选有该技能的员工 → 选分配比例」，
+// 自动派生 提成%（只读）/ 分配额(=consumeBase×比例) / 提成额(=fixedFee+consumeAmount)。
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
-import { lookupServiceRate, computeServiceLine, ServiceRateRow } from '../utils/service-commission-calc';
+import {
+  lookupServiceRate, computeServiceLine, computeServiceSummary, ServiceRateRow,
+} from '../utils/service-commission-calc';
+
+const SKILL_TAGS = ['美容师', '养生师', '推广师'];
+const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+const MAX_PER_POOL = 3;
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 interface ServiceItem {
   service_item_id: string;
@@ -37,38 +46,35 @@ interface OrderInfo {
   employee_name: string | null;
 }
 
+/** 候选员工（市场内全部在职员工，供 admin 式按技能筛选） */
+interface CandidateEmployee {
+  staffWfId: string;
+  name: string;
+  storeId: string;
+  storeName: string;
+  skills: string[];
+  department: string;
+}
+
 interface DetailResponse {
   order: OrderInfo;
   items: ServiceItem[];
   commissions: ExistingCommission[];
   rates: ServiceRateRow[];
-}
-
-interface DeptApiResponse {
-  departments: Array<{
-    departmentName: string;
-    members: Array<{ staffWfId: string; name: string; position: string; skills?: string[] }>;
-  }>;
-}
-
-interface StaffInfo {
-  staffWfId: string;
-  staffName: string;
-  department: string;
-  skills: string[];
+  candidateEmployees?: CandidateEmployee[];
+  orderStoreId?: string;
 }
 
 interface CommLine {
   serviceItemId: string;
-  roleType: string;
-  staffWfId: string;
+  roleType: string;        // 技能标签（''=未选）
+  staffWfId: string;       // 员工（''=未选）
   staffName: string;
   salesCategory: string;
-  commissionRate: number; // display-only, from matrix
-  allocationRatio: number; // 0.10~1.00
-  ratioPercent: number; // 10~100, 用于 picker 显示
-  allocAmount: string;
-  commissionAmount: string;
+  ratioPercent: number;    // 分配比例（0=未选，10~100 整十）
+  commissionRate: number;  // 提成比例，只读，按 roleType+salesCat+consumeBase 查表
+  allocAmount: string;     // 分配额 = consumeBase × 比例
+  commissionAmount: string; // 提成额 = fixedFee + consumeAmount
 }
 
 interface DisplayItem {
@@ -77,20 +83,10 @@ interface DisplayItem {
   sku_spec_name: string;
   sales_category: string | null;
   session_used: number;
-  consumeBase: number; // unit_real_price × session_used（整池基数）
+  consumeBase: number;  // unit_real_price × session_used（整池基数）
   fixedFeeBase: number; // service_fee × session_used（整池）
   allocLines: CommLine[];
-  poolSummary: Array<{ role: string; percent: number }>; // 每技能池累计%
 }
-
-interface PickerGroup {
-  department: string;
-  members: StaffInfo[];
-}
-
-const RATIO_OPTIONS = ['10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%'];
-
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 Page({
   data: {
@@ -99,14 +95,23 @@ Page({
     serviceOrderId: '',
     order: null as OrderInfo | null,
     rates: [] as ServiceRateRow[],
-    allStaffList: [] as StaffInfo[],
-    pickerGroups: [] as PickerGroup[],
+    candidateEmployees: [] as CandidateEmployee[],
+    orderStoreId: '',
     displayItems: [] as DisplayItem[],
     isAllocated: false,
-    ratioOptions: RATIO_OPTIONS,
-    // 选人弹窗
-    pickerVisible: false,
-    pickerServiceItemId: '',
+    // 汇总
+    summary: [] as Array<{ staffName: string; department: string; total: string }>,
+    grandTotal: '0.00',
+    // ---- 选择器 ----
+    pickerItemIdx: -1,
+    pickerLineIdx: -1,
+    skillSheetVisible: false,
+    skillSheetActions: SKILL_TAGS.map(name => ({ name })),
+    ratioSheetVisible: false,
+    ratioSheetActions: RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })),
+    empPopupVisible: false,
+    empPopupList: [] as CandidateEmployee[],
+    empPopupTitle: '选择员工',
   },
 
   onLoad(options: Record<string, string>) {
@@ -124,37 +129,24 @@ Page({
   async init(serviceOrderId: string) {
     this.setData({ loading: true });
     try {
-      const [detailData, deptResponse] = await Promise.all([
-        callStaffApi<DetailResponse>('serviceCommission.detail', { serviceOrderId }),
-        callStaffApi<DeptApiResponse>('staff.departments'),
-      ]);
+      const detailData = await callStaffApi<DetailResponse>('serviceCommission.detail', { serviceOrderId });
 
       const order = detailData.order;
       const rates = detailData.rates || [];
       const isAllocated = order.commission_status === '已分配';
+      const candidateEmployees = detailData.candidateEmployees || [];
+      const orderStoreId = detailData.orderStoreId || '';
 
-      // 员工列表（扁平 + 分组）
-      const allStaffList: StaffInfo[] = [];
-      const pickerGroups: PickerGroup[] = [];
-      for (const d of (deptResponse.departments || [])) {
-        const members: StaffInfo[] = (d.members || []).map((s) => ({
-          staffWfId: s.staffWfId,
-          staffName: s.name || '',
-          department: d.departmentName,
-          skills: Array.isArray(s.skills) ? s.skills : [],
-        }));
-        allStaffList.push(...members);
-        pickerGroups.push({ department: d.departmentName, members });
-      }
+      const staffNameMap = new Map<string, string>();
+      candidateEmployees.forEach(e => staffNameMap.set(e.staffWfId, e.name));
 
-      // displayItems：计算每项基数
       const existingByItem = new Map<string, ExistingCommission[]>();
       for (const c of (detailData.commissions || [])) {
         if (!existingByItem.has(c.service_item_id)) existingByItem.set(c.service_item_id, []);
         existingByItem.get(c.service_item_id)!.push(c);
       }
-      const staffNameMap = new Map<string, string>();
-      allStaffList.forEach(s => staffNameMap.set(s.staffWfId, s.staffName));
+
+      this.setData({ rates }); // computeLine 依赖 data.rates
 
       const displayItems: DisplayItem[] = (detailData.items || []).map(item => {
         const sessionUsed = Number(item.session_used) || 0;
@@ -162,21 +154,24 @@ Page({
         const fixedFeeBase = round2(Number(item.service_fee || 0) * sessionUsed);
         const salesCat = item.sales_category || '自销自耗';
 
+        // 已分配回填：commissionRate 用 lookupServiceRate 重算（与销售页恢复口径一致）
         const lines: CommLine[] = (existingByItem.get(item.service_item_id) || []).map(c => {
-          const ratio = Number(c.allocation_ratio) || 1.0;
-          const rate = Number(c.commission_rate) || 0;
-          const allocAmount = round2(consumeBase * ratio).toFixed(2);
+          const ratioPercent = Math.round((Number(c.allocation_ratio) || 0) * 100);
+          const roleType = c.role_type || '';
+          const commissionRate = roleType ? lookupServiceRate(roleType, salesCat, consumeBase, rates) : 0;
+          const { allocAmount, commissionAmount } = computeServiceLine(
+            consumeBase, fixedFeeBase, ratioPercent / 100, commissionRate
+          );
           return {
             serviceItemId: item.service_item_id,
-            roleType: c.role_type || '',
+            roleType,
             staffWfId: c.employee_id,
             staffName: staffNameMap.get(c.employee_id) || c.employee_name || c.employee_id,
             salesCategory: salesCat,
-            commissionRate: rate,
-            allocationRatio: ratio,
-            ratioPercent: Math.round(ratio * 100),
+            ratioPercent,
+            commissionRate,
             allocAmount,
-            commissionAmount: Number(c.commission_amount || 0).toFixed(2),
+            commissionAmount,
           };
         });
 
@@ -189,19 +184,18 @@ Page({
           consumeBase,
           fixedFeeBase,
           allocLines: lines,
-          poolSummary: this.calcPoolSummary(lines),
         };
       });
 
       this.setData({
         order,
-        rates,
-        allStaffList,
-        pickerGroups,
+        candidateEmployees,
+        orderStoreId,
         displayItems,
         isAllocated,
         loading: false,
       });
+      this.computeSummary();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -209,138 +203,187 @@ Page({
     }
   },
 
-  /** 计算每技能池累计分配比例（百分比） */
-  calcPoolSummary(lines: CommLine[]): Array<{ role: string; percent: number }> {
-    const map = new Map<string, number>();
-    for (const l of lines) {
-      if (!l.roleType) continue;
-      map.set(l.roleType, (map.get(l.roleType) || 0) + l.ratioPercent);
-    }
-    return [...map.entries()].map(([role, percent]) => ({ role, percent }));
+  /** 重算单行：分配额 = consumeBase×比例；提成额 = fixedFee + consumeAmount */
+  computeLine(line: CommLine, consumeBase: number, fixedFeeBase: number): CommLine {
+    const { allocAmount, commissionAmount } = computeServiceLine(
+      consumeBase, fixedFeeBase, line.ratioPercent / 100, line.commissionRate || 0
+    );
+    return { ...line, allocAmount, commissionAmount };
   },
 
-  /** 打开选人弹窗 */
-  onAddPerson(e: WechatMiniprogram.TouchEvent) {
-    const serviceItemId = e.currentTarget.dataset.serviceItemId as string;
-    this.setData({ pickerVisible: true, pickerServiceItemId: serviceItemId });
-  },
-
-  onPickerClose() {
-    this.setData({ pickerVisible: false, pickerServiceItemId: '' });
-  },
-
-  /** 选中员工（按 skills 推断 roleType） */
-  async onStaffSelected(e: WechatMiniprogram.TouchEvent) {
-    const staffWfId = e.currentTarget.dataset.staffWfId as string;
-    const department = e.currentTarget.dataset.department as string;
-    const { pickerServiceItemId, displayItems, allStaffList } = this.data;
-
-    const diIdx = displayItems.findIndex(d => d.service_item_id === pickerServiceItemId);
-    if (diIdx < 0) return;
-    const di = displayItems[diIdx];
-
-    const staff = allStaffList.find(s => s.staffWfId === staffWfId && s.department === department);
-    if (!staff) return;
-
-    if (!staff.skills || staff.skills.length === 0) {
-      wx.showToast({ title: `${staff.staffName} 暂无技能标签，请联系管理员补录`, icon: 'none', duration: 2500 });
-      return;
-    }
-    let roleType = '';
-    if (staff.skills.length === 1) {
-      roleType = staff.skills[0];
-    } else {
-      try {
-        const sheetRes = await wx.showActionSheet({ itemList: staff.skills });
-        roleType = staff.skills[sheetRes.tapIndex];
-      } catch (_e) {
-        return;
-      }
-    }
-
-    // 防重复：同一 item 同一 roleType 不添加同一人
-    if (di.allocLines.some(l => l.staffWfId === staffWfId && l.roleType === roleType)) {
-      wx.showToast({ title: '该员工已在此技能下添加', icon: 'none' });
-      return;
-    }
-
-    const salesCat = di.sales_category || '自销自耗';
-    const ratio = 1.0;
-    const rate = lookupServiceRate(roleType, salesCat, di.consumeBase, this.data.rates);
-    const { allocAmount, commissionAmount } = computeServiceLine(di.consumeBase, di.fixedFeeBase, ratio, rate);
-
-    const newLine: CommLine = {
-      serviceItemId: pickerServiceItemId,
-      roleType,
-      staffWfId: staff.staffWfId,
-      staffName: staff.staffName,
-      salesCategory: salesCat,
-      commissionRate: rate,
-      allocationRatio: ratio,
-      ratioPercent: 100,
-      allocAmount,
-      commissionAmount,
-    };
-
-    const lines = [...di.allocLines, newLine];
-    this.setData({
-      [`displayItems[${diIdx}].allocLines`]: lines,
-      [`displayItems[${diIdx}].poolSummary`]: this.calcPoolSummary(lines),
-      pickerVisible: false,
-      pickerServiceItemId: '',
+  /** 按技能筛选候选员工：美容师→服务单门店；养生师/推广师→市场内任意门店 */
+  getFilteredEmployees(skillTag: string): CandidateEmployee[] {
+    const { candidateEmployees, orderStoreId } = this.data;
+    return candidateEmployees.filter(e => {
+      if (!e.skills || !e.skills.includes(skillTag)) return false;
+      if (skillTag === '美容师') return e.storeId === orderStoreId;
+      return true;
     });
   },
 
-  /** 修改分配比例 */
-  onRatioChange(e: WechatMiniprogram.CustomEvent) {
-    const itemIdx = Number(e.currentTarget.dataset.itemIdx);
-    const lineIdx = Number(e.currentTarget.dataset.lineIdx);
-    const optIdx = Number(e.detail.value);
-    const ratioPercent = (optIdx + 1) * 10;
-    const ratio = ratioPercent / 100;
+  /** 添加一条空分配行 */
+  onAddLine(e: WechatMiniprogram.TouchEvent) {
+    const itemIdx = e.currentTarget.dataset.itemIdx as number;
+    const di = this.data.displayItems[itemIdx];
+    if (!di) return;
+    const newLine: CommLine = {
+      serviceItemId: di.service_item_id,
+      roleType: '',
+      staffWfId: '',
+      staffName: '',
+      salesCategory: di.sales_category || '自销自耗',
+      ratioPercent: 0,
+      commissionRate: 0,
+      allocAmount: '0.00',
+      commissionAmount: '0.00',
+    };
+    this.setData({ [`displayItems[${itemIdx}].allocLines`]: [...di.allocLines, newLine] });
+  },
+
+  onRemoveLine(e: WechatMiniprogram.TouchEvent) {
+    const itemIdx = e.currentTarget.dataset.itemIdx as number;
+    const lineIdx = e.currentTarget.dataset.lineIdx as number;
+    const di = this.data.displayItems[itemIdx];
+    if (!di) return;
+    const updated = di.allocLines.filter((_: CommLine, i: number) => i !== lineIdx);
+    this.setData({ [`displayItems[${itemIdx}].allocLines`]: updated });
+    this.computeSummary();
+  },
+
+  // ---------- 技能标签 ----------
+  openSkillPicker(e: WechatMiniprogram.TouchEvent) {
+    const itemIdx = e.currentTarget.dataset.itemIdx as number;
+    const lineIdx = e.currentTarget.dataset.lineIdx as number;
+    this.setData({ pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, skillSheetVisible: true });
+  },
+
+  onSkillSelect(e: WechatMiniprogram.CustomEvent) {
+    const roleType = e.detail.name as string;
+    const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
+    const di = displayItems[itemIdx];
+    if (!di) { this.closeSkillSheet(); return; }
+    const line = di.allocLines[lineIdx];
+    // 切换技能：清空已选员工 + 重查提成比例
+    const commissionRate = lookupServiceRate(roleType, line.salesCategory, di.consumeBase, this.data.rates);
+    const updated = this.computeLine(
+      { ...line, roleType, staffWfId: '', staffName: '', commissionRate },
+      di.consumeBase, di.fixedFeeBase
+    );
+    this.setData({
+      [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
+      skillSheetVisible: false,
+    });
+    this.computeSummary();
+  },
+
+  closeSkillSheet() {
+    this.setData({ skillSheetVisible: false });
+  },
+
+  // ---------- 员工 ----------
+  openEmployeePicker(e: WechatMiniprogram.TouchEvent) {
+    const itemIdx = e.currentTarget.dataset.itemIdx as number;
+    const lineIdx = e.currentTarget.dataset.lineIdx as number;
     const di = this.data.displayItems[itemIdx];
     if (!di) return;
     const line = di.allocLines[lineIdx];
-    if (!line) return;
-    const { allocAmount, commissionAmount } = computeServiceLine(di.consumeBase, di.fixedFeeBase, ratio, line.commissionRate);
-    const lines = di.allocLines.map((l, i) => i === lineIdx
-      ? { ...l, allocationRatio: ratio, ratioPercent, allocAmount, commissionAmount }
-      : l);
+    if (!line.roleType) {
+      wx.showToast({ title: '请先选择技能标签', icon: 'none' });
+      return;
+    }
+    const list = this.getFilteredEmployees(line.roleType);
     this.setData({
-      [`displayItems[${itemIdx}].allocLines`]: lines,
-      [`displayItems[${itemIdx}].poolSummary`]: this.calcPoolSummary(lines),
+      pickerItemIdx: itemIdx,
+      pickerLineIdx: lineIdx,
+      empPopupList: list,
+      empPopupTitle: `选择员工（${list.length}人）`,
+      empPopupVisible: true,
     });
   },
 
-  /** 移除人员 */
-  onRemovePerson(e: WechatMiniprogram.TouchEvent) {
-    const itemIdx = Number(e.currentTarget.dataset.itemIdx);
-    const lineIdx = Number(e.currentTarget.dataset.lineIdx);
-    const di = this.data.displayItems[itemIdx];
-    if (!di) return;
-    const lines = di.allocLines.filter((_, i) => i !== lineIdx);
+  onEmployeeSelect(e: WechatMiniprogram.TouchEvent) {
+    const staffWfId = e.currentTarget.dataset.staffWfId as string;
+    const staffName = e.currentTarget.dataset.name as string;
+    const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
+    const di = displayItems[itemIdx];
+    if (!di) { this.closeEmpPopup(); return; }
+    const line = di.allocLines[lineIdx];
+    // 防重复：同 item 同技能标签池内不重复员工
+    const dup = di.allocLines.some((l: CommLine, i: number) =>
+      i !== lineIdx && l.roleType === line.roleType && l.staffWfId === staffWfId
+    );
+    if (dup) {
+      wx.showToast({ title: '该员工已在同技能标签下分配', icon: 'none' });
+      return;
+    }
     this.setData({
-      [`displayItems[${itemIdx}].allocLines`]: lines,
-      [`displayItems[${itemIdx}].poolSummary`]: this.calcPoolSummary(lines),
+      [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: { ...line, staffWfId, staffName },
+      empPopupVisible: false,
     });
+  },
+
+  closeEmpPopup() {
+    this.setData({ empPopupVisible: false });
+  },
+
+  // ---------- 分配比例 ----------
+  openRatioPicker(e: WechatMiniprogram.TouchEvent) {
+    const itemIdx = e.currentTarget.dataset.itemIdx as number;
+    const lineIdx = e.currentTarget.dataset.lineIdx as number;
+    this.setData({ pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, ratioSheetVisible: true });
+  },
+
+  onRatioSelect(e: WechatMiniprogram.CustomEvent) {
+    const percent = e.detail.value as number;
+    const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
+    const di = displayItems[itemIdx];
+    if (!di) { this.closeRatioSheet(); return; }
+    const updated = this.computeLine(
+      { ...di.allocLines[lineIdx], ratioPercent: percent },
+      di.consumeBase, di.fixedFeeBase
+    );
+    this.setData({
+      [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
+      ratioSheetVisible: false,
+    });
+    this.computeSummary();
+  },
+
+  closeRatioSheet() {
+    this.setData({ ratioSheetVisible: false });
+  },
+
+  computeSummary() {
+    const { summary, grandTotal } = computeServiceSummary(this.data.displayItems);
+    this.setData({ summary, grandTotal });
   },
 
   async onSave() {
     if (this.data.submitting) return;
     const { displayItems, serviceOrderId } = this.data;
 
+    // 收集完整行（技能标签 + 员工 + 分配比例 三者齐全）
     const commissions: Array<{ serviceItemId: string; employeeId: string; roleType: string; allocationRatio: number }> = [];
+    let hasPartial = false;
     for (const di of displayItems) {
       for (const l of di.allocLines) {
-        if (l.staffWfId && l.roleType) {
+        const filled = l.roleType && l.staffWfId && l.ratioPercent > 0;
+        if (filled) {
           commissions.push({
             serviceItemId: l.serviceItemId,
             employeeId: l.staffWfId,
             roleType: l.roleType,
-            allocationRatio: l.allocationRatio,
+            allocationRatio: l.ratioPercent / 100,
           });
+        } else if (l.roleType || l.staffWfId || l.ratioPercent > 0) {
+          hasPartial = true;
         }
       }
+    }
+
+    if (hasPartial) {
+      wx.showToast({ title: '请填写完整的分配信息（技能标签、员工、分配比例）', icon: 'none' });
+      return;
     }
 
     if (commissions.length === 0) {
@@ -350,13 +393,19 @@ Page({
       if (!res.confirm) return;
     }
 
-    // 客户端分池预校验（合计 ≤ 100%）
-    const poolPct = new Map<string, number>();
+    // 前端轻量预校验：同 (serviceItemId, roleType) 池 ≤3 人 / 比例合计 ≤100%
+    const pools = new Map<string, Array<{ employeeId: string; allocationRatio: number }>>();
     for (const c of commissions) {
       const key = `${c.serviceItemId}|${c.roleType}`;
-      poolPct.set(key, (poolPct.get(key) || 0) + Math.round(c.allocationRatio * 100));
+      if (!pools.has(key)) pools.set(key, []);
+      pools.get(key)!.push(c);
     }
-    for (const [, pct] of poolPct) {
+    for (const [, pool] of pools) {
+      if (pool.length > MAX_PER_POOL) {
+        wx.showToast({ title: `每个服务明细每个技能标签最多分配 ${MAX_PER_POOL} 人`, icon: 'none' });
+        return;
+      }
+      const pct = pool.reduce((s, c) => s + Math.round(c.allocationRatio * 100), 0);
       if (pct > 100) {
         wx.showToast({ title: '同技能标签分配比例合计不能超过 100%', icon: 'none' });
         return;

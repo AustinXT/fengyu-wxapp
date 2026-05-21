@@ -42,56 +42,62 @@
 .item-sub { font-size: 22rpx; color: #999; margin: 6rpx 0 20rpx; padding-bottom: 16rpx; border-bottom: 1rpx solid #F0F0F0; }
 
 /* 分配行 */
-.comm-row {
-  padding: 16rpx;
-  margin-bottom: 12rpx;
+.alloc-line {
   background: #FAFAFA;
   border-radius: 12rpx;
+  padding: 16rpx;
+  margin-bottom: 12rpx;
 }
-.comm-main {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  margin-bottom: 14rpx;
-}
-.person-name { font-size: 26rpx; font-weight: 600; color: #2D2017; }
-.comm-metrics {
+.line-fields {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 8rpx;
+  gap: 12rpx;
 }
-.metric { display: flex; flex-direction: column; align-items: flex-start; gap: 6rpx; }
-.metric-label { font-size: 20rpx; color: #999; }
-.metric-value { font-size: 26rpx; font-weight: 600; color: #2D2017; }
-.metric-value.amount { color: var(--color-primary); }
-.metric-warn { color: #E65100; }
-.ratio-picker {
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  flex: 1;
+  min-width: 0;
+}
+.field--ratio { flex: 0 0 150rpx; }
+.field-label { font-size: 20rpx; color: #999; }
+.field-value {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 4rpx;
+  background: #FFFFFF;
+  border: 1rpx solid #E0E0E0;
+  border-radius: 10rpx;
+  padding: 0 12rpx;
+  height: 60rpx;
   font-size: 26rpx;
-  font-weight: 600;
-  color: #1976D2;
-  background: #E3F2FD;
-  padding: 6rpx 14rpx;
-  border-radius: 8rpx;
+  color: #2D2017;
 }
+.field-value.placeholder { color: #BBB; }
 .remove-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 56rpx;
-  height: 56rpx;
-  border-radius: 28rpx;
-  background: #F5F5F5;
+  height: 60rpx;
   flex-shrink: 0;
 }
 
-/* 池汇总 */
-.pool-summary { display: flex; flex-wrap: wrap; gap: 12rpx; margin: 4rpx 0 16rpx; }
-.pool-tag { font-size: 22rpx; color: #666; background: #F0F0F0; padding: 4rpx 12rpx; border-radius: 8rpx; }
-.pool-tag.pool-over { color: #D94040; background: #FDECEC; }
+/* 只读派生：提成% / 分配额 / 提成额 */
+.line-derived {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-top: 14rpx;
+  padding-top: 12rpx;
+  border-top: 1rpx dashed #ECECEC;
+}
+.derived-item { font-size: 24rpx; color: #666; }
+.derived-strong { color: #2D2017; font-weight: 600; }
+.derived-warn { color: #D4820A; font-weight: 600; }
+.derived-primary { color: var(--color-primary); font-weight: 600; margin-left: auto; }
 
 /* 添加分配按钮 */
 .add-person-btn {
@@ -116,24 +122,44 @@
 }
 .picker-title { font-size: 32rpx; font-weight: 600; color: #2D2017; }
 .picker-scroll { height: 720rpx; padding: 0 32rpx; }
-.picker-group { margin-bottom: 16rpx; }
-.picker-group-title {
-  font-size: 24rpx;
-  font-weight: 600;
-  color: #999;
-  padding: 20rpx 0 12rpx;
-  position: sticky;
-  top: 0;
-  background: #FFFFFF;
-}
 .picker-member {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 24rpx 16rpx;
   border-bottom: 1rpx solid #F5F5F5;
 }
 .picker-member:active { background: #F5F5F5; }
 .picker-member-name { font-size: 28rpx; color: #2D2017; }
+.picker-member-store { font-size: 22rpx; color: #999; }
+.picker-empty { text-align: center; font-size: 26rpx; color: #999; padding: 80rpx 0; }
+
+/* 汇总 */
+.summary-section {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  margin: 0 32rpx 24rpx;
+  padding: 24rpx;
+}
+.summary-title { font-size: 26rpx; font-weight: 600; color: #2D2017; margin-bottom: 16rpx; }
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8rpx 0;
+}
+.summary-name { font-size: 26rpx; color: #666; }
+.summary-amount { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.summary-grand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1rpx solid #F0F0F0;
+  margin-top: 12rpx;
+  padding-top: 12rpx;
+}
+.summary-grand-label { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.summary-grand-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 
 /* 操作区 */
 .action-bar { padding: 0 32rpx 32rpx; }
