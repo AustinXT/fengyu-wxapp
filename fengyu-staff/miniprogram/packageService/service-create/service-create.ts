@@ -73,7 +73,7 @@ Page({
     staffName: '',
     isManager: false,
     showStaffPicker: false,
-    staffList: [] as Array<{ staffWfId: string; name: string; department: string }>,
+    staffList: [] as Array<{ staffWfId: string; name: string; department: string; skills?: string[] }>,
     staffColumns: [] as string[],
     assignedStaffWfId: '' as string,
     // 备注
@@ -325,11 +325,12 @@ Page({
   // ===== 店长选择服务人员 =====
   async loadStaffList() {
     try {
-      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string }> }>('staff.list');
+      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string; skills?: string[] }> }>('staff.list');
       const list = data?.staffList || [];
+      const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
       this.setData({
         staffList: list,
-        staffColumns: list.map(s => `${s.name}（${s.department || '未分组'}）`),
+        staffColumns: list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）`),
       });
     } catch (_) {}
   },

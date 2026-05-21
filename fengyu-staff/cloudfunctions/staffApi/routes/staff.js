@@ -77,14 +77,17 @@ async function list(ctx) {
     throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
   }
 
-  // 严格按 skills 数组含 '美容师' 判定美容师身份 ——
-  // 与 clientApi/routes/staff.js + admin orders/services/customers picker 单源对齐。
+  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
+  // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
+  // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
+  // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
   // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
   const staffRows = await pg.query(`
     SELECT
       u.employee_id,
       u.name,
       u.position_name AS position,
+      u.skills,
       u.avatar_url,
       d.name AS department,
       s.store_name,
@@ -97,7 +100,7 @@ async function list(ctx) {
     WHERE u.is_resigned = false
       AND u.store_id = $1
       AND u.employee_id IS NOT NULL
-      AND '美容师' = ANY(u.skills)
+      AND u.skills && ARRAY['美容师','养生师']::text[]
     ORDER BY d.name, u.name
   `, [targetStoreId])
 
@@ -106,6 +109,7 @@ async function list(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: r.skills || [],
       avatarUrl: r.avatar_url || null,
       department: r.department || '',
       storeName: r.store_name || '',

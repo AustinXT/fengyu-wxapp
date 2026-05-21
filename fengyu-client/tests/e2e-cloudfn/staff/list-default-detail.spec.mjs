@@ -6,12 +6,12 @@
  *
  * 实测要点：
  *   - staff.list 是公开接口（无 auth 中间件），但仍要求 storeId 参数
- *   - list 过滤条件：is_resigned=false AND '美容师' = ANY(skills)
- *     → "美容师身份"按 skills 数组判定，不按 position_name —— 店长 / 美容顾问 等
- *       岗位若 skills 标了 '美容师' 也会入选；反之 position_name='美容师' 但 skills
- *       为空也不会入选
+ *   - list 过滤条件：is_resigned=false AND skills && ARRAY['美容师','养生师']::text[]
+ *     → "服务人员身份"按 skills 数组判定，不按 position_name —— 店长 / 美容顾问 等
+ *       岗位若 skills 标了 '美容师' 或 '养生师' 也会入选；反之 position_name='美容师'
+ *       但 skills 为空（或只含其它技能）也不会入选
  *     → createTestStaff 默认 skills=['美容师']，所以会出现在 list；
- *       本地建 beautician 也必须显式置 skills=['美容师']
+ *       本地建 beautician 也必须显式置 skills 含 '美容师' 或 '养生师'
  *   - defaultStaff 走 auth 中间件，但路由要求 ctx.auth.phone 存在；否则直接返回空对象
  *     → 测试时必须建带 phone 的顾客（createTestClient 默认就带 phone）
  *   - detail 公开（无认证），只要 employeeId 存在且 is_resigned=false 即可
@@ -80,14 +80,23 @@ async function caseListBeauticians() {
     name: `${NS}_高级美A`,
     positionName: '高级美容师',
   })
-  // 反面对照：插一个 position='美容师' 但 skills 不含 '美容师' 的员工，应不出现
+  // 正向：养生师（skills 含 '养生师'）也应入选 —— 服务人员选择放开养生师
+  const WELLNESS_ID = `${NS}_WELLNESS`
+  await createBeautician({
+    employeeId: WELLNESS_ID,
+    phone: '19999099014',
+    name: `${NS}_养生师A`,
+    positionName: '养生师',
+    skills: ['养生师'],
+  })
+  // 反面对照：插一个 position='美容师' 但 skills 不含 '美容师'/'养生师' 的员工，应不出现
   const NON_BEAUTY_ID = `${NS}_NONBEAUTY`
   await createBeautician({
     employeeId: NON_BEAUTY_ID,
     phone: '19999099013',
     name: `${NS}_无技能美容师`,
     positionName: '美容师',
-    skills: ['清洁'],  // 故意不含 '美容师'
+    skills: ['清洁'],  // 故意不含 '美容师'/'养生师'
   })
 
   const res = await invokePublic('staff.list', { storeId: TEST_STORE_ID })
@@ -96,8 +105,16 @@ async function caseListBeauticians() {
   if (!ids.includes(BEAUTICIAN_1_ID) || !ids.includes(BEAUTICIAN_2_ID)) {
     throw new Error(`missing beauticians, got ${JSON.stringify(ids)}`)
   }
+  if (!ids.includes(WELLNESS_ID)) {
+    throw new Error(`养生师（skills 含'养生师'）应入选，got ${JSON.stringify(ids)}`)
+  }
   if (ids.includes(NON_BEAUTY_ID)) {
-    throw new Error(`position='美容师' 但 skills 不含'美容师' 不应入选，got ${JSON.stringify(ids)}`)
+    throw new Error(`position='美容师' 但 skills 不含'美容师'/'养生师' 不应入选，got ${JSON.stringify(ids)}`)
+  }
+  // skills 字段应透出，供前端派生身份标签
+  const wellnessRow = res.data.staffList.find(s => s.staff_id === WELLNESS_ID)
+  if (!wellnessRow || !Array.isArray(wellnessRow.skills) || !wellnessRow.skills.includes('养生师')) {
+    throw new Error(`staff.list 应透出 skills 数组，got ${JSON.stringify(wellnessRow)}`)
   }
 }
 

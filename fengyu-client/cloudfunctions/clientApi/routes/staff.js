@@ -16,8 +16,9 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
-  // "美容师"身份按 skills 数组判定，不按 position_name —— 因为店长 / 高级美容师 / 资深美容师
-  // 等岗位的人也可能在技能上标"美容师"对外接单，反之新人挂"美容师"岗位但 skills 为空也不应入选。
+  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
+  // 养生师也可被指定接单（业务诉求）；因为店长 / 高级美容师 / 资深美容师等岗位的人也
+  // 可能在技能上标"美容师"对外接单，反之新人挂"美容师"岗位但 skills 为空也不应入选。
   // 与 staffApi/routes/mgmt-dashboard.js 的 `s.skills && ARRAY['美容师','养生师']::text[]` 同源约定。
   const rows = await pg.query(`
     SELECT
@@ -30,7 +31,7 @@ async function list(ctx) {
     FROM staff_wechat_users
     WHERE store_id = $1
       AND is_resigned = false
-      AND '美容师' = ANY(skills)
+      AND skills && ARRAY['美容师','养生师']::text[]
     ORDER BY name
   `, [storeId])
 
@@ -38,6 +39,7 @@ async function list(ctx) {
     staff_id: r.staff_id,
     name: r.name,
     position: r.position,
+    skills: r.skills || [],
     phone: r.phone,
     avatarUrl: r.avatar_url || null,
   }))

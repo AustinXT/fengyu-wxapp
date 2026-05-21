@@ -1,4 +1,4 @@
-<!-- components/staff-popup — 美容师选择弹层（3 页面复用） -->
+<!-- components/staff-popup — 美容师选择弹层（含养生师，3 页面复用） -->
 <van-popup
   show="{{show}}"
   position="bottom"

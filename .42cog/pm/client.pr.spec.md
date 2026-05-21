@@ -104,7 +104,7 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| EMPLOYEE-01 | 美容师列表 | 按门店过滤在职美容部员工（`department='美容部'` OR `position='美容师'`） |
+| EMPLOYEE-01 | 美容师列表 | 按门店过滤在职员工，身份按 `skills` 数组判定：`is_resigned=false AND skills && ARRAY['美容师','养生师']`（养生师亦可被指定接单，不按 `position_name`） |
 | EMPLOYEE-02 | 默认美容师 | `client_wechat_users.bound_employee_id`，预约/下单默认填充 |
 | EMPLOYEE-03 | 不指定选项 | 下单时可不选 |
 

@@ -300,7 +300,7 @@ Page({
     preferredStaffWfId: '' as string,
     preferredStaffName: '',
     showStaffPicker: false,
-    staffListForPicker: [] as Array<{ staffWfId: string; name: string; department: string }>,
+    staffListForPicker: [] as Array<{ staffWfId: string; name: string; department: string; skills?: string[] }>,
     staffPickerColumns: [] as string[],
   },
 
@@ -1183,11 +1183,12 @@ Page({
   async onSelectPreferredStaff() {
     if (this.data.staffListForPicker.length === 0) {
       try {
-        const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string }> }>('staff.list');
+        const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string; skills?: string[] }> }>('staff.list');
         const list = data?.staffList || [];
+        const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
         this.setData({
           staffListForPicker: list,
-          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${s.department || '未分组'}）`)],
+          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）`)],
         });
       } catch {
         return;

@@ -284,10 +284,12 @@ Page({
       const storeId = app.globalData.boundStoreId;
       if (!storeId) return;
       const data = await callClientApi('staff.list', { storeId });
+      const roleTag = (skills?: string[]) => (skills || []).filter((s) => s === '美容师' || s === '养生师').join('/');
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         employee_id: s.staff_id,
         name: s.name,
-        position: s.position,
+        // 优先展示派生身份（美容师/养生师），兜底用 position_name
+        position: roleTag(s.skills) || s.position,
         avatarUrl: s.avatarUrl || '',
       }));
       this.setData({ staffList });

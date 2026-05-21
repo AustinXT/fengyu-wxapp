@@ -31,6 +31,23 @@ describe('staff.list', () => {
     expect(ctx.result.staffList[1].isManager).toBe(false)
   })
 
+  test('养生师入选并透出 skills（供前端派生身份标签）', async () => {
+    const ctx = createManagerCtx()
+
+    pg.query.mockResolvedValueOnce([
+      { employee_id: 'emp-001', name: '张三', position: '美容师', skills: ['美容师'], department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
+      { employee_id: 'emp-003', name: '王五', position: '养生师', skills: ['养生师'], department: '养生部', store_name: '凤御A店', market_name: '华东市场' },
+    ])
+
+    await staffRoutes.list(ctx)
+
+    // SQL 用 skills && ARRAY['美容师','养生师'] 过滤
+    expect(pg.query.mock.calls[0][0]).toMatch(/skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
+    expect(ctx.result.staffList).toHaveLength(2)
+    expect(ctx.result.staffList[1].name).toBe('王五')
+    expect(ctx.result.staffList[1].skills).toEqual(['养生师'])
+  })
+
   test('payload.storeId 覆盖默认门店', async () => {
     const ctx = createManagerCtx(
       { storeId: 'store-other' },
