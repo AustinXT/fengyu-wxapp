@@ -11,6 +11,7 @@ interface Spu {
   category_name: string;
   cover_image: string;
   description: string;
+  detail_images?: string[];
   is_bundle: boolean;
   price: number;
   special_price: number | null;

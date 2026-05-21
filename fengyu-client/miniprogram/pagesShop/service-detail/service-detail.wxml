@@ -84,6 +84,23 @@ module.exports.fmt = function(val) {
     />
   </van-cell-group>
 
+  <!-- 商品详情（图文，竖向依次排列） -->
+  <view
+    class="detail-section"
+    wx:if="{{spu.description || (spu.detail_images && spu.detail_images.length)}}"
+  >
+    <view class="detail-title">商品详情</view>
+    <text class="detail-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
+    <image
+      wx:for="{{spu.detail_images}}"
+      wx:key="*this"
+      class="detail-img"
+      src="{{item}}"
+      mode="widthFix"
+      lazy-load
+    />
+  </view>
+
   <!-- 底部操作栏 -->
   <view class="action-bar safe-area-bottom">
     <!-- 套餐：展示已选合计；非套餐：单 SKU × 数量 -->

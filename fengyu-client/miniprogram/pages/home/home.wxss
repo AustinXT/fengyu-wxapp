@@ -314,14 +314,14 @@
 }
 
 .spu-cover {
-  width: 160rpx;
+  width: 250rpx;
   height: 160rpx;
   flex-shrink: 0;
   display: block;
 }
 
 .cover-placeholder {
-  width: 160rpx;
+  width: 250rpx;
   height: 160rpx;
   display: flex;
   align-items: center;

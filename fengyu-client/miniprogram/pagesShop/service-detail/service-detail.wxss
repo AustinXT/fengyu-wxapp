@@ -87,6 +87,35 @@
   color: var(--color-text-hint);
 }
 
+/* ===== 商品详情（图文） ===== */
+.detail-section {
+  background: var(--color-bg-card);
+  margin-bottom: 16rpx;
+  padding: 28rpx 32rpx;
+}
+
+.detail-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 20rpx;
+}
+
+.detail-desc {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  margin-bottom: 20rpx;
+}
+
+.detail-img {
+  width: 100%;
+  display: block;
+  margin-bottom: 12rpx;
+}
+
 /* ===== SKU Popup ===== */
 .sku-popup {
   padding: 32rpx;
