@@ -8,8 +8,14 @@ const mockCookieStore = {
   delete: vi.fn(),
 }
 
+// sessionCookieOptions 读取 x-forwarded-proto 判定 Secure；默认无该头（→ HTTP，不加 Secure）
+const mockHeaders = {
+  get: vi.fn(() => null),
+}
+
 vi.mock('next/headers', () => ({
   cookies: vi.fn(() => Promise.resolve(mockCookieStore)),
+  headers: vi.fn(() => Promise.resolve(mockHeaders)),
 }))
 
 vi.mock('jose', () => {

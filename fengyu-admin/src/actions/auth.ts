@@ -1,6 +1,6 @@
 'use server'
 
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
 import { SignJWT, jwtVerify } from 'jose'
 import { compare, hash } from 'bcryptjs'
 import { db } from '@/db'
@@ -19,6 +19,30 @@ const JWT_SECRET = new TextEncoder().encode(
 )
 const COOKIE_NAME = 'fy-admin-token'
 const JWT_EXPIRES = '24h'
+const COOKIE_MAX_AGE = 24 * 60 * 60 // 24h
+
+/**
+ * 会话 cookie 选项。
+ *
+ * `Secure` 标记必须与「客户端实际访问协议」一致：纯 HTTP 上设置 Secure cookie
+ * 会被浏览器静默丢弃（既不存储也不回传），导致登录后第一个依赖 cookie 的
+ * server action（如 changePassword）拿不到登录态 → 误报「未登录」。
+ *
+ * 因此 Secure 由请求的 `x-forwarded-proto` 自动判定（TLS 反代终止时会注入该头），
+ * 不再依赖写死的 COOKIE_SECURE：HTTP 部署 → 不加 Secure，将来接入 HTTPS 反代 →
+ * 自动加上，无需改代码。仅当显式 `COOKIE_SECURE=false` 时强制关闭（本地兜底）。
+ */
+async function sessionCookieOptions() {
+  const proto = (await headers()).get('x-forwarded-proto')?.split(',')[0]?.trim()
+  const secure = process.env.COOKIE_SECURE === 'false' ? false : proto === 'https'
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: COOKIE_MAX_AGE,
+  }
+}
 
 // ── 登录锁定（内存 Map） ──
 const loginAttempts = new Map<string, { count: number; lockedUntil: number }>()
@@ -103,13 +127,7 @@ export async function login(
 
   // 设置 httpOnly cookie
   const cookieStore = await cookies()
-  cookieStore.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.COOKIE_SECURE !== 'false' && process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 24 * 60 * 60, // 24h
-  })
+  cookieStore.set(COOKIE_NAME, token, await sessionCookieOptions())
 
   return { success: true, message: '登录成功', mustChange: pwRow.mustChange }
 }
@@ -148,13 +166,7 @@ export async function changePassword(
     .sign(JWT_SECRET)
 
   const cookieStore = await cookies()
-  cookieStore.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.COOKIE_SECURE !== 'false' && process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 24 * 60 * 60,
-  })
+  cookieStore.set(COOKIE_NAME, token, await sessionCookieOptions())
 
   return { success: true, message: '密码修改成功' }
 }
