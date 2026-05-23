@@ -20,7 +20,7 @@ async function main() {
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
-  await createTestProduct({ suffix: 'A', productKind: '护理项目', productType: '单品', price: 100 })
+  await createTestProduct({ suffix: 'A', productKind: '护理项目', productType: '疗程卡', price: 100 })
 
   const errors = []
   const r = await invokeStaffApi('product.shopInit', { _testOpenid: TEST_MANAGER_OPENID })

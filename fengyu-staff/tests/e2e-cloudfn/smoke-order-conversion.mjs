@@ -49,7 +49,7 @@ async function main() {
   const targetSku = await createTestProduct({
     suffix: 'TGT',
     productKind: '护理项目',
-    productType: '单品',
+    productType: '疗程卡',
     salesCategory: '他销自耗',
     price: 200,
     sessionCount: 1,

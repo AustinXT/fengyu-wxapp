@@ -20,7 +20,7 @@ async function main() {
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
-  const { categoryId, skuId } = await createTestProduct({ suffix: 'L', productKind: '护理项目', productType: '单品', price: 200 })
+  const { categoryId, skuId } = await createTestProduct({ suffix: 'L', productKind: '护理项目', productType: '疗程卡', price: 200 })
 
   const errors = []
   // 1. by categoryId

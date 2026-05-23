@@ -23,7 +23,7 @@
 // 5. customer-detail 的 lastServiceDate 字段来自 customer.js 的 MAX(service_date)，
 //    fixture INSERT service_orders 时 service_date = 今天，complete 后即时可见。
 
-import { launchStaff, disconnect, navigateToTab, waitForData, tap, assertElementVisible } from '../helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToTab, waitForData, tap, assertElementVisible, navigateToPage } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid } from '../helpers/login.mjs';
 import { installToastHook, assertToast, clearToasts, autoConfirmModal } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
@@ -166,11 +166,13 @@ async function run() {
   );
   console.log('  ✓ 服务中 Tab 含 fixture 服务单（list.length=', d2.list.length, '）');
 
-  // ─── Step 3：tap "确认完成" → modal confirm → toast → PG ──────────────
-  console.log('[step 3] tap "确认完成"（弹 modal，autoConfirmModal 已 hook）');
+  // ─── Step 3："确认完成" → modal confirm → toast → PG ──────────────
+  // service.wxml 的"确认完成"是 van-button slot 文字，automator el.text() 读不到 slot 内容，
+  // 直接 callMethod('onCompleteService', {dataset.id}) 触发 catchtap 绑定的 handler（同 bs01/bs04）。
+  console.log('[step 3] 确认完成（callMethod onCompleteService，弹 modal，autoConfirmModal 已 hook）');
   await clearToasts(miniProgram);
   const page3 = await miniProgram.currentPage();
-  await tap(page3, { selector: '.van-button', text: '确认完成' });
+  await page3.callMethod('onCompleteService', { currentTarget: { dataset: { id: SERVICE_ORDER_ID } } });
   await assertToast(miniProgram, '服务已完成', { timeoutMs: 5000 });
   await snapshot(miniProgram, 'bs03-step3-after-complete');
 
@@ -200,7 +202,7 @@ async function run() {
   // ─── Step 4：进入 customer-detail 验 lastServiceDate + 剩余次数 ───────
   console.log('[step 4] navigate customer-detail');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo(
+  await navigateToPage(miniProgram,
     `/packageCustomer/customer-detail/customer-detail?clientUserId=${encodeURIComponent(TEST_CLIENT_USER_ID)}`,
   );
   const today = new Date().toISOString().slice(0, 10);

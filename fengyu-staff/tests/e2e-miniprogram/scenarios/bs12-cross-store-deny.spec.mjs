@@ -53,7 +53,7 @@ async function createTestOrderInStoreB() {
         service_fee, is_shengmei, is_experience)
      VALUES
        ($1, $2, $3, '购买',
-        'L3 B 店商品', '标准', '单品',
+        'L3 B 店商品', '标准', '疗程卡',
         500, 1, 500, 500, 500,
         0, false, false)`,
     [itemId, orderId, TEST_STORE_B1_ID],

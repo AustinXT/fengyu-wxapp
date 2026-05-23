@@ -216,6 +216,28 @@ export async function navigateToTab(miniProgram, url) {
 }
 
 /**
+ * navigateTo 到**子包**页面（packageService / packageCustomer 等）。
+ *
+ * 已知 quirk：子包首跳时，IDE 的 wx.navigateTo 成功回调在 automation 通道里常延迟到 ~10s
+ * 之后才回（甚至不回）→ `miniProgram.navigateTo` 抛 `Error: timeout`，但页面其实已经
+ * 跳转并 onLoad 加载完成（探针实测 currentPage 正确、data 完整）。
+ * 这里吞掉这种伪 timeout，由调用方随后的 waitForData / currentPage 断言确认真正落地；
+ * 其它错误照常抛出。
+ *
+ * @param {object} miniProgram
+ * @param {string} url 形如 '/packageService/appointment-detail/appointment-detail?id=xxx'
+ */
+export async function navigateToPage(miniProgram, url) {
+  try {
+    await miniProgram.navigateTo(url);
+  } catch (e) {
+    if (!/timeout/i.test(e?.message || '')) throw e;
+    // 子包首跳伪超时：导航实际已完成，交给后续断言兜底
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+
+/**
  * 通用 tap helper（H1，2026-05-17 改造）：selector + text + index 三段过滤。
  *
  * 比旧的 tapByText 更鲁棒：

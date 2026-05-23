@@ -53,7 +53,7 @@ async function ensureProductFixture() {
     `INSERT INTO product_skus (sku_id, category_id, product_type, spec_name, price,
                                session_count, sort_order, service_fee, is_shengmei,
                                is_experience, is_enabled)
-     VALUES ($1, $2, '单品'::product_type, 'L3 目标项目 ¥200', 200,
+     VALUES ($1, $2, '疗程卡'::product_type, 'L3 目标项目 ¥200', 200,
              1, 0, 0, true, false, true)
      ON CONFLICT (sku_id) DO UPDATE SET is_enabled = true, price = EXCLUDED.price`,
     [TGT_SKU_ID, TGT_CAT_ID],

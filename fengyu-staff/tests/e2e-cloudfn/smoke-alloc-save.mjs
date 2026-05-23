@@ -50,7 +50,7 @@ async function main() {
     saleOrderId: orderId,
     clientUserId: TEST_CLIENT_USER_ID,
     productName: `${NS}_测试单品`,
-    productType: '单品',
+    productType: '疗程卡',
     quantity: 1,
     totalAmount: 1000,
     status: '已支付',

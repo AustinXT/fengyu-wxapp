@@ -24,7 +24,7 @@ async function main() {
   const orderId = `${NS}_HIS_OD`
   await createTestSaleOrder({
     saleOrderId: orderId, clientUserId: TEST_CLIENT_USER_ID,
-    productType: '单品', totalAmount: 500, status: '已支付', salesCategory: '他销自耗',
+    productType: '疗程卡', totalAmount: 500, status: '已支付', salesCategory: '他销自耗',
   })
   await pgQuery(`UPDATE sale_orders SET paid_at = NOW(), received = total_amount WHERE sale_order_id = $1`, [orderId])
 

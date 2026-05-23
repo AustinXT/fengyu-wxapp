@@ -16,7 +16,7 @@ async function main() {
   await ensureTestStore()
   await createTestStaff()
   await createTestClient()
-  const { skuId } = await createTestProduct({ suffix: 'CP', productKind: '护理项目', productType: '单品', price: 300 })
+  const { skuId } = await createTestProduct({ suffix: 'CP', productKind: '护理项目', productType: '疗程卡', price: 300 })
   await createTestCoupon({ minSpend: 200, discountValue: 30 })
 
   const r = await invokeStaffApi('coupon.available', {

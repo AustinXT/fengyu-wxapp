@@ -3,7 +3,7 @@
 // 覆盖范围：
 //   a) 4 个 Tab 页面 + 10 条矩阵元素
 //      - workbench: '门店今日营收' / '待确认收款' / '待确认订单' / '待提成分配' / '待审批退款' / '待审批解绑申请'
-//      - profile:   '分配列表'
+//      - profile:   '营业额分配'
 //      - customer-list: data.isManager 决定 longpress 分配 action-sheet 是否渲染
 //      - service:   tab 仅作角色无差异 sanity（手册 wxml 未基于 isManager 分支，这里只断定一个共有元素两角色都可见，防止误改）
 //
@@ -17,7 +17,7 @@
 //      1) onShow 内部 callStaffApi 可能因为 _testOpenid 不映射真实员工而 reject。若 setData(isManager: ...) 在 await callStaffApi 之前执行就 OK；
 //         若被吞掉则需要直接 page.callMethod('syncStoreContext') / page.setData({ isManager: ... }) 强制刷新
 //      2) workbench storeTodayRevenue 在美容师隐藏的 wx:if 包含 '门店今日营收' 文本节点；若该 cell 内文本同时出现在其他地方（如标题），matrix 的 'hidden' 会误报。已选用相对唯一文案
-//      3) profile '分配列表' 是 van-cell title 属性，最终渲染会变成 DOM 文本；但 Vant cell 文本可能嵌套较深 + tap helper 的 selector 默认覆盖 .van-cell —— 已在 selector 显式包含
+//      3) profile '营业额分配' 是 van-cell title 属性，最终渲染会变成 DOM 文本；但 Vant cell 文本可能嵌套较深 + tap helper 的 selector 默认覆盖 .van-cell —— 已在 selector 显式包含
 //      4) customer-list 的 van-action-sheet wx:if 在 show=false 时即使 isManager=true 也不渲染 DOM；故对该页改测 page.data().isManager 而非 DOM 查找
 //      5) auth.login 真实身份就是 manager（IDE 当前账号），切美容师时只是前端覆写；后端权限校验仍是 manager。所以本矩阵只验前端 UI 显隐，不验后端 403
 
@@ -51,8 +51,8 @@ const MATRIX = [
   // selector 命中不稳定（Vant cell 的 title 属性走 component template 内部节点，跨版本结构差异）。
   // 改用 page.data().isManager 数据态断言（#11/#12）覆盖等效语义。
   // ---- profile：分配列表 ----
-  { role: 'manager',    page: '/pages/profile/profile',             text: '分配列表',         expect: 'visible' },
-  { role: 'beautician', page: '/pages/profile/profile',             text: '分配列表',         expect: 'hidden'  },
+  { role: 'manager',    page: '/pages/profile/profile',             text: '营业额分配',       expect: 'visible' },
+  { role: 'beautician', page: '/pages/profile/profile',             text: '营业额分配',       expect: 'hidden'  },
   // ---- customer-list：data.isManager 间接验 action-sheet 渲染条件 ----
   { role: 'manager',    page: '/pages/customer-list/customer-list', text: null,               expect: 'visible', mode: 'data' },
   { role: 'beautician', page: '/pages/customer-list/customer-list', text: null,               expect: 'hidden',  mode: 'data' },
@@ -135,7 +135,9 @@ async function runOne(entry, idx) {
     try {
       if (page) {
         const isMgr = entry.role === 'manager';
-        await page.setData({ isManager: isMgr });
+        // workbench/profile 主体内容包在 <block wx:else>（loading=false 才渲染），
+        // 强制 loading:false 确保「门店今日营收」等 store_manager 专属块真正进入 DOM。
+        await page.setData({ isManager: isMgr, loading: false });
         await new Promise(r => setTimeout(r, 250));
       }
     } catch { /* 某些页面（如管理层 mode）没该字段，静默 */ }

@@ -35,7 +35,7 @@ async function main() {
   const orderId = `${NS}_ALC_DEL`
   await createTestSaleOrder({
     saleOrderId: orderId, clientUserId: TEST_CLIENT_USER_ID,
-    productType: '单品', quantity: 1, totalAmount: 500,
+    productType: '疗程卡', quantity: 1, totalAmount: 500,
     status: '已支付', salesCategory: '他销自耗',
   })
   await pgQuery(`UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`, [orderId])

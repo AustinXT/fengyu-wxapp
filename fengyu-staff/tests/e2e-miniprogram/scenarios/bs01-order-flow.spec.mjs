@@ -51,14 +51,11 @@ const EXPECTED_CART_TOTAL = SKU_A_PRICE + SKU_B_PRICE; // 2100
 const COUPON_DISCOUNT = 30;
 const EXPECTED_PAYABLE = EXPECTED_CART_TOTAL - COUPON_DISCOUNT; // 2070
 
-// 在小程序内执行任意 page 函数（避免依赖 wxml selector 脆性）
-async function callPage(fn, ...args) {
-  return miniProgram.evaluate(function (fnStr, argsJson) {
-    const pages = getCurrentPages();
-    const page = pages[pages.length - 1];
-    // eslint-disable-next-line no-new-func
-    return (new Function('page', 'args', `return (${fnStr})(page, ...args)`))(page, JSON.parse(argsJson));
-  }, fn.toString(), JSON.stringify(args));
+// mp 运行时禁用 eval / new Function（旧 callPage 把函数源码传进去重建会抛
+// "Function(...) is not a function"）。统一改用 automator 原生 page.callMethod /
+// setData / data（与 bs04 一致，更稳）。
+async function cur() {
+  return miniProgram.currentPage();
 }
 
 async function setupProductsAndCoupon() {
@@ -74,7 +71,7 @@ async function setupProductsAndCoupon() {
        (sku_id, category_id, product_type, spec_name, price, session_count,
         sort_order, service_fee, is_experience, is_enabled)
      VALUES
-       ($1, $2, '单品', 'L3 BS01 单品 600', $3, 1, 0, 0, false, true),
+       ($1, $2, '疗程卡', 'L3 BS01 单品 600', $3, 1, 0, 0, false, true),
        ($4, $2, '疗程卡', 'L3 BS01 疗程卡 1500x5', $5, 5, 0, 0, false, true)
      ON CONFLICT (sku_id) DO UPDATE SET is_enabled = true, price = EXCLUDED.price`,
     [L3_SKU_A_ID, L3_CATEGORY_ID, SKU_A_PRICE, L3_SKU_B_ID, SKU_B_PRICE],
@@ -132,21 +129,19 @@ async function step2_assertDefaultKind() {
 
 async function selectCategoryAndAddSku(targetSkuId) {
   // 切到 L3 category
-  await callPage(function (page, args) {
-    page.setData({ activeCategoryId: args[0] });
-    if (typeof page.loadSpuList === 'function') page.loadSpuList(args[0]);
-  }, L3_CATEGORY_ID);
+  const page = await cur();
+  await page.setData({ activeCategoryId: L3_CATEGORY_ID });
+  try { await page.callMethod('loadSpuList', L3_CATEGORY_ID); } catch { /* setData observer 可能已触发加载 */ }
   await waitForData(
     miniProgram,
     (d) => Array.isArray(d.spuList) && d.spuList.some((s) => s.spuId === targetSkuId),
     { timeoutMs: 4000 },
   );
-  // 调 onSpuTap
-  await callPage(function (page, args) {
-    const item = (page.data.spuList || []).find((s) => s.spuId === args[0]);
-    if (!item) throw new Error('spuList 无目标 SKU: ' + args[0]);
-    page.onSpuTap({ currentTarget: { dataset: { spu: item } } });
-  }, targetSkuId);
+  // 调 onSpuTap（item 从 node 侧 page.data() 取，再以序列化参数回传）
+  const d = await (await cur()).data();
+  const item = (d.spuList || []).find((s) => s.spuId === targetSkuId);
+  if (!item) throw new Error('spuList 无目标 SKU: ' + targetSkuId);
+  await (await cur()).callMethod('onSpuTap', { currentTarget: { dataset: { spu: item } } });
 }
 
 async function step3_addSkuA() {
@@ -171,38 +166,37 @@ async function step4_addSkuB() {
 
 async function step5_openCheckout() {
   console.log('[bs01 step5] 打开结算弹层');
-  await callPage(function (page) { page.onOpenCheckout(); });
+  await (await cur()).callMethod('onOpenCheckout');
   await waitForData(miniProgram, (d) => d.showCheckout === true && d.checkoutStep === 0, { timeoutMs: 3000 });
 }
 
 async function step6_selectCustomer() {
   console.log('[bs01 step6] 搜索 + 选顾客');
-  await callPage(function (page, args) {
-    page.setData({ customerPhone: args[0] });
-    return page.onSearchCustomer();
-  }, TEST_CLIENT_PHONE);
+  const page = await cur();
+  // 页面 onSearchCustomer 读的是 customerKeyword（不是 customerPhone）
+  await page.setData({ customerKeyword: TEST_CLIENT_PHONE });
+  await page.callMethod('onSearchCustomer');
   await waitForData(
     miniProgram,
     (d) => d.customerInfo && d.customerInfo.id === TEST_CLIENT_USER_ID,
     { timeoutMs: 4000 },
   );
-  await callPage(function (page) { page.onStep0Next(); });
+  await (await cur()).callMethod('onStep0Next');
   await waitForData(miniProgram, (d) => d.checkoutStep === 2, { timeoutMs: 3000 });
 }
 
 async function step7_selectCoupon() {
   console.log('[bs01 step7] 选优惠券');
-  await callPage(function (page) { return page.onSelectCoupon(); });
+  await (await cur()).callMethod('onSelectCoupon');
   await waitForData(
     miniProgram,
     (d) => Array.isArray(d.availableCoupons) && d.availableCoupons.some((c) => c.couponId === L3_COUPON_ID),
     { timeoutMs: 4000 },
   );
-  await callPage(function (page, args) {
-    const target = (page.data.availableCoupons || []).find((c) => c.couponId === args[0]);
-    if (!target) throw new Error('未找到 coupon: ' + args[0]);
-    page.onCouponPick({ currentTarget: { dataset: { couponId: target.couponId, name: target.name, discount: target.discount } } });
-  }, L3_COUPON_ID);
+  const dCoup = await (await cur()).data();
+  const target = (dCoup.availableCoupons || []).find((c) => c.couponId === L3_COUPON_ID);
+  if (!target) throw new Error('未找到 coupon: ' + L3_COUPON_ID);
+  await (await cur()).callMethod('onCouponPick', { currentTarget: { dataset: { couponId: target.couponId, name: target.name, discount: target.discount } } });
   await waitForData(miniProgram, (d) => Number(d.couponDiscount) === COUPON_DISCOUNT, { timeoutMs: 3000 });
   const d = await (await miniProgram.currentPage()).data();
   const payable = parseFloat(d.couponTotal);
@@ -214,8 +208,9 @@ async function step7_selectCoupon() {
 
 async function step8_submitOffline() {
   console.log('[bs01 step8] 切线下 + 提交');
-  await callPage(function (page) { page.setData({ paymentMethod: '线下' }); });
-  await callPage(function (page) { return page.onSubmitOrder(); });
+  const page = await cur();
+  await page.setData({ paymentMethod: '线下' });
+  await page.callMethod('onSubmitOrder');
   await new Promise((r) => setTimeout(r, 1500)); // navigateTo 异步
 }
 

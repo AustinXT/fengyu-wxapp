@@ -39,7 +39,7 @@ async function main() {
   const itemB = `${orderNo}_ITEM_2`
   await createTestSaleItem({
     saleOrderId: orderNo, saleItemId: itemB,
-    productName: `${NS}_B单品`, productType: '单品', unitPrice: 500, quantity: 1,
+    productName: `${NS}_B单品`, productType: '疗程卡', unitPrice: 500, quantity: 1,
     sessionCount: 1, salesCategory: '他销自耗',
   })
   // 订单总额改为 1500（A1000 + B500），received 起点 0

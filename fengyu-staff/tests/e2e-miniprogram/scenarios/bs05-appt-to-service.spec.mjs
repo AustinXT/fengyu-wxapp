@@ -14,7 +14,7 @@
 //   4. appointments.employee_id NOT NULL → fixture 用 TEST_MANAGER_EMPLOYEE_ID（manager 看自己的预约不受 scope 拦）
 //   5. appointment → '已完成' 自动转的触发点不在 service.create，在 service.complete；本 spec 不覆盖此跳变
 
-import { launchStaff, disconnect, waitForData } from '../helpers/automator.mjs';
+import { launchStaff, disconnect, waitForData, navigateToPage } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid } from '../helpers/login.mjs';
 import { installToastHook, assertToast, clearToasts, autoConfirmModal } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
@@ -46,9 +46,9 @@ async function seedFixture(mgr, cli) {
     `INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
         product_name, sku_spec_name, product_type, unit_price, quantity, unit_real_price,
         sale_amount, received, service_fee, is_shengmei, is_experience,
-        session_count, remaining_sessions)
+        session_count, remaining_sessions, paid_sessions)
      VALUES ($1, $2, $3, '购买', 'L3 疗程卡', '5次卡', '疗程卡', 1500, 1, 1500,
-        1500, 1500, 0, false, false, 5, 5)`,
+        1500, 1500, 0, false, false, 5, 5, 5)`,
     [PAID_ITEM_ID, PAID_ORDER_ID, mgr.storeId],
   );
   await query(
@@ -77,7 +77,7 @@ async function run() {
   // Step 1: appointment-detail 加载 + 状态=已确认
   console.log('[step 1] navigate appointment-detail');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo(
+  await navigateToPage(miniProgram,
     `/packageService/appointment-detail/appointment-detail?id=${APPT_ID}`,
   );
   await waitForData(miniProgram, (d) => d.appt?.id === APPT_ID && d.statusText === '已确认');
