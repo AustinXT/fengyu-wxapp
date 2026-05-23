@@ -38,11 +38,22 @@ APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo de
 APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"
 echo "目标环境: $ENV"
+
+# 登录密码 RSA 公钥：NEXT_PUBLIC_ 变量须在「构建期」inline 进客户端 bundle。
+# 从 envs/$ENV.env 读出（.dockerignore 已排除 .env.local，构建时拿不到），--build-arg 传入。
+# prod 缺失则 fail-fast（否则前端 encryptPassword 抛「缺少公钥」，登录不可用）。
+RSA_PUB=$(grep '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "envs/$ENV.env" 2>/dev/null | head -1 | cut -d= -f2-)
+if [[ "$ENV" == "prod" && -z "$RSA_PUB" ]]; then
+  echo "✗ envs/prod.env 缺少 NEXT_PUBLIC_RSA_PUBLIC_KEY，登录会挂。请先配置 RSA 密钥对。" >&2
+  exit 1
+fi
+
 docker buildx build \
   --platform linux/amd64 \
   --load \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
+  --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$RSA_PUB" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="

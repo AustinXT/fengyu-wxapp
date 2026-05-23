@@ -6,7 +6,7 @@
 # 说明：
 #   - admin / cron-worker 改连远程 PG 5433（绕开 base 的 internal postgres:5432）
 #   - base 的 postgres 服务用 profile 禁用（prod 不启本地 PG 容器）
-#   - 远程 docker/.env 需提供 ADMIN_DATABASE_URL + ADMIN_JWT_SECRET
+#   - 远程 docker/.env 需提供 ADMIN_DATABASE_URL + ADMIN_JWT_SECRET + ADMIN_RSA_PRIVATE_KEY
 #   - CloudBase 桶（CLOUDBASE_ENV_ID / CDN_BASE）在此 override 写死 prod 值：
 #     base 的 ${CLOUDBASE_ENV_ID}/${CDN_BASE} 来自远程 docker/.env（dev 值），
 #     deploy-admin.sh 不同步远程 .env，故必须由本 override 覆盖，否则 admin 上传图
@@ -15,6 +15,7 @@
 # 远程 docker/.env 追加：
 #   ADMIN_DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp
 #   ADMIN_JWT_SECRET=<openssl rand -hex 32>
+#   ADMIN_RSA_PRIVATE_KEY=<envs/prod.env 同名值，base64(PEM) 私钥>
 
 name: fengyu-wxapp
 services:
@@ -26,6 +27,9 @@ services:
       # 将来接入 TLS 反代（x-forwarded-proto=https）→ 自动加 Secure，无需改配置。
       COOKIE_SECURE: ""
       JWT_SECRET: ${ADMIN_JWT_SECRET}
+      # 登录密码 RSA 解密私钥（运行期）。缺失则 login server action fail-fast → 500。
+      # 必须与构建期 inline 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 同一对（见 envs/prod.env）。
+      RSA_PRIVATE_KEY: ${ADMIN_RSA_PRIVATE_KEY}
       # prod CloudBase 桶（覆盖 base 从远程 docker/.env 注入的 dev 值）
       CLOUDBASE_ENV_ID: fengyu-client-prod-d1cga6909c0ba
       CDN_BASE: https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la

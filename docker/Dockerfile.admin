@@ -49,6 +49,13 @@ ENV APP_COMMIT=$APP_COMMIT
 # 注入真值覆盖（runner stage 不继承本 ENV），fail-fast 的运行期安全保障不受影响。
 ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
 
+# 登录密码 RSA 公钥：NEXT_PUBLIC_ 前缀变量由 next build 在「构建期」inline 进客户端
+# bundle（运行期注入无效）。须由 deploy-admin.sh 从 envs/prod.env 读出后 --build-arg 传入，
+# 否则（.dockerignore 已排除 .env.local）公钥为空 → 前端 encryptPassword 抛「缺少公钥」。
+# 运行期对应的私钥 RSA_PRIVATE_KEY 由 docker-compose.prod.yml 注入，两者必须同一对。
+ARG NEXT_PUBLIC_RSA_PUBLIC_KEY=
+ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
+
 RUN bun run build
 
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
