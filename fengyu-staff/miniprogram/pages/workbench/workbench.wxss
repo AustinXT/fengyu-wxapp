@@ -260,3 +260,52 @@
 .cal-day--future .cal-day-num {
   color: #CCCCCC;
 }
+
+/* ===== 待处理事项：图标宫格 ===== */
+.todo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  padding-bottom: 12rpx;
+}
+
+.todo-item {
+  width: 25%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 0 24rpx;
+}
+
+.todo-icon-wrap {
+  position: relative;
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.todo-badge {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  min-width: 32rpx;
+  height: 32rpx;
+  padding: 0 8rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 20rpx;
+  line-height: 32rpx;
+  text-align: center;
+  border: 2rpx solid #FFFFFF;
+}
+
+.todo-label {
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  line-height: 1;
+}

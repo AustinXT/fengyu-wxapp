@@ -112,69 +112,64 @@
       <view class="section-header">
         <text class="section-title">待处理事项</text>
       </view>
-      <van-cell-group>
-        <van-cell
-          title="预约待确认"
-          value="{{pendingAppointmentCount}}条"
-          is-link
-          bind:click="goAppointments"
-        >
-          <van-icon slot="icon" name="clock-o" size="40rpx" color="#D4820A" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          title="服务单待推进"
-          value="{{pendingServiceCount}}条"
-          is-link
-          bind:click="goServiceList"
-        >
-          <van-icon slot="icon" name="flower-o" size="40rpx" color="#3D8A5A" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          wx:if="{{isManager}}"
-          title="待确认线下收款"
-          value="{{pendingOfflineOrderCount}}条"
-          is-link
-          bind:click="goOrderListOffline"
-        >
-          <van-icon slot="icon" name="gold-coin-o" size="40rpx" color="#C0322A" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          wx:if="{{isManager}}"
-          title="待确认订单"
-          value="{{pendingCreateOrderCount}}条"
-          is-link
-          bind:click="goOrderListCreate"
-        >
-          <van-icon slot="icon" name="records" size="40rpx" color="#C0322A" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          wx:if="{{isManager}}"
-          title="待提成分配"
-          value="{{pendingAllocationCount}}条"
-          is-link
-          bind:click="goAllocationList"
-        >
-          <van-icon slot="icon" name="balance-o" size="40rpx" color="#D4820A" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          wx:if="{{isManager}}"
-          title="待审批退款"
-          value="{{pendingRefundCount}}条"
-          is-link
-          bind:click="goRefundList"
-        >
-          <van-icon slot="icon" name="revoke" size="40rpx" color="#C62828" class="cell-icon" />
-        </van-cell>
-        <van-cell
-          wx:if="{{isManager}}"
-          title="待审批解绑申请"
-          value="{{pendingUnbindCount}}条"
-          is-link
-          bind:click="goUnbindRequests"
-        >
-          <van-icon slot="icon" name="exchange" size="40rpx" color="#C0322A" class="cell-icon" />
-        </van-cell>
-      </van-cell-group>
+      <view class="todo-grid">
+        <!-- 预约待确认 -->
+        <view class="todo-item" bindtap="goAppointments">
+          <view class="todo-icon-wrap" style="background: rgba(212, 130, 10, 0.12);">
+            <van-icon name="clock-o" size="44rpx" color="#D4820A" />
+            <view wx:if="{{pendingAppointmentCount > 0}}" class="todo-badge">{{pendingAppointmentCount > 99 ? '99+' : pendingAppointmentCount}}</view>
+          </view>
+          <text class="todo-label">预约确认</text>
+        </view>
+        <!-- 服务单待推进 -->
+        <view class="todo-item" bindtap="goServiceList">
+          <view class="todo-icon-wrap" style="background: rgba(61, 138, 90, 0.12);">
+            <van-icon name="flower-o" size="44rpx" color="#3D8A5A" />
+            <view wx:if="{{pendingServiceCount > 0}}" class="todo-badge">{{pendingServiceCount > 99 ? '99+' : pendingServiceCount}}</view>
+          </view>
+          <text class="todo-label">服务推进</text>
+        </view>
+        <!-- 待确认线下收款 -->
+        <view wx:if="{{isManager}}" class="todo-item" bindtap="goOrderListOffline">
+          <view class="todo-icon-wrap" style="background: rgba(192, 50, 42, 0.12);">
+            <van-icon name="gold-coin-o" size="44rpx" color="#C0322A" />
+            <view wx:if="{{pendingOfflineOrderCount > 0}}" class="todo-badge">{{pendingOfflineOrderCount > 99 ? '99+' : pendingOfflineOrderCount}}</view>
+          </view>
+          <text class="todo-label">线下收款</text>
+        </view>
+        <!-- 待确认订单 -->
+        <view wx:if="{{isManager}}" class="todo-item" bindtap="goOrderListCreate">
+          <view class="todo-icon-wrap" style="background: rgba(192, 50, 42, 0.12);">
+            <van-icon name="records" size="44rpx" color="#C0322A" />
+            <view wx:if="{{pendingCreateOrderCount > 0}}" class="todo-badge">{{pendingCreateOrderCount > 99 ? '99+' : pendingCreateOrderCount}}</view>
+          </view>
+          <text class="todo-label">确认订单</text>
+        </view>
+        <!-- 待提成分配 -->
+        <view wx:if="{{isManager}}" class="todo-item" bindtap="goAllocationList">
+          <view class="todo-icon-wrap" style="background: rgba(212, 130, 10, 0.12);">
+            <van-icon name="balance-o" size="44rpx" color="#D4820A" />
+            <view wx:if="{{pendingAllocationCount > 0}}" class="todo-badge">{{pendingAllocationCount > 99 ? '99+' : pendingAllocationCount}}</view>
+          </view>
+          <text class="todo-label">提成分配</text>
+        </view>
+        <!-- 待审批退款 -->
+        <view wx:if="{{isManager}}" class="todo-item" bindtap="goRefundList">
+          <view class="todo-icon-wrap" style="background: rgba(198, 40, 40, 0.12);">
+            <van-icon name="revoke" size="44rpx" color="#C62828" />
+            <view wx:if="{{pendingRefundCount > 0}}" class="todo-badge">{{pendingRefundCount > 99 ? '99+' : pendingRefundCount}}</view>
+          </view>
+          <text class="todo-label">退款审批</text>
+        </view>
+        <!-- 待审批解绑申请 -->
+        <view wx:if="{{isManager}}" class="todo-item" bindtap="goUnbindRequests">
+          <view class="todo-icon-wrap" style="background: rgba(192, 50, 42, 0.12);">
+            <van-icon name="exchange" size="44rpx" color="#C0322A" />
+            <view wx:if="{{pendingUnbindCount > 0}}" class="todo-badge">{{pendingUnbindCount > 99 ? '99+' : pendingUnbindCount}}</view>
+          </view>
+          <text class="todo-label">解绑审批</text>
+        </view>
+      </view>
     </view>
 
     <!-- 底部安全区 -->
