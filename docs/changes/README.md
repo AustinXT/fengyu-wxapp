@@ -19,6 +19,7 @@
 | [003](arch/003_lakala-payment-integration.md) | 2026-05-20 | 拉卡拉聚合支付接入（收银台 SDK + payNotify 启用 + 统一退货预留） |
 | [004](arch/004_merge-danpin-into-liaochengka.md) | 2026-05-21 | 单品合并入疗程卡（product_type 枚举 3→2 值） |
 | [005](arch/005_beautician-picker-include-wellness.md) | 2026-05-21 | 开单/下单/服务单的美容师选择列表放开养生师 |
+| [006](arch/006_service-order-customer-confirmation.md) | 2026-05-23 | 服务单新增「顾客确认」步骤（待客户确认 中间态） |
 
 ## ops — 生产操作
 

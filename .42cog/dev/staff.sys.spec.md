@@ -260,14 +260,18 @@ allocation.deleteAllocation(sale_order_id)
 
 服务推进:
   service.start → 待服务→服务中
-  service.complete → 服务中→已完成
-    → 原子扣减: UPDATE sale_items SET remaining_sessions = remaining_sessions - session_used
+  service.complete → 服务中→待客户确认（员工标记完成，仅记 staff_completed_at，无副作用）
+  service.confirm → 待客户确认→已完成（店长代确认；顾客本人走 clientApi.service.confirm；后台走 admin.confirmServiceOrder）
+    → finalize 原子: UPDATE sale_items SET remaining_sessions = remaining_sessions - session_used
       WHERE sale_item_id = $1 AND remaining_sessions >= session_used
     → rowCount=0 → 次数不足，回滚
+    → 计算并写入 service_commissions（双字段模型，缺率写 operation_logs）
+    → 状态翻转 WHERE status='待客户确认'（并发锁定，rowCount=0 视为已被其它入口确认 → 幂等）
     → 归零检查:
       → remaining_sessions = 0 → 关闭关联的待确认/已确认预约
       → 订单所有行归零 → sale_orders.status → 已完成
-  service.cancel → 不扣次数
+    → finalize SQL 在 staffApi/clientApi 双端独立副本，cross-end-sql-snapshot.test.js 守护
+  service.cancel → 不扣次数（待服务/服务中/待客户确认 可取消）
 
 权限:
   - 店长：可代创建（指定美容师），可操作本店任意服务单

@@ -1,10 +1,11 @@
 /**
  * 服务单模块路由
- * 顾客查询服务单状态(只读) + 服务完成后评价美容师
+ * 顾客查询服务单状态(只读) + 顾客确认服务完成 + 服务完成后评价美容师
  */
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
+const { loadServiceItems, finalizeServiceOrder } = require('../utils/service-finalize')
 
 const MAX_COMMENT_LENGTH = 500
 
@@ -208,8 +209,63 @@ async function createReview(ctx) {
   ctx.result = { serviceOrderId, rating, comment: normalizedComment }
 }
 
+/**
+ * 顾客确认服务完成（待客户确认 → 已完成）
+ * payload: { serviceOrderId: string }
+ *
+ * 仅本人的"待客户确认"服务单可确认。确认时原子执行 finalize 副作用：
+ * 扣减卡剩余次数 + 计算并写入美容师提成 + 关闭关联预约。
+ * 幂等：已完成直接返回；并发（顾客 + 店长代确认）由 WHERE 锁定状态兜底。
+ */
+async function confirm(ctx) {
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+  const { serviceOrderId, serviceOrderNo } = ctx.event.payload || {}
+  const id = serviceOrderId || serviceOrderNo
+  if (!id) {
+    throw new Error('INVALID_PARAMS: 缺少 serviceOrderId 参数')
+  }
+
+  const orders = await pg.query(
+    `SELECT * FROM service_orders WHERE service_order_id = $1`,
+    [id]
+  )
+
+  if (orders.length === 0 || orders[0].client_user_id !== userId) {
+    throw new Error('PERMISSION_DENIED: 无权确认该服务单')
+  }
+
+  const so = orders[0]
+
+  // 幂等：已完成
+  if (so.status === '已完成') {
+    ctx.result = { serviceOrderId: id, status: '已完成', message: '服务已完成（幂等）' }
+    return
+  }
+
+  if (so.status !== '待客户确认') {
+    throw new Error('INVALID_STATE: 服务单当前状态不可确认')
+  }
+
+  const items = await loadServiceItems(id)
+  const now = new Date()
+
+  let finalized = false
+  await pg.transaction(async (client) => {
+    finalized = await finalizeServiceOrder(client, so, items, now)
+  })
+
+  ctx.result = {
+    serviceOrderId: id,
+    status: '已完成',
+    message: finalized ? '服务已确认完成' : '服务已完成（幂等）'
+  }
+}
+
 module.exports = {
   detail,
   list,
+  confirm,
   createReview
 }

@@ -80,6 +80,12 @@ const FILES = {
   adminScopeAssertTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/scope-assert.ts'),
   // SUMMARY v3 §2 #13 — client 端 scope helper（语义不同：单用户归属，不参与 staff/admin 跨端 SQL 对比）
   clientScopeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/scope.js'),
+
+  // 服务单 finalize（待客户确认 → 已完成）副作用 SQL — staff / client 双端字节同义
+  // staff: routes/service.js 的 finalizeServiceOrder；client: utils/service-finalize.js
+  // 顾客确认链路首次把"扣次数 + 算提成"SQL 引入 clientApi，故纳入跨端守护。
+  staffServiceJs: path.resolve(__dirname, '../../routes/service.js'),
+  clientServiceFinalizeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js'),
 }
 
 function readFile(p) {
@@ -1064,6 +1070,65 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
   describe("Snapshot 守护", () => {
     test("STEP 1 分摊 SQL 文本快照", () => {
       expect(allocSqls.staff).toMatchSnapshot()
+    })
+  })
+})
+
+// ── 服务单 finalize（待客户确认 → 已完成）SQL — staff / client 双端字节同义 ──────────
+// 「顾客确认才算完成」需求：扣次数 + 算提成 + 关预约从 staff complete 后移到 confirm，
+// 且顾客本人确认（clientApi）首次执行该副作用，故 clientApi 新增了 finalize 副本。
+// 三条核心 SQL（扣减 UPDATE / commission_rate_matrix 查率 / service_commissions 写入）
+// 必须与 staff finalizeServiceOrder 字面量一致；任一端漂移 → fail，提示同步另一端。
+// operation_logs 缺率告警 INSERT 因 operator/source 字面不同（staffApi vs clientApi），不纳入比对。
+describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceOrder vs client service-finalize）', () => {
+  const MARKER_SVC_DEDUCT = 'remaining_sessions = remaining_sessions - $1'
+  const MARKER_SVC_RATE = 'commission_rate FROM commission_rate_matrix'
+  const MARKER_SVC_COMM_INSERT = 'INSERT INTO service_commissions'
+
+  let deduct, rate, commInsert
+
+  beforeAll(() => {
+    const staffSrc = readFile(FILES.staffServiceJs)
+    const clientSrc = readFile(FILES.clientServiceFinalizeJs)
+    deduct = {
+      staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_DEDUCT)),
+      client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_DEDUCT)),
+    }
+    rate = {
+      staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_RATE)),
+      client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_RATE)),
+    }
+    commInsert = {
+      staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_COMM_INSERT)),
+      client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_COMM_INSERT)),
+    }
+  })
+
+  describe('剩余次数原子扣减 UPDATE 镜像比对', () => {
+    test('staff vs client 一致', () => { expect(deduct.client).toBe(deduct.staff) })
+    test('含 paid_sessions 限额条件（防漂移退化）', () => {
+      expect(deduct.staff).toContain('COALESCE(paid_sessions, session_count)')
+    })
+  })
+
+  describe('提成比例矩阵查询 SELECT 镜像比对', () => {
+    test('staff vs client 一致', () => { expect(rate.client).toBe(rate.staff) })
+    test("order_type = '服务单' 限定（防误取销售单费率）", () => {
+      expect(rate.staff).toContain("order_type = '服务单'")
+    })
+  })
+
+  describe('service_commissions 写入 INSERT 镜像比对', () => {
+    test('staff vs client 一致', () => { expect(commInsert.client).toBe(commInsert.staff) })
+    test('ON CONFLICT DO NOTHING 幂等（防重复确认重复计提成）', () => {
+      expect(commInsert.staff).toContain('ON CONFLICT')
+      expect(commInsert.staff).toContain('DO NOTHING')
+    })
+  })
+
+  describe('Snapshot 守护', () => {
+    test('finalize 三条核心 SQL 文本快照', () => {
+      expect({ deduct: deduct.staff, rate: rate.staff, commInsert: commInsert.staff }).toMatchSnapshot()
     })
   })
 })

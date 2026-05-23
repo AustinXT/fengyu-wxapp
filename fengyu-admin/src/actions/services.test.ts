@@ -256,9 +256,9 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     expect(db.execute).not.toHaveBeenCalled()
   })
 
-  it('scope 校验通过，但 status_updated=0（状态已变更）→ 失败', async () => {
+  it('scope 校验通过，但 update count=0（状态已变更）→ 失败', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
-    ;(db.execute as any).mockResolvedValue([{ status_updated: '0', items_deducted: '0' }])
+    setupUpdate(0)
 
     const result = await completeServiceOrder('svc-1')
 
@@ -266,20 +266,22 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     expect(result.message).toContain('状态已变更')
   })
 
-  it('scope 校验通过，status_updated=1 → 成功', async () => {
+  it('scope 校验通过，update count=1 → 标记完成（待客户确认）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
-    ;(db.execute as any).mockResolvedValue([{ status_updated: '1', items_deducted: '1' }])
+    setupUpdate(1)
 
     const result = await completeServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
-    expect(result.message).toContain('服务已完成')
+    // C4：员工点「完成」只是标记完成（服务中→待客户确认），扣次数推迟到 confirmServiceOrder
+    expect(result.message).toContain('已标记完成')
+    expect(result.message).toContain('待客户确认')
   })
 
-  it('admin 用户：跳过 scope 预检查，直接执行原子 SQL', async () => {
+  it('admin 用户：跳过 scope 预检查，直接翻转状态', async () => {
     mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(isAdminScope as any).mockReturnValue(true)
-    ;(db.execute as any).mockResolvedValue([{ status_updated: '1', items_deducted: '1' }])
+    setupUpdate(1)
 
     const result = await completeServiceOrder('svc-1')
 
@@ -288,14 +290,16 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     expect(db.select).toHaveBeenCalledOnce()
   })
 
-  it('原子 SQL 异常 → 返回友好错误', async () => {
+  it('状态翻转 SQL 异常 → 返回友好错误', async () => {
     mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(isAdminScope as any).mockReturnValue(true)
-    ;(db.execute as any).mockRejectedValue(new Error('connection lost'))
+    const where = vi.fn().mockRejectedValue(new Error('connection lost'))
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
 
     const result = await completeServiceOrder('svc-1')
     expect(result.success).toBe(false)
-    expect(result.message).toBe('完成服务失败，请稍后重试')
+    expect(result.message).toBe('标记完成失败，请稍后重试')
   })
 })
 
@@ -360,6 +364,39 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('剩余次数不足')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('原订单退款审批中 → 拒绝（在途退款冻结）', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', hasPendingRefund: true }])
+    )
+
+    const result = await createServiceOrder({
+      ...baseData,
+      items: [{ saleItemId: 'item-1', sessionUsed: 1 }],
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('退款审批中')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('审批后已退完的卡（paid_sessions 余量不足）→ 拒绝', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([{
+        sessionCount: 10, remainingSessions: 10, paidSessions: 0,
+        unitRealPrice: '200.00', hasApprovedRefund: true,
+      }])
+    )
+
+    const result = await createServiceOrder({
+      ...baseData,
+      items: [{ saleItemId: 'item-1', sessionUsed: 1 }],
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已退款')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 

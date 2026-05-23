@@ -43,6 +43,8 @@ Page({
     reviewRating: 0,
     reviewComment: '',
     reviewSubmitting: false,
+    // 确认服务完成状态
+    confirmingId: '',
   },
 
   _page: 1,
@@ -119,6 +121,35 @@ Page({
     // 服务记录为只读卡片，详情信息已在列表中展示
   },
 
+  /** 确认服务完成（待客户确认 → 已完成），确认后才扣减疗程次数 */
+  async onConfirmCompletion(e: WechatMiniprogram.TouchEvent) {
+    const { id } = e.currentTarget.dataset as { id: string };
+    if (this.data.confirmingId) return;
+    const res = await wx.showModal({
+      title: '确认服务完成',
+      content: '确认后本次服务将完成并扣减疗程次数，确认后可对美容师评价。',
+      confirmText: '确认完成',
+    });
+    if (!res.confirm) return;
+
+    this.setData({ confirmingId: id });
+    try {
+      await callClientApi('service.confirm', { serviceOrderId: id });
+      Toast.success('已确认完成');
+      // 局部更新该条记录状态为已完成
+      const records = this.data.records.map((r) =>
+        r.service_order_id === id
+          ? { ...r, status: '已完成', statusColor: getStatusColor('已完成') }
+          : r,
+      );
+      this.setData({ records });
+    } catch (err: any) {
+      Toast.fail(err.message || '确认失败');
+    } finally {
+      this.setData({ confirmingId: '' });
+    }
+  },
+
   /** 打开评价弹窗 */
   onTapReview(e: WechatMiniprogram.TouchEvent) {
     const { id, name } = e.currentTarget.dataset as { id: string; name?: string };
@@ -137,11 +168,11 @@ Page({
     this.setData({ reviewVisible: false });
   },
 
-  onRatingChange(e: WechatMiniprogram.CustomEvent<number>) {
+  onRatingChange(e: { detail: number }) {
     this.setData({ reviewRating: e.detail });
   },
 
-  onCommentChange(e: WechatMiniprogram.CustomEvent<string>) {
+  onCommentChange(e: { detail: string }) {
     this.setData({ reviewComment: e.detail });
   },
 
@@ -181,6 +212,7 @@ function getStatusColor(status: string): string {
   switch (status) {
     case '待服务': return '#D48806';
     case '服务中': return '#096DD9';
+    case '待客户确认': return '#C0322A';
     case '已完成': return '#389E0D';
     case '已取消': return '#8C8C8C';
     default: return '#8C8C8C';

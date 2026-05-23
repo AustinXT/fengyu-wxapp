@@ -59,8 +59,20 @@
         </view>
       </view>
 
+      <!-- 待客户确认：确认服务完成按钮 -->
+      <view wx:if="{{item.status === '待客户确认'}}" class="record-confirm">
+        <view class="record-confirm-hint">美容师已完成服务，请确认</view>
+        <van-button
+          size="small"
+          type="danger"
+          loading="{{confirmingId === item.service_order_id}}"
+          data-id="{{item.service_order_id}}"
+          bindtap="onConfirmCompletion"
+        >确认服务完成</van-button>
+      </view>
+
       <!-- 评价区（仅已完成服务单） -->
-      <view wx:if="{{item.status === '已完成'}}" class="record-review">
+      <view wx:elif="{{item.status === '已完成'}}" class="record-review">
         <!-- 已评价：回显星级 + 内容 -->
         <view wx:if="{{item.reviewed}}" class="review-done">
           <view class="review-done-head">

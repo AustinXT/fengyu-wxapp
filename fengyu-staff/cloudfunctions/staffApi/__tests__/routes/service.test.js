@@ -121,6 +121,27 @@ describe('service.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*不可消费/)  // ticket 2026-05-19：消息改为"订单状态为 X，不可消费"
   })
 
+  test('原订单退款审批中时拒绝开单（在途退款冻结）', async () => {
+    const ctx = createManagerCtx({
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'item-001',
+      remaining_sessions: 10,
+      unit_real_price: '100',
+      product_type: '疗程卡',
+      order_status: '已支付',
+      store_id: 'store-001',
+      client_user_id: 'cu-001',
+      client_phone: '138',
+      has_pending_refund: true, // 存在 '待审批' 退款
+    }])
+
+    await expect(serviceRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_STATE.*REFUND_IN_PROGRESS.*退款审批中/)
+  })
+
   test('家居产品拒绝创建服务单', async () => {
     const ctx = createManagerCtx({
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
@@ -494,18 +515,116 @@ describe('service.start', () => {
   })
 })
 
-describe('service.complete', () => {
+describe('service.complete（服务中 → 待客户确认，轻量翻状态）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  test('完成服务 — 原子扣减次数（C4: UPDATE WHERE 含 status 条件）', async () => {
+  test('标记完成 — 服务中 → 待客户确认（不扣次数、不开事务）', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    let capturedUpdateSql = ''
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockImplementationOnce(async (sql) => {
+        if (typeof sql === 'string') capturedUpdateSql = sql
+        return { rows: [], rowCount: 1 }
+      })
+
+    await serviceRoutes.complete(ctx)
+
+    expect(ctx.result.status).toBe('待客户确认')
+    expect(capturedUpdateSql).toContain("status = '待客户确认'")
+    expect(capturedUpdateSql).toContain('staff_completed_at')
+    expect(capturedUpdateSql).toContain("AND status = '服务中'")
+    // 不产生副作用：不开事务
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('并发竞态：complete UPDATE rowCount=0 时报错', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
         status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 并发竞态
+
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
+  })
+
+  test('幂等 — 待客户确认的服务单不重复标记', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待客户确认',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+
+    await serviceRoutes.complete(ctx)
+
+    expect(ctx.result.status).toBe('待客户确认')
+    expect(ctx.result.message).toContain('幂等')
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('幂等 — 已完成的服务单直接返回', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '已完成',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+
+    await serviceRoutes.complete(ctx)
+
+    expect(ctx.result.status).toBe('已完成')
+    expect(ctx.result.message).toContain('幂等')
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('非服务中状态拒绝完成', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待服务',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*待服务.*不可完成/)
+  })
+})
+
+describe('service.confirm（待客户确认 → 已完成，finalize 副作用）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('确认完成 — 原子扣减次数（finalize: UPDATE WHERE status=待客户确认）', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -525,20 +644,20 @@ describe('service.complete', () => {
       return await cb(client)
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     expect(ctx.result.status).toBe('已完成')
     expect(ctx.result.message).toContain('次数已扣减')
-    expect(capturedSoUpdateSql).toContain("AND status = '服务中'")
+    expect(capturedSoUpdateSql).toContain("AND status = '待客户确认'")
   })
 
-  test('并发竞态：complete UPDATE service_orders rowCount=0 时报错', async () => {
+  test('并发竞态：finalize UPDATE service_orders rowCount=0 时幂等返回（已被顾客确认）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -552,7 +671,7 @@ describe('service.complete', () => {
       const client = {
         query: vi.fn(async () => {
           callCount++
-          // 第 1 次：原子扣减成功，第 2 次：查剩余次数，第 3 次：UPDATE service_orders 失败
+          // 第 1 次：原子扣减成功，第 2 次：查剩余次数，第 3 次：UPDATE service_orders 失败（已被并发确认）
           if (callCount === 1) return { rows: [], rowCount: 1 }
           if (callCount === 2) return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
           return { rows: [], rowCount: 0 } // 并发竞态
@@ -561,8 +680,9 @@ describe('service.complete', () => {
       return await cb(client)
     })
 
-    await expect(serviceRoutes.complete(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
+    // finalize 返回 false → confirm 幂等返回已完成，不报错
+    await serviceRoutes.confirm(ctx)
+    expect(ctx.result.status).toBe('已完成')
   })
 
   test('幂等 — 已完成的服务单不重复扣减', async () => {
@@ -575,7 +695,7 @@ describe('service.complete', () => {
       store_id: 'store-001',
     }])
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     expect(ctx.result.status).toBe('已完成')
     expect(ctx.result.message).toContain('幂等')
@@ -583,18 +703,18 @@ describe('service.complete', () => {
     expect(pg.transaction).not.toHaveBeenCalled()
   })
 
-  test('非服务中状态拒绝完成', async () => {
+  test('非待客户确认状态拒绝确认', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query.mockResolvedValueOnce([{
       service_order_id: 'HLD-001',
-      status: '待服务',
+      status: '服务中',
       assigned_employee_id: 'emp-001',
       store_id: 'store-001',
     }])
 
-    await expect(serviceRoutes.complete(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*待服务.*不可完成/)
+    await expect(serviceRoutes.confirm(ctx))
+      .rejects.toThrow(/INVALID_STATE.*服务中.*不可确认/)
   })
 
   test('原子扣减失败（次数不足）时回滚', async () => {
@@ -603,7 +723,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -623,7 +743,7 @@ describe('service.complete', () => {
       return await cb(client)
     })
 
-    await expect(serviceRoutes.complete(ctx))
+    await expect(serviceRoutes.confirm(ctx))
       .rejects.toThrow(/次数不足/)
   })
 
@@ -633,7 +753,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -653,7 +773,7 @@ describe('service.complete', () => {
       return await cb(client)
     })
 
-    await expect(serviceRoutes.complete(ctx))
+    await expect(serviceRoutes.confirm(ctx))
       .rejects.toThrow(/仅在 store-999 可核销/)
   })
 
@@ -663,7 +783,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: 'appt-001',
@@ -698,7 +818,7 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     expect(ctx.result.status).toBe('已完成')
     // 验证关闭预约的 SQL
@@ -718,7 +838,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -763,7 +883,7 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     // 断言 service_commissions 被 INSERT
     expect(svcCommInsertCall).not.toBeNull()
@@ -789,7 +909,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -835,7 +955,7 @@ describe('service.complete', () => {
     })
 
     // 不应 throw
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     // operation_logs 被写入
     expect(opLogInsert).not.toBeNull()
@@ -856,7 +976,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -893,7 +1013,7 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     const [, , roleType] = svcCommInsert.params
     expect(roleType).toBe('美容师')  // 兜底值
@@ -909,7 +1029,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -920,7 +1040,7 @@ describe('service.complete', () => {
           sale_item_id: 'item-card',
           session_used: 1,
           employee_id: 'emp-001',
-          unit_real_price: '3500.00',   // per-card
+          unit_real_price: '700.00',    // per-session 单次价（5次卡 3500/5=700），已是单次基准
           service_fee: '0',
           sales_category: '自销自耗',
           session_count: 10,             // 5次卡 × 2张
@@ -950,12 +1070,12 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     expect(svcCommInsert).not.toBeNull()
     // 参数顺序：service_item_id, employee_id, role_type, commission_rate, commission_amount, fixed_fee, consume_amount
     const [, , , rate, commAmt, fixedFee, consumeAmt] = svcCommInsert.params
-    // per_session = 3500 × 2 / 10 = 700
+    // per_session = unit_real_price = 700（已是单次价，不再 ÷session_count）
     // consumeBase = 700 × 1 = 700
     // consumeAmt = 700 × 0.10 = 70
     expect(rate).toBe(0.1)
@@ -970,7 +1090,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -981,7 +1101,7 @@ describe('service.complete', () => {
           sale_item_id: 'item-card',
           session_used: 2,
           employee_id: 'emp-001',
-          unit_real_price: '3500.00',
+          unit_real_price: '700.00',    // per-session 单次价（5次卡 3500/5=700）
           service_fee: '0',
           sales_category: '自销自耗',
           session_count: 10,
@@ -1011,7 +1131,7 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     const [, , , , , , consumeAmt] = svcCommInsert.params
     // per_session=700, consumeBase=700×2=1400, consumeAmt=1400×0.10=140
@@ -1024,7 +1144,7 @@ describe('service.complete', () => {
     pg.query
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001',
-        status: '服务中',
+        status: '待客户确认',
         assigned_employee_id: 'emp-001',
         store_id: 'store-001',
         appointment_id: null,
@@ -1065,7 +1185,7 @@ describe('service.complete', () => {
       return await cb({ query: clientQueryMock })
     })
 
-    await serviceRoutes.complete(ctx)
+    await serviceRoutes.confirm(ctx)
 
     const [, , , , , , consumeAmt] = svcCommInsert.params
     // per_session = 49.80 × 1 / 1 = 49.80; consumeBase = 49.80; consumeAmt = 4.98

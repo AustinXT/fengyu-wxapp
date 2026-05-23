@@ -206,10 +206,11 @@ async function run() {
     `/packageCustomer/customer-detail/customer-detail?clientUserId=${encodeURIComponent(TEST_CLIENT_USER_ID)}`,
   );
   const today = new Date().toISOString().slice(0, 10);
+  // customer-detail 是子包，navigateToPage 已吞首跳伪 timeout；给足 15s 等 onLoad 回填
   const d4 = await waitForData(miniProgram, (d) =>
     d.customer && d.customer.lastServiceDate &&
     String(d.customer.lastServiceDate).slice(0, 10) === today,
-    { timeoutMs: 8000 },
+    { timeoutMs: 15000 },
   );
   await snapshot(miniProgram, 'bs03-step4-customer-detail');
   console.log('  ✓ customer.lastServiceDate =', d4.customer.lastServiceDate);

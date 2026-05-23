@@ -67,6 +67,20 @@
   border-top: 1rpx solid var(--color-border);
 }
 
+.record-confirm {
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.record-confirm-hint {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
 .review-action {
   display: flex;
   justify-content: flex-end;

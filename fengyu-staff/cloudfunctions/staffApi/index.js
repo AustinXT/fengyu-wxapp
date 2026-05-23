@@ -111,6 +111,7 @@ const routes = {
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,
   'service.complete':     () => require('./routes/service').complete,
+  'service.confirm':      () => require('./routes/service').confirm,
   'service.cancel':       () => require('./routes/service').cancel,
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,

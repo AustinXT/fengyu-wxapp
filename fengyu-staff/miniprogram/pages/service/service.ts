@@ -11,7 +11,7 @@ interface ServiceItem {
   customerName: string;
   customerPhone: string;
   staffName: string;
-  status: '待服务' | '服务中' | '已完成';
+  status: '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消';
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
@@ -31,6 +31,7 @@ Page({
     tabs: [
       { name: 'pending', label: '待服务', badge: 0 },
       { name: 'processing', label: '服务中', badge: 0 },
+      { name: 'awaiting', label: '待确认', badge: 0 },
       { name: 'completed', label: '已完成', badge: 0 },
     ],
     list: [] as ServiceItem[],
@@ -66,6 +67,7 @@ Page({
       const statusMap: Record<string, string> = {
         pending: '待服务',
         processing: '服务中',
+        awaiting: '待客户确认',
         completed: '已完成',
       };
       const status = statusMap[this.data.tabActive] || this.data.tabActive;
@@ -110,15 +112,41 @@ Page({
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     wx.showModal({
-      title: '确认完成服务',
-      content: '确认完成后将扣减1次疗程次数，操作不可撤销',
-      confirmText: '确认完成',
+      title: '标记完成服务',
+      content: '标记完成后将通知顾客确认，顾客确认后才扣减疗程次数。',
+      confirmText: '标记完成',
       success: async (res) => {
         if (!res.confirm) return;
         this.setData({ actioningId: id });
         try {
           await callStaffApi('service.complete', { serviceOrderId: id });
-          wx.showToast({ title: '服务已完成', icon: 'success' });
+          wx.showToast({ title: '已完成，待顾客确认', icon: 'none' });
+          this.loadList();
+          this.loadTabCounts();
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ actioningId: '' });
+        }
+      }
+    });
+  },
+
+  // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
+  onConfirmService(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    wx.showModal({
+      title: '代客户确认',
+      content: '确认后将扣减疗程次数并完成服务单，仅在顾客不便自行确认时使用。',
+      confirmText: '确认完成',
+      success: async (res) => {
+        if (!res.confirm) return;
+        this.setData({ actioningId: id });
+        try {
+          await callStaffApi('service.confirm', { serviceOrderId: id });
+          wx.showToast({ title: '服务已确认完成', icon: 'success' });
           this.loadList();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';

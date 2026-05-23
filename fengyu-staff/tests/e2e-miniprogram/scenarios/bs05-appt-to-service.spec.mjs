@@ -80,7 +80,9 @@ async function run() {
   await navigateToPage(miniProgram,
     `/packageService/appointment-detail/appointment-detail?id=${APPT_ID}`,
   );
-  await waitForData(miniProgram, (d) => d.appt?.id === APPT_ID && d.statusText === '已确认');
+  // 子包首跳 navigateTo 在 automation 通道里偶发 ~10s 才落地（navigateToPage 已吞伪 timeout），
+  // 故 waitForData 给足 15s，等 onLoad → appointment.detail 真正回填。
+  await waitForData(miniProgram, (d) => d.appt?.id === APPT_ID && d.statusText === '已确认', { timeoutMs: 15000 });
   await snapshot(miniProgram, 'bs05-step1-detail');
   console.log('  ✓ statusText=已确认');
 

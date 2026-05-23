@@ -279,6 +279,22 @@ export const getAvailableSaleItems = withPermission(
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
       AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+      -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
+      AND NOT EXISTS (
+        SELECT 1 FROM sale_order_payments sop
+        WHERE sop.sale_order_id = o.sale_order_id
+          AND sop.change_type = '退款' AND sop.status = '待审批'
+      )
+      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = o.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 
@@ -343,10 +359,68 @@ export const startServiceOrder = withPermission(
 )
 
 /**
- * C1+C4: 完成服务 — 原子扣减 remaining_sessions + 状态推进
- * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL
+ * C4: 员工标记完成服务 — 服务中 → 待客户确认（轻量，仅翻状态 + 记 staff_completed_at）
+ *
+ * 不扣次数 / 不关预约——这些副作用推迟到顾客确认（confirmServiceOrder）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属。
  */
 export const completeServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志 + 非 admin scope 预检查
+  const [svcCtx] = await db
+    .select({
+      storeId: serviceOrders.storeId,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
+  if (!isAdminScope(session)) {
+    const scopeStoreIds = session.permissions.scopeStoreIds
+    if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
+      return { success: false, message: '无权操作该服务单' }
+    }
+  }
+
+  let result: any
+  try {
+    result = await db
+      .update(serviceOrders)
+      .set({ status: '待客户确认', staffCompletedAt: new Date() })
+      .where(and(
+        eq(serviceOrders.serviceOrderId, serviceOrderId),
+        eq(serviceOrders.status, '服务中'),
+        scopeCondition(session, serviceOrders.storeId),
+      ))
+  } catch {
+    return { success: false, message: '标记完成失败，请稍后重试' }
+  }
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '服务单状态已变更，无法完成' }
+  }
+
+  await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '待客户确认', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
+
+  revalidatePath('/services')
+  return { success: true, message: '已标记完成，待客户确认' }
+  },
+)
+
+/**
+ * C1+C4: 后台代客户确认服务 — 待客户确认 → 已完成（原子扣减 remaining_sessions + 状态推进）
+ *
+ * 兜底入口：顾客不便用小程序时由后台 / 店长代确认。执行 finalize 副作用（扣次数）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL。
+ */
+export const confirmServiceOrder = withPermission(
   'service:update',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志 + 非 admin scope 预检查
@@ -377,7 +451,7 @@ export const completeServiceOrder = withPermission(
       WITH status_check AS (
         UPDATE service_orders
         SET status = '已完成', completed_at = NOW(), updated_at = NOW()
-        WHERE service_order_id = ${serviceOrderId} AND status = '服务中'
+        WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
         RETURNING service_order_id
       ),
       deduct AS (
@@ -400,24 +474,24 @@ export const completeServiceOrder = withPermission(
         (SELECT n FROM total_items) AS items_total
     `)
   } catch {
-    return { success: false, message: '完成服务失败，请稍后重试' }
+    return { success: false, message: '确认服务失败，请稍后重试' }
   }
 
   const row = (result as any[])[0]
   if (!row || Number(row.status_updated) === 0) {
-    return { success: false, message: '服务单状态已变更，无法完成' }
+    return { success: false, message: '服务单状态已变更，无法确认' }
   }
   // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
   if (row && Number(row.items_deducted) < Number(row.items_total)) {
-    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再完成服务' }
+    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
   }
 
-  await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '已完成', {
+  await logTransition(session, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
     employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
   })
 
   revalidatePath('/services')
-  return { success: true, message: '服务已完成' }
+  return { success: true, message: '服务已确认完成' }
   },
 )
 
@@ -517,15 +591,19 @@ export const createServiceOrder = withPermission(
   // 先校验订单状态 + 剩余次数（事务外，只读查询）
   // 2026-05-20 ticket：放宽消费条件——只要"已支付/部分支付" + remainingSessions > 0 即可消费
   // 不再校验 paid_sessions 限额（之前的 D6=A 锁死规则已废止）
+  // 注：退款冻结是独立守卫（与 D6 无关）——审批中拒绝整单，审批后按 paid_sessions 有效余量拒绝已退完的卡
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
+        paidSessions: saleItems.paidSessions,
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
         orderStatus: saleOrders.status,
+        hasPendingRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
+        hasApprovedRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
@@ -539,8 +617,19 @@ export const createServiceOrder = withPermission(
     if (saleItem.orderStatus && !['已支付', '部分支付'].includes(saleItem.orderStatus)) {
       return { success: false, message: `销售明细 ${item.saleItemId} 对应订单状态为 ${saleItem.orderStatus}，不可消费` }
     }
+    // 在途退款冻结：原订单存在 '待审批' 退款时不可开单
+    if (saleItem.hasPendingRefund) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 对应订单退款审批中，不可开单` }
+    }
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
+    }
+    // 审批后已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+    if (saleItem.hasApprovedRefund && saleItem.paidSessions !== null && saleItem.sessionCount !== null) {
+      const consumed = saleItem.sessionCount - (saleItem.remainingSessions ?? saleItem.sessionCount)
+      if (consumed + item.sessionUsed > saleItem.paidSessions) {
+        return { success: false, message: `销售明细 ${item.saleItemId} 已退款，可用次数不足` }
+      }
     }
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,

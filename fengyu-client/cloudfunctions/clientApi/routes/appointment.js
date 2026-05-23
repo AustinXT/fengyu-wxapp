@@ -222,7 +222,7 @@ async function cancel(ctx) {
   const linkedService = await pg.query(
     `SELECT 1 FROM service_orders
      WHERE appointment_id = $1
-       AND status IN ('待服务', '服务中', '已完成')
+       AND status NOT IN ('已取消')
      LIMIT 1`,
     [appointmentId]
   )

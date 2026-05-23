@@ -65,6 +65,7 @@ const routes = {
   'appointment.cancel': () => require('./routes/appointment').cancel,
   'service.detail': () => require('./routes/service').detail,
   'service.list': () => require('./routes/service').list,
+  'service.confirm': () => require('./routes/service').confirm,
   'service.createReview': () => require('./routes/service').createReview,
   'coupon.list': () => require('./routes/coupon').list,
   'coupon.available': () => require('./routes/coupon').available,

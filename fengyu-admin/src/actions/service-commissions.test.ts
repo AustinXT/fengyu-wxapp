@@ -76,10 +76,11 @@ function makeSelectChain(result: any[]) {
   const orderBy = vi.fn().mockReturnValue({ limit })
   const whereResult = Object.assign(Promise.resolve(result), { limit, orderBy })
   const where = vi.fn().mockReturnValue(whereResult)
-  const innerJoin = vi.fn().mockReturnValue({ where, innerJoin: vi.fn(), leftJoin: vi.fn() })
-  // leftJoin/rightJoin reserved for parity if future queries need them
-  const leftJoin = vi.fn().mockReturnValue({ where, innerJoin, leftJoin: vi.fn() })
-  const from = vi.fn().mockReturnValue({ where, innerJoin, leftJoin })
+  // innerJoin/leftJoin 自引用 → 支持任意层 JOIN（如 serviceItems×saleItems×saleOrders 两次 innerJoin）
+  const chain: any = { where }
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue({ from })
 }
 
@@ -140,6 +141,23 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('整十')
+  })
+
+  it('寄存单不参与提成分配 → 拒绝', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope
+      if (callCount === 2) return makeSelectChain([{ serviceItemId: 'si-1' }])() // validItems
+      return makeSelectChain([{ saleOrderType: '寄存单' }])() // deposit 反查
+    })
+
+    const result = await batchSaveServiceCommissions('so-dep', [
+      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.50', commissionRate: '0.30', commissionAmount: '15.00' },
+    ])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('寄存单')
   })
 
   it('同技能标签超过 3 人 → 拒绝（P2-14 Q5）', async () => {

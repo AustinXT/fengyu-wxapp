@@ -190,7 +190,7 @@ export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失�
  */
 export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
-export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
+export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
 export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
 export type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'

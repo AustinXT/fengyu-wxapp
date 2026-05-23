@@ -11,7 +11,7 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Pagination } from "@/components/ui/pagination"
-import { startServiceOrder, completeServiceOrder, cancelServiceOrder } from "@/actions/services"
+import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder } from "@/actions/services"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
@@ -24,7 +24,7 @@ function formatDate(dt: string) {
 function ServiceActions({ so }: { so: ServiceOrder }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
-  const [confirmDialog, setConfirmDialog] = useState<'cancel' | 'complete' | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<'cancel' | 'complete' | 'confirm' | null>(null)
 
   const handleAction = (actionFn: (id: string) => Promise<{ success: boolean; message: string }>) => {
     setConfirmDialog(null)
@@ -55,6 +55,9 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
         {so.status === "服务中" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog('complete')} disabled={pending}>完成服务</Button>
         )}
+        {so.status === "待客户确认" && (
+          <Button size="sm" variant="outline" onClick={() => setConfirmDialog('confirm')} disabled={pending}>代客户确认</Button>
+        )}
       </div>
 
       <AlertDialog open={confirmDialog === 'cancel'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
@@ -67,11 +70,20 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
       </AlertDialog>
 
       <AlertDialog open={confirmDialog === 'complete'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
-        <AlertDialogTitle>确认完成服务？</AlertDialogTitle>
-        <AlertDialogDescription>完成后将扣减关联销售明细的剩余次数。此操作不可撤销。</AlertDialogDescription>
+        <AlertDialogTitle>标记完成服务？</AlertDialogTitle>
+        <AlertDialogDescription>标记完成后服务单进入「待客户确认」，需顾客（或后台代）确认后才扣减次数、计提成。</AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
-          <AlertDialogAction onClick={() => handleAction(completeServiceOrder)}>确认完成</AlertDialogAction>
+          <AlertDialogAction onClick={() => handleAction(completeServiceOrder)}>标记完成</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === 'confirm'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>代客户确认服务完成？</AlertDialogTitle>
+        <AlertDialogDescription>确认后将扣减关联销售明细的剩余次数并完成服务单。此操作不可撤销，仅在顾客不便自行确认时使用。</AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(confirmServiceOrder)}>确认完成</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
     </>
@@ -132,7 +144,7 @@ export default function ServicesPageClient({
           <div className="flex flex-wrap gap-3">
             <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
-              {(["待服务", "服务中", "已完成", "已取消"] as ServiceOrderStatus[]).map((s) => (
+              {(["待服务", "服务中", "待客户确认", "已完成", "已取消"] as ServiceOrderStatus[]).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </Select>

@@ -12,6 +12,7 @@
   >
     <van-tab name="pending" title="待服务{{tabs[0].badge > 0 ? '(' + tabs[0].badge + ')' : ''}}" />
     <van-tab name="processing" title="服务中{{tabs[1].badge > 0 ? '(' + tabs[1].badge + ')' : ''}}" />
+    <van-tab name="awaiting" title="待确认{{tabs[2].badge > 0 ? '(' + tabs[2].badge + ')' : ''}}" />
     <van-tab name="completed" title="已完成" />
   </van-tabs>
 
@@ -22,7 +23,7 @@
 
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
-    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : '已完成'}}的服务单" />
+    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : tabActive === 'awaiting' ? '待确认' : '已完成'}}的服务单" />
   </view>
 
   <!-- 服务单列表 -->
@@ -37,7 +38,7 @@
       <!-- 卡片头：编号 + 状态 -->
       <view class="card-header">
         <text class="service-no">{{item.serviceOrderId}}</text>
-        <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : 'done'}}">
+        <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
           {{item.status}}
         </view>
       </view>
@@ -66,6 +67,7 @@
         <van-icon name="clock-o" size="26rpx" color="#999" />
         <text class="time-text" wx:if="{{item.status === '待服务'}}">预计 {{item.serviceTime}}</text>
         <text class="time-text" wx:elif="{{item.status === '服务中'}}">开始 {{item.startTime}}（进行中）</text>
+        <text class="time-text" wx:elif="{{item.status === '待客户确认'}}">待顾客确认</text>
         <text class="time-text" wx:else>完成 {{item.completedTime}}</text>
       </view>
 
@@ -86,7 +88,15 @@
           custom-class="btn-success"
           catchtap="onCompleteService"
           data-id="{{item.id}}"
-        >确认完成</van-button>
+        >标记完成</van-button>
+        <van-button
+          wx:elif="{{item.status === '待客户确认' && isManager}}"
+          type="primary"
+          size="small"
+          custom-class="btn-success"
+          catchtap="onConfirmService"
+          data-id="{{item.id}}"
+        >代客户确认</van-button>
         <van-button
           wx:else
           size="small"

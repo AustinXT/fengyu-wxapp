@@ -287,7 +287,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_order_id` | varchar(30) | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
-| `status` | enum | `待服务` / `服务中` / `已完成` / `已取消` |
+| `status` | enum | `待服务` / `服务中` / `待客户确认` / `已完成` / `已取消` |
 | `service_order_type` | enum | `售前` / `售后`（由顾客 customer_type 自动判定：会员客→售后，其他→售前） |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
@@ -729,11 +729,19 @@ login 返回中包含 `permissions` 字段：
 ### 5.2 服务单状态机
 
 ```text
-待服务 → 服务中          （开始服务）
-服务中 → 已完成          （完成服务，原子扣减次数）
-待服务 → 已取消          （取消服务单，不扣次）
-服务中 → 已取消          （取消服务单，不扣次）
+待服务 → 服务中            （开始服务）
+服务中 → 待客户确认        （员工标记完成，仅记 staff_completed_at，无副作用）
+待客户确认 → 已完成        （顾客 / 店长 / 后台代确认，原子扣次数 + 计提成 + 关预约）
+待服务 → 已取消            （取消服务单，不扣次）
+服务中 → 已取消            （取消服务单，不扣次）
+待客户确认 → 已取消        （确认前店长可撤，不扣次）
 ```
+
+> **顾客确认才算完成**：员工点「完成」只把状态推进到 `待客户确认`，不产生任何不可逆副作用；
+> 扣减卡剩余次数、计算美容师提成、关闭关联预约这三件事统一推迟到「确认」那一步原子执行。
+> 确认入口三个：顾客本人（clientApi `service.confirm`）、店长代确认（staffApi `service.confirm`）、
+> 后台代确认（admin `confirmServiceOrder`）；并发由 `WHERE status='待客户确认'` 锁定保证幂等。
+> finalize 副作用 SQL 在 staffApi / clientApi 双端各持独立副本，由 `cross-end-sql-snapshot.test.js` 守护。
 
 ### 5.3 预约状态机
 
