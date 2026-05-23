@@ -22,6 +22,16 @@
 **/test-results
 **/.tree
 
+# 测试源码与配置（不参与 next build / 运行时）
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+fengyu-admin/tests
+fengyu-admin/vitest.config.ts
+fengyu-admin/playwright.config.ts
+
 # 文档与本地工具配置（不参与镜像）
 **/*.log
 .claude
