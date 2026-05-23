@@ -20,6 +20,7 @@
 | [004](arch/004_merge-danpin-into-liaochengka.md) | 2026-05-21 | 单品合并入疗程卡（product_type 枚举 3→2 值） |
 | [005](arch/005_beautician-picker-include-wellness.md) | 2026-05-21 | 开单/下单/服务单的美容师选择列表放开养生师 |
 | [006](arch/006_service-order-customer-confirmation.md) | 2026-05-23 | 服务单新增「顾客确认」步骤（待客户确认 中间态） |
+| [007](arch/007_store-unbind-to-transfer-flow.md) | 2026-05-23 | 门店解绑流程改为「转店」（前置选新门店）+ 修复审批缓存陈旧 bug |
 
 ## ops — 生产操作
 

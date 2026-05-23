@@ -57,12 +57,12 @@
 | STORE-01 | 门店列表 | 按市场分组；支持城市筛选 |
 | STORE-02 | 门店详情 | 门店名、所属市场、床位、开业时间、`employee_count`、`customer_count` |
 | STORE-03 | 绑定门店 | 首次选择后默认展示该门店商品/美容师 |
-| STORE-04 | 更换门店 | 解绑申请（发起→查看状态→可取消） |
+| STORE-04 | 转店（更换门店） | 转店申请（前置选新店→发起→查看状态→可取消）；审批通过后绑定直接从原店改到新店，无悬空未绑定态 |
 | STORE-05 | 地理定位 | `store.geocode`（腾讯地图逆地理编码，去掉"市"后缀）→ 推荐就近门店 |
 
 - **搜索**: ≥2 字符，按 `store_name` 或 `region` 匹配
-- **绑定状态 UI（4 种）**: `no-binding`（绑定按钮）| `is-current`（解绑按钮）| `is-current-reviewing`（审批中+取消）| `other-bound`（禁用）
-- **解绑流程**: 输入原因 → `store.requestUnbind` → 审批中 → 可取消
+- **绑定状态 UI**: `no-binding`（绑定按钮）| `is-current`（已绑定，无操作）| `other-bound`（「申请转绑到本店」按钮）；只要存在待审批转店申请，任意门店页都展示「审批中 + 取消」横幅（同顾客仅 1 条 pending）
+- **转店流程**: 在想去的新门店详情页点「申请转绑到本店」→ `store.requestUnbind({ toStoreId, note? })`（from=当前绑定店，to=目标店）→ 原门店店长审核 → 通过后 `bound_store_id` 直接 from→to。**已移除纯解绑（不绑新店）入口。**
 
 ---
 
