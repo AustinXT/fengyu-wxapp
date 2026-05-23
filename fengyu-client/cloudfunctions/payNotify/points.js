@@ -58,9 +58,16 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   }
 
   const type = delta > 0 ? '消费赠送' : '消费冲销'
+  // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+  // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
+  // 避免裸 INSERT 撞唯一索引导致整事务回滚。四端字面同义，由 cross-end-sql-snapshot 守护。
   await client.query(
     `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
-     VALUES ($1, $2, $3, $4, NOW())`,
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (user_id, ref_order_id, type)
+       WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+     DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount,
+                   created_at = NOW()`,
     [userId, type, delta, originalSaleOrderId],
   )
   await client.query(
@@ -78,9 +85,15 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
   if (process.env.POINTS_ACCRUAL_ENABLED === 'false') {
     return { skipped: 'feature-flag-disabled' }
   }
+  // SAVEPOINT 真隔离：积分发放报错只回滚子事务，外层资金事务不受影响
+  // （决策：资金正确优先，积分失败仅告警，由 cronTask 兜底重算）。
+  await client.query('SAVEPOINT sp_settle_points')
   try {
-    return await settlePointsForOrder(client, originalSaleOrderId)
+    const result = await settlePointsForOrder(client, originalSaleOrderId)
+    await client.query('RELEASE SAVEPOINT sp_settle_points')
+    return result
   } catch (err) {
+    await client.query('ROLLBACK TO SAVEPOINT sp_settle_points')
     try {
       await client.query(
         `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)

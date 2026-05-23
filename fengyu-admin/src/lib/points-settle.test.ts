@@ -58,6 +58,14 @@ function buildMockTx({
   return { execute }
 }
 
+// settlePointsSafe 现在用 tx.transaction(SAVEPOINT) 包裹 settle；mock 让嵌套事务透传同一 execute
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const withSavepoint = (execute: any) => ({
+  execute,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  transaction: async (cb: (sp: any) => any) => cb({ execute }),
+})
+
 describe('ORDER_TYPES_EARN_POINTS', () => {
   test('仅包含 销售单', () => {
     expect(ORDER_TYPES_EARN_POINTS.has('销售单')).toBe(true)
@@ -202,7 +210,7 @@ describe('settlePointsSafe — 外层封装', () => {
     delete process.env.POINTS_ACCRUAL_ENABLED
     const { execute } = buildMockTx({ netSettled: 280, granted: 0 })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const r = await settlePointsSafe({ execute } as any, 'o1', 'admin.confirmOffline')
+    const r = await settlePointsSafe(withSavepoint(execute) as any, 'o1', 'admin.confirmOffline')
     expect(r.delta).toBe(2)
   })
 
@@ -212,7 +220,7 @@ describe('settlePointsSafe — 外层封装', () => {
       .mockRejectedValueOnce(new Error('pg connection lost')) // 第一次 SELECT 抛错
       .mockResolvedValueOnce({ rowCount: 1 })                  // INSERT operation_logs 成功
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const r = await settlePointsSafe({ execute } as any, 'o1', 'admin.recordPayment')
+    const r = await settlePointsSafe(withSavepoint(execute) as any, 'o1', 'admin.recordPayment')
     expect(r.skipped).toBe('settle-failed')
     expect(r.error).toBe('pg connection lost')
     // 2 次：原 SELECT 抛错 + INSERT operation_logs
@@ -225,7 +233,7 @@ describe('settlePointsSafe — 外层封装', () => {
       throw new Error('catastrophic failure')
     })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const r = await settlePointsSafe({ execute } as any, 'o1', 'admin.confirmOffline')
+    const r = await settlePointsSafe(withSavepoint(execute) as any, 'o1', 'admin.confirmOffline')
     expect(r.skipped).toBe('settle-failed')
     expect(r.error).toBe('catastrophic failure')
   })

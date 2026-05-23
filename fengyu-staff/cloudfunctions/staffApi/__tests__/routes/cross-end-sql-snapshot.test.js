@@ -111,10 +111,12 @@ function extractBacktickStringContaining(src, marker) {
 const MARKER_NET_SETTLED = 'AS net_settled'
 const MARKER_GRANTED = 'AS granted'
 const MARKER_UPSERT_PREPAID = 'INSERT INTO prepaid_cards'
+const MARKER_UPSERT_POINTS = 'INSERT INTO point_transactions'
 
 describe('audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护', () => {
   let netSettledSqls
   let grantedSqls
+  let upsertSqls
 
   beforeAll(() => {
     netSettledSqls = {
@@ -128,6 +130,13 @@ describe('audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性�
       client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_GRANTED)),
       payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_GRANTED)),
       adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_GRANTED)),
+    }
+    // point_transactions 写入 upsert（分次回款/退款累加，四端字面同义）
+    upsertSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPointsJs), MARKER_UPSERT_POINTS)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_UPSERT_POINTS)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_UPSERT_POINTS)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_UPSERT_POINTS)),
     }
   })
 
@@ -170,11 +179,29 @@ describe('audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性�
     })
   })
 
+  describe('point_transactions 写入 upsert 守护（分次回款累加，禁止裸 INSERT 撞唯一索引回滚）', () => {
+    test('四端 upsert SQL 镜像比对（任一端漂移 → fail，提示同步另外三端）', () => {
+      expect(upsertSqls.client).toBe(upsertSqls.staff)
+      expect(upsertSqls.payNotify).toBe(upsertSqls.staff)
+      expect(upsertSqls.adminTs).toBe(upsertSqls.staff)
+    })
+    test('四端均为 ON CONFLICT DO UPDATE 累加（非裸 INSERT / 非 DO NOTHING）', () => {
+      for (const [end, sql] of Object.entries(upsertSqls)) {
+        expect(sql, `${end} 缺 ON CONFLICT`).toContain('ON CONFLICT (user_id, ref_order_id, type)')
+        expect(sql, `${end} 缺 DO UPDATE 累加`).toContain(
+          'DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount',
+        )
+        expect(sql, `${end} 不应再用 DO NOTHING`).not.toContain('DO NOTHING')
+      }
+    })
+  })
+
   describe('Snapshot 守护（提交后任一字符漂移立即可见）', () => {
     test('settlePoints 关键 SQL 文本快照', () => {
       expect({
         netSettled: netSettledSqls.staff,
         granted: grantedSqls.staff,
+        upsert: upsertSqls.staff,
       }).toMatchSnapshot()
     })
   })

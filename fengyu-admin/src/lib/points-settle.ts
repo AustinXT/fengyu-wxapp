@@ -103,9 +103,16 @@ export async function settlePointsForOrder(
   }
 
   const type = delta > 0 ? '消费赠送' : '消费冲销'
+  // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+  // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
+  // 避免裸 INSERT 撞唯一索引导致整事务回滚。四端字面同义，由 cross-end-sql-snapshot 守护。
   await tx.execute(sql`
     INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
     VALUES (${userId}, ${type}, ${delta}, ${originalSaleOrderId}, NOW())
+    ON CONFLICT (user_id, ref_order_id, type)
+      WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+    DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount,
+                  created_at = NOW()
   `)
   await tx.execute(sql`
     UPDATE client_wechat_users
@@ -134,7 +141,9 @@ export async function settlePointsSafe(
     return { delta: 0, expected: 0, granted: 0, skipped: 'feature-flag-disabled' }
   }
   try {
-    return await settlePointsForOrder(tx, originalSaleOrderId)
+    // SAVEPOINT 真隔离：drizzle 嵌套 transaction = SAVEPOINT，积分发放报错只回滚子事务，
+    // 外层资金事务不受影响（决策：资金正确优先，积分失败仅告警，由 cronTask 兜底重算）。
+    return await tx.transaction(async (sp) => settlePointsForOrder(sp, originalSaleOrderId))
   } catch (err) {
     const errMessage = err instanceof Error ? err.message : String(err)
     try {
