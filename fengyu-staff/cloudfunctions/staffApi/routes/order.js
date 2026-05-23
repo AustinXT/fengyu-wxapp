@@ -19,6 +19,7 @@ const { getMemberThreshold } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe } = require('../utils/points')
+const { recalcMemberLevel } = require('../utils/member-level')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const {
   buildRefundDetails,
@@ -217,6 +218,8 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
   if (clientUserId) {
     await refreshSpendingTier(client, clientUserId)
     await recalcCustomerType(client, clientUserId)
+    // 会员等级即时重算（只升不降；与 recalcCustomerType 同口径，礼包留给 cron）
+    await recalcMemberLevel(client, clientUserId, await getMemberThreshold(), 'staffApi')
   }
   await settlePointsSafe(client, saleOrderId, 'staffApi.createPaidByCard')
   // 分享礼（首单结清；savepoint 隔离，非致命）
@@ -1219,6 +1222,8 @@ async function confirmOffline(ctx) {
     await refreshSpendingTier(client, order.client_user_id)
     // 重算顾客类型（只升不降）
     await recalcCustomerType(client, order.client_user_id)
+    // 会员等级即时重算（只升不降；礼包留给 cron）
+    await recalcMemberLevel(client, order.client_user_id, await getMemberThreshold(), 'staffApi')
 
     // 积分结算（订单链净额差值法，幂等）
     // confirmOffline 是店长确认线下收款的"状态转已支付/部分支付"入口（AC-04）；
@@ -1821,6 +1826,8 @@ async function approveRefund(ctx) {
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
       await recalcCustomerType(client, sopRow.client_user_id)
+      // 会员等级即时重算（只升不降；退款路径下消费降低 → rank 不增即跳过）
+      await recalcMemberLevel(client, sopRow.client_user_id, await getMemberThreshold(), 'staffApi')
     }
 
     // 6. 写 operation_logs（审计）
@@ -2199,6 +2206,8 @@ async function createRepayment(ctx) {
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
     await recalcCustomerType(client, locked.client_user_id)
+    // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）
+    await recalcMemberLevel(client, locked.client_user_id, await getMemberThreshold(), 'staffApi')
 
     return {
       refSaleOrderId,
@@ -2670,6 +2679,22 @@ async function customerHeldCards(ctx) {
        AND so.status IN ('已支付', '已完成')
        AND si.product_type = '疗程卡'
        AND COALESCE(si.remaining_sessions, 0) > 0
+       -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
+       AND NOT EXISTS (
+         SELECT 1 FROM sale_order_payments sop
+         WHERE sop.sale_order_id = si.sale_order_id
+           AND sop.change_type = '退款' AND sop.status = '待审批'
+       )
+       -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         OR si.paid_sessions IS NULL
+         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+       )
      ORDER BY si.sale_order_id DESC`,
     [clientUserId, storeId]
   )
@@ -3101,6 +3126,33 @@ async function refundDetail(ctx) {
     } catch (_) { detail = null }
   }
 
+  // 退款明细补商品名：note JSON items 仅存 refSaleItemId/quantity/refundAmount/productType，
+  // 这里按 refSaleItemId JOIN sale_items 取商品名/规格名
+  const noteItems = detail && Array.isArray(detail.items) ? detail.items : []
+  const itemIds = noteItems.map(it => it.refSaleItemId).filter(Boolean)
+  const nameMap = {}
+  if (itemIds.length > 0) {
+    const siRows = await pg.query(
+      `SELECT sale_item_id, product_name, spec_name, product_type
+         FROM sale_items WHERE sale_item_id = ANY($1)`,
+      [itemIds]
+    )
+    for (const si of siRows) {
+      nameMap[si.sale_item_id] = si
+    }
+  }
+  const refundItems = noteItems.map(it => {
+    const si = nameMap[it.refSaleItemId] || {}
+    return {
+      saleItemId: it.refSaleItemId,
+      productName: si.product_name || null,
+      specName: si.spec_name || null,
+      productType: it.productType || si.product_type || null,
+      quantity: it.quantity,
+      refundAmount: it.refundAmount,
+    }
+  })
+
   ctx.result = {
     payment: {
       paymentId: r.payment_id,
@@ -3134,7 +3186,7 @@ async function refundDetail(ctx) {
       clientPhone: r.client_phone,
       customerName: r.customer_name,
     },
-    refundItems: detail && Array.isArray(detail.items) ? detail.items : [],
+    refundItems,
   }
 }
 

@@ -10,6 +10,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
+const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const lakalaSign = require('./utils/lakala-sign')
@@ -611,6 +612,9 @@ exports.main = async (event) => {
             )
           }
         }
+
+        // 会员等级即时重算（只升不降；对所有会员客生效，含已是会员客后继续消费跨档；礼包留给 cron）
+        await recalcMemberLevel(client, targetOrder.client_user_id, await getMemberThreshold(), 'payNotify')
       }
 
       // 6. 积分结算（订单链净额差值法，幂等）

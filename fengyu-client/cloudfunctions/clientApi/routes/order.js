@@ -7,6 +7,7 @@ const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
+const { recalcMemberLevel } = require('../utils/member-level')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
@@ -1447,6 +1448,22 @@ async function appointableItems(ctx) {
       AND o.status = '已支付'
       ${activeFilter}
       AND si.product_type = '疗程卡'
+      -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
+      AND NOT EXISTS (
+        SELECT 1 FROM sale_order_payments sop
+        WHERE sop.sale_order_id = o.sale_order_id
+          AND sop.change_type = '退款' AND sop.status = '待审批'
+      )
+      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = o.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )
     ORDER BY o.paid_at DESC, si.sale_item_id
   `, [userId])
 
@@ -1874,6 +1891,9 @@ async function confirmPrepaidFull(ctx) {
     // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
     // 保留调用以保证"所有状态转已支付的触发点"都走同一入口
     await settlePointsSafe(client, saleOrderId, 'clientApi.confirmPrepaidFull')
+
+    // 会员等级即时重算（只升不降；仅会员客生效，礼包留给 cron）
+    await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
   })
 
   ctx.result = {
@@ -2075,6 +2095,8 @@ async function repay(ctx) {
       await recalcPaidSessionsForOrder(client, saleOrderId)
       // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
       await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
+      // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）
+      await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
     }
   })
 
