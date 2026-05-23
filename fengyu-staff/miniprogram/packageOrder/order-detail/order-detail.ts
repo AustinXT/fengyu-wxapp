@@ -25,7 +25,9 @@ interface RawOrder {
   created_at?: string;
   paid_at?: string;
   total_amount?: string;
-  paid_amount?: string;
+  // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，改用 received / refunded_amount
+  received?: string;
+  refunded_amount?: string;
   prepaid_card_amount?: string;
   payable_amount?: string;
   opened_by?: string;
@@ -235,18 +237,21 @@ Page({
 
       const totalAmount = Number(o.total_amount || 0);
       const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
-      const paidAmount = Number(o.paid_amount || 0);
+      // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，净到账 = received - refunded_amount
+      const received = Number(o.received || 0);
+      const refundedAmount = Number(o.refunded_amount || 0);
+      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
       // payable_amount 在旧订单可能 NULL，用 total - prepaid 兜底
       const payableAmount = o.payable_amount != null
         ? Number(o.payable_amount)
         : Math.round((totalAmount - prepaidCardAmount) * 100) / 100;
-      const remainingPayable = Math.round((payableAmount - paidAmount) * 100) / 100;
-      // 仅在"销售单"且未付清且非终态时视为欠款可回款
+      const remainingPayable = Math.max(0, Math.round((payableAmount - netReceived) * 100) / 100);
+      // 「发起回款」仅在已首次支付（部分支付）且仍有欠款时显示；
+      // 待支付走「确认线下收款」，已结清/终态均不显示回款入口
       const orderType = o.sale_order_type || '';
       const hasDebt = orderType === '销售单'
-        && remainingPayable > 0
-        && o.status !== '已关闭'
-        && o.status !== '已完成';
+        && o.status === '部分支付'
+        && remainingPayable > 0;
 
       this.setData({
         order: {
@@ -269,7 +274,7 @@ Page({
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
           totalAmount: totalAmount.toFixed(2),
-          paidAmount: paidAmount.toFixed(2),
+          paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),
           payableAmount: payableAmount.toFixed(2),
           remainingPayable: remainingPayable.toFixed(2),
