@@ -1,4 +1,4 @@
-// pages/unbind-requests/unbind-requests.ts — 顾客解绑申请审批
+// pages/unbind-requests/unbind-requests.ts — 顾客转店申请审批
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime } from '../../utils/formatters';
 
@@ -6,6 +6,8 @@ interface UnbindRequest {
   requestId: string;
   phoneMasked: string;
   fromStoreName: string;
+  toStoreId: string;
+  toStoreName: string;
   note: string | null;
   createdAt: string;
 }
@@ -43,10 +45,12 @@ Page({
   },
 
   async onApprove(e: WechatMiniprogram.TouchEvent) {
-    const { requestId } = e.currentTarget.dataset as { requestId: string };
+    const { requestId, fromStore, toStore } = e.currentTarget.dataset as {
+      requestId: string; fromStore: string; toStore: string;
+    };
     wx.showModal({
       title: '确认通过',
-      content: '通过后顾客门店绑定将被解除，顾客可重新选择门店。',
+      content: `通过后顾客将从「${fromStore}」转绑到「${toStore}」。`,
       confirmText: '通过',
       success: async (res) => {
         if (!res.confirm) return;

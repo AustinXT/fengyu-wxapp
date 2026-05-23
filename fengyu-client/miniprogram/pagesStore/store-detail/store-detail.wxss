@@ -159,9 +159,16 @@
   box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
 }
 
-/* 解绑备注弹窗 */
+/* 转店备注弹窗 */
 .dialog-body {
   padding: 16rpx 0;
+}
+
+.transfer-tip {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  padding: 0 32rpx 12rpx;
 }
 
 /* 来源渠道弹窗 */

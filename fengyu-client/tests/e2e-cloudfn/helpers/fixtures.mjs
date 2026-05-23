@@ -16,6 +16,7 @@
 import {
   NS,
   TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_HQ_ORG_ID, TEST_MARKET_ORG_ID,
+  TEST_STORE_ID_2, TEST_STORE_ORG_ID_2,
   TEST_MANAGER_EMP_ID, TEST_MANAGER_OPENID, TEST_MANAGER_PHONE,
   TEST_CLIENT_USER_ID, TEST_CLIENT_OPENID, TEST_CLIENT_PHONE,
   pgQuery, getPool,
@@ -55,6 +56,27 @@ export async function ensureTestStore() {
   )
 
   return { storeId: TEST_STORE_ID, storeOrgId: TEST_STORE_ORG_ID, marketOrgId: TEST_MARKET_ORG_ID, hqOrgId: TEST_HQ_ORG_ID }
+}
+
+/**
+ * 确保第二测试门店存在（转店目标店，挂在同一市场下）
+ * 依赖 ensureTestStore() 已建好市场节点
+ */
+export async function ensureTestStore2() {
+  await ensureTestStore()
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '门店', $3, 1, true)
+     ON CONFLICT (id) DO NOTHING`,
+    [TEST_STORE_ORG_ID_2, `${NS}_测试店2`, TEST_MARKET_ORG_ID]
+  )
+  await pgQuery(
+    `INSERT INTO stores (store_id, store_name, org_node_id, opening_date, is_closed)
+     VALUES ($1, $2, $3, CURRENT_DATE, false)
+     ON CONFLICT (store_id) DO NOTHING`,
+    [TEST_STORE_ID_2, `${NS}_测试店2`, TEST_STORE_ORG_ID_2]
+  )
+  return { storeId: TEST_STORE_ID_2, storeOrgId: TEST_STORE_ORG_ID_2 }
 }
 
 /**

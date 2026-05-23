@@ -134,16 +134,26 @@ function formatOpenDate(date) {
 }
 
 /**
- * 申请解绑门店
- * 向当前绑定门店的店长提交解绑申请
- * payload: { note? }
+ * 申请转店
+ * 顾客从当前绑定门店（from）转绑到目标门店（to），向原门店店长提交申请。
+ * 「选新门店」前置：审批通过后 bound_store_id 直接 from→to，永不出现悬空未绑定态。
+ * payload: { toStoreId（必填）, note? }
  */
 async function requestUnbind(ctx) {
-  const { userId, boundStoreId, boundStoreName } = ctx.auth
+  const { userId, boundStoreId } = ctx.auth
   if (!userId) throw new Error('UNAUTHORIZED: 未登录')
   if (!boundStoreId) throw new Error('INVALID_PARAMS: 当前未绑定任何门店')
 
-  const { note } = ctx.event.payload || {}
+  const { toStoreId, note } = ctx.event.payload || {}
+  if (!toStoreId) throw new Error('INVALID_PARAMS: 缺少目标门店 toStoreId')
+  if (toStoreId === boundStoreId) throw new Error('INVALID_PARAMS: 目标门店不能与当前门店相同')
+
+  // 校验目标门店存在且未停业
+  const target = await pg.query(
+    `SELECT store_id FROM stores WHERE store_id = $1 AND is_closed = false`,
+    [toStoreId]
+  )
+  if (target.length === 0) throw new Error('INVALID_PARAMS: 目标门店不存在或已停业')
 
   // 检查是否已有 pending 申请
   const existing = await pg.query(
@@ -151,27 +161,27 @@ async function requestUnbind(ctx) {
     [userId]
   )
   if (existing.length > 0) {
-    throw new Error('INVALID_PARAMS: 已有待审批的解绑申请，请等待审批结果')
+    throw new Error('INVALID_PARAMS: 已有待审批的转店申请，请等待审批结果')
   }
 
   // partial unique uq_store_unbind_pending 兜底 TOCTOU：同顾客双击提交
   const requestId = crypto.randomUUID()
   const insRes = await pg.query(
-    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, status, note)
-     VALUES ($1, $2, $3, '待处理', $4)
+    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, to_store_id, status, note)
+     VALUES ($1, $2, $3, $4, '待处理', $5)
      ON CONFLICT (user_id) WHERE status = '待处理' DO NOTHING
      RETURNING request_id`,
-    [requestId, userId, boundStoreId, note || null]
+    [requestId, userId, boundStoreId, toStoreId, note || null]
   )
   if (insRes.length === 0) {
-    throw new Error('CONFLICT: 已有待审批的解绑申请，请等待审批结果')
+    throw new Error('CONFLICT: 已有待审批的转店申请，请等待审批结果')
   }
 
   ctx.result = { requestId }
 }
 
 /**
- * 查询当前用户最新的 pending 解绑申请
+ * 查询当前用户最新的 pending 转店申请（含目标门店）
  */
 async function getUnbindRequest(ctx) {
   const { userId } = ctx.auth
@@ -181,10 +191,12 @@ async function getUnbindRequest(ctx) {
   }
 
   const rows = await pg.query(
-    `SELECT r.request_id, r.from_store_id, r.status, r.note, r.created_at,
-            s.store_name AS from_store_name
+    `SELECT r.request_id, r.from_store_id, r.to_store_id, r.status, r.note, r.created_at,
+            sf.store_name AS from_store_name,
+            st.store_name AS to_store_name
      FROM store_unbind_requests r
-     LEFT JOIN stores s ON s.store_id = r.from_store_id
+     LEFT JOIN stores sf ON sf.store_id = r.from_store_id
+     LEFT JOIN stores st ON st.store_id = r.to_store_id
      WHERE r.user_id = $1 AND r.status = '待处理'
      ORDER BY r.created_at DESC
      LIMIT 1`,
@@ -195,6 +207,8 @@ async function getUnbindRequest(ctx) {
     request: rows.length > 0 ? {
       requestId: rows[0].request_id,
       fromStoreName: rows[0].from_store_name || '',
+      toStoreId: rows[0].to_store_id || '',
+      toStoreName: rows[0].to_store_name || '',
       status: rows[0].status,
       note: rows[0].note,
       createdAt: rows[0].created_at,

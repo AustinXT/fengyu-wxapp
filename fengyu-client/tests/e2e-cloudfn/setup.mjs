@@ -38,6 +38,10 @@ export const TEST_STORE_ORG_ID = `${NS}_STORE_ORG`
 export const TEST_HQ_ORG_ID = `${NS}_HQ_ORG`
 export const TEST_MARKET_ORG_ID = `${NS}_MARKET_ORG`
 
+// 第二测试店（转店目标店）
+export const TEST_STORE_ID_2 = `${NS}_STORE2`
+export const TEST_STORE_ORG_ID_2 = `${NS}_STORE2_ORG`
+
 // 公共 employee/openid/user 模板（test 内可覆盖）
 export const TEST_MANAGER_EMP_ID = `${NS}_MGR`
 export const TEST_MANAGER_OPENID = `${NS}_MGR_OPENID`

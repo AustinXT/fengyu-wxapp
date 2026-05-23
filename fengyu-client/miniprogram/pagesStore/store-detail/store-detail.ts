@@ -28,19 +28,23 @@ interface StoreInfo {
   fullAddress?: string;
 }
 
-interface UnbindRequest {
+// 转店申请（含目标门店）
+interface TransferRequest {
   requestId: string;
   fromStoreName: string;
+  toStoreId: string;
+  toStoreName: string;
   note: string | null;
   createdAt: string;
 }
 
-// bindState:
-//   'no-binding'          — 无绑定门店，可直接绑定
-//   'is-current'          — 当前门店，无 pending 申请，可申请解绑
-//   'is-current-reviewing'— 当前门店，有 pending 申请
-//   'other-bound'         — 已绑定其他门店
-type BindState = 'no-binding' | 'is-current' | 'is-current-reviewing' | 'other-bound';
+// bindState 仅表示「当前页门店 vs 已绑定门店」的关系（不含审批态）。
+// 审批态由 pendingRequest 是否存在统一表达：一旦有 pending 转店申请，
+// 无论在哪家门店详情页都展示审核中横幅 + 取消，且禁止再发起（同顾客仅 1 条 pending）。
+//   'no-binding' — 未绑定任何门店，可直接绑定
+//   'is-current' — 当前页就是已绑定门店
+//   'other-bound'— 已绑定其他门店（可申请转绑到本店）
+type BindState = 'no-binding' | 'is-current' | 'other-bound';
 
 Page({
   data: {
@@ -50,11 +54,11 @@ Page({
     storeName: '',
     bindState: 'no-binding' as BindState,
     boundStoreName: '',
-    pendingRequest: null as UnbindRequest | null,
-    // 解绑备注弹窗
-    showUnbindDialog: false,
-    unbindNote: '',
-    submittingUnbind: false,
+    pendingRequest: null as TransferRequest | null,
+    // 转店备注弹窗
+    showTransferDialog: false,
+    transferNote: '',
+    submittingTransfer: false,
     // 来源渠道弹窗
     showSourcePopup: false,
     sourceChannel: '',
@@ -76,6 +80,19 @@ Page({
     this.loadAll(storeId, storeName);
   },
 
+  // 审批生效后顾客切回本页时，先从服务器同步最新绑定态再重算 UI。
+  // 首次进入由 onLoad 已 loadAll，跳过本次 onShow 避免重复请求；之后每次回到本页都刷新。
+  _shownOnce: false,
+  async onShow() {
+    if (!this._shownOnce) {
+      this._shownOnce = true;
+      return;
+    }
+    if (!this.data.storeId && !this.data.storeName) return;
+    await app.syncLoginState();
+    await this.loadAll(this.data.storeId, this.data.storeName);
+  },
+
   async loadAll(storeId: string, storeName: string) {
     this.setData({ isLoading: true });
     try {
@@ -84,11 +101,11 @@ Page({
         callClientApi('store.detail', detailPayload),
         callClientApi('store.getUnbindRequest'),
       ]);
-      const pendingRequest: UnbindRequest | null = unbindData?.request || null;
+      const pendingRequest: TransferRequest | null = unbindData?.request || null;
       const boundStoreName = app.globalData.boundStoreName || '';
       // 从 API 返回的 store 获取真实 storeId
       const realStoreId = detailData?.store?.store_id || storeId;
-      const bindState = this.computeBindState(realStoreId, pendingRequest);
+      const bindState = this.computeBindState(realStoreId);
       const store: StoreInfo | null = detailData?.store
         ? {
             ...detailData.store,
@@ -111,13 +128,10 @@ Page({
     }
   },
 
-  computeBindState(storeId: string, pendingRequest: UnbindRequest | null): BindState {
+  computeBindState(storeId: string): BindState {
     const boundStoreId = app.globalData.boundStoreId;
     if (!boundStoreId) return 'no-binding';
-    if (boundStoreId === storeId) {
-      return pendingRequest ? 'is-current-reviewing' : 'is-current';
-    }
-    return 'other-bound';
+    return boundStoreId === storeId ? 'is-current' : 'other-bound';
   },
 
   // 绑定门店 — 先弹出来源渠道选择
@@ -166,53 +180,51 @@ Page({
     }
   },
 
-  // 申请解绑
-  onRequestUnbind() {
-    this.setData({ showUnbindDialog: true, unbindNote: '' });
+  // 申请转绑到本店（from = 已绑定门店，to = 当前页门店）
+  onRequestTransfer() {
+    this.setData({ showTransferDialog: true, transferNote: '' });
   },
 
-  onUnbindNoteInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    this.setData({ unbindNote: e.detail.value });
+  onTransferNoteInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    this.setData({ transferNote: e.detail.value });
   },
 
-  onUnbindDialogCancel() {
-    this.setData({ showUnbindDialog: false });
+  onTransferDialogCancel() {
+    this.setData({ showTransferDialog: false });
   },
 
-  async onUnbindDialogConfirm() {
-    if (this.data.submittingUnbind) return;
-    this.setData({ submittingUnbind: true });
+  async onTransferDialogConfirm() {
+    if (this.data.submittingTransfer) return;
+    this.setData({ submittingTransfer: true });
     try {
-      const data = await callClientApi('store.requestUnbind', { note: this.data.unbindNote || undefined });
-      const pendingRequest: UnbindRequest = {
+      const data = await callClientApi('store.requestUnbind', {
+        toStoreId: this.data.storeId,
+        note: this.data.transferNote || undefined,
+      });
+      const pendingRequest: TransferRequest = {
         requestId: data.requestId,
-        fromStoreName: this.data.storeName,
-        note: this.data.unbindNote || null,
+        fromStoreName: app.globalData.boundStoreName || '',
+        toStoreId: this.data.storeId,
+        toStoreName: this.data.storeName,
+        note: this.data.transferNote || null,
         createdAt: new Date().toISOString(),
       };
-      this.setData({
-        showUnbindDialog: false,
-        bindState: 'is-current-reviewing',
-        pendingRequest,
-      });
-      Toast.success('解绑申请已提交');
+      this.setData({ showTransferDialog: false, pendingRequest });
+      Toast.success('转店申请已提交');
     } catch (err: any) {
       Toast.fail(err?.message || '提交失败');
     } finally {
-      this.setData({ submittingUnbind: false });
+      this.setData({ submittingTransfer: false });
     }
   },
 
-  // 取消解绑申请
-  async onCancelUnbindRequest() {
+  // 取消转店申请
+  async onCancelTransferRequest() {
     const { pendingRequest } = this.data;
     if (!pendingRequest) return;
     try {
       await callClientApi('store.cancelUnbindRequest', { requestId: pendingRequest.requestId });
-      this.setData({
-        pendingRequest: null,
-        bindState: 'is-current',
-      });
+      this.setData({ pendingRequest: null });
       Toast.success('申请已取消');
     } catch (err: any) {
       Toast.fail(err?.message || '取消失败');

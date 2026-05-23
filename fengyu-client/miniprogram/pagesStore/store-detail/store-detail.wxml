@@ -24,7 +24,7 @@
       <van-icon name="shop-o" size="56px" color="var(--color-brand)" />
       <view class="hero-info">
         <view class="hero-name">{{store.store_name}}</view>
-        <van-tag wx:if="{{bindState === 'is-current' || bindState === 'is-current-reviewing'}}" type="primary" round>当前门店</van-tag>
+        <van-tag wx:if="{{bindState === 'is-current'}}" type="primary" round>当前门店</van-tag>
       </view>
     </view>
 
@@ -32,7 +32,7 @@
     <view wx:if="{{store.cover_image}}" class="store-name-section">
       <view class="store-name-row">
         <text class="store-name-text">{{store.store_name}}</text>
-        <van-tag wx:if="{{bindState === 'is-current' || bindState === 'is-current-reviewing'}}" type="primary" round>当前门店</van-tag>
+        <van-tag wx:if="{{bindState === 'is-current'}}" type="primary" round>当前门店</van-tag>
       </view>
     </view>
 
@@ -78,10 +78,10 @@
       </view>
     </van-cell-group>
 
-    <!-- 审批中提示 -->
-    <view wx:if="{{bindState === 'is-current-reviewing'}}" class="review-notice">
+    <!-- 转店审批中提示 -->
+    <view wx:if="{{pendingRequest}}" class="review-notice">
       <van-icon name="info-o" size="32rpx" color="#D48806" />
-      <text class="review-notice-text">解绑申请审批中，请等待店长处理</text>
+      <text class="review-notice-text">转店申请审批中：{{pendingRequest.fromStoreName}} → {{pendingRequest.toStoreName}}，请等待店长处理</text>
     </view>
   </view>
 
@@ -92,8 +92,21 @@
 <!-- 底部固定操作栏 -->
 <view wx:if="{{!isLoading && store}}" class="bottom-bar safe-area-bottom">
 
+  <!-- 有待审批转店申请：任意门店页都展示审核中 + 取消（同顾客仅 1 条 pending） -->
+  <block wx:if="{{pendingRequest}}">
+    <van-button type="default" block round disabled>转店申请审批中</van-button>
+    <van-button
+      type="danger"
+      block
+      round
+      plain
+      style="margin-top:16rpx"
+      bindtap="onCancelTransferRequest"
+    >取消申请</van-button>
+  </block>
+
   <!-- 无绑定：直接绑定 -->
-  <block wx:if="{{bindState === 'no-binding'}}">
+  <block wx:elif="{{bindState === 'no-binding'}}">
     <view class="bind-hint">绑定门店后可享受预约、购买等服务</view>
     <van-button
       type="primary"
@@ -104,53 +117,44 @@
     >绑定此门店</van-button>
   </block>
 
-  <!-- 当前门店，无申请：申请解绑 -->
+  <!-- 当前门店：已绑定，无可操作 -->
   <van-button
     wx:elif="{{bindState === 'is-current'}}"
     type="default"
     block
     round
-    bindtap="onRequestUnbind"
-  >申请解绑此门店</van-button>
+    disabled
+  >当前绑定门店</van-button>
 
-  <!-- 当前门店，审批中 -->
-  <block wx:elif="{{bindState === 'is-current-reviewing'}}">
-    <van-button type="default" block round disabled>解绑申请审批中</van-button>
+  <!-- 已绑定其他门店：申请转绑到本店 -->
+  <block wx:elif="{{bindState === 'other-bound'}}">
+    <view class="bind-hint">当前绑定「{{boundStoreName}}」，可申请转绑到本店</view>
     <van-button
-      type="danger"
+      type="primary"
       block
       round
-      plain
-      style="margin-top:16rpx"
-      bindtap="onCancelUnbindRequest"
-    >取消申请</van-button>
+      color="#C0322A"
+      bindtap="onRequestTransfer"
+    >申请转绑到本店</van-button>
   </block>
-
-  <!-- 已绑定其他门店：禁用 -->
-  <van-button
-    wx:elif="{{bindState === 'other-bound'}}"
-    type="default"
-    block
-    round
-    disabled
-  >已绑定「{{boundStoreName}}」，请先解绑</van-button>
 
 </view>
 
-<!-- 解绑备注弹窗 -->
+<!-- 转店备注弹窗 -->
 <van-dialog
-  show="{{ showUnbindDialog }}"
-  title="申请解绑门店"
+  show="{{ showTransferDialog }}"
+  title="申请转绑到本店"
   show-cancel-button
   confirm-button-text="提交申请"
-  bind:confirm="onUnbindDialogConfirm"
-  bind:cancel="onUnbindDialogCancel"
+  bind:confirm="onTransferDialogConfirm"
+  bind:cancel="onTransferDialogCancel"
 >
   <view class="dialog-body">
+    <view class="transfer-tip">从「{{ boundStoreName }}」转绑到「{{ storeName }}」，提交后由原门店店长审核。</view>
     <van-field
-      value="{{ unbindNote }}"
+      value="{{ transferNote }}"
       placeholder="备注（选填）"
-      bind:input="onUnbindNoteInput"
+      bind:input="onTransferNoteInput"
       type="textarea"
       autosize
       border="{{ false }}"
