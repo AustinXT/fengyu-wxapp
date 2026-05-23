@@ -296,10 +296,11 @@ test.describe('优惠券按钮交互', () => {
 test.describe('预约按钮交互', () => {
   test('4 个 Tab 均可切换', async ({ page }) => {
     await page.goto('/appointments')
+    // 状态筛选用 <button>（下划线高亮），非 ARIA tablist；选中态由 primary 高亮类表达。
     for (const name of ['待确认', '已确认', '今日', '全部']) {
-      const tab = page.getByRole('tab', { name: new RegExp(name) })
+      const tab = page.getByRole('button', { name: new RegExp(name) })
       await tab.click()
-      await expect(tab).toHaveAttribute('aria-selected', 'true')
+      await expect(tab).toHaveClass(/text-\[var\(--primary\)\]/)
     }
   })
 })
@@ -345,28 +346,34 @@ test.describe('权限按钮交互', () => {
 // 组织架构 — 新增/编辑按钮
 // ============================================================
 test.describe('组织架构按钮交互', () => {
-  test('"新增根节点" 按钮有响应', async ({ page }) => {
+  // 注：org 已实现节点 CRUD，按钮打开 Dialog（非旧的"功能开发中"占位 toast）。
+  test('"新增根节点" 打开新增节点 Dialog', async ({ page }) => {
     await page.goto('/org')
     await page.getByRole('button', { name: '新增根节点' }).click()
-    await expectToast(page, '功能开发中')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('新增节点')).toBeVisible()
   })
 
-  test('"编辑" 按钮有响应', async ({ page }) => {
+  test('"编辑" 打开编辑节点 Dialog', async ({ page }) => {
     await page.goto('/org')
+    // 详情面板默认选中首个节点，编辑按钮即可见
     const editBtn = page.getByRole('button', { name: '编辑' })
-    if (await editBtn.isVisible()) {
-      await editBtn.click()
-      await expectToast(page, '功能开发中')
-    }
+    await expect(editBtn).toBeVisible()
+    await editBtn.click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('编辑节点')).toBeVisible()
   })
 
-  test('"新增子节点" 按钮有响应', async ({ page }) => {
+  test('"新增子节点" 打开新增节点 Dialog', async ({ page }) => {
     await page.goto('/org')
     const btn = page.getByRole('button', { name: '新增子节点' })
-    if (await btn.isVisible()) {
-      await btn.click()
-      await expectToast(page, '功能开发中')
-    }
+    await expect(btn).toBeVisible()
+    await btn.click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('新增节点')).toBeVisible()
   })
 })
 

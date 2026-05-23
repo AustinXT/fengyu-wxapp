@@ -14,8 +14,9 @@ test.describe('开单向导 — 必须选择已注册 + 已绑定门店顾客', 
   test('搜索不存在的手机号 → 显示灰色指引卡 + 下一步 disabled', async ({ page }) => {
     await page.goto('/orders/create')
 
-    // 使用一个测试库几乎不可能命中的手机号
-    await page.getByPlaceholder(/手机号/).fill('19999999999')
+    // 使用一个不可能命中的搜索串：20 个 0 不可能是任何 11 位手机号的子串，也不会匹配中文姓名
+    // （注：'19999999999' 在共享开发库存在真实同步顾客 庹满珍/FYGK-…，会误命中）
+    await page.getByPlaceholder(/手机号/).fill('00000000000000000000')
     await page.getByRole('button', { name: /搜索/ }).click()
 
     // 等待搜索完成（灰色指引卡或"找到 X 位顾客"出现）
@@ -24,8 +25,8 @@ test.describe('开单向导 — 必须选择已注册 + 已绑定门店顾客', 
       return t.includes('未找到已注册顾客') || t.includes('找到')
     }, { timeout: 10000 })
 
-    // 指引卡文案出现
-    await expect(page.getByText('未找到已注册顾客')).toBeVisible()
+    // 指引卡文案出现（exact 仅匹配卡片 <p>，避开同文案的 toast 提示，否则 strict mode 命中 2 个）
+    await expect(page.getByText('未找到已注册顾客', { exact: true })).toBeVisible()
     await expect(page.getByText(/已在凤御小程序登录并绑定门店/)).toBeVisible()
 
     // manualPhone 输入框不再出现
