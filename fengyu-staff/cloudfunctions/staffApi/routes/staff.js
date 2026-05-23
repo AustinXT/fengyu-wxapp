@@ -805,4 +805,18 @@ async function uploadAvatar(ctx) {
   ctx.result = { fileID, avatarUrl: httpsUrl }
 }
 
-module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, uploadAvatar }
+/**
+ * 技能标签字典（提成分配 / 服务提成下拉选项来源）
+ * 读 skill_tags 字典表（admin 员工管理维护），与员工技能标签同源。
+ */
+async function skillTags(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const rows = await pg.query(
+    'SELECT name FROM skill_tags WHERE is_valid = true ORDER BY sort_order, name'
+  )
+
+  ctx.result = { skillTags: rows.map(r => r.name) }
+}
+
+module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, uploadAvatar, skillTags }

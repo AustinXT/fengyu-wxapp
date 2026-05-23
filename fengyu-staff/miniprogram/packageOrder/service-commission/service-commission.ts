@@ -7,7 +7,6 @@ import {
   lookupServiceRate, computeServiceLine, computeServiceSummary, ServiceRateRow,
 } from '../utils/service-commission-calc';
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师'];
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const MAX_PER_POOL = 3;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -106,7 +105,8 @@ Page({
     pickerItemIdx: -1,
     pickerLineIdx: -1,
     skillSheetVisible: false,
-    skillSheetActions: SKILL_TAGS.map(name => ({ name })),
+    // 技能标签下拉选项：init 时从 staff.skillTags（skill_tags 字典表）动态拉取
+    skillSheetActions: [] as Array<{ name: string }>,
     ratioSheetVisible: false,
     ratioSheetActions: RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })),
     empPopupVisible: false,
@@ -129,7 +129,11 @@ Page({
   async init(serviceOrderId: string) {
     this.setData({ loading: true });
     try {
-      const detailData = await callStaffApi<DetailResponse>('serviceCommission.detail', { serviceOrderId });
+      const [detailData, skillTagData] = await Promise.all([
+        callStaffApi<DetailResponse>('serviceCommission.detail', { serviceOrderId }),
+        callStaffApi<{ skillTags: string[] }>('staff.skillTags', {}).catch(() => ({ skillTags: [] })),
+      ]);
+      this.setData({ skillSheetActions: (skillTagData.skillTags || []).map(name => ({ name })) });
 
       const order = detailData.order;
       const rates = detailData.rates || [];

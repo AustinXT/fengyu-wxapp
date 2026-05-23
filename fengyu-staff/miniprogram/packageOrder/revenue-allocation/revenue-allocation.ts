@@ -5,7 +5,6 @@ import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../utils/allocation-calc';
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师'];
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const MAX_PER_POOL = 3;
 
@@ -152,7 +151,8 @@ Page({
     pickerLineIdx: -1,
     // 技能标签 action-sheet
     skillSheetVisible: false,
-    skillSheetActions: SKILL_TAGS.map(name => ({ name })),
+    // 技能标签下拉选项：init 时从 staff.skillTags（skill_tags 字典表）动态拉取
+    skillSheetActions: [] as Array<{ name: string }>,
     // 分配比例 action-sheet
     ratioSheetVisible: false,
     ratioSheetActions: RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })),
@@ -177,10 +177,13 @@ Page({
   async init(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const [suggestData, orderData] = await Promise.all([
+      const [suggestData, orderData, skillTagData] = await Promise.all([
         callStaffApi<SuggestResponse>('allocation.suggest', { saleOrderId }),
         callStaffApi<OrderDetailResponse>('order.detail', { saleOrderId }),
+        callStaffApi<{ skillTags: string[] }>('staff.skillTags', {}).catch(() => ({ skillTags: [] })),
       ]);
+
+      const skillSheetActions = (skillTagData.skillTags || []).map(name => ({ name }));
 
       const order = orderData.order;
       const items: OrderItem[] = suggestData.items || orderData.items || [];
@@ -209,6 +212,7 @@ Page({
         isNewCustomer,
         beauticianInfo,
         deptAnomalous,
+        skillSheetActions,
         loading: false,
       });
 

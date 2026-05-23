@@ -31,6 +31,7 @@ const routes = {
   'staff.bindStore':      () => require('./routes/staff').bindStore,
   'staff.performanceDetail': () => require('./routes/staff').performanceDetail,
   'staff.uploadAvatar':   () => require('./routes/staff').uploadAvatar,
+  'staff.skillTags':      () => require('./routes/staff').skillTags,
 
   // 顾客档案
   'customer.search':      () => require('./routes/customer').search,
