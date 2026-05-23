@@ -124,6 +124,34 @@
   background: var(--color-border);
 }
 
+/* 顾客评价卡片 */
+.rating-card {
+  display: flex;
+  align-items: center;
+  gap: 28rpx;
+  background: var(--color-bg-section);
+  border-radius: 16rpx;
+  padding: 28rpx 32rpx;
+}
+
+.rating-score {
+  font-size: 64rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1;
+}
+
+.rating-stars {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.rating-count {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
 /* 底部占位 */
 .bottom-space {
   height: 60rpx;

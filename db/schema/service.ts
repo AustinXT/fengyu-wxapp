@@ -102,7 +102,42 @@ export const serviceItems = pgTable(
   ],
 )
 
+/**
+ * 服务评价（顾客对已完成服务单的美容师评价）
+ *
+ * 一单一评：service_order_id 作 PK，天然唯一约束，重复评价由 PG 23505 拦截。
+ * employee_id 取服务单 assigned_employee_id 快照，便于按美容师聚合平均分。
+ * 客户端入口在 service-records 列表（仅"已完成"服务单可评价），提交后不可改。
+ */
+export const serviceReviews = pgTable(
+  'service_reviews',
+  {
+    serviceOrderId: varchar('service_order_id', { length: 30 })
+      .primaryKey()
+      .references(() => serviceOrders.serviceOrderId),
+    /** 被评价美容师（= 服务单 assigned_employee_id 快照） */
+    employeeId: varchar('employee_id', { length: 30 })
+      .notNull()
+      .references(() => staffWechatUsers.employeeId),
+    /** 评价人 */
+    clientUserId: text('client_user_id')
+      .notNull()
+      .references(() => clientWechatUsers.userId),
+    /** 星级 1–5，应用层校验为整数 */
+    rating: integer('rating').notNull(),
+    /** 评价文字内容，选填 */
+    comment: text('comment'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    /** 支撑按美容师聚合 avg(rating)/count 的列表与详情展示 */
+    index('idx_svc_reviews_employee').on(table.employeeId),
+  ],
+)
+
 export type ServiceOrder = typeof serviceOrders.$inferSelect
 export type NewServiceOrder = typeof serviceOrders.$inferInsert
 export type ServiceItem = typeof serviceItems.$inferSelect
 export type NewServiceItem = typeof serviceItems.$inferInsert
+export type ServiceReview = typeof serviceReviews.$inferSelect
+export type NewServiceReview = typeof serviceReviews.$inferInsert

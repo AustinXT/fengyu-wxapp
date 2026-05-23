@@ -58,6 +58,29 @@
           <text>{{item.durationFmt}}</text>
         </view>
       </view>
+
+      <!-- 评价区（仅已完成服务单） -->
+      <view wx:if="{{item.status === '已完成'}}" class="record-review">
+        <!-- 已评价：回显星级 + 内容 -->
+        <view wx:if="{{item.reviewed}}" class="review-done">
+          <view class="review-done-head">
+            <van-rate value="{{item.review_rating}}" readonly size="28rpx" color="#C0322A" void-color="#E8E8E8" />
+            <text class="review-done-label">已评价</text>
+          </view>
+          <view wx:if="{{item.review_comment}}" class="review-done-comment">{{item.review_comment}}</view>
+        </view>
+        <!-- 未评价：评价按钮 -->
+        <view wx:else class="review-action">
+          <van-button
+            size="small"
+            plain
+            type="danger"
+            data-id="{{item.service_order_id}}"
+            data-name="{{item.employee_name}}"
+            bindtap="onTapReview"
+          >评价美容师</van-button>
+        </view>
+      </view>
     </view>
 
     <!-- 底部加载更多 -->
@@ -68,3 +91,49 @@
   </view>
 
 </view>
+
+<!-- 评价美容师弹窗 -->
+<van-popup
+  show="{{ reviewVisible }}"
+  position="bottom"
+  round
+  custom-style="padding: 32rpx;"
+  bind:close="onReviewClose"
+>
+  <view class="review-popup">
+    <view class="review-popup-title">评价美容师{{ reviewStaffName ? '：' + reviewStaffName : '' }}</view>
+
+    <view class="review-popup-rate">
+      <van-rate
+        value="{{ reviewRating }}"
+        size="48rpx"
+        color="#C0322A"
+        void-color="#E8E8E8"
+        bind:change="onRatingChange"
+      />
+      <text class="review-popup-rate-hint">{{ reviewRating > 0 ? reviewRating + ' 星' : '请打分' }}</text>
+    </view>
+
+    <van-field
+      value="{{ reviewComment }}"
+      type="textarea"
+      placeholder="说说本次服务体验（选填）"
+      maxlength="500"
+      autosize="{{ { minHeight: 120 } }}"
+      border="{{ false }}"
+      custom-class="review-popup-field"
+      bind:change="onCommentChange"
+    />
+
+    <view class="review-popup-actions">
+      <van-button block plain bind:tap="onReviewClose">取消</van-button>
+      <van-button
+        block
+        type="danger"
+        loading="{{ reviewSubmitting }}"
+        disabled="{{ reviewRating < 1 }}"
+        bind:tap="onSubmitReview"
+      >提交评价</van-button>
+    </view>
+  </view>
+</van-popup>

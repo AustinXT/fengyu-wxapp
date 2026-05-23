@@ -7,6 +7,7 @@
     "van-button": "@vant/weapp/button/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-empty": "@vant/weapp/empty/index"
+    "van-empty": "@vant/weapp/empty/index",
+    "van-rate": "@vant/weapp/rate/index"
   }
 }

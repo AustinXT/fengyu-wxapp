@@ -1,9 +1,12 @@
 /**
  * 服务单模块路由
- * 顾客查询服务单状态(只读)
+ * 顾客查询服务单状态(只读) + 服务完成后评价美容师
  */
 
 const pg = require('../db/pg')
+const { requirePhone } = require('../middleware/auth')
+
+const MAX_COMMENT_LENGTH = 500
 
 /**
  * 服务单详情
@@ -91,10 +94,14 @@ async function list(ctx) {
       sw.name AS employee_name,
       so.started_at,
       so.completed_at,
-      so.created_at
+      so.created_at,
+      sr.rating AS review_rating,
+      sr.comment AS review_comment,
+      (sr.service_order_id IS NOT NULL) AS reviewed
     FROM service_orders so
     LEFT JOIN stores s ON so.store_id = s.store_id
     LEFT JOIN staff_wechat_users sw ON so.assigned_employee_id = sw.employee_id
+    LEFT JOIN service_reviews sr ON so.service_order_id = sr.service_order_id
     WHERE so.client_user_id = $1
     ORDER BY so.created_at DESC
     LIMIT $2 OFFSET $3
@@ -132,7 +139,77 @@ async function list(ctx) {
   ctx.result = { records }
 }
 
+/**
+ * 评价已完成服务单的美容师
+ * payload: { serviceOrderId: string, rating: 1-5, comment?: string }
+ *
+ * 约束：仅本人的"已完成"服务单可评价；一单一评，重复评价由 PK 唯一约束拦截。
+ */
+async function createReview(ctx) {
+  // 必须绑定手机号
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+  const { serviceOrderId, rating, comment } = ctx.event.payload || {}
+
+  if (!serviceOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 serviceOrderId 参数')
+  }
+
+  // 星级：必须为 1-5 的整数
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    throw new Error('INVALID_PARAMS: 评分必须为 1-5 的整数')
+  }
+
+  // 评价文字：选填，做长度上限保护
+  let normalizedComment = null
+  if (comment !== undefined && comment !== null) {
+    if (typeof comment !== 'string') {
+      throw new Error('INVALID_PARAMS: 评价内容格式不正确')
+    }
+    const trimmed = comment.trim()
+    if (trimmed.length > MAX_COMMENT_LENGTH) {
+      throw new Error(`INVALID_PARAMS: 评价内容不能超过 ${MAX_COMMENT_LENGTH} 字`)
+    }
+    normalizedComment = trimmed || null
+  }
+
+  // 查服务单：校验归属 + 状态 + 取被评价美容师
+  const orders = await pg.query(
+    `SELECT service_order_id, status, client_user_id, assigned_employee_id
+     FROM service_orders
+     WHERE service_order_id = $1`,
+    [serviceOrderId]
+  )
+
+  if (orders.length === 0 || orders[0].client_user_id !== userId) {
+    throw new Error('PERMISSION_DENIED: 无权评价该服务单')
+  }
+
+  const order = orders[0]
+  if (order.status !== '已完成') {
+    throw new Error('INVALID_STATE: 服务未完成不可评价')
+  }
+
+  try {
+    await pg.query(
+      `INSERT INTO service_reviews (service_order_id, employee_id, client_user_id, rating, comment)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [serviceOrderId, order.assigned_employee_id, userId, rating, normalizedComment]
+    )
+  } catch (err) {
+    // PK 冲突：该服务单已评价过
+    if (err.code === '23505' || err.cause?.code === '23505') {
+      throw new Error('CONFLICT: 该服务已评价过')
+    }
+    throw err
+  }
+
+  ctx.result = { serviceOrderId, rating, comment: normalizedComment }
+}
+
 module.exports = {
   detail,
-  list
+  list,
+  createReview
 }

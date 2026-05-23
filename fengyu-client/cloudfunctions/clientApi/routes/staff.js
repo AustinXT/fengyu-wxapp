@@ -22,17 +22,26 @@ async function list(ctx) {
   // 与 staffApi/routes/mgmt-dashboard.js 的 `s.skills && ARRAY['美容师','养生师']::text[]` 同源约定。
   const rows = await pg.query(`
     SELECT
-      employee_id AS staff_id,
-      name,
-      position_name AS position,
-      phone,
-      avatar_url,
-      skills
-    FROM staff_wechat_users
-    WHERE store_id = $1
-      AND is_resigned = false
-      AND skills && ARRAY['美容师','养生师']::text[]
-    ORDER BY name
+      sw.employee_id AS staff_id,
+      sw.name,
+      sw.position_name AS position,
+      sw.phone,
+      sw.avatar_url,
+      sw.skills,
+      r.avg_rating,
+      r.review_count
+    FROM staff_wechat_users sw
+    LEFT JOIN (
+      SELECT employee_id,
+             ROUND(AVG(rating)::numeric, 1) AS avg_rating,
+             COUNT(*)::int AS review_count
+      FROM service_reviews
+      GROUP BY employee_id
+    ) r ON r.employee_id = sw.employee_id
+    WHERE sw.store_id = $1
+      AND sw.is_resigned = false
+      AND sw.skills && ARRAY['美容师','养生师']::text[]
+    ORDER BY sw.name
   `, [storeId])
 
   const staffList = rows.map(r => ({
@@ -42,6 +51,8 @@ async function list(ctx) {
     skills: r.skills || [],
     phone: r.phone,
     avatarUrl: r.avatar_url || null,
+    avgRating: r.avg_rating !== null ? Number(r.avg_rating) : null,
+    reviewCount: r.review_count || 0,
   }))
 
   ctx.result = { staffList }
@@ -130,14 +141,18 @@ async function detail(ctx) {
 
   const staff = staffRows[0]
 
-  // Service count + today's active appointments (parallel)
-  const [countRows, todayRows] = await Promise.all([
+  // Service count + today's active appointments + review aggregate (parallel)
+  const [countRows, todayRows, reviewRows] = await Promise.all([
     pg.query(
       "SELECT COUNT(*)::int AS count FROM service_orders WHERE assigned_employee_id = $1 AND status = '已完成'",
       [employeeId]
     ),
     pg.query(
       "SELECT COUNT(*)::int AS count FROM appointments WHERE employee_id = $1 AND appointment_time::date = CURRENT_DATE AND status IN ('待确认', '已确认')",
+      [employeeId]
+    ),
+    pg.query(
+      "SELECT ROUND(AVG(rating)::numeric, 1) AS avg_rating, COUNT(*)::int AS review_count FROM service_reviews WHERE employee_id = $1",
       [employeeId]
     ),
   ])
@@ -154,6 +169,10 @@ async function detail(ctx) {
     serviceCount: countRows[0]?.count || 0,
     isBusy: (todayRows[0]?.count || 0) > 0,
     todayAppointments: todayRows[0]?.count || 0,
+    avgRating: reviewRows[0]?.avg_rating !== null && reviewRows[0]?.avg_rating !== undefined
+      ? Number(reviewRows[0].avg_rating)
+      : null,
+    reviewCount: reviewRows[0]?.review_count || 0,
   }
 }
 

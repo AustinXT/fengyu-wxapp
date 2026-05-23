@@ -131,6 +131,8 @@ Page({
         name: s.name,
         position: s.position,
         avatarUrl: s.avatarUrl || '',
+        avgRating: s.avgRating ?? null,
+        reviewCount: s.reviewCount || 0,
       }));
       this.setData({ staffList });
     } catch {

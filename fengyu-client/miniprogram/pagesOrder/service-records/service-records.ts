@@ -13,6 +13,9 @@ interface ServiceRecord {
   employee_name: string;
   started_at: string;
   completed_at: string;
+  reviewed: boolean;
+  review_rating: number | null;
+  review_comment: string | null;
   items: Array<{
     product_name: string;
     sku_spec_name: string;
@@ -33,6 +36,13 @@ Page({
     loadingMore: false,
     loadError: false,
     hasMore: true,
+    // 评价弹窗状态
+    reviewVisible: false,
+    reviewOrderId: '',
+    reviewStaffName: '',
+    reviewRating: 0,
+    reviewComment: '',
+    reviewSubmitting: false,
   },
 
   _page: 1,
@@ -107,6 +117,63 @@ Page({
 
   onTapRecord(_e: WechatMiniprogram.TouchEvent) {
     // 服务记录为只读卡片，详情信息已在列表中展示
+  },
+
+  /** 打开评价弹窗 */
+  onTapReview(e: WechatMiniprogram.TouchEvent) {
+    const { id, name } = e.currentTarget.dataset as { id: string; name?: string };
+    this.setData({
+      reviewVisible: true,
+      reviewOrderId: id,
+      reviewStaffName: name || '',
+      reviewRating: 0,
+      reviewComment: '',
+    });
+  },
+
+  /** 关闭评价弹窗 */
+  onReviewClose() {
+    if (this.data.reviewSubmitting) return;
+    this.setData({ reviewVisible: false });
+  },
+
+  onRatingChange(e: WechatMiniprogram.CustomEvent<number>) {
+    this.setData({ reviewRating: e.detail });
+  },
+
+  onCommentChange(e: WechatMiniprogram.CustomEvent<string>) {
+    this.setData({ reviewComment: e.detail });
+  },
+
+  /** 提交评价 */
+  async onSubmitReview() {
+    const { reviewOrderId, reviewRating, reviewComment, reviewSubmitting } = this.data;
+    if (reviewSubmitting) return;
+    if (reviewRating < 1) {
+      Toast('请先打分');
+      return;
+    }
+
+    this.setData({ reviewSubmitting: true });
+    try {
+      await callClientApi('service.createReview', {
+        serviceOrderId: reviewOrderId,
+        rating: reviewRating,
+        comment: reviewComment.trim(),
+      });
+      Toast.success('评价成功');
+      // 局部更新该条记录的已评价状态，无需整表重载
+      const records = this.data.records.map((r) =>
+        r.service_order_id === reviewOrderId
+          ? { ...r, reviewed: true, review_rating: reviewRating, review_comment: reviewComment.trim() || null }
+          : r,
+      );
+      this.setData({ records, reviewVisible: false });
+    } catch (err: any) {
+      Toast.fail(err.message || '评价失败');
+    } finally {
+      this.setData({ reviewSubmitting: false });
+    }
   },
 });
 
