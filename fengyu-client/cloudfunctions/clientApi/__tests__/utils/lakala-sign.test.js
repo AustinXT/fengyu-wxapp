@@ -203,15 +203,17 @@ describe('lakala-sign', () => {
       expect(result.reason).toBe('SIGNATURE_MISMATCH')
     })
 
-    it('fails when body is JSON.parse-then-stringify (key 顺序变化)', () => {
-      const original = '{"b":1,"a":2}'  // 注意 key 顺序 b 在前
+    it('fails when body has different whitespace (JSON.parse-then-stringify 风险)', () => {
+      // 拉卡拉真实回调 body 可能含格式化空白，JSON.parse + JSON.stringify 会丢失
+      const originalWithSpaces = '{\n  "pay_order_no": "X",\n  "amount": 100\n}'
       const timestamp = '1700000000'
       const nonceStr = 'XYZ123456789'
-      const target = sign.buildSignTarget3({ timestamp, nonceStr, body: original })
+      const target = sign.buildSignTarget3({ timestamp, nonceStr, body: originalWithSpaces })
       const signature = sign.rsaSign(target, privateKeyPem)
       const authorizationHeader = `LKLAPI-SHA256withRSA timestamp="${timestamp}",nonce_str="${nonceStr}",signature="${signature}"`
-      // 拿到 raw body 后误用 JSON.parse + stringify → key 顺序变成 a,b
-      const reSerialized = JSON.stringify(JSON.parse(original))
+      // 拿到 raw body 后误用 JSON.parse + stringify → 空白被去掉
+      const reSerialized = JSON.stringify(JSON.parse(originalWithSpaces))
+      expect(reSerialized).not.toBe(originalWithSpaces)  // 确认确实变了
       const result = sign.verifyAsyncNotification({
         authorizationHeader,
         rawBody: reSerialized,
