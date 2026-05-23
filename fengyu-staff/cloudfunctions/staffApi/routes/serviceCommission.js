@@ -204,6 +204,19 @@ async function save(ctx) {
     throw new Error('INVALID_STATE: 服务单提成状态异常')
   }
 
+  // 寄存单不参与提成分配（寄存单仅初始化剩余次数，不计营业额/客单价/提成）
+  const depositChk = await pg.query(`
+    SELECT 1
+    FROM service_items sit
+    JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+    WHERE sit.service_order_id = $1 AND so.sale_order_type = '寄存单'
+    LIMIT 1
+  `, [serviceOrderId])
+  if (depositChk.length > 0) {
+    throw new Error('INVALID_STATE: 寄存单不参与提成分配')
+  }
+
   // 加载服务明细定价（校验归属 + 重算）
   const itemRows = await pg.query(`
     SELECT sit.service_item_id, sit.session_used, sit.unit_real_price, sit.sales_category,

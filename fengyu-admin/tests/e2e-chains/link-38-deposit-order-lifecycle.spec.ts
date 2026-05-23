@@ -4,7 +4,7 @@
  * 主题：寄存单 sale_order_type='寄存单' 的完整链路：
  *   - 创建：total_amount=0, status='已支付', payment_method='无', document_type='售后'
  *   - service_order：复用正常 service.complete 链路扣 remaining_sessions
- *   - service_commissions：与正常服务一致写入（用户已确认）
+ *   - service_commissions：寄存单不产生提成（completeServiceOrder 不自动写；分配接口拒绝寄存单）
  *   - 看板聚合：金额维度排除寄存单；次数维度纳入顾客数
  *
  * 实现：
@@ -14,7 +14,7 @@
  *   4. 走 admin UI 进入 /services/[id]，点击「完成服务」按钮 → 调 completeServiceOrder server action
  *   5. SQL invariant：
  *      a) sale_items.remaining_sessions = original - session_used
- *      b) service_commissions 新增一行（用户确认参与提成）
+ *      b) service_commissions 为空（寄存单不参与提成）
  *      c) sale_orders.sale_order_type='寄存单' / total=0 / status='已支付' / payment_method='无'
  *      d) 金额聚合 SUM(received) where sale_order_type IN ('销售单','转换单') 不含本单
  *      e) 顾客次数维度：本单对应顾客被 COUNT
@@ -22,7 +22,7 @@
  *
  * 关键引用：
  *   - actions/orders.ts:1897 createDepositOrder（按其 INSERT 模式 seed）
- *   - actions/services.ts:343 completeServiceOrder（原子扣减 + commission 写入）
+ *   - actions/services.ts:343 completeServiceOrder（原子扣减；不写提成）
  *   - .claude memory: project_deposit_sale_order_type.md
  */
 
@@ -179,9 +179,11 @@ test('链路38：寄存单完整生命周期', async ({ browser }) => {
     const svcStatus = psql(`SELECT status FROM service_orders WHERE service_order_id='${SVC_ID}'`).trim()
     recordVerdict(verdicts, 'service_completed', svcStatus === '已完成', `status=${svcStatus}`)
 
-    // ── DB invariant: service_commissions 写入（按用户决定参与提成） ──
+    // ── DB invariant: 寄存单不产生提成 —— service_commissions 必须为空 ──
+    // 寄存单仅初始化剩余次数，不计营业额/客单价/提成；completeServiceOrder 不自动写提成，
+    // 且 batchSaveServiceCommissions / staff serviceCommission.save 均拒绝寄存单分配。
     const commCount = parseInt(psql(`SELECT COUNT(*)::text FROM service_commissions WHERE service_item_id='${SVC_ITEM_ID}'`), 10)
-    recordVerdict(verdicts, 'commissions_written', commCount > 0, `count=${commCount}`)
+    recordVerdict(verdicts, 'commissions_not_written', commCount === 0, `count=${commCount}`)
   } finally {
     await ctx.close()
   }
