@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { jwtVerify } from "jose"
 import { uploadFile } from "@/lib/cloudbase"
+import { JWT_SECRET } from "@/lib/jwt-secret"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
 const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 // 5MB
 const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图专用）
 const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
-)
 const COOKIE_NAME = 'fy-admin-token'
 
 export async function POST(req: NextRequest) {

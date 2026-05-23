@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jwtVerify } from 'jose'
+import { JWT_SECRET } from '@/lib/jwt-secret'
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
-)
 const COOKIE_NAME = 'fy-admin-token'
 
 export async function middleware(request: NextRequest) {

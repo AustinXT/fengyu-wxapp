@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { login } from "@/actions/auth"
+import { encryptPassword } from "@/lib/password-encrypt"
 
 export default function LoginPage() {
   const [phone, setPhone] = useState("")
@@ -31,7 +32,7 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      const result = await login(phone, password)
+      const result = await login(phone, encryptPassword(password))
 
       if (!result.success) {
         setError(result.message)

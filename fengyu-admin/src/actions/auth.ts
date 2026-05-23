@@ -5,18 +5,18 @@ import { SignJWT, jwtVerify } from 'jose'
 import { compare, hash } from 'bcryptjs'
 import { db } from '@/db'
 import { adminPasswords } from '@db/admin-auth'
+import { loginAttempts } from '@db/login-attempt'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { decryptPassword } from '@/lib/password-transit'
+import { JWT_SECRET } from '@/lib/jwt-secret'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
-)
 const COOKIE_NAME = 'fy-admin-token'
 const JWT_EXPIRES = '24h'
 const COOKIE_MAX_AGE = 24 * 60 * 60 // 24h
@@ -44,46 +44,80 @@ async function sessionCookieOptions() {
   }
 }
 
-// ── 登录锁定（内存 Map） ──
-const loginAttempts = new Map<string, { count: number; lockedUntil: number }>()
+// ── 登录锁定（PG 持久化，防爆破；多实例 / 重启不丢失） ──
 const MAX_ATTEMPTS = 5
-const LOCK_DURATION = 15 * 60 * 1000 // 15 分钟
+const LOCK_DURATION_MS = 15 * 60 * 1000 // 15 分钟
 
-function checkLock(phone: string): string | null {
-  const record = loginAttempts.get(phone)
-  if (!record) return null
-  if (record.lockedUntil > Date.now()) {
-    const minutes = Math.ceil((record.lockedUntil - Date.now()) / 60000)
+/**
+ * 检查手机号是否处于锁定状态。
+ * 锁定中 → 返回提示文案；未锁定或锁定已过期 → 返回 null。
+ */
+async function checkLock(phone: string): Promise<string | null> {
+  const [row] = await db
+    .select({ lockedUntil: loginAttempts.lockedUntil })
+    .from(loginAttempts)
+    .where(eq(loginAttempts.phone, phone))
+    .limit(1)
+
+  if (!row?.lockedUntil) return null
+
+  const remainingMs = row.lockedUntil.getTime() - Date.now()
+  if (remainingMs > 0) {
+    const minutes = Math.ceil(remainingMs / 60000)
     return `账号已锁定，请 ${minutes} 分钟后重试`
-  }
-  if (record.lockedUntil <= Date.now() && record.count >= MAX_ATTEMPTS) {
-    loginAttempts.delete(phone)
   }
   return null
 }
 
-function recordFailure(phone: string) {
-  const record = loginAttempts.get(phone) || { count: 0, lockedUntil: 0 }
-  record.count += 1
-  if (record.count >= MAX_ATTEMPTS) {
-    record.lockedUntil = Date.now() + LOCK_DURATION
-  }
-  loginAttempts.set(phone, record)
+/**
+ * 记录一次登录失败：原子 UPSERT 自增 fail_count；
+ * 达到阈值则写入 locked_until。并发安全（依赖 phone 唯一索引 + ON CONFLICT 原子自增）。
+ */
+async function recordFailure(phone: string): Promise<void> {
+  const lockExpr = sql`CASE WHEN ${loginAttempts.failCount} + 1 >= ${MAX_ATTEMPTS}
+    THEN now() + (${LOCK_DURATION_MS} || ' milliseconds')::interval
+    ELSE NULL END`
+
+  await db
+    .insert(loginAttempts)
+    .values({ phone, failCount: 1, lastFailedAt: new Date() })
+    .onConflictDoUpdate({
+      target: loginAttempts.phone,
+      set: {
+        failCount: sql`${loginAttempts.failCount} + 1`,
+        lockedUntil: lockExpr,
+        lastFailedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    })
 }
 
-function clearFailure(phone: string) {
-  loginAttempts.delete(phone)
+/** 登录成功后清除失败记录。 */
+async function clearFailure(phone: string): Promise<void> {
+  await db.delete(loginAttempts).where(eq(loginAttempts.phone, phone))
 }
 
 // ── Server Actions ──
 
 export async function login(
   phone: string,
-  password: string
+  encryptedPassword: string
 ): Promise<{ success: boolean; message: string; mustChange?: boolean }> {
   // 检查锁定
-  const lockMsg = checkLock(phone)
+  const lockMsg = await checkLock(phone)
   if (lockMsg) return { success: false, message: lockMsg }
+
+  // 解密传输层密文（前端用 RSA 公钥加密，见 lib/password-encrypt.ts）
+  let password: string
+  try {
+    password = decryptPassword(encryptedPassword)
+  } catch (e) {
+    // 配置缺失（无 RSA_PRIVATE_KEY）→ fail-fast 暴露给运维；
+    // 仅密文损坏/篡改 → 当作普通认证失败，不泄露区分
+    if (!process.env.RSA_PRIVATE_KEY) throw e
+    await recordFailure(phone)
+    return { success: false, message: '手机号或密码错误' }
+  }
 
   // 通过 phone 查找员工
   const [staff] = await db
@@ -93,7 +127,7 @@ export async function login(
     .limit(1)
 
   if (!staff) {
-    recordFailure(phone)
+    await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
 
@@ -105,18 +139,18 @@ export async function login(
     .limit(1)
 
   if (!pwRow) {
-    recordFailure(phone)
+    await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
 
   // 验证密码
   const valid = await compare(password, pwRow.passwordHash)
   if (!valid) {
-    recordFailure(phone)
+    await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
 
-  clearFailure(phone)
+  await clearFailure(phone)
 
   // 签发 JWT（含 mustChange 标记，供 middleware 零 DB 查询判断）
   const token = await new SignJWT({ employeeId: staff.employeeId, mustChange: pwRow.mustChange })
@@ -138,11 +172,20 @@ export async function logout(): Promise<void> {
 }
 
 export async function changePassword(
-  newPassword: string
+  encryptedNewPassword: string
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSessionFromCookie()
   if (!session) {
     return { success: false, message: '未登录' }
+  }
+
+  // 解密传输层密文（前端用 RSA 公钥加密，见 lib/password-encrypt.ts）
+  let newPassword: string
+  try {
+    newPassword = decryptPassword(encryptedNewPassword)
+  } catch (e) {
+    if (!process.env.RSA_PRIVATE_KEY) throw e
+    return { success: false, message: '密码修改失败，请重试' }
   }
 
   const passwordHash = await hash(newPassword, 12)

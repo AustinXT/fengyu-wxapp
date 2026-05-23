@@ -4,6 +4,13 @@ import tsconfigPaths from 'vite-tsconfig-paths'
 
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
+  resolve: {
+    alias: {
+      // `server-only` 在非 RSC 环境（vitest）导入即抛错。生产 RSC 下正常守护，
+      // 测试里用空模块替身，让 import server-only 的模块（lib/password-transit）可被单测。
+      'server-only': new URL('./tests/stubs/server-only.ts', import.meta.url).pathname,
+    },
+  },
   test: {
     environment: 'happy-dom',
     globals: true,

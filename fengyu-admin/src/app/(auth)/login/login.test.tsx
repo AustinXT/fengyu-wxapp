@@ -23,6 +23,7 @@ vi.mock('@/actions/auth', () => ({
 }))
 
 import LoginPage from './page'
+import { decryptPassword } from '@/lib/password-transit'
 
 // 登录成功后用 window.location.href 硬跳转（commit bf07dc1：确保 cookie 生效），
 // 故跳转断言通过 spy location.href setter
@@ -109,7 +110,11 @@ describe('LoginPage', () => {
     await user.type(screen.getByLabelText('密码'), 'admin123')
     await user.click(screen.getByRole('button', { name: /登 录/ }))
     await waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith('13800138000', 'admin123')
+      // 密码经 RSA 加密后传输：实参为密文（非明文），但能用私钥还原回明文
+      const [phoneArg, pwArg] = mockLogin.mock.calls[0]
+      expect(phoneArg).toBe('13800138000')
+      expect(pwArg).not.toBe('admin123')
+      expect(decryptPassword(pwArg as string)).toBe('admin123')
       expect(setHref).toHaveBeenCalledWith('/dashboard')
     })
   })
