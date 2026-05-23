@@ -4,76 +4,72 @@ import { isManager } from '../../utils/role';
 import { formatDateTimeShort } from '../../utils/formatters';
 
 interface RawPayment {
-  change_type: string;
+  paymentId: number;
+  saleOrderId: string;
   amount: number;
-  payment_method: string;
   status: string;
-  paid_at: string | null;
-  created_at: string;
-  note: string | null;
+  paymentMethod: string;
+  changeType: string;
+  createdAt: string;
+  paidAt: string | null;
 }
 
-interface DisplayPayment {
-  change_type: string;
-  payment_method: string;
-  status: string;
-  timeFmt: string;
-  amountAbs: string;
-  note: string | null;
+interface RawDetail {
+  refundReason: string | null;
+  refSaleItemId: string | null;
+  sessionCount: number | null;
+  operatorEmployeeId: string | null;
+  operatorName: string | null;
+  auditEmployeeId: string | null;
+  auditName: string | null;
+  auditAt: string | null;
+  auditRemark: string | null;
+  noteJson: { handlingFee?: number } | null;
 }
 
-interface RawRefund {
-  sale_order_id: string;
-  status: string;
-  ref_sale_order_id: string;
-  client_phone: string | null;
-  customer_name: string | null;
-  total_amount: string | number;
-  handling_fee: string | number | null;
-  refund_reason: string | null;
-  rejected_reason: string | null;
-  opened_by: string | null;
-  approved_by: string | null;
-  opened_by_name: string | null;
-  approved_by_name: string | null;
-  created_at: string;
-  approved_at: string | null;
-}
-
-interface DisplayRefund extends RawRefund {
+interface DisplayRefund {
   refund_abs: string;
   handling_fee_display: string;
+  refund_reason: string | null;
+  rejected_reason: string | null;
+  ref_sale_order_id: string;
+  customer_name: string | null;
+  client_phone: string | null;
+  opened_by_name: string | null;
+  approved_by_name: string | null;
   created_at_display: string;
   approved_at_display: string;
+  status: string;
   statusLabel: string;
   statusClass: 'pending' | 'approved' | 'rejected';
 }
 
 interface RawRefundItem {
-  sale_item_id: string;
-  product_name: string;
-  sku_spec_name: string | null;
-  product_type: string;
+  saleItemId: string;
+  productName: string | null;
+  specName: string | null;
+  productType: string | null;
   quantity: number;
-  unit_real_price: string | number;
-  sale_amount: string | number;
+  refundAmount: number;
 }
 
-interface DisplayRefundItem extends RawRefundItem {
+interface DisplayRefundItem {
+  saleItemId: string;
+  productName: string;
+  specName: string | null;
+  quantity: number;
   amount_abs: string;
 }
 
 interface RawOrigOrder {
-  sale_order_id: string;
-  status: string;
-  total_amount: string;
-  paid_amount: string;
-  prepaid_card_amount: string;
-  payable_amount: string | null;
-  payment_method: string;
-  sale_order_datetime: string;
-  client_phone: string;
-  customer_name: string;
+  saleOrderId: string;
+  totalAmount: number;
+  received: number;
+  prepaidCardAmount: number;
+  paymentMethod: string;
+  saleOrderDatetime: string;
+  clientPhone: string | null;
+  customerName: string | null;
 }
 
 interface DisplayOrigOrder {
@@ -84,16 +80,16 @@ interface DisplayOrigOrder {
 }
 
 interface RefundDetailResponse {
-  refund: RawRefund;
+  payment: RawPayment;
+  detail: RawDetail;
   origOrder: RawOrigOrder | null;
   refundItems: RawRefundItem[];
-  payments: RawPayment[];
 }
 
 const STATUS_META: Record<string, { label: string; cls: DisplayRefund['statusClass'] }> = {
   '待审批': { label: '待审批', cls: 'pending' },
   '已支付': { label: '已通过', cls: 'approved' },
-  '已关闭': { label: '已驳回', cls: 'rejected' },
+  '已作废': { label: '已驳回', cls: 'rejected' },
 };
 
 
@@ -105,7 +101,6 @@ Page({
     refund: null as DisplayRefund | null,
     refundItems: [] as DisplayRefundItem[],
     origOrder: null as DisplayOrigOrder | null,
-    payments: [] as DisplayPayment[],
     rejectPopup: false,
     rejectReason: '',
   },
@@ -124,41 +119,45 @@ Page({
     this.setData({ loading: true });
     try {
       const res = await callStaffApi<RefundDetailResponse>('order.refundDetail', {
-        saleOrderId: this.data.refundId,
+        paymentId: Number(this.data.refundId),
       });
-      const r = res.refund;
-      const meta = STATUS_META[r.status] ?? { label: r.status, cls: 'pending' as const };
-      const fee = Number(r.handling_fee || 0);
+      const p = res.payment;
+      const d = res.detail;
+      const meta = STATUS_META[p.status] ?? { label: p.status, cls: 'pending' as const };
+      const fee = Number(d.noteJson?.handlingFee || 0);
       const refund: DisplayRefund = {
-        ...r,
-        refund_abs: Math.abs(Number(r.total_amount || 0)).toFixed(2),
+        refund_abs: Math.abs(Number(p.amount || 0)).toFixed(2),
         handling_fee_display: fee > 0 ? fee.toFixed(2) : '',
-        created_at_display: formatDateTimeShort(r.created_at),
-        approved_at_display: formatDateTimeShort(r.approved_at),
+        refund_reason: d.refundReason,
+        // 驳回原因复用审批备注（驳回时 auditRemark 记录原因）
+        rejected_reason: p.status === '已作废' ? d.auditRemark : null,
+        ref_sale_order_id: p.saleOrderId,
+        customer_name: res.origOrder?.customerName ?? null,
+        client_phone: res.origOrder?.clientPhone ?? null,
+        opened_by_name: d.operatorName,
+        approved_by_name: d.auditName,
+        created_at_display: formatDateTimeShort(p.createdAt),
+        approved_at_display: formatDateTimeShort(d.auditAt),
+        status: p.status,
         statusLabel: meta.label,
         statusClass: meta.cls,
       };
       const refundItems: DisplayRefundItem[] = (res.refundItems || []).map(it => ({
-        ...it,
-        amount_abs: Math.abs(Number(it.sale_amount || 0)).toFixed(2),
+        saleItemId: it.saleItemId,
+        productName: it.productName || '商品',
+        specName: it.specName,
+        quantity: it.quantity,
+        amount_abs: Math.abs(Number(it.refundAmount || 0)).toFixed(2),
       }));
       const origOrder: DisplayOrigOrder | null = res.origOrder ? {
-        status: res.origOrder.status,
-        total_display: Number(res.origOrder.total_amount || 0).toFixed(2),
-        paid_display: Number(res.origOrder.paid_amount || 0).toFixed(2),
-        prepaid_display: Number(res.origOrder.prepaid_card_amount || 0) > 0
-          ? Number(res.origOrder.prepaid_card_amount).toFixed(2)
+        status: '',
+        total_display: Number(res.origOrder.totalAmount || 0).toFixed(2),
+        paid_display: Number(res.origOrder.received || 0).toFixed(2),
+        prepaid_display: Number(res.origOrder.prepaidCardAmount || 0) > 0
+          ? Number(res.origOrder.prepaidCardAmount).toFixed(2)
           : '',
       } : null;
-      const payments: DisplayPayment[] = (res.payments || []).map(p => ({
-        change_type: p.change_type,
-        payment_method: p.payment_method,
-        status: p.status,
-        timeFmt: formatDateTimeShort(p.paid_at || p.created_at),
-        amountAbs: Math.abs(Number(p.amount || 0)).toFixed(2),
-        note: p.note,
-      }));
-      this.setData({ refund, refundItems, origOrder, payments });
+      this.setData({ refund, refundItems, origOrder });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -183,7 +182,7 @@ Page({
         if (!res.confirm) return;
         wx.showLoading({ title: '审批中', mask: true });
         try {
-          await callStaffApi('order.approveRefund', { saleOrderId: this.data.refundId });
+          await callStaffApi('order.approveRefund', { paymentId: Number(this.data.refundId) });
           wx.hideLoading();
           wx.showToast({ title: '审批已通过', icon: 'success' });
           this.loadDetail();
@@ -217,8 +216,8 @@ Page({
     wx.showLoading({ title: '提交中', mask: true });
     try {
       await callStaffApi('order.rejectRefund', {
-        saleOrderId: this.data.refundId,
-        rejectedReason: reason,
+        paymentId: Number(this.data.refundId),
+        auditRemark: reason,
       });
       wx.hideLoading();
       wx.showToast({ title: '已驳回', icon: 'success' });

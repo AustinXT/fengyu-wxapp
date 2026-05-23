@@ -3,7 +3,7 @@
   <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
     <van-tab name="待审批" title="待审批" />
     <van-tab name="已支付" title="已通过" />
-    <van-tab name="已关闭" title="已驳回" />
+    <van-tab name="已作废" title="已驳回" />
   </van-tabs>
 
   <view wx:if="{{loading && refunds.length === 0}}" class="loading-wrap">
@@ -16,12 +16,12 @@
     <view
       class="refund-card"
       wx:for="{{refunds}}"
-      wx:key="sale_order_id"
-      data-id="{{item.sale_order_id}}"
+      wx:key="payment_id"
+      data-id="{{item.payment_id}}"
       bindtap="onTapRefund"
     >
       <view class="card-header">
-        <text class="refund-no">{{item.sale_order_id}}</text>
+        <text class="refund-no">{{item.ref_sale_order_id}}</text>
         <view class="status-tag status-tag--{{item.statusClass}}">{{item.statusLabel}}</view>
       </view>
       <view class="card-body">
@@ -33,17 +33,9 @@
           <text class="info-label">退款金额</text>
           <text class="info-value amount">¥{{item.refund_abs}}</text>
         </view>
-        <view wx:if="{{item.handling_fee_display}}" class="info-row">
-          <text class="info-label">手续费</text>
-          <text class="info-value">¥{{item.handling_fee_display}}</text>
-        </view>
         <view class="info-row">
           <text class="info-label">原因</text>
           <text class="info-value">{{item.refund_reason || '—'}}</text>
-        </view>
-        <view class="info-row">
-          <text class="info-label">原单</text>
-          <text class="info-value mono">{{item.ref_sale_order_id}}</text>
         </view>
         <view class="info-row">
           <text class="info-label">发起</text>

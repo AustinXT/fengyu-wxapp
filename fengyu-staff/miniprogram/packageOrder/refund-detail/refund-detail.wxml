@@ -19,7 +19,6 @@
     <!-- 退款单信息 -->
     <view class="card-group">
       <van-cell-group>
-        <van-cell title="退款单号" value="{{refund.sale_order_id}}" value-class="mono-value" />
         <van-cell title="关联原单" value="{{refund.ref_sale_order_id}}" is-link bind:click="onTapOrigOrder" value-class="mono-value" />
         <van-cell title="顾客" value="{{refund.customer_name}} {{refund.client_phone}}" />
         <van-cell title="发起人" value="{{refund.opened_by_name || refund.opened_by || '—'}}" />
@@ -49,10 +48,10 @@
     <!-- 退款明细 -->
     <view class="card-group" wx:if="{{refundItems.length > 0}}">
       <view class="section-title">退款明细</view>
-      <view class="item-row" wx:for="{{refundItems}}" wx:key="sale_item_id">
+      <view class="item-row" wx:for="{{refundItems}}" wx:key="saleItemId">
         <view class="item-main">
-          <text class="item-name">{{item.product_name}}</text>
-          <text wx:if="{{item.sku_spec_name}}" class="item-spec">{{item.sku_spec_name}}</text>
+          <text class="item-name">{{item.productName}}</text>
+          <text wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</text>
         </view>
         <view class="item-right">
           <text class="item-qty">×{{item.quantity}}</text>
@@ -61,28 +60,9 @@
       </view>
     </view>
 
-    <!-- 款项流水（挂在原单上的本次退款 payments） -->
-    <view class="card-group" wx:if="{{payments.length > 0}}">
-      <view class="section-title">款项流水</view>
-      <view class="pay-row" wx:for="{{payments}}" wx:key="timeFmt" wx:for-item="p">
-        <view class="pay-left">
-          <text class="pay-type">{{p.change_type}}</text>
-          <text class="pay-meta">{{p.timeFmt}} · {{p.payment_method}}</text>
-        </view>
-        <view class="pay-right">
-          <text class="pay-amount pay-amount--refund">-¥{{p.amountAbs}}</text>
-          <text class="pay-status" wx:if="{{p.status !== '已支付'}}">{{p.status}}</text>
-        </view>
-      </view>
-    </view>
-
     <!-- 原单概要 -->
     <view class="card-group" wx:if="{{origOrder}}">
       <view class="section-title">原销售单</view>
-      <view class="orig-row">
-        <text class="orig-label">原单状态</text>
-        <text class="orig-value">{{origOrder.status}}</text>
-      </view>
       <view class="orig-row">
         <text class="orig-label">总金额</text>
         <text class="orig-value">¥{{origOrder.total_display}}</text>

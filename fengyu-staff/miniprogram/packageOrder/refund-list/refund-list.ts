@@ -2,18 +2,18 @@
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTimeShort } from '../../utils/formatters';
 
-type TabStatus = '待审批' | '已支付' | '已关闭';
+type TabStatus = '待审批' | '已支付' | '已作废';
 
 interface RawRefund {
-  sale_order_id: string;
+  payment_id: number;
   status: string;
   ref_sale_order_id: string;
+  amount: string | number;
+  payment_method: string;
   client_phone: string | null;
   customer_name: string | null;
-  total_amount: string | number;
-  handling_fee: string | number | null;
   refund_reason: string | null;
-  rejected_reason: string | null;
+  audit_remark: string | null;
   opened_by: string | null;
   approved_by: string | null;
   opened_by_name: string | null;
@@ -24,7 +24,6 @@ interface RawRefund {
 
 interface DisplayRefund extends RawRefund {
   refund_abs: string;
-  handling_fee_display: string;
   created_at_display: string;
   statusLabel: string;
   statusClass: 'pending' | 'approved' | 'rejected';
@@ -39,7 +38,7 @@ interface RefundListResponse {
 const STATUS_META: Record<TabStatus, { label: string; cls: DisplayRefund['statusClass'] }> = {
   '待审批': { label: '待审批', cls: 'pending' },
   '已支付': { label: '已通过', cls: 'approved' },
-  '已关闭': { label: '已驳回', cls: 'rejected' },
+  '已作废': { label: '已驳回', cls: 'rejected' },
 };
 
 
@@ -88,13 +87,11 @@ Page({
       });
       const rows = res?.refunds || [];
       const mapped: DisplayRefund[] = rows.map(r => {
-        const total = Math.abs(Number(r.total_amount || 0));
-        const fee = Number(r.handling_fee || 0);
+        const total = Math.abs(Number(r.amount || 0));
         const meta = STATUS_META[r.status as TabStatus] ?? { label: r.status, cls: 'pending' as const };
         return {
           ...r,
           refund_abs: total.toFixed(2),
-          handling_fee_display: fee > 0 ? fee.toFixed(2) : '',
           created_at_display: formatDateTimeShort(r.created_at),
           statusLabel: meta.label,
           statusClass: meta.cls,
@@ -118,7 +115,7 @@ Page({
   },
 
   onTapRefund(e: WechatMiniprogram.TouchEvent) {
-    const id = e.currentTarget.dataset.id as string;
+    const id = e.currentTarget.dataset.id as number;
     wx.navigateTo({ url: `/packageOrder/refund-detail/refund-detail?id=${id}` });
   },
 });
