@@ -173,12 +173,51 @@ async function caseAppointableItemsCrossStoreFilter() {
   if (hitB.storeId !== STORE_X_ID) throw new Error(`hitB.storeId=${hitB.storeId}`)
 }
 
+// 在途退款冻结：原订单存在 '待审批' 退款时，整单疗程卡从可预约列表排除；驳回（已作废）后恢复
+async function casePendingRefundExcluded() {
+  await createTestClient()
+  const orderNo = `${NS}_AP_RFD1`.slice(0, 30)
+  await newPaidCourseOrder({ orderNo, sessionCount: 5, remainingSessions: 5 })
+
+  // 退款前：出现
+  let res = await invokeAs(TEST_CLIENT_OPENID, 'order.appointableItems', {})
+  if (!(res.data?.orders || []).find(o => o.saleOrderId === orderNo)) {
+    throw new Error(`退款前应列出 ${orderNo}`)
+  }
+
+  // 写入一笔 '待审批' 退款流水
+  await pgQuery(
+    `INSERT INTO sale_order_payments
+       (sale_order_id, change_type, amount, payment_method, status, source_end, refund_reason, created_at)
+     VALUES ($1, '退款', -100, '线下', '待审批', 'staff', 'e2e_freeze', NOW())`,
+    [orderNo]
+  )
+
+  // 退款审批中：被排除
+  res = await invokeAs(TEST_CLIENT_OPENID, 'order.appointableItems', {})
+  if ((res.data?.orders || []).find(o => o.saleOrderId === orderNo)) {
+    throw new Error(`退款审批中应排除 ${orderNo}，但仍出现`)
+  }
+
+  // 驳回（流水置 '已作废'）：恢复
+  await pgQuery(
+    `UPDATE sale_order_payments SET status = '已作废'
+     WHERE sale_order_id = $1 AND change_type = '退款'`,
+    [orderNo]
+  )
+  res = await invokeAs(TEST_CLIENT_OPENID, 'order.appointableItems', {})
+  if (!(res.data?.orders || []).find(o => o.saleOrderId === orderNo)) {
+    throw new Error(`驳回后应恢复列出 ${orderNo}`)
+  }
+}
+
 const CASES = [
   ['happy (paid + remaining>0) returns the order/item', caseHappyHasRemaining],
   ['remaining=0 excluded by default filter', caseZeroRemainingExcluded],
   ['product_type=家居产品 excluded (not in 疗程卡/单品)', caseNonAppointableProductTypeExcluded],
   ['no saleOrderId param → returns all (route does not require it)', caseNoSaleOrderIdParam],
   ['cross-store: 两单都返回（documented: route 不按 storeId 过滤）', caseAppointableItemsCrossStoreFilter],
+  ['在途退款(待审批)排除整单, 驳回后恢复', casePendingRefundExcluded],
 ]
 
 let pass = 0, fail = 0
