@@ -98,6 +98,7 @@ page {
 .status-tag--pending  { background: var(--color-badge-pending);  color: #D4820A; }
 .status-tag--success  { background: var(--color-badge-confirmed); color: #3D8A5A; }
 .status-tag--progress { background: var(--color-badge-progress);  color: #5E8BB3; }
+.status-tag--awaiting { background: #FCEEED;                       color: #C0322A; }
 .status-tag--done     { background: var(--color-badge-done);      color: #888888; }
 .status-tag--error    { background: var(--color-badge-error);     color: #D94040; }
 

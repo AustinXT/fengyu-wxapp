@@ -12,6 +12,15 @@
     <van-tab wx:for="{{productKindChoices}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
 
+  <!-- 普通商品：商品名称模糊查询（跨分类全量匹配） -->
+  <van-search
+    wx:if="{{productKindChoice === '普通商品'}}"
+    value="{{productKeyword}}"
+    placeholder="搜索商品名称"
+    bind:change="onProductKeywordChange"
+    bind:clear="onProductKeywordClear"
+  />
+
   <!-- 分类 + 商品主区域 -->
   <view class="catalog-layout">
 
@@ -39,13 +48,13 @@
             bindtap="onSpuTap"
             data-spu="{{item}}"
           >
-            <view class="trial-card-main">
-              <text class="trial-card-name">{{item.spuName}}</text>
+            <text class="trial-card-name">{{item.spuName}}</text>
+            <view class="trial-card-sub">
               <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + '次卡' : '单次'}}</text>
-            </view>
-            <view class="trial-card-right">
-              <text class="trial-card-price">¥{{item.price}}</text>
-              <view class="trial-card-add-btn">加入</view>
+              <view class="trial-card-right">
+                <text class="trial-card-price">¥{{item.price}}</text>
+                <view class="trial-card-add-btn">加入</view>
+              </view>
             </view>
           </view>
         </view>
@@ -95,6 +104,11 @@
           <van-skeleton title avatar row="3" style="margin-top:24rpx" />
         </view>
 
+        <!-- 搜索无结果 -->
+        <view wx:elif="{{searching && spuList.length === 0}}">
+          <van-empty description="未找到相关商品" />
+        </view>
+
         <!-- 空态 -->
         <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
           <van-empty description="暂无商品" />
@@ -103,73 +117,47 @@
           <van-empty description="该分类暂无商品" />
         </view>
 
-        <!-- SPU 列表（isCardType=true 时 grid 简化布局；否则平铺卡片）-->
+        <!-- SPU 列表（isCardType=true 时 grid 简化布局；否则单行卡片，向体验卡列表看齐）-->
         <view wx:else>
-          <view class="spu-list-inner {{isCardType ? 'spu-list-inner--grid' : ''}}">
+          <!-- 卡类型（充值卡）：grid 简化按钮块 -->
+          <view wx:if="{{isCardType}}" class="spu-list-inner spu-list-inner--grid">
             <view
-              class="{{isCardType ? 'sku-grid-item' : 'spu-card'}}"
+              class="sku-grid-item"
               wx:for="{{spuList}}"
               wx:key="spuId"
               bindtap="onSpuTap"
               data-spu="{{item}}"
             >
-              <!-- 卡类型 grid：简化为"名称 + 金额"按钮块 -->
-              <block wx:if="{{isCardType}}">
-                <text class="sku-grid-name">{{item.spuName}}</text>
-                <view class="sku-grid-price">
-                  <text class="price-symbol">¥</text>
-                  <text class="price-integer">{{item.price}}</text>
-                </view>
-              </block>
-
-              <!-- 普通商品：纯文字卡片（实体 SKU 无图片） -->
-              <block wx:else>
-                <view class="spu-body">
-                  <view class="spu-tags" wx:if="{{item.productType}}">
-                    <van-tag plain color="{{item.productType === '疗程卡' ? '#C0322A' : '#8A8A8A'}}">{{item.productType}}</van-tag>
-                    <van-tag wx:if="{{item.productType === '疗程卡'}}" plain color="#C0322A">{{item.sessionCount ? item.sessionCount + '次' : '单次'}}</van-tag>
-                  </view>
-                  <text class="spu-name">{{item.spuName}}</text>
-                  <view class="spu-footer">
-                    <view class="price-group">
-                      <text class="price-symbol">¥</text>
-                      <text class="price-integer">{{item.price}}</text>
-                    </view>
-                    <view class="spu-add-btn">
-                      <van-icon name="plus" size="36rpx" color="#FFFFFF" />
-                    </view>
-                  </view>
-                </view>
-              </block>
+              <text class="sku-grid-name">{{item.spuName}}</text>
+              <view class="sku-grid-price">
+                <text class="price-symbol">¥</text>
+                <text class="price-integer">{{item.price}}</text>
+              </view>
             </view>
           </view>
 
-          <!-- 购物车已选项目（内联） -->
-          <view wx:if="{{cart.length > 0}}" class="cart-items-inline">
-            <text class="cart-inline-title">已添加项目</text>
-            <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
-              <view class="cart-item-info">
-                <text class="cart-item-name">{{item.spuName}}</text>
-                <text class="cart-item-spec">{{item.specName}}</text>
-                <view class="cart-item-tags" wx:if="{{item.productType}}">
-                  <van-tag plain color="{{item.productType === '疗程卡' ? '#C0322A' : '#8A8A8A'}}" size="mini">{{item.productType}}</van-tag>
-                  <van-tag wx:if="{{item.productType === '疗程卡'}}" plain color="#C0322A" size="mini">{{item.sessionCount ? item.sessionCount + '次' : '单次'}}</van-tag>
+          <!-- 普通商品：单行精简卡片（左 名称 + meta，右 价格 + 加入），与体验卡列表对齐 -->
+          <view wx:else class="trial-card-list">
+            <view
+              class="trial-card-item"
+              wx:for="{{spuList}}"
+              wx:key="spuId"
+              bindtap="onSpuTap"
+              data-spu="{{item}}"
+            >
+              <text class="trial-card-name">{{item.spuName}}</text>
+              <view class="trial-card-sub">
+                <text class="trial-card-meta">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+                <view class="trial-card-right">
+                  <view class="price-dual">
+                    <block wx:if="{{item.specialPrice != null}}">
+                      <text class="price-original">¥{{item.listPrice}}</text>
+                      <text class="price-special">¥{{item.specialPrice}}</text>
+                    </block>
+                    <text wx:else class="price-special">¥{{item.listPrice}}</text>
+                  </view>
+                  <view class="trial-card-add-btn">加入</view>
                 </view>
-              </view>
-              <view class="cart-item-right">
-                <text class="cart-item-price">¥{{item.priceLine}}</text>
-                <van-stepper
-                  wx:if="{{!item.refBundleId}}"
-                  value="{{item.quantity}}"
-                  min="1"
-                  max="10"
-                  data-sku-id="{{item.skuId}}"
-                  bind:change="onCartQtyChange"
-                />
-                <van-icon
-                  name="delete-o" size="36rpx" color="#D94040"
-                  data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
-                />
               </view>
             </view>
           </view>
@@ -181,8 +169,10 @@
   <!-- 底部操作栏（普通分类有数据 / 体验卡有数据时显示）
        组合套餐独占下单流程，由 bundle-picker 自带的"去下单"按钮直接进入结算 → 不显示页面级底栏 -->
   <view class="bottom-bar" wx:if="{{productKindChoice !== '组合套餐' && (categories.length > 0 || (productKindChoice === '体验卡' && spuList.length > 0))}}">
-    <view class="bottom-bar-mid">
-      <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
+    <view class="bottom-bar-cart {{cartCount === 0 ? 'bottom-bar-cart--disabled' : ''}}" bindtap="onOpenCartPopup">
+      <text class="bottom-bar-cart-text">已选 {{cartCount}} 项</text>
+    </view>
+    <view class="bottom-bar-mid" bindtap="onOpenCartPopup">
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
     </view>
     <van-button
@@ -194,6 +184,52 @@
       bind:click="onOpenCheckout"
     >下单</van-button>
   </view>
+
+  <!-- 已选项目弹层 -->
+  <van-popup
+    show="{{cartPopupVisible}}"
+    position="bottom"
+    round
+    safe-area-inset-bottom
+    bind:close="onCloseCartPopup"
+  >
+    <view class="cart-popup">
+      <view class="cart-popup-header">
+        <text class="cart-popup-title">已选项目</text>
+        <text class="cart-popup-clear" bindtap="onClearCart">清空</text>
+      </view>
+      <scroll-view scroll-y class="cart-popup-list">
+        <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
+          <view class="cart-item-info">
+            <text class="cart-item-name">{{item.specName}}</text>
+            <text class="cart-item-spec" wx:if="{{item.productType}}">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+            <view class="cart-item-unitprice">
+              <block wx:if="{{item.specialPrice != null}}">
+                <text class="price-original">¥{{item.listPrice}}</text>
+                <text class="price-special">¥{{item.specialPrice}}</text>
+              </block>
+              <text wx:else class="price-special">¥{{item.listPrice}}</text>
+            </view>
+          </view>
+          <view class="cart-item-right">
+            <text class="cart-item-price">¥{{item.priceLine}}</text>
+            <van-stepper
+              wx:if="{{!item.refBundleId}}"
+              value="{{item.quantity}}"
+              min="1"
+              max="10"
+              data-sku-id="{{item.skuId}}"
+              bind:change="onCartQtyChange"
+            />
+            <van-icon
+              name="delete-o" size="36rpx" color="#D94040"
+              data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
+            />
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+  </van-popup>
 
   <!-- 结算面板弹层 -->
   <van-popup

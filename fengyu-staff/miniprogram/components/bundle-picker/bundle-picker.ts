@@ -86,10 +86,17 @@ Component({
     bundles: {
       type: Array,
       value: [] as BundleSpu[],
+      observer() {
+        (this as unknown as { _refreshFiltered(): void })._refreshFiltered();
+      },
     },
   },
 
   data: {
+    /** 套餐名称模糊查询关键词 */
+    keyword: '',
+    /** 按 keyword 过滤后的套餐列表（列表态渲染数据源） */
+    filteredBundles: [] as BundleSpu[],
     selectedBundleId: '' as string,
     /** groupSelections[groupId] = Set<skuId>，为了 WXML 渲染方便用数组 */
     groupSelections: {} as Record<number, string[]>,
@@ -99,6 +106,28 @@ Component({
   },
 
   methods: {
+    // ===== 套餐名称模糊查询 =====
+
+    onKeywordChange(e: WechatMiniprogram.CustomEvent) {
+      this.setData({ keyword: ((e.detail as unknown as string) || '').trim() });
+      this._refreshFiltered();
+    },
+
+    onKeywordClear() {
+      this.setData({ keyword: '' });
+      this._refreshFiltered();
+    },
+
+    /** 按 keyword（大小写不敏感）过滤 bundles → filteredBundles */
+    _refreshFiltered() {
+      const kw = this.data.keyword.trim().toLowerCase();
+      const all = this.data.bundles as BundleSpu[];
+      const filtered = kw
+        ? all.filter(b => (b.name || '').toLowerCase().includes(kw))
+        : all;
+      this.setData({ filteredBundles: filtered });
+    },
+
     onSelectBundle(e: WechatMiniprogram.TouchEvent) {
       const productId = e.currentTarget.dataset.productId as string;
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === productId);

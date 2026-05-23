@@ -33,6 +33,10 @@ interface CartItem {
   specName: string;
   /** 单价（会员价优先 specialPrice，否则 price；由 skuToDisplay / SkuItem 决定） */
   price: number;
+  /** 展示用：原始挂牌价（划线原价）。缺省时降级为单价显示 */
+  listPrice?: number;
+  /** 展示用：特价，null 表示无特价 */
+  specialPrice?: number | null;
   quantity: number;
   sessionCount: number;
   productType: string;
@@ -112,7 +116,10 @@ interface BundleSpu {
 interface DisplayItem {
   spuId: string;
   spuName: string;
+  /** 生效价（specialPrice 优先，否则 price）；计费用 */
   price: number;
+  /** 原始挂牌价 sku.price（展示划线用，price 折叠后保留此字段） */
+  listPrice: number;
   specialPrice: number | null;
   productKind: string;
   productType: string;
@@ -175,6 +182,7 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
     spuId: sku.skuId,
     spuName: sku.specName,
     price: Number(sku.specialPrice || sku.price) || 0,
+    listPrice: Number(sku.price) || 0,
     specialPrice: sku.specialPrice ? Number(sku.specialPrice) : null,
     productKind: sku.productKind,
     productType: sku.productType,
@@ -230,6 +238,10 @@ Page({
     /** PR-B：普通商品模式下，当前选中的 category id（驱动 active 样式 + SKU 刷新） */
     activeCategoryId: '' as string,
     spuList: [] as DisplayItem[],
+    /** 普通商品名称模糊查询关键词 */
+    productKeyword: '',
+    /** 是否处于搜索态（普通商品跨分类匹配；驱动空态文案 + 恢复分类逻辑） */
+    searching: false,
     // 组合套餐（BundlePicker 数据源）
     bundleSpus: [] as BundleSpu[],
     skuMap: {} as Record<string, SkuItem>,
@@ -239,6 +251,7 @@ Page({
     cart: [] as CartItem[],
     cartCount: 0,
     cartTotal: '0.00',
+    cartPopupVisible: false,
     // 结算底部弹层
     showCheckout: false,
     checkoutStep: 0,   // 0=选顾客 2=确认（Step 1 历史遗留编号，已废弃）
@@ -317,6 +330,8 @@ Page({
   _experienceSkus: [] as SkuItem[],
   // SKU 缓存：按 `${productKindChoice}:${categoryId}` 缓存已加载的展示列表
   _spuCache: {} as Record<string, DisplayItem[]>,
+  /** 普通商品搜索防抖计时器 */
+  _kwTimer: null as ReturnType<typeof setTimeout> | null,
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -349,6 +364,8 @@ Page({
           spuName: pending.spuName,
           specName: pending.specName,
           price: pending.price,
+          listPrice: pending.price,
+          specialPrice: null,
           quantity: pending.quantity,
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
@@ -373,6 +390,8 @@ Page({
             spuName: pending.spuName,
             specName: pending.specName,
             price: pending.price,
+            listPrice: pending.price,
+            specialPrice: null,
             quantity: pending.quantity,
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
@@ -553,9 +572,12 @@ Page({
     }
 
     const apply = () => {
+      if (this._kwTimer) clearTimeout(this._kwTimer);
       this.setData({
         productKindChoiceIndex: index,
         productKindChoice: nextChoice,
+        productKeyword: '',
+        searching: false,
       });
       this.applyKindChoice(nextChoice);
     };
@@ -604,7 +626,21 @@ Page({
    */
   onGroupedCategoryTap(e: WechatMiniprogram.TouchEvent) {
     const categoryId = e.currentTarget.dataset.id as string;
-    if (!categoryId || categoryId === this.data.activeCategoryId) return;
+    if (!categoryId) return;
+    // 点分类即退出搜索态（清空关键词）
+    const wasSearching = this.data.searching;
+    if (this.data.productKeyword) {
+      if (this._kwTimer) clearTimeout(this._kwTimer);
+      this.setData({ productKeyword: '', searching: false });
+    }
+    // 点回当前分类：搜索态下需用缓存恢复分类列表，非搜索态则无变化
+    if (categoryId === this.data.activeCategoryId) {
+      if (wasSearching) {
+        const cacheKey = `${this.data.productKindChoice}:${categoryId}`;
+        this.setData({ spuList: this._spuCache[cacheKey] || [] });
+      }
+      return;
+    }
 
     const { productKindChoice } = this.data;
     // 同步 activeCategoryIndex（在扁平 categories 中找到对应索引，保证 van-sidebar 回退场景时一致）
@@ -659,6 +695,39 @@ Page({
     }
   },
 
+  // ===== 普通商品名称模糊查询（跨分类全量匹配）=====
+
+  onProductKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    const kw = ((e.detail as unknown as string) || '').trim();
+    this.setData({ productKeyword: kw });
+    if (this._kwTimer) clearTimeout(this._kwTimer);
+    this._kwTimer = setTimeout(() => this.applyProductSearch(), 200);
+  },
+
+  onProductKeywordClear() {
+    if (this._kwTimer) clearTimeout(this._kwTimer);
+    this.setData({ productKeyword: '' });
+    this.applyProductSearch();
+  },
+
+  /**
+   * 应用普通商品搜索：
+   * - 关键词为空 → 恢复当前分类视图（读 _spuCache）
+   * - 关键词非空 → 在全量普通商品 SKU 中按名称模糊匹配（忽略当前分类）
+   */
+  applyProductSearch() {
+    const kw = this.data.productKeyword.trim().toLowerCase();
+    if (!kw) {
+      const cacheKey = `普通商品:${this.data.activeCategoryId}`;
+      this.setData({ searching: false, spuList: this._spuCache[cacheKey] || [] });
+      return;
+    }
+    const matched = filterSkusByKindChoice(this._allSkus, '普通商品')
+      .filter(s => (s.specName || '').toLowerCase().includes(kw))
+      .map(skuToDisplay);
+    this.setData({ searching: true, spuList: matched });
+  },
+
   // ===== BundlePicker 选完后覆盖购物车并直接进入下单流程 =====
   // 组合套餐独占：不进共享购物车（避免与普通商品混单），点 "去下单" 一步到结算
 
@@ -699,6 +768,8 @@ Page({
         spuName: item.spuName,
         specName: item.spuName,
         price: item.price,
+        listPrice: item.listPrice,
+        specialPrice: item.specialPrice,
         quantity: 1,
         sessionCount: item.sessionCount || 0,
         productType: item.productKind || item.productType,
@@ -711,6 +782,33 @@ Page({
   },
 
   // ===== 购物车 =====
+
+  onOpenCartPopup() {
+    if (this.data.cartCount === 0) {
+      wx.showToast({ title: '请先选择商品', icon: 'none' });
+      return;
+    }
+    this.setData({ cartPopupVisible: true });
+  },
+
+  onCloseCartPopup() {
+    this.setData({ cartPopupVisible: false });
+  },
+
+  onClearCart() {
+    wx.showModal({
+      title: '清空已选项目',
+      content: '确定清空购物车？组合套餐项目会保留。',
+      confirmColor: '#C0322A',
+      success: (res) => {
+        if (!res.confirm) return;
+        // 组合套餐项目受保护（与逐项删除逻辑一致）
+        const cart = this.data.cart.filter(c => c.productType === '组合套餐' || c.refBundleId);
+        this.updateCart(cart);
+        if (cart.length === 0) this.setData({ cartPopupVisible: false });
+      },
+    });
+  },
 
   onCartItemRemove(e: WechatMiniprogram.TouchEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
@@ -827,6 +925,10 @@ Page({
     };
     if (this.data.couponDiscount > 0) {
       update.couponTotal = payableSum.toFixed(2);
+    }
+    // 空车时自动关闭已选项目弹层
+    if (count === 0 && this.data.cartPopupVisible) {
+      update.cartPopupVisible = false;
     }
     this.setData(update);
     // cart 变动后重新评估已选优惠券（未选券时内部短路，零开销）

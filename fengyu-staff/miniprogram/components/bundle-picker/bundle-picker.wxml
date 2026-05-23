@@ -8,9 +8,18 @@
 
   <!-- 列表态：未选中具体套餐 -->
   <scroll-view wx:elif="{{!selectedBundleId}}" scroll-y class="bundle-list">
+    <van-search
+      value="{{keyword}}"
+      placeholder="搜索套餐名称"
+      bind:change="onKeywordChange"
+      bind:clear="onKeywordClear"
+    />
+    <view wx:if="{{filteredBundles.length === 0}}" class="bundle-empty">
+      <van-empty description="未找到相关套餐" />
+    </view>
     <view
       class="bundle-card"
-      wx:for="{{bundles}}"
+      wx:for="{{filteredBundles}}"
       wx:key="productId"
       data-product-id="{{item.productId}}"
       bindtap="onSelectBundle"
