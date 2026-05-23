@@ -40,6 +40,10 @@ function rowToStore(row: {
     description: s.description,
     announcement: s.announcement,
     parkingInfo: s.parkingInfo,
+    lakalaMerchantNo: s.lakalaMerchantNo,
+    lakalaTermNo: s.lakalaTermNo,
+    lakalaSubAppid: s.lakalaSubAppid,
+    lakalaEnabled: s.lakalaEnabled,
     createdAt: s.createdAt.toISOString(),
     updatedAt: s.updatedAt.toISOString(),
     marketName: row.market_node?.name ?? undefined,
@@ -206,6 +210,10 @@ export const updateStore = withPermission(
       description: string | null
       announcement: string | null
       parkingInfo: string | null
+      lakalaMerchantNo: string | null
+      lakalaTermNo: string | null
+      lakalaSubAppid: string | null
+      lakalaEnabled: boolean
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,

@@ -23,6 +23,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
+  const [lakalaEnabled, setLakalaEnabled] = useState(store.lakalaEnabled)
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
@@ -42,6 +43,10 @@ export default function StoreEditPage({ store }: { store: Store }) {
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
+        lakalaMerchantNo: ((formData.get("lakalaMerchantNo") as string) || "").trim() || null,
+        lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
+        lakalaSubAppid: ((formData.get("lakalaSubAppid") as string) || "").trim() || null,
+        lakalaEnabled,
       }, store.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -192,6 +197,64 @@ export default function StoreEditPage({ store }: { store: Store }) {
                 multiple
                 max={9}
               />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>拉卡拉聚合支付配置</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-xs text-muted-foreground mb-3">
+            该门店在拉卡拉的商户号 / 终端号。留空时云函数 fallback 到环境变量默认测试号；
+            正式上线前必须完成本店进件 + 录入。开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">商户号（merchant_no）</label>
+              <Input
+                name="lakalaMerchantNo"
+                defaultValue={store.lakalaMerchantNo ?? ""}
+                placeholder="如：822290059430BFA"
+                maxLength={32}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">终端号（term_no）</label>
+              <Input
+                name="lakalaTermNo"
+                defaultValue={store.lakalaTermNo ?? ""}
+                placeholder="如：D9261078"
+                maxLength={32}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">子 appid（lakala_sub_appid）</label>
+              <Input
+                name="lakalaSubAppid"
+                defaultValue={store.lakalaSubAppid ?? ""}
+                placeholder="本期留空即可"
+                maxLength={32}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">启用真实支付通道</label>
+              <div className="flex items-center gap-2 pt-2">
+                <input
+                  type="checkbox"
+                  checked={lakalaEnabled}
+                  onChange={(e) => {
+                    setLakalaEnabled(e.target.checked)
+                    setFormDirty(true)
+                  }}
+                  className="h-4 w-4"
+                />
+                <span className="text-sm">
+                  {lakalaEnabled ? "已启用（调真实拉卡拉接口）" : "未启用（走 mock / 兜底）"}
+                </span>
+              </div>
             </div>
           </div>
         </CardContent>
