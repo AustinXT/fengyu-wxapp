@@ -42,6 +42,18 @@ export interface MemberLevelsResult {
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
+/** 支付链路即时升级后，cron 幂等补发礼包的回看窗口（覆盖上次 cron 至今，留余量）。 */
+const RECENT_UPGRADE_WINDOW_MS = 36 * 60 * 60 * 1000
+
+/** 该用户的 member_level 是否在近 RECENT_UPGRADE_WINDOW_MS 内被升级过（含支付链路即时升级）。 */
+function wasRecentlyUpgraded(
+  upgradedAt: Date | string | null,
+  ctx?: CronContext,
+): boolean {
+  if (!upgradedAt) return false
+  return nowOf(ctx).getTime() - new Date(upgradedAt).getTime() <= RECENT_UPGRADE_WINDOW_MS
+}
+
 export async function refreshMemberLevels(
   db: Db,
   ctx?: CronContext,
@@ -64,6 +76,7 @@ export async function refreshMemberLevels(
       cwu.user_id,
       cwu.member_level,
       cwu.member_level_locked_until,
+      cwu.member_level_upgraded_at,
       COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
         WHERE so.sale_order_type IN ('销售单','转换单')
           AND so.paid_at >= (${nowSql} - INTERVAL '12 months')
@@ -71,11 +84,12 @@ export async function refreshMemberLevels(
     FROM client_wechat_users cwu
     LEFT JOIN sale_orders so ON so.client_user_id = cwu.user_id
     WHERE cwu.customer_type = '会员客'
-    GROUP BY cwu.user_id, cwu.member_level, cwu.member_level_locked_until
+    GROUP BY cwu.user_id, cwu.member_level, cwu.member_level_locked_until, cwu.member_level_upgraded_at
   `)) as Array<{
     user_id: string
     member_level: string | null
     member_level_locked_until: Date | string | null
+    member_level_upgraded_at: Date | string | null
     spend: string | number
   }>
 
@@ -92,6 +106,20 @@ export async function refreshMemberLevels(
       const oldLevel = row.member_level
 
       if (newLevel === oldLevel) {
+        // 支付结算链路（payNotify / staffApi / clientApi）可能已在 cron 之外把等级即时升到位，
+        // 但升级礼包（消息/积分/优惠券）仍由本 cron 发放。此时 newLevel === oldLevel 会跳过
+        // processUpgrade → 礼包丢失。故对近 36h 内升级过的会员客幂等补发礼包
+        // （grantUpgradeBenefits 内 idempotency_key / external_ref / coupon_id 防重复，
+        // 旧升级重试即 no-op；窗口限定避免对全部会员客无谓尝试）。
+        if (
+          newLevel &&
+          benefitsConfig?.[newLevel] &&
+          wasRecentlyUpgraded(row.member_level_upgraded_at, ctx)
+        ) {
+          await db.transaction(async (tx) => {
+            await grantUpgradeBenefits(tx, row.user_id, newLevel, benefitsConfig[newLevel], ctx)
+          })
+        }
         unchangedCount++
         continue
       }

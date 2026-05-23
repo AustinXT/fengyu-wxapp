@@ -214,6 +214,60 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     })
   })
 
+  describe('G. 支付链路即时升级后，cron 幂等补发礼包', () => {
+    it('newLevel===oldLevel 且近 36h 内升级过 → 补发礼包（不重写等级）', async () => {
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
+      // 该用户已被支付链路即时升到黑钻（member_level=黑钻，spend 仍是黑钻档），刚升级
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          member_level: '黑钻',
+          member_level_locked_until: null,
+          member_level_upgraded_at: new Date(), // 刚刚升级
+          spend: '120000',
+        },
+      ])
+      // 补发事务内仅三件套（无 UPDATE level / operation_logs）
+      mockExecute.mockResolvedValueOnce([]) // INSERT messages
+      mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
+      mockExecute.mockResolvedValueOnce([
+        { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
+      ]) // SELECT coupon_templates
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.unchangedCount).toBe(1)
+      expect(result.upgradeCount).toBe(0)
+      // 进入补发事务
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1)
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).toContain('member-upgrade-u1-黑钻')
+      // 不重写等级（无 INTERVAL '150 days' 的 UPDATE）
+      const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
+      expect(sqlTexts.some((t) => t.includes("INTERVAL '150 days'"))).toBe(false)
+    })
+
+    it('newLevel===oldLevel 但升级时间久远（>36h）→ 不补发', async () => {
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          member_level: '黑钻',
+          member_level_locked_until: null,
+          member_level_upgraded_at: new Date(Date.now() - 5 * 86400000), // 5 天前
+          spend: '120000',
+        },
+      ])
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.unchangedCount).toBe(1)
+      expect(mockDb.transaction).not.toHaveBeenCalled()
+    })
+  })
+
   describe('F. 单用户失败不影响其他用户', () => {
     it('某用户事务内 UPDATE 抛错 → 该用户 errorCount++，下个用户继续', async () => {
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
