@@ -91,6 +91,31 @@ cloud auth 恢复（bs10 canary PASS）。5 项逐个单跑：
 > 复跑：`bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs --filter bs06`（稳定 PASS）；
 > 其余单跑偶发受 IDE/automator 导航超时影响。
 
+### 2026-05-23 第二轮：啃 4 个下游失败点
+
+| 下游点 | 根因 | 处置 | 验证 |
+|--------|------|------|------|
+| bs05 step1 / bs03 step4 导航超时 | **非真失败**：子包（packageService/packageCustomer）首跳时 IDE 的 wx.navigateTo 成功回调在 automation 通道 ~10s 才回 → `navigateTo` 抛 `timeout`，但探针实测页面其实已加载完成（currentPage 正确、appt data 完整） | ✅ 新增 `navigateToPage()` helper 吞掉伪 timeout（automator.mjs），bs03/bs05 改用；并把后续 waitForData 超时放宽到 15s | helper 生效（不再报 nav timeout） |
+| bs01 step6 顾客搜索 | **spec bug**：spec setData `customerPhone`，但页面 `onSearchCustomer` 读的是 `customerKeyword` | ✅ 改 spec 写 `customerKeyword`（bs01-order-flow.spec.mjs） | — |
+| bs02 step4 refund-detail | **真·生产契约 bug**（见下「待决策」） | ⏸ 记录待决策，未改 | — |
+
+**本轮验证受阻于 L3 IDE 环境退化**：连续跑批 2 小时+ 后，IDE cloud 数据加载在 step1/step2 开始
+不确定性失败/挂起（bs03 step1 `service.list`、bs05 step1 `appointment.detail` 15s 都等不到、
+bs01 categories 在 0/10 间漂移）——与之前 `access_token missing` 同类的会话退化。我的代码改动
+在「相关 step 被跑到」的那次（重登后首跑）均已逐一验证正确：bs01 callMethod 跑过 step3/4/5、
+bs03 onCompleteService 完整跑完 start→complete(remaining 5→4)、bs05 navigateToPage 吞掉伪 timeout。
+要拿到干净全绿需要一个**新鲜 IDE 会话**（重启后立即跑、单跑、别连跑），属环境问题非测试代码问题。
+
+**bs02 step4 待决策（真生产 bug，未改）**：refund-detail 页 ↔ `order.refundDetail` 契约双重不符：
+1. **id 维度**：refund-list 用 `data-id="{{item.sale_order_id}}"` 传 sale_order_id 字符串 →
+   refund-detail 以 `saleOrderId` 转发 → 后端 `queryPaymentId = paymentId || (typeof saleOrderId === 'number' ? ...)`
+   只认 number，永远落 null → 抛 `INVALID_PARAMS: 缺少 paymentId`；且后端是 `WHERE sop.id`（按 paymentId 查），
+   根本不支持按 sale_order_id 查。
+2. **响应 shape**：后端返回 `{payment, detail, origOrder, refundItems}`，页面却读 `res.refund / res.payments`。
+   即便 id 修好，页面也渲染不出。
+   （approveRefund/rejectRefund 同样传 saleOrderId，spec step5 已用 API 直驱绕过——见 bs02 文件头 note 2。）
+   → **需决策**：refund-detail 该按 paymentId 还是 sale_order_id 检索？一单多笔退款怎么定位？响应字段统一成哪套？是否同步 admin 端同款 refundDetail？
+
 ### 新浮现的下游失败点（超出本批 5 项，待你定夺是否继续）
 
 - bs01 step6：`onSearchCustomer` 后 `customerInfo.id` 未等到（顾客搜索结果/契约）
