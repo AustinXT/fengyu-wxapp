@@ -122,21 +122,12 @@
                 </view>
               </block>
 
-              <!-- 普通商品：保留原图文卡片 -->
+              <!-- 普通商品：纯文字卡片（实体 SKU 无图片） -->
               <block wx:else>
-                <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-                  <van-icon name="photo-o" size="64rpx" color="#C0322A" />
-                </view>
-                <image
-                  wx:else
-                  class="spu-cover"
-                  src="{{item.cover_image}}"
-                  mode="aspectFill"
-                  lazy-load
-                />
                 <view class="spu-body">
-                  <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                    <van-tag color="#C0322A">推荐</van-tag>
+                  <view class="spu-tags" wx:if="{{item.productType}}">
+                    <van-tag plain color="{{item.productType === '疗程卡' ? '#C0322A' : '#8A8A8A'}}">{{item.productType}}</van-tag>
+                    <van-tag wx:if="{{item.productType === '疗程卡'}}" plain color="#C0322A">{{item.sessionCount ? item.sessionCount + '次' : '单次'}}</van-tag>
                   </view>
                   <text class="spu-name">{{item.spuName}}</text>
                   <view class="spu-footer">
@@ -160,6 +151,10 @@
               <view class="cart-item-info">
                 <text class="cart-item-name">{{item.spuName}}</text>
                 <text class="cart-item-spec">{{item.specName}}</text>
+                <view class="cart-item-tags" wx:if="{{item.productType}}">
+                  <van-tag plain color="{{item.productType === '疗程卡' ? '#C0322A' : '#8A8A8A'}}" size="mini">{{item.productType}}</van-tag>
+                  <van-tag wx:if="{{item.productType === '疗程卡'}}" plain color="#C0322A" size="mini">{{item.sessionCount ? item.sessionCount + '次' : '单次'}}</van-tag>
+                </view>
               </view>
               <view class="cart-item-right">
                 <text class="cart-item-price">¥{{item.priceLine}}</text>
