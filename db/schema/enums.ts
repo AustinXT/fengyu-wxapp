@@ -88,7 +88,7 @@ export const paymentSourceEndEnum = pgEnum("payment_source_end", [
   "notify",
 ]);
 
-export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "已完成", "已取消"]);
+export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "待客户确认", "已完成", "已取消"]);
 
 export const serviceOrderTypeEnum = pgEnum("service_order_type", ["售前", "售后"]);
 

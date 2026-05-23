@@ -37,6 +37,9 @@ export * from './coupon'
 // 管理后台登录密码
 export * from './admin-auth'
 
+// 管理后台登录失败锁定（持久化防爆破）
+export * from './login-attempt'
+
 // 积分系统（积分流水；余额缓存已合并至 client_wechat_users）
 export * from './points'
 

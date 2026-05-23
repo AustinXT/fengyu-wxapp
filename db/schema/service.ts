@@ -11,7 +11,9 @@ import { appointments } from './appointment'
  *
  * 与订单的关联通过 service_items.sale_item_id → sale_items.sale_item_id 实现，
  * 主表不存 sale_order_id，支持同一次到店跨多笔订单核销。
- * 状态流转：待服务 -> 服务中 -> 已完成
+ * 状态流转：待服务 -> 服务中 -> 待客户确认 -> 已完成
+ * 员工点「完成」仅把 服务中 -> 待客户确认（记 staff_completed_at），不产生副作用；
+ * 顾客（或店长/后台代）确认后才 待客户确认 -> 已完成，并原子扣减次数 + 计提成 + 关预约（记 completed_at）。
  */
 export const serviceOrders = pgTable(
   'service_orders',
@@ -33,7 +35,9 @@ export const serviceOrders = pgTable(
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
     /** 服务开始时间（状态转为"服务中"时记录） */
     startedAt: timestamp('started_at'),
-    /** 服务完成时间（状态转为"已完成"时记录） */
+    /** 员工标记完成时间（状态转为"待客户确认"时记录） */
+    staffCompletedAt: timestamp('staff_completed_at'),
+    /** 服务完成时间（顾客/代确认使状态转为"已完成"时记录） */
     completedAt: timestamp('completed_at'),
     /** 提成分配状态（仅已完成的服务单有值） */
     commissionStatus: allocationStatusEnum('commission_status'),
@@ -62,10 +66,14 @@ export const serviceOrders = pgTable(
     uniqueIndex('uq_so_appointment')
       .on(table.appointmentId)
       .where(sql`appointment_id IS NOT NULL`),
-    /** 同一顾客同时只能有 1 张活跃服务单：防同顾客双 create */
+    /**
+     * 同一顾客同时只能有 1 张活跃服务单：防同顾客双 create（待客户确认 仍占活跃，未确认期间不能开新服务单）。
+     * 谓词用 NOT IN 终态而非正列表：仅引用既有枚举值，避免与 ALTER TYPE ADD VALUE '待客户确认'
+     * 同事务时触发 55P04（drizzle migrate 把全部 pending migration 包进单事务），同时天然涵盖未来新增的非终态。
+     */
     uniqueIndex('uq_so_client_active')
       .on(table.clientUserId)
-      .where(sql`status IN ('待服务','服务中')`),
+      .where(sql`status NOT IN ('已完成','已取消')`),
   ],
 )
 
