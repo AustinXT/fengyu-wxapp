@@ -110,6 +110,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
 
       {/* Version info */}
       <div
+        data-testid="build-version"
         className={cn(
           "truncate border-t border-[var(--border)] py-1 text-center text-[10px] leading-tight text-[#999999]",
           collapsed ? "px-1" : "px-2",
