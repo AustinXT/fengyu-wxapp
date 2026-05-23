@@ -2,9 +2,12 @@
 /**
  * clientApi.appointment.cancel
  *
- * 路由源：fengyu-client/cloudfunctions/clientApi/routes/appointment.js (line 185)
+ * 路由源：fengyu-client/cloudfunctions/clientApi/routes/appointment.js (cancel)
  *   - status ∈ {'待确认','已确认'} 时允许 cancel
- *   - 其他状态（已签到/已完成/已取消）→ INVALID_PARAMS: 预约状态不允许取消
+ *   - 其他状态（已完成/已取消/已关闭）→ INVALID_PARAMS: 预约状态不允许取消
+ *   - 已关联服务单且服务已开始/完成（service_orders.status ∈ 待服务/服务中/已完成）
+ *     → INVALID_STATE: 该预约已开始服务，无法取消（防止服务已发生却显示已取消）；
+ *     服务单为 已取消 时不拦截
  *   - 跨用户：路由 SELECT WHERE client_user_id 不命中 → INVALID_PARAMS: 预约不存在
  *     （无显式 PERMISSION_DENIED 分支）
  *
@@ -41,6 +44,21 @@ async function insertAppointment({ idx, status, userId = TEST_CLIENT_USER_ID }) 
     status,
   })
   return apptId
+}
+
+// 插入一条关联到预约的服务单（assigned_employee_id 复用 insertAppointment 建的美容师）
+async function insertServiceOrder({ idx, appointmentId, status, employeeId = `${NS}_CN_BEAUT` }) {
+  const soId = `${NS}_CN_SO_${idx}`.slice(0, 30)
+  await pgQuery(
+    `INSERT INTO service_orders (
+       service_order_id, status, service_order_type, market_name, store_id,
+       service_date, assigned_employee_id, client_user_id, appointment_id
+     )
+     VALUES ($1, $2::service_order_status, '售前'::service_order_type, $3, $4,
+             CURRENT_DATE, $5, $6, $7)`,
+    [soId, status, `${NS}_市场`, TEST_STORE_ID, employeeId, TEST_CLIENT_USER_ID, appointmentId]
+  )
+  return soId
 }
 
 async function casePendingCancel() {
@@ -97,11 +115,44 @@ async function caseCrossUserDenied() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '预约不存在' })
 }
 
+// 已确认预约 + 关联进行中（服务中）服务单 → 取消被拦截，预约保持已确认
+async function caseLinkedServiceRejected() {
+  await createTestClient()
+  const apptId = await insertAppointment({ idx: 5, status: '已确认' })
+  await insertServiceOrder({ idx: 5, appointmentId: apptId, status: '服务中' })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'appointment.cancel', {
+    appointmentId: apptId,
+  })
+  expectError(res, 'INVALID_STATE', { messageIncludes: '已开始服务' })
+  // 预约未被翻成已取消（防止服务已发生却显示已取消）
+  const rows = await pgQuery(`SELECT status FROM appointments WHERE appointment_id = $1`, [apptId])
+  if (rows[0].status !== '已确认') {
+    throw new Error(`PG status=${rows[0].status}，期望仍为 已确认（拦截后不应变更）`)
+  }
+}
+
+// 已确认预约 + 关联服务单为已取消 → 守卫不命中，取消照常放行
+async function caseCancelledServiceStillCancellable() {
+  await createTestClient()
+  const apptId = await insertAppointment({ idx: 6, status: '已确认' })
+  await insertServiceOrder({ idx: 6, appointmentId: apptId, status: '已取消' })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'appointment.cancel', {
+    appointmentId: apptId,
+  })
+  if (res.code !== 0) {
+    throw new Error(`expect code=0 (服务单已取消应放行), got ${res.code}: ${res.message}`)
+  }
+  const rows = await pgQuery(`SELECT status FROM appointments WHERE appointment_id = $1`, [apptId])
+  if (rows[0].status !== '已取消') throw new Error(`PG status=${rows[0].status}`)
+}
+
 const CASES = [
   ['cancel 待确认 → status=已取消 + cancelled_reason saved', casePendingCancel],
   ['cancel 已确认 → allowed → status=已取消', caseConfirmedCancel],
   ['cancel 已完成 → INVALID_PARAMS 预约状态不允许取消', caseCompletedRejected],
   ['cancel cross-user → INVALID_PARAMS/预约不存在', caseCrossUserDenied],
+  ['cancel 已关联服务中服务单 → INVALID_STATE 已开始服务 + 预约保持已确认', caseLinkedServiceRejected],
+  ['cancel 关联服务单已取消 → 仍可取消', caseCancelledServiceStillCancellable],
 ]
 
 let pass = 0, fail = 0

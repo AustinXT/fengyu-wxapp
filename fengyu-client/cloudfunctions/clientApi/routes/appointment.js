@@ -215,6 +215,21 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 预约状态不允许取消')
   }
 
+  // 已关联服务单且服务已开始/完成的预约不可取消：
+  // service.create 关联预约但不改其状态，预约在 待服务/服务中 阶段仍是 已确认，
+  // 若放行取消会造成「服务已发生（已扣次数、已产生提成）却显示已取消」的数据不一致。
+  // 服务单 已取消 不拦截，以便释放预约。
+  const linkedService = await pg.query(
+    `SELECT 1 FROM service_orders
+     WHERE appointment_id = $1
+       AND status IN ('待服务', '服务中', '已完成')
+     LIMIT 1`,
+    [appointmentId]
+  )
+  if (linkedService.length > 0) {
+    throw new Error('INVALID_STATE: 该预约已开始服务，无法取消')
+  }
+
   const now = new Date()
   const cancelUpd = await pg.query(
     `UPDATE appointments

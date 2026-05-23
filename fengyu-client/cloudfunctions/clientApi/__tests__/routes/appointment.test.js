@@ -205,6 +205,7 @@ describe('appointment.cancel', () => {
       .mockResolvedValueOnce([{
         appointment_id: 'apt-1', status: '待确认', client_user_id: 'user-001',
       }])
+      .mockResolvedValueOnce([]) // 无关联服务单
       .mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ appointmentId: 'apt-1' })
@@ -218,6 +219,37 @@ describe('appointment.cancel', () => {
       .mockResolvedValueOnce([{
         appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
       }])
+      .mockResolvedValueOnce([]) // 无关联服务单
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ appointmentId: 'apt-1' })
+    await routes.cancel(ctx)
+
+    expect(ctx.result.status).toBe('已取消')
+  })
+
+  test('已关联进行中服务单的预约不可取消 → INVALID_STATE', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
+      }])
+      .mockResolvedValueOnce([{ '?column?': 1 }]) // 存在 服务中 服务单
+
+    const ctx = createBoundCtx({ appointmentId: 'apt-1' })
+    await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_STATE.*已开始服务/)
+
+    // 守卫 SQL 只拦截 待服务/服务中/已完成
+    const guardSql = pg.query.mock.calls[1][0]
+    expect(guardSql).toContain('service_orders')
+    expect(guardSql).toContain("'待服务', '服务中', '已完成'")
+  })
+
+  test('服务单已取消时仍可取消预约', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
+      }])
+      .mockResolvedValueOnce([]) // 服务单为 已取消，守卫查询不命中
       .mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ appointmentId: 'apt-1' })
