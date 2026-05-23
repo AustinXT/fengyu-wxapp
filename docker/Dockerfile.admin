@@ -43,6 +43,12 @@ ARG APP_COMMIT=
 ENV APP_VERSION=$APP_VERSION
 ENV APP_COMMIT=$APP_COMMIT
 
+# 构建期占位：next build 的 page-data 收集会求值模块图，jwt-secret.ts 在模块加载期
+# 即调 resolveSecret()，NODE_ENV=production 下无 JWT_SECRET 会 fail-fast 中断构建。
+# 构建期不是运行期、本就无真 secret，这里给一个 dummy 占位让构建过；运行期由容器 env
+# 注入真值覆盖（runner stage 不继承本 ENV），fail-fast 的运行期安全保障不受影响。
+ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
+
 RUN bun run build
 
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
