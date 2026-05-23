@@ -17,6 +17,7 @@ const {
   assertEmployeeInScope,
 } = require("../utils/scope");
 const { maskPhone } = require("../utils/pii");
+const { maskPhoneForAuth } = require("../utils/phone-visibility");
 
 /**
  * 搜索顾客（PG 单源）
@@ -26,8 +27,6 @@ async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
   const { keyword, phone, customerType, crossStore } = ctx.event.payload || {};
-
-  const isManagerRole = ctx.auth.roles.includes("manager");
 
   // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
   const typeFilter = customerType === 'member'
@@ -40,24 +39,27 @@ async function search(ctx) {
   let rows = [];
 
   if (phone) {
+    // 精确手机号定位：账户级资产（积分/储值卡/会员等级）不跟门店绑定，
+    // 故含已解绑（bound_store_id IS NULL）顾客也应可被定位查看。
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.phone = $1 AND c.bound_store_id IS NOT NULL${typeFilter}`,
+       WHERE c.phone = $1${typeFilter}`,
       [phone.trim()],
     );
   } else if (keyword && keyword.trim()) {
     const kw = `%${keyword.trim()}%`;
     if (crossStore) {
-      // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，绑定任意门店即可见）
+      // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
+      // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
       rows = await pg.query(
         `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id IS NOT NULL${typeFilter}
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1)${typeFilter}
          LIMIT $2`,
         [kw, limit],
       );
@@ -90,7 +92,7 @@ async function search(ctx) {
     clientUserId: r.user_id,
     customerNo: r.customer_id || null,
     name: r.name ? r.name.trim() : "",
-    phone: isManagerRole ? (r.phone || "") : maskPhone(r.phone),
+    phone: maskPhoneForAuth(r.phone, ctx.auth),
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : "",
@@ -274,8 +276,6 @@ async function detail(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 id、phone 或 clientUserId 参数");
   }
 
-  const isManagerRole = ctx.auth.roles.includes("manager");
-
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
     c.bound_employee_id, c.skin_type, c.improvement_focus, c.gender, c.notes,
     c.bound_store_id, s.store_name`;
@@ -365,7 +365,7 @@ async function detail(ctx) {
     clientUserId,
     name,
     gender: pgUser.gender || null,
-    phone: isManagerRole ? phone : maskPhone(phone),
+    phone: maskPhoneForAuth(phone, ctx.auth),
     phoneMasked: maskPhone(phone),
     memberLevel: pgUser.member_level || null,
     storeName: pgUser.store_name ? pgUser.store_name.trim() : "",
@@ -511,6 +511,22 @@ async function paidOrders(ctx) {
       si.product_name
     FROM sale_items si
     WHERE si.sale_order_id = ANY($1)
+      -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
+      AND NOT EXISTS (
+        SELECT 1 FROM sale_order_payments sop
+        WHERE sop.sale_order_id = si.sale_order_id
+          AND sop.change_type = '退款' AND sop.status = '待审批'
+      )
+      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = si.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )
     ORDER BY si.sale_item_id`,
     [orderIds],
   );
@@ -620,7 +636,6 @@ async function listByTag(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 tag 参数')
   }
 
-  const isManagerRole = ctx.auth.roles.includes('manager')
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const currentMonth = now.getMonth() + 1
@@ -701,7 +716,7 @@ async function listByTag(ctx) {
         id: null,
         clientUserId: r.user_id,
         name: r.name || '',
-        phone: isManagerRole ? (r.phone || '') : maskPhone(r.phone),
+        phone: maskPhoneForAuth(r.phone, ctx.auth),
         phoneMasked: maskPhone(r.phone),
         memberLevel: r.member_level,
         lastServiceDate: r.last_service_date,
@@ -1000,8 +1015,20 @@ async function customerBalance(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 customerUserId')
   }
 
-  // scope 守卫：店长只能查 scope 内顾客余额（prepaid_cards 跨店共享，无 store_id 列）
-  await assertCustomerInScope(pg, ctx.auth, customerUserId)
+  // scope 守卫：储值卡余额是账户级资产（prepaid_cards 跨店共享，无 store_id 列），
+  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）」——
+  // 解绑顾客的余额仍可查；仅「仍绑定他店」的活跃顾客继续 PERMISSION_DENIED。
+  const scopeRows = await pg.query(
+    'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+    [customerUserId]
+  )
+  if (scopeRows.length === 0) {
+    throw new Error('PERMISSION_DENIED: 顾客不存在')
+  }
+  const boundStoreId = scopeRows[0].bound_store_id
+  if (boundStoreId !== null && !isStoreInScope(ctx.auth, boundStoreId)) {
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+  }
 
   const rows = await pg.query(
     'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',

@@ -146,11 +146,30 @@ describe('customer.search', () => {
     const [sql, params] = pg.query.mock.calls[0]
     // 模糊匹配手机号 + 姓名
     expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
-    // 跨门店：绑定任意门店即可见，不按 effectiveStoreId 过滤
-    expect(sql).toContain('c.bound_store_id IS NOT NULL')
+    // 账户级资产不跟门店绑定：跨店检索含已解绑顾客，不带 bound_store_id 过滤
+    expect(sql).not.toContain('c.bound_store_id IS NOT NULL')
     expect(sql).not.toContain('c.bound_store_id = $2')
     expect(params[0]).toBe('%张%')
     expect(params[1]).toBe(20) // LIMIT，无门店参数占位
+  })
+
+  test('精确手机号可定位已解绑（bound_store_id=NULL）顾客', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111' })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: '黑钻', bound_store_id: null, store_name: null },
+      ])
+      .mockResolvedValueOnce([])  // spendRows
+      .mockResolvedValueOnce([])  // svcDateRows
+      .mockResolvedValueOnce([])  // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    // 精确手机号分支不再要求 bound_store_id 非空 → 已解绑顾客也能搜到
+    expect(sql).toContain('c.phone = $1')
+    expect(sql).not.toContain('c.bound_store_id IS NOT NULL')
+    expect(ctx.result[0].clientUserId).toBe('u1')
+    expect(ctx.result[0].memberLevel).toBe('黑钻')
+    expect(ctx.result[0].storeName).toBe('')  // 未绑定门店 → 空串
   })
 
   test('不带 crossStore 的关键词仍走门店内过滤（回归）', async () => {
@@ -1421,5 +1440,33 @@ describe('customer.customerBalance', () => {
     const ctx = createManagerCtx({})
     await expect(customerRoutes.customerBalance(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*customerUserId/)
+  })
+
+  test('已解绑顾客（bound_store_id=NULL）余额仍可查（账户级，不跟门店绑定）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-unbound' })
+    // scope 检查 SELECT bound_store_id → NULL（已解绑）
+    pg.query.mockResolvedValueOnce([{ bound_store_id: null }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-x', balance: '100000.00' }])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-x')
+    expect(ctx.result.balance).toBe(100000)
+  })
+
+  test('仍绑定他店（不在 scope）顾客余额仍拒绝（scope 隔离未破坏）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-otherstore' })
+    // scope 检查 SELECT bound_store_id → 他店，不在 scopeStoreIds 内
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999' }])
+
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('顾客不存在拒绝', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-missing' })
+    pg.query.mockResolvedValueOnce([])  // scope 检查无行
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
