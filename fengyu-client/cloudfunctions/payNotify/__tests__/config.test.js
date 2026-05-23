@@ -16,6 +16,11 @@ require.cache[pgPath] = {
       query: (...args) => mockQuery(...args),
       on: vi.fn(),
     })),
+    // config.js 模块加载时调用 pg.types.setTypeParser（commit 3544deb9 引入的
+    // numeric/bigint 全局 OID 解析）；mock 需提供 types 否则 require 即抛
+    types: {
+      setTypeParser: vi.fn(),
+    },
   },
 }
 
