@@ -271,6 +271,8 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">组织架构</h1>
+        {/* 新增根节点：parentId=null（无需先选中节点）；服务端 createOrgNode 已按 org:create 鉴权 */}
+        <Button size="sm" onClick={() => openCreateDialog(null)}>新增根节点</Button>
       </div>
 
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
