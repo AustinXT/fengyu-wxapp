@@ -4,7 +4,7 @@
  * 关键场景：
  *   A 无超期预约 → closed=0，不写日志
  *   B 有超期预约 → UPDATE + 单条聚合 operation_logs
- *   C SQL 形态：status IN ('待确认','已确认') + appointment_time < NOW() - INTERVAL '1 day'
+ *   C SQL 形态：status IN ('待确认','已确认') + checkin_at IS NULL + appointment_time < date_trunc('day', NOW())
  *   D 不调 notifyOps（常规清扫）
  */
 
@@ -87,7 +87,8 @@ describe('cron-worker STEP 8 — closeExpiredAppointments', () => {
     expect(sqlText).toMatch(/UPDATE\s+appointments/)
     expect(sqlText).toMatch(/status\s*=\s*'已关闭'/)
     expect(sqlText).toMatch(/status\s+IN\s*\(\s*'待确认'\s*,\s*'已确认'\s*\)/)
-    expect(sqlText).toMatch(/appointment_time\s*<\s*NOW\(\)\s*-\s*INTERVAL\s*'1 day'/)
+    expect(sqlText).toMatch(/checkin_at\s+IS\s+NULL/)
+    expect(sqlText).toMatch(/appointment_time\s*<\s*date_trunc\(\s*'day'/)
     expect(sqlText).toMatch(/RETURNING\s+appointment_id/)
   })
 

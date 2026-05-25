@@ -2,7 +2,10 @@
  * cron-01：STEP 1 closeExpiredAppointments 端到端
  *
  * 关键事实（src/cron/steps/close-expired-appointments.ts）：
- *   - 关闭 status IN ('待确认','已确认') AND appointment_time < NOW() - INTERVAL '1 day'
+ *   - 关闭 status IN ('待确认','已确认') AND checkin_at IS NULL
+ *     AND appointment_time < date_trunc('day', NOW())（预约日期早于今天）
+ *   - 按"预约日期"判定：当天的预约即便时刻已过也不关闭，要到次日 03:00 才关
+ *   - 已签到（checkin_at 非空）不关闭
  *   - 已关闭/已取消/已完成 不动
  *   - closed > 0 时写 1 条聚合 operation_logs（target_id = dateStampOf(ctx)）
  *   - closed = 0 时不写日志
@@ -43,21 +46,24 @@ function insertAppointment(opt: {
   clientName: string
   appointmentTime: string // ISO + timezone
   status: '待确认' | '已确认' | '已关闭' | '已取消' | '已完成'
+  checkinAt?: string // ISO + timezone；省略则 NULL（未签到）
 }): string {
   const aid = `${PREFIX.APT}${opt.suffix}`
+  const checkinSql = opt.checkinAt ? `'${opt.checkinAt}'::timestamptz` : 'NULL'
   psql(`
     INSERT INTO appointments (
       appointment_id, store_id, client_user_id, client_name,
       employee_id, employee_name,
-      appointment_time, status, created_at, updated_at
+      appointment_time, checkin_at, status, created_at, updated_at
     )
     VALUES (
       '${aid}', '${REAL.storeId}', '${opt.clientUserId}', '${opt.clientName.replace(/'/g, "''")}',
       '${REAL.employeeId}', '${REAL.employeeName.replace(/'/g, "''")}',
-      '${opt.appointmentTime}'::timestamptz, '${opt.status}', NOW(), NOW()
+      '${opt.appointmentTime}'::timestamptz, ${checkinSql}, '${opt.status}', NOW(), NOW()
     )
     ON CONFLICT (appointment_id) DO UPDATE SET
       appointment_time = EXCLUDED.appointment_time,
+      checkin_at = EXCLUDED.checkin_at,
       status = EXCLUDED.status,
       updated_at = NOW()
   `)
@@ -68,12 +74,12 @@ test.describe.serial('cron-01 closeExpiredAppointments', () => {
   test.beforeAll(() => cleanupCronE2E())
   test.afterAll(() => cleanupCronE2E())
 
-  test('1.1 超期 25h 待确认 → 关闭 + 写聚合 operation_logs', () => {
+  test('1.1 预约日期早于今天（待确认）→ 关闭 + 写聚合 operation_logs', () => {
     const uid = upsertClient('APT_11', { customerType: '会员客' })
     const aid = insertAppointment({
       suffix: 'APT_11',
       clientUserId: uid, clientName: 'CRON_E2E_APT',
-      appointmentTime: '2026-11-19 02:00:00+0800', // referenceDate=2026-11-20 03:00 → 超期 25h
+      appointmentTime: '2026-11-19 02:00:00+0800', // referenceDate=2026-11-20 → 前一日预约
       status: '待确认',
     })
     const result = runClose('2026-11-20')
@@ -85,12 +91,13 @@ test.describe.serial('cron-01 closeExpiredAppointments', () => {
     expect(countOperationLogs('cron.close_expired_appointments', '2026-11-20')).toBeGreaterThanOrEqual(1)
   })
 
-  test('1.2 临界 23h 未超过 → 不动', () => {
+  test('1.2 当天预约即便时刻已过也不关闭（按日期判定）', () => {
     const uid = upsertClient('APT_12', { customerType: '会员客' })
     const aid = insertAppointment({
       suffix: 'APT_12',
       clientUserId: uid, clientName: 'CRON_E2E_APT',
-      appointmentTime: '2026-11-19 06:00:00+0800', // referenceDate 03:00 → 距今 21h < 24h
+      // referenceDate=2026-11-20 03:00；预约在同一天 02:00（时刻已过但仍是"今天"）→ 不关闭
+      appointmentTime: '2026-11-20 02:00:00+0800',
       status: '待确认',
     })
     runClose('2026-11-20')
@@ -158,5 +165,19 @@ test.describe.serial('cron-01 closeExpiredAppointments', () => {
     runClose('2026-11-20')
     expect(getAppointmentStatus(aidA)).toBe('已取消')
     expect(getAppointmentStatus(aidB)).toBe('已完成')
+  })
+
+  test('1.8 已签到（checkin_at 非空）+ 过期 → 不关闭', () => {
+    const uid = upsertClient('APT_18', { customerType: '会员客' })
+    const aid = insertAppointment({
+      suffix: 'APT_18',
+      clientUserId: uid, clientName: 'CRON_E2E_APT',
+      appointmentTime: '2026-11-18 12:00:00+0800', // 前几日，已过期
+      status: '已确认',
+      checkinAt: '2026-11-18 12:30:00+0800', // 已签到 → 不应被关闭
+    })
+    const result = runClose('2026-11-20')
+    expect(result.ids).not.toContain(aid)
+    expect(getAppointmentStatus(aid)).toBe('已确认')
   })
 })
