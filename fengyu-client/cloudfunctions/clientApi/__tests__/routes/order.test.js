@@ -523,27 +523,70 @@ describe('order.create', () => {
 })
 
 describe('order.pay', () => {
-  test('正常发起微信支付', async () => {
+  // 微信支付走拉卡拉收银台：需 lakala env 就绪（isReady 真），lakala-client.request 已在 setup.js mock。
+  // 局部设 env 避免泄漏到其它 describe / 文件。
+  const LAKALA_ENV = {
+    LAKALA_API_BASE: 'https://test.wsmsd.cn/sit/api',
+    LAKALA_APPID: 'OP00000003',
+    LAKALA_SERIAL_NO: '00dfba8194c41b84cf',
+    LAKALA_PRIVATE_KEY_PEM: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----',
+    LAKALA_PLATFORM_CERT_PEM: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
+    LAKALA_DEFAULT_MERCHANT_NO: '822290059430BFA',
+    LAKALA_DEFAULT_TERM_NO: 'D9261078',
+    LAKALA_NOTIFY_URL: 'https://notify.test/lakala/notify',
+    LAKALA_ENV: 'release',
+  }
+  const lakalaEnvSnapshot = {}
+  beforeEach(() => {
+    for (const [k, v] of Object.entries(LAKALA_ENV)) {
+      lakalaEnvSnapshot[k] = process.env[k]
+      process.env[k] = v
+    }
+  })
+  afterEach(() => {
+    for (const k of Object.keys(LAKALA_ENV)) {
+      if (lakalaEnvSnapshot[k] === undefined) delete process.env[k]
+      else process.env[k] = lakalaEnvSnapshot[k]
+    }
+  })
+
+  // 门店拉卡拉商户行（resolveLakalaMerchant 的 SELECT 结果）
+  const STORE_LAKALA_ROW = [{ lakala_merchant_no: 'M-TEST', lakala_term_no: 'T-TEST', lakala_enabled: true }]
+
+  // 按 SQL 派发的 pg.query mock（对查询条数/顺序鲁棒，避免脆弱的 once 序列）
+  function mockPayQueries({ order, paidSum = 0 }) {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [order]
+      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: paidSum }]
+      if (/lakala_merchant_no/.test(sql)) return STORE_LAKALA_ROW
+      return [] // UPDATE / hasPaymentRows / 其它
+    })
+  }
+
+  test('正常发起微信支付（拉卡拉收银台）', async () => {
     const now = new Date()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '待支付',
-      client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
-      sale_order_datetime: now.toISOString(),    }])
-    // calcPaymentRemaining: SUM(payments) → 0
-    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
-    // hasPaymentRows: 空
-    pg.query.mockResolvedValueOnce([])
-    // UPDATE
-    pg.query.mockResolvedValueOnce([])
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.pay(ctx)
 
-    expect(ctx.result.mockMode).toBe(true)
-    expect(ctx.result.paymentParams).toBeDefined()
-    // totalFee 按本次应付（分）
-    expect(ctx.result.paymentParams.totalFee).toBe(10000)
+    // 返回拉卡拉收银台跳转信息（取代旧 mockMode/paymentParams）
+    expect(ctx.result.lakala.counterUrl).toBe('https://pay.test/cashier')
+    expect(ctx.result.lakala.payOrderNo).toBe('PO-TEST-1')
+    expect(ctx.result.lakala.appId).toBe('wx889424d565967811')
+    expect(ctx.result.paymentMethod).toBe('微信')
     expect(ctx.result.paidAmount).toBe(100)
+    // 调拉卡拉收银台下单时金额按本次应付（分），且字段类型为数字
+    const reqData = __mocks__.lakalaClient.request.mock.calls[0][0].reqData
+    expect(reqData.total_amount).toBe(10000)
+    expect(reqData.support_refund).toBe(1)
+    expect(reqData.trade_biz_tp).toBeUndefined()
   })
 
   test('paid_amount=0（全额抵扣）直接短路返回已支付', async () => {
@@ -593,18 +636,14 @@ describe('order.pay', () => {
 
   test('pay 发起成功后不写 payments 行（只更新 sale_orders.payment_method）', async () => {
     const now = new Date()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '待支付',
-      client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
-      prepaid_card_amount: 0,
-      sale_order_datetime: now.toISOString(),
-    }])
-    // calcPaymentRemaining
-    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
-    // hasPaymentRows
-    pg.query.mockResolvedValueOnce([])
-    // UPDATE
-    pg.query.mockResolvedValueOnce([])
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
+        prepaid_card_amount: 0,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.pay(ctx)
@@ -650,24 +689,24 @@ describe('order.pay', () => {
 
   test('pay 在 部分支付 状态下允许发起补款（按剩余应付 200-50=150）', async () => {
     const now = new Date()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '部分支付',
-      client_user_id: 'user-001', total_amount: 200, paid_amount: 50,
-      prepaid_card_amount: 0,
-      sale_order_datetime: now.toISOString(),
-    }])
-    // SUM(payments) = 50（已有首次支付 50）
-    pg.query.mockResolvedValueOnce([{ paid_sum: 50 }])
-    // hasPaymentRows = 有行
-    pg.query.mockResolvedValueOnce([{ '?column?': 1 }])
-    // UPDATE
-    pg.query.mockResolvedValueOnce([])
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-001', status: '部分支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 200, paid_amount: 50,
+        prepaid_card_amount: 0,
+        sale_order_datetime: now.toISOString(),
+      },
+      paidSum: 50, // 已有首次支付 50 → 剩余应付 150
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.pay(ctx)
 
     expect(ctx.result.paidAmount).toBe(150)
-    expect(ctx.result.paymentParams.totalFee).toBe(15000)
+    // 拉卡拉收银台下单金额 = 本次应付 150 元 → 15000 分（数字）
+    const reqData = __mocks__.lakalaClient.request.mock.calls[0][0].reqData
+    expect(reqData.total_amount).toBe(15000)
+    expect(ctx.result.lakala.counterUrl).toBe('https://pay.test/cashier')
   })
 })
 
@@ -900,6 +939,127 @@ describe('order.cancel', () => {
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)
+  })
+
+  test('取消已发起拉卡拉的线上待支付单 → 调 closeCashierOrder 关单防迟付', async () => {
+    const env = {
+      LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+      LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+      LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
+    }
+    const snap = {}
+    for (const [k, v] of Object.entries(env)) { snap[k] = process.env[k]; process.env[k] = v }
+    try {
+      pg.query.mockImplementation(async (sql) => {
+        if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+          sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+          store_id: 'store-1', lakala_out_order_no: 'FY-001_1700000000',
+        }]
+        if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+        return []
+      })
+      pg.transaction.mockImplementation(async (cb) => cb({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }))
+
+      const ctx = createBoundCtx({ orderNo: 'FY-001' })
+      await routes.cancel(ctx)
+
+      expect(ctx.result.status).toBe('已关闭')
+      expect(__mocks__.lakalaClient.closeCashierOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ merchantNo: 'M1', outOrderNo: 'FY-001_1700000000' })
+      )
+    } finally {
+      for (const k of Object.keys(env)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] }
+    }
+  })
+
+  test('关单失败不影响本地取消（best-effort）', async () => {
+    const env = {
+      LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+      LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+      LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
+    }
+    const snap = {}
+    for (const [k, v] of Object.entries(env)) { snap[k] = process.env[k]; process.env[k] = v }
+    try {
+      pg.query.mockImplementation(async (sql) => {
+        if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+          sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+          store_id: 'store-1', lakala_out_order_no: 'FY-001_1700000000',
+        }]
+        if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+        return []
+      })
+      pg.transaction.mockImplementation(async (cb) => cb({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }))
+      __mocks__.lakalaClient.closeCashierOrder.mockRejectedValueOnce(new Error('网络超时'))
+
+      const ctx = createBoundCtx({ orderNo: 'FY-001' })
+      await routes.cancel(ctx) // 不应抛错
+
+      expect(ctx.result.status).toBe('已关闭')
+    } finally {
+      for (const k of Object.keys(env)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] }
+    }
+  })
+})
+
+describe('order.queryLakalaStatus', () => {
+  const env = {
+    LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+    LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+    LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
+  }
+  const snap = {}
+  beforeEach(() => { for (const [k, v] of Object.entries(env)) { snap[k] = process.env[k]; process.env[k] = v } })
+  afterEach(() => { for (const k of Object.keys(env)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] } })
+
+  test('待支付且已发起拉卡拉 → 查询并透传 order_status（不改本地状态）', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001',
+      }]
+      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryCashierOrder.mockResolvedValueOnce({
+      ok: true, code: '000000', resp_data: { order_status: '0' },
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.queryLakalaStatus(ctx)
+
+    expect(ctx.result.lakalaQueried).toBe(true)
+    expect(ctx.result.localStatus).toBe('待支付')
+    expect(ctx.result.lakalaOrderStatus).toBe('0')
+    expect(__mocks__.lakalaClient.queryCashierOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ merchantNo: 'M1', outOrderNo: 'FY-001_1700000000' })
+    )
+  })
+
+  test('订单未经拉卡拉发起（lakala_out_order_no 为空）→ 不查拉卡拉', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: null, client_user_id: 'user-001',
+      }]
+      return []
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.queryLakalaStatus(ctx)
+
+    expect(ctx.result.lakalaQueried).toBe(false)
+    expect(__mocks__.lakalaClient.queryCashierOrder).not.toHaveBeenCalled()
+  })
+
+  test('非本人订单 → PERMISSION_DENIED', async () => {
+    pg.query.mockImplementation(async () => [{
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
+      lakala_out_order_no: 'FY-001_x',
+    }])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await expect(routes.queryLakalaStatus(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
 

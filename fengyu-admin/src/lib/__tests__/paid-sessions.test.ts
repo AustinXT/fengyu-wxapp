@@ -84,6 +84,18 @@ describe('computePaidSessionsForItem 行级', () => {
     expect(v).toBe(8)
   })
 
+  it('整数精度（先乘后除）：received=3000、refunded=2600、total=3000、sa=3000、sc=15 → settled=400 → 400×15/3000=2（旧实现先除得 1.9999… 误舍成 1）', () => {
+    // 退款单 #18 实测形态：15 次卡退 13 次（净 ¥400=2 次），不得误算成 1 触发 PAID_SESSIONS_UNDERFLOW
+    const v = computePaidSessionsForItem({
+      itemReceived: 3000,
+      itemSaleAmount: 3000,
+      itemSessionCount: 15,
+      orderTotal: 3000,
+      orderRefunded: 2600,
+    })
+    expect(v).toBe(2)
+  })
+
   it('退款单调下降（单行订单）：received=100、refunded=30、total=100 → item_refund_share=30 → settled=70 → paid_sessions=7', () => {
     const v = computePaidSessionsForItem({
       itemReceived: 100,

@@ -34,7 +34,7 @@ async function resolveLakalaMerchant(storeId) {
 async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmountYuan, payMode }) {
   const cfg = lakalaConfig.readConfig()
   const efficientTime = lakalaClient.formatReqTime(new Date(Date.now() + 10 * 60 * 1000))
-  const totalAmountFen = String(Math.round(payAmountYuan * 100))
+  const totalAmountFen = Math.round(payAmountYuan * 100)
   // out_order_no 加秒级时间戳后缀避免拉卡拉判重（同一 sale_order_id 多次发起支付场景）
   // FY-XSD-WX-YYMMDDXXXX (19) + '_' + ts10 = 30 字符 ≤ 32 上限
   // pay_order_no（拉卡拉平台号）落 sale_order_payments.external_txn_id 维护跨次幂等，不依赖此后缀
@@ -47,11 +47,13 @@ async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmount
     order_efficient_time: efficientTime,
     notify_url: cfg.notifyUrl || '',
     order_info: `凤御美容订单 ${orderNo}`,
-    support_refund: '1',
-    support_repeat_pay: '1',
-    support_cancel: '0',
+    // 字段类型对齐拉卡拉 SDK 实体 V3CcssCounterOrderSpecialCreateRequest：
+    // total_amount=Long、support_*=Integer（发数字而非字符串）。SIT 实测两种类型均接受，
+    // 但 SDK 权威类型为数字，故对齐；trade_biz_tp 非该接口字段（SDK 实体无），已移除。
+    support_refund: 1,
+    support_repeat_pay: 1,
+    support_cancel: 0,
     counter_param: JSON.stringify({ pay_mode: payMode }),
-    trade_biz_tp: '100A06',
   }
   const resp = await lakalaClient.request({
     path: '/v3/ccss/counter/order/special_create',
@@ -60,9 +62,16 @@ async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmount
   if (!resp.ok) {
     throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
   }
+  // 持久化本次收银台商户订单号，供后续「查询/关单」按 out_order_no 寻单（取消防迟付 / 轮询兜底）。
+  // CAS-EXEMPT：仅写 lakala_out_order_no，不翻 status。
+  await pg.query(
+    'UPDATE sale_orders SET lakala_out_order_no = $1 WHERE sale_order_id = $2',
+    [outOrderNo, orderNo]
+  )
   return {
     counterUrl: resp.resp_data.counter_url,
     payOrderNo: resp.resp_data.pay_order_no,
+    outOrderNo,
   }
 }
 
@@ -1402,6 +1411,22 @@ async function cancel(ctx) {
     }
   })
 
+  // 关闭拉卡拉收银台订单，防止已取消的线上单被迟到支付。
+  // best-effort：本地取消已提交，关单失败不回滚（收银台订单也会到期自动失效）。
+  if (order.lakala_out_order_no) {
+    try {
+      const merchant = await resolveLakalaMerchant(order.store_id)
+      if (merchant) {
+        await lakalaClient.closeCashierOrder({
+          merchantNo: merchant.merchantNo,
+          outOrderNo: order.lakala_out_order_no,
+        })
+      }
+    } catch (e) {
+      console.warn('[lakala] 取消订单时关单失败（不影响本地取消）:', orderNo, e.message)
+    }
+  }
+
   ctx.result = {
     orderNo,
     status: '已关闭',
@@ -2142,6 +2167,61 @@ async function repay(ctx) {
   }
 }
 
+/**
+ * 查询拉卡拉收银台支付状态（只读轮询兜底）
+ *
+ * 前端轮询 order.detail 仍 '待支付' 时可调本接口，主动问拉卡拉该单是否已支付，
+ * 避免 payNotify 延迟/丢失时死等。**不改 DB**——订单结算（置已支付/积分/储值卡等）仍由
+ * payNotify 单源负责（payNotify 是独立云函数，避免在此重复结算逻辑）；本接口仅把拉卡拉视角的
+ * order_status 透出给前端做 UX 决策。
+ *
+ * resp_data.order_status 拉卡拉枚举（SIT 实测：'0'=未支付/处理中，'7'=已关闭；
+ * 已支付对应值需联调时按拉卡拉文档确认，故此处只透传原始值不做语义判定）。
+ */
+async function queryLakalaStatus(ctx) {
+  const { userId } = ctx.auth
+  const p = ctx.event.payload || {}
+  const orderNo = p.saleOrderId || p.orderNo
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+
+  const orders = await pg.query(
+    'SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
+  if (orders.length === 0) {
+    throw new Error('NOT_FOUND: 订单不存在')
+  }
+  const order = orders[0]
+  if (order.client_user_id && order.client_user_id !== userId) {
+    throw new Error('PERMISSION_DENIED: 无权查询该订单')
+  }
+
+  // 未经拉卡拉发起支付，或门店未启用：无可查的收银台订单，仅回本地状态
+  let merchant = null
+  if (order.lakala_out_order_no) {
+    merchant = await resolveLakalaMerchant(order.store_id)
+  }
+  if (!order.lakala_out_order_no || !merchant) {
+    ctx.result = { orderNo, localStatus: order.status, lakalaQueried: false }
+    return
+  }
+
+  const resp = await lakalaClient.queryCashierOrder({
+    merchantNo: merchant.merchantNo,
+    outOrderNo: order.lakala_out_order_no,
+  })
+  ctx.result = {
+    orderNo,
+    localStatus: order.status,
+    lakalaQueried: true,
+    lakalaOk: resp.ok,
+    lakalaOrderStatus: resp.ok ? (resp.resp_data.order_status || null) : null,
+    lakalaCode: resp.code,
+  }
+}
+
 module.exports = {
   create,
   pay,
@@ -2155,4 +2235,5 @@ module.exports = {
   scanAdjust,
   confirmPrepaidFull,
   repay,
+  queryLakalaStatus,
 }

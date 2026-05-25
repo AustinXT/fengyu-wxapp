@@ -368,7 +368,7 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
     `UPDATE sale_items SET paid_sessions = CASE ` +
     `WHEN sale_items.session_count IS NULL THEN NULL ` +
     `WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ` +
-    `ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer) ` +
+    `ELSE LEAST(sale_items.session_count, FLOOR(GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) * sale_items.session_count / sale_items.sale_amount::numeric)::integer) ` +
     `END, updated_at = NOW() ` +
     `FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id='${PRE_SALE_ORDER_ID}') op ` +
     `WHERE sale_items.sale_order_id='${PRE_SALE_ORDER_ID}'`

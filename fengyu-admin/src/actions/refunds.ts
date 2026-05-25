@@ -25,6 +25,7 @@ import {
 } from '@/lib/refund'
 import { cascadeRefund } from '@/lib/refund-cascade'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import * as lakalaClient from '@/lib/lakala-client'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -716,6 +717,76 @@ export const createRefund = withPermission(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 写：审批通过（仅 manager 持有 refund_approve）
+/**
+ * [联调待启用] admin 退款审批通过后，把"原通道部分"经拉卡拉退回。
+ *
+ * **默认关闭**（`LAKALA_REFUND_ENABLED !== 'true'`）→ 直接 no-op，不影响现有退款流（DB cascade 照常）。
+ * 之所以默认关：退款无法在 SIT 实证（需一笔真实已支付单），且 origin 引用映射需联调确认。
+ *
+ * 联调开启 checklist：
+ *  1. admin 运行时 env 设 `LAKALA_REFUND_ENABLED=true` + 完整 `LAKALA_*`（私钥/平台证书/商户号）。
+ *  2. 用一笔真实已支付的拉卡拉订单退款，核对 `sale_order_payments.external_trade_info`
+ *     （payNotify 已落库的回调 order_trade_info）里哪个字段对应
+ *     `/v3/rfd/refund_front/refund` 的 origin_trade_no（拉卡拉交易流水）/ origin_log_no（对账单流水号）。
+ *     当前按 `acc_trade_no→origin_trade_no`、`log_no→origin_log_no` 猜测，需按真实回调字段修正下方 TODO。
+ *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（收银台商户订单号）兜底。
+ *  4. requestIp 必须改用 admin 操作人真实 IP（风控必送），现用 env 占位。
+ *  5. 处理 requestRefund 返回 trade_state：SUCCESS=同步成功；PROCESSING/INIT/TIMEOUT=异步，
+ *     需 cron poll-lakala-refunds（queryRefund 推进，仍为 follow-up）。
+ */
+async function refundViaLakalaIfEnabled(opts: {
+  refundPaymentId: number
+  saleOrderId: string
+  refundByOriginFen: number
+  paymentMethod: string
+  requestIp: string
+}): Promise<{ attempted: boolean; tradeState?: string; error?: string }> {
+  if (process.env.LAKALA_REFUND_ENABLED !== 'true') return { attempted: false }
+  if (opts.refundByOriginFen <= 0) return { attempted: false }
+  if (opts.paymentMethod !== '微信' && opts.paymentMethod !== '支付宝') return { attempted: false }
+  if (!lakalaClient.isReady()) return { attempted: false, error: 'LAKALA_NOT_READY' }
+
+  // 取原支付的受单信息 + 收银台 out_order_no + 门店拉卡拉商户号
+  const [row] = await db
+    .select({
+      tradeInfo: saleOrderPayments.externalTradeInfo,
+      outOrderNo: saleOrders.lakalaOutOrderNo,
+      merchantNo: stores.lakalaMerchantNo,
+      termNo: stores.lakalaTermNo,
+    })
+    .from(saleOrderPayments)
+    .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+    .leftJoin(stores, eq(stores.storeId, saleOrders.storeId))
+    .where(
+      and(
+        eq(saleOrderPayments.saleOrderId, opts.saleOrderId),
+        sql`${saleOrderPayments.changeType} IN ('首次支付','回款')`,
+        sql`${saleOrderPayments.externalTxnId} IS NOT NULL`,
+      ),
+    )
+    .orderBy(asc(saleOrderPayments.id))
+    .limit(1)
+
+  if (!row || !row.merchantNo || !row.termNo) return { attempted: false, error: 'NO_LAKALA_MERCHANT' }
+  const tradeInfo = (row.tradeInfo || {}) as Record<string, string>
+  try {
+    const res = await lakalaClient.requestRefund({
+      merchantNo: row.merchantNo,
+      termNo: row.termNo,
+      outTradeNo: `refund-${opts.refundPaymentId}`,
+      refundAmountFen: opts.refundByOriginFen,
+      // TODO[联调]：核对 order_trade_info 字段名 → origin 引用（按拉卡拉文档/真实回调）
+      originTradeNo: tradeInfo.acc_trade_no || tradeInfo.trade_no,
+      originLogNo: tradeInfo.log_no,
+      originOutTradeNo: row.outOrderNo || undefined,
+      requestIp: opts.requestIp,
+    })
+    return { attempted: true, tradeState: res.tradeState }
+  } catch (e) {
+    return { attempted: true, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export const approveRefund = withPermission(
   'sale_order:refund_approve',
   async (session, refundPaymentId: number | string): Promise<ApproveRefundResult> => {
@@ -825,21 +896,11 @@ export const approveRefund = withPermission(
          WHERE so.sale_order_id = ${refSaleOrderId}
       `)
 
-      // 4) 扣减原购买行 remaining_sessions（疗程卡）+ 储值卡回冲
+      // 4) 储值卡回冲（Model X：退款只动金额，不扣 remaining_sessions —— 退后可消费次数
+      //    由 paid_sessions 闸门约束，service.js 核销条件 (已用+本次)≤paid_sessions 自动拦截已退次数；
+      //    与 staff/clientApi 一致。退款次数上限已在 createRefund 处由 calculateUnusedQuantity≤remaining 约束。）
       const refSaleItemId = pre.payment.refSaleItemId ?? null
       const sessionCount = pre.payment.sessionCount ?? null
-      if (refSaleItemId && sessionCount && sessionCount > 0) {
-        const sessRes = await tx.execute(sql`
-          UPDATE sale_items
-             SET remaining_sessions = remaining_sessions - ${sessionCount},
-                 updated_at = NOW()
-           WHERE sale_item_id = ${refSaleItemId}
-             AND remaining_sessions >= ${sessionCount}
-        `)
-        if ((sessRes as { rowCount?: number }).rowCount === 0) {
-          throw new ApiError('INVALID_STATE', 'INSUFFICIENT_SESSIONS: 剩余次数不足，无法退款')
-        }
-      }
 
       if (refundByCard > 0 && pre.orderClientUserId) {
         const refOrderTag = `refund-payment-${idNum}`
@@ -903,6 +964,19 @@ export const approveRefund = withPermission(
     }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }
+  }
+
+  // [联调待启用] DB 退款已提交，经拉卡拉把原通道金额退回（flag 默认关 → no-op）。
+  // best-effort：拉卡拉调用失败不回滚已提交的 DB 退款，记录待人工跟进。
+  const lakalaRefund = await refundViaLakalaIfEnabled({
+    refundPaymentId: idNum,
+    saleOrderId: refSaleOrderId,
+    refundByOriginFen: Math.round(refundByOrigin * 100),
+    paymentMethod: pre.payment.paymentMethod,
+    requestIp: process.env.LAKALA_REFUND_REQUEST_IP || '', // TODO[联调]：改用 admin 操作人真实 IP
+  })
+  if (lakalaRefund.attempted && lakalaRefund.error) {
+    console.error('[approveRefund] 拉卡拉退款调用失败（DB 退款已提交，需人工跟进）:', refSaleOrderId, lakalaRefund.error)
   }
 
   await logOperation(session, 'refund.approve', 'sale_order_payment', String(idNum), {

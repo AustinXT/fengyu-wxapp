@@ -126,37 +126,56 @@ describe('order.repay', () => {
     expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
   })
 
-  test('微信线上回款 → 不写 payments 行，仅返回 paymentParams', async () => {
-    const router = makeClientQueryRouter([
-      {
-        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
-        result: { rows: [makeOrigOrderRow()], rowCount: 1 },
-      },
-      // 仅 UPDATE payment_method（线上通道更新）
-      { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
-    ])
-    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+  test('微信线上回款 → 调拉卡拉收银台，返回 counter_url（不写 payments 行）', async () => {
+    // 线上通道走拉卡拉收银台：需 lakala env 就绪；lakala-client.request 已在 setup.js mock
+    const lakalaEnv = {
+      LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+      LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+      LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
+    }
+    const snap = {}
+    for (const [k, v] of Object.entries(lakalaEnv)) { snap[k] = process.env[k]; process.env[k] = v }
+    try {
+      const router = makeClientQueryRouter([
+        {
+          match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+          result: { rows: [makeOrigOrderRow()], rowCount: 1 },
+        },
+        // 仅 UPDATE payment_method（线上通道更新）
+        { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
+      ])
+      pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores + createLakalaCounterOrder 持久化 out_order_no
+      pg.query.mockImplementation(async (sql) => {
+        if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+        return []
+      })
 
-    const ctx = createBoundCtx({
-      saleOrderId: 'FY-XSD-WX-2604240001',
-      paymentMethod: '微信',
-      repayAmount: 200,
-      prepaidCardAmount: 0,
-    })
-    await routes.repay(ctx)
+      const ctx = createBoundCtx({
+        saleOrderId: 'FY-XSD-WX-2604240001',
+        paymentMethod: '微信',
+        repayAmount: 200,
+        prepaidCardAmount: 0,
+      })
+      await routes.repay(ctx)
 
-    expect(ctx.result.status).toBe('待支付')
-    expect(ctx.result.paymentMethod).toBe('微信')
-    expect(ctx.result.paymentParams).toBeDefined()
-    expect(ctx.result.paymentParams.totalFee).toBe(20000) // 200 元 → 20000 分
-    expect(ctx.result.saleOrderId).toBe('FY-XSD-WX-2604240001')
-    expect(ctx.result.repaymentOrderId).toBeUndefined()
+      expect(ctx.result.status).toBe('待支付')
+      expect(ctx.result.paymentMethod).toBe('微信')
+      expect(ctx.result.lakala.counterUrl).toBe('https://pay.test/cashier')
+      expect(ctx.result.saleOrderId).toBe('FY-XSD-WX-2604240001')
+      expect(ctx.result.repaymentOrderId).toBeUndefined()
+      // 收银台下单金额按本次回款额（数字分）
+      const reqData = globalThis.__mocks__.lakalaClient.request.mock.calls[0][0].reqData
+      expect(reqData.total_amount).toBe(20000) // 200 元 → 20000 分
 
-    // 微信通道：不应写 payments / card_transactions / 凭证单 sale_orders
-    const calls = router.mock.calls.map((c) => c[0])
-    expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(false)
-    expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
-    expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
+      // 微信通道：事务内不应写 payments / card_transactions / 凭证单 sale_orders
+      const calls = router.mock.calls.map((c) => c[0])
+      expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(false)
+      expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
+      expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
+    } finally {
+      for (const k of Object.keys(lakalaEnv)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] }
+    }
   })
 
   test('超额回款 → INVALID_PARAMS', async () => {

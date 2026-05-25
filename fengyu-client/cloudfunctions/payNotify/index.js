@@ -134,6 +134,8 @@ function parseHttpTriggerEvent(event) {
     transactionId: payOrderNo,
     payAmount: Math.round(totalAmountFen) / 100,
     paymentMethod,
+    // 透传受单交易信息（acc_trade_no/log_no/trade_no 等），落 sale_order_payments.external_trade_info 供退款取 origin 引用
+    tradeInfo,
     _httpEntry: true,
   }
 }
@@ -174,7 +176,7 @@ exports.main = async (event) => {
   const isHttpEntry = !!httpEntryResult
 
   try {
-    const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput } = businessEvent
+    const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput, tradeInfo } = businessEvent
     // PII 精简日志：不打全 event，仅 orderNo + txn 前 8 位
     const txnSummary = transactionId ? String(transactionId).slice(0, 8) : 'null'
     console.log('[payNotify] received', JSON.stringify({ orderNo, txn: txnSummary, isHttpEntry }))
@@ -193,6 +195,12 @@ exports.main = async (event) => {
 
     const pg = getPg()
 
+    // 拉卡拉收银台下单时 out_order_no = `${saleOrderId}_${unixSeconds}`（防判重后缀，见 order.js createLakalaCounterOrder）。
+    // 回调原样回传该 out_order_no，而 sale_orders.sale_order_id 无此后缀 → 必须剥离才能匹配订单，
+    // 否则 `WHERE sale_order_id = out_order_no` 永远落空、回调入账失败（联调回调侧根因）。
+    // sale_order_id 形如 FY-XSD-WX-YYMMDDNNNN（无下划线），故剥尾部 `_<数字>` 安全且对无后缀输入幂等。
+    const saleOrderId = String(orderNo).replace(/_\d+$/, '')
+
     // 幂等检查：订单是否已支付
     // 注：wechat_transaction_id 列已在 migration 0018 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
     const orderResult = await pg.query(
@@ -200,7 +208,7 @@ exports.main = async (event) => {
               total_amount, payable_amount, client_user_id, store_id, prepaid_card_amount,
               sale_order_type, ref_sale_order_id
        FROM sale_orders WHERE sale_order_id = $1`,
-      [orderNo]
+      [saleOrderId]
     )
 
     if (orderResult.rows.length === 0) {
@@ -212,7 +220,7 @@ exports.main = async (event) => {
 
     // 回款单已在 2026-04-26 sale-order-domain-refactor 从 sale_order_type 枚举移除（合并到 sale_order_payments.change_type='回款'）。
     // 这里不再判别 isRepaymentCredential，所有支付都按原单推进；回款由 change_type 区分。
-    const targetOrderNo = orderNo
+    const targetOrderNo = saleOrderId
     const targetOrder = order
     const isRepaymentCredential = false  // 兼容下方未清理的引用（如有），后续整体重构时移除
 
@@ -308,9 +316,9 @@ exports.main = async (event) => {
         insertRes = await client.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method,
-            external_txn_id, status, source_end, operator_employee_id,
+            external_txn_id, external_trade_info, status, source_end, operator_employee_id,
             note, created_at, paid_at
-          ) VALUES ($1, $2, $3, $4, $5, '已支付', 'notify', NULL, $6, $7, $7)
+          ) VALUES ($1, $2, $3, $4, $5, $8, '已支付', 'notify', NULL, $6, $7, $7)
           ON CONFLICT (sale_order_id, payment_method, external_txn_id)
             WHERE external_txn_id IS NOT NULL
           DO NOTHING
@@ -321,6 +329,8 @@ exports.main = async (event) => {
               ? `${paymentMethod} 回款到账 凭证 ${orderNo}`
               : `${paymentMethod} 回调到账`,
             now,
+            // 受单交易信息快照（退款 origin 引用来源）；callFunction 入口无 tradeInfo → NULL
+            tradeInfo ? JSON.stringify(tradeInfo) : null,
           ]
         )
       } catch (err) {

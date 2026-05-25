@@ -54,8 +54,37 @@ require.cache[configPath] = {
   exports: mockConfig,
 }
 
+// ====== Mock: utils/lakala-client (HTTP caller) ======
+// 只 mock HTTP 调用 request，避免单测真打拉卡拉网络；保留 formatReqTime / expectedSuccessCode 原实现。
+// lakala-config 不在此 mock（其自身单测直接 require 真实模块），需要时由测试文件局部设 env。
+const lakalaClientPath = require.resolve('../utils/lakala-client')
+const realLakalaClient = require('../utils/lakala-client')
+const mockLakalaClient = {
+  ...realLakalaClient,
+  request: vi.fn(async () => ({
+    code: '000000',
+    msg: '操作成功',
+    resp_data: { counter_url: 'https://pay.test/cashier', pay_order_no: 'PO-TEST-1' },
+    expectedCode: '000000',
+    ok: true,
+  })),
+  // query/close helper 也 mock，避免单测走真网络
+  queryCashierOrder: vi.fn(async () => ({
+    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '0' },
+  })),
+  closeCashierOrder: vi.fn(async () => ({
+    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '7' },
+  })),
+}
+require.cache[lakalaClientPath] = {
+  id: lakalaClientPath,
+  filename: lakalaClientPath,
+  loaded: true,
+  exports: mockLakalaClient,
+}
+
 // Export mocks for test files to reference
-globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, config: mockConfig }
+globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, config: mockConfig, lakalaClient: mockLakalaClient }
 
 // Reset mock state before each test (clears "once" queue + call history)
 beforeEach(() => {
@@ -73,4 +102,17 @@ beforeEach(() => {
   })
   mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
   mockConfig.invalidateCache.mockReset()
+  mockLakalaClient.request.mockReset().mockResolvedValue({
+    code: '000000',
+    msg: '操作成功',
+    resp_data: { counter_url: 'https://pay.test/cashier', pay_order_no: 'PO-TEST-1' },
+    expectedCode: '000000',
+    ok: true,
+  })
+  mockLakalaClient.queryCashierOrder.mockReset().mockResolvedValue({
+    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '0' },
+  })
+  mockLakalaClient.closeCashierOrder.mockReset().mockResolvedValue({
+    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '7' },
+  })
 })

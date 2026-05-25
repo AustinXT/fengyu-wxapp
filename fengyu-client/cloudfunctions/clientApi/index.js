@@ -60,6 +60,7 @@ const routes = {
   'order.scanAdjust': () => require('./routes/order').scanAdjust,
   'order.confirmPrepaidFull': () => require('./routes/order').confirmPrepaidFull,
   'order.repay': () => require('./routes/order').repay,
+  'order.queryLakalaStatus': () => require('./routes/order').queryLakalaStatus,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,

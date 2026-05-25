@@ -74,11 +74,11 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
           审批通过后将执行以下操作：
           <ul className="mt-2 list-disc list-inside text-sm">
             <li>退款流水翻 待审批 → 已支付，回写审批人/时间</li>
-            <li>重算原销售单 refunded_amount（received - refunded_amount = 净收入）</li>
-            <li>扣减对应疗程卡 remaining_sessions</li>
+            <li>重算原销售单已退金额（refunded_amount）；净收入 = 实收（received） − 已退金额</li>
+            <li>重算疗程卡已支付次数（paid_sessions）：退款后该卡可消费次数相应减少</li>
             <li>按储值卡比例回冲顾客账户余额</li>
-            <li>5 通道级联：sale_allocations / service_commissions 软删；user_coupons 恢复未使用；point_transactions 反向流水；sale_items.picked_up_quantity 反向恢复</li>
-            <li>顾客累计消费档位 spending_tier 重算</li>
+            <li>5 通道级联：营业额分配（sale_allocations）/ 服务提成（service_commissions）软删；优惠券（user_coupons）恢复未使用；积分（point_transactions）反向流水；家居产品已提货数量（sale_items.picked_up_quantity）反向恢复</li>
+            <li>顾客累计消费档位（spending_tier）重算</li>
           </ul>
           此操作不可撤销。
         </AlertDialogDescription>

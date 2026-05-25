@@ -2,7 +2,8 @@
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
  *
  * 语义：净已支付金额按比例可换到的次数，**行级**比例 floor。
- * 公式：paid_sessions = floor( min(1, (item.received - item_refund_share) / item.sale_amount) × session_count )
+ * 公式：paid_sessions = min( session_count, floor( (item.received - item_refund_share) × session_count / item.sale_amount ) )
+ *   先乘后除（D9=A 整数精度）：避免先除产生 0.13333…×15=1.9999… 被 FLOOR 误舍成 1（应为 2）；封顶交给外层 LEAST(session_count)
  *   - item_refund_share = order.refunded × item.sale_amount / order.total （订单级退款按 sale_amount 按比例下分到行）
  *     之所以按订单级而非行级是因为目前没有行级退款追踪
  *   - sale_items.received 已含 '储值卡抵扣' change_type 行（见 staff/order.js L1991-1994 跨端同义），不重复计 prepaid_card_amount
@@ -37,8 +38,8 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
   if (tot <= 0) return Number(itemSessionCount)
   const itemRefundShare = tot > 0 ? (Number(orderRefunded) || 0) * sa / tot : 0
   const itemSettled = Math.max(0, (Number(itemReceived) || 0) - itemRefundShare)
-  const ratio = Math.min(1, itemSettled / sa)
-  return Math.max(0, Math.min(Number(itemSessionCount), Math.floor(ratio * Number(itemSessionCount))))
+  // 先乘后除保整数精度；封顶 session_count（过付/越界兜底）
+  return Math.max(0, Math.min(Number(itemSessionCount), Math.floor(itemSettled * Number(itemSessionCount) / sa)))
 }
 
 /**
@@ -95,7 +96,7 @@ SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) / sale_items.sale_amount::numeric) * sale_items.session_count)::integer)
+  ELSE LEAST(sale_items.session_count, FLOOR(GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
 END,
 updated_at = NOW()
 FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = $1) op

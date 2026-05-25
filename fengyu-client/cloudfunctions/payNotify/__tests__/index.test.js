@@ -226,6 +226,30 @@ describe('payNotify index.js', () => {
     expect(qs).toContain('COMMIT')
   })
 
+  test('1b. 拉卡拉 out_order_no 带 _<ts> 后缀 → 剥离后按 sale_order_id 匹配订单', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({ preferred_employee_id: 'emp-001', total_amount: '300.00' })],
+    })
+    setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
+      {
+        match: 'FROM sale_items WHERE sale_order_id',
+        result: { rows: [{ sale_item_id: 'item-001', received: '300.00' }], rowCount: 1 },
+      },
+      { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
+      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
+    ])
+
+    // 模拟真实拉卡拉回调：out_order_no = sale_order_id + '_' + unixSeconds
+    const res = await main({ orderNo: 'FY-XSD-WX-2604240001_1779725000', transactionId: 'wx-txn-001b' })
+    expect(res.code).toBe('SUCCESS')
+    // 订单 SELECT 必须用剥离后的 sale_order_id（不含 _<ts> 后缀），否则永远匹配不到订单
+    const orderSelectCall = mockPoolQuery.mock.calls.find(([sql]) => /FROM sale_orders WHERE sale_order_id/.test(sql))
+    expect(orderSelectCall[1][0]).toBe('FY-XSD-WX-2604240001')
+  })
+
   test('2. 部分抵扣订单（prepaid_card_amount=100）微信支付成功 → 扣 balance + INSERT 扣款 + 已支付', async () => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({

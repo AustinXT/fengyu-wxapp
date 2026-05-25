@@ -48,6 +48,14 @@ describe('computePaidSessionsForItem 公式边界（行级）', () => {
     })).toBe(0)
   })
 
+  test('整数精度（先乘后除）：received=3000 refunded=2600 total=3000 sa=3000 sc=15 → 400×15/3000=2（旧先除得 1.9999… 误舍成 1）', () => {
+    // 退款单 #18 实测形态：15 次卡退 13 次（净 ¥400=2 次），不得误算成 1 触发 PAID_SESSIONS_UNDERFLOW
+    expect(computePaidSessionsForItem({
+      itemReceived: 3000, itemSaleAmount: 3000, itemSessionCount: 15,
+      orderTotal: 3000, orderRefunded: 2600,
+    })).toBe(2)
+  })
+
   test('D3=A 退款扣减：order.refunded 按 sale_amount 比例下分到行 → paid_sessions 单调下降', () => {
     // 单行订单：行 sale_amount = order total，所以 refund 全分到这一行
     // received=1000, refunded=300 → item_settled = 1000 - 300×1000/1000 = 700 → 70% × 10 = 7
