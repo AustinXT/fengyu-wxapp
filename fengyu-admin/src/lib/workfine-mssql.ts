@@ -9,12 +9,60 @@
 
 import mssql from 'mssql'
 
+/**
+ * 解析 ADO.NET 风格连接字符串（`Server=host,port;Database=..;User Id=..;Password=..`）。
+ * 与全项目 env 约定对齐（envs/*.env / staffApi 都用 MSSQL_CONNECTION_STRING）。
+ * key 大小写不敏感；Server 的 `host,port` 拆出端口。返回的字段用于覆盖 MSSQL_CONFIG。
+ */
+export function parseMssqlConnString(connStr: string): {
+  server?: string
+  port?: number
+  database?: string
+  user?: string
+  password?: string
+} {
+  const out: { server?: string; port?: number; database?: string; user?: string; password?: string } = {}
+  for (const pair of connStr.split(';')) {
+    const idx = pair.indexOf('=')
+    if (idx === -1) continue
+    const key = pair.slice(0, idx).trim().toLowerCase()
+    const value = pair.slice(idx + 1).trim()
+    if (!value) continue
+    switch (key) {
+      case 'server':
+      case 'data source': {
+        const [host, port] = value.split(',')
+        out.server = host.trim()
+        if (port) out.port = parseInt(port.trim(), 10)
+        break
+      }
+      case 'database':
+      case 'initial catalog':
+        out.database = value
+        break
+      case 'user id':
+      case 'uid':
+        out.user = value
+        break
+      case 'password':
+      case 'pwd':
+        out.password = value
+        break
+    }
+  }
+  return out
+}
+
+// 优先连接字符串（与 envs/*.env、staffApi 约定一致），缺失则 fallback 分离变量。
+const CONN_STRING = process.env.MSSQL_CONNECTION_STRING
+const PARSED = CONN_STRING ? parseMssqlConnString(CONN_STRING) : {}
+
 const MSSQL_CONFIG: mssql.config = {
-  user: process.env.MSSQL_USER || 'admin',
-  password: process.env.MSSQL_PASSWORD || '',
-  database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
-  server: process.env.MSSQL_SERVER || '47.96.87.33',
-  port: parseInt(process.env.MSSQL_PORT || '1433', 10),
+  user: PARSED.user || process.env.MSSQL_USER || 'admin',
+  password: PARSED.password || process.env.MSSQL_PASSWORD || '',
+  database: PARSED.database || process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
+  server: PARSED.server || process.env.MSSQL_SERVER || '47.96.87.33',
+  port: PARSED.port || parseInt(process.env.MSSQL_PORT || '1433', 10),
   pool: { max: 3, min: 0, idleTimeoutMillis: 30_000 },
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
   requestTimeout: 30_000,
