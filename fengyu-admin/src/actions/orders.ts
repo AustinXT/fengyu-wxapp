@@ -15,7 +15,7 @@ import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
-import { ApiError } from '@/lib/api-error'
+import { ApiError, parseErrorPrefix } from '@/lib/api-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
@@ -1448,26 +1448,21 @@ export const createOrder = withPermission(
       return id
     })
   } catch (err: any) {
-    // 事务内业务异常 → 友好消息
-    if (err?.message === '订单号生成失败') {
-      return { success: false, message: '订单号生成失败，请稍后重试' }
+    // 业务异常（ApiError）：剥离一级前缀后直接透出真实消息。
+    // 覆盖 CONFLICT(已有待支付订单 / 优惠券已被使用)、INVALID_STATE(订单号生成失败)、
+    // INSUFFICIENT_BALANCE(全额抵扣余额不足) 等。
+    // 修复 f4248169 把这些 throw 迁移到 ApiError（带 "<PREFIX>: " 前缀）后，
+    // 旧的 err.message === / startsWith('<中文>') 匹配器全部失配，被吞成通用「创建订单失败」的回归。
+    if (err instanceof ApiError) {
+      const parsed = parseErrorPrefix(err.message)
+      return { success: false, message: parsed?.displayMessage ?? err.message }
     }
-    // 全额储值卡抵扣扣卡失败（余额不足 / 无卡）
+    // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
+    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
+    // 需用专用正则连子标签一起剥掉（parseErrorPrefix 会残留 NO_CARD/数字子标签）。
     if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
-    }
-    if (err?.message?.startsWith('该顾客已有待支付订单')) {
-      return { success: false, message: err.message }
-    }
-    if (err?.message === '优惠券已被使用，请刷新后重试') {
-      return { success: false, message: err.message }
-    }
-    if (err?.message === 'INVALID_PARAMS: 充值卡商品不允许与普通商品混单') {
-      return {
-        success: false,
-        message: '充值卡商品不允许与普通商品混单',
-      }
     }
     // PG 外键违反（storeId / skuId / clientUserId 不存在）
     if (err?.code === '23503') {

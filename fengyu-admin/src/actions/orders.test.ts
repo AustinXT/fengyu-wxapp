@@ -189,6 +189,7 @@ import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
 import { eq, ilike, gte, lt, gt } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
+import { ApiError } from '@/lib/api-error'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -230,6 +231,28 @@ function mockTransactionSuccess(orderId = 'FY-XSD-WX-260315001') {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+    }
+    return fn(tx)
+  })
+}
+
+// 事务变体：待支付订单 partial unique index 检查命中已有待支付订单 → 触发 CONFLICT 抛错
+function mockTransactionWithPendingOrder(pendingId = 'FY-XSD-WX-2605250007') {
+  ;(db.transaction as any).mockImplementation(async (fn: any) => {
+    const tx = {
+      execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260315099' }]),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
+      // 非空结果 → createOrder 事务内 throw ApiError('CONFLICT', '该顾客已有待支付订单 ...')
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ saleOrderId: pendingId }]),
           }),
         }),
       }),
@@ -310,6 +333,29 @@ describe('createOrder — 顾客校验（顾客未注册守卫）', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('顾客未注册')
+  })
+})
+
+describe('createOrder — 已有待支付订单守卫（CONFLICT 消息透出）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  // 回归守护：f4248169 把事务内 throw 迁移到 ApiError（带 "CONFLICT: " 前缀）后，
+  // 旧 catch 的 err.message.startsWith('该顾客已有待支付订单') 失配，被吞成通用「创建订单失败」。
+  // 修复后 catch 改走 instanceof ApiError + parseErrorPrefix，剥前缀透出真实单号消息。
+  it('顾客已有待支付订单 → 透出含单号的真实消息（剥离前缀，不退化成通用失败）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    mockTransactionWithPendingOrder('FY-XSD-WX-2605250007')
+
+    const result = await createOrder(baseOrderData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('该顾客已有待支付订单 FY-XSD-WX-2605250007，请先关闭后再创建新订单')
+    expect(result.message).not.toContain('CONFLICT')
+    expect(result.message).not.toBe('创建订单失败，请稍后重试')
   })
 })
 
@@ -497,7 +543,9 @@ describe('createOrder — 事务异常捕获', () => {
       discountValue: '50.00', maxDiscount: null, minSpend: '100',
     }))
     ;(calcCouponDiscount as any).mockReturnValue(50)
-    ;(db.transaction as any).mockRejectedValue(new Error('优惠券已被使用，请刷新后重试'))
+    // 真实代码（orders.ts L1368）抛 ApiError('CONFLICT', ...)，带 "CONFLICT: " 前缀；
+    // catch 走 instanceof ApiError + parseErrorPrefix 剥前缀后透出原始业务消息。
+    ;(db.transaction as any).mockRejectedValue(new ApiError('CONFLICT', '优惠券已被使用，请刷新后重试'))
 
     const result = await createOrder({ ...baseOrderData, couponId: 'coupon-1', clientUserId: 'user-1' })
 
