@@ -37,12 +37,22 @@ const REQUIRED_VARS = Object.freeze([
   'LAKALA_DEFAULT_TERM_NO',
 ])
 
+/**
+ * PEM 换行归一化：部分部署/加载链路（dotenv 未展开、cloudbaserc 单行写法等）会把换行存成
+ * 字面量 "\n"，而 Node crypto 只认真实换行，否则 createSign/createVerify 报
+ * `DECODER routines::unsupported`，导致加签/验签全部失败（拉卡拉联调"全被拒"根因）。
+ * 这里把字面 "\n" 统一还原成真实换行；本身已是真实换行时为幂等空操作。
+ */
+function normalizePem(s) {
+  return (s || '').replace(/\\n/g, '\n')
+}
+
 function readConfig() {
   const apiBase = process.env.LAKALA_API_BASE || ''
   const appid = process.env.LAKALA_APPID || ''
   const serialNo = process.env.LAKALA_SERIAL_NO || ''
-  const privateKeyPem = process.env.LAKALA_PRIVATE_KEY_PEM || ''
-  const platformCertPem = process.env.LAKALA_PLATFORM_CERT_PEM || ''
+  const privateKeyPem = normalizePem(process.env.LAKALA_PRIVATE_KEY_PEM || '')
+  const platformCertPem = normalizePem(process.env.LAKALA_PLATFORM_CERT_PEM || '')
   const defaultMerchantNo = process.env.LAKALA_DEFAULT_MERCHANT_NO || ''
   const defaultTermNo = process.env.LAKALA_DEFAULT_TERM_NO || ''
   const notifyUrl = process.env.LAKALA_NOTIFY_URL || ''

@@ -100,5 +100,24 @@ describe('lakala-config', () => {
       cfg = config.readConfig()
       expect(cfg.env).toBe('trial')
     })
+
+    it('normalizes literal \\n in PEM env to real newlines (crypto-usable)', () => {
+      setAllRequired()
+      // 模拟 dotenv 未展开 / cloudbaserc 单行写法：换行被存成字面量 "\n"（下面源码中的 \\n）
+      process.env.LAKALA_PRIVATE_KEY_PEM = '-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----'
+      process.env.LAKALA_PLATFORM_CERT_PEM = '-----BEGIN CERTIFICATE-----\\nDEF\\n-----END CERTIFICATE-----'
+      const cfg = config.readConfig()
+      // 还原成真实换行（下面源码中的 \n），crypto 才能解析；否则报 DECODER routines::unsupported
+      expect(cfg.privateKeyPem).toBe('-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----')
+      expect(cfg.privateKeyPem).not.toContain('\\n')
+      expect(cfg.platformCertPem).toBe('-----BEGIN CERTIFICATE-----\nDEF\n-----END CERTIFICATE-----')
+    })
+
+    it('leaves already-real newlines untouched (idempotent)', () => {
+      setAllRequired()
+      const real = '-----BEGIN PRIVATE KEY-----\nXYZ\n-----END PRIVATE KEY-----'
+      process.env.LAKALA_PRIVATE_KEY_PEM = real
+      expect(config.readConfig().privateKeyPem).toBe(real)
+    })
   })
 })

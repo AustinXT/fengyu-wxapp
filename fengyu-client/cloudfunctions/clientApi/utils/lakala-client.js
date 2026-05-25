@@ -163,8 +163,35 @@ async function request({ path, reqData, outOrgCode, skipVerify = false, timeoutM
   }
 }
 
+/**
+ * 收银台订单查询 /v3/ccss/counter/order/query
+ * SIT 实测：channel_id 非必填；成功 code='000000'，resp_data.order_status（'0'=待支付/未支付，'7'=已关闭，其余见拉卡拉文档）。
+ * @param {object} opts
+ * @param {string} opts.merchantNo
+ * @param {string} opts.outOrderNo   special_create 时用的商户订单号（含时间戳后缀）
+ * @param {string} [opts.channelId]
+ */
+async function queryCashierOrder({ merchantNo, outOrderNo, channelId }) {
+  const reqData = { merchant_no: merchantNo, out_order_no: outOrderNo }
+  if (channelId) reqData.channel_id = channelId
+  return request({ path: '/v3/ccss/counter/order/query', reqData })
+}
+
+/**
+ * 收银台关单 /v3/ccss/counter/order/close
+ * SIT 实测：channel_id 非必填；成功 code='000000'，resp_data.order_status='7'。
+ * 用于订单取消时关闭未支付的收银台订单，防止迟到支付。
+ */
+async function closeCashierOrder({ merchantNo, outOrderNo, channelId }) {
+  const reqData = { merchant_no: merchantNo, out_order_no: outOrderNo }
+  if (channelId) reqData.channel_id = channelId
+  return request({ path: '/v3/ccss/counter/order/close', reqData })
+}
+
 module.exports = {
   request,
   formatReqTime,
   expectedSuccessCode,
+  queryCashierOrder,
+  closeCashierOrder,
 }

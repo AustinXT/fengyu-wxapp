@@ -32,13 +32,22 @@ interface LakalaEnv {
   notifyUrl: string
 }
 
+/**
+ * PEM 换行归一化：部分部署/加载链路（dotenv 未展开、cloudbaserc 单行写法等）会把换行存成
+ * 字面量 "\n"，Node crypto 只认真实换行，否则报 `DECODER routines::unsupported` 导致加签/验签失败。
+ * 与三端云函数 lakala-config.js 的 normalizePem 同义（幂等：真实换行不受影响）。
+ */
+function normalizePem(s: string): string {
+  return (s || '').replace(/\\n/g, '\n')
+}
+
 function readEnv(): LakalaEnv {
   return {
     apiBase: (process.env.LAKALA_API_BASE || '').replace(/\/+$/, ''),
     appid: process.env.LAKALA_APPID || '',
     serialNo: process.env.LAKALA_SERIAL_NO || '',
-    privateKeyPem: process.env.LAKALA_PRIVATE_KEY_PEM || '',
-    platformCertPem: process.env.LAKALA_PLATFORM_CERT_PEM || '',
+    privateKeyPem: normalizePem(process.env.LAKALA_PRIVATE_KEY_PEM || ''),
+    platformCertPem: normalizePem(process.env.LAKALA_PLATFORM_CERT_PEM || ''),
     defaultMerchantNo: process.env.LAKALA_DEFAULT_MERCHANT_NO || '',
     defaultTermNo: process.env.LAKALA_DEFAULT_TERM_NO || '',
     notifyUrl: process.env.LAKALA_NOTIFY_URL || '',
