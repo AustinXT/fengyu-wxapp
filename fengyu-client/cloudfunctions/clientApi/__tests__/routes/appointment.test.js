@@ -214,40 +214,35 @@ describe('appointment.cancel', () => {
     expect(ctx.result.status).toBe('已取消')
   })
 
-  test('正常取消已确认预约', async () => {
-    pg.query
-      .mockResolvedValueOnce([{
-        appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
-      }])
-      .mockResolvedValueOnce([]) // 无关联服务单
-      .mockResolvedValueOnce([])
+  test('已确认预约不可取消 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
+    }])
 
     const ctx = createBoundCtx({ appointmentId: 'apt-1' })
-    await routes.cancel(ctx)
-
-    expect(ctx.result.status).toBe('已取消')
+    await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*仅待确认/)
   })
 
   test('已关联进行中服务单的预约不可取消 → INVALID_STATE', async () => {
     pg.query
       .mockResolvedValueOnce([{
-        appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
+        appointment_id: 'apt-1', status: '待确认', client_user_id: 'user-001',
       }])
       .mockResolvedValueOnce([{ '?column?': 1 }]) // 存在 服务中 服务单
 
     const ctx = createBoundCtx({ appointmentId: 'apt-1' })
     await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_STATE.*已开始服务/)
 
-    // 守卫 SQL 只拦截 待服务/服务中/已完成
+    // 守卫 SQL：关联服务单只要不是「已取消」就拦截
     const guardSql = pg.query.mock.calls[1][0]
     expect(guardSql).toContain('service_orders')
-    expect(guardSql).toContain("'待服务', '服务中', '已完成'")
+    expect(guardSql).toContain("NOT IN ('已取消')")
   })
 
   test('服务单已取消时仍可取消预约', async () => {
     pg.query
       .mockResolvedValueOnce([{
-        appointment_id: 'apt-1', status: '已确认', client_user_id: 'user-001',
+        appointment_id: 'apt-1', status: '待确认', client_user_id: 'user-001',
       }])
       .mockResolvedValueOnce([]) // 服务单为 已取消，守卫查询不命中
       .mockResolvedValueOnce([])
@@ -264,7 +259,7 @@ describe('appointment.cancel', () => {
     }])
 
     const ctx = createBoundCtx({ appointmentId: 'apt-1' })
-    await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)
+    await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*仅待确认/)
   })
 
   test('缺少 appointmentId → INVALID_PARAMS', async () => {
