@@ -77,6 +77,12 @@
       is-link
       bindtap="onServiceRecords"
     />
+    <van-cell
+      title="邀请有礼"
+      icon="gift-o"
+      is-link
+      bindtap="onMemberBenefits"
+    />
   </van-cell-group>
 
   <!-- 关于 -->

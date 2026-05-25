@@ -1,0 +1,91 @@
+<!-- pagesProfile/member-benefits/member-benefits.wxml -->
+<van-toast id="van-toast" />
+
+<!-- 加载态 -->
+<view wx:if="{{isLoading}}" class="skeleton-wrap">
+  <van-skeleton title row="4" />
+</view>
+
+<block wx:else>
+  <!-- 规则说明卡 -->
+  <view class="hero">
+    <view class="hero__badge">🎁 邀请有礼</view>
+    <block wx:if="{{rule.enabled}}">
+      <view class="hero__title">分享好友，双方都有礼</view>
+      <view class="hero__desc">
+        好友通过你的分享首次下单并结清，你和好友<text class="hero__strong">各得一张代金券</text>。
+      </view>
+      <view class="hero__rule">
+        券面值 = 好友首单实付的 <text class="hero__strong">{{percentLabel}}</text>（{{rule.minFaceValue}}~{{rule.maxFaceValue}} 元），自到账起 {{rule.validityDays}} 天内有效。
+      </view>
+
+      <view class="steps">
+        <view class="step">
+          <view class="step__no">1</view>
+          <view class="step__txt">点击下方按钮把小程序分享给好友</view>
+        </view>
+        <view class="step">
+          <view class="step__no">2</view>
+          <view class="step__txt">好友进入并绑定门店、完成首单结清</view>
+        </view>
+        <view class="step">
+          <view class="step__no">3</view>
+          <view class="step__txt">系统自动给你和好友各发一张代金券</view>
+        </view>
+      </view>
+
+      <button class="share-btn" open-type="share">
+        <van-icon name="share-o" size="36rpx" custom-class="share-btn__icon" />
+        立即分享给好友
+      </button>
+      <view class="hero__tip">储值卡全额抵扣（实付 0 元）的订单不发分享礼。</view>
+    </block>
+    <block wx:else>
+      <view class="hero__title">活动暂未开启</view>
+      <view class="hero__desc">分享礼活动暂未开启，敬请期待～</view>
+    </block>
+  </view>
+
+  <!-- 我的分享礼 -->
+  <view class="section" wx:if="{{loggedIn}}">
+    <view class="section__head">我的分享礼</view>
+
+    <van-empty
+      wx:if="{{loadError}}"
+      image="error"
+      description="加载失败，下拉刷新重试"
+    />
+    <van-empty
+      wx:elif="{{coupons.length === 0}}"
+      description="还没有分享礼，快分享给好友吧"
+    />
+
+    <view wx:else class="coupon-list">
+      <view
+        wx:for="{{coupons}}"
+        wx:key="couponId"
+        class="coupon-card {{item.status !== '未使用' ? 'coupon-card--disabled' : ''}}"
+      >
+        <view class="coupon-card__left">
+          <text class="coupon-card__amount">{{item.discountLabel}}</text>
+          <text class="coupon-card__type">{{item.couponType}}</text>
+        </view>
+        <view class="coupon-card__right">
+          <text class="coupon-card__name">{{item.name}}</text>
+          <text class="coupon-card__expire">
+            <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAtFmt || '-'}} 使用</block>
+            <block wx:else>有效期至 {{item.expireAtFmt}}</block>
+          </text>
+          <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
+        </view>
+        <view class="coupon-card__stamp" wx:if="{{item.status === '已使用'}}">已使用</view>
+        <view class="coupon-card__stamp coupon-card__stamp--expired" wx:elif="{{item.status === '已过期'}}">已过期</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 未登录提示 -->
+  <view class="section" wx:else>
+    <van-empty description="登录后可查看你获得的分享礼" />
+  </view>
+</block>

@@ -2,6 +2,7 @@
  * 系统配置模块路由（客户端）
  * config.banners — 获取首页轮播图数量 + 版本号（无需认证）
  * config.fengyuguan — 获取凤御馆宣传图（无需认证）
+ * config.shareGift — 获取分享礼展示规则（脱敏，无需认证）
  * config.invalidateConfig — 主动清空 utils/config 内存缓存（admin 保存配置时广播，副作用仅限清一次缓存）
  */
 
@@ -59,6 +60,43 @@ async function fengyuguan(ctx) {
 }
 
 /**
+ * 获取分享礼展示规则（脱敏，无需认证）。
+ *
+ * 读 system_configs.share_gift_config，仅返回顾客端展示所需字段：
+ *   { enabled, percent, minFaceValue, maxFaceValue, validityDays }
+ * 运营内部字段（couponTemplateId / inviterMustHavePaidOrder / 各类消息文案）一律不暴露。
+ * 无配置、解析失败或显式关闭时返回 { enabled: false }，前端据此展示「活动暂未开启」。
+ */
+async function shareGift(ctx) {
+  const disabled = { enabled: false }
+  const rows = await pg.query(
+    "SELECT value FROM system_configs WHERE key = 'share_gift_config'"
+  )
+  if (rows.length === 0 || !rows[0].value) {
+    ctx.result = disabled
+    return
+  }
+  let cfg
+  try {
+    cfg = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value
+  } catch (e) {
+    ctx.result = disabled
+    return
+  }
+  if (!cfg || !cfg.enabled) {
+    ctx.result = disabled
+    return
+  }
+  ctx.result = {
+    enabled: true,
+    percent: Number(cfg.percent) > 0 ? Number(cfg.percent) : 0.15,
+    minFaceValue: Number(cfg.minFaceValue) > 0 ? Number(cfg.minFaceValue) : 1,
+    maxFaceValue: Number(cfg.maxFaceValue) > 0 ? Number(cfg.maxFaceValue) : 500,
+    validityDays: Number(cfg.validityDays) > 0 ? Number(cfg.validityDays) : 90,
+  }
+}
+
+/**
  * 主动清空 utils/config 的内存缓存。
  *
  * 调用者：admin saveSettings 在 newMemberThreshold 变化时广播。
@@ -70,4 +108,4 @@ async function invalidateConfig(ctx) {
   ctx.result = { success: true }
 }
 
-module.exports = { banners, fengyuguan, invalidateConfig }
+module.exports = { banners, fengyuguan, shareGift, invalidateConfig }

@@ -63,6 +63,10 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/service-records/service-records' });
   },
 
+  onMemberBenefits() {
+    wx.navigateTo({ url: '/pagesProfile/member-benefits/member-benefits' });
+  },
+
   async loadUnreadCount() {
     try {
       const data = await callClientApi<{ count: number }>('message.unreadCount', {});
