@@ -25,10 +25,14 @@ Page({
     todayOrderCount: 0,
     todayServiceCount: 0,
     storeTodayRevenue: '0.00',
-    // 本月累计
+    // 本月累计（首卡：个人分成口径）
     monthlyCommission: '0.00',
     monthlyOrderCount: 0,
     monthlyServiceCount: 0,
+    // 日历合计（整店汇总业绩口径，随日历翻月变化）
+    storeMonthAmount: '0.00',
+    storeMonthOrderCount: 0,
+    storeMonthServiceCount: 0,
     // 上月累计
     lastMonthCommission: '0.00',
     lastMonthOrderCount: 0,
@@ -161,6 +165,9 @@ Page({
         orderCount: number;
         serviceCount: number;
         storeTodayRevenue?: string;
+        thisMonthAmount?: string;
+        thisMonthOrderCount?: number;
+        thisMonthServiceCount?: number;
         lastMonthAmount?: string;
         lastMonthOrderCount?: number;
         lastMonthServiceCount?: number;
@@ -170,6 +177,9 @@ Page({
         todayOrderCount: data.orderCount || 0,
         todayServiceCount: data.serviceCount || 0,
         storeTodayRevenue: data.storeTodayRevenue || '0.00',
+        monthlyCommission: data.thisMonthAmount || '0.00',
+        monthlyOrderCount: data.thisMonthOrderCount || 0,
+        monthlyServiceCount: data.thisMonthServiceCount || 0,
         lastMonthCommission: data.lastMonthAmount || '0.00',
         lastMonthOrderCount: data.lastMonthOrderCount || 0,
         lastMonthServiceCount: data.lastMonthServiceCount || 0,
@@ -186,14 +196,14 @@ Page({
         totalServiceCount?: number;
       }>('staff.monthlyCalendar', { yearMonth: this.data.currentMonth });
       const days = buildCalendarDays(this.data.currentMonth, data.dailyData || []);
-      const monthlyCommission = data.totalAmount > 0
+      const storeMonthAmount = data.totalAmount > 0
         ? data.totalAmount.toFixed(2)
         : '0.00';
       this.setData({
         calendarDays: days,
-        monthlyCommission,
-        monthlyOrderCount: data.totalOrderCount || 0,
-        monthlyServiceCount: data.totalServiceCount || 0,
+        storeMonthAmount,
+        storeMonthOrderCount: data.totalOrderCount || 0,
+        storeMonthServiceCount: data.totalServiceCount || 0,
       });
     } catch (_) {
       const days = buildCalendarDays(this.data.currentMonth, []);

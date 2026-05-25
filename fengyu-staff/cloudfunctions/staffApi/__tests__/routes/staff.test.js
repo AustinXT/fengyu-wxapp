@@ -144,12 +144,17 @@ describe('staff.todayCommission', () => {
     const ctx = createBeauticianCtx()
     pg.query.mockResolvedValueOnce([{ today_amount: '350.00', order_count: '3' }])  // 今日分成
     pg.query.mockResolvedValueOnce([{ service_count: '2' }])                        // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '900.00', order_count: '7' }])        // 本月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '5' }])                        // 本月服务
     pg.query.mockResolvedValueOnce([{ amount: '1200.00', order_count: '10' }])      // 上月分成
     pg.query.mockResolvedValueOnce([{ service_count: '8' }])                        // 上月服务
     await staffRoutes.todayCommission(ctx)
     expect(ctx.result.todayAmount).toBe('350.00')
     expect(ctx.result.orderCount).toBe(3)
     expect(ctx.result.serviceCount).toBe(2)
+    expect(ctx.result.thisMonthAmount).toBe('900.00')
+    expect(ctx.result.thisMonthOrderCount).toBe(7)
+    expect(ctx.result.thisMonthServiceCount).toBe(5)
     expect(ctx.result.lastMonthAmount).toBe('1200.00')
     expect(ctx.result.lastMonthOrderCount).toBe(10)
     expect(ctx.result.lastMonthServiceCount).toBe(8)
@@ -160,6 +165,8 @@ describe('staff.todayCommission', () => {
     const ctx = createManagerCtx()
     pg.query.mockResolvedValueOnce([{ today_amount: '500.00', order_count: '5' }])  // 今日分成
     pg.query.mockResolvedValueOnce([{ service_count: '3' }])                        // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])             // 本月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '0' }])                        // 本月服务
     pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])             // 上月分成
     pg.query.mockResolvedValueOnce([{ service_count: '0' }])                        // 上月服务
     pg.query.mockResolvedValueOnce([{ store_revenue: '8000.00' }])                  // 门店营收
@@ -172,11 +179,13 @@ describe('staff.todayCommission', () => {
     const ctx = createBeauticianCtx()
     pg.query.mockResolvedValueOnce([{ today_amount: '0', order_count: '0' }])   // 今日分成
     pg.query.mockResolvedValueOnce([{ service_count: '0' }])                    // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])         // 本月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '0' }])                    // 本月服务
     pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])         // 上月分成
     pg.query.mockResolvedValueOnce([{ service_count: '0' }])                    // 上月服务
     await staffRoutes.todayCommission(ctx)
     expect(ctx.result.storeTodayRevenue).toBeUndefined()
-    expect(pg.query).toHaveBeenCalledTimes(4)
+    expect(pg.query).toHaveBeenCalledTimes(6)
   })
 })
 

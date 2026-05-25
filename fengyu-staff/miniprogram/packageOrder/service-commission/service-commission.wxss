@@ -22,6 +22,8 @@
   margin-bottom: 24rpx;
 }
 .status-notice--allocated { background: #E8F5E9; }
+.status-notice--frozen { background: #FDECEC; }
+.status-notice--frozen .status-text { color: #D94040; }
 .status-text { font-size: 24rpx; color: #3D8A5A; }
 
 /* 服务明细分组 */

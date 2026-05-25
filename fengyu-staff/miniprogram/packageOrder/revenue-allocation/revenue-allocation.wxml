@@ -42,8 +42,14 @@ module.exports.pct = function(rate) {
       </view>
     </view>
 
+    <!-- 冻结提示 -->
+    <view wx:if="{{frozen}}" class="status-notice status-notice--frozen">
+      <van-icon name="lock" size="28rpx" color="#D94040" />
+      <text class="status-text">分配结果已冻结（支付超 3 天），如需修改请联系管理后台</text>
+    </view>
+
     <!-- 已分配提示 -->
-    <view wx:if="{{isAllocated}}" class="status-notice status-notice--allocated">
+    <view wx:elif="{{isAllocated}}" class="status-notice status-notice--allocated">
       <van-icon name="passed" size="28rpx" color="#3D8A5A" />
       <text class="status-text">该订单已分配，可修改后重新保存</text>
     </view>
@@ -136,6 +142,7 @@ module.exports.pct = function(rate) {
         plain
         block
         loading="{{submitting}}"
+        disabled="{{frozen}}"
         custom-style="border-color:#999;color:#666;border-radius:48rpx;margin-bottom:20rpx;"
         bind:click="onSkipAllocation"
       >标记为无需分配</van-button>
@@ -143,10 +150,11 @@ module.exports.pct = function(rate) {
         type="primary"
         block
         loading="{{submitting}}"
+        disabled="{{frozen}}"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"
         bind:click="onSave"
-      >保存分配方案</van-button>
+      >{{frozen ? '分配已冻结' : '保存分配方案'}}</van-button>
     </view>
   </block>
 

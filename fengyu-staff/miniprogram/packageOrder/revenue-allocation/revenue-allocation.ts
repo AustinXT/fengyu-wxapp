@@ -100,6 +100,7 @@ interface SuggestResponse {
   allocLines: SuggestLine[];
   candidateEmployees?: CandidateEmployee[];
   orderStoreId?: string;
+  frozen?: boolean; // 支付超 3 天冻结
 }
 
 /** order.detail API 响应 */
@@ -144,6 +145,8 @@ Page({
     hasUnassigned: false,
     // 已分配状态
     isAllocated: false,
+    // 支付超 3 天冻结，禁止修改分配
+    frozen: false,
     // suggest 上下文
     isNewCustomer: false,
     beauticianInfo: null as BeauticianInfo | null,
@@ -211,6 +214,7 @@ Page({
         beautyRates,
         rates,
         isAllocated,
+        frozen: !!suggestData.frozen,
         isNewCustomer,
         beauticianInfo,
         deptAnomalous,
@@ -475,6 +479,10 @@ Page({
 
   /** 标记为无需分配 */
   async onSkipAllocation() {
+    if (this.data.frozen) {
+      wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
+      return;
+    }
     const res = await new Promise<WechatMiniprogram.ShowModalSuccessCallbackResult>(resolve => {
       wx.showModal({
         title: '确认',
@@ -502,6 +510,10 @@ Page({
 
   async onSave() {
     if (this.data.submitting) return;
+    if (this.data.frozen) {
+      wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
+      return;
+    }
     const { displayItems, saleOrderId } = this.data;
 
     // 收集完整行（技能标签 + 员工 + 分配比例 三者齐全）

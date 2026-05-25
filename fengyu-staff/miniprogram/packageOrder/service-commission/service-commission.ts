@@ -43,6 +43,7 @@ interface OrderInfo {
   commission_status: string;
   customer_name: string | null;
   employee_name: string | null;
+  frozen?: boolean; // 完成超 3 天冻结
 }
 
 /** 候选员工（市场内全部在职员工，供 admin 式按技能筛选） */
@@ -98,6 +99,7 @@ Page({
     orderStoreId: '',
     displayItems: [] as DisplayItem[],
     isAllocated: false,
+    frozen: false, // 完成超 3 天冻结，禁止修改分配
     // 汇总
     summary: [] as Array<{ staffName: string; department: string; total: string }>,
     grandTotal: '0.00',
@@ -197,6 +199,7 @@ Page({
         orderStoreId,
         displayItems,
         isAllocated,
+        frozen: !!order.frozen,
         loading: false,
       });
       this.computeSummary();
@@ -364,6 +367,10 @@ Page({
 
   async onSave() {
     if (this.data.submitting) return;
+    if (this.data.frozen) {
+      wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
+      return;
+    }
     const { displayItems, serviceOrderId } = this.data;
 
     // 收集完整行（技能标签 + 员工 + 分配比例 三者齐全）

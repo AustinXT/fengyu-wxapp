@@ -11,7 +11,7 @@ const crypto = require('crypto')
 const { URL } = require('url')
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
-const { assertEmployeeInScope, isStoreInScope } = require('../utils/scope')
+const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -235,7 +235,7 @@ async function departments(ctx) {
 async function todayCommission(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeId, roles } = ctx.auth
+  const { staffWfId, roles } = ctx.auth
   const isManager = roles.includes('manager')
 
   const now = new Date()
@@ -266,6 +266,34 @@ async function todayCommission(ctx) {
     WHERE assigned_employee_id = $1
       AND service_date = $2
   `, [staffWfId, todayStr])
+
+  // 本月时间范围
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+
+  // 本月分成金额 + 订单数（个人口径）
+  const thisMonthCommRows = await pg.query(`
+    SELECT
+      COALESCE(SUM(sa.total_amount::numeric), 0) AS amount,
+      COUNT(DISTINCT si.sale_order_id) AS order_count
+    FROM sale_allocations sa
+    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE sa.employee_id = $1
+      AND sa.is_void = false
+      AND o.status = '已支付'
+      AND o.paid_at >= $2
+      AND o.paid_at < $3
+  `, [staffWfId, thisMonthStart, thisMonthEnd])
+
+  // 本月服务单数（个人口径）
+  const thisMonthSvcRows = await pg.query(`
+    SELECT COUNT(*) AS service_count
+    FROM service_orders
+    WHERE assigned_employee_id = $1
+      AND service_date >= $2
+      AND service_date < $3
+  `, [staffWfId, thisMonthStart.toISOString().slice(0, 10), thisMonthEnd.toISOString().slice(0, 10)])
 
   // 上月时间范围
   const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -299,22 +327,28 @@ async function todayCommission(ctx) {
     todayAmount: Number(commissionRows[0].today_amount).toFixed(2),
     orderCount: Number(commissionRows[0].order_count),
     serviceCount: Number(serviceRows[0].service_count),
+    thisMonthAmount: Number(thisMonthCommRows[0].amount).toFixed(2),
+    thisMonthOrderCount: Number(thisMonthCommRows[0].order_count),
+    thisMonthServiceCount: Number(thisMonthSvcRows[0].service_count),
     lastMonthAmount: Number(lastMonthCommRows[0].amount).toFixed(2),
     lastMonthOrderCount: Number(lastMonthCommRows[0].order_count),
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
   // 店长：门店今日总营收（2026-04-26 refactor：业绩口径 = received - refunded_amount）
-  if (isManager && storeId) {
+  // 门店过滤用 effectiveStoreId（当前选中门店），多店店长切店后才正确
+  const eff = ctx.auth.effectiveStoreId
+  if (isManager && eff) {
+    const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
     const storeRows = await pg.query(`
       SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS store_revenue
       FROM sale_orders o
-      WHERE o.store_id = $1
+      WHERE ${sc.sql}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
-        AND o.paid_at >= $2
-        AND o.paid_at < $3
-    `, [storeId, todayStart, todayEnd])
+        AND o.paid_at >= $${sc.params.length + 1}
+        AND o.paid_at < $${sc.params.length + 2}
+    `, [...sc.params, todayStart, todayEnd])
     result.storeTodayRevenue = Number(storeRows[0].store_revenue).toFixed(2)
   }
 
@@ -322,12 +356,16 @@ async function todayCommission(ctx) {
 }
 
 /**
- * 月度业绩日历
+ * 月度业绩日历（整店口径）
+ *
+ * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
+ *   = SUM(sale_orders.received - refunded_amount)，sale_order_type IN ('销售单','转换单')、status='已支付'，
+ *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
+ *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */
 async function monthlyCalendar(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId } = ctx.auth
   const { yearMonth } = ctx.event.payload || {}
 
   const now = new Date()
@@ -340,46 +378,45 @@ async function monthlyCalendar(ctx) {
   const monthStartStr = monthStart.toISOString().slice(0, 10)
   const monthEndStr = monthEnd.toISOString().slice(0, 10)
 
-  // 按日汇总分成金额
+  const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
+
+  // 按日汇总整店营业额（received - refunded）
   const dailyRows = await pg.query(`
     SELECT
       DATE(o.paid_at) AS date,
-      SUM(sa.total_amount::numeric) AS amount
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
+      SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS amount
+    FROM sale_orders o
+    WHERE ${sc.sql}
+      AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND o.paid_at >= $${sc.params.length + 1}
+      AND o.paid_at < $${sc.params.length + 2}
     GROUP BY DATE(o.paid_at)
     ORDER BY DATE(o.paid_at)
-  `, [staffWfId, monthStart, monthEnd])
+  `, [...sc.params, monthStart, monthEnd])
 
-  // 月度汇总
+  // 月度整店汇总
   const totalRows = await pg.query(`
     SELECT
-      COALESCE(SUM(sa.total_amount::numeric), 0) AS total_amount,
-      COUNT(DISTINCT si.sale_order_id) AS total_order_count
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
+      COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS total_amount,
+      COUNT(*) AS total_order_count
+    FROM sale_orders o
+    WHERE ${sc.sql}
+      AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
-  `, [staffWfId, monthStart, monthEnd])
+      AND o.paid_at >= $${sc.params.length + 1}
+      AND o.paid_at < $${sc.params.length + 2}
+  `, [...sc.params, monthStart, monthEnd])
 
-  // 月度服务单数
+  // 月度整店服务单数
+  const svcSc = buildStoreScopeCondition(ctx.auth, 'store_id', 1)
   const svcRows = await pg.query(`
     SELECT COUNT(*) AS total_service_count
     FROM service_orders
-    WHERE assigned_employee_id = $1
-      AND service_date >= $2
-      AND service_date < $3
-  `, [staffWfId, monthStartStr, monthEndStr])
+    WHERE ${svcSc.sql}
+      AND service_date >= $${svcSc.params.length + 1}
+      AND service_date < $${svcSc.params.length + 2}
+  `, [...svcSc.params, monthStartStr, monthEndStr])
 
   const dailyData = dailyRows.map(r => ({
     date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10),
