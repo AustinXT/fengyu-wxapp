@@ -140,6 +140,8 @@ Page({
     // 汇总
     summary: [] as Array<{ staffName: string; department: string; total: string }>,
     grandTotal: '0.00',
+    // 存在「填了技能标签/比例但未选员工」的行 → 提成额未计入汇总，提示店长补全
+    hasUnassigned: false,
     // 已分配状态
     isAllocated: false,
     // suggest 上下文
@@ -467,8 +469,8 @@ Page({
   },
 
   computeSummary() {
-    const { summary, grandTotal } = _computeSummary(this.data.displayItems);
-    this.setData({ summary, grandTotal });
+    const { summary, grandTotal, hasUnassigned } = _computeSummary(this.data.displayItems);
+    this.setData({ summary, grandTotal, hasUnassigned });
   },
 
   /** 标记为无需分配 */

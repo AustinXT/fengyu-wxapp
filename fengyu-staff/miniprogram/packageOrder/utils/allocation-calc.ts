@@ -66,18 +66,24 @@ export function lookupRate(
  *
  * 页面语义为「提成分配」，汇总按员工聚合**提成额**（commissionAmount = 分配额 × 提成比例），
  * 合计为提成额合计。入库的 total_amount（=实收×分配比例）是「分配额」，与此处展示口径不同。
+ *
+ * 不变量：**Σ(汇总各行) ≡ grandTotal**。合计与汇总只统计**已选员工**的行（同一口径）。
+ * 「填了技能标签+比例却未选员工」的行（commissionAmount>0）既不计入合计也不计入汇总——
+ * 不允许出现匿名分配行，而是通过 `hasUnassigned` 让页面提示店长补全后再保存。
  */
 export function computeSummary(displayItems: DisplayItem[]): {
   summary: Array<{ staffName: string; department: string; total: string }>
   grandTotal: string
+  hasUnassigned: boolean
 } {
   const map = new Map<string, { staffName: string; department: string; total: number }>()
   let grand = 0
+  let hasUnassigned = false
   for (const di of displayItems) {
     for (const l of di.allocLines) {
       const amt = parseFloat(l.commissionAmount) || 0
-      grand += amt
       if (l.staffWfId) {
+        grand += amt
         const key = `${l.staffWfId}_${l.roleType}`
         const existing = map.get(key)
         if (existing) {
@@ -85,6 +91,9 @@ export function computeSummary(displayItems: DisplayItem[]): {
         } else {
           map.set(key, { staffName: l.staffName, department: l.roleType, total: amt })
         }
+      } else if (amt > 0) {
+        // 未选员工却已产生提成额：标记待补全，不计入合计/汇总
+        hasUnassigned = true
       }
     }
   }
@@ -93,5 +102,5 @@ export function computeSummary(displayItems: DisplayItem[]): {
     department: s.department,
     total: s.total.toFixed(2),
   }))
-  return { summary, grandTotal: grand.toFixed(2) }
+  return { summary, grandTotal: grand.toFixed(2), hasUnassigned }
 }

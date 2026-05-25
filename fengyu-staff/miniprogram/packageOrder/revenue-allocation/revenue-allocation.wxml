@@ -124,6 +124,12 @@ module.exports.pct = function(rate) {
       </view>
     </view>
 
+    <!-- 未指定员工警示 -->
+    <view wx:if="{{hasUnassigned}}" class="status-notice status-notice--warn">
+      <van-icon name="warning-o" size="28rpx" color="#E65100" />
+      <text class="status-text">有分配行尚未指定员工，其提成额未计入汇总，请补全后再保存</text>
+    </view>
+
     <!-- 操作按钮 -->
     <view class="action-bar">
       <van-button

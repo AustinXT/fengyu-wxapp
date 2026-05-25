@@ -42,7 +42,9 @@
   margin-bottom: 24rpx;
 }
 .status-notice--allocated { background: #E8F5E9; }
+.status-notice--warn { background: #FFF3E0; }
 .status-text { font-size: 24rpx; color: #3D8A5A; }
+.status-notice--warn .status-text { color: #E65100; }
 
 /* 分配区域 — 按订单项分组 */
 .alloc-section {
