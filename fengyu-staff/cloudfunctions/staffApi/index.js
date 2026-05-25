@@ -75,6 +75,7 @@ const routes = {
   'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
   'order.createPickup':   () => require('./routes/order').createPickup,
   'order.createDeposit':  () => require('./routes/order').createDeposit,
+  'order.updateDepositReceived': () => require('./routes/order').updateDepositReceived,
   'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
   'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
 

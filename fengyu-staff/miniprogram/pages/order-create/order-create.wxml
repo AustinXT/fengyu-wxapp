@@ -359,10 +359,10 @@
           />
         </block>
 
-        <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数 -->
+        <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数；可录入历史实收（仅记账） -->
         <block wx:elif="{{saleOrderType === '寄存单'}}">
           <view class="deposit-banner">
-            <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销</text>
+            <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
           </view>
           <view class="confirm-items">
             <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
@@ -373,6 +373,21 @@
               <view class="confirm-item-row">
                 <text class="confirm-item-label">数量</text>
                 <text class="confirm-item-value">× {{item.quantity}}</text>
+              </view>
+              <!-- 历史实收：可选，默认 0（不收钱），仅记账 -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">历史实收</text>
+                <view class="confirm-discount-input-wrap">
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{depositReceivedMap[item.skuId]}}"
+                    placeholder="0"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onDepositReceivedChange"
+                  />
+                </view>
               </view>
             </view>
           </view>

@@ -263,6 +263,8 @@ Page({
     recentCustomers: [] as CustomerInfo[],
     // Step 2 顶部：订单类型 4 选 1（PR-C §C1）
     saleOrderType: '销售单' as SaleOrderType,
+    /** 寄存单各行历史实收（skuId → 金额字符串）；仅记账，默认 0，不影响次数/统计 */
+    depositReceivedMap: {} as Record<string, string>,
     /** 内部单半价合计（行原价 × 0.5 之和） */
     halfPriceTotal: '0.00',
     /** 应付合计：销售单/寄存单 = cartTotal - couponDiscount；内部单 = halfPriceTotal - couponDiscount */
@@ -867,6 +869,20 @@ Page({
       row.received = (Math.round(clamped * 100) / 100).toFixed(2);
     }
     this.updateCart(cart, { preserveReceived: true });
+  },
+
+  /** 寄存单历史实收输入（独立于 cart.received，避免和销售单实付逻辑纠缠） */
+  onDepositReceivedChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = String(e.detail.value ?? '');
+    const parsed = parseFloat(raw);
+    const next = { ...this.data.depositReceivedMap };
+    if (!raw || Number.isNaN(parsed) || parsed < 0) {
+      delete next[skuId];
+    } else {
+      next[skuId] = (Math.round(parsed * 100) / 100).toFixed(2);
+    }
+    this.setData({ depositReceivedMap: next });
   },
 
   /**
@@ -1486,7 +1502,7 @@ Page({
    * - 提交成功后直接返回上一页（无付款码流程）
    */
   async _submitDeposit() {
-    const { customerInfo, cart, remark, submitting } = this.data;
+    const { customerInfo, cart, remark, submitting, depositReceivedMap } = this.data;
     if (!customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
       return;
@@ -1506,7 +1522,11 @@ Page({
         'order.createDeposit',
         {
           clientUserId: customerInfo.clientUserId,
-          items: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
+          items: cart.map(c => ({
+            skuId: c.skuId,
+            quantity: c.quantity,
+            received: Math.max(0, parseFloat(depositReceivedMap[c.skuId] || '0') || 0),
+          })),
           remark: remark || undefined,
         }
       );
@@ -1515,6 +1535,7 @@ Page({
       this.setData({
         showCheckout: false,
         saleOrderType: '销售单',
+        depositReceivedMap: {},
       });
       wx.showToast({
         title: `寄存单已创建（${res.itemCount} 项）`,
