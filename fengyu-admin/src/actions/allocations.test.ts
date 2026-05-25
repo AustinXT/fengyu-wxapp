@@ -91,6 +91,7 @@ describe('deleteAllocation — scope 校验', () => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isAdminScope as any).mockReturnValue(false)
+    ;(db.execute as any).mockResolvedValue([]) // 默认空数组：销售提成快照查询无市场 → rate 0
   })
 
   it('分配记录不存在 → 拒绝，不调用 update', async () => {
@@ -174,6 +175,7 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isAdminScope as any).mockReturnValue(false)
+    ;(db.execute as any).mockResolvedValue([]) // 默认空数组：销售提成快照查询无市场 → rate 0
   })
 
   const validAllocations = [
@@ -292,6 +294,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isAdminScope as any).mockReturnValue(false)
+    ;(db.execute as any).mockResolvedValue([]) // 默认空数组：销售提成快照查询无市场 → rate 0
   })
 
   function mockScopeAndItems(items: Array<{ saleItemId: string; received: string }>) {
@@ -467,5 +470,45 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     ])
 
     expect(result.success).toBe(true)
+  })
+
+  it('销售提成固化快照：commission_amount = 份额 × 命中费率（§3.15）', async () => {
+    mockScopeAndItems([{ saleItemId: 'item-1', received: '1000.00' }])
+    // db.execute 三次：①订单 market_name ②订单明细 ③销售单费率矩阵
+    let execCall = 0
+    ;(db.execute as any).mockImplementation(() => {
+      execCall++
+      if (execCall === 1) return Promise.resolve([{ market_name: '测试市场' }])
+      if (execCall === 2)
+        return Promise.resolve([{ sale_item_id: 'item-1', received: '1000.00', sales_category: '自销自耗' }])
+      return Promise.resolve([
+        { role_type: '美容师', sales_category: '自销自耗', amount_tier_min: '0', amount_tier_max: null, commission_rate: '0.08' },
+      ])
+    })
+    let capturedRows: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue({}),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((rows: any[]) => {
+            capturedRows = rows
+            return Promise.resolve({})
+          }),
+        }),
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+      }
+      return fn(tx)
+    })
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.30', totalAmount: '300.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(capturedRows).toHaveLength(1)
+    // 份额 = 1000 × 0.30 = 300；提成 = 300 × 0.08 = 24.00
+    expect(capturedRows[0].totalAmount).toBe('300.00')
+    expect(capturedRows[0].commissionRate).toBe('0.0800')
+    expect(capturedRows[0].commissionAmount).toBe('24.00')
   })
 })

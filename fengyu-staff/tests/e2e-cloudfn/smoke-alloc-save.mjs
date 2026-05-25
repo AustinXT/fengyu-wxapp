@@ -135,7 +135,7 @@ async function main() {
 
   // ─── 5. PG 校验 ───
   const allocs = await pgQuery(
-    `SELECT employee_id, role_type, allocation_ratio, total_amount, is_void
+    `SELECT employee_id, role_type, allocation_ratio, total_amount, commission_rate, commission_amount, is_void
      FROM sale_allocations WHERE sale_item_id = $1 AND is_void = false ORDER BY employee_id`,
     [itemId]
   )
@@ -143,6 +143,14 @@ async function main() {
   else {
     const sum = allocs.reduce((s, a) => s + Number(a.total_amount), 0)
     if (Math.abs(sum - 1000) > 0.01) errors.push(`分配金额合计应=1000（received），实际=${sum}`)
+    // §3.15 销售提成固化快照：保存时应写入 commission_rate / commission_amount（非 NULL）
+    for (const a of allocs) {
+      if (a.commission_amount == null) errors.push(`commission_amount 不应为 NULL（emp=${a.employee_id}）`)
+      const expected = Math.round(Number(a.total_amount) * Number(a.commission_rate || 0) * 100) / 100
+      if (Math.abs(Number(a.commission_amount) - expected) > 0.01) {
+        errors.push(`commission_amount 应=份额×费率=${expected}，实际=${a.commission_amount}（rate=${a.commission_rate}）`)
+      }
+    }
   }
 
   const orderAfter = await pgQuery(

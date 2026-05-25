@@ -29,6 +29,60 @@ function isFrozen(anchor) {
 }
 
 /**
+ * 构造销售提成率查找器（销售提成固化快照用）。
+ *
+ * 一次性加载该市场「销售单」的 commission_rate_matrix，返回 (role, salesCat, amount) => rate。
+ * 口径与 suggest 的 lookupTierRate 完全一致：amountMin <= amount <= amountMax，多 tier 命中取
+ * amountMin 最大者（高 tier 优先），跳过 rate<=0 的 grouped 项；market 为空 / 无配置 → 恒返回 0。
+ * amount（tier 基准）应传订单级 received 合计，与 suggest 一致。
+ *
+ * 跨端约定（no-shared-cloudfunctions）：admin allocations.ts / payNotify 各保留同语义独立副本。
+ */
+async function buildSalesRateLookup(marketName) {
+  if (!marketName) return () => 0
+
+  const rateRows = await pg.query(`
+    SELECT crm.role_type, crm.sales_category,
+           crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+    FROM commission_rate_matrix crm
+    JOIN org_nodes n ON n.id = crm.org_id
+    WHERE n.name = $1 AND crm.order_type = '销售单'
+    ORDER BY crm.role_type, crm.amount_tier_min
+  `, [marketName])
+
+  const grouped = []
+  const byKey = new Map()
+  for (const r of rateRows) {
+    const dept = (r.role_type || '').trim()
+    const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+    let entry = byKey.get(key)
+    if (!entry) {
+      entry = {
+        department: dept,
+        amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+        amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+      }
+      byKey.set(key, entry)
+      grouped.push(entry)
+    }
+    entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+  }
+
+  return function lookup(role, salesCat, amount) {
+    let hit = null
+    for (const r of grouped) {
+      if (r.department !== role) continue
+      if (amount < r.amountMin || amount > r.amountMax) continue
+      const rate = r.orderRates[salesCat]
+      if (!rate || rate <= 0) continue
+      if (!hit || r.amountMin > hit.amountMin) hit = r
+    }
+    return (hit && hit.orderRates[salesCat]) || 0
+  }
+}
+
+/**
  * 保存提成分配（支付后分配）
  *
  * P2-14 Q5: roleType 字段改为 required，按 (saleItemId, roleType) 分池独立校验；
@@ -60,7 +114,7 @@ async function save(ctx) {
 
   // 查询订单
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status, store_id, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -81,13 +135,17 @@ async function save(ctx) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
 
-  // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount）
+  // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount + 提成率查找）
   const orderItems = await pg.query(
-    'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
+    'SELECT sale_item_id, received, sales_category FROM sale_items WHERE sale_order_id = $1',
     [saleOrderId]
   )
   const validItemIds = new Set(orderItems.map(i => i.sale_item_id))
   const receivedMap = new Map(orderItems.map(i => [i.sale_item_id, Number(i.received) || 0]))
+  const salesCategoryMap = new Map(orderItems.map(i => [i.sale_item_id, i.sales_category || '自销自耗']))
+  // tier 基准 = 订单级 received 合计（与 suggest.lookupTierRate 一致）
+  const orderTotalReceived = orderItems.reduce((s, i) => s + (Number(i.received) || 0), 0)
+  const rateLookup = await buildSalesRateLookup(order.market_name)
 
   // 空分配：标记为无需分配
   if (allocations.length === 0) {
@@ -143,6 +201,10 @@ async function save(ctx) {
     }
     const received = receivedMap.get(alloc.saleItemId) || 0
     const totalAmount = Math.round(received * Number(ratioStr) * 100) / 100
+    // 销售提成固化快照：rate = 市场×角色×销售类别×订单级金额档位命中费率；提成额 = 份额 × 费率
+    const salesCategory = salesCategoryMap.get(alloc.saleItemId) || '自销自耗'
+    const commissionRate = rateLookup(alloc.roleType, salesCategory, orderTotalReceived)
+    const commissionAmount = Math.round(totalAmount * commissionRate * 100) / 100
     enriched.push({
       saleItemId: alloc.saleItemId,
       employeeId: alloc.employeeId,
@@ -150,6 +212,8 @@ async function save(ctx) {
       departmentName: alloc.departmentName || null,
       allocationRatio: ratioStr,
       totalAmount,
+      commissionRate,
+      commissionAmount,
     })
   }
 
@@ -193,12 +257,12 @@ async function save(ctx) {
       )
     }
 
-    // 插入新的分配记录（扁平结构，写入 role_type 列）
+    // 插入新的分配记录（扁平结构，写入 role_type 列 + 销售提成固化快照）
     for (const alloc of enriched) {
       await client.query(
         `INSERT INTO sale_allocations
-           (sale_item_id, employee_id, role_type, department_name, allocation_ratio, total_amount, is_void, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, false, $7, $7)`,
+           (sale_item_id, employee_id, role_type, department_name, allocation_ratio, total_amount, commission_rate, commission_amount, is_void, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $9)`,
         [
           alloc.saleItemId,
           alloc.employeeId,
@@ -206,6 +270,8 @@ async function save(ctx) {
           alloc.departmentName,
           alloc.allocationRatio,
           alloc.totalAmount,
+          alloc.commissionRate,
+          alloc.commissionAmount,
           now
         ]
       )

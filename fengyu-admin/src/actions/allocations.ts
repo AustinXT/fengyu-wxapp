@@ -9,6 +9,81 @@ import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 
+/**
+ * 销售提成率查找（销售提成固化快照用）。
+ *
+ * 跨端约定（no-shared-cloudfunctions）：与 staffApi allocation.js buildSalesRateLookup /
+ * payNotify 同语义独立副本。一次性加载市场「销售单」commission_rate_matrix，
+ * 返回 (role, salesCat, amount) => rate，口径与 allocation.suggest 的 lookupTierRate 一致：
+ * amountMin <= amount <= amountMax，多 tier 命中取 amountMin 最大者，跳过 rate<=0；
+ * market 为空 / 无配置 → 恒返回 0。amount 传订单级 received 合计。
+ */
+async function buildSalesRateLookup(
+  marketName: string | null,
+): Promise<(role: string, salesCat: string, amount: number) => number> {
+  if (!marketName) return () => 0
+
+  const rows = (await db.execute(sql`
+    SELECT crm.role_type, crm.sales_category,
+           crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+    FROM commission_rate_matrix crm
+    JOIN org_nodes n ON n.id = crm.org_id
+    WHERE n.name = ${marketName} AND crm.order_type = '销售单'
+    ORDER BY crm.role_type, crm.amount_tier_min
+  `)) as any[]
+
+  type Grouped = { department: string; amountMin: number; amountMax: number; orderRates: Record<string, number> }
+  const grouped: Grouped[] = []
+  const byKey = new Map<string, Grouped>()
+  for (const r of rows) {
+    const dept = String(r.role_type || '').trim()
+    const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+    let entry = byKey.get(key)
+    if (!entry) {
+      entry = {
+        department: dept,
+        amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+        amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+        orderRates: { 自销自耗: 0, 他销自耗: 0, 他销他耗: 0, 生态合作: 0 },
+      }
+      byKey.set(key, entry)
+      grouped.push(entry)
+    }
+    entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+  }
+
+  return (role: string, salesCat: string, amount: number): number => {
+    let hit: Grouped | null = null
+    for (const r of grouped) {
+      if (r.department !== role) continue
+      if (amount < r.amountMin || amount > r.amountMax) continue
+      const rate = r.orderRates[salesCat]
+      if (!rate || rate <= 0) continue
+      if (!hit || r.amountMin > hit.amountMin) hit = r
+    }
+    return (hit && hit.orderRates[salesCat]) || 0
+  }
+}
+
+/** 加载订单市场名 + 订单级 received 合计（提成率 tier 基准）+ 各 item 销售类别 */
+async function loadOrderCommissionContext(saleOrderId: string): Promise<{
+  marketName: string | null
+  orderTotalReceived: number
+  salesCategoryByItem: Map<string, string>
+}> {
+  const [orderRow] = (await db.execute(sql`
+    SELECT market_name FROM sale_orders WHERE sale_order_id = ${saleOrderId} LIMIT 1
+  `)) as any[]
+  const itemRows = (await db.execute(sql`
+    SELECT sale_item_id, received, sales_category FROM sale_items WHERE sale_order_id = ${saleOrderId}
+  `)) as any[]
+  const orderTotalReceived = itemRows.reduce((s, i) => s + (Number(i.received) || 0), 0)
+  const salesCategoryByItem = new Map<string, string>(
+    itemRows.map((i) => [i.sale_item_id as string, (i.sales_category as string) || '自销自耗']),
+  )
+  return { marketName: (orderRow?.market_name as string) ?? null, orderTotalReceived, salesCategoryByItem }
+}
+
 /** 校验订单是否在用户 scope 内（admin 始终通过） */
 async function verifyOrderScope(saleOrderId: string, session: AuthSession): Promise<boolean> {
   if (isAdminScope(session)) return true
@@ -119,12 +194,26 @@ export const saveAllocation = withPermission(
     resolvedRoleType = skills[0] || '美容师'
   }
 
+  // 销售提成固化快照：从 commission_rate_matrix 命中费率，提成额 = 份额 × 费率
+  const [itemRow] = (await db.execute(sql`
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
+  `)) as any[]
+  const { marketName, orderTotalReceived, salesCategoryByItem } = await loadOrderCommissionContext(
+    itemRow?.sale_order_id as string,
+  )
+  const rateLookup = await buildSalesRateLookup(marketName)
+  const salesCategory = salesCategoryByItem.get(data.saleItemId) || '自销自耗'
+  const commissionRate = rateLookup(resolvedRoleType, salesCategory, orderTotalReceived)
+  const commissionAmount = (Number(data.totalAmount) * commissionRate).toFixed(2)
+
   await db.insert(saleAllocations).values({
     saleItemId: data.saleItemId,
     employeeId: data.employeeId,
     roleType: resolvedRoleType,
     allocationRatio: data.allocationRatio,
     totalAmount: data.totalAmount,
+    commissionRate: commissionRate.toFixed(4),
+    commissionAmount,
     departmentName: data.departmentName || null,
   })
 
@@ -267,12 +356,26 @@ export const batchSaveAllocations = withPermission(
     }
   }
 
+  // 销售提成固化快照：加载订单市场 + 订单级 received 合计 + 各 item 销售类别，命中费率
+  const { marketName, orderTotalReceived, salesCategoryByItem } =
+    allocations.length > 0
+      ? await loadOrderCommissionContext(saleOrderId)
+      : { marketName: null, orderTotalReceived: 0, salesCategoryByItem: new Map<string, string>() }
+  const rateLookup = await buildSalesRateLookup(marketName)
+
   // 构造 INSERT 用的 enriched 数组（allocations.length === 0 时为空，下面事务分支会处理）
   const finalAllocations = allocations.length > 0
-    ? allocations.map((a) => ({
-        ...a,
-        totalAmount: ((itemReceivedMap.get(a.saleItemId) || 0) * Number(a.allocationRatio)).toFixed(2),
-      }))
+    ? allocations.map((a) => {
+        const totalAmount = (itemReceivedMap.get(a.saleItemId) || 0) * Number(a.allocationRatio)
+        const salesCategory = salesCategoryByItem.get(a.saleItemId) || '自销自耗'
+        const commissionRate = rateLookup(a.roleType, salesCategory, orderTotalReceived)
+        return {
+          ...a,
+          totalAmount: totalAmount.toFixed(2),
+          commissionRate: commissionRate.toFixed(4),
+          commissionAmount: (totalAmount * commissionRate).toFixed(2),
+        }
+      })
     : []
 
   // 事务：作废旧分配 + 插入新分配 + 更新订单状态，原子提交
@@ -293,6 +396,8 @@ export const batchSaveAllocations = withPermission(
             roleType: a.roleType,
             allocationRatio: a.allocationRatio,
             totalAmount: a.totalAmount, // 服务端重算值（P2-14）
+            commissionRate: a.commissionRate, // 销售提成率快照
+            commissionAmount: a.commissionAmount, // 真实销售提成额
             departmentName: a.departmentName || null,
           }))
         )

@@ -562,14 +562,15 @@ async function bindStore(ctx) {
  * 返回指定时段的分配明细 + 服务提成明细
  * payload: { startDate, endDate, employeeId? (店长可查他人), salesCategory?, page, pageSize }
  *
- * 口径约定（既定混合口径，勿误改）：
- *   totalSalesAlloc       = SUM(sale_allocations.total_amount) — 销售【营业额份额】（业绩，非提成）
+ * 口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
+ *   totalSalesAlloc       = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
  *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
- *   totalCommission（合计）= 两者相加 —— 销售侧用业绩份额、服务侧用真实提成，单位刻意混合。
- *   前端 wxml 把 totalSalesAlloc 标作「销售提成」是历史措辞，与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径，三处自洽。
- *   ⚠️ 不要"修正"为纯提成（销售侧再乘提成率）或把它与首卡「今日分成（营业额）」强行对齐——
- *      首卡是【营业额】维度（= staffRankingRevenue），本页合计是【混合收入】维度，二者本就不等。
- *      若日后要落地 spec §3.15 双维度模型（业绩合计/提成合计分列 + 真实销售提成率），属独立工单。
+ *   totalCommission（合计）= 两者相加 —— 销售/服务两侧均为真实提成收入。
+ *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 营业额份额（total_amount）；
+ *   item.businessAmount = 整行实收（si.received，按产品决策保持不变）。
+ *   提成率快照在 allocation.save / admin / payNotify 写入时固化（commission_rate），历史不随改率变化。
+ *   与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径（销售部分均 = commission_amount），三处自洽。
+ *   ⚠️ 销售提成是【提成收入】维度，与首卡「今日分成（营业额）」（= staffRankingRevenue，营业额份额维度）本就不等，勿强行对齐。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -603,6 +604,8 @@ async function performanceDetail(ctx) {
   const allocRows = await pg.query(`
     SELECT
       sa.total_amount AS alloc_amount,
+      COALESCE(sa.commission_amount, 0) AS commission_amount,
+      sa.commission_rate,
       sa.allocation_ratio,
       sa.department_name,
       si.product_name,
@@ -679,10 +682,11 @@ async function performanceDetail(ctx) {
   const categorySummary = {}
 
   for (const r of allocRows) {
-    totalSalesAlloc += Number(r.alloc_amount)
+    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额 total_amount
+    totalSalesAlloc += Number(r.commission_amount)
     const cat = r.sales_category || '未分类'
     if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].sales += Number(r.alloc_amount)
+    categorySummary[cat].sales += Number(r.commission_amount)
   }
 
   for (const r of svcRows) {
@@ -699,9 +703,11 @@ async function performanceDetail(ctx) {
     productName: r.product_name,
     specName: r.sku_spec_name,
     salesCategory: r.sales_category,
-    amount: Number(r.alloc_amount),
+    amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
+    allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
+    commissionRate: Number(r.commission_rate || 0), // 提成率快照
     ratio: Number(r.allocation_ratio),
-    businessAmount: Number(r.received),
+    businessAmount: Number(r.received), // 整行实收（产品决策：保持不变）
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.sale_order_id,

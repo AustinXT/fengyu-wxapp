@@ -328,16 +328,16 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
-// 「员工收入」口径约定（既定混合口径，勿误改）：
-//   销售部分 = SUM(sale_allocations.total_amount) — 销售【营业额份额】（业绩，非提成）
+// 「员工收入」口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
+//   销售部分 = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
 //   服务部分 = SUM(service_commissions.commission_amount) — 真实【服务提成】
-//   收入 = 两者相加（见 staffRankingIncome）。销售用业绩份额、服务用真实提成，单位刻意混合，
+//   收入 = 两者相加（见 staffRankingIncome）。销售/服务两侧均为真实提成收入，
 //   与 staffApi/routes/staff.js performanceDetail 三处自洽。
-//   注意区分 staffRankingRevenue（纯销售营业额份额，= 门店视图首卡「今日分成（营业额）」口径）。
+//   注意区分 staffRankingRevenue（纯销售营业额份额 SUM(total_amount)，= 门店视图首卡「今日分成（营业额）」口径）。
 async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sa.total_amount::numeric), 0) AS v
+    `SELECT COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
        FROM sale_allocations sa
        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -1146,9 +1146,10 @@ ${STAFF_ORDER_BY}`,
 }
 
 /**
- * 收入排名 = 销售提成（业绩）+ 服务提成
- *   - 销售部分公式与 staffRankingRevenue 完全一致
+ * 收入排名 = 销售提成 + 服务提成（2026-05-26 §3.15：销售部分改用真实提成 commission_amount）
+ *   - 销售部分 = SUM(sale_allocations.commission_amount)（≠ staffRankingRevenue 的 total_amount 营业额份额）
  *   - 服务部分来自 service_commissions.commission_amount（已是计算后的实拿提成）
+ *   - 与 querySalesCommissionIncome / staff.js performanceDetail 三处自洽
  * role_type IN ('美容师','养生师') ∩ is_void=FALSE
  */
 async function staffRankingIncome(period, storeFilter) {
@@ -1157,7 +1158,7 @@ async function staffRankingIncome(period, storeFilter) {
 sales_comm AS (
   SELECT
     sa.employee_id,
-    COALESCE(SUM(sa.total_amount::numeric), 0) AS v
+    COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
   FROM sale_allocations sa
   JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id

@@ -206,7 +206,7 @@ exports.main = async (event) => {
     const orderResult = await pg.query(
       `SELECT status, payment_method, preferred_employee_id,
               total_amount, payable_amount, client_user_id, store_id, prepaid_card_amount,
-              sale_order_type, ref_sale_order_id
+              sale_order_type, ref_sale_order_id, market_name
        FROM sale_orders WHERE sale_order_id = $1`,
       [saleOrderId]
     )
@@ -497,21 +497,70 @@ exports.main = async (event) => {
         const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
         const roleType = skills[0] || '美容师'
 
-        // 查询该订单的所有明细
+        // 查询该订单的所有明细（含 sales_category 供销售提成固化快照用）
         const itemsResult = await client.query(
-          'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
+          'SELECT sale_item_id, received, sales_category FROM sale_items WHERE sale_order_id = $1',
           [targetOrderNo]
         )
 
-        // 为每个明细行创建分配记录（100% 给指定美容师）
+        // 销售提成固化快照：加载该市场「销售单」费率矩阵，tier 基准 = 订单级 received 合计
+        // 跨端约定（no-shared-cloudfunctions）：与 staffApi allocation.js buildSalesRateLookup /
+        // admin allocations.ts 同语义独立副本。
+        const orderTotalReceived = itemsResult.rows.reduce((s, i) => s + (Number(i.received) || 0), 0)
+        let salesRateGrouped = []
+        if (targetOrder.market_name) {
+          const rateRows = await client.query(
+            `SELECT crm.role_type, crm.sales_category,
+                    crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+             FROM commission_rate_matrix crm
+             JOIN org_nodes n ON n.id = crm.org_id
+             WHERE n.name = $1 AND crm.order_type = '销售单'
+             ORDER BY crm.role_type, crm.amount_tier_min`,
+            [targetOrder.market_name]
+          )
+          const byKey = new Map()
+          for (const r of rateRows.rows) {
+            const dept = (r.role_type || '').trim()
+            const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+            let entry = byKey.get(key)
+            if (!entry) {
+              entry = {
+                department: dept,
+                amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+                amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+                orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+              }
+              byKey.set(key, entry)
+              salesRateGrouped.push(entry)
+            }
+            entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+          }
+        }
+        const lookupSalesRate = (role, salesCat, amount) => {
+          let hit = null
+          for (const r of salesRateGrouped) {
+            if (r.department !== role) continue
+            if (amount < r.amountMin || amount > r.amountMax) continue
+            const rate = r.orderRates[salesCat]
+            if (!rate || rate <= 0) continue
+            if (!hit || r.amountMin > hit.amountMin) hit = r
+          }
+          return (hit && hit.orderRates[salesCat]) || 0
+        }
+
+        // 为每个明细行创建分配记录（100% 给指定美容师）+ 销售提成固化快照
         for (const item of itemsResult.rows) {
+          const salesCategory = item.sales_category || '自销自耗'
+          const commissionRate = lookupSalesRate(roleType, salesCategory, orderTotalReceived)
+          const commissionAmount = Math.round(Number(item.received) * commissionRate * 100) / 100
           await client.query(
             `INSERT INTO sale_allocations
                (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
-                is_void, created_at, updated_at)
-             VALUES ($1, $2, $3, 1.00, $4, FALSE, $5, $5)
+                commission_rate, commission_amount, is_void, created_at, updated_at)
+             VALUES ($1, $2, $3, 1.00, $4, $5, $6, FALSE, $7, $7)
              ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role DO NOTHING`,
-            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received, now]
+            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received,
+             commissionRate, commissionAmount, now]
           )
         }
       }
