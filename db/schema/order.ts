@@ -283,8 +283,19 @@ export const saleAllocations = pgTable(
     roleType: varchar("role_type", { length: 20 }).notNull(),
     /** 部门名称快照（用于按部门分组展示） */
     departmentName: varchar("department_name", { length: 100 }),
-    /** 该员工最终分配金额（退款为负数） */
+    /** 该员工最终分配金额 = 营业额份额（退款为负数；销售提成的计算基数） */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
+    /**
+     * 销售提成率快照（保存分配时从 commission_rate_matrix 按市场×角色×销售类别×金额档位固化，
+     * 历史提成不随后续改费率而变化；与 service_commissions.commission_rate 同源同语义）。
+     * NULL = 未回填的历史行 / 无匹配费率配置。
+     */
+    commissionRate: numeric("commission_rate", { precision: 5, scale: 4 }),
+    /**
+     * 真实销售提成额 = round(total_amount × commission_rate, 2)（退款为负数）。
+     * 绩效页「销售提成」/ 数据看板「员工收入」销售部分读此列（落地 staff.pr.spec §3.15 双维度模型）。
+     */
+    commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
     isVoid: boolean("is_void").notNull().default(false),
     voidedAt: timestamp("voided_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

@@ -400,6 +400,13 @@
       "when": 1779726450046,
       "tag": "0056_complete_madelyne_pryor",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1779728834930,
+      "tag": "0057_simple_firebrand",
+      "breakpoints": true
     }
   ]
 }
