@@ -96,33 +96,15 @@ async function search(ctx) {
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : "",
-    tier: null,
     lastServiceDate: null,
     lastPurchaseName: null,
     source: r.customer_id ? "both" : "miniprogram",
   }));
 
-  // 补充 tier（年度消费分级）、lastServiceDate、lastPurchaseName
+  // 补充 lastServiceDate、lastPurchaseName
   const allClientUserIds = results.map(r => r.clientUserId).filter(Boolean);
 
   if (allClientUserIds.length > 0) {
-    // 年度消费总额 → tier
-    const yearStart = new Date().getFullYear() + '-01-01';
-    const spendRows = await pg.query(`
-      SELECT o.client_user_id,
-             COALESCE(SUM(o.total_amount::numeric), 0) AS annual_spend
-      FROM sale_orders o
-      WHERE o.client_user_id = ANY($1)
-        AND o.status = '已支付'
-        AND o.paid_at >= $2::date
-      GROUP BY o.client_user_id
-    `, [allClientUserIds, yearStart]);
-    const spendMap = {};
-    for (const r of spendRows) {
-      const amt = Number(r.annual_spend);
-      spendMap[r.client_user_id] = amt >= 20000 ? 'diamond' : amt >= 5000 ? 'iron' : amt > 0 ? 'fan' : null;
-    }
-
     // 最近服务日期
     const svcDateRows = await pg.query(`
       SELECT DISTINCT ON (so.client_user_id)
@@ -154,7 +136,6 @@ async function search(ctx) {
 
     for (const item of results) {
       if (item.clientUserId) {
-        item.tier = spendMap[item.clientUserId] || null;
         item.lastServiceDate = svcDateMap[item.clientUserId] || null;
         item.lastPurchaseName = lastPurchaseMap[item.clientUserId] || null;
       }
@@ -641,31 +622,21 @@ async function listByTag(ctx) {
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // 查询所有绑定本店的顾客及其最近服务日期 + 年消费金额（兼容门店/管理层 scope）
-  const yearStart = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10)
+  // 查询所有绑定本店的顾客及其最近服务日期（兼容门店/管理层 scope）
   const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
   const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', 1 + cScope.params.length)
-  const yearStartIdx = 1 + cScope.params.length + soScope.params.length
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
-      MAX(so.service_date) AS last_service_date,
-      COALESCE(annual.year_total, 0) AS year_consumption
+      MAX(so.service_date) AS last_service_date
     FROM client_wechat_users c
     LEFT JOIN service_orders so
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
       AND ${soScope.sql}
-    LEFT JOIN (
-      SELECT o.client_user_id, SUM(si.received::numeric) AS year_total
-      FROM sale_orders o
-      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-      WHERE o.status = '已支付' AND o.paid_at >= $${yearStartIdx}::date
-      GROUP BY o.client_user_id
-    ) annual ON annual.client_user_id = c.user_id
     WHERE ${cScope.sql}
-    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level, annual.year_total
-  `, [...cScope.params, ...soScope.params, yearStart])
+    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
+  `, [...cScope.params, ...soScope.params])
 
   // 按 tag 过滤
   const filtered = allRows.filter(r => {
@@ -711,7 +682,6 @@ async function listByTag(ctx) {
   ctx.result = {
     total: filtered.length,
     customers: paged.map(r => {
-      const yearTotal = Number(r.year_consumption) || 0
       return {
         id: null,
         clientUserId: r.user_id,
@@ -722,7 +692,6 @@ async function listByTag(ctx) {
         lastServiceDate: r.last_service_date,
         lastPurchaseName: lastPurchaseMap[r.user_id] || null,
         birthday: r.birthday,
-        tier: yearTotal >= 20000 ? 'diamond' : yearTotal >= 5000 ? 'iron' : yearTotal > 0 ? 'fan' : null,
         source: 'miniprogram',
       }
     })
