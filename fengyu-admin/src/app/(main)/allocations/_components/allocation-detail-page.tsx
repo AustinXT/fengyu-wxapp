@@ -10,11 +10,10 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
-import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate } from "@/lib/types"
+import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate, SkillTag } from "@/lib/types"
 
 // --------------- 常量 ---------------
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师', '品项老师'] as const
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
@@ -123,13 +122,17 @@ export default function AllocationDetailPageClient({
   employees,
   commissionRates = [],
   marketStoreIds = [],
+  skillTags = [],
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   employees: Employee[]
   commissionRates?: CommissionRate[]
   marketStoreIds?: string[]
+  skillTags?: SkillTag[]
 }) {
+  // 技能标签下拉选项：严格来自数据库 skill_tags（is_valid + sort_order 已在 action 内处理）
+  const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
   // 所有在职员工（不区分门店，后续按 skillTag 动态筛选）
   const allActiveEmployees = useMemo(
     () => sortByPosition(employees.filter((e) => !e.isResigned)),
@@ -267,6 +270,7 @@ export default function AllocationDetailPageClient({
             item={item}
             entries={itemAllocs[item.saleItemId] || []}
             getFilteredEmployees={getFilteredEmployees}
+            skillTagNames={skillTagNames}
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
@@ -299,6 +303,7 @@ function ItemAllocationCard({
   item,
   entries,
   getFilteredEmployees,
+  skillTagNames,
   onAdd,
   onUpdate,
   onRemove,
@@ -306,6 +311,7 @@ function ItemAllocationCard({
   item: SaleItem
   entries: AllocationEntry[]
   getFilteredEmployees: (skillTag: string) => Employee[]
+  skillTagNames: string[]
   onAdd: (saleItemId: string) => void
   onUpdate: (saleItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (saleItemId: string, entryId: number) => void
@@ -355,7 +361,7 @@ function ItemAllocationCard({
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'skillTag', e.target.value)}
                   >
                     <option value="">选择</option>
-                    {SKILL_TAGS.map((tag) => (
+                    {skillTagNames.map((tag) => (
                       <option key={tag} value={tag}>{tag}</option>
                     ))}
                   </Select>

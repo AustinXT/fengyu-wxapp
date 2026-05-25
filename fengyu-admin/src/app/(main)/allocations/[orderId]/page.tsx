@@ -4,6 +4,7 @@ import { getOrderAllocations } from '@/actions/allocations'
 import { getEmployees, getItemTeachers } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getMarketStoreIds } from '@/actions/stores'
+import { getActiveSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import AllocationDetailPageClient from '../_components/allocation-detail-page'
 
@@ -11,12 +12,13 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ orderId: string }> }) {
   const { orderId } = await params
-  const [order, allocations, scopedEmployees, itemTeachers, commissionRates] = await Promise.all([
+  const [order, allocations, scopedEmployees, itemTeachers, commissionRates, skillTags] = await Promise.all([
     getOrderById(orderId),
     getOrderAllocations(orderId),
     getEmployees(),
     getItemTeachers(),
     getRates().catch(() => []),
+    getActiveSkillTags(),
   ])
 
   if (!order) notFound()
@@ -34,6 +36,7 @@ export default async function Page({ params }: { params: Promise<{ orderId: stri
       employees={employees}
       commissionRates={commissionRates}
       marketStoreIds={marketStoreIds}
+      skillTags={skillTags}
     />
   )
 }
