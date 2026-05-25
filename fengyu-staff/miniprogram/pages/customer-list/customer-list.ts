@@ -107,7 +107,8 @@ Page({
     this.setData({ loading: true });
     try {
       const { customerType } = this.data;
-      const params: Record<string, string> = {};
+      // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
+      const params: Record<string, string | boolean> = { profileScope: true };
       if (customerType !== 'all') params.customerType = customerType;
       const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
       this.setData({ results: data || [], searched: false });
@@ -134,7 +135,7 @@ Page({
     }
     this.setData({ loading: true, searched: true, activeTag: '' });
     try {
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword });
+      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
       this.setData({ results: data || [] });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '搜索失败';

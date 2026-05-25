@@ -15,10 +15,30 @@ const {
   isStoreInScope,
   assertCustomerInScope,
   assertEmployeeInScope,
+  restrictToBoundEmployee,
+  assertCustomerProfileVisible,
 } = require("../utils/scope");
 const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
+
+/**
+ * 顾客档案子 Tab 可见性闸门（calendar/giftHistory/refundHistory 等）。
+ * 仅门店普通员工（store_staff）触发员工级校验；店长/管理层无额外开销（直接放行）。
+ * 入参可为 clientUserId 或 clientPhone（后者先解析 user_id）。
+ */
+async function assertProfileVisibleByIdentifier(auth, clientUserId, clientPhone) {
+  if (!restrictToBoundEmployee(auth)) return;
+  let cuid = clientUserId;
+  if (!cuid && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    cuid = r[0]?.user_id;
+  }
+  await assertCustomerProfileVisible(pg, auth, cuid);
+}
 
 /**
  * 搜索顾客（PG 单源）
@@ -27,7 +47,7 @@ const { logOperation } = require("../utils/operation-log");
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, customerType, crossStore } = ctx.event.payload || {};
+  const { keyword, phone, customerType, crossStore, profileScope } = ctx.event.payload || {};
 
   // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
   const typeFilter = customerType === 'member'
@@ -35,6 +55,10 @@ async function search(ctx) {
     : customerType === 'flow'
     ? ' AND c.customer_id IS NULL'
     : '';
+
+  // 顾客档案浏览（profileScope，仅顾客 Tab 传）：门店普通员工只见绑定本人的顾客。
+  // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
+  const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
   const limit = 20;
   let rows = [];
@@ -66,25 +90,36 @@ async function search(ctx) {
       );
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
+      // 顾客 Tab（profileScope）普通员工额外按 bound_employee_id 收紧
+      const empClause = restrictEmp ? ' AND c.bound_employee_id = $3' : '';
+      const params = restrictEmp
+        ? [kw, ctx.auth.effectiveStoreId, ctx.auth.staffWfId, limit]
+        : [kw, ctx.auth.effectiveStoreId, limit];
+      const limitIdx = restrictEmp ? 4 : 3;
       rows = await pg.query(
         `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${typeFilter}
-         LIMIT $3`,
-        [kw, ctx.auth.effectiveStoreId, limit],
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${empClause}${typeFilter}
+         LIMIT $${limitIdx}`,
+        params,
       );
     }
   } else {
+    const empClause = restrictEmp ? ' AND c.bound_employee_id = $2' : '';
+    const params = restrictEmp
+      ? [ctx.auth.effectiveStoreId, ctx.auth.staffWfId, limit]
+      : [ctx.auth.effectiveStoreId, limit];
+    const limitIdx = restrictEmp ? 3 : 2;
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.bound_store_id = $1${typeFilter}
-       LIMIT $2`,
-      [ctx.auth.effectiveStoreId, limit],
+       WHERE c.bound_store_id = $1${empClause}${typeFilter}
+       LIMIT $${limitIdx}`,
+      params,
     );
   }
 
@@ -161,6 +196,8 @@ async function calendar(ctx) {
   if (!year || !month) {
     throw new Error("INVALID_PARAMS: 缺少 year 或 month");
   }
+
+  await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone);
 
   const startDate = new Date(year, month - 1, 1);
   const endDate = new Date(year, month, 1);
@@ -298,6 +335,10 @@ async function detail(ctx) {
   // Scope check: customer must belong to a store within current employee's scope
   if (pgUser.bound_store_id && !isStoreInScope(ctx.auth, pgUser.bound_store_id)) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+  }
+  // 顾客档案主闸门：门店普通员工只能查看绑定本人的顾客
+  if (restrictToBoundEmployee(ctx.auth) && pgUser.bound_employee_id !== ctx.auth.staffWfId) {
+    throw new Error('PERMISSION_DENIED: 顾客未分配给当前员工')
   }
 
   const phone = pgUser.phone || "";
@@ -553,8 +594,16 @@ async function stats(ctx) {
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
   // scope 过滤：兼容门店模式(单一)+管理层模式(多门店)
+  // 普通员工（store_staff）顾客统计仅覆盖绑定本人的顾客
+  const restrictEmp = restrictToBoundEmployee(ctx.auth)
   const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
-  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', 1 + cScope.params.length)
+  let cWhere = cScope.sql
+  const cParams = [...cScope.params]
+  if (restrictEmp) {
+    cWhere += ` AND c.bound_employee_id = $${cParams.length + 1}`
+    cParams.push(ctx.auth.staffWfId)
+  }
+  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', cParams.length + 1)
   const rows = await pg.query(`
     SELECT
       c.user_id,
@@ -565,9 +614,9 @@ async function stats(ctx) {
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
       AND ${soScope.sql}
-    WHERE ${cScope.sql}
+    WHERE ${cWhere}
     GROUP BY c.user_id, c.birthday
-  `, [...cScope.params, ...soScope.params])
+  `, [...cParams, ...soScope.params])
 
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
@@ -592,10 +641,16 @@ async function stats(ctx) {
 
   // 会员客/流量客统计
   const memberScope = buildStoreScopeCondition(ctx.auth, 'bound_store_id', 1)
+  let memberWhere = memberScope.sql
+  const memberParams = [...memberScope.params]
+  if (restrictEmp) {
+    memberWhere += ` AND bound_employee_id = $${memberParams.length + 1}`
+    memberParams.push(ctx.auth.staffWfId)
+  }
   const memberRows = await pg.query(`
     SELECT COUNT(*) AS cnt FROM client_wechat_users
-    WHERE ${memberScope.sql} AND customer_id IS NOT NULL
-  `, memberScope.params)
+    WHERE ${memberWhere} AND customer_id IS NOT NULL
+  `, memberParams)
   const memberCount = Number(memberRows[0].cnt)
 
   ctx.result = {
@@ -624,8 +679,16 @@ async function listByTag(ctx) {
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
   // 查询所有绑定本店的顾客及其最近服务日期（兼容门店/管理层 scope）
+  // 普通员工（store_staff）仅覆盖绑定本人的顾客
+  const restrictEmp = restrictToBoundEmployee(ctx.auth)
   const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
-  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', 1 + cScope.params.length)
+  let cWhere = cScope.sql
+  const cParams = [...cScope.params]
+  if (restrictEmp) {
+    cWhere += ` AND c.bound_employee_id = $${cParams.length + 1}`
+    cParams.push(ctx.auth.staffWfId)
+  }
+  const soScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', cParams.length + 1)
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
@@ -635,9 +698,9 @@ async function listByTag(ctx) {
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
       AND ${soScope.sql}
-    WHERE ${cScope.sql}
+    WHERE ${cWhere}
     GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
-  `, [...cScope.params, ...soScope.params])
+  `, [...cParams, ...soScope.params])
 
   // 按 tag 过滤
   const filtered = allRows.filter(r => {
@@ -713,6 +776,8 @@ async function refundHistory(ctx) {
 
   const { clientUserId, clientPhone, page = 1, pageSize = 50 } = ctx.event.payload || {}
   if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+
+  await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone)
 
   // 退款流水（来自 sale_order_payments）+ store_id scope
   let refundParams, refundClientWhere
@@ -850,6 +915,8 @@ async function giftHistory(ctx) {
 
   const { clientUserId, clientPhone } = ctx.event.payload || {}
   if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+
+  await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone)
 
   let whereClause, params
   if (clientUserId) {
@@ -1056,4 +1123,124 @@ async function assign(ctx) {
   }
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign, customerBalance };
+/**
+ * 顾客预约记录（顾客档案 Tab）
+ * 按 clientUserId|clientPhone 查该顾客全部预约 + store_id scope + 普通员工档案闸门。
+ * 顾客已通过档案闸门（普通员工仅见绑定本人的顾客），故不再按 employee_id 过滤预约行，
+ * 展示该顾客完整预约历史。
+ */
+async function appointments(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+
+  await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone)
+
+  let clientWhere, params
+  if (clientUserId) {
+    clientWhere = 'a.client_user_id = $1'
+    params = [clientUserId]
+  } else {
+    clientWhere = 'wu.phone = $1'
+    params = [clientPhone]
+  }
+  const scope = buildStoreScopeCondition(ctx.auth, 'a.store_id', params.length + 1)
+  params.push(...scope.params)
+
+  const rows = await pg.query(`
+    SELECT
+      a.appointment_id, a.status, a.client_user_id, a.client_name,
+      a.employee_name, a.appointment_time, a.notes, a.checkin_at, a.created_at,
+      COALESCE(si.product_name, '到店预约') AS service_name, si.sku_spec_name
+    FROM appointments a
+    LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
+    LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
+    WHERE ${clientWhere} AND ${scope.sql}
+    ORDER BY a.appointment_time DESC
+  `, params)
+
+  ctx.result = rows.map(a => ({
+    id: a.appointment_id,
+    customerName: a.client_name,
+    clientUserId: a.client_user_id,
+    staffName: a.employee_name,
+    appointmentTime: a.appointment_time,
+    statusText: a.status,
+    serviceItemName: a.service_name || a.sku_spec_name || '',
+    remark: a.notes || '',
+    checkinAt: a.checkin_at,
+    createdAt: a.created_at,
+  }))
+}
+
+/**
+ * 顾客手机号变更记录（顾客档案 Tab）
+ * 镜像 admin getCustomerPhoneChangeLogs：
+ *   auth.rebindPhone（顾客自助换绑，已下线但保留历史） + customer.update(detail.changes 含 phone)
+ */
+async function phoneChangeLogs(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+
+  // 手机号变更日志按 client_user_id 关联，先解析 user_id
+  let cuid = clientUserId
+  if (!cuid && clientPhone) {
+    const r = await pg.query(
+      'SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+      [clientPhone],
+    )
+    cuid = r[0]?.user_id
+  }
+  if (!cuid) { ctx.result = []; return }
+
+  // 档案闸门（门店 scope + 普通员工 bound_employee_id）
+  await assertCustomerProfileVisible(pg, ctx.auth, cuid)
+
+  const rows = await pg.query(`
+    SELECT id, created_at, action, detail, source, operator_employee_id, operator_name
+    FROM operation_logs
+    WHERE (
+      (action = 'auth.rebindPhone' AND target_type = 'client_user' AND target_id = $1)
+      OR (action = 'customer.update' AND target_type = 'customer' AND target_id = $1
+          AND (detail -> 'changes' ? 'phone'))
+    )
+    ORDER BY created_at DESC
+    LIMIT 200
+  `, [cuid])
+
+  ctx.result = rows.map(r => {
+    const detail = r.detail || {}
+    if (r.action === 'customer.update') {
+      const phoneDiff = (detail.changes && detail.changes.phone) || {}
+      return {
+        id: r.id,
+        createdAt: r.created_at,
+        oldPhone: maskPhoneForAuth(phoneDiff.from ?? null, ctx.auth),
+        newPhone: maskPhoneForAuth(phoneDiff.to ?? null, ctx.auth),
+        operatorLabel: r.operator_name || r.operator_employee_id || '—',
+        source: 'admin',
+      }
+    }
+    // auth.rebindPhone：operator 为空 + detail.clientUserId 存在 → 顾客自助
+    const operatorLabel = r.operator_employee_id
+      ? (r.operator_name || r.operator_employee_id)
+      : (detail.clientUserId ? '顾客自助' : (r.operator_name || '—'))
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      oldPhone: maskPhoneForAuth(detail.oldPhone ?? null, ctx.auth),
+      newPhone: maskPhoneForAuth(detail.newPhone ?? null, ctx.auth),
+      operatorLabel,
+      source: 'client',
+    }
+  })
+}
+
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };

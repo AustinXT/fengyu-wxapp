@@ -395,6 +395,141 @@ export const getCustomerAppointments = withPermission(
   },
 )
 
+export interface CustomerRefundItem {
+  saleItemId: string
+  direction: string | null
+  productName: string | null
+  specName: string | null
+  quantity: number
+  received: string
+}
+
+export interface CustomerRefundRecord {
+  /** 退款指向原销售单；转换单指向转换单自身 */
+  saleOrderId: string
+  type: '退款' | '转换单'
+  status: string
+  /** 退款金额已含负号；转换单为单据总额 */
+  totalAmount: string
+  refundReason: string | null
+  createdAt: string
+  paidAt: string | null
+  items: CustomerRefundItem[]
+}
+
+/**
+ * 顾客退换记录（顾客档案「退换记录」Tab，与员工端 customer.refundHistory 同口径）
+ * 数据源 = sale_order_payments[change_type='退款'] + sale_orders[sale_order_type='转换单']
+ * scope：按 sale_orders.store_id 过滤（与列表同 scope；admin 无过滤）
+ */
+export const getCustomerRefundHistory = withPermission(
+  'customer:list',
+  async (session, userId: string): Promise<CustomerRefundRecord[]> => {
+  const { saleOrders, saleItems, saleOrderPayments } = await import('@db/order')
+
+  // 退款流水（来自 sale_order_payments）
+  const refundRows = await db
+    .select({
+      saleOrderId: saleOrderPayments.saleOrderId,
+      amount: saleOrderPayments.amount,
+      status: saleOrderPayments.status,
+      createdAt: saleOrderPayments.createdAt,
+      paidAt: saleOrderPayments.paidAt,
+      refundReason: saleOrderPayments.refundReason,
+      note: saleOrderPayments.note,
+    })
+    .from(saleOrderPayments)
+    .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+    .where(
+      and(
+        eq(saleOrderPayments.changeType, '退款'),
+        eq(saleOrders.clientUserId, userId),
+        scopeCondition(session, saleOrders.storeId),
+      ),
+    )
+    .orderBy(desc(saleOrderPayments.createdAt))
+
+  // 转换单
+  const convRows = await db
+    .select({
+      saleOrderId: saleOrders.saleOrderId,
+      status: saleOrders.status,
+      totalAmount: saleOrders.totalAmount,
+      createdAt: saleOrders.createdAt,
+      paidAt: saleOrders.paidAt,
+    })
+    .from(saleOrders)
+    .where(
+      and(
+        eq(saleOrders.clientUserId, userId),
+        eq(saleOrders.saleOrderType, '转换单'),
+        scopeCondition(session, saleOrders.storeId),
+      ),
+    )
+    .orderBy(desc(saleOrders.createdAt))
+
+  // 转换单明细
+  const convOrderIds = convRows.map((o) => o.saleOrderId)
+  const convItemRows = convOrderIds.length > 0
+    ? await db
+        .select({
+          saleOrderId: saleItems.saleOrderId,
+          saleItemId: saleItems.saleItemId,
+          itemDirection: saleItems.itemDirection,
+          productName: saleItems.productName,
+          quantity: saleItems.quantity,
+          received: saleItems.received,
+        })
+        .from(saleItems)
+        .where(inArray(saleItems.saleOrderId, convOrderIds))
+    : []
+  const convItemsByOrder = new Map<string, CustomerRefundItem[]>()
+  for (const i of convItemRows) {
+    if (!convItemsByOrder.has(i.saleOrderId)) convItemsByOrder.set(i.saleOrderId, [])
+    convItemsByOrder.get(i.saleOrderId)!.push({
+      saleItemId: i.saleItemId,
+      direction: i.itemDirection,
+      productName: i.productName,
+      specName: null,
+      quantity: i.quantity,
+      received: i.received,
+    })
+  }
+
+  const refunds: CustomerRefundRecord[] = refundRows.map((r) => {
+    let parsed: { items?: CustomerRefundItem[] } | null = null
+    if (r.note) {
+      try { parsed = typeof r.note === 'string' ? JSON.parse(r.note) : r.note } catch { /* ignore */ }
+    }
+    return {
+      saleOrderId: r.saleOrderId,
+      type: '退款',
+      status: r.status,
+      totalAmount: r.amount, // 已含负号
+      refundReason: r.refundReason,
+      createdAt: r.createdAt.toISOString(),
+      paidAt: r.paidAt?.toISOString() ?? null,
+      items: parsed?.items ?? [],
+    }
+  })
+
+  const conversions: CustomerRefundRecord[] = convRows.map((o) => ({
+    saleOrderId: o.saleOrderId,
+    type: '转换单',
+    status: o.status,
+    totalAmount: o.totalAmount,
+    refundReason: null,
+    createdAt: o.createdAt.toISOString(),
+    paidAt: o.paidAt?.toISOString() ?? null,
+    items: convItemsByOrder.get(o.saleOrderId) ?? [],
+  }))
+
+  return [...refunds, ...conversions].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
+  },
+)
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (

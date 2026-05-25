@@ -507,3 +507,90 @@
   justify-content: flex-end;
   padding: 8rpx 32rpx 16rpx;
 }
+
+/* ===== 预约记录 ===== */
+.appt-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+  margin: 0 24rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+
+.appt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.appt-service {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  flex: 1;
+}
+
+.appt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
+.appt-time {
+  color: var(--color-text-secondary);
+}
+
+.appt-staff {
+  color: var(--color-text-hint);
+}
+
+.appt-remark {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 手机号变更 ===== */
+.phone-log-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+  margin: 0 24rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+
+.phone-log-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 10rpx;
+}
+
+.phone-log-phone {
+  font-size: 28rpx;
+  font-family: monospace;
+  color: var(--color-text-secondary);
+}
+
+.phone-log-new {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.phone-log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.phone-log-op {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}

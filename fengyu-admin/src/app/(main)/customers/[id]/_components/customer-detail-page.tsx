@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
-import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile } from "@/actions/customers"
+import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile, type CustomerRefundRecord } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 
@@ -34,6 +34,7 @@ interface CustomerDetailPageProps {
   stores: Store[]
   employees: Employee[]
   phoneChangeLogs: PhoneChangeLog[]
+  refundHistory: CustomerRefundRecord[]
   orphanProfiles: OrphanProfile[]
   canEditPhone?: boolean
   canPullLegacy?: boolean
@@ -46,6 +47,7 @@ export default function CustomerDetailPage({
   stores,
   employees,
   phoneChangeLogs,
+  refundHistory,
   orphanProfiles,
   canEditPhone = false,
   canPullLegacy = false,
@@ -413,8 +415,9 @@ export default function CustomerDetailPage({
         <TabsList>
           <TabsTrigger value="profile">基本档案</TabsTrigger>
           <TabsTrigger value="orders">消费记录（{orders.length}）</TabsTrigger>
-          <TabsTrigger value="sessions">疗程卡余次（{activeSaleItems.length}）</TabsTrigger>
+          <TabsTrigger value="sessions">疗程卡（{activeSaleItems.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
+          <TabsTrigger value="refunds">退换记录（{refundHistory.length}）</TabsTrigger>
           <TabsTrigger value="phone-history">手机号变更（{phoneChangeLogs.length}）</TabsTrigger>
         </TabsList>
 
@@ -788,7 +791,7 @@ export default function CustomerDetailPage({
         <TabsContent value="sessions">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">疗程卡余次</CardTitle>
+              <CardTitle className="text-base">疗程卡</CardTitle>
             </CardHeader>
             <CardContent>
               <DataTable
@@ -811,6 +814,47 @@ export default function CustomerDetailPage({
                 data={appointments}
                 emptyText="暂无预约记录"
               />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="refunds">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">退换记录</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {refundHistory.length === 0 ? (
+                <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">暂无退换记录</div>
+              ) : (
+                <div className="space-y-3">
+                  {refundHistory.map((r) => (
+                    <div key={`${r.type}-${r.saleOrderId}-${r.createdAt}`} className="rounded-lg border border-[var(--border)] p-3">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={r.type === '退款' ? 'destructive' : 'outline'}>{r.type}</Badge>
+                        <StatusBadge status={r.status} />
+                        <span className="font-mono text-xs text-[var(--muted-foreground)]">{r.saleOrderId}</span>
+                        <span className="ml-auto text-sm font-semibold">{formatCurrency(r.totalAmount)}</span>
+                      </div>
+                      {r.refundReason && (
+                        <div className="mt-1 text-sm text-[var(--muted-foreground)]">原因：{r.refundReason}</div>
+                      )}
+                      {r.items.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {r.items.map((it) => (
+                            <div key={it.saleItemId} className="flex items-center gap-2 text-sm">
+                              {it.direction && <Badge variant="outline">{it.direction}</Badge>}
+                              <span className="flex-1">{it.productName ?? '—'}</span>
+                              <span className="text-[var(--muted-foreground)]">{formatCurrency(it.received)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-2 text-xs text-[var(--muted-foreground)]">{formatDateTime(r.createdAt)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

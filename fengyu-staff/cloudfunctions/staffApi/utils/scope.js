@@ -205,6 +205,65 @@ async function assertCustomerInScope(client, auth, clientUserId) {
 }
 
 /**
+ * 是否需把顾客档案可见性收紧到"绑定本员工"（仅门店普通员工 store_staff）。
+ * 店长（store_manager）/ 市场 / 总部仍按门店 scope 看全店顾客。
+ *
+ * @param {{staffLevel: string|null}} auth
+ * @returns {boolean}
+ */
+function restrictToBoundEmployee(auth) {
+  return auth && auth.staffLevel === LEVEL_STORE_STAFF
+}
+
+/**
+ * 构造"顾客档案"可见性过滤 SQL 片段：门店 scope 之上，
+ * 普通员工额外要求 bound_employee_id = 自己。
+ *
+ * @param {object} auth - ctx.auth
+ * @param {string} customerAlias - client_wechat_users 别名（如 'c'）；门店列用 `${alias}.bound_store_id`
+ * @param {number} startIndex - 参数起始下标（$n）
+ * @returns {{sql: string, params: any[]}}
+ */
+function buildProfileScopeCondition(auth, customerAlias, startIndex = 1) {
+  const store = buildStoreScopeCondition(auth, `${customerAlias}.bound_store_id`, startIndex)
+  if (!restrictToBoundEmployee(auth)) return store
+  const empIdx = startIndex + store.params.length
+  return {
+    sql: `${store.sql} AND ${customerAlias}.bound_employee_id = $${empIdx}`,
+    params: [...store.params, auth.staffWfId],
+  }
+}
+
+/**
+ * 断言 client_user_id 对当前账号"顾客档案"可见，否则抛 PERMISSION_DENIED。
+ * 门店校验复用 assertCustomerInScope；普通员工额外要求 bound_employee_id = 自己。
+ * 顾客档案页（detail 及其子 Tab）的统一可见性闸门。
+ *
+ * @param {{query: Function}} client
+ * @param {object} auth - ctx.auth
+ * @param {string} clientUserId
+ * @returns {Promise<{boundStoreId: string|null, boundEmployeeId: string|null}>}
+ */
+async function assertCustomerProfileVisible(client, auth, clientUserId) {
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  const rows = await client.query(
+    'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId],
+  )
+  if (rows.length === 0) {
+    throw new Error('PERMISSION_DENIED: 顾客不存在')
+  }
+  const { bound_store_id: boundStoreId, bound_employee_id: boundEmployeeId } = rows[0]
+  if (!isStoreInScope(auth, boundStoreId)) {
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+  }
+  if (restrictToBoundEmployee(auth) && boundEmployeeId !== auth.staffWfId) {
+    throw new Error('PERMISSION_DENIED: 顾客未分配给当前员工')
+  }
+  return { boundStoreId, boundEmployeeId }
+}
+
+/**
  * 断言 sale_order_id 在当前 scope 内，否则抛 PERMISSION_DENIED。
  *
  * @param {{query: Function}} client
@@ -263,6 +322,9 @@ module.exports = {
   assertCustomerInScope,
   assertOrderInScope,
   assertEmployeeInScope,
+  restrictToBoundEmployee,
+  buildProfileScopeCondition,
+  assertCustomerProfileVisible,
   LEVEL_HEADQUARTERS,
   LEVEL_MARKET,
   LEVEL_STORE_MANAGER,

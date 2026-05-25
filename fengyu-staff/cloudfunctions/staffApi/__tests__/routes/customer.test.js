@@ -1472,3 +1472,165 @@ describe('customer.customerBalance', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
+
+// ============================================================
+// 普通员工"员工级档案 scope"（bound_employee_id = 自己）
+// createBeauticianCtx.staffWfId = 'emp-beautician-001'，staffLevel='store_staff'
+// ============================================================
+describe('普通员工档案可见性（员工级 scope）', () => {
+  const detailRow = (boundEmployeeId) => ({
+    user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001',
+    member_level: 'VIP', bound_employee_id: boundEmployeeId, skin_type: null,
+    improvement_focus: null, gender: '女', notes: null,
+    bound_store_id: 'store-001', store_name: '测试店',
+  })
+
+  test('detail：店员可看绑定本人的顾客', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query
+      .mockResolvedValueOnce([detailRow('emp-beautician-001')])  // 顾客行（bound 给本人）
+      .mockResolvedValueOnce([{ name: '美容师' }])               // preferredStaffName
+      .mockResolvedValueOnce([{ total: '0', year_total: '0' }])  // getConsumptionStats
+      .mockResolvedValueOnce([{ last_date: null, visit_count_90d: '0' }])
+      .mockResolvedValueOnce([])                                  // getTopProduct
+    await customerRoutes.detail(ctx)
+    expect(ctx.result.clientUserId).toBe('u1')
+  })
+
+  test('detail：店员看未绑定本人的顾客 → PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([detailRow('emp-other-999')])  // bound 给别人
+    await expect(customerRoutes.detail(ctx)).rejects.toThrow(/PERMISSION_DENIED.*未分配/)
+  })
+
+  test('detail：店长不受员工级限制（顾客绑给别人也可看）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query
+      .mockResolvedValueOnce([detailRow('emp-other-999')])
+      .mockResolvedValueOnce([{ name: '美容师' }])
+      .mockResolvedValueOnce([{ total: '0', year_total: '0' }])
+      .mockResolvedValueOnce([{ last_date: null, visit_count_90d: '0' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.detail(ctx)
+    expect(ctx.result.clientUserId).toBe('u1')
+  })
+
+  test('search + profileScope：店员 SQL 含 bound_employee_id 且带 staffWfId', async () => {
+    const ctx = createBeauticianCtx({ keyword: '张', profileScope: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+
+  test('search 无 profileScope（服务单选顾客）：店员 SQL 不含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({ keyword: '张' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('bound_employee_id')
+  })
+
+  test('search + profileScope：店长不加员工过滤', async () => {
+    const ctx = createManagerCtx({ keyword: '张', profileScope: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('bound_employee_id')
+  })
+
+  test('stats：店员统计 SQL 含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({})
+    pg.query
+      .mockResolvedValueOnce([])   // 活跃度分类查询
+      .mockResolvedValueOnce([{ cnt: '0' }])  // 会员数
+    await customerRoutes.stats(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+
+  test('listByTag：店员列表 SQL 含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({ tag: 'active', page: 1, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.listByTag(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+})
+
+// ============================================================
+// customer.appointments
+// ============================================================
+describe('customer.appointments', () => {
+  test('店长返回顾客预约列表', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      { appointment_id: 'A1', status: '已确认', client_user_id: 'u1', client_name: '张三',
+        employee_name: '美容师', appointment_time: '2026-05-20T03:00:00Z', notes: '准时',
+        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理', sku_spec_name: null },
+    ])
+    await customerRoutes.appointments(ctx)
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].id).toBe('A1')
+    expect(ctx.result[0].statusText).toBe('已确认')
+    expect(ctx.result[0].serviceItemName).toBe('面部护理')
+  })
+
+  test('店员越权（顾客未绑定本人）→ PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    // 档案闸门 SELECT bound_store_id, bound_employee_id
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-other-999' }])
+    await expect(customerRoutes.appointments(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('缺少标识参数拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.appointments(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+})
+
+// ============================================================
+// customer.phoneChangeLogs
+// ============================================================
+describe('customer.phoneChangeLogs', () => {
+  test('映射 admin(customer.update) 与 client(rebindPhone) 两类记录', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query
+      // 档案闸门
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      // operation_logs
+      .mockResolvedValueOnce([
+        { id: 2, created_at: '2026-05-20T00:00:00Z', action: 'customer.update',
+          detail: { changes: { phone: { from: '13800001111', to: '13900002222' } } },
+          source: 'admin', operator_employee_id: 'emp-009', operator_name: '王五' },
+        { id: 1, created_at: '2026-05-10T00:00:00Z', action: 'auth.rebindPhone',
+          detail: { oldPhone: '13700001111', newPhone: '13800001111', clientUserId: 'u1' },
+          source: 'client', operator_employee_id: null, operator_name: null },
+      ])
+    await customerRoutes.phoneChangeLogs(ctx)
+    expect(ctx.result).toHaveLength(2)
+    // manager 看全号
+    expect(ctx.result[0].source).toBe('admin')
+    expect(ctx.result[0].oldPhone).toBe('13800001111')
+    expect(ctx.result[0].newPhone).toBe('13900002222')
+    expect(ctx.result[0].operatorLabel).toBe('王五')
+    expect(ctx.result[1].source).toBe('client')
+    expect(ctx.result[1].operatorLabel).toBe('顾客自助')
+  })
+
+  test('店员越权（顾客未绑定本人）→ PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-other-999' }])
+    await expect(customerRoutes.phoneChangeLogs(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('解析不到 user_id 返回空数组', async () => {
+    const ctx = createManagerCtx({ clientPhone: '19900000000' })
+    pg.query.mockResolvedValueOnce([])  // 解析 user_id 无行
+    await customerRoutes.phoneChangeLogs(ctx)
+    expect(ctx.result).toEqual([])
+  })
+})

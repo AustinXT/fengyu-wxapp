@@ -45,6 +45,8 @@ const routes = {
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,
   'customer.customerBalance': () => require('./routes/customer').customerBalance,
+  'customer.appointments': () => require('./routes/customer').appointments,
+  'customer.phoneChangeLogs': () => require('./routes/customer').phoneChangeLogs,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,

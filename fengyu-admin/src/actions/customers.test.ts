@@ -69,10 +69,10 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope, isAdminScope, requirePermission } from '@/lib/permissions'
+import { isInScope, isAdminScope, requirePermission, scopeCondition } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
 import { clientWechatUsers } from '@db/user'
@@ -706,5 +706,34 @@ describe('searchCustomers — 模糊搜索（收紧：bound_store_id 必须非�
     expect(result).toHaveLength(1)
     expect(result[0].phone).toBe('13812345678')
     expect(result[0].storeName).toBe('南昌旗舰店')
+  })
+})
+
+// ── getCustomerRefundHistory（退换记录 Tab）────────────────────────────────────
+function mockRefundChain() {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockResolvedValue([])
+  ;(db.select as any).mockReturnValue(chain)
+}
+
+describe('getCustomerRefundHistory — scope + 空结果', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('无退款/转换单 → 返回空数组', async () => {
+    mockRefundChain()
+    const result = await getCustomerRefundHistory('user-1')
+    expect(result).toEqual([])
+  })
+
+  it('按 sale_orders.store_id 应用 scopeCondition 过滤', async () => {
+    mockRefundChain()
+    await getCustomerRefundHistory('user-1')
+    expect(scopeCondition).toHaveBeenCalled()
   })
 })

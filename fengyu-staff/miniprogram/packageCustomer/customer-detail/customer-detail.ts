@@ -130,12 +130,14 @@ interface GiftItem {
   sessionCount: number;
   remainingSessions: number;
   paidSessions: number | null;
+  createdAt?: string;
 }
 
 interface PromoOrder {
   saleOrderId: string;
   status: string;
   createdAt: string;
+  paidAt?: string;
   items: Array<{ productName: string; skuSpecName: string; quantity: number }>;
 }
 
@@ -154,6 +156,31 @@ interface RefundRecord {
   refundReason: string | null;
   createdAt: string;
   items: Array<{ productName: string; skuSpecName: string; quantity: number; received: string }>;
+}
+
+// 预约记录
+interface AppointmentRecord {
+  id: string;
+  customerName: string;
+  staffName: string | null;
+  appointmentTime: string;
+  statusText: string;
+  statusClass: string;
+  serviceItemName: string;
+  remark: string;
+  checkinAt: string | null;
+  createdAt: string;
+}
+
+// 手机号变更
+interface PhoneChangeRecord {
+  id: number;
+  createdAt: string;
+  oldPhone: string;
+  newPhone: string;
+  operatorLabel: string;
+  source: string;
+  sourceText: string;
 }
 
 // ===== 页面逻辑 =====
@@ -189,6 +216,12 @@ Page({
     // Tab 5: 退换记录
     refundRecords: [] as RefundRecord[],
     refundLoaded: false,
+    // 预约记录
+    appointmentRecords: [] as AppointmentRecord[],
+    appointmentsLoaded: false,
+    // 手机号变更
+    phoneChangeRecords: [] as PhoneChangeRecord[],
+    phoneLoaded: false,
     // Wave 3G — 储值卡余额（跨店统一，仅店长视角）
     cardBalance: 0 as number,
     cardBalanceLoaded: false as boolean,
@@ -268,16 +301,22 @@ Page({
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    if (index === 1 && !this.data.calendarLoaded) {
-      this.loadCalendar();
-    } else if (index === 2 && !this.data.purchaseLoaded) {
+    // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 退换记录 /
+    //         5 手机号变更 / 6 日历 / 7 赠送记录
+    if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
-    } else if (index === 3 && !this.data.cardsLoaded) {
+    } else if (index === 2 && !this.data.cardsLoaded) {
       this.loadTreatmentCards();
-    } else if (index === 4 && !this.data.giftLoaded) {
-      this.loadGiftHistory();
-    } else if (index === 5 && !this.data.refundLoaded) {
+    } else if (index === 3 && !this.data.appointmentsLoaded) {
+      this.loadAppointments();
+    } else if (index === 4 && !this.data.refundLoaded) {
       this.loadRefundHistory();
+    } else if (index === 5 && !this.data.phoneLoaded) {
+      this.loadPhoneChangeLogs();
+    } else if (index === 6 && !this.data.calendarLoaded) {
+      this.loadCalendar();
+    } else if (index === 7 && !this.data.giftLoaded) {
+      this.loadGiftHistory();
     }
   },
 
@@ -503,6 +542,47 @@ Page({
   onRefundOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
+  },
+
+  // ===== 预约记录 =====
+  async loadAppointments() {
+    const id = this._clientId();
+    if (!id) return;
+    const statusClassMap: Record<string, string> = {
+      '待确认': 'pending',
+      '已确认': 'success',
+      '已完成': 'done',
+      '已取消': 'done',
+      '已关闭': 'done',
+    };
+    try {
+      const rows = (await callStaffApi<AppointmentRecord[]>('customer.appointments', id) || [])
+        .map(r => ({
+          ...r,
+          appointmentTime: r.appointmentTime ? formatDateTime(r.appointmentTime) : '',
+          statusClass: statusClassMap[r.statusText] || 'done',
+        }));
+      this.setData({ appointmentRecords: rows, appointmentsLoaded: true });
+    } catch (_) {
+      this.setData({ appointmentRecords: [], appointmentsLoaded: true });
+    }
+  },
+
+  // ===== 手机号变更 =====
+  async loadPhoneChangeLogs() {
+    const id = this._clientId();
+    if (!id) return;
+    try {
+      const rows = (await callStaffApi<PhoneChangeRecord[]>('customer.phoneChangeLogs', id) || [])
+        .map(r => ({
+          ...r,
+          createdAt: r.createdAt ? formatDateTime(r.createdAt) : '',
+          sourceText: r.source === 'admin' ? '后台修改' : '顾客换绑',
+        }));
+      this.setData({ phoneChangeRecords: rows, phoneLoaded: true });
+    } catch (_) {
+      this.setData({ phoneChangeRecords: [], phoneLoaded: true });
+    }
   },
 
   // ===== 备注编辑 =====
