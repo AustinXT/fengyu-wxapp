@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 /**
- * service.complete 服务提成完整链路冒烟
+ * service.complete → service.confirm 服务提成完整链路冒烟
+ *
+ * 状态机（arch/006 顾客确认步骤）：服务中 →[complete]→ 待客户确认 →[confirm]→ 已完成。
+ * 提成在 confirm（finalizeServiceOrder）时生成，故本测试两步连走后再校验。
  *
  * 验证 commission_rate_matrix 通过 (role_type, sales_category, amount_tier) 命中并写入
  * service_commissions 的完整链路 + tier 阶梯切换 + 矩阵未配的兜底。
@@ -31,7 +34,7 @@ let exitCode = 1
 function rec(line) { console.log(line) }
 
 /**
- * 一次性走完：建销售单→建服务单('服务中')→service.complete→读 service_commissions
+ * 一次性走完：建销售单→建服务单('服务中')→service.complete→service.confirm→读 service_commissions
  *
  * 注意：每用例独立 clientUserId — service_orders 有 partial unique
  *      `uq_so_client_active(client_user_id) WHERE status IN ('待服务','服务中')`，
@@ -84,18 +87,32 @@ async function runCase({
     }],
   })
 
-  const res = await invokeStaffApi('service.complete', {
+  const errors = []
+
+  // 1) 员工标记完成：服务中 → 待客户确认（不产生提成副作用）
+  const completeRes = await invokeStaffApi('service.complete', {
     _testOpenid: TEST_MANAGER_OPENID,
     serviceOrderId,
   })
+  if (completeRes.code !== 0) {
+    errors.push(`[${caseName}] service.complete 失败 code=${completeRes.code} msg=${completeRes.message}`)
+    return { errors }
+  }
+  if (completeRes.data?.status !== '待客户确认') {
+    errors.push(`[${caseName}] complete 后 status 应=待客户确认，实际=${completeRes.data?.status}`)
+  }
 
-  const errors = []
+  // 2) 店长代客户确认：待客户确认 → 已完成（扣次数 + 计提成 + 关预约）
+  const res = await invokeStaffApi('service.confirm', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    serviceOrderId,
+  })
   if (res.code !== 0) {
-    errors.push(`[${caseName}] service.complete 失败 code=${res.code} msg=${res.message}`)
+    errors.push(`[${caseName}] service.confirm 失败 code=${res.code} msg=${res.message}`)
     return { errors }
   }
   if (res.data?.status !== '已完成') {
-    errors.push(`[${caseName}] status 应=已完成，实际=${res.data?.status}`)
+    errors.push(`[${caseName}] confirm 后 status 应=已完成，实际=${res.data?.status}`)
   }
 
   const commRows = await pgQuery(
