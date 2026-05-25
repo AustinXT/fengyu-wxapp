@@ -43,6 +43,8 @@ cloudbaserc.json
 envs/dev.env
 envs/prod.env
 envs/.active
+envs/*.pem
+envs/*.cer
 
 # Delivery build output
 delivery/
