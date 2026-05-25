@@ -211,8 +211,8 @@ async function cancel(ctx) {
 
   const appointment = appointments[0]
 
-  if (!['待确认', '已确认'].includes(appointment.status)) {
-    throw new Error('INVALID_PARAMS: 预约状态不允许取消')
+  if (appointment.status !== '待确认') {
+    throw new Error('INVALID_PARAMS: 仅待确认的预约可取消')
   }
 
   // 已关联服务单且服务已开始/完成的预约不可取消：
@@ -235,7 +235,7 @@ async function cancel(ctx) {
     `UPDATE appointments
      SET status = '已取消', cancelled_reason = $1, updated_at = $2
      WHERE appointment_id = $3
-       AND status IN ('待确认', '已确认')`,
+       AND status = '待确认'`,
     [cancelledReason || '', now, appointmentId]
   )
   if (cancelUpd.rowCount === 0) {
