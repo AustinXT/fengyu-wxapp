@@ -21,6 +21,15 @@ const { logOperation } = require('../utils/operation-log')
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
 const MAX_PER_POOL = 3
 
+// 分配冻结窗口：服务单完成（completed_at）超过 N 天后，店长端禁止再修改提成分配（admin 后台不受限）
+const FREEZE_DAYS = 3
+
+// 是否已过冻结窗口（anchor 为完成/支付时刻；为空则保守放行）
+function isFrozen(anchor) {
+  if (!anchor) return false
+  return Date.now() - new Date(anchor).getTime() > FREEZE_DAYS * 86400000
+}
+
 function round2(n) {
   return Math.round(Number(n) * 100) / 100
 }
@@ -73,7 +82,7 @@ async function detail(ctx) {
   // 1. 服务单（scope 校验：限本门店）
   const orders = await pg.query(`
     SELECT so.service_order_id, so.status, so.service_date, so.market_name, so.store_id,
-           so.commission_status, so.client_user_id, so.assigned_employee_id,
+           so.commission_status, so.client_user_id, so.assigned_employee_id, so.completed_at,
            cu.name AS customer_name,
            swu.name AS employee_name
     FROM service_orders so
@@ -85,6 +94,8 @@ async function detail(ctx) {
     throw new Error('NOT_FOUND: 服务单不存在或不属于本门店')
   }
   const order = orders[0]
+  // 完成超 FREEZE_DAYS 天则冻结，前端据此禁用保存
+  order.frozen = isFrozen(order.completed_at)
 
   // 2. 服务明细 ⋈ sale_items（含定价快照）
   const items = await pg.query(`
@@ -141,6 +152,7 @@ async function detail(ctx) {
 
   // 5. 候选员工（admin 式按技能筛选用）：订单所属市场内全部在职员工，含 store_id / skills。
   //    前端按规则筛选：美容师 → 服务单所属门店；养生师/推广师 → 市场内任意门店。
+  //    品项老师特例：可跨门店/跨市场选全公司任意品项老师，故 WHERE 额外 OR 拥有该技能者（不限市场）。
   //    本 action 已 requireManager() 门控，与 admin 让分配人看到市场级员工口径一致。
   let candidateEmployees = []
   if (order.market_name) {
@@ -153,7 +165,7 @@ async function detail(ctx) {
       LEFT JOIN org_nodes m  ON so.parent_id = m.id
       LEFT JOIN org_nodes d  ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND m.name = $1
+        AND (m.name = $1 OR '品项老师' = ANY(u.skills))
         AND u.employee_id IS NOT NULL
       ORDER BY u.name
     `, [order.market_name])
@@ -191,7 +203,7 @@ async function save(ctx) {
 
   // 服务单 scope + 状态校验
   const orders = await pg.query(
-    'SELECT service_order_id, status, commission_status FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
+    'SELECT service_order_id, status, commission_status, completed_at FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
     [serviceOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) {
@@ -203,6 +215,10 @@ async function save(ctx) {
   }
   if (!['待分配', '已分配'].includes(order.commission_status)) {
     throw new Error('INVALID_STATE: 服务单提成状态异常')
+  }
+  // 完成超 FREEZE_DAYS 天后冻结分配结果（含清空场景；admin 后台不受此限）
+  if (isFrozen(order.completed_at)) {
+    throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，服务单完成超过 ${FREEZE_DAYS} 天不可修改`)
   }
 
   // 寄存单不参与提成分配（寄存单仅初始化剩余次数，不计营业额/客单价/提成）

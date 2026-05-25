@@ -19,6 +19,15 @@ const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','
 const MAX_PER_POOL = 3
 const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
 
+// 分配冻结窗口：订单支付（paid_at）超过 N 天后，店长端禁止再修改分配（admin 后台不受限）
+const FREEZE_DAYS = 3
+
+// 是否已过冻结窗口（anchor 为支付时刻；为空则保守放行）
+function isFrozen(anchor) {
+  if (!anchor) return false
+  return Date.now() - new Date(anchor).getTime() > FREEZE_DAYS * 86400000
+}
+
 /**
  * 保存提成分配（支付后分配）
  *
@@ -51,7 +60,7 @@ async function save(ctx) {
 
   // 查询订单
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status, store_id FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, store_id, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -66,6 +75,10 @@ async function save(ctx) {
   }
   if (!['待分配', '已分配'].includes(order.allocation_status)) {
     throw new Error('PERMISSION_DENIED: 订单分配状态异常')
+  }
+  // 支付超 FREEZE_DAYS 天后冻结分配结果（含清空场景；admin 后台不受此限）
+  if (isFrozen(order.paid_at)) {
+    throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
 
   // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount）
@@ -233,7 +246,7 @@ async function deleteAllocation(ctx) {
   }
 
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -243,6 +256,10 @@ async function deleteAllocation(ctx) {
 
   if (orders[0].status !== '已支付') {
     throw new Error('PERMISSION_DENIED: 仅已支付订单可操作分配')
+  }
+  // 支付超 FREEZE_DAYS 天后冻结分配结果（admin 后台不受此限）
+  if (isFrozen(orders[0].paid_at)) {
+    throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
 
   const now = new Date()
@@ -402,7 +419,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
-            preferred_employee_id, client_phone, customer_name
+            preferred_employee_id, client_phone, customer_name, paid_at
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
@@ -520,6 +537,7 @@ async function suggest(ctx) {
 
   // 9. 候选员工（admin 式按技能筛选用）：订单所属市场内全部在职员工，含 store_id / skills。
   //    前端按规则筛选：美容师 → 订单所属门店；养生师/推广师 → 市场内任意门店。
+  //    品项老师特例：可跨门店/跨市场选全公司任意品项老师，故 WHERE 额外 OR 拥有该技能者（不限市场）。
   //    本 action 已 requireManager() 门控，与 admin 让分配人看到市场级员工口径一致。
   let candidateEmployees = []
   if (order.market_name) {
@@ -532,7 +550,7 @@ async function suggest(ctx) {
       LEFT JOIN org_nodes m  ON so.parent_id = m.id
       LEFT JOIN org_nodes d  ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND m.name = $1
+        AND (m.name = $1 OR '品项老师' = ANY(u.skills))
         AND u.employee_id IS NOT NULL
       ORDER BY u.name
     `, [order.market_name])
@@ -558,6 +576,7 @@ async function suggest(ctx) {
     items,
     totalAmount,
     rates,
+    frozen: isFrozen(order.paid_at), // 支付超 FREEZE_DAYS 天，前端据此禁用保存
   }
 }
 

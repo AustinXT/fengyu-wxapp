@@ -14,7 +14,7 @@ import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate } fr
 
 // --------------- 常量 ---------------
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师'] as const
+const SKILL_TAGS = ['美容师', '养生师', '推广师', '品项老师'] as const
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
@@ -139,8 +139,12 @@ export default function AllocationDetailPageClient({
   // 按 skillTag 筛选员工：
   // 美容师 → 订单所属门店
   // 养生师/推广师 → 订单所属市场的所有门店
+  // 品项老师 → 全公司所有门店（不收窄，候选池已含跨门店品项老师）
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
+    if (skillTag === '品项老师') {
+      return allActiveEmployees.filter((e) => e.skills?.includes('品项老师'))
+    }
     const storeScope = skillTag === '美容师'
       ? [order.storeId]
       : marketStoreIds.length > 0 ? marketStoreIds : [order.storeId]

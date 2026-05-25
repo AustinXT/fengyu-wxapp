@@ -15,7 +15,7 @@ import type { ServiceItemDetail } from "@/actions/services"
 
 // --------------- 常量 ---------------
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师'] as const
+const SKILL_TAGS = ['美容师', '养生师', '推广师', '品项老师'] as const
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
@@ -150,8 +150,13 @@ export default function ServiceCommissionDetailPageClient({
     [employees],
   )
 
+  // 美容师 → 服务单门店；养生师/推广师 → 市场内门店；
+  // 品项老师 → 全公司所有门店（不收窄，候选池已含跨门店品项老师）
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
+    if (skillTag === '品项老师') {
+      return allActiveEmployees.filter((e) => e.skills?.includes('品项老师'))
+    }
     const storeScope = skillTag === '美容师'
       ? [serviceOrder.storeId]
       : marketStoreIds.length > 0 ? marketStoreIds : [serviceOrder.storeId]

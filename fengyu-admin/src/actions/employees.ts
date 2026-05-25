@@ -74,6 +74,32 @@ export const getEmployees = withPermission(
 )
 
 /**
+ * 全公司在职「品项老师」员工 — 营业额/服务提成分配专用补充候选池。
+ *
+ * 品项老师可跨门店/跨市场被任意订单分配，故**不加 scopeCondition**，返回全部
+ * 拥有「品项老师」技能的在职员工。调用方（分配详情页）需与 getEmployees 结果按
+ * employeeId 去重合并，再交给前端按技能筛选。
+ */
+export const getItemTeachers = withPermission(
+  'employee:list',
+  async (): Promise<Employee[]> => {
+  const rows = await db
+    .select()
+    .from(staffWechatUsers)
+    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .where(and(
+      eq(staffWechatUsers.isResigned, false),
+      sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
+    ))
+    // 例外：picker 字母序（与 getEmployees 一致）
+    .orderBy(asc(staffWechatUsers.name))
+
+  return rows.map(rowToEmployee)
+  },
+)
+
+/**
  * 搜索在职员工（不限 scope），用于推荐人选择等场景。
  * 返回简要信息，最多 20 条。
  */
