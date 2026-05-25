@@ -57,6 +57,16 @@ const actionLabels: Record<string, string> = {
   // 职位 / 标签
   "position.create": "创建职位", "position.update": "编辑职位",
   "skillTag.create": "创建技能标签", "skillTag.update": "编辑技能标签",
+  // 员工端（staffApi）专有动作
+  "order.confirmOffline": "确认线下收款", "order.createRefund": "发起退款",
+  "order.approveRefund": "审批退款通过", "order.rejectRefund": "驳回退款",
+  "order.createRepayment": "订单回款", "order.createConversion": "创建转换单",
+  "order.createPickup": "家居产品提货", "order.createDeposit": "寄存单初始化",
+  "service.confirm": "确认完成服务", "serviceCommission.save": "保存服务提成",
+  "card.recharge": "充值卡开单", "card.createRefund": "发起充值卡退款",
+  "card.approveRefund": "审批充值卡退款", "card.rejectRefund": "驳回充值卡退款",
+  "customer.updateNotes": "编辑顾客备注", "customer.assign": "分配顾客",
+  "customer.memberLevelChange": "会员等级变更",
 }
 
 const targetTypeLabels: Record<string, string> = {
@@ -82,6 +92,9 @@ const targetTypeLabels: Record<string, string> = {
   mall_bundle_group: "套餐分组",
   position: "职位",
   skill_tag: "技能标签",
+  sale_order_payment: "收退款流水",
+  sale_item: "订单商品行",
+  service_commission: "服务提成",
 }
 
 /** 字段名 → 中文标签 */
