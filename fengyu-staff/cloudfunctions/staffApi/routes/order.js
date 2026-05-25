@@ -2834,7 +2834,7 @@ async function availablePickupItems(ctx) {
     `SELECT si.sale_item_id,
             si.sale_order_id,
             si.product_name,
-            si.spec_name,
+            si.sku_spec_name AS spec_name,
             si.quantity,
             COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
             si.unit_real_price,
@@ -2938,7 +2938,7 @@ async function pickupRecordsList(ctx) {
            cw.phone AS client_phone,
            sw.name AS confirmed_by_name,
            si.product_name,
-           si.spec_name,
+           si.sku_spec_name AS spec_name,
            si.quantity AS item_quantity,
            si.picked_up_quantity AS item_picked_up_quantity,
            si.sale_order_id
@@ -3133,7 +3133,7 @@ async function refundDetail(ctx) {
   const nameMap = {}
   if (itemIds.length > 0) {
     const siRows = await pg.query(
-      `SELECT sale_item_id, product_name, spec_name, product_type
+      `SELECT sale_item_id, product_name, sku_spec_name AS spec_name, product_type
          FROM sale_items WHERE sale_item_id = ANY($1)`,
       [itemIds]
     )
