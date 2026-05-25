@@ -8,6 +8,7 @@ import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types"
 import { RecordPaymentDialog } from "./record-payment-dialog"
 import { ConfirmOfflineDialog } from "./confirm-offline-dialog"
+import { DepositReceiptDialog } from "./deposit-receipt-dialog"
 import { RefundForm } from "@/components/orders/refund-form"
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
@@ -64,6 +65,7 @@ export default function OrderDetailPageClient({
   canRefund = false,
   cardBalance = null,
   canListAllocations = true,
+  canEditDepositReceipt = false,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
@@ -82,6 +84,8 @@ export default function OrderDetailPageClient({
    * 缺该权限的角色（如 admin）不展示"营业额分配"分区，避免误导（admin 不参与分配流程）。
    */
   canListAllocations?: boolean
+  /** 是否展示寄存单「修改实收」按钮（与开寄存单同权限 sale_order:create） */
+  canEditDepositReceipt?: boolean
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
@@ -112,6 +116,10 @@ export default function OrderDetailPageClient({
   const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false)
   const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false)
   const [refundFormOpen, setRefundFormOpen] = useState(false)
+  const [depositReceiptDialogOpen, setDepositReceiptDialogOpen] = useState(false)
+
+  // 寄存单「修改实收」入口：仅寄存单 + 有权限时可见
+  const canShowEditDepositReceipt = canEditDepositReceipt && order.saleOrderType === "寄存单"
 
   // 退款按钮仅对销售单 + 已支付/已完成/部分支付 可见
   const canShowRefund =
@@ -154,8 +162,13 @@ export default function OrderDetailPageClient({
 
       {/* B5 — 寄存单提示：不计入营业额 / 提成 / 客单价等统计；仅次数维度纳入 cardHolders */}
       {order.saleOrderType === "寄存单" && (
-        <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280]">
-          此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 / 客单价统计；可正常生成服务单核销次数。
+        <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
+          <span>此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 / 客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录。</span>
+          {canShowEditDepositReceipt && (
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setDepositReceiptDialogOpen(true)}>
+              修改实收
+            </Button>
+          )}
         </div>
       )}
 
@@ -497,6 +510,20 @@ export default function OrderDetailPageClient({
           open={refundFormOpen}
           onOpenChange={setRefundFormOpen}
           saleOrderId={order.saleOrderId}
+        />
+      )}
+
+      {/* 寄存单历史实收编辑弹层 */}
+      {canShowEditDepositReceipt && (
+        <DepositReceiptDialog
+          open={depositReceiptDialogOpen}
+          onOpenChange={setDepositReceiptDialogOpen}
+          saleOrderId={order.saleOrderId}
+          items={items.map((it) => ({
+            saleItemId: it.saleItemId,
+            productName: it.skuName || it.productName || it.saleItemId,
+            received: String(it.received ?? "0"),
+          }))}
         />
       )}
     </div>

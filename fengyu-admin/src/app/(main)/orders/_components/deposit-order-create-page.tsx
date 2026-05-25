@@ -44,6 +44,8 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
 
   // ===== 购物车 =====
   const [cart, setCart] = useState<CartItem[]>([])
+  // 每行历史实收金额输入（key=skuId，字符串便于受控输入；提交时转数字，默认 0）
+  const [receivedMap, setReceivedMap] = useState<Record<string, string>>({})
 
   // ===== 备注 + 提交 =====
   const [remark, setRemark] = useState("")
@@ -81,6 +83,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
   const clearCustomer = () => {
     setSelectedCustomer(null)
     setCart([])
+    setReceivedMap({})
   }
 
   // 顾客绑定门店校验（寄存单沿用 client 的 bound_store_id 作为开单门店）
@@ -130,6 +133,11 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
 
   const removeFromCart = (skuId: string) => {
     setCart((prev) => prev.filter((it) => it.sku.skuId !== skuId))
+    setReceivedMap((prev) => {
+      const next = { ...prev }
+      delete next[skuId]
+      return next
+    })
   }
 
   const updateQty = (skuId: string, qty: number) => {
@@ -163,7 +171,11 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
         marketName,
         clientUserId: selectedCustomer.userId,
         remark: remark || null,
-        items: cart.map((it) => ({ skuId: it.sku.skuId, quantity: it.quantity })),
+        items: cart.map((it) => ({
+          skuId: it.sku.skuId,
+          quantity: it.quantity,
+          received: Math.max(0, Number(receivedMap[it.sku.skuId]) || 0),
+        })),
       })
       if (res.success && res.saleOrderId) {
         toast.success(res.message)
@@ -289,14 +301,28 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
                     return (
                       <div
                         key={it.sku.skuId}
-                        className="flex items-center justify-between border border-[var(--border)] rounded-[var(--radius)] p-3"
+                        className="flex items-center justify-between gap-3 border border-[var(--border)] rounded-[var(--radius)] p-3"
                       >
-                        <div className="flex-1">
+                        <div className="flex-1 min-w-0">
                           <p className="font-medium">{it.sku.specName}</p>
                           <p className="text-xs text-[#999999]">
                             {it.sku.productType}
                             {sessionCount != null && ` · 每件 ${sessionCount} 次`}
                           </p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-[#999999] whitespace-nowrap">实收 ¥</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="0"
+                            className="w-24"
+                            value={receivedMap[it.sku.skuId] ?? ""}
+                            onChange={(e) =>
+                              setReceivedMap((prev) => ({ ...prev, [it.sku.skuId]: e.target.value }))
+                            }
+                          />
                         </div>
                         <div className="flex items-center gap-2">
                           <Button
@@ -334,7 +360,11 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
                       acc + (it.sku.sessionCount != null ? Number(it.sku.sessionCount) * it.quantity : 0),
                     0,
                   )}{" "}
-                  次
+                  次；合计实收 ¥
+                  {cart
+                    .reduce((acc, it) => acc + (Math.max(0, Number(receivedMap[it.sku.skuId]) || 0)), 0)
+                    .toFixed(2)}
+                  （仅记账，不计营业额）
                 </p>
               </>
             )}

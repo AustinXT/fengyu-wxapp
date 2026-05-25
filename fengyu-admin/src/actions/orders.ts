@@ -24,6 +24,10 @@ import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 
 const opener = alias(staffWechatUsers, 'opener')
 
+// 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
+// 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
+const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
+
 /**
  * 充值卡订单入账（2026-05-20 重构：充值卡剥离 SKU 化）
  *
@@ -2029,6 +2033,10 @@ export const createDepositOrder = withPermission(
       items: Array<{
         skuId: string
         quantity: number
+        // 该行历史实收金额（老顾客这张卡当时实际收了多少钱）。可选，默认 0。
+        // >0 时写一条 sale_order_payments('回款',线下,ref=该行) 流水，total_amount 仍保持 0
+        // （次数全开 + 统计排除不变）。
+        received?: number
       }>
     },
   ): Promise<{ success: boolean; message: string; saleOrderId?: string; itemCount?: number }> => {
@@ -2045,6 +2053,9 @@ export const createDepositOrder = withPermission(
       if (!it || !it.skuId) return { success: false, message: 'items 缺少 skuId' }
       if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
         return { success: false, message: 'items.quantity 必须为正' }
+      }
+      if (it.received != null && (!Number.isFinite(it.received) || it.received < 0)) {
+        return { success: false, message: 'items.received 必须为非负数' }
       }
     }
 
@@ -2150,12 +2161,16 @@ export const createDepositOrder = withPermission(
           seq = parseInt(String(lastRow.sale_item_id).slice(-4)) + 1
         }
 
+        // 收集需要写实收流水的行（received>0），循环后统一 INSERT sale_order_payments + 更新 received
+        const receiptRows: Array<{ saleItemId: string; received: number }> = []
         for (let i = 0; i < data.items.length; i++) {
           const item = data.items[i]
           const sku = skuMap.get(item.skuId)!
           const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
           const basePrice = Number(sku.specialPrice || sku.price)
           const quantity = item.quantity
+          const itemReceived = Math.round((Number(item.received) || 0) * 100) / 100
+          if (itemReceived > 0) receiptRows.push({ saleItemId, received: itemReceived })
           // 次数 × 数量；家居产品不带次数
           const sc = sku.productType === '家居产品'
             ? null
@@ -2188,7 +2203,35 @@ export const createDepositOrder = withPermission(
           })
         }
 
+        // 历史实收录入：对 received>0 的行写一条 '回款'(线下) 流水（ref=该行，targeted）
+        // 并把 sale_orders.received 设为合计。total_amount 仍保持 0：
+        //   → paid_sessions 走 recalc STEP2 的 total_amount<=0 兜底 = session_count（次数全开）
+        //   → dashboard 按 sale_order_type 排除寄存单，received 不进统计
+        if (receiptRows.length > 0) {
+          for (const r of receiptRows) {
+            await tx.insert(saleOrderPayments).values({
+              saleOrderId: id,
+              changeType: '回款',
+              amount: r.received.toFixed(2),
+              paymentMethod: '线下',
+              externalTxnId: null,
+              status: '已支付',
+              sourceEnd: 'admin',
+              paidAt: now,
+              operatorEmployeeId: session.employeeId,
+              refSaleItemId: r.saleItemId,
+              note: DEPOSIT_RECEIPT_NOTE,
+            })
+          }
+          const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
+          await tx
+            .update(saleOrders)
+            .set({ received: totalReceived.toFixed(2), updatedAt: new Date() })
+            .where(eq(saleOrders.saleOrderId, id))
+        }
+
         // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0 → 兜底全付 = session_count
+        // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
         await recalcPaidSessionsForOrder(tx, id)
 
         return id
@@ -2226,6 +2269,114 @@ export const createDepositOrder = withPermission(
       saleOrderId,
       itemCount: data.items.length,
     }
+  },
+)
+
+/**
+ * 修改寄存单明细的历史实收金额（创建后编辑）。
+ *
+ * 全量重设语义：用传入的 items 覆盖该单所有「寄存单初始化实收」流水（删重建），
+ * 重算 sale_orders.received。total_amount 始终保持 0 → 次数全开、统计排除不变。
+ * 与创建同权限（sale_order:create）；finance 无 create 故不可编辑（避免越权）。
+ */
+export const updateDepositReceived = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
+      saleOrderId: string
+      items: Array<{ saleItemId: string; received: number }>
+    },
+  ): Promise<{ success: boolean; message: string }> => {
+    const saleOrderId = String(data?.saleOrderId || '').trim()
+    if (!saleOrderId) return { success: false, message: '缺少订单号' }
+    if (!Array.isArray(data.items)) return { success: false, message: 'items 必须为数组' }
+    for (const it of data.items) {
+      if (!it || !it.saleItemId) return { success: false, message: 'items 缺少 saleItemId' }
+      if (!Number.isFinite(it.received) || it.received < 0) {
+        return { success: false, message: 'items.received 必须为非负数' }
+      }
+    }
+
+    try {
+      await db.transaction(async (tx) => {
+        // 锁单 + 校验类型/权限
+        const lockRes = await tx.execute(sql`
+          SELECT sale_order_id, store_id, sale_order_type, total_amount
+            FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+        `)
+        const locked = (lockRes as unknown as any[])[0]
+        if (!locked) throw new ApiError('NOT_FOUND', '订单不存在')
+        if (!isInScope(session, locked.store_id)) {
+          throw new ApiError('PERMISSION_DENIED', '该订单不在你的可见门店范围内')
+        }
+        if (locked.sale_order_type !== '寄存单') {
+          throw new ApiError('INVALID_STATE', '仅寄存单可修改历史实收金额')
+        }
+
+        // 校验 items 行都属于本单
+        const itemRowsRes = await tx.execute(sql`
+          SELECT sale_item_id FROM sale_items
+           WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买'
+        `)
+        const validIds = new Set((itemRowsRes as unknown as any[]).map(r => r.sale_item_id))
+        const receiptRows = data.items
+          .map(it => ({ saleItemId: it.saleItemId, received: Math.round(it.received * 100) / 100 }))
+          .filter(it => it.received > 0)
+        for (const r of receiptRows) {
+          if (!validIds.has(r.saleItemId)) {
+            throw new ApiError('INVALID_PARAMS', `明细行 ${r.saleItemId} 不属于本订单`)
+          }
+        }
+
+        // 删除旧的「寄存单初始化实收」流水（寄存单不会有真实回款，按标记安全删重建）
+        await tx.execute(sql`
+          DELETE FROM sale_order_payments
+           WHERE sale_order_id = ${saleOrderId}
+             AND change_type = '回款'
+             AND note = ${DEPOSIT_RECEIPT_NOTE}
+        `)
+
+        // 按新值重写流水
+        const now = new Date()
+        for (const r of receiptRows) {
+          await tx.insert(saleOrderPayments).values({
+            saleOrderId,
+            changeType: '回款',
+            amount: r.received.toFixed(2),
+            paymentMethod: '线下',
+            externalTxnId: null,
+            status: '已支付',
+            sourceEnd: 'admin',
+            paidAt: now,
+            operatorEmployeeId: session.employeeId,
+            refSaleItemId: r.saleItemId,
+            note: DEPOSIT_RECEIPT_NOTE,
+          })
+        }
+
+        // 重算 received（total_amount 不动，仍为 0）
+        const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
+        await tx
+          .update(saleOrders)
+          .set({ received: totalReceived.toFixed(2), updatedAt: now })
+          .where(eq(saleOrders.saleOrderId, saleOrderId))
+
+        // STEP1 把 targeted 落回各行 received；STEP2 因 total_amount=0 兜底 paid_sessions=session_count
+        await recalcPaidSessionsForOrder(tx, saleOrderId)
+      })
+    } catch (err: any) {
+      if (err instanceof ApiError) return { success: false, message: err.message }
+      return { success: false, message: err?.message || '修改实收失败' }
+    }
+
+    await logOperation(session, 'order.updateDepositReceived', 'sale_order', saleOrderId, {
+      _v: 1,
+      items: data.items.map(it => ({ saleItemId: it.saleItemId, received: Number(it.received).toFixed(2) })),
+    })
+    revalidatePath(`/orders/${saleOrderId}`)
+    revalidatePath('/orders')
+    return { success: true, message: '实收金额已更新' }
   },
 )
 

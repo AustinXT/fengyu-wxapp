@@ -43,6 +43,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canConfirmOffline = !!(session && hasPermission(session, 'sale_order:update'))
   // 「创建退款」按钮：仅提单权限（所有 admin 角色都有）；审批走 /refunds 流程
   const canRefund = !!(session && hasPermission(session, 'sale_order:refund_create'))
+  // 寄存单「修改实收」：与开寄存单同权限 sale_order:create（finance 无此权限，不可编辑）
+  const canEditDepositReceipt = !!(session && hasPermission(session, 'sale_order:create'))
   let cardBalance: number | null = null
   if ((canRecordPayment || canConfirmOffline) && order.clientUserId) {
     const [row] = await db
@@ -64,6 +66,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       canRefund={canRefund}
       cardBalance={cardBalance}
       canListAllocations={canListAllocations}
+      canEditDepositReceipt={canEditDepositReceipt}
     />
   )
 }
