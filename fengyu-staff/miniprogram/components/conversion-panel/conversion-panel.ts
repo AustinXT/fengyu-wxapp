@@ -112,7 +112,11 @@ Component({
    * 不放在 data 里（避免触发 observer/渲染）
    */
   lifetimes: {
-    attached(this: any) {
+    // 必须在 created 初始化：properties observer 在初始赋值时触发，
+    // 时机早于 attached。若放 attached，首次 clientUserId observer 调 loadCards 时
+    // this._requestSeq 还是 undefined → ++ 得 NaN，回包时 NaN !== 0 被当旧回包丢弃，
+    // loading 永不复位，折抵卡列表永久卡在「加载顾客折抵卡」。
+    created(this: any) {
       this._requestSeq = 0;
       this._cardInit = false;
     },
@@ -120,7 +124,8 @@ Component({
 
   methods: {
     async loadCards(this: any, clientUserId: string) {
-      const seq = ++this._requestSeq;
+      // 防御：不依赖外部初始化，即使 _requestSeq 未初始化也不会产生 NaN
+      const seq = (this._requestSeq = (this._requestSeq || 0) + 1);
       this.setData({ loading: true, errorMsg: '' });
       try {
         const data = await callStaffApi<HeldCardsResponse>('order.customerHeldCards', {
