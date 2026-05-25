@@ -46,6 +46,7 @@ App<IAppOption>({
     if (!raw.startsWith('FYGK-')) return;
     if (this.globalData.pendingInviter) return;
     this.globalData.pendingInviter = raw;
+    wx.setStorageSync('pendingInviter', raw);
   },
 
   initNavBarInfo() {
@@ -75,6 +76,10 @@ App<IAppOption>({
     }
     if (boundMarketName) {
       this.globalData.boundMarketName = boundMarketName;
+    }
+    const cachedInviter = wx.getStorageSync('pendingInviter');
+    if (!this.globalData.pendingInviter && cachedInviter) {
+      this.globalData.pendingInviter = cachedInviter as string;
     }
   },
 

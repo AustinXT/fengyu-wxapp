@@ -171,6 +171,7 @@ Page({
       // 一次性消费邀请人，防止二次使用
       if (inviterUserId) {
         app.globalData.pendingInviter = undefined;
+        wx.removeStorageSync('pendingInviter');
       }
       this.setData({ bindState: 'is-current', boundStoreName: storeName, showSourcePopup: false });
       Toast.success('门店已绑定');
