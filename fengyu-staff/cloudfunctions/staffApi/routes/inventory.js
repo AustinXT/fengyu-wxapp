@@ -71,13 +71,13 @@ function buildStoreFilter(auth, cfg, paramIndexStart) {
   }
   if (cfg.storeFilterMode === 'transfer') {
     return {
-      sql: `(store_id = ANY($${paramIndexStart}::text[]) OR counterpart_store_id = ANY($${paramIndexStart}::text[]))`,
+      sql: `(m.store_id = ANY($${paramIndexStart}::text[]) OR m.counterpart_store_id = ANY($${paramIndexStart}::text[]))`,
       params: [ids],
       nextIdx: paramIndexStart + 1,
     }
   }
   return {
-    sql: `store_id = ANY($${paramIndexStart}::text[])`,
+    sql: `m.store_id = ANY($${paramIndexStart}::text[])`,
     params: [ids],
     nextIdx: paramIndexStart + 1,
   }
@@ -117,9 +117,9 @@ async function list(ctx) {
 
   if (storeId) {
     if (cfg.storeFilterMode === 'transfer') {
-      conditions.push(`(store_id = $${idx} OR counterpart_store_id = $${idx})`)
+      conditions.push(`(m.store_id = $${idx} OR m.counterpart_store_id = $${idx})`)
     } else {
-      conditions.push(`store_id = $${idx}`)
+      conditions.push(`m.store_id = $${idx}`)
     }
     params.push(storeId)
     idx++
@@ -182,7 +182,7 @@ async function list(ctx) {
   ORDER BY m.doc_date DESC, m.created_at DESC
      LIMIT ${limit} OFFSET ${offset}
   `
-  const countSql = `SELECT COUNT(*)::int AS cnt FROM ${cfg.master} ${whereSql}`
+  const countSql = `SELECT COUNT(*)::int AS cnt FROM ${cfg.master} m ${whereSql}`
 
   const [rows, countRow] = await Promise.all([
     pg.query(dataSql, params),
