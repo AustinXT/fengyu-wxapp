@@ -40,7 +40,6 @@ const routes = {
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
   'customer.stats':       () => require('./routes/customer').stats,
   'customer.listByTag':   () => require('./routes/customer').listByTag,
-  'customer.giftHistory': () => require('./routes/customer').giftHistory,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,

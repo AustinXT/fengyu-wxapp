@@ -324,69 +324,6 @@
   height: calc(120rpx + env(safe-area-inset-bottom));
 }
 
-/* ===== 赠送记录 ===== */
-.gift-section-title {
-  display: block;
-  font-size: 26rpx;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  padding: 16rpx 24rpx 8rpx;
-}
-
-.gift-card {
-  background: #FFFFFF;
-  border-radius: 16rpx;
-  padding: 20rpx 24rpx;
-  margin: 0 24rpx 12rpx;
-  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
-}
-
-.gift-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12rpx;
-}
-
-.gift-order-no {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  font-family: monospace;
-}
-
-.gift-item-row {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  padding: 4rpx 0;
-}
-
-.gift-item-name {
-  font-size: 26rpx;
-  color: var(--color-text-primary);
-}
-
-.gift-item-spec {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  background: #F5F2EE;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
-}
-
-.gift-item-sessions {
-  font-size: 22rpx;
-  color: var(--color-primary);
-  font-weight: 500;
-}
-
-.gift-card-time {
-  display: block;
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  margin-top: 8rpx;
-}
-
 /* ===== 退换记录 ===== */
 .refund-card {
   background: #FFFFFF;

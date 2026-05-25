@@ -1,6 +1,6 @@
 /**
  * 顾客档案路由测试
- * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / giftHistory
+ * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs
  * PG 单源架构，非店长脱敏
  */
 
@@ -1073,92 +1073,6 @@ describe('customer.refundHistory', () => {
 
     await customerRoutes.refundHistory(ctx)
     expect(ctx.result).toEqual([])
-  })
-})
-
-// ============================================================
-// customer.giftHistory
-// ============================================================
-describe('customer.giftHistory', () => {
-  test('返回组合套餐订单和赠品明细', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1' })
-
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_order_id: 'PROMO-001', status: '已支付', sale_order_type: '销售单',
-        total_amount: '0', created_at: '2024-06-01', paid_at: '2024-06-01',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_item_id: 'gift-001', sale_order_id: 'FY-001', product_name: '赠送面膜',
-        sku_spec_name: '体验装', quantity: 1, session_count: 3, remaining_sessions: 3,
-        received: '0', created_at: '2024-06-05', paid_at: '2024-06-05',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_order_id: 'PROMO-001', sale_item_id: 'promo-item-1',
-        product_name: '活动面部护理', sku_spec_name: '体验版',
-        quantity: 1, session_count: 5, remaining_sessions: 5, received: '0',
-      },
-    ])
-
-    await customerRoutes.giftHistory(ctx)
-
-    expect(ctx.result.promoOrders).toHaveLength(1)
-    expect(ctx.result.promoOrders[0].saleOrderId).toBe('PROMO-001')
-    expect(ctx.result.promoOrders[0].items).toHaveLength(1)
-    expect(ctx.result.promoOrders[0].items[0].productName).toBe('活动面部护理')
-    expect(ctx.result.giftItems).toHaveLength(1)
-    expect(ctx.result.giftItems[0].productName).toBe('赠送面膜')
-  })
-
-  test('无组合套餐时 promoOrders 为空', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1' })
-
-    pg.query.mockResolvedValueOnce([]) // 无组合套餐
-    pg.query.mockResolvedValueOnce([]) // 无赠品
-
-    await customerRoutes.giftHistory(ctx)
-
-    expect(ctx.result.promoOrders).toEqual([])
-    expect(ctx.result.giftItems).toEqual([])
-  })
-
-  test('按 clientPhone 查询', async () => {
-    const ctx = createManagerCtx({ clientPhone: '13800001111' })
-
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-
-    await customerRoutes.giftHistory(ctx)
-
-    const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain('client_phone')
-  })
-
-  test('缺少标识参数时拒绝', async () => {
-    const ctx = createManagerCtx({})
-    await expect(customerRoutes.giftHistory(ctx)).rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
-  })
-
-  // ── scope isolation ──
-  test('SQL 包含 store_id scope 条件', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1' })
-    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
-    await customerRoutes.giftHistory(ctx)
-    // giftItems 查询是第 2 个 call（第 1 个是 promoOrders）
-    const giftSql = pg.query.mock.calls[1][0]
-    expect(giftSql).toMatch(/o\.store_id\s*=\s*\$/)
-  })
-
-  test('管理模式 SQL 使用 ANY(scopeStoreIds)', async () => {
-    const ctx = createManagementCtx({ clientUserId: 'u1' })
-    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
-    await customerRoutes.giftHistory(ctx)
-    const giftSql = pg.query.mock.calls[1][0]
-    expect(giftSql).toMatch(/o\.store_id\s*=\s*ANY\(\$/)
   })
 })
 

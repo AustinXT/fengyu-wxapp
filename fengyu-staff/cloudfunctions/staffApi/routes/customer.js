@@ -23,7 +23,7 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
 
 /**
- * 顾客档案子 Tab 可见性闸门（calendar/giftHistory/refundHistory 等）。
+ * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
  * 仅门店普通员工（store_staff）触发员工级校验；店长/管理层无额外开销（直接放行）。
  * 入参可为 clientUserId 或 clientPhone（后者先解析 user_id）。
  */
@@ -906,108 +906,6 @@ async function refundHistory(ctx) {
 }
 
 /**
- * 赠送记录（套餐内赠品 + 组合套餐）
- * 逻辑：从已支付订单中提取 received=0 或 is_bundle_sku=true+price=0 的明细行
- *       以及原组合套餐类型的订单（已合并为销售单）
- */
-async function giftHistory(ctx) {
-  await requireStaffBound()(ctx, async () => {})
-
-  const { clientUserId, clientPhone } = ctx.event.payload || {}
-  if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
-
-  await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone)
-
-  let whereClause, params
-  if (clientUserId) {
-    whereClause = "o.client_user_id = $1"
-    params = [clientUserId]
-  } else {
-    whereClause = "o.client_phone = $1"
-    params = [clientPhone]
-  }
-
-  // Store scope filter
-  const giftScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
-  whereClause += ` AND ${giftScope.sql}`
-  params.push(...giftScope.params)
-
-  // 组合套餐订单（整单视为赠送/活动）
-  const promoOrders = await pg.query(`
-    SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
-           o.created_at, o.paid_at
-    FROM sale_orders o
-    WHERE ${whereClause}
-      AND FALSE -- TODO: 组合套餐已合并为销售单，需另行标记
-      AND o.status IN ('已支付', '已完成')
-    ORDER BY o.created_at DESC
-  `, params)
-
-  // 套餐内赠品（received=0 的明细行，排除组合套餐）
-  const giftItems = await pg.query(`
-    SELECT si.sale_item_id, si.sale_order_id, si.product_name, si.sku_spec_name,
-           si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions,
-           si.received, o.created_at, o.paid_at
-    FROM sale_items si
-    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE ${whereClause}
-      AND o.status IN ('已支付', '已完成')
-      AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
-      AND si.item_direction = '购买'
-      AND si.received::numeric = 0
-    ORDER BY o.created_at DESC
-  `, params)
-
-  // 组合套餐订单的明细
-  const promoOrderIds = promoOrders.map(o => o.sale_order_id)
-  let promoItems = []
-  if (promoOrderIds.length > 0) {
-    promoItems = await pg.query(
-      `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.sku_spec_name,
-              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received
-       FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
-      [promoOrderIds]
-    )
-  }
-
-  const promoItemsByOrder = {}
-  for (const i of promoItems) {
-    if (!promoItemsByOrder[i.sale_order_id]) promoItemsByOrder[i.sale_order_id] = []
-    promoItemsByOrder[i.sale_order_id].push({
-      productName: i.product_name,
-      specName: i.sku_spec_name,
-      quantity: i.quantity,
-      sessionCount: i.session_count,
-      remainingSessions: i.remaining_sessions,
-      paidSessions: i.paid_sessions,
-    })
-  }
-
-  ctx.result = {
-    promoOrders: promoOrders.map(o => ({
-      saleOrderId: o.sale_order_id,
-      type: o.sale_order_type,
-      status: o.status,
-      totalAmount: Number(o.total_amount),
-      createdAt: o.created_at,
-      paidAt: o.paid_at,
-      items: promoItemsByOrder[o.sale_order_id] || [],
-    })),
-    giftItems: giftItems.map(i => ({
-      saleItemId: i.sale_item_id,
-      saleOrderId: i.sale_order_id,
-      productName: i.product_name,
-      specName: i.sku_spec_name,
-      quantity: i.quantity,
-      sessionCount: i.session_count,
-      remainingSessions: i.remaining_sessions,
-      paidSessions: i.paid_sessions,
-      createdAt: i.created_at,
-    })),
-  }
-}
-
-/**
  * 更新顾客备注
  */
 async function updateNotes(ctx) {
@@ -1243,4 +1141,4 @@ async function phoneChangeLogs(ctx) {
   })
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };

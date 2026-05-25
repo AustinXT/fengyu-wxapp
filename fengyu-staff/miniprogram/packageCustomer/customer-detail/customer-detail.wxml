@@ -1,4 +1,4 @@
-<!-- packageCustomer/customer-detail/customer-detail.wxml — 6-Tab 顾客详情 -->
+<!-- packageCustomer/customer-detail/customer-detail.wxml — 7-Tab 顾客详情 -->
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -43,7 +43,7 @@
       </view>
     </view>
 
-    <!-- 8-Tab 导航：6 核心（与 admin 一致）+ 日历/赠送记录（员工端特有） -->
+    <!-- 7-Tab 导航：6 核心（与 admin 一致）+ 日历（员工端特有） -->
     <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable line-width="40rpx">
       <van-tab title="基本档案">
         <view class="tab-content">
@@ -277,46 +277,6 @@
         </view>
       </van-tab>
 
-      <van-tab title="赠送记录">
-        <view class="tab-content">
-          <view wx:if="{{!giftLoaded}}" class="loading-wrap">
-            <van-loading type="spinner" color="#C0322A" />
-          </view>
-          <view wx:elif="{{giftData && (giftData.promoOrders.length > 0 || giftData.giftItems.length > 0)}}">
-            <!-- 组合套餐订单 -->
-            <view wx:if="{{giftData.promoOrders.length > 0}}">
-              <text class="gift-section-title">组合套餐</text>
-              <view class="gift-card" wx:for="{{giftData.promoOrders}}" wx:key="saleOrderId">
-                <view class="gift-card-header">
-                  <text class="gift-order-no">{{item.saleOrderId}}</text>
-                  <text class="status-tag status-tag--success">{{item.status}}</text>
-                </view>
-                <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
-                  <text class="gift-item-name">{{gi.productName}}</text>
-                  <text class="gift-item-spec">{{gi.specName}}</text>
-                  <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.remainingSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}}</text>
-                </view>
-                <text class="gift-card-time">{{item.paidAt}}</text>
-              </view>
-            </view>
-            <!-- 套餐赠品 -->
-            <view wx:if="{{giftData.giftItems.length > 0}}">
-              <text class="gift-section-title">套餐赠品</text>
-              <view class="gift-card" wx:for="{{giftData.giftItems}}" wx:key="saleItemId">
-                <view class="gift-item-row">
-                  <text class="gift-item-name">{{item.productName}}</text>
-                  <text class="gift-item-spec">{{item.specName}}</text>
-                </view>
-                <view wx:if="{{item.sessionCount}}" class="gift-item-row">
-                  <text class="gift-item-sessions">剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
-                </view>
-                <text class="gift-card-time">{{item.createdAt}}</text>
-              </view>
-            </view>
-          </view>
-          <van-empty wx:else description="暂无赠送记录" />
-        </view>
-      </van-tab>
     </van-tabs>
   </block>
 

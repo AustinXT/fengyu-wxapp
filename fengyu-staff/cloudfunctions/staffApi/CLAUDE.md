@@ -20,7 +20,7 @@ staffApi/
 │   ├── auth.js       # login, bindPhone
 │   ├── store.js      # list, unbindRequests, approveUnbind, rejectUnbind
 │   ├── staff.js      # list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail
-│   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs
+│   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs
 │   ├── product.js    # shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans
 │   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup, availablePickupItems, pickupRecordsList
 │   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList(支持 allocationStatus), suggest

@@ -1,4 +1,4 @@
-// packageCustomer/customer-detail/customer-detail.ts — 6-Tab 顾客详情
+// packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTime } from '../../utils/formatters';
@@ -121,31 +121,6 @@ interface TreatmentCard {
   storeId?: string;
 }
 
-// Tab 4: 赠送记录
-interface GiftItem {
-  saleItemId: string;
-  productName: string;
-  skuSpecName: string;
-  quantity: number;
-  sessionCount: number;
-  remainingSessions: number;
-  paidSessions: number | null;
-  createdAt?: string;
-}
-
-interface PromoOrder {
-  saleOrderId: string;
-  status: string;
-  createdAt: string;
-  paidAt?: string;
-  items: Array<{ productName: string; skuSpecName: string; quantity: number }>;
-}
-
-interface GiftData {
-  promoOrders: PromoOrder[];
-  giftItems: GiftItem[];
-}
-
 // Tab 5: 退换记录
 interface RefundRecord {
   saleOrderId: string;
@@ -210,9 +185,6 @@ Page({
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
     selectedCount: 0,
-    // Tab 4: 赠送记录
-    giftData: null as GiftData | null,
-    giftLoaded: false,
     // Tab 5: 退换记录
     refundRecords: [] as RefundRecord[],
     refundLoaded: false,
@@ -301,8 +273,8 @@ Page({
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 退换记录 /
-    //         5 手机号变更 / 6 日历 / 7 赠送记录
+    // 7-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 退换记录 /
+    //         5 手机号变更 / 6 日历
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
@@ -315,8 +287,6 @@ Page({
       this.loadPhoneChangeLogs();
     } else if (index === 6 && !this.data.calendarLoaded) {
       this.loadCalendar();
-    } else if (index === 7 && !this.data.giftLoaded) {
-      this.loadGiftHistory();
     }
   },
 
@@ -501,29 +471,6 @@ Page({
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
-  },
-
-  // ===== Tab 4: 赠送记录 =====
-  async loadGiftHistory() {
-    const id = this._clientId();
-    if (!id) return;
-    try {
-      const data = await callStaffApi<GiftData>('customer.giftHistory', id);
-      const formatted: GiftData = {
-        promoOrders: (data?.promoOrders || []).map(o => ({
-          ...o,
-          paidAt: o.paidAt ? formatDateTime(o.paidAt) : o.paidAt,
-          createdAt: formatDateTime(o.createdAt),
-        })),
-        giftItems: (data?.giftItems || []).map(g => ({
-          ...g,
-          createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt,
-        })),
-      };
-      this.setData({ giftData: formatted, giftLoaded: true });
-    } catch (_) {
-      this.setData({ giftData: { promoOrders: [], giftItems: [] }, giftLoaded: true });
-    }
   },
 
   // ===== Tab 5: 退换记录 =====
