@@ -18,6 +18,7 @@ const {
 } = require("../utils/scope");
 const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
+const { logOperation } = require("../utils/operation-log");
 
 /**
  * 搜索顾客（PG 单源）
@@ -955,18 +956,17 @@ async function updateNotes(ctx) {
   // （store 模式 = effectiveStoreId；management 模式 = scopeStoreIds）
   await assertCustomerInScope(pg, ctx.auth, clientUserId)
 
-  await pg.query(
-    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
-    [trimmed || null, clientUserId]
-  )
-
-  // Audit log
-  await pg.query(
-    `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())`,
-    ['customer.updateNotes', 'client_wechat_users', clientUserId,
-     JSON.stringify({ notesLength: trimmed ? trimmed.length : 0 }), 'staffApi']
-  )
+  await pg.transaction(async (client) => {
+    await client.query(
+      'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
+      [trimmed || null, clientUserId]
+    )
+    // Audit log
+    await logOperation(client, ctx, 'customer.updateNotes', 'customer', clientUserId, {
+      _v: 3,
+      notesLength: trimmed ? trimmed.length : 0,
+    })
+  })
 
   ctx.result = { message: '备注已保存' }
 }
@@ -1037,18 +1037,18 @@ async function assign(ctx) {
     throw new Error('INVALID_PARAMS: 员工不存在')
   }
 
-  await pg.query(
-    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
-    [employeeId, clientUserId]
-  )
-
-  // Audit log
-  await pg.query(
-    `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())`,
-    ['customer.assign', 'client_wechat_users', clientUserId,
-     JSON.stringify({ employeeId, employeeName: staffRows[0].name }), 'staffApi']
-  )
+  await pg.transaction(async (client) => {
+    await client.query(
+      'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
+      [employeeId, clientUserId]
+    )
+    // Audit log
+    await logOperation(client, ctx, 'customer.assign', 'customer', clientUserId, {
+      _v: 3,
+      employeeId,
+      employeeName: staffRows[0].name,
+    })
+  })
 
   ctx.result = {
     message: '分配成功',

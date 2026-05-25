@@ -214,12 +214,14 @@ describe('store.rejectUnbind', () => {
   test('拒绝解绑申请', async () => {
     const ctx = createManagerCtx({ requestId: 'req-001', rejectReason: '不允许' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        from_store_id: 'store-001',
-        status: '待处理',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: null,
+      from_store_id: 'store-001',
+      status: '待处理',
+    }])
+    // 事务内 CAS UPDATE（rowCount=1）+ 审计日志
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await storeRoutes.rejectUnbind(ctx)
     expect(ctx.result.success).toBe(true)

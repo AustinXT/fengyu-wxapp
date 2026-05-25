@@ -11,6 +11,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const { logOperation, logTransition } = require('../utils/operation-log')
 
 /**
  * 创建服务单
@@ -279,6 +280,17 @@ async function create(ctx) {
         ]
       )
     }
+
+    // 审计日志
+    await logOperation(client, ctx, 'service.create', 'service_order', serviceOrderId, {
+      _v: 3,
+      serviceOrderType,
+      storeId: ctx.auth.effectiveStoreId,
+      clientUserId: resolvedClientUserId,
+      assignedEmployeeId: resolvedStaffWfId,
+      itemCount: normalizedItems.length,
+      appointmentId: appointmentId || null,
+    })
   })
 
   ctx.result = {
@@ -320,13 +332,17 @@ async function start(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '待服务'",
-    [now, serviceOrderId]
-  )
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '待服务'",
+      [now, serviceOrderId]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中')
+  })
 
   ctx.result = {
     serviceOrderId,
@@ -565,13 +581,17 @@ async function complete(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE service_orders SET status = '待客户确认', staff_completed_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
-    [now, serviceOrderId]
-  )
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE service_orders SET status = '待客户确认', staff_completed_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
+      [now, serviceOrderId]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'service.complete', 'service_order', serviceOrderId, '服务中', '待客户确认')
+  })
 
   ctx.result = {
     serviceOrderId,
@@ -625,6 +645,11 @@ async function confirm(ctx) {
       // 已被其它入口（顾客本人）确认，事务内无副作用，视为幂等
       return
     }
+    // 审计日志（仅本入口真正完成时记；finalize 共享副本不含日志，归属 handler 层）
+    await logTransition(client, ctx, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
+      clientUserId: so.client_user_id,
+      itemCount: items.length,
+    })
   })
 
   ctx.result = {
@@ -913,13 +938,17 @@ async function cancel(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2 AND status = $3",
-    [now, serviceOrderId, so.status]
-  )
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2 AND status = $3",
+      [now, serviceOrderId, so.status]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'service.cancel', 'service_order', serviceOrderId, so.status, '已取消')
+  })
 
   ctx.result = {
     serviceOrderId,

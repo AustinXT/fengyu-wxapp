@@ -17,6 +17,7 @@
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
+const { logOperation, logTransition } = require('../utils/operation-log')
 
 // ================= 路由 =================
 
@@ -136,6 +137,15 @@ async function recharge(ctx) {
         paymentMethod, ctx.auth.staffWfId, remark || null,
       ]
     )
+    // 审计日志
+    await logOperation(client, ctx, 'card.recharge', 'sale_order', saleOrderId, {
+      _v: 3,
+      clientUserId,
+      faceValue: faceVal,
+      payAmount,
+      paymentMethod,
+      storeId,
+    })
   })
 
   ctx.result = {
@@ -214,24 +224,35 @@ async function createRefund(ctx) {
   // 占位串须每次唯一（uq_sop_txn）。
   const sourceEnd = ctx.event.payload?._sourceEnd === 'admin' ? 'admin' : 'staff'
   const placeholderTxnId = `refund-pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const inserted = await pg.query(
-    `INSERT INTO sale_order_payments (
-       sale_order_id, change_type, amount, payment_method, status, source_end,
-       operator_employee_id, refund_reason, note, external_txn_id
-     ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7, $8)
-     RETURNING id`,
-    [
+  let paymentId
+  await pg.transaction(async (client) => {
+    const inserted = await client.query(
+      `INSERT INTO sale_order_payments (
+         sale_order_id, change_type, amount, payment_method, status, source_end,
+         operator_employee_id, refund_reason, note, external_txn_id
+       ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7, $8)
+       RETURNING id`,
+      [
+        saleOrderId,
+        -refundPay,
+        order.payment_method,
+        sourceEnd,
+        ctx.auth.staffWfId || null,
+        reason || null,
+        JSON.stringify({ refundFace, balanceAtRequest: balanceNow }),
+        placeholderTxnId,
+      ]
+    )
+    paymentId = inserted.rows[0].id
+    // 审计日志
+    await logOperation(client, ctx, 'card.createRefund', 'sale_order_payment', paymentId, {
+      _v: 3,
       saleOrderId,
-      -refundPay,
-      order.payment_method,
-      sourceEnd,
-      ctx.auth.staffWfId || null,
-      reason || null,
-      JSON.stringify({ refundFace, balanceAtRequest: balanceNow }),
-      placeholderTxnId,
-    ]
-  )
-  const paymentId = inserted[0].id
+      refundFace,
+      refundPay,
+      reason: reason || null,
+    })
+  })
 
   ctx.result = {
     paymentId,
@@ -321,6 +342,13 @@ async function approveRefund(ctx) {
        WHERE sale_order_id = $2`,
       [Math.abs(Number(pay.amount)), pay.sale_order_id]
     )
+
+    // 审计日志
+    await logTransition(client, ctx, 'card.approveRefund', 'sale_order_payment', paymentId, '待审批', '已支付', {
+      saleOrderId: pay.sale_order_id,
+      refundFace,
+      refundAmount: Math.abs(Number(pay.amount)),
+    })
   })
 
   // TODO: 调微信原路退款 API（refundPay = |pay.amount|）—— 当前 mock 阶段先跳过
@@ -339,7 +367,7 @@ async function rejectRefund(ctx) {
   if (!paymentId) throw new Error('INVALID_PARAMS: 缺少 paymentId')
 
   const payRows = await pg.query(
-    `SELECT sop.id, sop.status, so.store_id
+    `SELECT sop.id, sop.status, sop.sale_order_id, so.store_id
      FROM sale_order_payments sop
      JOIN sale_orders so ON sop.sale_order_id = so.sale_order_id
      WHERE sop.id = $1`,
@@ -354,12 +382,19 @@ async function rejectRefund(ctx) {
     throw new Error('PERMISSION_DENIED: 当前店长无权审批该门店的退款')
   }
 
-  await pg.query(
-    `UPDATE sale_order_payments
-     SET status='已作废', audit_employee_id=$1, audit_at=NOW(), audit_remark=$2
-     WHERE id=$3 AND status='待审批'`,
-    [ctx.auth.staffWfId || null, reason || null, paymentId]
-  )
+  await pg.transaction(async (client) => {
+    await client.query(
+      `UPDATE sale_order_payments
+       SET status='已作废', audit_employee_id=$1, audit_at=NOW(), audit_remark=$2
+       WHERE id=$3 AND status='待审批'`,
+      [ctx.auth.staffWfId || null, reason || null, paymentId]
+    )
+    // 审计日志
+    await logTransition(client, ctx, 'card.rejectRefund', 'sale_order_payment', paymentId, '待审批', '已作废', {
+      saleOrderId: payRows[0].sale_order_id,
+      reason: reason || null,
+    })
+  })
 
   ctx.result = { paymentId, status: '已作废' }
 }

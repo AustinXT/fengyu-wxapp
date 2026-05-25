@@ -1175,13 +1175,14 @@ describe('customer.updateNotes', () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '过敏体质，注意精油用量' })
 
     mockScopeOk()
-    pg.query.mockResolvedValueOnce([]) // UPDATE
-    pg.query.mockResolvedValueOnce([]) // audit log
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    const [sql, params] = pg.query.mock.calls[1]
+    const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('UPDATE client_wechat_users')
     expect(sql).toContain('notes = $1')
     expect(params[0]).toBe('过敏体质，注意精油用量')
@@ -1192,13 +1193,13 @@ describe('customer.updateNotes', () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '   ' })
 
     mockScopeOk()
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    expect(pg.query.mock.calls[1][1][0]).toBeNull()  // trimmed empty → null
+    expect(clientQuery.mock.calls[0][1][0]).toBeNull()  // trimmed empty → null
   })
 
   test('备注超过500字截断', async () => {
@@ -1206,12 +1207,12 @@ describe('customer.updateNotes', () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: longNotes })
 
     mockScopeOk()
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
-    expect(pg.query.mock.calls[1][1][0]).toHaveLength(500)
+    expect(clientQuery.mock.calls[0][1][0]).toHaveLength(500)
   })
 
   test('顾客不存在时拒绝', async () => {
@@ -1259,13 +1260,14 @@ describe('customer.updateNotes', () => {
   test('成功时写入 operation_logs 审计日志', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '审计测试' })
     mockScopeOk()
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
     await customerRoutes.updateNotes(ctx)
-    const [auditSql, auditParams] = pg.query.mock.calls[2]
-    expect(auditSql).toContain('operation_logs')
-    expect(auditParams[0]).toBe('customer.updateNotes')
-    expect(auditParams[2]).toBe('u1')
+    // helper INSERT 参数布局：[5]=action, [6]=targetType, [7]=targetId, [8]=detail
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.updateNotes')
+    expect(auditCall[1][7]).toBe('u1')
   })
 
   test('美容师无法操作（requireManager）', async () => {
@@ -1296,17 +1298,17 @@ describe('customer.assign', () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
 
     mockAssertChain()
-    pg.query
-      .mockResolvedValueOnce([{ name: '李四' }])  // SELECT name
-      .mockResolvedValueOnce([])                  // UPDATE
-      .mockResolvedValueOnce([])                  // audit
+    pg.query.mockResolvedValueOnce([{ name: '李四' }])  // SELECT name（pg.query）
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.assign(ctx)
 
     expect(ctx.result.message).toContain('分配成功')
     expect(ctx.result.employeeName).toBe('李四')
-    // call[3] = UPDATE
-    const [sql, params] = pg.query.mock.calls[3]
+    // 事务 client 首个调用 = UPDATE
+    const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('bound_employee_id = $1')
     expect(params[0]).toBe('emp-b1')
     expect(params[1]).toBe('u1')
@@ -1370,16 +1372,16 @@ describe('customer.assign', () => {
   test('成功时写入 operation_logs 审计日志', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
     mockAssertChain()
-    pg.query
-      .mockResolvedValueOnce([{ name: '李四' }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{ name: '李四' }])  // SELECT name
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
     await customerRoutes.assign(ctx)
-    const [auditSql, auditParams] = pg.query.mock.calls[4]
-    expect(auditSql).toContain('operation_logs')
-    expect(auditParams[0]).toBe('customer.assign')
-    expect(auditParams[2]).toBe('u1')
-    const detail = JSON.parse(auditParams[3])
+    // helper INSERT 参数布局：[5]=action, [7]=targetId, [8]=detail
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.assign')
+    expect(auditCall[1][7]).toBe('u1')
+    const detail = JSON.parse(auditCall[1][8])
     expect(detail.employeeId).toBe('emp-b1')
     expect(detail.employeeName).toBe('李四')
   })

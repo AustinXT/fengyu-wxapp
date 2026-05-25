@@ -1885,19 +1885,20 @@ describe('order.resetFailed', () => {
   test('店长重置支付失败订单为待支付（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-001',
-        status: '支付失败',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001',
+      status: '支付失败',
+      store_id: 'store-001',
+    }])
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await orderRoutes.resetFailed(ctx)
 
     expect(ctx.result.status).toBe('待支付')
     // C4 合规验证
-    const updateSql = pg.query.mock.calls[1][0]
+    const updateSql = clientQuery.mock.calls[0][0]
     expect(updateSql).toContain("AND status = '支付失败'")
   })
 
@@ -2978,10 +2979,10 @@ describe('order.approveRefund', () => {
     // 非储值卡通道，不应触发 card_transactions / prepaid_cards 写入
     expect(calls.find(c => c.sql.includes('INSERT INTO prepaid_cards'))).toBeUndefined()
 
-    // operation_logs 写审计
+    // operation_logs 写审计（helper 参数布局：[7]=targetId）
     const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
     expect(log).toBeDefined()
-    expect(log.params[0]).toBe('1001')
+    expect(log.params[7]).toBe('1001')
   })
 
   test('CAS 幂等哨兵：状态已变更（rowCount=0）→ INVALID_STATE', async () => {
@@ -3192,12 +3193,13 @@ describe('order.approveRefund', () => {
 
     await orderRoutes.approveRefund(ctx)
 
+    // helper 参数布局：[5]=action, [6]=targetType, [7]=targetId, [8]=detail
     const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
     expect(log).toBeDefined()
-    expect(log.sql).toMatch(/'order\.approveRefund'/)
-    expect(log.sql).toMatch(/'sale_order_payment'/)
-    expect(log.params[0]).toBe('1010')
-    const detail = JSON.parse(log.params[1])
+    expect(log.params[5]).toBe('order.approveRefund')
+    expect(log.params[6]).toBe('sale_order_payment')
+    expect(log.params[7]).toBe('1010')
+    const detail = JSON.parse(log.params[8])
     expect(detail.saleOrderId).toBe('FY-ORIG-001')
     expect(detail.refundAbs).toBe(500)
     expect(detail).toHaveProperty('cascade')
@@ -3339,10 +3341,10 @@ describe('order.rejectRefund', () => {
       c.sql.includes('UPDATE sale_orders') && c.sql.includes('refunded_amount')
     )).toBeUndefined()
 
-    // operation_logs 写 rejectRefund
+    // operation_logs 写 rejectRefund（helper 参数布局：[5]=action）
     const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
     expect(log).toBeDefined()
-    expect(log.sql).toMatch(/'order\.rejectRefund'/)
+    expect(log.params[5]).toBe('order.rejectRefund')
   })
 })
 

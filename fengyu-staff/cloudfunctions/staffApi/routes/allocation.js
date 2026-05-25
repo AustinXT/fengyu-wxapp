@@ -11,6 +11,7 @@
 
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
+const { logOperation } = require('../utils/operation-log')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
@@ -97,6 +98,12 @@ async function save(ctx) {
       if (upd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→已分配`)
       }
+      // 审计日志
+      await logOperation(client, ctx, 'allocation.save', 'sale_order', saleOrderId, {
+        _v: 3,
+        allocationCount: 0,
+        note: '标记为无需分配',
+      })
     })
     ctx.result = { saleOrderId, message: '已标记为无需分配', allocationCount: 0 }
     return
@@ -199,6 +206,12 @@ async function save(ctx) {
     if (upd.rowCount === 0) {
       throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→已分配`)
     }
+    // 审计日志
+    await logOperation(client, ctx, 'allocation.save', 'sale_order', saleOrderId, {
+      _v: 3,
+      allocationCount: enriched.length,
+      totalAmount: Math.round(enriched.reduce((s, a) => s + a.totalAmount, 0) * 100) / 100,
+    })
   })
 
   ctx.result = {
@@ -256,6 +269,8 @@ async function deleteAllocation(ctx) {
     if (upd.rowCount === 0) {
       throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→待分配`)
     }
+    // 审计日志
+    await logOperation(client, ctx, 'allocation.delete', 'sale_order', saleOrderId, { _v: 3 })
   })
 
   ctx.result = {

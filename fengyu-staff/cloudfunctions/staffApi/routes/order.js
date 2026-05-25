@@ -26,6 +26,7 @@ const {
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
 } = require('../utils/refund')
+const { logOperation, logTransition } = require('../utils/operation-log')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -867,6 +868,17 @@ async function create(ctx) {
         now,
       })
     }
+    // 审计日志
+    await logOperation(client, ctx, 'order.create', 'sale_order', saleOrderId, {
+      _v: 3,
+      storeId,
+      saleOrderType,
+      totalAmount,
+      itemCount: items.length,
+      couponId: inputCouponId || null,
+      couponDiscount: couponDiscount > 0 ? couponDiscount : null,
+      clientUserId,
+    })
   })
 
   // PR-2: status 与事务内 initialStatus 决策树保持一致
@@ -1254,6 +1266,13 @@ async function confirmOffline(ctx) {
         console.error('[staffApi/share-gift] error (non-fatal):', sgErr)
       }
     }
+
+    // 审计日志
+    await logTransition(client, ctx, 'order.confirmOffline', 'sale_order', saleOrderId, order.status, targetStatus, {
+      confirmAmount,
+      received: newReceived,
+      prepaidCardAmount: orderPrepaid > 0 ? orderPrepaid : null,
+    })
   })
 
   ctx.result = {
@@ -1338,6 +1357,8 @@ async function close(ctx) {
        WHERE used_sale_order_id = $1`,
       [saleOrderId]
     )
+    // 审计日志
+    await logTransition(client, ctx, 'order.close', 'sale_order', saleOrderId, order.status, '已关闭')
   })
 
   ctx.result = {
@@ -1373,13 +1394,17 @@ async function resetFailed(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE sale_orders SET status = '待支付', updated_at = $1 WHERE sale_order_id = $2 AND status = '支付失败'",
-    [now, saleOrderId]
-  )
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE sale_orders SET status = '待支付', updated_at = $1 WHERE sale_order_id = $2 AND status = '支付失败'",
+      [now, saleOrderId]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'order.resetFailed', 'sale_order', saleOrderId, '支付失败', '待支付')
+  })
 
   ctx.result = {
     saleOrderId,
@@ -1688,23 +1713,14 @@ async function createRefund(ctx) {
     paymentId = sopRes.rows[0].id
 
     // 审计日志
-    await client.query(
-      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-       VALUES ('order.createRefund', 'sale_order_payment', $1, $2::jsonb, $3, NOW())`,
-      [
-        String(paymentId),
-        JSON.stringify({
-          _v: 1,
-          saleOrderId: refSaleOrderId,
-          finalRefundAmount,
-          refundByCard,
-          refundByOrigin,
-          handlingFee: fee,
-          operatorEmployeeId: ctx.auth.staffWfId,
-        }),
-        'staffApi',
-      ]
-    )
+    await logOperation(client, ctx, 'order.createRefund', 'sale_order_payment', paymentId, {
+      _v: 3,
+      saleOrderId: refSaleOrderId,
+      finalRefundAmount,
+      refundByCard,
+      refundByOrigin,
+      handlingFee: fee,
+    })
   })
 
   ctx.result = {
@@ -1831,22 +1847,13 @@ async function approveRefund(ctx) {
     }
 
     // 6. 写 operation_logs（审计）
-    await client.query(
-      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-       VALUES ('order.approveRefund', 'sale_order_payment', $1, $2::jsonb, $3, NOW())`,
-      [
-        String(paymentId),
-        JSON.stringify({
-          _v: 1,
-          saleOrderId: refSaleOrderId,
-          refundAbs,
-          paymentMethod: sopRow.payment_method,
-          auditEmployeeId: ctx.auth.staffWfId,
-          cascade: cascadeResult,
-        }),
-        'staffApi',
-      ]
-    )
+    await logOperation(client, ctx, 'order.approveRefund', 'sale_order_payment', paymentId, {
+      _v: 3,
+      saleOrderId: refSaleOrderId,
+      refundAbs,
+      paymentMethod: sopRow.payment_method,
+      cascade: cascadeResult,
+    })
 
     // 注意：放弃旧的 settlePointsSafe 链式重算路径——cascadeRefund 内已写
     // point_transactions 反向流水 + 重算 customer_points.balance；二者职责重叠
@@ -1906,20 +1913,11 @@ async function rejectRefund(ctx) {
     }
 
     // operation_logs 审计
-    await client.query(
-      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-       VALUES ('order.rejectRefund', 'sale_order_payment', $1, $2::jsonb, $3, NOW())`,
-      [
-        String(paymentId),
-        JSON.stringify({
-          _v: 1,
-          saleOrderId: sopRow.sale_order_id,
-          auditEmployeeId: ctx.auth.staffWfId,
-          rejectedReason: remark,
-        }),
-        'staffApi',
-      ]
-    )
+    await logOperation(client, ctx, 'order.rejectRefund', 'sale_order_payment', paymentId, {
+      _v: 3,
+      saleOrderId: sopRow.sale_order_id,
+      rejectedReason: remark,
+    })
   })
 
   ctx.result = { paymentId, status: '已作废', message: '退款已驳回' }
@@ -2208,6 +2206,13 @@ async function createRepayment(ctx) {
     await recalcCustomerType(client, locked.client_user_id)
     // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）
     await recalcMemberLevel(client, locked.client_user_id, await getMemberThreshold(), 'staffApi')
+
+    // 审计日志
+    await logTransition(client, ctx, 'order.createRepayment', 'sale_order', refSaleOrderId, locked.status, targetStatus, {
+      repayAmount,
+      prepaidCardAmount,
+      received: newReceived,
+    })
 
     return {
       refSaleOrderId,
@@ -2616,6 +2621,16 @@ async function createConversion(ctx) {
       })
     }
 
+    // 审计日志（事务 client 为 tx；勿用 client，那是顾客行变量）
+    await logOperation(tx, ctx, 'order.createConversion', 'sale_order', convOrderId, {
+      _v: 3,
+      storeId,
+      clientUserId,
+      priceDiff,
+      prepaidCardAmount: card,
+      orderStatus,
+    })
+
     return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit, prepaidCardAmount: card }
   })
 
@@ -2808,6 +2823,16 @@ async function createPickup(ctx) {
     }
 
     updated = result.rows[0]
+
+    // 审计日志
+    await logOperation(client, ctx, 'order.createPickup', 'sale_item', saleItemId, {
+      _v: 3,
+      pickupQuantity,
+      clientUserId,
+      storeId: ctx.auth.effectiveStoreId,
+      pickedUp: updated.picked_up_quantity,
+      total: updated.quantity,
+    })
   })
 
   ctx.result = {
@@ -3392,24 +3417,15 @@ async function createDeposit(ctx) {
     await recalcPaidSessionsForOrder(tx, saleOrderId)
 
     // 审计日志
-    await tx.query(
-      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
-       VALUES ('order.createDeposit', 'sale_order', $1, $2::jsonb, $3, NOW())`,
-      [
-        saleOrderId,
-        JSON.stringify({
-          _v: 1,
-          clientUserId,
-          itemCount: itemDataList.length,
-          totalSessionCount: itemDataList.reduce(
-            (acc, it) => acc + (it.sessionCount != null ? it.sessionCount : 0),
-            0
-          ),
-          operatorEmployeeId: ctx.auth.staffWfId,
-        }),
-        'staffApi',
-      ]
-    )
+    await logOperation(tx, ctx, 'order.createDeposit', 'sale_order', saleOrderId, {
+      _v: 3,
+      clientUserId,
+      itemCount: itemDataList.length,
+      totalSessionCount: itemDataList.reduce(
+        (acc, it) => acc + (it.sessionCount != null ? it.sessionCount : 0),
+        0
+      ),
+    })
   })
 
   ctx.result = {

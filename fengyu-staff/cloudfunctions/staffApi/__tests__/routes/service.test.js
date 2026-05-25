@@ -454,19 +454,20 @@ describe('service.start', () => {
   test('开始服务成功（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        service_order_id: 'HLD-001',
-        status: '待服务',
-        assigned_employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待服务',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await serviceRoutes.start(ctx)
 
     expect(ctx.result.status).toBe('服务中')
-    const updateSql = pg.query.mock.calls[1][0]
+    const updateSql = clientQuery.mock.calls[0][0]
     expect(updateSql).toContain("AND status = '待服务'")
   })
 
@@ -523,28 +524,29 @@ describe('service.complete（服务中 → 待客户确认，轻量翻状态）'
   test('标记完成 — 服务中 → 待客户确认（不扣次数、不开事务）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
-    let capturedUpdateSql = ''
-    pg.query
-      .mockResolvedValueOnce([{
-        service_order_id: 'HLD-001',
-        status: '服务中',
-        assigned_employee_id: 'emp-001',
-        store_id: 'store-001',
-        appointment_id: null,
-      }])
-      .mockImplementationOnce(async (sql) => {
-        if (typeof sql === 'string') capturedUpdateSql = sql
-        return { rows: [], rowCount: 1 }
-      })
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '服务中',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+      appointment_id: null,
+    }])
+    // 轻量翻状态 + 审计日志走事务 client（无 finalize 业务副作用）
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await serviceRoutes.complete(ctx)
 
     expect(ctx.result.status).toBe('待客户确认')
-    expect(capturedUpdateSql).toContain("status = '待客户确认'")
-    expect(capturedUpdateSql).toContain('staff_completed_at')
-    expect(capturedUpdateSql).toContain("AND status = '服务中'")
-    // 不产生副作用：不开事务
-    expect(pg.transaction).not.toHaveBeenCalled()
+    const updateSql = clientQuery.mock.calls[0][0]
+    expect(updateSql).toContain("status = '待客户确认'")
+    expect(updateSql).toContain('staff_completed_at')
+    expect(updateSql).toContain("AND status = '服务中'")
+    // 不产生 finalize 副作用：不扣次数 / 不计提成（事务内仅 UPDATE + 审计日志）
+    const sideEffectCalls = clientQuery.mock.calls.filter((c) =>
+      /remaining_sessions|service_commissions/.test(c[0])
+    )
+    expect(sideEffectCalls.length).toBe(0)
   })
 
   test('并发竞态：complete UPDATE rowCount=0 时报错', async () => {
@@ -935,8 +937,13 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         // 返回空：无匹配规则
         return { rows: [], rowCount: 0 }
       }
-      if (sql.includes('INSERT INTO operation_logs')) {
+      if (sql.includes('INSERT INTO operation_logs') && sql.includes('rate_missing')) {
+        // finalize 内的缺率告警日志（9 列裸 INSERT，action 为字面量）
         opLogInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO operation_logs')) {
+        // service.confirm 状态流转审计日志（helper 参数化 INSERT）
         return { rows: [], rowCount: 1 }
       }
       if (sql.includes('INSERT INTO service_commissions')) {
@@ -1201,23 +1208,25 @@ describe('service.cancel', () => {
   test('取消待服务的服务单（C4: UPDATE WHERE 含 status 条件，不扣次数）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        service_order_id: 'HLD-001',
-        status: '待服务',
-        assigned_employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待服务',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    // UPDATE + 审计日志走事务 client（不扣次数）
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await serviceRoutes.cancel(ctx)
 
     expect(ctx.result.status).toBe('已取消')
-    expect(pg.transaction).not.toHaveBeenCalled()
-    // C4 合规验证
-    const updateSql = pg.query.mock.calls[1][0]
+    // C4 合规验证（事务 client 首个调用 = UPDATE）
+    const updateSql = clientQuery.mock.calls[0][0]
     expect(updateSql).toContain('AND status = $')
-    expect(pg.query.mock.calls[1][1]).toContain('待服务')
+    expect(clientQuery.mock.calls[0][1]).toContain('待服务')
+    // 不扣次数：事务内无 remaining_sessions 扣减
+    expect(clientQuery.mock.calls.filter((c) => /remaining_sessions/.test(c[0])).length).toBe(0)
   })
 
   test('并发竞态：cancel UPDATE rowCount=0 时报错', async () => {
@@ -1239,14 +1248,13 @@ describe('service.cancel', () => {
   test('取消服务中的服务单', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        service_order_id: 'HLD-001',
-        status: '服务中',
-        assigned_employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '服务中',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: vi.fn(async () => ({ rows: [], rowCount: 1 })) }))
 
     await serviceRoutes.cancel(ctx)
     expect(ctx.result.status).toBe('已取消')

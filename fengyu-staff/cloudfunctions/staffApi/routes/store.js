@@ -8,6 +8,7 @@
 
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
+const { logTransition } = require('../utils/operation-log')
 
 /**
  * 门店列表
@@ -148,6 +149,12 @@ async function approveUnbind(ctx) {
       `UPDATE client_wechat_users SET bound_store_id = $1, customer_source = '转店', updated_at = NOW() WHERE user_id = $2`,
       [req.to_store_id, req.user_id]
     )
+    // 审计日志
+    await logTransition(client, ctx, 'store_unbind.approve', 'store_unbind_request', requestId, '待处理', '已通过', {
+      clientUserId: req.user_id,
+      fromStoreId: req.from_store_id,
+      toStoreId: req.to_store_id,
+    })
   })
 
   ctx.result = { success: true }
@@ -173,17 +180,24 @@ async function rejectUnbind(ctx) {
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
-  const rejectUpd = await pg.query(
-    `UPDATE store_unbind_requests
-     SET status = '已拒绝', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2, updated_at = NOW()
-     WHERE request_id = $3 AND status = '待处理'`,
-    [staffWfId, rejectReason || null, requestId]
-  )
-  if (rejectUpd.rowCount === 0) {
-    throw new Error(
-      `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已拒绝`
+  await pg.transaction(async (client) => {
+    const rejectUpd = await client.query(
+      `UPDATE store_unbind_requests
+       SET status = '已拒绝', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2, updated_at = NOW()
+       WHERE request_id = $3 AND status = '待处理'`,
+      [staffWfId, rejectReason || null, requestId]
     )
-  }
+    if (rejectUpd.rowCount === 0) {
+      throw new Error(
+        `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已拒绝`
+      )
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'store_unbind.reject', 'store_unbind_request', requestId, '待处理', '已拒绝', {
+      fromStoreId: req.from_store_id,
+      rejectReason: rejectReason || null,
+    })
+  })
 
   ctx.result = { success: true }
 }

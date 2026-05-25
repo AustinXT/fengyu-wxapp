@@ -8,6 +8,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
+const { logOperation, logTransition } = require('../utils/operation-log')
 
 /**
  * 格式化时间为北京时间可读格式：M月D日 HH:mm
@@ -201,14 +202,17 @@ async function confirm(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2 AND status = '待确认'",
-    [now, appointmentId]
-  )
-
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2 AND status = '待确认'",
+      [now, appointmentId]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'appointment.confirm', 'appointment', appointmentId, '待确认', '已确认')
+  })
 
   ctx.result = {
     appointmentId,
@@ -258,11 +262,19 @@ async function checkin(ctx) {
   }
 
   const now = new Date()
-  // CAS-EXEMPT: 仅写 checkin_at 时间戳，不翻 status
-  await pg.query(
-    'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
-    [now, appointmentId]
-  )
+  await pg.transaction(async (client) => {
+    // CAS-EXEMPT: 仅写 checkin_at 时间戳，不翻 status
+    await client.query(
+      'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
+      [now, appointmentId]
+    )
+    // 审计日志（签到仅打时间戳不翻状态，用 logOperation）
+    await logOperation(client, ctx, 'appointment.checkin', 'appointment', appointmentId, {
+      _v: 3,
+      status: appt.status,
+      checkinAt: now.toISOString(),
+    })
+  })
 
   ctx.result = {
     appointmentId,

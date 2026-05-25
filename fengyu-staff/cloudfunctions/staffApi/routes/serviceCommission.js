@@ -15,6 +15,7 @@
 
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
+const { logOperation } = require('../utils/operation-log')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
@@ -243,6 +244,12 @@ async function save(ctx) {
       if (upd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:service_orders:${serviceOrderId}:commission_status→待分配`)
       }
+      // 审计日志
+      await logOperation(client, ctx, 'serviceCommission.save', 'service_order', serviceOrderId, {
+        _v: 3,
+        commissionCount: 0,
+        note: '清空提成分配',
+      })
     })
     ctx.result = { serviceOrderId, message: '已清空提成分配', commissionCount: 0 }
     return
@@ -354,6 +361,11 @@ async function save(ctx) {
     if (upd.rowCount === 0) {
       throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:service_orders:${serviceOrderId}:commission_status→已分配`)
     }
+    // 审计日志
+    await logOperation(client, ctx, 'serviceCommission.save', 'service_order', serviceOrderId, {
+      _v: 3,
+      commissionCount: commissions.length,
+    })
   })
 
   ctx.result = {
