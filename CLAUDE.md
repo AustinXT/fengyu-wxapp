@@ -103,7 +103,8 @@ bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs                   # staff L3 
 
 每次 /cloudbase-deploy 完成后：
 - 提醒验证环境变量（**禁止使用 `tcb fn deploy --force`**，用 `tcb fn code update`）
-- 必检变量：clientApi(PG_CONNECTION_STRING, TMAP_KEY, TMAP_SECRET)、staffApi(PG_CONNECTION_STRING, CLIENT_SECRET)
+- 必检变量：clientApi(PG_CONNECTION_STRING, TMAP_KEY, TMAP_SECRET)、staffApi(PG_CONNECTION_STRING, CLIENT_SECRET, CLIENT_APPSECRET)
+  - `CLIENT_SECRET`=HMAC 共享密钥（两端一致），`CLIENT_APPSECRET`=客户端小程序真实 appsecret（wxacode 换 token），二者勿混；混用会导致 order.qrcode「生成小程序码失败」(40125)
 
 ### 跨端变更
 

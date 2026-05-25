@@ -56,8 +56,9 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 ## 环境变量（云函数）
 
 - `PG_CONNECTION_STRING` — PostgreSQL 连接串
-- `CLIENT_SECRET` — 内部接口密钥
-- `WXACODE_ENV_VERSION` — 小程序码环境版本
+- `CLIENT_SECRET` — staffApi↔clientApi 跨 env 调用的 HMAC 共享密钥（任意随机值，两端须一致；prod 用 `openssl rand -hex 32` 独立生成）。**与微信 appsecret 无关**
+- `CLIENT_APPSECRET` — 客户端小程序(wx811eb4ded3dfba3f)真实 appsecret，`utils/wxacode.js` 换 access_token 生成订单小程序码用（32 位 hex，dev/prod 同一份）。**缺它或填错会导致 order.qrcode 报 40125 invalid appsecret，「生成小程序码失败」**
+- `WXACODE_ENV_VERSION` — 小程序码环境版本（dev=develop / prod=release）
 
 ## 规范文档
 
