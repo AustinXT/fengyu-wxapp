@@ -67,30 +67,61 @@ describe('customer.search', () => {
     expect(ctx.result).toEqual([])
   })
 
-  test('customerType=member 只返回会员客（customer_id 非空）', async () => {
-    const ctx = createManagerCtx({ customerType: 'member' })
-    pg.query.mockResolvedValueOnce([
-      { user_id: 'u1', phone: '13800001111', name: '会员张', customer_id: 'C001', member_level: 'VIP', bound_store_id: 'store-001', store_name: '测试店' },
-    ])
+  test('customerType=会员客 按 customer_type 枚举等值过滤', async () => {
+    const ctx = createManagerCtx({ customerType: '会员客' })
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
-    expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].source).toBe('both')
-    // PG SQL 应包含 customer_id IS NOT NULL 过滤
-    const pgSql = pg.query.mock.calls[0][0]
-    expect(pgSql).toContain('customer_id IS NOT NULL')
+    const [sql, params] = pg.query.mock.calls[0]
+    // 默认列表分支：$1=门店，$2=customer_type，$3=LIMIT
+    expect(sql).toContain('c.customer_type = $2')
+    expect(sql).not.toContain('customer_id IS NOT NULL')
+    expect(params).toEqual(['store-001', '会员客', 20])
   })
 
-  test('customerType=flow 只返回流量客（customer_id 为空）', async () => {
-    const ctx = createManagerCtx({ customerType: 'flow' })
-    pg.query.mockResolvedValueOnce([
-      { user_id: 'u3', phone: '13700003333', name: '流量客', customer_id: null, member_level: null, bound_store_id: 'store-001', store_name: '测试店' },
-    ])
+  test('customerType=all 不追加 customer_type 过滤', async () => {
+    const ctx = createManagerCtx({ customerType: 'all' })
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
-    expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].source).toBe('miniprogram')
-    // PG SQL 应包含 customer_id IS NULL 过滤
-    const pgSql = pg.query.mock.calls[0][0]
-    expect(pgSql).toContain('customer_id IS NULL')
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.customer_type =')
+    expect(params).toEqual(['store-001', 20])
+  })
+
+  test('spendingTier / monthlyActivity / customerStatus 多维度 AND 叠加（默认分支）', async () => {
+    const ctx = createManagerCtx({
+      spendingTier: '10W+',
+      monthlyActivity: '一次客活',
+      customerStatus: '沉睡',
+    })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.spending_tier = $2')
+    expect(sql).toContain('c.monthly_activity = $3')
+    expect(sql).toContain('c.customer_status = $4')
+    expect(sql).toContain('LIMIT $5')
+    expect(params).toEqual(['store-001', '10W+', '一次客活', '沉睡', 20])
+  })
+
+  test('非法枚举值被忽略（不追加条件）', async () => {
+    const ctx = createManagerCtx({ spendingTier: '999W', customerStatus: 'foo' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.spending_tier')
+    expect(sql).not.toContain('c.customer_status')
+    expect(params).toEqual(['store-001', 20])
+  })
+
+  test('手机号分支叠加枚举筛选（占位符从 $2 起，无 LIMIT）', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111', customerStatus: '冰冻' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.phone = $1')
+    expect(sql).toContain('c.customer_status = $2')
+    expect(sql).not.toContain('LIMIT')
+    expect(params).toEqual(['13800001111', '冰冻'])
   })
 
   test('search 返回 lastPurchaseName 字段', async () => {

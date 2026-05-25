@@ -40,6 +40,47 @@ async function assertProfileVisibleByIdentifier(auth, clientUserId, clientPhone)
   await assertCustomerProfileVisible(pg, auth, cuid);
 }
 
+// 顾客档案枚举筛选白名单（值须与 db/schema/enums.ts 字面量完全一致）
+const CUSTOMER_TYPE_VALUES = ['流量客', '体验客', '小美客', '会员客'];
+const SPENDING_TIER_VALUES = ['10W+', '6-10W', '3-6W', '1-3W', '1990-1W', '<1990'];
+const MONTHLY_ACTIVITY_VALUES = ['二次客活', '一次客活', '0次客活'];
+const CUSTOMER_STATUS_VALUES = ['保有会员-稳定', '保有会员-有效', '沉睡', '冰冻', '休眠'];
+
+/**
+ * 顾客档案拓展筛选条件构造（顾客 Tab 拓展筛选区用）。
+ * customerType 现按 customer_type 枚举等值过滤（'all'/缺省不过滤）；
+ * 另支持 spendingTier / monthlyActivity / customerStatus 三个枚举维度。
+ * 仅接受白名单内取值，非法/空值忽略（容错，不抛错）。
+ * @returns {{columns: string[], values: string[]}}
+ */
+function buildProfileFilters(payload) {
+  const { customerType, spendingTier, monthlyActivity, customerStatus } = payload || {};
+  const columns = [];
+  const values = [];
+  if (customerType && customerType !== 'all' && CUSTOMER_TYPE_VALUES.includes(customerType)) {
+    columns.push('c.customer_type');
+    values.push(customerType);
+  }
+  if (spendingTier && SPENDING_TIER_VALUES.includes(spendingTier)) {
+    columns.push('c.spending_tier');
+    values.push(spendingTier);
+  }
+  if (monthlyActivity && MONTHLY_ACTIVITY_VALUES.includes(monthlyActivity)) {
+    columns.push('c.monthly_activity');
+    values.push(monthlyActivity);
+  }
+  if (customerStatus && CUSTOMER_STATUS_VALUES.includes(customerStatus)) {
+    columns.push('c.customer_status');
+    values.push(customerStatus);
+  }
+  return { columns, values };
+}
+
+/** 把枚举筛选渲染成 ` AND col = $n ...`，占位符从 startIdx 起。 */
+function renderProfileFilters(filters, startIdx) {
+  return filters.columns.map((col, i) => ` AND ${col} = $${startIdx + i}`).join('');
+}
+
 /**
  * 搜索顾客（PG 单源）
  * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
@@ -47,14 +88,10 @@ async function assertProfileVisibleByIdentifier(auth, clientUserId, clientPhone)
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, customerType, crossStore, profileScope } = ctx.event.payload || {};
+  const { keyword, phone, crossStore, profileScope } = ctx.event.payload || {};
 
-  // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
-  const typeFilter = customerType === 'member'
-    ? ' AND c.customer_id IS NOT NULL'
-    : customerType === 'flow'
-    ? ' AND c.customer_id IS NULL'
-    : '';
+  // 拓展筛选：customer_type / spending_tier / monthly_activity / customer_status 等值过滤
+  const filters = buildProfileFilters(ctx.event.payload);
 
   // 顾客档案浏览（profileScope，仅顾客 Tab 传）：门店普通员工只见绑定本人的顾客。
   // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
@@ -66,60 +103,67 @@ async function search(ctx) {
   if (phone) {
     // 精确手机号定位：账户级资产（积分/储值卡/会员等级）不跟门店绑定，
     // 故含已解绑（bound_store_id IS NULL）顾客也应可被定位查看。
+    const fSql = renderProfileFilters(filters, 2);
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.phone = $1${typeFilter}`,
-      [phone.trim()],
+       WHERE c.phone = $1${fSql}`,
+      [phone.trim(), ...filters.values],
     );
   } else if (keyword && keyword.trim()) {
     const kw = `%${keyword.trim()}%`;
     if (crossStore) {
       // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
       // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
+      const fSql = renderProfileFilters(filters, 2);
+      const limitIdx = 2 + filters.values.length;
       rows = await pg.query(
         `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-         WHERE (c.phone LIKE $1 OR c.name LIKE $1)${typeFilter}
-         LIMIT $2`,
-        [kw, limit],
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
+         LIMIT $${limitIdx}`,
+        [kw, ...filters.values, limit],
       );
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
       // 顾客 Tab（profileScope）普通员工额外按 bound_employee_id 收紧
+      const base = restrictEmp
+        ? [kw, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
+        : [kw, ctx.auth.effectiveStoreId];
       const empClause = restrictEmp ? ' AND c.bound_employee_id = $3' : '';
-      const params = restrictEmp
-        ? [kw, ctx.auth.effectiveStoreId, ctx.auth.staffWfId, limit]
-        : [kw, ctx.auth.effectiveStoreId, limit];
-      const limitIdx = restrictEmp ? 4 : 3;
+      const fStart = base.length + 1;
+      const fSql = renderProfileFilters(filters, fStart);
+      const limitIdx = fStart + filters.values.length;
       rows = await pg.query(
         `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${empClause}${typeFilter}
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${empClause}${fSql}
          LIMIT $${limitIdx}`,
-        params,
+        [...base, ...filters.values, limit],
       );
     }
   } else {
+    const base = restrictEmp
+      ? [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
+      : [ctx.auth.effectiveStoreId];
     const empClause = restrictEmp ? ' AND c.bound_employee_id = $2' : '';
-    const params = restrictEmp
-      ? [ctx.auth.effectiveStoreId, ctx.auth.staffWfId, limit]
-      : [ctx.auth.effectiveStoreId, limit];
-    const limitIdx = restrictEmp ? 3 : 2;
+    const fStart = base.length + 1;
+    const fSql = renderProfileFilters(filters, fStart);
+    const limitIdx = fStart + filters.values.length;
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.bound_store_id = $1${empClause}${typeFilter}
+       WHERE c.bound_store_id = $1${empClause}${fSql}
        LIMIT $${limitIdx}`,
-      params,
+      [...base, ...filters.values, limit],
     );
   }
 
