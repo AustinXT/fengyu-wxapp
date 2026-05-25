@@ -11,22 +11,25 @@ let cachedToken = null
 let tokenExpiresAt = 0
 
 const CLIENT_APPID = process.env.CLIENT_APPID || 'wx811eb4ded3dfba3f'
-const CLIENT_SECRET = process.env.CLIENT_SECRET
+// 客户端小程序真实 appsecret（换 access_token 用）。
+// 注意：必须是客户端小程序的 appsecret（32 位 hex），与跨 env HMAC 用的 CLIENT_SECRET 区分开——
+// 二者曾共用 CLIENT_SECRET，prod 把它配成了 64 位内部 HMAC 密钥，导致换 token 报 40125 invalid appsecret。
+const CLIENT_APPSECRET = process.env.CLIENT_APPSECRET
 const WXACODE_ENV_VERSION = process.env.WXACODE_ENV_VERSION || 'release'
 
 /**
  * 获取客户端小程序 access_token（带缓存）
  */
 async function getClientAccessToken(forceRefresh = false) {
-  if (!CLIENT_SECRET) {
-    throw new Error('未配置 CLIENT_SECRET 环境变量')
+  if (!CLIENT_APPSECRET) {
+    throw new Error('未配置 CLIENT_APPSECRET 环境变量')
   }
 
   if (!forceRefresh && cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken
   }
 
-  const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${CLIENT_APPID}&secret=${CLIENT_SECRET}`
+  const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${CLIENT_APPID}&secret=${CLIENT_APPSECRET}`
 
   const data = await httpGet(url)
 
