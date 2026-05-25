@@ -1,0 +1,1 @@
+ALTER TABLE "sale_order_payments" ADD COLUMN "external_trade_info" jsonb;

@@ -1,0 +1,1 @@
+ALTER TABLE "sale_orders" ADD COLUMN "lakala_out_order_no" text;

@@ -96,6 +96,12 @@ export const saleOrders = pgTable(
     paidAt: timestamp("paid_at"),
     offlineConfirmedBy: varchar("offline_confirmed_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     offlineConfirmedAt: timestamp("offline_confirmed_at"),
+    /**
+     * 最近一次发起拉卡拉收银台支付时用的商户订单号（out_order_no，含时间戳后缀，与 sale_order_id 不同）。
+     * 收银台「查询/关单」接口按此寻单：order.cancel 关单防迟到支付、order.queryLakalaStatus 轮询兜底。
+     * 仅线上微信/支付宝走拉卡拉时写入；线下/储值卡为 NULL。
+     */
+    lakalaOutOrderNo: text("lakala_out_order_no"),
     allocationStatus: allocationStatusEnum("allocation_status"),
     /** 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护，不设反向 FK 避免循环引用） */
     couponId: text("coupon_id"),
@@ -321,8 +327,14 @@ export const saleOrderPayments = pgTable(
     /** 资金方向 × 金额：正=流入商家，负=退还顾客（退款行为负） */
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
-    /** 微信/支付宝三方交易号；线下/储值卡为 NULL */
+    /** 微信/支付宝三方交易号；线下/储值卡为 NULL。拉卡拉场景=收银台 pay_order_no */
     externalTxnId: text("external_txn_id"),
+    /**
+     * 拉卡拉回调 order_trade_info 原始快照（acc_trade_no/log_no/trade_no/pay_mode 等）。
+     * 退款（/v3/rfd/refund_front/refund）所需 origin_trade_no/origin_log_no 从此取，联调时按拉卡拉文档选定字段。
+     * 仅拉卡拉线上支付回调写入；线下/储值卡为 NULL。
+     */
+    externalTradeInfo: jsonb("external_trade_info"),
     status: paymentFlowStatusEnum("status").notNull(),
     sourceEnd: paymentSourceEndEnum("source_end").notNull(),
     /** 操作人（开单/确认线下/抵扣/发起退款的员工） */
