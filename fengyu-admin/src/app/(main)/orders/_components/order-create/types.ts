@@ -53,13 +53,14 @@ export interface NormalKindPickerProps extends PickerCommonProps {
 /**
  * 一次性加入套餐的 payload：
  * - product：套餐封面占位 product（purchased 行的 product.name 显示用）
- * - skus：套餐内已选 SKU 列表（bundlePrice 已写入 specialPrice）
+ * - items：套餐内已选 SKU + 数量（bundlePrice 已写入 specialPrice）
+ *   「选N项」分组支持同一 SKU 选多次，故每项携带 quantity（N 按数量合计统计）。
  *
  * 组合套餐走"一次性替换 cart"分支；普通/体验/充值走 addToCart 循环。
  */
 export interface BundleAddPayload {
   product: Product
-  skus: ProductSku[]
+  items: { sku: ProductSku; quantity: number }[]
 }
 
 /** 套餐 picker 数据形状 */

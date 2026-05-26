@@ -69,27 +69,53 @@
           <text class="bundle-group-hint">{{g.pickCountLabel}}</text>
         </view>
         <view class="bundle-group-skus">
-          <view
-            class="bundle-sku-item {{sku.selected ? 'bundle-sku-item--active' : ''}}"
-            wx:for="{{g.skus}}"
-            wx:for-item="sku"
-            wx:key="skuId"
-            data-group-id="{{g.id}}"
-            data-sku-id="{{sku.skuId}}"
-            bindtap="onToggleSku"
-          >
-            <view class="bundle-sku-check">
-              <van-icon
-                name="{{sku.selected ? 'checked' : 'circle'}}"
-                size="40rpx"
-                color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+          <!-- 选N项：数量步进器（同一 SKU 可选多次，组内合计 = pickCount） -->
+          <block wx:if="{{g.mode === 'pick'}}">
+            <view
+              class="bundle-sku-item {{sku.qty > 0 ? 'bundle-sku-item--active' : ''}}"
+              wx:for="{{g.skus}}"
+              wx:for-item="sku"
+              wx:key="skuId"
+            >
+              <view class="bundle-sku-info">
+                <text class="bundle-sku-name">{{sku.specName}}</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+              </view>
+              <van-stepper
+                value="{{sku.qty}}"
+                min="0"
+                max="{{sku.maxQty}}"
+                integer
+                data-group-id="{{g.id}}"
+                data-sku-id="{{sku.skuId}}"
+                bind:change="onSkuQtyChange"
               />
             </view>
-            <view class="bundle-sku-info">
-              <text class="bundle-sku-name">{{sku.specName}}</text>
-              <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+          </block>
+          <!-- 全选组：勾选 toggle -->
+          <block wx:else>
+            <view
+              class="bundle-sku-item {{sku.selected ? 'bundle-sku-item--active' : ''}}"
+              wx:for="{{g.skus}}"
+              wx:for-item="sku"
+              wx:key="skuId"
+              data-group-id="{{g.id}}"
+              data-sku-id="{{sku.skuId}}"
+              bindtap="onToggleSku"
+            >
+              <view class="bundle-sku-check">
+                <van-icon
+                  name="{{sku.selected ? 'checked' : 'circle'}}"
+                  size="40rpx"
+                  color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+                />
+              </view>
+              <view class="bundle-sku-info">
+                <text class="bundle-sku-name">{{sku.specName}}</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+              </view>
             </view>
-          </view>
+          </block>
         </view>
       </view>
     </scroll-view>

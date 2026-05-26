@@ -54,13 +54,18 @@ interface CartItemOut {
   refBundleId: string;
 }
 
-/** 展示用 SKU（带选中态） */
+/** 展示用 SKU（带选中态 / 数量） */
 interface DisplaySku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
   bundlePrice: number;
+  /** 全选组：是否勾选 */
   selected: boolean;
+  /** 选N项组：当前数量 */
+  qty: number;
+  /** 选N项组：该 SKU 步进器上限（= qty + 组内剩余可选额度） */
+  maxQty: number;
 }
 
 /** 展示用分组 */
@@ -68,6 +73,8 @@ interface DisplayGroup {
   id: number;
   groupName: string;
   pickCount: number | null;
+  /** 'pick' = 选N项（数量步进器）；'all' = 全选（勾选 toggle） */
+  mode: 'pick' | 'all';
   pickCountLabel: string;
   skus: DisplaySku[];
 }
@@ -98,8 +105,8 @@ Component({
     /** 按 keyword 过滤后的套餐列表（列表态渲染数据源） */
     filteredBundles: [] as BundleSpu[],
     selectedBundleId: '' as string,
-    /** groupSelections[groupId] = Set<skuId>，为了 WXML 渲染方便用数组 */
-    groupSelections: {} as Record<number, string[]>,
+    /** groupSelections[groupId][skuId] = 数量（选N项支持同一 SKU 多次；全选组数量恒 0/1） */
+    groupSelections: {} as Record<number, Record<string, number>>,
     selectedView: null as SelectedBundleView | null,
     totalSelected: 0,
     canSubmit: false,
@@ -133,9 +140,9 @@ Component({
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === productId);
       if (!bundle) return;
 
-      const groupSelections: Record<number, string[]> = {};
+      const groupSelections: Record<number, Record<string, number>> = {};
       for (const g of bundle.groups) {
-        groupSelections[g.id] = [];
+        groupSelections[g.id] = {};
       }
       const selectedView = this._buildView(bundle, groupSelections);
       this.setData({
@@ -156,29 +163,46 @@ Component({
       });
     },
 
+    /** 全选组（pickCount=null）勾选 toggle：数量 0/1 */
     onToggleSku(e: WechatMiniprogram.TouchEvent) {
       const { groupId, skuId } = e.currentTarget.dataset as { groupId: number; skuId: string };
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === this.data.selectedBundleId);
       if (!bundle) return;
       const group = bundle.groups.find(g => g.id === Number(groupId));
-      if (!group) return;
+      if (!group || group.pickCount != null) return; // 仅全选组走此 handler
 
       const selections = { ...this.data.groupSelections };
-      const cur = selections[group.id] ? [...selections[group.id]] : [];
-      const idx = cur.indexOf(skuId);
-      if (idx >= 0) {
-        cur.splice(idx, 1);
+      const cur = { ...(selections[group.id] || {}) };
+      if (cur[skuId]) {
+        delete cur[skuId];
       } else {
-        // pickCount 非空时校验上限
-        if (group.pickCount != null && cur.length >= group.pickCount) {
-          wx.showToast({
-            title: `该组最多选 ${group.pickCount} 项`,
-            icon: 'none',
-          });
-          return;
-        }
-        cur.push(skuId);
+        cur[skuId] = 1;
       }
+      selections[group.id] = cur;
+      const selectedView = this._buildView(bundle, selections);
+      this.setData({ groupSelections: selections, selectedView });
+      this._refreshCanSubmit(bundle, selections);
+    },
+
+    /** 选N项组（pickCount!=null）数量步进：同一 SKU 可选多次，组内合计夹紧到 pickCount */
+    onSkuQtyChange(e: WechatMiniprogram.CustomEvent) {
+      const { groupId, skuId } = e.currentTarget.dataset as { groupId: number; skuId: string };
+      const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === this.data.selectedBundleId);
+      if (!bundle) return;
+      const group = bundle.groups.find(g => g.id === Number(groupId));
+      if (!group || group.pickCount == null) return;
+
+      const selections = { ...this.data.groupSelections };
+      const cur = { ...(selections[group.id] || {}) };
+      const prevQty = cur[skuId] || 0;
+      const otherTotal = Object.entries(cur).reduce((s, [k, v]) => s + (k === skuId ? 0 : v), 0);
+      const allowed = group.pickCount - otherTotal; // 该 SKU 可达上限
+      const raw = parseInt(e.detail as unknown as string) || 0;
+      const next = Math.max(0, Math.min(raw, allowed));
+      // van-stepper 初始化会触发一次 change；值未变则不重渲染（避免无谓 setData）
+      if (next === prevQty) return;
+      if (next > 0) cur[skuId] = next;
+      else delete cur[skuId];
       selections[group.id] = cur;
       const selectedView = this._buildView(bundle, selections);
       this.setData({ groupSelections: selections, selectedView });
@@ -189,20 +213,21 @@ Component({
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === this.data.selectedBundleId);
       if (!bundle || !this.data.canSubmit) return;
 
-      // 按"组 → 选中 sku"展平，每行 unitPrice = sku.bundlePrice（与 client/admin 一致）
+      // 按"组 → 选中 sku + 数量"展平，每行 unitPrice = sku.bundlePrice（与 client/admin 一致）。
+      // 选N项支持同一 SKU 多次 → quantity=该 SKU 的已选数量（后端 B2 拆行规则按类型落库）。
       const cartItems: CartItemOut[] = [];
       for (const g of bundle.groups) {
-        const picked = this.data.groupSelections[g.id] || [];
-        for (const skuId of picked) {
-          const sku = g.skus.find(s => s.skuId === skuId);
-          if (!sku) continue;
+        const picked = this.data.groupSelections[g.id] || {};
+        for (const sku of g.skus) {
+          const qty = picked[sku.skuId] || 0;
+          if (qty <= 0) continue;
           cartItems.push({
-            spuId: skuId,
-            skuId,
+            spuId: sku.skuId,
+            skuId: sku.skuId,
             spuName: sku.specName,
             specName: sku.specName,
             price: sku.bundlePrice,
-            quantity: 1,
+            quantity: qty,
             discount: 0,
             sessionCount: sku.sessionCount || 0,
             productType: sku.productType || '组合套餐',
@@ -218,41 +243,56 @@ Component({
       this.triggerEvent('select', { cartItems, bundleName: bundle.name });
     },
 
-    /** 根据 pickCount + 已选数判断是否可提交 */
-    _refreshCanSubmit(bundle: BundleSpu, selections: Record<number, string[]>) {
+    /** 组内已选数量合计（选N项 N 按数量统计，非种类数） */
+    _groupTotal(selections: Record<number, Record<string, number>>, groupId: number): number {
+      return Object.values(selections[groupId] || {}).reduce((s, q) => s + q, 0);
+    },
+
+    /** 根据 pickCount + 已选数量合计判断是否可提交 */
+    _refreshCanSubmit(bundle: BundleSpu, selections: Record<number, Record<string, number>>) {
       let ok = true;
       let total = 0;
       for (const g of bundle.groups) {
-        const picked = (selections[g.id] || []).length;
+        const picked = this._groupTotal(selections, g.id);
         total += picked;
         if (g.pickCount == null) {
           // 全选：至少 1 个（避免空选）
           if (picked === 0) ok = false;
         } else {
+          // 选N项：数量合计须 === pickCount
           if (picked !== g.pickCount) ok = false;
         }
       }
       this.setData({ canSubmit: ok && total > 0, totalSelected: total });
     },
 
-    _buildView(bundle: BundleSpu, selections: Record<number, string[]>): SelectedBundleView {
+    _buildView(bundle: BundleSpu, selections: Record<number, Record<string, number>>): SelectedBundleView {
       const groups: DisplayGroup[] = bundle.groups.map(g => {
         const total = g.skus.length;
-        const picked = selections[g.id] || [];
+        const picked = selections[g.id] || {};
+        const groupTotal = this._groupTotal(selections, g.id);
+        const isPick = g.pickCount != null;
         return {
           id: g.id,
           groupName: g.groupName,
           pickCount: g.pickCount,
+          mode: isPick ? 'pick' : 'all',
           pickCountLabel: g.pickCount == null
             ? `全选 ${total} 项`
-            : `${total} 选 ${g.pickCount}`,
-          skus: g.skus.map(s => ({
-            skuId: s.skuId,
-            specName: s.specName,
-            sessionCount: s.sessionCount,
-            bundlePrice: s.bundlePrice,
-            selected: picked.indexOf(s.skuId) >= 0,
-          })),
+            : `${total} 选 ${g.pickCount}（已选 ${groupTotal}）`,
+          skus: g.skus.map(s => {
+            const qty = picked[s.skuId] || 0;
+            return {
+              skuId: s.skuId,
+              specName: s.specName,
+              sessionCount: s.sessionCount,
+              bundlePrice: s.bundlePrice,
+              selected: qty > 0,
+              qty,
+              // 选N项步进器上限 = 当前数量 + 组内剩余可选额度
+              maxQty: isPick ? qty + ((g.pickCount as number) - groupTotal) : 1,
+            };
+          }),
         };
       });
       return {

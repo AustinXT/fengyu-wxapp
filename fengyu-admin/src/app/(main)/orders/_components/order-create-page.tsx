@@ -421,10 +421,10 @@ export default function OrderCreatePageClient({
    * 预算子总额用 sku.specialPrice（= bundlePrice）逐项累加，用于优惠券匹配。
    */
   const handleBundleAdded = (payload: BundleAddPayload) => {
-    const newCart: CartItem[] = payload.skus.map((sku) => ({
+    const newCart: CartItem[] = payload.items.map(({ sku, quantity }) => ({
       sku,
       product: payload.product,
-      quantity: 1,
+      quantity,
     }))
     setCart(newCart)
     setPriceOverrides({})

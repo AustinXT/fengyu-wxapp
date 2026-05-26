@@ -8,10 +8,10 @@
  * 阶段一基础形态（参考 ticket §5 第一行风险妥协）：
  * - 套餐右侧"加入套餐"按钮 → 把套餐内"未分组 + 各分组下 pickCount=null 的全部 SKU"
  *   一次性加入购物车，使用 bundlePrice（套餐价）作为 specialPrice。
- * - 当套餐定义了 pickCount=N（N 选 M）的分组时，弹出"分组选择"区域让用户在该
- *   分组内勾选 N 个 SKU 后再加入。基础阶段：分组列表用 checkbox 选 N 个，超过
- *   不让选；满 N 后点"加入套餐"按钮才生效。
- * - N 选 M 复杂校验（如跨多组、依赖其他组完成度）留待后续 ticket。
+ * - 当套餐定义了 pickCount=N（选N项）的分组时，分组内每个 SKU 提供数量步进器，
+ *   允许同一 SKU 选多次；N 按"组内各 SKU 数量之和"统计（非种类数），合计满 N 才可加入。
+ * - 落库：前端只按 SKU 传 quantity=N，后端既有 B2 拆行规则处理
+ *   （疗程卡 quantity>1 拆 N 行 / 家居产品合 1 行），无需后端改动。
  */
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
@@ -30,7 +30,7 @@ interface BundleRowProps {
 }
 
 function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
-  // 各 N 选 M 分组的当前选择状态：groupId → Set<skuId>
+  // 各「选N项」分组的当前选择状态：groupId → { skuId → 数量 }
   const pickGroups = useMemo(
     () => bundle.groups.filter((g) => g.pickCount != null && g.pickCount > 0),
     [bundle.groups],
@@ -40,41 +40,53 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
     [bundle.groups],
   )
 
-  const [selections, setSelections] = useState<Record<number, Set<string>>>({})
+  const [selections, setSelections] = useState<Record<number, Record<string, number>>>({})
 
-  const toggleSelect = (groupId: number, skuId: string, max: number) => {
+  // 组内已选数量合计（N 按数量统计，非种类数）
+  const groupTotal = (groupId: number): number =>
+    Object.values(selections[groupId] ?? {}).reduce((s, q) => s + q, 0)
+
+  const incSku = (groupId: number, skuId: string, pickCount: number) => {
+    if (groupTotal(groupId) >= pickCount) {
+      toast.error(`该分组共选 ${pickCount} 项`)
+      return
+    }
     setSelections((prev) => {
-      const cur = new Set(prev[groupId] ?? [])
-      if (cur.has(skuId)) {
-        cur.delete(skuId)
-      } else {
-        if (cur.size >= max) {
-          toast.error(`该分组最多选 ${max} 个`)
-          return prev
-        }
-        cur.add(skuId)
-      }
+      const cur = { ...(prev[groupId] ?? {}) }
+      cur[skuId] = (cur[skuId] ?? 0) + 1
+      return { ...prev, [groupId]: cur }
+    })
+  }
+
+  const decSku = (groupId: number, skuId: string) => {
+    setSelections((prev) => {
+      const cur = { ...(prev[groupId] ?? {}) }
+      const next = (cur[skuId] ?? 0) - 1
+      if (next > 0) cur[skuId] = next
+      else delete cur[skuId]
       return { ...prev, [groupId]: cur }
     })
   }
 
   const handleAddBundle = () => {
-    // 校验：每个 N 选 M 分组必须满 pickCount
+    // 校验：每个「选N项」分组的数量合计必须 === pickCount
     for (const g of pickGroups) {
-      const sel = selections[g.id]
-      if ((sel?.size ?? 0) !== (g.pickCount ?? 0)) {
+      if (groupTotal(g.id) !== (g.pickCount ?? 0)) {
         toast.error(`「${g.groupName}」需选 ${g.pickCount} 项`)
         return
       }
     }
 
-    // 收集要加入的 SKU：未分组 + 全选分组 + N 选 M 已选
-    const toAdd: OrderPickerBundleSkuRef[] = []
-    toAdd.push(...bundle.ungroupedSkus)
-    for (const g of allSelectGroups) toAdd.push(...g.skus)
+    // 收集要加入的 SKU + 数量：未分组 + 全选分组各 1 份；选N项分组按已选数量
+    const toAdd: { ref: OrderPickerBundleSkuRef; quantity: number }[] = []
+    for (const ref of bundle.ungroupedSkus) toAdd.push({ ref, quantity: 1 })
+    for (const g of allSelectGroups) for (const ref of g.skus) toAdd.push({ ref, quantity: 1 })
     for (const g of pickGroups) {
-      const sel = selections[g.id] ?? new Set<string>()
-      toAdd.push(...g.skus.filter((s) => sel.has(s.skuId)))
+      const sel = selections[g.id] ?? {}
+      for (const ref of g.skus) {
+        const qty = sel[ref.skuId] ?? 0
+        if (qty > 0) toAdd.push({ ref, quantity: qty })
+      }
     }
 
     if (toAdd.length === 0) {
@@ -103,12 +115,14 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
 
     if (onBundleAdded) {
       // 一次性替换分支：父级负责清空旧 cart + 填入新套餐 + 跳 Step 3
-      const skus = toAdd.map((ref) => bundleSkuToProductSku(ref))
-      onBundleAdded({ product: fakeProduct, skus })
+      const items = toAdd.map(({ ref, quantity }) => ({ sku: bundleSkuToProductSku(ref), quantity }))
+      onBundleAdded({ product: fakeProduct, items })
     } else {
-      // 兼容分支：未提供一次性回调时走 addToCart 循环（保留既有单测路径）
-      for (const ref of toAdd) {
-        onAdd(fakeProduct, bundleSkuToProductSku(ref))
+      // 兼容分支：未提供一次性回调时走 addToCart 循环（保留既有单测路径）。
+      // page 的 addToCart 按 skuId 累加，故同一 SKU 调 quantity 次等价 quantity=N。
+      for (const { ref, quantity } of toAdd) {
+        const sku = bundleSkuToProductSku(ref)
+        for (let i = 0; i < quantity; i++) onAdd(fakeProduct, sku)
       }
     }
 
@@ -159,35 +173,49 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
           </div>
         ))}
 
-        {/* N 选 M 分组（交互式） */}
+        {/* 选N项分组（交互式数量步进器，同一 SKU 可选多次，N 按数量合计） */}
         {pickGroups.map((g) => {
-          const sel = selections[g.id] ?? new Set<string>()
+          const pickCount = g.pickCount ?? 0
+          const total = groupTotal(g.id)
+          const full = total >= pickCount
           return (
             <div key={g.id}>
               <Separator />
               <p className="text-xs font-medium text-[#666666] my-2">
-                「{g.groupName}」请选 {g.pickCount} 项（已选 {sel.size}/{g.pickCount}）
+                「{g.groupName}」请选 {pickCount} 项（已选 {total}/{pickCount}）
               </p>
               <div className="space-y-1">
                 {g.skus.map((s) => {
-                  const checked = sel.has(s.skuId)
+                  const qty = selections[g.id]?.[s.skuId] ?? 0
                   return (
-                    <label
+                    <div
                       key={s.skuId}
-                      className={`flex items-center justify-between text-xs px-2 py-1 rounded cursor-pointer ${
-                        checked ? "bg-[#FFF0EE]" : "hover:bg-gray-100"
+                      className={`flex items-center justify-between text-xs px-2 py-1 rounded ${
+                        qty > 0 ? "bg-[#FFF0EE]" : ""
                       }`}
                     >
-                      <span className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleSelect(g.id, s.skuId, g.pickCount ?? 1)}
-                        />
-                        {s.specName}
-                      </span>
-                      <span className="text-[#999999]">套餐价 ¥{s.bundlePrice ?? s.price}</span>
-                    </label>
+                      <span className="flex-1 truncate">{s.specName}</span>
+                      <span className="text-[#999999] mr-3">套餐价 ¥{s.bundlePrice ?? s.price}</span>
+                      <div className="flex items-center border border-[var(--border)] rounded shrink-0">
+                        <button
+                          type="button"
+                          disabled={qty <= 0}
+                          onClick={() => decSku(g.id, s.skuId)}
+                          className="w-6 h-6 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                        >
+                          −
+                        </button>
+                        <span className="w-7 text-center font-medium">{qty}</span>
+                        <button
+                          type="button"
+                          disabled={full}
+                          onClick={() => incSku(g.id, s.skuId, pickCount)}
+                          className="w-6 h-6 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
                   )
                 })}
               </div>
