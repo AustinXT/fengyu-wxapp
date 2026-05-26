@@ -611,6 +611,25 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
+  // 退款上限 = max(sale_order_payments 流水净额, origOrder.received)（与 staffApi createRefund 对齐）。
+  // 部分支付订单按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶；流水净额含储值卡抵扣，
+  // received 兜底（流水缺失单），取 max 避免误拒。超限直接拒绝（不截断金额），保持退款数量与金额自洽。
+  const paymentsNetRows = await db.execute<{ net: string }>(sql`
+    SELECT COALESCE(SUM(amount), 0)::numeric AS net
+    FROM sale_order_payments
+    WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
+  `)
+  const paymentsNet = Number(
+    (paymentsNetRows as unknown as Array<{ net: string | number }>)[0]?.net || 0,
+  )
+  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0))
+  if (finalRefundAmount > refundCap + 0.001) {
+    return {
+      success: false,
+      error: { code: 'INVALID_STATE', message: '退款金额超过订单可退余额，请减少退款数量' },
+    }
+  }
+
   const applyOverdraft = input.applyOverdraftDeduction !== false
   let overdraftDeduction = 0
   if (applyOverdraft && origOrder.clientUserId) {
