@@ -2,7 +2,7 @@
  * 端到端 fixture：测试组织 / 门店 / 员工 / 顾客 / 销售单 / 商品 / 预约 / 服务单 /
  * 退款申请 / 储值卡 / 优惠券。
  *
- * 所有写入必须以命名空间 (默认 'TEST_E2E_L2' 即 'TE2L2_') 为前缀，cleanupTestData
+ * 所有写入必须以命名空间 (默认 'TEST_E2E_L2' 即 'TE2LS_') 为前缀，cleanupTestData
  * 用前缀 WHERE 精确清理，保证不污染生产数据。
  *
  * 创建顺序（FK 依赖正向）：
@@ -593,7 +593,13 @@ export async function createTestSaleOrder({
         itemId, saleOrderId, storeId,
         skuId, productName, productType,
         sessionCount,
-        Number(totalAmount) / Number(quantity), quantity, totalAmount,
+        // unit_price / unit_real_price 取 per-session 单次价（[sale-items-money-fields]）：
+        // 疗程卡（session_count>0）= 行应付总额 / (件数 × 单卡次数)，sale_amount 仍为行应付总额；
+        // 家居产品（session_count 空）= totalAmount / quantity。退款封顶/提成均按单次价 × 次数算。
+        sessionCount && Number(sessionCount) > 0
+          ? Number(totalAmount) / (Number(quantity) * Number(sessionCount))
+          : Number(totalAmount) / Number(quantity),
+        quantity, totalAmount,
         isExperience, isShengmei, salesCategory,
       ]
     )
@@ -680,7 +686,7 @@ export async function createTestSaleItem({
 /**
  * 创建测试预约。
  * @param {object} opts
- * @param {string} opts.appointmentId - 必填，建议 NS 前缀（如 'TE2L2_APPT_001'）
+ * @param {string} opts.appointmentId - 必填，建议 NS 前缀（如 'TE2LS_APPT_001'）
  * @param {string} opts.status - 默认 '待确认'
  * @param {Date|string} opts.appointmentTime - 默认 现在 +1 小时
  * @param {string} opts.saleItemId - 关联购买行（可选）
@@ -723,7 +729,7 @@ export async function createTestAppointment({
  * 创建测试服务单（含可选 service_items）。
  *
  * @param {object} opts
- * @param {string} opts.serviceOrderId - 必填，varchar(30)，NS 前缀（如 'TE2L2_SVC_001'）
+ * @param {string} opts.serviceOrderId - 必填，varchar(30)，NS 前缀（如 'TE2LS_SVC_001'）
  * @param {string} opts.status - 默认 '待服务'
  * @param {Array<{saleItemId, employeeId?, sessionUsed?, serviceDuration?}>} opts.items
  * @param {string} opts.appointmentId - 可选关联预约
@@ -946,7 +952,7 @@ export async function createTestCoupon({
  */
 export async function cleanupTestData(prefix = NS) {
   const like = `${prefix}%`
-  // 多角色 / 多市场场景下，员工号段扩展到 19999099001 ~ 19999099020
+  // 多角色 / 多市场场景下，员工号段扩展到 19999098001 ~ 19999098020
   const testPhones = []
   for (let n = TEST_PHONE_RANGE_START; n <= TEST_PHONE_RANGE_END; n++) {
     testPhones.push(String(n))
@@ -1032,7 +1038,7 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
     // order.create 真实开单生成 FY-XSD-WX-* 单（不带 NS 前缀），其 settlePoints 写的
-    // point_transactions.user_id 可能是共享夹具客（如 FY-FIX-CLIENT-01，非 TE2L2 前缀），
+    // point_transactions.user_id 可能是共享夹具客（如 FY-FIX-CLIENT-01，非 TE2LS 前缀），
     // 上两条都匹配不到 → 残留阻挡 sale_orders 删除级联。按 order 的 store_id/opened_by 兜底。
     [
       `DELETE FROM point_transactions

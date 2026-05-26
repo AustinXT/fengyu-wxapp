@@ -17,7 +17,7 @@ async function main() {
   await createTestStaff()
   await createTestStaff({
     employeeId: `${NS}_BEAU1`, openid: `${NS}_BEAU1_OPENID`,
-    phone: '19999099010', name: `${NS}_美1`,
+    phone: '19999098010', name: `${NS}_美1`,
     isManager: false, positionName: '美容师', skills: ['美容师'],
   })
 

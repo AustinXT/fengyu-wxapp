@@ -175,7 +175,7 @@ async function main() {
     await createTestClient({
       userId,
       openid: `${NS}_CLI${i}_OPENID`,
-      phone: `1999909901${i}`,
+      phone: `1999909801${i}`,
       name: `${NS}_顾客${i}`,
     })
     clients.push(userId)

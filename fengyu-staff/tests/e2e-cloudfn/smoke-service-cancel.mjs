@@ -36,8 +36,8 @@ async function main() {
   // so1(待服务) 与 so2(服务中) 须挂在不同顾客，否则建第二张时违反唯一索引。
   const CLI_W = `${NS}_SVC_CN_CLIW`
   const CLI_I = `${NS}_SVC_CN_CLII`
-  await createTestClient({ userId: CLI_W, openid: `${NS}_SVC_CN_CLIW_OID`, phone: '19999099007' })
-  await createTestClient({ userId: CLI_I, openid: `${NS}_SVC_CN_CLII_OID`, phone: '19999099008' })
+  await createTestClient({ userId: CLI_W, openid: `${NS}_SVC_CN_CLIW_OID`, phone: '19999098007' })
+  await createTestClient({ userId: CLI_I, openid: `${NS}_SVC_CN_CLII_OID`, phone: '19999098008' })
 
   const orderId = `${NS}_SVC_CN`
   await createTestSaleOrder({
