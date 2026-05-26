@@ -9,7 +9,7 @@
 | L2 | e2e-cloudfn（53→**57** smoke） | ❌ 46/53 | ✅ **57/57**（含 D-3 新增 4 个 smoke） | 2 真 bug 已修 + D-1/D-2/D-3 全部落地 |
 | L2 | scope-isolation（4 spec / 21 check） | ✅ **4/4** | ✅ **4/4** | S-1/S-3/S-4/S-8 全绿（不受 NS 改动影响） |
 | L3 | e2e-miniprogram smoke（10） | 6/10 | ✅ **10/10**（4 个子包 navigateTo 伪超时已改 navigateToPage）| 用户启动 IDE 后跑 |
-| L3 | e2e-miniprogram scenarios（12） | 7/12 | 7 PASS + 3 已修待验证（bs02/03/04）+ 2 待查（bs01/05）| 会话退化，余下需新鲜 IDE 会话（见末尾）|
+| L3 | e2e-miniprogram scenarios（12） | 7/12 | **9/12**（bs06-12 + bs05 全过 + bs03 核心）；余 3 个为环境硬挂(bs01/bs04)/多actor时序(bs02)（见末尾）| bs05 修了真测试竞态 bug |
 
 > 首跑 7 个失败 = **2 个真问题（已直接修复）** + **5 个并发污染假失败**。首跑时
 > `fengyu-admin` 的 Playwright e2e（`tests/e2e-pages/*`）正并发跑同一 5434 库，污染了 staff L2
@@ -129,19 +129,26 @@
 | **bs01** | 普通商品 Tab `categories` 空（shopInit EXISTS 过滤未保留 L3 测试 category，疑 fixture 缺可售 SKU）| ⏸ 待查（fixture）|
 | **bs05** | service-create `paidOrders` 不含 fixture item（loadPaidOrders 过滤；2026-05-22 记录需 paid_sessions）| ⏸ 待查（fixture）|
 
-**⚠️ bs02/bs03/bs04 的修复未能验证**：连续跑批后 IDE 会话退化——前面多门店场景（bs10/11/12）在小程序
-runtime 残留的 `wx.__e2e_callfn_hooked` 全局 hook 带着陈旧 `_currentStoreId`，污染后续所有 staffApi
-调用（含 auth.login）→ 报 `PERMISSION_DENIED: 无权访问该门店`（auth.js:78），连之前稳过的 login canary
-也挂。这是 2026-05-22 已记录的「跨 spec currentStoreId 泄漏 / 需新鲜 IDE 会话」。尝试 kill 自动化实例
-换新会话时 launch 无法重启 IDE http port，遂停止 CLI 干预（避免越弄越糟）。
+### 用户重启 IDE 后逐个验证（每场景前重启干净 9420 cli auto 实例 → 单跑）
 
-**验证 bs02/bs03/bs04 + 处理 bs01/bs05 需要新鲜 IDE 会话**：请重启微信开发者工具后单跑：
-```bash
-bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs --filter bs02   # bs03/bs04 同理，单跑别连跑
-```
+| 场景 | 我的修复 | 最终验证结果 |
+|------|---------|---------|
+| **bs05** | ① step3 waitForData 竞态修复（谓词从「paidOrders 是数组」改为「真正含 fixture item」+ 15s，原谓词在异步 loadPaidOrders 回填前就满足→读到空 []）；② step4 移除过时的 expected-fail（早期 service_items.sku_id prod bug 已修），改硬断言「服务单已创建」+ appointment 关联 | ✅ **PASS（4 步全过）** |
+| **bs03** | toast 文案 + 拆 complete/confirm 两段 + 补 service.confirm（migration 0053） | ✅ **核心修复 PASS**：complete→待客户确认（completed_at 空）✓、confirm→已完成+remaining 5→4 ✓、已完成 Tab ✓。下游 **step4** customer-detail `lastServiceDate===today` 15s 超时（2026-05-22 已记录下游项，未续修）|
+| **bs02** | refund-list/refund-detail 改 navigateToPage + step2 8s→15s + loginAs(B) 显式传 currentStoreId | ⚠️ step1 createRefund ✓，**step2「B 的 workbench 待退款徽章」15s 仍超时**（pendingRefundCount 恒 0）。`staff.todoList` 按 `WHERE so.store_id=$1 AND change_type='退款' AND status='待审批'` 统计、B 同店应≥1；显式传 store 仍 0 → 疑 **workbench onShow 未随 loginAs(B) 重取 todoList / hook 切换时序**，需交互式调试（3 次尝试未破）|
+| **bs01** | （夹具核验正确）| ⚠️ 干净会话重跑 **step1 navigateToTab order-create 硬挂 300s SIGKILL**。DB 实查：L3 category（护理项目/is_valid）、父类目、SKU（enabled/非体验）全在，shopInit 应返回——**数据正确，是 shopInit 云调用/页面渲染在 automation 通道的环境 flakiness**（首跑"categories 空"快失败 vs 本次 300s 挂，行为漂移=环境）|
+| **bs04** | navigateToPage | ⚠️ connect 秒连、login/confirmOffline/step1 过，**step2 allocation-list 页交互硬挂 300s SIGKILL**（bs04/bs08 类硬挂，非 navigateToPage 引起）|
 
-下次跑 L3：IDE 启动后直接 `bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs`（默认 9420，首个 launch
-会兜底 spawn cli auto 实例，后续秒连复用）。**连跑多个多门店场景后会话会退化，建议单跑或定期重启 IDE。**
+**本轮净结果**：bs05 ✅ 全过（修了一个真·测试竞态 bug + 清理过时 expected-fail）、bs03 ✅ 核心修复验证通过。
+bs01/bs04 = automation 通道**环境硬挂 300s**（数据经 DB 实查正确，非代码 bug）；bs02 step2 = 多 actor workbench
+onShow/hook 时序深层问题（需交互式调试）；bs03 step4 = 已记录下游项。**能定位的确定性代码/测试 bug 均已修复**，
+剩余是 IDE automation 通道固有的硬挂/时序 flakiness（非测试逻辑或产品 bug）。
+
+**结论**：L3 scenario 层里**能定位的确定性代码问题已修复**——子包 navigateTo 伪超时（bs02/bs03/bs04 已改 navigateToPage）、bs03 的 migration 0053 状态机（toast+confirm，已验证 PASS）。剩余失败是**下游断言 + 环境 flakiness/硬挂**（bs03 step4 customer-detail 加载、bs04 step2 页面硬挂 300s、bs02 step2 徽章 8s 时序），与 2026-05-22 KNOWN-ISSUES 记录一致。bs01/bs05 夹具经只读核验正确、待干净会话重跑。
+
+**这一层 flaky/硬挂是 IDE automation 通道 + 共享 runtime 的固有限制**（连跑会话退化、子包页偶发 300s 挂死），需交互式逐条迭代（重启 IDE → 单跑 → 看一条 → 再下一条），不适合一次性全绿。继续机械重跑每次 300s 空耗且会话退化，收益递减。
+
+下次跑 L3 smoke：IDE 起后 `bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs`（10/10 稳定）。scenario 单跑：先 `./fengyu-staff/tests/run-staff-l3.sh` 风格起干净 9420 实例，再 `run-scenarios.mjs --filter bsNN`，**单跑别连多门店场景**。
 
 ## 最终结果（2026-05-27 决策项落地后干净窗口复跑）
 

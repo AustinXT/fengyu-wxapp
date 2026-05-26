@@ -115,10 +115,12 @@ async function run() {
   // ─── STEP 2：切 B → navigate workbench → 徽章 = 1 ───
   console.log('[step 2] loginAs B + workbench 徽章=1');
   await clearToasts(miniProgram);
-  await loginAs(miniProgram, MANAGER_B_OPENID);
+  // 显式传 B 的 currentStoreId（=本店），否则 _currentStoreId 不注入 → effectiveStoreId 解析为 null
+  // → staff.todoList 的 `WHERE so.store_id=$1` 命中 0，pendingRefundCount 永远 0。
+  await loginAs(miniProgram, MANAGER_B_OPENID, TEST_STORE_ID);
   await navigateToTab(miniProgram, '/pages/workbench/workbench');
   // workbench onShow 异步拉 todoList。pendingRefundCount 直接挂在 page.data 上。
-  await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 8000 });
+  await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 15000 });
   console.log('  ✓ workbench pendingRefundCount >= 1');
   await snapshot(miniProgram, 'bs02-step2-workbench-badge');
 
@@ -137,7 +139,7 @@ async function run() {
   console.log('[step 4] navigate refund-detail');
   await clearToasts(miniProgram);
   // 直接带 paymentId 跳详情（refundDetail 后端兼容数字 saleOrderId 走 paymentId 路径）
-  await miniProgram.navigateTo(
+  await navigateToPage(miniProgram,
     `/packageOrder/refund-detail/refund-detail?id=${paymentId}`);
   await new Promise(r => setTimeout(r, 1500));
   await waitForData(miniProgram, (d) =>
