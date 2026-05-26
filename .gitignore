@@ -53,6 +53,15 @@ delivery/
 .tree/
 .claude/worktrees/*
 
+# 42plugin externally-installed skills (machine-local symlinks; break CI/other machines)
+.claude/skills/agent-team-architect
+.claude/skills/md-to-docx
+.claude/skills/transcript-to-article
+.claude/skills/vant-weapp
+.claude/skills/wx-debug-production
+.claude/skills/wx-quality-assurance
+.claude/skills/wx-release-check
+
 # Progress reports (PDF output)
 reports/
 .claude/last-report.json
