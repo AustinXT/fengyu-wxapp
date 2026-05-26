@@ -1,7 +1,7 @@
 // pages/service/service.ts — 服务 Tab
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { getElapsedTime as _getElapsedTime, formatTime as _formatTime } from '../../utils/formatters';
+import { getElapsedTime as _getElapsedTime, formatTime as _formatTime, formatDateTime } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -74,7 +74,13 @@ Page({
       const list = await callStaffApi<ServiceItem[]>('service.list', {
         status,
       });
-      this.setData({ list: list || [] });
+      // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
+      const formatted = (list || []).map((it) => ({
+        ...it,
+        startTime: it.startTime ? formatDateTime(it.startTime) : it.startTime,
+        completedTime: it.completedTime ? formatDateTime(it.completedTime) : it.completedTime,
+      }));
+      this.setData({ list: formatted });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });

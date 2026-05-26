@@ -65,12 +65,12 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
   fi
   got_pg=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const m=fn&&(fn.envVariables.PG_CONNECTION_STRING.match(/:(\d+)\//));console.log(m?m[1]:'')")
   if [[ -n "$got_pg" && "$got_pg" != "$EXPECT_PG_PORT" ]]; then
-    echo "ERROR: $1 的 PG 端口=$got_pg ≠ $ACTIVE 期望 $EXPECT_PG_PORT（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
+    echo "ERROR: $1 的 PG 端口=$got_pg ≠ ${ACTIVE} 期望 ${EXPECT_PG_PORT}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
   fi
 }
 assert_rc fengyu-staff  "$STAFF_ENV_ID"
 assert_rc fengyu-client "$CLIENT_ENV_ID"
-echo "  ✓ envId + PG 端口校验通过（$ACTIVE）"
+echo "  ✓ envId + PG 端口校验通过（${ACTIVE}）"
 
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 PLACEHOLDERS=$(grep -ohE '<待用户提供[^>]*>|[A-Za-z0-9_.-]*PLACEHOLDER[A-Za-z0-9_.-]*' "$ROOT/fengyu-client/cloudbaserc.json" "$ROOT/fengyu-staff/cloudbaserc.json" 2>/dev/null | sort -u || true)
@@ -90,7 +90,7 @@ fi
 tcb logout >/dev/null 2>&1 || true
 tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
 if ! tcb env list 2>/dev/null | grep -q "$STAFF_ENV_ID"; then
-  echo "ERROR: staff 账号看不到 $STAFF_ENV_ID（tcb env list 未列出）。" >&2
+  echo "ERROR: staff 账号看不到 ${STAFF_ENV_ID}（tcb env list 未列出）。" >&2
   echo "  检查：fengyu-staff/.env 的 TENCENTCLOUD_SECRETID 是 staff 账号子号" >&2
   exit 1
 fi
@@ -109,7 +109,7 @@ fi
 tcb logout >/dev/null 2>&1 || true
 tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
 if ! tcb env list 2>/dev/null | grep -q "$CLIENT_ENV_ID"; then
-  echo "ERROR: client 账号看不到 $CLIENT_ENV_ID。" >&2
+  echo "ERROR: client 账号看不到 ${CLIENT_ENV_ID}。" >&2
   echo "  检查：fengyu-client/.env 的 TENCENTCLOUD_SECRETID 是 client 账号子号" >&2
   exit 1
 fi

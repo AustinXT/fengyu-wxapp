@@ -86,6 +86,21 @@ export function getCustomerStatus(userId: string): string | null {
   return out || null
 }
 
+export function getMonthlyActivity(userId: string): string | null {
+  const out = psql(
+    `SELECT COALESCE(monthly_activity::text, '') FROM client_wechat_users WHERE user_id = '${esc(userId)}'`,
+  )
+  return out || null
+}
+
+/** spending_tier 是 NOT NULL（default '<1990'），正常情况下总有值 */
+export function getSpendingTier(userId: string): string | null {
+  const out = psql(
+    `SELECT COALESCE(spending_tier::text, '') FROM client_wechat_users WHERE user_id = '${esc(userId)}'`,
+  )
+  return out || null
+}
+
 export function getAppointmentStatus(appointmentId: string): string | null {
   const out = psql(
     `SELECT status::text FROM appointments WHERE appointment_id = '${esc(appointmentId)}'`,

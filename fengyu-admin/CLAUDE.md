@@ -140,13 +140,20 @@ export const getRefundDetail = withAnyPermission(
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 入口 | `src/cron/index.ts` | node-cron 调度（`0 3 * * *` Asia/Shanghai）+ `--once` 单次模式 |
-| 调度 | `src/cron/run.ts` | 串行 5 STEP，每个 STEP 独立 try/catch（单 STEP 失败不阻塞下一个） |
+| 调度 | `src/cron/run.ts` | 串行 12 STEP，每个 STEP 独立 try/catch（单 STEP 失败不阻塞下一个） |
 | 配置缓存 | `src/cron/config.ts` | `getMemberThreshold` 双层缓存（30s/5min TTL） |
-| STEP 1 | `steps/refresh-customer-status.ts` | 重算 `customer_status`（三段式 SQL，整体一个事务） |
-| STEP 2 | `steps/refresh-member-levels.ts` | 重算 `member_level` + 升降级权益（消息/积分/优惠券） |
-| STEP 3 | `steps/grant-birthday-benefits.ts` | 当日生日权益（年度幂等键 `bday-{YYYY}`） |
-| STEP 4 | `steps/grant-thanksgiving-benefits.ts` | 仅每月 20 号；月度幂等键；优惠券固定 10 天 |
-| STEP 5 | `steps/audit-points-balance.ts` | 积分余额校验（仅告警不修复） |
+| STEP 1 | `steps/close-expired-appointments.ts` | 关闭超期未到店预约 |
+| STEP 2 | `steps/refresh-customer-status.ts` | 重算 `customer_status`（三段式 SQL，整体一个事务） |
+| STEP 3 | `steps/refresh-monthly-activity.ts` | 重算 `monthly_activity` 月度客活（按当月到店天数；2026-05-26 从 db/scripts 纳入） |
+| STEP 4 | `steps/refresh-member-levels.ts` | 重算 `member_level` + 升降级权益（消息/积分/优惠券） |
+| STEP 5 | `steps/refresh-spending-tier.ts` | 重算 `spending_tier` 终身消费档位（2026-05-26 从 db/scripts 纳入） |
+| STEP 6 | `steps/grant-birthday-benefits.ts` | 当日生日权益（年度幂等键 `bday-{YYYY}`） |
+| STEP 7 | `steps/grant-thanksgiving-benefits.ts` | 仅每月 20 号；月度幂等键；优惠券固定 10 天 |
+| STEP 8 | `steps/audit-points-balance.ts` | 积分余额校验（仅告警不修复） |
+| STEP 9 | `steps/audit-role-type-nulls.ts` | sa/sc role_type NULL 监控（只读告警） |
+| STEP 10 | `steps/audit-payment-invariants.ts` | 5 项资金不变量守护（只读告警） |
+| STEP 11 | `steps/audit-refund-cascade-coverage.ts` | 退款 5 通道级联巡检（只读告警） |
+| STEP 12 | `steps/audit-store-unbind-orphans.ts` | 门店解绑孤儿巡检（只读告警） |
 
 **本地运行**：
 ```bash

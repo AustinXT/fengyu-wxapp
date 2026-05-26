@@ -1031,6 +1031,17 @@ export async function cleanupTestData(prefix = NS) {
          WHERE user_id IN (SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1)`,
       [like],
     ],
+    // order.create 真实开单生成 FY-XSD-WX-* 单（不带 NS 前缀），其 settlePoints 写的
+    // point_transactions.user_id 可能是共享夹具客（如 FY-FIX-CLIENT-01，非 TE2L2 前缀），
+    // 上两条都匹配不到 → 残留阻挡 sale_orders 删除级联。按 order 的 store_id/opened_by 兜底。
+    [
+      `DELETE FROM point_transactions
+         WHERE ref_order_id IN (
+           SELECT sale_order_id FROM sale_orders
+             WHERE store_id LIKE $1 OR opened_by LIKE $1 OR client_user_id LIKE $1
+         )`,
+      [like],
+    ],
 
     // ─── 5) sale_order_payments ───
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],

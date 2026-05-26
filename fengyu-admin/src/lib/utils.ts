@@ -23,17 +23,20 @@ export function formatPhone(phone: string): string {
   return `${phone.slice(0, 3)}****${phone.slice(7)}`
 }
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** 本地时区日期：YYYY-MM-DD（无效日期返回空串） */
 export function formatDate(date: string | Date): string {
   const d = typeof date === 'string' ? new Date(date) : date
-  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+  if (!d || Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
 }
 
+/** 本地时区日期时间：YYYY-MM-DD HH:mm:ss（无效日期返回空串） */
 export function formatDateTime(date: string | Date): string {
   const d = typeof date === 'string' ? new Date(date) : date
-  return d.toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit'
-  })
+  if (!d || Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 }
 
 /**
