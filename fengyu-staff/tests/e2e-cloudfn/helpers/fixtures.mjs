@@ -593,7 +593,13 @@ export async function createTestSaleOrder({
         itemId, saleOrderId, storeId,
         skuId, productName, productType,
         sessionCount,
-        Number(totalAmount) / Number(quantity), quantity, totalAmount,
+        // unit_price / unit_real_price 取 per-session 单次价（[sale-items-money-fields]）：
+        // 疗程卡（session_count>0）= 行应付总额 / (件数 × 单卡次数)，sale_amount 仍为行应付总额；
+        // 家居产品（session_count 空）= totalAmount / quantity。退款封顶/提成均按单次价 × 次数算。
+        sessionCount && Number(sessionCount) > 0
+          ? Number(totalAmount) / (Number(quantity) * Number(sessionCount))
+          : Number(totalAmount) / Number(quantity),
+        quantity, totalAmount,
         isExperience, isShengmei, salesCategory,
       ]
     )
