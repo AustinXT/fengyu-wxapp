@@ -34,6 +34,13 @@ describe('formatCurrency', () => {
   it('负数（退款场景）', () => {
     expect(formatCurrency(-100)).toBe('¥-100.00')
   })
+
+  it('空值/非数值兜底为 ¥0.00（历史数据金额 NULL 不致整页崩溃）', () => {
+    expect(formatCurrency(null)).toBe('¥0.00')
+    expect(formatCurrency(undefined)).toBe('¥0.00')
+    expect(formatCurrency('')).toBe('¥0.00')
+    expect(formatCurrency('abc')).toBe('¥0.00')
+  })
 })
 
 describe('formatPhone', () => {

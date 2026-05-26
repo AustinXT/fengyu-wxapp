@@ -6,8 +6,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatCurrency(amount: number | string): string {
+export function formatCurrency(amount: number | string | null | undefined): string {
+  // 历史 WorkFine 拉取的订单/明细金额字段可能为 NULL；空串/非数值同样兜底，
+  // 避免 num.toFixed() 在渲染期抛错导致整页白屏（React #419）。
   const num = typeof amount === 'string' ? parseFloat(amount) : amount
+  if (num == null || Number.isNaN(num)) return '¥0.00'
   return `¥${num.toFixed(2)}`
 }
 
