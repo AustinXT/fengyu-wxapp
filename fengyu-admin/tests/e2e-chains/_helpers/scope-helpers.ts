@@ -65,16 +65,38 @@ export function psql(sql: string): string {
   }
 }
 
-/** 通用登录 — 走 /login，登录后跳到 /dashboard */
+/**
+ * 通用登录 — 走 /login，登录后跳到 /dashboard（或 /change-password）。
+ *
+ * 健壮性：dev server 单 worker + Turbopack 冷编译 + 多 browser context 并发时，
+ * 偶发「提交 → middleware → /dashboard」跳转滞留在 /login（登录竞态，非产品 bug）。
+ * 内部用重试包裹：若 waitForURL 超时仍停留 /login，重新 goto /login 重提，最多 3 次，
+ * 每次 fill 前清空输入框。签名与调用方零改动（内部增强）。
+ *
+ * 历史：audit-menu-access.spec.ts 内联验证过此模式（单次 waitForURL 60s 偶发滞留 →
+ * 加 3 次重试后稳定），现下沉为共享 helper 标准行为。
+ */
 export async function login(page: Page, phone: string, pass = ADMIN_PASS): Promise<void> {
-  await page.goto(`${BASE}/login`)
-  await page.waitForLoadState('networkidle')
-  await page.locator('#phone').click()
-  await page.locator('#phone').pressSequentially(phone, { delay: 30 })
-  await page.locator('#password').click()
-  await page.locator('#password').pressSequentially(pass, { delay: 30 })
-  await page.getByRole('button', { name: /登\s*录/ }).click()
-  await page.waitForURL(/\/dashboard/, { timeout: 20000 })
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
+      await page.locator('#phone').waitFor({ state: 'attached', timeout: 60_000 })
+      await page.locator('#phone').click()
+      await page.locator('#phone').fill('')
+      await page.locator('#phone').pressSequentially(phone, { delay: 30 })
+      await page.locator('#password').click()
+      await page.locator('#password').fill('')
+      await page.locator('#password').pressSequentially(pass, { delay: 30 })
+      await page.getByRole('button', { name: /登\s*录/ }).click()
+      await page.waitForURL(/\/dashboard|\/change-password/, { timeout: 60_000 })
+      return
+    } catch (e) {
+      lastErr = e
+      console.log(`[login] attempt ${attempt} for ${phone} timed out (still on /login?), retrying...`)
+    }
+  }
+  throw lastErr
 }
 
 /** 退出登录 — 走 /logout 或 topbar 退出按钮 */

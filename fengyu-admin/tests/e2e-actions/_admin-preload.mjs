@@ -19,16 +19,17 @@ const __dirname = path.dirname(__filename)
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 
 const SESSION = {
-  employeeId: process.env.TEST_ADMIN_EMP_ID || 'TE2L2_MGR',
+  employeeId: process.env.TEST_ADMIN_EMP_ID || 'TE2A_MGR',
   name: '测试店长',
-  phone: '19999099001',
+  phone: '19999088001',
   roles: [{ role: 'manager', scopeId: 'TEST', scopeType: '门店' }],
   permissions: {
     actions: [
       'sale_order:create', 'sale_order:update', 'sale_order:record_payment',
       'sale_order:read', 'sale_order:close', 'sale_order:confirm_offline',
+      'sale_order:refund_create', 'sale_order:refund_approve',
     ],
-    scopeStoreIds: [process.env.TEST_STORE_ID || 'TE2L2_STORE'],
+    scopeStoreIds: [process.env.TEST_STORE_ID || 'TE2A_STORE'],
   },
 }
 
