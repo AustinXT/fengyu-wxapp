@@ -3,6 +3,10 @@
 /**
  * calc-spending-tier.js — 重算顾客历史消费档位（spending_tier）
  *
+ * ⚠️ 已被 cron-worker 取代（2026-05-26）：
+ *   fengyu-admin/src/cron/steps/refresh-spending-tier.ts（STEP spendingTier），
+ *   每日 03:00 自动跑，随 admin 镜像部署。本脚本仅留作一次性手动补数兜底。
+ *
  * 用法：
  *   node scripts/calc-spending-tier.js              # 执行更新
  *   node scripts/calc-spending-tier.js --dry-run     # 预览（不写入）

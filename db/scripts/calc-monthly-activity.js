@@ -2,6 +2,12 @@
 /**
  * 月度客活 + 到店状态 计算脚本
  *
+ * ⚠️ 已被 cron-worker 取代（2026-05-26）：
+ *   - 月度客活 → fengyu-admin/src/cron/steps/refresh-monthly-activity.ts（STEP monthlyActivity）
+ *   - 到店状态 → fengyu-admin/src/cron/steps/refresh-customer-status.ts（STEP customerStatus）
+ *   cron-worker 每日 03:00 自动跑，随 admin 镜像部署。本脚本仅留作一次性手动补数兜底，
+ *   勿再依赖它做日常调度。
+ *
  * 使用方法：
  *   node scripts/calc-monthly-activity.js            # 正常计算
  *   node scripts/calc-monthly-activity.js --dry-run   # 预览模式

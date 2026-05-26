@@ -11,20 +11,26 @@
  * STEP 顺序（2026-04-26 sale-order-domain-refactor 后）：
  *   1. closeExpiredAppointments — 业务清扫，先关掉超期预约（与后续重算无依赖）
  *   2. customerStatus           — 重算 client_wechat_users.customer_status
- *   3. memberLevels             — 重算会员等级 + 升降级权益（依赖最新 sale_orders）
- *   4. birthday                 — 当日生日权益（依赖 member_level）
- *   5. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
- *   6. pointsAudit              — 积分余额一致性校验（只读告警）
- *   7. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *   8. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
- *   9. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
- *  10. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
+ *   3. monthlyActivity          — 重算 monthly_activity 月度客活（依赖 customer_type，不依赖等级）
+ *   4. memberLevels             — 重算会员等级 + 升降级权益（依赖最新 sale_orders）
+ *   5. spendingTier             — 重算 spending_tier 终身消费档位（依赖 sale_orders）
+ *   6. birthday                 — 当日生日权益（依赖 member_level）
+ *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
+ *   8. pointsAudit              — 积分余额一致性校验（只读告警）
+ *   9. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
+ *  10. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *  11. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
+ *  12. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
+ *
+ *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
  */
 
 import { db } from '@/db'
 import type { CronContext } from './lib/cron-context'
 import { refreshCustomerStatus } from './steps/refresh-customer-status'
+import { refreshMonthlyActivity } from './steps/refresh-monthly-activity'
 import { refreshMemberLevels } from './steps/refresh-member-levels'
+import { refreshSpendingTier } from './steps/refresh-spending-tier'
 import { grantBirthdayBenefits } from './steps/grant-birthday-benefits'
 import { grantThanksgivingBenefits } from './steps/grant-thanksgiving-benefits'
 import { auditPointsBalance } from './steps/audit-points-balance'
@@ -56,7 +62,9 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['closeExpiredAppointments', closeExpiredAppointments],
   // —— 状态/等级重算 ——
   ['customerStatus', refreshCustomerStatus],
+  ['monthlyActivity', refreshMonthlyActivity],
   ['memberLevels', refreshMemberLevels],
+  ['spendingTier', refreshSpendingTier],
   // —— 权益发放 ——
   ['birthday', grantBirthdayBenefits],
   ['thanksgiving', grantThanksgivingBenefits],
