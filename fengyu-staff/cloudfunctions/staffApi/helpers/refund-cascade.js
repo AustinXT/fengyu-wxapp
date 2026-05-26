@@ -142,17 +142,32 @@ async function cascadeRefund(client, params) {
   }
 
   // ========== 通道 5: pickup_records 反向恢复 ==========
-  // 仅在传入 saleItemId 时执行；以 sessionCount/quantity 为反推数量
+  // 部分退款（传 saleItemId）：按 sessionCount 反推数量，仅减该行；
+  // 整单退款（saleItemId 为 null）：把原单下所有家居产品行 picked_up_quantity 清零。
+  // 两端均带 product_type='家居产品' 守卫 + COALESCE(...)>0 过滤。
   let rolledBackPickups = 0
-  if (saleItemId && sessionCount && Number(sessionCount) > 0) {
+  if (saleItemId) {
+    if (sessionCount && Number(sessionCount) > 0) {
+      const pickupRes = await client.query(
+        `UPDATE sale_items
+            SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - $1),
+                updated_at = $2
+          WHERE sale_item_id = $3
+            AND product_type = '家居产品'
+            AND COALESCE(picked_up_quantity, 0) > 0`,
+        [Number(sessionCount), now, saleItemId],
+      )
+      rolledBackPickups = pickupRes.rowCount || 0
+    }
+  } else {
     const pickupRes = await client.query(
       `UPDATE sale_items
-          SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - $1),
-              updated_at = $2
-        WHERE sale_item_id = $3
+          SET picked_up_quantity = 0,
+              updated_at = $1
+        WHERE sale_order_id = $2
           AND product_type = '家居产品'
           AND COALESCE(picked_up_quantity, 0) > 0`,
-      [Number(sessionCount), now, saleItemId],
+      [now, saleOrderId],
     )
     rolledBackPickups = pickupRes.rowCount || 0
   }

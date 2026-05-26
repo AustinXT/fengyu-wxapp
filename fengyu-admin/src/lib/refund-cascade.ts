@@ -190,13 +190,15 @@ export async function cascadeRefund(
              SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - ${qty}),
                  updated_at = NOW()
            WHERE sale_item_id = ${saleItemId}
-             AND COALESCE(picked_up_quantity, 0) >= ${qty}
+             AND product_type = '家居产品'
+             AND COALESCE(picked_up_quantity, 0) > 0
         `)
       : await tx.execute(sql`
           UPDATE sale_items
              SET picked_up_quantity = 0,
                  updated_at = NOW()
            WHERE sale_order_id = ${saleOrderId}
+             AND product_type = '家居产品'
              AND COALESCE(picked_up_quantity, 0) > 0
         `)
     rolledBackPickups = (res as { rowCount?: number }).rowCount ?? 0
