@@ -15,8 +15,9 @@
  *
  * 关键不变量：
  *   sale_items 行数                 = 3（疗程卡拆 2 行 + 家居 1 行）
- *   疗程卡行 quantity=1 / session_count=2 / unit_real_price=90（×2 行）
- *   家居行   quantity=1 / unit_real_price=90（×1 行）
+ *   疗程卡行 quantity=1 / session_count=2 / unit_real_price=45（×2 行）
+ *     （unit_real_price 是「单次价」=bundle_price 90 ÷ session_count 2；sale_amount=90 才是行总额）
+ *   家居行   quantity=1 / unit_real_price=90（×1 行，无 session，单次价=行总额）
  *   SUM(sale_items.sale_amount)     = 270
  *   sale_orders.total_amount        = 270
  *   sale_orders.status              = '已支付'
@@ -131,9 +132,12 @@ test('链路 46：组合套餐选N项支持同商品多次（N 按数量合计�
     await expect(page.getByText('组合套餐', { exact: false }).first()).toBeVisible({ timeout: 15000 })
     const bundleHeading = page.locator('h4', { hasText: BUNDLE_NAME }).first()
     await expect(bundleHeading).toBeVisible({ timeout: 15000 })
-    // 该套餐卡容器（含"加入套餐"按钮的最近祖先）
+    // 该套餐卡容器（CardContent）。注意：不能用"含『加入套餐』按钮的最近祖先"——
+    // 该按钮在卡片头部行 div 内（与标题同级），而选N项 SKU 行在头部行的兄弟 div 里，
+    // 取头部行会把 SKU 行排除在 cardScope 之外。改用"含『请选』分组文案的最近祖先"，
+    // 即整张 CardContent（头部行无『请选』），同时仍含「加入套餐」按钮。
     const cardScope = bundleHeading.locator(
-      'xpath=ancestor::*[.//button[contains(normalize-space(.), "加入套餐")]][1]',
+      'xpath=ancestor::*[.//p[contains(normalize-space(.), "请选")]][1]',
     )
 
     // 步进：specName 行内 [−, +] 两个按钮，+ 为最后一个
@@ -188,15 +192,15 @@ test('链路 46：组合套餐选N项支持同商品多次（N 按数量合计�
     const totalRows = Number(psql(`SELECT count(*) FROM sale_items WHERE sale_order_id='${saleOrderId}'`))
     push('sale_items 行数 = 3（疗程卡拆2行+家居1行）', totalRows === 3, String(totalRows))
 
-    // 疗程卡：2 行，每行 quantity=1 / session_count=2 / unit_real_price=90
+    // 疗程卡：2 行，每行 quantity=1 / session_count=2 / unit_real_price=45（单次价=90÷2）
     const cardAgg = psql(
-      `SELECT count(*), bool_and(quantity=1), bool_and(session_count=2), bool_and(unit_real_price=90.00) FROM sale_items WHERE sale_order_id='${saleOrderId}' AND sku_id='${SKU_CARD}'`,
+      `SELECT count(*), bool_and(quantity=1), bool_and(session_count=2), bool_and(unit_real_price=45.00) FROM sale_items WHERE sale_order_id='${saleOrderId}' AND sku_id='${SKU_CARD}'`,
     )
-    const [cCount, cQty1, cSess2, cPrice90] = cardAgg.split('|')
+    const [cCount, cQty1, cSess2, cPrice45] = cardAgg.split('|')
     push('疗程卡 拆成 2 行', Number(cCount) === 2, cCount)
     push('疗程卡 每行 quantity=1', cQty1 === 't', cQty1)
     push('疗程卡 每行 session_count=2', cSess2 === 't', cSess2)
-    push('疗程卡 每行 unit_real_price=90', cPrice90 === 't', cPrice90)
+    push('疗程卡 每行 unit_real_price=45（单次价=bundle_price 90÷session_count 2）', cPrice45 === 't', cPrice45)
 
     // 家居：1 行，quantity=1 / unit_real_price=90
     const homeAgg = psql(

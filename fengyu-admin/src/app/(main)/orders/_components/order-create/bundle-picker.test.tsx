@@ -74,7 +74,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
   })
 
   it('渲染分组提示与步进器', () => {
-    render(<BundlePicker bundles={[makeBundle()]} onAdd={() => {}} onBundleAdded={() => {}} />)
+    render(<BundlePicker bundles={[makeBundle()]} cart={[]} onAdd={() => {}} onBundleAdded={() => {}} />)
     expect(screen.getByText(/请选 3 项（已选 0\/3）/)).toBeInTheDocument()
     expect(screen.getByText('疗程卡A')).toBeInTheDocument()
     expect(screen.getByText('家居B')).toBeInTheDocument()
@@ -82,7 +82,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
 
   it('未满 pickCount 时加入被拦截，onBundleAdded 不触发', async () => {
     const onBundleAdded = vi.fn()
-    render(<BundlePicker bundles={[makeBundle()]} onAdd={() => {}} onBundleAdded={onBundleAdded} />)
+    render(<BundlePicker bundles={[makeBundle()]} cart={[]} onAdd={() => {}} onBundleAdded={onBundleAdded} />)
 
     await userEvent.click(steppersFor('疗程卡A').plus) // 合计 1，未满 3
     await userEvent.click(screen.getByRole('button', { name: '加入套餐' }))
@@ -93,7 +93,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
 
   it('同一 SKU 选多次：A×2 + B×1 合计=3 → payload 按数量聚合', async () => {
     const onBundleAdded = vi.fn()
-    render(<BundlePicker bundles={[makeBundle()]} onAdd={() => {}} onBundleAdded={onBundleAdded} />)
+    render(<BundlePicker bundles={[makeBundle()]} cart={[]} onAdd={() => {}} onBundleAdded={onBundleAdded} />)
 
     const a = steppersFor('疗程卡A')
     await userEvent.click(a.plus)
@@ -121,7 +121,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
   })
 
   it('合计达到 pickCount 后，加号按钮全部禁用（不能超选）', async () => {
-    render(<BundlePicker bundles={[makeBundle()]} onAdd={() => {}} onBundleAdded={() => {}} />)
+    render(<BundlePicker bundles={[makeBundle()]} cart={[]} onAdd={() => {}} onBundleAdded={() => {}} />)
 
     const a = steppersFor('疗程卡A')
     await userEvent.click(a.plus)
@@ -133,7 +133,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
   })
 
   it('减号可回退，低于 pickCount 后重新可加', async () => {
-    render(<BundlePicker bundles={[makeBundle()]} onAdd={() => {}} onBundleAdded={() => {}} />)
+    render(<BundlePicker bundles={[makeBundle()]} cart={[]} onAdd={() => {}} onBundleAdded={() => {}} />)
 
     const a = steppersFor('疗程卡A')
     await userEvent.click(a.plus)
