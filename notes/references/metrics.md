@@ -435,6 +435,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
 | 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
 | 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
+| 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 
 ---
 
@@ -460,6 +461,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 小美客业绩 | `SUM(si.received)` | `sale_items si` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.client_user_id = so.client_user_id` | 分型:小美客 ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ `[paid_at_period]` |
 | 新增会员业绩 | `SUM(si.received)` | 同上 | 分型:新增会员 ∩ 同上 |
 | 老会员业绩 | `SUM(si.received)` | 同上 | 分型:老会员 ∩ 同上 |
+| 流量客业绩（admin 数据中心销售板块） | `SUM(si.received)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
 
 ### 分客型项目实耗
 
@@ -603,6 +605,35 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **性能注意**：`daily_agg` 全历史扫描（`paid_at <= $endDate`，无下界），随运营时长增长。
 > 建议追加索引 `idx_so_client_paid(client_user_id, paid_at, status)`；800ms slow warn 阈值。
 
+### 3. 二级品项（category_name）粒度（admin 数据中心品项板块专用）
+
+> **背景**：staff 端 `mgmtProduct.cardHolders` / `cycleStats` 只按一级品项 `product_kind` 出数。
+> admin 数据中心「品项板块」额外支持**按一级筛选下钻到二级品项 `category_name`**，分组键随筛选层级切换：
+>
+> | 筛选层级 | 分组键 | 说明 |
+> |---------|--------|------|
+> | 都不选（默认） | `pc.product_kind` | 全部品项按一级汇总（与 staff 端 `cardHolders`/`cycleStats` 完全同构）|
+> | 仅选一级（`productKind`） | `pc.product_kind` | WHERE `pc.product_kind = $productKind` 过滤后仍按一级聚合（单组）|
+> | 选到二级（`categoryName`，附带其一级） | `pc.category_name` | WHERE `pc.product_kind = $productKind AND pc.category_name = $categoryName` 过滤后按二级聚合（单组）|
+>
+> **口径与一级完全同构**——所有 CTE（`daily_agg` / `qualifying_days` / `first_entry` / `period_agg` / `xinzeng` / `fugou` / `tiyan`）
+> 与持卡截面查询的逻辑、阈值（`getMemberThreshold`，默认 1980/1990）、达标日规则、`新增 ⊆ 复购` 关系
+> **均不变**，唯一差异是把分组键 `pc.product_kind` 整体替换为 `pc.category_name`（达标日聚合的 GROUP BY 维度
+> 与 `first_entry` 跨店合并键同步替换）。即：
+>
+> - 持卡人数 / 占比：`COUNT(DISTINCT so.client_user_id)` GROUP BY 分组键，`si.product_type = '疗程卡'` ∩ `si.remaining_sessions > 0`；占比分母仍为 `memberCount`（不随分组键变化）。
+> - 体验 / 新增 / 复购：`daily_agg` 与 `first_entry` 的 `(client_user_id [, store_id], 分组键, purchase_date)` 中的 `product_kind` 替换为 `category_name`。
+>
+> **达标日的分组维度语义**：一级筛选时「同一顾客 + 同门店 + 同一**一级品项** + 同日」≥ threshold 算达标；
+> 二级筛选时收窄为「同一顾客 + 同门店 + 同一**二级品项** + 同日」≥ threshold 算达标——粒度越细，单组消费越分散，达标人数通常 ≤ 一级口径，符合"看某个具体二级品项的进入/复购"的业务诉求。
+>
+> **filterOptions 数据源**：`SELECT DISTINCT product_kind, category_name FROM product_categories WHERE product_kind IS NOT NULL`，
+> 组装为 `[{ kind, categories: [...] }]`（一级 → 其下二级名列表）供前端两级联动下拉。
+>
+> **admin 实现位置**：`fengyu-admin/src/actions/data-center/product.ts`（`getProductBoard`）；
+> 一致性守护：`fengyu-admin/src/actions/data-center/__tests__/consistency.product.test.ts`
+> 对 staff `mgmt-product.js` 做关键口径字面量比对（一级 product_kind 口径同源，二级为 admin 独有扩展）。
+
 ---
 
 ## 时间窗口补充（sales-data 页专用口径）
@@ -614,3 +645,20 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 本年 | `date_trunc('year', NOW()::date)` | `NOW()::date` |
 
 > 过滤写法：`col::date BETWEEN [period_start] AND [period_end]`
+
+---
+
+## 数据中心（admin）板块专属指标（2026-05-26 用户拍板）
+
+> admin `/data-center` 看板新增/重定义、且 staff 端无对端的指标。一致性守护见各
+> `fengyu-admin/src/actions/data-center/__tests__/consistency.*.test.ts`。
+
+| 指标 | 板块 | 公式 | 说明 |
+|------|------|------|------|
+| 流量客业绩 | 销售 | `SUM(si.received)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；详见上方「分客型业绩」表 |
+| 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
+| 店长人数 | 人效 | `COUNT(在营门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店')` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
+
+> **时间口径**：数据中心排名榜与上述区间指标统一走顶部时间维度 `col::date BETWEEN current.start AND current.end`
+> （TimeRange：今日/本周/本月/今年/自定义），而非 staff 端固定 month/lastMonth/year 锚 NOW()。
+> **同比/环比**：仅 KPI 卡片标量计算（本期/上期/去年同期 delta%），明细表与排名榜不做逐行对比。

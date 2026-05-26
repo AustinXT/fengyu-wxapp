@@ -12,6 +12,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
+const { testBypassAllowed } = require('../utils/runtime-guard')
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
@@ -182,8 +183,8 @@ async function bindPhone(ctx) {
   const { phoneNumber: directPhone, _testOpenid: payloadTestOpenid } = ctx.event.payload || {}
   const phoneData = ctx.event.phoneData
 
-  // 测试模式：_testOpenid 覆盖真实 openid（与 middleware/auth.js 同源逻辑）
-  const testOpenid = process.env.ALLOW_TEST_OPENID === 'true'
+  // 测试模式：_testOpenid 覆盖真实 openid（与 middleware/auth.js 同源逻辑；prod 由 runtime-guard 硬闸禁用）
+  const testOpenid = testBypassAllowed('ALLOW_TEST_OPENID')
     ? (payloadTestOpenid || ctx.event._testOpenid)
     : null
   const OPENID = testOpenid || realOpenid
@@ -204,10 +205,10 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
     }
   }
-  // 方式2: 直接传入手机号（测试用，仅 ALLOW_TEST_OPENID=true 时启用）
+  // 方式2: 直接传入手机号（测试用，独立 ALLOW_DIRECT_PHONE 开关 + 非生产运行时；prod 由 runtime-guard 硬闸禁用）
   else if (directPhone) {
-    if (process.env.ALLOW_TEST_OPENID !== 'true') {
-      throw new Error('INVALID_PARAMS: phoneNumber 直传仅在测试环境启用')
+    if (!testBypassAllowed('ALLOW_DIRECT_PHONE')) {
+      throw new Error('INVALID_PARAMS: phoneNumber 直传未启用')
     }
     phoneNumber = directPhone
   } else {

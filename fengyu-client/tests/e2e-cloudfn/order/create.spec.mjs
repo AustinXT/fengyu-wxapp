@@ -211,7 +211,7 @@ async function caseExperienceSkuAllowed() {
   await createTestClient()
   await createTestSku({
     skuId: TEST_SKU_EXPERIENCE_ID, productId: `${NS}_PROD_EXP`,
-    productType: '单品', price: '30.00', isExperience: true,
+    productType: '疗程卡', price: '30.00', isExperience: true,
   })
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
     storeId: TEST_STORE_ID,

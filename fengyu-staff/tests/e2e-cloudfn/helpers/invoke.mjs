@@ -116,9 +116,11 @@ function loadPayNotify() {
  * @param {string} action - 如 'order.confirmOffline'
  * @param {object} payload - 必含 _testOpenid 字段以走测试模式 auth
  */
-export async function invokeStaffApi(action, payload = {}) {
+export async function invokeStaffApi(action, payload = {}, eventExtras = {}) {
   const main = loadStaffApi()
-  return await main({ action, payload }, {})
+  // eventExtras 注入 event 顶层（如 phoneData：模拟 CloudID 已解密结果，
+  // 供 bindPhone 走 CloudID 路径而非已默认关闭的 phoneNumber 直传旁路）
+  return await main({ action, payload, ...eventExtras }, {})
 }
 
 /**

@@ -1662,6 +1662,24 @@ async function createRefund(ctx) {
     throw new Error('INVALID_STATE: 无可退项')
   }
 
+  // 退款上限 = max(sale_order_payments 流水净额, sale_orders.received)：
+  //   - 部分支付订单（如疗程卡只付定金、次数全在）按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶。
+  //   - 流水净额（首次支付/回款/储值卡抵扣为正、已审批退款为负）是生产权威已收（含储值卡抵扣）；
+  //     received 列兜底（流水缺失的历史/异常单），取 max 避免误拒。
+  //   - 超限直接拒绝（而非截断金额）：退款明细 quantity/session_count 按请求记录、cascade 据此回滚次数，
+  //     只截金额不截数量会导致「退 N 次核销权却只退 M 次钱」，故让店长减少退款数量以保持数量与金额自洽。
+  const paymentsNetRows = await pg.query(
+    `SELECT COALESCE(SUM(amount), 0)::numeric AS net
+       FROM sale_order_payments
+      WHERE sale_order_id = $1 AND status = '已支付'`,
+    [refSaleOrderId],
+  )
+  const paymentsNet = Number(paymentsNetRows[0]?.net || 0)
+  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0))
+  if (finalRefundAmount > refundCap + 0.001) {
+    throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
+  }
+
   // 储值卡 vs 原路径拆分（按原单储值卡占比）
   const origPrepaidCardAmount = Number(origOrder.prepaid_card_amount || 0)
   const origTotalAmount = Number(origOrder.total_amount || 0)

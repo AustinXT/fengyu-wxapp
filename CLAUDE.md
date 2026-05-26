@@ -99,10 +99,14 @@ bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs                   # staff L3 
 
 扫描结果展示给用户确认后，按 L0→L10 顺序逐层修改（参考 wx-change-propagation skill 的 10 层传播图）。
 
-### 云函数部署后
+### 云函数部署
+
+- **prod 部署只走 `scripts/deploy-cloudfunctions.sh`**：它会按 `envs/.active` 强制重渲染 cloudbaserc + 校验 envId/PG 端口一致 + 占位符告警，确保上传的是目标环境的 env。
+- **⚠️ `tcb fn code update` 会把 cloudbaserc.json 的 envVariables 一并推送覆盖（不只代码）**。因此**禁止手动 `tcb fn code update <fn> --env-id <X>` 跨环境部署**——若当前 cloudbaserc 是 dev 渲染态却推到 prod，会把 dev/SIT 配置刷进 prod（2026-05-26 踩过此坑）。改 env 前务必先 `scripts/use-env.sh <env>`。
+- **`tcb fn deploy --force`** 同样重置 env，仅首次创建函数用；已存在函数一律走脚本。
 
 每次 /cloudbase-deploy 完成后：
-- 提醒验证环境变量（**禁止使用 `tcb fn deploy --force`**，用 `tcb fn code update`）
+- 验证环境变量（用 `tcb config pull fn <fn> --stdout --json` 只读核验，勿用 `tcb config update`，3.0.1 有键名小写损坏 bug）
 - 必检变量：clientApi(PG_CONNECTION_STRING, TMAP_KEY, TMAP_SECRET)、staffApi(PG_CONNECTION_STRING, CLIENT_SECRET, CLIENT_APPSECRET)
   - `CLIENT_SECRET`=HMAC 共享密钥（两端一致），`CLIENT_APPSECRET`=客户端小程序真实 appsecret（wxacode 换 token），二者勿混；混用会导致 order.qrcode「生成小程序码失败」(40125)
 

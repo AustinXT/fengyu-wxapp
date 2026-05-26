@@ -79,7 +79,7 @@ async function createStaffOpenedPending({
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               NULL, $4, '默认', '单品'::product_type,
+               NULL, $4, '默认', '疗程卡'::product_type,
                $5, 1, $5, $5, 0,
                false)`,
       [itemId, saleOrderId, storeId, `${NS}_员工单商品`, totalAmount]
@@ -109,7 +109,7 @@ async function caseHappyMultiDeduction() {
     skuId: TEST_SKU_NORMAL_ID,
     productId: TEST_PRODUCT_ID,
     price: '100.00',
-    productType: '单品',
+    productType: '疗程卡',
   })
   await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
 
@@ -169,7 +169,7 @@ async function caseInsufficientBalanceRollback() {
     skuId: TEST_SKU_NORMAL_ID,
     productId: TEST_PRODUCT_ID,
     price: '100.00',
-    productType: '单品',
+    productType: '疗程卡',
   })
   // 卡余额仅 50，无法支撑 60 抵扣
   await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '50.00' })
@@ -275,7 +275,7 @@ async function caseCouponDeductionHappy() {
     skuId: TEST_SKU_NORMAL_ID,
     productId: TEST_PRODUCT_ID,
     price: '100.00',
-    productType: '单品',
+    productType: '疗程卡',
   })
   await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
   // 满100减10 现金券，限定 TEST_PRODUCT_ID → 强制走商品维度过滤（skuProductMap）

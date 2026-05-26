@@ -11,6 +11,8 @@
  *   B 路径 — 拒绝退款：
  *     5. 另一张销售单 createRefund → rejectRefund → status: 待审批 → 已作废
  *     6. sale_orders.refunded_amount 不变
+ *   C 路径 — 超净已收防护（P2）：
+ *     7. 部分支付单（received=200、次数全在）退全额 800 > 可退余额 → INVALID_STATE 被拒
  */
 import './setup.mjs'
 import {
@@ -160,6 +162,38 @@ async function main() {
     }
   }
 
+  // ─── C. 部分支付订单超净已收退款被拒（P2 守护）───
+  const orderC = `${NS}_RFD_C_PARTIAL`
+  await createTestSaleOrder({
+    saleOrderId: orderC,
+    clientUserId: TEST_CLIENT_USER_ID,
+    productName: `${NS}_疗程卡800`,
+    productType: '疗程卡',
+    quantity: 1,
+    sessionCount: 1,
+    totalAmount: 800,
+    status: '部分支付',
+    salesCategory: '他销自耗',
+  })
+  // 部分支付：只收 200 现金（received=200），次数全在（remaining=1，unit_real_price=800）；无 payments 流水
+  await pgQuery(`UPDATE sale_orders SET received = 200 WHERE sale_order_id = $1`, [orderC])
+  const cItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderC])
+  const itemC = cItems[0].sale_item_id
+  // 退全部 1 次 = 800 元 > 可退余额（净已收 200）→ 必须被拒（防超退商家净亏）
+  const refC = await invokeStaffApi('order.createRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: orderC,
+    items: [{ saleItemId: itemC, refundQuantity: 1 }],
+    refundReason: 'e2e_refund_C_overrefund',
+  })
+  if (refC.code === 0) {
+    errors.push('C.部分支付超净已收退款应被拒，却成功了')
+  } else if (!(refC.message || '').includes('可退余额')) {
+    errors.push(`C.拒绝消息不符，实际='${refC.message}'`)
+  } else {
+    rec(`  ✓ createRefund C: 超净已收(200) 退款 800 被拒 — ${refC.message}`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -168,7 +202,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 退款 approve + reject 双路径正确`)
+  rec(`  ✅ PASS — 退款 approve + reject + 超净已收防护`)
 }
 
 try {
