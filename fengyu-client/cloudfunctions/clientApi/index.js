@@ -8,6 +8,10 @@
  *   2. 其他 → 原 cloud.callFunction 入口（小程序前端 + admin callClientFunction）
  */
 
+// 强制进程时区为东八区。CloudBase 运行时默认 UTC，否则 new Date(y,m,d) / getHours/getDate
+// 等本地时间方法会偏差 8 小时（须在任何 Date 操作与模块 require 之前设置）。
+process.env.TZ = 'Asia/Shanghai'
+
 const cloud = require('wx-server-sdk')
 const crypto = require('crypto')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })

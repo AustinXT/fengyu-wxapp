@@ -9,6 +9,7 @@
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
+const { shanghaiYYMMDD } = require('../utils/datetime')
 
 // =============================================================
 // 内部：从 system_configs 加载档位 + 匹配
@@ -285,7 +286,7 @@ async function recharge(ctx) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const now = new Date()
-    const dateStrOrder = now.toISOString().slice(2, 10).replace(/-/g, '')
+    const dateStrOrder = shanghaiYYMMDD(now)
     const orderSeqResult = await client.query(
       `SELECT sale_order_id FROM sale_orders
        WHERE sale_order_id LIKE $1
