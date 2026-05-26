@@ -836,7 +836,9 @@ Page({
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx >= 0) {
-      if (cart[idx].productType === '组合套餐') {
+      // 组合套餐行数量在 bundle-picker 内锁定（refBundleId 标记）；真实 productType 是
+      // 疗程卡/家居，故不能只判 productType==='组合套餐'，须一并判 refBundleId。
+      if (cart[idx].refBundleId || cart[idx].productType === '组合套餐') {
         wx.showToast({ title: '组合套餐项目不可修改数量', icon: 'none' });
         return;
       }
