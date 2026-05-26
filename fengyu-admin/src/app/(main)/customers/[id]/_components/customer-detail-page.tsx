@@ -283,7 +283,7 @@ export default function CustomerDetailPage({
     {
       key: "saleOrderDatetime",
       header: "下单时间",
-      cell: (row) => <span>{formatDateTime(row.saleOrderDatetime)}</span>,
+      cell: (row) => <span>{formatDateTime(row.saleOrderDatetime) || "—"}</span>,
     },
     { key: "storeName", header: "门店" },
   ]
@@ -323,7 +323,7 @@ export default function CustomerDetailPage({
     {
       key: "appointmentTime",
       header: "预约时间",
-      cell: (row) => <span>{formatDateTime(row.appointmentTime)}</span>,
+      cell: (row) => <span>{formatDateTime(row.appointmentTime) || "—"}</span>,
     },
     {
       key: "status",
@@ -850,7 +850,7 @@ export default function CustomerDetailPage({
                           ))}
                         </div>
                       )}
-                      <div className="mt-2 text-xs text-[var(--muted-foreground)]">{formatDateTime(r.createdAt)}</div>
+                      <div className="mt-2 text-xs text-[var(--muted-foreground)]">{formatDateTime(r.createdAt) || "—"}</div>
                     </div>
                   ))}
                 </div>
@@ -870,7 +870,7 @@ export default function CustomerDetailPage({
               ) : (
                 <DataTable
                   columns={[
-                    { key: 'createdAt', header: '时间', cell: (row) => <span>{formatDateTime(row.createdAt)}</span> },
+                    { key: 'createdAt', header: '时间', cell: (row) => <span>{formatDateTime(row.createdAt) || "—"}</span> },
                     { key: 'oldPhone', header: '旧号', cell: (row) => <span className="font-mono text-xs">{row.oldPhone ?? '—'}</span> },
                     { key: 'newPhone', header: '新号', cell: (row) => <span className="font-mono text-xs">{row.newPhone ?? '—'}</span> },
                     { key: 'mergedOrders', header: '归并订单数', cell: (row) => <span>{row.mergedOrders}</span> },

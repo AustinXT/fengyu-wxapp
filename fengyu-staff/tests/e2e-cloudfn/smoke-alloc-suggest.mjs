@@ -44,7 +44,7 @@ async function main() {
   await createTestStaff({
     employeeId: `${NS}_BEAU`,
     openid: `${NS}_BEAU_OPENID`,
-    phone: '19999099005',
+    phone: '19999098005',
     name: `${NS}_美养双技`,
     isManager: false,
     positionName: '美容师',
@@ -54,7 +54,7 @@ async function main() {
   await createTestStaff({
     employeeId: `${NS}_BEAU_SOLO`,
     openid: `${NS}_BEAU_SOLO_OPENID`,
-    phone: '19999099007',
+    phone: '19999098007',
     name: `${NS}_美容师单技`,
     isManager: false,
     positionName: '美容师',
@@ -64,7 +64,7 @@ async function main() {
   await createTestStaff({
     employeeId: `${NS}_NOSKILL`,
     openid: `${NS}_NOSKILL_OPENID`,
-    phone: '19999099006',
+    phone: '19999098006',
     name: `${NS}_无技能`,
     isManager: false,
     positionName: '美容师',

@@ -42,7 +42,7 @@
     >
       <!-- 卡片头：服务名 + 状态 -->
       <view class="appt-card__header">
-        <text class="appt-service">{{item.service_name}}{{item.sku_spec_name ? ' · ' + item.sku_spec_name : ''}}</text>
+        <text class="appt-service">{{item.service_name || '—'}}{{item.sku_spec_name ? ' · ' + item.sku_spec_name : ''}}</text>
         <van-tag
           type="{{item.statusType}}"
           color="{{item.statusColor}}"

@@ -248,7 +248,7 @@ export default function AllocationDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">顾客</span>
-              <p className="font-medium mt-1">{order.customerName || "-"}</p>
+              <p className="font-medium mt-1">{order.customerName || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">状态</span>
@@ -331,7 +331,7 @@ function ItemAllocationCard({
       <CardHeader className="pb-3">
         <div className="flex items-baseline justify-between">
           <CardTitle className="text-base">
-            {item.productName || '-'}
+            {item.productName || '—'}
             {item.skuName ? ` - ${item.skuName}` : ''}
             {item.salesCategory && (
               <span className="ml-2 text-xs font-normal text-[#999999] bg-gray-100 px-2 py-0.5 rounded">
@@ -392,7 +392,7 @@ function ItemAllocationCard({
                       ? entry.commissionRate > 0
                         ? `${(entry.commissionRate * 100).toFixed(1)}%`
                         : <span className="text-[#D4820A]">0%</span>
-                      : '-'}
+                      : '—'}
                   </p>
                 </div>
 

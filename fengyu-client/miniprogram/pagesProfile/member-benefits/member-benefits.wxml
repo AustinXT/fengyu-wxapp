@@ -73,8 +73,8 @@
         <view class="coupon-card__right">
           <text class="coupon-card__name">{{item.name}}</text>
           <text class="coupon-card__expire">
-            <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAtFmt || '-'}} 使用</block>
-            <block wx:else>有效期至 {{item.expireAtFmt}}</block>
+            <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAtFmt || '—'}} 使用</block>
+            <block wx:else>有效期至 {{item.expireAtFmt || '—'}}</block>
           </text>
           <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
         </view>

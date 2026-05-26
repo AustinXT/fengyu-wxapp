@@ -33,7 +33,8 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { formatPhoneSafe } from "@/lib/format"
 import PullWorkfineDialog from "./pull-workfine-dialog"
 
-function formatDateTime(dt: string) {
+function formatDateTime(dt: string | null | undefined) {
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
@@ -327,9 +328,9 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
                           onChange={() => toggleSelect(o.saleOrderId)}
                         />
                       </td>
-                      <td className="px-4 py-3 font-mono">{formatPhoneSafe(o.clientPhone) || "-"}</td>
-                      <td className="px-4 py-3">{o.customerName || o.clientName || "-"}</td>
-                      <td className="px-4 py-3">{o.storeName || "-"}</td>
+                      <td className="px-4 py-3 font-mono">{formatPhoneSafe(o.clientPhone) || "—"}</td>
+                      <td className="px-4 py-3">{o.customerName || o.clientName || "—"}</td>
+                      <td className="px-4 py-3">{o.storeName || "—"}</td>
                       <td className="px-4 py-3 text-right font-medium">
                         ¥ {Number(o.totalAmount).toFixed(2)}
                         {(() => {
@@ -460,7 +461,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </DialogHeader>
         <div className="mt-4 space-y-2">
           <label className="text-sm text-[#666666]">
-            原手机号：{phoneTarget?.clientPhone || "-"}
+            原手机号：{phoneTarget?.clientPhone || "—"}
           </label>
           <Input
             value={newPhone}
@@ -494,7 +495,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </DialogHeader>
         <div className="mt-4 space-y-2">
           <label className="text-sm text-[#666666]">
-            当前金额：¥ {amountTarget ? Number(amountTarget.totalAmount).toFixed(2) : "-"}
+            当前金额：¥ {amountTarget ? Number(amountTarget.totalAmount).toFixed(2) : "—"}
           </label>
           <Input
             type="number"

@@ -383,7 +383,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
     {
       key: "issuedAt",
       header: "发放时间",
-      cell: (row) => <span>{formatDate(row.issuedAt)}</span>,
+      cell: (row) => <span>{formatDate(row.issuedAt) || "—"}</span>,
     },
     {
       key: "usedAt",

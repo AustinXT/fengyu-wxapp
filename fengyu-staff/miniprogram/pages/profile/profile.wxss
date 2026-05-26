@@ -98,13 +98,25 @@
 
 /* ===== 重新绑定按钮 ===== */
 .rebind-btn {
-  font-size: 22rpx;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 0;
+  font-size: 20rpx;
   color: var(--color-primary);
-  border-color: var(--color-primary);
+  border: 1rpx solid var(--color-primary);
+  border-radius: 20rpx;
+  margin: 0 0 0 16rpx;
   padding: 0 16rpx;
-  line-height: 48rpx;
-  height: 48rpx;
+  line-height: normal;
+  height: 42rpx;
   background: transparent;
+  box-sizing: border-box;
+}
+
+.rebind-btn::after {
+  border: none;
 }
 
 /* ===== 角色标签 ===== */

@@ -1,7 +1,7 @@
 /**
  * 端到端 fixture：测试组织 / 门店 / 员工 / 顾客 / 销售单。
  *
- * 所有写入必须以命名空间 (默认 'TEST_E2E_L2') 为前缀，cleanupTestData 用前缀
+ * 所有写入必须以命名空间 (默认 'TE2A'，= TEST_E2E_Admin) 为前缀，cleanupTestData 用前缀
  * WHERE 精确清理，保证不污染生产数据。
  *
  * 创建顺序：

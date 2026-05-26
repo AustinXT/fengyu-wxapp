@@ -2,6 +2,10 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests/e2e-pages',
+  // 详情用例夹具工厂：globalSetup 建「有欠款订单 + 待审批退款单」并把 id 写临时文件，
+  // 让 refunds/orders-repayment 详情用例进常规 CI（不再因缺 E2E_*_ID 种子而跳过）。
+  globalSetup: './tests/e2e-pages/global-setup.ts',
+  globalTeardown: './tests/e2e-pages/global-teardown.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

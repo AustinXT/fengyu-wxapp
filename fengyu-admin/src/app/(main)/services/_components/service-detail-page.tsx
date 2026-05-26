@@ -7,7 +7,7 @@ import type { ServiceOrder } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return "-"
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
@@ -55,15 +55,15 @@ export default function ServiceDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">顾客</span>
-              <p className="font-medium mt-1">{serviceOrder.customerName || "-"}</p>
+              <p className="font-medium mt-1">{serviceOrder.customerName || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">门店</span>
-              <p className="font-medium mt-1">{serviceOrder.storeName || "-"}</p>
+              <p className="font-medium mt-1">{serviceOrder.storeName || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">负责美容师</span>
-              <p className="font-medium mt-1">{serviceOrder.employeeName || "-"}</p>
+              <p className="font-medium mt-1">{serviceOrder.employeeName || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">服务日期</span>
@@ -71,7 +71,7 @@ export default function ServiceDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">预约ID</span>
-              <p className="font-medium mt-1">{serviceOrder.appointmentId || "-"}</p>
+              <p className="font-medium mt-1">{serviceOrder.appointmentId || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">创建时间</span>
@@ -113,19 +113,19 @@ export default function ServiceDetailPageClient({
                     : null
                   const sessionCell = item.sessionCount !== null
                     ? `${used ?? 0}/${item.paidSessions ?? 0}/${item.sessionCount}`
-                    : "-"
+                    : "—"
                   return (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{item.productName || "-"}</td>
-                    <td className="px-4 py-3">{item.skuName || "-"}</td>
+                    <td className="px-4 py-3 font-medium">{item.productName || "—"}</td>
+                    <td className="px-4 py-3">{item.skuName || "—"}</td>
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice
                         ? `¥${Number(item.unitRealPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "-"}
+                        : "—"}
                     </td>
                     <td className="px-4 py-3 text-right">{item.sessionUsed}</td>
                     <td className="px-4 py-3 text-right">{sessionCell}</td>
-                    <td className="px-4 py-3">{item.employeeName || "-"}</td>
+                    <td className="px-4 py-3">{item.employeeName || "—"}</td>
                   </tr>
                   )
                 }) : (

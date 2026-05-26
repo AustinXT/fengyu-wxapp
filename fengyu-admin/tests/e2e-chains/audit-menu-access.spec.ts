@@ -9,7 +9,7 @@
  * 注：只检 page.tsx 入口（GET），不模拟点按钮触发 server action（那是其他链路的事）。
  */
 import { test } from '@playwright/test'
-import { BASE, TEST_PHONES } from './_helpers/scope-helpers'
+import { BASE, TEST_PHONES, login } from './_helpers/scope-helpers'
 
 test.setTimeout(900_000)
 
@@ -89,16 +89,10 @@ const PHONE: Record<string, string> = {
   customer_mgr: TEST_PHONES.CSM,
 }
 
-async function loginSlow(page: import('@playwright/test').Page, phone: string): Promise<void> {
-  await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
-  await page.locator('#phone').waitFor({ state: 'attached', timeout: 60_000 })
-  await page.locator('#phone').click()
-  await page.locator('#phone').pressSequentially(phone, { delay: 30 })
-  await page.locator('#password').click()
-  await page.locator('#password').pressSequentially('fengyu2026', { delay: 30 })
-  await page.getByRole('button', { name: /登\s*录/ }).click()
-  await page.waitForURL(/\/dashboard|\/change-password/, { timeout: 60_000 })
-}
+// 登录重试已下沉为共享 helper login() 的标准行为（scope-helpers.ts）。
+// 本 spec 在单个 test 内串行登录 6 个角色 + 探测 ~80 个页面，dev server（单 worker
+// Turbopack 冷编译 + 多 browser context）偶发使「提交→middleware→/dashboard」跳转滞留
+// /login —— 共享 login() 内部已用 3 次重试包裹该竞态，不弱化任何 403/500 页面断言。
 
 async function probePage(page: import('@playwright/test').Page, path: string): Promise<{
   status: number
@@ -107,9 +101,17 @@ async function probePage(page: import('@playwright/test').Page, path: string): P
   badge: '✅' | '❌'
   detail: string
 }> {
-  const resp = await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' }).catch(() => null)
+  let resp = await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' }).catch(() => null)
   await page.waitForTimeout(800)
-  const status = resp?.status() ?? 0
+  let status = resp?.status() ?? 0
+  // status=0 = 导航被 abort / dev server 抖动（非权限拒绝）。与真正的 403/500 区分：
+  // reload 一次再判定，避免把「导航抖动」误记为 ❌ 权限拒绝。
+  if (status === 0) {
+    console.log(`  ↻  [retry] ${path} navigation returned status=0, reloading once...`)
+    resp = await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' }).catch(() => null)
+    await page.waitForTimeout(800)
+    status = resp?.status() ?? 0
+  }
   const body = (await page.textContent('body').catch(() => '')) || ''
   // ErrorBoundary 的 marker：admin 仓库统一的 "服务异常" + "错误编号:"
   const errorBoundary = body.includes('服务异常') && body.includes('错误编号:')
@@ -133,7 +135,7 @@ test('audit-403：全角色 × 菜单可见页', async ({ browser }) => {
     const ctx = await browser.newContext()
     const page = await ctx.newPage()
     try {
-      await loginSlow(page, PHONE[role])
+      await login(page, PHONE[role])
       // 1) menu sidebar 可见的顶层链接
       for (const path of MENU[role]) {
         const r = await probePage(page, path)

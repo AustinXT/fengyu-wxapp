@@ -12,6 +12,7 @@ const { URL } = require('url')
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
+const { shanghaiDateStr } = require('../utils/datetime')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -242,7 +243,7 @@ async function todayCommission(ctx) {
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const todayEnd = new Date(todayStart)
   todayEnd.setDate(todayEnd.getDate() + 1)
-  const todayStr = todayStart.toISOString().slice(0, 10)
+  const todayStr = shanghaiDateStr(todayStart)
 
   // 今日分成金额 + 订单数
   const commissionRows = await pg.query(`
@@ -293,7 +294,7 @@ async function todayCommission(ctx) {
     WHERE assigned_employee_id = $1
       AND service_date >= $2
       AND service_date < $3
-  `, [staffWfId, thisMonthStart.toISOString().slice(0, 10), thisMonthEnd.toISOString().slice(0, 10)])
+  `, [staffWfId, shanghaiDateStr(thisMonthStart), shanghaiDateStr(thisMonthEnd)])
 
   // 上月时间范围
   const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -321,7 +322,7 @@ async function todayCommission(ctx) {
     WHERE assigned_employee_id = $1
       AND service_date >= $2
       AND service_date < $3
-  `, [staffWfId, lastMonthStart.toISOString().slice(0, 10), lastMonthEnd.toISOString().slice(0, 10)])
+  `, [staffWfId, shanghaiDateStr(lastMonthStart), shanghaiDateStr(lastMonthEnd)])
 
   const result = {
     todayAmount: Number(commissionRows[0].today_amount).toFixed(2),
@@ -375,8 +376,8 @@ async function monthlyCalendar(ctx) {
   const [y, m] = ym.split('-').map(Number)
   const monthStart = new Date(y, m - 1, 1)
   const monthEnd = new Date(y, m, 1)
-  const monthStartStr = monthStart.toISOString().slice(0, 10)
-  const monthEndStr = monthEnd.toISOString().slice(0, 10)
+  const monthStartStr = shanghaiDateStr(monthStart)
+  const monthEndStr = shanghaiDateStr(monthEnd)
 
   const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
 
@@ -419,7 +420,7 @@ async function monthlyCalendar(ctx) {
   `, [...svcSc.params, monthStartStr, monthEndStr])
 
   const dailyData = dailyRows.map(r => ({
-    date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10),
+    date: r.date instanceof Date ? shanghaiDateStr(r.date) : String(r.date).slice(0, 10),
     amount: Number(r.amount),
   }))
 

@@ -27,6 +27,7 @@ const {
   resolveRefundPaymentMethod,
 } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
+const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -705,7 +706,7 @@ async function create(ctx) {
     saleOrderId = await generateOrderNo(undefined, client)
 
     const today = now
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
+    const dateStr = shanghaiYMD(today)
     const maxResult = await client.query(
       `SELECT sale_item_id FROM sale_items
        WHERE sale_item_id LIKE $1
@@ -2513,7 +2514,7 @@ async function createConversion(ctx) {
     )
 
     // 5. 生成 sale_item 流水号序列
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const dateStr = shanghaiYMD(now)
     const maxResult = await tx.query(
       `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1
        ORDER BY sale_item_id DESC LIMIT 1`,
@@ -3051,7 +3052,7 @@ async function generateOrderNo(prefix, client) {
   if (!prefix) prefix = 'FY-XSD-WX-'
   // dateStr 在事务内计算，避免跨午夜窗口（事务外算的 dateStr 可能落到上一日）
   const today = new Date()
-  const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
+  const dateStr = shanghaiYYMMDD(today)
   const likePattern = `${prefix}${dateStr}%`
 
   // 与 admin orders.ts 对齐：hashtext('sale_order_id_gen')
@@ -3399,7 +3400,7 @@ async function createDeposit(ctx) {
     )
 
     // sale_item 流水号序列
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const dateStr = shanghaiYMD(now)
     const maxResult = await tx.query(
       `SELECT sale_item_id FROM sale_items
        WHERE sale_item_id LIKE $1

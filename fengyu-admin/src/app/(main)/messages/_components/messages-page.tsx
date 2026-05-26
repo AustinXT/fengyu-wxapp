@@ -46,7 +46,8 @@ const MEMBER_LEVEL_OPTIONS = ['黑钻', '金钻', '粉钻', '星钻', '初钻'] 
 /** 批量发送对话框：单次最多发送的人数上限（需与 Server Action 保持一致） */
 const BATCH_SEND_MAX = 1000
 
-function formatDateTime(dt: string) {
+function formatDateTime(dt: string | null | undefined) {
+  if (!dt) return '—'
   return new Date(dt).toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',

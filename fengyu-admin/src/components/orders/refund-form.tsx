@@ -296,7 +296,7 @@ export function RefundForm({
                 overdraft.willDowngrade ? (
                   <>
                     <div className="text-[#666]">
-                      当前等级 <span className="font-medium text-[var(--foreground)]">{overdraft.currentLevel ?? "-"}</span>
+                      当前等级 <span className="font-medium text-[var(--foreground)]">{overdraft.currentLevel ?? "—"}</span>
                       {" → 退款后应降级至 "}
                       <span className="font-medium text-[var(--foreground)]">{overdraft.recomputedLevel ?? "无等级"}</span>
                     </div>

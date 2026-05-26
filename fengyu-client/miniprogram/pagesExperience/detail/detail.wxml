@@ -58,7 +58,7 @@ module.exports.fmt = function(n) {
     <!-- 规格信息 -->
     <view class="cell-section">
       <van-cell-group>
-        <van-cell title="规格" value="{{sku.spec_name || '-'}}" />
+        <van-cell title="规格" value="{{sku.spec_name || '—'}}" />
         <van-cell wx:if="{{sku.session_count}}" title="次数" value="{{sku.session_count}} 次" />
         <van-cell title="使用门店" value="{{boundStoreName || '请绑定门店'}}" />
       </van-cell-group>

@@ -85,7 +85,7 @@
           </view>
           <view class="info-row">
             <text class="info-label">美容师</text>
-            <text class="info-value">{{item.employee_name || '-'}}</text>
+            <text class="info-value">{{item.employee_name || '—'}}</text>
           </view>
           <view class="info-row">
             <text class="info-label">服务日期</text>

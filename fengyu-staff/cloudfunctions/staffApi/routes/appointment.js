@@ -9,6 +9,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 const { logOperation, logTransition } = require('../utils/operation-log')
+const { shanghaiDateStr } = require('../utils/datetime')
 
 /**
  * 格式化时间为北京时间可读格式：M月D日 HH:mm
@@ -58,7 +59,7 @@ async function list(ctx) {
   }
 
   if (todayOnly) {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shanghaiDateStr()
     params.push(today)
     whereExtra += ` AND DATE(a.appointment_time) = $${params.length}::date`
   }

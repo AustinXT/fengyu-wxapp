@@ -155,16 +155,19 @@
 }
 
 /* ===== 月度业绩日历 ===== */
-.section-header-left {
-  display: flex;
-  align-items: baseline;
-  gap: 16rpx;
+.cal-header {
+  margin-bottom: 16rpx;
 }
 
-.cal-total {
+/* 第一行（标题 + 月份切换）与第二行更紧凑成组 */
+.cal-header .section-header {
+  margin-bottom: 8rpx;
+}
+
+.cal-stats-row {
   display: flex;
   align-items: baseline;
-  gap: 8rpx;
+  justify-content: space-between;
 }
 
 .cal-total-amount {

@@ -17,7 +17,7 @@ import type { Appointment, Store } from "@/lib/types"
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return "-"
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
   })
@@ -174,7 +174,7 @@ export default function AppointmentsPageClient({
                     <td className="px-4 py-3"><StatusBadge status={appt.status} /></td>
                     <td className="px-4 py-3 font-medium">{appt.clientName}</td>
                     <td className="px-4 py-3">{formatDateTime(appt.appointmentTime)}</td>
-                    <td className="px-4 py-3">{appt.storeName || "-"}</td>
+                    <td className="px-4 py-3">{appt.storeName || "—"}</td>
                     <td className="px-4 py-3">{appt.employeeName}</td>
                     <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
                     <td className="px-4 py-3">

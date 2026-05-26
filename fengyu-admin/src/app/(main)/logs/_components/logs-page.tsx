@@ -144,7 +144,7 @@ const fieldLabels: Record<string, string> = {
 
 /** 格式化单个值用于展示 */
 function formatValue(val: unknown): string {
-  if (val === null || val === undefined) return "-"
+  if (val === null || val === undefined) return "—"
   if (typeof val === "boolean") return val ? "是" : "否"
   if (Array.isArray(val)) return val.length === 0 ? "-" : val.join(", ")
   if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
@@ -238,7 +238,8 @@ function LogDetail({ detail }: { detail: Record<string, unknown> }) {
   )
 }
 
-function formatDateTime(dt: string) {
+function formatDateTime(dt: string | null | undefined) {
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",

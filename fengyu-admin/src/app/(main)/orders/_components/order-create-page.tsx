@@ -627,7 +627,7 @@ export default function OrderCreatePageClient({
                         }`}
                       >
                         <div className="flex items-center gap-4">
-                          <span className="font-medium min-w-[4em]">{c.name || "-"}</span>
+                          <span className="font-medium min-w-[4em]">{c.name || "—"}</span>
                           <span className="text-[#999999]">{formatPhoneSafe(c.phone)}</span>
                           {c.memberLevel && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-[#FFF8E6] text-[#D4820A]">{c.memberLevel}</span>
@@ -658,7 +658,7 @@ export default function OrderCreatePageClient({
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
                       <div>
                         <span className="text-[#999999]">姓名</span>
-                        <p className="font-medium">{selectedCustomer.name || "-"}</p>
+                        <p className="font-medium">{selectedCustomer.name || "—"}</p>
                       </div>
                       <div>
                         <span className="text-[#999999]">手机</span>
@@ -666,15 +666,15 @@ export default function OrderCreatePageClient({
                       </div>
                       <div>
                         <span className="text-[#999999]">会员等级</span>
-                        <p className="font-medium">{selectedCustomer.memberLevel || "-"}</p>
+                        <p className="font-medium">{selectedCustomer.memberLevel || "—"}</p>
                       </div>
                       <div>
                         <span className="text-[#999999]">绑定门店</span>
-                        <p className="font-medium">{selectedCustomer.storeName || "-"}</p>
+                        <p className="font-medium">{selectedCustomer.storeName || "—"}</p>
                       </div>
                       <div>
                         <span className="text-[#999999]">绑定美容师</span>
-                        <p className="font-medium">{selectedCustomer.employeeName || "-"}</p>
+                        <p className="font-medium">{selectedCustomer.employeeName || "—"}</p>
                       </div>
                     </div>
                   </CardContent>
@@ -859,7 +859,7 @@ export default function OrderCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
-                <p className="font-medium">{selectedCustomer?.name ?? "-"}</p>
+                <p className="font-medium">{selectedCustomer?.name ?? "—"}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">充值面额</label>
@@ -1010,7 +1010,7 @@ export default function OrderCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
-                <p className="font-medium">{selectedCustomer?.name ?? "-"}</p>
+                <p className="font-medium">{selectedCustomer?.name ?? "—"}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
@@ -1070,7 +1070,7 @@ export default function OrderCreatePageClient({
                       <option value="">不使用优惠券</option>
                       {availableCoupons.map((c) => (
                         <option key={c.couponId} value={c.couponId}>
-                          {c.name} — 优惠¥{c.discountAmount}（到期 {formatDate(c.expireAt)}）
+                          {c.name} — 优惠¥{c.discountAmount}（到期 {formatDate(c.expireAt) || "—"}）
                         </option>
                       ))}
                     </Select>

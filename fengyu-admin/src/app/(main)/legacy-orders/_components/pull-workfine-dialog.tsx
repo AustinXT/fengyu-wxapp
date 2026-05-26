@@ -30,7 +30,8 @@ interface Props {
 
 type Step = "search" | "preview"
 
-function formatDate(s: string) {
+function formatDate(s: string | null | undefined) {
+  if (!s) return "—"
   const d = new Date(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })

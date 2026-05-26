@@ -173,7 +173,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                   <div>
                     <span className="text-[#999999]">姓名</span>
-                    <p className="font-medium">{customer.name || '-'}</p>
+                    <p className="font-medium">{customer.name || '—'}</p>
                   </div>
                   <div>
                     <span className="text-[#999999]">手机</span>
@@ -181,11 +181,11 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                   </div>
                   <div>
                     <span className="text-[#999999]">会员等级</span>
-                    <p className="font-medium">{customer.memberLevel || '-'}</p>
+                    <p className="font-medium">{customer.memberLevel || '—'}</p>
                   </div>
                   <div>
                     <span className="text-[#999999]">绑定门店</span>
-                    <p className="font-medium">{customer.storeName || '-'}</p>
+                    <p className="font-medium">{customer.storeName || '—'}</p>
                   </div>
                 </div>
               </CardContent>
@@ -261,7 +261,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                             />
                           </td>
                           <td className="px-4 py-3">
-                            <div className="font-medium">{item.productName || '-'}</div>
+                            <div className="font-medium">{item.productName || '—'}</div>
                             {item.skuSpecName && (
                               <div className="text-xs text-[#999999]">{item.skuSpecName}</div>
                             )}

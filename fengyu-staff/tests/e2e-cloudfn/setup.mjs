@@ -30,7 +30,12 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION
 // 命名空间常量 — 所有 fixture 数据必须以此为前缀，方便清理
 // 短前缀（受限于 sale_order_id / employee_id / sale_item_id 均为 varchar(30)），
 // 文档/外部说明中仍称作 "TEST_E2E_L2" 命名空间。
-export const NS = 'TE2L2' // = TEST_E2E_L2 缩写
+//
+// ⚠️ staff 端专用前缀 'TE2LS'（= TEST_E2E_L2_Staff），与 client 端 'TE2L2' **互不为 LIKE 前缀**：
+//    'TE2L2%' 不匹配 'TE2LS*'（第 5 位 S≠2），'TE2LS%' 不匹配 'TE2L2*'。
+//    client/staff L2 并发跑同一 5434 库时，各自 cleanupTestData 的 LIKE 前缀清理不会误删对端夹具。
+//    （切勿改成 'TE2L2S' —— 会被 client 的 'TE2L2%' 命中而误删。）手机号同理：staff=19999098xxx 段。
+export const NS = 'TE2LS' // staff 端 = TEST_E2E_L2_Staff（与 client 'TE2L2' 隔离）
 
 // 测试店 store_id / org_node_id（与 NS 解耦的稳定 id，跨多次运行幂等）
 //
@@ -48,14 +53,14 @@ export const TEST_MARKET_ORG_ID = `${NS}_MARKET_ORG`
 export const TEST_MANAGER_EMP_ID = `${NS}_MGR`
 export const TEST_MANAGER_OPENID = `${NS}_MGR_OPENID`
 // 199 段 + 末尾 99001/99002，与真实顾客 / WorkFine 同步号码不冲突
-export const TEST_MANAGER_PHONE = '19999099001'
+export const TEST_MANAGER_PHONE = '19999098001'
 export const TEST_CLIENT_USER_ID = `${NS}_CLI`
 export const TEST_CLIENT_OPENID = `${NS}_CLI_OPENID`
-export const TEST_CLIENT_PHONE = '19999099002'
+export const TEST_CLIENT_PHONE = '19999098002'
 
 // ─── 多市场 / 多门店常量（用于 rbac / deny / mgmt / xend smoke）───
 // 命名规则：${NS}_MKT_<X> / ${NS}_STORE_<X><N> / ${NS}_STORE_ORG_<X><N>
-// 测试号段 19999099003 ~ 19999099020 预留给多角色员工
+// 测试号段 19999098003 ~ 19999098020 预留给多角色员工
 export const TEST_MARKETS = {
   A: { orgId: `${NS}_MKT_A`, name: `${NS}_华东` },
   B: { orgId: `${NS}_MKT_B`, name: `${NS}_华北` },
@@ -67,8 +72,8 @@ export const TEST_STORES_MULTI = {
   B2: { storeId: `${NS}_STORE_B2`, orgId: `${NS}_STORE_ORG_B2`, name: `${NS}_华北2店`, marketKey: 'B' },
 }
 // 多角色测试电话号段（不与 TEST_MANAGER_PHONE / TEST_CLIENT_PHONE 冲突）
-export const TEST_PHONE_RANGE_START = 19999099001
-export const TEST_PHONE_RANGE_END = 19999099020
+export const TEST_PHONE_RANGE_START = 19999098001
+export const TEST_PHONE_RANGE_END = 19999098020
 export function testPhone(idx) {
   // idx ∈ [1..20]，1=manager, 2=client, 3..20=扩展员工
   const n = TEST_PHONE_RANGE_START + (idx - 1)

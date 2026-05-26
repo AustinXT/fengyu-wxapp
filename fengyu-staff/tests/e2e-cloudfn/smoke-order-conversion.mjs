@@ -55,9 +55,11 @@ async function main() {
     sessionCount: 1,
   })
 
-  // 源销售单（已支付，含 1 个疗程卡 sale_item，pack 价 500）
+  // 源销售单（已支付，含 1 个疗程卡 sale_item，卡总额 ¥2500 = 5 次 × 单次价 ¥500）
   // 业务侧 conversion 折抵公式：amount = unit_real_price × remaining_sessions
-  //   = 500 × 5 = 2500（pack 价 × 卡内剩余次数）
+  //   = 500 × 5 = 2500（单次价 × 卡内剩余次数）
+  // 注：totalAmount 是行应付总额（=2500），createTestSaleOrder 据此算单次价
+  //     unit_real_price = totalAmount/(quantity×sessionCount) = 2500/5 = 500。
   const sourceOrderId = `${NS}_CONV_SRC`
   await createTestSaleOrder({
     saleOrderId: sourceOrderId,
@@ -69,7 +71,7 @@ async function main() {
     sessionCount: 5,
     isShengmei: true,
     salesCategory: '他销他耗',
-    totalAmount: 500,
+    totalAmount: 2500,
     status: '已支付',
   })
   // sale_items.received 需为正（源卡）：fixture 已写

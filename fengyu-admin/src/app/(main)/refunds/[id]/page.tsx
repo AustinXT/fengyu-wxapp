@@ -11,7 +11,7 @@ import { formatPhoneSafe } from '@/lib/format'
 export const dynamic = 'force-dynamic'
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return '-'
+  if (!dt) return '—'
   return new Date(dt).toLocaleString('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
@@ -73,16 +73,16 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
                   <Link href={`/orders/${refund.refSaleOrderId}`} className="text-[var(--primary)] hover:underline">
                     {refund.refSaleOrderId}
                   </Link>
-                ) : '-'}
+                ) : '—'}
               </p>
             </div>
             <div>
               <span className="text-[#999]">门店</span>
-              <p className="font-medium mt-1">{refund.storeName || '-'}</p>
+              <p className="font-medium mt-1">{refund.storeName || '—'}</p>
             </div>
             <div>
               <span className="text-[#999]">顾客</span>
-              <p className="font-medium mt-1">{refund.customerName || '-'}</p>
+              <p className="font-medium mt-1">{refund.customerName || '—'}</p>
             </div>
             <div>
               <span className="text-[#999]">手机号</span>
@@ -98,7 +98,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div>
               <span className="text-[#999]">发起人</span>
-              <p className="font-medium mt-1">{refund.operatorName || '-'}</p>
+              <p className="font-medium mt-1">{refund.operatorName || '—'}</p>
             </div>
             <div>
               <span className="text-[#999]">创建时间</span>
@@ -106,7 +106,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div>
               <span className="text-[#999]">审批人</span>
-              <p className="font-medium mt-1">{refund.auditorName || '-'}</p>
+              <p className="font-medium mt-1">{refund.auditorName || '—'}</p>
             </div>
             <div>
               <span className="text-[#999]">审批时间</span>
@@ -114,7 +114,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div className="col-span-2 md:col-span-3">
               <span className="text-[#999]">退款原因</span>
-              <p className="font-medium mt-1">{refund.refundReason || '-'}</p>
+              <p className="font-medium mt-1">{refund.refundReason || '—'}</p>
             </div>
             {refund.auditRemark && (
               <div className="col-span-2 md:col-span-3">
@@ -222,7 +222,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
                           {p.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3">{p.operatorName || '-'}</td>
+                      <td className="px-4 py-3">{p.operatorName || '—'}</td>
                     </tr>
                   )
                 })}

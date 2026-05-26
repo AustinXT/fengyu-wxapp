@@ -55,41 +55,45 @@
 
 已更新记忆 [e2e-shared-namespace-contention]：补记 admin e2e 也是污染源。
 
-## 待决策（请统一处理，未改动）
+## 决策项执行（用户 2026-05-26 已批准全部三项 + 多 Agent 并行）
 
-### D-1. 夹具 `createTestSaleOrder` vs `createTestSaleItem` 的 unit_real_price 语义不一致
+> ⚠️ 执行期间本仓库有并行 git 操作（claude-review/MiniMax CI 分支的 checkout/merge/reset）一度把
+> 未提交的 D-1/D-2 编辑冲掉；按用户决定「在 dev 工作区重做不提交」已重新应用。这些改动**未提交**。
 
-- `createTestSaleOrder`（fixtures.mjs:596）：`unit_real_price = totalAmount/quantity`（**整卡价**）。
-- `createTestSaleItem`（另一 helper）：按 **per-session 单次价** 语义（smoke-service-commission 注释
-  "单 item 总额 = unitRealPrice × sessionCount" 印证）。
-- 两者矛盾，且 `createTestSaleOrder` 的整卡价违反 [sale-items-money-fields]（unit_real_price 应为单次价）。
-- 本轮只对 refund-freeze 做了局部修正；**未统一共享 helper**，因为有 10 个 smoke 用 `sessionCount>1`
-  建单，改默认值可能波及它们的提成/退款断言。
-- **决策点**：是否把 `createTestSaleOrder` 的 `unit_real_price` 统一改为
-  `sale_amount/(quantity×session_count)`（疗程卡 per-session）？需逐个核对受影响 smoke 的断言。
+### D-1. 统一 `createTestSaleOrder` 的 unit_real_price 为单次价语义 — ✅ 已改
 
-### D-2. L2 测试隔离根治（共享 TE2L2 命名空间 + 5434 单库）
+- 原 `createTestSaleOrder`：`unit_real_price = totalAmount/quantity`（整卡价），与 `createTestSaleItem`
+  的 per-session 语义矛盾，且违反 [sale-items-money-fields]。
+- **改法**：`unit_real_price = sessionCount>0 ? totalAmount/(quantity×sessionCount) : totalAmount/quantity`
+  （疗程卡按单次价，家居产品不变），`sale_amount` 仍为行应付总额。
+- **连带修复**：① `smoke-order-conversion.mjs` 源卡 `totalAmount` 由 `500`（误填单次价）改为 `2500`
+  （真实卡总额 = 5 次 × 500）；② `smoke-service-refund-freeze.mjs` 移除原 phase-1 的局部 `UPDATE`
+  （helper 已直接产出正确单次价 100，无需局部修正）。
+- **验证**：全部 order/service/alloc/product 类 + 全套通过（见末尾「最终结果」）。
 
-- 现状：client L2、staff L2 共用 `TE2L2_` 命名空间；admin e2e 共用 5434 库 + 夹具客 FY-FIX-CLIENT-01。
-  三者并发即互相污染，假失败非确定性。本轮靠"抓干净窗口串行跑"规避。
-- **决策点**：是否根治？候选方案——(a) 各端 L2 用独立命名空间前缀；(b) CI 串行化所有打 5434 的 e2e +
-  跑前独占锁。属测试架构改造。
+### D-2. L2 测试隔离根治（独立命名空间前缀）— ✅ 已改
 
-### D-3. L2 覆盖盲区（建议补 smoke，补哪些属判断）
+- **改法**：staff 端 L2 命名空间前缀 `TE2L2` → **`TE2LS`**（= TEST_E2E_L2_Staff），手机号段
+  `19999099xxx` → `19999098xxx`，与 client 端（仍 `TE2L2` / `099` 段）彻底隔离。
+- **关键陷阱**：不能用 `TE2L2S`（6 字符）——会被 client 的 `LIKE 'TE2L2%'` 命中而被 client cleanup 误删；
+  `TE2LS`（5 字符，第 5 位 S≠2）与 `TE2L2` **互不为 LIKE 前缀**，双向无碰撞，且长度不变（零 varchar(30) 溢出风险）。
+- **改动文件**：`setup.mjs`（NS + 号段常量 + 说明注释）、9 个 smoke 的硬编码手机号、`cleanup.mjs`
+  （paynotify event_keys 过滤改用 NS 参数化）、`fixtures.mjs` 文档注释。
+- **效果**：client L2 / staff L2 现可并发跑同一 5434 库而不互删夹具（admin e2e 用 FY-CHAIN/FY-TEST，本就不同前缀）。
 
-逐一比对路由表 action 与现有 smoke，以下**近期新增功能无专属 L2 smoke**（按业务重要度排序）：
+### D-3. L2 覆盖盲区补 smoke — ✅ 4 个 Agent 并行新建，已实跑全 PASS
 
-| 缺口 | action | 重要度 | 备注 |
-|------|--------|--------|------|
-| 储值卡退款 | `card.createRefund` / `card.approveRefund` / `card.rejectRefund` | 高（财务） | 已有 order 退款三联 smoke，可镜像；现仅 card.recharge/balance 有 smoke |
-| 提货流程 | `order.createPickup` / `availablePickupItems` / `pickupRecordsList` | 中 | 库存域 v1（[inventory-domain-v1]），全链路无覆盖 |
-| 寄存单历史实收 | `order.updateDepositReceived` | 中 | 5972dcb1 新增，无覆盖 |
-| 门店库存只读 | `inventory.list` / `inventory.detail` | 低 | 只读，员工端展示用 |
+4 个 Agent 并行各写 1 个新 smoke（run-all 自动发现）：
 
-> `service.confirm`（migration 0053「待客户确认」）已被 smoke-service-lifecycle 覆盖（含幂等），无需补。
->
-> **决策点**：是否补这些 smoke？建议优先补储值卡退款（财务一致性 + 已有可镜像的 order 退款模板）。
-> 提供 SKILL/夹具后可委派 subagent 实现。
+| 新文件 | 覆盖 action | 断言要点 | 实跑 |
+|--------|------------|---------|------|
+| `smoke-card-refund.mjs` | card.createRefund/approveRefund/rejectRefund | 退款 face vs pay 双口径、approve 扣 balance + card_transactions 落账、reject 不动账 | ✅ PASS |
+| `smoke-order-pickup.mjs` | order.availablePickupItems/createPickup/pickupRecordsList | 家居产品分次自提：picked_up_quantity 原子累加、幂等、超提拒、记录列表（自写 pickup_records cleanup） | ✅ PASS |
+| `smoke-order-deposit-received.mjs` | order.updateDepositReceived | 寄存单历史实收 delete-rebuild、received 重算、4 条边界（负值/非寄存单/非店长/越界 item） | ✅ PASS |
+| `smoke-inventory.mjs` | inventory.list/detail | procurement 单据 scope 过滤可见 + 明细 + 非法 docCategory 拒（自写 inventory_* cleanup） | ✅ PASS |
+
+> `service.confirm`（migration 0053「待客户确认」）已被 smoke-service-lifecycle 覆盖，无需补。
+> L2 smoke 总数 53 → **57**。
 
 ## L3（e2e-miniprogram）未跑说明
 

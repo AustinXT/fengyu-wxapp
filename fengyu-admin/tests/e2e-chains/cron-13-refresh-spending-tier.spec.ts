@@ -56,13 +56,14 @@ test.describe.serial('cron-13 refreshSpendingTier', () => {
     expect(getSpendingTier(uid)).toBe('<1990')
   })
 
-  test('13.5 退款扣减：received 100000 - refunded 95000 = 净 5000 → <1990', () => {
+  test('13.5 退款扣减：received 100000 - refunded 95000 = 净 5000 → 1990-1W', () => {
     const uid = upsertClient('ST_25', { customerType: '会员客' })
     insertSaleOrder('ST_25', {
       storeId: STORE_ID, clientUserId: uid, received: 100000, refundedAmount: 95000, paidAt: PAID,
     })
     runSpendingTier()
-    expect(getSpendingTier(uid)).toBe('<1990')
+    // 净额 5000 ≥ 1990 且 < 10000 → 落 '1990-1W' 档（原断言 '<1990' 系作者把退款后净额误算成 <1990）
+    expect(getSpendingTier(uid)).toBe('1990-1W')
   })
 
   test('13.6 内部单不计入净额：100000 内部单 → <1990', () => {

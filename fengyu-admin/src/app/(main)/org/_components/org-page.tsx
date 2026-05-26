@@ -370,11 +370,11 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
                   </div>
                   <div>
                     <div className="text-sm text-[var(--muted-foreground)]">创建时间</div>
-                    <div className="mt-1 text-sm">{formatDateTime(selectedNode.createdAt)}</div>
+                    <div className="mt-1 text-sm">{formatDateTime(selectedNode.createdAt) || "—"}</div>
                   </div>
                   <div>
                     <div className="text-sm text-[var(--muted-foreground)]">更新时间</div>
-                    <div className="mt-1 text-sm">{formatDateTime(selectedNode.updatedAt)}</div>
+                    <div className="mt-1 text-sm">{formatDateTime(selectedNode.updatedAt) || "—"}</div>
                   </div>
                 </div>
 
