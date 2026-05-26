@@ -60,7 +60,7 @@ const first = (rows: unknown): Record<string, unknown> =>
 
 /**
  * 注册情况单项（截面，截至区间 endDate）。
- * 会员客切 became_member_at（与首页 memberCount 对齐）；其余仍 customer_type 当前快照 + created_at 截面。
+ * 会员客切 customer_type='会员客' 截面（2026-05-27 两端统一会员客判定口径）；其余仍 customer_type 当前快照 + created_at 截面。
  */
 async function queryRegistration(
   session: AuthSession,
@@ -74,8 +74,8 @@ async function queryRegistration(
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${sc}
-        AND c.became_member_at IS NOT NULL
-        AND c.became_member_at::date <= ${range.end}
+        AND c.customer_type = '会员客'
+        AND c.created_at::date <= ${range.end}
     `)
     return num(first(rows).v)
   }
