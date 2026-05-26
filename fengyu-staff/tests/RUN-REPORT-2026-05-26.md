@@ -8,7 +8,8 @@
 |----|------|------|---------------------|------|
 | L2 | e2e-cloudfn（53→**57** smoke） | ❌ 46/53 | ✅ **57/57**（含 D-3 新增 4 个 smoke） | 2 真 bug 已修 + D-1/D-2/D-3 全部落地 |
 | L2 | scope-isolation（4 spec / 21 check） | ✅ **4/4** | ✅ **4/4** | S-1/S-3/S-4/S-8 全绿（不受 NS 改动影响） |
-| L3 | e2e-miniprogram（10 smoke + 12 scenarios） | ⏸ 未跑 | — | 需微信开发者工具 9420 自动化 + 已登录态，本轮环境未就绪（见末尾） |
+| L3 | e2e-miniprogram smoke（10） | 6/10 | ✅ **10/10**（4 个子包 navigateTo 伪超时已改 navigateToPage）| 用户启动 IDE 后跑 |
+| L3 | e2e-miniprogram scenarios（12） | 7/12 | 7 PASS + 3 已修待验证（bs02/03/04）+ 2 待查（bs01/05）| 会话退化，余下需新鲜 IDE 会话（见末尾）|
 
 > 首跑 7 个失败 = **2 个真问题（已直接修复）** + **5 个并发污染假失败**。首跑时
 > `fengyu-admin` 的 Playwright e2e（`tests/e2e-pages/*`）正并发跑同一 5434 库，污染了 staff L2
@@ -116,9 +117,31 @@
 
 改后逐个重跑全 PASS（页面确实已加载，纯 automation 通道伪超时，非真 bug）。
 
-### L3 scenarios（run-scenarios，12 个）：见下方「scenarios 结果」（历史最 flaky 一批）
+### L3 scenarios（run-scenarios，12 个）：首跑 7 PASS / 5 FAIL；3 个已修待验证、2 个待查
 
-下次跑 L3：IDE 启动后直接 `bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs`（默认 9420 复用 cli auto 实例）。
+首跑：✅ bs06–bs12（7 个）PASS；❌ bs01–bs05（5 个）FAIL。失败分类：
+
+| 场景 | 根因 | 处置 |
+|------|------|------|
+| **bs02** step3 navigate refund-list | 子包 navigateTo 伪超时 | ✅ 已改 navigateToPage（待验证）|
+| **bs04** step2/3 navigate allocation-list/revenue-allocation | 子包 navigateTo 伪超时 | ✅ 已改 navigateToPage（待验证）|
+| **bs03** | toast 文案 + 状态机：migration 0053 后 complete 仅→「待客户确认」（toast "已完成，待顾客确认"），需补 service.confirm 才到「已完成」+扣次数 | ✅ 已改（toast + 拆 complete/confirm 两段断言 + 补 callStaffApiWithTestOpenid confirm，待验证）|
+| **bs01** | 普通商品 Tab `categories` 空（shopInit EXISTS 过滤未保留 L3 测试 category，疑 fixture 缺可售 SKU）| ⏸ 待查（fixture）|
+| **bs05** | service-create `paidOrders` 不含 fixture item（loadPaidOrders 过滤；2026-05-22 记录需 paid_sessions）| ⏸ 待查（fixture）|
+
+**⚠️ bs02/bs03/bs04 的修复未能验证**：连续跑批后 IDE 会话退化——前面多门店场景（bs10/11/12）在小程序
+runtime 残留的 `wx.__e2e_callfn_hooked` 全局 hook 带着陈旧 `_currentStoreId`，污染后续所有 staffApi
+调用（含 auth.login）→ 报 `PERMISSION_DENIED: 无权访问该门店`（auth.js:78），连之前稳过的 login canary
+也挂。这是 2026-05-22 已记录的「跨 spec currentStoreId 泄漏 / 需新鲜 IDE 会话」。尝试 kill 自动化实例
+换新会话时 launch 无法重启 IDE http port，遂停止 CLI 干预（避免越弄越糟）。
+
+**验证 bs02/bs03/bs04 + 处理 bs01/bs05 需要新鲜 IDE 会话**：请重启微信开发者工具后单跑：
+```bash
+bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs --filter bs02   # bs03/bs04 同理，单跑别连跑
+```
+
+下次跑 L3：IDE 启动后直接 `bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs`（默认 9420，首个 launch
+会兜底 spawn cli auto 实例，后续秒连复用）。**连跑多个多门店场景后会话会退化，建议单跑或定期重启 IDE。**
 
 ## 最终结果（2026-05-27 决策项落地后干净窗口复跑）
 
