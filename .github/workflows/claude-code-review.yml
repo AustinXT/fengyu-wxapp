@@ -47,6 +47,10 @@ jobs:
           API_TIMEOUT_MS: "3000000"
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         with:
+          # claude-code-action 入口强制校验 with 提供认证参数（不认纯 env.ANTHROPIC_AUTH_TOKEN）。
+          # 这里给 anthropic_api_key 过校验；实际认证仍走 env.ANTHROPIC_AUTH_TOKEN（Bearer，
+          # Anthropic SDK 在 AUTH_TOKEN 存在时优先用 Authorization: Bearer），打到 MiniMax 国内端点。
+          anthropic_api_key: ${{ secrets.MINIMAX_API_KEY }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
