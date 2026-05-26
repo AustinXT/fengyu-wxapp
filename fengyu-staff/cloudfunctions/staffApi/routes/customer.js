@@ -21,6 +21,7 @@ const {
 const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
+const { shanghaiDateStr } = require("../utils/datetime");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -633,7 +634,7 @@ async function stats(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const now = new Date()
-  const today = now.toISOString().slice(0, 10)
+  const today = shanghaiDateStr(now)
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
@@ -718,7 +719,7 @@ async function listByTag(ctx) {
   }
 
   const now = new Date()
-  const today = now.toISOString().slice(0, 10)
+  const today = shanghaiDateStr(now)
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 

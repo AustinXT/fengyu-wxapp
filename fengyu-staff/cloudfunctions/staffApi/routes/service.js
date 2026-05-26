@@ -12,6 +12,7 @@ const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
+const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 
 /**
  * 创建服务单
@@ -42,7 +43,7 @@ async function create(ctx) {
     serviceDuration: item.serviceDuration || null,
   }))
 
-  const resolvedServiceDate = serviceDate || new Date().toISOString().slice(0, 10)
+  const resolvedServiceDate = serviceDate || shanghaiDateStr()
   const resolvedStaffWfId = assignedStaffWfId || ctx.auth.staffWfId
 
   if (!normalizedItems || normalizedItems.length === 0) {
@@ -977,7 +978,7 @@ async function generateServiceOrderId(client) {
   }
   // dateStr 在事务内计算，避免跨午夜窗口
   const today = new Date()
-  const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
+  const dateStr = shanghaiYYMMDD(today)
   const likePattern = `HLD-WX-${dateStr}%`
 
   // 与 admin services.ts:522 对齐：hashtext('service_order_id_gen')

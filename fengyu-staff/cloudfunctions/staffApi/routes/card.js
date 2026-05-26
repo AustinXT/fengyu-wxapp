@@ -18,6 +18,7 @@ const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { logOperation, logTransition } = require('../utils/operation-log')
+const { shanghaiYYMMDD } = require('../utils/datetime')
 
 // ================= 路由 =================
 
@@ -104,7 +105,7 @@ async function recharge(ctx) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const now = new Date()
-    const dateStrOrder = now.toISOString().slice(2, 10).replace(/-/g, '')
+    const dateStrOrder = shanghaiYYMMDD(now)
     const orderSeqResult = await client.query(
       `SELECT sale_order_id FROM sale_orders
        WHERE sale_order_id LIKE $1
