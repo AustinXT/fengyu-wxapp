@@ -50,6 +50,15 @@ async function main() {
     status: '已支付', salesCategory: '他销自耗',
   })
   await pgQuery(`UPDATE sale_orders SET received = total_amount WHERE sale_order_id = $1`, [orderId])
+  // 疗程卡单次价语义修正：createTestSaleOrder 默认把 unit_real_price 填成整卡价(totalAmount/quantity=500)，
+  // 而退款封顶(0da8122f)按 unit_real_price × 退款次数 算 → 退 5 次得 500×5=2500 误超已收 500 被拒。
+  // 卡为 500元/5次，单次价应为 100；改后退满 5 次 = 100×5 = 500 = 已收，封顶通过。
+  await pgQuery(
+    `UPDATE sale_items SET unit_price = sale_amount / session_count,
+                           unit_real_price = sale_amount / session_count
+       WHERE sale_order_id = $1`,
+    [orderId],
+  )
   const items = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderId])
   const saleItemId = items[0].sale_item_id
   rec(`  fixture: ${orderId} / ${saleItemId}`)
