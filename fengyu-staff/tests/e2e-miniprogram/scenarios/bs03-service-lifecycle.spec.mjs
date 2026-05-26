@@ -24,7 +24,7 @@
 //    fixture INSERT service_orders 时 service_date = 今天，complete 后即时可见。
 
 import { launchStaff, disconnect, navigateToTab, waitForData, tap, assertElementVisible, navigateToPage } from '../helpers/automator.mjs';
-import { loginStaffWithTestOpenid } from '../helpers/login.mjs';
+import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid } from '../helpers/login.mjs';
 import { installToastHook, assertToast, clearToasts, autoConfirmModal } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
 import { query, pgPoll, closePool, tx } from '../helpers/pg.mjs';
@@ -173,9 +173,21 @@ async function run() {
   await clearToasts(miniProgram);
   const page3 = await miniProgram.currentPage();
   await page3.callMethod('onCompleteService', { currentTarget: { dataset: { id: SERVICE_ORDER_ID } } });
-  await assertToast(miniProgram, '服务已完成', { timeoutMs: 5000 });
+  // migration 0053：service.complete 仅把服务单翻到「待客户确认」（不扣次数/不计提成），toast 文案随之变更。
+  await assertToast(miniProgram, '已完成，待顾客确认', { timeoutMs: 5000 });
   await snapshot(miniProgram, 'bs03-step3-after-complete');
 
+  await pgPoll(
+    `SELECT status, completed_at FROM service_orders WHERE service_order_id = $1`,
+    [SERVICE_ORDER_ID],
+    (rows) => rows[0]?.status === '待客户确认' && rows[0]?.completed_at == null,
+    { timeoutMs: 6000 },
+  );
+  console.log('  ✓ PG: complete → 待客户确认（completed_at 仍空，扣次数/提成推迟到 confirm）');
+
+  // 店长代客户确认（待客户确认 → 已完成）：finalize 原子扣次数 + 计提成 + 记 completed_at。
+  // 顾客本人确认走 clientApi；此处用店长兜底入口（service.confirm）推进状态机。
+  await callStaffApiWithTestOpenid(miniProgram, 'service.confirm', { serviceOrderId: SERVICE_ORDER_ID });
   await pgPoll(
     `SELECT status, completed_at FROM service_orders WHERE service_order_id = $1`,
     [SERVICE_ORDER_ID],
@@ -188,7 +200,7 @@ async function run() {
     (rows) => Number(rows[0]?.remaining_sessions) === 4,
     { timeoutMs: 5000 },
   );
-  console.log('  ✓ PG: status=已完成 + completed_at + remaining_sessions 5→4');
+  console.log('  ✓ confirm → status=已完成 + completed_at + remaining_sessions 5→4');
 
   // 切到"已完成"Tab 验证迁移
   await page3.callMethod('onTabChange', { detail: { name: 'completed' } });
