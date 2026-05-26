@@ -157,8 +157,12 @@ test('链路23：服务单"待服务"取消 → session 不回退（未曾扣减
     cleanupSaleOrder(oid, psql, { logPrefix: '[链路23/preclean]' })
   }
   // 残留 LINK23 service_order/items/logs
+  // 清自己的孤儿（FY-FW-LINK23-%）+ 该夹具顾客名下任何活跃服务单。
+  // uq_so_client_active：同一 client_user_id 同时只能有一个未完成（非 已完成/已取消）服务单，
+  // 其它 link（如 link-2/45 中途失败）可能留下 服务中 孤儿，撞本用例的 待服务 INSERT。
   const orphanSvcRaw = psql(
-    `SELECT service_order_id FROM service_orders WHERE service_order_id LIKE 'FY-FW-LINK23-%'`,
+    `SELECT service_order_id FROM service_orders WHERE service_order_id LIKE 'FY-FW-LINK23-%' ` +
+      `OR (client_user_id='${FIXTURE_USER_ID}' AND status NOT IN ('已完成','已取消'))`,
   )
   const orphanSvcIds = orphanSvcRaw.split('\n').map((s) => s.trim()).filter(Boolean)
   for (const sid of orphanSvcIds) {

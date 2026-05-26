@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
- * customer.paidOrders + giftHistory + refundHistory 冒烟
+ * customer.paidOrders + refundHistory 冒烟
  *
- * 验证：3 个历史查询接口都返回正常结构（不崩溃）
+ * 验证：2 个历史查询接口都返回正常结构（不崩溃）
+ * 注：customer.giftHistory（赠送记录）已随 staff 详情页 Tab 精简删除，不再覆盖。
  */
 import './setup.mjs'
 import { NS, TEST_MANAGER_OPENID, TEST_CLIENT_USER_ID, closePool } from './setup.mjs'
@@ -29,7 +30,7 @@ async function main() {
   await pgQuery(`UPDATE sale_orders SET paid_at = NOW(), received = total_amount WHERE sale_order_id = $1`, [orderId])
 
   const errors = []
-  for (const action of ['customer.paidOrders', 'customer.giftHistory', 'customer.refundHistory']) {
+  for (const action of ['customer.paidOrders', 'customer.refundHistory']) {
     const r = await invokeStaffApi(action, {
       _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
     })
@@ -41,7 +42,7 @@ async function main() {
     rec(`  ✗ FAIL`); for (const e of errors) rec(`    - ${e}`); return
   }
   pass = true; exitCode = 0
-  rec(`  ✅ PASS — 3 个历史查询 API 正常`)
+  rec(`  ✅ PASS — 2 个历史查询 API 正常`)
 }
 
 try { await main() } catch (e) { console.error('EXCEPTION:', e.message); console.error(e.stack) }

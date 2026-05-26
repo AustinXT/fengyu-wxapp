@@ -144,7 +144,24 @@ async function ensurePaidSaleItemFixture() {
   console.log(`[link-3 beforeAll] 已注入 ${PRE_SALE_ORDER_ID} / ${PRE_SALE_ITEM_ID}`)
 }
 
+/**
+ * 预清理 fixture 顾客残留的活跃服务单。
+ * uq_so_client_active 是 client_user_id 上 WHERE status NOT IN ('已完成','已取消') 的偏唯一索引
+ * （同一顾客同时只能有一个未完成服务单）。上一轮 link-2/3/45 若中途失败会留下孤儿活跃服务单，
+ * 阻塞 B2 的服务单创建（提交后停在确认页，等不到"服务单创建成功"标题）。
+ */
+function cleanupActiveServiceOrders() {
+  const raw = dbQuery(
+    `SELECT service_order_id FROM service_orders WHERE client_user_id='${FIX_CLIENT_ID}' AND status NOT IN ('已完成','已取消')`,
+  )
+  for (const sid of raw.split('\n').map((s) => s.trim()).filter(Boolean)) {
+    console.log(`[link-3 beforeAll] 清理残留活跃服务单 ${sid}`)
+    cleanupServiceOrder(sid)
+  }
+}
+
 test.beforeAll(async () => {
+  cleanupActiveServiceOrders()
   await insertAppointmentFixture()
   await ensurePaidSaleItemFixture()
 })

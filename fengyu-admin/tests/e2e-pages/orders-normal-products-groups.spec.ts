@@ -67,10 +67,10 @@ test.describe('开单向导 PR-A: 普通商品侧边栏二级分组', () => {
     await page.getByRole('button', { name: '下一步' }).click()
     await expect(page.getByText('商品分类')).toBeVisible({ timeout: 5000 })
 
-    // 找到所有子项 button（侧边栏内的可点击分类）
-    const categoryButtons = page.locator('button').filter({
-      hasText: /面部护理|身体护理|特色项目|护肤品|养生产品/,
-    })
+    // 找到所有子项 button（侧边栏内的可点击分类）。
+    // 数据无关选择器：二级分类按钮是 NormalSkuPicker 里唯一带 `text-left`+`py-1.5` 的 button
+    // （右侧「加入」按钮是 h-6 text-xs px-2，不含 text-left），避免硬编码分类名随种子数据漂移。
+    const categoryButtons = page.locator('button[class*="text-left"][class*="py-1.5"]')
     const count = await categoryButtons.count()
     expect(count).toBeGreaterThanOrEqual(2)
 
