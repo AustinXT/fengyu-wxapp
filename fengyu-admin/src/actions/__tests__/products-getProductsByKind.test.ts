@@ -4,9 +4,12 @@
  * 测试重点（ticket §4.2）：
  * 1. `__normal__` 返回 `{ kind:'__normal__', groups: [{ productKind, categories }] }`
  *    且不包含 '充值卡' / '体验卡'
- * 2. 新增一级行'福利活动' + 二级 + 非 bundle SKU → 自动出现在 __normal__ 返回（排除法语义）
+ * 2. 新增一级行'福利活动' + 二级 + SKU → 自动出现在 __normal__ 返回（排除法语义）
  * 3. groups 顺序按一级行 sortOrder
- * 4. 空分类（无有效非 bundle SKU）不出现
+ * 4. 空分类（无有效 SKU）不出现
+ *
+ * 注：2026-05-26 起普通商品不再因「SKU 进过套餐」而隐藏（取消 NOT EXISTS bundle 谓词），
+ *    SKU 既可单卖也可进套餐，互不影响。
  * 5. '充值卡' 仍返回平铺结构，仅 productKind='充值卡'
  * 6. '__bundle__' 行为不变
  */
@@ -237,8 +240,8 @@ describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
     expect(result.groups[0].categories.map((c) => c.categoryName)).toEqual(['面部护理', '身体护理'])
   })
 
-  it('空分类（无有效非 bundle SKU）不出现 — SQL 层 EXISTS 已过滤，rows 不含该分类', async () => {
-    // 模拟 DB 已 EXISTS 过滤过：某 productKind="福利活动"的分类因无 SKU 未返回
+  it('空分类（无有效 SKU）不出现 — SQL 层已过滤，rows 不含该分类', async () => {
+    // 模拟 DB 已过滤过：某 productKind="福利活动"的分类因无 SKU 未返回
     mockChain([
       row({ kindName: '护理项目', kindSortOrder: 2, categoryId: 'cat-hr-01', categoryName: '面部护理', categorySortOrder: 1, skuId: 'SKU-1', specName: 'A' }),
     ])

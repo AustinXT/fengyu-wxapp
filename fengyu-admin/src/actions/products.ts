@@ -1719,13 +1719,8 @@ export const getProductsByKind = withPermission(
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),
-          // 排除 bundle SKU（SKU 被任何 is_bundle=true 的 products 通过 mall_product_skus 关联）
-          sql`NOT EXISTS (
-            SELECT 1 FROM mall_product_skus mps_b
-            INNER JOIN products p_b ON p_b.product_id = mps_b.product_id
-            WHERE mps_b.sku_id = product_skus.sku_id
-              AND p_b.is_bundle = true
-          )`,
+          // 普通商品列表不再因「SKU 进过套餐」而隐藏：一个 SKU 既可单卖也可进套餐，
+          // 套餐通过独立的 __bundle__ picker 选购，互不影响（2026-05-26 决策：彻底取消套餐排除）。
         ),
       )
       // 例外：sortOrder 手工排序权重

@@ -313,7 +313,9 @@ async function shopInit(ctx) {
     withParentJoin: true,
   })
 
-  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非 bundle、非卡类 SKU
+  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非卡类 SKU
+  // 注：不再因「SKU 进过套餐」而排除——SKU 既可单卖也可进套餐，二者互不影响
+  // （2026-05-26 决策：彻底取消套餐排除）。仅含套餐 SKU 的分类也会出现在普通侧边栏。
   let catRows = rawRows
   if (rawRows.length > 0) {
     const categoryIds = rawRows.map((r) => r.category_id)
@@ -325,12 +327,6 @@ async function shopInit(ctx) {
         AND sk.is_enabled = true
         AND sk.deleted_at IS NULL
         AND NOT sk.is_experience
-        AND NOT EXISTS (
-          SELECT 1
-          FROM mall_product_skus mps
-          JOIN products p ON p.product_id = mps.product_id
-          WHERE mps.sku_id = sk.sku_id AND p.is_bundle = true
-        )
       `,
       [categoryIds]
     )

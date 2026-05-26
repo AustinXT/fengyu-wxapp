@@ -10,7 +10,7 @@ const app = getApp<IAppOption>();
 /**
  * 顶部商品类型 4 选 1（PR-B 改版）
  * - 组合套餐：走 BundlePicker 子视图（products.is_bundle=true）
- * - 普通商品：!isExperience && !isBundle（SKU 级 capability 过滤）
+ * - 普通商品：!isExperience（SKU 级 capability 过滤；进过套餐的 SKU 仍可单卖，2026-05-26 取消套餐排除）
  * - 体验卡：isExperience=true（capability，与 product_kind 字面量解耦）
  * - 充值卡：跳转独立 card-recharge 页（2026-05-20 充值卡剥离 SKU 化）
  */
@@ -193,7 +193,7 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
 
 /**
  * 商品类型过滤器（按 SKU 级 capability 判定）
- * - 普通商品：非体验卡、非套餐
+ * - 普通商品：非体验卡（进过套餐的 SKU 仍允许单卖，2026-05-26 取消套餐排除）
  * - 体验卡：isExperience=true
  * - 充值卡：本视图不渲染，由 onBigCategoryChange 截走跳 card-recharge 页（2026-05-20）
  * - 组合套餐：不走 SKU 列表，由 BundlePicker 接管
@@ -201,7 +201,7 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
 function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): SkuItem[] {
   if (choice === '组合套餐') return [];
   if (choice === '普通商品') {
-    return skus.filter(s => !s.isExperience && !s.isBundle);
+    return skus.filter(s => !s.isExperience);
   }
   if (choice === '体验卡') {
     return skus.filter(s => s.isExperience === true);
