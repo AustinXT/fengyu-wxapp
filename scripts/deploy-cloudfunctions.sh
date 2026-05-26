@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # 部署云函数到当前 active env
 # 处理：
+#   - 部署前【强制按 .active 重新渲染 cloudbaserc】→ 保证上传的 env 一定是目标环境的
+#   - 渲染后【校验 envId + PG 端口与 .active 一致】→ 不一致直接中止（防 dev 配置误推 prod）
+#   - 渲染后【扫描占位符】→ 仍含 <待用户提供…>/PLACEHOLDER 的 env 给出告警
 #   - tcb 双账号切换（staff/client 各自登录）
 #   - prod 强制 confirm prompt
 #   - tcb env list 校验目标 env 可见
+#
+# ⚠️ 重要：`tcb fn code update` 会把 cloudbaserc.json 的 envVariables 一并推送覆盖（不只代码）。
+#    因此【禁止手动 `tcb fn code update <fn> --env-id <X>` 跨环境部署】——务必只走本脚本，
+#    它会先按 .active 重渲染，确保 env 与目标环境匹配。手动跨环境调用会把 dev/SIT 配置刷进 prod。
 #
 # Usage: scripts/deploy-cloudfunctions.sh [--yes]
 
@@ -42,9 +49,35 @@ if [[ "$ACTIVE" == "prod" && "${1:-}" != "--yes" ]]; then
   fi
 fi
 
-# 渲染产物存在性检查
-[[ -f "$ROOT/fengyu-staff/cloudbaserc.json" ]] || { echo "ERROR: fengyu-staff/cloudbaserc.json missing. Run scripts/use-env.sh $ACTIVE first." >&2; exit 1; }
-[[ -f "$ROOT/fengyu-client/cloudbaserc.json" ]] || { echo "ERROR: fengyu-client/cloudbaserc.json missing." >&2; exit 1; }
+# ── 强制按 .active 重新渲染，保证 cloudbaserc 与目标环境一致（防 dev 配置误推 prod）──
+echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证上传正确环境变量）"
+node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
+
+# ── 一致性校验：envId 必须匹配 .active 的 env-id；PG 端口必须匹配环境（prod=5433 / dev=5434）──
+EXPECT_PG_PORT=$([[ "$ACTIVE" == "prod" ]] && echo 5433 || echo 5434)
+assert_rc() {  # $1=side 目录  $2=期望 envId
+  local f="$ROOT/$1/cloudbaserc.json"
+  [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
+  local got_env got_pg
+  got_env=$(node -e "console.log(require('$f').envId||'')")
+  if [[ "$got_env" != "$2" ]]; then
+    echo "ERROR: $1/cloudbaserc.json envId=$got_env ≠ 期望 $2（.active=$ACTIVE 渲染异常）。中止。" >&2; exit 1
+  fi
+  got_pg=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const m=fn&&(fn.envVariables.PG_CONNECTION_STRING.match(/:(\d+)\//));console.log(m?m[1]:'')")
+  if [[ -n "$got_pg" && "$got_pg" != "$EXPECT_PG_PORT" ]]; then
+    echo "ERROR: $1 的 PG 端口=$got_pg ≠ $ACTIVE 期望 $EXPECT_PG_PORT（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
+  fi
+}
+assert_rc fengyu-staff  "$STAFF_ENV_ID"
+assert_rc fengyu-client "$CLIENT_ENV_ID"
+echo "  ✓ envId + PG 端口校验通过（$ACTIVE）"
+
+# ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
+PLACEHOLDERS=$(grep -ohE '<待用户提供[^>]*>|[A-Za-z0-9_.-]*PLACEHOLDER[A-Za-z0-9_.-]*' "$ROOT/fengyu-client/cloudbaserc.json" "$ROOT/fengyu-staff/cloudbaserc.json" 2>/dev/null | sort -u || true)
+if [[ -n "$PLACEHOLDERS" ]]; then
+  echo "⚠️  注意：cloudbaserc 仍含以下占位符，将原样上传到 [$ACTIVE]，请确认是否预期："
+  echo "$PLACEHOLDERS" | sed 's/^/      /'
+fi
 
 # --- staff side ---
 echo "==> [1/3] Deploy staffApi → $STAFF_ENV_ID"
