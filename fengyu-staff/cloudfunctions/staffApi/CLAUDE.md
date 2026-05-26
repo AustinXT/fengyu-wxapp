@@ -27,7 +27,7 @@ staffApi/
 │   ├── serviceCommission.js # pendingList(已完成服务单), detail, save（服务提成手动分配，按 ratio 拆分）
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
-│   ├── service.js    # create, start, complete, cancel, list, detail, counts
+│   ├── service.js    # create, start, complete, confirm, cancel, list, detail, counts
 │   ├── card.js       # rechargeSkus, recharge（充值卡独立开单路由）
 │   ├── inventory.js  # list, detail（只读；门店库存 4 类单据：procurement/sale/transfer/scrap）
 │   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
@@ -94,8 +94,9 @@ staffApi/
 - 分配项关联到具体员工
 
 ### 服务单（service）
-- create → start → complete 生命周期
-- complete 原子扣减次数 + 幂等校验
+- create → start → complete → confirm 生命周期（migration 0053 插入「待客户确认」步骤）
+- `complete`：服务中 → 待客户确认，仅记 `staff_completed_at`，**不产生副作用**（不扣次数/不计提成/不关预约）；幂等
+- `confirm`：待客户确认 → 已完成，执行 finalize（原子扣减次数 + 计提成 + 关预约 + 记 `completed_at`）；需 manager（店长代客户确认兜底入口）；幂等。顾客本人确认走 clientApi、后台走 admin
 - 支持预约关联（appointment_id）
 
 ## 依赖

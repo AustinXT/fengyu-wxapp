@@ -59,6 +59,22 @@ test.setTimeout(300000)
 test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂等', async ({ page }) => {
   ensureDir(TEST_RESULTS_DIR)
 
+  // ── 预清理：删除 fixture 顾客残留的活跃服务单 ──
+  // uq_so_client_active 是 client_user_id 上 WHERE status NOT IN ('已完成','已取消') 的
+  // 偏唯一索引（同一顾客同时只能有一个未完成服务单）。上一轮 link-2/3/45 若中途失败，
+  // 会留下 服务中/待服务/待客户确认 的孤儿服务单，阻塞本轮服务单创建（提交后停在确认页，
+  // 永远等不到"服务单创建成功"）。先按 client_user_id 清掉所有活跃服务单（FK 顺序）。
+  const activeSvcRaw = runPsql(
+    `SELECT service_order_id FROM service_orders WHERE client_user_id='${FIXTURE_CLIENT_ID}' AND status NOT IN ('已完成','已取消')`
+  )
+  for (const sid of activeSvcRaw.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('ERROR'))) {
+    console.log(`[链路2/preclean] 清理残留活跃服务单 ${sid}`)
+    runPsql(`DELETE FROM service_commissions WHERE service_item_id LIKE '${sid}-%'`)
+    runPsql(`DELETE FROM service_items WHERE service_order_id='${sid}'`)
+    runPsql(`DELETE FROM service_orders WHERE service_order_id='${sid}'`)
+    runPsql(`DELETE FROM operation_logs WHERE target_id='${sid}'`)
+  }
+
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.log(`[browser-error] ${msg.text()}`)
   })
@@ -479,9 +495,22 @@ test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂�
   await expect(completeBtn).toBeVisible({ timeout: 5000 })
   await completeBtn.click()
 
-  // 等待确认弹窗（AlertDialog 标题）
-  await expect(page.getByRole('heading', { name: /确认完成服务/ })).toBeVisible({ timeout: 5000 })
+  // migration 0053（arch/006）：服务中 →「标记完成」→ 待客户确认（不直接已完成、不扣次数）
+  await expect(page.getByRole('heading', { name: /标记完成服务/ })).toBeVisible({ timeout: 5000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-2-30-complete-dialog.png` })
+  await page.getByRole('button', { name: '标记完成' }).click()
+
+  // 等待进入"待客户确认"
+  await page.waitForFunction(() => {
+    const tbody = document.querySelector('table tbody')
+    return tbody?.textContent?.includes('待客户确认') ?? false
+  }, { timeout: 20000 })
+
+  // 代客户确认 → 确认完成 → 已完成 + 原子扣减次数
+  const confirmStepBtn = page.getByRole('button', { name: '代客户确认' }).first()
+  await expect(confirmStepBtn).toBeVisible({ timeout: 10000 })
+  await confirmStepBtn.click()
+  await expect(page.getByRole('heading', { name: /代客户确认服务完成/ })).toBeVisible({ timeout: 5000 })
 
   // 点确认
   const confirmCompleteBtn = page.getByRole('button', { name: '确认完成' })

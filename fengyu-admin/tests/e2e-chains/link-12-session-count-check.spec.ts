@@ -98,7 +98,11 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   )
   console.log(`[链路12] Step0 existing multi-session item: "${existingCheck}"`)
 
-  if (existingCheck && !existingCheck.startsWith('ERROR') && existingCheck.length > 0) {
+  // 注：原「复用现有 sale_item」分支会从共享开发库挑任意一张多次卡，但现网数据可能
+  // remaining 与 service_items.session_used 不一致（如 sc=2/rem=1/used≠1），导致初始不变量
+  // 非确定性 FAIL。改为始终用受控的 PRE_ 夹具（下方清理 + 全新插入 paid=sc=rem，确定 pristine）。
+  const REUSE_EXISTING = false
+  if (REUSE_EXISTING && existingCheck && !existingCheck.startsWith('ERROR') && existingCheck.length > 0) {
     const parts = existingCheck.split('|')
     saleItemId = parts[0]
     initialSessionCount = parseInt(parts[1])
@@ -366,15 +370,26 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-12-21-in-progress.png` })
   console.log('[链路12] Step2 服务已开始（服务中）✓')
 
-  // 完成服务
+  // 完成服务（migration 0053：服务中 →「标记完成」→ 待客户确认 →「代客户确认」→ 已完成）
   const completeBtn = page.getByRole('button', { name: '完成服务' }).first()
   await expect(completeBtn).toBeVisible({ timeout: 10000 })
   await completeBtn.click()
 
-  // 确认弹窗
-  await expect(page.getByRole('heading', { name: /确认完成服务/ })).toBeVisible({ timeout: 5000 })
+  // 标记完成弹窗 → 待客户确认（不扣次数）
+  await expect(page.getByRole('heading', { name: /标记完成服务/ })).toBeVisible({ timeout: 5000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-12-22-complete-dialog.png` })
+  await page.getByRole('button', { name: '标记完成' }).click()
 
+  await page.waitForFunction(() => {
+    const tbody = document.querySelector('table tbody')
+    return tbody?.textContent?.includes('待客户确认') ?? false
+  }, { timeout: 20000 })
+
+  // 代客户确认 → 确认完成 → 已完成 + 扣次数
+  const confirmStepBtn = page.getByRole('button', { name: '代客户确认' }).first()
+  await expect(confirmStepBtn).toBeVisible({ timeout: 10000 })
+  await confirmStepBtn.click()
+  await expect(page.getByRole('heading', { name: /代客户确认服务完成/ })).toBeVisible({ timeout: 5000 })
   const confirmCompleteBtn = page.getByRole('button', { name: '确认完成' })
   await expect(confirmCompleteBtn).toBeVisible({ timeout: 5000 })
   await confirmCompleteBtn.click()

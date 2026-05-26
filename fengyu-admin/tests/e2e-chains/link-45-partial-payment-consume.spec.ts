@@ -256,8 +256,13 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
   await page.getByRole('button', { name: '开始服务' }).first().click()
   await page.waitForFunction(() => document.body.textContent?.includes('服务中'), { timeout: 20000 })
 
+  // migration 0053（arch/006）：服务中 →「标记完成」→ 待客户确认 →「代客户确认」→ 已完成（confirm 才扣次数）
   await page.getByRole('button', { name: '完成服务' }).first().click()
-  await expect(page.getByRole('heading', { name: /确认完成服务/ })).toBeVisible({ timeout: 5000 })
+  await expect(page.getByRole('heading', { name: /标记完成服务/ })).toBeVisible({ timeout: 5000 })
+  await page.getByRole('button', { name: '标记完成' }).click()
+  await page.waitForFunction(() => document.body.textContent?.includes('待客户确认'), { timeout: 20000 })
+  await page.getByRole('button', { name: '代客户确认' }).first().click()
+  await expect(page.getByRole('heading', { name: /代客户确认服务完成/ })).toBeVisible({ timeout: 5000 })
   await page.getByRole('button', { name: '确认完成' }).click()
   await page.waitForFunction(() => document.body.textContent?.includes('已完成'), { timeout: 20000 })
   console.log('[链路45] Step1 服务单完成 ✓')

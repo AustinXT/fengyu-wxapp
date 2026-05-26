@@ -153,11 +153,18 @@ test('链路38：寄存单完整生命周期', async ({ browser }) => {
     let clicked = false
     if (await completeBtn.count() > 0) {
       await completeBtn.click().catch(() => null)
-      // AlertDialog 「确认完成服务？」-> 「确认完成」
-      const confirmBtn = page.getByRole('button', { name: /^确认完成$/ }).first()
-      await confirmBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => null)
-      if (await confirmBtn.count() > 0) {
-        await confirmBtn.click().catch(() => null)
+      // migration 0053（arch/006）：服务中 →「标记完成服务？」/「标记完成」→ 待客户确认（不扣次数）
+      const markBtn = page.getByRole('button', { name: '标记完成' }).first()
+      await markBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => null)
+      if (await markBtn.count() > 0) await markBtn.click().catch(() => null)
+      // 待客户确认 →「代客户确认」→「代客户确认服务完成？」/「确认完成」→ 已完成 + 扣次数
+      const confirmStepBtn = page.getByRole('button', { name: '代客户确认' }).first()
+      await confirmStepBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => null)
+      if (await confirmStepBtn.count() > 0) {
+        await confirmStepBtn.click().catch(() => null)
+        const confirmBtn = page.getByRole('button', { name: /^确认完成$/ }).first()
+        await confirmBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => null)
+        if (await confirmBtn.count() > 0) await confirmBtn.click().catch(() => null)
       }
       clicked = true
     }

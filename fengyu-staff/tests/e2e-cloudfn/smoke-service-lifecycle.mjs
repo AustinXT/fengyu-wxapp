@@ -5,11 +5,12 @@
  * service.create 路径由 smoke-service-create.mjs 独立守护。
  * 此处用 createTestServiceOrder fixture 直造 PG 记录，跳过业务校验以便测 start/complete 状态机。
  *
- * 验证：
+ * 验证（状态机插入「待客户确认」步骤后，migration 0053）：
  *   1. service.start: 待服务 → 服务中，记 started_at
  *   2. 服务中状态再调 start 应拒
- *   3. service.complete: 服务中 → 已完成，原子扣减 remaining_sessions
- *   4. service.complete 幂等（再调一次仍 PASS，不重复扣减）
+ *   3. service.complete: 服务中 → 待客户确认，仅记 staff_completed_at，不扣次数（副作用推迟）
+ *   4. service.confirm: 待客户确认 → 已完成，原子扣减 remaining_sessions + 记 completed_at
+ *   5. service.confirm 幂等（再调一次仍 PASS，不重复扣减）
  */
 import './setup.mjs'
 import {
@@ -84,40 +85,65 @@ async function main() {
   if (startAgain.code === 0) errors.push(`服务中状态再调 start 应拒，实际成功`)
   else rec(`  ✓ 服务中再 start 被拒（${startAgain.message}）`)
 
-  // ─── 2. service.complete ───
+  // ─── 2. service.complete（服务中 → 待客户确认，不扣次数）───
   const completeRes = await invokeStaffApi('service.complete', {
     _testOpenid: TEST_MANAGER_OPENID, serviceOrderId,
   })
   if (completeRes.code !== 0) {
     errors.push(`service.complete 应成功，实际 code=${completeRes.code} msg=${completeRes.message}`)
   } else {
-    rec(`  ✓ service.complete OK`)
+    rec(`  ✓ service.complete OK（→ 待客户确认）`)
+  }
+
+  const pendingRow = await pgQuery(
+    `SELECT status, completed_at, staff_completed_at FROM service_orders WHERE service_order_id = $1`, [serviceOrderId]
+  )
+  if (pendingRow[0].status !== '待客户确认') errors.push(`complete 后 status 应='待客户确认'，实际='${pendingRow[0].status}'`)
+  if (pendingRow[0].completed_at) errors.push(`complete 后 completed_at 应仍为 NULL（副作用推迟到 confirm）`)
+  if (!pendingRow[0].staff_completed_at) errors.push(`complete 后 staff_completed_at 应非 NULL`)
+
+  // complete 不扣次数，remaining 仍=5
+  const remainAfterComplete = await pgQuery(`SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
+  if (Number(remainAfterComplete[0].remaining_sessions) !== 5) {
+    errors.push(`complete 后 remaining_sessions 应仍=5（未扣），实际=${remainAfterComplete[0].remaining_sessions}`)
+  } else {
+    rec(`  ✓ complete 未扣次数（仍=5）`)
+  }
+
+  // ─── 3. service.confirm（待客户确认 → 已完成，扣次数）───
+  const confirmRes = await invokeStaffApi('service.confirm', {
+    _testOpenid: TEST_MANAGER_OPENID, serviceOrderId,
+  })
+  if (confirmRes.code !== 0) {
+    errors.push(`service.confirm 应成功，实际 code=${confirmRes.code} msg=${confirmRes.message}`)
+  } else {
+    rec(`  ✓ service.confirm OK（→ 已完成）`)
   }
 
   const completedRow = await pgQuery(
     `SELECT status, completed_at FROM service_orders WHERE service_order_id = $1`, [serviceOrderId]
   )
-  if (completedRow[0].status !== '已完成') errors.push(`complete 后 status 应='已完成'，实际='${completedRow[0].status}'`)
-  if (!completedRow[0].completed_at) errors.push(`complete 后 completed_at 应非 NULL`)
+  if (completedRow[0].status !== '已完成') errors.push(`confirm 后 status 应='已完成'，实际='${completedRow[0].status}'`)
+  if (!completedRow[0].completed_at) errors.push(`confirm 后 completed_at 应非 NULL`)
 
   // remaining_sessions 5 → 4
   const remainAfter = await pgQuery(`SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
   if (Number(remainAfter[0].remaining_sessions) !== 4) {
-    errors.push(`complete 后 remaining_sessions 应=4，实际=${remainAfter[0].remaining_sessions}`)
+    errors.push(`confirm 后 remaining_sessions 应=4，实际=${remainAfter[0].remaining_sessions}`)
   } else {
     rec(`  ✓ remaining_sessions 原子扣减 5 → 4`)
   }
 
-  // ─── 3. 幂等：再次 complete ───
-  const idempotentRes = await invokeStaffApi('service.complete', {
+  // ─── 4. 幂等：再次 confirm ───
+  const idempotentRes = await invokeStaffApi('service.confirm', {
     _testOpenid: TEST_MANAGER_OPENID, serviceOrderId,
   })
-  if (idempotentRes.code !== 0) errors.push(`complete 幂等再调应 PASS，实际 code=${idempotentRes.code}`)
-  else rec(`  ✓ complete 幂等 (${idempotentRes.data.message})`)
+  if (idempotentRes.code !== 0) errors.push(`confirm 幂等再调应 PASS，实际 code=${idempotentRes.code}`)
+  else rec(`  ✓ confirm 幂等 (${idempotentRes.data.message})`)
 
   const remainStillAfter = await pgQuery(`SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
   if (Number(remainStillAfter[0].remaining_sessions) !== 4) {
-    errors.push(`幂等 complete 后 remaining_sessions 应仍=4，实际=${remainStillAfter[0].remaining_sessions}`)
+    errors.push(`幂等 confirm 后 remaining_sessions 应仍=4，实际=${remainStillAfter[0].remaining_sessions}`)
   }
 
   if (errors.length) {
@@ -128,7 +154,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — start + complete 生命周期 + 幂等正确`)
+  rec(`  ✅ PASS — start + complete + confirm 生命周期 + 幂等正确`)
 }
 
 try {
