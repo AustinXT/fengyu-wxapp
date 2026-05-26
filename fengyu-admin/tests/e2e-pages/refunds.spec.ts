@@ -19,9 +19,9 @@ test.describe('退款管理页 — 列表 + 详情渲染（ticket 2026-04-24）'
     await expect(page.getByText(/已驳回|已关闭/)).toBeVisible()
   })
 
-  test.skip(!REFUND_ID_SEED, '未提供 E2E_REFUND_ID：跳过详情页交互断言')
-
   test('详情页：关键字段 + 审批按钮按状态渲染', async ({ page }) => {
+    // 详情页交互断言需真实退款单，未提供 seed 时跳过本 case（不影响上面的列表页 smoke）
+    test.skip(!REFUND_ID_SEED, '未提供 E2E_REFUND_ID：跳过详情页交互断言')
     await page.goto(`/refunds/${REFUND_ID_SEED}`)
 
     // 详情页关键文案

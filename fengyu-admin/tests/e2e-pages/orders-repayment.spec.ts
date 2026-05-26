@@ -22,9 +22,9 @@ test.describe('订单详情页 — 录入回款入口（ticket 2026-04-24）', (
     await expect(page.getByRole('heading', { name: '订单管理' })).toBeVisible()
   })
 
-  test.skip(!ORDER_ID_SEED, '未提供 E2E_ORDER_ID_WITH_DEBT：跳过详情页 Dialog 交互断言')
-
   test('详情页：款项流水 + 录入回款 Dialog 基础字段', async ({ page }) => {
+    // 详情页 Dialog 交互需真实欠款订单，未提供 seed 时跳过本 case（不影响上面的列表页 smoke）
+    test.skip(!ORDER_ID_SEED, '未提供 E2E_ORDER_ID_WITH_DEBT：跳过详情页 Dialog 交互断言')
     await page.goto(`/orders/${ORDER_ID_SEED}`)
 
     // 款项流水区块存在

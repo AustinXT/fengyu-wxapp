@@ -1,4 +1,23 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
+
+/**
+ * Step 2「普通商品」picker 默认不选中任何二级分类，SKU 网格为空、无「加入」按钮，
+ * 必须先点一个二级分类（侧边栏 text-left + py-1.5 的 button）才会渲染出 SKU 卡片。
+ * 返回是否成功加购第一个 SKU（无可用分类/SKU 时返回 false 由调用方决定跳过）。
+ */
+async function addFirstNormalSku(page: Page): Promise<boolean> {
+  // Step 2 商品分类侧边栏异步加载（kind 数据预拉），等"商品分类"标题 + 二级分类按钮出现。
+  await page.getByText('商品分类').waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
+  const categoryButtons = page.locator('button[class*="text-left"][class*="py-1.5"]')
+  await categoryButtons.first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
+  if ((await categoryButtons.count()) === 0) return false
+  await categoryButtons.first().click()
+  const addBtn = page.getByRole('button', { name: '加入', exact: true }).first()
+  await addBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+  if ((await addBtn.count()) === 0) return false
+  await addBtn.click()
+  return true
+}
 
 /**
  * PR-B: Step 1 商品类型 4 选 1 + 顾客搜索后预拉 Step 2 数据 E2E
@@ -133,18 +152,12 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
     // 默认普通商品 → 直接进入 Step 2
     await page.getByRole('button', { name: '下一步' }).click()
 
-    // Step 2 暂跳过加购，直接到 Step 3 看订单类型选择 UI
-    // 部分测试库无 SKU 时"下一步"按钮被禁用 → 跳过
+    // Step 2 → Step 3 需购物车非空（否则"下一步"被禁用）。
+    // 普通商品 picker 默认无选中分类，需先选分类再加购。
     const nextBtn = page.getByRole('button', { name: '下一步' })
     if (await nextBtn.isDisabled().catch(() => true)) {
-      // 如果 Step 2 有 SKU 加购按钮，点第一个加入购物车
-      const addBtn = page.getByRole('button', { name: '加入', exact: true }).first()
-      if ((await addBtn.count()) > 0) {
-        await addBtn.click()
-      } else {
-        test.skip()
-        return
-      }
+      const added = await addFirstNormalSku(page)
+      if (!added) { test.skip(true, '测试库该 kind 无可加购 SKU'); return }
     }
     await page.getByRole('button', { name: '下一步' }).click()
 
@@ -175,10 +188,8 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
 
     await page.getByRole('button', { name: '下一步' }).click()
 
-    // 加购第一个 SKU
-    const addBtn = page.getByRole('button', { name: '加入', exact: true }).first()
-    if ((await addBtn.count()) === 0) { test.skip(); return }
-    await addBtn.click()
+    // 加购第一个 SKU（需先选二级分类）
+    if (!(await addFirstNormalSku(page))) { test.skip(true, '测试库该 kind 无可加购 SKU'); return }
 
     await page.getByRole('button', { name: '下一步' }).click()
 
@@ -186,8 +197,9 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
     await page.getByRole('button', { name: '内部单', exact: true }).click()
     await expect(page.getByRole('button', { name: '内部单', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
-    // "内部单 5 折" 灰色 tag 可见
-    await expect(page.getByText('内部单 5 折')).toBeVisible({ timeout: 5000 })
+    // "内部单 5 折" 提示可见。注："内部单 5 折"在 Step 3 出现 2 处（订单类型下方提示 tag
+    // + 合计区标签），用完整提示文案精确匹配 tag，避免 strict-mode 多匹配。
+    await expect(page.getByText('内部单 5 折，禁用手工改价 + 优惠券')).toBeVisible({ timeout: 5000 })
 
     // 应付/实付输入框（type=number）应至少有一个 disabled
     const numberInputs = page.locator('input[type="number"]')
@@ -226,9 +238,7 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
 
     await page.getByRole('button', { name: '下一步' }).click()
 
-    const addBtn = page.getByRole('button', { name: '加入', exact: true }).first()
-    if ((await addBtn.count()) === 0) { test.skip(); return }
-    await addBtn.click()
+    if (!(await addFirstNormalSku(page))) { test.skip(true, '测试库该 kind 无可加购 SKU'); return }
 
     await page.getByRole('button', { name: '下一步' }).click()
 
