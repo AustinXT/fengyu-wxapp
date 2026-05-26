@@ -1,6 +1,7 @@
 // utils/cloud.ts — staffApi 调用封装（含 Mock 拦截 + 自动附加登录层级参数）
 import { mockCallApi } from './mock-api'
 import { getCosBase } from './cloud-env'
+import { APP_VERSION } from './version'
 
 /**
  * 将 cloud:// 协议的 fileID 转换为 HTTPS CDN URL（兼容历史 fileID 兜底；
@@ -52,14 +53,21 @@ export function sanitizeErrorMessage(msg: string, fallback: string = '请求失�
 }
 
 /**
- * 自动附加当前登录层级 / 当前门店到 payload，供云函数中间件校验 + 过滤
+ * 自动附加请求上下文到 payload：
+ *   - `_appVersion`：小程序前端版本号，供云函数按前端版本做向后兼容分流
+ *     （上线版/测试版共用 CloudBase 环境，云函数部署即生效但前端上线有审批延迟，新旧版并存）
+ *   - `_loginLevel` / `_currentStoreId`：登录层级 / 当前门店，供云函数中间件校验 + 过滤
  * 开发期：localStorage `__devTestOpenid` 存在则注入 `_testOpenid`，便于切换测试员工身份
  *        （远端云函数需 ALLOW_TEST_OPENID=true 才生效；生产关闭后自动失效）
  */
 function withAuthContext(payload: Record<string, any>): Record<string, any> {
+  const next: Record<string, any> = { ...payload }
+  // 版本号注入不依赖 getApp，故置于 try 之外，确保 getApp 异常时仍带上 _appVersion
+  if (next._appVersion === undefined) {
+    next._appVersion = APP_VERSION
+  }
   try {
     const g = getApp<IAppOption>()?.globalData
-    const next: Record<string, any> = { ...payload }
     if (g?.loginLevel && next._loginLevel === undefined) {
       next._loginLevel = g.loginLevel
     }
@@ -72,7 +80,7 @@ function withAuthContext(payload: Record<string, any>): Record<string, any> {
     }
     return next
   } catch {
-    return payload
+    return next
   }
 }
 
