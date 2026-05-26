@@ -1,0 +1,351 @@
+/**
+ * getEfficiencyBoard 装配逻辑单测
+ *
+ * 关注点（非 SQL 正确性，SQL 由 consistency 测试 + e2e 守护）：
+ *   1. kpis 键齐全（7 项人均派生）且单位正确；分母=0 → null
+ *   2. byMarket 结构正确（按市场聚合 + 各项人均）
+ *   3. storeRankings / staffRankings 各 metric 键存在
+ *   4. assignRanks 并列跳号语义（[100,100,50] → 1/1/3）
+ *
+ * Mock 策略（仿 sales.test.ts / dashboard.test.ts）：
+ *   - @/db.execute：按"调用顺序队列"返回（无 withComparison，每个查询恰跑一次，顺序确定）
+ *   - drizzle-orm.sql：no-op（不参与逻辑）
+ *   - @/lib/permissions / @/lib/auth：放行 withPermission 包装
+ *   - @/lib/data-center/{context,scope-sql}：mock 成固定 ctx / no-op 片段
+ *
+ * db.execute 调用顺序（与 efficiency.ts Promise.all 顺序一致）：
+ *   Part A（0-8）：revenueTotal / consumeTotal / salesCommTotal / serviceCommTotal /
+ *                 footfallTotal / projectCountTotal / memberCount / technicianCount / managerCount
+ *   Part B（9-18）：skeleton / managerByStore / techByStore / revenueByStore / consumeByStore /
+ *                 shengmeiConsumeByStore / salesCommByStore / serviceCommByStore /
+ *                 footfallByStore / projectByStore
+ *   Part C（19-23）：storeRank revenue / consume / retainedMember / newMember / projectCount
+ *   Part D（24-28）：staffRank revenue / consume / newMember / projectCount / income
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+vi.mock('@/db', () => ({
+  db: { execute: vi.fn() },
+}))
+
+vi.mock('drizzle-orm', () => ({
+  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(() => ({})), join: vi.fn(() => ({})) }),
+}))
+
+vi.mock('@/lib/auth', () => ({
+  getSession: vi.fn(),
+}))
+
+vi.mock('@/lib/permissions', () => ({
+  requirePermission: vi.fn(),
+  isAdminScope: vi.fn(() => true),
+}))
+
+vi.mock('@/lib/data-center/scope-sql', () => ({
+  scopeFilterSql: vi.fn(() => ({})),
+  scopeStoreSkeletonSql: vi.fn(() => ({})),
+}))
+
+const mockCtx = {
+  scope: { type: 'all' as const },
+  meta: {
+    scope: { type: 'all' as const, id: null, name: '全部' },
+    timeRange: { start: '2026-05-01', end: '2026-05-26', presetLabel: '本月' },
+  },
+  comparison: {
+    current: { start: '2026-05-01', end: '2026-05-26' },
+    previous: null,
+    lastYear: null,
+  },
+  enabled: false,
+}
+
+vi.mock('@/lib/data-center/context', () => ({
+  prepareBoardContext: vi.fn(),
+}))
+
+import { getEfficiencyBoard } from '../efficiency'
+import { db } from '@/db'
+import { getSession } from '@/lib/auth'
+import { prepareBoardContext } from '@/lib/data-center/context'
+
+/** 单标量行包装 */
+const v = (n: number) => [{ v: n }]
+
+/**
+ * 按"调用顺序"配置 db.execute 返回值（29 次）。
+ * @param opts.scalars Part A 9 个标量（默认全 0）
+ * @param opts.skeleton Part B 骨架行
+ * @param opts.detail   Part B 9 个明细行表（manager/tech/rev/cons/shengmeiCons/salesComm/serviceComm/footfall/project）
+ * @param opts.storeRanks Part C 5 个门店榜行表
+ * @param opts.staffRanks Part D 5 个员工榜行表
+ */
+function setupQueue(opts: {
+  scalars?: number[]
+  skeleton?: Array<Record<string, unknown>>
+  detail?: Array<Array<Record<string, unknown>>>
+  storeRanks?: Array<Array<Record<string, unknown>>>
+  staffRanks?: Array<Array<Record<string, unknown>>>
+}) {
+  const scalars = opts.scalars ?? [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  const skeleton = opts.skeleton ?? []
+  const detail = opts.detail ?? [[], [], [], [], [], [], [], [], []]
+  const storeRanks = opts.storeRanks ?? [[], [], [], [], []]
+  const staffRanks = opts.staffRanks ?? [[], [], [], [], []]
+
+  const queue: unknown[] = [
+    ...scalars.map((n) => v(n)),
+    skeleton,
+    ...detail,
+    ...storeRanks,
+    ...staffRanks,
+  ]
+  let i = 0
+  ;(db.execute as any).mockImplementation(() => Promise.resolve(queue[i++] ?? []))
+}
+
+function mockSessionOk() {
+  ;(getSession as any).mockResolvedValue({
+    employeeId: 'ADMIN-001',
+    name: 'admin',
+    phone: '13800000000',
+    roles: [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
+    permissions: { actions: ['data_center:dashboard'], scopeStoreIds: [] },
+  })
+}
+
+const baseParams = {
+  scope: { type: 'all' as const },
+  timeRange: { preset: 'month' as const },
+  withComparison: false,
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockSessionOk()
+  ;(prepareBoardContext as any).mockResolvedValue(mockCtx)
+})
+
+describe('getEfficiencyBoard — KPI 人均派生装配', () => {
+  it('kpis 含全部 7 个键且单位正确', async () => {
+    setupQueue({})
+    const res = await getEfficiencyBoard(baseParams)
+    expect(Object.keys(res.kpis).sort()).toEqual(
+      [
+        'managerAvgMembers',
+        'managerAvgEmployees',
+        'empAvgRevenue',
+        'empAvgConsume',
+        'empAvgIncome',
+        'empAvgMembers',
+        'empAvgProjects',
+      ].sort(),
+    )
+    expect(res.kpis.empAvgRevenue.unit).toBe('amount')
+    expect(res.kpis.empAvgConsume.unit).toBe('amount')
+    expect(res.kpis.empAvgIncome.unit).toBe('amount')
+    expect(res.kpis.empAvgMembers.unit).toBe('count')
+    expect(res.kpis.empAvgProjects.unit).toBe('count')
+    expect(res.kpis.managerAvgMembers.unit).toBe('count')
+    expect(res.kpis.managerAvgEmployees.unit).toBe('count')
+  })
+
+  it('人均派生 = 分子 / 分母（员工=技师数、店长=managerCount）', async () => {
+    // scalars: revenue=2000 consume=1500 salesComm=300 serviceComm=200
+    //          footfall=80 project=400 member=500 tech=10 manager=5
+    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 10, 5] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.kpis.empAvgRevenue.value).toBe(200) // 2000 / 10
+    expect(res.kpis.empAvgConsume.value).toBe(150) // 1500 / 10
+    expect(res.kpis.empAvgIncome.value).toBe(50) // (300+200) / 10
+    expect(res.kpis.empAvgMembers.value).toBe(8) // 80 / 10
+    expect(res.kpis.empAvgProjects.value).toBe(40) // 400 / 10
+    expect(res.kpis.managerAvgMembers.value).toBe(100) // 500 / 5
+    expect(res.kpis.managerAvgEmployees.value).toBe(2) // 10 / 5
+  })
+
+  it('分母=0 → 人均派生为 null（前端 "--"）', async () => {
+    // tech=0、manager=0
+    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 0, 0] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.kpis.empAvgRevenue.value).toBeNull()
+    expect(res.kpis.empAvgProjects.value).toBeNull()
+    expect(res.kpis.managerAvgMembers.value).toBeNull()
+    expect(res.kpis.managerAvgEmployees.value).toBeNull()
+  })
+
+  it('收入 = 销售提成 + 服务提成', async () => {
+    setupQueue({ scalars: [0, 0, 700, 300, 0, 0, 0, 10, 0] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.kpis.empAvgIncome.value).toBe(100) // (700+300)/10
+  })
+})
+
+describe('getEfficiencyBoard — byMarket 明细装配', () => {
+  const skeleton = [
+    { store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' },
+    { store_id: 'S2', store_name: '门店二', market_id: 'M1', market_name: '市场甲' },
+    { store_id: 'S3', store_name: '门店三', market_id: 'M2', market_name: '市场乙' },
+  ]
+
+  it('byMarket 含全部 9 个 metric 键（含人均派生）', async () => {
+    setupQueue({ skeleton })
+    const res = await getEfficiencyBoard(baseParams)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    expect(Object.keys(m1.metrics).sort()).toEqual(
+      [
+        'managerCount',
+        'managerAvgIncome',
+        'technicianCount',
+        'techAvgRevenue',
+        'techAvgConsume',
+        'techAvgShengmeiConsume',
+        'techAvgIncome',
+        'techAvgMembers',
+        'techAvgProjects',
+      ].sort(),
+    )
+  })
+
+  it('按 marketId 聚合：人数求和 + 人均派生正确', async () => {
+    setupQueue({
+      skeleton,
+      detail: [
+        [{ store_id: 'S1', v: 1 }, { store_id: 'S2', v: 1 }, { store_id: 'S3', v: 1 }], // manager
+        [{ store_id: 'S1', v: 3 }, { store_id: 'S2', v: 2 }, { store_id: 'S3', v: 4 }], // tech
+        [{ store_id: 'S1', v: 1000 }, { store_id: 'S2', v: 500 }], // revenue
+        [{ store_id: 'S1', v: 800 }], // consume
+        [{ store_id: 'S1', v: 200 }], // shengmeiConsume
+        [{ store_id: 'S1', v: 150 }, { store_id: 'S2', v: 50 }], // salesComm
+        [{ store_id: 'S1', v: 60 }, { store_id: 'S2', v: 40 }], // serviceComm
+        [{ store_id: 'S1', v: 30 }], // footfall
+        [{ store_id: 'S1', v: 90 }], // project
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')! // S1+S2
+    expect(m1.metrics.managerCount).toBe(2) // 1+1
+    expect(m1.metrics.technicianCount).toBe(5) // 3+2
+    // 市场 income = (150+50)+(60+40) = 300；店长人均收入 = 300/2 = 150
+    expect(m1.metrics.managerAvgIncome).toBe(150)
+    // 技师人均业绩 = (1000+500)/5 = 300
+    expect(m1.metrics.techAvgRevenue).toBe(300)
+    // 技师人均实耗 = 800/5 = 160
+    expect(m1.metrics.techAvgConsume).toBe(160)
+    // 技师人均生美实耗 = 200/5 = 40
+    expect(m1.metrics.techAvgShengmeiConsume).toBe(40)
+    // 技师人均收入 = 300/5 = 60
+    expect(m1.metrics.techAvgIncome).toBe(60)
+    // 技师人均会员量(客流) = 30/5 = 6
+    expect(m1.metrics.techAvgMembers).toBe(6)
+    // 技师人均项目数 = 90/5 = 18
+    expect(m1.metrics.techAvgProjects).toBe(18)
+
+    const m2 = res.byMarket.find((r) => r.groupId === 'M2')! // S3
+    expect(m2.metrics.managerCount).toBe(1)
+    expect(m2.metrics.technicianCount).toBe(4)
+  })
+
+  it('分母=0（无技师/店长）→ 该市场人均派生为 null', async () => {
+    setupQueue({
+      skeleton: [{ store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' }],
+      detail: [
+        [], // manager 0
+        [], // tech 0
+        [{ store_id: 'S1', v: 1000 }], // revenue
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    expect(m1.metrics.managerCount).toBe(0)
+    expect(m1.metrics.technicianCount).toBe(0)
+    expect(m1.metrics.techAvgRevenue).toBeNull()
+    expect(m1.metrics.managerAvgIncome).toBeNull()
+  })
+
+  it('空骨架 → byMarket 为空数组', async () => {
+    setupQueue({ skeleton: [] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.byMarket).toEqual([])
+  })
+})
+
+describe('getEfficiencyBoard — 排名榜装配 + assignRanks 并列跳号', () => {
+  it('storeRankings / staffRankings 各 metric 键存在', async () => {
+    setupQueue({})
+    const res = await getEfficiencyBoard(baseParams)
+    expect(Object.keys(res.storeRankings).sort()).toEqual(
+      ['revenue', 'consume', 'retainedMember', 'newMember', 'projectCount'].sort(),
+    )
+    expect(Object.keys(res.staffRankings).sort()).toEqual(
+      ['revenue', 'consume', 'newMember', 'projectCount', 'income'].sort(),
+    )
+  })
+
+  it('门店榜：rank/id/name/marketName/value 映射 + 并列跳号 [100,100,50]→1/1/3', async () => {
+    setupQueue({
+      storeRanks: [
+        [
+          { store_id: 'S1', store_name: '门店一', market_name: '市场甲', value: 100 },
+          { store_id: 'S2', store_name: '门店二', market_name: '市场甲', value: 100 },
+          { store_id: 'S3', store_name: '门店三', market_name: '市场乙', value: 50 },
+        ], // revenue
+        [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    const rev = res.storeRankings.revenue
+    expect(rev).toHaveLength(3)
+    expect(rev.map((r) => r.rank)).toEqual([1, 1, 3]) // 并列跳号
+    expect(rev[0]).toMatchObject({ id: 'S1', name: '门店一', marketName: '市场甲', value: 100 })
+    expect(rev[2]).toMatchObject({ id: 'S3', name: '门店三', marketName: '市场乙', value: 50 })
+  })
+
+  it('员工榜：id=employeeId、name=employeeName、marketName=市场名、value', async () => {
+    setupQueue({
+      staffRanks: [
+        [
+          { employee_id: 'E1', employee_name: '张三', store_name: '门店一', market_name: '市场甲', value: 300 },
+          { employee_id: 'E2', employee_name: '李四', store_name: '门店二', market_name: '市场乙', value: 200 },
+        ], // revenue
+        [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    const rev = res.staffRankings.revenue
+    expect(rev).toHaveLength(2)
+    expect(rev.map((r) => r.rank)).toEqual([1, 2])
+    expect(rev[0]).toMatchObject({ id: 'E1', name: '张三', marketName: '市场甲', value: 300 })
+    expect(rev[1]).toMatchObject({ id: 'E2', name: '李四', marketName: '市场乙', value: 200 })
+  })
+
+  it('员工榜 income 走第 5 个员工榜槽位（顺序正确）', async () => {
+    setupQueue({
+      staffRanks: [
+        [], [], [], [],
+        [{ employee_id: 'E9', employee_name: '王五', store_name: '门店九', market_name: '市场丙', value: 999 }], // income
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.staffRankings.income[0]).toMatchObject({ id: 'E9', value: 999 })
+    expect(res.staffRankings.revenue).toEqual([])
+  })
+
+  it('空行表 → 排名榜为空数组', async () => {
+    setupQueue({})
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.storeRankings.revenue).toEqual([])
+    expect(res.staffRankings.income).toEqual([])
+  })
+})
+
+describe('getEfficiencyBoard — meta 透传', () => {
+  it('meta 来自 ctx（scope/timeRange 透传）', async () => {
+    setupQueue({})
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.scope).toEqual(mockCtx.meta.scope)
+    expect(res.timeRange).toEqual(mockCtx.meta.timeRange)
+  })
+})
