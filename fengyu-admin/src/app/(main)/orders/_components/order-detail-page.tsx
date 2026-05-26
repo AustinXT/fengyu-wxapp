@@ -10,6 +10,7 @@ import { RecordPaymentDialog } from "./record-payment-dialog"
 import { ConfirmOfflineDialog } from "./confirm-offline-dialog"
 import { DepositReceiptDialog } from "./deposit-receipt-dialog"
 import { RefundForm } from "@/components/orders/refund-form"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -49,10 +50,7 @@ const orderTypeColorMap: Record<string, string> = {
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "-"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 export default function OrderDetailPageClient({

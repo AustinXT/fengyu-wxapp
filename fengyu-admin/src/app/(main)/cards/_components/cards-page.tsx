@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
-import { formatPhone } from "@/lib/utils";
+import { formatPhone, formatDate as fmtDate } from "@/lib/utils";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
@@ -32,7 +32,7 @@ const STATUS_LABEL_MAP: Record<string, { label: string; className: string }> = {
 
 function formatDate(s: string | null): string {
 	if (!s) return "—";
-	return new Date(s).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+	return fmtDate(s);
 }
 
 /**

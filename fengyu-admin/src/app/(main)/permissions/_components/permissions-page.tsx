@@ -12,7 +12,7 @@ import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFoote
 import { toast } from "sonner"
 import { assignRole, revokeRole, getRolesByScope } from "@/actions/permissions"
 import { ROLE_LABELS } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, formatDate } from "@/lib/utils"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
 const roleBgMap: Record<string, string> = {
@@ -339,7 +339,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                                   <td className="px-3 py-2 text-[#999999]">{pr.employeeId}</td>
                                   <td className="px-3 py-2 text-[#999999]">{pr.createdBy || "-"}</td>
                                   <td className="px-3 py-2 text-[#999999]">
-                                    {new Date(pr.createdAt).toLocaleDateString("zh-CN")}
+                                    {formatDate(pr.createdAt)}
                                   </td>
                                   <td className="px-3 py-2">
                                     <Button

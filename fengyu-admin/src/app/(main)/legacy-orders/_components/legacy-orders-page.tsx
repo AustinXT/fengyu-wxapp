@@ -32,12 +32,10 @@ import {
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { formatPhoneSafe } from "@/lib/format"
 import PullWorkfineDialog from "./pull-workfine-dialog"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDateTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {

@@ -14,6 +14,7 @@ import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { RegionSelect } from "@/components/ui/region-select"
+import { formatDate } from "@/lib/utils"
 
 export default function StoreEditPage({ store }: { store: Store }) {
   const router = useRouter()
@@ -79,7 +80,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
         )}
         {store.isClosed && (
           <span className="ml-auto text-sm text-[#888888] bg-[#F5F5F5] px-3 py-1 rounded">
-            已关闭{store.closedAt ? ` (${store.closedAt})` : ""}
+            已关闭{store.closedAt ? ` (${formatDate(store.closedAt)})` : ""}
           </span>
         )}
       </div>

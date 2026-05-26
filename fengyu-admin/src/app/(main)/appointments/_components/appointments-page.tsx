@@ -13,14 +13,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { Appointment, Store } from "@/lib/types"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "-"
-  return new Date(dt).toLocaleString("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 const TAB_OPTIONS = [

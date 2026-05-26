@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { StatusBadge, Badge } from "@/components/ui/badge";
 import { Pagination } from "@/components/ui/pagination";
+import { formatDateTime as fmtDateTime } from "@/lib/utils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,7 +48,7 @@ const orderTypeColorMap: Record<string, string> = {
 };
 
 function formatTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return fmtDateTime(dt);
 }
 
 function OrderActions({ order }: { order: SaleOrder }) {

@@ -13,6 +13,7 @@ import {
 } from '@/actions/messages'
 import type { BatchMessageCustomer, OrgNode } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
+import { formatDateTime as fmtDateTime } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -47,13 +48,7 @@ const MEMBER_LEVEL_OPTIONS = ['黑钻', '金钻', '粉钻', '星钻', '初钻'] 
 const BATCH_SEND_MAX = 1000
 
 function formatDateTime(dt: string) {
-  return new Date(dt).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {

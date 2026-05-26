@@ -5,13 +5,11 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { ServiceOrder } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "-"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 export default function ServiceDetailPageClient({

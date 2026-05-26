@@ -21,6 +21,7 @@ import { getMemberThreshold } from '@/lib/member-threshold'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import { shanghaiYmd } from '@/lib/datetime'
 
 const opener = alias(staffWechatUsers, 'opener')
 
@@ -2149,7 +2150,7 @@ export const createDepositOrder = withPermission(
         })
 
         // 生成 sale_item 流水号序列
-        const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+        const dateStr = shanghaiYmd(now)
         const maxRows = await tx.execute(sql`
           SELECT sale_item_id FROM sale_items
           WHERE sale_item_id LIKE ${`XSLSH-WX-${dateStr}%`}

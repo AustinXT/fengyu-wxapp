@@ -14,11 +14,12 @@ import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder } from "@/actions/services"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
+import { formatDate as fmtDate } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDate(dt: string) {
-  return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+  return fmtDate(dt)
 }
 
 function ServiceActions({ so }: { so: ServiceOrder }) {

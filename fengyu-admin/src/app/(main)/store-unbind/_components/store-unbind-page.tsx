@@ -23,12 +23,10 @@ import {
 } from "@/components/ui/dialog"
 import { approveUnbind, rejectUnbind, type UnbindRequest } from "@/actions/store-unbind"
 import { formatPhoneSafe } from "@/lib/format"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDate(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {

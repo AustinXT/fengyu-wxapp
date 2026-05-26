@@ -5,6 +5,7 @@ import type {
 } from '@/actions/inventory/types'
 import { Card, CardContent } from '@/components/ui/card'
 import { ArrowLeft } from 'lucide-react'
+import { formatDateTime as fmtDateTime } from '@/lib/utils'
 
 interface DetailField {
   label: string
@@ -38,13 +39,7 @@ function fmt(v: string | number | null | undefined) {
 
 function formatDateTime(s: string | null | undefined): string {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return fmtDateTime(s)
 }
 
 export default function InventoryDetailView({ category, title, order }: Props) {

@@ -17,18 +17,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, formatDateTime as fmtDateTime } from '@/lib/utils'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string) {
-  return new Date(dt).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {

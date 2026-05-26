@@ -7,15 +7,13 @@ import { ApprovalActions } from '../_components/approval-actions'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import { formatPhoneSafe } from '@/lib/format'
+import { formatDateTime as fmtDateTime } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
 
 function formatDateTime(dt: string | null) {
   if (!dt) return '-'
-  return new Date(dt).toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
+  return fmtDateTime(dt)
 }
 
 const paymentFlowStatusColorMap: Record<string, string> = {

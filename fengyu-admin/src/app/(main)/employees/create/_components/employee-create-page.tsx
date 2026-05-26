@@ -13,6 +13,7 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { findAncestorMarketId } from "@/lib/utils"
+import { shanghaiToday } from "@/lib/datetime"
 import type { Store, OrgNode, SkillTag } from "@/lib/types"
 
 
@@ -38,7 +39,7 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
     avatarUrl: "",
     birthday: "",
     // 默认今天作为入职日，可在表单内调整；DB 兜底为 created_at::date
-    hiredAt: new Date().toISOString().slice(0, 10),
+    hiredAt: shanghaiToday(),
     skills: [] as string[],
   })
 

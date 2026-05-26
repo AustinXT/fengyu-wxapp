@@ -20,6 +20,7 @@ import {
   type WorkfineCustomerCandidate,
   type WorkfineOrderPreview,
 } from "@/actions/legacy-orders"
+import { formatDate as fmtDate } from "@/lib/utils"
 
 interface Props {
   open: boolean
@@ -31,9 +32,7 @@ interface Props {
 type Step = "search" | "preview"
 
 function formatDate(s: string) {
-  const d = new Date(s)
-  if (isNaN(d.getTime())) return s
-  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })
+  return fmtDate(s) || s
 }
 
 export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }: Props) {

@@ -11,6 +11,7 @@ import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
+import { shanghaiToday } from '@/lib/datetime'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -233,7 +234,7 @@ export const updateStore = withPermission(
   // - isClosed=false：清空 closedAt（重新开业）
   const updateData = { ...data }
   if (data.isClosed !== undefined && data.closedAt === undefined) {
-    updateData.closedAt = data.isClosed ? new Date().toISOString().slice(0, 10) : null
+    updateData.closedAt = data.isClosed ? shanghaiToday() : null
   }
 
   let result: any
