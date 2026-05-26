@@ -7,6 +7,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
+const { testBypassAllowed } = require('../utils/runtime-guard')
 
 /**
  * 微信登录
@@ -103,8 +104,11 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
     }
   }
-  // 方式2: 直接传入手机号（用于测试或特殊场景）
+  // 方式2: 直接传入手机号（测试用，独立 ALLOW_DIRECT_PHONE 开关 + 非生产运行时；prod 由 runtime-guard 硬闸禁用）
   else if (directPhone) {
+    if (!testBypassAllowed('ALLOW_DIRECT_PHONE')) {
+      throw new Error('INVALID_PARAMS: phoneNumber 直传未启用')
+    }
     phoneNumber = directPhone
   }
   // 缺少参数

@@ -17,11 +17,11 @@
  */
 import { invokeClientApi as rawInvoke } from './invoke.mjs'
 
-export async function invokeAs(openid, action, payload = {}) {
+export async function invokeAs(openid, action, payload = {}, eventExtras = {}) {
   if (!openid) throw new Error('invokeAs: openid required')
   globalThis.__e2e_current_openid__ = openid
   try {
-    return await rawInvoke(action, { _testOpenid: openid, ...payload })
+    return await rawInvoke(action, { _testOpenid: openid, ...payload }, eventExtras)
   } finally {
     delete globalThis.__e2e_current_openid__
   }

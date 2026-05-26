@@ -9,6 +9,7 @@
 const cloud = require('wx-server-sdk')
 
 const pg = require('../db/pg')
+const { testBypassAllowed } = require('../utils/runtime-guard')
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
@@ -100,9 +101,9 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
 
-  // 测试模式: 仅在显式开启时允许通过 _testOpenid 参数覆盖（生产环境不设此变量）
+  // 测试模式: 仅在 env 开启 且 非生产运行时 允许 _testOpenid 覆盖（prod 由 runtime-guard 硬闸禁用）
   let effectiveOpenid = OPENID
-  if (process.env.ALLOW_TEST_OPENID === 'true') {
+  if (testBypassAllowed('ALLOW_TEST_OPENID')) {
     const testOpenid = ctx.event.payload?._testOpenid || ctx.event._testOpenid
     if (testOpenid) effectiveOpenid = testOpenid
   }

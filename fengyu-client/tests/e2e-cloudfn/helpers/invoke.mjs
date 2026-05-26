@@ -83,9 +83,11 @@ export async function invokeStaffApi(action, payload = {}) {
 /**
  * 调用 clientApi
  */
-export async function invokeClientApi(action, payload = {}) {
+export async function invokeClientApi(action, payload = {}, eventExtras = {}) {
   const main = loadClientApi()
-  return await main({ action, payload }, {})
+  // eventExtras 注入 event 顶层（如 phoneData：模拟微信平台 CloudID 已解密结果，
+  // 供 bindPhone 走 CloudID 路径而非已默认关闭的 phoneNumber 直传旁路）
+  return await main({ action, payload, ...eventExtras }, {})
 }
 
 /**
