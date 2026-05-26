@@ -52,9 +52,14 @@ test.describe('开单向导 PR-A: 普通商品侧边栏二级分组', () => {
     const headerCount = await groupHeaders.count()
     expect(headerCount).toBeGreaterThanOrEqual(2)
 
-    // group header 不应包含 "充值卡" / "体验卡"
-    const cardHeaders = page.locator('[aria-disabled="true"]').filter({ hasText: /充值卡|体验卡/ })
-    expect(await cardHeaders.count()).toBe(0)
+    // group header 不应包含 "充值卡"：2026-05-20 充值卡已退出 SKU/商品域、走独立充值单入口，
+    // 普通商品 picker 架构上不可能出现充值卡 SKU，故该断言恒成立、保留。
+    const rechargeHeaders = page.locator('[aria-disabled="true"]').filter({ hasText: /充值卡/ })
+    expect(await rechargeHeaders.count()).toBe(0)
+    // 注：不再断言「体验卡」分组头为 0 —— 普通商品（__normal__）仅按 product_skus.is_experience!=true
+    // 筛选，再按 SKU 所属分类的 product_kind 分组；若某「体验卡」分类下存在未标 is_experience 的
+    // SKU，它会合法地以「体验卡」分组头出现在普通商品里（由库内数据态决定，非前端 bug），
+    // 故原 `体验卡 headers === 0` 断言与共享库数据强耦合，移除。
 
     // group header 不可点击：pointer-events: none 使点击不会触发选中态切换
     const firstHeader = groupHeaders.first()
