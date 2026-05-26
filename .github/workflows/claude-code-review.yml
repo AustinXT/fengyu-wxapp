@@ -34,8 +34,19 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
+        env:
+          # 底层改用 MiniMax 国内站 API（platform.minimaxi.com/docs/token-plan/claude-code）。
+          # claude-code-action 透传 env 给 Claude Code CLI：走 MiniMax Anthropic 兼容端点 + Bearer 认证。
+          ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_MODEL: MiniMax-M2.7
+          # Claude Code 内部按场景调 sonnet/opus/haiku，全部映射到 MiniMax-M2.7，避免打到不存在的 model
+          ANTHROPIC_DEFAULT_SONNET_MODEL: MiniMax-M2.7
+          ANTHROPIC_DEFAULT_OPUS_MODEL: MiniMax-M2.7
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: MiniMax-M2.7
+          API_TIMEOUT_MS: "3000000"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
