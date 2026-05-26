@@ -1,0 +1,71 @@
+"use client"
+
+import { Card } from "@/components/ui/card"
+import { DataTable, type Column } from "@/components/ui/data-table"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { formatByUnit } from "@/lib/data-center/format"
+import type { RankingRow, MetricUnit } from "@/lib/data-center/types"
+
+export interface RankingMetric {
+  key: string // 对应 rankings 的键
+  label: string
+  unit: MetricUnit
+}
+
+/**
+ * 排名榜（泛化）：顶部 metric 切换 Tab（组件内部状态，非 URL），下方排名表。
+ * 门店榜 / 员工榜共用；showMarket 控制是否展示「所属市场」列。
+ */
+export function RankingBoard({
+  title,
+  rankings,
+  metrics,
+  showMarket = true,
+  loading = false,
+}: {
+  title: string
+  rankings: Record<string, RankingRow[]>
+  metrics: RankingMetric[]
+  showMarket?: boolean
+  loading?: boolean
+}) {
+  if (metrics.length === 0) return null
+  const columnsFor = (unit: MetricUnit): Column<RankingRow>[] => [
+    { key: "rank", header: "排名", className: "w-16", cell: (r) => `#${r.rank}` },
+    { key: "name", header: "名称", cell: (r) => <span className="font-medium">{r.name}</span> },
+    ...(showMarket
+      ? [{ key: "marketName", header: "所属市场", cell: (r: RankingRow) => r.marketName ?? "—" }]
+      : []),
+    {
+      key: "value",
+      header: "数值",
+      className: "text-right tabular-nums",
+      cell: (r: RankingRow) => formatByUnit(r.value, unit),
+    },
+  ]
+
+  return (
+    <Card className="p-4 flex flex-col gap-3">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <Tabs defaultValue={metrics[0].key}>
+        <TabsList>
+          {metrics.map((m) => (
+            <TabsTrigger key={m.key} value={m.key}>
+              {m.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {metrics.map((m) => (
+          <TabsContent key={m.key} value={m.key}>
+            <DataTable
+              columns={columnsFor(m.unit)}
+              data={rankings[m.key] ?? []}
+              loading={loading}
+              emptyText="暂无排名数据"
+            />
+          </TabsContent>
+        ))}
+      </Tabs>
+    </Card>
+  )
+}

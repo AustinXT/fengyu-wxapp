@@ -26,6 +26,7 @@ import {
 	Unlink,
 	History,
 	Boxes,
+	LineChart,
 	type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -95,6 +96,12 @@ export const MENU_CONFIG: MenuGroup[] = [
 	{
 		label: "数据管理",
 		items: [
+			{
+				label: "数据中心",
+				icon: LineChart,
+				href: "/data-center",
+				requiredRoles: ["admin", "manager", "finance"],
+			},
 			{ label: "组织架构", icon: Network, href: "/org", requiredRoles: ["admin", "hr"] },
 			{ label: "门店管理", icon: Store, href: "/stores", requiredRoles: ["admin", "hr"] },
 			{ label: "员工管理", icon: Users, href: "/employees", requiredRoles: ["admin", "hr"] },

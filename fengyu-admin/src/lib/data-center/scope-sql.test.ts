@@ -8,7 +8,7 @@ vi.mock('@db/org', () => ({
 }))
 
 import { PgDialect } from 'drizzle-orm/pg-core'
-import { scopeFilterSql } from './scope-sql'
+import { scopeFilterSql, scopeStoreSkeletonSql } from './scope-sql'
 import type { AuthSession, RoleType } from '@/lib/types'
 import type { DataCenterScope } from './types'
 
@@ -37,15 +37,15 @@ const ALL: DataCenterScope = { type: 'all' }
 describe('scopeFilterSql — admin 空 scopeStoreIds 陷阱（★必守第一项）', () => {
   it('admin 角色 + 空 scopeStoreIds + scope=all → TRUE（绝不能是 FALSE）', () => {
     const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
-    const { sql } = render(scopeFilterSql(session, ALL, 'so.store_id'))
-    expect(sql.trim()).toBe('TRUE')
-    expect(sql).not.toContain('FALSE')
+    const { raw } = render(scopeFilterSql(session, ALL, 'so.store_id'))
+    expect(raw.trim().toUpperCase()).toBe('TRUE')
+    expect(raw.toUpperCase()).not.toContain('FALSE')
   })
 
   it('非 admin + 空 scopeStoreIds → FALSE（无可见门店）', () => {
     const session = makeSession([{ role: 'manager', scopeType: '门店' }], [])
-    const { sql } = render(scopeFilterSql(session, ALL, 'so.store_id'))
-    expect(sql.trim()).toBe('FALSE')
+    const { raw } = render(scopeFilterSql(session, ALL, 'so.store_id'))
+    expect(raw.trim().toUpperCase()).toBe('FALSE')
   })
 })
 
@@ -92,5 +92,25 @@ describe('scopeFilterSql — UI 选中 scope 收窄', () => {
     const session = makeSession([{ role: 'manager', scopeType: '门店' }], ['S1'])
     const { sql } = render(scopeFilterSql(session, ALL, 'c.bound_store_id'))
     expect(sql).toContain('c.bound_store_id in')
+  })
+})
+
+describe('scopeStoreSkeletonSql — 关系骨架（store→market）', () => {
+  it('产出 store/market 名称列 + JOIN org_nodes 两次 + scope 内嵌', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { sql } = render(scopeStoreSkeletonSql(session, ALL))
+    expect(sql).toContain('s.store_id')
+    expect(sql).toContain('o_mkt.name as market_name')
+    expect(sql).toContain('join org_nodes o_store')
+    expect(sql).toContain('join org_nodes o_mkt')
+    // admin scope 短路为 TRUE
+    expect(sql).toContain('true')
+  })
+
+  it('非 admin 把 scopeStoreIds 内嵌进骨架 WHERE', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2'])
+    const { sql, params } = render(scopeStoreSkeletonSql(session, ALL))
+    expect(sql).toContain('s.store_id in')
+    expect(params).toEqual(['S1', 'S2'])
   })
 })

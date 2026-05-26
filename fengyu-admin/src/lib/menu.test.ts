@@ -135,6 +135,15 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("顾客管理");
 	});
 
+	it("数据中心仅 admin/manager/finance 可见，hr/product/customer_mgr 不可见", () => {
+		for (const role of ["admin", "manager", "finance"] as RoleType[]) {
+			expect(getMenuLabels(makeSession({ role }))).toContain("数据中心");
+		}
+		for (const role of ["hr", "product", "customer_mgr"] as RoleType[]) {
+			expect(getMenuLabels(makeSession({ role }))).not.toContain("数据中心");
+		}
+	});
+
 	it("staff 不可登录管理后台 — 只有工作台", () => {
 		const labels = getMenuLabels(makeSession({ role: "staff" as RoleType }));
 		// staff 不在任何菜单的 requiredRoles 中
