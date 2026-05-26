@@ -13,6 +13,9 @@ interface ServiceRecord {
   employee_name: string;
   started_at: string;
   completed_at: string;
+  reviewed: boolean;
+  review_rating: number | null;
+  review_comment: string | null;
   items: Array<{
     product_name: string;
     sku_spec_name: string;
@@ -33,6 +36,15 @@ Page({
     loadingMore: false,
     loadError: false,
     hasMore: true,
+    // 评价弹窗状态
+    reviewVisible: false,
+    reviewOrderId: '',
+    reviewStaffName: '',
+    reviewRating: 0,
+    reviewComment: '',
+    reviewSubmitting: false,
+    // 确认服务完成状态
+    confirmingId: '',
   },
 
   _page: 1,
@@ -108,12 +120,99 @@ Page({
   onTapRecord(_e: WechatMiniprogram.TouchEvent) {
     // 服务记录为只读卡片，详情信息已在列表中展示
   },
+
+  /** 确认服务完成（待客户确认 → 已完成），确认后才扣减疗程次数 */
+  async onConfirmCompletion(e: WechatMiniprogram.TouchEvent) {
+    const { id } = e.currentTarget.dataset as { id: string };
+    if (this.data.confirmingId) return;
+    const res = await wx.showModal({
+      title: '确认服务完成',
+      content: '确认后本次服务将完成并扣减疗程次数，确认后可对美容师评价。',
+      confirmText: '确认完成',
+    });
+    if (!res.confirm) return;
+
+    this.setData({ confirmingId: id });
+    try {
+      await callClientApi('service.confirm', { serviceOrderId: id });
+      Toast.success('已确认完成');
+      // 局部更新该条记录状态为已完成
+      const records = this.data.records.map((r) =>
+        r.service_order_id === id
+          ? { ...r, status: '已完成', statusColor: getStatusColor('已完成') }
+          : r,
+      );
+      this.setData({ records });
+    } catch (err: any) {
+      Toast.fail(err.message || '确认失败');
+    } finally {
+      this.setData({ confirmingId: '' });
+    }
+  },
+
+  /** 打开评价弹窗 */
+  onTapReview(e: WechatMiniprogram.TouchEvent) {
+    const { id, name } = e.currentTarget.dataset as { id: string; name?: string };
+    this.setData({
+      reviewVisible: true,
+      reviewOrderId: id,
+      reviewStaffName: name || '',
+      reviewRating: 0,
+      reviewComment: '',
+    });
+  },
+
+  /** 关闭评价弹窗 */
+  onReviewClose() {
+    if (this.data.reviewSubmitting) return;
+    this.setData({ reviewVisible: false });
+  },
+
+  onRatingChange(e: { detail: number }) {
+    this.setData({ reviewRating: e.detail });
+  },
+
+  onCommentChange(e: { detail: string }) {
+    this.setData({ reviewComment: e.detail });
+  },
+
+  /** 提交评价 */
+  async onSubmitReview() {
+    const { reviewOrderId, reviewRating, reviewComment, reviewSubmitting } = this.data;
+    if (reviewSubmitting) return;
+    if (reviewRating < 1) {
+      Toast('请先打分');
+      return;
+    }
+
+    this.setData({ reviewSubmitting: true });
+    try {
+      await callClientApi('service.createReview', {
+        serviceOrderId: reviewOrderId,
+        rating: reviewRating,
+        comment: reviewComment.trim(),
+      });
+      Toast.success('评价成功');
+      // 局部更新该条记录的已评价状态，无需整表重载
+      const records = this.data.records.map((r) =>
+        r.service_order_id === reviewOrderId
+          ? { ...r, reviewed: true, review_rating: reviewRating, review_comment: reviewComment.trim() || null }
+          : r,
+      );
+      this.setData({ records, reviewVisible: false });
+    } catch (err: any) {
+      Toast.fail(err.message || '评价失败');
+    } finally {
+      this.setData({ reviewSubmitting: false });
+    }
+  },
 });
 
 function getStatusColor(status: string): string {
   switch (status) {
     case '待服务': return '#D48806';
     case '服务中': return '#096DD9';
+    case '待客户确认': return '#C0322A';
     case '已完成': return '#389E0D';
     case '已取消': return '#8C8C8C';
     default: return '#8C8C8C';

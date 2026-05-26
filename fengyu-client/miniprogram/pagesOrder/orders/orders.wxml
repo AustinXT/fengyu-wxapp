@@ -49,7 +49,10 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <view class="order-header-left">
           <view class="order-no-row">
             <text class="order-no">{{item.sale_order_id}}</text>
-            <van-tag wx:if="{{item.sale_order_type === '福利活动'}}" color="#F9F0FF" text-color="#722ED1">福利</van-tag>
+            <!-- 2026-04-26 sale-order-domain-refactor: 已退款标签由 refunded_amount > 0 推导，不再依赖 sale_order_type='退款单' -->
+            <view wx:if="{{item.has_refund}}" class="order-refund-tag">
+              <van-tag color="#FFF1F0" text-color="#FF4D4F" size="medium">已退款</van-tag>
+            </view>
           </view>
           <text class="order-time">{{item.order_time_fmt}}</text>
         </view>
@@ -58,46 +61,69 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
       <!-- 商品明细摘要 -->
       <view class="order-items">
-        <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
-          <image
-            wx:if="{{oi.cover_image}}"
-            class="oi-cover"
-            src="{{oi.cover_image}}"
-            mode="aspectFill"
-            lazy-load
-          />
-          <view wx:else class="oi-cover oi-cover--empty">
-            <van-icon name="photo-o" size="32rpx" color="#CCC" />
+        <!-- 充值单：不写 sale_items，单独渲染充值卡摘要行 -->
+        <view wx:if="{{item.isRecharge}}" class="recharge-row">
+          <view class="recharge-icon">
+            <van-icon name="gift-o" size="44rpx" color="#FFF" />
           </view>
-          <view class="oi-info">
-            <view class="oi-top">
-              <text class="oi-name">{{oi.product_name}} · {{oi.sku_spec_name}}</text>
-              <text class="oi-qty">×{{oi.quantity}}</text>
-            </view>
-            <view class="oi-bottom">
-              <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
-                <text class="oi-sessions-text">剩余{{oi.remaining_sessions}}次</text>
-              </view>
-              <view wx:else />
-              <text class="oi-price">¥{{fmt.price(oi.received)}}</text>
-            </view>
+          <view class="recharge-meta">
+            <text class="recharge-title">充值卡充值</text>
+            <text class="recharge-sub">¥{{fmt.price(item.total_amount)}} · {{item.store_name || '凤御美容'}}</text>
           </view>
         </view>
+
+        <!-- 普通订单：保留原 items loop -->
+        <block wx:else>
+          <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
+            <image
+              wx:if="{{oi.cover_image}}"
+              class="oi-cover"
+              src="{{oi.cover_image}}"
+              mode="aspectFill"
+              lazy-load
+            />
+            <view wx:else class="oi-cover oi-cover--empty">
+              <van-icon name="photo-o" size="32rpx" color="#CCC" />
+            </view>
+            <view class="oi-info">
+              <view class="oi-top">
+                <text class="oi-name">{{oi.product_name}} · {{oi.sku_spec_name}}</text>
+                <text class="oi-qty">×{{oi.quantity}}</text>
+              </view>
+              <view class="oi-bottom">
+                <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
+                  <text class="oi-sessions-text">已用 {{oi.used_sessions}} / 已付 {{oi.paid_sessions}} / 共 {{oi.session_count}} 次</text>
+                </view>
+                <view wx:else />
+                <text class="oi-price">¥{{fmt.price(oi.sale_amount)}}</text>
+              </view>
+            </view>
+          </view>
+        </block>
       </view>
 
       <!-- 底部：件数 + 金额 -->
       <view class="order-card__footer">
-        <text class="order-count">共 {{item.itemCount}} 件</text>
+        <text class="order-count">{{item.isRecharge ? '充值卡' : ('共 ' + item.itemCount + ' 件')}}</text>
         <view class="order-amount-wrap">
           <text class="order-amount-label">合计</text>
           <text class="order-amount">¥{{fmt.price(item.total_amount)}}</text>
         </view>
       </view>
 
+      <!-- 部分支付：待付金额提示 -->
+      <view wx:if="{{item.isPartialPay}}" class="order-outstanding-row">
+        <text class="order-outstanding-label">待付</text>
+        <text class="order-outstanding-value">¥{{item.outstanding_fmt}}</text>
+      </view>
+
       <!-- 操作按钮 -->
       <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
         <van-button size="small" plain round catch:tap="onCancelTap" data-sale-order-id="{{item.sale_order_id}}">取消订单</van-button>
         <van-button size="small" type="primary" round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
+      </view>
+      <view class="order-card__actions" wx:elif="{{item.status === '部分支付'}}">
+        <van-button size="small" type="primary" round catch:tap="onContinuePayTap" data-sale-order-id="{{item.sale_order_id}}">继续支付 ¥{{item.outstanding_fmt}}</van-button>
       </view>
       <view class="order-card__actions" wx:elif="{{item.status === '已支付' && item.hasAppointable}}">
         <van-button size="small" type="primary" round catch:tap="onAppointmentTap" data-sale-order-id="{{item.sale_order_id}}">发起预约</van-button>

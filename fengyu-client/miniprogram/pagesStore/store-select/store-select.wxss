@@ -26,15 +26,77 @@
   padding-top: 80rpx;
 }
 
-.market-group {
-  margin-bottom: 8rpx;
+.store-list {
+  padding: 24rpx;
 }
 
-.market-title {
+.store-card {
+  display: flex;
+  align-items: center;
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  padding: 20rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+}
+
+.store-cover {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 12rpx;
+  flex-shrink: 0;
+  background: var(--color-bg-section);
+}
+
+.store-cover-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.store-info {
+  flex: 1;
+  min-width: 0;
+  margin-left: 20rpx;
+}
+
+.store-name-row {
+  display: flex;
+  align-items: center;
+}
+
+.store-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-title);
+  margin-right: 12rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store-address {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.store-distance {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 16rpx;
   font-size: 24rpx;
   color: var(--color-text-hint);
-  padding: 20rpx 32rpx 10rpx;
-  letter-spacing: 1rpx;
+}
+
+.store-distance text {
+  margin-left: 4rpx;
 }
 
 .bottom-space {

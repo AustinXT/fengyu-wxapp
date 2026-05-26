@@ -72,10 +72,13 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  expandVisibleMarketIds: vi.fn().mockResolvedValue(null),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -100,6 +103,16 @@ vi.mock('drizzle-orm', () => ({
 import { getTemplates, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons, batchIssueCoupons } from './coupons'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
 
 function makeTemplateRow(templateId: string, overrides: Partial<Record<string, any>> = {}) {
   return {
@@ -221,6 +234,8 @@ const baseCreateData = {
   name: '满100减20',
   couponType: '现金券',
   discountValue: '20.00',
+  validityMode: 'days' as const,
+  validDays: 30,
 }
 
 describe('createTemplate — 输入校验 + 错误处理', () => {
@@ -253,14 +268,16 @@ describe('createTemplate — 输入校验 + 错误处理', () => {
     expect(db.insert).not.toHaveBeenCalled()
   })
 
-  it('validFrom 晚于 validTo → 拒绝', async () => {
+  it('validFrom 晚于 validTo（fixed 模式）→ 拒绝', async () => {
     const result = await createTemplate({
       ...baseCreateData,
-      validFrom: '2026-12-31',
-      validTo: '2026-01-01',
+      validityMode: 'fixed' as const,
+      validDays: null,
+      validFrom: '2099-12-31',
+      validTo: '2099-01-01',
     })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期开始日期不能晚于结束日期')
+    expect(result.message).toContain('有效期开始日期必须早于结束日期')
     expect(db.insert).not.toHaveBeenCalled()
   })
 
@@ -285,6 +302,138 @@ describe('createTemplate — 输入校验 + 错误处理', () => {
   })
 })
 
+// ── createTemplate — 有效期校验 ───────────────────────────────────────────────
+
+describe('createTemplate — 有效期字段校验', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+  })
+
+  it('validityMode 非法值 → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'forever' as any,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('有效期模式必须为 days 或 fixed')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('days 模式缺少 validDays → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'days',
+      validDays: null,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('"领取后 N 天"模式需填写正整数有效天数')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('days 模式 validDays <= 0 → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'days',
+      validDays: 0,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('"领取后 N 天"模式需填写正整数有效天数')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('days 模式 validDays > 3650 → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'days',
+      validDays: 3651,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('有效天数不能超过 3650 天（10 年）')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('fixed 模式缺少 validFrom → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'fixed',
+      validDays: null,
+      validFrom: null,
+      validTo: '2099-12-31',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('"固定时段"模式需同时填写开始与结束日期')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('fixed 模式缺少 validTo → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'fixed',
+      validDays: null,
+      validFrom: '2099-01-01',
+      validTo: null,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('"固定时段"模式需同时填写开始与结束日期')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('fixed 模式 validTo 早于当前时间 → 拒绝', async () => {
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'fixed',
+      validDays: null,
+      validFrom: '2020-01-01',
+      validTo: '2020-12-31',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('有效期结束日期必须晚于当前时间')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('合法 days 模式 → 成功，另一侧字段强制为 null', async () => {
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'days',
+      validDays: 30,
+      // 即使误传，也必须被 null 化
+      validFrom: '2099-01-01',
+      validTo: '2099-12-31',
+    })
+    expect(result.success).toBe(true)
+    const inserted = values.mock.calls[0][0]
+    expect(inserted.validityMode).toBe('days')
+    expect(inserted.validDays).toBe(30)
+    expect(inserted.validFrom).toBeNull()
+    expect(inserted.validTo).toBeNull()
+  })
+
+  it('合法 fixed 模式 → 成功，validDays 强制为 null', async () => {
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const result = await createTemplate({
+      ...baseCreateData,
+      validityMode: 'fixed',
+      validDays: 30, // 即使误传，也必须被 null 化
+      validFrom: '2099-01-01',
+      validTo: '2099-12-31',
+    })
+    expect(result.success).toBe(true)
+    const inserted = values.mock.calls[0][0]
+    expect(inserted.validityMode).toBe('fixed')
+    expect(inserted.validDays).toBeNull()
+    expect(inserted.validFrom).toBeInstanceOf(Date)
+    expect(inserted.validTo).toBeInstanceOf(Date)
+  })
+})
+
 // ── updateTemplate ────────────────────────────────────────────────────────────
 
 describe('updateTemplate — rowCount=0 静默成功修复 + 错误处理', () => {
@@ -294,6 +443,7 @@ describe('updateTemplate — rowCount=0 静默成功修复 + 错误处理', () =
       employeeId: 'ADMIN-001',
       roles: [{ role: 'admin', scopeId: 'hq-1' }],
     })
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -328,6 +478,128 @@ describe('updateTemplate — rowCount=0 静默成功修复 + 错误处理', () =
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
     await expect(updateTemplate('TPL-001', { name: '新名称' })).rejects.toThrow('connection lost')
+  })
+})
+
+// ── updateTemplate — Partial Update 有效期校验 ────────────────────────────────
+
+describe('updateTemplate — partial update 有效期校验', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+    })
+  })
+
+  /** 模拟 before = 一个 fixed 模式的合法模板 */
+  function mockSelectBeforeFixed() {
+    const row = {
+      templateId: 'TPL-001',
+      name: '旧券',
+      couponType: '现金券',
+      discountValue: '20.00',
+      validityMode: 'fixed',
+      validFrom: new Date('2099-01-01'),
+      validTo: new Date('2099-12-31'),
+      validDays: null,
+      updatedAt: new Date('2026-01-15T00:00:00.000Z'),
+    }
+    const limit = vi.fn().mockResolvedValue([row])
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+    return row
+  }
+
+  /** 模拟 before = 一个 days 模式的合法模板 */
+  function mockSelectBeforeDays() {
+    const row = {
+      templateId: 'TPL-001',
+      name: '旧券',
+      couponType: '现金券',
+      discountValue: '20.00',
+      validityMode: 'days',
+      validFrom: null,
+      validTo: null,
+      validDays: 30,
+      updatedAt: new Date('2026-01-15T00:00:00.000Z'),
+    }
+    const limit = vi.fn().mockResolvedValue([row])
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+    return row
+  }
+
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+    return set
+  }
+
+  it('切模式到 days 但不给 validDays → 拒绝', async () => {
+    mockSelectBeforeFixed()
+    setupUpdate(1)
+    const result = await updateTemplate('TPL-001', { validityMode: 'days' })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('切换到"领取后 N 天"模式需同时提交有效天数')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('切模式到 fixed 但只给一半日期 → 拒绝', async () => {
+    mockSelectBeforeDays()
+    setupUpdate(1)
+    const result = await updateTemplate('TPL-001', {
+      validityMode: 'fixed',
+      validFrom: '2099-01-01',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('切换到"固定时段"模式需同时提交开始与结束日期')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('只传 validDays: null 把合法 days 券清空 → 拒绝', async () => {
+    mockSelectBeforeDays()
+    setupUpdate(1)
+    const result = await updateTemplate('TPL-001', { validDays: null })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('"领取后 N 天"模式需填写正整数有效天数')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('fixed 券只改 validTo 使日期倒置 → 拒绝', async () => {
+    mockSelectBeforeFixed()
+    setupUpdate(1)
+    // before.validFrom = 2099-01-01；提交 validTo=2098-12-31 应早于 validFrom
+    const result = await updateTemplate('TPL-001', { validTo: '2098-12-31' })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('有效期开始日期必须早于结束日期')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('完整切模式到 days（含 validDays）→ 成功，强制 validFrom/validTo 为 null', async () => {
+    mockSelectBeforeFixed()
+    const set = setupUpdate(1)
+    const result = await updateTemplate('TPL-001', {
+      validityMode: 'days',
+      validDays: 60,
+    })
+    expect(result.success).toBe(true)
+    const payload = (set as any).mock.calls[0][0]
+    expect(payload.validityMode).toBe('days')
+    expect(payload.validDays).toBe(60)
+    expect(payload.validFrom).toBeNull()
+    expect(payload.validTo).toBeNull()
+  })
+
+  it('只改 name 不触及有效期字段 → 跳过有效期校验，成功', async () => {
+    mockSelectBeforeDays()
+    setupUpdate(1)
+    const result = await updateTemplate('TPL-001', { name: '新名字' })
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已更新')
   })
 })
 
@@ -485,6 +757,28 @@ describe('issueCoupon — 发放优惠券', () => {
     })
     const result = await issueCoupon('TPL-001', '13800000000')
     expect(result.success).toBe(true)
+  })
+
+  it('历史脏数据模板（validityMode=days 但 validDays=null）→ 拒绝，不 insert', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    setupIssueMocks({
+      template: makeTemplateRow('TPL-DIRTY', {
+        totalCount: null,
+        validityMode: 'days',
+        validDays: null,
+        validTo: null,
+      }),
+      customer: { userId: 'FYGK-001', name: '赵女士' },
+    })
+    const result = await issueCoupon('TPL-DIRTY', '13800000000')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('优惠券模板有效期配置异常')
+    expect(db.insert).not.toHaveBeenCalled()
+    expect(errSpy).toHaveBeenCalledWith(
+      '[issueCoupon] INVALID_TEMPLATE',
+      expect.objectContaining({ templateId: 'TPL-DIRTY' }),
+    )
+    errSpy.mockRestore()
   })
 })
 
@@ -803,5 +1097,46 @@ describe('batchIssueCoupons — 批量发放', () => {
     const diffDays = Math.round((expireAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
     expect(diffDays).toBeGreaterThanOrEqual(29)
     expect(diffDays).toBeLessThanOrEqual(31)
+  })
+
+  it('历史脏数据模板（validityMode=fixed 但 validTo=null）→ 整批拒绝，不 insert', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板 — 脏数据
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-DIRTY', {
+          totalCount: null,
+          validityMode: 'fixed',
+          validTo: null,
+          validDays: null,
+        })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 批量查顾客
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+          { userId: 'U-002', name: '李四', phone: '13800000002' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await batchIssueCoupons('TPL-DIRTY', ['13800000001', '13800000002'])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('优惠券模板有效期配置异常')
+    expect(db.insert).not.toHaveBeenCalled()
+    expect(errSpy).toHaveBeenCalledWith(
+      '[batchIssueCoupons] INVALID_TEMPLATE',
+      expect.objectContaining({ templateId: 'TPL-DIRTY' }),
+    )
+    errSpy.mockRestore()
   })
 })

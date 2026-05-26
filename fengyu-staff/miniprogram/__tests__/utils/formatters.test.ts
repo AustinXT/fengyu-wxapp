@@ -1,4 +1,51 @@
-import { formatDateTime, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL } from '../../utils/formatters'
+import { safeParseDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL } from '../../utils/formatters'
+
+describe('safeParseDate', () => {
+  test('ISO 含 T 串原样解析（回归：旧 replace(/-/g,"/") 逻辑会破坏 T 串变 NaN）', () => {
+    const d = safeParseDate('2026-05-21T09:00:00.000Z')
+    expect(d).not.toBeNull()
+    expect(d!.getTime()).toBe(new Date('2026-05-21T09:00:00.000Z').getTime())
+  })
+
+  test('dash-space 串（iOS 兼容）', () => {
+    const d = safeParseDate('2026-05-21 17:30:00')
+    expect(d).not.toBeNull()
+    expect(d!.getTime()).toBe(new Date('2026/05/21 17:30:00').getTime())
+  })
+
+  test('仅日期串', () => {
+    const d = safeParseDate('2026-05-21')
+    expect(d).not.toBeNull()
+    expect(d!.getFullYear()).toBe(2026)
+  })
+
+  test('Date 对象原样', () => {
+    const src = new Date(2026, 4, 21, 17, 30)
+    const d = safeParseDate(src)
+    expect(d!.getTime()).toBe(src.getTime())
+  })
+
+  test('null / 空串 / 非法串返回 null', () => {
+    expect(safeParseDate(null)).toBeNull()
+    expect(safeParseDate('')).toBeNull()
+    expect(safeParseDate('not-a-date')).toBeNull()
+  })
+})
+
+describe('formatDateTimeShort', () => {
+  test('ISO 含 T 串不再产生 NaN', () => {
+    const result = formatDateTimeShort('2026-05-21T09:00:00.000Z')
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  })
+
+  test('dash-space 串', () => {
+    expect(formatDateTimeShort('2026-05-21 17:30:00')).toBe('2026-05-21 17:30')
+  })
+
+  test('无效串原样返回', () => {
+    expect(formatDateTimeShort('not-a-date')).toBe('not-a-date')
+  })
+})
 
 describe('formatDateTime', () => {
   test('正常日期格式化', () => {
@@ -134,15 +181,23 @@ describe('STATUS_CLASS', () => {
 })
 
 describe('ORDER_TYPE_LABEL', () => {
-  test('普通 → 普通单', () => {
-    expect(ORDER_TYPE_LABEL['普通']).toBe('普通单')
+  test('销售单 → 销售单', () => {
+    expect(ORDER_TYPE_LABEL['销售单']).toBe('销售单')
   })
 
-  test('体验 → 体验单', () => {
-    expect(ORDER_TYPE_LABEL['体验']).toBe('体验单')
+  test('回款单 → 回款单', () => {
+    expect(ORDER_TYPE_LABEL['回款单']).toBe('回款单')
   })
 
-  test('福利活动 → 福利活动', () => {
-    expect(ORDER_TYPE_LABEL['福利活动']).toBe('福利活动')
+  test('转换单 → 转换单', () => {
+    expect(ORDER_TYPE_LABEL['转换单']).toBe('转换单')
+  })
+
+  test('退款单 → 退款单', () => {
+    expect(ORDER_TYPE_LABEL['退款单']).toBe('退款单')
+  })
+
+  test('内部单 → 内部单', () => {
+    expect(ORDER_TYPE_LABEL['内部单']).toBe('内部单')
   })
 })

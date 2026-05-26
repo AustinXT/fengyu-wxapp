@@ -37,7 +37,8 @@
       { "type": "file", "value": "README.md" },
       { "type": "folder", "value": ".git" },
       { "type": "folder", "value": "mock" },
-      { "type": "folder", "value": "scripts" }
+      { "type": "folder", "value": "scripts" },
+      { "type": "folder", "value": "__tests__" }
     ],
     "include": []
   },

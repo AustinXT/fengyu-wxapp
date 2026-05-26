@@ -172,6 +172,125 @@
   margin-right: 16rpx;
 }
 
+/* ===== 抵扣区 ===== */
+.deduction-section {
+  background: var(--color-bg-card);
+  margin: 16rpx 0;
+  padding: 16rpx 32rpx 24rpx;
+}
+
+.deduction-section__title {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  padding: 12rpx 0;
+}
+
+.deduction-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20rpx 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.deduction-row:last-child {
+  border-bottom: none;
+}
+
+.deduction-row--sub {
+  padding: 12rpx 0;
+}
+
+.deduction-row__left {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.deduction-row__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.deduction-row__hint {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.deduction-row__hint--disabled {
+  color: var(--color-text-hint);
+  opacity: 0.6;
+}
+
+.deduction-row__sub-label {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+
+.deduction-row__amount {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.deduction-row__right {
+  display: flex;
+  align-items: center;
+}
+
+.deduction-tips {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-top: 8rpx;
+}
+
+/* ===== 实付区 ===== */
+.paid-section {
+  background: var(--color-bg-card);
+  padding: 24rpx 32rpx;
+  margin-bottom: 16rpx;
+}
+
+.paid-section__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.paid-section__label {
+  font-size: 28rpx;
+  color: var(--color-text-secondary);
+}
+
+.paid-section__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.paid-section__symbol {
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.paid-section__value {
+  font-size: 48rpx;
+  font-weight: 700;
+}
+
+.paid-section__hint {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-top: 16rpx;
+  text-align: center;
+}
+
+.pay-method-wrap {
+  margin-top: 16rpx;
+}
+
 /* ===== 支付宝二维码弹窗 ===== */
 .alipay-qr-popup {
   padding: 48rpx 32rpx;

@@ -137,6 +137,48 @@
   color: var(--color-text-primary);
 }
 
+/* ===== 充值单专属摘要行 ===== */
+.recharge-row {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+}
+
+.recharge-icon {
+  width: 96rpx;
+  height: 96rpx;
+  flex-shrink: 0;
+  border-radius: 12rpx;
+  margin-right: 20rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #C0322A 0%, #E5544A 100%);
+  box-shadow: 0 4rpx 12rpx rgba(192, 50, 42, 0.25);
+}
+
+.recharge-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+
+.recharge-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.recharge-sub {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ===== 底部区 ===== */
 .order-card__footer {
   display: flex;
@@ -171,6 +213,26 @@
   font-size: 34rpx;
   font-weight: 700;
   color: var(--color-primary);
+}
+
+/* 部分支付待付提示行 */
+.order-outstanding-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8rpx;
+  padding: 0 28rpx 12rpx;
+}
+
+.order-outstanding-label {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.order-outstanding-value {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-status-confirm);
 }
 
 /* ===== 操作区 ===== */

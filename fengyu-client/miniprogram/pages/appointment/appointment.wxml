@@ -58,7 +58,7 @@
       </van-cell-group>
 
       <!-- 操作按钮 -->
-      <view class="appt-card__actions" wx:if="{{item.status === '待确认' || item.status === '已确认'}}">
+      <view class="appt-card__actions" wx:if="{{item.status === '待确认'}}">
         <van-button
           size="small"
           plain
@@ -83,7 +83,6 @@
       type="primary"
       block
       round
-      size="large"
       bindtap="onCreateAppointment"
     >发起预约</van-button>
   </view>

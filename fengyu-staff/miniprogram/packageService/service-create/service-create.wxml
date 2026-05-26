@@ -60,7 +60,7 @@
     </view>
 
     <view wx:elif="{{paidOrders.length === 0}}" class="empty-tip">
-      <van-empty description="该顾客暂无可核销的已支付订单" />
+      <van-empty description="该顾客在本店暂无可核销的已支付订单（跨店卡需在购买门店使用）" />
     </view>
 
     <view wx:else class="order-list">
@@ -85,7 +85,7 @@
               <text class="order-item-name">{{si.itemName}}</text>
               <view class="order-item-meta">
                 <text class="order-item-spec">{{si.spec}}</text>
-                <text class="order-item-sessions">剩余 {{si.remainingSessions}} 次</text>
+                <text class="order-item-sessions">剩余 {{si.remainingSessions}} / 已付 {{si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} 次</text>
               </view>
             </view>
             <van-icon
@@ -99,7 +99,7 @@
             <van-stepper
               value="{{selectedSessionCounts[si.saleItemId]}}"
               min="{{1}}"
-              max="{{si.remainingSessions}}"
+              max="{{si.consumableSessions}}"
               input-width="60rpx"
               button-size="48rpx"
               bind:change="onSessionStepperChange"

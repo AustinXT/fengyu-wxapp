@@ -38,7 +38,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -161,7 +161,7 @@ async function createTkklsSaleItems(pgPool, wfItems, customerMap, storeMap, dryR
       const oRows = slice.map(o => [
         o.saleOrderId, '已完成', '普通', '未知市场', o.storeId,
         o.saleDate, o.clientUserId, null,
-        0, 'offline', 'admin', 'allocated', 'WorkFine拓客卡导入',
+        0, '线下', 'admin', '已分配', 'WorkFine拓客卡导入',
       ])
       const oMv = buildMultiRowValues(oRows, 13)
       const r1 = await client.query(`
@@ -179,10 +179,10 @@ async function createTkklsSaleItems(pgPool, wfItems, customerMap, storeMap, dryR
       for (const o of slice) {
         for (const it of o.items) {
           iRows.push([
-            it.saleItemId, o.saleOrderId, 'purchase', it.itemName,
+            it.saleItemId, o.saleOrderId, '购买', it.itemName,
             '疗程卡', it.sessionCount, 0,
             0, 1, 0, 0, 0,
-            null, '自采自销', null,
+            null, '自销自耗', null,
           ])
         }
       }
@@ -252,7 +252,7 @@ async function queryPresaleServices(mssqlPool, yearFilter) {
 }
 
 function processPresaleData(rows, lookups) {
-  const { saleItemIds, customerMap, storeMap, employeeIds, existingServiceIds } = lookups
+  const { saleItemIds, customerMap, storeMap, employeeIds, employeeSkills, existingServiceIds } = lookups
   const orders = new Map()
   const stats = {
     total: rows.length, newItems: 0,
@@ -287,7 +287,7 @@ function processPresaleData(rows, lookups) {
         storeId,
         clientUserId: userId,
         assignedEmployeeId: employeeId,
-        serviceType: '体验', // 售前/体验
+        serviceType: '售前', // 售前护理单（TKKLS 拓客卡场景）
         items: [],
       })
     }
@@ -296,11 +296,16 @@ function processPresaleData(rows, lookups) {
     const serviceFee = Math.max(0, parseFloat(row.service_fee) || 0)
     const unitRealPrice = Math.max(0, parseFloat(row.unit_real_price) || 0)
 
+    // role_type 派生：员工 skills[0]，缺省 '美容师'（与 backfill / payNotify 一致）
+    const skills = (employeeSkills && employeeSkills.get(employeeId)) || []
+    const roleType = skills[0] || '美容师'
+
     orders.get(serviceOrderId).items.push({
       serviceItemId,
       saleItemId: saleFlowNo,
       sessionUsed,
       employeeId,
+      roleType,
       serviceDuration: parseInt(row.duration_minutes) || null,
       unitRealPrice,
       serviceFee,
@@ -373,17 +378,17 @@ async function batchInsertServices(pgPool, orders, dryRun) {
             const rate = it.unitRealPrice > 0
               ? Math.min(9.9999, Math.round((it.serviceFee / it.unitRealPrice) * 10000) / 10000)
               : 1.0
-            cRows.push([it.serviceItemId, it.employeeId, rate, it.serviceFee, false])
+            cRows.push([it.serviceItemId, it.employeeId, it.roleType, rate, it.serviceFee, false])
           }
         }
       }
       if (cRows.length > 0) {
-        const cMv = buildMultiRowValues(cRows, 5)
+        const cMv = buildMultiRowValues(cRows, 6)
         const r3 = await client.query(`
           INSERT INTO service_commissions (
-            service_item_id, employee_id, commission_rate, commission_amount, is_void
+            service_item_id, employee_id, role_type, commission_rate, commission_amount, is_void
           ) VALUES ${cMv.placeholders}
-          ON CONFLICT (service_item_id, employee_id) WHERE is_void = false DO NOTHING
+          ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role DO NOTHING
         `, cMv.values)
         commissionsInserted += r3.rowCount
       }
@@ -418,7 +423,7 @@ async function verify(pgPool) {
   )
   const svc = await pgPool.query(
     "SELECT COUNT(*) AS so, (SELECT COUNT(*) FROM service_items) AS si, " +
-    "(SELECT COUNT(*) FROM service_orders) AS total_so FROM service_orders WHERE service_order_type = '体验'"
+    "(SELECT COUNT(*) FROM service_orders) AS total_so FROM service_orders WHERE service_order_type = '售前'"
   )
   console.log(`  拓客卡 sale_orders: ${tkklsOrders.rows[0].cnt}`)
   console.log(`  拓客卡 sale_items:  ${tkkls.rows[0].cnt}`)
@@ -476,8 +481,11 @@ async function main() {
     storeRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
     log(`  门店映射: ${Object.keys(storeMap).length}`)
 
-    const empRes = await pgPool.query("SELECT employee_id FROM staff_wechat_users WHERE employee_id IS NOT NULL")
+    const empRes = await pgPool.query("SELECT employee_id, skills FROM staff_wechat_users WHERE employee_id IS NOT NULL")
     const employeeIds = new Set(empRes.rows.map(r => r.employee_id))
+    const employeeSkills = new Map(
+      empRes.rows.map(r => [r.employee_id, Array.isArray(r.skills) ? r.skills : []])
+    )
     log(`  员工: ${employeeIds.size}`)
 
     // ── Phase 1: TKKLS 合成 sale_items ──
@@ -501,7 +509,7 @@ async function main() {
     console.log('\n--- Phase 2: 售前护理服务记录导入 ---')
     const rows = await queryPresaleServices(mssqlPool, yearFilter)
     const { orders, stats } = processPresaleData(rows, {
-      saleItemIds, customerMap, storeMap, employeeIds, existingServiceIds,
+      saleItemIds, customerMap, storeMap, employeeIds, employeeSkills, existingServiceIds,
     })
 
     console.log('\n=== 数据分析 ===')

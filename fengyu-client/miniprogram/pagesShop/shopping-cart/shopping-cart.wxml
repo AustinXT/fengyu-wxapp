@@ -53,9 +53,14 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           <view class="cart-item-info">
             <view class="cart-item-name-row">
               <text class="cart-item-name">{{item.spuName}}</text>
-              <van-tag wx:if="{{item.bigCategory === '护理项目'}}" type="primary" size="mini">护理</van-tag>
+              <!-- PR-D：优先用 DB 驱动的 productKind + kindDisplayColor 渲染；
+                   2026-04-26：充值卡走 capability 列 isRechargeCard 而非 bigCategory 字面量。
+                   常规商城通道已在 SKU_VALID_FILTER 排除充值卡 SKU，此分支为兜底防御。 -->
+              <van-tag wx:if="{{item.isRechargeCard}}" color="#D4820A" size="mini">充值</van-tag>
+              <van-tag wx:elif="{{item.productKind && item.kindDisplayColor}}" color="{{item.kindDisplayColor}}" size="mini">{{item.productKind}}</van-tag>
+              <van-tag wx:elif="{{item.productKind}}" type="primary" size="mini">{{item.productKind}}</van-tag>
+              <van-tag wx:elif="{{item.bigCategory === '护理项目'}}" type="primary" size="mini">护理</van-tag>
               <van-tag wx:elif="{{item.bigCategory === '家居产品'}}" color="#5AACA5" size="mini">家居</van-tag>
-              <van-tag wx:elif="{{item.bigCategory === '充值卡'}}" color="#D4820A" size="mini">充值</van-tag>
             </view>
             <text class="cart-item-sku">{{item.skuDisplayName}}</text>
             <view class="cart-item-bottom">

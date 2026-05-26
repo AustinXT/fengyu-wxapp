@@ -16,14 +16,18 @@ clientApi/
 ├── db/
 │   └── pg.js         # PostgreSQL 连接池（懒初始化，max 5）
 └── routes/
-    ├── auth.js       # login, bindPhone, bindStore
+    ├── auth.js       # login, bindPhone, bindStore, updateProfile
     ├── store.js      # list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode
     ├── product.js    # categories, spuList, skuDetail, spuDetail, hotList, shopInit
-    ├── staff.js      # list, default
+    ├── staff.js      # list, default, detail
     ├── order.js      # create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail
     ├── appointment.js # create, list, cancel
-    ├── service.js    # detail
-    └── coupon.js     # list, available
+    ├── service.js    # detail, list
+    ├── coupon.js     # list, available
+    ├── points.js     # balance, history
+    ├── message.js    # list, read, unreadCount
+    ├── card.js       # list, history, balance, rechargeConfig, recharge
+    └── config.js     # banners, fengyuguan
 ```
 
 ## 认证

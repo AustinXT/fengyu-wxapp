@@ -6,11 +6,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatCurrency(amount: number | string): string {
+export function formatCurrency(amount: number | string | null | undefined): string {
+  // 历史 WorkFine 拉取的订单/明细金额字段可能为 NULL；空串/非数值同样兜底，
+  // 避免 num.toFixed() 在渲染期抛错导致整页白屏（React #419）。
   const num = typeof amount === 'string' ? parseFloat(amount) : amount
+  if (num == null || Number.isNaN(num)) return '¥0.00'
   return `¥${num.toFixed(2)}`
 }
 
+/**
+ * @deprecated 仅对 11 位手机号脱敏，其他长度返回明文。新代码请用
+ * `import { formatPhoneSafe } from '@/lib/format'`（基于 pii.maskPhone，全长度统一脱敏）。
+ */
 export function formatPhone(phone: string): string {
   if (!phone || phone.length !== 11) return phone
   return `${phone.slice(0, 3)}****${phone.slice(7)}`
@@ -31,7 +38,7 @@ export function formatDateTime(date: string | Date): string {
 
 /**
  * 计算给定订单金额下，优惠券的实际抵扣金额。
- * - 现金券/项目券：min(discountValue, totalAmount)
+ * - 现金券/品项券：min(discountValue, totalAmount)
  * - 折扣券：totalAmount × (1 - discountValue)，可选 maxDiscount 封顶
  */
 export function calcCouponDiscount(
@@ -55,7 +62,7 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   const names: string[] = []
   let current = map.get(nodeId)
   for (let i = 0; i < 5 && current; i++) {
-    if (i === 0 || current.type !== "headquarters") {
+    if (i === 0 || current.type !== "总部") {
       names.unshift(current.name)
     }
     current = current.parentId ? map.get(current.parentId) : undefined
@@ -69,7 +76,7 @@ export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[])
   const map = new Map(orgNodes.map((n) => [n.id, n]))
   let current = map.get(nodeId)
   for (let i = 0; i < 5 && current; i++) {
-    if (current.type === "market") return current.id
+    if (current.type === "市场") return current.id
     current = current.parentId ? map.get(current.parentId) : undefined
   }
   return null

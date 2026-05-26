@@ -1,0 +1,111 @@
+<!-- packageMy/pickup/pickup-by-customer.wxml -->
+<view class="container">
+  <view class="header">
+    <view class="header-title">提货核销</view>
+    <view class="header-link" bindtap="onNavToList">查看提货记录 ›</view>
+  </view>
+
+  <!-- 顾客搜索 -->
+  <view wx:if="{{!selectedCustomer}}" class="search-area">
+    <view class="search-row">
+      <input
+        class="search-input"
+        placeholder="输入顾客手机号或姓名"
+        value="{{keyword}}"
+        bindinput="onInput"
+        confirm-type="search"
+        bindconfirm="onSearch"
+      />
+      <view class="search-btn" bindtap="onSearch">搜索</view>
+    </view>
+    <view class="customer-list">
+      <view
+        wx:for="{{customers}}"
+        wx:key="clientUserId"
+        class="customer-row"
+        data-idx="{{index}}"
+        bindtap="onSelectCustomer"
+      >
+        <view class="customer-name">{{item.name || '未命名'}}</view>
+        <view class="customer-meta">
+          <text>{{item.phone || '无手机号'}}</text>
+          <text wx:if="{{item.memberLevel}}" class="member-level">{{item.memberLevel}}</text>
+        </view>
+      </view>
+      <view wx:if="{{customers.length === 0 && keyword}}" class="empty">
+        未找到匹配顾客
+      </view>
+    </view>
+  </view>
+
+  <!-- 选中顾客 + 可提清单 -->
+  <view wx:if="{{selectedCustomer}}" class="result-area">
+    <view class="selected-bar">
+      <view>
+        <text class="selected-name">{{selectedCustomer.name || '未命名'}}</text>
+        <text class="selected-phone">{{selectedCustomer.phone}}</text>
+      </view>
+      <view class="back-link" bindtap="onBackToSearch">重新搜索</view>
+    </view>
+
+    <view wx:if="{{loadingItems}}" class="loading">加载中...</view>
+    <view wx:elif="{{items.length === 0}}" class="empty-card">
+      该顾客暂无可提货的家居产品
+    </view>
+    <view wx:else class="item-list">
+      <view wx:for="{{items}}" wx:key="saleItemId" class="item-card">
+        <view class="item-head">
+          <text class="item-name">{{item.productName || '商品'}}</text>
+          <text class="store-tag">{{item.storeName || item.storeId}}</text>
+        </view>
+        <view wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</view>
+        <view class="item-progress">
+          <text>已提 {{item.pickedUpQuantity}} / {{item.quantity}}</text>
+          <text class="remaining">剩余 {{item.remaining}}</text>
+        </view>
+        <view class="item-action">
+          <button class="pickup-btn" data-idx="{{index}}" bindtap="onPickupTap">录入提货</button>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
+
+<!-- 提货录入 dialog -->
+<view class="dialog-mask" wx:if="{{pickupDialog.visible}}" bindtap="closePickupDialog">
+  <view class="dialog" catchtap="">
+    <view class="dialog-title">录入提货</view>
+    <view class="dialog-body">
+      <view class="dialog-product">{{pickupDialog.productName}}</view>
+      <view class="dialog-remaining">剩余可提：{{pickupDialog.remaining}}</view>
+      <view class="dialog-field">
+        <text class="dialog-label">提货数量</text>
+        <input
+          type="number"
+          class="dialog-input"
+          value="{{pickupDialog.quantity}}"
+          bindinput="onPickupQtyInput"
+        />
+      </view>
+      <view class="dialog-field">
+        <text class="dialog-label">备注（可选）</text>
+        <input
+          class="dialog-input"
+          placeholder="补充说明"
+          value="{{pickupDialog.remark}}"
+          bindinput="onPickupRemarkInput"
+        />
+      </view>
+    </view>
+    <view class="dialog-actions">
+      <button class="dialog-btn cancel" bindtap="closePickupDialog">取消</button>
+      <button
+        class="dialog-btn confirm"
+        disabled="{{pickupDialog.submitting}}"
+        bindtap="submitPickup"
+      >
+        {{pickupDialog.submitting ? '提交中...' : '确认提货'}}
+      </button>
+    </view>
+  </view>
+</view>

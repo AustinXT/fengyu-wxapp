@@ -1,4 +1,4 @@
-<!-- components/staff-popup — 美容师选择弹层（3 页面复用） -->
+<!-- components/staff-popup — 美容师选择弹层（含养生师，3 页面复用） -->
 <van-popup
   show="{{show}}"
   position="bottom"
@@ -33,10 +33,15 @@
         data-name="{{item.name}}"
       >
         <view class="staff-avatar">
-          <van-icon name="manager-o" size="48rpx" color="#C0322A" />
+          <image wx:if="{{item.avatarUrl}}" src="{{item.avatarUrl}}" class="staff-avatar-img" mode="aspectFill" />
+          <van-icon wx:else name="manager-o" size="48rpx" color="#C0322A" />
         </view>
         <text class="staff-name">{{item.name}}</text>
         <text class="staff-title">{{item.position}}</text>
+        <view wx:if="{{item.reviewCount > 0}}" class="staff-rating">
+          <van-icon name="star" size="22rpx" color="#C0322A" />
+          <text class="staff-rating-text">{{item.avgRating}}（{{item.reviewCount}}）</text>
+        </view>
       </view>
       <!-- 空态 -->
       <view wx:if="{{!loading && staffList.length === 0}}" class="staff-empty">

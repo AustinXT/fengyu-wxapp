@@ -1,0 +1,1 @@
+CREATE INDEX "idx_sale_orders_client_user_id" ON "sale_orders" USING btree ("client_user_id") WHERE client_user_id IS NOT NULL;

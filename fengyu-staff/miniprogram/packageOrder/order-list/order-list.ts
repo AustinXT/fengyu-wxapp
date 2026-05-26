@@ -1,10 +1,11 @@
 // pages/order-list/order-list.ts — 订单列表
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-type OrderStatus = '全部' | '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭';
+type OrderStatus = '全部' | '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭';
 
 interface OrderItem {
   id: string;
@@ -19,6 +20,8 @@ interface OrderItem {
   paidAt: string | null;
   statusClass: string;
   openedBy: string | null;
+  hasRefund: boolean;
+  hasPendingRefund: boolean;
 }
 
 interface RawOrderRow {
@@ -32,6 +35,8 @@ interface RawOrderRow {
   created_at: string;
   paid_at: string | null;
   opened_by: string | null;
+  has_refund?: boolean;
+  has_pending_refund?: boolean;
 }
 
 interface OrderListResponse {
@@ -42,7 +47,6 @@ interface OrderListResponse {
 
 const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
-  '待确认收款': 'pending',
   '已支付': 'success',
   '已完成': 'done',
   '支付失败': 'error',
@@ -68,7 +72,7 @@ Page({
     this.setData({ isManager: isManager(), currentStaffId: app.globalData.staffWfId || '' });
     if (options.status) {
       const statusMap: Record<string, OrderStatus> = {
-        pendingOffline: '待确认收款',
+        pendingOffline: '待支付',
         pendingCreate: '待支付',
       };
       const tab = statusMap[options.status] || '全部';
@@ -119,10 +123,12 @@ Page({
         orderType: r.sale_order_type,
         payType: r.payment_method,
         totalAmount: r.total_amount,
-        createdAt: r.created_at,
-        paidAt: r.paid_at,
+        createdAt: formatDateTime(r.created_at),
+        paidAt: r.paid_at ? formatDateTime(r.paid_at) : r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
         openedBy: r.opened_by || null,
+        hasRefund: !!r.has_refund,
+        hasPendingRefund: !!r.has_pending_refund,
       }));
       this.setData({
         list: [...this.data.list, ...mapped],
@@ -157,7 +163,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderNo: id });
+          await callStaffApi('order.confirmOffline', { saleOrderId: id });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -170,7 +176,7 @@ Page({
 
   onViewQrcode(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${id}` });
+    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${id}` });
   },
 
   onCloseOrder(e: WechatMiniprogram.TouchEvent) {
@@ -183,7 +189,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.close', { orderNo: id });
+          await callStaffApi('order.close', { saleOrderId: id });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -203,7 +209,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.resetFailed', { orderNo: id });
+          await callStaffApi('order.resetFailed', { saleOrderId: id });
           wx.showToast({ title: '已重置为待支付', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -216,6 +222,6 @@ Page({
 
   onAllocate(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${id}` });
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${id}` });
   },
 });

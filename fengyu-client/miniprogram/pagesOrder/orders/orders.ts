@@ -44,19 +44,70 @@ Page({
     this.loadOrders();
   },
 
+  // 构造 order.list 请求参数：「待支付」Tab 同时纳入 部分支付（statuses 数组），
+  // 其余 Tab 走单值 status，「全部」不带过滤
+  _buildListPayload(page: number): Record<string, any> {
+    const payload: Record<string, any> = { page, pageSize: PAGE_SIZE };
+    const tab = this.data.activeTab;
+    if (tab === '待支付') {
+      payload.statuses = ['待支付', '部分支付'];
+    } else if (tab !== 'all') {
+      payload.status = tab;
+    }
+    return payload;
+  },
+
   _mapOrders(orders: any[]) {
     return orders.map(item => {
+      // 可预约判定：已支付 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
+      // ticket 2026-05-19 paid_sessions：可消费门槛由 remaining > 0 升级为"还有已付未用的次数"
       const hasAppointable = item.status === '已支付'
-        && (item.items || []).some((i: any) =>
-          i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
-        );
+        && (item.items || []).some((i: any) => {
+          if (i.product_type === '家居产品') return false;
+          const total = Number(i.session_count ?? 0);
+          const remaining = Number(i.remaining_sessions ?? 0);
+          const paid = Number(i.paid_sessions ?? 0);
+          const used = Math.max(0, total - remaining);
+          return paid > 0 && (paid - used) > 0;
+        });
       const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - 已退款标签由 refunded_amount > 0 推导
+      //   - 后端列表接口已返回 received / refunded_amount
+      const hasRefund = Number(item.refunded_amount || 0) > 0;
+      // 列表项三段次数展示（ticket 2026-05-19）
+      const mappedItems = (item.items || []).map((i: any) => {
+        const total = Number(i.session_count ?? 0);
+        const remaining = Number(i.remaining_sessions ?? 0);
+        const paid = Number(i.paid_sessions ?? 0);
+        return {
+          ...i,
+          paid_sessions: paid,
+          used_sessions: Math.max(0, total - remaining),
+        };
+      });
+      // 部分支付订单：计算待付额（口径与 order-detail.ts 一致）
+      // 待付 = payable_amount - 净到账（received - refunded_amount）
+      const isPartialPay = item.status === '部分支付';
+      let outstanding = 0;
+      if (isPartialPay) {
+        const payable = Number(item.payable_amount ?? 0) > 0
+          ? Number(item.payable_amount)
+          : Math.round((Number(item.total_amount || 0) - Number(item.prepaid_card_amount || 0)) * 100) / 100;
+        const net = Math.round((Number(item.received ?? 0) - Number(item.refunded_amount ?? 0)) * 100) / 100;
+        outstanding = Math.max(0, Math.round((payable - net) * 100) / 100);
+      }
       return {
         ...item,
+        items: mappedItems,
         statusClass: getStatusClass(item.status),
         order_time_fmt: formatOrderDate(item.sale_order_datetime),
         hasAppointable,
         itemCount,
+        has_refund: hasRefund,
+        isRecharge: item.sale_order_type === '充值单',
+        isPartialPay,
+        outstanding_fmt: outstanding.toFixed(2),
       };
     });
   },
@@ -65,10 +116,7 @@ Page({
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
-      const payload: Record<string, any> = { page: 1, pageSize: PAGE_SIZE };
-      if (this.data.activeTab !== 'all') {
-        payload.status = this.data.activeTab;
-      }
+      const payload = this._buildListPayload(1);
       const data = await callClientApi('order.list', payload);
       const orders: any[] = data?.orders || [];
       this.setData({
@@ -87,10 +135,7 @@ Page({
     this._page += 1;
     this.setData({ loadingMore: true });
     try {
-      const payload: Record<string, any> = { page: this._page, pageSize: PAGE_SIZE };
-      if (this.data.activeTab !== 'all') {
-        payload.status = this.data.activeTab;
-      }
+      const payload = this._buildListPayload(this._page);
       const data = await callClientApi('order.list', payload);
       const orders: any[] = data?.orders || [];
       this.setData({
@@ -114,6 +159,12 @@ Page({
   onPayTap(e: WechatMiniprogram.TouchEvent) {
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
+  },
+
+  // 部分支付订单回款：跳详情页并自动唤起回款弹层（复用 order-detail 已有流程）
+  onContinuePayTap(e: WechatMiniprogram.TouchEvent) {
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}&repay=1` });
   },
 
   async onCancelTap(e: WechatMiniprogram.TouchEvent) {
@@ -141,6 +192,10 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
+    // 分享礼：被分享人进入首页而非分享者的订单列表
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御订单', path: `/pages/home/home${invSuffix}` };
   },
 });

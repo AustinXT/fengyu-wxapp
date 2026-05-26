@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jwtVerify } from 'jose'
+import { JWT_SECRET } from '@/lib/jwt-secret'
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
-)
 const COOKIE_NAME = 'fy-admin-token'
 
 export async function middleware(request: NextRequest) {
@@ -11,6 +9,13 @@ export async function middleware(request: NextRequest) {
 
   // Auth pages: allow without token
   if (pathname.startsWith('/login') || pathname.startsWith('/change-password')) {
+    // Session expired: clear stale cookie and stay on login
+    if (pathname === '/login' && request.nextUrl.searchParams.has('expired')) {
+      const response = NextResponse.redirect(new URL('/login', request.url))
+      response.cookies.delete(COOKIE_NAME)
+      return response
+    }
+
     // If user has valid token and is on /login, redirect appropriately
     const token = request.cookies.get(COOKIE_NAME)?.value
     if (token && pathname === '/login') {

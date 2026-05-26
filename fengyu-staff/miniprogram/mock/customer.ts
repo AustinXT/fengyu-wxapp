@@ -28,8 +28,8 @@ const MOCK_CUSTOMERS = [
     yearConsumption: 8800,
   },
   {
-    id: 'client-003',
-    clientUserId: null,
+    id: null,
+    clientUserId: 'client-wx-003',
     name: '李晓华',
     phone: '13622230000',
     phoneMasked: '136****3000',
@@ -62,10 +62,10 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
         {
           saleItemId: 'XSLSH-WX-20260205002',
           itemName: '安吉丽眼部护理',
-          spec: '单品',
+          spec: '单次',
           sessionCount: 1,
           remainingSessions: 1,
-          productType: '单品',
+          productType: '疗程卡',
         },
       ],
     },
@@ -96,10 +96,10 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
         {
           saleItemId: 'XSLSH-WX-20260210001',
           itemName: '明眸祛皱疗程',
-          spec: '单品',
+          spec: '单次',
           sessionCount: 1,
           remainingSessions: 1,
-          productType: '单品',
+          productType: '疗程卡',
         },
       ],
     },
@@ -108,11 +108,21 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
 
 export const customerHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'customer.search': (payload) => {
+    // 手机号精确匹配（pickup 数字输入用）
     const phone = (payload.phone || '').replace(/\s/g, '')
-    const found = MOCK_CUSTOMERS.find(c => c.phone === phone)
-    if (found) return [found]
-    // 未注册时返回空数组
-    return []
+    if (phone) {
+      const found = MOCK_CUSTOMERS.find(c => c.phone === phone)
+      return found ? [found] : []
+    }
+    // 关键词模糊匹配手机号 + 姓名（开单 / 充值卡 / 顾客 Tab / 服务单用；crossStore 在 mock 中无意义）
+    const keyword = (payload.keyword || '').trim()
+    if (keyword) {
+      return MOCK_CUSTOMERS.filter(
+        c => (c.phone || '').includes(keyword) || (c.name || '').includes(keyword),
+      )
+    }
+    // 无入参时返回全部（默认列表）
+    return MOCK_CUSTOMERS
   },
 
   'customer.calendar': (payload) => {

@@ -4,14 +4,16 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, or, sql, ilike, inArray } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, inArray, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
+import { logOperation, logUpdate } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
+import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -32,9 +34,12 @@ function rowToEmployee(row: {
     storeId: e.storeId,
     orgNodeId: e.orgNodeId,
     positionName: e.positionName,
+    avatarUrl: e.avatarUrl,
     birthday: e.birthday,
     skills: e.skills,
     isResigned: e.isResigned,
+    hiredAt: e.hiredAt,
+    resignedAt: e.resignedAt,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
     createdAt: e.createdAt?.toISOString() ?? '',
     updatedAt: e.updatedAt?.toISOString() ?? '',
@@ -43,21 +48,94 @@ function rowToEmployee(row: {
   }
 }
 
-export async function getEmployees(): Promise<Employee[]> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+/**
+ * 员工选择器数据源 — 用于顾客分配、分配营业额、开单选店员等 picker 场景。
+ * 主管理列表（含筛选 + 分页 + 乐观锁编辑）请使用 getEmployeesPaginated。
+ *
+ * 不加 LIMIT：picker 必须返回 scope 内全部员工，否则前端按 storeId 二次过滤
+ * 时会因排序截断丢失目标 store 的人（详见 2026-05-18 admin/orders/create
+ * 南昌万科店 dropdown 只显示 2 人的根因复盘）。scoped 角色天然受 scopeCondition
+ * 限制；admin 角色无 scope，会全量拉（当前 ~2000 行在职员工，prop 体量可接受）。
+ */
+export const getEmployees = withPermission(
+  'employee:list',
+  async (session): Promise<Employee[]> => {
   const rows = await db
     .select()
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
     .where(scopeCondition(session, staffWechatUsers.storeId))
-    .orderBy(staffWechatUsers.name)
-    .limit(500)
+    // 例外：picker 字母序（人眼扫视更友好）
+    .orderBy(asc(staffWechatUsers.name))
 
   return rows.map(rowToEmployee)
-}
+  },
+)
+
+/**
+ * 全公司在职「品项老师」员工 — 营业额/服务提成分配专用补充候选池。
+ *
+ * 品项老师可跨门店/跨市场被任意订单分配，故**不加 scopeCondition**，返回全部
+ * 拥有「品项老师」技能的在职员工。调用方（分配详情页）需与 getEmployees 结果按
+ * employeeId 去重合并，再交给前端按技能筛选。
+ */
+export const getItemTeachers = withPermission(
+  'employee:list',
+  async (): Promise<Employee[]> => {
+  const rows = await db
+    .select()
+    .from(staffWechatUsers)
+    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .where(and(
+      eq(staffWechatUsers.isResigned, false),
+      sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
+    ))
+    // 例外：picker 字母序（与 getEmployees 一致）
+    .orderBy(asc(staffWechatUsers.name))
+
+  return rows.map(rowToEmployee)
+  },
+)
+
+/**
+ * 搜索在职员工（不限 scope），用于推荐人选择等场景。
+ * 返回简要信息，最多 20 条。
+ */
+export const searchEmployees = withPermission(
+  'customer:update',
+  async (
+    _session,
+    keyword: string,
+  ): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> => {
+  const trimmed = keyword.trim()
+  if (!trimmed) return []
+
+  const pattern = `%${trimmed}%`
+  const rows = await db
+    .select({
+      employeeId: staffWechatUsers.employeeId,
+      name: staffWechatUsers.name,
+      phone: staffWechatUsers.phone,
+    })
+    .from(staffWechatUsers)
+    .where(
+      and(
+        eq(staffWechatUsers.isResigned, false),
+        or(
+          ilike(staffWechatUsers.name, pattern),
+          ilike(staffWechatUsers.phone, pattern),
+        ),
+      ),
+    )
+    // 例外：搜索选择器字母序
+    .orderBy(asc(staffWechatUsers.name))
+    .limit(20)
+
+  return rows
+  },
+)
 
 /** 员工列表筛选参数 */
 export interface EmployeeFilters {
@@ -81,10 +159,9 @@ export interface PaginatedEmployees {
  * status 映射：active → is_resigned = false, resigned → is_resigned = true
  * 搜索支持：姓名、员工编号、手机号（ILIKE）
  */
-export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Promise<PaginatedEmployees> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployeesPaginated = withPermission(
+  'employee:list',
+  async (session, filters: EmployeeFilters = {}): Promise<PaginatedEmployees> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -100,16 +177,16 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .from(orgNodes)
       .where(eq(orgNodes.id, filters.marketId))
       .limit(1)
-    if (node?.type === 'market') {
+    if (node?.type === '市场') {
       // 市场：筛选该市场下所有门店的员工
       const sub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
       conditions.push(inArray(staffWechatUsers.storeId, sub))
-    } else if (node?.type === 'department') {
+    } else if (node?.type === '部门') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
-    } else if (node?.type === 'store') {
+    } else if (node?.type === '门店') {
       // 门店：按 orgNodeId 查对应 storeId 过滤
       const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
         .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
@@ -151,7 +228,8 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
       .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(whereClause)
-      .orderBy(staffWechatUsers.name)
+      // 默认排序：最近编辑过的员工浮顶（admin.sys.spec.md §5），employeeId 作为稳定分页 tiebreaker
+      .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -163,12 +241,12 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
     })),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
-export async function getEmployeeById(employeeId: string): Promise<Employee | null> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployeeById = withPermission(
+  'employee:list',
+  async (session, employeeId: string): Promise<Employee | null> => {
   const rows = await db
     .select()
     .from(staffWechatUsers)
@@ -178,17 +256,17 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
 
   if (rows.length === 0) return null
   return rowToEmployee(rows[0])
-}
+  },
+)
 
 /** 获取组织架构第 2 级节点（市场 + 总部部门，用于筛选下拉） */
-export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: string; type: string }[]> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getOrgLevel2ForFilter = withPermission(
+  'employee:list',
+  async (): Promise<{ id: string; name: string; type: string }[]> => {
   const [hq] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'headquarters'))
+    .where(eq(orgNodes.type, '总部'))
     .limit(1)
   if (!hq) return []
 
@@ -196,26 +274,34 @@ export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: strin
     .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
     .from(orgNodes)
     .where(eq(orgNodes.parentId, hq.id))
-    .orderBy(orgNodes.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map(r => ({ id: r.id, name: r.name ?? '', type: r.type }))
-}
+  },
+)
 
 
-export async function createEmployee(data: {
-  phone: string
-  name: string
-  gender?: string | null
-  idCard?: string | null
-  storeId?: string | null
-  orgNodeId?: string | null
-  positionName?: string | null
-  birthday?: string | null
-  skills?: string[] | null
-}): Promise<{ success: boolean; message: string; employeeId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'employee:create')
-
+export const createEmployee = withPermission(
+  'employee:create',
+  async (
+    session,
+    data: {
+      phone: string
+      name: string
+      gender?: string | null
+      idCard?: string | null
+      storeId?: string | null
+      orgNodeId?: string | null
+      positionName?: string | null
+      birthday?: string | null
+      skills?: string[] | null
+      /** 头像 URL（admin /api/upload 返回的 cloud:// fileID 或 https CDN URL） */
+      avatarUrl?: string | null
+      /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
+      hiredAt?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; employeeId?: string }> => {
   // 服务端输入校验（手机号格式 + 必填字段）
   if (!data.name?.trim()) {
     return { success: false, message: '姓名不能为空' }
@@ -267,7 +353,10 @@ export async function createEmployee(data: {
         FROM lock
       `)
       const id = (idRows as any[])[0]?.id as string
-      if (!id) throw new Error('员工编号生成失败')
+      // P0 audit-CC5 示范：用 ApiError 替代裸 throw，让错误前缀（INVALID_STATE）
+      // 走 9 项白名单通道，前端可按 errorType 路由。
+      // 其余 33 处 admin actions 裸 throw 由 ticket-10c 全量迁移。
+      if (!id) throw new ApiError('INVALID_STATE', '员工编号生成失败')
 
       await tx.insert(staffWechatUsers).values({
         employeeId: id,
@@ -278,9 +367,13 @@ export async function createEmployee(data: {
         storeId: data.storeId ?? null,
         orgNodeId: data.orgNodeId ?? null,
         positionName: data.positionName ?? null,
+        avatarUrl: data.avatarUrl ?? null,
         birthday: data.birthday ?? null,
         skills: data.skills ?? null,
         isResigned: false,
+        // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
+        hiredAt: data.hiredAt ?? new Date().toISOString().slice(0, 10),
+        resignedAt: null,
       })
 
       return id
@@ -299,28 +392,35 @@ export async function createEmployee(data: {
   await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
   revalidatePath('/employees')
   return { success: true, message: '员工创建成功', employeeId }
-}
+  },
+)
 
-export async function updateEmployee(
-  employeeId: string,
-  data: Partial<{
-    phone: string | null
-    name: string | null
-    gender: string | null
-    idCard: string | null
-    storeId: string | null
-    orgNodeId: string | null
-    positionName: string | null
-    birthday: string | null
-    skills: string[] | null
-    isResigned: boolean
-  }>,
-  /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'employee:update')
-
+export const updateEmployee = withPermission(
+  'employee:update',
+  async (
+    session,
+    employeeId: string,
+    data: Partial<{
+      phone: string | null
+      name: string | null
+      gender: string | null
+      idCard: string | null
+      storeId: string | null
+      orgNodeId: string | null
+      positionName: string | null
+      /** 头像 URL（cloud:// fileID 或 https CDN URL；null = 清空头像） */
+      avatarUrl: string | null
+      birthday: string | null
+      skills: string[] | null
+      isResigned: boolean
+      /** 入职日期（YYYY-MM-DD） */
+      hiredAt: string | null
+      /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
+      resignedAt: string | null
+    }>,
+    /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 服务端输入校验
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
@@ -341,16 +441,9 @@ export async function updateEmployee(
     }
   }
 
-  // 如果 storeId 变更，先获取旧值以便后续同步 permission_roles scope（§AFF-03）
-  let oldStoreId: string | null = null
-  if (data.storeId !== undefined) {
-    const [current] = await db
-      .select({ storeId: staffWechatUsers.storeId })
-      .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, employeeId))
-      .limit(1)
-    oldStoreId = current?.storeId ?? null
-  }
+  // 获取旧值用于日志 diff + storeId 变更检测
+  const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
+  const oldStoreId = currentEmployee?.storeId ?? null
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
@@ -362,9 +455,28 @@ export async function updateEmployee(
       )
     : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)
 
+  // is_resigned ↔ resigned_at 双写一致：调用方仅传 isResigned 时由 action 自动推导 resignedAt
+  // - isResigned=true 且未显式给 resignedAt：写 today
+  // - isResigned=false：清空 resignedAt
+  const updateData = { ...data }
+  if (data.isResigned !== undefined && data.resignedAt === undefined) {
+    updateData.resignedAt = data.isResigned ? new Date().toISOString().slice(0, 10) : null
+  }
+
+  // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）
+  // 必须在 UPDATE is_resigned=true 之前检查：countActiveAdmins 用 is_resigned=false JOIN 过滤
+  if (data.isResigned === true) {
+    if (await isAdminEmployee(employeeId)) {
+      const adminCount = await countActiveAdmins()
+      if (adminCount <= 1) {
+        throw new Error('INVALID_STATE: 该员工是系统最后一个活跃 admin，请先转移角色')
+      }
+    }
+  }
+
   let result: any
   try {
-    result = await db.update(staffWechatUsers).set(data).where(whereConditions)
+    result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
   } catch (err: any) {
     if (err?.code === '23505') {
       if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
@@ -382,15 +494,27 @@ export async function updateEmployee(
     }
   }
 
-  // 标记离职时同步作废所有有效的 permission_roles
+  // 标记离职时事务清理权限角色 + 逐条 logOperation（audit-22 P1-22-06 顺手关闭）
   if (data.isResigned === true) {
-    await db
-      .update(permissionRoles)
-      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-      .where(and(
-        eq(permissionRoles.employeeId, employeeId),
-        eq(permissionRoles.isVoid, false),
-      ))
+    await db.transaction(async (tx) => {
+      const roles = await tx
+        .select({
+          id: permissionRoles.id,
+          role: permissionRoles.role,
+          scopeId: permissionRoles.scopeId,
+        })
+        .from(permissionRoles)
+        .where(eq(permissionRoles.employeeId, employeeId))
+      await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
+      for (const r of roles) {
+        await logOperation(session, 'permission.revoke', 'permission_role', String(r.id), {
+          role: r.role,
+          scopeId: r.scopeId,
+          employeeId,
+          batch: 'resignation',
+        })
+      }
+    })
   }
 
   // §AFF-03：门店变更时同步更新 permission_roles scope
@@ -414,7 +538,6 @@ export async function updateEmployee(
         .where(and(
           eq(permissionRoles.employeeId, employeeId),
           eq(permissionRoles.scopeId, oldStore.orgNodeId),
-          eq(permissionRoles.isVoid, false),
         ))
 
       if ((scopeResult as any).count > 0) {
@@ -426,8 +549,9 @@ export async function updateEmployee(
     }
   }
 
-  await logOperation(session, 'employee.update', 'employee', employeeId, data)
+  await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, data)
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }
-}
+  },
+)

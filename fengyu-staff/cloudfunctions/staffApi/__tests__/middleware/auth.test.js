@@ -29,6 +29,7 @@ describe('auth 中间件', () => {
         position_name: '门店经理',
         store_id: 'store-001',
         is_resigned: false,
+        skills: ['美容师', '推广师'],
         store_name: '凤御测试店',
         market_name: '华东市场',
         department: '美容部',
@@ -49,6 +50,32 @@ describe('auth 中间件', () => {
     expect(ctx.auth.storeName).toBe('凤御测试店')
     expect(ctx.auth.marketName).toBe('华东市场')
     expect(ctx.auth.department).toBe('美容部')
+    expect(ctx.auth.skills).toEqual(['美容师', '推广师'])
+  })
+
+  test('skills 为 null 兜底为空数组（P2-14 Q5）', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-no-skills' })
+    pg.query
+      .mockResolvedValueOnce([{
+        employee_id: 'emp-no-skills',
+        phone: '13800003333',
+        name: '无技能员工',
+        position_name: '美容师',
+        store_id: 'store-001',
+        is_resigned: false,
+        skills: null,
+        store_name: '凤御测试店',
+        market_name: '华东市场',
+        department: '美容部',
+      }])
+      .mockResolvedValueOnce([])
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await auth(ctx, async () => {})
+
+    expect(ctx.auth.skills).toEqual([])
+
+    invalidateAuthCache('staff-openid-no-skills')
   })
 
   test('未注册 openid 返回空 auth（新用户）', async () => {
@@ -64,6 +91,7 @@ describe('auth 中间件', () => {
     expect(ctx.auth.phone).toBeNull()
     expect(ctx.auth.staffWfId).toBeNull()
     expect(ctx.auth.roles).toEqual([])
+    expect(ctx.auth.skills).toEqual([])
 
     // 清理
     invalidateAuthCache('new-user-openid')
@@ -100,7 +128,10 @@ describe('auth 中间件', () => {
       .rejects.toThrow(/UNAUTHORIZED/)
   })
 
-  test('_testOpenid 覆盖真实 OPENID', async () => {
+  test('_testOpenid 覆盖真实 OPENID（仅 ALLOW_TEST_OPENID=true 时）', async () => {
+    const origEnv = process.env.ALLOW_TEST_OPENID
+    process.env.ALLOW_TEST_OPENID = 'true'
+
     cloud.getWXContext.mockReturnValue({ OPENID: 'real-openid' })
     pg.query
       .mockResolvedValueOnce([{
@@ -125,13 +156,51 @@ describe('auth 中间件', () => {
     await auth(ctx, async () => {})
 
     expect(ctx.auth.openid).toBe('test-override-openid')
-    // 查询用的是 test-override-openid
     expect(pg.query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE u.openid = $1'),
       ['test-override-openid']
     )
 
+    process.env.ALLOW_TEST_OPENID = origEnv
     invalidateAuthCache('test-override-openid')
+  })
+
+  test('_testOpenid 在无 ALLOW_TEST_OPENID 时被忽略（P0 安全回归）', async () => {
+    const origEnv = process.env.ALLOW_TEST_OPENID
+    delete process.env.ALLOW_TEST_OPENID
+
+    cloud.getWXContext.mockReturnValue({ OPENID: 'real-openid' })
+    pg.query
+      .mockResolvedValueOnce([{
+        employee_id: 'emp-real',
+        phone: '13800004444',
+        name: '真实员工',
+        position_name: '美容师',
+        store_id: 'store-001',
+        is_resigned: false,
+        store_name: '凤御测试店',
+        market_name: '华东市场',
+        department: null,
+      }])
+      .mockResolvedValueOnce([])
+
+    const ctx = {
+      event: { payload: { _testOpenid: 'attacker-openid' } },
+      context: {},
+      auth: {},
+      result: null,
+    }
+    await auth(ctx, async () => {})
+
+    // 应使用真实 OPENID，忽略 _testOpenid
+    expect(ctx.auth.openid).toBe('real-openid')
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE u.openid = $1'),
+      ['real-openid']
+    )
+
+    process.env.ALLOW_TEST_OPENID = origEnv
+    invalidateAuthCache('real-openid')
   })
 
   test('缓存命中时不查询数据库', async () => {

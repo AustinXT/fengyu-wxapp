@@ -1,0 +1,13 @@
+<view wx:if="{{state === 'loading'}}" class="mds-loading">
+  <van-loading type="spinner" color="#C0322A" />
+  <text wx:if="{{loadingText}}" class="mds-text">{{loadingText}}</text>
+</view>
+<view wx:elif="{{state === 'empty'}}" class="mds-empty">
+  <van-empty description="{{emptyText}}" />
+</view>
+<view wx:elif="{{state === 'error'}}" class="mds-empty">
+  <van-empty description="{{errorText}}">
+    <van-button slot="bottom" type="primary" size="small" round bind:click="onRetry">{{retryText}}</van-button>
+  </van-empty>
+</view>
+<slot wx:else />

@@ -5,7 +5,9 @@
     "pages/order-create/order-create",
     "pages/service/service",
     "pages/customer-list/customer-list",
-    "pages/profile/profile"
+    "pages/profile/profile",
+    "pages/mgmt-dashboard/mgmt-dashboard",
+    "pages/sales-data/sales-data"
   ],
   "subPackages": [
     {
@@ -16,8 +18,11 @@
         "order-detail/order-detail",
         "revenue-allocation/revenue-allocation",
         "allocation-list/allocation-list",
+        "service-commission/service-commission",
         "staff-performance/staff-performance",
-        "dashboard/dashboard"
+        "card-recharge/card-recharge",
+        "refund-list/refund-list",
+        "refund-detail/refund-detail"
       ]
     },
     {
@@ -36,6 +41,27 @@
         "appointment-detail/appointment-detail",
         "product-detail/product-detail",
         "unbind-requests/unbind-requests"
+      ]
+    },
+    {
+      "root": "packageMgmt",
+      "name": "管理层子页",
+      "pages": [
+        "mgmt-traffic-stats/mgmt-traffic-stats",
+        "mgmt-product-cycle/mgmt-product-cycle",
+        "mgmt-customer-list/mgmt-customer-list",
+        "mgmt-customer-detail/mgmt-customer-detail"
+      ]
+    },
+    {
+      "root": "packageMy",
+      "name": "我的子页",
+      "pages": [
+        "inventory/inventory",
+        "inventory/list",
+        "inventory/detail",
+        "pickup/pickup-by-customer",
+        "pickup/pickup-list"
       ]
     }
   ],
@@ -59,7 +85,7 @@
       },
       {
         "pagePath": "pages/service/service",
-        "text": "护理",
+        "text": "服务",
         "iconPath": "images/icons/tab-service.png",
         "selectedIconPath": "images/icons/tab-service-active.png"
       },

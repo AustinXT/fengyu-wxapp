@@ -30,7 +30,7 @@ Page({
     try {
       const data = await callClientApi('card.list');
       const cards = data.cards || [];
-      const totalBalance = cards.reduce((sum: number, c: any) => sum + (c.balance || 0), 0);
+      const totalBalance = cards.reduce((sum: number, c: any) => sum + (Number(c.balance) || 0), 0);
       this.setData({ cards, totalBalance });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
@@ -57,7 +57,7 @@ Page({
         ...r,
         displayDate: formatShortDate(r.createdAt),
         displayAmount: formatAmount(r.amount),
-        isPositive: r.amount >= 0,
+        isPositive: Number(r.amount) >= 0,
       }));
       this.setData({ transactions });
     } catch (err: any) {

@@ -34,6 +34,13 @@ describe('formatCurrency', () => {
   it('负数（退款场景）', () => {
     expect(formatCurrency(-100)).toBe('¥-100.00')
   })
+
+  it('空值/非数值兜底为 ¥0.00（历史数据金额 NULL 不致整页崩溃）', () => {
+    expect(formatCurrency(null)).toBe('¥0.00')
+    expect(formatCurrency(undefined)).toBe('¥0.00')
+    expect(formatCurrency('')).toBe('¥0.00')
+    expect(formatCurrency('abc')).toBe('¥0.00')
+  })
 })
 
 describe('formatPhone', () => {
@@ -89,9 +96,9 @@ describe('calcCouponDiscount', () => {
     expect(calcCouponDiscount('现金券', '50', null, 30)).toBe(30) // 订单金额不足
   })
 
-  it('项目券：同现金券逻辑', () => {
-    expect(calcCouponDiscount('项目券', '100', null, 500)).toBe(100)
-    expect(calcCouponDiscount('项目券', '100', null, 80)).toBe(80)
+  it('品项券：同现金券逻辑', () => {
+    expect(calcCouponDiscount('品项券', '100', null, 500)).toBe(100)
+    expect(calcCouponDiscount('品项券', '100', null, 80)).toBe(80)
   })
 
   it('折扣券：按折扣率计算', () => {

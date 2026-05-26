@@ -8,6 +8,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
+const { logOperation, logTransition } = require('../utils/operation-log')
 
 /**
  * 格式化时间为北京时间可读格式：M月D日 HH:mm
@@ -47,7 +48,7 @@ async function list(ctx) {
   const { status, todayOnly, page = 1, pageSize = 50 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
 
   if (status && status !== 'all') {
@@ -141,7 +142,7 @@ async function detail(ctx) {
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
     LEFT JOIN service_orders so ON so.appointment_id = a.appointment_id
     WHERE a.appointment_id = $1 AND a.store_id = $2
-  `, [id, ctx.auth.storeId])
+  `, [id, ctx.auth.effectiveStoreId])
 
   if (appointments.length === 0) {
     throw new Error('INVALID_PARAMS: 预约不存在或不属于本门店')
@@ -183,7 +184,7 @@ async function confirm(ctx) {
 
   const appointments = await pg.query(
     'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
-    [appointmentId, ctx.auth.storeId]
+    [appointmentId, ctx.auth.effectiveStoreId]
   )
 
   if (appointments.length === 0) {
@@ -201,14 +202,17 @@ async function confirm(ctx) {
   }
 
   const now = new Date()
-  const result = await pg.query(
-    "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2 AND status = '待确认'",
-    [now, appointmentId]
-  )
-
-  if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
-  }
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2 AND status = '待确认'",
+      [now, appointmentId]
+    )
+    if (result.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
+    }
+    // 审计日志
+    await logTransition(client, ctx, 'appointment.confirm', 'appointment', appointmentId, '待确认', '已确认')
+  })
 
   ctx.result = {
     appointmentId,
@@ -230,7 +234,7 @@ async function checkin(ctx) {
 
   const appointments = await pg.query(
     'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
-    [appointmentId, ctx.auth.storeId]
+    [appointmentId, ctx.auth.effectiveStoreId]
   )
 
   if (appointments.length === 0) {
@@ -258,10 +262,19 @@ async function checkin(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
-    [now, appointmentId]
-  )
+  await pg.transaction(async (client) => {
+    // CAS-EXEMPT: 仅写 checkin_at 时间戳，不翻 status
+    await client.query(
+      'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
+      [now, appointmentId]
+    )
+    // 审计日志（签到仅打时间戳不翻状态，用 logOperation）
+    await logOperation(client, ctx, 'appointment.checkin', 'appointment', appointmentId, {
+      _v: 3,
+      status: appt.status,
+      checkinAt: now.toISOString(),
+    })
+  })
 
   ctx.result = {
     appointmentId,

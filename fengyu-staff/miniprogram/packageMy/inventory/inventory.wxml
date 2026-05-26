@@ -1,0 +1,22 @@
+<!-- packageMy/inventory/inventory.wxml — 库存管理首页 -->
+<view class="container">
+  <view class="page-tip">
+    <text>本门店库存查询。如需新建/编辑单据，请联系门店管理员在后台操作。</text>
+  </view>
+
+  <view class="grid">
+    <view
+      class="card"
+      wx:for="{{categories}}"
+      wx:key="key"
+      data-key="{{item.key}}"
+      bindtap="onCategoryTap"
+    >
+      <view class="icon-wrap" style="background-color: {{item.color}}22;">
+        <van-icon name="{{item.icon}}" size="28px" color="{{item.color}}" />
+      </view>
+      <view class="card-title">{{item.title}}</view>
+      <view class="card-desc">{{item.desc}}</view>
+    </view>
+  </view>
+</view>

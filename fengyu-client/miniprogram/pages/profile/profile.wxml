@@ -1,6 +1,4 @@
 <!-- pages/profile/profile.wxml — 我的 -->
-<van-toast id="van-toast" />
-
 <view class="container">
 
   <!-- 头部卡片（品牌渐变） -->
@@ -46,27 +44,6 @@
     </view>
   </view>
 
-  <!-- 我的订单快捷入口 -->
-  <view class="section-title">我的订单</view>
-  <view class="order-shortcuts">
-    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="待支付">
-      <van-icon name="clock-o" size="44rpx" color="#FAAD14" />
-      <text class="order-shortcut-label">待支付</text>
-    </view>
-    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="已支付">
-      <van-icon name="passed" size="44rpx" color="#52C41A" />
-      <text class="order-shortcut-label">已支付</text>
-    </view>
-    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="已完成">
-      <van-icon name="success" size="44rpx" color="#8C8C8C" />
-      <text class="order-shortcut-label">已完成</text>
-    </view>
-    <view class="order-shortcut-item" bindtap="onOrders">
-      <van-icon name="orders-o" size="44rpx" color="#C0322A" />
-      <text class="order-shortcut-label">全部</text>
-    </view>
-  </view>
-
   <!-- 我的服务 -->
   <view class="section-title">我的服务</view>
   <van-cell-group inset>
@@ -100,30 +77,11 @@
       is-link
       bindtap="onServiceRecords"
     />
-  </van-cell-group>
-
-  <!-- 账户设置 -->
-  <view class="section-title" style="margin-top:32rpx">账户设置</view>
-  <van-cell-group inset>
-    <!-- 使用 button + getPhoneNumber 获取手机号 -->
-    <button
-      class="phone-bind-btn"
-      open-type="getPhoneNumber"
-      bindgetphonenumber="onGetPhoneNumber"
-    >
-      <van-cell
-        title="绑定手机号"
-        icon="phone-o"
-        is-link
-        value="{{maskedPhone || '未绑定'}}"
-      />
-    </button>
     <van-cell
-      title="切换门店"
-      icon="shop-o"
+      title="邀请有礼"
+      icon="gift-o"
       is-link
-      bindtap="onSwitchStore"
-      value="{{boundStoreName || '未选择'}}"
+      bindtap="onMemberBenefits"
     />
   </van-cell-group>
 
@@ -143,7 +101,7 @@
       value="400-000-0000"
       bindtap="onCallService"
     />
-    <van-cell title="版本" icon="setting-o" value="v1.0.0" />
+    <van-cell title="版本" icon="setting-o" value="{{appVersion}}" />
   </van-cell-group>
 
   <view class="bottom-space" />

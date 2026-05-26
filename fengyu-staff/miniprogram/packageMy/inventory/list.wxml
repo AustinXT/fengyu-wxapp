@@ -1,0 +1,61 @@
+<!-- packageMy/inventory/list.wxml -->
+<view class="container">
+  <view class="filters">
+    <view class="filter-row" wx:if="{{subtypes.length > 0}}">
+      <view class="filter-chip {{subtypeFilter === '' ? 'active' : ''}}" data-value="" bindtap="onSubtypeTap">全部</view>
+      <view
+        wx:for="{{subtypes}}"
+        wx:key="*this"
+        class="filter-chip {{subtypeFilter === item ? 'active' : ''}}"
+        data-value="{{item}}"
+        bindtap="onSubtypeTap"
+      >
+        {{item}}
+      </view>
+    </view>
+    <view class="search-row">
+      <input
+        class="search-input"
+        placeholder="搜索单据号 / 备注"
+        value="{{keyword}}"
+        bindinput="onSearchInput"
+        confirm-type="search"
+        bindconfirm="onSearchConfirm"
+      />
+    </view>
+  </view>
+
+  <view class="list">
+    <view
+      class="item"
+      wx:for="{{items}}"
+      wx:key="id"
+      data-id="{{item.id}}"
+      bindtap="onItemTap"
+    >
+      <view class="item-head">
+        <text class="item-id">{{item.id}}</text>
+        <text class="item-status status-{{item.statusKey}}">{{item.status}}</text>
+      </view>
+      <view class="item-meta">
+        <text wx:if="{{item.docSubtype}}" class="meta-tag">{{item.docSubtype}}</text>
+        <text class="meta-text">{{item.docDate}}</text>
+      </view>
+      <view class="item-body">
+        <text class="store">{{item.storeName || item.storeId}}</text>
+        <text wx:if="{{item.counterpartStoreName}}" class="counterpart">→ {{item.counterpartStoreName}}</text>
+        <text wx:if="{{item.customerName}}" class="customer">{{item.customerName}}</text>
+      </view>
+      <view class="item-foot">
+        <text class="qty">总数量：{{item.totalQuantity || '—'}}</text>
+        <text wx:if="{{item.createdByName}}" class="by">录入：{{item.createdByName}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{!loading && items.length === 0}}" class="empty">
+      暂无单据
+    </view>
+    <view wx:if="{{loading}}" class="loading">加载中...</view>
+    <view wx:if="{{!hasMore && items.length > 0}}" class="no-more">没有更多数据</view>
+  </view>
+</view>

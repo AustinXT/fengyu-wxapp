@@ -1,0 +1,53 @@
+/* packageMy/inventory/inventory.wxss */
+.container {
+  padding: 24rpx;
+  background-color: #F5F5F5;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.page-tip {
+  background: #FFF8E1;
+  border-radius: 12rpx;
+  padding: 16rpx 24rpx;
+  font-size: 24rpx;
+  color: #8a6d3b;
+  margin-bottom: 24rpx;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24rpx;
+}
+
+.card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 32rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.03);
+}
+
+.icon-wrap {
+  width: 80rpx;
+  height: 80rpx;
+  border-radius: 16rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-title {
+  font-size: 32rpx;
+  font-weight: 500;
+  color: #1A1A1A;
+}
+
+.card-desc {
+  font-size: 24rpx;
+  color: #999;
+}

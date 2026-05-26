@@ -1,0 +1,1 @@
+CREATE INDEX "idx_svc_orders_status_updated" ON "service_orders" USING btree ("status","updated_at" DESC NULLS LAST,"created_at" DESC NULLS LAST);

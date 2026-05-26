@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { jwtVerify } from "jose"
 import { uploadFile } from "@/lib/cloudbase"
+import { JWT_SECRET } from "@/lib/jwt-secret"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
-const MAX_SIZE = 5 * 1024 * 1024 // 5MB
+const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 // 5MB
+const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图专用）
+const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
-)
 const COOKIE_NAME = 'fy-admin-token'
 
 export async function POST(req: NextRequest) {
@@ -37,16 +37,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    if (file.size > MAX_SIZE) {
-      return NextResponse.json(
-        { error: "文件大小不能超过 5MB" },
-        { status: 400 }
-      )
-    }
-
     // exactKey: use as-is; path: generate timestamped name under that path
     const exactKey = formData.get("exactKey") as string | null
     const pathPrefix = formData.get("path") as string | null
+
+    // 凤御馆宣传图是超长品牌图，单独放宽到 20MB；其余维持 5MB
+    const maxSize = exactKey === FENGYUGUAN_KEY ? MAX_SIZE_FENGYUGUAN : MAX_SIZE_DEFAULT
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { error: `文件大小不能超过 ${maxSize / 1024 / 1024}MB` },
+        { status: 400 }
+      )
+    }
 
     let cloudPath: string
     if (exactKey) {

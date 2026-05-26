@@ -1,0 +1,26 @@
+title = "fengyu-wxapp gitleaks config"
+
+# 扩展默认规则集（保留 gitleaks 内置 150+ 条规则）
+[extend]
+useDefault = true
+
+# ─── 腾讯云 ─────────────────────────────────────────────────────
+[[rules]]
+id          = "tencent-cloud-secret-id"
+description = "Tencent Cloud SecretId"
+regex       = '''AKID[A-Za-z0-9]{32,40}'''
+tags        = ["tencent", "cloud", "key"]
+
+# ─── 全局白名单（减少误报）──────────────────────────────────────
+[allowlist]
+description = "测试夹具与示例占位符"
+paths = [
+  '''.env.example''',
+  # 拉卡拉 PEM 归一化单测：夹具用占位 PEM（body 为 ABC/DEF/XYZ），非真实密钥
+  '''.*__tests__/.*lakala-config\.test\.js''',
+]
+regexes = [
+  # PEM 头尾包裹的占位短串（测试夹具）：BEGIN ... 后紧跟字面量 \n + 3-8 位占位字符
+  '''-----BEGIN [A-Z ]+-----\\+n[A-Z]{1,8}\\+n-----END [A-Z ]+-----''',
+  '''(?i)your[_\-]?(api[_\-]?)?key''',
+]

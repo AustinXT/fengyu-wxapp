@@ -5,6 +5,7 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     transaction: vi.fn(),
   },
 }))
@@ -22,6 +23,7 @@ vi.mock('@db/user', () => ({
     birthday: 'birthday',
     skills: 'skills',
     isResigned: 'is_resigned',
+    createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
 }))
@@ -35,10 +37,15 @@ vi.mock('@db/permission', () => ({
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
-    isVoid: 'is_void',
-    voidedAt: 'voided_at',
+    role: 'role',
+    scopeId: 'scope_id',
     updatedBy: 'updated_by',
   },
+}))
+
+vi.mock('@/lib/admin-guard', () => ({
+  countActiveAdmins: vi.fn().mockResolvedValue(5),
+  isAdminEmployee: vi.fn().mockResolvedValue(false),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -53,6 +60,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -66,6 +75,8 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
     vi.fn((...args) => ({ type: 'sql', args })),
     { raw: vi.fn() },
@@ -76,12 +87,13 @@ vi.mock('drizzle-orm/pg-core', () => ({
   alias: vi.fn((_table, aliasName) => ({ _aliasName: aliasName })),
 }))
 
-import { createEmployee, updateEmployee, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
+import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull } from 'drizzle-orm'
+import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -329,35 +341,99 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.message).toContain('不存在或无权')
   })
 
-  it('isResigned=true → 同步作废权限角色', async () => {
+  /** 离职事务 mock：返回员工现有角色列表 + delete + log 链 */
+  function mockResignTransaction(roles: any[]) {
+    const txDelete = vi.fn().mockResolvedValue({})
+    const txLimit = vi.fn() // 不需要
+    const txWhere = vi.fn().mockResolvedValue(roles)
+    const txFrom = vi.fn().mockReturnValue({ where: txWhere })
+    const txSelect = vi.fn().mockReturnValue({ from: txFrom })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: txSelect,
+        delete: vi.fn().mockReturnValue({ where: txDelete }),
+      }
+      return fn(tx)
+    })
+    return { txDelete }
+  }
+
+  it('isResigned=true (非 admin) → 事务清理权限角色 + 逐条 logOperation', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    // 第一次 update：更新员工
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    // 第二次 update：作废权限
-    const roleWhere = vi.fn().mockResolvedValue({})
-    const roleSet = vi.fn().mockReturnValue({ where: roleWhere })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
-    })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    mockResignTransaction([
+      { id: 11, role: 'manager', scopeId: 'store-A' },
+      { id: 12, role: 'staff', scopeId: 'store-A' },
+    ])
 
     const result = await updateEmployee('FY-001', { isResigned: true })
 
     expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalledTimes(2) // 员工 + 权限
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledTimes(2)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'permission.revoke',
+      'permission_role',
+      '11',
+      expect.objectContaining({ role: 'manager', scopeId: 'store-A', employeeId: 'FY-001', batch: 'resignation' }),
+    )
   })
 
-  it('权限作废失败 → 重新抛出（不静默忽略）', async () => {
+  it('isResigned=true 但是最后一个活跃 admin → 抛 INVALID_STATE (UPDATE 未发生)', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(isAdminEmployee as any).mockResolvedValueOnce(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(1)
+
+    await expect(
+      updateEmployee('FY-001', { isResigned: true }),
+    ).rejects.toThrow(/INVALID_STATE: 该员工是系统最后一个活跃 admin/)
+
+    expect(db.update).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('isResigned=true admin 但 count=2 → 成功离职 + 角色清理', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(isAdminEmployee as any).mockResolvedValueOnce(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(2)
+    const empWhere = vi.fn().mockResolvedValue({ count: 1 })
+    const empSet = vi.fn().mockReturnValue({ where: empWhere })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    mockResignTransaction([{ id: 99, role: 'admin', scopeId: 'hq-1' }])
+
+    const result = await updateEmployee('FY-002', { isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'permission.revoke',
+      'permission_role',
+      '99',
+      expect.objectContaining({ role: 'admin', scopeId: 'hq-1', employeeId: 'FY-002', batch: 'resignation' }),
+    )
+  })
+
+  it('事务内 delete 抛错 → 整个 updateEmployee 抛出（事务回滚由 Drizzle 处理）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    const roleSet = vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 1, role: 'manager', scopeId: 'store-A' }]),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockRejectedValue(new Error('connection lost')),
+        }),
+      }
+      return fn(tx)
     })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
@@ -430,12 +506,13 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(result.success).toBe(true)
     // db.update 应被调用 2 次：员工更新 + scope 同步
     expect(db.update).toHaveBeenCalledTimes(2)
-    // logOperation 应被调用 2 次：permission.scopeSync + employee.update
-    expect(logOperation).toHaveBeenCalledTimes(2)
+    // logOperation 1 次：permission.scopeSync；logUpdate 1 次：employee.update
+    expect(logOperation).toHaveBeenCalledTimes(1)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
       expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
     )
+    expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 
   it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
@@ -511,10 +588,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
 
     expect(result.success).toBe(true)
     // scope UPDATE 执行了但 rowCount=0 → 不写 scopeSync 日志
-    expect(logOperation).toHaveBeenCalledTimes(1) // 仅 employee.update
-    expect(logOperation).toHaveBeenCalledWith(
-      mockSession, 'employee.update', 'employee', 'FY-001', expect.anything(),
-    )
+    expect(logOperation).not.toHaveBeenCalled() // scopeSync 被跳过
+    expect(logUpdate).toHaveBeenCalledTimes(1) // 仅 employee.update
   })
 })
 
@@ -590,6 +665,39 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(result.data[0].name).toBe('张三')
     expect(result.data[0].storeName).toBe('南昌旗舰店')
     expect(result.data[0].departmentName).toBe('美容部')
+  })
+
+  // admin.sys.spec.md §5 默认排序：最近编辑过的员工浮顶，employeeId 作分页 tiebreaker
+  it('默认 orderBy 首键为 desc(updatedAt)，带 createdAt DESC + employeeId ASC', async () => {
+    // 专门 mock 以捕获 DATA 查询的 orderBy 参数
+    let dataOrderBy: any = null
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        const where = vi.fn().mockResolvedValue([{ count: 0 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      const offset = vi.fn().mockResolvedValue([])
+      const limit = vi.fn().mockReturnValue({ offset })
+      dataOrderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy: dataOrderBy })
+      const leftJoin4 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+
+    await getEmployeesPaginated()
+
+    expect(dataOrderBy).toHaveBeenCalledTimes(1)
+    const args = dataOrderBy.mock.calls[0]
+    expect(args[0]).toMatchObject({ type: 'desc', col: 'updated_at' })
+    expect(args[1]).toMatchObject({ type: 'desc', col: 'created_at' })
+    expect(args[2]).toMatchObject({ type: 'asc', col: 'employee_id' })
   })
 
   it('空数据 → { data: [], total: 0 }', async () => {
@@ -687,7 +795,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'market' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '市场' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -730,7 +838,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'department' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '部门' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -786,9 +894,9 @@ describe('getOrgLevel2ForFilter', () => {
       }
       // 查询子节点: select → from → where → orderBy
       const orderBy = vi.fn().mockResolvedValue([
-        { id: 'market-1', name: '南昌市场', type: 'market' },
-        { id: 'market-2', name: '九江市场', type: 'market' },
-        { id: 'dept-1', name: '人事部', type: 'department' },
+        { id: 'market-1', name: '南昌市场', type: '市场' },
+        { id: 'market-2', name: '九江市场', type: '市场' },
+        { id: 'dept-1', name: '人事部', type: '部门' },
       ])
       const where = vi.fn().mockReturnValue({ orderBy })
       const from = vi.fn().mockReturnValue({ where })
@@ -798,9 +906,9 @@ describe('getOrgLevel2ForFilter', () => {
     const result = await getOrgLevel2ForFilter()
 
     expect(result).toEqual([
-      { id: 'market-1', name: '南昌市场', type: 'market' },
-      { id: 'market-2', name: '九江市场', type: 'market' },
-      { id: 'dept-1', name: '人事部', type: 'department' },
+      { id: 'market-1', name: '南昌市场', type: '市场' },
+      { id: 'market-2', name: '九江市场', type: '市场' },
+      { id: 'dept-1', name: '人事部', type: '部门' },
     ])
   })
 
@@ -813,5 +921,68 @@ describe('getOrgLevel2ForFilter', () => {
     const result = await getOrgLevel2ForFilter()
 
     expect(result).toEqual([])
+  })
+})
+
+// 2026-05-18 picker LIMIT 截断回归：getEmployees() 是开单/服务单/分配/客户分配 picker
+// 共用数据源；曾经写死 .limit(500)，全库 2000+ 员工时按 name 排序后某店员工被截断，
+// 导致 admin /orders/create 选南昌万科店时下拉只显示 2 人（其余 14 人因 name 落在 500
+// 行之后被截）。这里断言链路不再调 limit，且 select 链路顺序为 from → leftJoin × 2 →
+// where → orderBy。
+describe('getEmployees — picker 数据源不得有 LIMIT', () => {
+  const pickerSession = {
+    employeeId: 'ADMIN-001',
+    name: 'admin',
+    phone: '',
+    roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+    permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(pickerSession)
+  })
+
+  it('链路止于 orderBy（不再链式 .limit），并返回全量行', async () => {
+    const allRows = Array.from({ length: 1234 }, (_, i) => ({
+      staff_wechat_users: {
+        employeeId: `FY-${String(i).padStart(6, '0')}`,
+        openid: null,
+        phone: null,
+        name: `员工${i}`,
+        gender: null,
+        idCard: null,
+        storeId: i % 2 === 0 ? 'store-A' : 'store-B',
+        orgNodeId: null,
+        positionName: '美容师',
+        avatarUrl: null,
+        birthday: null,
+        skills: ['美容师'],
+        isResigned: false,
+        hiredAt: null,
+        resignedAt: null,
+        lastLoginAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      stores: { storeName: i % 2 === 0 ? '南昌万科店' : '南昌天虹店' },
+      org_nodes: null,
+    }))
+
+    // orderBy 直接 resolve 全量数据；如果代码意外再调 .limit 会得到 undefined.limit
+    // → TypeError，测试失败。
+    const orderBy = vi.fn().mockResolvedValue(allRows)
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin2 = vi.fn().mockReturnValue({ where })
+    const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+    const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getEmployees()
+
+    expect(result).toHaveLength(1234)
+    expect(orderBy).toHaveBeenCalledTimes(1)
+    // 防止有人未来再加回 .limit() —— orderBy 返回的 promise 上不应有 .limit 被调
+    expect((orderBy.mock.results[0]?.value as any).limit).toBeUndefined()
   })
 })

@@ -1,7 +1,7 @@
 // pagesProfile/points/points.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTimeShort } from '../../utils/format';
 
 const PAGE_SIZE = 20;
 
@@ -10,7 +10,6 @@ Page({
     balance: 0,
     levelName: '',
     nextLevel: null as { name: string; minPoints: number } | null,
-    activeTab: 0,
     records: [] as any[],
     isLoading: false,
     loadingMore: false,
@@ -57,16 +56,10 @@ Page({
   _mapRecords(raw: any[]) {
     return raw.map((r: any) => ({
       ...r,
-      displayDate: formatDateTime(r.createdAt),
+      displayDate: formatDateTimeShort(r.createdAt),
       displayAmount: r.amount > 0 ? `+${r.amount}` : `${r.amount}`,
       isEarn: r.amount > 0,
     }));
-  },
-
-  _buildPayload() {
-    const typeMap = ['all', 'earn', 'redeem'];
-    const type = typeMap[this.data.activeTab] || 'all';
-    return { type: type === 'all' ? undefined : type };
   },
 
   /** 加载首页（重置分页） */
@@ -75,7 +68,6 @@ Page({
     this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
       const data = await callClientApi('points.history', {
-        ...this._buildPayload(),
         page: 1,
         pageSize: PAGE_SIZE,
       });
@@ -98,7 +90,6 @@ Page({
     this.setData({ loadingMore: true });
     try {
       const data = await callClientApi('points.history', {
-        ...this._buildPayload(),
         page: this._page,
         pageSize: PAGE_SIZE,
       });
@@ -115,9 +106,4 @@ Page({
     }
   },
 
-  onTabChange(e: WechatMiniprogram.CustomEvent) {
-    const index = e.detail.index;
-    this.setData({ activeTab: index });
-    this.loadHistory();
-  },
 });

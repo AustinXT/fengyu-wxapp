@@ -28,6 +28,41 @@
   background: transparent;
 }
 
+/* ===== PR-B：普通商品模式的自定义分组侧边栏（替代 van-sidebar）===== */
+.grouped-sidebar {
+  background: transparent;
+}
+/* group header（一级 kind 名）：不可点击、视觉弱化 */
+.group-header {
+  font-size: 24rpx;
+  color: #888888;
+  background: #F7F7F7;
+  padding: 12rpx 16rpx;
+  letter-spacing: 1rpx;
+  /* 防御性：禁止 tap 透传 */
+  pointer-events: none;
+  user-select: none;
+}
+/* 子项（二级 category 名） */
+.cat-item {
+  position: relative;
+  font-size: 28rpx;
+  color: #333333;
+  background: #F5F2EE;
+  padding: 22rpx 16rpx;
+  line-height: 1.3;
+  border-left: 4rpx solid transparent;
+}
+.cat-item-hover {
+  background: #EAE5DE;
+}
+.cat-item--active {
+  background: #FFFFFF;
+  color: var(--color-primary);
+  font-weight: 600;
+  border-left-color: var(--color-primary);
+}
+
 /* 右侧商品滚动区 */
 .product-scroll {
   flex: 1;
@@ -42,93 +77,163 @@
 }
 
 
+/* ===== BundlePicker 子视图 ===== */
+.bundle-picker-wrap {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+/* host 兜底：自定义组件元素需显式 flex+block 才能撑满 wrap，否则
+   宽度不满（右侧空白）+ 高度不约束（footer 被页面 bottom-bar 遮挡）。 */
+.bundle-picker-wrap bundle-picker {
+  flex: 1;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ===== 体验卡扁平卡片列表（无侧边栏；参照 admin TrialCardPicker） ===== */
+.trial-card-scroll {
+  flex: 1;
+  overflow: hidden;
+  padding: 16rpx;
+  box-sizing: border-box;
+}
+.trial-card-empty {
+  padding: 80rpx 0;
+}
+.trial-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+.trial-card-item {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 24rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12rpx;
+}
+/* 第 1 行：名称独占整行（全宽，单行 ellipsis） */
+.trial-card-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 第 2 行：左 meta + 右 价格/加入 */
+.trial-card-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+.trial-card-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  line-height: 1.4;
+}
+.trial-card-right {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  flex-shrink: 0;
+}
+.trial-card-price {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+.trial-card-add-btn {
+  font-size: 24rpx;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
+  border-radius: 28rpx;
+  padding: 6rpx 22rpx;
+  line-height: 1.4;
+}
+
+/* ===== 双价展示（原价划线 + 特价红字）：列表与购物车共用 ===== */
+.price-dual {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+.price-original {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+}
+.price-special {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
 /* ===== SPU 卡片列表（图文卡片） ===== */
 .spu-list-inner {
   padding-bottom: 16rpx;
 }
 
-.spu-card {
+/* ===== SKU 网格（体验卡 / 充值卡 简化布局）===== */
+.spu-list-inner--grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16rpx;
+}
+.sku-grid-item {
   background: #FFFFFF;
-  border-radius: 16rpx;
-  overflow: hidden;
-  margin-bottom: 16rpx;
-}
-
-.spu-cover {
-  width: 100%;
-  height: 220rpx;
-  display: block;
-}
-
-.cover-placeholder {
+  border-radius: 12rpx;
+  padding: 24rpx 16rpx;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #F5F2EE 0%, #EDE8E0 100%);
+  gap: 12rpx;
+  border: 2rpx solid transparent;
 }
-
-.spu-body {
-  padding: 18rpx 20rpx 16rpx;
-}
-
-.spu-tags {
-  display: flex;
-  gap: 8rpx;
-  margin-bottom: 12rpx;
-  flex-wrap: wrap;
-}
-
-.spu-name {
-  display: block;
-  font-size: 28rpx;
-  font-weight: 600;
+.sku-grid-name {
+  font-size: 26rpx;
   color: var(--color-text-primary);
-  line-height: 1.45;
-  margin-bottom: 16rpx;
+  text-align: center;
+  line-height: 1.4;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+.sku-grid-price {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+.sku-grid-price .price-symbol { font-size: 24rpx; }
+.sku-grid-price .price-integer { font-size: 40rpx; }
 
-.spu-footer {
+/* ===== 已选项目弹层 ===== */
+.cart-popup { padding: 24rpx 32rpx; padding-bottom: calc(24rpx + env(safe-area-inset-bottom)); }
+.cart-popup-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.price-start {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  margin-left: 4rpx;
-}
-
-.spu-add-btn {
-  width: 56rpx;
-  height: 56rpx;
-  background: var(--color-primary);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-/* ===== 购物车内联展示 ===== */
-.cart-items-inline {
-  background: #FFFFFF;
-  border-radius: 12rpx;
-  padding: 16rpx;
-  margin-top: 8rpx;
-}
-.cart-inline-title {
-  display: block;
-  font-size: 24rpx;
-  color: var(--color-text-hint);
-  margin-bottom: 12rpx;
-  padding-bottom: 8rpx;
+  padding-bottom: 16rpx;
+  margin-bottom: 8rpx;
   border-bottom: 1rpx solid #F0EDE9;
 }
+.cart-popup-title { font-size: 30rpx; font-weight: 700; color: var(--color-text-primary); }
+.cart-popup-clear { font-size: 26rpx; color: var(--color-primary); padding: 8rpx 12rpx; }
+.cart-popup-list { max-height: 60vh; }
 .cart-item {
   display: flex;
   align-items: center;
@@ -138,7 +243,8 @@
 .cart-item:last-child { border-bottom: none; }
 .cart-item-info { flex: 1; }
 .cart-item-name { font-size: 26rpx; color: var(--color-text-primary); display: block; }
-.cart-item-spec { font-size: 22rpx; color: var(--color-text-secondary); }
+.cart-item-spec { font-size: 22rpx; color: var(--color-text-secondary); display: block; margin-top: 4rpx; }
+.cart-item-unitprice { display: flex; align-items: baseline; gap: 8rpx; margin-top: 6rpx; }
 .cart-item-right { display: flex; align-items: center; gap: 12rpx; }
 .cart-item-price { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
 
@@ -153,8 +259,10 @@
   border-top: 1rpx solid var(--color-border);
   gap: 12rpx;
 }
+.bottom-bar-cart { display: flex; align-items: center; padding: 8rpx 4rpx; }
+.bottom-bar-cart-text { font-size: 24rpx; color: var(--color-text-secondary); }
+.bottom-bar-cart--disabled .bottom-bar-cart-text { color: var(--color-text-hint); }
 .bottom-bar-mid { flex: 1; display: flex; flex-direction: column; align-items: flex-end; padding-right: 8rpx; }
-.bottom-bar-count { font-size: 22rpx; color: var(--color-text-hint); }
 .bottom-bar-total { font-size: 34rpx; font-weight: 700; color: var(--color-primary); }
 
 /* ===== 结算弹层 ===== */
@@ -345,21 +453,21 @@
   justify-content: flex-end;
 }
 
-/* ===== 开单类型卡片（Step 1）===== */
+/* ===== 订单类型卡片（Step 2 顶部；PR-C §C1）===== */
 .order-type-cards {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 16rpx;
   margin-bottom: 20rpx;
 }
 .order-type-card {
   flex: 1;
-  min-width: 28%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8rpx;
-  padding: 24rpx 12rpx;
+  padding: 20rpx 12rpx;
   background: #F5F2EE;
   border: 2rpx solid var(--color-border);
   border-radius: 16rpx;
@@ -371,4 +479,166 @@
 .order-type-card--disabled { opacity: 0.5; }
 .order-type-card-name { font-size: 28rpx; font-weight: 600; color: var(--color-text-primary); }
 .order-type-card-name--gray { color: #CCC; }
-.order-type-card-desc { font-size: 22rpx; color: var(--color-text-hint); }
+.order-type-card-desc { font-size: 22rpx; color: var(--color-text-hint); text-align: center; }
+
+/* ===== PR-C §C2 内部单视觉 ===== */
+/* 合计行"内部单 5 折"红底徽章 + 划线原价 */
+.confirm-total-label-group {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+.confirm-internal-badge {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  letter-spacing: 1rpx;
+}
+.confirm-total-price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+}
+.confirm-total-strikethrough {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+}
+/* 行级实付：内部单双价 */
+.confirm-internal-price {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+.confirm-item-origprice {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+}
+/* 内部单 discount 输入禁用态 */
+.confirm-discount-input-wrap--disabled {
+  background: #F5F2EE;
+  opacity: 0.6;
+}
+
+/* ===== Wave 3G 储值卡预选抵扣区 ===== */
+.prepaid-card-section {
+  background: #FFFAF3;
+  border: 1rpx solid #F5E0C8;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 16rpx;
+}
+.prepaid-card-section-title {
+  display: block;
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 12rpx;
+}
+.prepaid-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4rpx 0;
+}
+.prepaid-card-info {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+  flex: 1;
+}
+.prepaid-card-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.prepaid-card-balance {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-card-switch-wrap {
+  flex-shrink: 0;
+}
+.prepaid-card-deduct-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed #F5E0C8;
+}
+.prepaid-card-deduct-label {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-card-deduct-amount {
+  font-size: 30rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.prepaid-card-deduct-hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  font-weight: 400;
+  margin-left: 6rpx;
+}
+.prepaid-card-empty-hint {
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed #F5E0C8;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 实付金额 + 全额抵扣副文案 ===== */
+.prepaid-paid-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12rpx 4rpx 4rpx;
+}
+.prepaid-paid-label {
+  font-size: 28rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-paid-amount {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+.prepaid-paid-fullcover-hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-align: right;
+  padding-right: 4rpx;
+  margin-bottom: 16rpx;
+}
+
+/* ===== 警示副文案（温和强调色 #FA8C16） ===== */
+.prepaid-warning-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 16rpx 0 8rpx;
+}
+.prepaid-warning-text {
+  font-size: 24rpx;
+  color: #FA8C16;
+  font-weight: 500;
+}
+
+/* ===== B5 寄存单 banner ===== */
+.deposit-banner {
+  background: #FFF7E6;
+  border: 1rpx solid #FA8C16;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 24rpx;
+  font-size: 26rpx;
+  color: #874D00;
+  line-height: 1.5;
+}

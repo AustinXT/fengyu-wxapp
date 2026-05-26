@@ -3,6 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { recomputeAmounts } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -19,6 +20,7 @@ interface Staff {
   employee_id: string;
   name: string;
   position: string;
+  avatarUrl?: string;
 }
 
 Page({
@@ -29,8 +31,9 @@ Page({
     unitPrice: 0,
     staffWfId: '',
     staffName: '',
+    staffAvatarUrl: '',
     storeName: '',
-    paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
+    paymentMethod: '微信' as '微信' | '支付宝' | '线下',
     agreed: false,
     submitting: false,
     // 若从员工端扫码进入，持有已有 orderNo
@@ -39,6 +42,8 @@ Page({
     fromCart: false,
     cartItems: [] as CheckoutItem[],
     displayItems: [] as CheckoutItem[],
+    // 组合套餐下单（service-detail bundle 流）
+    bundleProductId: '',
     totalPrice: 0,
     quantity: 1,
     // 支付宝二维码弹窗
@@ -53,28 +58,75 @@ Page({
     showStaffPopup: false,
     // 促销方案
     orderType: 'normal' as string,
-    promotionSchemeId: '',
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
     showCouponPopup: false,
     availableCoupons: [] as any[],
     couponsLoading: false,
+    // 储值卡抵扣（Wave 3E）
+    cardBalance: 0,
+    cardId: '' as string,
+    useCard: true,                // 默认开（决策 #1）；余额 = 0 时 effectiveUseCard 自动 false
+    prepaidCardAmount: 0,         // 由 recomputeAmounts 派生
+    paidAmount: 0,                // 由 recomputeAmounts 派生
+    showPayMethodGroup: true,     // 由 recomputeAmounts 派生：实付 > 0 才显示
+    netBeforeCard: 0,             // 应抵扣部分（=总价-券），UI 显示用
+    // 充值单分支：sale_order_type='充值单' 时隐藏商品/美容师/抵扣，只展示充值摘要
+    isRecharge: false,
+    rechargeFaceValue: 0,
+    rechargePayAmount: 0,
+    rechargeBonus: 0,
+    rechargeDiscountLabel: '',
+    // 拉卡拉收银台跳转：跳走时记录 saleOrderId，跳回 onShow 启动轮询
+    awaitingLakalaOrderId: '',
+  },
+
+  onShow() {
+    if (this.data.awaitingLakalaOrderId) {
+      this.pollOrderAfterLakala();
+    }
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, promotionSchemeId } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, bundleProductId } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
     this.loadStaffList();
     this.loadDefaultStaff();
+    // 加载储值卡余额（与门店无关，跨店可用；注意先于 recompute 生效）
+    this.loadCardBalance();
 
     const existingId = saleOrderId || orderNo;
     if (existingId) {
       // 场景 B：扫码收款，订单已存在
       this.setData({ existingOrderNo: existingId });
       this.loadExistingOrder(existingId);
+    } else if (bundleProductId) {
+      // 场景 D：组合套餐下单（service-detail 跳来，items 暂存 localStorage）
+      const bundleItems: CheckoutItem[] = wx.getStorageSync('bundleCheckoutItems') || [];
+      if (bundleItems.length === 0) {
+        Toast.fail('无套餐商品');
+        setTimeout(() => wx.navigateBack(), 1000);
+        return;
+      }
+      const total = Math.round(bundleItems.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
+      const decodedSpuName = decodeURIComponent(spuName || '');
+      this.setData({
+        bundleProductId,
+        cartItems: bundleItems,
+        displayItems: bundleItems,
+        spuName: decodedSpuName,
+        skuDisplayName: bundleItems.map(i => i.skuDisplayName).join('、'),
+        unitPrice: total,
+        totalPrice: total,
+        storeName,
+        staffWfId: staffWfId || '',
+        staffName: decodeURIComponent(staffName || ''),
+        quantity: 1,
+      });
+      this.recomputeAmounts();
     } else if (fromCart === '1') {
       // 场景 C：购物车批量下单
       const checkoutItems: CheckoutItem[] = wx.getStorageSync('checkoutItems') || [];
@@ -94,6 +146,7 @@ Page({
         totalPrice: total,
         storeName,
       });
+      this.recomputeAmounts();
     } else {
       // 场景 A：自助下单
       const qty = parseInt(quantity, 10) || 1;
@@ -106,7 +159,6 @@ Page({
         storeName,
         quantity: qty,
         orderType: orderType || 'normal',
-        promotionSchemeId: promotionSchemeId ? decodeURIComponent(promotionSchemeId) : '',
       });
     }
   },
@@ -129,6 +181,7 @@ Page({
           quantity,
         }],
       });
+      this.recomputeAmounts();
     } catch {
       Toast.fail('加载价格失败');
     }
@@ -146,7 +199,6 @@ Page({
           '已关闭': '订单已超时关闭',
           '已支付': '订单已完成支付',
           '已完成': '订单已完成',
-          '待确认收款': '订单正在等待确认收款',
           '支付失败': '订单支付失败，请联系店员',
         };
         Toast.fail(msgMap[order.status] || `订单状态：${order.status}`);
@@ -161,8 +213,40 @@ Page({
       // unitPrice 需为扣券前金额，WXML 用 unitPrice - couponDiscount 计算实付
       const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount;
       // 还原支付方式（避免默认 wechat 覆盖用户原选）
-      const validMethods = ['wechat', 'alipay', 'offline'] as const;
-      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : 'wechat';
+      const validMethods = ['微信', '支付宝', '线下'] as const;
+      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : '微信';
+
+      // 充值单分支：精简摘要 + paidAmount 直接取 payable_amount，跳过抵扣/美容师/商品明细
+      if (order.sale_order_type === '充值单') {
+        const faceValue = Number(order.total_amount || 0);
+        const payable = Number(order.payable_amount || 0);
+        const bonus = Math.round((faceValue - payable) * 100) / 100;
+        const discount = faceValue > 0 ? Math.round((payable / faceValue) * 100) / 100 : 1;
+        const discountLabel = (discount * 10).toFixed(1).replace(/\.0$/, '') + ' 折';
+        this.setData({
+          isRecharge: true,
+          spuName: '充值卡',
+          storeName: order.store_name || '',
+          paymentMethod: restoredMethod,
+          rechargeFaceValue: faceValue,
+          rechargePayAmount: payable,
+          rechargeBonus: bonus,
+          rechargeDiscountLabel: discountLabel,
+          // 实付直接落 payable_amount；showPayMethodGroup 必须为 true 才能选支付方式
+          paidAmount: payable,
+          showPayMethodGroup: payable > 0,
+          prepaidCardAmount: 0,
+          couponDiscount: 0,
+          netBeforeCard: 0,
+          // 充值单不需要协议勾选（充值说明已展示在 recharge 页 footer）
+          agreed: true,
+        });
+        return;
+      }
+
+      // 尊重订单已有的抵扣状态：DB 已写入 prepaid_card_amount=0 时 useCard 默认关，
+      // 避免 UI 默认 useCard=true 与 DB 不一致——用户后续切换会通过 onSubmitOrder 的 scanAdjust 同步
+      const orderPrepaidCardAmount = Number(order.prepaid_card_amount || 0);
 
       this.setData({
         spuName: items.length > 1
@@ -176,6 +260,7 @@ Page({
         quantity: 1,
         couponDiscount: existingCouponDiscount,
         paymentMethod: restoredMethod,
+        useCard: orderPrepaidCardAmount > 0,
         // 还原订单指定的美容师（覆盖 loadDefaultStaff 的并行竞态）
         staffWfId: order.preferred_employee_id || '',
         staffName: order.preferred_staff_name || '',
@@ -188,6 +273,7 @@ Page({
           quantity: Number(i.quantity || 1),
         })),
       });
+      this.recomputeAmounts();
     } catch {
       Toast.fail('加载订单信息失败');
     }
@@ -198,10 +284,13 @@ Page({
       const storeId = app.globalData.boundStoreId;
       if (!storeId) return;
       const data = await callClientApi('staff.list', { storeId });
+      const roleTag = (skills?: string[]) => (skills || []).filter((s) => s === '美容师' || s === '养生师').join('/');
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         employee_id: s.staff_id,
         name: s.name,
-        position: s.position
+        // 优先展示派生身份（美容师/养生师），兜底用 position_name
+        position: roleTag(s.skills) || s.position,
+        avatarUrl: s.avatarUrl || '',
       }));
       this.setData({ staffList });
     } catch {
@@ -213,16 +302,72 @@ Page({
     try {
       // 若 URL 已传入 staffWfId，不覆盖
       if (this.data.staffWfId) return;
-      const data = await callClientApi('staff.default', {});
+      const data = await callClientApi<{
+        mainStaffId: string | null;
+        mainStaffName: string | null;
+        mainStaffAvatarUrl: string | null;
+      }>('staff.default', {});
       if (data?.mainStaffId) {
         this.setData({
           staffWfId: data.mainStaffId,
           staffName: data.mainStaffName || '',
+          staffAvatarUrl: data.mainStaffAvatarUrl || '',
         });
       }
     } catch {
       // 获取默认美容师失败不影响主流程
     }
+  },
+
+  /** 拉取储值卡余额，并按当前金额状态触发一次 recompute */
+  async loadCardBalance() {
+    try {
+      const data = await callClientApi<{ balance: number; cardId: string | null }>(
+        'card.balance', {}
+      );
+      const balance = Number(data?.balance) || 0;
+      this.setData({
+        cardBalance: balance,
+        cardId: data?.cardId || '',
+        // 余额 = 0 时强制关闭开关，避免 UI 出现"开关 on 但抵扣 0"的违和状态
+        useCard: balance > 0 ? this.data.useCard : false,
+      });
+      this.recomputeAmounts();
+    } catch {
+      // 余额查询失败不阻断下单：保持 cardBalance=0、useCard=false
+      this.setData({ cardBalance: 0, useCard: false });
+      this.recomputeAmounts();
+    }
+  },
+
+  /** 根据当前 totalAmount/couponDiscount/cardBalance/useCard 重算抵扣明细 */
+  recomputeAmounts() {
+    // 充值单分支：paidAmount 已由 loadExistingOrder 写定为 payable_amount，不参与抵扣计算
+    if (this.data.isRecharge) return;
+
+    const totalAmount = this.data.fromCart
+      ? Number(this.data.totalPrice) || 0
+      : (Number(this.data.unitPrice) || 0) * (Number(this.data.quantity) || 1);
+    const result = recomputeAmounts({
+      totalAmount,
+      couponDiscount: Number(this.data.couponDiscount) || 0,
+      cardBalance: Number(this.data.cardBalance) || 0,
+      useCard: this.data.useCard,
+    });
+    this.setData({
+      prepaidCardAmount: result.prepaidCardAmount,
+      paidAmount: result.paidAmount,
+      showPayMethodGroup: result.showPayMethodGroup,
+      netBeforeCard: result.netBeforeCard,
+    });
+  },
+
+  /** 储值卡开关切换 */
+  onToggleUseCard(e: WxEvent<boolean>) {
+    // 余额 = 0 时禁用：忽略 change 事件
+    if (this.data.cardBalance <= 0) return;
+    this.setData({ useCard: !!e.detail });
+    this.recomputeAmounts();
   },
 
   onSelectStaff() {
@@ -235,9 +380,11 @@ Page({
 
   onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
     const { wfId, name } = e.detail;
+    const matched = this.data.staffList.find((s) => s.employee_id === wfId);
     this.setData({
       staffWfId: wfId,
       staffName: name,
+      staffAvatarUrl: matched?.avatarUrl || '',
       showStaffPopup: false,
     });
   },
@@ -252,7 +399,7 @@ Page({
     try {
       // 构建 items 参数
       let items: { skuId: string; quantity: number; amount: number }[];
-      if (this.data.fromCart) {
+      if (this.data.fromCart || this.data.bundleProductId) {
         items = this.data.cartItems.map(i => ({
           skuId: i.skuId,
           quantity: i.quantity,
@@ -289,6 +436,7 @@ Page({
       couponDiscount: d,
       showCouponPopup: false,
     });
+    this.recomputeAmounts();
   },
 
   onClearCoupon() {
@@ -297,6 +445,7 @@ Page({
       couponDiscount: 0,
       showCouponPopup: false,
     });
+    this.recomputeAmounts();
   },
 
   onAgreementChange(e: WxEvent<boolean>) {
@@ -304,11 +453,11 @@ Page({
   },
 
   onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
+    this.setData({ paymentMethod: e.detail as '微信' | '支付宝' | '线下' });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'alipay' | 'offline' };
+    const { method } = e.currentTarget.dataset as { method: '微信' | '支付宝' | '线下' };
     this.setData({ paymentMethod: method });
   },
 
@@ -329,24 +478,67 @@ Page({
     this.setData({ submitting: true });
 
     try {
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'offline') {
-        // 扫码 + 线下付款
-        await callClientApi('order.offlinePay', { saleOrderId: this.data.existingOrderNo });
-        Toast.success('已提交，等待店长确认收款');
-        setTimeout(() => wx.navigateBack(), 1500);
-        return;
-      }
+      if (this.data.existingOrderNo) {
+        const existingId = this.data.existingOrderNo;
+        const useCard = this.data.useCard && this.data.cardBalance > 0;
+        const prepaidCardAmount = useCard ? Number(this.data.prepaidCardAmount) || 0 : 0;
+        const paidAmount = Number(this.data.paidAmount) || 0;
 
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'alipay') {
-        // 扫码 + 支付宝
-        await this.doAlipayPay(this.data.existingOrderNo);
-        return;
-      }
+        // 充值单不参与储值卡抵扣（loadExistingOrder 已强制 useCard/prepaidCardAmount=0），
+        // 跳过 scanAdjust 同步——避免改写订单 prepaid_card_amount
+        let balanceSnapshot: { updatedAt?: string } | null = null;
+        if (!this.data.isRecharge) {
+          // 把当前 UI 抵扣方案同步到 DB（confirmPrepaidFull / order.pay 读 DB 列计算 payable_amount）
+          // paidAmount=0 时 paymentMethod 必须留空，后端会自动落 '无'
+          const adjustRes = await callClientApi<{ balanceSnapshot?: { updatedAt?: string } | null }>(
+            'order.scanAdjust',
+            {
+              saleOrderId: existingId,
+              useCard,
+              prepaidCardAmount,
+              paymentMethod: paidAmount === 0 ? undefined : this.data.paymentMethod,
+            }
+          );
+          balanceSnapshot = adjustRes?.balanceSnapshot || null;
+        }
 
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'wechat') {
-        // 扫码 + 微信支付
-        await this.doWechatPay(this.data.existingOrderNo);
-        return;
+        if (paidAmount === 0 && prepaidCardAmount > 0) {
+          // 全额储值卡抵扣：同事务扣 balance + 置已支付，不进任何第三方通道
+          await callClientApi('order.confirmPrepaidFull', {
+            saleOrderId: existingId,
+            expectedBalanceUpdatedAt: balanceSnapshot?.updatedAt,
+          });
+          Toast.success('已使用储值卡支付');
+          setTimeout(() => wx.redirectTo({
+            url: `/pagesOrder/order-detail/order-detail?saleOrderId=${existingId}`,
+          }), 1200);
+          return;
+        }
+
+        if (this.data.paymentMethod === '线下') {
+          // 线下：余额需等店长 confirmOffline 后才到账，跳 order-detail 看"待支付"状态
+          // （跳 prepaid-cards 会展示未更新的旧余额，造成"我刚充值怎么没到账"的困惑）
+          await callClientApi('order.offlinePay', { saleOrderId: existingId });
+          Toast.success('已选择线下支付，请到店付款');
+          setTimeout(() => {
+            if (this.data.isRecharge) {
+              wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${existingId}` });
+            } else {
+              wx.navigateBack();
+            }
+          }, 1500);
+          return;
+        }
+
+        if (this.data.paymentMethod === '支付宝') {
+          await this.doAlipayPay(existingId);
+          return;
+        }
+
+        if (this.data.paymentMethod === '微信') {
+          await this.doWechatPay(existingId);
+          return;
+        }
       }
 
       // 自助下单
@@ -354,35 +546,52 @@ Page({
 
       // 构建订单项
       let items: { skuId: string; quantity: number }[];
-      if (this.data.fromCart) {
+      if (this.data.fromCart || this.data.bundleProductId) {
         items = this.data.cartItems.map(i => ({ skuId: i.skuId, quantity: i.quantity }));
       } else {
         items = [{ skuId: this.data.skuId, quantity: this.data.quantity }];
       }
 
-      const data = await callClientApi('order.create', {
+      const data = await callClientApi<any>('order.create', {
         storeId,
         items,
+        bundleProductId: this.data.bundleProductId || undefined,
         preferredStaffWfId: this.data.staffWfId || null,
         paymentMethod: this.data.paymentMethod,
         orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
-        promotionSchemeId: this.data.promotionSchemeId || undefined,
         couponId: this.data.selectedCoupon?.couponId || undefined,
+        useCard: this.data.useCard && this.data.cardBalance > 0,
+        prepaidCardAmount: this.data.prepaidCardAmount,
       });
 
       const saleOrderId = data?.saleOrderId || data?.orderNo;
       if (!saleOrderId) throw new Error('创建订单失败');
 
-      if (this.data.paymentMethod === 'offline') {
+      // 全额抵扣：后端已置 '已支付'，跳详情页不唤起支付
+      const isPrepaidFull = data?.status === '已支付'
+        || data?.reason === 'prepaid_card_full'
+        || (data?.paymentParams === null && Number(data?.paidAmount || 0) === 0);
+      if (isPrepaidFull) {
         if (this.data.fromCart) clearCart();
+        if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
+        Toast.success('已使用储值卡支付');
+        setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
+        return;
+      }
+
+      if (this.data.paymentMethod === '线下') {
+        if (this.data.fromCart) clearCart();
+        if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1500);
-      } else if (this.data.paymentMethod === 'alipay') {
+      } else if (this.data.paymentMethod === '支付宝') {
         if (this.data.fromCart) clearCart();
+        if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
         await this.doAlipayPay(saleOrderId);
       } else {
         await this.doWechatPay(saleOrderId);
         if (this.data.fromCart) clearCart();
+        if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
       }
     } catch (err: any) {
       if (err?.errorType === 'PHONE_REQUIRED') {
@@ -434,19 +643,42 @@ Page({
   },
 
   async doAlipayPay(saleOrderId: string) {
-    const data = await callClientApi('order.alipayPay', { saleOrderId });
+    const data = await callClientApi<any>('order.alipayPay', { saleOrderId });
+    // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页，不调任何第三方通道
+    if (data?.status === '已支付' || data?.reason === 'prepaid_card_full') {
+      Toast.success('已使用储值卡支付');
+      setTimeout(() => wx.redirectTo({
+        url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`,
+      }), 1200);
+      return;
+    }
+    if (data?.lakala?.counterUrl) {
+      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+      return;
+    }
+    // 充值单 total_amount 是面值（¥1000），paidAmount 才是实付（¥980）；用 paidAmount 避免弹窗金额与实付不符
+    // 普通订单 fallback 到 totalAmount，保留原行为
+    const displayAmount = this.data.isRecharge
+      ? Number(data?.paidAmount || 0)
+      : Number(data?.totalAmount || 0);
+    // 兜底：mock 二维码
     this.setData({
       showAlipayQr: true,
       alipayQrUrl: data?.qrCodeUrl || '',
-      alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
+      alipayAmount: displayAmount.toFixed(2),
       alipayOrderNo: saleOrderId,
     });
   },
 
   onAlipayDone() {
     const saleOrderId = this.data.alipayOrderNo;
+    const isRecharge = this.data.isRecharge;
     this.setData({ showAlipayQr: false });
-    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+    wx.redirectTo({
+      url: isRecharge
+        ? '/pagesProfile/prepaid-cards/prepaid-cards'
+        : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`,
+    });
   },
 
   onAlipayClose() {
@@ -455,23 +687,123 @@ Page({
   },
 
   async doWechatPay(saleOrderId: string) {
-    const data = await callClientApi('order.pay', { saleOrderId });
+    const data = await callClientApi<any>('order.pay', { saleOrderId });
+    // 防御性短路：后端识别为全额储值卡抵扣（payable_amount=0）→ 直接跳详情页，
+    // 不能掉到下方 wx.requestPayment(空参) 兜底——会触发"由于小程序违规"弹窗
+    if (data?.status === '已支付' || data?.reason === 'prepaid_card_full') {
+      Toast.success('已使用储值卡支付');
+      setTimeout(() => wx.redirectTo({
+        url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`,
+      }), 1200);
+      return;
+    }
+    if (data?.lakala?.counterUrl) {
+      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+      return;
+    }
+    // 兜底：原 mock 流程（wx.requestPayment + mock 参数）
     const paymentParams = data?.paymentParams || {};
+    const isRecharge = this.data.isRecharge;
+    const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
+    const successUrl = isRecharge ? '/pagesProfile/prepaid-cards/prepaid-cards' : detailUrl;
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
-      // 用户主动取消支付，静默跳转订单详情（订单仍处于待支付，可重新支付）
+      // 用户主动取消支付，跳订单详情（订单仍处于待支付，可重新支付）
+      // 充值单同样跳 order-detail（不去 prepaid-cards，避免"充值成功？余额怎么没变"的错觉）
       if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
-        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        wx.redirectTo({ url: detailUrl });
         return;
       }
       throw err;
     }
-    Toast.success('支付成功');
-    setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
+    Toast.success(isRecharge ? '充值成功' : '支付成功');
+    setTimeout(() => wx.redirectTo({ url: successUrl }), 1200);
+  },
+
+  async jumpLakalaCashier(
+    saleOrderId: string,
+    lakala: { counterUrl: string; appId: string; envVersion: 'release' | 'trial'; openMode?: 'embedded' | 'fullscreen' }
+  ) {
+    const path = `payment-cashier/pages/checkout/index?source=WECHATMINI&counterUrl=${encodeURIComponent(lakala.counterUrl)}`;
+    this.setData({ awaitingLakalaOrderId: saleOrderId });
+
+    const tryFullscreen = () => new Promise<void>((resolve, reject) => {
+      wx.navigateToMiniProgram({
+        appId: lakala.appId,
+        path,
+        envVersion: lakala.envVersion,
+        success: () => resolve(),
+        fail: reject,
+      });
+    });
+
+    const tryEmbedded = () => new Promise<void>((resolve, reject) => {
+      (wx as any).openEmbeddedMiniProgram({
+        appId: lakala.appId,
+        path,
+        envVersion: lakala.envVersion,
+        success: () => resolve(),
+        fail: reject,
+      });
+    });
+
+    try {
+      if (lakala.openMode === 'embedded') {
+        try {
+          await tryEmbedded();
+        } catch {
+          // 半屏失败兜底降级到全屏
+          await tryFullscreen();
+        }
+      } else {
+        await tryFullscreen();
+      }
+    } catch (err: any) {
+      this.setData({ awaitingLakalaOrderId: '' });
+      Toast.fail(err?.errMsg || '调起收银台失败');
+      throw err;
+    }
+  },
+
+  async pollOrderAfterLakala() {
+    const saleOrderId: string = this.data.awaitingLakalaOrderId;
+    if (!saleOrderId) return;
+    const isRecharge = this.data.isRecharge;
+    const successUrl = isRecharge
+      ? '/pagesProfile/prepaid-cards/prepaid-cards'
+      : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
+    const maxAttempts = 30;
+    const interval = 2000;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const order = await callClientApi<any>('order.detail', { saleOrderId });
+        const status = order?.order?.status || order?.status;
+        if (status === '已支付' || status === '部分支付') {
+          this.setData({ awaitingLakalaOrderId: '' });
+          Toast.success(isRecharge ? '充值成功' : '支付成功');
+          setTimeout(() => wx.redirectTo({ url: successUrl }), 800);
+          return;
+        }
+        if (status === '已关闭' || status === '支付失败') {
+          this.setData({ awaitingLakalaOrderId: '' });
+          Toast.fail('订单已关闭');
+          return;
+        }
+      } catch {
+        // 网络异常忽略，下次再试
+      }
+      await new Promise((r) => setTimeout(r, interval));
+    }
+    this.setData({ awaitingLakalaOrderId: '' });
+    Toast.fail('未检测到支付到账，请刷新订单详情');
+    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onShareAppMessage() {
-    return { title: '凤御美容', path: '/pages/home/home' };
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御美容', path: `/pages/home/home${invSuffix}` };
   },
 });

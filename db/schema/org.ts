@@ -43,10 +43,13 @@ export const stores = pgTable(
   {
     storeId: text('store_id').primaryKey(),
     storeName: text('store_name').unique().notNull(),
-    orgNodeId: text('org_node_id').references(() => orgNodes.id),
+    // 1:1 — 一个门店组织节点最多一条 stores 详情行（门店实体以组织树门店节点为权威）
+    orgNodeId: text('org_node_id').references(() => orgNodes.id).unique(),
     openingDate: date('opening_date'),
     bedCount: integer('bed_count'),
     isClosed: boolean('is_closed').notNull().default(false),
+    /** 闭店日期；NULL 表示在营。与 is_closed 双写一致（is_closed = closed_at IS NOT NULL） */
+    closedAt: date('closed_at'),
     // 顾客向字段
     coverImage: text('cover_image'),
     images: text('images').array(),
@@ -59,6 +62,11 @@ export const stores = pgTable(
     description: text('description'),
     announcement: text('announcement'),
     parkingInfo: text('parking_info'),
+    // 拉卡拉聚合支付配置（WIP，commit 02f2176 引入；保留以匹配 migration 0044）
+    lakalaMerchantNo: text('lakala_merchant_no'),
+    lakalaTermNo: text('lakala_term_no'),
+    lakalaSubAppid: text('lakala_sub_appid'),
+    lakalaEnabled: boolean('lakala_enabled').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },

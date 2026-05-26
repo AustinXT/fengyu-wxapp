@@ -1,7 +1,7 @@
 // pages/profile/profile.ts
-import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
-import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { callClientApi } from '../../utils/cloud';
+import { APP_VERSION } from '../../utils/version';
 
 const app = getApp<IAppOption>();
 
@@ -13,6 +13,7 @@ Page({
     boundStoreName: '',
     avatarUrl: '',
     unreadCount: 0,
+    appVersion: APP_VERSION,
   },
 
   onLoad() {
@@ -46,11 +47,6 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/orders/orders' });
   },
 
-  onOrdersByStatus(e: WechatMiniprogram.TouchEvent) {
-    const { status } = e.currentTarget.dataset as { status: string };
-    wx.navigateTo({ url: `/pagesOrder/orders/orders?status=${encodeURIComponent(status)}` });
-  },
-
   onTreatmentCards() {
     wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
   },
@@ -65,6 +61,10 @@ Page({
 
   onServiceRecords() {
     wx.navigateTo({ url: '/pagesOrder/service-records/service-records' });
+  },
+
+  onMemberBenefits() {
+    wx.navigateTo({ url: '/pagesProfile/member-benefits/member-benefits' });
   },
 
   async loadUnreadCount() {
@@ -88,43 +88,6 @@ Page({
     wx.navigateTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
   },
 
-  /**
-   * 处理微信手机号授权
-   * 使用 CloudID 方式，云函数自动解密
-   */
-  async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
-    const { cloudID, errMsg } = e.detail;
-
-    // 用户拒绝授权
-    if (!cloudID) {
-      if (errMsg?.includes('auth deny')) {
-        Toast.fail('您拒绝了授权');
-      } else if (errMsg) {
-        Toast.fail(errMsg);
-      }
-      return;
-    }
-
-    try {
-      const { updatedOrdersCount } = await bindPhoneWithCloudID(cloudID as string);
-      this.refreshData();
-
-      const tips = updatedOrdersCount > 0
-        ? `已同步 ${updatedOrdersCount} 笔历史订单`
-        : '';
-
-      Toast.success(tips || '绑定成功');
-
-    } catch (err: any) {
-      console.error('绑定手机号失败:', err);
-      Toast.fail(err.message || '绑定失败，请重试');
-    }
-  },
-
-  onSwitchStore() {
-    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
-  },
-
   onAbout() {
     wx.switchTab({ url: '/pages/cart/cart' });
   },
@@ -137,6 +100,9 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御美容', path: '/pages/home/home' };
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御美容', path: `/pages/home/home${invSuffix}` };
   },
 });

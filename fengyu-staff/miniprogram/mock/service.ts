@@ -42,7 +42,7 @@ const MOCK_SERVICES = [
       {
         saleItemId: 'XSLSH-WX-20260210001',
         itemName: '明眸祛皱疗程',
-        spec: '单品',
+        spec: '单次',
         sessionCount: 1,
         remainingSessions: 0,
         totalSessions: 1,

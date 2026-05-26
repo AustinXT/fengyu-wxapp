@@ -1,7 +1,16 @@
 import { notFound } from 'next/navigation'
-import { getCustomerById, getCustomerOrders, getCustomerAppointments } from '@/actions/customers'
+import {
+  getCustomerById,
+  getCustomerOrders,
+  getCustomerAppointments,
+  getCustomerPhoneChangeLogs,
+  getCustomerRefundHistory,
+  getOrphanProfilesByUserId,
+} from '@/actions/customers'
 import { getStores } from '@/actions/stores'
 import { getEmployees } from '@/actions/employees'
+import { getSession, hasRole } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import CustomerDetailPage from './_components/customer-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -9,15 +18,29 @@ export const dynamic = 'force-dynamic'
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const [customer, orders, appointments, stores, employees] = await Promise.all([
+  const session = await getSession()
+  const canListEmployees = session ? hasPermission(session, 'employee:list') : false
+  const canListStores = session ? hasPermission(session, 'store:list') : false
+
+  const [customer, orders, appointments, stores, employees, phoneChangeLogs, refundHistory, orphanProfiles] = await Promise.all([
     getCustomerById(id),
     getCustomerOrders(id),
     getCustomerAppointments(id),
-    getStores(),
-    getEmployees(),
+    canListStores ? getStores() : Promise.resolve([]),
+    canListEmployees ? getEmployees() : Promise.resolve([]),
+    getCustomerPhoneChangeLogs(id),
+    getCustomerRefundHistory(id),
+    getOrphanProfilesByUserId(id),
   ])
 
   if (!customer) notFound()
+
+  // 仅 admin / manager / customer_mgr 可见"编辑手机号"入口（hr/finance/product 不可见）
+  const canEditPhone = session
+    ? hasRole(session, 'admin') || hasRole(session, 'manager') || hasRole(session, 'customer_mgr')
+    : false
+
+  const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
 
   return (
     <CustomerDetailPage
@@ -26,6 +49,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       appointments={appointments}
       stores={stores}
       employees={employees}
+      phoneChangeLogs={phoneChangeLogs}
+      refundHistory={refundHistory}
+      orphanProfiles={orphanProfiles}
+      canEditPhone={canEditPhone}
+      canPullLegacy={canPullLegacy}
     />
   )
 }

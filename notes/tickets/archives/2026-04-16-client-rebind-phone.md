@@ -1,0 +1,475 @@
+---
+title: Client 端换绑手机号需求分析
+date: 2026-04-16
+status: P0/P1 已上线 → P2 改为 admin-only（2026-04-16 业务方决策）：客户端自助换绑已下线，admin 顾客详情 phone 字段可编辑 + 二次确认，change history Tab 合并展示 P0/P1 历史 + admin 新记录
+owner: 待分配
+area: fengyu-client / cloudfunctions/clientApi / db / admin（可选）
+related:
+  - fengyu-client/cloudfunctions/clientApi/routes/auth.js (bindPhone)
+  - fengyu-client/cloudfunctions/clientApi/middleware/auth.js (requirePhone, invalidateAuthCache)
+  - fengyu-client/miniprogram/pagesProfile/profile-edit/profile-edit.{ts,wxml}
+  - fengyu-client/miniprogram/pages/profile/profile.ts
+  - db/schema/user.ts (client_wechat_users)
+  - db/schema/order.ts (sale_orders.client_phone / pending unique)
+  - db/schema/operation-log.ts (operation_logs)
+---
+
+## 🔑 前提与已决策项
+
+### 前提 1 — WorkFine 同步已停
+**正式运行后不会再执行 WorkFine 同步**（`db/scripts/sync-workfine.js` 仅用于历史
+数据一次性迁移 + 上线前的定期刷新，正式上线后停止）。因此：
+
+- `client_wechat_users.customer_id` 不会被同步脚本动态覆盖；
+- WorkFine 同步导致的"档案被覆盖回旧值"风险**不存在**；
+- 但**存量孤儿档案**（历史同步进来的 openid=NULL 行，约 5.8w 条中的绝大部分）
+  **仍然在 PG 中**，换绑到这些号的场景依然是真实风险。
+
+### 前提 2 — 业务语义（已决策）
+> **"换手机号只是更改手机号这个字段，账号还是这个账号。"**
+
+即采用 §4.1 的**语义 α — 跟人走**：
+
+- openid/user_id 不变；
+- 所有业务数据（积分 / 会员等级 / 顾客类型 / 消费档位 / 优惠券 / 充值卡 /
+  历史订单 / 预约 / 消息 / 绑定门店 / 绑定美容师）**全部保留**；
+- 仅 UPDATE `client_wechat_users.phone` 一个字段；
+- 历史订单 `sale_orders.client_phone` 为下单时快照，**不回填**；
+- `customer_id` 及其他 WorkFine 档案字段**保留原值**（账号即原账号）。
+
+基于该决策，本 ticket 进入实现阶段只需要在 §4 中继续解决
+**R3（匿名订单归并）、R4（风控）、R5（pending 冲突）、R6（前端刷新）** 四项。
+
+# Client 端换绑手机号 — 需求与影响分析
+
+## 1. 需求背景
+
+顾客端（C端）已经在「我的 → 编辑资料」页面埋了「手机号（换绑）」按钮
+（`fengyu-client/miniprogram/pagesProfile/profile-edit/profile-edit.wxml:44-55`），
+但后端 `auth.bindPhone`（`routes/auth.js:81-162`）当前只实现了**首次绑定**的语义，
+对**换绑**（old_phone → new_phone，两个都不为 null）的副作用处理不完整。
+
+本 ticket 目的：
+1. 梳理换绑涉及的所有联动与风险；
+2. 对关键的歧义语义给出**需业务方决策的问题列表**；
+3. 给出**推荐实现方案**与**分阶段落地计划**。
+
+## 2. 现状分析
+
+### 2.1 当前 bindPhone 行为（同一个 action 承载首次绑定 + 换绑）
+
+关键代码路径：`fengyu-client/cloudfunctions/clientApi/routes/auth.js:81-162`
+
+```
+1. 通过 OPENID 查出当前 client_wechat_users 行（一定存在，login 已建行）
+2. 校验 新 phone 是否被"另一个 user_id"占用 → 占用则抛 INVALID_PARAMS
+3. UPDATE client_wechat_users SET phone = 新号 WHERE user_id = 当前用户
+4. invalidateAuthCache(OPENID)
+5. UPDATE sale_orders SET client_user_id = 当前用户
+   WHERE client_phone = 新号 AND client_user_id IS NULL
+   （"历史匿名订单归并"逻辑）
+```
+
+### 2.2 已有的换绑 UI 入口
+
+- `profile-edit.wxml:45-55` 有 `<button open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber">`
+- `profile-edit.ts:105-125` 的 `onGetPhoneNumber` 调用同一个
+  `bindPhoneWithCloudID(cloudID)`（`utils/cloud.ts:59-82`）
+- 前端文案未区分"首次绑定"与"换绑"，成功 Toast 统一显示"绑定成功"或"已同步 N 笔历史订单"
+
+### 2.3 手机号在业务侧的语义
+
+停用 WorkFine 同步后，`client_wechat_users.phone` 仍承担**两种角色**，换绑会牵动两条链路：
+
+| 角色 | 字段/索引 | 文件 |
+| --- | --- | --- |
+| A. 微信身份的联系方式 / 登录态 | `client_wechat_users.phone` (uq_client_users_phone) | db/schema/user.ts:20,71 |
+| B. 订单快照 / 匿名单归并键 | `sale_orders.client_phone`（开单时写入 + bindPhone 回填） | db/schema/order.ts:53,93; routes/order.js:396-401; routes/card.js:262-266; routes/auth.js:148-154 |
+
+（历史上还有一条 "WorkFine UPSERT 匹配键"，因同步停用，不再是动态风险，
+但**历史孤儿档案存量仍在**，详见 §4.2。）
+
+语义错位的后果：档案串号、历史订单错挂人、匿名开单被他人认领。
+
+## 3. 影响面矩阵
+
+以下"影响"=换绑一次之后，需要确认的状态是否正确。
+
+### 3.1 数据库层
+
+| # | 对象 | 影响 | 是否已自动处理 |
+| --- | --- | --- | --- |
+| D1 | `client_wechat_users.phone` 唯一约束 | 当前代码仅检查"别的 user_id 不能占用" | ✅ 已处理 |
+| D2 | `client_wechat_users.customer_id`（WorkFine 顾客编号，历史静态字段） | 换绑后字段保留旧值，不再被同步覆盖。若业务方视为"该 user_id 的历史档案关联"可接受；若 admin 会按 customer_id 反查会误导 | ⚠️ 需要业务决策（清空 vs 保留） [P2 admin-only 后影响面退化为 admin 改 phone 时是否同步清 customer_id；当前 updateCustomer 不动 customer_id] |
+| D3 | `client_wechat_users` 的档案字段（name/gender/member_level/bound_store_id/skin_type 等） | 换绑后字段保留（跟 user_id 走）。在 α 语义下是正确的 | ✅ 跟 α 语义一致 |
+| D4 | `client_wechat_users.points_balance` + `point_transactions` | 以 user_id 关联，换绑后不变 | ⚠️ 需要业务决策：是跟旧号（数据归属不变）还是重置（视为新身份）？ |
+| D5 | `client_wechat_users.member_level`, `customer_type`, `spending_tier`, `became_member_at` | 同 D4，跟 user_id 走 | ⚠️ 需要业务决策 |
+| D6 | `sale_orders.client_phone`（已开过的订单快照） | **按 v3.1 约定是快照**，换绑后旧订单的 client_phone 保留为旧号 | ✅ 这是正确的（快照语义） |
+| D7 | `sale_orders.client_user_id`（已绑定的历史订单） | 不变 | ✅ 正确 |
+| D8 | `sale_orders` pending unique `uq_sale_orders_phone_pending` | 当前用户的新号如果在同门店已有"匿名待支付单"，合并时会冲突 | ❌ 未处理边界（非常罕见但要兜底） |
+| D9 | 现有匿名待支付单归并 `UPDATE ... client_user_id IS NULL` | **换绑场景下这一步变得危险**：如果新手机号曾被店员录入过其他顾客的匿名订单，换绑后会错误归并到当前 user | ❌ 危险 |
+| D10 | `user_coupons.client_user_id` | 跟 user_id 走，不变 | ⚠️ 语义歧义（同 D4） |
+| D11 | `prepaid_cards` / `card_transactions` | 以 user_id 关联 | ⚠️ 语义歧义（同 D4） |
+| D12 | `appointments.client_user_id` / `client_name`（快照） | 以 user_id 关联，client_name 是快照 | ✅ 正确 |
+| D13 | `service_orders` | 继承订单，无独立 phone 字段 | ✅ 正确 |
+| D14 | `messages.client_user_id` | 跟 user_id 走 | ✅ 正确 |
+| D15 | `store_unbind_requests` | 跟 user_id 走 | ✅ 正确 |
+| D16 | `operation_logs`（审计） | 当前 `operator_employee_id` 仅支持员工 ID，客户端换绑这种**自助操作**无位置记录 | ❌ 审计缺口 |
+
+### 3.2 云函数 / 接口层
+
+| # | 接口 | 影响 |
+| --- | --- | --- |
+| A1 | `auth.bindPhone` | 承担两个语义（首次 + 换绑），逻辑分叉需要明确化 [P2 后：仅首绑，已绑定调用直接报 INVALID_PARAMS] |
+| A2 | `auth.login` | 返回 phone、memberLevel、boundStoreName，换绑后前端需要 refresh [P2 后：admin 改 phone 后，client 端 AUTH_CACHE TTL 5min 自然过期，下次 login 读到新值] |
+| A3 | `order.create` | 以 `ctx.auth.phone` 写入 `sale_orders.client_phone`（快照），换绑后新单用新号，旧单保留旧号 ✓ |
+| A4 | `card.history / card.list` | 依赖 user_id，不变 |
+| A5 | `requirePhone` 中间件 | 换绑期间的"同一会话"可能触发缓存脏读；现有代码已在 bindPhone 结束调用 `invalidateAuthCache(OPENID)`，OK [P2 admin-only 后：admin 改 phone 不知道 OPENID，依赖 5min TTL 自然过期] |
+| A6 | WorkFine 同步脚本 `db/scripts/sync-workfine.js` | ~~**最大的联动风险源**（见 4.2）~~ [已弃用，admin-only 不再受影响] |
+
+### 3.3 前端 / UI 层
+
+| # | 位置 | 影响 |
+| --- | --- | --- |
+| U1 | `profile-edit.wxml:45-55` | ~~换绑按钮已存在，但缺二次确认、缺"后果提示"~~ [已弃用，admin-only 不再受影响 — 该按钮已删除，仅保留首绑 + 已绑定只读展示"如需修改请联系门店"] |
+| U2 | `profile-edit.ts:105-125` `onGetPhoneNumber` | ~~Toast 文案不区分首绑/换绑~~ [已弃用，admin-only — 该回调仅服务首绑] |
+| U3 | `pages/profile/profile.ts` | ~~有相同按钮（首绑场景）。建议：首页按钮仅作首绑、换绑统一走 profile-edit，避免两处逻辑分叉~~ [已弃用，admin-only — 仅保留首绑入口] |
+| U4 | `app.ts` 登录态同步 | ~~换绑成功后需要 `syncLoginState()`~~ [已弃用，admin-only — admin 改 phone 后由 5min TTL 自然过期触发 client 重新 login] |
+| U5 | 已下单页面（如 checkout）的"收货手机号"展示 | ~~若页面读取 `wx.getStorageSync('phone')`，换绑后需刷新~~ [已弃用，admin-only — phone 由 admin 改完后下次 login 同步到 storage] |
+
+### 3.4 管理后台（fengyu-admin）
+
+| # | 位置 | 影响 |
+| --- | --- | --- |
+| M1 | 顾客列表按 phone 搜索 | 用旧手机号搜不到历史（因为 phone 列被覆盖） [P2 admin-only 后：admin 改 phone 走 customer.update 审计，旧号在 operation_logs 可追溯，admin 顾客详情"手机号变更"Tab 可看到] |
+| M2 | 顾客详情"绑定手机号" | ~~直接展示 client_wechat_users.phone，换绑后显示新号，没有 phone history~~ [P2 后：phone 字段可编辑（角色门禁），change history Tab 同时展示 P0/P1 client 历史 + admin customer.update 记录] |
+| M3 | 订单列表里的 `client_phone` | 快照，仍显示下单时的旧号 ✓ |
+| M4 | 审计/操作日志 | ~~无客户端换绑事件记录~~ [P2 后：admin 改 phone 由 logUpdate 写入 operation_logs，含 before/after diff] |
+
+## 4. 核心风险与歧义决策点
+
+### 4.1 【决策 R1】换绑后身份归属 — ✅ 已决策 α（跟人走）
+
+**已决策（2026-04-16）：** "换手机号只是更改手机号这个字段，账号还是这个账号。"
+
+即：openid/user_id 不变，所有业务数据（积分 / 会员等级 / 顾客类型 / 消费档位 /
+优惠券 / 充值卡 / 历史订单 / 预约 / 消息 / 绑定门店 / 绑定美容师 / customer_id）
+**全部保留**，仅 UPDATE `client_wechat_users.phone` 一列。
+
+历史订单 `sale_orders.client_phone` 为下单时快照，**不回填**（保留旧号）。
+
+> 备选方案 β（跟号走 / 强合并）、γ（禁止换绑到已有档案的号）已被否决。
+
+### 4.2 【决策 R2】与 WorkFine 同步的交互 — ✅ 已失效
+
+正式运行后 WorkFine 同步不再跑，本决策项**作废**。
+
+- `customer_id` 不会被同步覆盖，换绑后保留旧值即可；
+- 无需在换绑事务内清空任何档案字段；
+- 同步逻辑（sync-workfine.js）从风险面里移除，不再作为 §5.1 事务的考虑因素。
+
+### 4.3 【决策 R3】历史匿名订单归并（auth.js:148-154）
+
+当前无脑 `UPDATE sale_orders ... WHERE client_phone = new_phone AND client_user_id IS NULL`。
+首次绑定下是合理的（把员工录入的匿名开单认领给当前微信）。
+**换绑下是危险的**：别人的匿名单可能被顶替绑到当前用户。
+
+**建议**：
+- 若本次是换绑（`old_phone != null`），**只归并那些最近 N 小时内新创建的匿名单**
+  （例如 24 小时），并限制同门店、限制条数；
+- 或者直接：换绑场景下**禁用**自动归并，提示用户联系门店店员手工处理。
+
+### 4.4 【决策 R4】换绑频率、风控、验证强度
+
+- 微信 `getPhoneNumber` 拿到的 CloudID 只能证明"当前微信账号能看到这个手机号"，
+  不能证明所有权（例如家人、离职员工等）。
+- 考虑**限流**：N 天内最多换绑 M 次（建议 30 天 / 3 次，可配置）。
+- 考虑**高风险拦截**：
+  - 新号 = 门店员工绑定号 → 拒绝
+  - 新号 30 天内有其他 openid 刚解绑 → 二次确认或冷静期
+- 考虑**审计**：每次换绑写 `operation_logs`，source='clientApi'，
+  target_type='client_user'，target_id=user_id，detail={oldPhone, newPhone, cloudIdAt}。
+  （注意现表结构 `operator_employee_id` 不允许客户端用户；需要迁移加可选
+  `operator_client_user_id` 或 source='clientApi' 时允许 operatorEmployeeId 为 null）
+
+### 4.5 【决策 R5】待支付订单的冲突（D8）
+
+若当前微信已有同门店的 pending 销售单（`status='待支付'` 且 `client_user_id=当前`），
+且换绑后新号又恰好挂着一张同门店的匿名 pending 单（`client_user_id IS NULL` 且
+`client_phone = new_phone`），归并会违反
+`uq_sale_orders_phone_pending`（其实不会触发，因为这个约束的 where 是
+`client_user_id IS NULL`；归并后匿名单的 client_user_id 不再为空，就从这个约束里退出了）。
+
+但是会激活另一个约束 `uq_sale_orders_client_pending`（where `client_user_id IS NOT NULL`）：
+**一个 user 同门店只能有一张 pending**。**这里需要处理**：
+
+- 方案 a：拒绝归并，保留旧的 pending 单不动，要求顾客先付款/关闭某一张；
+- 方案 b：把匿名单直接关闭（`status='已关闭'`）；
+- 方案 c：把当前用户的旧 pending 关闭。
+
+建议 **a**（最小惊讶原则，通过提示让用户自己选）。
+
+### 4.6 【决策 R6】前端会话刷新
+
+换绑成功后，以下要失效：
+- `wx.getStorageSync('phone')` → 写入新号
+- `app.globalData.userInfo` 中的 phone
+- clientApi 的 `AUTH_CACHE`（已由 `invalidateAuthCache` 处理）
+- 页面数据（profile-edit.maskedPhone 已处理，profile.ts 的 refreshData 要改）
+
+## 5. 推荐实现方案
+
+### 5.1 接口约定
+
+新增独立 action（与 `bindPhone` 明确分离），降低语义耦合：
+
+```
+auth.rebindPhone
+  输入：phoneData (CloudID)
+  规则：
+    - 要求 ctx.auth.phone 非空（首次绑定走 bindPhone）
+    - 新号 = 老号 → 幂等成功，直接返回
+    - 新号已被其他 user_id 占用 → INVALID_PARAMS: 该手机号已被其他账户使用
+    - 新号属于员工 phone → PERMISSION_DENIED（可选风控）
+    - 30 天内换绑次数 >= 3 → RATE_LIMIT（可选风控）
+  执行（单事务）：
+    1. 读 client_wechat_users 当前行（含 customer_id、phone）
+    2. 检查新号在 client_wechat_users 里是否已存在另一条独立"孤儿"档案
+       （phone = new_phone AND openid IS NULL）
+       → 若存在：进入 5.2 决策路径（当前先报 NEEDS_CUSTOMER_SUPPORT，让客服处理）
+    3. UPDATE phone = new_phone（仅此一列）
+       customer_id / member_level / points / bound_store_id / 档案字段 **全部保留**。
+       历史订单的 client_user_id / client_phone 不动。
+    4. 审计日志（见 5.4）
+    5. 处理匿名订单归并（见 5.3，仅在允许时执行）
+    6. invalidateAuthCache(OPENID)
+  返回：{ success: true, phone: new, oldPhone: old, mergedAnonymousOrders: N }
+```
+
+保留 `auth.bindPhone` 只处理 **首次绑定**；在服务端强制检查：若 `ctx.auth.phone` 非空，
+bindPhone 返回 `INVALID_PARAMS: 已绑定手机号，请使用换绑功能`。
+
+> 过渡期可让 `bindPhone` 在 `ctx.auth.phone` 非空时**内部转调** `rebindPhone`
+> 以兼容既有小程序客户端，但要在 operation_logs 里标明 via=legacy-bind。
+
+### 5.2 新号已有"孤儿档案"的处理
+
+孤儿档案 = `client_wechat_users WHERE phone = new_phone AND openid IS NULL`，
+**均来自历史 WorkFine 同步时创建的顾客档案**（因同步已停，存量固定，不会新增）。
+
+这类行上挂着的不只是 phone，还可能有：customer_id、历史会员等级、消费档位、
+历史订单（通过 user_id 关联）、充值卡、积分等。简单 "UPDATE phone=new_phone
+WHERE user_id=当前" 会因 `uq_client_users_phone` 冲突而失败，
+且即便成功也会让那条孤儿行的业务数据**成为无法访问的死数据**。
+
+**MVP 实现（与 α 语义一致，最保守）**：
+
+- 换绑事务内先检测 `SELECT 1 FROM client_wechat_users WHERE phone = new_phone AND user_id != 当前`；
+- 命中即拒绝，返回错误码 `PHONE_HAS_EXISTING_PROFILE`，文案：
+  "该手机号在我们系统中已存在消费档案。为避免数据错乱，请联系门店协助处理。"
+- 业务备注：虽然现有代码 `auth.js:130-136` 已有"被其他 user_id 占用"的校验并返回
+  "该手机号已被其他用户绑定"，但该文案对"孤儿档案"（openid=NULL，并非另一个活跃用户）
+  用户误导性强；应细分为**两种错误码**：
+  - `PHONE_BOUND_BY_OTHER_USER`（目标行有 openid，是另一个活跃微信账号）
+  - `PHONE_HAS_EXISTING_PROFILE`（目标行 openid 为 NULL，是历史档案）
+  两类场景的处理方式相同（都拒绝），但文案区分，便于客服定位。
+
+**后续迭代（P1/P2，不在本 ticket 范围）**：
+
+- admin 端"顾客合并工具"：把孤儿行的 customer_id / member_level / 历史订单等
+  业务数据迁移到当前微信用户的行，再删除孤儿行。该工具同样能解决 α 语义下的
+  历史档案认领问题。
+- 客户端"检测到历史档案，是否认领合并"的自助流程需要身份核验（如门店员工扫码确认），
+  目前不实现。
+
+### 5.3 匿名订单归并规则（换绑场景）
+
+**方案 A（保守，推荐 MVP）**：换绑**不触发**匿名订单归并。
+理由：换绑时用户已经是老用户，匿名归并属于首绑场景的"把过去的匿名单找回来"
+特性，对换绑没有同样的合理性。
+
+**方案 B（若业务要保留）**：仅归并
+- `client_phone = new_phone` 且
+- `client_user_id IS NULL` 且
+- `created_at > now() - interval '24 hours'` 且
+- `store_id = ctx.auth.boundStoreId`（仅限当前绑定门店）
+
+两种方案都要返回 `mergedAnonymousOrders` 计数便于前端展示。
+
+### 5.4 审计
+
+- 在 `operation_logs` 中新增/补写一行：
+  ```
+  source = 'clientApi'
+  action = 'auth.rebindPhone'
+  target_type = 'client_user'
+  target_id = userId
+  detail = { oldPhone: '138***1111', newPhone: '139***2222',
+             customerIdCleared: 'FY-GK-XXX', mergedOrders: 0, viaLegacyBind: false }
+  operator_employee_id = NULL   ← 当前 FK 不允许 NULL 时要迁移 schema
+  operator_name = '顾客自助'
+  ```
+
+- schema：`operator_employee_id` 已经是**可空** FK（见 db/schema/operation-log.ts:16），
+  无需迁移；MVP 直接用 `NULL + detail.clientUserId` 的方式记录即可。
+  是否增设 `operator_client_user_id` 列放 P1 评估。
+
+- 手机号脱敏：`detail` 里的 oldPhone/newPhone 使用 `maskPhone` 存储，防止审计表泄密。
+
+### 5.5 前端改造
+
+1. `profile-edit.wxml` 手机号行：
+   - 首绑（`maskedPhone` 为空）：按钮文案"立即绑定"、onGetPhoneNumber 调 `auth.bindPhone`
+   - 已绑定：点击弹 `van-dialog` 二次确认：
+     "换绑后新手机号将用于登录、下单联系、会员识别，确认继续？"
+     确认后才触发 `open-type="getPhoneNumber"` 弹窗
+     （注意：微信 getPhoneNumber 按钮必须直接是 `<button>`，
+     二次确认可做成"先点一次普通按钮弹 dialog → 确认 → 再显示绑定按钮"的两步式）
+
+2. `profile-edit.ts`：
+   - 新增 `isRebind = computed(!!maskedPhone)`
+   - `onGetPhoneNumber` 根据 isRebind 调不同 action
+   - 成功后 Toast 文案差异化；调 `app.syncLoginState()` 刷新 globalData +
+     localStorage（phone、memberLevel 等）
+
+3. `pages/profile/profile.ts`：
+   - 把"换绑"统一导去 profile-edit 页（避免两处入口）
+   - 首绑入口保留
+
+4. `utils/cloud.ts`：
+   - 新增 `rebindPhoneWithCloudID(cloudID)`，与 `bindPhoneWithCloudID` 并列
+   - 或在 `bindPhoneWithCloudID` 里根据本地 `wx.getStorageSync('phone')` 自动选 action
+
+5. 受 phone 影响的页面刷新：
+   - checkout、card-recharge、profile 等页从 globalData 读取
+   - 保证换绑成功后：`app.globalData.userInfo.phone = newPhone`
+     + `wx.setStorageSync('phone', newPhone)`
+
+### 5.6 数据库
+
+MVP 不需要 schema 迁移（只用现有字段 + operation_logs.detail）。
+
+后续（P2）考虑：
+- `client_wechat_users.phone_history jsonb`（或独立表 `client_phone_history`）
+  存 `[{phone, changed_at, changed_by}]`，便于 admin 按旧号反查。
+- `operator_client_user_id` 字段（见 5.4）。
+
+## 6. 分阶段落地计划
+
+### P0（本 ticket 范围 — MVP）
+- [ ] 后端：`auth.rebindPhone` action（单事务：仅 UPDATE phone 一列 + 审计）
+- [ ] 后端：`auth.bindPhone` 在 `ctx.auth.phone` 非空时返回 `INVALID_PARAMS`
+      或内部转调 `rebindPhone`（二选一）
+- [ ] 后端：换绑时**禁用**匿名订单归并（方案 A）
+- [ ] 后端：细分错误码 `PHONE_BOUND_BY_OTHER_USER` / `PHONE_HAS_EXISTING_PROFILE`
+- [ ] 前端：profile-edit 二次确认 + 首绑/换绑文案区分
+- [ ] 前端：换绑成功后刷新 globalData + localStorage（phone 一列即可）
+- [ ] 前端：pages/profile 移除重复的换绑入口
+- [ ] 测试：单测覆盖 新号=旧号幂等 / 新号被活跃用户占 / 新号为孤儿档案 / 审计写入 / 匿名归并未触发
+- [ ] 测试：手机号 mask 脱敏写入 operation_logs
+
+### P1（1-2 周内）
+- [ ] 换绑限流（30 天 3 次）配置化
+- [ ] admin 顾客合并工具（孤儿档案认领）
+- [ ] admin 顾客详情增加"手机号变更日志"Tab
+- [ ] 评估是否需要 `operation_logs.operator_client_user_id` 字段
+
+### P2（已弃用客户端自助换绑，改为 admin-only）
+
+> **业务方决策（2026-04-16）**：
+> "客户端不再提供自助换绑功能，只支持管理后台修改客户手机号。如果新手机号已经存在，则不能修改。"
+>
+> 理由：换绑行为低频、风险/客诉成本高于便利收益；admin 已有完整审计 + 权限矩阵兜底，
+> 由店员代客操作更稳妥；微信 getPhoneNumber 的"客户端冒充"威胁面虽小但非零，
+> admin-only 更彻底地消除该面。
+
+P2 原计划（`client_phone_history` 独立表 + 自助合并审批流程）整体弃用。
+P2 实际落地：
+
+- [x] **回滚客户端自助换绑**：删除 `auth.rebindPhone` 云函数 + router 注册 + 限流；
+      profile-edit 移除换绑入口/dialog/状态机，保留首绑 + 已绑定只读展示；
+      删除 `utils/cloud.ts:rebindPhoneWithCloudID`；删除前端/后端 18 条 rebindPhone 单测
+- [x] **admin 顾客详情手机号字段可编辑**：phone Input 默认只读 + "编辑"按钮（仅
+      admin/manager/customer_mgr 可见）；编辑态 + AlertDialog 二次确认；复用现有
+      `updateCustomer`（已有格式校验/23505 占用拒绝/乐观锁/审计），不新增 server action
+- [x] **`getCustomerPhoneChangeLogs` 兼容 admin 改 phone**：WHERE OR 合并
+      `(action='auth.rebindPhone' AND target_type='client_user')` ∪
+      `(action='customer.update' AND target_type='customer' AND detail->'changes' ? 'phone')`；
+      P0/P1 历史 client 记录与 admin 新记录在同一 Tab 时间线展示（含"来源"列：管理后台/顾客端）
+- [x] 顾客端 AUTH_CACHE TTL 5min 自然过期，admin 改 phone 不需要跨服务调用清缓存（仅留 TODO）
+- [x] 决策回顾文档：`notes/tickets/2026-04-16-operator-client-user-id-evaluation.md` 加状态标注（推迟，限流场景消失）
+
+P2 不做的：
+
+- ❌ 不建 `client_phone_history` 独立表（admin 改 phone 走 `customer.update` 审计流，已有 200 条限制 + 顺序）
+- ❌ 不实施"客户端自助合并"流程（自助合并需要的身份核验微信平台不提供）
+- ❌ 不加 `operator_client_user_id` 字段（限流场景消失，详见 evaluation 文档）
+- ❌ 不引入 admin → client 缓存失效跨服务调用（性能可接受，5min 自然过期）
+
+后续触发条件（什么时候重启客户端自助换绑讨论）：
+- admin 代客修改手机号的工单数突破 N/月，店员负担过重；
+- 业务方确认引入 SMS 验证码能力；
+- 微信平台 `getPhoneNumber` 出现更强的"实名所有权"凭证。
+
+## 7. 测试用例清单
+
+### 7.1 正向（rebindPhone client，已删除 — P2 admin-only）
+- ~~TC01 已绑定 138xxx1111，换绑到全新号 139xxx2222 → 成功，客户所有券/积分/会员保留~~ **已删除**
+- ~~TC02 换绑到和当前号一致 → 返回成功（幂等）~~ **已删除**
+- ~~TC03 换绑后立即调 `auth.login` → 返回新 phone~~ **已删除**
+- TC04 ~~换绑后~~ admin 改 phone 后立即调 `order.create` → 新单 `client_phone` = 新号 [admin-only 场景下：用户重新 login 后 order.create 写新号]
+- TC05 ~~换绑后~~ admin 改 phone 后历史订单 `client_phone` = 旧号（快照未变）
+
+### 7.2 负向（rebindPhone client，已删除 — P2 admin-only）
+- ~~TC10 未绑定就调 rebindPhone → UNAUTHORIZED / PHONE_REQUIRED~~ **已删除（rebindPhone action 已移除）**
+- ~~TC11 新号被其他 user_id 占用 → INVALID_PARAMS~~ **已删除**
+- ~~TC12 新号为孤儿档案（phone 已存在、openid=null）→ NEEDS_CUSTOMER_SUPPORT~~ **已删除**
+- ~~TC13 CloudID 解密失败 → INVALID_PARAMS~~ **已删除**
+- ~~TC14 30 天内第 4 次换绑 → RATE_LIMIT（若启用限流）~~ **已删除（限流已下线）**
+- ~~TC15 新号为员工绑定号 → PERMISSION_DENIED（若启用）~~ **已删除**
+
+### 7.3 身份/会员数据保留（α 语义核查 — admin 改 phone 同样适用）
+- TC20 admin 改 phone 前积分 5000 → 之后 `points.balance` 仍为 5000
+- TC21 admin 改 phone 前 member_level = 粉钻 → 之后等级不变
+- TC22 admin 改 phone 前有优惠券 3 张、充值卡 2 张 → 之后全部保留
+- TC23 admin 改 phone 前 customer_id = 'FY-GK-001' → 之后 customer_id 不变
+
+### 7.4 审计（admin 改 phone）
+- TC30 admin 改 phone 后 operation_logs 新增 1 条 customer.update（detail.changes.phone {from, to}）
+- TC31 admin 顾客详情"手机号变更"Tab 可同时看到该条 + P0/P1 历史 client 自助换绑记录
+
+### 7.5 前端（已删除 — P2 admin-only）
+- ~~TC40 点击换绑按钮弹二次确认，取消后不触发微信授权~~ **已删除**
+- ~~TC41 换绑成功 Toast 显示"已换绑至 139****2222"~~ **已删除**
+- ~~TC42 换绑后 profile 页、checkout 页读取的 phone 是新号~~ **已删除**
+- ~~TC43 换绑失败（NEEDS_CUSTOMER_SUPPORT）时显示完整客服提示文案~~ **已删除**
+
+### 7.6 admin 改 phone（P2 新增 — 单测落地于 fengyu-admin/src/actions/customers.test.ts）
+- TC60 admin 改 phone（仅 phone 字段）→ 成功 + logUpdate 记录 phone diff（before/after）
+- TC61 改 phone 时新号已被占用（PG 23505）→ 返回"该手机号已被其他顾客使用"，不写审计
+- TC62 权限拒绝：requirePermission 抛出 → 整个 action 失败（不到达 db.update）
+- TC63 改 phone 时乐观锁不匹配（rowCount=0 + expectedUpdatedAt 错误）→ 返回"数据已被其他人修改"
+
+## 8. 决策状态
+
+| 决策项 | 结论 | 备注 |
+| --- | --- | --- |
+| **R1 身份归属** | ✅ 采用语义 α（账号不变，只改 phone） | 2026-04-16 业务方确认 |
+| **R2 WorkFine 联动** | ✅ 已失效 | 正式运行后不再跑同步 |
+| **R3 匿名归并** | ✅ 换绑禁用匿名订单归并（方案 A） | 与 α 一致：历史订单不动 |
+| **R4 风控** | ⚠️ 待定（建议 30 天 3 次 + 拦截员工号） | 可放 P1 |
+| **R5 Pending 单冲突** | ✅ 已失效 | 方案 A 下 pending 单归并不触发 |
+| **R6 孤儿档案** | ✅ MVP 拒绝换绑，返回专用错误码引导客服 | 不合并业务数据 |
+| **P1 admin 合并工具** | ✅ 已实现 `mergeClientProfile`（独立处理孤儿档案，仍保留） | 与本次 P2 决策无冲突 |
+| **R7 客户端入口** | ✅ 移除 client 端自助换绑（profile-edit + rebindPhone action） | 2026-04-16 业务方决策 — admin-only |
+| **R8 admin 入口** | ✅ 复用 updateCustomer，UI 把 phone 字段从只读改可编辑 + 二次确认 + 角色门禁（admin/manager/customer_mgr） | 同上 — 不新增 action |
+| **R9 phone_history 表** | ✅ 不建 — operation_logs 已能记录 admin 改 phone 的 before/after diff，配合 P0/P1 client 历史合并展示 | 同上 |
+| **R10 自助合并** | ✅ 不实施 — 客户端无法核验手机号实名所有权，admin 代操作更稳妥 | 同上 |
+
+## 9. 关联 / 参考
+
+- `.42cog/pm/client.pr.spec.md` — 客户端产品需求（需补充换绑章节）
+- `.42cog/real.md` — 现实约束（customer_id 与 phone 的主从关系）
+- `project_staff_data_ownership.md` — 员工端类似的合并/同步逻辑可借鉴
+- `feedback_no_legacy_compat.md` — 本项目开发阶段不需要历史兼容，
+  因此 `auth.bindPhone` 内部转调 `rebindPhone` 的兼容层可省略，直接让前端改用新 action

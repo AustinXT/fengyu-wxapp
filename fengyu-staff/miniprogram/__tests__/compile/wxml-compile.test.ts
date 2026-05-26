@@ -201,7 +201,10 @@ function checkComponentPaths(jsonPath: string): string[] {
     const p = compPath as string
     let resolvedBase: string
 
-    if (p.startsWith('.') || p.startsWith('/')) {
+    if (p.startsWith('/')) {
+      // 小程序绝对路径 — 相对 miniprogram 根目录（不是系统根目录）
+      resolvedBase = path.join(ROOT, p)
+    } else if (p.startsWith('.')) {
       resolvedBase = path.resolve(jsonDir, p)
     } else {
       // npm 包路径 — 在 miniprogram_npm/ 中查找

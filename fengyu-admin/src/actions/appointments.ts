@@ -7,9 +7,9 @@ import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { scopeCondition } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
+import { logTransition } from '@/lib/operation-log'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -34,10 +34,9 @@ function serializeAppointment(r: {
   }
 }
 
-export async function getAppointments(): Promise<Appointment[]> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:list')
-
+export const getAppointments = withPermission(
+  'appointment:list',
+  async (session): Promise<Appointment[]> => {
   const rows = await db
     .select({
       appointment: appointments,
@@ -46,11 +45,13 @@ export async function getAppointments(): Promise<Appointment[]> {
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
     .where(scopeCondition(session, appointments.storeId))
+    // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
     .orderBy(desc(appointments.appointmentTime))
     .limit(500)
 
   return rows.map(serializeAppointment)
-}
+  },
+)
 
 /** 预约列表筛选参数 */
 export interface AppointmentFilters {
@@ -82,10 +83,9 @@ export interface PaginatedAppointments {
  *
  * badge 数量通过额外 COUNT 查询获取（scope 范围内全局统计，不受其他筛选影响）。
  */
-export async function getAppointmentsPaginated(filters: AppointmentFilters = {}): Promise<PaginatedAppointments> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:list')
-
+export const getAppointmentsPaginated = withPermission(
+  'appointment:list',
+  async (session, filters: AppointmentFilters = {}): Promise<PaginatedAppointments> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -152,6 +152,7 @@ export async function getAppointmentsPaginated(filters: AppointmentFilters = {})
       .from(appointments)
       .leftJoin(stores, eq(appointments.storeId, stores.storeId))
       .where(whereClause)
+      // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
       .orderBy(desc(appointments.appointmentTime))
       .limit(pageSize)
       .offset(offset),
@@ -163,18 +164,25 @@ export async function getAppointmentsPaginated(filters: AppointmentFilters = {})
     pendingCount: badgeRow?.pending ?? 0,
     confirmedCount: badgeRow?.confirmed ?? 0,
   }
-}
+  },
+)
 
 /** C4: 确认预约 — WHERE status = '待确认' + scope 校验 */
-export async function confirmAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:confirm')
+export const confirmAppointment = withPermission(
+  'appointment:confirm',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ clientName: appointments.clientName, employeeName: appointments.employeeName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
 
   let result: any
   try {
     result = await db
       .update(appointments)
-      .set({ status: '已确认' })
+      .set({ status: '已确认', confirmedAt: new Date() })
       .where(and(
         eq(appointments.appointmentId, appointmentId),
         eq(appointments.status, '待确认'),
@@ -188,16 +196,26 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.confirm', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.confirm', 'appointment', appointmentId, '待确认', '已确认', {
+    clientName: apptCtx?.clientName, employeeName: apptCtx?.employeeName,
+    appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已确认' }
-}
+  },
+)
 
 /** 签到 — 仅记录时间，不改状态 + scope 校验 */
-export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:checkin')
+export const checkinAppointment = withPermission(
+  'appointment:checkin',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
 
   let result: any
   try {
@@ -217,16 +235,25 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.checkin', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.checkin', 'appointment', appointmentId, '已确认', '已签到', {
+    clientName: apptCtx?.clientName, appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '签到成功' }
-}
+  },
+)
 
 /** 取消预约 — WHERE status IN ('待确认', '已确认') + scope 校验 */
-export async function cancelAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:confirm')
+export const cancelAppointment = withPermission(
+  'appointment:confirm',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ status: appointments.status, clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
 
   let result: any
   try {
@@ -246,8 +273,11 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.cancel', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.cancel', 'appointment', appointmentId, apptCtx?.status ?? '待确认', '已取消', {
+    clientName: apptCtx?.clientName, appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已取消' }
-}
+  },
+)

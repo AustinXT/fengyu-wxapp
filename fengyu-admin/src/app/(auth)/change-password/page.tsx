@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { changePassword } from "@/actions/auth"
+import { encryptPassword } from "@/lib/password-encrypt"
 
 const PASSWORD_REGEX = /^(?=.*[a-zA-Z])(?=.*\d).{8,}$/
 
@@ -42,7 +43,7 @@ export default function ChangePasswordPage() {
 
     setLoading(true)
     try {
-      const result = await changePassword(newPassword)
+      const result = await changePassword(encryptPassword(newPassword))
 
       if (!result.success) {
         toast.error(result.message)

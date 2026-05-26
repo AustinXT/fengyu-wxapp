@@ -1,0 +1,136 @@
+<!-- components/bundle-picker/bundle-picker.wxml — PR-B §2.2 -->
+<view class="bundle-picker">
+
+  <!-- 空态 -->
+  <view wx:if="{{bundles.length === 0}}" class="bundle-empty">
+    <van-empty description="暂无组合套餐" />
+  </view>
+
+  <!-- 列表态：未选中具体套餐 -->
+  <scroll-view wx:elif="{{!selectedBundleId}}" scroll-y class="bundle-list">
+    <van-search
+      value="{{keyword}}"
+      placeholder="搜索套餐名称"
+      bind:change="onKeywordChange"
+      bind:clear="onKeywordClear"
+    />
+    <view wx:if="{{filteredBundles.length === 0}}" class="bundle-empty">
+      <van-empty description="未找到相关套餐" />
+    </view>
+    <view
+      class="bundle-card"
+      wx:for="{{filteredBundles}}"
+      wx:key="productId"
+      data-product-id="{{item.productId}}"
+      bindtap="onSelectBundle"
+    >
+      <view wx:if="{{item.coverImage}}" class="bundle-cover">
+        <image class="bundle-cover-img" src="{{item.coverImage}}" mode="aspectFill" lazy-load />
+      </view>
+      <view wx:else class="bundle-cover bundle-cover--placeholder">
+        <van-icon name="gift-o" size="64rpx" color="#C0322A" />
+      </view>
+      <view class="bundle-card-body">
+        <text class="bundle-card-name">{{item.name}}</text>
+        <text class="bundle-card-desc" wx:if="{{item.description}}">{{item.description}}</text>
+        <view class="bundle-card-footer">
+          <view class="bundle-price-group">
+            <text class="bundle-price-symbol">¥</text>
+            <text class="bundle-price-value">{{item.specialPrice || item.price}}</text>
+            <text
+              wx:if="{{item.specialPrice && item.specialPrice < item.price}}"
+              class="bundle-price-origin"
+            >¥{{item.price}}</text>
+          </view>
+          <view class="bundle-enter-btn">
+            <text>选购</text>
+            <van-icon name="arrow" size="28rpx" color="#FFFFFF" />
+          </view>
+        </view>
+      </view>
+    </view>
+  </scroll-view>
+
+  <!-- 详情态：已选中某套餐 → 展示 N 选 M 分组 -->
+  <view wx:else class="bundle-detail">
+    <view class="bundle-detail-header">
+      <view class="bundle-back" bindtap="onBackToList">
+        <van-icon name="arrow-left" size="36rpx" color="#C0322A" />
+        <text>返回套餐列表</text>
+      </view>
+      <text class="bundle-detail-name">{{selectedView.name}}</text>
+      <text class="bundle-detail-price">¥{{selectedView.displayPrice}}</text>
+    </view>
+
+    <scroll-view scroll-y class="bundle-groups-scroll">
+      <view class="bundle-group" wx:for="{{selectedView.groups}}" wx:for-item="g" wx:key="id">
+        <view class="bundle-group-header">
+          <text class="bundle-group-name">{{g.groupName}}</text>
+          <text class="bundle-group-hint">{{g.pickCountLabel}}</text>
+        </view>
+        <view class="bundle-group-skus">
+          <!-- 选N项：数量步进器（同一 SKU 可选多次，组内合计 = pickCount） -->
+          <block wx:if="{{g.mode === 'pick'}}">
+            <view
+              class="bundle-sku-item {{sku.qty > 0 ? 'bundle-sku-item--active' : ''}}"
+              wx:for="{{g.skus}}"
+              wx:for-item="sku"
+              wx:key="skuId"
+            >
+              <view class="bundle-sku-info">
+                <text class="bundle-sku-name">{{sku.specName}}</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+              </view>
+              <van-stepper
+                value="{{sku.qty}}"
+                min="0"
+                max="{{sku.maxQty}}"
+                integer
+                data-group-id="{{g.id}}"
+                data-sku-id="{{sku.skuId}}"
+                bind:change="onSkuQtyChange"
+              />
+            </view>
+          </block>
+          <!-- 全选组：勾选 toggle -->
+          <block wx:else>
+            <view
+              class="bundle-sku-item {{sku.selected ? 'bundle-sku-item--active' : ''}}"
+              wx:for="{{g.skus}}"
+              wx:for-item="sku"
+              wx:key="skuId"
+              data-group-id="{{g.id}}"
+              data-sku-id="{{sku.skuId}}"
+              bindtap="onToggleSku"
+            >
+              <view class="bundle-sku-check">
+                <van-icon
+                  name="{{sku.selected ? 'checked' : 'circle'}}"
+                  size="40rpx"
+                  color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+                />
+              </view>
+              <view class="bundle-sku-info">
+                <text class="bundle-sku-name">{{sku.specName}}</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+              </view>
+            </view>
+          </block>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="bundle-detail-footer">
+      <text class="bundle-detail-summary">已选 {{totalSelected}} 项</text>
+      <van-button
+        type="primary"
+        size="small"
+        disabled="{{!canSubmit}}"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:40rpx;padding:0 40rpx;"
+        bind:click="onAddToCart"
+      >去下单</van-button>
+    </view>
+  </view>
+
+</view>

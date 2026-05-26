@@ -1,0 +1,9 @@
+<view class="mpp">
+  <view
+    wx:for="{{options}}"
+    wx:key="value"
+    class="mpp-chip {{item.value === value ? 'mpp-chip--active' : ''}}"
+    data-value="{{item.value}}"
+    bind:tap="onSelect"
+  >{{item.label}}</view>
+</view>

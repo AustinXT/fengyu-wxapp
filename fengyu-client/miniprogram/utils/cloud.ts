@@ -52,9 +52,9 @@ interface BindPhoneResult {
 }
 
 /**
- * CloudID 方式绑定手机号
+ * CloudID 方式绑定手机号（首次绑定）
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
- * 各页面只需处理成功后的 UI 回调
+ * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */
 export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneResult> {
   wx.showLoading({ title: '绑定中...', mask: true })
@@ -69,7 +69,10 @@ export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneRe
     }) as any
 
     if (res.result?.code !== 0) {
-      throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'))
+      const err: ClientApiError = new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'))
+      err.code = res.result?.code
+      err.errorType = res.result?.errorType
+      throw err
     }
 
     const { phone, updatedOrdersCount = 0 } = res.result.data

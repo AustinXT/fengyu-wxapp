@@ -1,4 +1,11 @@
 {
+  "scripts": {
+    "test:l2": "bun tests/e2e-cloudfn/run-all.mjs",
+    "test:l2:cleanup": "bun tests/e2e-cloudfn/cleanup.mjs",
+    "test:l3": "bun tests/e2e-miniprogram/run-all.mjs",
+    "test:l3:setup": "bun tests/e2e-miniprogram/setup.mjs",
+    "test:l3:cleanup": "bun tests/e2e-miniprogram/cleanup.mjs"
+  },
   "devDependencies": {
     "miniprogram-automator": "^0.12.1",
     "tencentcloud-sdk-nodejs": "^4.1.186",

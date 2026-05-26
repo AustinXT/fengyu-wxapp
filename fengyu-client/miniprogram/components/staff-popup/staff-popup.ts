@@ -1,5 +1,12 @@
 // components/staff-popup/staff-popup.ts
 Component({
+  // 让 app.wxss 中 .staff-popup / .staff-list / .staff-item / .staff-avatar / .staff-avatar-img
+  // 等全局样式可以渗入本组件。默认 isolated 会屏蔽掉这些 selector，导致 <image> 用 <image>
+  // 默认 320×240 尺寸撑满列宽（screenshot 3 bug）；本组件样式也不会泄露出去。
+  options: {
+    styleIsolation: 'apply-shared',
+  },
+
   properties: {
     show: { type: Boolean, value: false },
     staffList: { type: Array, value: [] },

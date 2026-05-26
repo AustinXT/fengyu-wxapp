@@ -1,0 +1,137 @@
+<!-- pages/sales-data — 管理层"销售数据"页 -->
+<!-- 顶部筛选行：下划线 chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+<view class="mgmt-filter-bar mgmt-filter-bar--sticky">
+  <view class="sd-period-tabs">
+    <view
+      class="sd-period-tab {{period==='month'?'active':''}}"
+      data-period="month"
+      bindtap="onPeriodChange"
+    >本月</view>
+    <view
+      class="sd-period-tab {{period==='lastMonth'?'active':''}}"
+      data-period="lastMonth"
+      bindtap="onPeriodChange"
+    >上月</view>
+    <view
+      class="sd-period-tab {{period==='year'?'active':''}}"
+      data-period="year"
+      bindtap="onPeriodChange"
+    >本年</view>
+  </view>
+  <view class="mgmt-scope-tag">
+    <text>范围：</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  </view>
+</view>
+
+<view class="sd-page">
+
+  <!-- 三态壳：loading / error 时由组件接管 -->
+  <mgmt-data-state state="{{ state }}" bind:retry="onRetry">
+    <!-- 业绩与实耗区 -->
+    <view class="sd-section">
+      <view class="sd-section-title">业绩与实耗</view>
+
+      <!-- 业绩卡片（4列） -->
+      <view class="sd-matrix-card">
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">总业绩</text>
+          <text class="sd-cell-value">{{totalRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">小美客业绩</text>
+          <text class="sd-cell-value">{{xiaomeiRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">新增会员业绩</text>
+          <text class="sd-cell-value">{{newMemberRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">老会员业绩</text>
+          <text class="sd-cell-value">{{oldMemberRevenue}}</text>
+        </view>
+      </view>
+
+      <!-- 实耗卡片（左大值 + 右3×2矩阵） -->
+      <view class="sd-consume-card">
+        <view class="sd-consume-total">
+          <text class="sd-cell-label">总实耗</text>
+          <text class="sd-cell-value sd-cell-value--lg">{{totalConsume}}</text>
+        </view>
+        <view class="sd-consume-breakdown">
+          <view class="sd-consume-row">
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">小美客项目实耗</text>
+              <text class="sd-cell-value">{{xiaomeiProjectConsume}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">新增会员实耗</text>
+              <text class="sd-cell-value">{{newMemberProjectConsume}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">老会员实耗</text>
+              <text class="sd-cell-value">{{oldMemberProjectConsume}}</text>
+            </view>
+          </view>
+          <view class="sd-consume-row">
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">小美客产品出库</text>
+              <text class="sd-cell-value">{{xiaomeiProductOut}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">新增会员产品出库</text>
+              <text class="sd-cell-value">{{newMemberProductOut}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">老会员产品出库</text>
+              <text class="sd-cell-value">{{oldMemberProductOut}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 业绩与品项区 -->
+    <view class="sd-section">
+      <view class="sd-section-title">业绩与品项</view>
+
+      <!-- 1. 按经营类型汇总（pgEnum 4 行硬骨架） -->
+      <view class="sd-breakdown-group">
+        <view class="sd-breakdown-item">
+          <text class="sd-breakdown-label">按经营类型汇总</text>
+        </view>
+        <view class="sd-breakdown-list">
+          <view class="sd-breakdown-row" wx:for="{{bySalesCategory}}" wx:key="label">
+            <text class="sd-breakdown-name">{{item.label}}</text>
+            <text class="sd-breakdown-value">{{item.value}}</text>
+            <text class="sd-breakdown-ratio">{{item.ratio}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 2. 按品项汇总（一级 + 二级嵌套，骨架来自 product_categories 快照） -->
+      <view class="sd-breakdown-group">
+        <view class="sd-breakdown-item">
+          <text class="sd-breakdown-label">按品项汇总</text>
+        </view>
+        <view class="sd-breakdown-list">
+          <block wx:for="{{byProductKind}}" wx:key="label" wx:for-item="kind">
+            <!-- 一级行：左竖条 + 主色加粗 -->
+            <view class="sd-kind-row">
+              <view class="sd-kind-bar"></view>
+              <text class="sd-kind-name">{{kind.label}}</text>
+              <text class="sd-kind-value">{{kind.value}}</text>
+              <text class="sd-kind-ratio">{{kind.ratio}}</text>
+            </view>
+            <!-- 二级行：缩进 + 项目符号（骨架包含所有该一级下的二级，零值也在） -->
+            <view class="sd-leaf-row" wx:for="{{kind.children}}" wx:key="label" wx:for-item="leaf">
+              <text class="sd-leaf-name">· {{leaf.label}}</text>
+              <text class="sd-leaf-value">{{leaf.value}}</text>
+              <text class="sd-leaf-ratio">{{leaf.ratio}}</text>
+            </view>
+          </block>
+        </view>
+      </view>
+    </view>
+  </mgmt-data-state>
+</view>

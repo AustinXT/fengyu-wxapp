@@ -1,0 +1,2 @@
+DROP INDEX "idx_svc_orders_status_updated";--> statement-breakpoint
+CREATE INDEX "idx_svc_orders_status_updated" ON "service_orders" USING btree ("status","updated_at" DESC NULLS FIRST,"created_at" DESC NULLS FIRST);

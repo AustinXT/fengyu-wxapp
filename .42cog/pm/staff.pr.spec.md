@@ -63,7 +63,7 @@
 |----|------|------|
 | STORE-01 | 门店列表 | PG `stores` + `org_nodes` 营业中门店 |
 | STORE-02 | 切换工作门店 | 验证门店存在性，返回门店名 |
-| STORE-03 | 解绑申请审批 | 店长审批顾客门店解绑（approve/reject） |
+| STORE-03 | 转店申请审批 | 原门店店长审批顾客转店（approve/reject）；通过后顾客 `bound_store_id` 从原店改绑到目标店，列表展示「原门店 → 转往门店」 |
 
 **个人中心**: 门店切换（Picker，首次加载后缓存）、手机号重绑、快捷导航（订单/服务单/顾客列表）、退出登录
 
@@ -83,15 +83,16 @@
 | 销售单 | 体验单 | `体验` | 限选体验卡商品，不计入普通业绩 |
 | 销售单 | 内部单 | `内部` | 员工/家属半价（`price × 0.5`），不算顾客数、不计入会员等级 |
 | 销售单 | 福利活动 | `福利活动` | `product_kind = '福利活动'`，方案内项目不可增删，单独成单 |
-| 回款单 | — | `回款` | 选客户 → 查看欠款 → 录入回款（P2） |
 | 转换单 | — | `转换` | A→B 项目转换 + 差价处理（P2） |
+
+> 回款已下沉到 `sale_order_payments`，员工端不再单独开"回款单"——欠款回收由 admin `recordPayment` / 客户端在线支付完成。
 
 **项目选择（四级导航）**:
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | `福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind`） | 固定常量 |
-| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），院装产品固定追加末尾 |
+| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"过滤 SKU `is_experience=false AND is_recharge_card=false`（capability 列驱动）。**Tab 标签仅 UI 渲染分支用**——SQL 过滤一律走 `is_experience` / `is_recharge_card` capability 列，详见 `backend.pr.spec.md` §4 #23 | 视图常量 + capability 列 |
+| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），家居产品固定追加末尾 |
 | 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
 | 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |
 
@@ -110,6 +111,39 @@
 
 ---
 
+#### 3.3.1 结算侧储值卡预选抵扣 ✅
+
+**实现状态**: 已实现 | **权限**: 仅店长
+
+**核心语义**: 店长端对储值卡的所有操作都是"**预选**"，**不扣卡**。扣卡仅在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）三处发生。
+
+**结算弹层 UI**:
+
+- "抵扣区（预选）"与"支付方式区"**分离布局**；储值卡位于抵扣区（与优惠券并列），**禁止**塞进支付方式按钮组
+- 储值卡按钮文案 "**预选抵扣**"（非"使用"），底部固定副文案 "**顾客扫码确认后才真正扣卡**"
+- 支付方式按钮组枚举扩展为 4 值（微信/支付宝/线下/无）：实付 > 0 时展示前三项；实付 = 0 时**隐藏按钮组**并显示 "全额抵扣（payment_method='无'）"
+- 店长可见顾客**跨店统一**余额（`customer.customerBalance`，无门店范围限制；仅店长角色可访问）
+
+**开单行为**:
+
+1. 店长勾选储值卡抵扣 → `staffApi.order.create` 写入 `sale_orders.prepaid_card_amount` + `paid_amount` + `payment_method`（实付=0 落 `'无'`）
+2. `prepaid_cards.balance` 不动，`card_transactions` 不写入；订单 `status='待支付'`，返回二维码
+3. 顾客扫码 → `scan-pay` 页（顾客端）调 `order.scanAdjust` 调整 / 调 `order.confirmPrepaidFull` 确认，客户端承担真实扣卡
+4. 超时未确认 → 订单按现有 TTL 关闭；预选值作废，`balance` 仍未动
+
+**扣卡时机（员工端触发）**:
+
+| 场景 | 触发点 | 动作 |
+|------|--------|------|
+| 顾客扫码后选"线下支付" | `order.confirmOffline` | 事务内 `FOR UPDATE` + 二次余额校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
+| 退款 | `order.approveRefund` | 按 §2.5 比例拆分：`refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund − refundByCard`；储值卡部分回冲 balance + INSERT `type='充值'` |
+| 转换单负差额（多退给客户） | `order.createConversion` | 保留现有"充入储值卡"逻辑；UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id` |
+| 转换单 / 回款单正差额补款 | `order.createConversion` / `order.createRepayment` | 沿用"店长开单 → 顾客扫码确认"链路，不直接扣卡 |
+
+**API**: `order.create`（增补 `useCard` / `prepaidCardAmount`，不扣卡）| `order.confirmOffline`（线下收款时扣卡）| `order.approveRefund`（返回 `{refundByCard, refundByOrigin}`）| `customer.customerBalance`（跨店查顾客余额，仅店长）
+
+---
+
 #### 3.4 营业额分配
 
 **实现状态**: 已实现 | **权限**: 仅店长
@@ -123,7 +157,7 @@
 | 默认候选人 | 订单指定的美容师（`preferred_employee_id`） |
 | 未指定美容师 | 店长从全体可分配员工中手动选择 |
 
-**销售分类（sales_category）**: 自采自销 / 他销自耗 / 他销他耗 / 生态合作
+**销售分类（sales_category）**: 自销自耗 / 他销自耗 / 他销他耗 / 生态合作
 
 **提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 比例（PG `commission_rate_matrix`）
 
@@ -141,7 +175,7 @@
 |------|----------|
 | 员工端开单 | 开单流程中手动分配 |
 | 顾客端下单（指定美容师） | 支付后系统自动创建分配记录 |
-| 顾客端下单（未指定美容师） | allocation_status = pending，店长手动分配 |
+| 顾客端下单（未指定美容师） | allocation_status = 待分配，店长手动分配 |
 
 **API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `staff.departments`
 
@@ -221,7 +255,7 @@
 
 ---
 
-#### 3.8 服务单（护理单）
+#### 3.8 服务单
 
 **实现状态**: 已实现
 
@@ -233,12 +267,13 @@
 | 操作 | 状态变化 | 说明 |
 |------|---------|------|
 | 开始服务 | 待服务 → 服务中 | — |
-| 完成服务 | 服务中 → 已完成 | 原子扣减 `remaining_sessions`，幂等 |
-| 取消服务 | 待服务/服务中 → 已取消 | 不扣次数 |
+| 标记完成 | 服务中 → 待客户确认 | 仅记 `staff_completed_at`，**不扣次数、不计提成、不关预约** |
+| 代客户确认 | 待客户确认 → 已完成 | 仅店长（`service.confirm`）；原子扣减 `remaining_sessions` + 计提成，幂等；兜底入口 |
+| 取消服务 | 待服务/服务中/待客户确认 → 已取消 | 不扣次数 |
 
-**核销规则**: 仅"已完成"时扣减（原子+幂等，SQL 见 `backend.pr.spec.md` §5.2）；归零自动关闭关联的待确认/已确认预约
+**核销规则**: 副作用（扣次数 + 计提成 + 关预约）统一在「确认」一步执行（顾客本人 / 店长 / 后台代确认任一入口，原子+幂等，SQL 见 `backend.pr.spec.md` §5.2）；归零自动关闭关联的待确认/已确认预约
 
-**护理 Tab**: 3 Tab（待服务/服务中/已完成），卡片含快捷操作，FAB "+" 创建服务单，完成需确认弹窗（扣减不可撤销）
+**护理 Tab**: 4 Tab（待服务/服务中/待确认/已完成），卡片含快捷操作，FAB "+" 创建服务单，标记完成弹窗提示「待顾客确认」，待确认单店长可代确认
 
 **API**: `service.create` / `service.start` / `service.complete` / `service.cancel` / `service.list` / `service.detail`
 
@@ -261,7 +296,7 @@
 | 3 | 待确认收款 | 仅店长 | order-list (`presetStatus=pendingOffline`) |
 | 4 | 待确认订单 | 仅店长 | order-list (`presetStatus=pendingCreate`) |
 | 5 | 待提成分配 | 仅店长 | allocation-list |
-| 6 | 待审批解绑申请 | 仅店长 | unbind-requests |
+| 6 | 待审批转店申请 | 仅店长 | unbind-requests |
 
 **API**: `staff.todayCommission` / `staff.monthlyCalendar` / `staff.todoList`
 
@@ -288,7 +323,7 @@
 
 | 角色 | 数据可见范围 | 员工端特有行为 |
 |------|-------------|---------------|
-| 店长 | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、审批解绑 |
+| 店长 | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、审批转店 |
 | 美容师 | 本人相关数据 | 确认预约（仅自己的）、推进服务单（仅自己的）、查看脱敏手机号 |
 
 **门店数据隔离**: `buildScopeWhere()` 按域级别过滤（headquarters 无过滤 / market 按区域 / store 按门店）
@@ -372,7 +407,7 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 未付尾款/欠款清算：选客户 → 查看欠款 → 选回款项目 → 录入 → 营业额分配。
 
 #### 3.19 取货单
-院装产品分次提货：选已购实物 → 选数量（≤ 剩余未取）→ 确认。
+家居产品分次提货：选已购实物 → 选数量（≤ 剩余未取）→ 确认。
 
 #### 3.20 消息中心
 代办 Tab（6 种待办，同 §3.9，含已处理/未处理切换 + 类型筛选）| 通知 Tab（公告 + 订单状态变更 + 系统通知，未读角标）。依赖消息推送基础设施。
@@ -414,7 +449,7 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 - 工作台 → 待办 → 各详情页；分成卡片 → 月度日历；顾客搜索 → 详情 → 日历/疗程卡 → 创建服务单
 - 开单 → 四级导航 → 商品详情 → 购物车 → 结算弹层 → 二维码
 - 护理 → 3 Tab + FAB → 服务单详情/创建；预约从护理/工作台进入 → 确认/签到/创建服务单
-- 顾客列表 → 详情 → 消费日历/创建服务单/解绑审批
+- 顾客列表 → 详情 → 消费日历/创建服务单/转店审批
 - 我的 → 门店切换/手机号重绑/退出；快捷导航 → 订单列表 → 详情/分配
 
 ---
@@ -422,6 +457,13 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 ## 6. 约束与数据模型
 
 > 数据模型见 `backend.pr.spec.md` §2；环境约束见 `real.md`。
+>
+> **特别注意**：体验卡 / 充值卡判定一律走 `product_skus.is_experience` / `is_recharge_card` capability 列（`backend.pr.spec.md` §2.6 / §4 #23）。`sale_items` 行级快照（§2.9）支撑跃迁/对账。staffApi 已落地的相关约束：
+> - `order.create` / `createConversion` / `createRefund` 写入 sale_items 时拷贝两列快照
+> - `order.create` 含 **D4 严格独立校验**：同一订单 sale_items 不能混合 `is_recharge_card` true/false，抛 `MIXED_RECHARGE_NOT_ALLOWED`
+> - `order.confirmOffline` 结清时调用 `recalcCustomerType` 触发 customer_type 跃迁（`backend.pr.spec.md` §4 #25）
+> - `product.shopInit` / `skuList` 默认 `is_experience = false AND is_recharge_card = false` 过滤普通商品
+> - `card.rechargeSkus` 走 `is_recharge_card = true` 查充值卡虚拟 SKU 列表
 
 ---
 
@@ -462,7 +504,7 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 
 | 功能 | 排除原因 |
 |------|----------|
-| 转换单/退款单/回款单/取货单 | P2，待需求确认 |
+| 转换单/取货单 | P2，待需求确认 |
 | 充值卡金营业额分配 | 流程未建立 |
 | 跨店服务 | 审批流程未设计 |
 | PC 管理后台 | 独立项目 |

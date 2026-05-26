@@ -1,15 +1,19 @@
 <!-- pages/profile/profile.wxml — 我的 -->
 <view class="container">
   <view class="profile-header brand-gradient">
-    <view class="avatar-wrap">
-      <van-icon name="manager" size="80rpx" color="#BBBBBB" />
+    <view class="avatar-wrap" bindtap="onChooseAvatar">
+      <image wx:if="{{avatarHttpUrl}}" src="{{avatarHttpUrl}}" class="avatar-image" mode="aspectFill" />
+      <van-icon wx:else name="manager" size="80rpx" color="#BBBBBB" />
+      <view class="avatar-edit-badge">
+        <van-icon name="photo-o" size="24rpx" color="#FFFFFF" />
+      </view>
     </view>
     <view class="profile-info">
       <text class="profile-name">{{staffName || '未登录'}}</text>
       <view class="profile-meta">
-        <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
+        <text class="profile-store" wx:if="{{currentStoreName}}">{{currentStoreName}}</text>
         <van-tag color="#C0322A" text-color="#FFFFFF">
-          {{position || '未绑定'}}
+          {{position || '职位待设置'}}
         </van-tag>
       </view>
     </view>
@@ -35,11 +39,18 @@
       </van-cell>
       <van-cell title="员工编号" value="{{staffWfId || '未关联'}}" icon="manager-o" />
       <van-cell
+        wx:if="{{hasMultiStore}}"
         title="所属门店"
-        value="{{boundStoreName || '请选择门店'}}"
+        value="{{currentStoreName || '请选择门店'}}"
         icon="shop-o"
         is-link
-        bindtap="onBindStore"
+        bindtap="openStorePicker"
+      />
+      <van-cell
+        wx:else
+        title="所属门店"
+        value="{{currentStoreName || '未绑定'}}"
+        icon="shop-o"
       />
     </van-cell-group>
   </view>
@@ -48,34 +59,27 @@
   <view class="section-card">
     <van-cell-group title="工作功能">
       <van-cell title="订单管理" icon="orders-o" is-link bindtap="onNavOrders" />
-      <van-cell title="服务单列表" icon="todo-list-o" is-link bindtap="onNavServices" />
       <van-cell title="预约管理" icon="clock-o" is-link bindtap="onNavAppointments" />
-      <van-cell title="顾客档案" icon="friends-o" is-link bindtap="onNavCustomers" />
-      <van-cell wx:if="{{isManager}}" title="分配列表" icon="balance-o" is-link bindtap="onNavAllocationList" />
-      <van-cell title="数据看板" icon="chart-trending-o" is-link bindtap="onNavDashboard" />
-      <van-cell title="员工绩效" icon="balance-list-o" is-link bindtap="onNavPerformance" />
+      <van-cell wx:if="{{isManager}}" title="营业额分配" icon="balance-o" is-link bindtap="onNavAllocationList" />
+      <van-cell wx:if="{{canSeeInventory}}" title="库存管理" icon="goods-collect-o" is-link bindtap="onNavInventory" />
+      <van-cell wx:if="{{isManager}}" title="提货核销" icon="cart-o" is-link bindtap="onNavPickup" />
     </van-cell-group>
   </view>
 
   <view class="section-card">
     <van-cell-group title="其他">
+      <van-cell title="版本" icon="setting-o" value="{{appVersion}}" />
       <van-cell title="退出登录" icon="revoke" bindtap="onLogout" />
     </van-cell-group>
   </view>
 </view>
 
-<!-- 门店选择弹出层 -->
-<van-popup
-  show="{{showStorePicker}}"
-  round
-  position="bottom"
+<!-- 门店切换 action sheet（仅 scope 内多店时启用） -->
+<van-action-sheet
+  show="{{storePickerVisible}}"
+  actions="{{storePickerActions}}"
+  cancel-text="取消"
+  bind:select="onStorePickerSelect"
   bind:close="onStorePickerClose"
->
-  <van-picker
-    title="选择门店"
-    show-toolbar
-    columns="{{storeColumns}}"
-    bind:confirm="onStoreConfirm"
-    bind:cancel="onStorePickerClose"
-  />
-</van-popup>
+  bind:cancel="onStorePickerClose"
+/>

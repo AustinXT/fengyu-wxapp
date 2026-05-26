@@ -1,0 +1,33 @@
+{
+  "name": "fengyu-wxapp",
+  "version": "1.0.0",
+  "description": "美容院数字化运营的微信小程序生态系统（monorepo），包含顾客端、员工端两个小程序和管理后台（规划中）。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:delivery": "node scripts/build-delivery.js",
+    "lint:cas-guards": "node scripts/lint-cas-guards.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AustinXT/fengyu-wxapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AustinXT/fengyu-wxapp/issues"
+  },
+  "homepage": "https://github.com/AustinXT/fengyu-wxapp#readme",
+  "devDependencies": {
+    "fs-extra": "^11.3.4",
+    "javascript-obfuscator": "^5.4.2",
+    "miniprogram-automator": "^0.12.1",
+    "pg": "^8.20.0",
+    "webpack": "^5.106.2"
+  }
+}

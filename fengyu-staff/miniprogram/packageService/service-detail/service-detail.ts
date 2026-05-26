@@ -8,7 +8,7 @@ interface ServiceDetail {
   customerName: string;
   customerPhone: string;
   staffName: string;
-  status: '待服务' | '服务中' | '已完成' | '已取消';
+  status: '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消';
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
@@ -21,6 +21,7 @@ interface ServiceDetail {
     sessionCount: number;
     remainingSessions: number;
     totalSessions: number;
+    paidSessions: number | null;
   }>;
 }
 
@@ -79,15 +80,41 @@ Page({
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;
     wx.showModal({
-      title: '确认完成服务',
-      content: '确认完成后将扣减1次疗程次数，操作不可撤销',
-      confirmText: '确认完成',
+      title: '标记完成服务',
+      content: '标记完成后将通知顾客确认，顾客确认后才扣减疗程次数。',
+      confirmText: '标记完成',
       success: async (res) => {
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('service.complete', { serviceOrderId: detail.id });
-          wx.showToast({ title: '服务已完成', icon: 'success' });
+          wx.showToast({ title: '已完成，待顾客确认', icon: 'none' });
+          this.loadDetail(detail.id);
+          setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
+        }
+      }
+    });
+  },
+
+  // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
+  onConfirmService() {
+    const { detail } = this.data;
+    if (!detail || this.data.submitting) return;
+    wx.showModal({
+      title: '代客户确认',
+      content: '确认后将扣减疗程次数并完成服务单，仅在顾客不便自行确认时使用。',
+      confirmText: '确认完成',
+      success: async (res) => {
+        if (!res.confirm) return;
+        this.setData({ submitting: true });
+        try {
+          await callStaffApi('service.confirm', { serviceOrderId: detail.id });
+          wx.showToast({ title: '服务已确认完成', icon: 'success' });
           this.loadDetail(detail.id);
           setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
         } catch (err: unknown) {

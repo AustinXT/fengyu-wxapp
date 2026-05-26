@@ -2,16 +2,18 @@
 
 import { db } from '@/db'
 import { serviceOrders, serviceItems } from '@db/service'
-import { saleItems } from '@db/order'
+import { saleItems, saleOrders } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { eq, desc, and, or, sql, ilike, gte, lte } from 'drizzle-orm'
+import { appointments } from '@db/appointment'
+import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
+import { logOperation, logTransition } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -40,10 +42,9 @@ function serializeServiceOrder(r: {
   }
 }
 
-export async function getServiceOrders(): Promise<ServiceOrder[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrders = withPermission(
+  'service:list',
+  async (session): Promise<ServiceOrder[]> => {
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -56,11 +57,13 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, serviceOrders.storeId))
-    .orderBy(desc(serviceOrders.createdAt))
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(500)
 
   return rows.map(serializeServiceOrder)
-}
+  },
+)
 
 /** 服务单列表筛选参数 */
 export interface ServiceOrderFilters {
@@ -69,6 +72,8 @@ export interface ServiceOrderFilters {
   dateFrom?: string
   dateTo?: string
   search?: string
+  /** 提成状态筛选（'待分配' | '已分配'，用于营业额分配页） */
+  commissionStatus?: string
   page?: number
   pageSize?: number
 }
@@ -85,10 +90,9 @@ export interface PaginatedServiceOrders {
  * 替代 getServiceOrders() 的客户端过滤模式。
  * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
  */
-export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrdersPaginated = withPermission(
+  'service:list',
+  async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -121,6 +125,9 @@ export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {
       ),
     )
   }
+  if (filters.commissionStatus === '待分配' || filters.commissionStatus === '已分配') {
+    conditions.push(eq(serviceOrders.commissionStatus, filters.commissionStatus))
+  }
 
   const whereClause = and(...conditions)
 
@@ -145,17 +152,18 @@ export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    .orderBy(desc(serviceOrders.createdAt))
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(pageSize)
     .offset(offset)
 
   return { data: rows.map(serializeServiceOrder), total }
-}
+  },
+)
 
-export async function getServiceOrderById(serviceOrderId: string): Promise<ServiceOrder | null> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrderById = withPermission(
+  'service:list',
+  async (session, serviceOrderId: string): Promise<ServiceOrder | null> => {
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -172,7 +180,8 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
 
   if (rows.length === 0) return null
   return serializeServiceOrder(rows[0])
-}
+  },
+)
 
 export interface ServiceItemDetail {
   serviceItemId: string
@@ -186,12 +195,13 @@ export interface ServiceItemDetail {
   salesCategory: string | null
   remainingSessions: number | null
   sessionCount: number | null
+  paidSessions: number | null
+  quantity: number | null
 }
 
-export async function getServiceItems(serviceOrderId: string): Promise<ServiceItemDetail[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceItems = withPermission(
+  'service:list',
+  async (_session, serviceOrderId: string): Promise<ServiceItemDetail[]> => {
   const rows = await db.execute(sql`
     SELECT
       si.service_item_id,
@@ -204,7 +214,9 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
       sli.sku_spec_name AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
-      sli.session_count
+      sli.session_count,
+      sli.paid_sessions,
+      sli.quantity AS sli_quantity
     FROM service_items si
     LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
     LEFT JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
@@ -223,10 +235,13 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     salesCategory: r.sales_category ?? null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+    paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
+    quantity: r.sli_quantity !== null && r.sli_quantity !== undefined ? Number(r.sli_quantity) : null,
   }))
-}
+  },
+)
 
-/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡/单品） */
+/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡） */
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
@@ -235,14 +250,14 @@ export interface AvailableSaleItem {
   productType: string | null
   sessionCount: number | null
   remainingSessions: number | null
+  paidSessions: number | null
   unitRealPrice: string
   expireDate: string | null
 }
 
-export async function getAvailableSaleItems(clientUserId: string): Promise<AvailableSaleItem[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:create')
-
+export const getAvailableSaleItems = withPermission(
+  'service:create',
+  async (_session, clientUserId: string): Promise<AvailableSaleItem[]> => {
   const rows = await db.execute(sql`
     SELECT
       si.sale_item_id,
@@ -252,17 +267,34 @@ export async function getAvailableSaleItems(clientUserId: string): Promise<Avail
       si.product_type,
       si.session_count,
       si.remaining_sessions,
+      si.paid_sessions,
       si.unit_real_price,
       si.expire_date
     FROM sale_items si
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE o.client_user_id = ${clientUserId}
-      AND o.status = '已支付'
-      AND si.item_direction = 'purchase'
-      AND si.product_type IN ('疗程卡', '单品')
+      AND o.status IN ('已支付', '部分支付')
+      AND si.item_direction = '购买'
+      AND si.product_type = '疗程卡'
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
       AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+      -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
+      AND NOT EXISTS (
+        SELECT 1 FROM sale_order_payments sop
+        WHERE sop.sale_order_id = o.sale_order_id
+          AND sop.change_type = '退款' AND sop.status = '待审批'
+      )
+      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = o.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 
@@ -274,15 +306,30 @@ export async function getAvailableSaleItems(clientUserId: string): Promise<Avail
     productType: r.product_type,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
+    paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
     unitRealPrice: r.unit_real_price ?? '0',
     expireDate: r.expire_date,
   }))
-}
+  },
+)
 
 /** C4: 开始服务 — WHERE status = '待服务' */
-export async function startServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
+export const startServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({
+      assignedEmployeeId: serviceOrders.assignedEmployeeId,
+      employeeName: staffWechatUsers.name,
+      clientUserId: serviceOrders.clientUserId,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
 
   let result: any
   try {
@@ -302,41 +349,109 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
     return { success: false, message: '服务单状态已变更，无法开始' }
   }
 
-  await logOperation(session, 'service.start', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已开始' }
-}
+  },
+)
 
 /**
- * C1+C4: 完成服务 — 原子扣减 remaining_sessions + 状态推进
- * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL
+ * C4: 员工标记完成服务 — 服务中 → 待客户确认（轻量，仅翻状态 + 记 staff_completed_at）
+ *
+ * 不扣次数 / 不关预约——这些副作用推迟到顾客确认（confirmServiceOrder）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属。
  */
-export async function completeServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
+export const completeServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志 + 非 admin scope 预检查
+  const [svcCtx] = await db
+    .select({
+      storeId: serviceOrders.storeId,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
 
-  // 非 admin 需校验 scope（原子 SQL 不支持 Drizzle scopeCondition，此处预检查）
   if (!isAdminScope(session)) {
     const scopeStoreIds = session.permissions.scopeStoreIds
-    if (scopeStoreIds.length === 0) return { success: false, message: '无权操作该服务单' }
-    const [so] = await db
-      .select({ storeId: serviceOrders.storeId })
-      .from(serviceOrders)
-      .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
-      .limit(1)
-    if (!so || !scopeStoreIds.includes(so.storeId)) {
+    if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
       return { success: false, message: '无权操作该服务单' }
     }
   }
 
   let result: any
   try {
+    result = await db
+      .update(serviceOrders)
+      .set({ status: '待客户确认', staffCompletedAt: new Date() })
+      .where(and(
+        eq(serviceOrders.serviceOrderId, serviceOrderId),
+        eq(serviceOrders.status, '服务中'),
+        scopeCondition(session, serviceOrders.storeId),
+      ))
+  } catch {
+    return { success: false, message: '标记完成失败，请稍后重试' }
+  }
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '服务单状态已变更，无法完成' }
+  }
+
+  await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '待客户确认', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
+
+  revalidatePath('/services')
+  return { success: true, message: '已标记完成，待客户确认' }
+  },
+)
+
+/**
+ * C1+C4: 后台代客户确认服务 — 待客户确认 → 已完成（原子扣减 remaining_sessions + 状态推进）
+ *
+ * 兜底入口：顾客不便用小程序时由后台 / 店长代确认。执行 finalize 副作用（扣次数）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL。
+ */
+export const confirmServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志 + 非 admin scope 预检查
+  const [svcCtx] = await db
+    .select({
+      storeId: serviceOrders.storeId,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
+  if (!isAdminScope(session)) {
+    const scopeStoreIds = session.permissions.scopeStoreIds
+    if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
+      return { success: false, message: '无权操作该服务单' }
+    }
+  }
+
+  let result: any
+  try {
+    // 2026-05-20 ticket：扣减条件放宽——只校验 remaining_sessions >= sessionUsed
+    // paid_sessions 限额（旧 D6=A 规则）已废止，部分支付订单也可消费
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
         SET status = '已完成', completed_at = NOW(), updated_at = NOW()
-        WHERE service_order_id = ${serviceOrderId} AND status = '服务中'
+        WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
         RETURNING service_order_id
       ),
       deduct AS (
@@ -349,30 +464,48 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
           AND sale_items.remaining_sessions >= si.session_used
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
+      ),
+      total_items AS (
+        SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
       )
       SELECT
         (SELECT COUNT(*) FROM status_check) AS status_updated,
-        (SELECT COUNT(*) FROM deduct) AS items_deducted
+        (SELECT COUNT(*) FROM deduct) AS items_deducted,
+        (SELECT n FROM total_items) AS items_total
     `)
   } catch {
-    return { success: false, message: '完成服务失败，请稍后重试' }
+    return { success: false, message: '确认服务失败，请稍后重试' }
   }
 
   const row = (result as any[])[0]
   if (!row || Number(row.status_updated) === 0) {
-    return { success: false, message: '服务单状态已变更，无法完成' }
+    return { success: false, message: '服务单状态已变更，无法确认' }
+  }
+  // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
+  if (row && Number(row.items_deducted) < Number(row.items_total)) {
+    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
   }
 
-  await logOperation(session, 'service.complete', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
-  return { success: true, message: '服务已完成' }
-}
+  return { success: true, message: '服务已确认完成' }
+  },
+)
 
 /** C4: 取消服务 — WHERE status = '待服务'，不扣次数 */
-export async function cancelServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
+export const cancelServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({ customerName: clientWechatUsers.name })
+    .from(serviceOrders)
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
 
   let cancelResult: any
   try {
@@ -392,54 +525,116 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
 
-  await logOperation(session, 'service.cancel', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.cancel', 'service_order', serviceOrderId, '待服务', '已取消', {
+    customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
-}
+  },
+)
 
 /** 管理后台创建服务单 */
-export async function createServiceOrder(data: {
+export const createServiceOrder = withPermission(
+  'service:create',
+  async (
+    session,
+    data: {
   storeId: string
   marketName: string
   clientUserId: string
   assignedEmployeeId: string
   serviceDate: string
-  serviceOrderType?: '普通' | '体验'
-  appointmentId?: string | null
   remark?: string | null
   items: Array<{
     saleItemId: string
     sessionUsed: number
   }>
-}): Promise<{ success: boolean; message: string; serviceOrderId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:create')
-
+    },
+  ): Promise<{ success: boolean; message: string; serviceOrderId?: string }> => {
   // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
   }
 
-  // 先校验剩余次数（事务外，只读查询）
+  // 根据顾客成为会员客的时间戳判定服务单类型：
+  // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
+  const [customerRow] = await db
+    .select({ becameMemberAt: clientWechatUsers.becameMemberAt })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, data.clientUserId))
+    .limit(1)
+  const serviceOrderType: '售前' | '售后' =
+    customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date() ? '售后' : '售前'
+
+  // 自动关联：查找该顾客在该门店已签到、且尚未关联服务单的最近预约
+  const [pendingAppt] = await db
+    .select({ appointmentId: appointments.appointmentId })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.clientUserId, data.clientUserId),
+        eq(appointments.storeId, data.storeId),
+        eq(appointments.status, '已确认'),
+        isNotNull(appointments.checkinAt),
+        notExists(
+          db.select({ id: serviceOrders.serviceOrderId })
+            .from(serviceOrders)
+            .where(eq(serviceOrders.appointmentId, appointments.appointmentId))
+        ),
+      )
+    )
+    .orderBy(desc(appointments.checkinAt))
+    .limit(1)
+  const resolvedAppointmentId = pendingAppt?.appointmentId ?? null
+
+  // 先校验订单状态 + 剩余次数（事务外，只读查询）
+  // 2026-05-20 ticket：放宽消费条件——只要"已支付/部分支付" + remainingSessions > 0 即可消费
+  // 不再校验 paid_sessions 限额（之前的 D6=A 锁死规则已废止）
+  // 注：退款冻结是独立守卫（与 D6 无关）——审批中拒绝整单，审批后按 paid_sessions 有效余量拒绝已退完的卡
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
+        sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
+        paidSessions: saleItems.paidSessions,
         unitRealPrice: saleItems.unitRealPrice,
+        saleOrderType: saleOrders.saleOrderType,
+        orderStatus: saleOrders.status,
+        hasPendingRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
+        hasApprovedRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`,
       })
       .from(saleItems)
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
       .where(eq(saleItems.saleItemId, item.saleItemId))
       .limit(1)
 
     if (!saleItem) {
       return { success: false, message: `销售明细 ${item.saleItemId} 不存在` }
     }
+    // orderStatus 显式不在白名单时拒绝（mock 中可能 undefined，按通过处理）
+    if (saleItem.orderStatus && !['已支付', '部分支付'].includes(saleItem.orderStatus)) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 对应订单状态为 ${saleItem.orderStatus}，不可消费` }
+    }
+    // 在途退款冻结：原订单存在 '待审批' 退款时不可开单
+    if (saleItem.hasPendingRefund) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 对应订单退款审批中，不可开单` }
+    }
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
     }
-    saleItemSnapshots.push({ saleItemId: item.saleItemId, unitRealPrice: saleItem.unitRealPrice })
+    // 审批后已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+    if (saleItem.hasApprovedRefund && saleItem.paidSessions !== null && saleItem.sessionCount !== null) {
+      const consumed = saleItem.sessionCount - (saleItem.remainingSessions ?? saleItem.sessionCount)
+      if (consumed + item.sessionUsed > saleItem.paidSessions) {
+        return { success: false, message: `销售明细 ${item.saleItemId} 已退款，可用次数不足` }
+      }
+    }
+    saleItemSnapshots.push({
+      saleItemId: item.saleItemId,
+      unitRealPrice: saleItem.unitRealPrice,
+    })
   }
 
   // 事务：ID 生成 + 服务单 + 服务明细，原子提交
@@ -462,18 +657,18 @@ export async function createServiceOrder(data: {
         FROM lock
       `)
       const id = (idRows as any[])[0]?.id as string
-      if (!id) throw new Error('服务单号生成失败')
+      if (!id) throw new ApiError('INVALID_STATE', '服务单号生成失败')
 
       await tx.insert(serviceOrders).values({
         serviceOrderId: id,
         status: '待服务',
-        serviceOrderType: data.serviceOrderType || '普通',
+        serviceOrderType,
         marketName: data.marketName,
         storeId: data.storeId,
         serviceDate: data.serviceDate,
         assignedEmployeeId: data.assignedEmployeeId,
         clientUserId: data.clientUserId,
-        appointmentId: data.appointmentId || null,
+        appointmentId: resolvedAppointmentId,
         remark: data.remark || null,
       })
 
@@ -508,4 +703,5 @@ export async function createServiceOrder(data: {
 
   revalidatePath('/services')
   return { success: true, message: '服务单创建成功', serviceOrderId }
-}
+  },
+)

@@ -36,6 +36,11 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAnyPermission: vi.fn((session: any, actions: string[]) => {
+    if (!session) throw new Error('NO_SESSION')
+    const has = actions.some((a: string) => session.permissions?.actions?.includes(a))
+    if (!has) throw new Error(`PERMISSION_DENIED: 无权执行 ${actions.join(' 或 ')}`)
+  }),
 }))
 
 import { getLogs, getOrderLogs } from './logs'
@@ -207,5 +212,41 @@ describe('getOrderLogs — 订单操作日志', () => {
     const result = await getOrderLogs('FY-XSD-WX-999')
 
     expect(result).toEqual([])
+  })
+
+  it('admin（仅 operation_log:list）也可查看订单日志', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'admin' }],
+      permissions: { actions: ['operation_log:list'], scopeStoreIds: [] },
+    })
+    mockLogChainNoLimit([mockLogRow])
+
+    const result = await getOrderLogs('FY-XSD-WX-260315-0001')
+
+    expect(result).toHaveLength(1)
+  })
+
+  it('manager（仅 sale_order:list）也可查看订单日志', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'manager' }],
+      permissions: { actions: ['sale_order:list'], scopeStoreIds: ['store-1'] },
+    })
+    mockLogChainNoLimit([mockLogRow])
+
+    const result = await getOrderLogs('FY-XSD-WX-260315-0001')
+
+    expect(result).toHaveLength(1)
+  })
+
+  it('无两个权限 → 抛 PERMISSION_DENIED', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'staff' }],
+      permissions: { actions: [], scopeStoreIds: [] },
+    })
+
+    await expect(getOrderLogs('FY-XSD-WX-260315-0001')).rejects.toThrow('PERMISSION_DENIED')
   })
 })

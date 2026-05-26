@@ -25,9 +25,9 @@
       <van-cell wx:if="{{appt.remark}}" title="备注" value="{{appt.remark}}" />
     </van-cell-group>
 
-    <!-- 关联护理单 -->
-    <van-cell-group wx:if="{{appt.serviceOrderId}}" title="关联护理单" class="card-group">
-      <van-cell title="护理单 ID" value="{{appt.serviceOrderId}}" is-link
+    <!-- 关联服务单 -->
+    <van-cell-group wx:if="{{appt.serviceOrderId}}" title="关联服务单" class="card-group">
+      <van-cell title="服务单 ID" value="{{appt.serviceOrderId}}" is-link
         bind:click="onViewServiceOrder" />
     </van-cell-group>
 
@@ -58,7 +58,7 @@
           custom-class="btn-primary-brand"
           custom-style="flex:1;border-radius:48rpx;"
           bind:click="onCreateService"
-        >创建护理单</van-button>
+        >创建服务单</van-button>
       </view>
       <!-- 终态：返回工作台 -->
       <van-button

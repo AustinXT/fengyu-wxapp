@@ -32,6 +32,7 @@ Page({
     defaultStaffName: '',
     selectedStaffWfId: '',
     selectedStaffName: '',
+    selectedStaffAvatarUrl: '',
 
     notes: '',
 
@@ -70,25 +71,43 @@ Page({
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
+      // 当前绑定门店作为"预约门店"；非本店卡需要禁用以符合"一张卡只能在购买门店使用"业务规则
+      const bookingStoreId = app.globalData.boundStoreId || '';
       const items: any[] = [];
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
+          // 疗程卡（含原单品=1 次卡）可预约；必须本店可用 + 有已付未用次数
+          const itemStoreId = order.storeId || '';
+          const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
+          if (isCrossStore) continue;
+          const total = Number(item.sessionCount ?? 0);
+          const remaining = Number(item.remainingSessions ?? 0);
+          const paid = Number(item.paidSessions ?? 0);
+          const used = Math.max(0, total - remaining);
+          const paidUnused = Math.max(0, paid - used);
+          if (!(paid > 0 && paidUnused > 0)) continue;
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
             sku_spec_name: item.skuSpecName,
-            remaining_sessions: item.remainingSessions,
-            session_count: item.sessionCount,
+            remaining_sessions: remaining,
+            session_count: total,
+            paid_sessions: paid,
+            used_sessions: used,
+            paid_unused_sessions: paidUnused,
             product_type: item.productType,
             sale_order_id: order.saleOrderId,
+            store_id: itemStoreId,
             store_name: order.storeName,
+            disabled: false,
+            disabled_reason: '',
           });
         }
       }
-      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目
+      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目；跨店卡不预选
       const preselect = preselectItemId
-        ? items.find(i => i.sale_item_id === preselectItemId)
+        ? items.find(i => i.sale_item_id === preselectItemId && !i.disabled)
         : null;
       this.setData({
         appointableItems: items,
@@ -111,6 +130,9 @@ Page({
         employee_id: s.staff_id,
         name: s.name,
         position: s.position,
+        avatarUrl: s.avatarUrl || '',
+        avgRating: s.avgRating ?? null,
+        reviewCount: s.reviewCount || 0,
       }));
       this.setData({ staffList });
     } catch {
@@ -120,11 +142,16 @@ Page({
 
   async loadDefaultStaff() {
     try {
-      const data = await callClientApi('staff.default', {});
+      const data = await callClientApi<{
+        mainStaffId: string | null;
+        mainStaffName: string | null;
+        mainStaffAvatarUrl: string | null;
+      }>('staff.default', {});
       if (data?.mainStaffId) {
         this.setData({
           selectedStaffWfId: data.mainStaffId,
           selectedStaffName: data.mainStaffName || '',
+          selectedStaffAvatarUrl: data.mainStaffAvatarUrl || '',
         });
       }
     } catch {
@@ -134,6 +161,10 @@ Page({
 
   onSelectItem(e: WechatMiniprogram.TouchEvent) {
     const item = e.currentTarget.dataset.item as any;
+    if (item.disabled) {
+      Toast(item.disabled_reason || '该卡不可用于当前门店');
+      return;
+    }
     this.setData({
       selectedSaleItemId: item.sale_item_id,
       selectedSaleOrderId: item.sale_order_id,
@@ -183,8 +214,9 @@ Page({
   },
 
   onTimeSlotTap(e: WechatMiniprogram.TouchEvent) {
-    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean };
-    if (disabled) {
+    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean | string };
+    const isDisabled = disabled === true || disabled === 'true';
+    if (isDisabled) {
       Toast('该时段已过，请选择其他时段');
       return;
     }
@@ -204,7 +236,14 @@ Page({
 
   onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
     const { wfId, name } = e.detail;
-    this.setData({ selectedStaffWfId: wfId, selectedStaffName: name, showStaffPopup: false });
+    // 从已加载的 staffList 里反查头像（弹层 select 事件只携带 id/name，避免破坏现有契约）
+    const matched = (this.data.staffList as any[]).find((s) => s.employee_id === wfId);
+    this.setData({
+      selectedStaffWfId: wfId,
+      selectedStaffName: name,
+      selectedStaffAvatarUrl: matched?.avatarUrl || '',
+      showStaffPopup: false,
+    });
   },
 
   onGoOrders() {
@@ -276,6 +315,10 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御预约', path: '/pages/appointment/appointment' };
+    // 分享礼：被分享人进入首页而非分享者的预约页
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御预约', path: `/pages/home/home${invSuffix}` };
   },
 });

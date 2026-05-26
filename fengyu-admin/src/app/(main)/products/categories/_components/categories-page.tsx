@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import type { ProductKind, ProductCategory } from "@/lib/types"
+import type { ProductCategory } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -20,55 +20,85 @@ import {
   AlertDialogCancel,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
-import { createCategory, updateCategory } from "@/actions/products"
+import { createCategory, updateCategory, deleteCategory } from "@/actions/products"
+import ProductKindManagementDialog from "./product-kind-management-dialog"
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
+type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
+
+const SALES_CATEGORY_OPTIONS: SalesCategory[] = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
 
 interface CategoryFormData {
   categoryName: string
-  productKind: ProductKind
+  productKind: string
+  salesCategory: SalesCategory | ''
   sortOrder: number
   isValid: boolean
 }
 
-const emptyForm = (defaultKind: ProductKind): CategoryFormData => ({
-  categoryName: "",
-  productKind: defaultKind,
-  sortOrder: 0,
-  isValid: true,
-})
-
 export default function CategoriesPageClient({
   categories,
+  productKinds,
 }: {
   categories: ProductCategory[]
+  productKinds: ProductCategory[]
 }) {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<ProductKind>("福利活动")
+
+  // 动态一级分类列表（启用 + 按排序）
+  const activeKinds = useMemo(
+    () => [...productKinds].filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder),
+    [productKinds],
+  )
+
+  const defaultKind = activeKinds[0]?.categoryName ?? ""
+  const [activeTab, setActiveTab] = useState(defaultKind)
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<ProductCategory | null>(null)
-  const [form, setForm] = useState<CategoryFormData>(emptyForm("福利活动"))
+  const [form, setForm] = useState<CategoryFormData>({
+    categoryName: "",
+    productKind: defaultKind,
+    salesCategory: "",
+    sortOrder: 0,
+    isValid: true,
+  })
   const [saving, setSaving] = useState(false)
 
   // AlertDialog state for disable confirmation
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
+  // AlertDialog state for delete confirmation（仅已停用行显示删除按钮）
+  const [deleteTarget, setDeleteTarget] = useState<ProductCategory | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  // 列表筛选：是否包含已停用（默认仅展示启用）
+  const [includeDisabled, setIncludeDisabled] = useState(false)
+
+  // 品项一级分类管理 dialog
+  const [kindDialogOpen, setKindDialogOpen] = useState(false)
+
   const categoriesByKind = useMemo(() => {
     const map: Record<string, ProductCategory[]> = {}
-    for (const kind of PRODUCT_KINDS) {
-      map[kind] = categories
-        .filter((c) => c.productKind === kind)
+    for (const kind of activeKinds) {
+      map[kind.categoryName] = categories
+        .filter((c) => c.productKind === kind.categoryName)
+        .filter((c) => includeDisabled || c.isValid)
         .sort((a, b) => a.sortOrder - b.sortOrder)
     }
     return map
-  }, [categories])
+  }, [categories, activeKinds, includeDisabled])
 
   const openAddDialog = () => {
     setEditingCategory(null)
-    setForm(emptyForm(activeTab))
+    setForm({
+      categoryName: "",
+      productKind: activeTab,
+      salesCategory: "",
+      sortOrder: 0,
+      isValid: true,
+    })
     setDialogOpen(true)
   }
 
@@ -76,7 +106,8 @@ export default function CategoriesPageClient({
     setEditingCategory(row)
     setForm({
       categoryName: row.categoryName,
-      productKind: row.productKind,
+      productKind: row.productKind ?? activeTab,
+      salesCategory: (row.salesCategory as SalesCategory | null) ?? "",
       sortOrder: row.sortOrder,
       isValid: row.isValid,
     })
@@ -85,7 +116,7 @@ export default function CategoriesPageClient({
 
   const handleSubmit = async () => {
     if (!form.categoryName.trim()) {
-      toast.error("请输入分类名称")
+      toast.error("请输入二级分类名称")
       return
     }
     setSaving(true)
@@ -94,6 +125,7 @@ export default function CategoriesPageClient({
         const catResult = await updateCategory(editingCategory.categoryId, {
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
+          salesCategory: form.salesCategory || null,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
         }, editingCategory.updatedAt)
@@ -102,13 +134,12 @@ export default function CategoriesPageClient({
           if (catResult.message.includes("已被其他人修改")) router.refresh()
           return
         }
-        toast.success("分类已更新")
+        toast.success("二级分类已更新")
       } else {
-        const categoryId = `cat-${Date.now()}`
         const createResult = await createCategory({
-          categoryId,
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
+          salesCategory: form.salesCategory || null,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
         })
@@ -116,7 +147,7 @@ export default function CategoriesPageClient({
           toast.error(createResult.message)
           return
         }
-        toast.success("分类已创建")
+        toast.success("二级分类已创建")
       }
       setDialogOpen(false)
       router.refresh()
@@ -138,7 +169,7 @@ export default function CategoriesPageClient({
         if (disableResult.message.includes("已被其他人修改")) router.refresh()
         return
       }
-      toast.success("分类已停用")
+      toast.success("二级分类已停用")
       setDisableTarget(null)
       router.refresh()
     } catch (err) {
@@ -149,11 +180,37 @@ export default function CategoriesPageClient({
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const deleteResult = await deleteCategory(deleteTarget.categoryId, deleteTarget.updatedAt)
+      if (!deleteResult.success) {
+        toast.error(deleteResult.message)
+        if (deleteResult.message.includes("CONFLICT")) router.refresh()
+        return
+      }
+      toast.success("二级分类已删除")
+      setDeleteTarget(null)
+      router.refresh()
+    } catch (err) {
+      toast.error("删除失败")
+      console.error(err)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const columns: Column<ProductCategory>[] = [
     {
       key: "categoryName",
-      header: "分类名称",
+      header: "二级分类名称",
       cell: (row) => <span className="font-medium">{row.categoryName}</span>,
+    },
+    {
+      key: "salesCategory",
+      header: "经营类型",
+      cell: (row) => row.salesCategory ?? <span className="text-[var(--muted-foreground)]">—</span>,
     },
     {
       key: "sortOrder",
@@ -183,14 +240,25 @@ export default function CategoriesPageClient({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[var(--destructive)]"
-            onClick={() => setDisableTarget(row)}
-          >
-            停用
-          </Button>
+          {row.isValid ? (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDisableTarget(row)}
+            >
+              停用
+            </Button>
+          ) : (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDeleteTarget(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },
@@ -199,29 +267,52 @@ export default function CategoriesPageClient({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
-        <Button onClick={openAddDialog}>新增分类</Button>
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+            &larr; 返回
+          </Button>
+          <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={includeDisabled}
+              onChange={(e) => setIncludeDisabled(e.target.checked)}
+              className="h-4 w-4 rounded border-[var(--input)]"
+            />
+            <span>包含已停用</span>
+          </label>
+          <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项一级分类管理</Button>
+          <Button onClick={openAddDialog}>新增二级分类</Button>
+        </div>
       </div>
 
-      <Tabs defaultValue="福利活动" onValueChange={(v) => setActiveTab(v as ProductKind)}>
-        <TabsList>
-          {PRODUCT_KINDS.map((kind) => (
-            <TabsTrigger key={kind} value={kind}>
-              {kind}（{categoriesByKind[kind]?.length ?? 0}）
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      {activeKinds.length > 0 ? (
+        <Tabs defaultValue={defaultKind} onValueChange={setActiveTab}>
+          <TabsList>
+            {activeKinds.map((kind) => (
+              <TabsTrigger key={kind.categoryId} value={kind.categoryName}>
+                {kind.categoryName}（{categoriesByKind[kind.categoryName]?.length ?? 0}）
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-        {PRODUCT_KINDS.map((kind) => (
-          <TabsContent key={kind} value={kind}>
-            <DataTable
-              columns={columns}
-              data={(categoriesByKind[kind] ?? [])}
-              emptyText="暂无分类"
-            />
-          </TabsContent>
-        ))}
-      </Tabs>
+          {activeKinds.map((kind) => (
+            <TabsContent key={kind.categoryId} value={kind.categoryName}>
+              <DataTable
+                columns={columns}
+                data={(categoriesByKind[kind.categoryName] ?? [])}
+                emptyText="暂无二级分类"
+              />
+            </TabsContent>
+          ))}
+        </Tabs>
+      ) : (
+        <div className="text-center py-8 text-[var(--muted-foreground)]">
+          暂无品项一级分类，请先通过「品项一级分类管理」添加
+        </div>
+      )}
 
       {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -238,15 +329,29 @@ export default function CategoriesPageClient({
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">品项类型 *</label>
+            <label className="text-sm font-medium">品项一级分类 *</label>
             <Select
               value={form.productKind}
-              onChange={(e) => setForm({ ...form, productKind: e.target.value as ProductKind })}
+              onChange={(e) => setForm({ ...form, productKind: e.target.value })}
             >
-              {PRODUCT_KINDS.map((kind) => (
-                <option key={kind} value={kind}>
-                  {kind}
+              {activeKinds.map((kind) => (
+                <option key={kind.categoryId} value={kind.categoryName}>
+                  {kind.categoryName}
                 </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">经营类型</label>
+            <Select
+              value={form.salesCategory}
+              onChange={(e) =>
+                setForm({ ...form, salesCategory: e.target.value as SalesCategory | "" })
+              }
+            >
+              <option value="">未设置</option>
+              {SALES_CATEGORY_OPTIONS.map((sc) => (
+                <option key={sc} value={sc}>{sc}</option>
               ))}
             </Select>
           </div>
@@ -291,6 +396,29 @@ export default function CategoriesPageClient({
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
+
+      {/* Delete Confirmation（仅已停用行可触发） */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认删除</AlertDialogTitle>
+        <AlertDialogDescription>
+          确定要删除分类「{deleteTarget?.categoryName}」吗？此操作不可恢复。若该分类被 SKU 或优惠券引用将自动拒绝。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+            {deleting ? "删除中..." : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* 品项一级分类管理 Dialog */}
+      <ProductKindManagementDialog
+        open={kindDialogOpen}
+        onOpenChange={setKindDialogOpen}
+        productKinds={productKinds}
+      />
     </div>
   )
 }

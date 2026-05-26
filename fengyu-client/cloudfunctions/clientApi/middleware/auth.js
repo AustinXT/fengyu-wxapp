@@ -9,8 +9,10 @@ const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 
 // 用户信息缓存：OPENID → { data, ts }
+// TTL 60s：缓存含 bound_store_id，而店长在 staffApi（独立云函数）审批转店后无法清除
+// 本进程缓存。缩短 TTL 把跨函数陈旧窗口收敛到 ≤60s（转店为低频操作，足够）。
 const AUTH_CACHE = new Map()
-const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
+const CACHE_TTL = 60 * 1000 // 60 秒
 
 /**
  * 认证中间件

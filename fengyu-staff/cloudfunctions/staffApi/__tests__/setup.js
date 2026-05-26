@@ -14,7 +14,10 @@ require.cache[mssqlPath] = { id: mssqlPath, filename: mssqlPath, loaded: true, e
 const wxacodePath = require.resolve('../utils/wxacode')
 const mockWxacode = { generateWxacode: vi.fn(async () => Buffer.from('fake-qrcode-png')), uploadToCloudStorage: vi.fn(async () => 'cloud://mock-file-id/wxacode.png') }
 require.cache[wxacodePath] = { id: wxacodePath, filename: wxacodePath, loaded: true, exports: mockWxacode }
-globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, mssql: mockMssql, wxacode: mockWxacode }
+const configPath = require.resolve('../utils/config')
+const mockConfig = { getMemberThreshold: vi.fn(async () => 1980), invalidateCache: vi.fn(), FALLBACK_THRESHOLD: 1980 }
+require.cache[configPath] = { id: configPath, filename: configPath, loaded: true, exports: mockConfig }
+globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, mssql: mockMssql, wxacode: mockWxacode, config: mockConfig }
 beforeEach(() => {
   mockPg.query.mockReset().mockResolvedValue([])
   mockPg.transaction.mockReset().mockImplementation(async (cb) => { const client = { query: vi.fn(async () => ({ rows: [], rowCount: 0 })) }; return await cb(client) })
@@ -22,4 +25,6 @@ beforeEach(() => {
   mockCloud.init.mockReset()
   mockCloud.getWXContext.mockReset().mockReturnValue({ OPENID: 'test-openid-001', APPID: 'wxe3f5d9ee6a94d22d', UNIONID: undefined })
   mockMssql.query.mockReset().mockResolvedValue([])
+  mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
+  mockConfig.invalidateCache.mockReset()
 })

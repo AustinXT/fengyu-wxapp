@@ -1,0 +1,53 @@
+<!-- packageMy/inventory/detail.wxml -->
+<view class="container" wx:if="{{detail}}">
+  <view class="head">
+    <view class="head-line">
+      <text class="doc-id">{{detail.id}}</text>
+      <text class="status status-{{detail.statusKey}}">{{detail.status}}</text>
+    </view>
+    <view class="meta-row">
+      <text wx:if="{{detail.docSubtype}}" class="meta-tag">{{detail.docSubtype}}</text>
+      <text class="meta-date">{{detail.docDate}}</text>
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section-title">基础信息</view>
+    <view class="field"><text class="label">门店</text><text class="value">{{detail.storeName || detail.storeId}}</text></view>
+    <view class="field" wx:if="{{detail.counterpartStoreName}}"><text class="label">对方门店</text><text class="value">{{detail.counterpartStoreName}}</text></view>
+    <view class="field" wx:if="{{detail.isDispatcher !== null}}"><text class="label">本端身份</text><text class="value">{{detail.isDispatcher ? '发出方' : '接收方'}}</text></view>
+    <view class="field" wx:if="{{detail.customerName}}"><text class="label">顾客</text><text class="value">{{detail.customerName}}</text></view>
+    <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity || '—'}}</text></view>
+    <view class="field" wx:if="{{detail.receiveQuantity}}"><text class="label">实收数量</text><text class="value">{{detail.receiveQuantity}}</text></view>
+    <view class="field" wx:if="{{detail.relatedDocNo}}"><text class="label">引用单号</text><text class="value">{{detail.relatedDocNo}}</text></view>
+    <view class="field" wx:if="{{detail.sourceDate}}"><text class="label">市场配货日</text><text class="value">{{detail.sourceDate}}</text></view>
+    <view class="field" wx:if="{{detail.sourceQuantity}}"><text class="label">配货数量</text><text class="value">{{detail.sourceQuantity}}</text></view>
+    <view class="field"><text class="label">录入人</text><text class="value">{{detail.createdByName || '—'}}</text></view>
+    <view class="field" wx:if="{{detail.confirmedByName}}"><text class="label">确认人</text><text class="value">{{detail.confirmedByName}}</text></view>
+    <view class="field" wx:if="{{detail.confirmedAt}}"><text class="label">确认时间</text><text class="value">{{detail.confirmedAt}}</text></view>
+    <view class="field" wx:if="{{detail.remark}}"><text class="label">备注</text><text class="value">{{detail.remark}}</text></view>
+  </view>
+
+  <view class="section">
+    <view class="section-title">明细行（{{detail.items.length}} 条）</view>
+    <view class="item-card" wx:for="{{detail.items}}" wx:key="id">
+      <view class="item-head">
+        <text class="item-name">{{item.productName}}</text>
+        <text class="item-qty">×{{item.quantity}}</text>
+      </view>
+      <view class="item-meta">
+        <text class="item-code">{{item.productCode}}</text>
+        <text wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</text>
+        <text wx:if="{{item.batchNo}}" class="item-batch">批号：{{item.batchNo}}</text>
+      </view>
+      <view class="item-extra">
+        <text wx:if="{{item.unitPrice}}" class="item-price">单价：¥{{item.unitPrice}}</text>
+        <text wx:if="{{item.amount}}" class="item-amount">金额：¥{{item.amount}}</text>
+        <text wx:if="{{item.scrapReason}}" class="item-reason">{{item.scrapReason}}</text>
+        <text wx:if="{{item.saleFlowNo}}" class="item-flow">流水：{{item.saleFlowNo}}</text>
+      </view>
+    </view>
+  </view>
+</view>
+
+<view wx:if="{{loading}}" class="loading">加载中...</view>

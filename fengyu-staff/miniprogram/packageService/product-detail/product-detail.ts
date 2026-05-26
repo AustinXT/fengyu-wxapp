@@ -6,6 +6,10 @@ interface Spu {
   product_id: string;
   name: string;
   product_kind: string;
+  /** PR-D：一级 kind 名（与 product_kind 同义；前端 tag 渲染统一字段名为 camelCase） */
+  productKind?: string | null;
+  /** PR-D：一级 kind 行的 display_color HEX 值（DB 驱动，缺失时回退到 type='primary'） */
+  kindDisplayColor?: string | null;
   cover_image: string;
   description: string;
   is_bundle: boolean;
@@ -61,13 +65,16 @@ Page({
         throw new Error('商品不存在');
       }
 
-      const isPromo = spu.product_kind === '福利活动';
+      const isPromo = spu.product_kind === '组合套餐';
 
       this.setData({
         spu: {
           product_id: spu.product_id,
           name: spu.name,
           product_kind: spu.product_kind,
+          // PR-D：tag 渲染走 productKind / kindDisplayColor（DB 驱动）
+          productKind: spu.productKind || spu.product_kind || null,
+          kindDisplayColor: spu.kindDisplayColor || null,
           cover_image: spu.cover_image,
           description: spu.description || '',
           is_bundle: spu.is_bundle || false,

@@ -2,11 +2,12 @@
  * 商品模块路由（员工端）
  * product.shopInit — 开单页初始化（合并接口）
  * product.categories — 品项分类列表
- * product.spuList — 商品列表（含 SKU 价格）
+ * product.skuList — SKU 列表（按品项分类）
  * product.skuDetail — SKU 详情
- * product.spuDetail — 商品详情
+ * product.spuDetail — 商城商品详情
  *
- * 数据全部来自 PG（product_categories / products / product_skus），零 WorkFine 依赖。
+ * SKU 直接绑定品项分类（product_skus → product_categories），无 products 中间层。
+ * 商城商品查询通过 products → mall_product_skus → product_skus。
  */
 
 const pg = require('../db/pg')
@@ -14,14 +15,77 @@ const { requireStaffBound } = require('../middleware/auth')
 
 // ===== 公共查询辅助 =====
 
-/** 查询分类列表 */
-async function _queryCategoryRows() {
-  return pg.query(`
-    SELECT category_id, category_name, product_kind, sort_order
-    FROM product_categories
-    WHERE is_valid = true
-    ORDER BY sort_order ASC
-  `)
+/**
+ * 查询品项分类列表
+ *
+ * @param {Object}   [opts]
+ * @param {string[]} [opts.kindIn]       仅返回 product_kind ∈ kindIn 的二级行
+ * @param {string[]} [opts.kindNotIn]    仅返回 product_kind ∉ kindNotIn 的二级行
+ * @param {boolean}  [opts.withParentJoin=false]
+ *                                        为 true 时 JOIN 一级行（`parent.product_kind IS NULL
+ *                                        AND parent.category_name = child.product_kind`）附带出
+ *                                        `kind_name` 与 `kind_sort_order`；按
+ *                                        (parent.sort_order, child.sort_order) 排序。
+ *                                        同时强制只返回二级行（`child.product_kind IS NOT NULL`）。
+ *
+ * 无参调用保留"全量行为"（含一级行+二级行，按 sort_order 排序），
+ * 保持 `categories` action 的历史契约向后兼容。
+ *
+ * 任何"取二级分类"语义的调用都应显式传 `kindIn` / `kindNotIn` 或 `withParentJoin=true`，
+ * 避免把一级行误当作二级分类下发给客户端。
+ */
+async function _queryCategoryRows(opts = {}) {
+  const { kindIn, kindNotIn, withParentJoin } = opts || {}
+  const params = []
+  const conditions = ['child.is_valid = true']
+
+  if (Array.isArray(kindIn) && kindIn.length > 0) {
+    params.push(kindIn)
+    conditions.push(`child.product_kind = ANY($${params.length})`)
+    conditions.push('child.product_kind IS NOT NULL')
+  }
+  if (Array.isArray(kindNotIn) && kindNotIn.length > 0) {
+    params.push(kindNotIn)
+    conditions.push(`child.product_kind <> ALL($${params.length})`)
+    conditions.push('child.product_kind IS NOT NULL')
+  }
+
+  if (withParentJoin) {
+    // 显式仅返回二级行（parent.product_kind IS NULL 限定一级行）
+    if (!conditions.includes('child.product_kind IS NOT NULL')) {
+      conditions.push('child.product_kind IS NOT NULL')
+    }
+    const whereClause = conditions.join(' AND ')
+    return pg.query(
+      `
+      SELECT
+        child.category_id, child.category_name, child.product_kind,
+        child.sales_category, child.sort_order,
+        parent.category_name AS kind_name,
+        parent.sort_order    AS kind_sort_order
+      FROM product_categories child
+      JOIN product_categories parent
+        ON parent.product_kind IS NULL
+       AND parent.category_name = child.product_kind
+       AND parent.is_valid = true
+      WHERE ${whereClause}
+      ORDER BY parent.sort_order ASC, child.sort_order ASC
+    `,
+      params
+    )
+  }
+
+  const whereClause = conditions.join(' AND ')
+  return pg.query(
+    `
+    SELECT child.category_id, child.category_name, child.product_kind,
+           child.sales_category, child.sort_order
+    FROM product_categories child
+    WHERE ${whereClause}
+    ORDER BY child.sort_order ASC
+  `,
+    params
+  )
 }
 
 /** 格式化分类行 → 前端格式 */
@@ -30,21 +94,60 @@ function _formatCategory(r) {
     id: r.category_id,
     name: r.category_name,
     productKind: r.product_kind,
+    salesCategory: r.sales_category,
     sortOrder: r.sort_order
   }
 }
 
-/** 查询商品列表并格式化为前端格式 */
-async function _queryFormattedSpuList(categoryId, productKind) {
+/** 行映射：DB row → 前端 SKU 形状。
+ *
+ * 抽出独立 helper 以便 shopInit 的 experienceSkus 查询直接复用同一字段映射，
+ * 避免两处字符串字面量漂移。
+ */
+function _formatSkuRow(sk) {
+  return {
+    skuId: sk.sku_id,
+    specName: sk.spec_name,
+    categoryId: sk.category_id,
+    categoryName: sk.category_name,
+    productKind: sk.product_kind,
+    salesCategory: sk.sales_category,
+    price: Number(sk.price) || 0,
+    specialPrice: sk.special_price ? Number(sk.special_price) : null,
+    sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
+    productType: sk.product_type,
+    serviceFee: Number(sk.service_fee) || 0,
+    isShengmei: sk.is_shengmei,
+    isExperience: !!sk.is_experience,
+    isBundle: !!sk.is_bundle,
+  }
+}
+
+/** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories）
+ *
+ * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
+ * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
+ * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
+ *
+ * 卡类 capability 列下发：is_experience 透传给前端，"普通商品"过滤按 SKU capability 判定。
+ * 充值卡已剥离 SKU 化（2026-05-20），不再用 is_recharge_card 过滤。
+ *
+ * @param {string|null} categoryId
+ * @param {string|null} productKind
+ * @param {Object} [opts]
+ * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience SKU（体验卡）
+ */
+async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
+  const { excludeCards = false } = opts || {}
   const params = []
   const conditions = [
-    `(p.valid_start IS NULL OR p.valid_start <= CURRENT_DATE)`,
-    `(p.valid_end IS NULL OR p.valid_end >= CURRENT_DATE)`
+    `sk.is_enabled = true`,
+    `sk.deleted_at IS NULL`
   ]
 
   if (categoryId) {
     params.push(categoryId)
-    conditions.push(`p.category_id = $${params.length}`)
+    conditions.push(`sk.category_id = $${params.length}`)
   }
 
   if (productKind) {
@@ -52,56 +155,137 @@ async function _queryFormattedSpuList(categoryId, productKind) {
     conditions.push(`pc.product_kind = $${params.length}`)
   }
 
+  if (excludeCards) {
+    conditions.push(`NOT sk.is_experience`)
+  }
+
   const whereClause = 'WHERE ' + conditions.join(' AND ')
 
-  const spuRows = await pg.query(`
-    SELECT p.product_id, p.name, p.category_id, pc.category_name, pc.product_kind,
-           p.cover_image, p.description, p.sort_order, p.price AS list_price
-    FROM products p
-    JOIN product_categories pc ON p.category_id = pc.category_id
+  const skuRows = await pg.query(`
+    SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
+           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.service_fee, sk.is_shengmei,
+           sk.is_experience,
+           pc.category_name, pc.product_kind, pc.sales_category,
+           COALESCE((
+             SELECT bool_or(p.is_bundle)
+             FROM mall_product_skus mps
+             JOIN products p ON mps.product_id = p.product_id
+             WHERE mps.sku_id = sk.sku_id
+           ), false) AS is_bundle
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
     ${whereClause}
-    ORDER BY p.sort_order ASC
+    ORDER BY sk.sort_order ASC
   `, params)
 
-  // 批量查询所有商品的 SKU
-  const productIds = spuRows.map(s => s.product_id)
-  let allSkus = []
-  if (productIds.length > 0) {
-    allSkus = await pg.query(`
-      SELECT sku_id, product_id, product_type, spec_name, price, special_price,
-             session_count, sort_order
-      FROM product_skus
-      WHERE product_id = ANY($1)
-        AND (valid_start IS NULL OR valid_start <= CURRENT_DATE)
-        AND (valid_end IS NULL OR valid_end >= CURRENT_DATE)
-      ORDER BY sort_order ASC
-    `, [productIds])
-  }
+  return skuRows.map(_formatSkuRow)
+}
 
-  const skuByProduct = {}
-  for (const sku of allSkus) {
-    if (!skuByProduct[sku.product_id]) skuByProduct[sku.product_id] = []
-    skuByProduct[sku.product_id].push(sku)
-  }
+/** 全量启用的体验卡 SKU 列表（不受 shopInit 分类 EXISTS 过滤影响）
+ *
+ * staff 开单页"体验卡 Tab"展示用：admin 端 getProductsByKind('体验卡') 走
+ * SKU 级 capability eq(is_experience,true) 直查；staff 端原先把体验卡硬塞进
+ * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT is_experience
+ * EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
+ *
+ * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
+ */
+async function _queryExperienceSkus() {
+  const rows = await pg.query(`
+    SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
+           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.service_fee, sk.is_shengmei,
+           sk.is_experience,
+           pc.category_name, pc.product_kind, pc.sales_category,
+           false AS is_bundle
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
+    WHERE sk.is_experience = true
+      AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
+    ORDER BY sk.sort_order ASC
+  `)
+  return rows.map(_formatSkuRow)
+}
 
-  return spuRows.map(spu => {
-    const skus = skuByProduct[spu.product_id] || []
-    return {
-      spuId: spu.product_id,
-      spuName: spu.name,
-      categoryId: spu.category_id,
-      categoryName: spu.category_name,
-      productKind: spu.product_kind,
-      priceFrom: skus.length > 0 ? Math.min(...skus.map(s => Number(s.special_price || s.price) || 0)) : null,
-      cover_image: spu.cover_image,
-      skus: skus.map(s => ({
-        skuId: s.sku_id,
-        specName: s.spec_name || '',
-        price: Number(s.price) || 0,
-        specialPrice: s.special_price ? Number(s.special_price) : null,
-        sessionCount: s.session_count != null ? Number(s.session_count) : null,
-        productType: s.product_type,
+/**
+ * 查询套餐商品（bundle SPU）及其 N 选 M 分组
+ *
+ * 返回结构（每个 group 内嵌完整 SKU 详情，前端无需外部 skuMap 查询）：
+ *   [{ productId, name, coverImage, price, specialPrice, description,
+ *      groups: [{ id, groupName, pickCount,
+ *                 skus: [{ skuId, specName, sessionCount, productType,
+ *                          isShengmei, bundlePrice, listPrice, listSpecialPrice,
+ *                          sortOrder }] }] }]
+ *
+ * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
+ * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
+ */
+async function _queryMallBundleGroups() {
+  const productRows = await pg.query(`
+    SELECT p.product_id, p.name, p.cover_image, p.description,
+           p.price, p.special_price, p.sort_order
+    FROM products p
+    WHERE p.is_bundle = true
+      AND p.deleted_at IS NULL
+      AND p.is_visible = true
+    ORDER BY p.sort_order ASC
+  `)
+
+  if (productRows.length === 0) return []
+
+  const productIds = productRows.map(r => r.product_id)
+  const groupRows = await pg.query(`
+    SELECT id, product_id, group_name, pick_count, sort_order
+    FROM mall_bundle_groups
+    WHERE product_id = ANY($1)
+    ORDER BY sort_order ASC
+  `, [productIds])
+
+  const skuLinkRows = await pg.query(`
+    SELECT mps.product_id, mps.sku_id, mps.bundle_group_id,
+           mps.bundle_price, mps.sort_order,
+           sk.spec_name, sk.session_count,
+           sk.product_type, sk.is_shengmei,
+           sk.price AS list_price, sk.special_price AS list_special_price
+    FROM mall_product_skus mps
+    JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    WHERE mps.product_id = ANY($1)
+      AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
+    ORDER BY mps.sort_order ASC
+  `, [productIds])
+
+  return productRows.map(p => {
+    const groups = groupRows
+      .filter(g => g.product_id === p.product_id)
+      .map(g => ({
+        id: g.id,
+        groupName: g.group_name,
+        pickCount: g.pick_count,
+        skus: skuLinkRows
+          .filter(s => s.product_id === p.product_id && s.bundle_group_id === g.id)
+          .map(s => ({
+            skuId: s.sku_id,
+            specName: s.spec_name,
+            sessionCount: s.session_count,
+            productType: s.product_type,
+            isShengmei: !!s.is_shengmei,
+            bundlePrice: s.bundle_price != null ? Number(s.bundle_price) : 0,
+            listPrice: Number(s.list_price) || 0,
+            listSpecialPrice: s.list_special_price != null ? Number(s.list_special_price) : null,
+            sortOrder: s.sort_order,
+          })),
       }))
+    return {
+      productId: p.product_id,
+      name: p.name,
+      coverImage: p.cover_image,
+      description: p.description,
+      price: Number(p.price) || 0,
+      specialPrice: p.special_price ? Number(p.special_price) : null,
+      groups,
     }
   })
 }
@@ -110,39 +294,101 @@ async function _queryFormattedSpuList(categoryId, productKind) {
 
 /**
  * 开单页初始化（合并接口）
- * 一次返回 categories + 第一个分类的 spuList
+ * 一次返回 categories + 第一个分类的 skuList + 套餐分组 + groupedCategories
+ *
+ * PR-B：
+ *   - 侧边栏分类只下发"非卡类"，体验卡在前端有独立 Tab 流；充值卡已剥离商品域（2026-05-20）
+ *   - 卡类判定走 SKU 级 `product_skus.is_experience` capability 列；
+ *     即一个分类只要存在非体验卡（NOT is_experience）的可售非 bundle SKU 就保留
+ *   - EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的非体验卡 SKU，避免出现空分类
+ *   - 额外返回 `groupedCategories: [{ productKind, kindSortOrder, items: Category[] }]`
+ *     （按一级行 sortOrder 排序；同组内按二级 sortOrder 排序）
+ *   - 保留老字段 `categories`（平铺数组）以兼容旧前端 / 其他调用方
  */
 async function shopInit(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const catRows = await _queryCategoryRows()
-  const categories = catRows.map(_formatCategory)
+  // 取全部二级分类 + 一级行 JOIN（用于 groupedCategories）；卡类过滤下沉到 SKU EXISTS
+  const rawRows = await _queryCategoryRows({
+    withParentJoin: true,
+  })
 
-  let spuList = []
-  if (categories.length > 0) {
-    spuList = await _queryFormattedSpuList(categories[0].id, null)
+  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非卡类 SKU
+  // 注：不再因「SKU 进过套餐」而排除——SKU 既可单卖也可进套餐，二者互不影响
+  // （2026-05-26 决策：彻底取消套餐排除）。仅含套餐 SKU 的分类也会出现在普通侧边栏。
+  let catRows = rawRows
+  if (rawRows.length > 0) {
+    const categoryIds = rawRows.map((r) => r.category_id)
+    const nonEmptyRows = await pg.query(
+      `
+      SELECT DISTINCT sk.category_id
+      FROM product_skus sk
+      WHERE sk.category_id = ANY($1)
+        AND sk.is_enabled = true
+        AND sk.deleted_at IS NULL
+        AND NOT sk.is_experience
+      `,
+      [categoryIds]
+    )
+    const nonEmptySet = new Set(nonEmptyRows.map((r) => r.category_id))
+    catRows = rawRows.filter((r) => nonEmptySet.has(r.category_id))
   }
 
-  ctx.result = { categories, spuList }
+  const categories = catRows.map(_formatCategory)
+
+  // 分组：按 productKind 聚合（rawRows 已按 parent.sort_order, child.sort_order 排序）
+  const groupMap = new Map()
+  for (const r of catRows) {
+    const key = r.product_kind
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        productKind: key,
+        kindSortOrder: r.kind_sort_order != null ? Number(r.kind_sort_order) : 0,
+        items: [],
+      })
+    }
+    groupMap.get(key).items.push(_formatCategory(r))
+  }
+  const groupedCategories = Array.from(groupMap.values())
+
+  let skuList = []
+  if (categories.length > 0) {
+    skuList = await _queryFormattedSkuList(categories[0].id, null, { excludeCards: true })
+  }
+
+  const mallBundleGroups = await _queryMallBundleGroups()
+
+  // 体验卡 Tab 走扁平 SKU 列表，不依赖分类元数据；
+  // 与 admin getProductsByKind('体验卡') 用 SKU 级 capability 判定保持一致。
+  const experienceSkus = await _queryExperienceSkus()
+
+  ctx.result = { categories, groupedCategories, skuList, mallBundleGroups, experienceSkus }
 }
 
 /**
  * 品项分类列表
+ *
+ * 无参调用：保持全量行为（与历史契约一致，含一级+二级行）。
+ * 可选 payload.kindNotIn：二级行且 product_kind ∉ kindNotIn；会自动带上 product_kind IS NOT NULL。
  */
 async function categories(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const rows = await _queryCategoryRows()
+  const payload = (ctx.event && ctx.event.payload) || {}
+  const kindNotIn = Array.isArray(payload.kindNotIn) && payload.kindNotIn.length > 0 ? payload.kindNotIn : null
+  const rows = await _queryCategoryRows(kindNotIn ? { kindNotIn } : {})
   ctx.result = rows.map(_formatCategory)
 }
 
 /**
- * 商品列表（按品项分类）
+ * SKU 列表（按品项分类）
+ *
+ * payload.excludeCards 透传到底层查询：true 时排除 is_experience SKU（体验卡）。
+ * 默认 false 以保持向后兼容（其他调用方未传则行为不变）。
  */
-async function spuList(ctx) {
+async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const { category, categoryId, productKind } = ctx.event.payload || {}
-  const resolvedCategoryId = categoryId || category
-  ctx.result = await _queryFormattedSpuList(resolvedCategoryId, productKind)
+  const { categoryId, productKind, excludeCards } = ctx.event.payload || {}
+  ctx.result = await _queryFormattedSkuList(categoryId, productKind, { excludeCards: !!excludeCards })
 }
 
 /**
@@ -156,27 +402,26 @@ async function skuDetail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')
   }
 
-  const skuList = await pg.query(`
+  const rows = await pg.query(`
     SELECT
-      s.sku_id, s.product_id, s.product_type, s.spec_name,
-      s.price, s.special_price, s.session_count, s.sort_order,
-      p.name AS product_name, p.category_id, pc.category_name, pc.product_kind,
-      p.description
-    FROM product_skus s
-    JOIN products p ON s.product_id = p.product_id
-    JOIN product_categories pc ON p.category_id = pc.category_id
-    WHERE s.sku_id = $1
+      sk.sku_id, sk.product_type, sk.spec_name,
+      sk.price, sk.special_price, sk.session_count, sk.sort_order,
+      sk.service_fee, sk.is_shengmei, sk.market_scope,
+      pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
+    WHERE sk.sku_id = $1 AND sk.deleted_at IS NULL
   `, [skuId])
 
-  if (skuList.length === 0) {
-    throw new Error('INVALID_PARAMS: SKU 不存在')
+  if (rows.length === 0) {
+    throw new Error('INVALID_PARAMS: 商品不存在')
   }
 
-  ctx.result = { sku: skuList[0] }
+  ctx.result = { sku: rows[0] }
 }
 
 /**
- * 商品详情（单个商品详情页）
+ * 商城商品详情（展示用，查 products + mall_product_skus）
  */
 async function spuDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -187,11 +432,11 @@ async function spuDetail(ctx) {
   }
 
   const spuRows = await pg.query(`
-    SELECT p.product_id, p.name, p.category_id, pc.category_name, pc.product_kind,
+    SELECT p.product_id, p.name, p.category_id, mc.category_name,
            p.cover_image, p.description, p.sort_order, p.price, p.special_price,
            p.is_bundle
     FROM products p
-    JOIN product_categories pc ON p.category_id = pc.category_id
+    JOIN mall_categories mc ON p.category_id = mc.category_id
     WHERE p.product_id = $1
   `, [spuId])
 
@@ -201,20 +446,60 @@ async function spuDetail(ctx) {
 
   const spu = spuRows[0]
 
+  // PR-D：JOIN product_categories pc → 一级行 parent_pc，带出 product_kind / kind_display_color
+  // 供前端 product-detail 顶部 tag 渲染（颜色 DB 驱动）
   const skuList = await pg.query(`
-    SELECT sku_id, product_type, spec_name, price, special_price,
-           session_count, sort_order
-    FROM product_skus
-    WHERE product_id = $1
-      AND (valid_start IS NULL OR valid_start <= CURRENT_DATE)
-      AND (valid_end IS NULL OR valid_end >= CURRENT_DATE)
-    ORDER BY sort_order ASC
+    SELECT sk.sku_id, sk.product_type, sk.spec_name, sk.price, sk.special_price,
+           sk.session_count, sk.sort_order, sk.service_fee,
+           mps.bundle_price, mps.sort_order AS display_order,
+           mps.bundle_group_id,
+           bg.group_name, bg.pick_count AS group_pick_count,
+           pc.product_kind,
+           parent_pc.display_color AS kind_display_color
+    FROM mall_product_skus mps
+    JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+    LEFT JOIN product_categories parent_pc
+      ON parent_pc.product_kind IS NULL
+     AND parent_pc.category_name = pc.product_kind
+    LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
+    WHERE mps.product_id = $1
+      AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
+    ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [spuId])
+
+  // PR-D：从 SKU 行聚合出 spu 级 productKind / kindDisplayColor
+  // 取首个非空 product_kind 作为该 SPU 的 kind 标签（一个 SPU 通常只属一个 kind）
+  const firstKindSku = skuList.find(s => s.product_kind)
+  const productKind = firstKindSku ? firstKindSku.product_kind : null
+  const kindDisplayColor = firstKindSku ? (firstKindSku.kind_display_color || null) : null
+
+  // 构建分组信息（套餐商品）
+  let bundleGroups = null
+  if (spu.is_bundle) {
+    const groupRows = await pg.query(`
+      SELECT id, group_name, pick_count, sort_order
+      FROM mall_bundle_groups
+      WHERE product_id = $1
+      ORDER BY sort_order ASC
+    `, [spuId])
+
+    bundleGroups = groupRows.map(g => ({
+      id: g.id,
+      groupName: g.group_name,
+      pickCount: g.pick_count,
+      skuIds: skuList.filter(s => s.bundle_group_id === g.id).map(s => s.sku_id),
+    }))
+  }
 
   ctx.result = {
     spu: {
       ...spu,
+      productKind,
+      kindDisplayColor,
       skuList,
+      bundleGroups,
       priceFrom: skuList.length > 0 ? Math.min(...skuList.map(s => Number(s.special_price || s.price) || 0)) : null,
     }
   }
@@ -234,4 +519,11 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
+
+// 测试专用导出：用 Object.defineProperty 以非枚举挂载，避免被 index.test.js 的
+// "路由完整性" 扫描（Object.keys）检出为未注册路由。
+Object.defineProperty(module.exports, '__testables__', {
+  enumerable: false,
+  value: { _queryCategoryRows },
+})

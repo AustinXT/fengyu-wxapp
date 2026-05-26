@@ -8,6 +8,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 // 导入中间件
 const { auth } = require('./middleware/auth')
+const { buildErrorResponse } = require('./utils/error-codes')
 
 // 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
@@ -29,7 +30,8 @@ const routes = {
   'staff.todoList':       () => require('./routes/staff').todoList,
   'staff.bindStore':      () => require('./routes/staff').bindStore,
   'staff.performanceDetail': () => require('./routes/staff').performanceDetail,
-  'staff.dashboard':      () => require('./routes/staff').dashboard,
+  'staff.uploadAvatar':   () => require('./routes/staff').uploadAvatar,
+  'staff.skillTags':      () => require('./routes/staff').skillTags,
 
   // 顾客档案
   'customer.search':      () => require('./routes/customer').search,
@@ -38,16 +40,18 @@ const routes = {
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
   'customer.stats':       () => require('./routes/customer').stats,
   'customer.listByTag':   () => require('./routes/customer').listByTag,
-  'customer.giftHistory': () => require('./routes/customer').giftHistory,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,
+  'customer.customerBalance': () => require('./routes/customer').customerBalance,
+  'customer.appointments': () => require('./routes/customer').appointments,
+  'customer.phoneChangeLogs': () => require('./routes/customer').phoneChangeLogs,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,
   'product.categories':   () => require('./routes/product').categories,
   'product.skuDetail':    () => require('./routes/product').skuDetail,
-  'product.spuList':      () => require('./routes/product').spuList,
+  'product.skuList':      () => require('./routes/product').skuList,
   'product.spuDetail':    () => require('./routes/product').spuDetail,
   'product.promotionList': () => require('./routes/product').promotionList,
   'product.promotionPlans': () => require('./routes/product').promotionPlans,
@@ -63,9 +67,20 @@ const routes = {
   'order.createRefund':   () => require('./routes/order').createRefund,
   'order.approveRefund':  () => require('./routes/order').approveRefund,
   'order.rejectRefund':   () => require('./routes/order').rejectRefund,
+  'order.refundList':     () => require('./routes/order').refundList,
+  'order.refundDetail':   () => require('./routes/order').refundDetail,
   'order.createRepayment': () => require('./routes/order').createRepayment,
   'order.createConversion': () => require('./routes/order').createConversion,
+  'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
   'order.createPickup':   () => require('./routes/order').createPickup,
+  'order.createDeposit':  () => require('./routes/order').createDeposit,
+  'order.updateDepositReceived': () => require('./routes/order').updateDepositReceived,
+  'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
+  'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
+
+  // 库存（只读）
+  'inventory.list':       () => require('./routes/inventory').list,
+  'inventory.detail':     () => require('./routes/inventory').detail,
 
   // 营业额分配
   'allocation.save':         () => require('./routes/allocation').save,
@@ -73,6 +88,11 @@ const routes = {
   'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
   'allocation.pendingList':  () => require('./routes/allocation').pendingList,
   'allocation.suggest':      () => require('./routes/allocation').suggest,
+
+  // 服务提成（营业额分配 - 服务提成 Tab）
+  'serviceCommission.pendingList': () => require('./routes/serviceCommission').pendingList,
+  'serviceCommission.detail':      () => require('./routes/serviceCommission').detail,
+  'serviceCommission.save':        () => require('./routes/serviceCommission').save,
 
   // 预约
   'appointment.list':     () => require('./routes/appointment').list,
@@ -83,14 +103,44 @@ const routes = {
   // 优惠券
   'coupon.available':     () => require('./routes/coupon').available,
 
+  // 充值卡（店长替顾客充值 + 退款审批流）
+  'card.rechargeConfig':  () => require('./routes/card').rechargeConfig,
+  'card.recharge':        () => require('./routes/card').recharge,
+  'card.createRefund':    () => require('./routes/card').createRefund,
+  'card.approveRefund':   () => require('./routes/card').approveRefund,
+  'card.rejectRefund':    () => require('./routes/card').rejectRefund,
+
   // 服务单
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,
   'service.complete':     () => require('./routes/service').complete,
+  'service.confirm':      () => require('./routes/service').confirm,
   'service.cancel':       () => require('./routes/service').cancel,
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,
   'service.counts':       () => require('./routes/service').counts,
+
+  // 管理层数据中心
+  'mgmtDashboard.scopeOptions': () => require('./routes/mgmt-dashboard').scopeOptions,
+  'mgmtDashboard.summary':     () => require('./routes/mgmt-dashboard').summary,
+  'mgmtDashboard.storeRanking': () => require('./routes/mgmt-dashboard').storeRanking,
+  'mgmtDashboard.staffRanking': () => require('./routes/mgmt-dashboard').staffRanking,
+  'mgmtDashboard.salesData':    () => require('./routes/mgmt-dashboard').salesData,
+
+  // 管理层 - 品项数据子页
+  'mgmtProduct.cardHolders': () => require('./routes/mgmt-product').cardHolders,
+  'mgmtProduct.cycleStats':  () => require('./routes/mgmt-product').cycleStats,
+
+  // 管理层 - 客量数据子页
+  'mgmtTraffic.summary':       () => require('./routes/mgmt-traffic').summary,
+
+  // 管理层 - 顾客档案子页
+  'mgmtCustomer.search':        () => require('./routes/mgmt-customer').search,
+  'mgmtCustomer.detail':        () => require('./routes/mgmt-customer').detail,
+  'mgmtCustomer.calendar':      () => require('./routes/mgmt-customer').calendar,
+  'mgmtCustomer.paidOrders':    () => require('./routes/mgmt-customer').paidOrders,
+  'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
+  'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
 }
 
 /**
@@ -132,27 +182,6 @@ exports.main = async (event, context) => {
     }
   } catch (error) {
     console.error(`[${action}] Error:`, error)
-
-    // 解析错误类型——仅透传已知前缀的业务错误，其余一律返回通用提示
-    const errorMessage = error.message || '服务器内部错误'
-    const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
-    const errorType = errorTypeMatch ? errorTypeMatch[1] : null
-    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND']
-    const isKnown = errorType && knownTypes.includes(errorType)
-    const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
-
-    const code = errorMessage.startsWith('UNAUTHORIZED') ? -401 :
-                  errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
-                  errorMessage.startsWith('INVALID_PARAMS') ? -400 :
-                  errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
-                  errorMessage.startsWith('NOT_FOUND') ? -404 :
-                  -1
-
-    return {
-      code,
-      message: displayMessage,
-      errorType: isKnown ? errorType : null,
-      data: null
-    }
+    return buildErrorResponse(error)
   }
 }

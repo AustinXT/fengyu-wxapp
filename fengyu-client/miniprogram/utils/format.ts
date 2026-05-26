@@ -27,10 +27,37 @@ export function formatDiscount(coupon: { couponType: string; discountValue: numb
   return `¥${Number(coupon.discountValue).toFixed(0)}`;
 }
 
-/** 疗程卡进度百分比 */
+/** 疗程卡进度百分比（旧接口，已用占比，仅向后兼容） */
 export function calculateProgress(sessionCount: number, remainingSessions: number): number {
   if (sessionCount <= 0) return 0;
   return Math.round(((sessionCount - remainingSessions) / sessionCount) * 100);
+}
+
+/**
+ * 疗程卡三段进度（剩余可用 / 已付未用 / 未付）
+ * - usedPct: 已用 = (total - remaining) / total
+ * - paidUnusedPct: 已付未用 = max(0, paid - used) / total
+ * - unpaidPct: 未付 = max(0, total - paid) / total
+ * 三段加起来 ≤ 100，剩余可用段 = 已付未用段（颜色 #C0322A 品牌主色）
+ */
+export function calculateTriProgress(
+  sessionCount: number,
+  remainingSessions: number,
+  paidSessions: number
+): { usedPct: number; paidUnusedPct: number; unpaidPct: number } {
+  const total = Number(sessionCount) || 0;
+  const remaining = Number(remainingSessions) || 0;
+  const paid = Number(paidSessions) || 0;
+  if (total <= 0) return { usedPct: 0, paidUnusedPct: 0, unpaidPct: 0 };
+  const used = Math.max(0, total - remaining);
+  const paidUnused = Math.max(0, paid - used);
+  const unpaid = Math.max(0, total - paid);
+  const pct = (n: number) => Math.round((n / total) * 10000) / 100;
+  return {
+    usedPct: pct(used),
+    paidUnusedPct: pct(paidUnused),
+    unpaidPct: pct(unpaid),
+  };
 }
 
 /** 清理错误消息前缀（如 "INVALID_PARAMS: xxx" → "xxx"） */
@@ -67,7 +94,7 @@ export function searchProducts<T extends { product_id: string; name: string }>(
 /** 订单状态 → CSS class */
 const STATUS_CLASS: Record<string, string> = {
   '待支付':     'status-pending',
-  '待确认收款': 'status-confirm',
+  '部分支付':   'status-partial',
   '已支付':     'status-paid',
   '已完成':     'status-completed',
   '支付失败':   'status-failed',
@@ -94,8 +121,21 @@ export function safeParseDate(dateStr: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** 日期时间格式化："2025-03-14 10:30" */
+/** 日期时间格式化（带秒）："2025-03-14 10:30:42" */
 export function formatDateTime(dateStr: string): string {
+  const d = safeParseDate(dateStr);
+  if (!d) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const sec = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${sec}`;
+}
+
+/** 日期时间格式化（不带秒）："2025-03-14 10:30"（用于列表/卡片等紧凑展示位置） */
+export function formatDateTimeShort(dateStr: string): string {
   const d = safeParseDate(dateStr);
   if (!d) return '';
   const y = d.getFullYear();
@@ -132,9 +172,10 @@ export function formatRelativeTime(dateStr: string): string {
   return `${m}-${day}`;
 }
 
-/** 金额带符号格式化："+1.00" / "-1.00" */
-export function formatAmount(amount: number): string {
-  return amount >= 0 ? `+${amount.toFixed(2)}` : amount.toFixed(2);
+/** 金额带符号格式化："+1.00" / "-1.00"（兼容云函数返回的 PG numeric 字符串） */
+export function formatAmount(amount: number | string): string {
+  const n = Number(amount) || 0;
+  return n >= 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
 }
 
 /** 预约时间格式化："2026-03-15 09:00-11:00" → "3月15日 09:00-11:00" */

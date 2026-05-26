@@ -1,5 +1,16 @@
 #!/usr/bin/env node
 /**
+ * @deprecated 2026-05-18 — 旧的"全字段历史订单导入"策略已废弃。
+ *
+ * 用户反馈："你抓的多就错的多"。会议（meeting-20260507）决议改用
+ * "4 字段最小化 + 顾客到店触发核对"工作流，由 import-workfine-legacy.js 实现：
+ *   - 只抓 phone / store_name / amount / order_date
+ *   - status='未审核'，不进入任何统计/cron
+ *   - 顾客小程序登录 → admin /legacy-orders 核对 → 触发标签重算
+ *
+ * 本脚本保留供历史审计与回滚参考，不再调用。任何新的 WorkFine→PG 历史回填
+ * 请使用 db/scripts/import-workfine-legacy.js。
+ *
  * migrate-history-orders.js — 导入 WorkFine 全部历史订单到 PG
  *
  * 补全 Round 1（仅活跃疗程卡）遗漏的历史订单：已用完疗程卡、过期卡、单品销售等。
@@ -30,7 +41,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -150,18 +161,19 @@ function processItems(rows, existingItemIds, customerMap, storeMap) {
     let sessionCount = null
     let remainingSessions = null
 
+    // 2026-05-21 单品合并：单品并入疗程卡（1 次卡），不再产出 '单品' 枚举值
     if (rawType === '疗程卡' || rawType === '自定义-疗程') {
       productType = '疗程卡'
       sessionCount = Math.round(parseFloat(row.total_sessions) || 0)
       const computed = sessionCount - (parseFloat(row.used_sessions) || 0)
       remainingSessions = Math.max(0, Math.round(computed))
     } else if (rawType === '单品' || rawType === '自定义-单品') {
-      productType = '单品'
+      productType = '疗程卡'
       sessionCount = 1
       remainingSessions = 0
     } else {
-      // NULL 或其他类型，作为单品处理
-      productType = '单品'
+      // NULL 或其他类型，作为 1 次疗程卡处理
+      productType = '疗程卡'
       sessionCount = 1
       remainingSessions = 0
     }
@@ -253,7 +265,7 @@ async function batchInsert(pgPool, orders, dryRun) {
         return [
           o.saleOrderId, '已完成', '普通', o.marketName, o.storeId,
           o.saleDate || new Date().toISOString(), o.clientUserId, o.customerName,
-          totalAmount, 'offline', 'admin', 'allocated', 'WorkFine历史订单导入',
+          totalAmount, '线下', 'admin', '已分配', 'WorkFine历史订单导入',
         ]
       })
       const oMv = buildMultiRowValues(orderRows, 13)
@@ -272,10 +284,10 @@ async function batchInsert(pgPool, orders, dryRun) {
       for (const order of batchOrders) {
         for (const item of order.items) {
           itemRows.push([
-            item.saleItemId, order.saleOrderId, 'purchase', item.itemName,
+            item.saleItemId, order.saleOrderId, '购买', item.itemName,
             item.productType, item.sessionCount, item.remainingSessions,
             item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
-            item.expireDate, '自采自销', item.remark,
+            item.expireDate, '自销自耗', item.remark,
           ])
         }
       }

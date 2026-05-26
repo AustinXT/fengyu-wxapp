@@ -9,19 +9,28 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Tooltip } from "@/components/ui/tooltip"
 import { createTemplate } from "@/actions/coupons"
 import type { CouponType } from "@/lib/types"
+import { validateCouponValidityFields } from "./coupon-validity-helper"
 
 interface Market {
   id: string
   name: string
 }
 
-interface Props {
-  markets: Market[]
+interface Category {
+  categoryId: string
+  categoryName: string
+  productKind: string | null
 }
 
-export default function CouponCreatePage({ markets }: Props) {
+interface Props {
+  markets: Market[]
+  categories: Category[]
+}
+
+export default function CouponCreatePage({ markets, categories }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -39,6 +48,8 @@ export default function CouponCreatePage({ markets }: Props) {
   const [description, setDescription] = useState("")
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
   const [allMarkets, setAllMarkets] = useState(true)
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([])
+  const [allCategories, setAllCategories] = useState(true)
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -63,6 +74,17 @@ export default function CouponCreatePage({ markets }: Props) {
       return
     }
 
+    const validityCheck = validateCouponValidityFields({
+      validityMode,
+      validDays,
+      validFrom,
+      validTo,
+    })
+    if (!validityCheck.ok) {
+      toast.error(validityCheck.message)
+      return
+    }
+
     setSaving(true)
     try {
       const templateId = `tpl-${Date.now()}`
@@ -72,8 +94,9 @@ export default function CouponCreatePage({ markets }: Props) {
         couponType,
         discountValue,
         minSpend: minSpend || undefined,
-        maxDiscount: couponType === "折扣券" && maxDiscount ? maxDiscount : null,
-        totalCount: totalCount ? parseInt(totalCount, 10) : null,
+        maxDiscount: null,
+        totalCount: couponType === "折扣券" ? null : (totalCount ? parseInt(totalCount, 10) : null),
+        applicableCategoryIds: couponType === "品项券" && !allCategories && selectedCategoryIds.length > 0 ? selectedCategoryIds : null,
         validityMode,
         validFrom: validityMode === "fixed" && validFrom ? validFrom : null,
         validTo: validityMode === "fixed" && validTo ? validTo : null,
@@ -130,7 +153,7 @@ export default function CouponCreatePage({ markets }: Props) {
                   请选择券类型
                 </option>
                 <option value="现金券">现金券</option>
-                <option value="项目券">项目券</option>
+                <option value="品项券">品项券</option>
                 <option value="折扣券">折扣券</option>
               </Select>
             </div>
@@ -146,7 +169,18 @@ export default function CouponCreatePage({ markets }: Props) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">最低消费</label>
+              <div className="flex items-center gap-1.5">
+                <label className="text-sm font-medium">最低消费</label>
+                <Tooltip
+                  side="top"
+                  wide
+                  content='门槛基数 = "符合适用分类的商品行小计"，而非全单总额。例：品类=护理项目 + 最低消费 500，顾客必须购买护理类商品金额 ≥ 500 才能使用本券，美甲等其他分类不计入门槛。若不限品类则退化为全单小计。'
+                >
+                  <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-[var(--border)] text-[10px] text-[var(--muted-foreground)]">
+                    ?
+                  </span>
+                </Tooltip>
+              </div>
               <Input
                 type="number"
                 placeholder="0 表示无门槛"
@@ -154,26 +188,17 @@ export default function CouponCreatePage({ markets }: Props) {
                 onChange={(e) => setMinSpend(e.target.value)}
               />
             </div>
-            {couponType === "折扣券" && (
+            {couponType !== "折扣券" && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">最高抵扣</label>
+                <label className="text-sm font-medium">发行总量</label>
                 <Input
                   type="number"
-                  placeholder="折扣封顶金额"
-                  value={maxDiscount}
-                  onChange={(e) => setMaxDiscount(e.target.value)}
+                  placeholder="不填则不限量"
+                  value={totalCount}
+                  onChange={(e) => setTotalCount(e.target.value)}
                 />
               </div>
             )}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">发行总量</label>
-              <Input
-                type="number"
-                placeholder="不填则不限量"
-                value={totalCount}
-                onChange={(e) => setTotalCount(e.target.value)}
-              />
-            </div>
           </div>
         </CardContent>
       </Card>
@@ -188,7 +213,17 @@ export default function CouponCreatePage({ markets }: Props) {
               <label className="text-sm font-medium">有效期模式</label>
               <Select
                 value={validityMode}
-                onChange={(e) => setValidityMode(e.target.value as "fixed" | "days")}
+                onChange={(e) => {
+                  const next = e.target.value as "fixed" | "days"
+                  setValidityMode(next)
+                  // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                  if (next === "days") {
+                    setValidFrom("")
+                    setValidTo("")
+                  } else {
+                    setValidDays("")
+                  }
+                }}
               >
                 <option value="days">领取后N天</option>
                 <option value="fixed">固定时段</option>
@@ -227,6 +262,66 @@ export default function CouponCreatePage({ markets }: Props) {
           </div>
         </CardContent>
       </Card>
+
+      {couponType === "品项券" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">适用品项分类</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allCategories}
+                  onChange={(e) => {
+                    setAllCategories(e.target.checked)
+                    if (e.target.checked) setSelectedCategoryIds([])
+                  }}
+                  className="h-4 w-4 rounded border-[var(--input)]"
+                />
+                <span className="text-sm font-medium">全部品项</span>
+              </label>
+              {!allCategories && (
+                <div className="space-y-3 pl-6">
+                  {(() => {
+                    const grouped = new Map<string, Category[]>()
+                    for (const c of categories) {
+                      const kind = c.productKind ?? "未分类"
+                      if (!grouped.has(kind)) grouped.set(kind, [])
+                      grouped.get(kind)!.push(c)
+                    }
+                    return [...grouped.entries()].map(([kind, cats]) => (
+                      <div key={kind}>
+                        <div className="text-xs font-medium text-[var(--muted-foreground)] mb-1">{kind}</div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {cats.map((c) => (
+                            <label key={c.categoryId} className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedCategoryIds.includes(c.categoryId)}
+                                onChange={(e) => {
+                                  setSelectedCategoryIds((prev) =>
+                                    e.target.checked
+                                      ? [...prev, c.categoryId]
+                                      : prev.filter((id) => id !== c.categoryId)
+                                  )
+                                }}
+                                className="h-4 w-4 rounded border-[var(--input)]"
+                              />
+                              <span className="text-sm">{c.categoryName}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  })()}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

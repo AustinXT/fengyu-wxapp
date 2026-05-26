@@ -1,0 +1,25 @@
+.mmt {
+  display: grid;
+  gap: var(--gap-grid);
+}
+
+.mmt--col3 { grid-template-columns: repeat(3, 1fr); }
+.mmt--col4 { grid-template-columns: repeat(4, 1fr); }
+
+.mmt-item {
+  padding: 24rpx 0;
+  text-align: center;
+  background: var(--color-divider-soft);
+  border-radius: var(--radius-sm);
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+.mmt-item--active {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.mmt-item:active { opacity: 0.7; }

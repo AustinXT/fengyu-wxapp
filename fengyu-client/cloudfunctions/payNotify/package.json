@@ -3,8 +3,15 @@
   "version": "1.0.0",
   "description": "微信支付回调云函数",
   "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
     "wx-server-sdk": "latest",
     "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
   }
 }

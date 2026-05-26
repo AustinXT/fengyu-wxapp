@@ -19,10 +19,9 @@
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#C0322A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
-      <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
-      <van-tag color="#006D75" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
-      <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+      <!-- PR-D：tag 颜色由 DB display_color 驱动；displayColor 缺失时退化为 primary -->
+      <van-tag wx:if="{{spu.productKind && spu.kindDisplayColor}}" color="{{spu.kindDisplayColor}}">{{spu.productKind}}</van-tag>
+      <van-tag wx:elif="{{spu.productKind}}" type="primary">{{spu.productKind}}</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>

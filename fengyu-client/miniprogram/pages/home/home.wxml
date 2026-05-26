@@ -3,7 +3,7 @@
 module.exports.min = function(n) {
   var v = parseFloat(n) || 0;
   var r = Math.round(v * 100) / 100;
-  return r % 1 === 0 ? String(Math.round(r)) : r.toFixed(2);
+  return r % 1 === 0 ? '' + Math.round(r) : r.toFixed(2);
 }
 </wxs>
 <van-toast id="van-toast" />
@@ -43,11 +43,11 @@ module.exports.min = function(n) {
     </view>
   </view>
 
-  <!-- 顶部区域：轮播图 + 功能宫格 -->
-  <view class="top-section">
+  <!-- 顶部区域：轮播图 + 功能宫格（搜索时隐藏，腾出空间给结果列表） -->
+  <view class="top-section" wx:if="{{!isSearching}}">
 
     <!-- ===== 1. 轮播图 ===== -->
-    <view class="section-banner">
+    <view class="section-banner" wx:if="{{banners.length > 0}}">
       <swiper
         class="banner-swiper"
         indicator-dots="{{false}}"
@@ -68,24 +68,6 @@ module.exports.min = function(n) {
     <!-- ===== 2. 功能模块宫格区（5个一排） ===== -->
     <view class="section-grid">
       <view class="grid-row grid-row-5">
-        <view class="grid-item {{activeBigCategoryIndex === 0 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="promotion">
-          <view class="grid-icon-wrap">
-            <van-icon name="gift" size="44rpx" color="#C0322A" />
-          </view>
-          <text class="grid-label {{activeBigCategoryIndex === 0 ? 'grid-label-active' : ''}}">福利活动</text>
-        </view>
-        <view class="grid-item {{activeBigCategoryIndex === 1 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="service">
-          <view class="grid-icon-wrap">
-            <image class="grid-icon-img" src="/images/icons/grid-flower.png" mode="aspectFit" />
-          </view>
-          <text class="grid-label {{activeBigCategoryIndex === 1 ? 'grid-label-active' : ''}}">护理项目</text>
-        </view>
-        <view class="grid-item {{activeBigCategoryIndex === 2 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="product">
-          <view class="grid-icon-wrap">
-            <van-icon name="bag" size="44rpx" color="#C0322A" />
-          </view>
-          <text class="grid-label {{activeBigCategoryIndex === 2 ? 'grid-label-active' : ''}}">家居产品</text>
-        </view>
         <view class="grid-item" bindtap="onGridTap" data-type="coupon">
           <view class="grid-icon-wrap">
             <van-icon name="coupon" size="44rpx" color="#C0322A" />
@@ -97,6 +79,18 @@ module.exports.min = function(n) {
             <image class="grid-icon-img" src="/images/icons/grid-calendar.png" mode="aspectFit" />
           </view>
           <text class="grid-label">我的疗程</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="recharge">
+          <view class="grid-icon-wrap">
+            <van-icon name="gold-coin" size="44rpx" color="#C0322A" />
+          </view>
+          <text class="grid-label">充值卡</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="experience">
+          <view class="grid-icon-wrap">
+            <van-icon name="gift" size="44rpx" color="#C0322A" />
+          </view>
+          <text class="grid-label">体验卡</text>
         </view>
       </view>
     </view>
@@ -131,12 +125,6 @@ module.exports.min = function(n) {
             </view>
             <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
             <view class="spu-body">
-              <view class="spu-tags">
-                <van-tag color="#E8684A" wx:if="{{item.product_kind === '福利活动'}}">福利活动</van-tag>
-                <van-tag type="primary" wx:elif="{{item.product_kind === '护理项目'}}">护理项目</van-tag>
-                <van-tag color="#5AACA5" wx:elif="{{item.product_kind === '家居产品'}}">家居产品</van-tag>
-                <van-tag color="#D4820A" wx:elif="{{item.product_kind === '充值卡'}}">充值卡</van-tag>
-              </view>
               <text class="spu-name">{{item.name}}</text>
               <view class="spu-footer">
                 <view class="price-group">
@@ -157,21 +145,21 @@ module.exports.min = function(n) {
     <!-- 正常浏览模式 -->
     <view wx:else class="catalog">
 
-      <!-- 左侧：自定义分类侧边栏（一级分类作为标题，二级分类可点击） -->
+      <!-- 左侧：自定义分类侧边栏（一级分组标题 + 二级分类可点击） -->
       <scroll-view class="sidebar-scroll" scroll-y scroll-into-view="{{sidebarScrollIntoView}}">
         <view
           wx:for="{{sidebarItems}}"
           wx:key="id"
           id="{{item.id}}"
         >
-          <!-- 一级分类标题（不可点击） -->
+          <!-- 一级分组标题 -->
           <view wx:if="{{item.type === 'title'}}" class="sidebar-title">
             <text class="sidebar-title-text">{{item.label}}</text>
           </view>
-          <!-- 二级分类项（可点击） -->
+          <!-- 二级分类项 -->
           <view
             wx:else
-            class="sidebar-item {{activeCategoryKey === item.categoryKey && activeBigCategory === item.bigCategory ? 'sidebar-item--active' : ''}}"
+            class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
             bindtap="onSidebarCategoryTap"
             data-key="{{item.categoryKey}}"
           >
@@ -224,14 +212,6 @@ module.exports.min = function(n) {
 
             <!-- 右侧信息 -->
             <view class="spu-body">
-              <!-- 标签行 -->
-              <view class="spu-tags">
-                <van-tag color="#E8684A" wx:if="{{item.product_kind === '福利活动'}}">福利活动</van-tag>
-                <van-tag type="primary" wx:elif="{{item.product_kind === '护理项目'}}">护理项目</van-tag>
-                <van-tag color="#5AACA5" wx:elif="{{item.product_kind === '家居产品'}}">家居产品</van-tag>
-                <van-tag color="#D4820A" wx:elif="{{item.product_kind === '充值卡'}}">充值卡</van-tag>
-              </view>
-
               <!-- 商品名 -->
               <text class="spu-name">{{item.name}}</text>
 

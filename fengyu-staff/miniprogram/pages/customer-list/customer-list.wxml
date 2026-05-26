@@ -33,16 +33,75 @@
     </view>
   </view>
 
-  <!-- 统计栏：全部/会员客/流量客 -->
-  <view class="type-tabs">
-    <view class="type-tab {{customerType === 'all' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="all">
-      全部({{stats.total}})
+  <!-- 拓展筛选（可折叠，置于搜索框之前） -->
+  <view class="advanced-filter">
+    <view class="advanced-header" bindtap="toggleAdvanced">
+      <view class="advanced-title">
+        拓展筛选<text wx:if="{{hasAdvancedFilter}}" class="advanced-dot"></text>
+      </view>
+      <text class="advanced-arrow {{advancedExpanded ? 'advanced-arrow--up' : ''}}">⌄</text>
     </view>
-    <view class="type-tab {{customerType === 'member' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="member">
-      会员客({{stats.memberCount}})
-    </view>
-    <view class="type-tab {{customerType === 'flow' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="flow">
-      流量客({{stats.flowCount}})
+
+    <view wx:if="{{advancedExpanded}}" class="advanced-body">
+      <view class="filter-dim">
+        <text class="filter-dim-label">顾客类型</text>
+        <view class="filter-chips">
+          <view
+            wx:for="{{customerTypeOptions}}"
+            wx:key="value"
+            class="filter-chip {{customerType === item.value ? 'filter-chip--active' : ''}}"
+            data-dim="customerType"
+            data-value="{{item.value}}"
+            bindtap="onAdvancedFilterTap"
+          >{{item.label}}</view>
+        </view>
+      </view>
+
+      <view class="filter-dim">
+        <text class="filter-dim-label">消费档位</text>
+        <view class="filter-chips">
+          <view
+            wx:for="{{spendingTierOptions}}"
+            wx:key="value"
+            class="filter-chip {{spendingTier === item.value ? 'filter-chip--active' : ''}}"
+            data-dim="spendingTier"
+            data-value="{{item.value}}"
+            bindtap="onAdvancedFilterTap"
+          >{{item.label}}</view>
+        </view>
+      </view>
+
+      <view class="filter-dim">
+        <text class="filter-dim-label">月度客活</text>
+        <view class="filter-chips">
+          <view
+            wx:for="{{monthlyActivityOptions}}"
+            wx:key="value"
+            class="filter-chip {{monthlyActivity === item.value ? 'filter-chip--active' : ''}}"
+            data-dim="monthlyActivity"
+            data-value="{{item.value}}"
+            bindtap="onAdvancedFilterTap"
+          >{{item.label}}</view>
+        </view>
+      </view>
+
+      <view class="filter-dim">
+        <text class="filter-dim-label">到店状态</text>
+        <view class="filter-chips">
+          <view
+            wx:for="{{customerStatusOptions}}"
+            wx:key="value"
+            class="filter-chip {{customerStatus === item.value ? 'filter-chip--active' : ''}}"
+            data-dim="customerStatus"
+            data-value="{{item.value}}"
+            bindtap="onAdvancedFilterTap"
+          >{{item.label}}</view>
+        </view>
+      </view>
+
+      <view class="advanced-actions">
+        <view class="reset-btn" bindtap="onResetFilters">重置筛选</view>
+      </view>
     </view>
   </view>
 
@@ -60,8 +119,8 @@
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <view wx:elif="{{(searched || activeTag) && results.length === 0}}" class="empty-wrap">
-    <van-empty description="{{activeTag ? '该分类暂无顾客' : '未找到该顾客'}}" />
+  <view wx:elif="{{(searched || activeTag || hasAdvancedFilter) && results.length === 0}}" class="empty-wrap">
+    <van-empty description="{{activeTag ? '该分类暂无顾客' : (hasAdvancedFilter && !searched ? '该筛选条件下暂无顾客' : '未找到该顾客')}}" />
   </view>
 
   <view wx:elif="{{results.length > 0}}" class="customer-list">
@@ -82,9 +141,6 @@
         <view class="customer-name-row">
           <text class="customer-name">{{item.name || '未知'}}</text>
           <text wx:if="{{item.memberLevel}}" class="vip-badge">{{item.memberLevel}}</text>
-          <text wx:if="{{item.tier === 'diamond'}}" class="tier-badge tier-badge--diamond">黑钻</text>
-          <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
-          <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
         </view>
         <text class="customer-phone">{{item.phone}}</text>
         <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>

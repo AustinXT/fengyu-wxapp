@@ -73,6 +73,15 @@
         <text class="success-amount">¥{{totalAmount}} 已支付</text>
       </block>
 
+      <!-- 部分支付：已收部分款，仍可继续收款或关闭 -->
+      <block wx:elif="{{status === '部分支付'}}">
+        <view class="status-badge status-badge--warning">部分支付</view>
+        <view class="success-icon-area">
+          <van-icon name="pending-payment" size="120rpx" color="#D4820A" />
+        </view>
+        <text class="hint-text">本订单已部分付款，可继续收款或关闭订单</text>
+      </block>
+
       <!-- 已关闭 -->
       <block wx:else>
         <view class="status-badge status-badge--done">{{status}}</view>

@@ -1,0 +1,74 @@
+/* packageMgmt/mgmt-traffic-stats — 客量数据子页样式 */
+
+.tf-page {
+  padding: 0 var(--spacing-card) 80rpx;
+  background: var(--color-bg-page);
+  min-height: 100vh;
+}
+
+.tf-section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+  text-align: center;
+  margin: 32rpx 0 var(--gap-grid);
+  padding-top: var(--spacing-tight);
+  border-top: 2rpx solid var(--color-divider-soft);
+}
+
+.tf-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--gap-grid-tight);
+  margin-bottom: var(--gap-grid-tight);
+}
+
+.tf-row {
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-tight) var(--spacing-card);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--gap-grid-tight);
+}
+
+.tf-row .lbl {
+  color: var(--color-text-secondary);
+  font-size: 26rpx;
+  flex: 1;
+}
+
+.tf-row .val {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-size: 28rpx;
+}
+
+.tf-row-mid {
+  flex: 0 0 auto;
+  margin-left: var(--spacing-card);
+  margin-right: var(--spacing-tight);
+}
+
+.tf-status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12rpx;
+}
+
+.tf-mark {
+  color: var(--color-primary);
+  font-size: 22rpx;
+  margin-left: 4rpx;
+}
+
+.tf-note {
+  text-align: right;
+  color: var(--color-text-hint);
+  font-size: 22rpx;
+  margin-top: 8rpx;
+}
+
+.tf-avg-ticket-wrap {
+  margin-top: var(--gap-grid);
+}

@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { getVisibleMenuGroups } from "@/lib/menu";
 import { getRoleLabel } from "@/lib/auth";
 import type { AuthSession } from "@/lib/types";
+import { APP_VERSION, APP_COMMIT, BUILD_TIME } from "@/generated/version";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -106,6 +107,20 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
           </div>
         </div>
       )}
+
+      {/* Version info */}
+      <div
+        data-testid="build-version"
+        className={cn(
+          "truncate border-t border-[var(--border)] py-1 text-center text-[10px] leading-tight text-[#999999]",
+          collapsed ? "px-1" : "px-2",
+        )}
+        title={`${APP_VERSION}${APP_COMMIT ? ` · ${APP_COMMIT}` : ""}\nBuilt: ${BUILD_TIME}`}
+      >
+        {collapsed
+          ? APP_VERSION
+          : `${APP_VERSION}${APP_COMMIT ? ` · ${APP_COMMIT}` : ""}`}
+      </div>
 
       {/* Collapse toggle */}
       <button

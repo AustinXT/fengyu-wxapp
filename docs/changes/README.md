@@ -1,0 +1,35 @@
+# 变更记录 (Changes)
+
+按类型分目录、按顺序编号的项目变更记录。
+
+## 三类文档
+
+| 类型 | 何时写 |
+|------|--------|
+| `arch/` | 重要架构 / 技术选型决策 |
+| `ops/`  | 生产环境重要操作（部署、迁移、配置） |
+| `fix/`  | 值得复盘的故障 |
+
+## arch — 架构决策
+
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| [001](arch/001_legacy-orders-manual-pull-pivot.md) | 2026-05-19 | admin /legacy-orders 改为按顾客手动拉取（弃用全量 bulk 导入） |
+| [002](arch/002_inventory-domain-v1.md) | 2026-05-19 | 门店库存域 v1（PG 4 对表 + admin 主写 + 员工端只读 + 提货流程 UI） |
+| [003](arch/003_lakala-payment-integration.md) | 2026-05-20 | 拉卡拉聚合支付接入（收银台 SDK + payNotify 启用 + 统一退货预留） |
+| [004](arch/004_merge-danpin-into-liaochengka.md) | 2026-05-21 | 单品合并入疗程卡（product_type 枚举 3→2 值） |
+| [005](arch/005_beautician-picker-include-wellness.md) | 2026-05-21 | 开单/下单/服务单的美容师选择列表放开养生师 |
+| [006](arch/006_service-order-customer-confirmation.md) | 2026-05-23 | 服务单新增「顾客确认」步骤（待客户确认 中间态） |
+| [007](arch/007_store-unbind-to-transfer-flow.md) | 2026-05-23 | 门店解绑流程改为「转店」（前置选新门店）+ 修复审批缓存陈旧 bug |
+
+## ops — 生产操作
+
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| _暂无_ | | |
+
+## fix — 故障复盘
+
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| _暂无_ | | |

@@ -7,41 +7,20 @@ import { permissionRoles } from '@db/permission'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, isAdminScope } from '@/lib/permissions'
-import type { AuthSession } from '@/lib/types'
-import { logOperation } from '@/lib/operation-log'
+import { isNodeInScope } from '@/lib/node-scope'
+import { withPermission } from '@/lib/with-permission'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
-const VALID_NODE_TYPES = ['headquarters', 'market', 'store', 'department'] as const
+const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
-/**
- * 校验 org_node 是否在用户 scope 内（admin 始终通过）。
- * 从目标节点沿 parentId 向上遍历（最多 5 层），
- * 任一祖先命中 session.roles[].scopeId 即视为在 scope 内。
- */
-async function isNodeInScope(session: AuthSession, nodeId: string): Promise<boolean> {
-  if (isAdminScope(session)) return true
-  const scopeIds = new Set(session.roles.map((r) => r.scopeId))
-  if (scopeIds.size === 0) return false
-
-  let currentId: string | null = nodeId
-  for (let depth = 0; depth < 5 && currentId; depth++) {
-    if (scopeIds.has(currentId)) return true
-    const [node] = await db
-      .select({ parentId: orgNodes.parentId })
-      .from(orgNodes)
-      .where(eq(orgNodes.id, currentId))
-      .limit(1)
-    currentId = node?.parentId ?? null
-  }
-  return false
-}
-
-export async function getOrgNodes(): Promise<OrgNode[]> {
-  const session = await getSession()
-  requirePermission(session, 'org:list')
-
-  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+export const getOrgNodes = withPermission(
+  'org:list',
+  async (): Promise<OrgNode[]> => {
+  const rows = await db
+    .select()
+    .from(orgNodes)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -52,19 +31,22 @@ export async function getOrgNodes(): Promise<OrgNode[]> {
     createdAt: row.createdAt?.toISOString() ?? '',
     updatedAt: row.updatedAt?.toISOString() ?? '',
   }))
-}
+  },
+)
 
-export async function createOrgNode(data: {
-  id: string
-  name: string
-  type: OrgNode['type']
-  parentId: string | null
-  sortOrder: number
-  isActive: boolean
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:create')
-
+export const createOrgNode = withPermission(
+  'org:create',
+  async (
+    session,
+    data: {
+      id: string
+      name: string
+      type: OrgNode['type']
+      parentId: string | null
+      sortOrder: number
+      isActive: boolean
+    },
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验 type 是否有效
   if (!VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
@@ -81,11 +63,11 @@ export async function createOrgNode(data: {
       return { success: false, message: '父节点不存在' }
     }
     // department 下不能再建 department
-    if (parent.type === 'department' && data.type === 'department') {
+    if (parent.type === '部门' && data.type === '部门') {
       return { success: false, message: '部门不可嵌套' }
     }
-    // store 下只能建 department
-    if (parent.type === 'store' && data.type !== 'department') {
+    // 门店下只能建部门
+    if (parent.type === '门店' && data.type !== '部门') {
       return { success: false, message: '门店节点下只能创建部门' }
     }
 
@@ -113,23 +95,24 @@ export async function createOrgNode(data: {
   await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
   revalidatePath('/org')
   return { success: true, message: '节点创建成功' }
-}
+  },
+)
 
-export async function updateOrgNode(
-  id: string,
-  data: Partial<{
-    name: string
-    type: OrgNode['type']
-    parentId: string | null
-    sortOrder: number
-    isActive: boolean
-  }>,
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:update')
-
+export const updateOrgNode = withPermission(
+  'org:update',
+  async (
+    session,
+    id: string,
+    data: Partial<{
+      name: string
+      type: OrgNode['type']
+      parentId: string | null
+      sortOrder: number
+      isActive: boolean
+    }>,
+    /** 乐观锁：提交时携带的 updated_at */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验 type 是否有效
   if (data.type && !VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
@@ -139,6 +122,9 @@ export async function updateOrgNode(
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权编辑该节点' }
   }
+
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
@@ -158,17 +144,18 @@ export async function updateOrgNode(
     }
   }
 
-  await logOperation(session, 'org.update', 'org_node', id, data)
+  await logUpdate(session, 'org.update', 'org_node', id, before as Record<string, unknown>, data)
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
-}
+  },
+)
 
-export async function deleteOrgNode(
-  id: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:delete')
-
+export const deleteOrgNode = withPermission(
+  'org:delete',
+  async (
+    session,
+    id: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // scope 隔离
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }
@@ -230,4 +217,5 @@ export async function deleteOrgNode(
   await logOperation(session, 'org.delete', 'org_node', id)
   revalidatePath('/org')
   return { success: true, message: '节点已删除' }
-}
+  },
+)

@@ -1,0 +1,257 @@
+<!-- packageMgmt/mgmt-customer-detail — 管理层 6-Tab 顾客详情（只读） -->
+<view class="container">
+
+  <!-- 顶部筛选行：仅市场范围 tag（顾客详情无时间维度） -->
+  <view class="mgmt-filter-bar">
+    <view class="mgmt-scope-tag">
+      <text>范围：</text>
+      <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+    </view>
+  </view>
+
+  <!-- 顶层三态壳：loading / error / empty / content -->
+  <mgmt-data-state
+    state="{{ loading ? 'loading' : (customerError ? 'error' : (!customer ? 'empty' : 'content')) }}"
+    empty-text="顾客不存在"
+    bind:retry="onCustomerRetry"
+  >
+    <view wx:if="{{customer}}">
+      <!-- 头部信息卡 -->
+      <view class="profile-card">
+        <view class="profile-header">
+          <view class="profile-avatar">
+            <van-icon name="manager" size="64rpx" color="#C0322A" />
+          </view>
+          <view class="profile-main">
+            <view class="profile-name-row">
+              <text class="profile-name">{{customer.name}}</text>
+              <view wx:if="{{customer.memberLevel === 'VIP'}}" class="vip-badge">VIP</view>
+            </view>
+            <text class="profile-phone">{{customer.phone}}</text>
+          </view>
+        </view>
+        <view class="profile-stats">
+          <view class="stat-item">
+            <text class="stat-label">累计消费</text>
+            <text class="stat-value">¥{{customer.totalConsumption}}</text>
+          </view>
+          <view class="stat-divider" />
+          <view class="stat-item">
+            <text class="stat-label">本年消费</text>
+            <text class="stat-value">¥{{customer.yearConsumption}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 6-Tab 导航（sticky 吸顶） -->
+      <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" sticky scrollable line-width="40rpx">
+        <van-tab title="详情">
+          <view class="tab-content">
+            <van-cell-group class="card-group">
+              <van-cell title="客户姓名" value="{{customer.name || '—'}}" />
+              <van-cell wx:if="{{customer.gender}}" title="客户性别" value="{{customer.gender}}" />
+              <van-cell title="手机号" value="{{customer.phone}}" />
+              <van-cell wx:if="{{customer.storeName}}" title="注册门店" value="{{customer.storeName}}" />
+              <van-cell wx:if="{{customer.preferredStaffName}}" title="指定美容师" value="{{customer.preferredStaffName}}" />
+              <van-cell wx:if="{{customer.topProductName}}" title="常购商品" value="{{customer.topProductName}}" />
+              <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
+              <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
+              <van-cell title="消费金额" value="¥{{customer.totalConsumption}}" />
+              <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
+              <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
+              <van-cell wx:if="{{customer.notes}}" title="备注" value="{{customer.notes}}" />
+            </van-cell-group>
+          </view>
+        </van-tab>
+
+        <van-tab title="日历">
+          <view class="tab-content">
+            <!-- 月份导航 -->
+            <view class="calendar-nav">
+              <van-icon name="arrow-left" size="40rpx" bindtap="onCalendarPrev" />
+              <text class="calendar-month-label">{{calendarYear}}年{{calendarMonth}}月</text>
+              <van-icon name="arrow" size="40rpx" bindtap="onCalendarNext" />
+            </view>
+            <!-- 星期头 -->
+            <view class="calendar-week-header">
+              <text wx:for="{{['日','一','二','三','四','五','六']}}" wx:key="*this" class="calendar-week-cell">{{item}}</text>
+            </view>
+            <!-- 日历网格 -->
+            <view class="calendar-grid">
+              <view
+                wx:for="{{calendarDays}}" wx:key="index"
+                class="calendar-cell {{item.hasData ? 'calendar-cell--has-data' : ''}} {{item.date === selectedDate ? 'calendar-cell--selected' : ''}}"
+                bindtap="onCalendarDateTap"
+                data-date="{{item.date}}"
+              >
+                <text wx:if="{{item.day > 0}}" class="calendar-day">{{item.day}}</text>
+                <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amountLabel}}</text>
+              </view>
+            </view>
+            <!-- 选中日期的订单列表 -->
+            <view wx:if="{{selectedDate}}" class="calendar-orders">
+              <text class="calendar-orders-title">{{selectedDate}} 消费记录</text>
+              <view wx:for="{{calendarOrders}}" wx:key="saleOrderId">
+                <van-cell
+                  wx:if="{{item.payDate === selectedDate}}"
+                  title="{{item.saleOrderId}}"
+                  value="¥{{item.totalReceived}}"
+                  label="{{item.orderType}}"
+                  is-link
+                  data-id="{{item.saleOrderId}}"
+                  bindtap="onOrderTap"
+                />
+              </view>
+            </view>
+          </view>
+        </van-tab>
+
+        <van-tab title="购买记录">
+          <view class="tab-content">
+            <view wx:if="{{!purchaseLoaded}}" class="loading-wrap">
+              <van-loading type="spinner" color="#C0322A" />
+            </view>
+            <van-empty wx:elif="{{purchaseOrders.length === 0}}" description="暂无购买记录" />
+            <view wx:else>
+              <view class="purchase-card" wx:for="{{purchaseOrders}}" wx:key="saleOrderId">
+                <view class="purchase-header">
+                  <text class="purchase-order-no">{{item.saleOrderId}}</text>
+                  <text class="status-tag status-tag--success">已支付</text>
+                </view>
+                <view class="purchase-items">
+                  <view wx:for="{{item.items}}" wx:for-item="si" wx:key="saleItemId" class="purchase-item-row">
+                    <text class="purchase-item-name">{{si.itemName}}</text>
+                    <text class="purchase-item-spec">{{si.spec}}</text>
+                  </view>
+                </view>
+                <view class="purchase-footer" bindtap="onPurchaseOrderTap" data-id="{{item.saleOrderId}}">
+                  <text class="purchase-time">{{item.paidAt}}</text>
+                  <text class="purchase-link">查看详情 ›</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </van-tab>
+
+        <van-tab title="持卡汇总">
+          <view class="tab-content">
+            <view class="tab-hint">仅显示当前数据范围内的疗程</view>
+            <view wx:if="{{!cardsLoaded}}" class="loading-wrap">
+              <van-loading type="spinner" color="#C0322A" />
+            </view>
+            <van-empty wx:elif="{{treatmentCards.length === 0}}" description="暂无可核销疗程" />
+            <view wx:else class="card-list">
+              <view
+                wx:for="{{treatmentCards}}" wx:key="saleItemId"
+                class="treatment-card"
+              >
+                <view class="tc-row">
+                  <view class="tc-info">
+                    <text class="tc-name">{{item.itemName}}</text>
+                    <view class="tc-meta">
+                      <text class="tc-spec">{{item.spec}}</text>
+                      <text class="tc-order">{{item.saleOrderId}}</text>
+                    </view>
+                    <text class="tc-sessions">剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} 次</text>
+                    <view class="session-bar">
+                      <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
+                      <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
+                      <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
+                    </view>
+                  </view>
+                </view>
+              </view>
+            </view>
+          </view>
+        </van-tab>
+
+        <van-tab title="赠送记录">
+          <view class="tab-content">
+            <view wx:if="{{!giftLoaded}}" class="loading-wrap">
+              <van-loading type="spinner" color="#C0322A" />
+            </view>
+            <view wx:elif="{{giftData && (giftData.promoOrders.length > 0 || giftData.giftItems.length > 0)}}">
+              <!-- 组合套餐订单 -->
+              <view wx:if="{{giftData.promoOrders.length > 0}}">
+                <text class="gift-section-title">组合套餐</text>
+                <view class="gift-card" wx:for="{{giftData.promoOrders}}" wx:key="saleOrderId">
+                  <view class="gift-card-header">
+                    <text class="gift-order-no">{{item.saleOrderId}}</text>
+                    <text class="status-tag status-tag--success">{{item.status}}</text>
+                  </view>
+                  <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
+                    <text class="gift-item-name">{{gi.productName}}</text>
+                    <text class="gift-item-spec">{{gi.specName}}</text>
+                    <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.remainingSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}}</text>
+                  </view>
+                  <text class="gift-card-time">{{item.paidAt}}</text>
+                </view>
+              </view>
+              <!-- 套餐赠品 -->
+              <view wx:if="{{giftData.giftItems.length > 0}}">
+                <text class="gift-section-title">套餐赠品</text>
+                <view class="gift-card" wx:for="{{giftData.giftItems}}" wx:key="saleItemId">
+                  <view class="gift-item-row">
+                    <text class="gift-item-name">{{item.productName}}</text>
+                    <text class="gift-item-spec">{{item.specName}}</text>
+                  </view>
+                  <view wx:if="{{item.sessionCount}}" class="gift-item-row">
+                    <text class="gift-item-sessions">剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
+                  </view>
+                  <text class="gift-card-time">{{item.createdAt}}</text>
+                </view>
+              </view>
+            </view>
+            <van-empty wx:else description="暂无赠送记录" />
+          </view>
+        </van-tab>
+
+        <van-tab title="退换记录">
+          <view class="tab-content">
+            <view wx:if="{{!refundLoaded}}" class="loading-wrap">
+              <van-loading type="spinner" color="#C0322A" />
+            </view>
+            <van-empty wx:elif="{{refundRecords.length === 0}}" description="暂无退换记录" />
+            <view wx:else>
+              <view class="refund-card" wx:for="{{refundRecords}}" wx:key="saleOrderId">
+                <view class="refund-card-header">
+                  <text class="refund-order-no">{{item.saleOrderId}}</text>
+                  <!-- 退款 → status-tag--error；转换 → status-tag--progress -->
+                  <text class="status-tag {{item.type === '退款' ? 'status-tag--error' : 'status-tag--progress'}}">
+                    {{item.type}}
+                  </text>
+                  <text class="status-tag status-tag--{{item.status === '待审批' ? 'pending' : item.status === '已支付' ? 'success' : 'done'}}">
+                    {{item.status}}
+                  </text>
+                </view>
+                <view wx:if="{{item.refundReason}}" class="refund-reason">
+                  <text class="refund-reason-label">原因：</text>
+                  <text>{{item.refundReason}}</text>
+                </view>
+                <view class="refund-items">
+                  <view wx:for="{{item.items}}" wx:for-item="ri" wx:key="saleItemId" class="refund-item-row">
+                    <!-- 退出/转出 → status-tag--error；其他（流入）→ status-tag--success；局部尺寸覆写在 refund-item-direction -->
+                    <text class="refund-item-direction status-tag {{ri.direction === '退出' || ri.direction === '转出' ? 'status-tag--error' : 'status-tag--success'}}">
+                      {{ri.direction}}
+                    </text>
+                    <text class="refund-item-name">{{ri.productName}}</text>
+                    <text class="refund-item-amount">¥{{ri.received}}</text>
+                  </view>
+                </view>
+                <view class="refund-card-footer">
+                  <text class="refund-card-time">{{item.createdAt}}</text>
+                  <text class="refund-total">合计 ¥{{item.totalAmount}}</text>
+                </view>
+                <view class="refund-link" bindtap="onRefundOrderTap" data-id="{{item.saleOrderId}}">
+                  <text class="purchase-link">查看详情 ›</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </van-tab>
+      </van-tabs>
+    </view>
+  </mgmt-data-state>
+
+  <view class="safe-area-bottom" />
+</view>

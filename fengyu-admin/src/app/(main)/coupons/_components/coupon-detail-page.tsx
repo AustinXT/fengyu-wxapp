@@ -10,17 +10,20 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Tooltip } from "@/components/ui/tooltip"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { formatPhoneSafe } from "@/lib/format"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
+import { validateCouponValidityFields } from "./coupon-validity-helper"
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "项目券": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
+  "品项券": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
   "折扣券": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
 }
 
@@ -41,13 +44,20 @@ interface Market {
   name: string
 }
 
+interface Category {
+  categoryId: string
+  categoryName: string
+  productKind: string | null
+}
+
 interface Props {
   template: CouponTemplate
   markets: Market[]
   issuedCoupons: IssuedCoupon[]
+  categories: Category[]
 }
 
-export default function CouponDetailPage({ template, markets, issuedCoupons }: Props) {
+export default function CouponDetailPage({ template, markets, issuedCoupons, categories }: Props) {
   const router = useRouter()
 
   // Edit mode state
@@ -70,7 +80,10 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
   const [editIsActive, setEditIsActive] = useState(template.isActive ?? true)
   const [editAllMarkets, setEditAllMarkets] = useState(!template.applicableMarketIds || template.applicableMarketIds.length === 0)
   const [editSelectedMarketIds, setEditSelectedMarketIds] = useState<string[]>(template.applicableMarketIds ?? [])
+  const [editAllCategories, setEditAllCategories] = useState(!template.applicableCategoryIds || template.applicableCategoryIds.length === 0)
+  const [editSelectedCategoryIds, setEditSelectedCategoryIds] = useState<string[]>(template.applicableCategoryIds ?? [])
   const marketMap = useMemo(() => new Map(markets.map((m) => [m.id, m.name])), [markets])
+  const categoryMap = useMemo(() => new Map(categories.map((c) => [c.categoryId, c.categoryName])), [categories])
 
   // Issue coupon dialog state
   const [issueOpen, setIssueOpen] = useState(false)
@@ -229,6 +242,8 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
     setEditIsActive(template.isActive ?? true)
     setEditAllMarkets(!template.applicableMarketIds || template.applicableMarketIds.length === 0)
     setEditSelectedMarketIds(template.applicableMarketIds ?? [])
+    setEditAllCategories(!template.applicableCategoryIds || template.applicableCategoryIds.length === 0)
+    setEditSelectedCategoryIds(template.applicableCategoryIds ?? [])
     setEditing(true)
   }
 
@@ -255,6 +270,17 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
       return
     }
 
+    const validityCheck = validateCouponValidityFields({
+      validityMode: editValidityMode,
+      validDays: editValidDays,
+      validFrom: editValidFrom,
+      validTo: editValidTo,
+    })
+    if (!validityCheck.ok) {
+      toast.error(validityCheck.message)
+      return
+    }
+
     setSaving(true)
     try {
       const tplResult = await updateTemplate(template.templateId, {
@@ -262,8 +288,9 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
         couponType: editCouponType,
         discountValue: editDiscountValue,
         minSpend: editMinSpend || undefined,
-        maxDiscount: editCouponType === "折扣券" && editMaxDiscount ? editMaxDiscount : null,
-        totalCount: editTotalCount ? parseInt(editTotalCount, 10) : null,
+        maxDiscount: null,
+        totalCount: editCouponType === "折扣券" ? null : (editTotalCount ? parseInt(editTotalCount, 10) : null),
+        applicableCategoryIds: editCouponType === "品项券" && !editAllCategories && editSelectedCategoryIds.length > 0 ? editSelectedCategoryIds : null,
         validityMode: editValidityMode,
         validFrom: editValidityMode === "fixed" && editValidFrom ? editValidFrom : null,
         validTo: editValidityMode === "fixed" && editValidTo ? editValidTo : null,
@@ -421,7 +448,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   onChange={(e) => setEditCouponType(e.target.value as CouponType)}
                 >
                   <option value="现金券">现金券</option>
-                  <option value="项目券">项目券</option>
+                  <option value="品项券">品项券</option>
                   <option value="折扣券">折扣券</option>
                 </Select>
               </div>
@@ -436,7 +463,18 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">最低消费</label>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-sm font-medium">最低消费</label>
+                  <Tooltip
+                    side="top"
+                    wide
+                    content='门槛基数 = "符合适用分类的商品行小计"，而非全单总额。例：品类=护理项目 + 最低消费 500，顾客必须购买护理类商品金额 ≥ 500 才能使用本券，美甲等其他分类不计入门槛。若不限品类则退化为全单小计。'
+                  >
+                    <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-[var(--border)] text-[10px] text-[var(--muted-foreground)]">
+                      ?
+                    </span>
+                  </Tooltip>
+                </div>
                 <Input
                   type="number"
                   placeholder="0 表示无门槛"
@@ -444,31 +482,32 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   onChange={(e) => setEditMinSpend(e.target.value)}
                 />
               </div>
-              {editCouponType === "折扣券" && (
+              {editCouponType !== "折扣券" && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">最高抵扣</label>
+                  <label className="text-sm font-medium">发行总量</label>
                   <Input
                     type="number"
-                    placeholder="折扣封顶金额"
-                    value={editMaxDiscount}
-                    onChange={(e) => setEditMaxDiscount(e.target.value)}
+                    placeholder="不填则不限量"
+                    value={editTotalCount}
+                    onChange={(e) => setEditTotalCount(e.target.value)}
                   />
                 </div>
               )}
               <div className="space-y-2">
-                <label className="text-sm font-medium">发行总量</label>
-                <Input
-                  type="number"
-                  placeholder="不填则不限量"
-                  value={editTotalCount}
-                  onChange={(e) => setEditTotalCount(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
                 <label className="text-sm font-medium">有效期模式</label>
                 <Select
                   value={editValidityMode}
-                  onChange={(e) => setEditValidityMode(e.target.value as "fixed" | "days")}
+                  onChange={(e) => {
+                    const next = e.target.value as "fixed" | "days"
+                    setEditValidityMode(next)
+                    // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                    if (next === "days") {
+                      setEditValidFrom("")
+                      setEditValidTo("")
+                    } else {
+                      setEditValidDays("")
+                    }
+                  }}
                 >
                   <option value="days">领取后N天</option>
                   <option value="fixed">固定时段</option>
@@ -514,6 +553,61 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   <option value="false">停用</option>
                 </Select>
               </div>
+              {editCouponType === "品项券" && (
+                <div className="col-span-2 space-y-3">
+                  <label className="text-sm font-medium">适用品项分类</label>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={editAllCategories}
+                        onChange={(e) => {
+                          setEditAllCategories(e.target.checked)
+                          if (e.target.checked) setEditSelectedCategoryIds([])
+                        }}
+                        className="h-4 w-4 rounded border-[var(--input)]"
+                      />
+                      <span className="text-sm">全部品项</span>
+                    </label>
+                    {!editAllCategories && (
+                      <div className="space-y-3 pl-6">
+                        {(() => {
+                          const grouped = new Map<string, Category[]>()
+                          for (const c of categories) {
+                            const kind = c.productKind ?? "未分类"
+                            if (!grouped.has(kind)) grouped.set(kind, [])
+                            grouped.get(kind)!.push(c)
+                          }
+                          return [...grouped.entries()].map(([kind, cats]) => (
+                            <div key={kind}>
+                              <div className="text-xs font-medium text-[var(--muted-foreground)] mb-1">{kind}</div>
+                              <div className="grid grid-cols-3 gap-2">
+                                {cats.map((c) => (
+                                  <label key={c.categoryId} className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={editSelectedCategoryIds.includes(c.categoryId)}
+                                      onChange={(e) => {
+                                        setEditSelectedCategoryIds((prev) =>
+                                          e.target.checked
+                                            ? [...prev, c.categoryId]
+                                            : prev.filter((id) => id !== c.categoryId)
+                                        )
+                                      }}
+                                      className="h-4 w-4 rounded border-[var(--input)]"
+                                    />
+                                    <span className="text-sm">{c.categoryName}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          ))
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="col-span-2 space-y-3">
                 <label className="text-sm font-medium">适用市场</label>
                 <div className="space-y-2">
@@ -588,18 +682,14 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                     : "无门槛"}
                 </div>
               </div>
-              {template.maxDiscount && (
+              {template.couponType !== "折扣券" && (
                 <div>
-                  <div className="text-sm text-[var(--muted-foreground)]">最高抵扣</div>
-                  <div className="mt-1 font-medium">{formatCurrency(template.maxDiscount)}</div>
+                  <div className="text-sm text-[var(--muted-foreground)]">发行总量</div>
+                  <div className="mt-1 font-medium">
+                    {template.totalCount ?? "不限"}
+                  </div>
                 </div>
               )}
-              <div>
-                <div className="text-sm text-[var(--muted-foreground)]">发行总量</div>
-                <div className="mt-1 font-medium">
-                  {template.totalCount ?? "不限"}
-                </div>
-              </div>
               <div>
                 <div className="text-sm text-[var(--muted-foreground)]">有效期</div>
                 <div className="mt-1 font-medium">
@@ -625,6 +715,16 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   </Badge>
                 </div>
               </div>
+              {template.couponType === "品项券" && (
+                <div className="col-span-2">
+                  <div className="text-sm text-[var(--muted-foreground)]">适用品项分类</div>
+                  <div className="mt-1 font-medium">
+                    {!template.applicableCategoryIds || template.applicableCategoryIds.length === 0
+                      ? "全部品项"
+                      : template.applicableCategoryIds.map((id) => categoryMap.get(id) ?? id).join('、')}
+                  </div>
+                </div>
+              )}
               <div className="col-span-2">
                 <div className="text-sm text-[var(--muted-foreground)]">适用市场</div>
                 <div className="mt-1 font-medium">
@@ -752,7 +852,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   value={batchOrgFilter}
                   onChange={(id) => setBatchOrgFilter(id)}
                   placeholder="全部门店"
-                  excludeTypes={["department"]}
+                  excludeTypes={["部门"]}
                   className="w-48"
                 />
                 <Select
@@ -761,9 +861,11 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   className="w-32"
                 >
                   <option value="">全部等级</option>
-                  <option value="金卡">金卡</option>
-                  <option value="银卡">银卡</option>
-                  <option value="普通">普通</option>
+                  <option value="黑钻">黑钻</option>
+                  <option value="金钻">金钻</option>
+                  <option value="粉钻">粉钻</option>
+                  <option value="星钻">星钻</option>
+                  <option value="初钻">初钻</option>
                 </Select>
                 <Input
                   placeholder="搜索姓名/手机号"
@@ -812,7 +914,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                             />
                           </td>
                           <td className="px-3 py-2 font-medium">{c.name || "—"}</td>
-                          <td className="px-3 py-2 font-mono">{c.phone || "—"}</td>
+                          <td className="px-3 py-2 font-mono">{formatPhoneSafe(c.phone)}</td>
                           <td className="px-3 py-2">{c.storeName || "—"}</td>
                           <td className="px-3 py-2">{c.memberLevel || "—"}</td>
                         </tr>
@@ -843,7 +945,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
               <div className="text-sm font-medium text-[#D94040]">以下手机号未匹配到顾客：</div>
               {batchErrors.map((e) => (
                 <div key={e.phone} className="text-sm text-[#D94040] font-mono">
-                  {e.phone}
+                  {formatPhoneSafe(e.phone)}
                 </div>
               ))}
             </div>

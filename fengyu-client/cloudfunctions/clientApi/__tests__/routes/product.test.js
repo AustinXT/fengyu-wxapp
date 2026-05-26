@@ -75,25 +75,21 @@ describe('product.spuList', () => {
 })
 
 describe('product.skuDetail', () => {
-  test('正常返回 SKU 详情（含封面图）', async () => {
+  test('正常返回 SKU 详情', async () => {
+    // skuDetail 仅查 product_skus + product_categories（cover_image 在 products 层，不属 SKU 详情）
     pg.query.mockResolvedValueOnce([{
-      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
+      sku_id: 'sku-1', product_type: '疗程卡',
       spec_name: '10次卡', price: 1000, special_price: 800,
-      session_count: 10, product_name: '美白护理',
-      cover_image: 'https://img.example.com/beauty.jpg',
-      category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目',
+      session_count: 10, service_fee: 0, sort_order: 1, is_shengmei: false,
+      category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目', sales_category: null,
     }])
 
     const ctx = createCtx({ payload: { skuId: 'sku-1' } })
     await routes.skuDetail(ctx)
 
     expect(ctx.result.sku.sku_id).toBe('sku-1')
-    expect(ctx.result.sku.product_name).toBe('美白护理')
-    expect(ctx.result.sku.cover_image).toBe('https://img.example.com/beauty.jpg')
-
-    // 验证 SQL 包含 cover_image
-    const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain('cover_image')
+    expect(ctx.result.sku.spec_name).toBe('10次卡')
+    expect(ctx.result.sku.category_name).toBe('护理项目')
   })
 
   test('缺少 skuId → INVALID_PARAMS', async () => {
@@ -101,10 +97,10 @@ describe('product.skuDetail', () => {
     await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*skuId/)
   })
 
-  test('SKU 不存在 → INVALID_PARAMS', async () => {
+  test('商品不存在 → INVALID_PARAMS', async () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createCtx({ payload: { skuId: 'nonexistent' } })
-    await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*SKU 不存在/)
+    await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*商品不存在/)
   })
 })
 
@@ -160,22 +156,34 @@ describe('product.hotList', () => {
 })
 
 describe('product.shopInit', () => {
-  test('返回分类 + 第一个分类的商品列表', async () => {
-    pg.query.mockResolvedValueOnce([
-      { category_id: 'cat-1', category_name: '护理', product_kind: '护理项目', category_order: 1 },
-    ])
-    pg.query.mockResolvedValueOnce([
-      { product_id: 'p1', name: 'A', category_id: 'cat-1', category_name: '护理', product_kind: '护理项目', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_shengmei: false, is_bundle: false },
-    ])
-    pg.query.mockResolvedValueOnce([
-      { product_id: 'p1', sku_id: 'sku-1', price: 100, special_price: 80, sort_order: 1 },
-    ])
+  test('返回 groups + 二级分类 + 第一个二级分类的商品列表', async () => {
+    // 重构后：shopInit 并发查 getCategoryGroups + getCategoriesList，
+    // 然后查第一个 group 下首个二级分类的商品（getProductListByCategory 内部 2 次 query）
+    pg.query
+      // 1) getCategoryGroups → 一级分组
+      .mockResolvedValueOnce([
+        { category_id: 'g-1', category_name: '护理', sort_order: 1 },
+      ])
+      // 2) getCategoriesList → 二级分类（category_group 必须等于 group 的 category_name）
+      .mockResolvedValueOnce([
+        { category_id: 'cat-1', category_name: '面部', category_group: '护理', category_order: 1 },
+      ])
+      // 3) getProductListByCategory products
+      .mockResolvedValueOnce([
+        { product_id: 'p1', name: 'A', category_id: 'cat-1', category_name: '面部', cover_image: '', description: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
+      ])
+      // 4) getProductListByCategory skus
+      .mockResolvedValueOnce([
+        { product_id: 'p1', sku_id: 'sku-1', product_type: '疗程卡', spec_name: '10次', price: 100, special_price: 80, session_count: 10, service_fee: 0, display_order: 1, bundle_price: null, bundle_group_id: null, group_name: null, group_pick_count: null },
+      ])
 
     const ctx = createBoundCtx()
     await routes.shopInit(ctx)
 
+    expect(ctx.result.groups).toHaveLength(1)
     expect(ctx.result.categories).toHaveLength(1)
     expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.spuList[0].product_id).toBe('p1')
   })
 
   test('无分类时返回空列表', async () => {
@@ -186,5 +194,47 @@ describe('product.shopInit', () => {
 
     expect(ctx.result.categories).toEqual([])
     expect(ctx.result.spuList).toEqual([])
+  })
+})
+
+describe('product.experienceCardList', () => {
+  test('按 sortOrder ASC 返回 is_experience = true 的 SKU 列表', async () => {
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-exp-1', product_type: '疗程卡', spec_name: '体验装', price: 99, special_price: 1, session_count: 1, service_fee: 0, sort_order: 1, product_id: 'p-trial-A', product_name: '焕活面部体验', cover_image: 'https://img/a.jpg', description: '新人专享' },
+      { sku_id: 'sku-exp-2', product_type: '疗程卡', spec_name: '体验装', price: 199, special_price: 9, session_count: 1, service_fee: 0, sort_order: 2, product_id: 'p-trial-B', product_name: '小气泡体验', cover_image: 'https://img/b.jpg', description: null },
+    ])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList).toHaveLength(2)
+    expect(ctx.result.skuList[0].sku_id).toBe('sku-exp-1')
+    expect(ctx.result.skuList[1].sku_id).toBe('sku-exp-2')
+
+    // 验证 SQL：必须含 is_experience = true 过滤、is_enabled = true、按 sort_order ASC 排序
+    const calledSql = pg.query.mock.calls[0][0]
+    expect(calledSql).toMatch(/is_experience\s*=\s*true/)
+    expect(calledSql).toMatch(/is_enabled\s*=\s*true/)
+    expect(calledSql).toMatch(/ORDER BY sk\.sort_order ASC/)
+  })
+
+  test('SQL 不能用 SKU_VALID_FILTER（会反向过滤掉所有体验卡）', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    const calledSql = pg.query.mock.calls[0][0]
+    // SKU_VALID_FILTER 含 NOT (is_experience OR is_recharge_card)，本入口反向使用，必须不含
+    expect(calledSql).not.toMatch(/NOT\s*\(\s*sk\.is_experience\s+OR/)
+  })
+
+  test('无体验卡时返回空 skuList', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList).toEqual([])
   })
 })

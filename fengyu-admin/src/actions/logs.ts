@@ -4,8 +4,7 @@ import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
 import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
 import type { OperationLog } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { withPermission, withAnyPermission } from '@/lib/with-permission'
 
 export interface LogFilter {
   operatorName?: string
@@ -32,10 +31,9 @@ function serializeLog(r: typeof operationLogs.$inferSelect): OperationLog {
   }
 }
 
-export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
-  const session = await getSession()
-  requirePermission(session, 'operation_log:list')
-
+export const getLogs = withPermission(
+  'operation_log:list',
+  async (_session, filter?: LogFilter): Promise<OperationLog[]> => {
   const conditions = []
 
   if (filter?.operatorName) {
@@ -66,17 +64,20 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
     .select()
     .from(operationLogs)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
+    // 例外：日志型表无 updatedAt 列
     .orderBy(desc(operationLogs.createdAt))
     .limit(500)
 
   return rows.map(serializeLog)
-}
+  },
+)
 
-export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]> {
-  const session = await getSession()
-  // 查看订单操作日志只需订单查看权限（不需要全局操作日志权限）
-  requirePermission(session, 'sale_order:list')
-
+// 查看订单操作日志：订单查看者（sale_order:list）、退款提单人/审批人
+// （sale_order:refund_create / sale_order:refund_approve）或操作日志查看者
+// （operation_log:list）任一即可。
+export const getOrderLogs = withAnyPermission(
+  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve', 'operation_log:list'],
+  async (_session, saleOrderId: string): Promise<OperationLog[]> => {
   const rows = await db
     .select()
     .from(operationLogs)
@@ -84,6 +85,7 @@ export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]>
       eq(operationLogs.targetType, 'sale_order'),
       eq(operationLogs.targetId, saleOrderId),
     ))
+    // 例外：日志型表无 updatedAt 列
     .orderBy(desc(operationLogs.createdAt))
 
   return rows.map((r) => ({
@@ -100,4 +102,5 @@ export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]>
     source: r.source,
     createdAt: r.createdAt.toISOString(),
   }))
-}
+  },
+)

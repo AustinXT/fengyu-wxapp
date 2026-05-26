@@ -34,10 +34,13 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  expandVisibleMarketIds: vi.fn().mockResolvedValue(null),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -52,6 +55,8 @@ vi.mock('drizzle-orm', () => ({
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   ne: vi.fn((a, b) => ({ type: 'ne', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
@@ -68,7 +73,7 @@ const baseData = {
   orgId: 'market-1',
   orderType: '销售单',
   roleType: 'manager',
-  salesCategory: '自采自销',
+  salesCategory: '自销自耗',
 }
 
 // 设置 hasTierOverlap 内部的 DB select 调用
@@ -173,6 +178,17 @@ describe('createRate — 金额阶段重叠校验 (AC-07)', () => {
 })
 
 describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
+  /** mock db.select() 自引用链，用于 update 前获取旧值 */
+  function mockSelectBefore(rows: any[] = [{}]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    ;(db.select as any).mockReturnValue(chain)
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -185,7 +201,13 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      return overlapSelect.select()
+      if (callCount === 1) return overlapSelect.select()
+      // call 2+: before-fetch chain
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue([{}])
+      return chain
     })
     ;(db.update as any).mockImplementation(updateMock.update)
 
@@ -213,6 +235,7 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('仅更新 commissionRate（无分类键）时：跳过重叠检查', async () => {
+    mockSelectBefore() // before-fetch 仍需 db.select
     const updateMock = setupUpdateSuccess(1)
     ;(db.update as any).mockImplementation(updateMock.update)
 
@@ -220,14 +243,23 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
     const result = await updateRate(42, { commissionRate: '0.09' })
 
     expect(result.success).toBe(true)
-    expect(db.select).not.toHaveBeenCalled() // 未触发重叠查询
+    expect(db.select).toHaveBeenCalledTimes(1) // 仅 before-fetch，无重叠查询
   })
 
   it('乐观锁冲突时：返回修改提示', async () => {
     const overlapSelect = setupOverlapCheck(false)
     const updateMock = setupUpdateSuccess(0) // rowCount=0
 
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return overlapSelect.select()
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue([{}])
+      return chain
+    })
     ;(db.update as any).mockImplementation(updateMock.update)
 
     const result = await updateRate(
@@ -241,10 +273,9 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('rowCount=0，无乐观锁 → 报告规则不存在（不静默成功）', async () => {
-    const overlapSelect = setupOverlapCheck(false)
+    mockSelectBefore() // before-fetch
     const updateMock = setupUpdateSuccess(0)
 
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
     ;(db.update as any).mockImplementation(updateMock.update)
 
     const result = await updateRate(99, { commissionRate: '0.09' }) // 无 expectedUpdatedAt
@@ -254,8 +285,7 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('DB 异常 → 重新抛出', async () => {
-    const overlapSelect = setupOverlapCheck(false)
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
+    mockSelectBefore() // before-fetch
 
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
     const set = vi.fn().mockReturnValue({ where })
@@ -343,7 +373,7 @@ describe('getRates — 全量提成比例列表', () => {
   it('返回序列化的提成比例列表', async () => {
     const limit = vi.fn().mockResolvedValue([{
       id: 1, orgId: 'market-1', orderType: '销售单', roleType: '美容师',
-      salesCategory: '自采自销', amountTierMin: '0', amountTierMax: '1000',
+      salesCategory: '自销自耗', amountTierMin: '0', amountTierMax: '1000',
       commissionRate: '0.08',
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
       orgName: '南昌市场',
@@ -358,6 +388,22 @@ describe('getRates — 全量提成比例列表', () => {
     expect(result).toHaveLength(1)
     expect(result[0].id).toBe(1)
     expect(result[0].orgName).toBe('南昌市场')
+  })
+
+  // admin.sys.spec.md §5 默认排序：最近编辑过的规则浮顶
+  it('默认 orderBy 首键为 desc(updatedAt)', async () => {
+    const limit = vi.fn().mockResolvedValue([])
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+
+    await getRates()
+
+    expect(orderBy).toHaveBeenCalledTimes(1)
+    const args = orderBy.mock.calls[0]
+    expect(args[0]).toMatchObject({ type: 'desc', col: 'updated_at' })
+    expect(args[1]).toMatchObject({ type: 'desc', col: 'id' })
   })
 })
 

@@ -2,24 +2,29 @@
 /**
  * migrate-prepaid-cards.js — 从已导入的 sale_items 生成 prepaid_cards + card_transactions
  *
- * 识别已导入的充值/储值/预存类 sale_items，转化为 prepaid_cards 记录，
- * 使客户端可以看到历史充值卡余额。
+ * 识别已导入的充值/储值/预存类 sale_items，**按 (user_id, store_id) 聚合**
+ * 为一张 prepaid_card 账户（满足 schema UNIQUE(user_id, store_id) 约束），
+ * 组内每个 sale_item 作为一条 topup 流水写入 card_transactions。
  *
  * 数据源：PG sale_items（Round 1 已导入），无需连接 WorkFine
- * 余额计算：balance = remaining_sessions / session_count * sale_amount
+ * 单条余额：balance = remaining_sessions / session_count * sale_amount
+ * 卡余额：同一 (user_id, store_id) 下所有 sale_item 的 balance 之和
+ * cardId 格式：`CARD-{storeId}-{userId}`（重跑幂等）
  *
  * 用法：
  *   node scripts/migrate-prepaid-cards.js              # 正式执行
  *   node scripts/migrate-prepaid-cards.js --dry-run     # 预览模式
  *   node scripts/migrate-prepaid-cards.js --verify      # 仅验证
  *
- * 幂等设计：ON CONFLICT (card_id) DO UPDATE
+ * 幂等设计：
+ *   - prepaid_cards: ON CONFLICT (card_id) DO UPDATE balance
+ *   - card_transactions: 先查 (card_id, ref_order_id, type) 是否已存在，避免重复写入
  */
 
 const { Pool } = require('pg')
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -62,10 +67,11 @@ async function queryPrepaidItems(pgPool) {
   return rows
 }
 
-// ─── 2. 计算余额并生成记录 ──────────────────────────────────
+// ─── 2. 计算余额并按 (user_id, store_id) 聚合生成卡 + 流水 ───
 
 function generateCards(items) {
-  const cards = []
+  // 2.1 先对每个 sale_item 计算剩余余额
+  const itemsWithBalance = []
   let skippedZeroBalance = 0
 
   for (const item of items) {
@@ -75,7 +81,6 @@ function generateCards(items) {
     const unitPrice = parseFloat(item.unit_price) || 0
     const received = parseFloat(item.received) || 0
 
-    // 计算余额
     let balance = 0
     if (sessionCount > 0 && saleAmount > 0) {
       balance = Math.round((remaining / sessionCount) * saleAmount * 100) / 100
@@ -92,32 +97,66 @@ function generateCards(items) {
       continue
     }
 
-    cards.push({
-      cardId: `CARD-${item.sale_item_id}`,
-      userId: item.client_user_id,
-      balance,
-      storeId: item.store_id,
+    itemsWithBalance.push({
+      saleItemId: item.sale_item_id,
       saleOrderId: item.sale_order_id,
       saleOrderDatetime: item.sale_order_datetime,
       productName: item.product_name,
+      userId: item.client_user_id,
+      storeId: item.store_id,
+      balance,
     })
   }
 
-  log(`生成 ${cards.length} 条充值卡记录（跳过 ${skippedZeroBalance} 条零余额）`)
+  // 2.2 按 (user_id, store_id) 聚合为单张卡
+  // SQL 已按 client_user_id, sale_item_id 排序，组内第一个即最早订单
+  const cardMap = new Map()
+  for (const it of itemsWithBalance) {
+    const key = `${it.userId}__${it.storeId}`
+    if (!cardMap.has(key)) {
+      cardMap.set(key, {
+        cardId: `CARD-${it.storeId}-${it.userId}`,
+        userId: it.userId,
+        storeId: it.storeId,
+        balance: 0,
+        createdAt: it.saleOrderDatetime, // 最早订单时间
+        transactions: [],
+      })
+    }
+    const card = cardMap.get(key)
+    card.balance = Math.round((card.balance + it.balance) * 100) / 100
+    card.transactions.push({
+      saleItemId: it.saleItemId,
+      saleOrderId: it.saleOrderId,
+      saleOrderDatetime: it.saleOrderDatetime,
+      productName: it.productName,
+      amount: it.balance,
+    })
+  }
+
+  const cards = Array.from(cardMap.values())
+  log(
+    `聚合: ${itemsWithBalance.length} 条 sale_item → ${cards.length} 张卡` +
+      `（跳过 ${skippedZeroBalance} 条零余额）`
+  )
   return cards
 }
 
 // ─── 3. 写入 PG ─────────────────────────────────────────────
 
 async function upsertCards(pgPool, cards, dryRun) {
-  if (dryRun) {
-    log(`[DRY] 将导入 ${cards.length} 条充值卡 + ${cards.length} 条初始流水`)
+  const totalTxns = cards.reduce((sum, c) => sum + c.transactions.length, 0)
 
-    // 预览前 10 条
+  if (dryRun) {
+    log(`[DRY] 将导入 ${cards.length} 张卡 + ${totalTxns} 条初始流水`)
+
+    // 预览前 10 张
     cards.slice(0, 10).forEach((c, i) => {
-      console.log(`  [DRY] ${i + 1}. ${c.cardId} | user=${c.userId} | ¥${c.balance} | ${c.productName}`)
+      console.log(
+        `  [DRY] ${i + 1}. ${c.cardId} | user=${c.userId} | store=${c.storeId} | ¥${c.balance} | ${c.transactions.length} 条流水`
+      )
     })
-    if (cards.length > 10) console.log(`  ... 及 ${cards.length - 10} 条更多`)
+    if (cards.length > 10) console.log(`  ... 及 ${cards.length - 10} 张更多`)
     return cards.length
   }
 
@@ -130,44 +169,42 @@ async function upsertCards(pgPool, cards, dryRun) {
 
     for (const card of cards) {
       // UPSERT prepaid_card
-      await client.query(`
-        INSERT INTO prepaid_cards (card_id, user_id, balance, store_id, created_at)
+      await client.query(
+        `
+        INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (card_id) DO UPDATE SET
           balance = EXCLUDED.balance,
           updated_at = now()
-      `, [
-        card.cardId,
-        card.userId,
-        card.balance,
-        card.storeId,
-        card.saleOrderDatetime || new Date(),
-      ])
+      `,
+        [card.cardId, card.userId, card.storeId, card.balance, card.createdAt || new Date()]
+      )
       cardCount++
 
-      // UPSERT 初始 topup 流水（用 ref_order_id 去重）
-      // 先检查是否已有该卡的 topup 记录
-      const existing = await client.query(
-        "SELECT id FROM card_transactions WHERE card_id = $1 AND type = 'topup' AND ref_order_id = $2",
-        [card.cardId, card.saleOrderId]
-      )
+      // 为组内每个 sale_item 写一条 topup 流水
+      for (const txn of card.transactions) {
+        // 用 (card_id, ref_order_id, type) 做幂等（单 sale_order 可能对应多个 sale_item → 改用 ref_order_id + amount 难区分，
+        // 历史场景里同一 sale_order_id 下多个 item 共同充值属于业务例外，此处忽略）
+        const existing = await client.query(
+          "SELECT id FROM card_transactions WHERE card_id = $1 AND type = '充值' AND ref_order_id = $2",
+          [card.cardId, txn.saleOrderId]
+        )
 
-      if (existing.rows.length === 0) {
-        await client.query(`
-          INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-          VALUES ($1, 'topup', $2, $3, $4)
-        `, [
-          card.cardId,
-          card.balance,
-          card.saleOrderId,
-          card.saleOrderDatetime || new Date(),
-        ])
-        txnCount++
+        if (existing.rows.length === 0) {
+          await client.query(
+            `
+            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+            VALUES ($1, '充值', $2, $3, $4)
+          `,
+            [card.cardId, txn.amount, txn.saleOrderId, txn.saleOrderDatetime || new Date()]
+          )
+          txnCount++
+        }
       }
     }
 
     await client.query('COMMIT')
-    log(`导入完成：${cardCount} 条充值卡, ${txnCount} 条初始流水`)
+    log(`导入完成：${cardCount} 张卡, ${txnCount} 条流水`)
     return cardCount
   } catch (err) {
     await client.query('ROLLBACK')
@@ -190,7 +227,7 @@ async function verify(pgPool) {
   console.log(`  涉及顾客: ${cards.rows[0].users}`)
 
   const txns = await pgPool.query(
-    "SELECT COUNT(*) AS cnt, SUM(amount) AS total FROM card_transactions WHERE type = 'topup'"
+    "SELECT COUNT(*) AS cnt, SUM(amount) AS total FROM card_transactions WHERE type = '充值'"
   )
   console.log(`  充值流水: ${txns.rows[0].cnt} 条, 总额 ¥${parseFloat(txns.rows[0].total || 0).toFixed(2)}`)
 
@@ -202,9 +239,21 @@ async function verify(pgPool) {
   console.log(`    孤立 user_id: ${orphanUser.rows[0].cnt}`)
 
   const orphanStore = await pgPool.query(
-    "SELECT COUNT(*) AS cnt FROM prepaid_cards p WHERE p.store_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM stores s WHERE s.store_id = p.store_id)"
+    "SELECT COUNT(*) AS cnt FROM prepaid_cards p WHERE NOT EXISTS (SELECT 1 FROM stores s WHERE s.store_id = p.store_id)"
   )
   console.log(`    孤立 store_id: ${orphanStore.rows[0].cnt}`)
+
+  const nullStore = await pgPool.query(
+    "SELECT COUNT(*) AS cnt FROM prepaid_cards WHERE store_id IS NULL"
+  )
+  console.log(`    store_id 为 NULL: ${nullStore.rows[0].cnt}`)
+
+  const dupGroups = await pgPool.query(`
+    SELECT COUNT(*) AS cnt FROM (
+      SELECT user_id, store_id FROM prepaid_cards GROUP BY user_id, store_id HAVING COUNT(*) > 1
+    ) t
+  `)
+  console.log(`    (user,store) 重复组: ${dupGroups.rows[0].cnt}`)
 
   const orphanTxn = await pgPool.query(
     "SELECT COUNT(*) AS cnt FROM card_transactions ct WHERE NOT EXISTS (SELECT 1 FROM prepaid_cards p WHERE p.card_id = ct.card_id)"
@@ -235,7 +284,7 @@ async function verify(pgPool) {
     SELECT COUNT(*) AS cnt
     FROM prepaid_cards p
     WHERE ABS(p.balance - COALESCE((
-      SELECT SUM(CASE WHEN type = 'topup' THEN amount ELSE -amount END)
+      SELECT SUM(CASE WHEN type = '充值' THEN amount ELSE -amount END)
       FROM card_transactions WHERE card_id = p.card_id
     ), 0)) > 0.01
   `)

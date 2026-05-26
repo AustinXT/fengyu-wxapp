@@ -27,7 +27,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | text | 节点名称，NOT NULL |
-| `type` | org_node_type enum | `headquarters` / `market` / `store` / `department`，NOT NULL |
+| `type` | org_node_type enum | `总部` / `市场` / `门店` / `部门`，NOT NULL |
 | `parent_id` | text \| null | FK → `org_nodes.id`（NULL = 根节点） |
 | `sort_order` | integer | 排序序号，NOT NULL DEFAULT 0 |
 | `is_active` | boolean | 是否启用，NOT NULL DEFAULT true |
@@ -41,10 +41,10 @@
 >
 > | 节点类型 | parent 必须是 |
 > |----------|--------------|
-> | headquarters | NULL（根节点，仅一个） |
-> | market | headquarters |
-> | store | market |
-> | department | headquarters / market / store（不能挂在 department 下） |
+> | 总部 | NULL（根节点，仅一个） |
+> | 市场 | 总部 |
+> | 门店 | 市场 |
+> | 部门 | 总部 / 市场 / 门店（不能挂在 部门 下） |
 >
 > `permission_roles.scope_id` → FK `org_nodes.id`
 
@@ -54,7 +54,7 @@
 |------|------|------|
 | `store_id` | text | 主键，UUID |
 | `store_name` | text | 门店名称（唯一索引） |
-| `org_node_id` | text \| null | FK → `org_nodes.id`（关联 type='store' 的节点） |
+| `org_node_id` | text \| null | FK → `org_nodes.id`（关联 type='门店' 的节点） |
 | `opening_date` | date \| null | 开业时间 |
 | `bed_count` | integer \| null | 可用床位数 |
 | `is_closed` | boolean | 是否停止营业，NOT NULL DEFAULT false |
@@ -71,7 +71,7 @@
 
 > **索引**: `INDEX(org_node_id)`。业务表通过 `store_id` FK 关联 stores，市场名称通过 JOIN `org_nodes` 树获取。
 >
-> **顾客向字段**（`cover_image` ~ `parking_info`）：员工端维护。图片指向 CloudBase 云存储。经纬度用于距离排序（Haversine，无需 PostGIS）。stores 是 org_nodes（type='store'）的 1:1 扩展表。
+> **顾客向字段**（`cover_image` ~ `parking_info`）：员工端维护。图片指向 CloudBase 云存储。经纬度用于距离排序（Haversine，无需 PostGIS）。stores 是 org_nodes（type='门店'）的 1:1 扩展表。
 
 ### 2.3 staff_wechat_users（员工 / 员工端微信用户）
 
@@ -88,7 +88,7 @@
 | `gender` | varchar(20) \| null | 性别 |
 | `id_card` | varchar(200) \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量） |
 | `store_id` | text \| null | FK → `stores.store_id` |
-| `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
+| `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='部门' 的部门节点） |
 | `position_name` | varchar(50) \| null | 工作职位 |
 | `birthday` | date \| null | 出生日期 |
 | `skills` | text[] \| null | 技能标签数组 |
@@ -109,11 +109,16 @@
 |------|------|------|
 | `category_id` | text | 主键，UUID |
 | `category_name` | text | 分类名（如"蜜语生玑"），**不唯一** |
-| `product_kind` | product_kind enum | 所属商品类型：`福利活动` / `护理项目` / `家居产品` / `充值卡` |
+| `product_kind` | text | 一级行 NULL；二级行 = 父级一级行的 `category_name`。**DB 驱动**：一级行集合由 admin 维护，无字面量枚举（`product_kind` PG enum 已 DROP，2026-04-24 ticket）|
 | `sort_order` | integer | 排序序号 |
 | `is_valid` | boolean | 是否有效，NOT NULL DEFAULT true |
+| `display_color` | text | 一级行展示色（HEX），用于商品 tag / 购物车标签的视觉色；二级行 NULL 时由前端继承父级 |
+| `display_icon` | text | 一级行展示图标（emoji 或 icon name），可空 |
+| `requires_shengmei_flag` | boolean | 一级行 capability：该 kind 下 SKU 表单是否需要"是否生美"开关。NOT NULL DEFAULT false |
 
 > `category_name` 不设唯一约束，允许不同 `product_kind` 下同名分类。
+> 新增/拆分一级 kind（如 4/17 会议护理项目→招牌/王牌/明星）零代码变更，仅 admin "品项分类 → 一级品项管理"操作即可。
+> "卡类"识别（充值卡 / 体验卡）已下沉到 SKU 级 capability 列 `product_skus.is_experience` / `is_recharge_card`，原 `is_card_kind` 一级 capability 列已于 2026-05-18 全仓清理 + DB DROP COLUMN（migration 0034）。
 
 ### 2.5 products（商品主表）
 
@@ -129,16 +134,15 @@
 | `is_bundle` | boolean | 是否套餐，NOT NULL DEFAULT false |
 | `price` | numeric(10,2) | 标价/原价（套餐 = Σ(SKU.price)；否则 = min(SKU.price)。交易以 SKU 价格为准） |
 | `special_price` | numeric(10,2) \| null | 特价/促销价 |
-| `sales_category` | sales_category enum \| null | 销售分类（自采自销 / 他销自耗 / 他销他耗 / 生态合作） |
+| `sales_category` | sales_category enum \| null | 销售分类（自销自耗 / 他销自耗 / 他销他耗 / 生态合作） |
 | `manage_scope` | text \| null | 管理范围（null=总部管理） |
 | `market_scope` | text \| null | 可见范围（null=全部可见） |
 | `sort_order` | integer | 排序权重 |
-| `valid_start` | date \| null | 有效期开始（null=立即生效） |
-| `valid_end` | date \| null | 有效期结束（null=永久有效） |
+| `is_enabled` | boolean | 上下架开关（false=下架），NOT NULL DEFAULT true |
 
-> **关键设计**: `valid_start` + `valid_end` 替代 `is_active`；`sales_category` 在商品层（非 SKU 层）。
+> **关键设计**: `is_enabled` 上下架开关替代 `is_active`（2026-04 schema reset 落地）；`sales_category` 在商品层（非 SKU 层）。
 >
-> **有效期叠加规则**: 商品和 SKU 各有 `valid_start/valid_end`，查询时**两层同时校验**，任一层过期即不可购买。
+> **上下架叠加规则**: 商品和 SKU 各有 `is_enabled`，查询时**两层同时校验**，任一层 false 即不可购买。
 
 ### 2.6 product_skus（商品规格）
 
@@ -146,18 +150,25 @@
 |------|------|------|
 | `sku_id` | text | 主键 |
 | `product_id` | text | FK → `products.product_id` |
-| `product_type` | product_type enum | 疗程卡 / 单品 / 院装产品；决定核销流程 |
+| `product_type` | product_type enum | 疗程卡 / 家居产品；决定核销流程（"家居产品"原称"院装产品"，2026-04-25 重命名；2026-05-21 原"单品"并入疗程卡=1 次卡，枚举 3→2 值） |
 | `spec_name` | text | 规格名（如"10次卡"、"单次体验"） |
 | `price` | numeric(10,2) | 标价/零售价（套餐组件中 0 表示赠品），**开单时快照到 sale_items.unit_price** |
 | `special_price` | numeric(10,2) \| null | 会员价 |
-| `session_count` | integer \| null | 疗程次数：疗程卡≥2，单品=1，院装产品=null |
+| `session_count` | integer \| null | 疗程次数：疗程卡≥1（含原单品=1），家居产品=null |
 | `is_bundle_sku` | boolean | 是否为套餐组成部分，NOT NULL DEFAULT false |
 | `sort_order` | integer | 排序序号 |
 | `service_fee` | numeric(10,2) | 手工费，NOT NULL DEFAULT 0 |
-| `valid_start` | date \| null | 有效期开始 |
-| `valid_end` | date \| null | 有效期结束 |
+| `is_enabled` | boolean | 上下架开关（false=下架），NOT NULL DEFAULT true |
+| `is_experience` | boolean | **capability 列**：是否为体验卡 SKU（替代 `product_kind='体验卡'` 字面量判定），NOT NULL DEFAULT false |
+| `is_recharge_card` | boolean | **capability 列**：是否为充值卡 SKU（替代 `product_kind='充值卡'` 字面量判定），NOT NULL DEFAULT false |
 
-> **索引**: `(product_id)`。**CHECK**: `price >= 0`、`service_fee >= 0`、`session_count IS NULL OR >= 1`。**FK 引用**: `sale_items.sku_id`。
+> **索引**: `(product_id)`、`(is_experience) WHERE is_experience = true`、`(is_recharge_card) WHERE is_recharge_card = true`。
+>
+> **CHECK**: `price >= 0`、`service_fee >= 0`、`session_count IS NULL OR >= 1`、`chk_sku_not_both_capabilities: NOT (is_experience AND is_recharge_card)`（互斥）。
+>
+> **FK 引用**: `sale_items.sku_id`。
+>
+> **capability 列 SSoT 原则**（2026-04-26 ticket，详见 §4 #23）：业务判定（跃迁 / 充值入账 / 入口过滤 / D4 严格独立校验）一律读 `is_experience` / `is_recharge_card`，不再读 `product_categories.product_kind` 字面量。`product_kind` 仅作为商品组织/分类标签，admin 可改名而不影响业务逻辑。新增卡类（如"季卡"）只需在 `product_categories` 加一行 + 加 capability 列即可零字面量散落。
 
 ### 2.7 commission_rate_matrix（提成比例矩阵）
 
@@ -175,13 +186,15 @@
 
 ### 2.8 sale_orders（订单主表）
 
-> **四种单据统一模型**：sale_orders + sale_items + sale_allocations 覆盖**销售单、回款单、转换单、退款单**，通过 `sale_order_type` 区分。回款/转换/退款通过 `ref_sale_order_id` 引用原销售单。
+> **四种销售单据 + 支付流水模型**：sale_orders 承载**销售单 / 内部单 / 转换单 / 寄存单**四类，通过 `sale_order_type` 区分。回款 / 退款下沉至 `sale_order_payments`（sop）表，通过 `change_type='回款' / '退款'` 区分；转换单通过 `ref_sale_order_id` 引用原销售单。
+>
+> **寄存单（2026-05-18 B5 新增）**：WorkFine 剩余次数初始化专用，仅店长手动开（`order.createDeposit` / admin `createDepositOrder`）；不收钱（`received=0` / `payable=0` / `total=0` / `payment_method='无'` / `status='已支付'`）、禁所有抵扣（couponId / prepaidCardAmount / customPrice 任一存在即报 `INVALID_STATE: DEPOSIT_NO_DISCOUNT`）；sale_items 保留原价快照供审计但 `received=0`；金额维度统计天然排除（不动 `IN ('销售单','转换单')` 列表），次数维度持卡人数 `mgmt-product.cardHolders` 显式纳入。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，单号格式见下表 |
 | `status` | enum | `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` / `待审批` |
-| `sale_order_type` | enum | `普通` / `体验` / `内部` / `福利活动` / `回款` / `转换` / `退款` |
+| `sale_order_type` | enum | `销售单` / `内部单` / `转换单` / `寄存单`（2026-05-18 B5 新增寄存单） |
 | `ref_sale_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；回款/转换/退款引用原单 |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
@@ -190,7 +203,7 @@
 | `client_phone` | varchar(30) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
 | `total_amount` | numeric(10,2) | 订单总金额（退款为负数），NOT NULL |
-| `payment_method` | enum | `wechat` / `alipay` / `offline` |
+| `payment_method` | enum | `微信` / `支付宝` / `线下` |
 | `sale_order_source` | enum | `client` / `staff` / `admin`；回款/转换/退款仅 `staff` 或 `admin` |
 | `opened_by` | varchar(30) \| null | 开单人，FK → `staff_wechat_users.employee_id` |
 | `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `staff_wechat_users.employee_id` |
@@ -199,7 +212,7 @@
 | `alipay_transaction_id` | varchar(64) \| null | 支付宝交易号（唯一索引） |
 | `offline_confirmed_by` | varchar(30) \| null | 线下确认人，FK → `staff_wechat_users.employee_id` |
 | `offline_confirmed_at` | timestamp | 线下确认时间 |
-| `allocation_status` | allocation_status enum \| null | null → `pending` → `allocated` |
+| `allocation_status` | allocation_status enum \| null | null → `待分配` → `已分配` |
 | `coupon_id` | text \| null | 使用的券实例ID |
 | `coupon_discount` | numeric(10,2) | 券抵扣总金额，DEFAULT 0 |
 
@@ -218,18 +231,18 @@
 
 ### 2.9 sale_items（销售明细）
 
-> **复用说明**：sale_items 用于销售、回款、转换、退款四种单据的明细行。`item_direction` 标识行的方向语义：
-> - `purchase`（默认）：正常购买行
-> - `convert_out`：转换退出行，`quantity` = 退次数，`received` = 负数
-> - `convert_in`：转换转入行，创建新的 sale_item
-> - `refund_out`：退款退出行，`quantity` = 退次数，`received` = 负数
+> **复用说明**：sale_items 用于**销售单 / 内部单 / 转换单**三类的明细行；退款 / 回款已下沉至 `sale_order_payments`，部分退款时通过 `sale_order_payments.ref_sale_item_id` 关联原明细行。`item_direction` 标识行的方向语义：
+> - `购买`（默认）：正常购买行
+> - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
+> - `转入`：转换转入行，创建新的 sale_item
+> - `退出`：退款退出行，`quantity` = 退次数，`received` = 负数
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_item_id` | varchar(30) | 主键，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
 | `sale_order_id` | varchar(30) | FK → `sale_orders.sale_order_id`，NOT NULL |
-| `item_direction` | enum | `purchase` / `convert_out` / `convert_in` / `refund_out` |
-| `ref_sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`；convert_out/refund_out 引用原购买行 |
+| `item_direction` | enum | `购买` / `转出` / `转入` / `退出` |
+| `ref_sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`；转出/退出 引用原购买行 |
 | `sku_id` | text \| null | FK → `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数 |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
@@ -238,13 +251,17 @@
 | `unit_real_price` | numeric(10,2) | 优惠后单价 |
 | `sale_amount` | numeric(10,2) | 优惠后销售金额 |
 | `received` | numeric(10,2) | 实收金额（退出行为负数） |
-| `expire_date` | date \| null | 到期日（院装产品为 null） |
+| `expire_date` | date \| null | 到期日（家居产品为 null） |
 | `remark` | text | 备注 |
-| `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
+| `sales_category` | enum \| null | 销售分类：`自销自耗` / `他销自耗` / `他销他耗` / `生态合作` |
+| `is_experience` | boolean | **capability 快照**：开单时从 `product_skus.is_experience` 拷贝；customer_type 跃迁判据，行级不可变，NOT NULL DEFAULT false |
+| `is_recharge_card` | boolean | **capability 快照**：开单时从 `product_skus.is_recharge_card` 拷贝；payNotify 充值入账触发判据 + D4 严格独立校验，NOT NULL DEFAULT false |
 
-> **索引**: `(sale_order_id)`, `(sku_id)`, `(ref_sale_item_id)`
+> **索引**: `(sale_order_id)`, `(sku_id)`, `(ref_sale_item_id)`、`(sale_order_id) WHERE is_recharge_card = true`
 >
 > **CHECK**: `unit_price >= 0`、`unit_real_price >= 0`、`remaining_sessions IS NULL OR >= 0`、`quantity > 0`。`sale_amount` 和 `received` 允许负值（退款/转换退出行）。
+>
+> **DB 兜底触发器** `trg_check_no_mixed_recharge`（CONSTRAINT TRIGGER DEFERRABLE INITIALLY DEFERRED）：同一 `sale_order_id` 的 sale_items 不能混合 `is_recharge_card = true / false`，COMMIT 时拒绝。应用层（admin / staff / client）已加显式 `MIXED_RECHARGE_NOT_ALLOWED` 双层守卫，DB trigger 是跨实现兜底。
 
 ### 2.10 sale_allocations（营业额分配）
 
@@ -263,15 +280,15 @@
 >
 > **索引**: `INDEX(employee_id)`
 
-### 2.11 service_orders（护理单主表）
+### 2.11 service_orders（服务单主表）
 
 > 与订单的关联通过 `service_items.sale_item_id → sale_items` 实现，主表不存 `sale_order_id`，支持跨订单核销。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_order_id` | varchar(30) | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
-| `status` | enum | `待服务` / `服务中` / `已完成` / `已取消` |
-| `service_order_type` | enum | `普通` / `体验` |
+| `status` | enum | `待服务` / `服务中` / `待客户确认` / `已完成` / `已取消` |
+| `service_order_type` | enum | `售前` / `售后`（由顾客 customer_type 自动判定：会员客→售后，其他→售前） |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `service_date` | date | 护理服务日期 |
@@ -342,7 +359,7 @@
 |------|------|------|
 | `employee_id` | varchar(30) NOT NULL | FK → `staff_wechat_users.employee_id` |
 | `role` | text NOT NULL | `admin` / `manager` / `finance` / `hr` / `product` / `staff` / `customer_mgr` |
-| `scope_id` | text NOT NULL | FK → `org_nodes.id`（headquarters/market/store 级别） |
+| `scope_id` | text NOT NULL | FK → `org_nodes.id`（总部/市场/门店 级别） |
 | `is_void` | boolean | 软删除标记，NOT NULL DEFAULT false |
 | `voided_at` | timestamp \| null | 作废时间 |
 | `created_by` | text \| null | 创建者（同步脚本标记 `'sync'`，手动标记操作人员工编号） |
@@ -380,13 +397,13 @@
 | `request_id` | text | 主键 |
 | `user_id` | text | FK → `client_wechat_users.user_id`，NOT NULL |
 | `from_store_id` | text | FK → `stores.store_id`，NOT NULL |
-| `status` | enum | `pending` / `approved` / `rejected` / `cancelled`，NOT NULL DEFAULT `pending` |
+| `status` | enum | `待处理` / `已通过` / `已拒绝` / `已取消`，NOT NULL DEFAULT `待处理` |
 | `note` | text \| null | 申请备注 |
 | `reviewed_by` | varchar(30) \| null | FK → `staff_wechat_users.employee_id` |
 | `reviewed_at` | timestamp \| null | 审批时间 |
 | `reject_reason` | text \| null | 拒绝原因 |
 
-> `approved` 后清除 `client_wechat_users.bound_store_id`；`cancelled` = 顾客主动撤销。
+> `已通过` 后清除 `client_wechat_users.bound_store_id`；`已取消` = 顾客主动撤销。
 
 ### 2.18 coupon_templates（券模板）
 
@@ -398,7 +415,7 @@
 | `name` | text | 券名称，NOT NULL |
 | `coupon_type` | coupon_type enum | `现金券` / `项目券` / `折扣券`，NOT NULL |
 | `discount_value` | numeric(10,2) | 现金券/项目券=抵扣金额；折扣券=折扣率（0.85=85折），NOT NULL |
-| `min_spend` | numeric(10,2) | 满减门槛（0=无门槛），DEFAULT 0 |
+| `min_spend` | numeric(10,2) | 满减门槛（0=无门槛），DEFAULT 0。**基数口径见下方说明** |
 | `max_discount` | numeric(10,2) \| null | 折扣券封顶金额 |
 | `total_count` | integer \| null | 发放总量限制（null=不限量） |
 | `applicable_product_ids` | text[] \| null | 适用商品ID数组（→ products.product_id），NULL=全部 |
@@ -409,6 +426,8 @@
 | `valid_days` | integer \| null | days 模式：领取后有效天数 |
 | `description` | text \| null | 券描述 |
 | `is_active` | boolean | DEFAULT true |
+
+**满减门槛口径（2026-04-10 审计确认）**：`min_spend` 判据基数为"**符合 `applicable_category_ids` 的商品行小计**"，**非订单全单总额**。若券无品类限制（`applicable_category_ids` 为 NULL 或 `[]`），则退化为全单小计。比较时需做分单位归一化（`Math.round(x * 100) / 100`）+ `eligibleTotal + 0.001 < minSpend` 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动（如 499.99 / 500.00 / 99.9×5 = 499.4999...）。四端实现必须口径一致：`clientApi/routes/coupon.js` available、`staffApi/routes/coupon.js` available、`clientApi/routes/order.js` create、`staffApi/routes/order.js` create。
 
 ### 2.19 user_coupons（用户券实例）
 
@@ -440,6 +459,103 @@
 | `created_at` / `updated_at` | timestamp | 时间戳 |
 
 > **约束**: `UNIQUE(employee_id)`。认证流程详见 `admin.pr.spec.md` §2.3。
+
+### 2.21 积分域（point_transactions + client_wechat_users.points_balance）
+
+#### 2.21.1 数据模型
+
+**权威流水表** `point_transactions`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigserial PK | — |
+| `user_id` | text | FK → `client_wechat_users.user_id` |
+| `type` | text（自由文本，非枚举） | 变动分类（见 §2.21.4） |
+| `amount` | integer | 正负均可，累加即余额 |
+| `ref_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；冲销/发放以原销售单 id 聚合 |
+| `created_at` | timestamp | — |
+
+**余额缓存** `client_wechat_users.points_balance` + `points_updated_at`
+- 缓存语义：`SUM(point_transactions.amount WHERE user_id = u.user_id)`
+- 运行时由业务触发点同事务双写维护；`cronTask` 夜间做一致性校验（仅告警，不自动修）
+
+#### 2.21.2 发放规则（订单链净额差值法）
+
+发放不对单笔 `sale_order_payments` 逐笔计算（会产生累积舍入误差），改为对"原销售单"维度：
+
+```
+expected = floor( max(0, net_settled) / 100 )
+其中 net_settled = SUM(sale_orders.paid_amount
+                        WHERE sale_order_id = X OR ref_sale_order_id = X)
+delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
+```
+
+`delta ≠ 0` 时写入一条流水 + 更新余额；`delta = 0` 天然幂等，无副作用。
+
+#### 2.21.3 发放矩阵（按 sale_order_type）
+
+| sale_order_type | 调用 settle | 使用的 originalOrderId |
+|-----------------|:-----------:|-----------------------|
+| 销售单          | ✅          | 自身 `sale_order_id` |
+| 内部单          | ❌          | — |
+| 转换单          | ✅          | `ref_sale_order_id`（补现金差价时有 delta） |
+
+> 回款 / 退款不再独立单据，统一以 `sale_order_payments.change_type='回款' / '退款'` 表达。积分重算入口由 admin `recordPayment`（回款）/ admin `/refunds` 审批通过（退款）触发，仍按对应支付流水所属的 `sale_order_id`（部分退款时为 `sale_order_payments.ref_sale_item_id` 反查的原销售单）合并重算。
+
+#### 2.21.4 type 取值约定
+
+| type 值 | 使用场景 | amount 符号 |
+|---------|---------|-------------|
+| `等级升级奖励` | `cronTask` 每日重算会员等级时升级发放 | + |
+| `消费赠送`     | 订单链净额增加，`delta > 0` | + |
+| `消费冲销`     | 订单链净额下降，`delta < 0` | − |
+
+未来兑换/过期等分类扩展时追加新值（type 是自由文本，无 DB 枚举约束）。
+
+#### 2.21.5 触发点清单
+
+所有触发点在资金状态写入之后、事务 COMMIT 之前调用 `settlePointsSafe(client, originalSaleOrderId, source)`：
+
+| 云函数 | 位置 | 场景 |
+|--------|------|------|
+| `payNotify` | 回调成功 COMMIT 前 | 微信/支付宝首次支付 / 线上回款 |
+| `clientApi.order.confirmPrepaidFull` | tx 末尾 | 全额储值卡抵扣支付（paid=0 → delta=0 无写入） |
+| `clientApi.order.repay`（纯卡分支） | 重算原单 paid_amount 之后 | 顾客用储值卡回款 |
+| `staffApi.order.confirmOffline` | recalcCustomerType 之后 | 店长二次确认线下收款 |
+| `staffApi.order.approveRefund` | recalcCustomerType 之后 | 店长审批退款单，传 `ref_sale_order_id` 作为 originalId |
+
+**决策**：`staffApi.order.create` 阶段订单最多为 `'待确认收款'`（而非 `'已支付'`），遵循"积分在店长确认时发放"的业务约束，不在 create 调用 settle；等 `confirmOffline` 触发。
+
+#### 2.21.6 不变量与幂等
+
+1. `FOR UPDATE` 原销售单行锁：串行化并发回款/退款，避免双写
+2. `delta = 0` 天然幂等：同一原单任意次重复调用不写流水
+3. `expected = floor(max(0, net_settled) / 100)`：链净额 ≤ 0 时积分回 0，不允许负余额
+4. 流水 `SUM(amount WHERE ref_order_id = X)` 恒等于 `floor(max(0, net_settled) / 100)`
+5. 失败隔离：`settlePointsSafe` 捕获异常写 `operation_logs('points.settleFailed')`，**不回滚主事务**（资金正确优先）
+6. Feature flag：环境变量 `POINTS_ACCRUAL_ENABLED='false'` 可一键停止所有触发点的写入
+
+#### 2.21.7 一致性兜底
+
+`cronTask` 每日凌晨 3 点执行一致性校验（STEP 3）：
+- 扫描 `client_wechat_users.points_balance ≠ SUM(point_transactions.amount)` 的行
+- 偏差写入 `operation_logs('points.balanceMismatch')`，供人工排查上游触发点 bug
+- **不自动修复**（决策 D7：自动修会掩盖触发点 bug）
+
+#### 2.21.8 储值卡抵扣启用范围（2026-05-18 补）
+
+| 端 | 入口 | 支持范围 | 备注 |
+|----|------|----------|------|
+| client | `clientApi.order.confirmPrepaidFull` | 全额抵扣（paid=0） | 适用"待支付"订单一次性走完 |
+| client | `clientApi.order.repay`（纯卡分支） | 回款抵扣 | 已支付订单二次回款 |
+| staff  | `staffApi.order.confirmOffline` | 全额或部分抵扣 | 店长二次确认时可勾选 |
+| admin  | — | **不支持** | admin 录单仅写 received（手工录票据，不动余额）|
+
+**业务约束**：
+- 卡余额扣减走 `prepaid_cards.balance` + 写 `card_transactions` 流水（一笔抵扣 = 一行流水）
+- 不允许跨顾客抵扣（`prepaid_cards.user_id` 必须 = 订单的 `client_user_id`）
+- 不允许跨门店：储值卡按 `bound_store_id` 维度结算（详见 `notes/tickets/archives/2026-04-23-prepaid-card-deduction-by-store.md`）
+- 退款时按比例回冲：5 通道之 #5 反向 GREATEST + insert reverse card_transaction（已在 `lib/refund-cascade.ts` 落地）
 
 ---
 
@@ -508,7 +624,7 @@ ctx.auth = {
     {
       role,          // 'manager' | 'finance' | 'hr' | 'product' | 'staff' | 'customer_mgr'
       scope: {
-        type,        // 'headquarters' | 'market' | 'store'
+        type,        // '总部' | '市场' | '门店'
         nodeId,      // org_nodes.id
         nodeName,    // org_nodes.name
         marketName,  // store 时通过 JOIN 父节点获取，headquarters 时为 null
@@ -566,14 +682,14 @@ login 返回中包含 `permissions` 字段：
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 N 倍）；**MVP 阶段不支持优惠/折扣，应收金额 = 实收金额**
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
-5. **混购完成规则**：`已完成` 以**所有疗程卡行与单品行的 remaining_sessions 全部归零**为触发条件；院装产品支付即视为已交付
+5. **混购完成规则**：`已完成` 以**所有疗程卡行（含原单品=1 次卡）的 remaining_sessions 全部归零**为触发条件；家居产品支付即视为已交付
 6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 7. 支付成功触发条件统一为**订单进入已支付**
 8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
 9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`）
-10. **护理单来源约束**：`service_items.sale_item_id` 必须关联已支付订单的 `sale_items` 行
-11. **体验/引流服务**需先创建体验单（`sale_order_type = '体验'`），支付确认后再创建护理单；体验单仅可选择体验卡商品（`product_kind = '福利活动'` 中的体验类项目），不计入普通业绩统计；体验单面向潜在客户（散客到店），由店长创建并指定归属美容师；**先服务后付款不在 MVP 范围**
-12. **开单流程分级选择**：先选大类（销售单 / 回款单 / 转换单），选销售单后再选子类型（普通单 / 体验单 / 内部单）
+10. **服务单来源约束**：`service_items.sale_item_id` 必须关联已支付订单的 `sale_items` 行
+11. **体验/引流服务**需先创建体验单（`sale_order_type = '体验'`），支付确认后再创建服务单；体验单仅可选择体验卡商品（`product_kind = '福利活动'` 中的体验类项目），不计入普通业绩统计；体验单面向潜在客户（散客到店），由店长创建并指定归属美容师；**先服务后付款不在 MVP 范围**
+12. **开单流程分级选择**：先选大类（销售单 / 内部单 / 转换单），不再支持开"回款单" / "退款单"——回款走 admin `recordPayment` / 客户端在线支付，退款走 admin `/refunds` 审批流程
 13. **内部单规则**：`sale_order_type = '内部'`，员工/家属消费按半价（`unit_price = product_skus.price × 0.5`）；不算顾客数、不计入会员等级升级消费额；走正常支付和营业额分配流程
 14. **顾客端自助下单的营业额分配**：已指定美容师→系统自动创建分配记录；未指定→不创建
 15. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定
@@ -581,9 +697,18 @@ login 返回中包含 `permissions` 字段：
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **回款规则**：`ref_sale_order_id` 必填；回款时原子累加原 `sale_item.received`；支持多次回款（N:1）；支付方式与销售单一致；仅员工端操作
-20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `convert_out` 行和 `convert_in` 行，单事务完成；`convert_out` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
+20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
 21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
 22. **回款/转换/退款仅员工端操作**
+23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
+24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
+25. **customer_type 跃迁（event-driven）**：在三处收款触发点同步重算 — `payNotify`（线上支付回调）/ `staffApi.order.confirmOffline`（线下确认）/ `admin.recordPayment`（后台补录）。跃迁 SQL **三端独立副本**（admin `actions/orders.ts` + staffApi `routes/order.js` + payNotify `index.js`），由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 字节守卫一致性。判定逻辑：
+    - `EXISTS(销售单 total_amount ≥ threshold)` → `会员客`
+    - `EXISTS(销售单 sale_items.is_experience = false)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
+    - `EXISTS(销售单 sale_items.is_experience = true)` → `体验客`
+    - 否则 `流量客`
+    - 客户分类**只升不降**（取 max(current, computed)）
+    - `customer_type='会员客'` 早退出，无需重算
 
 ---
 
@@ -598,17 +723,25 @@ login 返回中包含 `permissions` 字段：
 待支付 → 已关闭          （手动关闭）
 待确认收款 → 已支付      （店长确认线下收款）
 支付失败 → 待支付        （店长手动重置，允许重新付款）
-已支付 → 已完成          （全部 remaining_sessions 归零；院装产品支付即完成）
+已支付 → 已完成          （全部 remaining_sessions 归零；家居产品支付即完成）
 ```
 
 ### 5.2 服务单状态机
 
 ```text
-待服务 → 服务中          （开始服务）
-服务中 → 已完成          （完成服务，原子扣减次数）
-待服务 → 已取消          （取消服务单，不扣次）
-服务中 → 已取消          （取消服务单，不扣次）
+待服务 → 服务中            （开始服务）
+服务中 → 待客户确认        （员工标记完成，仅记 staff_completed_at，无副作用）
+待客户确认 → 已完成        （顾客 / 店长 / 后台代确认，原子扣次数 + 计提成 + 关预约）
+待服务 → 已取消            （取消服务单，不扣次）
+服务中 → 已取消            （取消服务单，不扣次）
+待客户确认 → 已取消        （确认前店长可撤，不扣次）
 ```
+
+> **顾客确认才算完成**：员工点「完成」只把状态推进到 `待客户确认`，不产生任何不可逆副作用；
+> 扣减卡剩余次数、计算美容师提成、关闭关联预约这三件事统一推迟到「确认」那一步原子执行。
+> 确认入口三个：顾客本人（clientApi `service.confirm`）、店长代确认（staffApi `service.confirm`）、
+> 后台代确认（admin `confirmServiceOrder`）；并发由 `WHERE status='待客户确认'` 锁定保证幂等。
+> finalize 副作用 SQL 在 staffApi / clientApi 双端各持独立副本，由 `cross-end-sql-snapshot.test.js` 守护。
 
 ### 5.3 预约状态机
 
@@ -624,19 +757,23 @@ login 返回中包含 `permissions` 字段：
 ### 5.4 营业额分配状态机
 
 ```text
-null → pending               （订单支付成功）
-pending → allocated          （店长完成分配）
-allocated → pending          （店长删除重新分配）
+null → 待分配               （订单支付成功）
+待分配 → 已分配              （店长完成分配）
+已分配 → 待分配              （店长删除重新分配）
 ```
 
 ### 5.5 退款审批状态机
 
 ```text
-待审批 → 已审批（已支付）     （店长审批通过，触发 remaining_sessions 原子扣减 + 退款业绩记录）
-待审批 → 已关闭              （店长驳回退款申请）
+待审批 → 已审批（已支付）     （审批人审批通过，触发 remaining_sessions 原子扣减 + 退款业绩记录）
+待审批 → 已关闭              （审批人驳回退款申请）
 ```
 
 > 退款单创建时 `status = '待审批'`，审批通过后流转为 `已支付`（复用已有状态表示退款已生效）。
+
+**审批权限**（2026-05-17 PR-Z2）：
+- admin 后台（Next.js）：`sale_order:refund_approve` 由 **admin + manager** 双角色持有；admin 在 manager 缺位时可代理审批。manager 在本店内可自审自批（接受其同时持 `refund_create`+`refund_approve`）
+- staff 端（员工端小程序，`staffApi.order.approveRefund`）：仍由 **店长（manager）** 独审，与现有移动场景一致
 
 ---
 

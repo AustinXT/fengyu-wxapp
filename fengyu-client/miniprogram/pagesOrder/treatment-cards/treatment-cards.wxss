@@ -93,6 +93,43 @@
   background: var(--color-border);
 }
 
+/* ===== 三段进度条（已用 / 已付未用 / 未付） ===== */
+.progress-bar--tri {
+  display: flex;
+  background: transparent;
+}
+
+.progress-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+/* 已用段：浅灰 */
+.progress-seg--used {
+  background: #B0B0B0;
+}
+
+/* 已付未用段：品牌主色（剩余可用的核心展示） */
+.progress-seg--paid-unused {
+  background: var(--color-primary);
+}
+
+/* 已付未用段（卡失效时置灰） */
+.progress-seg--paid-unused-inactive {
+  background: #B0B0B0;
+}
+
+/* 未付段：更浅灰 + 斜纹（视觉提示"未付不可用"） */
+.progress-seg--unpaid {
+  background: repeating-linear-gradient(
+    45deg,
+    #F0F0F0,
+    #F0F0F0 6rpx,
+    #E4E4E4 6rpx,
+    #E4E4E4 12rpx
+  );
+}
+
 .progress-info {
   display: flex;
   justify-content: space-between;

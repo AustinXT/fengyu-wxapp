@@ -1,0 +1,215 @@
+/* pagesProfile/member-benefits/member-benefits.wxss */
+
+page {
+  background: var(--color-bg-page);
+}
+
+.skeleton-wrap {
+  padding: 32rpx;
+}
+
+/* 规则说明卡 */
+.hero {
+  margin: 24rpx;
+  padding: 40rpx 32rpx 32rpx;
+  border-radius: 20rpx;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.hero__badge {
+  display: inline-block;
+  font-size: 24rpx;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999rpx;
+  padding: 6rpx 20rpx;
+}
+
+.hero__title {
+  font-size: 40rpx;
+  font-weight: 700;
+  margin-top: 20rpx;
+}
+
+.hero__desc {
+  font-size: 26rpx;
+  line-height: 1.6;
+  margin-top: 16rpx;
+  opacity: 0.95;
+}
+
+.hero__rule {
+  font-size: 24rpx;
+  line-height: 1.6;
+  margin-top: 12rpx;
+  opacity: 0.9;
+}
+
+.hero__strong {
+  font-weight: 700;
+}
+
+.steps {
+  margin-top: 28rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.step__no {
+  width: 40rpx;
+  height: 40rpx;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 24rpx;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step__txt {
+  font-size: 25rpx;
+  line-height: 1.4;
+}
+
+.share-btn {
+  margin-top: 36rpx;
+  width: 100%;
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 999rpx;
+  background: #fff;
+  color: var(--color-primary);
+  font-size: 30rpx;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.share-btn::after {
+  border: none;
+}
+
+.share-btn__icon {
+  margin-right: 10rpx;
+}
+
+.hero__tip {
+  font-size: 22rpx;
+  opacity: 0.8;
+  margin-top: 20rpx;
+  text-align: center;
+}
+
+/* 我的分享礼 */
+.section {
+  margin: 24rpx;
+}
+
+.section__head {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-text-title);
+  margin: 8rpx 0 20rpx;
+}
+
+.coupon-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+.coupon-card {
+  display: flex;
+  background: #fff;
+  border-radius: 16rpx;
+  overflow: hidden;
+  position: relative;
+  box-shadow: var(--shadow-card);
+}
+
+.coupon-card--disabled {
+  opacity: 0.6;
+}
+
+.coupon-card__left {
+  width: 200rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  padding: 32rpx 16rpx;
+}
+
+.coupon-card--disabled .coupon-card__left {
+  background: linear-gradient(135deg, #999 0%, #bbb 100%);
+}
+
+.coupon-card__amount {
+  font-size: 48rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.coupon-card__type {
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.85;
+}
+
+.coupon-card__right {
+  flex: 1;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.coupon-card__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.coupon-card__expire {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-card__desc {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-top: 4rpx;
+}
+
+.coupon-card__stamp {
+  position: absolute;
+  right: 20rpx;
+  top: 20rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  transform: rotate(15deg);
+  opacity: 0.6;
+}
+
+.coupon-card__stamp--expired {
+  color: var(--color-text-hint);
+  border-color: var(--color-text-hint);
+}

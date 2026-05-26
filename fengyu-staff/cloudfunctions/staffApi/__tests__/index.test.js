@@ -39,7 +39,10 @@ describe('staffApi 入口', () => {
         market_name: '测试市场',
         department: '美容部',
       }])
-      .mockResolvedValueOnce([{ role: 'manager' }]) // permission_roles
+      // permission_roles：manager 须落在合法 scope（门店），否则 requireManager 拒绝
+      .mockResolvedValueOnce([{ role: 'manager', scope_id: 'store-001', scope_type: '门店' }])
+      .mockResolvedValueOnce([{ store_id: 'store-001' }]) // expandScopeStoreIds（全角色）
+      .mockResolvedValueOnce([{ store_id: 'store-001' }]) // expandScopeStoreIds（manager 绑定）
   })
 
   test('缺少 action 返回 code: -1', async () => {
@@ -88,9 +91,9 @@ describe('staffApi 入口', () => {
     const indexSrc = fs.readFileSync(path.join(staffApiDir, 'index.js'), 'utf-8')
 
     // 提取路由表中引用的所有 moduleName.functionName（支持别名路由）
-    // 匹配模式: require('./routes/xxx').yyy
+    // 匹配模式: require('./routes/xxx').yyy （文件名允许 a-z / 0-9 / 短横线）
     const referencedFunctions = new Set()
-    const refRe = /require\('\.\/routes\/(\w+)'\)\.(\w+)/g
+    const refRe = /require\('\.\/routes\/([\w-]+)'\)\.(\w+)/g
     let rm
     while ((rm = refRe.exec(indexSrc)) !== null) {
       referencedFunctions.add(`${rm[1]}.${rm[2]}`)
@@ -104,6 +107,7 @@ describe('staffApi 入口', () => {
       const moduleName = file.replace('.js', '')
       const mod = require(path.join(staffApiDir, 'routes', file))
       for (const fnName of Object.keys(mod)) {
+        if (fnName.startsWith('__')) continue
         if (!referencedFunctions.has(`${moduleName}.${fnName}`)) {
           missing.push(`${moduleName}.${fnName}`)
         }

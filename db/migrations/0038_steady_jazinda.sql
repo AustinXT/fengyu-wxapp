@@ -1,0 +1,1 @@
+ALTER TYPE "public"."sale_order_type" ADD VALUE '寄存单';

@@ -20,6 +20,8 @@ export default async function Page({
       dateFrom: params.from,
       dateTo: params.to,
       search: params.q,
+      paymentMethod: params.payment,
+      hasPrepaidDeduction: params.hasPrepaid === '1',
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),

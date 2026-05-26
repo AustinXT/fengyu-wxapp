@@ -1,13 +1,13 @@
 /**
  * 顾客档案路由测试
- * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / giftHistory
+ * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs
  * PG 单源架构，非店长脱敏
  */
 
 
 
 const pg = globalThis.__mocks__.pg
-const { createManagerCtx, createBeauticianCtx } = require('../helpers')
+const { createManagerCtx, createBeauticianCtx, createManagementCtx } = require('../helpers')
 const customerRoutes = require('../../routes/customer')
 
 // ============================================================
@@ -67,30 +67,61 @@ describe('customer.search', () => {
     expect(ctx.result).toEqual([])
   })
 
-  test('customerType=member 只返回会员客（customer_id 非空）', async () => {
-    const ctx = createManagerCtx({ customerType: 'member' })
-    pg.query.mockResolvedValueOnce([
-      { user_id: 'u1', phone: '13800001111', name: '会员张', customer_id: 'C001', member_level: 'VIP', bound_store_id: 'store-001', store_name: '测试店' },
-    ])
+  test('customerType=会员客 按 customer_type 枚举等值过滤', async () => {
+    const ctx = createManagerCtx({ customerType: '会员客' })
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
-    expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].source).toBe('both')
-    // PG SQL 应包含 customer_id IS NOT NULL 过滤
-    const pgSql = pg.query.mock.calls[0][0]
-    expect(pgSql).toContain('customer_id IS NOT NULL')
+    const [sql, params] = pg.query.mock.calls[0]
+    // 默认列表分支：$1=门店，$2=customer_type，$3=LIMIT
+    expect(sql).toContain('c.customer_type = $2')
+    expect(sql).not.toContain('customer_id IS NOT NULL')
+    expect(params).toEqual(['store-001', '会员客', 20])
   })
 
-  test('customerType=flow 只返回流量客（customer_id 为空）', async () => {
-    const ctx = createManagerCtx({ customerType: 'flow' })
-    pg.query.mockResolvedValueOnce([
-      { user_id: 'u3', phone: '13700003333', name: '流量客', customer_id: null, member_level: null, bound_store_id: 'store-001', store_name: '测试店' },
-    ])
+  test('customerType=all 不追加 customer_type 过滤', async () => {
+    const ctx = createManagerCtx({ customerType: 'all' })
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
-    expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].source).toBe('miniprogram')
-    // PG SQL 应包含 customer_id IS NULL 过滤
-    const pgSql = pg.query.mock.calls[0][0]
-    expect(pgSql).toContain('customer_id IS NULL')
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.customer_type =')
+    expect(params).toEqual(['store-001', 20])
+  })
+
+  test('spendingTier / monthlyActivity / customerStatus 多维度 AND 叠加（默认分支）', async () => {
+    const ctx = createManagerCtx({
+      spendingTier: '10W+',
+      monthlyActivity: '一次客活',
+      customerStatus: '沉睡',
+    })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.spending_tier = $2')
+    expect(sql).toContain('c.monthly_activity = $3')
+    expect(sql).toContain('c.customer_status = $4')
+    expect(sql).toContain('LIMIT $5')
+    expect(params).toEqual(['store-001', '10W+', '一次客活', '沉睡', 20])
+  })
+
+  test('非法枚举值被忽略（不追加条件）', async () => {
+    const ctx = createManagerCtx({ spendingTier: '999W', customerStatus: 'foo' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.spending_tier')
+    expect(sql).not.toContain('c.customer_status')
+    expect(params).toEqual(['store-001', 20])
+  })
+
+  test('手机号分支叠加枚举筛选（占位符从 $2 起，无 LIMIT）', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111', customerStatus: '冰冻' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.phone = $1')
+    expect(sql).toContain('c.customer_status = $2')
+    expect(sql).not.toContain('LIMIT')
+    expect(params).toEqual(['13800001111', '冰冻'])
   })
 
   test('search 返回 lastPurchaseName 字段', async () => {
@@ -139,6 +170,49 @@ describe('customer.search', () => {
     expect(params[1]).toBe(ctx.auth.storeId)
   })
 
+  test('crossStore=true 时关键词模糊跨门店检索（开单/充值卡用）', async () => {
+    const ctx = createManagerCtx({ keyword: '张', crossStore: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    // 模糊匹配手机号 + 姓名
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    // 账户级资产不跟门店绑定：跨店检索含已解绑顾客，不带 bound_store_id 过滤
+    expect(sql).not.toContain('c.bound_store_id IS NOT NULL')
+    expect(sql).not.toContain('c.bound_store_id = $2')
+    expect(params[0]).toBe('%张%')
+    expect(params[1]).toBe(20) // LIMIT，无门店参数占位
+  })
+
+  test('精确手机号可定位已解绑（bound_store_id=NULL）顾客', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111' })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: '黑钻', bound_store_id: null, store_name: null },
+      ])
+      .mockResolvedValueOnce([])  // spendRows
+      .mockResolvedValueOnce([])  // svcDateRows
+      .mockResolvedValueOnce([])  // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    // 精确手机号分支不再要求 bound_store_id 非空 → 已解绑顾客也能搜到
+    expect(sql).toContain('c.phone = $1')
+    expect(sql).not.toContain('c.bound_store_id IS NOT NULL')
+    expect(ctx.result[0].clientUserId).toBe('u1')
+    expect(ctx.result[0].memberLevel).toBe('黑钻')
+    expect(ctx.result[0].storeName).toBe('')  // 未绑定门店 → 空串
+  })
+
+  test('不带 crossStore 的关键词仍走门店内过滤（回归）', async () => {
+    const ctx = createManagerCtx({ keyword: '张' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    expect(sql).toContain('c.bound_store_id = $2')
+    expect(params[1]).toBe(ctx.auth.storeId)
+  })
+
   test('默认列表按 bound_store_id 过滤', async () => {
     const ctx = createManagerCtx({})
     pg.query.mockResolvedValueOnce([])
@@ -160,7 +234,7 @@ describe('customer.calendar', () => {
       { pay_date: '2024-06-15', order_count: '1', total_received: '300.00' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_order_type: '正式', store_id: 'store-001', payment_method: '微信支付', paid_at: '2024-06-01T10:00:00Z', client_phone: '138', customer_name: '张三', pay_date: '2024-06-01', total_received: '250.00' },
+      { sale_order_id: 'SO-001', sale_order_type: '销售单', store_id: 'store-001', payment_method: '微信支付', paid_at: '2024-06-01T10:00:00Z', client_phone: '138', customer_name: '张三', pay_date: '2024-06-01', total_received: '250.00' },
     ])
     await customerRoutes.calendar(ctx)
     expect(ctx.result.year).toBe(2024)
@@ -188,7 +262,7 @@ describe('customer.calendar', () => {
         { pay_date: '2024-06-10', order_count: '1', total_received: '200.00' },
       ])
       .mockResolvedValueOnce([
-        { sale_order_id: 'SO-X01', sale_order_type: '正式', store_id: 'store-001',
+        { sale_order_id: 'SO-X01', sale_order_type: '销售单', store_id: 'store-001',
           payment_method: '微信支付', paid_at: '2024-06-10T12:00:00Z',
           client_phone: '13800001111', customer_name: '李四',
           pay_date: '2024-06-10', total_received: '200.00' },
@@ -200,6 +274,25 @@ describe('customer.calendar', () => {
     expect(ctx.result.dailySummary[0].totalReceived).toBe(200)
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain('client_phone')
+  })
+
+  // ── scope isolation ──
+  test('SQL 包含 store_id scope 条件（门店模式 = 单值）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', year: 2024, month: 6 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+    await customerRoutes.calendar(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/o\.store_id\s*=\s*\$/)
+    expect(params).toContain('store-001')
+  })
+
+  test('管理模式 SQL 使用 ANY(scopeStoreIds)', async () => {
+    const ctx = createManagementCtx({ clientUserId: 'u1', year: 2024, month: 6 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+    await customerRoutes.calendar(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/o\.store_id\s*=\s*ANY\(\$/)
+    expect(params).toContainEqual(['store-001', 'store-002'])
   })
 })
 
@@ -327,8 +420,10 @@ describe('customer.detail', () => {
     expect(ctx.result.preferredStaffName).toBeNull()
     expect(ctx.result.totalConsumption).toBe(8000)
     expect(ctx.result.yearConsumption).toBe(3000)
-    // maskPhone('138001') → length=6, ≤7 → '1****01'
-    expect(ctx.result.phoneMasked).toBe('1****01')
+    // 新 maskPhone（pii.js v2，2026-05-18 起）：length 6 ≤ 7 走"首末保留"分支，
+    // 返回 s[0] + '*' × (len-2) + s[-1] = '1****1'（6 字符，与输入等长）。
+    // 旧实现返回 '1****01'（7 字符，比输入还长）— 是 bug，本 ticket 一并修正。
+    expect(ctx.result.phoneMasked).toBe('1****1')
   })
 
   test('手机号全为空白时拒绝', async () => {
@@ -403,6 +498,7 @@ describe('customer.detail', () => {
       .mockResolvedValueOnce([{ total: '10000', year_total: '4000' }])  // single query
       .mockResolvedValueOnce([{ last_date: '2026-03-01', visit_count_90d: '3' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '精油SPA', cnt: '3' }])  // getTopProduct
+      .mockResolvedValueOnce([{ cnt: 0 }])  // legacy 历史订单待核对数（phone 非空时触发）
 
     await customerRoutes.detail(ctx)
 
@@ -413,8 +509,8 @@ describe('customer.detail', () => {
     // 验证 getConsumptionStats 使用 CASE WHEN
     const consumptionCall = pg.query.mock.calls[1]
     expect(consumptionCall[0]).toContain('CASE WHEN')
-    // 4 次 pg.query: detail + consumption + visitInfo + topProduct
-    expect(pg.query).toHaveBeenCalledTimes(4)
+    // 5 次 pg.query: detail + consumption + visitInfo + topProduct + legacyCount(phone 非空触发)
+    expect(pg.query).toHaveBeenCalledTimes(5)
   })
 
   test('到店频率分级：12次→一周一次以上，1次→偶尔到店', async () => {
@@ -465,6 +561,44 @@ describe('customer.detail', () => {
     expect(ctx.result.name).toBe('赵八')
     expect(ctx.result.source).toBe('miniprogram')
   })
+
+  // ── scope isolation ──
+  test('跨店顾客被拒绝（bound_store_id 不匹配）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-other-store' })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'u-other-store', phone: '138', name: '他店客', customer_id: null,
+      member_level: null, bound_employee_id: null, skin_type: null, improvement_focus: null,
+      gender: null, notes: null, bound_store_id: 'store-999', store_name: '他店',
+    }])
+    await expect(customerRoutes.detail(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
+  })
+
+  test('管理模式下 scope 内多店顾客可访问', async () => {
+    const ctx = createManagementCtx({ clientUserId: 'u-store2' })
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'u-store2', phone: '139', name: '二店客', customer_id: null,
+        member_level: null, bound_employee_id: null, skin_type: null, improvement_focus: null,
+        gender: null, notes: null, bound_store_id: 'store-002', store_name: '二店',
+      }])
+      .mockResolvedValueOnce([{ total: '0', year_total: '0' }])
+      .mockResolvedValueOnce([{ last_date: null, visit_count_90d: '0' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.detail(ctx)
+    expect(ctx.result.clientUserId).toBe('u-store2')
+  })
+
+  test('管理模式下 scope 外顾客被拒绝', async () => {
+    const ctx = createManagementCtx({ clientUserId: 'u-out' })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'u-out', phone: '137', name: '范围外', customer_id: null,
+      member_level: null, bound_employee_id: null, skin_type: null, improvement_focus: null,
+      gender: null, notes: null, bound_store_id: 'store-999', store_name: '远店',
+    }])
+    await expect(customerRoutes.detail(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
+  })
 })
 
 // ============================================================
@@ -473,6 +607,8 @@ describe('customer.detail', () => {
 describe('customer.paidOrders', () => {
   test('按 clientUserId 返回已支付订单及明细', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
+    // assertCustomerInScope 先 SELECT bound_store_id；store-001 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([
       { sale_order_id: 'SO-001', status: '已支付', paid_at: '2024-06-01T10:00:00Z' },
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
@@ -491,6 +627,8 @@ describe('customer.paidOrders', () => {
 
   test('无已支付订单时返回空数组', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-empty' })
+    // assertCustomerInScope 先 SELECT bound_store_id
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toEqual([])
@@ -512,6 +650,41 @@ describe('customer.paidOrders', () => {
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-003')
+  })
+
+  test('跨店过滤 — SQL WHERE 含 store_id 且用当前员工门店；返回含 storeId/storeName', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-multi-store' })
+    let ordersSql = ''
+    let ordersParams = []
+    pg.query.mockImplementation(async (sql, params) => {
+      const s = typeof sql === 'string' ? sql : ''
+      // assertCustomerInScope: SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1
+      if (/bound_store_id\s+FROM\s+client_wechat_users/.test(s)) {
+        return [{ bound_store_id: 'store-001' }]
+      }
+      // 主订单查询：FROM sale_orders o
+      if (/FROM\s+sale_orders\s+o\b/.test(s)) {
+        ordersSql = s
+        ordersParams = params || []
+        return [
+          { sale_order_id: 'SO-HOME', status: '已支付', paid_at: '2024-06-01T10:00:00Z', store_id: 'store-001', store_name: '测试店' },
+        ]
+      }
+      // items 查询：FROM sale_items si
+      return [
+        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础', product_name: '面部护理' },
+      ]
+    })
+    await customerRoutes.paidOrders(ctx)
+    // SQL 含 store_id 过滤
+    expect(ordersSql).toMatch(/o\.store_id\s*=\s*\$2/)
+    // 参数带上当前员工门店
+    expect(ordersParams).toContain('store-001')
+    // 返回字段含 storeId/storeName
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].storeId).toBe('store-001')
+    expect(ctx.result[0].storeName).toBe('测试店')
+    expect(ctx.result[0].items[0].storeId).toBe('store-001')
   })
 })
 
@@ -756,37 +929,156 @@ describe('customer.listByTag', () => {
 // customer.refundHistory
 // ============================================================
 describe('customer.refundHistory', () => {
-  test('返回退款和转换订单及明细', async () => {
+  // refundHistory 拆分为 3 query —
+  //   1) sale_order_payments[change_type='退款'] JOIN sale_orders（refund_reason / audit_* / note 在主表）
+  //   2) sale_orders[type='转换单']
+  //   3) sale_items（按 convOrderIds ANY）
+  // 返回扁平数组，按 createdAt 倒序合并退款和转换单。
+
+  test('返回退款流水（sale_order_payments）和转换单（sale_orders）— 新模型', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
 
+    // Q1: 退款流水（来自 sale_order_payments JOIN sale_orders）
     pg.query.mockResolvedValueOnce([
       {
-        sale_order_id: 'REF-001', status: '已完成', sale_order_type: '退款',
-        total_amount: '500', refund_reason: '质量问题', handling_fee: '50',
-        ref_sale_order_id: 'FY-001', approved_by: 'emp-001', approved_at: '2024-06-20',
-        rejected_reason: null, created_at: '2024-06-15', paid_at: null,
-      },
-      {
-        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换',
-        total_amount: '300', refund_reason: '更换项目', handling_fee: null,
-        ref_sale_order_id: 'FY-002', approved_by: 'emp-001', approved_at: '2024-06-22',
-        rejected_reason: null, created_at: '2024-06-18', paid_at: null,
+        payment_id: 101, sale_order_id: 'FY-001',
+        amount: '-500', status: '已支付',
+        created_at: '2024-06-15T10:00:00Z', paid_at: '2024-06-20T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '质量问题',
+        audit_at: '2024-06-20T10:00:00Z',
+        audit_remark: null,
+        detail_note: JSON.stringify({
+          _v: 1,
+          handlingFee: 50,
+          refundByCard: 0,
+          refundByOrigin: 500,
+          items: [{
+            refSaleItemId: 'refitem-1',
+            quantity: 1,
+            refundAmount: 500,
+            productType: '疗程卡',
+          }],
+        }),
+        client_user_id: 'u1',
+        store_id: 'store-001',
       },
     ])
+    // Q2: 转换单（来自 sale_orders）
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'REF-001', sale_item_id: 'refitem-1', item_direction: 'refund', product_name: '面部护理', sku_spec_name: '基础款', quantity: 1, received: '500' },
-      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: 'purchase', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
+      {
+        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换单',
+        total_amount: '300', created_at: '2024-06-18T10:00:00Z', paid_at: '2024-06-22T10:00:00Z',
+      },
+    ])
+    // Q3: 转换单明细
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
     ])
 
     await customerRoutes.refundHistory(ctx)
 
     expect(ctx.result).toHaveLength(2)
-    expect(ctx.result[0].saleOrderId).toBe('REF-001')
-    expect(ctx.result[0].type).toBe('退款')
-    expect(ctx.result[0].handlingFee).toBe(50)
-    expect(ctx.result[0].items).toHaveLength(1)
-    expect(ctx.result[1].type).toBe('转换')
-    expect(ctx.result[1].handlingFee).toBeNull()
+    // 排序：退款 createdAt 2024-06-18（CVT）> 2024-06-15（refund）→ CVT 在前
+    const cvt = ctx.result.find(r => r.saleOrderId === 'CVT-001')
+    const refund = ctx.result.find(r => r.paymentId === 101)
+    expect(cvt).toBeDefined()
+    expect(cvt.type).toBe('转换单')
+    expect(cvt.items).toHaveLength(1)
+    expect(refund).toBeDefined()
+    expect(refund.type).toBe('退款')
+    expect(refund.totalAmount).toBe(-500)
+    expect(refund.handlingFee).toBe(50)
+    expect(refund.items).toHaveLength(1)
+    expect(refund.items[0].refSaleItemId).toBe('refitem-1')
+  })
+
+  test('退款流水 4 状态完整展示（待审批 / 已支付 / 已作废）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      {
+        payment_id: 1, sale_order_id: 'FY-001',
+        amount: '-100', status: '待审批',
+        created_at: '2024-06-15T10:00:00Z', paid_at: null,
+        payment_method: '线下',
+        refund_reason: '原因A', audit_at: null, audit_remark: null,
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+      {
+        payment_id: 2, sale_order_id: 'FY-002',
+        amount: '-200', status: '已支付',
+        created_at: '2024-06-16T10:00:00Z', paid_at: '2024-06-17T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '原因B', audit_at: '2024-06-17T10:00:00Z', audit_remark: '同意',
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+      {
+        payment_id: 3, sale_order_id: 'FY-003',
+        amount: '-300', status: '已作废',
+        created_at: '2024-06-17T10:00:00Z', paid_at: null,
+        payment_method: '线下',
+        refund_reason: '原因C', audit_at: '2024-06-17T11:00:00Z', audit_remark: '驳回原因',
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])  // 转换单
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toHaveLength(3)
+    const pending = ctx.result.find(r => r.paymentId === 1)
+    const paid = ctx.result.find(r => r.paymentId === 2)
+    const voided = ctx.result.find(r => r.paymentId === 3)
+    expect(pending.status).toBe('待审批')
+    expect(paid.status).toBe('已支付')
+    expect(paid.approvedAt).toBe('2024-06-17T10:00:00Z')
+    expect(voided.status).toBe('已作废')
+    expect(voided.rejectedReason).toBe('驳回原因')
+    // 待审批 / 已支付 状态下 rejectedReason 为 null（按源码：仅已作废返回 audit_remark）
+    expect(pending.rejectedReason).toBeNull()
+    expect(paid.rejectedReason).toBeNull()
+  })
+
+  test('store_id scope 过滤生效 — SQL WHERE 含 so.store_id', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([])  // 退款
+    pg.query.mockResolvedValueOnce([])  // 转换单
+
+    await customerRoutes.refundHistory(ctx)
+
+    // 第 1 个 query 应该是退款 SQL，包含 store_id 过滤（effectiveStoreId='store-001'）
+    const [refundSql, refundParams] = pg.query.mock.calls[0]
+    expect(refundSql).toMatch(/sop\.change_type\s*=\s*'退款'/)
+    expect(refundSql).toMatch(/FROM\s+sale_order_payments\s+sop/i)
+    expect(refundSql).toMatch(/sop\.refund_reason/i)
+    expect(refundSql).toMatch(/so\.store_id\s*=/)
+    // params: [clientUserId, storeId, pageSize, offset]
+    expect(refundParams).toContain('store-001')
+  })
+
+  test('detail_note 解析失败时 items=[]，不抛错', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      {
+        payment_id: 1, sale_order_id: 'FY-001',
+        amount: '-100', status: '已支付',
+        created_at: '2024-06-15T10:00:00Z', paid_at: '2024-06-15T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '原因', audit_at: null, audit_remark: null,
+        detail_note: 'invalid-json{{{',  // 触发 try-catch
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].items).toEqual([])
+    expect(ctx.result[0].handlingFee).toBeNull()
   })
 
   test('按 clientPhone 查询', async () => {
@@ -816,86 +1108,26 @@ describe('customer.refundHistory', () => {
 })
 
 // ============================================================
-// customer.giftHistory
-// ============================================================
-describe('customer.giftHistory', () => {
-  test('返回福利活动订单和赠品明细', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1' })
-
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_order_id: 'PROMO-001', status: '已支付', sale_order_type: '福利活动',
-        total_amount: '0', created_at: '2024-06-01', paid_at: '2024-06-01',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_item_id: 'gift-001', sale_order_id: 'FY-001', product_name: '赠送面膜',
-        sku_spec_name: '体验装', quantity: 1, session_count: 3, remaining_sessions: 3,
-        received: '0', created_at: '2024-06-05', paid_at: '2024-06-05',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sale_order_id: 'PROMO-001', sale_item_id: 'promo-item-1',
-        product_name: '活动面部护理', sku_spec_name: '体验版',
-        quantity: 1, session_count: 5, remaining_sessions: 5, received: '0',
-      },
-    ])
-
-    await customerRoutes.giftHistory(ctx)
-
-    expect(ctx.result.promoOrders).toHaveLength(1)
-    expect(ctx.result.promoOrders[0].saleOrderId).toBe('PROMO-001')
-    expect(ctx.result.promoOrders[0].items).toHaveLength(1)
-    expect(ctx.result.promoOrders[0].items[0].productName).toBe('活动面部护理')
-    expect(ctx.result.giftItems).toHaveLength(1)
-    expect(ctx.result.giftItems[0].productName).toBe('赠送面膜')
-  })
-
-  test('无福利活动时 promoOrders 为空', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1' })
-
-    pg.query.mockResolvedValueOnce([]) // 无福利活动
-    pg.query.mockResolvedValueOnce([]) // 无赠品
-
-    await customerRoutes.giftHistory(ctx)
-
-    expect(ctx.result.promoOrders).toEqual([])
-    expect(ctx.result.giftItems).toEqual([])
-  })
-
-  test('按 clientPhone 查询', async () => {
-    const ctx = createManagerCtx({ clientPhone: '13800001111' })
-
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-
-    await customerRoutes.giftHistory(ctx)
-
-    const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain('client_phone')
-  })
-
-  test('缺少标识参数时拒绝', async () => {
-    const ctx = createManagerCtx({})
-    await expect(customerRoutes.giftHistory(ctx)).rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
-  })
-})
-
-// ============================================================
 // customer.updateNotes
 // ============================================================
 describe('customer.updateNotes', () => {
+  // 调用流：assertCustomerInScope(SELECT bound_store_id) → UPDATE → INSERT operation_logs
+  // helper 期望 pg.query 返回数组（与 db/pg.js wrapper 一致）
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ bound_store_id: storeId }])
+
   test('保存备注成功', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '过敏体质，注意精油用量' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    const [sql, params] = pg.query.mock.calls[0]
+    const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('UPDATE client_wechat_users')
     expect(sql).toContain('notes = $1')
     expect(params[0]).toBe('过敏体质，注意精油用量')
@@ -905,32 +1137,45 @@ describe('customer.updateNotes', () => {
   test('空备注保存为 null', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '   ' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    expect(pg.query.mock.calls[0][1][0]).toBeNull()  // trimmed empty → null
+    expect(clientQuery.mock.calls[0][1][0]).toBeNull()  // trimmed empty → null
   })
 
   test('备注超过500字截断', async () => {
     const longNotes = 'a'.repeat(600)
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: longNotes })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.updateNotes(ctx)
 
-    expect(pg.query.mock.calls[0][1][0]).toHaveLength(500)
+    expect(clientQuery.mock.calls[0][1][0]).toHaveLength(500)
   })
 
   test('顾客不存在时拒绝', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-nonexist', notes: 'test' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+    pg.query.mockResolvedValueOnce([])  // helper SELECT 命中 0 行
 
     await expect(customerRoutes.updateNotes(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不存在/)
+  })
+
+  test('顾客跨店时拒绝', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-other', notes: 'test' })
+
+    mockScopeOk('store-002')  // 不在当前 scope（store-001）
+
+    await expect(customerRoutes.updateNotes(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
   })
 
   test('缺少 clientUserId 时拒绝', async () => {
@@ -944,25 +1189,71 @@ describe('customer.updateNotes', () => {
     await expect(customerRoutes.updateNotes(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*notes/)
   })
+
+  // ── scope isolation ──
+  test('scope 守卫：先调用 assertCustomerInScope（SELECT bound_store_id）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', notes: 'test' })
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.updateNotes(ctx)
+    const [scopeSql, scopeParams] = pg.query.mock.calls[0]
+    expect(scopeSql).toMatch(/bound_store_id\s+FROM\s+client_wechat_users/i)
+    expect(scopeParams).toEqual(['u1'])
+  })
+
+  test('成功时写入 operation_logs 审计日志', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', notes: '审计测试' })
+    mockScopeOk()
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+    await customerRoutes.updateNotes(ctx)
+    // helper INSERT 参数布局：[5]=action, [6]=targetType, [7]=targetId, [8]=detail
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.updateNotes')
+    expect(auditCall[1][7]).toBe('u1')
+  })
+
+  test('美容师无法操作（requireManager）', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1', notes: 'test' })
+    await expect(customerRoutes.updateNotes(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
 })
 
 // ============================================================
 // customer.assign
 // ============================================================
 describe('customer.assign', () => {
+  // 调用流：
+  //   1. assertCustomerInScope → SELECT bound_store_id FROM client_wechat_users
+  //   2. assertEmployeeInScope → SELECT store_id FROM staff_wechat_users
+  //      （ctx.auth.staffWfId === targetEmployeeId 时 helper 不查 DB，直接返回）
+  //   3. SELECT name FROM staff_wechat_users
+  //   4. UPDATE client_wechat_users
+  //   5. INSERT operation_logs
+  const mockAssertChain = (boundStoreId = 'store-001', empStoreId = 'store-001') => {
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: boundStoreId }])  // assertCustomerInScope
+      .mockResolvedValueOnce([{ store_id: empStoreId }])           // assertEmployeeInScope
+  }
+
   test('店长分配顾客给美容师成功', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
 
-    pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])  // staff exists
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // UPDATE success
+    mockAssertChain()
+    pg.query.mockResolvedValueOnce([{ name: '李四' }])  // SELECT name（pg.query）
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await customerRoutes.assign(ctx)
 
     expect(ctx.result.message).toContain('分配成功')
     expect(ctx.result.employeeName).toBe('李四')
-    // 验证 UPDATE 参数
-    const [sql, params] = pg.query.mock.calls[1]
+    // 事务 client 首个调用 = UPDATE
+    const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('bound_employee_id = $1')
     expect(params[0]).toBe('emp-b1')
     expect(params[1]).toBe('u1')
@@ -974,24 +1265,24 @@ describe('customer.assign', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('员工不存在或不属于本门店时拒绝', async () => {
+  test('员工不在 scope 时拒绝（assertEmployeeInScope）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-other' })
 
-    pg.query.mockResolvedValueOnce([])  // staff not found
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])  // customer OK
+      .mockResolvedValueOnce([{ store_id: 'store-002' }])         // employee in other store
 
     await expect(customerRoutes.assign(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*员工不存在/)
+      .rejects.toThrow(/PERMISSION_DENIED.*员工不在当前门店范围内/)
   })
 
-  test('顾客不存在时拒绝', async () => {
+  test('顾客不存在时拒绝（assertCustomerInScope）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-nonexist', employeeId: 'emp-b1' })
 
-    pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // no rows updated
+    pg.query.mockResolvedValueOnce([])  // customer not found
 
     await expect(customerRoutes.assign(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不存在/)
   })
 
   test('缺少 clientUserId 时拒绝', async () => {
@@ -1004,5 +1295,287 @@ describe('customer.assign', () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
     await expect(customerRoutes.assign(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*employeeId/)
+  })
+
+  // ── scope isolation ──
+  test('scope 守卫：assertCustomerInScope + assertEmployeeInScope 双查', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
+    mockAssertChain()
+    pg.query
+      .mockResolvedValueOnce([{ name: '李四' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+    await customerRoutes.assign(ctx)
+    const [customerScopeSql, customerScopeParams] = pg.query.mock.calls[0]
+    expect(customerScopeSql).toMatch(/bound_store_id\s+FROM\s+client_wechat_users/i)
+    expect(customerScopeParams).toEqual(['u1'])
+    const [empScopeSql, empScopeParams] = pg.query.mock.calls[1]
+    expect(empScopeSql).toMatch(/store_id\s+FROM\s+staff_wechat_users/i)
+    expect(empScopeParams).toEqual(['emp-b1'])
+  })
+
+  test('成功时写入 operation_logs 审计日志', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
+    mockAssertChain()
+    pg.query.mockResolvedValueOnce([{ name: '李四' }])  // SELECT name
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+    await customerRoutes.assign(ctx)
+    // helper INSERT 参数布局：[5]=action, [7]=targetId, [8]=detail
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.assign')
+    expect(auditCall[1][7]).toBe('u1')
+    const detail = JSON.parse(auditCall[1][8])
+    expect(detail.employeeId).toBe('emp-b1')
+    expect(detail.employeeName).toBe('李四')
+  })
+})
+
+// ============================================================
+// customer.customerBalance — 2026-04-24 新增：店长查顾客储值卡余额（跨店共享）
+// ============================================================
+describe('customer.customerBalance', () => {
+  test('店长查询已有卡的顾客余额（跨店统一）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-001' })
+
+    // assertCustomerInScope 先 SELECT bound_store_id；store-001 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-001', balance: '320.50' },
+    ])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-001')
+    expect(ctx.result.balance).toBe(320.5)
+    // 查询仅按 user_id（无 store_id 条件），prepaid_cards 调用是第二次
+    const [sql, params] = pg.query.mock.calls[1]
+    expect(sql).toMatch(/FROM prepaid_cards WHERE user_id = \$1/)
+    expect(sql).not.toMatch(/store_id/)
+    expect(params).toEqual(['cu-001'])
+  })
+
+  test('无卡顾客返回 { cardId: null, balance: 0 }', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-nocard' })
+    // assertCustomerInScope: 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result).toEqual({ cardId: null, balance: 0 })
+  })
+
+  test('balance 返回为数字类型（Number 转换）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-002' })
+    // assertCustomerInScope: 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-002', balance: '1500.00' }])
+    await customerRoutes.customerBalance(ctx)
+
+    expect(typeof ctx.result.balance).toBe('number')
+    expect(ctx.result.balance).toBe(1500)
+  })
+
+  test('非店长（美容师）拒绝', async () => {
+    const ctx = createBeauticianCtx({ customerUserId: 'cu-001' })
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('缺少 customerUserId 拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*customerUserId/)
+  })
+
+  test('已解绑顾客（bound_store_id=NULL）余额仍可查（账户级，不跟门店绑定）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-unbound' })
+    // scope 检查 SELECT bound_store_id → NULL（已解绑）
+    pg.query.mockResolvedValueOnce([{ bound_store_id: null }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-x', balance: '100000.00' }])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-x')
+    expect(ctx.result.balance).toBe(100000)
+  })
+
+  test('仍绑定他店（不在 scope）顾客余额仍拒绝（scope 隔离未破坏）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-otherstore' })
+    // scope 检查 SELECT bound_store_id → 他店，不在 scopeStoreIds 内
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999' }])
+
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('顾客不存在拒绝', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-missing' })
+    pg.query.mockResolvedValueOnce([])  // scope 检查无行
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+// ============================================================
+// 普通员工"员工级档案 scope"（bound_employee_id = 自己）
+// createBeauticianCtx.staffWfId = 'emp-beautician-001'，staffLevel='store_staff'
+// ============================================================
+describe('普通员工档案可见性（员工级 scope）', () => {
+  const detailRow = (boundEmployeeId) => ({
+    user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001',
+    member_level: 'VIP', bound_employee_id: boundEmployeeId, skin_type: null,
+    improvement_focus: null, gender: '女', notes: null,
+    bound_store_id: 'store-001', store_name: '测试店',
+  })
+
+  test('detail：店员可看绑定本人的顾客', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query
+      .mockResolvedValueOnce([detailRow('emp-beautician-001')])  // 顾客行（bound 给本人）
+      .mockResolvedValueOnce([{ name: '美容师' }])               // preferredStaffName
+      .mockResolvedValueOnce([{ total: '0', year_total: '0' }])  // getConsumptionStats
+      .mockResolvedValueOnce([{ last_date: null, visit_count_90d: '0' }])
+      .mockResolvedValueOnce([])                                  // getTopProduct
+    await customerRoutes.detail(ctx)
+    expect(ctx.result.clientUserId).toBe('u1')
+  })
+
+  test('detail：店员看未绑定本人的顾客 → PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([detailRow('emp-other-999')])  // bound 给别人
+    await expect(customerRoutes.detail(ctx)).rejects.toThrow(/PERMISSION_DENIED.*未分配/)
+  })
+
+  test('detail：店长不受员工级限制（顾客绑给别人也可看）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query
+      .mockResolvedValueOnce([detailRow('emp-other-999')])
+      .mockResolvedValueOnce([{ name: '美容师' }])
+      .mockResolvedValueOnce([{ total: '0', year_total: '0' }])
+      .mockResolvedValueOnce([{ last_date: null, visit_count_90d: '0' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.detail(ctx)
+    expect(ctx.result.clientUserId).toBe('u1')
+  })
+
+  test('search + profileScope：店员 SQL 含 bound_employee_id 且带 staffWfId', async () => {
+    const ctx = createBeauticianCtx({ keyword: '张', profileScope: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+
+  test('search 无 profileScope（服务单选顾客）：店员 SQL 不含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({ keyword: '张' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('bound_employee_id')
+  })
+
+  test('search + profileScope：店长不加员工过滤', async () => {
+    const ctx = createManagerCtx({ keyword: '张', profileScope: true })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('bound_employee_id')
+  })
+
+  test('stats：店员统计 SQL 含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({})
+    pg.query
+      .mockResolvedValueOnce([])   // 活跃度分类查询
+      .mockResolvedValueOnce([{ cnt: '0' }])  // 会员数
+    await customerRoutes.stats(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+
+  test('listByTag：店员列表 SQL 含 bound_employee_id', async () => {
+    const ctx = createBeauticianCtx({ tag: 'active', page: 1, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.listByTag(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('c.bound_employee_id =')
+    expect(params).toContain('emp-beautician-001')
+  })
+})
+
+// ============================================================
+// customer.appointments
+// ============================================================
+describe('customer.appointments', () => {
+  test('店长返回顾客预约列表', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      { appointment_id: 'A1', status: '已确认', client_user_id: 'u1', client_name: '张三',
+        employee_name: '美容师', appointment_time: '2026-05-20T03:00:00Z', notes: '准时',
+        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理', sku_spec_name: null },
+    ])
+    await customerRoutes.appointments(ctx)
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].id).toBe('A1')
+    expect(ctx.result[0].statusText).toBe('已确认')
+    expect(ctx.result[0].serviceItemName).toBe('面部护理')
+  })
+
+  test('店员越权（顾客未绑定本人）→ PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    // 档案闸门 SELECT bound_store_id, bound_employee_id
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-other-999' }])
+    await expect(customerRoutes.appointments(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('缺少标识参数拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.appointments(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+})
+
+// ============================================================
+// customer.phoneChangeLogs
+// ============================================================
+describe('customer.phoneChangeLogs', () => {
+  test('映射 admin(customer.update) 与 client(rebindPhone) 两类记录', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query
+      // 档案闸门
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      // operation_logs
+      .mockResolvedValueOnce([
+        { id: 2, created_at: '2026-05-20T00:00:00Z', action: 'customer.update',
+          detail: { changes: { phone: { from: '13800001111', to: '13900002222' } } },
+          source: 'admin', operator_employee_id: 'emp-009', operator_name: '王五' },
+        { id: 1, created_at: '2026-05-10T00:00:00Z', action: 'auth.rebindPhone',
+          detail: { oldPhone: '13700001111', newPhone: '13800001111', clientUserId: 'u1' },
+          source: 'client', operator_employee_id: null, operator_name: null },
+      ])
+    await customerRoutes.phoneChangeLogs(ctx)
+    expect(ctx.result).toHaveLength(2)
+    // manager 看全号
+    expect(ctx.result[0].source).toBe('admin')
+    expect(ctx.result[0].oldPhone).toBe('13800001111')
+    expect(ctx.result[0].newPhone).toBe('13900002222')
+    expect(ctx.result[0].operatorLabel).toBe('王五')
+    expect(ctx.result[1].source).toBe('client')
+    expect(ctx.result[1].operatorLabel).toBe('顾客自助')
+  })
+
+  test('店员越权（顾客未绑定本人）→ PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-other-999' }])
+    await expect(customerRoutes.phoneChangeLogs(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('解析不到 user_id 返回空数组', async () => {
+    const ctx = createManagerCtx({ clientPhone: '19900000000' })
+    pg.query.mockResolvedValueOnce([])  // 解析 user_id 无行
+    await customerRoutes.phoneChangeLogs(ctx)
+    expect(ctx.result).toEqual([])
   })
 })

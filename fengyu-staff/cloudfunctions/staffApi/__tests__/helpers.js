@@ -7,6 +7,14 @@
  * @param {Object} overrides - 覆盖默认值
  */
 function createCtx(overrides = {}) {
+  const authOverrides = overrides.auth || {}
+  // 兼容：若调用方传了 storeId 但未显式传 effectiveStoreId，将 effectiveStoreId 对齐到 storeId
+  const storeId = Object.prototype.hasOwnProperty.call(authOverrides, 'storeId')
+    ? authOverrides.storeId
+    : 'store-001'
+  const effectiveStoreId = Object.prototype.hasOwnProperty.call(authOverrides, 'effectiveStoreId')
+    ? authOverrides.effectiveStoreId
+    : storeId
   return {
     event: {
       action: overrides.action || 'test.action',
@@ -18,13 +26,20 @@ function createCtx(overrides = {}) {
       openid: 'test-openid-001',
       phone: '13800001111',
       staffWfId: 'emp-001',
-      storeId: 'store-001',
+      storeId,
+      effectiveStoreId,
+      currentStoreId: effectiveStoreId,
+      scopeStoreIds: effectiveStoreId ? [effectiveStoreId] : [],
+      loginLevel: 'store',
+      staffLevel: 'store_manager',
+      roleBindings: [{ role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' }],
       roles: ['manager'],
       position: '门店经理',
       storeName: '测试店',
       marketName: '测试市场',
       department: '美容部',
-      ...(overrides.auth || {}),
+      skills: [],
+      ...authOverrides,
     },
     result: null,
   }
@@ -52,8 +67,33 @@ function createBeauticianCtx(payload = {}, authOverrides = {}) {
     payload,
     auth: {
       roles: [],
+      roleBindings: [{ role: 'customer_mgr', scopeId: 'org-node-store-001', scopeType: '门店' }],
+      staffLevel: 'store_staff',
       position: '美容师',
       staffWfId: 'emp-beautician-001',
+      ...authOverrides,
+    },
+  })
+}
+
+/**
+ * 创建管理层模式 ctx（多店店长切到 management 视角）
+ */
+function createManagementCtx(payload = {}, authOverrides = {}) {
+  return createCtx({
+    payload,
+    auth: {
+      roles: ['manager'],
+      loginLevel: 'management',
+      staffLevel: 'market',
+      effectiveStoreId: null,
+      currentStoreId: null,
+      scopeStoreIds: ['store-001', 'store-002'],
+      roleBindings: [
+        { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+        { role: 'manager', scopeId: 'org-node-store-002', scopeType: '门店' },
+      ],
+      position: '市场经理',
       ...authOverrides,
     },
   })
@@ -70,6 +110,12 @@ function createUnboundCtx(payload = {}) {
       phone: null,
       staffWfId: null,
       storeId: null,
+      effectiveStoreId: null,
+      currentStoreId: null,
+      scopeStoreIds: [],
+      loginLevel: null,
+      staffLevel: null,
+      roleBindings: [],
       roles: [],
       position: null,
       storeName: null,
@@ -112,6 +158,7 @@ module.exports = {
   createCtx,
   createManagerCtx,
   createBeauticianCtx,
+  createManagementCtx,
   createUnboundCtx,
   createMockTransactionClient,
   resetPgMock,

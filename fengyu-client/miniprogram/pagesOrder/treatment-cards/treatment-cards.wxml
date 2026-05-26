@@ -42,23 +42,23 @@
             color="rgba(255,255,255,0.2)"
             text-color="#FFF"
           >疗程卡</van-tag>
-          <van-tag
-            wx:elif="{{item.productType === '单品'}}"
-            color="rgba(255,255,255,0.2)"
-            text-color="#FFF"
-          >单品</van-tag>
         </view>
         <text class="tc-card__sku">{{item.skuSpecName}}</text>
       </view>
 
-      <!-- 进度区 -->
+      <!-- 进度区（三段：已用 / 已付未用 / 未付） -->
       <view class="tc-card__progress">
-        <view class="progress-bar">
-          <view class="progress-bar__fill {{item.active ? '' : 'progress-bar__fill--inactive'}}" style="width: {{item.percent}}%"></view>
+        <view class="progress-bar progress-bar--tri">
+          <!-- 已用段（浅灰） -->
+          <view class="progress-seg progress-seg--used" style="width: {{item.usedPct}}%"></view>
+          <!-- 已付未用段（品牌主色，失效卡置灰） -->
+          <view class="progress-seg {{item.active ? 'progress-seg--paid-unused' : 'progress-seg--paid-unused-inactive'}}" style="width: {{item.paidUnusedPct}}%"></view>
+          <!-- 未付段（更浅灰，斜纹） -->
+          <view class="progress-seg progress-seg--unpaid" style="width: {{item.unpaidPct}}%"></view>
         </view>
         <view class="progress-info">
-          <text class="progress-used">已用 {{item.sessionCount - item.remainingSessions}} 次</text>
-          <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.remainingSessions}}</text>/{{item.sessionCount}} 次</text>
+          <text class="progress-used">已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
+          <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.remainingSessions}}</text> 次</text>
         </view>
       </view>
 

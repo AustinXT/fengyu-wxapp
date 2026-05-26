@@ -1,0 +1,1 @@
+ALTER TABLE "user_coupons" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;

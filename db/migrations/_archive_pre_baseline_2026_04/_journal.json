@@ -1,0 +1,139 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1773347387087,
+      "tag": "0000_init_v3_1",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773348845274,
+      "tag": "0001_wonderful_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773561600000,
+      "tag": "0002_rename_sale_order_type_values",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1773395779355,
+      "tag": "0003_futuristic_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1773396563951,
+      "tag": "0004_windy_thor_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1773404378486,
+      "tag": "0005_dapper_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1773410087395,
+      "tag": "0006_lying_invisible_woman",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773504995960,
+      "tag": "0007_sync_to_current",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773814352082,
+      "tag": "0008_wide_mongoose",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774070400000,
+      "tag": "0009_commission_enum_chinese",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774106101019,
+      "tag": "0010_closed_spyke",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1774945191398,
+      "tag": "0011_superb_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1775145600000,
+      "tag": "0012_product_mall_split",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1775232000000,
+      "tag": "0013_sale_alloc_role_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1775232100000,
+      "tag": "0014_service_items_is_presale",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1775232200000,
+      "tag": "0015_svc_comm_role_alloc",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1775746431929,
+      "tag": "0016_sync_to_current",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1775752197466,
+      "tag": "0017_even_warpath",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1775754504702,
+      "tag": "0018_green_rogue",
+      "breakpoints": true
+    }
+  ]
+}

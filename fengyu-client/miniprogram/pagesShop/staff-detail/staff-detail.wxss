@@ -32,6 +32,13 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.staff-avatar-img--large {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 80rpx;
 }
 
 .staff-info {
@@ -115,6 +122,34 @@
   width: 1rpx;
   height: 60rpx;
   background: var(--color-border);
+}
+
+/* 顾客评价卡片 */
+.rating-card {
+  display: flex;
+  align-items: center;
+  gap: 28rpx;
+  background: var(--color-bg-section);
+  border-radius: 16rpx;
+  padding: 28rpx 32rpx;
+}
+
+.rating-score {
+  font-size: 64rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1;
+}
+
+.rating-stars {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.rating-count {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
 }
 
 /* 底部占位 */

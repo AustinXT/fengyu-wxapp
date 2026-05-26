@@ -24,16 +24,26 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
 
 const paymentMethodMap: Record<string, string> = {
-  wechat: "微信支付",
-  alipay: "支付宝",
-  offline: "线下支付",
+  微信: "微信支付",
+  支付宝: "支付宝",
+  线下: "线下支付",
+  无: "无（全额抵扣）",
 };
 
+const PAYMENT_METHOD_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "微信", label: "微信" },
+  { value: "支付宝", label: "支付宝" },
+  { value: "线下", label: "线下" },
+  { value: "无", label: "无（全额抵扣）" },
+];
+
+// 2026-04-26 sale-order-domain-refactor：5→3 值
+// 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
 const orderTypeColorMap: Record<string, string> = {
-  普通: "bg-[#E8F0FE] text-[#3574C4]",
-  体验: "bg-[#FFF0EE] text-[#C45C48]",
-  内部: "bg-[#F0F9F2] text-[#3D8A5A]",
-  福利活动: "bg-[#FFF8E6] text-[#D4820A]",
+  销售单: "bg-[#E8F0FE] text-[#3574C4]",
+  内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
+  转换单: "bg-[#E3F2FD] text-[#1565C0]",
+  寄存单: "bg-[#F3F4F6] text-[#6B7280]",
 };
 
 function formatTime(dt: string) {
@@ -106,12 +116,12 @@ function OrderActions({ order }: { order: SaleOrder }) {
   return (
     <>
       <div className="flex gap-1">
-        {order.status === "待确认收款" && (
+        {order.status === "待支付" && order.paymentMethod === "线下" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog("confirm")} disabled={pending}>
             确认收款
           </Button>
         )}
-        {order.status === "待支付" && (
+        {order.status === "待支付" && order.paymentMethod !== "线下" && (
           <>
             <Button size="sm" variant="outline" onClick={handleShowQrcode} disabled={pending}>
               查看二维码
@@ -264,6 +274,8 @@ export default function OrdersPageClient({
   const storeFilter = get("store");
   const dateFrom = get("from");
   const dateTo = get("to");
+  const paymentMethodFilter = get("payment");
+  const hasPrepaidFilter = get("hasPrepaid");
 
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
@@ -272,9 +284,14 @@ export default function OrdersPageClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">订单管理</h1>
-        <Link href="/orders/create">
-          <Button>新建订单</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/orders/create-deposit">
+            <Button variant="outline">开寄存单</Button>
+          </Link>
+          <Link href="/orders/create">
+            <Button>新建订单</Button>
+          </Link>
+        </div>
       </div>
 
       {/* Filters — URL-driven, 触发服务端重新查询 */}
@@ -283,15 +300,17 @@ export default function OrdersPageClient({
           <div className="flex flex-wrap gap-3">
             <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
-              {(["待支付", "待确认收款", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
+              {(["待支付", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
               ))}
             </Select>
             <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
-              <option value="">全部类型</option>
-              {(["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"] as SaleOrderType[]).map((t) => (
+              <option value="">全部单据</option>
+              {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
+              {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
+              {(["销售单", "内部单", "转换单", "寄存单"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>
@@ -304,6 +323,26 @@ export default function OrdersPageClient({
                   {s.storeName}
                 </option>
               ))}
+            </Select>
+            <Select
+              className="w-40"
+              value={paymentMethodFilter}
+              onChange={(e) => setFilter("payment", e.target.value)}
+            >
+              <option value="">全部支付方式</option>
+              {PAYMENT_METHOD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+            <Select
+              className="w-40"
+              value={hasPrepaidFilter}
+              onChange={(e) => setFilter("hasPrepaid", e.target.value)}
+            >
+              <option value="">全部订单</option>
+              <option value="1">有储值卡抵扣</option>
             </Select>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">下单日期</span>
@@ -339,6 +378,8 @@ export default function OrdersPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">订单金额</th>
+                  {/* 2026-04-26 sale-order-domain-refactor：实付（received）+ 已退款（refunded_amount）；paid_amount 列已 DROP */}
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">实付 / 已退</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">支付方式</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">开单人</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">下单时间</th>
@@ -364,6 +405,15 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">{order.customerName || "-"}</td>
                     <td className="px-4 py-3">{order.storeName || "-"}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
+                    {/* 实付（received） + 已退款（refunded_amount > 0 时点亮） */}
+                    <td className="px-4 py-3 text-right text-xs">
+                      <div>¥{Number(order.received ?? "0").toLocaleString()}</div>
+                      {Number(order.refundedAmount ?? "0") > 0 && (
+                        <div className="text-[#C62828] mt-0.5">
+                          已退 ¥{Number(order.refundedAmount).toLocaleString()}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{formatTime(order.saleOrderDatetime)}</td>
@@ -374,7 +424,7 @@ export default function OrdersPageClient({
                 ))}
                 {orders.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-12 text-center text-[#999999]">
+                    <td colSpan={11} className="px-4 py-12 text-center text-[#999999]">
                       {total === 0 ? "暂无订单数据" : "未找到匹配结果，请调整筛选条件"}
                     </td>
                   </tr>

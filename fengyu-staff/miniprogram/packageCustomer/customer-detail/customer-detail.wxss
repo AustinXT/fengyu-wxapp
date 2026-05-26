@@ -56,10 +56,36 @@
 .stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 .stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
+/* 历史订单待核对徽章（WorkFine 导入的 status='未审核' 订单） */
+.legacy-orders-badge {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  background: #FFF8E6;
+  border: 1rpx solid #F0D89B;
+  border-radius: 12rpx;
+}
+.legacy-orders-text {
+  flex: 1;
+  font-size: 24rpx;
+  color: #8A5800;
+  line-height: 1.4;
+}
+
 /* Tab 内容区 */
 .tab-content {
   padding: 16rpx 0;
   min-height: 400rpx;
+}
+
+/* Tab 下方提示文案（例如"仅本店卡"说明） */
+.tab-hint {
+  padding: 8rpx 32rpx 16rpx;
+  font-size: 24rpx;
+  color: #999;
+  line-height: 1.5;
 }
 
 /* ===== 日历样式 ===== */
@@ -256,6 +282,21 @@
   font-weight: 600;
 }
 
+/* 疗程卡三段进度条（剩余可用 / 已付未用 / 未付） */
+.session-bar {
+  display: flex;
+  height: 8rpx;
+  width: 100%;
+  margin-top: 8rpx;
+  border-radius: 4rpx;
+  overflow: hidden;
+  background: #EFEFEF;
+}
+.session-bar__seg { height: 100%; }
+.session-bar__seg--remain { background: #C0322A; }
+.session-bar__seg--paid-unused { background: #F2B6B0; }
+.session-bar__seg--unpaid { background: #DDD; }
+
 .tc-stepper-row {
   display: flex;
   align-items: center;
@@ -281,69 +322,6 @@
 }
 .bottom-bar-spacer {
   height: calc(120rpx + env(safe-area-inset-bottom));
-}
-
-/* ===== 赠送记录 ===== */
-.gift-section-title {
-  display: block;
-  font-size: 26rpx;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  padding: 16rpx 24rpx 8rpx;
-}
-
-.gift-card {
-  background: #FFFFFF;
-  border-radius: 16rpx;
-  padding: 20rpx 24rpx;
-  margin: 0 24rpx 12rpx;
-  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
-}
-
-.gift-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12rpx;
-}
-
-.gift-order-no {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  font-family: monospace;
-}
-
-.gift-item-row {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  padding: 4rpx 0;
-}
-
-.gift-item-name {
-  font-size: 26rpx;
-  color: var(--color-text-primary);
-}
-
-.gift-item-spec {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  background: #F5F2EE;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
-}
-
-.gift-item-sessions {
-  font-size: 22rpx;
-  color: var(--color-primary);
-  font-weight: 500;
-}
-
-.gift-card-time {
-  display: block;
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  margin-top: 8rpx;
 }
 
 /* ===== 退换记录 ===== */
@@ -465,4 +443,91 @@
   display: flex;
   justify-content: flex-end;
   padding: 8rpx 32rpx 16rpx;
+}
+
+/* ===== 预约记录 ===== */
+.appt-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+  margin: 0 24rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+
+.appt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.appt-service {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  flex: 1;
+}
+
+.appt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
+.appt-time {
+  color: var(--color-text-secondary);
+}
+
+.appt-staff {
+  color: var(--color-text-hint);
+}
+
+.appt-remark {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 手机号变更 ===== */
+.phone-log-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+  margin: 0 24rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+
+.phone-log-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 10rpx;
+}
+
+.phone-log-phone {
+  font-size: 28rpx;
+  font-family: monospace;
+  color: var(--color-text-secondary);
+}
+
+.phone-log-new {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.phone-log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.phone-log-op {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
 }

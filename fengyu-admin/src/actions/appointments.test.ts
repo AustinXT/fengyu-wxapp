@@ -46,6 +46,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -69,12 +71,24 @@ function setupUpdate(count: number) {
   ;(db.update as any).mockReturnValue({ set })
 }
 
+/** mock db.select() 链，用于状态变更前获取上下文 */
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
 // ── confirmAppointment ────────────────────────────────────────────────────────
 
 describe('confirmAppointment', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   it('rowCount=0 → 状态已变更或无权', async () => {
@@ -106,6 +120,7 @@ describe('checkinAppointment', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   it('rowCount=0 → 状态已变更或无权', async () => {
@@ -137,6 +152,7 @@ describe('cancelAppointment', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   it('rowCount=0 → 状态已变更或无权', async () => {

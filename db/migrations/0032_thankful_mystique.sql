@@ -1,0 +1,1 @@
+ALTER TABLE "staff_wechat_users" ADD COLUMN "avatar_url" text;

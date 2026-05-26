@@ -36,7 +36,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -250,7 +250,7 @@ async function batchInsert(pgPool, orders, dryRun) {
         return [
           o.saleOrderId, '已完成', '普通', '未知市场', o.storeId,
           o.saleDate, o.clientUserId, o.customerName,
-          totalAmount, 'offline', 'admin', 'allocated', 'WorkFine结存项目导入',
+          totalAmount, '线下', 'admin', '已分配', 'WorkFine结存项目导入',
         ]
       })
       const oMv = buildMultiRowValues(orderRows, 13)
@@ -269,10 +269,10 @@ async function batchInsert(pgPool, orders, dryRun) {
       for (const order of batchOrders) {
         for (const item of order.items) {
           itemRows.push([
-            item.saleItemId, order.saleOrderId, 'purchase', item.itemName,
+            item.saleItemId, order.saleOrderId, '购买', item.itemName,
             '疗程卡', item.sessionCount, item.remainingSessions,
             0, 1, 0, 0, 0, // unit_price, qty, unit_real_price, sale_amount, received = 0（结存无原始价格）
-            item.expireDate, '自采自销', null, // remark
+            item.expireDate, '自销自耗', null, // remark
           ])
         }
       }

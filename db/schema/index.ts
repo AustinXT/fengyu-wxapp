@@ -4,7 +4,7 @@ export * from './enums'
 // 组织架构与门店
 export * from './org'
 
-// 商品（品项分类 + 商品 + 规格）
+// 商品管理（品项分类 + SKU）+ 商城管理（商品分类 + 商城商品 + 关联）
 export * from './product'
 
 // 微信用户（客户端 + 员工端）
@@ -16,7 +16,7 @@ export * from './order'
 // 预约
 export * from './appointment'
 
-// 护理单 + 护理明细
+// 服务单 + 服务明细
 export * from './service'
 
 // 权限角色分配
@@ -37,7 +37,10 @@ export * from './coupon'
 // 管理后台登录密码
 export * from './admin-auth'
 
-// 积分系统（会员等级 + 积分余额 + 积分流水）
+// 管理后台登录失败锁定（持久化防爆破）
+export * from './login-attempt'
+
+// 积分系统（积分流水；余额缓存已合并至 client_wechat_users）
 export * from './points'
 
 // 消息中心
@@ -52,5 +55,11 @@ export * from './service-commission'
 // 提货记录
 export * from './pickup'
 
+// 门店库存域（采购/销售/调拨/报损 4 对主+明细表）
+export * from './inventory'
+
 // 系统配置
 export * from './system-config'
+
+// 查找表（职位 + 技能标签）
+export * from './lookup'

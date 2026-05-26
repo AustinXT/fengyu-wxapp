@@ -1,14 +1,13 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { login } from "@/actions/auth"
+import { encryptPassword } from "@/lib/password-encrypt"
 
 export default function LoginPage() {
-  const router = useRouter()
   const [phone, setPhone] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
@@ -33,7 +32,7 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      const result = await login(phone, password)
+      const result = await login(phone, encryptPassword(password))
 
       if (!result.success) {
         setError(result.message)
@@ -44,9 +43,9 @@ export default function LoginPage() {
       toast.success("登录成功")
 
       if (result.mustChange) {
-        router.push("/change-password")
+        window.location.href = "/change-password"
       } else {
-        router.push("/dashboard")
+        window.location.href = "/dashboard"
       }
     } catch {
       setError("网络异常，请稍后重试")

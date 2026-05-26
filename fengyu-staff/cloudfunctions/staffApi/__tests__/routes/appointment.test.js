@@ -21,20 +21,21 @@ describe('appointment.confirm', () => {
   test('确认待确认预约（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ appointmentId: 'appt-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        appointment_id: 'appt-001',
-        status: '待确认',
-        employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '待确认',
+      employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    // UPDATE + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await appointmentRoutes.confirm(ctx)
 
     expect(ctx.result.status).toBe('已确认')
     // 验证 UPDATE WHERE 包含状态条件（C4 合规）
-    const updateSql = pg.query.mock.calls[1][0]
+    const updateSql = clientQuery.mock.calls[0][0]
     expect(updateSql).toContain("status = '已确认'")
     expect(updateSql).toContain("AND status = '待确认'")
   })
@@ -56,14 +57,13 @@ describe('appointment.confirm', () => {
   test('美容师确认自己的预约', async () => {
     const ctx = createBeauticianCtx({ appointmentId: 'appt-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        appointment_id: 'appt-001',
-        status: '待确认',
-        employee_id: 'emp-beautician-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '待确认',
+      employee_id: 'emp-beautician-001',
+      store_id: 'store-001',
+    }])
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: vi.fn(async () => ({ rows: [], rowCount: 1 })) }))
 
     await appointmentRoutes.confirm(ctx)
     expect(ctx.result.status).toBe('已确认')
@@ -125,21 +125,22 @@ describe('appointment.checkin', () => {
   test('签到成功 — 仅记录时间不改状态', async () => {
     const ctx = createManagerCtx({ appointmentId: 'appt-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        appointment_id: 'appt-001',
-        status: '已确认',
-        employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE checkin_at
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '已确认',
+      employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    // UPDATE checkin_at + 审计日志走事务 client
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await appointmentRoutes.checkin(ctx)
 
     expect(ctx.result.checkinAt).toBeDefined()
     expect(ctx.result.message).toContain('已到店')
-    // 验证只更新 checkin_at，不改 status
-    const sql = pg.query.mock.calls[1][0]
+    // 验证只更新 checkin_at，不改 status（事务 client 首个调用 = UPDATE）
+    const sql = clientQuery.mock.calls[0][0]
     expect(sql).toContain('checkin_at')
     expect(sql).not.toContain("status")
   })

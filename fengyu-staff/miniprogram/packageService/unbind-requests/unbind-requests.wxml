@@ -1,4 +1,4 @@
-<!-- pages/unbind-requests/unbind-requests.wxml — 顾客解绑申请审批 -->
+<!-- pages/unbind-requests/unbind-requests.wxml — 顾客转店申请审批 -->
 <view class="container">
 
   <!-- 加载态 -->
@@ -9,7 +9,7 @@
   <block wx:else>
     <!-- 空态 -->
     <view wx:if="{{requests.length === 0}}" class="empty-wrap">
-      <van-empty description="暂无待审批的解绑申请" />
+      <van-empty description="暂无待审批的转店申请" />
     </view>
 
     <!-- 申请列表 -->
@@ -21,7 +21,8 @@
         inset
       >
         <van-cell title="顾客手机" value="{{item.phoneMasked}}" />
-        <van-cell title="当前门店" value="{{item.fromStoreName}}" />
+        <van-cell title="原门店" value="{{item.fromStoreName}}" />
+        <van-cell title="转往门店" value="{{item.toStoreName}}" />
         <van-cell wx:if="{{item.note}}" title="备注" value="{{item.note}}" />
         <van-cell title="申请时间" value="{{item.createdAt}}" />
         <view class="action-row">
@@ -31,6 +32,8 @@
             color="#3D8A5A"
             bindtap="onApprove"
             data-request-id="{{item.requestId}}"
+            data-from-store="{{item.fromStoreName}}"
+            data-to-store="{{item.toStoreName}}"
           >通过</van-button>
           <van-button
             type="danger"

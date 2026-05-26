@@ -11,8 +11,6 @@ Page({
     coupons: [] as any[],
     isLoading: false,
     loadError: false,
-    redeemCode: '',
-    redeeming: false,
   },
 
   onLoad() {
@@ -42,11 +40,19 @@ Page({
       const data = await callClientApi('coupon.list', { status });
       const coupons = (data?.coupons || []).map((c: any) => {
         const minSpendNum = Number(c.minSpend) || 0;
+        const hasCategory = Array.isArray(c.applicableCategoryNames) && c.applicableCategoryNames.length > 0;
+        // 品项券满减门槛仅对"符合品类行的小计"生效，文案须明确避免"全单满 X"的误解
+        const minSpendHint = minSpendNum > 0
+          ? (hasCategory
+              ? `仅限 ${c.applicableCategoryNames.join('/')} 品类小计满 ${minSpendNum} 元可用`
+              : `满 ${minSpendNum} 元可用`)
+          : '';
         return {
           ...c,
           expireAtFmt: formatDate(c.expireAt),
           discountLabel: formatDiscount(c),
           minSpendNum,
+          minSpendHint,
         };
       });
       this.setData({ coupons });
@@ -58,28 +64,4 @@ Page({
     }
   },
 
-  onRedeemInput(e: WechatMiniprogram.Input) {
-    this.setData({ redeemCode: e.detail.value.trim() });
-  },
-
-  async onRedeem() {
-    const code = this.data.redeemCode.trim();
-    if (!code) {
-      Toast.fail('请输入兑换码');
-      return;
-    }
-    if (this.data.redeeming) return;
-    this.setData({ redeeming: true });
-
-    try {
-      await callClientApi('coupon.redeem', { code });
-      Toast.success('兑换成功');
-      this.setData({ redeemCode: '', activeTab: 0 });
-      this.loadCoupons();
-    } catch (err: any) {
-      Toast.fail(err.message || '兑换失败');
-    } finally {
-      this.setData({ redeeming: false });
-    }
-  },
 });

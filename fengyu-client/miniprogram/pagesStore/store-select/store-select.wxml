@@ -6,7 +6,7 @@
   <!-- 当前城市提示 -->
   <view wx:if="{{currentCity}}" class="location-bar">
     <van-icon name="location-o" size="14" />
-    <text>当前城市：{{currentCity}}</text>
+    <text>当前城市：{{currentCity}}{{currentDistrict ? ' · ' + currentDistrict : ''}}</text>
   </view>
 
   <van-search
@@ -33,32 +33,45 @@
   </view>
 
   <!-- 空态 -->
-  <view wx:elif="{{groupedStores.length === 0}}" class="empty-wrap">
+  <view wx:elif="{{stores.length === 0}}" class="empty-wrap">
     <van-empty description="未找到门店" />
   </view>
 
-  <!-- 按市场分组的门店列表 -->
-  <view wx:else>
+  <!-- 按距离升序的门店卡片列表 -->
+  <view wx:else class="store-list">
     <view
-      wx:for="{{groupedStores}}"
-      wx:key="market_name"
-      class="market-group"
+      wx:for="{{stores}}"
+      wx:key="store_id"
+      class="store-card"
+      bindtap="onStoreTap"
+      data-store-id="{{item.store_id}}"
+      data-store-name="{{item.store_name}}"
     >
-      <view class="market-title">{{item.market_name}}</view>
-      <van-cell-group inset>
-        <van-cell
-          wx:for="{{item.stores}}"
-          wx:for-item="store"
-          wx:key="store_name"
-          title="{{store.store_name}}"
-          label="{{store.store_region}}"
-          is-link
-          bindtap="onStoreTap"
-          data-store-id="{{store.store_id}}"
-          data-store-name="{{store.store_name}}"
-          right-icon="{{selectedStore === store.store_name ? 'success' : 'arrow'}}"
-        />
-      </van-cell-group>
+      <!-- 封面图 -->
+      <image
+        wx:if="{{item.cover_image}}"
+        src="{{item.cover_image}}"
+        mode="aspectFill"
+        class="store-cover"
+      />
+      <view wx:else class="store-cover store-cover-placeholder">
+        <van-icon name="shop-o" size="40rpx" color="#C0322A" />
+      </view>
+
+      <!-- 信息 -->
+      <view class="store-info">
+        <view class="store-name-row">
+          <text class="store-name">{{item.store_name}}</text>
+          <van-tag wx:if="{{selectedStore === item.store_name}}" type="primary" round>当前</van-tag>
+        </view>
+        <view wx:if="{{item.fullAddress}}" class="store-address">{{item.fullAddress}}</view>
+      </view>
+
+      <!-- 距离 -->
+      <view wx:if="{{item.distanceText}}" class="store-distance">
+        <van-icon name="location-o" size="24rpx" color="#999" />
+        <text>{{item.distanceText}}</text>
+      </view>
     </view>
   </view>
 

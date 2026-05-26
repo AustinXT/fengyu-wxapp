@@ -9,7 +9,7 @@ const crypto = require('crypto')
 /**
  * 门店列表
  * 从 PG stores + org_nodes 查询，排除已停业的门店
- * @param {string} ctx.event.payload.city - 可选，按城市（市场名）筛选
+ * @param {string} ctx.event.payload.city - 可选，按城市筛选
  */
 async function list(ctx) {
   const { city } = ctx.event.payload || {}
@@ -17,10 +17,11 @@ async function list(ctx) {
   const params = []
   let whereClause = 'WHERE s.is_closed = false'
 
-  // 如果传入 city 参数，按市场名筛选
+  // 如果传入 city 参数，按门店自身 district 筛选
+  // （admin 录入的「省/市/区」，门店真实城市来源；不依赖市场节点命名）
   if (city) {
-    params.push(`${city}%`)
-    whereClause += ` AND pm.name LIKE $${params.length}`
+    params.push(`%${city}%`)
+    whereClause += ` AND s.district LIKE $${params.length}`
   }
 
   const stores = await pg.query(`
@@ -80,6 +81,7 @@ async function detail(ctx) {
       s.bed_count AS available_beds,
       s.district AS store_region,
       s.cover_image,
+      s.images,
       s.street_address,
       s.latitude,
       s.longitude,
@@ -101,6 +103,7 @@ async function detail(ctx) {
 
   const store = storeResult[0]
   store.open_date = formatOpenDate(store.open_date)
+  store.images = Array.isArray(store.images) ? store.images : []
 
   // 用确定的 store_id 并行查询员工数和顾客数
   const actualStoreId = store.store_id
@@ -131,38 +134,54 @@ function formatOpenDate(date) {
 }
 
 /**
- * 申请解绑门店
- * 向当前绑定门店的店长提交解绑申请
- * payload: { note? }
+ * 申请转店
+ * 顾客从当前绑定门店（from）转绑到目标门店（to），向原门店店长提交申请。
+ * 「选新门店」前置：审批通过后 bound_store_id 直接 from→to，永不出现悬空未绑定态。
+ * payload: { toStoreId（必填）, note? }
  */
 async function requestUnbind(ctx) {
-  const { userId, boundStoreId, boundStoreName } = ctx.auth
+  const { userId, boundStoreId } = ctx.auth
   if (!userId) throw new Error('UNAUTHORIZED: 未登录')
   if (!boundStoreId) throw new Error('INVALID_PARAMS: 当前未绑定任何门店')
 
-  const { note } = ctx.event.payload || {}
+  const { toStoreId, note } = ctx.event.payload || {}
+  if (!toStoreId) throw new Error('INVALID_PARAMS: 缺少目标门店 toStoreId')
+  if (toStoreId === boundStoreId) throw new Error('INVALID_PARAMS: 目标门店不能与当前门店相同')
+
+  // 校验目标门店存在且未停业
+  const target = await pg.query(
+    `SELECT store_id FROM stores WHERE store_id = $1 AND is_closed = false`,
+    [toStoreId]
+  )
+  if (target.length === 0) throw new Error('INVALID_PARAMS: 目标门店不存在或已停业')
 
   // 检查是否已有 pending 申请
   const existing = await pg.query(
-    `SELECT request_id FROM store_unbind_requests WHERE user_id = $1 AND status = 'pending'`,
+    `SELECT request_id FROM store_unbind_requests WHERE user_id = $1 AND status = '待处理'`,
     [userId]
   )
   if (existing.length > 0) {
-    throw new Error('INVALID_PARAMS: 已有待审批的解绑申请，请等待审批结果')
+    throw new Error('INVALID_PARAMS: 已有待审批的转店申请，请等待审批结果')
   }
 
+  // partial unique uq_store_unbind_pending 兜底 TOCTOU：同顾客双击提交
   const requestId = crypto.randomUUID()
-  await pg.query(
-    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_name, status, note)
-     VALUES ($1, $2, $3, 'pending', $4)`,
-    [requestId, userId, boundStoreName || '', note || null]
+  const insRes = await pg.query(
+    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, to_store_id, status, note)
+     VALUES ($1, $2, $3, $4, '待处理', $5)
+     ON CONFLICT (user_id) WHERE status = '待处理' DO NOTHING
+     RETURNING request_id`,
+    [requestId, userId, boundStoreId, toStoreId, note || null]
   )
+  if (insRes.length === 0) {
+    throw new Error('CONFLICT: 已有待审批的转店申请，请等待审批结果')
+  }
 
   ctx.result = { requestId }
 }
 
 /**
- * 查询当前用户最新的 pending 解绑申请
+ * 查询当前用户最新的 pending 转店申请（含目标门店）
  */
 async function getUnbindRequest(ctx) {
   const { userId } = ctx.auth
@@ -172,10 +191,14 @@ async function getUnbindRequest(ctx) {
   }
 
   const rows = await pg.query(
-    `SELECT request_id, from_store_name, status, note, created_at
-     FROM store_unbind_requests
-     WHERE user_id = $1 AND status = 'pending'
-     ORDER BY created_at DESC
+    `SELECT r.request_id, r.from_store_id, r.to_store_id, r.status, r.note, r.created_at,
+            sf.store_name AS from_store_name,
+            st.store_name AS to_store_name
+     FROM store_unbind_requests r
+     LEFT JOIN stores sf ON sf.store_id = r.from_store_id
+     LEFT JOIN stores st ON st.store_id = r.to_store_id
+     WHERE r.user_id = $1 AND r.status = '待处理'
+     ORDER BY r.created_at DESC
      LIMIT 1`,
     [userId]
   )
@@ -183,7 +206,9 @@ async function getUnbindRequest(ctx) {
   ctx.result = {
     request: rows.length > 0 ? {
       requestId: rows[0].request_id,
-      fromStoreName: rows[0].from_store_name,
+      fromStoreName: rows[0].from_store_name || '',
+      toStoreId: rows[0].to_store_id || '',
+      toStoreName: rows[0].to_store_name || '',
       status: rows[0].status,
       note: rows[0].note,
       createdAt: rows[0].created_at,
@@ -208,12 +233,17 @@ async function cancelUnbindRequest(ctx) {
   )
   if (rows.length === 0) throw new Error('INVALID_PARAMS: 申请不存在')
   if (rows[0].user_id !== userId) throw new Error('PERMISSION_DENIED: 无权操作此申请')
-  if (rows[0].status !== 'pending') throw new Error('INVALID_PARAMS: 申请状态不允许取消')
+  if (rows[0].status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许取消')
 
-  await pg.query(
-    `UPDATE store_unbind_requests SET status = 'cancelled', updated_at = NOW() WHERE request_id = $1`,
+  const cancelUpd = await pg.query(
+    `UPDATE store_unbind_requests SET status = '已取消', updated_at = NOW() WHERE request_id = $1 AND status = '待处理'`,
     [requestId]
   )
+  if (cancelUpd.rowCount === 0) {
+    throw new Error(
+      `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已取消`
+    )
+  }
 
   ctx.result = { success: true }
 }
@@ -245,12 +275,19 @@ async function geocode(ctx) {
   })
 
   const json = JSON.parse(body)
-  if (json.status !== 0) throw new Error('INVALID_PARAMS: 逆地理编码失败')
+  if (json.status !== 0) {
+    console.error('[geocode] LBS API error:', JSON.stringify(json))
+    throw new Error('INVALID_PARAMS: 逆地理编码失败')
+  }
 
-  const city = json.result?.address_component?.city || ''
-  const cityName = city.replace(/市$/, '')
+  const ac = json.result?.address_component || {}
+  const cityName = (ac.city || '').replace(/市$/, '')
 
-  ctx.result = { city: cityName }
+  ctx.result = {
+    province: ac.province || '',
+    city: cityName,
+    district: ac.district || '',
+  }
 }
 
 module.exports = {

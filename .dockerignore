@@ -1,0 +1,38 @@
+# Docker 构建上下文 = 仓库根（docker/Dockerfile.admin 的 context: ..）。
+# 关键：排除所有 .env*，否则 Dockerfile 的 `COPY fengyu-admin/ .` 会把 .env.local
+# 拖进 builder，next build 读到本地 dev 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 并 inline 进
+# 客户端 bundle（与 prod 私钥不匹配 → 登录 500），同时把 dev 私钥/JWT/DB 密码烤进镜像（泄漏）。
+# prod 公钥改由 deploy-admin.sh 显式 --build-arg 注入。
+**/.env
+**/.env.*
+!**/.env.example
+
+# 依赖与构建产物（builder 内会重装 / 重建，拷进来只会拖慢上下文传输）
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+
+# VCS / IDE / 测试产物
+.git
+.gitignore
+**/.DS_Store
+**/coverage
+**/playwright-report
+**/test-results
+**/.tree
+
+# 测试源码与配置（不参与 next build / 运行时）
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+fengyu-admin/tests
+fengyu-admin/vitest.config.ts
+fengyu-admin/playwright.config.ts
+
+# 文档与本地工具配置（不参与镜像）
+**/*.log
+.claude
+notes

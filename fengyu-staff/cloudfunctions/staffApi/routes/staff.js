@@ -2,10 +2,61 @@
  * 员工模块路由（员工端）
  * staff.list — 门店员工列表
  * staff.departments — 部门列表（含可分配员工）
+ * staff.uploadAvatar — 员工头像上传（HTTPS POST 转发到 clientApi 写入 client env COS）
  */
 
+const cloud = require('wx-server-sdk')
+const https = require('https')
+const crypto = require('crypto')
+const { URL } = require('url')
 const pg = require('../db/pg')
-const { requireStaffBound } = require('../middleware/auth')
+const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
+const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
+
+// 跨 env 转上传相关 env vars：
+// - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
+// - CLIENT_SECRET：与 clientApi 共享的 HMAC 密钥，已存在（原本给 wxacode.js 用）
+//
+// 不再用 wx-server-sdk 的 new Cloud({resourceEnv})（实测 v3.0.4 静默忽略 resourceEnv）；
+// 也不引 @cloudbase/node-sdk（避免多套 SDK 凭证管理）。
+// 直接 https.request 到 clientApi HTTP 触发器，clientApi 在自己 env 内上传 + getTempFileURL 返回 HTTPS URL。
+// 这个 URL 与 admin 写入的 products.cover_image 完全同 shape，三端 `<image src>` 透明渲染。
+const CLIENT_API_HTTP_URL = process.env.CLIENT_API_HTTP_URL
+const CLIENT_SECRET = process.env.CLIENT_SECRET
+
+/**
+ * HTTPS POST JSON helper（同 utils/wxacode.js 的 httpGet 同款风格，本地 Promise 包装）
+ * 返回 { status, json, raw }
+ */
+function postJson(urlStr, body, headers) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr)
+    const data = Buffer.from(body, 'utf-8')
+    const req = https.request({
+      method: 'POST',
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + (u.search || ''),
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': data.length,
+        ...headers,
+      },
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf-8')
+        let json = null
+        try { json = JSON.parse(text) } catch (_) {}
+        resolve({ status: res.statusCode, json, raw: text })
+      })
+    })
+    req.on('error', reject)
+    req.write(data)
+    req.end()
+  })
+}
 
 /**
  * 员工列表
@@ -14,17 +65,30 @@ async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { storeId: payloadStoreId } = ctx.event.payload || {}
-  const targetStoreId = payloadStoreId || ctx.auth.storeId
+  const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
+  // Scope guard: 防止任意员工通过 payloadStoreId 枚举跨店员工
+  // admin/headquarters 永远放行；其他角色必须在自己 scopeStoreIds 内
+  if (!isStoreInScope(ctx.auth, targetStoreId)) {
+    throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
+  }
+
+  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
+  // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
+  // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
+  // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
+  // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
   const staffRows = await pg.query(`
     SELECT
       u.employee_id,
       u.name,
       u.position_name AS position,
+      u.skills,
+      u.avatar_url,
       d.name AS department,
       s.store_name,
       m.name AS market_name
@@ -36,6 +100,7 @@ async function list(ctx) {
     WHERE u.is_resigned = false
       AND u.store_id = $1
       AND u.employee_id IS NOT NULL
+      AND u.skills && ARRAY['美容师','养生师']::text[]
     ORDER BY d.name, u.name
   `, [targetStoreId])
 
@@ -44,6 +109,8 @@ async function list(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: r.skills || [],
+      avatarUrl: r.avatar_url || null,
       department: r.department || '',
       storeName: r.store_name || '',
       marketName: r.market_name || '',
@@ -59,10 +126,15 @@ async function departments(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { storeId: payloadStoreId } = ctx.event.payload || {}
-  const targetStoreId = payloadStoreId || ctx.auth.storeId
+  const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
+  }
+
+  // Scope guard: 同 list，防止跨店枚举
+  if (!isStoreInScope(ctx.auth, targetStoreId)) {
+    throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
   }
 
   // 查询美容部
@@ -71,6 +143,8 @@ async function departments(ctx) {
       u.employee_id,
       u.name,
       u.position_name AS position,
+      u.skills,
+      u.avatar_url,
       d.name AS department
     FROM staff_wechat_users u
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
@@ -82,15 +156,19 @@ async function departments(ctx) {
   `, [targetStoreId])
 
   // 查询其他部门（按市场查询）
+  // 仅总部 / 市场级可见整个市场的人员名单；门店级（store_manager / store_staff）跳过
   const marketName = ctx.auth.marketName
+  const canSeeMarket = ctx.auth.staffLevel === 'headquarters' || ctx.auth.staffLevel === 'market'
   let otherDeptRows = []
 
-  if (marketName) {
+  if (marketName && canSeeMarket) {
     otherDeptRows = await pg.query(`
       SELECT
         u.employee_id,
         u.name,
         u.position_name AS position,
+        u.skills,
+        u.avatar_url,
         d.name AS department,
         s.store_name
       FROM staff_wechat_users u
@@ -116,6 +194,8 @@ async function departments(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: Array.isArray(r.skills) ? r.skills : [],
+      avatarUrl: r.avatar_url || null,
       department: '美容部'
     }))
   }
@@ -127,6 +207,8 @@ async function departments(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: Array.isArray(r.skills) ? r.skills : [],
+      avatarUrl: r.avatar_url || null,
       department: dept,
       storeName: r.store_name || ''
     })
@@ -142,11 +224,18 @@ async function departments(ctx) {
 
 /**
  * 今日分成
+ *
+ * 口径约定（勿误改）：首卡「今日分成（营业额）」金额 = SUM(sale_allocations.total_amount)
+ *   = 员工分到的【销售营业额份额】（= 实收 × 分账比例，见 allocation.js），是【业绩】而非提成；
+ *   服务在卡上只做计数（serviceCount），不并入金额。
+ *   本口径与 mgmt-dashboard.staffRankingRevenue（员工业绩排行）一致，spec 标题即「今日分成（营业额）」。
+ *   ⚠️ 不要为了"对齐绩效页合计"而把服务提成（service_commissions.commission_amount）加进来——
+ *      绩效页是【提成】维度、本卡是【营业额】维度，两者本就不应相等（详见 performanceDetail 注释）。
  */
 async function todayCommission(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeId, roles } = ctx.auth
+  const { staffWfId, roles } = ctx.auth
   const isManager = roles.includes('manager')
 
   const now = new Date()
@@ -177,6 +266,34 @@ async function todayCommission(ctx) {
     WHERE assigned_employee_id = $1
       AND service_date = $2
   `, [staffWfId, todayStr])
+
+  // 本月时间范围
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+
+  // 本月分成金额 + 订单数（个人口径）
+  const thisMonthCommRows = await pg.query(`
+    SELECT
+      COALESCE(SUM(sa.total_amount::numeric), 0) AS amount,
+      COUNT(DISTINCT si.sale_order_id) AS order_count
+    FROM sale_allocations sa
+    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE sa.employee_id = $1
+      AND sa.is_void = false
+      AND o.status = '已支付'
+      AND o.paid_at >= $2
+      AND o.paid_at < $3
+  `, [staffWfId, thisMonthStart, thisMonthEnd])
+
+  // 本月服务单数（个人口径）
+  const thisMonthSvcRows = await pg.query(`
+    SELECT COUNT(*) AS service_count
+    FROM service_orders
+    WHERE assigned_employee_id = $1
+      AND service_date >= $2
+      AND service_date < $3
+  `, [staffWfId, thisMonthStart.toISOString().slice(0, 10), thisMonthEnd.toISOString().slice(0, 10)])
 
   // 上月时间范围
   const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -210,22 +327,28 @@ async function todayCommission(ctx) {
     todayAmount: Number(commissionRows[0].today_amount).toFixed(2),
     orderCount: Number(commissionRows[0].order_count),
     serviceCount: Number(serviceRows[0].service_count),
+    thisMonthAmount: Number(thisMonthCommRows[0].amount).toFixed(2),
+    thisMonthOrderCount: Number(thisMonthCommRows[0].order_count),
+    thisMonthServiceCount: Number(thisMonthSvcRows[0].service_count),
     lastMonthAmount: Number(lastMonthCommRows[0].amount).toFixed(2),
     lastMonthOrderCount: Number(lastMonthCommRows[0].order_count),
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
-  // 店长：门店今日总营收
-  if (isManager && storeId) {
+  // 店长：门店今日总营收（2026-04-26 refactor：业绩口径 = received - refunded_amount）
+  // 门店过滤用 effectiveStoreId（当前选中门店），多店店长切店后才正确
+  const eff = ctx.auth.effectiveStoreId
+  if (isManager && eff) {
+    const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
     const storeRows = await pg.query(`
-      SELECT COALESCE(SUM(si.received::numeric), 0) AS store_revenue
-      FROM sale_items si
-      JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-      WHERE o.store_id = $1
+      SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS store_revenue
+      FROM sale_orders o
+      WHERE ${sc.sql}
+        AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
-        AND o.paid_at >= $2
-        AND o.paid_at < $3
-    `, [storeId, todayStart, todayEnd])
+        AND o.paid_at >= $${sc.params.length + 1}
+        AND o.paid_at < $${sc.params.length + 2}
+    `, [...sc.params, todayStart, todayEnd])
     result.storeTodayRevenue = Number(storeRows[0].store_revenue).toFixed(2)
   }
 
@@ -233,12 +356,16 @@ async function todayCommission(ctx) {
 }
 
 /**
- * 月度业绩日历
+ * 月度业绩日历（整店口径）
+ *
+ * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
+ *   = SUM(sale_orders.received - refunded_amount)，sale_order_type IN ('销售单','转换单')、status='已支付'，
+ *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
+ *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */
 async function monthlyCalendar(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId } = ctx.auth
   const { yearMonth } = ctx.event.payload || {}
 
   const now = new Date()
@@ -251,46 +378,45 @@ async function monthlyCalendar(ctx) {
   const monthStartStr = monthStart.toISOString().slice(0, 10)
   const monthEndStr = monthEnd.toISOString().slice(0, 10)
 
-  // 按日汇总分成金额
+  const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
+
+  // 按日汇总整店营业额（received - refunded）
   const dailyRows = await pg.query(`
     SELECT
       DATE(o.paid_at) AS date,
-      SUM(sa.total_amount::numeric) AS amount
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
+      SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS amount
+    FROM sale_orders o
+    WHERE ${sc.sql}
+      AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND o.paid_at >= $${sc.params.length + 1}
+      AND o.paid_at < $${sc.params.length + 2}
     GROUP BY DATE(o.paid_at)
     ORDER BY DATE(o.paid_at)
-  `, [staffWfId, monthStart, monthEnd])
+  `, [...sc.params, monthStart, monthEnd])
 
-  // 月度汇总
+  // 月度整店汇总
   const totalRows = await pg.query(`
     SELECT
-      COALESCE(SUM(sa.total_amount::numeric), 0) AS total_amount,
-      COUNT(DISTINCT si.sale_order_id) AS total_order_count
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
+      COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS total_amount,
+      COUNT(*) AS total_order_count
+    FROM sale_orders o
+    WHERE ${sc.sql}
+      AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
-  `, [staffWfId, monthStart, monthEnd])
+      AND o.paid_at >= $${sc.params.length + 1}
+      AND o.paid_at < $${sc.params.length + 2}
+  `, [...sc.params, monthStart, monthEnd])
 
-  // 月度服务单数
+  // 月度整店服务单数
+  const svcSc = buildStoreScopeCondition(ctx.auth, 'store_id', 1)
   const svcRows = await pg.query(`
     SELECT COUNT(*) AS total_service_count
     FROM service_orders
-    WHERE assigned_employee_id = $1
-      AND service_date >= $2
-      AND service_date < $3
-  `, [staffWfId, monthStartStr, monthEndStr])
+    WHERE ${svcSc.sql}
+      AND service_date >= $${svcSc.params.length + 1}
+      AND service_date < $${svcSc.params.length + 2}
+  `, [...svcSc.params, monthStartStr, monthEndStr])
 
   const dailyData = dailyRows.map(r => ({
     date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10),
@@ -350,28 +476,38 @@ async function todoList(ctx) {
   // 店长专属
   if (isManager) {
     const offlineRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待确认收款'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND payment_method = '线下'`,
       [storeId]
     )
     const createRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND sale_order_source != 'staff'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND opened_by IS NULL`,
       [storeId]
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)
     result.pendingCreateOrderCount = Number(createRows[0].cnt)
 
     const unbindRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = 'pending'`,
+      `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = '待处理'`,
       [storeId]
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
     // 待提成分配订单
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = 'pending'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'`,
       [storeId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
+
+    // 待审批退款流水（2026-04-26 sale-order-domain-refactor：从 sale_order_payments 推断）
+    const refundRows = await pg.query(
+      `SELECT COUNT(*) AS cnt
+         FROM sale_order_payments sop
+         JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+        WHERE so.store_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批'`,
+      [storeId]
+    )
+    result.pendingRefundCount = Number(refundRows[0].cnt)
   }
 
   ctx.result = result
@@ -388,6 +524,14 @@ async function bindStore(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
+  // Scope guard: 总部可任意切店；其他角色（market / store_manager / store_staff）
+  // 必须在自己 scopeStoreIds 内，禁止绕过 scope 切到任意门店
+  if (ctx.auth.staffLevel !== 'headquarters') {
+    if (!isStoreInScope(ctx.auth, storeId)) {
+      throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
+    }
+  }
+
   const storeRows = await pg.query(
     'SELECT store_id, store_name FROM stores WHERE store_id = $1 AND is_closed = false',
     [storeId]
@@ -396,6 +540,15 @@ async function bindStore(ctx) {
   if (storeRows.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在或已关闭')
   }
+
+  // 持久化到 staff_wechat_users.store_id，否则刷新后 auth 中间件依然读旧值
+  await pg.query(
+    'UPDATE staff_wechat_users SET store_id = $1, updated_at = NOW() WHERE employee_id = $2',
+    [storeRows[0].store_id, ctx.auth.staffWfId]
+  )
+
+  // 清除 OPENID → authData 缓存，避免 5 分钟内仍返回旧 storeId
+  invalidateAuthCache(ctx.auth.openid)
 
   ctx.result = {
     success: true,
@@ -408,6 +561,16 @@ async function bindStore(ctx) {
  * 员工绩效明细
  * 返回指定时段的分配明细 + 服务提成明细
  * payload: { startDate, endDate, employeeId? (店长可查他人), salesCategory?, page, pageSize }
+ *
+ * 口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
+ *   totalSalesAlloc       = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
+ *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
+ *   totalCommission（合计）= 两者相加 —— 销售/服务两侧均为真实提成收入。
+ *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 营业额份额（total_amount）；
+ *   item.businessAmount = 整行实收（si.received，按产品决策保持不变）。
+ *   提成率快照在 allocation.save / admin / payNotify 写入时固化（commission_rate），历史不随改率变化。
+ *   与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径（销售部分均 = commission_amount），三处自洽。
+ *   ⚠️ 销售提成是【提成收入】维度，与首卡「今日分成（营业额）」（= staffRankingRevenue，营业额份额维度）本就不等，勿强行对齐。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -417,6 +580,10 @@ async function performanceDetail(ctx) {
 
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
+
+  // Scope guard: when querying another employee, verify they're within current scope
+  // assertEmployeeInScope 自查（staffWfId === targetEmployeeId）直接放行，无需 DB
+  await assertEmployeeInScope(pg, ctx.auth, targetEmployeeId)
 
   if (!startDate || !endDate) {
     throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')
@@ -437,6 +604,8 @@ async function performanceDetail(ctx) {
   const allocRows = await pg.query(`
     SELECT
       sa.total_amount AS alloc_amount,
+      COALESCE(sa.commission_amount, 0) AS commission_amount,
+      sa.commission_rate,
       sa.allocation_ratio,
       sa.department_name,
       si.product_name,
@@ -461,7 +630,12 @@ async function performanceDetail(ctx) {
     ORDER BY o.paid_at DESC
   `, allocParams)
 
-  // 服务提成明细（基于 service_items）
+  // 服务提成明细（基于 service_commissions 表）
+  // 口径：commission_amount = fixed_fee + consume_amount
+  //       fixed_fee = sale_items.service_fee × session_used （固定手工费快照）
+  //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
+  // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
+  // 导致员工看到的数字虚高 3-5 倍，已修复。
   const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
   let svcWhere = ''
   if (salesCategory) {
@@ -471,21 +645,30 @@ async function performanceDetail(ctx) {
 
   const svcRows = await pg.query(`
     SELECT
-      sit.unit_real_price AS service_price,
+      sc.commission_amount,
+      sc.fixed_fee,
+      sc.consume_amount,
+      sc.role_type,
+      sc.commission_rate,
       sit.session_used,
+      sit.unit_real_price AS service_unit_price,
       si.product_name,
       si.sku_spec_name,
       si.sales_category,
       so.service_order_id,
       so.service_date,
+      so.created_at AS service_created_at,
       so.store_id,
       cu.name AS customer_name,
       cu.phone AS client_phone
-    FROM service_items sit
+    FROM service_commissions sc
+    JOIN service_items sit ON sit.service_item_id = sc.service_item_id
     JOIN service_orders so ON so.service_order_id = sit.service_order_id
     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
     LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
-    WHERE sit.employee_id = $1
+    WHERE sc.employee_id = $1
+      AND sc.is_void = false
+      AND sc.voided_at IS NULL
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
@@ -495,22 +678,23 @@ async function performanceDetail(ctx) {
 
   // 汇总
   let totalSalesAlloc = 0
-  let totalServiceFee = 0
+  let totalServiceCommission = 0
   const categorySummary = {}
 
   for (const r of allocRows) {
-    totalSalesAlloc += Number(r.alloc_amount)
+    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额 total_amount
+    totalSalesAlloc += Number(r.commission_amount)
     const cat = r.sales_category || '未分类'
     if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].sales += Number(r.alloc_amount)
+    categorySummary[cat].sales += Number(r.commission_amount)
   }
 
   for (const r of svcRows) {
-    const fee = Number(r.service_price) * (r.session_used || 1)
-    totalServiceFee += fee
+    const amount = Number(r.commission_amount)
+    totalServiceCommission += amount
     const cat = r.sales_category || '未分类'
     if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].service += fee
+    categorySummary[cat].service += amount
   }
 
   // 合并为时间线，按 filterType 过滤，分页
@@ -519,9 +703,11 @@ async function performanceDetail(ctx) {
     productName: r.product_name,
     specName: r.sku_spec_name,
     salesCategory: r.sales_category,
-    amount: Number(r.alloc_amount),
-    ratio: r.allocation_ratio,
-    businessAmount: Number(r.received),
+    amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
+    allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
+    commissionRate: Number(r.commission_rate || 0), // 提成率快照
+    ratio: Number(r.allocation_ratio),
+    businessAmount: Number(r.received), // 整行实收（产品决策：保持不变）
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.sale_order_id,
@@ -534,13 +720,17 @@ async function performanceDetail(ctx) {
     productName: r.product_name,
     specName: r.sku_spec_name,
     salesCategory: r.sales_category,
-    amount: Number(r.service_price) * (r.session_used || 1),
+    roleType: r.role_type,
+    amount: Number(r.commission_amount),
+    fixedFee: Number(r.fixed_fee || 0),
+    consumeAmount: Number(r.consume_amount || 0),
+    commissionRate: Number(r.commission_rate || 0),
     sessionUsed: r.session_used,
-    servicePrice: Number(r.service_price),
+    servicePrice: Number(r.service_unit_price || 0),
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.service_order_id,
-    date: r.service_date,
+    date: r.service_created_at || r.service_date,
   }))
 
   let allItems
@@ -553,10 +743,14 @@ async function performanceDetail(ctx) {
   const offset = (page - 1) * pageSize
   const paged = allItems.slice(offset, offset + pageSize)
 
+  const roundedServiceCommission = Math.round(totalServiceCommission * 100) / 100
+
   ctx.result = {
     totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
-    totalServiceFee: Math.round(totalServiceFee * 100) / 100,
-    totalCommission: Math.round((totalSalesAlloc + totalServiceFee) * 100) / 100,
+    totalServiceCommission: roundedServiceCommission,
+    // 向后兼容：保留 totalServiceFee 字段名供老版本前端使用（1-2 发布周期后下线）
+    totalServiceFee: roundedServiceCommission,
+    totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
     categorySummary,
     items: paged,
     total: allItems.length,
@@ -566,130 +760,106 @@ async function performanceDetail(ctx) {
 }
 
 /**
- * 数据看板（简单指标）
- * 返回客流/客量/新会员/业绩/消耗
- * payload: { startDate, endDate }
+ * 头像上传（员工本人自助）
+ *
+ * 流程：
+ *   1. 本函数前置校验参数（与 clientApi.auth.uploadStaffAvatar 重复一份，让 base64 损坏/超 2MB
+ *      等错误更早抛出，节省一次跨 env HTTPS 往返）
+ *   2. HMAC-SHA256(body, CLIENT_SECRET) 签 body，HTTPS POST 到 clientApi HTTP 触发器
+ *   3. clientApi 在 client env 内 cloud.uploadFile + getTempFileURL，返回 HTTPS URL
+ *   4. 本函数把 HTTPS URL 写入 PG staff_wechat_users.avatar_url
+ *
+ * 为什么不直接在 staff env 写 staff env COS：
+ *   - 客户端小程序读 staff env URL 需要额外配域名白名单 + staff env COS 还得改公共读策略
+ *   - 复用 admin → client env COS 的已有写路径（products.cover_image 已实证）最一致
+ *
+ * 为什么不用 wx-server-sdk 跨 env：
+ *   - wx-server-sdk@3.0.4 的 new Cloud({resourceEnv}) 实测被静默忽略（fileID 仍落 staff env）
+ *   - 不用 @cloudbase/node-sdk：避免再引一套 SDK + 腾讯云 secret 凭证管理
+ *
+ * 安全：HMAC 防伪 + timestamp 防重放 + clientApi HTTP 入口 allowlist 仅 uploadStaffAvatar
  */
-async function dashboard(ctx) {
+async function uploadAvatar(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { startDate, endDate } = ctx.event.payload || {}
-  const isManagerRole = ctx.auth.roles.includes('manager')
-  const storeId = ctx.auth.storeId
+  const { base64, ext } = ctx.event.payload || {}
+  const { OPENID } = cloud.getWXContext()
   const employeeId = ctx.auth.staffWfId
 
-  if (!startDate || !endDate) {
-    throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')
+  // 前置参数校验
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  if (!['jpg', 'jpeg', 'png', 'webp'].includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+  if (!employeeId) {
+    throw new Error('UNAUTHORIZED: 员工档案未关联')
+  }
+  if (!CLIENT_API_HTTP_URL || !CLIENT_SECRET) {
+    throw new Error('INVALID_STATE: CLIENT_API_HTTP_URL/CLIENT_SECRET 未配置')
   }
 
-  const start = startDate
-  const end = endDate
+  // 签 + 发
+  const body = JSON.stringify({
+    action: 'auth.uploadStaffAvatar',
+    payload: { base64, ext: normalizedExt, employeeId },
+    timestamp: Date.now(),
+  })
+  const sig = crypto.createHmac('sha256', CLIENT_SECRET).update(body).digest('hex')
 
-  // 域过滤：美容师仅看自己，店长看整店
-  let scopeFilter, scopeParams
-
-  if (isManagerRole) {
-    scopeFilter = 'so.store_id = $1'
-    scopeParams = [storeId]
-  } else {
-    scopeFilter = 'so.assigned_employee_id = $1'
-    scopeParams = [employeeId]
+  let resp
+  try {
+    resp = await postJson(CLIENT_API_HTTP_URL, body, { 'x-fengyu-signature': sig })
+  } catch (err) {
+    throw new Error(`INVALID_STATE: 跨 env 上传请求失败：${err.message}`)
   }
 
-  // 1. 客流：服务单数量（一人一天算一次）
-  const footfallRows = await pg.query(`
-    SELECT COUNT(DISTINCT (so.client_user_id, so.service_date)) AS footfall
-    FROM service_orders so
-    WHERE ${scopeFilter}
-      AND so.status = '已完成'
-      AND so.service_date >= $${scopeParams.length + 1}
-      AND so.service_date <= $${scopeParams.length + 2}
-  `, [...scopeParams, start, end])
-
-  // 2. 客量：按月+顾客去重（一人一月算一次）
-  const headcountRows = await pg.query(`
-    SELECT COUNT(DISTINCT so.client_user_id) AS headcount
-    FROM service_orders so
-    WHERE ${scopeFilter}
-      AND so.status = '已完成'
-      AND so.service_date >= $${scopeParams.length + 1}
-      AND so.service_date <= $${scopeParams.length + 2}
-      AND so.client_user_id IS NOT NULL
-  `, [...scopeParams, start, end])
-
-  // 3. 业绩：收款金额汇总（已支付）
-  let revenueRows
-  if (isManagerRole) {
-    // 店长看整店业绩
-    revenueRows = await pg.query(`
-      SELECT COALESCE(SUM(si.received::numeric), 0) AS revenue
-      FROM sale_orders o
-      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-      WHERE o.store_id = $1
-        AND o.status = '已支付'
-        AND o.paid_at >= $2::date
-        AND o.paid_at < ($3::date + INTERVAL '1 day')
-    `, [storeId, start, end])
-  } else {
-    // 美容师看基于 sale_allocations 的分配业绩
-    revenueRows = await pg.query(`
-      SELECT COALESCE(SUM(sa.total_amount::numeric), 0) AS revenue
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-      JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-      WHERE sa.employee_id = $1
-        AND sa.is_void = false
-        AND o.status = '已支付'
-        AND o.paid_at >= $2::date
-        AND o.paid_at < ($3::date + INTERVAL '1 day')
-    `, [employeeId, start, end])
+  if (resp.status !== 200 || !resp.json) {
+    throw new Error(`INVALID_STATE: 跨 env 上传 HTTP status=${resp.status}, body=${(resp.raw || '').slice(0, 200)}`)
+  }
+  if (resp.json.code !== 0) {
+    // clientApi 已 buildErrorResponse，errorType 已是 9 项白名单之一；message 含前缀
+    throw new Error(resp.json.message || 'INVALID_STATE: 跨 env 上传失败')
   }
 
-  // 4. 消耗：服务单划卡单价汇总
-  const consumeRows = await pg.query(`
-    SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS consume
-    FROM service_items sit
-    JOIN service_orders so ON so.service_order_id = sit.service_order_id
-    WHERE ${scopeFilter}
-      AND so.status = '已完成'
-      AND so.service_date >= $${scopeParams.length + 1}
-      AND so.service_date <= $${scopeParams.length + 2}
-  `, [...scopeParams, start, end])
-
-  // 5. 新会员：首次消费达 1980 元（简化统计）
-  let newMemberFilter, newMemberParams
-  if (isManagerRole) {
-    newMemberFilter = 'o.store_id = $1'
-    newMemberParams = [storeId]
-  } else {
-    newMemberFilter = 'o.preferred_employee_id = $1'
-    newMemberParams = [employeeId]
+  const httpsUrl = resp.json.data && resp.json.data.avatarUrl
+  const fileID = resp.json.data && resp.json.data.fileID
+  if (!httpsUrl) {
+    throw new Error('INVALID_STATE: clientApi 未返回 avatarUrl')
   }
 
-  const newMemberRows = await pg.query(`
-    SELECT COUNT(DISTINCT o.client_user_id) AS new_members
-    FROM sale_orders o
-    WHERE ${newMemberFilter}
-      AND o.status = '已支付'
-      AND o.paid_at >= $${newMemberParams.length + 1}::date
-      AND o.paid_at < ($${newMemberParams.length + 2}::date + INTERVAL '1 day')
-      AND o.total_amount >= 1980
-      AND o.client_user_id IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM sale_orders o2
-        WHERE o2.client_user_id = o.client_user_id
-          AND o2.status = '已支付'
-          AND o2.paid_at < $${newMemberParams.length + 1}::date
-      )
-  `, [...newMemberParams, start, end])
+  await pg.query(
+    'UPDATE staff_wechat_users SET avatar_url = $1, updated_at = NOW() WHERE employee_id = $2',
+    [httpsUrl, employeeId]
+  )
 
-  ctx.result = {
-    footfall: Number(footfallRows[0].footfall),
-    headcount: Number(headcountRows[0].headcount),
-    revenue: Math.round(Number(revenueRows[0].revenue) * 100) / 100,
-    consume: Math.round(Number(consumeRows[0].consume) * 100) / 100,
-    newMembers: Number(newMemberRows[0].new_members),
-  }
+  // 清除 auth 缓存，下一次 login/任意接口能读到新头像
+  invalidateAuthCache(OPENID)
+
+  ctx.result = { fileID, avatarUrl: httpsUrl }
 }
 
-module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard }
+/**
+ * 技能标签字典（提成分配 / 服务提成下拉选项来源）
+ * 读 skill_tags 字典表（admin 员工管理维护），与员工技能标签同源。
+ */
+async function skillTags(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const rows = await pg.query(
+    'SELECT name FROM skill_tags WHERE is_valid = true ORDER BY sort_order, name'
+  )
+
+  ctx.result = { skillTags: rows.map(r => r.name) }
+}
+
+module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, uploadAvatar, skillTags }

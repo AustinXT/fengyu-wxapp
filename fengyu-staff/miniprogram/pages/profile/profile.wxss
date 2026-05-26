@@ -11,6 +11,7 @@
 }
 
 .avatar-wrap {
+  position: relative;
   width: 112rpx;
   height: 112rpx;
   border-radius: 50%;
@@ -20,6 +21,28 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.avatar-image {
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 50%;
+}
+
+/* 头像右下角"换图"小角标 */
+.avatar-edit-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 36rpx;
+  height: 36rpx;
+  border-radius: 50%;
+  background: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2rpx solid #FFFFFF;
 }
 
 .profile-name {
@@ -63,12 +86,12 @@
 
 .profile-bind-btn {
   width: 100%;
-  height: 80rpx;
-  line-height: 80rpx;
-  border-radius: 12rpx;
+  height: 72rpx;
+  line-height: 72rpx;
+  border-radius: 8rpx;
   background: var(--color-primary);
   color: #FFFFFF;
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 500;
   border: none;
 }

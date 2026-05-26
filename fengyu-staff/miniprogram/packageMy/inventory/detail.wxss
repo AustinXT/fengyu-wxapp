@@ -1,0 +1,133 @@
+/* packageMy/inventory/detail.wxss */
+.container {
+  background-color: #F5F5F5;
+  min-height: 100vh;
+  padding-bottom: 32rpx;
+}
+
+.head {
+  background: #FFFFFF;
+  padding: 24rpx;
+  border-bottom: 1rpx solid #EEE;
+}
+
+.head-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12rpx;
+}
+
+.doc-id {
+  font-size: 32rpx;
+  font-weight: 500;
+  font-family: 'Courier New', monospace;
+}
+
+.status {
+  font-size: 26rpx;
+}
+
+.status-done { color: #3D8A5A; }
+.status-draft { color: #D4820A; }
+.status-cancelled { color: #999; }
+
+.meta-row {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+}
+
+.meta-tag {
+  background: #FFF0EE;
+  color: #C0322A;
+  padding: 4rpx 14rpx;
+  border-radius: 4rpx;
+  font-size: 24rpx;
+}
+
+.meta-date {
+  font-size: 26rpx;
+  color: #666;
+}
+
+.section {
+  background: #FFFFFF;
+  margin-top: 16rpx;
+  padding: 24rpx;
+}
+
+.section-title {
+  font-size: 28rpx;
+  font-weight: 500;
+  margin-bottom: 16rpx;
+  color: #333;
+}
+
+.field {
+  display: flex;
+  justify-content: space-between;
+  padding: 12rpx 0;
+  font-size: 26rpx;
+}
+
+.label {
+  color: #999;
+}
+
+.value {
+  color: #333;
+  text-align: right;
+  max-width: 60%;
+  word-break: break-all;
+}
+
+.item-card {
+  border-top: 1rpx solid #F5F5F5;
+  padding: 16rpx 0;
+}
+
+.item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8rpx;
+}
+
+.item-name {
+  font-size: 28rpx;
+  font-weight: 500;
+}
+
+.item-qty {
+  font-size: 28rpx;
+  color: #C0322A;
+  font-weight: 500;
+}
+
+.item-meta {
+  display: flex;
+  gap: 16rpx;
+  flex-wrap: wrap;
+  font-size: 22rpx;
+  color: #999;
+  margin-bottom: 8rpx;
+}
+
+.item-code {
+  font-family: 'Courier New', monospace;
+}
+
+.item-extra {
+  display: flex;
+  gap: 16rpx;
+  flex-wrap: wrap;
+  font-size: 22rpx;
+  color: #666;
+}
+
+.loading {
+  text-align: center;
+  padding: 60rpx;
+  color: #999;
+}

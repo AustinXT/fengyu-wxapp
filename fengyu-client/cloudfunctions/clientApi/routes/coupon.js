@@ -35,7 +35,9 @@ async function list(ctx) {
   const coupons = await pg.query(`
     SELECT
       uc.coupon_id, uc.status, uc.expire_at, uc.used_at, uc.created_at,
-      ct.name, ct.coupon_type, ct.discount_value, ct.min_spend,
+      ct.name, ct.coupon_type,
+      COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
+      ct.min_spend,
       ct.applicable_category_ids, ct.applicable_store_ids,
       ct.description
     FROM user_coupons uc
@@ -66,6 +68,22 @@ async function list(ctx) {
     for (const r of storeRows) storeNameMap[r.store_id] = r.store_name
   }
 
+  // 查询适用品类名称（批量，复用 storeNameMap 模式）
+  const categoryIds = new Set()
+  for (const c of coupons) {
+    if (c.applicable_category_ids) {
+      for (const id of c.applicable_category_ids) categoryIds.add(id)
+    }
+  }
+  let categoryNameMap = {}
+  if (categoryIds.size > 0) {
+    const catRows = await pg.query(
+      'SELECT category_id, category_name FROM product_categories WHERE category_id = ANY($1)',
+      [Array.from(categoryIds)]
+    )
+    for (const r of catRows) categoryNameMap[r.category_id] = r.category_name
+  }
+
   ctx.result = {
     coupons: coupons.map(c => ({
       couponId: c.coupon_id,
@@ -80,6 +98,9 @@ async function list(ctx) {
       description: c.description,
       applicableStoreNames: c.applicable_store_ids
         ? c.applicable_store_ids.map(id => storeNameMap[id] || id)
+        : null,
+      applicableCategoryNames: c.applicable_category_ids
+        ? c.applicable_category_ids.map(id => categoryNameMap[id] || id)
         : null,
     }))
   }
@@ -118,11 +139,12 @@ async function available(ctx) {
     [userId]
   )
 
-  // 查询用户可用券 + 模板信息
+  // 查询用户可用券 + 模板信息（face_value_override 优先于 template.discount_value）
   const coupons = await pg.query(`
     SELECT
       uc.coupon_id, uc.expire_at,
-      ct.template_id, ct.name, ct.coupon_type, ct.discount_value,
+      ct.template_id, ct.name, ct.coupon_type,
+      COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
       ct.min_spend, ct.max_discount,
       ct.applicable_category_ids, ct.applicable_store_ids,
       ct.description
@@ -138,13 +160,10 @@ async function available(ctx) {
     return
   }
 
-  // 解析每个 SKU 的 category_id
+  // 解析每个 SKU 的 category_id（SKU 直接有 category_id，无需 JOIN products）
   const skuIds = items.map(i => i.skuId)
   const skuCats = await pg.query(
-    `SELECT ps.sku_id, p.category_id
-     FROM product_skus ps
-     JOIN products p ON ps.product_id = p.product_id
-     WHERE ps.sku_id = ANY($1)`,
+    `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1) AND deleted_at IS NULL`,
     [skuIds]
   )
   const catMap = new Map()
@@ -170,16 +189,18 @@ async function available(ctx) {
     }
     if (eligibleItems.length === 0) continue
 
-    // 满减门槛
-    const eligibleTotal = eligibleItems.reduce(
+    // 满减门槛（归一化到分 + 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动）
+    const eligibleTotalRaw = eligibleItems.reduce(
       (sum, i) => sum + Number(i.amount || 0), 0
     )
-    const minSpend = Number(coupon.min_spend) || 0
-    if (eligibleTotal < minSpend) continue
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
+    const minSpend = Math.round((Number(coupon.min_spend) || 0) * 100) / 100
+    // +0.001 兜底 JS 浮点累计误差（仅用于门槛判断，分摊/显示仍精确到分）
+    if (eligibleTotal + 0.001 < minSpend) continue
 
     // 计算可抵扣金额
     let discount = 0
-    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '项目券') {
+    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '品项券') {
       discount = Math.min(Number(coupon.discount_value), eligibleTotal)
     } else if (coupon.coupon_type === '折扣券') {
       discount = eligibleTotal * (1 - Number(coupon.discount_value))
@@ -208,97 +229,4 @@ async function available(ctx) {
   ctx.result = { coupons: result }
 }
 
-/**
- * 兑换优惠券
- * payload: { code: string }
- */
-async function redeem(ctx) {
-  await requirePhone()(ctx, async () => {})
-
-  const { userId } = ctx.auth
-  const { code } = ctx.event.payload || {}
-
-  if (!code || typeof code !== 'string' || code.trim().length === 0) {
-    throw new Error('INVALID_PARAMS: 请输入兑换码')
-  }
-
-  const trimmedCode = code.trim().toUpperCase()
-
-  // 查找兑换码对应的券模板
-  const templates = await pg.query(
-    `SELECT template_id, name, coupon_type, discount_value, min_spend,
-            max_discount, applicable_category_ids, applicable_store_ids,
-            valid_days, expire_at AS template_expire_at, max_claims, claimed_count,
-            description, is_active
-     FROM coupon_templates
-     WHERE redeem_code = $1`,
-    [trimmedCode]
-  )
-
-  if (templates.length === 0) {
-    throw new Error('INVALID_PARAMS: 兑换码无效')
-  }
-
-  const tpl = templates[0]
-
-  if (!tpl.is_active) {
-    throw new Error('INVALID_PARAMS: 该兑换码已失效')
-  }
-
-  // 检查模板级过期
-  if (tpl.template_expire_at && new Date(tpl.template_expire_at) < new Date()) {
-    throw new Error('INVALID_PARAMS: 该兑换码已过期')
-  }
-
-  // 检查领取上限
-  if (tpl.max_claims && tpl.claimed_count >= tpl.max_claims) {
-    throw new Error('INVALID_PARAMS: 该兑换码已被领完')
-  }
-
-  // 检查用户是否已兑换过
-  const existing = await pg.query(
-    'SELECT coupon_id FROM user_coupons WHERE user_id = $1 AND template_id = $2',
-    [userId, tpl.template_id]
-  )
-  if (existing.length > 0) {
-    throw new Error('INVALID_PARAMS: 您已兑换过该优惠券')
-  }
-
-  // 计算过期时间
-  const now = new Date()
-  let expireAt
-  if (tpl.valid_days) {
-    expireAt = new Date(now.getTime() + tpl.valid_days * 24 * 60 * 60 * 1000)
-  } else if (tpl.template_expire_at) {
-    expireAt = new Date(tpl.template_expire_at)
-  } else {
-    // 默认 30 天有效
-    expireAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
-  }
-
-  // 生成券 ID
-  const couponId = 'cpn_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6)
-
-  // 事务：创建用户券 + 递增 claimed_count
-  await pg.transaction(async (client) => {
-    await client.query(
-      `INSERT INTO user_coupons (coupon_id, user_id, template_id, status, expire_at, created_at)
-       VALUES ($1, $2, $3, '未使用', $4, $5)`,
-      [couponId, userId, tpl.template_id, expireAt, now]
-    )
-    await client.query(
-      'UPDATE coupon_templates SET claimed_count = claimed_count + 1 WHERE template_id = $1',
-      [tpl.template_id]
-    )
-  })
-
-  ctx.result = {
-    couponId,
-    name: tpl.name,
-    couponType: tpl.coupon_type,
-    discountValue: tpl.discount_value,
-    expireAt,
-  }
-}
-
-module.exports = { list, available, redeem }
+module.exports = { list, available }

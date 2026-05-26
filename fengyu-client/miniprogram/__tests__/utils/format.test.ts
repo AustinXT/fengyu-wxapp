@@ -12,6 +12,7 @@ import {
   getStatusClass,
   formatOrderDate,
   formatDateTime,
+  formatDateTimeShort,
   formatShortDate,
   formatRelativeTime,
   formatAmount,
@@ -59,8 +60,8 @@ describe('formatDiscount', () => {
   test('现金券：10 → "¥10"', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: 10 })).toBe('¥10')
   })
-  test('项目券：50 → "¥50"', () => {
-    expect(formatDiscount({ couponType: '项目券', discountValue: 50 })).toBe('¥50')
+  test('品项券：50 → "¥50"', () => {
+    expect(formatDiscount({ couponType: '品项券', discountValue: 50 })).toBe('¥50')
   })
   test('字符串数值', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: '20' })).toBe('¥20')
@@ -173,20 +174,36 @@ describe('formatOrderDate', () => {
 })
 
 describe('formatDateTime', () => {
-  test('ISO 日期时间', () => {
-    // 使用本地时间构造以避免时区问题
-    const d = new Date(2025, 2, 14, 10, 30); // 2025-03-14 10:30 local
-    expect(formatDateTime(d.toISOString())).toBe('2025-03-14 10:30')
+  test('ISO 日期时间（带秒）', () => {
+    const d = new Date(2025, 2, 14, 10, 30, 42); // 2025-03-14 10:30:42 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-03-14 10:30:42')
   })
   test('补零', () => {
-    const d = new Date(2025, 0, 5, 8, 5); // 2025-01-05 08:05 local
-    expect(formatDateTime(d.toISOString())).toBe('2025-01-05 08:05')
+    const d = new Date(2025, 0, 5, 8, 5, 9); // 2025-01-05 08:05:09 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-01-05 08:05:09')
   })
   test('空字符串', () => {
     expect(formatDateTime('')).toBe('')
   })
   test('无效日期', () => {
     expect(formatDateTime('not-a-date')).toBe('')
+  })
+})
+
+describe('formatDateTimeShort', () => {
+  test('ISO 日期时间（不带秒）', () => {
+    const d = new Date(2025, 2, 14, 10, 30); // 2025-03-14 10:30 local
+    expect(formatDateTimeShort(d.toISOString())).toBe('2025-03-14 10:30')
+  })
+  test('补零', () => {
+    const d = new Date(2025, 0, 5, 8, 5); // 2025-01-05 08:05 local
+    expect(formatDateTimeShort(d.toISOString())).toBe('2025-01-05 08:05')
+  })
+  test('空字符串', () => {
+    expect(formatDateTimeShort('')).toBe('')
+  })
+  test('无效日期', () => {
+    expect(formatDateTimeShort('not-a-date')).toBe('')
   })
 })
 
@@ -244,6 +261,13 @@ describe('formatAmount', () => {
   })
   test('小数精度', () => {
     expect(formatAmount(9.9)).toBe('+9.90')
+  })
+  test('字符串数字（兼容 PG numeric 返回）', () => {
+    expect(formatAmount('7378.52')).toBe('+7378.52')
+    expect(formatAmount('-120.5')).toBe('-120.50')
+  })
+  test('非法字符串回退 0', () => {
+    expect(formatAmount('abc')).toBe('+0.00')
   })
 })
 

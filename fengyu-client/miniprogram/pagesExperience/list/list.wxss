@@ -1,0 +1,177 @@
+/* pagesExperience/list/list.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 40rpx;
+}
+
+/* ===== 顶部 hero ===== */
+
+.hero {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  padding: 56rpx 36rpx 48rpx;
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.hero-title {
+  font-size: 40rpx;
+  font-weight: 700;
+}
+
+.hero-sub {
+  font-size: 26rpx;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ===== 骨架屏 ===== */
+
+.skeleton-wrap {
+  padding: 32rpx 24rpx;
+}
+
+/* ===== 卡片列表 ===== */
+
+.card-list {
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+.card-item {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  display: flex;
+  overflow: hidden;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+}
+
+.card-cover {
+  width: 200rpx;
+  height: 200rpx;
+  flex-shrink: 0;
+  background: var(--color-bg-section);
+}
+
+.cover-placeholder {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-body {
+  flex: 1;
+  padding: 20rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.card-title {
+  flex: 1;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-tag {
+  flex-shrink: 0;
+  font-size: 20rpx;
+}
+
+.card-spec {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+.card-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6rpx;
+  margin-top: 4rpx;
+}
+
+.card-meta-text {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.card-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8rpx;
+}
+
+.price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+}
+
+.price-symbol {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.price-integer {
+  font-size: 36rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.price-origin {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
+}
+
+.card-buy-btn {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  padding: 12rpx 24rpx;
+  border-radius: 28rpx;
+}
+
+.card-buy-text {
+  color: #FFFFFF;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+/* ===== 底部说明 ===== */
+
+.footer-note {
+  padding: 24rpx 36rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.footer-note-line {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  line-height: 1.6;
+}

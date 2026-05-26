@@ -1,125 +1,178 @@
 <!-- pages/order-create/order-create.wxml — 开单 -->
 <view class="container order-create-page">
 
-  <!-- 顶部大类分类横向导航 -->
+  <!-- 顶部商品类型 4 选 1（PR-B §2.1）-->
   <van-tabs
-    active="{{activeBigCategoryIndex}}"
+    active="{{productKindChoiceIndex}}"
     bind:change="onBigCategoryChange"
     color="#C0322A"
     title-active-color="#C0322A"
     line-width="40rpx"
   >
-    <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
+    <van-tab wx:for="{{productKindChoices}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
+
+  <!-- 普通商品：商品名称模糊查询（跨分类全量匹配） -->
+  <van-search
+    wx:if="{{productKindChoice === '普通商品'}}"
+    value="{{productKeyword}}"
+    placeholder="搜索商品名称"
+    bind:change="onProductKeywordChange"
+    bind:clear="onProductKeywordClear"
+  />
 
   <!-- 分类 + 商品主区域 -->
   <view class="catalog-layout">
-    <!-- 左侧：分类侧边栏 -->
-    <scroll-view class="sidebar-scroll" scroll-y>
-      <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
-        <van-sidebar-item
-          wx:for="{{categories}}"
-          wx:key="id"
-          title="{{item.name}}"
+
+    <!-- 组合套餐：独立 BundlePicker 子视图（隐藏侧边栏）-->
+    <block wx:if="{{productKindChoice === '组合套餐'}}">
+      <view class="bundle-picker-wrap">
+        <bundle-picker
+          bundles="{{bundleSpus}}"
+          bind:select="onBundlePickerSelect"
         />
-      </van-sidebar>
-    </scroll-view>
-
-    <!-- 右侧：商品列表 -->
-    <scroll-view class="product-scroll" scroll-y>
-      <!-- 骨架屏 -->
-      <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
-        <van-skeleton title avatar row="3" />
-        <van-skeleton title avatar row="3" style="margin-top:24rpx" />
       </view>
+    </block>
 
-      <!-- 空态 -->
-      <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
-        <van-empty description="暂无商品" />
-      </view>
-      <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
-        <van-empty description="该分类暂无商品" />
-      </view>
-
-      <!-- SPU 卡片列表 -->
-      <view wx:else>
-        <view class="spu-list-inner">
+    <!-- 体验卡：扁平 SKU 卡片列表（无分类侧边栏，参照 admin TrialCardPicker） -->
+    <block wx:elif="{{productKindChoice === '体验卡'}}">
+      <scroll-view class="trial-card-scroll" scroll-y>
+        <view wx:if="{{spuList.length === 0}}" class="trial-card-empty">
+          <van-empty description="暂无可选体验卡" />
+        </view>
+        <view wx:else class="trial-card-list">
           <view
-            class="spu-card"
             wx:for="{{spuList}}"
             wx:key="spuId"
+            class="trial-card-item"
             bindtap="onSpuTap"
             data-spu="{{item}}"
           >
-            <!-- 商品封面 -->
-            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="64rpx" color="#C0322A" />
-            </view>
-            <image
-              wx:else
-              class="spu-cover"
-              src="{{item.cover_image}}"
-              mode="aspectFill"
-              lazy-load
-            />
-
-            <!-- 商品信息 -->
-            <view class="spu-body">
-              <!-- 标签行 -->
-              <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                <van-tag color="#C0322A">推荐</van-tag>
+            <text class="trial-card-name">{{item.spuName}}</text>
+            <view class="trial-card-sub">
+              <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + '次卡' : '单次'}}</text>
+              <view class="trial-card-right">
+                <text class="trial-card-price">¥{{item.price}}</text>
+                <view class="trial-card-add-btn">加入</view>
               </view>
+            </view>
+          </view>
+        </view>
+      </scroll-view>
+    </block>
 
-              <!-- 商品名 -->
-              <text class="spu-name">{{item.spuName}}</text>
+    <!-- 其他类型：侧边栏 + SKU 列表 -->
+    <block wx:else>
+      <!-- 左侧：分类侧边栏 -->
+      <scroll-view class="sidebar-scroll" scroll-y>
+        <!-- PR-B：普通商品模式用自定义分组 view（van-sidebar 不支持分组） -->
+        <block wx:if="{{productKindChoice === '普通商品'}}">
+          <view
+            class="grouped-sidebar"
+            wx:for="{{groupedCategories}}"
+            wx:for-item="group"
+            wx:key="productKind"
+          >
+            <view class="group-header">{{group.productKind}}</view>
+            <view
+              wx:for="{{group.items}}"
+              wx:for-item="sub"
+              wx:key="id"
+              class="cat-item {{activeCategoryId === sub.id ? 'cat-item--active' : ''}}"
+              hover-class="cat-item-hover"
+              hover-stay-time="50"
+              data-id="{{sub.id}}"
+              bindtap="onGroupedCategoryTap"
+            >{{sub.name}}</view>
+          </view>
+        </block>
+        <!-- 其他 Tab（体验卡/充值卡）：保留 van-sidebar 平坦结构 -->
+        <van-sidebar wx:else active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
+          <van-sidebar-item
+            wx:for="{{categories}}"
+            wx:key="id"
+            title="{{item.name}}"
+          />
+        </van-sidebar>
+      </scroll-view>
 
-              <!-- 底部：价格 + 按钮 -->
-              <view class="spu-footer">
-                <view class="price-group">
-                  <text class="price-symbol">¥</text>
-                  <text class="price-integer">{{item.priceFrom}}</text>
-                  <text class="price-start">起</text>
-                </view>
-                <view class="spu-add-btn">
-                  <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+      <!-- 右侧：商品列表 -->
+      <scroll-view class="product-scroll" scroll-y>
+        <!-- 骨架屏 -->
+        <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
+          <van-skeleton title avatar row="3" />
+          <van-skeleton title avatar row="3" style="margin-top:24rpx" />
+        </view>
+
+        <!-- 搜索无结果 -->
+        <view wx:elif="{{searching && spuList.length === 0}}">
+          <van-empty description="未找到相关商品" />
+        </view>
+
+        <!-- 空态 -->
+        <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
+          <van-empty description="暂无商品" />
+        </view>
+        <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
+          <van-empty description="该分类暂无商品" />
+        </view>
+
+        <!-- SPU 列表（isCardType=true 时 grid 简化布局；否则单行卡片，向体验卡列表看齐）-->
+        <view wx:else>
+          <!-- 卡类型（充值卡）：grid 简化按钮块 -->
+          <view wx:if="{{isCardType}}" class="spu-list-inner spu-list-inner--grid">
+            <view
+              class="sku-grid-item"
+              wx:for="{{spuList}}"
+              wx:key="spuId"
+              bindtap="onSpuTap"
+              data-spu="{{item}}"
+            >
+              <text class="sku-grid-name">{{item.spuName}}</text>
+              <view class="sku-grid-price">
+                <text class="price-symbol">¥</text>
+                <text class="price-integer">{{item.price}}</text>
+              </view>
+            </view>
+          </view>
+
+          <!-- 普通商品：单行精简卡片（左 名称 + meta，右 价格 + 加入），与体验卡列表对齐 -->
+          <view wx:else class="trial-card-list">
+            <view
+              class="trial-card-item"
+              wx:for="{{spuList}}"
+              wx:key="spuId"
+              bindtap="onSpuTap"
+              data-spu="{{item}}"
+            >
+              <text class="trial-card-name">{{item.spuName}}</text>
+              <view class="trial-card-sub">
+                <text class="trial-card-meta">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+                <view class="trial-card-right">
+                  <view class="price-dual">
+                    <block wx:if="{{item.specialPrice != null}}">
+                      <text class="price-original">¥{{item.listPrice}}</text>
+                      <text class="price-special">¥{{item.specialPrice}}</text>
+                    </block>
+                    <text wx:else class="price-special">¥{{item.listPrice}}</text>
+                  </view>
+                  <view class="trial-card-add-btn">加入</view>
                 </view>
               </view>
             </view>
           </view>
         </view>
-
-        <!-- 购物车已选项目（内联） -->
-        <view wx:if="{{cart.length > 0}}" class="cart-items-inline">
-          <text class="cart-inline-title">已添加项目</text>
-          <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
-            <view class="cart-item-info">
-              <text class="cart-item-name">{{item.spuName}}</text>
-              <text class="cart-item-spec">{{item.specName}}</text>
-            </view>
-            <view class="cart-item-right">
-              <text class="cart-item-price">¥{{item.itemTotal}}</text>
-              <van-stepper
-                value="{{item.quantity}}"
-                min="1"
-                max="10"
-                data-sku-id="{{item.skuId}}"
-                bind:change="onCartQtyChange"
-              />
-              <van-icon
-                name="delete-o" size="36rpx" color="#D94040"
-                data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
-              />
-            </view>
-          </view>
-        </view>
-      </view>
-    </scroll-view>
+      </scroll-view>
+    </block>
   </view>
 
-  <!-- 底部操作栏 -->
-  <view class="bottom-bar" wx:if="{{categories.length > 0}}">
-    <view class="bottom-bar-mid">
-      <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
+  <!-- 底部操作栏（普通分类有数据 / 体验卡有数据时显示）
+       组合套餐独占下单流程，由 bundle-picker 自带的"去下单"按钮直接进入结算 → 不显示页面级底栏 -->
+  <view class="bottom-bar" wx:if="{{productKindChoice !== '组合套餐' && (categories.length > 0 || (productKindChoice === '体验卡' && spuList.length > 0))}}">
+    <view class="bottom-bar-cart {{cartCount === 0 ? 'bottom-bar-cart--disabled' : ''}}" bindtap="onOpenCartPopup">
+      <text class="bottom-bar-cart-text">已选 {{cartCount}} 项</text>
+    </view>
+    <view class="bottom-bar-mid" bindtap="onOpenCartPopup">
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
     </view>
     <van-button
@@ -132,6 +185,52 @@
     >下单</van-button>
   </view>
 
+  <!-- 已选项目弹层 -->
+  <van-popup
+    show="{{cartPopupVisible}}"
+    position="bottom"
+    round
+    safe-area-inset-bottom
+    bind:close="onCloseCartPopup"
+  >
+    <view class="cart-popup">
+      <view class="cart-popup-header">
+        <text class="cart-popup-title">已选项目</text>
+        <text class="cart-popup-clear" bindtap="onClearCart">清空</text>
+      </view>
+      <scroll-view scroll-y class="cart-popup-list">
+        <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
+          <view class="cart-item-info">
+            <text class="cart-item-name">{{item.specName}}</text>
+            <text class="cart-item-spec" wx:if="{{item.productType}}">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+            <view class="cart-item-unitprice">
+              <block wx:if="{{item.specialPrice != null}}">
+                <text class="price-original">¥{{item.listPrice}}</text>
+                <text class="price-special">¥{{item.specialPrice}}</text>
+              </block>
+              <text wx:else class="price-special">¥{{item.listPrice}}</text>
+            </view>
+          </view>
+          <view class="cart-item-right">
+            <text class="cart-item-price">¥{{item.priceLine}}</text>
+            <van-stepper
+              wx:if="{{!item.refBundleId}}"
+              value="{{item.quantity}}"
+              min="1"
+              max="10"
+              data-sku-id="{{item.skuId}}"
+              bind:change="onCartQtyChange"
+            />
+            <van-icon
+              name="delete-o" size="36rpx" color="#D94040"
+              data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
+            />
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+  </van-popup>
+
   <!-- 结算面板弹层 -->
   <van-popup
     show="{{showCheckout}}"
@@ -141,13 +240,11 @@
     bind:close="onCloseCheckout"
   >
     <view class="checkout-panel">
-      <!-- 步骤条 -->
+      <!-- 步骤条（PR-D3.1：简化为 2 步；Step 1 编号保留 2 避免 git blame 噪声） -->
       <view class="checkout-steps">
         <view class="checkout-step {{checkoutStep >= 0 ? 'checkout-step--active' : ''}}">选顾客</view>
         <view class="checkout-step-line" />
-        <view class="checkout-step {{checkoutStep >= 1 ? 'checkout-step--active' : ''}}">开单类型</view>
-        <view class="checkout-step-line" />
-        <view class="checkout-step {{checkoutStep >= 2 ? 'checkout-step--active' : ''}}">确认</view>
+        <view class="checkout-step {{checkoutStep === 2 ? 'checkout-step--active' : ''}}">确认订单</view>
       </view>
 
       <!-- Step 0: 选择顾客 -->
@@ -167,14 +264,27 @@
           </van-cell-group>
         </view>
         <van-search
-          value="{{customerPhone}}"
-          placeholder="输入手机号搜索顾客"
+          value="{{customerKeyword}}"
+          placeholder="搜索姓名或手机号"
           bind:search="onSearchCustomer"
-          bind:change="onCustomerPhoneChange"
+          bind:change="onCustomerKeywordChange"
           use-action-slot
         >
           <view slot="action" bindtap="onSearchCustomer">搜索</view>
         </van-search>
+        <view wx:if="{{customerResults.length > 0 && !customerInfo}}" class="customer-results">
+          <van-cell-group>
+            <van-cell
+              wx:for="{{customerResults}}"
+              wx:key="clientUserId"
+              title="{{item.name || '未命名'}}"
+              label="{{item.phoneMasked || item.phone}}"
+              is-link
+              data-customer="{{item}}"
+              bind:click="onSelectCustomer"
+            />
+          </van-cell-group>
+        </view>
         <view wx:if="{{customerInfo}}" class="customer-found">
           <van-cell-group>
             <van-cell
@@ -197,116 +307,237 @@
         </view>
       </view>
 
-      <!-- Step 1: 开单类型 -->
-      <view wx:if="{{checkoutStep === 1}}" class="checkout-body">
-        <text class="checkout-customer-label">顾客：{{customerInfo.name || customerInfo.phone}}</text>
-        <text class="section-label">选择开单模式</text>
-        <view class="order-type-cards">
-          <view
-            class="order-type-card {{orderType === 'normal' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="normal"
-          >
-            <van-icon name="orders-o" size="48rpx" color="{{orderType === 'normal' ? '#C0322A' : '#999'}}" />
-            <text class="order-type-card-name">正常单</text>
-            <text class="order-type-card-desc">标准价格</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'experience' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="experience"
-          >
-            <van-icon name="smile-o" size="48rpx" color="{{orderType === 'experience' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">体验单</text>
-            <text class="order-type-card-desc">仅店长</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'internal' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="internal"
-          >
-            <van-icon name="friends-o" size="48rpx" color="{{orderType === 'internal' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">内部单</text>
-            <text class="order-type-card-desc">员工半价</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'promotion' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="promotion"
-          >
-            <van-icon name="gift-o" size="48rpx" color="{{orderType === 'promotion' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">福利活动</text>
-            <text class="order-type-card-desc">活动方案</text>
-          </view>
-        </view>
-        <view class="checkout-footer checkout-footer--row">
-          <van-button size="small" plain bind:click="onStep1Back">返回</van-button>
-          <van-button
-            size="small" type="primary"
-            custom-class="btn-primary-brand"
-            custom-style="border-radius:40rpx;"
-            bind:click="onStep1Next"
-          >下一步</van-button>
-        </view>
-      </view>
-
       <!-- Step 2: 确认订单 -->
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
-          顾客：{{customerInfo.name || customerInfo.phone}} ·
-          {{orderType === 'normal' ? '正常单' : orderType === 'experience' ? '体验单' : orderType === 'internal' ? '内部单' : '福利活动'}}
+          顾客：{{customerInfo.name || customerInfo.phone}} · {{saleOrderType}}
         </text>
-        <view class="confirm-items">
-          <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
-            <view class="confirm-item-header">
-              <text class="confirm-item-name">{{item.spuName}}</text>
-              <text class="confirm-item-spec">{{item.specName}}</text>
+
+        <!-- PR-C §C1 / B5 — 订单类型 4 选 1（寄存单：剩余次数初始化，不收钱） -->
+        <view class="order-type-cards">
+          <view
+            class="order-type-card {{saleOrderType === '销售单' ? 'order-type-card--active' : ''}}"
+            data-type="销售单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name">销售单</text>
+            <text class="order-type-card-desc">正常计价</text>
+          </view>
+          <view
+            class="order-type-card {{saleOrderType === '内部单' ? 'order-type-card--active' : ''}}"
+            data-type="内部单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name">内部单</text>
+            <text class="order-type-card-desc">员工半价</text>
+          </view>
+          <view
+            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{!customerInfo ? 'order-type-card--disabled' : ''}}"
+            data-type="转换单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name {{!customerInfo ? 'order-type-card-name--gray' : ''}}">转换单</text>
+            <text class="order-type-card-desc">{{!customerInfo ? '需已注册顾客' : '卡折抵换购'}}</text>
+          </view>
+          <view
+            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{!customerInfo ? 'order-type-card--disabled' : ''}}"
+            data-type="寄存单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name {{!customerInfo ? 'order-type-card-name--gray' : ''}}">寄存单</text>
+            <text class="order-type-card-desc">{{!customerInfo ? '需已注册顾客' : '剩余次数寄存'}}</text>
+          </view>
+        </view>
+
+        <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
+        <block wx:if="{{saleOrderType === '转换单'}}">
+          <conversion-panel
+            clientUserId="{{customerInfo.clientUserId}}"
+            convertInAmount="{{cartTotal}}"
+            cardBalance="{{customerCardBalance}}"
+            bind:change="onConversionPanelChange"
+          />
+        </block>
+
+        <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数；可录入历史实收（仅记账） -->
+        <block wx:elif="{{saleOrderType === '寄存单'}}">
+          <view class="deposit-banner">
+            <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
+          </view>
+          <view class="confirm-items">
+            <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
+              <view class="confirm-item-header">
+                <text class="confirm-item-name">{{item.spuName}}</text>
+                <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">数量</text>
+                <text class="confirm-item-value">× {{item.quantity}}</text>
+              </view>
+              <!-- 历史实收：可选，默认 0（不收钱），仅记账 -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">历史实收</text>
+                <view class="confirm-discount-input-wrap">
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{depositReceivedMap[item.skuId]}}"
+                    placeholder="0"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onDepositReceivedChange"
+                  />
+                </view>
+              </view>
             </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">售价</text>
-              <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.subtotal}}</text>
+          </view>
+        </block>
+
+        <!-- 销售单 / 内部单：行级明细 -->
+        <block wx:else>
+          <!-- 优惠券控件迁到商品清单"上方"（仅销售单可见；内部单云函数侧守卫拒券） -->
+          <block wx:if="{{saleOrderType === '销售单'}}">
+            <view class="confirm-coupon-row" bindtap="onSelectCoupon">
+              <text class="confirm-item-label">顾客优惠券</text>
+              <view class="confirm-coupon-value">
+                <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
+                <text wx:else class="confirm-coupon-hint">去选择</text>
+                <van-icon name="arrow" size="28rpx" color="#999" />
+              </view>
             </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">优惠</text>
-              <view class="confirm-discount-input-wrap">
-                <text class="confirm-discount-prefix">¥</text>
-                <input
-                  class="confirm-discount-input"
-                  type="digit"
-                  value="{{item.discount || ''}}"
-                  placeholder="0"
-                  data-sku-id="{{item.skuId}}"
-                  bindblur="onDiscountChange"
+            <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
+              <text>{{selectedCoupon.name}}</text>
+            </view>
+          </block>
+
+          <view class="confirm-items">
+            <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
+              <view class="confirm-item-header">
+                <text class="confirm-item-name">{{item.spuName}}</text>
+                <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">价格</text>
+                <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
+              </view>
+
+              <!-- 应付金额：不可编辑，仅由订单级优惠券冲抵（内部单走半价） -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">应付金额</text>
+                <block wx:if="{{saleOrderType === '内部单'}}">
+                  <view class="confirm-internal-price">
+                    <text class="confirm-item-origprice">¥{{item.saleAmount}}</text>
+                    <text class="confirm-item-receivable">¥{{item.halfPriceSaleAmount}}</text>
+                  </view>
+                </block>
+                <text wx:else class="confirm-item-receivable">¥{{item.saleAmount}}</text>
+              </view>
+
+              <!-- 实付金额：可编辑，0 ≤ received ≤ 应付 -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">实付金额</text>
+                <view class="confirm-discount-input-wrap">
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{item.received}}"
+                    placeholder="0"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onReceivedChange"
+                  />
+                </view>
+              </view>
+            </view>
+
+            <!-- 内部单合计区加"5 折"标签 + 划线原价 + 应付合计 -->
+            <view class="confirm-total-row">
+              <view class="confirm-total-label-group">
+                <text class="confirm-total-label">应付合计</text>
+                <view wx:if="{{saleOrderType === '内部单'}}" class="confirm-internal-badge">内部单 5 折</view>
+              </view>
+              <block wx:if="{{saleOrderType === '内部单'}}">
+                <view class="confirm-total-price-group">
+                  <text class="confirm-total-strikethrough">¥{{cartTotal}}</text>
+                  <text class="confirm-total-amount">¥{{payableTotal}}</text>
+                </view>
+              </block>
+              <text wx:else class="confirm-total-amount">¥{{payableTotal}}</text>
+            </view>
+          </view>
+
+          <!-- Wave 3G — 抵扣区（预选）：充值卡。与支付方式区明确分离 -->
+          <view class="prepaid-card-section">
+            <text class="prepaid-card-section-title">抵扣（预选）</text>
+            <view class="prepaid-card-row">
+              <view class="prepaid-card-info">
+                <text class="prepaid-card-label">充值卡</text>
+                <text class="prepaid-card-balance">余额 ¥{{customerCardBalance}}</text>
+              </view>
+              <view class="prepaid-card-switch-wrap">
+                <van-switch
+                  checked="{{useCard}}"
+                  size="40rpx"
+                  active-color="#C0322A"
+                  disabled="{{customerCardBalance <= 0 || customerBalanceLoading}}"
+                  bind:change="onTogglePrepaidCard"
                 />
               </view>
             </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">实付</text>
-              <text class="confirm-item-receivable">¥{{item.itemTotal}}</text>
+            <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="prepaid-card-deduct-row">
+              <text class="prepaid-card-deduct-label">预选抵扣</text>
+              <text class="prepaid-card-deduct-amount">-¥{{prepaidCardAmount}}<text class="prepaid-card-deduct-hint">（不计入实付）</text></text>
+            </view>
+            <view wx:elif="{{customerCardBalance <= 0}}" class="prepaid-card-empty-hint">
+              <text>顾客暂无充值卡余额</text>
             </view>
           </view>
-          <view class="confirm-total-row">
-            <text class="confirm-total-label">合计</text>
-            <text class="confirm-total-amount">¥{{cartTotal}}</text>
+
+          <!-- 实付汇总行（Σ 行实付） -->
+          <view class="prepaid-paid-summary">
+            <text class="prepaid-paid-label">实付金额</text>
+            <text class="prepaid-paid-amount">¥{{receivedTotal}}</text>
           </view>
-        </view>
-        <!-- 优惠券选择 -->
-        <view class="confirm-coupon-row" bindtap="onSelectCoupon">
-          <text class="confirm-item-label">顾客优惠券</text>
-          <view class="confirm-coupon-value">
-            <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
-            <text wx:else class="confirm-coupon-hint">去选择</text>
-            <van-icon name="arrow" size="28rpx" color="#999" />
+          <view wx:if="{{!showPayMethodGroup}}" class="prepaid-paid-fullcover-hint">
+            <text>全额抵扣，payment_method='无'</text>
           </view>
-        </view>
-        <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
-          <text>{{selectedCoupon.name}}</text>
-        </view>
-        <!-- 券后合计 -->
-        <view wx:if="{{couponDiscount > 0}}" class="confirm-total-row">
-          <text class="confirm-total-label">券后合计</text>
-          <text class="confirm-total-amount confirm-total-amount--coupon">¥{{couponTotal}}</text>
-        </view>
+
+          <!-- 支付方式：3 选 1（销售单 / 内部单）；转换单由 ConversionPanel 内部 picker 管理 -->
+          <!-- Wave 3G：仅在实付 > 0 时展示按钮组（作为建议通道） -->
+          <view wx:if="{{showPayMethodGroup}}" class="order-type-cards">
+            <view
+              class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
+              data-method="微信"
+              bindtap="onPaymentMethodTap"
+            >
+              <text class="order-type-card-name">微信支付</text>
+              <text class="order-type-card-desc">扫码付款</text>
+            </view>
+            <view
+              class="order-type-card {{paymentMethod === '支付宝' ? 'order-type-card--active' : ''}}"
+              data-method="支付宝"
+              bindtap="onPaymentMethodTap"
+            >
+              <text class="order-type-card-name">支付宝</text>
+              <text class="order-type-card-desc">扫码付款</text>
+            </view>
+            <view
+              class="order-type-card {{paymentMethod === '线下' ? 'order-type-card--active' : ''}}"
+              data-method="线下"
+              bindtap="onPaymentMethodTap"
+            >
+              <text class="order-type-card-name">线下收款</text>
+              <text class="order-type-card-desc">待店长确认</text>
+            </view>
+          </view>
+
+          <!-- Wave 3G — 固定副文案：消除"店长点了就扣了"的误解 -->
+          <view class="prepaid-warning-tip">
+            <van-icon name="warning-o" size="28rpx" color="#FA8C16" />
+            <text class="prepaid-warning-text">顾客扫码确认后才真正扣卡</text>
+          </view>
+        </block>
+
         <!-- 指定美容师（可选，用于默认分配） -->
         <van-cell
           title="指定美容师"
@@ -330,7 +561,7 @@
             custom-class="btn-primary-brand"
             custom-style="border-radius:40rpx;"
             bind:click="onSubmitOrder"
-          >确认开单</van-button>
+          >{{saleOrderType === '寄存单' ? '确认寄存' : '生成付款码'}}</van-button>
         </view>
       </view>
     </view>

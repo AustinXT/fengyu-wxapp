@@ -94,7 +94,7 @@ async function bindPhone(ctx) {
 
     const resolved = phoneData.data
     if (!resolved) {
-      throw new Error('INVALID_PARAMS: CloudID 未被解密，请检查是否放在 data 顶层')
+      throw new Error('INVALID_PARAMS: 登录凭证未被解密，请稍后重试')
     }
 
     phoneNumber = resolved.purePhoneNumber || resolved.phoneNumber
@@ -124,6 +124,11 @@ async function bindPhone(ctx) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
 
+  // 首绑守卫：已绑定手机号的用户禁止走 bindPhone（换绑改由管理后台操作）
+  if (users[0].phone) {
+    throw new Error('INVALID_PARAMS: 已绑定手机号，如需修改请联系门店')
+  }
+
   const userId = users[0].user_id
 
   // 检查手机号是否已被其他用户绑定
@@ -145,13 +150,34 @@ async function bindPhone(ctx) {
   // 清除认证缓存，避免 requirePhone 仍读到旧的 phone: null
   invalidateAuthCache(OPENID)
 
-  // 补全历史订单的 client_user_id
+  // 补全历史订单的 client_user_id（仅首绑场景触发）
+  // CAS-EXEMPT: 仅回写顾客 user_id（PII），不翻 status
   const updateResult = await pg.query(
     `UPDATE sale_orders
      SET client_user_id = $1, updated_at = $2
      WHERE client_phone = $3 AND client_user_id IS NULL`,
     [userId, now, phoneNumber]
   )
+
+  // 同步回填 WorkFine 历史导入订单的 client_user_id；不翻 status（仍 '未审核'）。
+  // 顾客本次绑定让 admin /legacy-orders 列表的"已匹配顾客"列变绿，便于店员核对。
+  // 实际审核动作发生在管理后台，触发标签重算见 lib/recompute-customer-tags.ts。
+  // 注意：上面那条 UPDATE 已经覆盖 legacy_source IS NOT NULL 的行（条件未排除 legacy），
+  // 这里不再重复 UPDATE 以免双写 updated_at；只做幂等查询打日志，便于排查。
+  try {
+    const legacyCheckRows = await pg.query(
+      `SELECT COUNT(*)::int AS cnt FROM sale_orders
+       WHERE legacy_source = 'workfine' AND client_user_id = $1`,
+      [userId]
+    )
+    const legacyLinked = legacyCheckRows[0]?.cnt || 0
+    if (legacyLinked > 0) {
+      console.log(`[bindPhone] linked ${legacyLinked} WorkFine legacy orders to user ${userId} (phone=${phoneNumber})`)
+    }
+  } catch (err) {
+    // 仅用于日志统计，失败不影响绑定主流程
+    console.error('[bindPhone] legacy order link check failed', err && err.message)
+  }
 
   ctx.result = {
     success: true,
@@ -195,7 +221,7 @@ async function generateUserId() {
  */
 async function bindStore(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { storeId, sourceChannel, promoterEmployeeId } = ctx.event.payload
+  const { storeId, sourceChannel, promoterEmployeeId, inviterUserId } = ctx.event.payload
 
   // 参数校验
   if (!storeId) {
@@ -246,6 +272,31 @@ async function bindStore(ctx) {
     `UPDATE client_wechat_users SET ${setClauses.join(', ')} WHERE user_id = $${params.length}`,
     params
   )
+
+  // 分享礼：邀请人一次性绑定
+  // - 仅当当前用户 inviter_user_id IS NULL 时写入（业务规则：只绑一次，防事后改邀请人套利）
+  // - 仅当 inviter 存在（EXISTS 子查询兜底：不存在时影响 0 行）
+  // - 前缀校验 + 防自邀（DB 也有 CHECK 约束兜底）
+  // - try/catch 包裹：失败不影响主绑店流程
+  if (
+    inviterUserId &&
+    typeof inviterUserId === 'string' &&
+    inviterUserId.startsWith('FYGK-') &&
+    inviterUserId !== users[0].user_id
+  ) {
+    try {
+      await pg.query(
+        `UPDATE client_wechat_users
+            SET inviter_user_id = $1, invited_at = NOW(), updated_at = NOW()
+          WHERE user_id = $2
+            AND inviter_user_id IS NULL
+            AND EXISTS (SELECT 1 FROM client_wechat_users WHERE user_id = $1)`,
+        [inviterUserId, users[0].user_id]
+      )
+    } catch (err) {
+      console.warn('[auth.bindStore] bind inviter failed (non-fatal):', err.message)
+    }
+  }
 
   // 清除认证缓存，确保后续请求读到最新的 boundStoreId
   invalidateAuthCache(OPENID)
@@ -310,9 +361,124 @@ async function updateProfile(ctx) {
   ctx.result = { success: true, ...result }
 }
 
+/**
+ * 头像上传（云函数代理）
+ * 小程序端直传 COS 默认被存储安全规则拦截（3002），改由云函数用管理员权限上传
+ * 客户端传 base64，云函数解码后上传到 avatars/{openid}/ 路径，并同步更新 avatar_url
+ */
+async function uploadAvatar(ctx) {
+  const { OPENID } = cloud.getWXContext()
+  const { base64, ext } = ctx.event.payload || {}
+
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  const allowedExts = ['jpg', 'jpeg', 'png', 'webp']
+  if (!allowedExts.includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  // 空 base64 解码得到空 buffer；过大图片拒绝（> 2MB）
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+
+  const users = await pg.query(
+    'SELECT user_id FROM client_wechat_users WHERE openid = $1',
+    [OPENID]
+  )
+  if (users.length === 0) {
+    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
+  }
+
+  const rand = Math.random().toString(36).slice(2, 8)
+  const cloudPath = `avatars/${OPENID}/${Date.now()}_${rand}.${normalizedExt}`
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer })
+  const fileID = uploadRes.fileID
+
+  if (!fileID) {
+    throw new Error('INVALID_PARAMS: 上传失败')
+  }
+
+  const now = new Date()
+  await pg.query(
+    'UPDATE client_wechat_users SET avatar_url = $1, updated_at = $2 WHERE user_id = $3',
+    [fileID, now, users[0].user_id]
+  )
+
+  invalidateAuthCache(OPENID)
+
+  ctx.result = { fileID, avatarUrl: fileID }
+}
+
+/**
+ * 员工头像上传（跨 env 入口，仅供 staffApi 通过 HTTP 触发器 + HMAC 调用）
+ *
+ * staffApi 不能直接写 client env 的 COS（wx-server-sdk 跨 env upload 不可靠），
+ * 转由本 action 在 client env 内 `cloud.uploadFile + getTempFileURL`，
+ * 返回的 HTTPS URL 与 admin 写入的 `products.cover_image` 完全同 shape
+ * （都是 client env CDN 域），保证三端 `<image src>` 透明渲染。
+ *
+ * 守卫：
+ *   - index.js HTTP 入口校验 HMAC(body, CLIENT_SECRET) + 时间戳 + allowlist；
+ *     校验通过后才在 ctx.event 注入 `_fromHttp=true, _hmacVerified=true`
+ *   - 本函数额外断言这两个 flag，防止任何无签名 cloud.callFunction 直调
+ */
+async function uploadStaffAvatar(ctx) {
+  if (!ctx.event._fromHttp || ctx.event._hmacVerified !== true) {
+    throw new Error('PERMISSION_DENIED: 仅允许 HMAC 验签的 HTTP 入口')
+  }
+
+  const { base64, ext, employeeId } = ctx.event.payload || {}
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+  if (!employeeId || typeof employeeId !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 employeeId')
+  }
+
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  if (!['jpg', 'jpeg', 'png', 'webp'].includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+
+  const rand = Math.random().toString(36).slice(2, 8)
+  const cloudPath = `avatars/staff/${employeeId}/${Date.now()}_${rand}.${normalizedExt}`
+
+  // 同 env upload（client env），与 admin product-covers/* 写入同一桶
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer })
+  if (!uploadRes.fileID) {
+    throw new Error('INVALID_PARAMS: 上传失败')
+  }
+
+  const urlRes = await cloud.getTempFileURL({ fileList: [uploadRes.fileID] })
+  const fi = urlRes.fileList && urlRes.fileList[0]
+  if (!fi || fi.status !== 0 || !fi.tempFileURL) {
+    throw new Error('INVALID_PARAMS: 头像上传成功但生成访问链接失败')
+  }
+
+  ctx.result = { fileID: uploadRes.fileID, avatarUrl: fi.tempFileURL }
+}
+
 module.exports = {
   login,
   bindPhone,
   bindStore,
-  updateProfile
+  updateProfile,
+  uploadAvatar,
+  uploadStaffAvatar
 }

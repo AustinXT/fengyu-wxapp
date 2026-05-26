@@ -28,17 +28,22 @@ module.exports.fmt = function(val) {
 
   <!-- 商品基础信息 -->
   <view class="info-card">
-    <view class="info-tags">
-      <van-tag color="#E8684A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
-      <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
-      <van-tag color="#5AACA5" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
-      <van-tag color="#D4820A" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+    <view class="info-tags" wx:if="{{spu.category_name}}">
+      <van-tag type="primary">{{spu.category_name}}</van-tag>
+      <van-tag wx:if="{{spu.is_bundle}}" type="danger" plain>组合套餐</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
 
-    <!-- 选中 SKU 价格 -->
-    <view class="price-row" wx:if="{{selectedSku}}">
+    <!-- 套餐：展示套餐价；非套餐：选中 SKU 价格 -->
+    <view class="price-row" wx:if="{{spu.is_bundle}}">
+      <view class="price-group">
+        <text class="price-symbol">¥</text>
+        <text class="price-integer">{{price.fmt(spu.price)}}</text>
+      </view>
+      <text class="price-unit">套餐价</text>
+    </view>
+    <view class="price-row" wx:elif="{{selectedSku}}">
       <view class="price-group">
         <text class="price-symbol">¥</text>
         <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
@@ -53,6 +58,14 @@ module.exports.fmt = function(val) {
   <!-- SKU 规格选择入口 -->
   <van-cell-group inset>
     <van-cell
+      wx:if="{{spu.is_bundle}}"
+      title="套餐内容"
+      value="{{bundleCanSubmit ? '已选 ' + bundleSelectedCount + ' 项' : '请选择'}}"
+      is-link
+      bindtap="onOpenSkuPopup"
+    />
+    <van-cell
+      wx:else
       title="已选规格"
       value="{{selectedSku ? selectedSku.spec_name + (quantity > 1 ? ' x' + quantity : '') : '请选择'}}"
       is-link
@@ -71,10 +84,32 @@ module.exports.fmt = function(val) {
     />
   </van-cell-group>
 
+  <!-- 商品详情（图文，竖向依次排列） -->
+  <view
+    class="detail-section"
+    wx:if="{{spu.description || (spu.detail_images && spu.detail_images.length)}}"
+  >
+    <view class="detail-title">商品详情</view>
+    <text class="detail-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
+    <image
+      wx:for="{{spu.detail_images}}"
+      wx:key="*this"
+      class="detail-img"
+      src="{{item}}"
+      mode="widthFix"
+      lazy-load
+    />
+  </view>
+
   <!-- 底部操作栏 -->
   <view class="action-bar safe-area-bottom">
-    <!-- 价格区 -->
-    <view class="action-bar__price" wx:if="{{selectedSku}}">
+    <!-- 套餐：展示已选合计；非套餐：单 SKU × 数量 -->
+    <view class="action-bar__price" wx:if="{{spu.is_bundle}}">
+      <text class="action-bar__price-symbol">¥</text>
+      <text class="action-bar__price-value">{{price.fmt(bundleTotalPrice)}}</text>
+      <text class="action-bar__price-qty" wx:if="{{bundleSelectedCount > 0}}"> 共{{bundleSelectedCount}}项</text>
+    </view>
+    <view class="action-bar__price" wx:elif="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
       <text class="action-bar__price-value">{{price.fmt(selectedSku.price * quantity)}}</text>
       <text class="action-bar__price-qty" wx:if="{{quantity > 1}}"> x{{quantity}}</text>
@@ -83,16 +118,17 @@ module.exports.fmt = function(val) {
       <text class="action-bar__price-hint">请选择规格</text>
     </view>
 
-    <!-- 购物车图标：促销方案不显示 -->
-    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{spu.product_kind !== '福利活动'}}">
+    <!-- 购物车图标：套餐不显示 -->
+    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{!spu.is_bundle}}">
       <van-icon name="shopping-cart-o" size="48rpx" />
       <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
     </view>
 
     <!-- 按钮区 -->
     <view class="action-bar__btns">
-      <view wx:if="{{spu.product_kind !== '福利活动'}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
-      <view class="action-bar__btn action-bar__btn--buy {{spu.product_kind === '福利活动' ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+      <view wx:if="{{!spu.is_bundle}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
+      <view wx:if="{{spu.is_bundle}}" class="action-bar__btn action-bar__btn--buy action-bar__btn--full {{!bundleCanSubmit ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+      <view wx:else class="action-bar__btn action-bar__btn--buy {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
     </view>
   </view>
 
@@ -115,7 +151,7 @@ module.exports.fmt = function(val) {
     bind:close="onCloseSkuPopup"
   >
     <view class="sku-popup">
-      <!-- 顶部：封面 + 当前选中价格 -->
+      <!-- 顶部：封面 + 价格 -->
       <view class="sku-popup__header">
         <image
           wx:if="{{spu.cover_image}}"
@@ -127,50 +163,102 @@ module.exports.fmt = function(val) {
           <van-icon name="photo-o" size="48rpx" color="#CCC" />
         </view>
         <view class="sku-popup__price-info">
-          <view wx:if="{{selectedSku}}" class="price-group">
+          <view wx:if="{{spu.is_bundle}}" class="price-group">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{price.fmt(spu.price)}}</text>
+          </view>
+          <view wx:elif="{{selectedSku}}" class="price-group">
             <text class="price-symbol">¥</text>
             <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
           </view>
           <text wx:else class="sku-popup__price-hint">请选择规格</text>
-          <text class="sku-popup__selected-name" wx:if="{{selectedSku}}">{{selectedSku.spec_name}}</text>
+          <text class="sku-popup__selected-name" wx:if="{{spu.is_bundle}}">{{spu.name}}</text>
+          <text class="sku-popup__selected-name" wx:elif="{{selectedSku}}">{{selectedSku.spec_name}}</text>
         </view>
       </view>
 
-      <!-- SKU 列表 -->
-      <view class="sku-popup__title">选择规格</view>
-      <view class="sku-popup__list">
-        <view
-          wx:for="{{skuList}}"
-          wx:key="sku_id"
-          class="sku-item {{selectedSku.sku_id === item.sku_id ? 'sku-item--active' : ''}}"
-          bindtap="onSkuTap"
-          data-sku-id="{{item.sku_id}}"
-        >
-          <text class="sku-display-name">{{item.spec_name}}</text>
-          <text class="sku-price">¥{{price.fmt(item.price)}}</text>
-          <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
+      <!-- 套餐分支：分组多选 -->
+      <block wx:if="{{spu.is_bundle}}">
+        <view class="sku-popup__bundle">
+          <view class="sku-popup__group" wx:for="{{bundleViewGroups}}" wx:for-item="g" wx:key="id">
+            <view class="sku-popup__group-header">
+              <text class="sku-popup__group-name">「{{g.groupName}}」</text>
+              <text class="sku-popup__group-hint">{{g.hint}}</text>
+            </view>
+            <view class="sku-popup__group-skus">
+              <view
+                wx:for="{{g.skus}}"
+                wx:for-item="sku"
+                wx:key="skuId"
+                class="bundle-sku-row {{sku.selected ? 'bundle-sku-row--active' : ''}} {{g.isAllSelect ? 'bundle-sku-row--locked' : ''}}"
+                data-group-id="{{g.id}}"
+                data-sku-id="{{sku.skuId}}"
+                bindtap="onBundleSkuToggle"
+              >
+                <view class="bundle-sku-row__check">
+                  <van-icon
+                    name="{{sku.selected ? 'checked' : 'circle'}}"
+                    size="40rpx"
+                    color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+                  />
+                </view>
+                <view class="bundle-sku-row__info">
+                  <text class="bundle-sku-row__name">{{sku.specName}}</text>
+                  <view class="bundle-sku-row__meta">
+                    <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
+                    <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+                  </view>
+                </view>
+              </view>
+            </view>
+          </view>
         </view>
-      </view>
+      </block>
 
-      <!-- 数量 -->
-      <view class="sku-popup__quantity">
-        <text class="sku-popup__quantity-label">购买数量</text>
-        <van-stepper
-          value="{{quantity}}"
-          min="1"
-          max="99"
-          bind:change="onQuantityChange"
-          input-width="44px"
-          button-size="28px"
-        />
-      </view>
+      <!-- 非套餐分支：普通 SKU 平铺 -->
+      <block wx:else>
+        <view class="sku-popup__title">选择规格</view>
+        <view class="sku-popup__list">
+          <view
+            wx:for="{{skuList}}"
+            wx:key="sku_id"
+            class="sku-item {{selectedSku.sku_id === item.sku_id ? 'sku-item--active' : ''}}"
+            bindtap="onSkuTap"
+            data-sku-id="{{item.sku_id}}"
+          >
+            <text class="sku-display-name">{{item.spec_name}}</text>
+            <text class="sku-price">¥{{price.fmt(item.price)}}</text>
+            <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
+          </view>
+        </view>
 
-      <!-- 确认按钮 -->
+        <!-- 数量（套餐不显示） -->
+        <view class="sku-popup__quantity">
+          <text class="sku-popup__quantity-label">购买数量</text>
+          <van-stepper
+            value="{{quantity}}"
+            min="1"
+            max="99"
+            bind:change="onQuantityChange"
+            input-width="44px"
+            button-size="28px"
+          />
+        </view>
+      </block>
+
+      <!-- 确认按钮：套餐→加入套餐+提交；非套餐→仅关闭弹层 -->
       <view class="sku-popup__confirm safe-area-bottom">
         <van-button
+          wx:if="{{spu.is_bundle}}"
           type="primary"
           block
-          round
+          disabled="{{!bundleCanSubmit}}"
+          bindtap="onSubmit"
+        >加入套餐</van-button>
+        <van-button
+          wx:else
+          type="primary"
+          block
           disabled="{{!selectedSku}}"
           bindtap="onCloseSkuPopup"
         >确定</van-button>

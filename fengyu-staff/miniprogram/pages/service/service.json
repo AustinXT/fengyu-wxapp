@@ -1,5 +1,5 @@
 {
-  "navigationBarTitleText": "护理",
+  "navigationBarTitleText": "服务",
   "enablePullDownRefresh": true,
   "usingComponents": {
     "van-tabs": "@vant/weapp/tabs/index",

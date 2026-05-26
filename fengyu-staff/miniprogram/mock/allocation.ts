@@ -4,7 +4,7 @@ export const allocationHandlers: Record<string, (payload: Record<string, any>) =
   'allocation.save': (payload) => ({
     success: true,
     allocationId: 'alloc-new-001',
-    orderNo: payload.orderNo,
+    saleOrderId: payload.saleOrderId,
   }),
 
   'allocation.delete': (payload) => ({

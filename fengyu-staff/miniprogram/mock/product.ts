@@ -6,7 +6,7 @@ const MOCK_CATEGORIES = [
   { id: 'cat-03', name: '光感白皙', big_category: '生美', category_order: 3 },
   { id: 'cat-04', name: '眉眼', big_category: '非生美', category_order: 4 },
   { id: 'cat-05', name: '身体护理', big_category: '非生美', category_order: 5 },
-  { id: 'cat-06', name: '院装产品', big_category: '院装产品', category_order: 6 },
+  { id: 'cat-06', name: '家居产品', big_category: '家居产品', category_order: 6 },
 ]
 
 const MOCK_SPUS: Record<string, any[]> = {
@@ -21,7 +21,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       skus: [
         { skuId: 'sku-001', specName: '10次卡', price: 3800, sessionCount: 10, workfineItemId: 'WF-1001' },
         { skuId: 'sku-002', specName: '20次卡', price: 6800, sessionCount: 20, workfineItemId: 'WF-1002' },
-        { skuId: 'sku-003', specName: '单品', price: 480, sessionCount: 1, workfineItemId: 'WF-1003' },
+        { skuId: 'sku-003', specName: '单次', price: 480, sessionCount: 1, workfineItemId: 'WF-1003' },
       ],
     },
     {
@@ -33,7 +33,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       cover_image: '',
       skus: [
         { skuId: 'sku-004', specName: '10次卡', price: 4200, sessionCount: 10, workfineItemId: 'WF-1004' },
-        { skuId: 'sku-005', specName: '单品', price: 520, sessionCount: 1, workfineItemId: 'WF-1005' },
+        { skuId: 'sku-005', specName: '单次', price: 520, sessionCount: 1, workfineItemId: 'WF-1005' },
       ],
     },
   ],
@@ -47,7 +47,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       cover_image: '',
       skus: [
         { skuId: 'sku-006', specName: '10次卡', price: 3600, sessionCount: 10, workfineItemId: 'WF-2001' },
-        { skuId: 'sku-007', specName: '单品', price: 450, sessionCount: 1, workfineItemId: 'WF-2002' },
+        { skuId: 'sku-007', specName: '单次', price: 450, sessionCount: 1, workfineItemId: 'WF-2002' },
       ],
     },
   ],
@@ -61,7 +61,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       cover_image: '',
       skus: [
         { skuId: 'sku-011', specName: '10次卡', price: 3200, sessionCount: 10, workfineItemId: 'WF-4001' },
-        { skuId: 'sku-012', specName: '单品', price: 420, sessionCount: 1, workfineItemId: 'WF-4002' },
+        { skuId: 'sku-012', specName: '单次', price: 420, sessionCount: 1, workfineItemId: 'WF-4002' },
       ],
     },
     {
@@ -82,11 +82,11 @@ const MOCK_SPUS: Record<string, any[]> = {
       spuId: 'spu-004',
       spuName: '明眸祛皱疗程',
       categoryName: '眉眼',
-      productType: '单品',
+      productType: '疗程卡',
       priceFrom: 1200,
       cover_image: '',
       skus: [
-        { skuId: 'sku-008', specName: '单品', price: 1200, sessionCount: 1, workfineItemId: 'WF-3001' },
+        { skuId: 'sku-008', specName: '单次', price: 1200, sessionCount: 1, workfineItemId: 'WF-3001' },
       ],
     },
     {
@@ -112,7 +112,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       cover_image: '',
       skus: [
         { skuId: 'sku-015', specName: '10次卡', price: 2600, sessionCount: 10, workfineItemId: 'WF-5001' },
-        { skuId: 'sku-016', specName: '单品', price: 380, sessionCount: 1, workfineItemId: 'WF-5002' },
+        { skuId: 'sku-016', specName: '单次', price: 380, sessionCount: 1, workfineItemId: 'WF-5002' },
       ],
     },
     {
@@ -125,7 +125,7 @@ const MOCK_SPUS: Record<string, any[]> = {
       skus: [
         { skuId: 'sku-017', specName: '10次卡', price: 1800, sessionCount: 10, workfineItemId: 'WF-5003' },
         { skuId: 'sku-018', specName: '20次卡', price: 3200, sessionCount: 20, workfineItemId: 'WF-5004' },
-        { skuId: 'sku-019', specName: '单品', price: 260, sessionCount: 1, workfineItemId: 'WF-5005' },
+        { skuId: 'sku-019', specName: '单次', price: 260, sessionCount: 1, workfineItemId: 'WF-5005' },
       ],
     },
   ],
@@ -133,8 +133,8 @@ const MOCK_SPUS: Record<string, any[]> = {
     {
       spuId: 'spu-010',
       spuName: '蜜语焕颜精华液',
-      categoryName: '院装产品',
-      productType: '院装产品',
+      categoryName: '家居产品',
+      productType: '家居产品',
       priceFrom: 680,
       cover_image: '',
       skus: [
@@ -145,8 +145,8 @@ const MOCK_SPUS: Record<string, any[]> = {
     {
       spuId: 'spu-011',
       spuName: '安吉丽眼霜',
-      categoryName: '院装产品',
-      productType: '院装产品',
+      categoryName: '家居产品',
+      productType: '家居产品',
       priceFrom: 520,
       cover_image: '',
       skus: [
@@ -166,8 +166,8 @@ const MOCK_PROMO_PLANS = [
     items: [
       { itemId: 'pi-001', itemName: '蜜语精华护理疗程', specName: '10次卡', originalPrice: 3800, promoPrice: 3200, isGift: false, skuId: 'sku-001', workfineItemId: 'WF-1001', sessionCount: 10, productType: '疗程卡' },
       { itemId: 'pi-002', itemName: '安吉丽美颜之爱疗程', specName: '10次卡', originalPrice: 3600, promoPrice: 3000, isGift: false, skuId: 'sku-006', workfineItemId: 'WF-2001', sessionCount: 10, productType: '疗程卡' },
-      { itemId: 'pi-003', itemName: '明眸祛皱疗程', specName: '单品', originalPrice: 1200, promoPrice: 0, isGift: true, skuId: 'sku-008', workfineItemId: 'WF-3001', sessionCount: 1, productType: '单品' },
-      { itemId: 'pi-004', itemName: '蜜语焕颜精华液', specName: '50ml', originalPrice: 680, promoPrice: 0, isGift: true, skuId: 'sku-020', workfineItemId: 'WF-P001', sessionCount: 0, productType: '院装产品' },
+      { itemId: 'pi-003', itemName: '明眸祛皱疗程', specName: '单次', originalPrice: 1200, promoPrice: 0, isGift: true, skuId: 'sku-008', workfineItemId: 'WF-3001', sessionCount: 1, productType: '疗程卡' },
+      { itemId: 'pi-004', itemName: '蜜语焕颜精华液', specName: '50ml', originalPrice: 680, promoPrice: 0, isGift: true, skuId: 'sku-020', workfineItemId: 'WF-P001', sessionCount: 0, productType: '家居产品' },
     ],
   },
   {
@@ -178,7 +178,7 @@ const MOCK_PROMO_PLANS = [
     promoPrice: 3800,
     items: [
       { itemId: 'pi-005', itemName: '蜜语焕颜精华护理', specName: '10次卡', originalPrice: 4200, promoPrice: 3800, isGift: false, skuId: 'sku-004', workfineItemId: 'WF-1004', sessionCount: 10, productType: '疗程卡' },
-      { itemId: 'pi-006', itemName: '蜜语焕颜精华液', specName: '50ml', originalPrice: 680, promoPrice: 0, isGift: true, skuId: 'sku-020', workfineItemId: 'WF-P001', sessionCount: 0, productType: '院装产品' },
+      { itemId: 'pi-006', itemName: '蜜语焕颜精华液', specName: '50ml', originalPrice: 680, promoPrice: 0, isGift: true, skuId: 'sku-020', workfineItemId: 'WF-P001', sessionCount: 0, productType: '家居产品' },
     ],
   },
   {
@@ -199,13 +199,13 @@ export const productHandlers: Record<string, (payload: Record<string, any>) => a
     const firstCat = MOCK_CATEGORIES[0]
     return {
       categories: MOCK_CATEGORIES,
-      spuList: firstCat ? (MOCK_SPUS[firstCat.id] || []) : [],
+      skuList: firstCat ? (MOCK_SPUS[firstCat.id] || []) : [],
     }
   },
 
   'product.categories': () => MOCK_CATEGORIES,
 
-  'product.spuList': (payload) => {
+  'product.skuList': (payload) => {
     const catId = payload.categoryId
     return MOCK_SPUS[catId] || []
   },

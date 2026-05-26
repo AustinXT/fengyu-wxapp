@@ -157,11 +157,11 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **品项分类字段**: category_name, product_kind, sort_order, is_valid
 
-**商品字段**: name, category_id, description, is_shengmei, is_bundle, price, special_price, sales_category, manage_scope, market_scope, cover_image, detail_images[], valid_start, valid_end, sort_order
+**商品字段**: name, category_id, description, is_shengmei, is_bundle, price, special_price, sales_category, manage_scope, market_scope, cover_image, detail_images[], is_enabled, sort_order
 
-**SKU 字段**: spec_name, product_type, price, special_price, session_count, service_fee, is_bundle_sku, valid_start, valid_end
+**SKU 字段**: spec_name, product_type, price, special_price, session_count, service_fee, is_bundle_sku, is_enabled, **is_experience, is_recharge_card**（capability 列，业务判定 SSoT，详见 `backend.pr.spec.md` §2.6 + §4 #23/#24）
 
-**约束**: price/service_fee ≥ 0；session_count ≥ 1（非 null）；套餐赠品 price=0；有效期叠加（商品+SKU 均有效才展示）；下架=设 valid_end；价格变更不影响已有订单
+**约束**: price/service_fee ≥ 0；session_count ≥ 1（非 null）；套餐赠品 price=0；上下架叠加（商品+SKU 均 is_enabled=true 才展示）；下架=设 is_enabled=false；价格变更不影响已有订单；`is_experience` 与 `is_recharge_card` 互斥（DB CHECK `chk_sku_not_both_capabilities`）；UI 编辑两个 capability 列勾选互斥提示
 
 #### AFF-05 提成比例矩阵配置
 
@@ -217,6 +217,36 @@ adminApi 独立实现 staffApi 同等业务操作（开单、订单管理、营�
 
 **约束**: 折扣券 discount_value ∈ (0,1)；现金券 discount_value > 0；已用不可撤回；停用模板不影响已发放券；核销在开单时扣减
 
+#### AFF-16 充值卡余额管理（2026-05-18 补）
+
+**操作对象**: `prepaid_cards` + `card_transactions` | 权限：`prepaid_card:read` (admin / manager / finance scope 内)；`adjustBalance` 仅 admin
+
+**列表 `/cards`**
+
+| 列 | 字段来源 | 备注 |
+|----|---------|------|
+| 卡号 | `prepaid_cards.card_id` | text |
+| 持有顾客 | `client_wechat_users.name` + `phone` | JOIN by user_id |
+| 绑定门店 | `stores.name` | JOIN by bound_store_id |
+| 余额 | `balance` | `< 0` 红色高亮（DB CHECK 防止，仅作视觉异常监控）|
+| 总充值 | `SUM(amount > 0 FROM card_transactions)` | aggregate |
+| 创建时间 | `created_at` | desc |
+| 操作 | 跳转 `/card-transactions?card_id=` | — |
+
+**流水 `/card-transactions`**
+
+| 列 | 字段 |
+|----|------|
+| 时间 | `created_at` desc |
+| 类型 | `change_type` enum（充值 / 抵扣 / 退款回冲 / 管理员调整）|
+| 金额 | `amount`（正绿负红）|
+| 关联订单 | `ref_sale_order_id`（点击跳订单详情）|
+| 备注 | `note` |
+
+筛选：card_id / 顾客手机号 / change_type / 时间范围
+
+**手动调账**（仅 admin）：`adjustBalance(cardId, delta, reason)` 写 `change_type='管理员调整'` 流水 + 调整 balance，必经 `logOperation('prepaid_card.adjustBalance')` 审计。
+
 ### 4.3 潜在可供性
 
 #### AFF-11 数据看板
@@ -226,6 +256,12 @@ P1 | 权限：manager, finance（scope 内）| 指标同 `staff.pr.spec.md` §3.
 #### AFF-12 门店解绑审批
 
 `store_unbind_requests` | 权限：manager | 审批通过（清 bound_store_id）/ 拒绝（填原因）
+
+#### AFF-12B 退款审批（2026-05-17 PR-Z2）
+
+`sale_order_payments[change_type='退款']` | 权限：`sale_order:refund_approve` 由 **admin + manager** 双角色持有 | 审批通过（`status='已支付'`，触发 cascade：作废 sale_allocations / service_commissions、恢复 user_coupons、反冲 point_transactions、回滚 pickup_records、按比例回冲储值卡 balance）/ 驳回（`status='已关闭'`，写 `audit_remark` 拒因）
+
+> **职责设计**：admin 与 manager 并列为审批角色；admin 在 manager 缺位时可代理审批。manager 在本店 scope 内可自审自批（与员工端 staffApi.approveRefund 行为对齐）。`refund_create` 全 6 个 admin-side 角色均持有（admin/manager/finance/hr/product/customer_mgr）。同人不审自单的 SoD 约束目前不强制（业务侧权衡）。
 
 #### AFF-13 系统配置
 
@@ -323,6 +359,9 @@ P2 | 权限：manager, finance（scope 内）| 模块：客户回店率、品项
 | AC-16 | 数据看板与 PG 聚合一致 |
 | AC-17 | 同步后 PG 与 WorkFine 一致 |
 | AC-18 | 操作日志多维筛选正确 |
+| AC-19 | `/cards` 列表正确 JOIN 顾客/门店，余额异常（< 0）红色高亮 |
+| AC-20 | `/card-transactions` 按 change_type / card_id / 顾客手机号 / 时间范围筛选可用 |
+| AC-21 | admin 手动调账（`adjustBalance`）写入 `change_type='管理员调整'` 流水并经 `logOperation` 审计 |
 
 ---
 

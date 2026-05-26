@@ -1,5 +1,6 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
@@ -11,13 +12,19 @@ interface PaidOrderItem {
   sessionCount: number;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
+  /** 可消费次数 = min(remaining, paid - used) = min(remaining, paid - (total - remaining)) */
+  consumableSessions: number;
   productType: string;
+  storeId?: string;
 }
 
 interface PaidOrder {
   orderId: string;
   saleOrderId: string;
   paidAt: string;
+  storeId?: string;
+  storeName?: string;
   items: PaidOrderItem[];
 }
 
@@ -66,7 +73,7 @@ Page({
     staffName: '',
     isManager: false,
     showStaffPicker: false,
-    staffList: [] as Array<{ staffWfId: string; name: string; department: string }>,
+    staffList: [] as Array<{ staffWfId: string; name: string; department: string; skills?: string[] }>,
     staffColumns: [] as string[],
     assignedStaffWfId: '' as string,
     // 备注
@@ -216,10 +223,21 @@ Page({
   async loadPaidOrders(clientUserId: string) {
     try {
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
-      // 过滤掉院装产品行
+      // 过滤掉家居产品行 + paid_sessions=0 / 已用满已付次数 的卡完全锁死（D6=A）
+      // 可消费次数 = min(remaining, paid - used)；其中 used = total - remaining
       const filtered = (orders || []).map(o => ({
         ...o,
-        items: o.items.filter(i => i.productType !== '院装产品' && i.remainingSessions > 0),
+        paidAt: formatDateTime(o.paidAt),
+        items: o.items
+          .map(i => {
+            const total = Number(i.totalSessions || i.sessionCount || 0);
+            const remain = Number(i.remainingSessions || 0);
+            const paid = i.paidSessions == null ? 0 : Number(i.paidSessions);
+            const used = Math.max(total - remain, 0);
+            const consumable = Math.max(0, Math.min(remain, paid - used));
+            return { ...i, consumableSessions: consumable };
+          })
+          .filter(i => i.productType !== '家居产品' && i.consumableSessions > 0),
       })).filter(o => o.items.length > 0);
       this.setData({ paidOrders: filtered });
     } catch (_) {}
@@ -307,11 +325,12 @@ Page({
   // ===== 店长选择服务人员 =====
   async loadStaffList() {
     try {
-      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string }> }>('staff.list');
+      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string; skills?: string[] }> }>('staff.list');
       const list = data?.staffList || [];
+      const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
       this.setData({
         staffList: list,
-        staffColumns: list.map(s => `${s.name}（${s.department || '未分组'}）`),
+        staffColumns: list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）`),
       });
     } catch (_) {}
   },

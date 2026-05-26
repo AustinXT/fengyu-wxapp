@@ -1,7 +1,11 @@
 // pages/profile/profile.ts — 我的
-import { callStaffApi } from '../../utils/cloud';
+import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
-import { isManager } from '../../utils/role';
+import { isManager, hasRole } from '../../utils/role';
+import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
+import { APP_VERSION } from '../../utils/version';
+
+type ScopedStore = { storeId: string; storeName: string };
 
 const app = getApp<IAppOption>();
 
@@ -11,12 +15,30 @@ Page({
     position: '',
     staffWfId: '',
     phone: '',
-    boundStoreName: '',
+    avatarUrl: '',
+    avatarHttpUrl: '',
     isManager: false,
-    // 门店绑定
-    showStorePicker: false,
-    storeList: [] as Array<{ storeId: string; storeName: string }>,
-    storeColumns: [] as string[],
+    canSeeInventory: false,
+    // scope 范围内门店切换（与 workbench 一致语义）
+    currentStoreName: '',
+    currentStoreId: '',
+    scopedStores: [] as ScopedStore[],
+    hasMultiStore: false,
+    storePickerVisible: false,
+    storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
+    appVersion: APP_VERSION,
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
+
+  onLoad() {
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, () => {
+      this.syncStoreContext();
+    });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
   },
 
   onShow() {
@@ -24,16 +46,96 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, position, staffWfId, phone, boundStoreName } = app.globalData;
-    this.setData({ staffName, position, staffWfId, phone, boundStoreName, isManager: isManager() });
+    const { staffName, position, staffWfId, phone, avatarUrl } = app.globalData;
+    const canSeeInventory = hasRole('manager', 'admin', 'finance');
+    this.setData({
+      staffName, position, staffWfId, phone,
+      avatarUrl: avatarUrl || '',
+      avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
+      isManager: isManager(),
+      canSeeInventory,
+    });
+    this.syncStoreContext();
+  },
+
+  syncStoreContext() {
+    const { scopedStores, currentStoreId, boundStoreName } = app.globalData;
+    const scoped = (scopedStores || []) as ScopedStore[];
+    const current = scoped.find((s) => s.storeId === currentStoreId);
+    const displayName = current?.storeName || boundStoreName || '';
+    this.setData({
+      currentStoreName: displayName,
+      currentStoreId: currentStoreId || '',
+      scopedStores: scoped,
+      hasMultiStore: scoped.length > 1,
+    });
+  },
+
+  /**
+   * 选图 + 调云函数上传（跨 env 写入 client env COS）
+   * 复刻自 client `pagesProfile/profile-edit/profile-edit.ts` 同款套路
+   */
+  async onChooseAvatar() {
+    if (!app.globalData.staffWfId) {
+      wx.showToast({ title: '请先登录', icon: 'none' });
+      return;
+    }
+    try {
+      const res = await wx.chooseMedia({
+        count: 1,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+        sizeType: ['compressed'],
+      });
+      const tempFilePath = res.tempFiles[0].tempFilePath;
+      if (!tempFilePath) return;
+
+      wx.showLoading({ title: '上传中...', mask: true });
+      const ext = (tempFilePath.split('.').pop() || 'jpg').toLowerCase();
+
+      // 小程序端直传 COS 默认被存储安全规则拦截，统一走云函数代理上传
+      const base64 = await new Promise<string>((resolve, reject) => {
+        wx.getFileSystemManager().readFile({
+          filePath: tempFilePath,
+          encoding: 'base64',
+          success: (r) => resolve(r.data as string),
+          fail: reject,
+        });
+      });
+
+      const data = await callStaffApi<{ fileID: string; avatarUrl: string }>(
+        'staff.uploadAvatar',
+        { base64, ext },
+      );
+      const fileID = data?.fileID || '';
+      // 同步 globalData + 当前 setData（HTTPS 用于渲染，cloud:// 持久化保留 protocol）
+      app.setStaffInfo({ avatarUrl: fileID });
+      this.setData({
+        avatarUrl: fileID,
+        avatarHttpUrl: fileID ? toHttpUrl(fileID) : '',
+      });
+      wx.hideLoading();
+      wx.showToast({ title: '头像已更新', icon: 'success' });
+    } catch (err) {
+      wx.hideLoading();
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('chooseMedia:fail cancel')) return;
+      wx.showToast({ title: msg || '上传失败', icon: 'none' });
+    }
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent) {
     if (!e.detail.cloudID) return
     try {
       await bindPhone(e.detail.cloudID)
-      const { phone, staffWfId, staffName, position, boundStoreName } = app.globalData
-      this.setData({ phone, staffWfId, staffName, position, boundStoreName, isManager: isManager() })
+      const { phone, staffWfId, staffName, position, avatarUrl } = app.globalData
+      this.setData({
+        phone, staffWfId, staffName, position,
+        avatarUrl: avatarUrl || '',
+        avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
+        isManager: isManager(),
+      })
+      this.syncStoreContext();
       wx.showToast({ title: '绑定成功', icon: 'success' })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '绑定失败';
@@ -41,60 +143,32 @@ Page({
     }
   },
 
-  async onBindStore() {
-    if (!this.data.storeList.length) {
-      try {
-        const data = await callStaffApi<Array<{ storeId: string; storeName: string }>>('store.list');
-        this.setData({
-          storeList: data || [],
-          storeColumns: (data || []).map(s => s.storeName),
-        });
-      } catch (err: unknown) {
-        wx.showToast({ title: '获取门店列表失败', icon: 'none' });
-        return;
-      }
-    }
-    this.setData({ showStorePicker: true });
+  openStorePicker() {
+    if (!this.data.hasMultiStore) return;
+    const actions = this.data.scopedStores.map((s) => ({
+      name: s.storeName,
+      storeId: s.storeId,
+      color: s.storeId === this.data.currentStoreId ? '#C0322A' : '',
+    }));
+    this.setData({ storePickerVisible: true, storePickerActions: actions });
   },
 
   onStorePickerClose() {
-    this.setData({ showStorePicker: false });
+    this.setData({ storePickerVisible: false });
   },
 
-  async onStoreConfirm(e: WechatMiniprogram.CustomEvent) {
-    const pickedName = e.detail.value as string;
-    const store = this.data.storeList.find(s => s.storeName === pickedName);
-    if (!store) return;
-    this.setData({ showStorePicker: false });
-    try {
-      await callStaffApi('staff.bindStore', { storeId: store.storeId });
-      app.setStaffInfo({ boundStoreName: store.storeName, boundStoreId: store.storeId });
-      this.setData({ boundStoreName: store.storeName });
-      wx.showToast({ title: '门店已切换', icon: 'success' });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '切换失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    }
+  onStorePickerSelect(e: WechatMiniprogram.CustomEvent<{ storeId: string; name: string }>) {
+    const { storeId } = e.detail || ({} as any);
+    this.setData({ storePickerVisible: false });
+    if (!storeId || storeId === this.data.currentStoreId) return;
+    app.setCurrentStoreId(storeId);
+    this.syncStoreContext();
+    emit(EVENT_STORE_CHANGED, storeId);
+    wx.showToast({ title: '已切换门店', icon: 'success' });
   },
 
   onNavOrders() {
     wx.navigateTo({ url: '/packageOrder/order-list/order-list' });
-  },
-
-  onNavServices() {
-    wx.switchTab({ url: '/pages/service/service' });
-  },
-
-  onNavCustomers() {
-    wx.switchTab({ url: '/pages/customer-list/customer-list' });
-  },
-
-  onNavDashboard() {
-    wx.navigateTo({ url: '/packageOrder/dashboard/dashboard' });
-  },
-
-  onNavPerformance() {
-    wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
   },
 
   onNavAppointments() {
@@ -103,6 +177,14 @@ Page({
 
   onNavAllocationList() {
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
+  },
+
+  onNavInventory() {
+    wx.navigateTo({ url: '/packageMy/inventory/inventory' });
+  },
+
+  onNavPickup() {
+    wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
   },
 
   onLogout() {

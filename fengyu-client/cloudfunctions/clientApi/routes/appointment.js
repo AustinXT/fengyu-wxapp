@@ -102,20 +102,28 @@ async function create(ctx) {
   if (!clientName) clientName = users[0]?.phone || ''
 
   // 创建预约
+  // partial unique uq_appt_sale_item_active 兜底 TOCTOU：同 sale_item 双发 create
   const appointmentId = generateAppointmentId()
   const now = new Date()
 
-  await pg.query(`
-    INSERT INTO appointments (
-      appointment_id, status, store_id,
-      client_user_id, client_name, employee_id, employee_name,
-      appointment_time, notes, sale_item_id, created_at, updated_at
-    ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-  `, [
-    appointmentId, storeId,
-    userId, clientName, staffWfId || null, inputStaffName || '',
-    parsedTime, notes || '', saleItemId || null, now
-  ])
+  try {
+    await pg.query(`
+      INSERT INTO appointments (
+        appointment_id, status, store_id,
+        client_user_id, client_name, employee_id, employee_name,
+        appointment_time, notes, sale_item_id, created_at, updated_at
+      ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+    `, [
+      appointmentId, storeId,
+      userId, clientName, staffWfId || null, inputStaffName || null,
+      parsedTime, notes || '', saleItemId || null, now
+    ])
+  } catch (err) {
+    if (err && err.code === '23505' && err.constraint === 'uq_appt_sale_item_active') {
+      throw new Error('CONFLICT: 该订单明细已有待确认或已确认的预约')
+    }
+    throw err
+  }
 
   ctx.result = {
     appointmentId,
@@ -157,6 +165,7 @@ async function list(ctx) {
       s.store_name,
       a.employee_id,
       a.employee_name,
+      sw.avatar_url AS employee_avatar_url,
       a.appointment_time,
       a.notes,
       a.sale_item_id,
@@ -167,6 +176,7 @@ async function list(ctx) {
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN stores s ON a.store_id = s.store_id
+    LEFT JOIN staff_wechat_users sw ON a.employee_id = sw.employee_id
     ${whereClause}
     ORDER BY a.appointment_time DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}
@@ -201,17 +211,36 @@ async function cancel(ctx) {
 
   const appointment = appointments[0]
 
-  if (!['待确认', '已确认'].includes(appointment.status)) {
-    throw new Error('INVALID_PARAMS: 预约状态不允许取消')
+  if (appointment.status !== '待确认') {
+    throw new Error('INVALID_PARAMS: 仅待确认的预约可取消')
+  }
+
+  // 已关联服务单且服务已开始/完成的预约不可取消：
+  // service.create 关联预约但不改其状态，预约在 待服务/服务中 阶段仍是 已确认，
+  // 若放行取消会造成「服务已发生（已扣次数、已产生提成）却显示已取消」的数据不一致。
+  // 服务单 已取消 不拦截，以便释放预约。
+  const linkedService = await pg.query(
+    `SELECT 1 FROM service_orders
+     WHERE appointment_id = $1
+       AND status NOT IN ('已取消')
+     LIMIT 1`,
+    [appointmentId]
+  )
+  if (linkedService.length > 0) {
+    throw new Error('INVALID_STATE: 该预约已开始服务，无法取消')
   }
 
   const now = new Date()
-  await pg.query(
+  const cancelUpd = await pg.query(
     `UPDATE appointments
      SET status = '已取消', cancelled_reason = $1, updated_at = $2
-     WHERE appointment_id = $3`,
+     WHERE appointment_id = $3
+       AND status = '待确认'`,
     [cancelledReason || '', now, appointmentId]
   )
+  if (cancelUpd.rowCount === 0) {
+    throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:appointments:${appointmentId}:→已取消`)
+  }
 
   ctx.result = {
     appointmentId,

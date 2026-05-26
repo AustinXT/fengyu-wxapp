@@ -12,6 +12,26 @@ export interface CartItem {
   quantity: number;
   bigCategory: string;
   productType: string;
+  /**
+   * PR-D：一级品项 kind 名（来自 product_categories 一级行）。
+   * 与 bigCategory（=商城分类 mall_categories.category_name）不同：productKind 是
+   * 业务品项（护理项目/家居产品/体验卡 + 任意 admin 新建一级 kind）。
+   * 充值卡已剥离 SKU 域（2026-05-20），走独立 prepaid-cards 页，不入商城购物车。
+   * 可选——加购时若 SKU 数据未携带则保持 undefined，购物车 tag 走 bigCategory 兜底。
+   */
+  productKind?: string;
+  /**
+   * PR-D：一级 kind 行的 display_color HEX 值（DB 驱动）。
+   * 与 productKind 配套；缺失时 tag 退化为 type='primary'。
+   */
+  kindDisplayColor?: string;
+  /**
+   * 2026-04-26 体验卡 capability 化（ticket Round 2）：行级标记（取自 product_skus.is_experience）。
+   * 商城常规通道已在 SKU_VALID_FILTER 排除体验卡（is_experience=true 的 SKU 不进商城商品列表）；
+   * 体验卡走独立购物流（pages/experience-card/checkout），不与商城购物车合并。
+   * 商城正常 SKU 保持 false；此字段仅用于兜底防御。
+   */
+  isExperience?: boolean;
   addedAt: number;
 }
 

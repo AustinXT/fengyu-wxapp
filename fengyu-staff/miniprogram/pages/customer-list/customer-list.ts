@@ -11,7 +11,40 @@ interface StaffAction {
   employeeId: string;
 }
 
-type CustomerType = 'all' | 'member' | 'flow';
+// 顾客类型：'all' = 全部，其余为 customer_type 枚举字面量（须与 DB 一致）
+type CustomerType = 'all' | '流量客' | '体验客' | '小美客' | '会员客';
+
+// 拓展筛选选项（值须与 db/schema/enums.ts 字面量完全一致；空串 = 不筛选）
+const CUSTOMER_TYPE_OPTIONS = [
+  { label: '全部', value: 'all' },
+  { label: '流量客', value: '流量客' },
+  { label: '体验客', value: '体验客' },
+  { label: '小美客', value: '小美客' },
+  { label: '会员客', value: '会员客' },
+];
+const SPENDING_TIER_OPTIONS = [
+  { label: '全部', value: '' },
+  { label: '10W+', value: '10W+' },
+  { label: '6-10W', value: '6-10W' },
+  { label: '3-6W', value: '3-6W' },
+  { label: '1-3W', value: '1-3W' },
+  { label: '1990-1W', value: '1990-1W' },
+  { label: '<1990', value: '<1990' },
+];
+const MONTHLY_ACTIVITY_OPTIONS = [
+  { label: '全部', value: '' },
+  { label: '二次客活', value: '二次客活' },
+  { label: '一次客活', value: '一次客活' },
+  { label: '0次客活', value: '0次客活' },
+];
+const CUSTOMER_STATUS_OPTIONS = [
+  { label: '全部', value: '' },
+  { label: '保有会员-稳定', value: '保有会员-稳定' },
+  { label: '保有会员-有效', value: '保有会员-有效' },
+  { label: '沉睡', value: '沉睡' },
+  { label: '冰冻', value: '冰冻' },
+  { label: '休眠', value: '休眠' },
+];
 
 interface CustomerListItem {
   id: string | null;
@@ -21,7 +54,6 @@ interface CustomerListItem {
   phoneMasked: string;
   memberLevel: string | null;
   storeName: string;
-  tier: 'diamond' | 'iron' | 'fan' | null;
   lastServiceDate: string | null;
   lastPurchaseName: string | null;
   source: string;
@@ -62,8 +94,20 @@ Page({
       memberCount: 0,
       flowCount: 0,
     },
-    // 统计栏：全部/会员客/流量客
+    // 顾客类型栏：全部 + customer_type 4 枚举值
     customerType: 'all' as CustomerType,
+    // 拓展筛选维度（空串 = 不筛选）
+    spendingTier: '',
+    monthlyActivity: '',
+    customerStatus: '',
+    advancedExpanded: false,
+    // 拓展筛选选项常量（供 wxml 渲染）
+    customerTypeOptions: CUSTOMER_TYPE_OPTIONS,
+    spendingTierOptions: SPENDING_TIER_OPTIONS,
+    monthlyActivityOptions: MONTHLY_ACTIVITY_OPTIONS,
+    customerStatusOptions: CUSTOMER_STATUS_OPTIONS,
+    // 是否有任意拓展筛选激活（含顾客类型）
+    hasAdvancedFilter: false,
     // 当前选中的标签（空 = 不筛选）
     activeTag: '' as '' | TagType,
     tagPage: 1,
@@ -83,7 +127,7 @@ Page({
     this.setData({ isManager: isManager() });
     this.loadStats();
     if (!this.data.activeTag && !this.data.searched) {
-      this.loadDefaultList();
+      this.loadFilteredList();
     }
   },
 
@@ -93,7 +137,7 @@ Page({
     if (this.data.activeTag) {
       this.loadByTag(this.data.activeTag as TagType, 1, true).finally(done);
     } else {
-      this.loadDefaultList().finally(done);
+      this.loadFilteredList().finally(done);
     }
   },
 
@@ -104,12 +148,23 @@ Page({
     } catch (_) {}
   },
 
-  async loadDefaultList(): Promise<void> {
-    this.setData({ loading: true });
+  // 是否存在任意拓展筛选（含顾客类型）激活
+  computeHasAdvancedFilter(): boolean {
+    const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
+    return customerType !== 'all' || !!spendingTier || !!monthlyActivity || !!customerStatus;
+  },
+
+  // 按当前筛选条件加载列表（无筛选时即默认全店列表）
+  async loadFilteredList(): Promise<void> {
+    this.setData({ loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
-      const { customerType } = this.data;
-      const params: Record<string, string> = {};
+      const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
+      // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
+      const params: Record<string, string | boolean> = { profileScope: true };
       if (customerType !== 'all') params.customerType = customerType;
+      if (spendingTier) params.spendingTier = spendingTier;
+      if (monthlyActivity) params.monthlyActivity = monthlyActivity;
+      if (customerStatus) params.customerStatus = customerStatus;
       const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
       this.setData({ results: data || [], searched: false });
     } catch (_) {
@@ -123,19 +178,19 @@ Page({
     this.setData({ searchKeyword: e.detail as unknown as string });
     if (!e.detail.trim()) {
       this.setData({ activeTag: '' });
-      this.loadDefaultList();
+      this.loadFilteredList();
     }
   },
 
   async onSearch() {
     const keyword = this.data.searchKeyword.trim();
     if (!keyword) {
-      this.loadDefaultList();
+      this.loadFilteredList();
       return;
     }
     this.setData({ loading: true, searched: true, activeTag: '' });
     try {
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword });
+      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
       this.setData({ results: data || [] });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '搜索失败';
@@ -145,12 +200,32 @@ Page({
     }
   },
 
-  // 切换统计栏：全部/会员客/流量客
-  onCustomerTypeTap(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as CustomerType;
-    if (type === this.data.customerType) return;
-    this.setData({ customerType: type, activeTag: '', searchKeyword: '', searched: false });
-    this.loadDefaultList();
+  // 展开/收起拓展筛选面板
+  toggleAdvanced() {
+    this.setData({ advancedExpanded: !this.data.advancedExpanded });
+  },
+
+  // 点击拓展筛选维度（顾客类型/消费档位/月度客活/到店状态），单选切换
+  onAdvancedFilterTap(e: WechatMiniprogram.TouchEvent) {
+    const { dim, value } = e.currentTarget.dataset as { dim: string; value: string };
+    if ((this.data as Record<string, unknown>)[dim] === value) return;
+    // 选拓展筛选清除统计卡片选中态（互斥）
+    this.setData({ [dim]: value, activeTag: '', searchKeyword: '', searched: false });
+    this.loadFilteredList();
+  },
+
+  // 重置全部拓展筛选（含顾客类型）
+  onResetFilters() {
+    this.setData({
+      customerType: 'all',
+      spendingTier: '',
+      monthlyActivity: '',
+      customerStatus: '',
+      activeTag: '',
+      searchKeyword: '',
+      searched: false,
+    });
+    this.loadFilteredList();
   },
 
   // 点击统计卡片筛选
@@ -159,10 +234,21 @@ Page({
     if (tag === this.data.activeTag) {
       // 取消筛选
       this.setData({ activeTag: '', searchKeyword: '' });
-      this.loadDefaultList();
+      this.loadFilteredList();
       return;
     }
-    this.setData({ activeTag: tag, customerType: 'all', searchKeyword: '', searched: false, tagPage: 1 });
+    // 选卡片清除全部拓展筛选（互斥）
+    this.setData({
+      activeTag: tag,
+      customerType: 'all',
+      spendingTier: '',
+      monthlyActivity: '',
+      customerStatus: '',
+      hasAdvancedFilter: false,
+      searchKeyword: '',
+      searched: false,
+      tagPage: 1,
+    });
     this.loadByTag(tag, 1, true);
   },
 

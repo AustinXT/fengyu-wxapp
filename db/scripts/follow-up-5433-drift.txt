@@ -1,0 +1,388 @@
+# RESOLVED 2026-04-10
+# 修复方式：db/scripts/5433-converge.sql（一次性 delta DDL，已 apply 并 COMMIT）
+# Journal 对齐：db/scripts/reset-drizzle-journal.js 已对 5433 跑过 --yes
+# 后置校验：5433 和 5434 的 drizzle.__drizzle_migrations 完全一致
+#          （id=1 hash=fc42e4114cf6a5d6... created_at=1775758338453）
+# 全量备份：~/backups/5433-before-drift-fix-20260410.dump（50MB custom format，310 TOC）
+#
+# 本文件作为历史记录保留。所有列出的真实结构差异（enum 值集、列添加/删除、表 DROP）
+# 都已在 5433 上修复；剩余差异（FK 命名 _fkey/_fk、index opclass、约束表达式格式）
+# 是 drizzle introspect 的语义噪音，按 _archive_pre_baseline_2026_04/README.md 第 64-66 行
+# 的 cosmetic 决议，不修复。
+#
+# Semantic diff (EXPECTED = schema/*.ts generated; PROD = introspected from 47.113.202.7)
+
+### ENUMS
+  - ONLY in PROD: public.point_transaction_type (values=earn,redeem)
+  - public.product_kind: EXPECTED-only=[体验卡] PROD-only=[福利活动]
+  - public.sale_order_type: EXPECTED-only=[销售单,内部单,回款单,转换单,退款单] PROD-only=[普通,体验,内部,组合套餐,回款,转换,退款]
+
+### TABLES — existence
+  - ONLY in PROD: public.customer_points
+  - ONLY in PROD: public.member_levels
+  - ONLY in PROD: public.sale_items_backup_20260410
+  - ONLY in PROD: public.service_commissions_backup_20260410
+
+### COLUMNS
+  - public.client_wechat_users.became_member_at: ONLY in EXPECTED ({"name":"became_member_at","type":"timestamp with time zone","primaryKey":false,"notNull":false})
+  - public.client_wechat_users.category: ONLY in PROD ({"name":"category","type":"varchar(50)","primaryKey":false,"notNull":false})
+  - public.client_wechat_users.points_balance: ONLY in EXPECTED ({"name":"points_balance","type":"integer","primaryKey":false,"notNull":true,"default":0})
+  - public.client_wechat_users.points_updated_at: ONLY in EXPECTED ({"name":"points_updated_at","type":"timestamp","primaryKey":false,"notNull":false})
+  - public.operation_logs.operator_employee_id:
+      expected: {"name":"operator_employee_id","type":"varchar(30)","primaryKey":false,"notNull":false}
+      prod:     {"name":"operator_employee_id","type":"varchar(30)","primaryKey":false,"notNull":true}
+  - public.operation_logs.operator_name:
+      expected: {"name":"operator_name","type":"text","primaryKey":false,"notNull":false}
+      prod:     {"name":"operator_name","type":"text","primaryKey":false,"notNull":true}
+  - public.product_categories.product_kind:
+      expected: {"name":"product_kind","type":"product_kind","typeSchema":"public","primaryKey":false,"notNull":false}
+      prod:     {"name":"product_kind","type":"text","primaryKey":false,"notNull":false}
+  - public.sale_orders.sale_order_type:
+      expected: {"name":"sale_order_type","type":"sale_order_type","typeSchema":"public","primaryKey":false,"notNull":true,"default":"'销售单'"}
+      prod:     {"name":"sale_order_type","type":"sale_order_type","typeSchema":"public","primaryKey":false,"notNull":true,"default":"'普通'"}
+  - public.service_items.is_presale: ONLY in PROD ({"name":"is_presale","type":"boolean","primaryKey":false,"notNull":true,"default":false})
+
+### INDEXES
+  - public.admin_passwords idx uq_admin_passwords_employee:
+      expected: {"name":"uq_admin_passwords_employee","columns":[{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_admin_passwords_employee","columns":[{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+  - public.appointments idx idx_appts_client_user_id:
+      expected: {"name":"idx_appts_client_user_id","columns":[{"expression":"client_user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_appts_client_user_id","columns":[{"expression":"client_user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.appointments idx idx_appts_employee_time:
+      expected: {"name":"idx_appts_employee_time","columns":[{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"appointment_time","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_appts_employee_time","columns":[{"expression":"employee_id","asc":true,"nulls":"last","opclass":"timestamp_ops","isExpression":false},{"expression":"appointment_time","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.appointments idx idx_appts_store_id:
+      expected: {"name":"idx_appts_store_id","columns":[{"expression":"store_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_appts_store_id","columns":[{"expression":"store_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.card_transactions idx idx_card_txns_card_id:
+      expected: {"name":"idx_card_txns_card_id","columns":[{"expression":"card_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_card_txns_card_id","columns":[{"expression":"card_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.client_wechat_users idx idx_client_users_bound_store_id:
+      expected: {"name":"idx_client_users_bound_store_id","columns":[{"expression":"bound_store_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_client_users_bound_store_id","columns":[{"expression":"bound_store_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.client_wechat_users idx uq_client_users_customer_id:
+      expected: {"name":"uq_client_users_customer_id","columns":[{"expression":"customer_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"customer_id IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_client_users_customer_id","columns":[{"expression":"customer_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(customer_id IS NOT NULL)","with":{}}
+  - public.client_wechat_users idx uq_client_users_openid:
+      expected: {"name":"uq_client_users_openid","columns":[{"expression":"openid","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"openid IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_client_users_openid","columns":[{"expression":"openid","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(openid IS NOT NULL)","with":{}}
+  - public.client_wechat_users idx uq_client_users_phone:
+      expected: {"name":"uq_client_users_phone","columns":[{"expression":"phone","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"phone IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_client_users_phone","columns":[{"expression":"phone","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(phone IS NOT NULL)","with":{}}
+  - public.mall_bundle_groups idx uq_bundle_group:
+      expected: {"name":"uq_bundle_group","columns":[{"expression":"product_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"group_name","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_bundle_group","columns":[{"expression":"product_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"group_name","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+  - public.mall_product_skus idx idx_mall_product_skus_product_id:
+      expected: {"name":"idx_mall_product_skus_product_id","columns":[{"expression":"product_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_mall_product_skus_product_id","columns":[{"expression":"product_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.mall_product_skus idx uq_mall_product_sku:
+      expected: {"name":"uq_mall_product_sku","columns":[{"expression":"product_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"sku_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_mall_product_sku","columns":[{"expression":"product_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"sku_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+  - public.messages idx idx_messages_recipient:
+      expected: {"name":"idx_messages_recipient","columns":[{"expression":"recipient_type","isExpression":false,"asc":true,"nulls":"last"},{"expression":"recipient_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"is_read","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_messages_recipient","columns":[{"expression":"recipient_type","asc":true,"nulls":"last","opclass":"enum_ops","isExpression":false},{"expression":"recipient_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"is_read","asc":true,"nulls":"last","opclass":"enum_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.operation_logs idx idx_op_logs_action:
+      expected: {"name":"idx_op_logs_action","columns":[{"expression":"action","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_op_logs_action","columns":[{"expression":"action","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.operation_logs idx idx_op_logs_created_at:
+      expected: {"name":"idx_op_logs_created_at","columns":[{"expression":"created_at","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_op_logs_created_at","columns":[{"expression":"created_at","asc":true,"nulls":"last","opclass":"timestamp_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.operation_logs idx idx_op_logs_operator:
+      expected: {"name":"idx_op_logs_operator","columns":[{"expression":"operator_employee_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_op_logs_operator","columns":[{"expression":"operator_employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.operation_logs idx idx_op_logs_target:
+      expected: {"name":"idx_op_logs_target","columns":[{"expression":"target_type","isExpression":false,"asc":true,"nulls":"last"},{"expression":"target_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_op_logs_target","columns":[{"expression":"target_type","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"target_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.org_nodes idx idx_org_nodes_parent_id:
+      expected: {"name":"idx_org_nodes_parent_id","columns":[{"expression":"parent_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_org_nodes_parent_id","columns":[{"expression":"parent_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.org_nodes idx idx_org_nodes_type:
+      expected: {"name":"idx_org_nodes_type","columns":[{"expression":"type","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_org_nodes_type","columns":[{"expression":"type","asc":true,"nulls":"last","opclass":"enum_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.permission_roles idx uq_perm_roles_emp_role_scope:
+      expected: {"name":"uq_perm_roles_emp_role_scope","columns":[{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"role","isExpression":false,"asc":true,"nulls":"last"},{"expression":"scope_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_perm_roles_emp_role_scope","columns":[{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"role","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"scope_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","with":{}}
+  - public.pickup_records idx idx_pickup_records_client:
+      expected: {"name":"idx_pickup_records_client","columns":[{"expression":"client_user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_pickup_records_client","columns":[{"expression":"client_user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.pickup_records idx idx_pickup_records_sale_item:
+      expected: {"name":"idx_pickup_records_sale_item","columns":[{"expression":"sale_item_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_pickup_records_sale_item","columns":[{"expression":"sale_item_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.point_transactions idx idx_point_txns_user_id:
+      expected: {"name":"idx_point_txns_user_id","columns":[{"expression":"user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_point_txns_user_id","columns":[{"expression":"user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.prepaid_cards idx idx_prepaid_cards_user_id:
+      expected: {"name":"idx_prepaid_cards_user_id","columns":[{"expression":"user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_prepaid_cards_user_id","columns":[{"expression":"user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.product_skus idx idx_product_skus_category_id:
+      expected: {"name":"idx_product_skus_category_id","columns":[{"expression":"category_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_product_skus_category_id","columns":[{"expression":"category_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_allocations idx idx_sale_alloc_employee_id:
+      expected: {"name":"idx_sale_alloc_employee_id","columns":[{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_alloc_employee_id","columns":[{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_allocations idx uq_sale_alloc_item_emp_role:
+      expected: {"name":"uq_sale_alloc_item_emp_role","columns":[{"expression":"sale_item_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"role_type","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"is_void = false","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_sale_alloc_item_emp_role","columns":[{"expression":"sale_item_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"role_type","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(is_void = false)","with":{}}
+  - public.sale_items idx idx_sale_items_order_id:
+      expected: {"name":"idx_sale_items_order_id","columns":[{"expression":"sale_order_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_items_order_id","columns":[{"expression":"sale_order_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_items idx idx_sale_items_ref:
+      expected: {"name":"idx_sale_items_ref","columns":[{"expression":"ref_sale_item_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_items_ref","columns":[{"expression":"ref_sale_item_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_items idx idx_sale_items_sku_id:
+      expected: {"name":"idx_sale_items_sku_id","columns":[{"expression":"sku_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_items_sku_id","columns":[{"expression":"sku_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_orders idx idx_sale_orders_ref:
+      expected: {"name":"idx_sale_orders_ref","columns":[{"expression":"ref_sale_order_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_orders_ref","columns":[{"expression":"ref_sale_order_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_orders idx idx_sale_orders_store_status:
+      expected: {"name":"idx_sale_orders_store_status","columns":[{"expression":"store_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"status","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_sale_orders_store_status","columns":[{"expression":"store_id","asc":true,"nulls":"last","opclass":"enum_ops","isExpression":false},{"expression":"status","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.sale_orders idx uq_sale_orders_client_pending:
+      expected: {"name":"uq_sale_orders_client_pending","columns":[{"expression":"client_user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"status = '待支付' AND client_user_id IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_sale_orders_client_pending","columns":[{"expression":"client_user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"((status = '待支付'::order_status) AND (client_user_id IS NOT NULL))","with":{}}
+  - public.sale_orders idx uq_sale_orders_phone_pending:
+      expected: {"name":"uq_sale_orders_phone_pending","columns":[{"expression":"client_phone","isExpression":false,"asc":true,"nulls":"last"},{"expression":"store_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"status = '待支付' AND client_user_id IS NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_sale_orders_phone_pending","columns":[{"expression":"client_phone","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"store_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"((status = '待支付'::order_status) AND (client_user_id IS NULL))","with":{}}
+  - public.service_commissions idx idx_svc_comm_employee_id:
+      expected: {"name":"idx_svc_comm_employee_id","columns":[{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_svc_comm_employee_id","columns":[{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.service_commissions idx uq_svc_comm_item_emp_role:
+      expected: {"name":"uq_svc_comm_item_emp_role","columns":[{"expression":"service_item_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"employee_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"role_type","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"is_void = false","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_svc_comm_item_emp_role","columns":[{"expression":"service_item_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"role_type","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(is_void = false)","with":{}}
+  - public.service_items idx idx_svc_items_order_id:
+      expected: {"name":"idx_svc_items_order_id","columns":[{"expression":"service_order_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_svc_items_order_id","columns":[{"expression":"service_order_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.service_orders idx idx_svc_orders_assigned_employee:
+      expected: {"name":"idx_svc_orders_assigned_employee","columns":[{"expression":"assigned_employee_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_svc_orders_assigned_employee","columns":[{"expression":"assigned_employee_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.service_orders idx idx_svc_orders_client_user_id:
+      expected: {"name":"idx_svc_orders_client_user_id","columns":[{"expression":"client_user_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_svc_orders_client_user_id","columns":[{"expression":"client_user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.service_orders idx idx_svc_orders_store_date:
+      expected: {"name":"idx_svc_orders_store_date","columns":[{"expression":"store_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"service_date","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_svc_orders_store_date","columns":[{"expression":"store_id","asc":true,"nulls":"last","opclass":"date_ops","isExpression":false},{"expression":"service_date","asc":true,"nulls":"last","opclass":"date_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.staff_wechat_users idx idx_staff_users_store_resigned:
+      expected: {"name":"idx_staff_users_store_resigned","columns":[{"expression":"store_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"is_resigned","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_staff_users_store_resigned","columns":[{"expression":"store_id","asc":true,"nulls":"last","opclass":"bool_ops","isExpression":false},{"expression":"is_resigned","asc":true,"nulls":"last","opclass":"bool_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.staff_wechat_users idx uq_staff_users_openid:
+      expected: {"name":"uq_staff_users_openid","columns":[{"expression":"openid","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"openid IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_staff_users_openid","columns":[{"expression":"openid","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(openid IS NOT NULL)","with":{}}
+  - public.staff_wechat_users idx uq_staff_users_phone:
+      expected: {"name":"uq_staff_users_phone","columns":[{"expression":"phone","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":true,"where":"phone IS NOT NULL","concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"uq_staff_users_phone","columns":[{"expression":"phone","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":true,"concurrently":false,"method":"btree","where":"(phone IS NOT NULL)","with":{}}
+  - public.stores idx idx_stores_org_node_id:
+      expected: {"name":"idx_stores_org_node_id","columns":[{"expression":"org_node_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_stores_org_node_id","columns":[{"expression":"org_node_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.user_coupons idx idx_user_coupons_expire:
+      expected: {"name":"idx_user_coupons_expire","columns":[{"expression":"expire_at","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_user_coupons_expire","columns":[{"expression":"expire_at","asc":true,"nulls":"last","opclass":"timestamp_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.user_coupons idx idx_user_coupons_used_order:
+      expected: {"name":"idx_user_coupons_used_order","columns":[{"expression":"used_sale_order_id","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_user_coupons_used_order","columns":[{"expression":"used_sale_order_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+  - public.user_coupons idx idx_user_coupons_user_status:
+      expected: {"name":"idx_user_coupons_user_status","columns":[{"expression":"user_id","isExpression":false,"asc":true,"nulls":"last"},{"expression":"status","isExpression":false,"asc":true,"nulls":"last"}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+      prod:     {"name":"idx_user_coupons_user_status","columns":[{"expression":"user_id","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false},{"expression":"status","asc":true,"nulls":"last","opclass":"text_ops","isExpression":false}],"isUnique":false,"concurrently":false,"method":"btree","with":{}}
+
+### FOREIGN KEYS
+  - public.admin_passwords FK admin_passwords_employee_id_staff_wechat_users_employee_id_fk:
+      expected: {"name":"admin_passwords_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"admin_passwords","tableTo":"staff_wechat_users","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"admin_passwords_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"admin_passwords","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.appointments FK appointments_client_user_id_client_wechat_users_user_id_fk:
+      expected: {"name":"appointments_client_user_id_client_wechat_users_user_id_fk","tableFrom":"appointments","tableTo":"client_wechat_users","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"appointments_client_user_id_client_wechat_users_user_id_fk","tableFrom":"appointments","tableTo":"client_wechat_users","schemaTo":"public","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.appointments FK appointments_employee_id_staff_wechat_users_employee_id_fk:
+      expected: {"name":"appointments_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"appointments","tableTo":"staff_wechat_users","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"appointments_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"appointments","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.appointments FK appointments_sale_item_id_sale_items_sale_item_id_fk:
+      expected: {"name":"appointments_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"appointments","tableTo":"sale_items","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"appointments_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"appointments","tableTo":"sale_items","schemaTo":"public","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.appointments FK appointments_store_id_stores_store_id_fk:
+      expected: {"name":"appointments_store_id_stores_store_id_fk","tableFrom":"appointments","tableTo":"stores","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"appointments_store_id_stores_store_id_fk","tableFrom":"appointments","tableTo":"stores","schemaTo":"public","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.card_transactions FK ONLY in PROD: card_transactions_card_id_fkey
+  - public.card_transactions FK ONLY in EXPECTED: card_transactions_card_id_prepaid_cards_card_id_fk
+  - public.card_transactions FK ONLY in PROD: card_transactions_ref_order_id_fkey
+  - public.card_transactions FK ONLY in EXPECTED: card_transactions_ref_order_id_sale_orders_sale_order_id_fk
+  - public.client_wechat_users FK client_wechat_users_bound_store_id_stores_store_id_fk:
+      expected: {"name":"client_wechat_users_bound_store_id_stores_store_id_fk","tableFrom":"client_wechat_users","tableTo":"stores","columnsFrom":["bound_store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"client_wechat_users_bound_store_id_stores_store_id_fk","tableFrom":"client_wechat_users","tableTo":"stores","schemaTo":"public","columnsFrom":["bound_store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.client_wechat_users FK ONLY in PROD: client_wechat_users_promoter_employee_id_fkey
+  - public.client_wechat_users FK ONLY in EXPECTED: client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk
+  - public.commission_rate_matrix FK commission_rate_matrix_org_id_org_nodes_id_fk:
+      expected: {"name":"commission_rate_matrix_org_id_org_nodes_id_fk","tableFrom":"commission_rate_matrix","tableTo":"org_nodes","columnsFrom":["org_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"commission_rate_matrix_org_id_org_nodes_id_fk","tableFrom":"commission_rate_matrix","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["org_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.mall_bundle_groups FK ONLY in PROD: mall_bundle_groups_product_id_fkey
+  - public.mall_bundle_groups FK ONLY in EXPECTED: mall_bundle_groups_product_id_products_product_id_fk
+  - public.mall_product_skus FK ONLY in PROD: mall_product_skus_bundle_group_id_fkey
+  - public.mall_product_skus FK ONLY in EXPECTED: mall_product_skus_bundle_group_id_mall_bundle_groups_id_fk
+  - public.mall_product_skus FK mall_product_skus_product_id_products_product_id_fk:
+      expected: {"name":"mall_product_skus_product_id_products_product_id_fk","tableFrom":"mall_product_skus","tableTo":"products","columnsFrom":["product_id"],"columnsTo":["product_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"mall_product_skus_product_id_products_product_id_fk","tableFrom":"mall_product_skus","tableTo":"products","schemaTo":"public","columnsFrom":["product_id"],"columnsTo":["product_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.mall_product_skus FK mall_product_skus_sku_id_product_skus_sku_id_fk:
+      expected: {"name":"mall_product_skus_sku_id_product_skus_sku_id_fk","tableFrom":"mall_product_skus","tableTo":"product_skus","columnsFrom":["sku_id"],"columnsTo":["sku_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"mall_product_skus_sku_id_product_skus_sku_id_fk","tableFrom":"mall_product_skus","tableTo":"product_skus","schemaTo":"public","columnsFrom":["sku_id"],"columnsTo":["sku_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.operation_logs FK ONLY in PROD: operation_logs_operator_employee_id_staff_wechat_users_employee
+  - public.operation_logs FK ONLY in EXPECTED: operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk
+  - public.operation_logs FK operation_logs_org_node_id_org_nodes_id_fk:
+      expected: {"name":"operation_logs_org_node_id_org_nodes_id_fk","tableFrom":"operation_logs","tableTo":"org_nodes","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"operation_logs_org_node_id_org_nodes_id_fk","tableFrom":"operation_logs","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.org_nodes FK org_nodes_parent_id_org_nodes_id_fk:
+      expected: {"name":"org_nodes_parent_id_org_nodes_id_fk","tableFrom":"org_nodes","tableTo":"org_nodes","columnsFrom":["parent_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"org_nodes_parent_id_org_nodes_id_fk","tableFrom":"org_nodes","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["parent_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.permission_roles FK permission_roles_employee_id_staff_wechat_users_employee_id_fk:
+      expected: {"name":"permission_roles_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"permission_roles","tableTo":"staff_wechat_users","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"permission_roles_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"permission_roles","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.permission_roles FK permission_roles_scope_id_org_nodes_id_fk:
+      expected: {"name":"permission_roles_scope_id_org_nodes_id_fk","tableFrom":"permission_roles","tableTo":"org_nodes","columnsFrom":["scope_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"permission_roles_scope_id_org_nodes_id_fk","tableFrom":"permission_roles","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["scope_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.pickup_records FK ONLY in EXPECTED: pickup_records_client_user_id_client_wechat_users_user_id_fk
+  - public.pickup_records FK ONLY in PROD: pickup_records_client_user_id_fkey
+  - public.pickup_records FK ONLY in PROD: pickup_records_confirmed_by_fkey
+  - public.pickup_records FK ONLY in EXPECTED: pickup_records_confirmed_by_staff_wechat_users_employee_id_fk
+  - public.pickup_records FK ONLY in PROD: pickup_records_sale_item_id_fkey
+  - public.pickup_records FK ONLY in EXPECTED: pickup_records_sale_item_id_sale_items_sale_item_id_fk
+  - public.pickup_records FK ONLY in PROD: pickup_records_store_id_fkey
+  - public.pickup_records FK ONLY in EXPECTED: pickup_records_store_id_stores_store_id_fk
+  - public.point_transactions FK ONLY in PROD: point_transactions_ref_order_id_fkey
+  - public.point_transactions FK ONLY in EXPECTED: point_transactions_ref_order_id_sale_orders_sale_order_id_fk
+  - public.point_transactions FK ONLY in EXPECTED: point_transactions_user_id_client_wechat_users_user_id_fk
+  - public.point_transactions FK ONLY in PROD: point_transactions_user_id_fkey
+  - public.prepaid_cards FK ONLY in PROD: prepaid_cards_store_id_fkey
+  - public.prepaid_cards FK ONLY in EXPECTED: prepaid_cards_store_id_stores_store_id_fk
+  - public.prepaid_cards FK ONLY in EXPECTED: prepaid_cards_user_id_client_wechat_users_user_id_fk
+  - public.prepaid_cards FK ONLY in PROD: prepaid_cards_user_id_fkey
+  - public.product_skus FK product_skus_category_id_product_categories_category_id_fk:
+      expected: {"name":"product_skus_category_id_product_categories_category_id_fk","tableFrom":"product_skus","tableTo":"product_categories","columnsFrom":["category_id"],"columnsTo":["category_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"product_skus_category_id_product_categories_category_id_fk","tableFrom":"product_skus","tableTo":"product_categories","schemaTo":"public","columnsFrom":["category_id"],"columnsTo":["category_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.products FK products_category_id_mall_categories_category_id_fk:
+      expected: {"name":"products_category_id_mall_categories_category_id_fk","tableFrom":"products","tableTo":"mall_categories","columnsFrom":["category_id"],"columnsTo":["category_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"products_category_id_mall_categories_category_id_fk","tableFrom":"products","tableTo":"mall_categories","schemaTo":"public","columnsFrom":["category_id"],"columnsTo":["category_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_allocations FK sale_allocations_employee_id_staff_wechat_users_employee_id_fk:
+      expected: {"name":"sale_allocations_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"sale_allocations","tableTo":"staff_wechat_users","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_allocations_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"sale_allocations","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_allocations FK sale_allocations_sale_item_id_sale_items_sale_item_id_fk:
+      expected: {"name":"sale_allocations_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"sale_allocations","tableTo":"sale_items","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_allocations_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"sale_allocations","tableTo":"sale_items","schemaTo":"public","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_items FK sale_items_ref_sale_item_id_sale_items_sale_item_id_fk:
+      expected: {"name":"sale_items_ref_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"sale_items","tableTo":"sale_items","columnsFrom":["ref_sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_items_ref_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"sale_items","tableTo":"sale_items","schemaTo":"public","columnsFrom":["ref_sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_items FK sale_items_sale_order_id_sale_orders_sale_order_id_fk:
+      expected: {"name":"sale_items_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"sale_items","tableTo":"sale_orders","columnsFrom":["sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_items_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"sale_items","tableTo":"sale_orders","schemaTo":"public","columnsFrom":["sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_items FK sale_items_sku_id_product_skus_sku_id_fk:
+      expected: {"name":"sale_items_sku_id_product_skus_sku_id_fk","tableFrom":"sale_items","tableTo":"product_skus","columnsFrom":["sku_id"],"columnsTo":["sku_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_items_sku_id_product_skus_sku_id_fk","tableFrom":"sale_items","tableTo":"product_skus","schemaTo":"public","columnsFrom":["sku_id"],"columnsTo":["sku_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_orders FK ONLY in PROD: sale_orders_approved_by_fkey
+  - public.sale_orders FK ONLY in EXPECTED: sale_orders_approved_by_staff_wechat_users_employee_id_fk
+  - public.sale_orders FK sale_orders_client_user_id_client_wechat_users_user_id_fk:
+      expected: {"name":"sale_orders_client_user_id_client_wechat_users_user_id_fk","tableFrom":"sale_orders","tableTo":"client_wechat_users","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_orders_client_user_id_client_wechat_users_user_id_fk","tableFrom":"sale_orders","tableTo":"client_wechat_users","schemaTo":"public","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_orders FK ONLY in PROD: sale_orders_offline_confirmed_by_staff_wechat_users_employee_id
+  - public.sale_orders FK ONLY in EXPECTED: sale_orders_offline_confirmed_by_staff_wechat_users_employee_id_fk
+  - public.sale_orders FK sale_orders_opened_by_staff_wechat_users_employee_id_fk:
+      expected: {"name":"sale_orders_opened_by_staff_wechat_users_employee_id_fk","tableFrom":"sale_orders","tableTo":"staff_wechat_users","columnsFrom":["opened_by"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_orders_opened_by_staff_wechat_users_employee_id_fk","tableFrom":"sale_orders","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["opened_by"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_orders FK ONLY in PROD: sale_orders_preferred_employee_id_staff_wechat_users_employee_i
+  - public.sale_orders FK ONLY in EXPECTED: sale_orders_preferred_employee_id_staff_wechat_users_employee_id_fk
+  - public.sale_orders FK sale_orders_ref_sale_order_id_sale_orders_sale_order_id_fk:
+      expected: {"name":"sale_orders_ref_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"sale_orders","tableTo":"sale_orders","columnsFrom":["ref_sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_orders_ref_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"sale_orders","tableTo":"sale_orders","schemaTo":"public","columnsFrom":["ref_sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.sale_orders FK sale_orders_store_id_stores_store_id_fk:
+      expected: {"name":"sale_orders_store_id_stores_store_id_fk","tableFrom":"sale_orders","tableTo":"stores","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"sale_orders_store_id_stores_store_id_fk","tableFrom":"sale_orders","tableTo":"stores","schemaTo":"public","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.service_commissions FK ONLY in PROD: service_commissions_employee_id_fkey
+  - public.service_commissions FK ONLY in EXPECTED: service_commissions_employee_id_staff_wechat_users_employee_id_fk
+  - public.service_commissions FK ONLY in PROD: service_commissions_service_item_id_fkey
+  - public.service_commissions FK ONLY in EXPECTED: service_commissions_service_item_id_service_items_service_item_id_fk
+  - public.service_items FK service_items_employee_id_staff_wechat_users_employee_id_fk:
+      expected: {"name":"service_items_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"service_items","tableTo":"staff_wechat_users","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"service_items_employee_id_staff_wechat_users_employee_id_fk","tableFrom":"service_items","tableTo":"staff_wechat_users","schemaTo":"public","columnsFrom":["employee_id"],"columnsTo":["employee_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.service_items FK service_items_sale_item_id_sale_items_sale_item_id_fk:
+      expected: {"name":"service_items_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"service_items","tableTo":"sale_items","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"service_items_sale_item_id_sale_items_sale_item_id_fk","tableFrom":"service_items","tableTo":"sale_items","schemaTo":"public","columnsFrom":["sale_item_id"],"columnsTo":["sale_item_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.service_items FK ONLY in PROD: service_items_service_order_id_service_orders_service_order_id_
+  - public.service_items FK ONLY in EXPECTED: service_items_service_order_id_service_orders_service_order_id_fk
+  - public.service_orders FK service_orders_appointment_id_appointments_appointment_id_fk:
+      expected: {"name":"service_orders_appointment_id_appointments_appointment_id_fk","tableFrom":"service_orders","tableTo":"appointments","columnsFrom":["appointment_id"],"columnsTo":["appointment_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"service_orders_appointment_id_appointments_appointment_id_fk","tableFrom":"service_orders","tableTo":"appointments","schemaTo":"public","columnsFrom":["appointment_id"],"columnsTo":["appointment_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.service_orders FK ONLY in PROD: service_orders_assigned_employee_id_staff_wechat_users_employee
+  - public.service_orders FK ONLY in EXPECTED: service_orders_assigned_employee_id_staff_wechat_users_employee_id_fk
+  - public.service_orders FK service_orders_client_user_id_client_wechat_users_user_id_fk:
+      expected: {"name":"service_orders_client_user_id_client_wechat_users_user_id_fk","tableFrom":"service_orders","tableTo":"client_wechat_users","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"service_orders_client_user_id_client_wechat_users_user_id_fk","tableFrom":"service_orders","tableTo":"client_wechat_users","schemaTo":"public","columnsFrom":["client_user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.service_orders FK service_orders_store_id_stores_store_id_fk:
+      expected: {"name":"service_orders_store_id_stores_store_id_fk","tableFrom":"service_orders","tableTo":"stores","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"service_orders_store_id_stores_store_id_fk","tableFrom":"service_orders","tableTo":"stores","schemaTo":"public","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.staff_wechat_users FK staff_wechat_users_org_node_id_org_nodes_id_fk:
+      expected: {"name":"staff_wechat_users_org_node_id_org_nodes_id_fk","tableFrom":"staff_wechat_users","tableTo":"org_nodes","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"staff_wechat_users_org_node_id_org_nodes_id_fk","tableFrom":"staff_wechat_users","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.staff_wechat_users FK staff_wechat_users_store_id_stores_store_id_fk:
+      expected: {"name":"staff_wechat_users_store_id_stores_store_id_fk","tableFrom":"staff_wechat_users","tableTo":"stores","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"staff_wechat_users_store_id_stores_store_id_fk","tableFrom":"staff_wechat_users","tableTo":"stores","schemaTo":"public","columnsFrom":["store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.store_unbind_requests FK store_unbind_requests_from_store_id_stores_store_id_fk:
+      expected: {"name":"store_unbind_requests_from_store_id_stores_store_id_fk","tableFrom":"store_unbind_requests","tableTo":"stores","columnsFrom":["from_store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"store_unbind_requests_from_store_id_stores_store_id_fk","tableFrom":"store_unbind_requests","tableTo":"stores","schemaTo":"public","columnsFrom":["from_store_id"],"columnsTo":["store_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.store_unbind_requests FK ONLY in PROD: store_unbind_requests_reviewed_by_staff_wechat_users_employee_i
+  - public.store_unbind_requests FK ONLY in EXPECTED: store_unbind_requests_reviewed_by_staff_wechat_users_employee_id_fk
+  - public.store_unbind_requests FK store_unbind_requests_user_id_client_wechat_users_user_id_fk:
+      expected: {"name":"store_unbind_requests_user_id_client_wechat_users_user_id_fk","tableFrom":"store_unbind_requests","tableTo":"client_wechat_users","columnsFrom":["user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"store_unbind_requests_user_id_client_wechat_users_user_id_fk","tableFrom":"store_unbind_requests","tableTo":"client_wechat_users","schemaTo":"public","columnsFrom":["user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.stores FK stores_org_node_id_org_nodes_id_fk:
+      expected: {"name":"stores_org_node_id_org_nodes_id_fk","tableFrom":"stores","tableTo":"org_nodes","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"stores_org_node_id_org_nodes_id_fk","tableFrom":"stores","tableTo":"org_nodes","schemaTo":"public","columnsFrom":["org_node_id"],"columnsTo":["id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.user_coupons FK user_coupons_template_id_coupon_templates_template_id_fk:
+      expected: {"name":"user_coupons_template_id_coupon_templates_template_id_fk","tableFrom":"user_coupons","tableTo":"coupon_templates","columnsFrom":["template_id"],"columnsTo":["template_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"user_coupons_template_id_coupon_templates_template_id_fk","tableFrom":"user_coupons","tableTo":"coupon_templates","schemaTo":"public","columnsFrom":["template_id"],"columnsTo":["template_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.user_coupons FK user_coupons_used_sale_order_id_sale_orders_sale_order_id_fk:
+      expected: {"name":"user_coupons_used_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"user_coupons","tableTo":"sale_orders","columnsFrom":["used_sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"user_coupons_used_sale_order_id_sale_orders_sale_order_id_fk","tableFrom":"user_coupons","tableTo":"sale_orders","schemaTo":"public","columnsFrom":["used_sale_order_id"],"columnsTo":["sale_order_id"],"onDelete":"no action","onUpdate":"no action"}
+  - public.user_coupons FK user_coupons_user_id_client_wechat_users_user_id_fk:
+      expected: {"name":"user_coupons_user_id_client_wechat_users_user_id_fk","tableFrom":"user_coupons","tableTo":"client_wechat_users","columnsFrom":["user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+      prod:     {"name":"user_coupons_user_id_client_wechat_users_user_id_fk","tableFrom":"user_coupons","tableTo":"client_wechat_users","schemaTo":"public","columnsFrom":["user_id"],"columnsTo":["user_id"],"onDelete":"no action","onUpdate":"no action"}
+
+### CHECK CONSTRAINTS
+  - public.pickup_records CK chk_pickup_quantity:
+      expected: {"name":"chk_pickup_quantity","value":"\"pickup_records\".\"pickup_quantity\" > 0"}
+      prod:     {"name":"chk_pickup_quantity","value":"pickup_quantity > 0"}
+  - public.product_skus CK chk_sku_price:
+      expected: {"name":"chk_sku_price","value":"\"product_skus\".\"price\" >= 0"}
+      prod:     {"name":"chk_sku_price","value":"price >= (0)::numeric"}
+  - public.product_skus CK chk_sku_service_fee:
+      expected: {"name":"chk_sku_service_fee","value":"\"product_skus\".\"service_fee\" >= 0"}
+      prod:     {"name":"chk_sku_service_fee","value":"service_fee >= (0)::numeric"}
+  - public.product_skus CK chk_sku_session_count:
+      expected: {"name":"chk_sku_session_count","value":"\"product_skus\".\"session_count\" IS NULL OR \"product_skus\".\"session_count\" >= 1"}
+      prod:     {"name":"chk_sku_session_count","value":"(session_count IS NULL) OR (session_count >= 1)"}
+  - public.sale_items CK chk_item_quantity:
+      expected: {"name":"chk_item_quantity","value":"\"sale_items\".\"quantity\" > 0"}
+      prod:     {"name":"chk_item_quantity","value":"quantity > 0"}
+  - public.sale_items CK chk_item_remaining:
+      expected: {"name":"chk_item_remaining","value":"\"sale_items\".\"remaining_sessions\" IS NULL OR \"sale_items\".\"remaining_sessions\" >= 0"}
+      prod:     {"name":"chk_item_remaining","value":"(remaining_sessions IS NULL) OR (remaining_sessions >= 0)"}
+  - public.sale_items CK chk_item_service_fee:
+      expected: {"name":"chk_item_service_fee","value":"\"sale_items\".\"service_fee\" >= 0"}
+      prod:     {"name":"chk_item_service_fee","value":"service_fee >= (0)::numeric"}
+  - public.sale_items CK chk_item_unit_price:
+      expected: {"name":"chk_item_unit_price","value":"\"sale_items\".\"unit_price\" >= 0"}
+      prod:     {"name":"chk_item_unit_price","value":"unit_price >= (0)::numeric"}
+  - public.sale_items CK chk_item_unit_real_price:
+      expected: {"name":"chk_item_unit_real_price","value":"\"sale_items\".\"unit_real_price\" >= 0"}
+      prod:     {"name":"chk_item_unit_real_price","value":"unit_real_price >= (0)::numeric"}
+  - public.service_commissions CK chk_svc_comm_consume_amount:
+      expected: {"name":"chk_svc_comm_consume_amount","value":"\"service_commissions\".\"consume_amount\" >= 0"}
+      prod:     {"name":"chk_svc_comm_consume_amount","value":"consume_amount >= (0)::numeric"}
+  - public.service_commissions CK chk_svc_comm_fixed_fee:
+      expected: {"name":"chk_svc_comm_fixed_fee","value":"\"service_commissions\".\"fixed_fee\" >= 0"}
+      prod:     {"name":"chk_svc_comm_fixed_fee","value":"fixed_fee >= (0)::numeric"}
+
+### UNIQUE CONSTRAINTS
+  - public.commission_rate_matrix UQ uq_commission_matrix: expected={"name":"uq_commission_matrix","nullsNotDistinct":false,"columns":["org_id","order_type","role_type","sales_category","amount_tier_min"]} prod={"columns":["org_id","order_type","role_type","sales_category","amount_tier_min"],"nullsNotDistinct":false,"name":"uq_commission_matrix"}
+  - public.org_nodes UQ uq_org_nodes_parent_name: expected={"name":"uq_org_nodes_parent_name","nullsNotDistinct":false,"columns":["parent_id","name"]} prod={"columns":["name","parent_id"],"nullsNotDistinct":false,"name":"uq_org_nodes_parent_name"}
+  - public.positions UQ uq_positions_name_scope: expected={"name":"uq_positions_name_scope","nullsNotDistinct":false,"columns":["name","scope"]} prod={"columns":["name","scope"],"nullsNotDistinct":false,"name":"uq_positions_name_scope"}
+  - public.sale_orders UQ sale_orders_alipay_transaction_id_unique: expected={"name":"sale_orders_alipay_transaction_id_unique","nullsNotDistinct":false,"columns":["alipay_transaction_id"]} prod={"columns":["alipay_transaction_id"],"nullsNotDistinct":false,"name":"sale_orders_alipay_transaction_id_unique"}
+  - public.sale_orders UQ sale_orders_wechat_transaction_id_unique: expected={"name":"sale_orders_wechat_transaction_id_unique","nullsNotDistinct":false,"columns":["wechat_transaction_id"]} prod={"columns":["wechat_transaction_id"],"nullsNotDistinct":false,"name":"sale_orders_wechat_transaction_id_unique"}
+  - public.skill_tags UQ skill_tags_name_unique: expected={"name":"skill_tags_name_unique","nullsNotDistinct":false,"columns":["name"]} prod={"columns":["name"],"nullsNotDistinct":false,"name":"skill_tags_name_unique"}
+  - public.staff_wechat_users UQ ONLY in PROD: staff_wechat_users_employee_id_unique ({"columns":["employee_id"],"nullsNotDistinct":false,"name":"staff_wechat_users_employee_id_unique"})
+  - public.stores UQ stores_store_name_unique: expected={"name":"stores_store_name_unique","nullsNotDistinct":false,"columns":["store_name"]} prod={"columns":["store_name"],"nullsNotDistinct":false,"name":"stores_store_name_unique"}

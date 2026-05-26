@@ -1,6 +1,7 @@
 // packageOrder/staff-performance/staff-performance.ts — 员工绩效
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { formatDateTimeShort } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -19,19 +20,31 @@ interface PerformanceItem {
   type: 'sale' | 'service';
   productName: string;
   specName: string;
-  amount: string;
-  ratio: string;
-  businessAmount: string;
-  servicePrice: string;
-  sessionUsed: number;
+  amount: number | string;
+  ratio?: string;
+  businessAmount?: number | string;
+  // sale 独有
+  department?: string;
+  // service 独有（服务提成双字段拆分）
+  roleType?: string;
+  fixedFee?: number;        // 固定手工费部分
+  consumeAmount?: number;   // 消耗提成部分
+  commissionRate?: number;  // 提成比例（0.12 = 12%）
+  servicePrice?: number | string;  // 单次划卡价（消耗业绩口径，仅展示用）
+  sessionUsed?: number;
   customerName: string;
+  clientPhone?: string;
+  orderId?: string;
   date: string;
   salesCategory: string;
 }
 
 interface PerformanceResponse {
   totalSalesAlloc: number;
-  totalServiceFee: number;
+  /** 服务提成新口径（= service_commissions.commission_amount 汇总） */
+  totalServiceCommission?: number;
+  /** 向后兼容字段，值同 totalServiceCommission */
+  totalServiceFee?: number;
   totalCommission: number;
   items: PerformanceItem[];
   total: number;
@@ -49,7 +62,7 @@ Page({
     displayDate: '',
     // 汇总数据
     totalSalesAlloc: '0.00',
-    totalServiceFee: '0.00',
+    totalServiceCommission: '0.00',
     totalCommission: '0.00',
     // 分类 Tab（5 个子分类）
     activeCategoryTab: 0,
@@ -187,10 +200,16 @@ Page({
         pageSize: 20,
       });
 
-      const newItems = reset ? (res.items || []) : [...this.data.items, ...(res.items || [])];
+      const formattedItems = (res.items || []).map((it) => ({
+        ...it,
+        date: formatDateTimeShort(it.date),
+      }));
+      const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
+      // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
+      const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       this.setData({
         totalSalesAlloc: (res.totalSalesAlloc || 0).toFixed(2),
-        totalServiceFee: (res.totalServiceFee || 0).toFixed(2),
+        totalServiceCommission: serviceCommission.toFixed(2),
         totalCommission: (res.totalCommission || 0).toFixed(2),
         items: newItems,
         total: res.total || 0,

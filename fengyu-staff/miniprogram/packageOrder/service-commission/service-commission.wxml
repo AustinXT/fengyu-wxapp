@@ -1,0 +1,166 @@
+<!-- packageOrder/service-commission/service-commission.wxml — 服务提成分配 -->
+<wxs module="fmt">
+module.exports.pct = function(rate) {
+  return (rate * 100).toFixed(1);
+}
+</wxs>
+<view class="container">
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <block wx:else>
+    <!-- 服务单摘要 -->
+    <view class="order-header">
+      <text class="order-no">{{serviceOrderId}}</text>
+      <view class="header-info">
+        <text class="customer-name">{{order.customer_name || '未知顾客'}}</text>
+        <text class="paid-at" wx:if="{{order.service_date}}">服务日期 {{order.service_date}}</text>
+      </view>
+      <view class="header-info" wx:if="{{order.employee_name}}">
+        <text class="paid-at">美容师 {{order.employee_name}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{frozen}}" class="status-notice status-notice--frozen">
+      <van-icon name="lock" size="28rpx" color="#D94040" />
+      <text class="status-text">分配结果已冻结（完成超 3 天），如需修改请联系管理后台</text>
+    </view>
+
+    <view wx:elif="{{isAllocated}}" class="status-notice status-notice--allocated">
+      <van-icon name="passed" size="28rpx" color="#3D8A5A" />
+      <text class="status-text">该服务单已分配，可修改后重新保存</text>
+    </view>
+
+    <!-- 按服务明细分组 -->
+    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="service_item_id">
+      <view class="item-header">
+        <view class="item-name-row">
+          <text class="item-name">{{dItem.product_name || dItem.sku_spec_name}}</text>
+          <van-tag wx:if="{{dItem.sales_category}}" plain color="#666" size="medium">{{dItem.sales_category}}</van-tag>
+        </view>
+        <text class="item-amount">¥{{dItem.consumeBase}}</text>
+      </view>
+      <view class="item-sub">核销 {{dItem.session_used}} 次 · 单次价基数 ¥{{dItem.consumeBase}}</view>
+
+      <!-- 分配行：技能标签 → 员工 → 分配比例 -->
+      <view
+        class="alloc-line"
+        wx:for="{{dItem.allocLines}}"
+        wx:for-item="line"
+        wx:for-index="lineIdx"
+        wx:key="lineIdx"
+      >
+        <view class="line-fields">
+          <view class="field" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openSkillPicker">
+            <text class="field-label">技能标签</text>
+            <view class="field-value {{line.roleType ? '' : 'placeholder'}}">
+              <text>{{line.roleType || '选择'}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
+          </view>
+          <view class="field" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openEmployeePicker">
+            <text class="field-label">员工</text>
+            <view class="field-value {{line.staffName ? '' : 'placeholder'}}">
+              <text>{{line.staffName || (line.roleType ? '选择' : '先选标签')}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
+          </view>
+          <view class="field field--ratio" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="openRatioPicker">
+            <text class="field-label">分配</text>
+            <view class="field-value {{line.ratioPercent ? '' : 'placeholder'}}">
+              <text>{{line.ratioPercent ? line.ratioPercent + '%' : '选择'}}</text>
+              <van-icon name="arrow-down" size="20rpx" color="#999" />
+            </view>
+          </view>
+          <view class="remove-btn" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="onRemoveLine">
+            <van-icon name="cross" size="28rpx" color="#999" />
+          </view>
+        </view>
+        <view class="line-derived">
+          <text class="derived-item">提成 <text class="{{line.commissionRate > 0 ? 'derived-strong' : 'derived-warn'}}">{{fmt.pct(line.commissionRate)}}%</text></text>
+          <text class="derived-item">分配额 ¥{{line.allocAmount}}</text>
+          <text class="derived-item derived-primary">提成额 ¥{{line.commissionAmount}}</text>
+        </view>
+      </view>
+
+      <view class="add-person-btn" data-item-idx="{{itemIdx}}" bindtap="onAddLine">
+        <van-icon name="plus" size="28rpx" color="#C0322A" />
+        <text class="add-person-text">添加分配</text>
+      </view>
+    </view>
+
+    <!-- 汇总 -->
+    <view class="summary-section" wx:if="{{summary.length > 0}}">
+      <view class="summary-title">分配汇总</view>
+      <view class="summary-row" wx:for="{{summary}}" wx:key="index">
+        <text class="summary-name">{{item.staffName}} ({{item.department}})</text>
+        <text class="summary-amount">¥{{item.total}}</text>
+      </view>
+      <view class="summary-grand">
+        <text class="summary-grand-label">合计</text>
+        <text class="summary-grand-value">¥{{grandTotal}}</text>
+      </view>
+    </view>
+
+    <view class="action-bar">
+      <van-button
+        type="primary"
+        block
+        loading="{{submitting}}"
+        disabled="{{frozen}}"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;"
+        bind:click="onSave"
+      >{{frozen ? '分配已冻结' : '保存提成方案'}}</van-button>
+    </view>
+  </block>
+
+  <!-- 技能标签选择 -->
+  <van-action-sheet
+    show="{{skillSheetVisible}}"
+    actions="{{skillSheetActions}}"
+    cancel-text="取消"
+    bind:select="onSkillSelect"
+    bind:cancel="closeSkillSheet"
+    bind:close="closeSkillSheet"
+  />
+
+  <!-- 分配比例选择 -->
+  <van-action-sheet
+    show="{{ratioSheetVisible}}"
+    actions="{{ratioSheetActions}}"
+    cancel-text="取消"
+    bind:select="onRatioSelect"
+    bind:cancel="closeRatioSheet"
+    bind:close="closeRatioSheet"
+  />
+
+  <!-- 员工选择弹窗 -->
+  <van-popup show="{{empPopupVisible}}" position="bottom" round bind:close="closeEmpPopup">
+    <view class="picker-header">
+      <text class="picker-title">{{empPopupTitle}}</text>
+      <view bindtap="closeEmpPopup">
+        <van-icon name="cross" size="36rpx" color="#999" />
+      </view>
+    </view>
+    <scroll-view class="picker-scroll" scroll-y>
+      <view wx:if="{{empPopupList.length === 0}}" class="picker-empty">该技能标签下暂无可选员工</view>
+      <view
+        class="picker-member"
+        wx:for="{{empPopupList}}"
+        wx:for-item="member"
+        wx:key="staffWfId"
+        data-staff-wf-id="{{member.staffWfId}}"
+        data-name="{{member.name}}"
+        bindtap="onEmployeeSelect"
+      >
+        <text class="picker-member-name">{{member.name}}</text>
+        <text wx:if="{{member.storeName}}" class="picker-member-store">{{member.storeName}}</text>
+      </view>
+    </scroll-view>
+  </van-popup>
+
+  <view class="safe-area-bottom" />
+</view>

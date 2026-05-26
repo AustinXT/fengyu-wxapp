@@ -9,17 +9,20 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { findAncestorMarketId } from "@/lib/utils"
-import type { Store, OrgNode } from "@/lib/types"
+import type { Store, OrgNode, SkillTag } from "@/lib/types"
+
 
 interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
+  skillTags: SkillTag[]
 }
 
-export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
+export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -32,7 +35,10 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
     storeId: "",
     orgNodeId: "",
     positionName: "",
+    avatarUrl: "",
     birthday: "",
+    // 默认今天作为入职日，可在表单内调整；DB 兜底为 created_at::date
+    hiredAt: new Date().toISOString().slice(0, 10),
     skills: [] as string[],
   })
 
@@ -71,7 +77,9 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
         storeId: form.storeId || null,
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName.trim() || null,
+        avatarUrl: form.avatarUrl || null,
         birthday: form.birthday || null,
+        hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
       })
 
@@ -104,6 +112,14 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
           <CardTitle className="text-base">基本信息</CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="mb-6 flex items-start gap-4">
+            <label className="text-sm font-medium pt-2 w-16 flex-shrink-0">头像</label>
+            <ImageUpload
+              value={form.avatarUrl}
+              onChange={(v) => handleChange("avatarUrl", v as string)}
+              path="avatars/staff/_new"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 max-w-3xl">
             <div className="space-y-2">
               <label className="text-sm font-medium">
@@ -193,9 +209,18 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
                 onChange={(e) => handleChange("birthday", e.target.value)}
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">入职日期</label>
+              <Input
+                type="date"
+                value={form.hiredAt}
+                onChange={(e) => handleChange("hiredAt", e.target.value)}
+              />
+            </div>
             <div className="space-y-2 col-span-2">
               <label className="text-sm font-medium">技能标签</label>
               <SkillSelect
+                options={skillTags.map((t) => t.name)}
                 value={form.skills}
                 onChange={(skills) => handleChange("skills", skills)}
               />

@@ -50,7 +50,9 @@
         "profile-edit/profile-edit",
         "points/points",
         "messages/messages",
-        "prepaid-cards/prepaid-cards"
+        "prepaid-cards/prepaid-cards",
+        "card-recharge/card-recharge",
+        "member-benefits/member-benefits"
       ]
     },
     {
@@ -58,6 +60,14 @@
       "name": "coupon",
       "pages": [
         "my-coupons/my-coupons"
+      ]
+    },
+    {
+      "root": "pagesExperience",
+      "name": "experience",
+      "pages": [
+        "list/list",
+        "detail/detail"
       ]
     }
   ],
@@ -94,12 +104,15 @@
     ]
   },
   "permission": {
-    "scope.userLocation": {
+    "scope.userFuzzyLocation": {
       "desc": "用于定位您所在城市，展示附近门店"
     }
   },
   "requiredPrivateInfos": [
-    "getLocation"
+    "getFuzzyLocation"
+  ],
+  "navigateToMiniProgramAppIdList": [
+    "wx889424d565967811"
   ],
   "window": {
     "backgroundTextStyle": "light",

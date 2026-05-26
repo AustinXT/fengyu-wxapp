@@ -18,8 +18,9 @@
 
     <!-- 头部信息 -->
     <view class="staff-header">
-      <view class="staff-avatar">
-        <van-icon name="manager" size="64px" color="var(--color-primary)" />
+      <view class="staff-avatar staff-avatar--large">
+        <image wx:if="{{staff.avatarUrl}}" src="{{staff.avatarUrl}}" class="staff-avatar-img staff-avatar-img--large" mode="aspectFill" />
+        <van-icon wx:else name="manager" size="64px" color="var(--color-primary)" />
       </view>
       <view class="staff-info">
         <view class="staff-name-row">
@@ -71,6 +72,23 @@
         <view class="stat-item">
           <text class="stat-value">{{staff.todayAppointments || 0}}</text>
           <text class="stat-label">今日预约（位）</text>
+        </view>
+        <view class="stat-divider" />
+        <view class="stat-item">
+          <text class="stat-value">{{staff.reviewCount > 0 ? staff.avgRating : '—'}}</text>
+          <text class="stat-label">{{staff.reviewCount > 0 ? '评分（' + staff.reviewCount + '条）' : '暂无评价'}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 顾客评价（平均星级展示） -->
+    <view class="section" wx:if="{{staff.reviewCount > 0}}">
+      <view class="section-title">顾客评价</view>
+      <view class="rating-card">
+        <text class="rating-score">{{staff.avgRating}}</text>
+        <view class="rating-stars">
+          <van-rate value="{{staff.avgRating}}" readonly allow-half size="32rpx" color="#C0322A" void-color="#E8E8E8" />
+          <text class="rating-count">共 {{staff.reviewCount}} 条评价</text>
         </view>
       </view>
     </view>

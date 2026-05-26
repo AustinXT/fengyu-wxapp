@@ -1,36 +1,18 @@
-import { bigserial, index, integer, jsonb, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
-import { pointTransactionTypeEnum } from './enums'
+import { bigint, bigserial, check, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { clientWechatUsers } from './user'
 import { saleOrders } from './order'
 
 /**
- * 会员等级定义
- */
-export const memberLevels = pgTable('member_levels', {
-  levelId: text('level_id').primaryKey(),
-  name: varchar('name', { length: 50 }).notNull(),
-  /** 达到此等级所需最低积分 */
-  minPoints: integer('min_points').notNull().default(0),
-  /** 等级权益描述（JSON） */
-  benefits: jsonb('benefits'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-})
-
-/**
- * 顾客积分余额
- */
-export const customerPoints = pgTable('customer_points', {
-  userId: text('user_id')
-    .primaryKey()
-    .references(() => clientWechatUsers.userId),
-  balance: integer('balance').notNull().default(0),
-  levelId: text('level_id').references(() => memberLevels.levelId),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-})
-
-/**
- * 积分流水
+ * 积分流水（权威源）
+ * 余额缓存已合并至 client_wechat_users.points_balance，由 cronTask 每日重算写入。
+ * 会员等级（钻石等级）由 client_wechat_users.member_level 字段单独维护。
+ *
+ * bigint mode='number' 安全前提（migration 0028 升级 int4 → bigint）：
+ *   - 单值 amount < 2^53（JS Number 精确范围），业务上限 << 2^53。
+ *   - SUM 聚合理论可越过 2^53；当前业务体量（人均 < 1M 积分 × 百万顾客 ≈ 10^12）距 2^53 还有 4 个数量级。
+ *   - 一旦业务量级跃迁逼近 2^53，必须切到 mode: 'bigint' + 业务层 BigInt 处理（pg 驱动 int8 默认回字符串）。
+ *   - admin/src/actions/points.ts 的 SUM 聚合已配套 cast as bigint + safeNumber() 兜底 + safe-int 警告。
  */
 export const pointTransactions = pgTable(
   'point_transactions',
@@ -39,20 +21,32 @@ export const pointTransactions = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => clientWechatUsers.userId),
-    type: pointTransactionTypeEnum('type').notNull(),
-    /** 积分变动量（earn 为正，redeem 为负） */
-    amount: integer('amount').notNull(),
+    type: text('type').notNull().default('获取'),
+    /** 积分变动量 */
+    amount: bigint('amount', { mode: 'number' }).notNull(),
     /** 关联订单ID（可选） */
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
+    /** 外部幂等引用；系统批量发放（升级/活动）使用，业务发放可为 null */
+    externalRef: text('external_ref'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
     index('idx_point_txns_user_id').on(table.userId),
+    uniqueIndex('uq_point_txns_external_ref')
+      .on(table.externalRef)
+      .where(sql`external_ref IS NOT NULL`),
+    /** 同订单同顾客同类型业务积分流水只能落 1 行：防 settlePoints / refund-cascade 双发 */
+    uniqueIndex('uq_point_txn_order_user_type')
+      .on(table.userId, table.refOrderId, table.type)
+      .where(sql`ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')`),
+    // 半严格：已知负值 type ('消费冲销') 严格守，正值兼容未来扩展（'消费赠送'/'等级升级奖励'/新加 type）
+    // 禁 amount = 0（业务上零变动流水无意义）
+    check(
+      'chk_pt_amount_sign',
+      sql`(${table.amount} < 0 AND ${table.type} = '消费冲销') OR ${table.amount} > 0`,
+    ),
   ],
 )
 
-export type MemberLevel = typeof memberLevels.$inferSelect
-export type NewMemberLevel = typeof memberLevels.$inferInsert
-export type CustomerPoints = typeof customerPoints.$inferSelect
 export type PointTransaction = typeof pointTransactions.$inferSelect
 export type NewPointTransaction = typeof pointTransactions.$inferInsert

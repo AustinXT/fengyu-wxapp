@@ -1,6 +1,7 @@
-import { boolean, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { bigint, boolean, check, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { stores, orgNodes } from './org'
+import { customerTypeEnum, customerStatusEnum, monthlyActivityEnum, spendingTierEnum, memberLevelEnum, customerSourceEnum } from './enums'
 
 /**
  * 顾客 / 客户端微信用户（合并原 customers + client_wechat_users）
@@ -29,12 +30,33 @@ export const clientWechatUsers = pgTable(
     boundStoreId: text('bound_store_id').references(() => stores.storeId),
     /** 绑定美容师（同步写入 or 营业额分配默认人员） */
     boundEmployeeId: varchar('bound_employee_id', { length: 50 }),
+    /** 绑定美容师姓名（冗余，随 boundEmployeeId 同步写入） */
+    boundEmployeeName: varchar('bound_employee_name', { length: 50 }),
     // Layer 4 — 会员与分类
-    memberLevel: varchar('member_level', { length: 20 }),
-    customerSource: varchar('customer_source', { length: 50 }),
+    memberLevel: memberLevelEnum('member_level'),
+    /** 会员等级保级截止时间；升级时设为 NOW()+150 天；保级期内跳过降级 */
+    memberLevelLockedUntil: timestamp('member_level_locked_until', { withTimezone: true }),
+    /** 最近一次升级时间戳（审计用；定位"什么时候升的金钻"之类问题） */
+    memberLevelUpgradedAt: timestamp('member_level_upgraded_at', { withTimezone: true }),
+    /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
+    oldMemberLevel: memberLevelEnum('old_member_level'),
+    customerSource: customerSourceEnum('customer_source'),
     /** 推荐人（美容师员工ID） */
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
-    category: varchar('category', { length: 50 }),
+    /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
+    inviterUserId: text('inviter_user_id').references((): any => clientWechatUsers.userId),
+    /** 成为被邀请人的时间戳（审计） */
+    invitedAt: timestamp('invited_at'),
+    /** 顾客类型：流量客/体验客/小美客/会员客，默认流量客 */
+    customerType: customerTypeEnum('customer_type').notNull().default('流量客'),
+    /** 首次/当前成为会员客的时间戳，与 customer_type 跃迁同步维护 */
+    becameMemberAt: timestamp('became_member_at', { withTimezone: true }),
+    /** 历史消费档位：按累计消费额分档，默认<1990（未被经营） */
+    spendingTier: spendingTierEnum('spending_tier').notNull().default('<1990'),
+    /** 月度客活：每日凌晨3点根据当月已完成服务单计算 */
+    monthlyActivity: monthlyActivityEnum('monthly_activity'),
+    /** 到店状态：基于服务单历史自动计算，每日凌晨3点更新 */
+    customerStatus: customerStatusEnum('customer_status'),
     // Layer 5 — 个人档案
     birthday: date('birthday'),
     occupation: varchar('occupation', { length: 50 }),
@@ -46,6 +68,10 @@ export const clientWechatUsers = pgTable(
     skinIssue: varchar('skin_issue', { length: 200 }),
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
     notes: text('notes'),
+    /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
+    pointsBalance: bigint('points_balance', { mode: 'number' }).notNull().default(0),
+    /** 最近积分更新时间 */
+    pointsUpdatedAt: timestamp('points_updated_at'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
@@ -55,6 +81,9 @@ export const clientWechatUsers = pgTable(
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
+    index('idx_client_users_inviter').on(table.inviterUserId).where(sql`inviter_user_id IS NOT NULL`),
+    check('chk_inviter_not_self', sql`${table.inviterUserId} IS NULL OR ${table.inviterUserId} <> ${table.userId}`),
+    check('chk_cwu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
   ],
 )
 
@@ -81,14 +110,20 @@ export const staffWechatUsers = pgTable(
     idCard: varchar('id_card', { length: 200 }),
     // Layer 3 — 组织归属
     storeId: text('store_id').references(() => stores.storeId),
-    /** 指向 type='department' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
+    /** 指向 type='部门' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     positionName: varchar('position_name', { length: 50 }),
+    /** 头像 URL（admin 后台 / 员工小程序"我的"上传，跨 env 写入 client env COS，存 cloud:// fileID） */
+    avatarUrl: text('avatar_url'),
     // Layer 4 — 个人档案
     birthday: date('birthday'),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
     isResigned: boolean('is_resigned').notNull().default(false),
+    /** 入职日期；用于 mgmt-dashboard 员工数历史化（按 selectedDate 判定在职状态） */
+    hiredAt: date('hired_at'),
+    /** 离职日期；NULL 表示在职。与 is_resigned 双写一致（is_resigned = resigned_at IS NOT NULL） */
+    resignedAt: date('resigned_at'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
@@ -97,6 +132,7 @@ export const staffWechatUsers = pgTable(
     uniqueIndex('uq_staff_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
     uniqueIndex('uq_staff_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     index('idx_staff_users_store_resigned').on(table.storeId, table.isResigned),
+    check('chk_swu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
   ],
 )
 

@@ -1,6 +1,28 @@
 import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
 import type { AuthSession } from './types'
+import { sanitizeDetail } from './pii'
+
+/**
+ * 对比 before/after，返回实际变更的字段 diff。
+ * 只遍历 after 中的 key（Partial 更新只有变更字段）。
+ * 返回 null 表示无实际变更。
+ */
+export function computeChanges(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, { from: unknown; to: unknown }> | null {
+  const changes: Record<string, { from: unknown; to: unknown }> = {}
+  for (const key of Object.keys(after)) {
+    if (after[key] === undefined) continue
+    const fromVal = before[key]
+    const toVal = after[key]
+    if (JSON.stringify(fromVal) !== JSON.stringify(toVal)) {
+      changes[key] = { from: fromVal ?? null, to: toVal }
+    }
+  }
+  return Object.keys(changes).length > 0 ? changes : null
+}
 
 /**
  * 写入操作日志
@@ -46,7 +68,54 @@ export async function logOperation(
     action,
     targetType,
     targetId,
-    detail: detail ?? null,
+    detail: detail ? sanitizeDetail(detail) : null,
     source: 'adminApi',
+  })
+}
+
+/**
+ * 写入更新操作日志（结构化 diff）
+ *
+ * detail 格式：{ _v: 3, _t: 'update', changes: { field: { from, to } } }
+ * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail（敏感 PII 字段入库前脱敏）
+ */
+export async function logUpdate(
+  session: AuthSession,
+  action: string,
+  targetType: string,
+  targetId: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+) {
+  const changes = computeChanges(before, after)
+  if (!changes) return
+  await logOperation(session, action, targetType, targetId, {
+    _v: 3,
+    _t: 'update',
+    changes,
+  })
+}
+
+/**
+ * 写入状态变更日志（状态流转 + 上下文）
+ *
+ * detail 格式：{ _v: 3, _t: 'transition', from, to, context? }
+ * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail
+ */
+export async function logTransition(
+  session: AuthSession,
+  action: string,
+  targetType: string,
+  targetId: string,
+  from: string,
+  to: string,
+  context?: Record<string, unknown>,
+) {
+  await logOperation(session, action, targetType, targetId, {
+    _v: 3,
+    _t: 'transition',
+    from,
+    to,
+    ...(context ? { context } : {}),
   })
 }

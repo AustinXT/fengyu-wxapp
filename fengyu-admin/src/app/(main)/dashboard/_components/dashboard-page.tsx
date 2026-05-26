@@ -31,7 +31,14 @@ interface Props {
   stats: DashboardStats
 }
 
-/** 业务角色看板：manager / finance */
+/**
+ * 业务角色看板：manager / finance
+ *
+ * 2026-04-26 sale-order-domain-refactor 关键展示口径：
+ *   - "今日客流" = service_orders[已完成] DISTINCT client_user_id（与 metrics §"客流"对齐）
+ *   - "今日业绩" = SUM(received - refunded_amount)，已扣退款（audit-17 P0-17-01/02 修复）
+ *   - "今日已退款"独立展示（refunded_amount > 0 时才点亮，避免噪音）
+ */
 function BusinessDashboard({ stats }: Props) {
   const metricCards = [
     {
@@ -39,7 +46,8 @@ function BusinessDashboard({ stats }: Props) {
       value: stats.todayVisitors,
       format: (v: number) => String(v),
       prev: stats.yesterdayVisitors,
-      href: "/orders",
+      href: "/services",
+      hint: "按已完成服务单去重",
     },
     {
       label: "今日业绩",
@@ -47,6 +55,10 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => `¥${v.toLocaleString()}`,
       prev: stats.yesterdayRevenue,
       href: "/orders",
+      hint:
+        stats.todayRefundedAmount > 0
+          ? `已扣退款 ¥${stats.todayRefundedAmount.toLocaleString()}`
+          : "已扣退款",
     },
     {
       label: "待处理订单",
@@ -54,6 +66,7 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => String(v),
       prev: null as number | null,
       href: "/orders",
+      hint: undefined as string | undefined,
     },
     {
       label: "待确认预约",
@@ -61,6 +74,7 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => String(v),
       prev: null as number | null,
       href: "/appointments",
+      hint: undefined as string | undefined,
     },
   ]
 
@@ -91,6 +105,9 @@ function BusinessDashboard({ stats }: Props) {
                   <div className="mt-1 flex items-center gap-1 text-xs text-[#999999]">
                     vs 昨日 <TrendArrow current={card.value} previous={card.prev} />
                   </div>
+                )}
+                {card.hint && (
+                  <p className="mt-1 text-xs text-[#999999]">{card.hint}</p>
                 )}
               </CardContent>
             </Card>
@@ -173,7 +190,7 @@ function SystemDashboard({ stats }: Props) {
       { label: "员工管理", href: "/employees" },
       { label: "商品管理", href: "/products" },
       { label: "权限管理", href: "/permissions" },
-      { label: "数据同步", href: "/sync" },
+
     ],
     hr: [
       { label: "组织架构", href: "/org" },

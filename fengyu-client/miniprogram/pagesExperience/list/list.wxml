@@ -1,0 +1,91 @@
+<!-- pagesExperience/list/list.wxml — 体验卡列表 -->
+<wxs module="price">
+module.exports.fmt = function(n) {
+  var v = parseFloat(n) || 0;
+  var r = Math.round(v * 100) / 100;
+  return r % 1 === 0 ? '' + Math.round(r) : r.toFixed(2);
+}
+</wxs>
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 顶部 hero -->
+  <view class="hero">
+    <view class="hero-title">体验卡专区</view>
+    <view class="hero-sub">新人专享 · 低价体验明星项目</view>
+  </view>
+
+  <!-- 加载态 -->
+  <view wx:if="{{isLoading && skuList.length === 0}}" class="skeleton-wrap">
+    <van-skeleton title avatar row="2" />
+    <van-skeleton title avatar row="2" style="margin-top: 24rpx;" />
+    <van-skeleton title avatar row="2" style="margin-top: 24rpx;" />
+  </view>
+
+  <!-- 错误态 -->
+  <van-empty
+    wx:elif="{{loadError}}"
+    image="error"
+    description="加载失败，下拉刷新重试"
+  />
+
+  <!-- 空态 -->
+  <van-empty
+    wx:elif="{{skuList.length === 0}}"
+    description="暂无体验卡，敬请期待"
+  />
+
+  <!-- 列表 -->
+  <view wx:else class="card-list">
+    <view
+      wx:for="{{skuList}}"
+      wx:key="sku_id"
+      class="card-item"
+      bindtap="onCardTap"
+      data-sku-id="{{item.sku_id}}"
+    >
+      <view class="card-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+        <van-icon name="gift-o" size="80rpx" color="#FFFFFF" />
+      </view>
+      <image
+        wx:else
+        class="card-cover"
+        src="{{item.cover_image}}"
+        mode="aspectFill"
+        lazy-load
+      />
+
+      <view class="card-body">
+        <view class="card-title-row">
+          <text class="card-title">{{item.product_name || item.spec_name}}</text>
+          <van-tag type="danger" plain custom-class="card-tag">限时</van-tag>
+        </view>
+        <text wx:if="{{item.product_name && item.spec_name}}" class="card-spec">{{item.spec_name}}</text>
+
+        <view wx:if="{{item.session_count}}" class="card-meta">
+          <van-icon name="balance-list-o" size="22rpx" color="#999" />
+          <text class="card-meta-text">{{item.session_count}} 次</text>
+        </view>
+
+        <view class="card-footer">
+          <view class="price-group">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{price.fmt(item.special_price || item.price)}}</text>
+            <text wx:if="{{item.special_price && item.price && item.special_price < item.price}}" class="price-origin">¥{{price.fmt(item.price)}}</text>
+          </view>
+          <view class="card-buy-btn">
+            <text class="card-buy-text">立即抢购</text>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部说明 -->
+  <view wx:if="{{skuList.length > 0}}" class="footer-note">
+    <view class="footer-note-line">· 体验卡仅限本人使用，不可转让</view>
+    <view class="footer-note-line">· 购买后请到店核销，逾期作废</view>
+  </view>
+
+</view>

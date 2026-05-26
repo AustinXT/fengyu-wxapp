@@ -12,6 +12,11 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
+const {
+  deriveStaffLevel,
+  deriveAvailableLoginLevels,
+  expandScopeStoreIds,
+} = require('../utils/scope')
 
 /**
  * 生成员工编号：FY-WX-{YYMMDD}{3位序号}
@@ -42,15 +47,52 @@ async function generateEmployeeId(client) {
 }
 
 /**
- * 查询员工权限角色
+ * 查询员工权限角色（带 scope 类型）
+ * @returns {Array<{role: string, scopeId: string, scopeType: string}>}
  */
-async function queryRoles(employeeId) {
+async function queryRoleBindings(employeeId) {
   if (!employeeId) return []
-  const roleRows = await pg.query(
-    'SELECT role FROM permission_roles WHERE employee_id = $1 AND is_void = false',
+  const rows = await pg.query(
+    `SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name
+     FROM permission_roles pr
+     LEFT JOIN org_nodes o ON o.id = pr.scope_id
+     WHERE pr.employee_id = $1`,
     [employeeId]
   )
-  return roleRows.map(r => r.role)
+  return rows.map((r) => ({
+    role: r.role,
+    scopeId: r.scope_id,
+    scopeType: r.scope_type,
+    scopeName: r.scope_name,
+  }))
+}
+
+/**
+ * 根据 scopeStoreIds 批量取店名，给前端门店下拉用
+ */
+async function fetchScopedStores(storeIds) {
+  if (!storeIds || storeIds.length === 0) return []
+  const rows = await pg.query(
+    `SELECT store_id, store_name
+     FROM stores
+     WHERE store_id = ANY($1::text[])
+     ORDER BY store_name ASC`,
+    [storeIds]
+  )
+  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name }))
+}
+
+/**
+ * 组装 auth 响应的权限层级字段
+ */
+async function buildLevelPayload(employeeId) {
+  const roleBindings = await queryRoleBindings(employeeId)
+  const roles = [...new Set(roleBindings.map((r) => r.role))]
+  const staffLevel = deriveStaffLevel(roleBindings)
+  const scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
+  const availableLoginLevels = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
+  const scopedStores = await fetchScopedStores(scopeStoreIds)
+  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores }
 }
 
 /**
@@ -60,11 +102,14 @@ async function queryRoles(employeeId) {
  *   - 未找到 → 返回 isNewUser:true（需 bindPhone 建档或关联）
  */
 async function login(ctx) {
-  const { OPENID } = cloud.getWXContext()
+  // 用 ctx.auth.openid（中间件已合并 _testOpenid），不要直接 cloud.getWXContext()
+  // 否则测试模式 switchTestUser 切身份失效——_testOpenid 被忽略，永远返回真实员工
+  const OPENID = ctx.auth.openid
 
   const users = await pg.query(`
     SELECT
       u.employee_id, u.phone, u.name, u.position_name, u.is_resigned,
+      u.skills, u.avatar_url,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -83,6 +128,12 @@ async function login(ctx) {
       staffName: null,
       position: null,
       roles: [],
+      roleBindings: [],
+      staffLevel: null,
+      availableLoginLevels: [],
+      scopedStores: [],
+      skills: [],
+      avatarUrl: null,
       boundStoreName: null,
       boundStoreId: null,
     }
@@ -96,7 +147,9 @@ async function login(ctx) {
   )
 
   const isActive = user.employee_id && !user.is_resigned
-  const roles = isActive ? await queryRoles(user.employee_id) : []
+  const level = isActive
+    ? await buildLevelPayload(user.employee_id)
+    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [] }
 
   ctx.result = {
     isNewUser: false,
@@ -104,7 +157,13 @@ async function login(ctx) {
     staffWfId: isActive ? user.employee_id : null,
     staffName: isActive ? user.name : null,
     position: isActive ? user.position_name : null,
-    roles,
+    roles: level.roles,
+    roleBindings: level.roleBindings,
+    staffLevel: level.staffLevel,
+    availableLoginLevels: level.availableLoginLevels,
+    scopedStores: level.scopedStores,
+    skills: isActive && Array.isArray(user.skills) ? user.skills : [],
+    avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
     boundStoreId: isActive ? user.store_id : null,
   }
@@ -119,9 +178,15 @@ async function login(ctx) {
  *   2. 找不到 → 自动建档（生成 FY-WX-{YYMMDD}{序号} employee_id）
  */
 async function bindPhone(ctx) {
-  const { OPENID } = cloud.getWXContext()
-  const { phoneNumber: directPhone } = ctx.event.payload || {}
+  const { OPENID: realOpenid } = cloud.getWXContext()
+  const { phoneNumber: directPhone, _testOpenid: payloadTestOpenid } = ctx.event.payload || {}
   const phoneData = ctx.event.phoneData
+
+  // 测试模式：_testOpenid 覆盖真实 openid（与 middleware/auth.js 同源逻辑）
+  const testOpenid = process.env.ALLOW_TEST_OPENID === 'true'
+    ? (payloadTestOpenid || ctx.event._testOpenid)
+    : null
+  const OPENID = testOpenid || realOpenid
 
   let phoneNumber = null
 
@@ -139,17 +204,41 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
     }
   }
-  // 方式2: 直接传入手机号（测试用）
+  // 方式2: 直接传入手机号（测试用，仅 ALLOW_TEST_OPENID=true 时启用）
   else if (directPhone) {
+    if (process.env.ALLOW_TEST_OPENID !== 'true') {
+      throw new Error('INVALID_PARAMS: phoneNumber 直传仅在测试环境启用')
+    }
     phoneNumber = directPhone
   } else {
     throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
   }
 
+  // openid 预检：拦截换绑 / 残留行场景，避免 INSERT 命中 uq_staff_users_openid
+  // 员工端 bindPhone 仅负责首次绑定；换手机号由管理后台操作
+  const byOpenid = await pg.query(
+    'SELECT employee_id, phone FROM staff_wechat_users WHERE openid = $1 LIMIT 1',
+    [OPENID]
+  )
+  if (byOpenid.length > 0 && byOpenid[0].phone !== phoneNumber) {
+    if (testOpenid) {
+      // 测试模式：dev openid 允许重新映射到另一员工，先把旧绑定置空
+      await pg.query(
+        'UPDATE staff_wechat_users SET openid = NULL WHERE employee_id = $1',
+        [byOpenid[0].employee_id]
+      )
+    } else {
+      throw new Error('INVALID_PARAMS: 该微信账号已绑定其他手机号，如需变更请联系管理员')
+    }
+  }
+  // byOpenid.length === 0 → 继续往下按 phone 查 / INSERT
+  // byOpenid.length > 0 且 phone 相同 → 幂等，phone 查询会命中同一行走 UPDATE openid（no-op）
+
   // 按手机号查找已有行（含历史同步和管理后台创建的）
   const empRows = await pg.query(`
     SELECT
       u.employee_id, u.openid, u.name, u.position_name, u.is_resigned,
+      u.skills, u.avatar_url,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -167,7 +256,10 @@ async function bindPhone(ctx) {
     const emp = empRows[0]
 
     if (emp.openid && emp.openid !== OPENID) {
-      throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
+      if (!testOpenid) {
+        throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
+      }
+      // 测试模式：允许覆盖目标员工的旧 openid 绑定（下面的 UPDATE 会写新 OPENID）
     }
 
     await pg.query(
@@ -177,7 +269,7 @@ async function bindPhone(ctx) {
 
     invalidateAuthCache(OPENID)
 
-    const roles = await queryRoles(emp.employee_id)
+    const level = await buildLevelPayload(emp.employee_id)
 
     ctx.result = {
       success: true,
@@ -185,7 +277,13 @@ async function bindPhone(ctx) {
       staffWfId: emp.employee_id,
       staffName: emp.name,
       position: emp.position_name,
-      roles,
+      roles: level.roles,
+      roleBindings: level.roleBindings,
+      staffLevel: level.staffLevel,
+      availableLoginLevels: level.availableLoginLevels,
+      scopedStores: level.scopedStores,
+      skills: Array.isArray(emp.skills) ? emp.skills : [],
+      avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,
       boundStoreId: emp.store_id,
     }
@@ -214,6 +312,12 @@ async function bindPhone(ctx) {
     staffName: null,
     position: null,
     roles: [],
+    roleBindings: [],
+    staffLevel: null,
+    availableLoginLevels: [],
+    scopedStores: [],
+    skills: [],
+    avatarUrl: null,
     boundStoreName: null,
     boundStoreId: null,
   }

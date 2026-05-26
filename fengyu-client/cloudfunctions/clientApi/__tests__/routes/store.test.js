@@ -34,8 +34,8 @@ describe('store.list', () => {
     const ctx = createCtx({ payload: { city: '华东' } })
     await routes.list(ctx)
 
-    expect(pg.query.mock.calls[0][0]).toContain('pm.name LIKE')
-    expect(pg.query.mock.calls[0][1]).toEqual(['华东%'])
+    expect(pg.query.mock.calls[0][0]).toContain('s.district LIKE')
+    expect(pg.query.mock.calls[0][1]).toEqual(['%华东%'])
   })
 })
 
@@ -73,27 +73,48 @@ describe('store.detail', () => {
   })
 })
 
-describe('store.requestUnbind', () => {
-  test('正常提交解绑申请', async () => {
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
+describe('store.requestUnbind（转店）', () => {
+  test('正常提交转店申请（带 toStoreId）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ store_id: 'store-002' }]) // 目标店存在
+      .mockResolvedValueOnce([])                          // 无 pending
+      .mockResolvedValueOnce([{ request_id: 'req-new' }]) // INSERT RETURNING
 
-    const ctx = createBoundCtx({ note: '搬家了' })
+    const ctx = createBoundCtx({ toStoreId: 'store-002', note: '搬家了' })
     await routes.requestUnbind(ctx)
 
     expect(ctx.result.requestId).toBeTruthy()
   })
 
   test('已有 pending 申请 → INVALID_PARAMS', async () => {
-    pg.query.mockResolvedValueOnce([{ request_id: 'req-1' }])
+    pg.query
+      .mockResolvedValueOnce([{ store_id: 'store-002' }]) // 目标店存在
+      .mockResolvedValueOnce([{ request_id: 'req-1' }])   // 已有 pending
 
-    const ctx = createBoundCtx({ note: '' })
+    const ctx = createBoundCtx({ toStoreId: 'store-002' })
     await expect(routes.requestUnbind(ctx)).rejects.toThrow(/INVALID_PARAMS.*已有待审批/)
+  })
+
+  test('缺少 toStoreId → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ note: '' })
+    await expect(routes.requestUnbind(ctx)).rejects.toThrow(/INVALID_PARAMS.*目标门店/)
+  })
+
+  test('目标门店与当前门店相同 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ toStoreId: 'store-001' }) // 与 boundStoreId 相同
+    await expect(routes.requestUnbind(ctx)).rejects.toThrow(/INVALID_PARAMS.*不能与当前门店相同/)
+  })
+
+  test('目标门店不存在或已停业 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([]) // 目标店查不到
+
+    const ctx = createBoundCtx({ toStoreId: 'store-999' })
+    await expect(routes.requestUnbind(ctx)).rejects.toThrow(/INVALID_PARAMS.*目标门店不存在或已停业/)
   })
 
   test('未绑定门店 → INVALID_PARAMS', async () => {
     const ctx = createCtx({
-      payload: {},
+      payload: { toStoreId: 'store-002' },
       auth: { userId: 'u1', boundStoreId: null },
     })
     await expect(routes.requestUnbind(ctx)).rejects.toThrow(/INVALID_PARAMS.*未绑定/)
@@ -106,16 +127,19 @@ describe('store.requestUnbind', () => {
 })
 
 describe('store.getUnbindRequest', () => {
-  test('有 pending 申请时返回', async () => {
+  test('有 pending 申请时返回（含目标门店）', async () => {
     pg.query.mockResolvedValueOnce([{
-      request_id: 'req-1', from_store_name: '凤御A店',
-      status: 'pending', note: '搬家', created_at: '2025-01-01',
+      request_id: 'req-1', from_store_id: 'store-1', from_store_name: '凤御A店',
+      to_store_id: 'store-2', to_store_name: '凤御B店',
+      status: '待处理', note: '搬家', created_at: '2025-01-01',
     }])
 
     const ctx = createBoundCtx({})
     await routes.getUnbindRequest(ctx)
 
     expect(ctx.result.request.requestId).toBe('req-1')
+    expect(ctx.result.request.toStoreId).toBe('store-2')
+    expect(ctx.result.request.toStoreName).toBe('凤御B店')
   })
 
   test('无申请时返回 null', async () => {
@@ -137,7 +161,7 @@ describe('store.getUnbindRequest', () => {
 describe('store.cancelUnbindRequest', () => {
   test('正常取消 pending 申请', async () => {
     pg.query
-      .mockResolvedValueOnce([{ user_id: 'user-001', status: 'pending' }])
+      .mockResolvedValueOnce([{ user_id: 'user-001', status: '待处理' }])
       .mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
@@ -147,14 +171,14 @@ describe('store.cancelUnbindRequest', () => {
   })
 
   test('非本人申请 → PERMISSION_DENIED', async () => {
-    pg.query.mockResolvedValueOnce([{ user_id: 'other-user', status: 'pending' }])
+    pg.query.mockResolvedValueOnce([{ user_id: 'other-user', status: '待处理' }])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
     await expect(routes.cancelUnbindRequest(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
   test('非 pending 状态 → INVALID_PARAMS', async () => {
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', status: 'approved' }])
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', status: '已通过' }])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
     await expect(routes.cancelUnbindRequest(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)

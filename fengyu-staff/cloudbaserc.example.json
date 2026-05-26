@@ -1,0 +1,26 @@
+{
+  "_comment": "TEMPLATE — rendered to cloudbaserc.json (gitignored) by scripts/render-cloudbaserc.mjs. Vars come from envs/<active>.env.",
+  "envId": "${STAFF_ENV_ID}",
+  "version": "2.0",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "staffApi",
+      "timeout": 30,
+      "path": "/cloudfunctions/staffApi",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "${PG_CONNECTION_STRING}",
+        "MSSQL_CONNECTION_STRING": "${MSSQL_CONNECTION_STRING}",
+        "CLIENT_SECRET": "${CLIENT_SECRET}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
+        "CLIENT_API_HTTP_URL": "${CLIENT_API_HTTP_URL}",
+        "WXACODE_ENV_VERSION": "${WXACODE_ENV_VERSION}",
+        "ALLOW_TEST_OPENID": "${ALLOW_TEST_OPENID}",
+        "TZ": "Asia/Shanghai"
+      },
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
+    }
+  ]
+}

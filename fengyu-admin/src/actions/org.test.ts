@@ -48,6 +48,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -101,63 +103,63 @@ describe('createOrgNode — 输入校验 + 错误处理', () => {
 
   it('父节点不存在 → 拒绝，不插入', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
-    const result = await createOrgNode({ id: 'n-1', name: '测试', type: 'market', parentId: 'nonexistent', sortOrder: 0, isActive: true })
+    const result = await createOrgNode({ id: 'n-1', name: '测试', type: '市场', parentId: 'nonexistent', sortOrder: 0, isActive: true })
     expect(result.success).toBe(false)
     expect(result.message).toContain('父节点不存在')
     expect(db.insert).not.toHaveBeenCalled()
   })
 
   it('department 下不能再建 department → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'department' }]))
-    const result = await createOrgNode({ id: 'n-1', name: '子部门', type: 'department', parentId: 'dept-1', sortOrder: 0, isActive: true })
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '部门' }]))
+    const result = await createOrgNode({ id: 'n-1', name: '子部门', type: '部门', parentId: 'dept-1', sortOrder: 0, isActive: true })
     expect(result.success).toBe(false)
     expect(result.message).toContain('部门不可嵌套')
   })
 
   it('store 下只能建 department → 拒绝非 department 类型', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'store' }]))
-    const result = await createOrgNode({ id: 'n-1', name: '子市场', type: 'market', parentId: 'store-1', sortOrder: 0, isActive: true })
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '门店' }]))
+    const result = await createOrgNode({ id: 'n-1', name: '子市场', type: '市场', parentId: 'store-1', sortOrder: 0, isActive: true })
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店节点下只能创建部门')
   })
 
   it('节点编号重复（23505）→ 友好消息', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'market' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '市场' }]))
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
-    const result = await createOrgNode({ id: 'n-1', name: '测试', type: 'store', parentId: 'market-1', sortOrder: 0, isActive: true })
+    const result = await createOrgNode({ id: 'n-1', name: '测试', type: '门店', parentId: 'market-1', sortOrder: 0, isActive: true })
     expect(result.success).toBe(false)
     expect(result.message).toContain('节点编号已存在')
   })
 
   it('父节点 FK 违反（23503）→ 友好消息', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'market' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '市场' }]))
     const pgError = Object.assign(new Error('FK violation'), { code: '23503' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
-    const result = await createOrgNode({ id: 'n-1', name: '测试', type: 'store', parentId: 'market-1', sortOrder: 0, isActive: true })
+    const result = await createOrgNode({ id: 'n-1', name: '测试', type: '门店', parentId: 'market-1', sortOrder: 0, isActive: true })
     expect(result.success).toBe(false)
     expect(result.message).toContain('父节点不存在')
   })
 
   it('其他 DB 异常 → 重新抛出', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'market' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '市场' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
     await expect(
-      createOrgNode({ id: 'n-1', name: '测试', type: 'store', parentId: 'market-1', sortOrder: 0, isActive: true })
+      createOrgNode({ id: 'n-1', name: '测试', type: '门店', parentId: 'market-1', sortOrder: 0, isActive: true })
     ).rejects.toThrow('connection lost')
   })
 
   it('正常创建（无父节点）→ 成功', async () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
-    const result = await createOrgNode({ id: 'hq-1', name: '总部', type: 'headquarters', parentId: null, sortOrder: 0, isActive: true })
+    const result = await createOrgNode({ id: 'hq-1', name: '总部', type: '总部', parentId: null, sortOrder: 0, isActive: true })
     expect(result.success).toBe(true)
     expect(result.message).toContain('节点创建成功')
   })
 
   it('正常创建（有父节点）→ 成功', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ type: 'headquarters' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '总部' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
-    const result = await createOrgNode({ id: 'market-1', name: '华南市场', type: 'market', parentId: 'hq-1', sortOrder: 1, isActive: true })
+    const result = await createOrgNode({ id: 'market-1', name: '华南市场', type: '市场', parentId: 'hq-1', sortOrder: 1, isActive: true })
     expect(result.success).toBe(true)
   })
 })
@@ -165,9 +167,21 @@ describe('createOrgNode — 输入校验 + 错误处理', () => {
 // ── updateOrgNode ─────────────────────────────────────────────────────────────
 
 describe('updateOrgNode — rowCount=0 静默成功修复', () => {
+  /** mock db.select() 链，用于 update 前获取旧值 */
+  function mockSelectBefore(rows: any[] = [{}]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    ;(db.select as any).mockReturnValue(chain)
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   it('rowCount=0，无乐观锁 → 报告节点不存在（而非静默成功）', async () => {
@@ -294,7 +308,7 @@ describe('org scope 隔离 — 非 admin 用户', () => {
     ;(db.select as any).mockImplementation(() => {
       selectCall++
       const limit = vi.fn().mockResolvedValue(
-        selectCall === 1 ? [{ type: 'store' }] : []
+        selectCall === 1 ? [{ type: '门店' }] : []
       )
       const where = vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ where })
@@ -304,7 +318,7 @@ describe('org scope 隔离 — 非 admin 用户', () => {
     ;(db.insert as any).mockReturnValue({ values })
 
     const result = await createOrgNode({
-      id: 'dept-new', name: '美容部', type: 'department',
+      id: 'dept-new', name: '美容部', type: '部门',
       parentId: 'store-nc01', sortOrder: 1, isActive: true,
     })
     expect(result.success).toBe(true)
@@ -318,7 +332,7 @@ describe('org scope 隔离 — 非 admin 用户', () => {
       selectCall++
       const limit = vi.fn().mockResolvedValue(
         selectCall === 1
-          ? [{ type: 'store' }]
+          ? [{ type: '门店' }]
           : selectCall === 2
             ? [{ parentId: 'market-other' }]
             : selectCall === 3
@@ -331,7 +345,7 @@ describe('org scope 隔离 — 非 admin 用户', () => {
     })
 
     const result = await createOrgNode({
-      id: 'dept-bad', name: '非法部门', type: 'department',
+      id: 'dept-bad', name: '非法部门', type: '部门',
       parentId: 'store-other', sortOrder: 1, isActive: true,
     })
     expect(result.success).toBe(false)

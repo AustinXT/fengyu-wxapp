@@ -1,21 +1,39 @@
-// packageOrder/allocation-list/allocation-list.ts — 待分配订单列表
+// packageOrder/allocation-list/allocation-list.ts — 营业额分配（销售提成 / 服务提成 双 Tab）
 import { callStaffApi } from '../../utils/cloud';
+import { safeParseDate } from '../../utils/formatters';
 
-interface PendingOrder {
+interface SaleOrder {
   sale_order_id: string;
   customer_name: string;
   client_phone: string;
   total_amount: string;
   paid_at: string;
-  sale_order_type: string;
-  sale_order_source: 'client' | 'staff';
+  allocation_status: string;
   preferred_employee_id: string | null;
+  opened_by?: string;
+  time_display?: string;
 }
+
+interface ServiceOrder {
+  service_order_id: string;
+  customer_name: string;
+  client_phone: string;
+  employee_name: string;
+  service_date: string;
+  commission_status: string;
+  time_display?: string;
+}
+
+type Tab = 'sale' | 'service';
+type Status = '待分配' | '已分配';
 
 Page({
   data: {
+    activeTab: 'sale' as Tab,
+    saleStatus: '待分配' as Status,
+    serviceStatus: '待分配' as Status,
     loading: false,
-    orders: [] as PendingOrder[],
+    orders: [] as Array<SaleOrder | ServiceOrder>,
     page: 1,
     hasMore: true,
   },
@@ -25,14 +43,12 @@ Page({
   },
 
   onShow() {
-    // 从分配页返回时始终刷新
-    this.setData({ page: 1, orders: [], hasMore: true });
-    this.loadOrders();
+    // 从详情页返回时刷新当前 Tab（状态可能已变）
+    this.reload();
   },
 
   onPullDownRefresh() {
-    this.setData({ page: 1, orders: [], hasMore: true });
-    this.loadOrders().finally(() => wx.stopPullDownRefresh());
+    this.reload().finally(() => wx.stopPullDownRefresh());
   },
 
   onReachBottom() {
@@ -41,29 +57,51 @@ Page({
     }
   },
 
+  reload() {
+    this.setData({ page: 1, orders: [], hasMore: true });
+    return this.loadOrders();
+  },
+
+  onTabChange(e: WechatMiniprogram.CustomEvent) {
+    const tab = e.detail.name as Tab;
+    if (tab === this.data.activeTab) return;
+    this.setData({ activeTab: tab });
+    this.reload();
+  },
+
+  onStatusChange(e: WechatMiniprogram.TouchEvent) {
+    const status = e.currentTarget.dataset.status as Status;
+    if (this.data.activeTab === 'sale') {
+      if (this.data.saleStatus === status) return;
+      this.setData({ saleStatus: status });
+    } else {
+      if (this.data.serviceStatus === status) return;
+      this.setData({ serviceStatus: status });
+    }
+    this.reload();
+  },
+
   async loadOrders() {
     if (this.data.loading) return;
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<{
-        orders: PendingOrder[];
-        page: number;
-        pageSize: number;
-      }>('allocation.pendingList', { page: this.data.page, pageSize: 20 });
-
-      const formatted = (data.orders || []).map(o => ({
-        ...o,
-        paid_at_display: this.formatTime(o.paid_at),
-      }));
-      const orders = this.data.page === 1
-        ? formatted
-        : [...this.data.orders, ...formatted];
-
-      this.setData({
-        orders,
-        hasMore: data.orders.length >= 20,
-        page: this.data.page + 1,
-      });
+      if (this.data.activeTab === 'sale') {
+        const data = await callStaffApi<{ orders: SaleOrder[] }>('allocation.pendingList', {
+          page: this.data.page,
+          pageSize: 20,
+          allocationStatus: this.data.saleStatus,
+        });
+        const list = data.orders || [];
+        this.appendOrders(list.map(o => ({ ...o, time_display: this.formatTime(o.paid_at) })), list.length);
+      } else {
+        const data = await callStaffApi<{ orders: ServiceOrder[] }>('serviceCommission.pendingList', {
+          page: this.data.page,
+          pageSize: 20,
+          commissionStatus: this.data.serviceStatus,
+        });
+        const list = data.orders || [];
+        this.appendOrders(list.map(o => ({ ...o, time_display: this.formatDate(o.service_date) })), list.length);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -72,20 +110,40 @@ Page({
     }
   },
 
-  onTapOrder(e: WechatMiniprogram.TouchEvent) {
-    const saleOrderId = e.currentTarget.dataset.saleOrderId as string;
-    wx.navigateTo({
-      url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${saleOrderId}`,
+  appendOrders(formatted: Array<SaleOrder | ServiceOrder>, count: number) {
+    const orders = this.data.page === 1 ? formatted : [...this.data.orders, ...formatted];
+    this.setData({
+      orders,
+      hasMore: count >= 20,
+      page: this.data.page + 1,
     });
   },
 
+  onTapOrder(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    if (this.data.activeTab === 'sale') {
+      wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${id}` });
+    } else {
+      wx.navigateTo({ url: `/packageOrder/service-commission/service-commission?serviceOrderId=${id}` });
+    }
+  },
+
   formatTime(dateStr: string): string {
-    if (!dateStr) return '';
-    const d = new Date(dateStr.replace(/-/g, '/'));
+    const d = safeParseDate(dateStr);
+    if (!d) return '';
     const m = d.getMonth() + 1;
     const day = d.getDate();
     const h = String(d.getHours()).padStart(2, '0');
     const min = String(d.getMinutes()).padStart(2, '0');
     return `${m}/${day} ${h}:${min}`;
+  },
+
+  formatDate(dateStr: string): string {
+    const d = safeParseDate(dateStr);
+    if (!d) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   },
 });

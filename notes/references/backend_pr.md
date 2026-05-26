@@ -1,6 +1,7 @@
 # 后端服务需求
 
 > 技术栈：CloudBase 云函数（Node.js）+ Workfine SQL Server + PG 自托管数据库
+> **术语备注**：本文档中的「院装产品」对应 PG `product_type` enum 的 `'家居产品'`（2026-04-25 重命名）。文档为历史规范快照，未逐行替换。
 
 ---
 

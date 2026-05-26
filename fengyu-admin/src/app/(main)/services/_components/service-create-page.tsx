@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { searchCustomerByPhone } from "@/actions/customers"
+import { searchCustomers } from "@/actions/customers"
 import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
 import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
+import { formatPhoneSafe } from "@/lib/format"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -68,7 +69,6 @@ export default function ServiceCreatePageClient({
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [serviceOrderType, setServiceOrderType] = useState<'普通' | '体验'>("普通")
   const [remark, setRemark] = useState("")
 
   // Step 3: Submit
@@ -93,7 +93,10 @@ export default function ServiceCreatePageClient({
     setSearching(true)
     setSearchDone(false)
     try {
-      const result = await searchCustomerByPhone(phone.trim())
+      // 与 /orders/create 行为对齐：fuzzy ILIKE 搜索，避开精确匹配的边界问题（trailing space / 历史脏数据 / openid 误过滤）
+      // 顾客可开单身份仅靠 bound_store_id IS NOT NULL（searchCustomers 内已含），不要求 openid
+      const results = await searchCustomers(phone.trim())
+      const result = results.find(c => c.phone === phone.trim()) ?? results[0] ?? null
       setSelectedCustomer(result)
       setSearchDone(true)
       if (result) {
@@ -150,7 +153,7 @@ export default function ServiceCreatePageClient({
     selectedItems.find(i => i.saleItemId === saleItemId)?.sessionUsed ?? 1
 
   const filteredEmployees = employees.filter(
-    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId)
+    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')
   )
 
   const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
@@ -166,7 +169,6 @@ export default function ServiceCreatePageClient({
         clientUserId: selectedCustomer.userId,
         assignedEmployeeId: selectedEmployeeId,
         serviceDate,
-        serviceOrderType,
         remark: remark.trim() || null,
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
@@ -196,7 +198,6 @@ export default function ServiceCreatePageClient({
     setSelectedItems([])
     setRemark("")
     setCreatedServiceOrderId("")
-    setServiceOrderType("普通")
   }
 
   return (
@@ -235,7 +236,7 @@ export default function ServiceCreatePageClient({
                     </div>
                     <div>
                       <span className="text-[#999999]">手机</span>
-                      <p className="font-medium">{selectedCustomer.phone}</p>
+                      <p className="font-medium">{formatPhoneSafe(selectedCustomer.phone)}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">会员等级</span>
@@ -277,7 +278,7 @@ export default function ServiceCreatePageClient({
               {availableItems.length === 0 ? (
                 <div className="text-center py-8 text-[#999999]">
                   <p>该顾客暂无可用服务项目</p>
-                  <p className="text-xs mt-1">需先有已支付订单的疗程卡或单品项目</p>
+                  <p className="text-xs mt-1">需先有已支付订单的疗程卡项目</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -288,7 +289,7 @@ export default function ServiceCreatePageClient({
                         <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">类型</th>
-                        <th className="px-4 py-3 text-right font-medium text-gray-500">剩余/总次数</th>
+                        <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
                         <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">到期日</th>
                         <th className="px-4 py-3 text-center font-medium text-gray-500">划卡次数</th>
@@ -308,6 +309,7 @@ export default function ServiceCreatePageClient({
                                 type="checkbox"
                                 checked={selected}
                                 onChange={() => toggleItem(item.saleItemId)}
+                                onClick={(e) => e.stopPropagation()}
                                 className="rounded"
                               />
                             </td>
@@ -323,9 +325,14 @@ export default function ServiceCreatePageClient({
                               </span>
                             </td>
                             <td className="px-4 py-3 text-right">
-                              {item.remainingSessions}/{item.sessionCount ?? "-"}
+                              {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
+                              {item.sessionCount !== null
+                                ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount}`
+                                : "-"}
                             </td>
-                            <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toFixed(2)}</td>
+                            <td className="px-4 py-3 text-right">
+                              ¥{Number(item.unitRealPrice).toFixed(2)}
+                            </td>
                             <td className="px-4 py-3">{item.expireDate || "永久"}</td>
                             <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
                               {selected && (
@@ -374,13 +381,6 @@ export default function ServiceCreatePageClient({
                   <label className="text-sm text-[#999999]">服务日期</label>
                   <Input type="date" className="mt-1" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
                 </div>
-                <div>
-                  <label className="text-sm text-[#999999]">服务类型</label>
-                  <Select className="mt-1" value={serviceOrderType} onChange={(e) => setServiceOrderType(e.target.value as '普通' | '体验')}>
-                    <option value="普通">普通</option>
-                    <option value="体验">体验</option>
-                  </Select>
-                </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>
                   <Input className="mt-1" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
@@ -422,10 +422,6 @@ export default function ServiceCreatePageClient({
               <div>
                 <span className="text-[#999999]">服务日期</span>
                 <p className="font-medium">{serviceDate}</p>
-              </div>
-              <div>
-                <span className="text-[#999999]">服务类型</span>
-                <p className="font-medium">{serviceOrderType}</p>
               </div>
               {remark.trim() && (
                 <div className="col-span-2">

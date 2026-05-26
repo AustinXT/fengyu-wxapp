@@ -28,16 +28,16 @@
         wx:for="{{appointableItems}}"
         wx:key="sale_item_id"
         title="{{item.product_name}}"
-        label="{{item.sku_spec_name}} · 剩余 {{item.remaining_sessions}} 次"
+        label="{{item.sku_spec_name}} · 已用 {{item.used_sessions}} / 已付 {{item.paid_sessions}} / 共 {{item.session_count}} 次{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
         clickable
         bind:click="onSelectItem"
         data-item="{{item}}"
-        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}}"
+        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}} {{item.disabled ? 'item-disabled' : ''}}"
       >
         <van-icon
           slot="right-icon"
-          name="{{selectedSaleItemId === item.sale_item_id ? 'success' : 'circle'}}"
-          color="{{selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC'}}"
+          name="{{item.disabled ? 'close' : (selectedSaleItemId === item.sale_item_id ? 'success' : 'circle')}}"
+          color="{{item.disabled ? '#CCCCCC' : (selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC')}}"
           size="40rpx"
         />
       </van-cell>
@@ -52,13 +52,14 @@
       is-link
       bindtap="onShowDatePicker"
     />
-    <van-cell title="到店时段" border="{{false}}">
-      <view slot="label" class="time-slots">
+    <view class="time-slot-row">
+      <view class="time-slot-row-title">到店时段</view>
+      <view class="time-slots">
         <view
           wx:for="{{timeSlots}}"
           wx:key="value"
           class="time-slot-tag {{appointmentTimeSlot === item.value ? 'time-slot-tag--active' : ''}} {{item.disabled ? 'time-slot-tag--disabled' : ''}}"
-          bindtap="onTimeSlotTap"
+          catchtap="onTimeSlotTap"
           data-value="{{item.value}}"
           data-text="{{item.text}}"
           data-disabled="{{item.disabled}}"
@@ -66,7 +67,7 @@
           <text>{{item.label}}</text>
         </view>
       </view>
-    </van-cell>
+    </view>
   </van-cell-group>
 
   <!-- 选择美容师（可选） -->
@@ -75,9 +76,14 @@
       title="{{selectedStaffName || '不指定'}}"
       label="{{defaultStaffName ? '主美容师：' + defaultStaffName : ''}}"
       is-link
-      icon="manager-o"
+      use-icon-slot
       bindtap="onShowStaffPopup"
-    />
+    >
+      <view slot="icon" class="cell-staff-avatar">
+        <image wx:if="{{selectedStaffAvatarUrl}}" src="{{selectedStaffAvatarUrl}}" class="cell-staff-avatar-img" mode="aspectFill" />
+        <van-icon wx:else name="manager-o" size="36rpx" color="#C0322A" />
+      </view>
+    </van-cell>
   </van-cell-group>
 
   <!-- 备注 -->
@@ -99,7 +105,6 @@
       type="primary"
       block
       round
-      size="large"
       loading="{{submitting}}"
       disabled="{{!appointmentDate || !appointmentTimeSlot || submitting}}"
       bindtap="onSubmit"

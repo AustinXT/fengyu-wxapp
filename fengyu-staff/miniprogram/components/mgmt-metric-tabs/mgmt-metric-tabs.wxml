@@ -1,0 +1,9 @@
+<view class="mmt mmt--col{{columns}}">
+  <view
+    wx:for="{{options}}"
+    wx:key="value"
+    class="mmt-item {{item.value === value ? 'mmt-item--active' : ''}}"
+    data-value="{{item.value}}"
+    bind:tap="onSelect"
+  >{{item.label}}</view>
+</view>

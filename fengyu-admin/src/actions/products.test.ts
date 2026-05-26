@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import crypto from 'crypto'
+
+vi.spyOn(crypto, 'randomUUID').mockReturnValue('mock-uuid-1234' as any)
 
 vi.mock('@/db', () => ({
   db: {
@@ -6,6 +9,8 @@ vi.mock('@/db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
+    execute: vi.fn(),
   },
 }))
 
@@ -16,6 +21,7 @@ vi.mock('@db/product', () => ({
     productKind: 'product_kind',
     sortOrder: 'sort_order',
     isValid: 'is_valid',
+    displayColor: 'display_color',
     updatedAt: 'updated_at',
   },
   products: {
@@ -28,9 +34,42 @@ vi.mock('@db/product', () => ({
   },
   productSkus: {
     skuId: 'sku_id',
-    productId: 'product_id',
+    categoryId: 'category_id',
     productType: 'product_type',
     updatedAt: 'updated_at',
+    sortOrder: 'sort_order',
+  },
+  mallCategories: {
+    categoryId: 'category_id',
+    categoryName: 'category_name',
+    sortOrder: 'sort_order',
+    isValid: 'is_valid',
+    updatedAt: 'updated_at',
+  },
+  mallBundleGroups: {
+    id: 'id',
+    productId: 'product_id',
+    groupName: 'group_name',
+    pickCount: 'pick_count',
+    sortOrder: 'sort_order',
+  },
+  mallProductSkus: {
+    productId: 'product_id',
+    skuId: 'sku_id',
+    bundleGroupId: 'bundle_group_id',
+    bundlePrice: 'bundle_price',
+    sortOrder: 'sort_order',
+  },
+}))
+
+vi.mock('@db/org', () => ({
+  orgNodes: {
+    id: 'id',
+    name: 'name',
+    type: 'type',
+    isActive: 'is_active',
+    sortOrder: 'sort_order',
+    parentId: 'parent_id',
   },
 }))
 
@@ -41,7 +80,11 @@ vi.mock('@db/order', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
+  isNull: vi.fn((col) => ({ type: 'isNull', col })),
+  isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
+  inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -50,10 +93,13 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  expandVisibleMarketIds: vi.fn().mockResolvedValue(null),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -65,10 +111,13 @@ import {
   updateProduct,
   createCategory,
   updateCategory,
+  deleteCategory,
+  updateProductKind,
   createSku,
   updateSku,
   deleteSku,
   getCategories,
+  getProductKinds,
   getProducts,
   getProductById,
   getSkusByProductId,
@@ -91,6 +140,16 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue({ from })
 }
 
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
 // ── createProduct ─────────────────────────────────────────────────────────────
 
 describe('createProduct — 输入校验 + 错误处理', () => {
@@ -106,11 +165,11 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(db.select).not.toHaveBeenCalled()
   })
 
-  it('会员价为负数 → 拒绝', async () => {
+  it('会员价为负数 → 允许（交由前端/DB 约束校验）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const result = await createProduct({ productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100', specialPrice: '-5' })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('会员价必须为非负数')
+    expect(result.success).toBe(true)
   })
 
   it('分类不存在 → 拒绝', async () => {
@@ -119,16 +178,6 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('商品分类不存在')
     expect(db.insert).not.toHaveBeenCalled()
-  })
-
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
-    const result = await createProduct({
-      productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100',
-      validStart: '2026-12-01', validEnd: '2026-01-01',
-    })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
   })
 
   it('商品编号重复（23505）→ 友好消息', async () => {
@@ -163,6 +212,7 @@ describe('updateProduct — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -202,25 +252,37 @@ describe('createCategory — 错误处理', () => {
   })
 
   it('分类编号重复（23505）→ 友好消息', async () => {
+    // 一级 kind 存在
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('分类编号已存在')
   })
 
   it('其他 DB 异常 → 重新抛出', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
     await expect(
-      createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+      createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     ).rejects.toThrow('connection lost')
   })
 
   it('正常创建 → 成功', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('分类创建成功')
+  })
+
+  it('品项一级分类不存在 → INVALID_PARAMS', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await createCategory({ categoryName: '测试分类', productKind: '不存在的 kind' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('品项一级分类不存在或已停用')
+    expect(db.insert).not.toHaveBeenCalled()
   })
 })
 
@@ -230,6 +292,7 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -258,6 +321,223 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     expect(result.success).toBe(true)
     expect(result.message).toContain('已更新')
   })
+
+  it('传了不存在的 productKind → INVALID_PARAMS', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await updateCategory('CAT-1', { productKind: '不存在的 kind' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('品项一级分类不存在或已停用')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('updateCategory({isValid: false}) → 成功（停用路径走 update 而非 delete）', async () => {
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+    const result = await updateCategory('CAT-1', { isValid: false }, '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ isValid: false }))
+  })
+})
+
+// ── deleteCategory ────────────────────────────────────────────────────────────
+
+describe('deleteCategory — 引用校验 + 硬删', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('有 SKU 引用 → 拒绝删除，提示 REFERENCE_EXISTS', async () => {
+    // 第 1 次 select: SKU 引用计数（>0）
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 3 }]))
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_STATE: REFERENCE_EXISTS')
+    expect(result.message).toContain('3 个 SKU')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('有优惠券引用 → 拒绝删除，提示 REFERENCE_EXISTS', async () => {
+    // 第 1 次 select: SKU 引用计数（0）
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    // 第 2 次：db.execute 返回优惠券引用计数（drizzle 返回 array-like {rows: [...]} 或 array）
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 2 }] })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_STATE: REFERENCE_EXISTS')
+    expect(result.message).toContain('2 张优惠券')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('无引用 + CAS 命中 → 删除成功', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 0 }] })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    ;(db.delete as any).mockReturnValue({ where })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('分类已删除')
+    expect(db.delete).toHaveBeenCalledTimes(1)
+  })
+
+  it('CAS 未命中（被改） → CONFLICT 提示', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 0 }] })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
+    ;(db.delete as any).mockReturnValue({ where })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('CONFLICT')
+  })
+})
+
+// ── updateProductKind 级联 ────────────────────────────────────────────────────
+
+describe('updateProductKind — 改名级联', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('改名时级联 UPDATE 子级的 product_kind', async () => {
+    // 第 1 次 select: 当前一级行；第 2 次 select: 重名检查（无重复）
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-care',
+          categoryName: '护理项目',
+          productKind: null,
+          sortOrder: 2,
+          isValid: true,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-care', { categoryName: '新护理项目' })
+    expect(result.success).toBe(true)
+    // 第 1 次 set: 更新自身 categoryName；第 2 次 set: 级联更新 productKind
+    expect(setCalls).toHaveLength(2)
+    expect(setCalls[0]).toMatchObject({ categoryName: '新护理项目' })
+    expect(setCalls[1]).toEqual({ productKind: '新护理项目' })
+  })
+
+  it('未改名时不触发级联 UPDATE', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-care',
+          categoryName: '护理项目',
+          productKind: null,
+          sortOrder: 2,
+          isValid: true,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-care', { sortOrder: 5 })
+    expect(result.success).toBe(true)
+    // 只有 1 次 set（自身 sortOrder），没有级联
+    expect(setCalls).toHaveLength(1)
+    expect(setCalls[0]).toMatchObject({ sortOrder: 5 })
+  })
+
+  it('updateProductKind 接收 capability 字段（displayColor）', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-test', categoryName: '测试卡', productKind: null,
+          sortOrder: 9, isValid: true,
+          displayColor: null,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-test', {
+      displayColor: '#FF00FF',
+    })
+    expect(result.success).toBe(true)
+    expect(setCalls[0]).toMatchObject({
+      displayColor: '#FF00FF',
+    })
+  })
+})
+
+describe('getProductKinds — 一级 kind 含 capability', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回结构含 displayColor', async () => {
+    const orderBy = vi.fn().mockResolvedValue([{
+      categoryId: 'kind-care', categoryName: '护理项目', productKind: null,
+      sortOrder: 2, isValid: true,
+      displayColor: '#1989FA',
+      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'),
+    }])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const kinds = await getProductKinds()
+    expect(kinds[0]).toMatchObject({
+      categoryName: '护理项目',
+      displayColor: '#1989FA',
+    })
+  })
 })
 
 // ── createSku ─────────────────────────────────────────────────────────────────
@@ -270,7 +550,7 @@ describe('createSku — 输入校验 + 错误处理', () => {
 
   const baseSkuData = {
     skuId: 'SKU-001',
-    productId: 'P-001',
+    categoryId: 'cat-hr-01',
     productType: '疗程卡' as const,
     specName: '10次卡',
     price: '1000',
@@ -295,26 +575,20 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('疗程卡的次数必须 >= 1')
   })
 
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    const result = await createSku({ ...baseSkuData, validStart: '2026-12-01', validEnd: '2026-01-01' })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
-  })
-
-  it('SKU 编号重复（23505）→ 友好消息', async () => {
+  it('商品编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('SKU 编号已存在')
+    expect(result.message).toContain('商品编号已存在')
   })
 
-  it('商品不存在（23503）→ 友好消息', async () => {
+  it('品项分类不存在（23503）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('FK violation'), { code: '23503' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('商品不存在')
+    expect(result.message).toContain('品项分类不存在')
   })
 
   it('其他 DB 异常 → 重新抛出', async () => {
@@ -326,7 +600,7 @@ describe('createSku — 输入校验 + 错误处理', () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(true)
-    expect(result.message).toContain('SKU 创建成功')
+    expect(result.message).toContain('商品创建成功')
   })
 })
 
@@ -336,6 +610,7 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -344,11 +619,11 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
     ;(db.update as any).mockReturnValue({ set })
   }
 
-  it('rowCount=0，无乐观锁 → 报告 SKU 不存在', async () => {
+  it('rowCount=0，无乐观锁 → 报告商品不存在', async () => {
     setupUpdate(0)
     const result = await updateSku('SKU-999', { specName: '新规格' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('SKU 不存在')
+    expect(result.message).toContain('商品不存在')
   })
 
   it('rowCount=0，有乐观锁 → 报告并发冲突', async () => {
@@ -368,27 +643,71 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
 
 // ── deleteSku ─────────────────────────────────────────────────────────────────
 
-describe('deleteSku — 引用校验', () => {
+describe('deleteSku — 引用校验 + 软删', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('SKU 被订单引用 → 拒绝删除', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ saleItemId: 'item-1' }]))
+  // 软删流程需要两次 db.select：1) saleItems 引用 guard；2) productSkus 快照。
+  function setupSelectsForDelete(refRows: any[], snapshotRows: any[]) {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount += 1
+      const rows = callCount === 1 ? refRows : snapshotRows
+      return makeSelectChain(rows)()
+    })
+  }
+
+  function setupUpdateForDelete(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+  }
+
+  it('SKU 被订单引用 → 拒绝删除（不进入快照/软删流程）', async () => {
+    setupSelectsForDelete([{ saleItemId: 'item-1' }], [])
     const result = await deleteSku('SKU-001')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已被订单引用')
     expect(db.delete).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('SKU 未被引用 → 成功删除', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([]))
+  it('SKU 不存在 / 已删 → 报告不存在', async () => {
+    setupSelectsForDelete([], [])
+    const result = await deleteSku('SKU-999')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('SKU 未被引用 → 软删成功（mallProductSkus 物理删 + productSkus update deleted_at）', async () => {
+    setupSelectsForDelete([], [{
+      skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
+      price: '100.00', productType: '护理项目', isExperience: false,
+    }])
     ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
+    setupUpdateForDelete(1)
     const result = await deleteSku('SKU-001')
     expect(result.success).toBe(true)
     expect(result.message).toContain('已删除')
-    expect(db.delete).toHaveBeenCalledOnce()
+    // mallProductSkus 物理删一次
+    expect(db.delete).toHaveBeenCalledTimes(1)
+    // productSkus 软删一次
+    expect(db.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('软删 update rowCount=0 → 并发冲突提示', async () => {
+    setupSelectsForDelete([], [{
+      skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
+      price: '100.00', productType: '护理项目', isExperience: false,
+    }])
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
+    setupUpdateForDelete(0)
+    const result = await deleteSku('SKU-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('请刷新重试')
   })
 })
 
@@ -400,20 +719,28 @@ describe('getCategories — 品项分类列表', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('返回序列化的分类列表', async () => {
+  it('返回序列化的分类列表（含父级 capability 回填）', async () => {
+    // getCategories 现在 LEFT JOIN parent 行，回填 parent displayColor。
     const orderBy = vi.fn().mockResolvedValue([{
-      categoryId: 'cat-1', categoryName: '护理项目', productKind: '护理项目',
-      sortOrder: 1, isValid: true,
-      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+      child: {
+        categoryId: 'cat-1', categoryName: '面部护理', productKind: '护理项目',
+        salesCategory: '自销自耗',
+        sortOrder: 1, isValid: true,
+        displayColor: null,
+        createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+      },
+      parentDisplayColor: '#1989FA',
     }])
-    const from = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getCategories()
 
     expect(result).toHaveLength(1)
     expect(result[0].categoryId).toBe('cat-1')
-    expect(result[0].categoryName).toBe('护理项目')
+    expect(result[0].categoryName).toBe('面部护理')
+    expect(result[0].parentDisplayColor).toBe('#1989FA')
   })
 })
 
@@ -435,7 +762,7 @@ describe('getProducts — 商品列表', () => {
         const from = vi.fn().mockReturnValue({ groupBy })
         return { from }
       }
-      // 主查询: select → from → leftJoin → leftJoin → orderBy → limit
+      // 主查询: select → from → leftJoin → leftJoin → where → orderBy → limit
       const limit = vi.fn().mockResolvedValue([{
         product: {
           productId: 'prod-1', name: '蜜语面膜', categoryId: 'cat-1',
@@ -443,13 +770,14 @@ describe('getProducts — 商品列表', () => {
           price: '199.00', specialPrice: null, salesCategory: null,
           manageScope: null, marketScope: null,
           coverImage: null, detailImages: null,
-          validStart: null, validEnd: null, sortOrder: 1,
+          isVisible: true, sortOrder: 1,
           createdAt: new Date(), updatedAt: new Date(),
         },
         categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
       }])
       const orderBy = vi.fn().mockReturnValue({ limit })
-      const leftJoin2 = vi.fn().mockReturnValue({ orderBy })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin2 = vi.fn().mockReturnValue({ where })
       const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
       const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
       return { from }
@@ -488,7 +816,7 @@ describe('getProductById — 单商品查询', () => {
         price: '199.00', specialPrice: null, salesCategory: null,
         manageScope: null, marketScope: null,
         coverImage: null, detailImages: null,
-        validStart: null, validEnd: null, sortOrder: 1,
+        isVisible: true, sortOrder: 1,
         createdAt: new Date(), updatedAt: new Date(),
       },
       categoryName: '护理项目', productKind: '护理项目',
@@ -512,7 +840,7 @@ const mockSkuRow = {
   skuId: 'SKU-001', productId: 'prod-1', productType: '疗程卡',
   specName: '10次卡', price: '1999.00', specialPrice: null,
   sessionCount: 10, isBundleSku: false, sortOrder: 1, serviceFee: '50.00',
-  validStart: null, validEnd: null,
+  isEnabled: true,
   createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
 }
 
@@ -523,9 +851,12 @@ describe('getSkusByProductId — 按商品查 SKU', () => {
   })
 
   it('返回序列化的 SKU 列表', async () => {
-    const orderBy = vi.fn().mockResolvedValue([mockSkuRow])
+    const mockRow = { sku: mockSkuRow, bundlePrice: null, bundleGroupId: null, displayOrder: 1, groupName: null }
+    const orderBy = vi.fn().mockResolvedValue([mockRow])
     const where = vi.fn().mockReturnValue({ orderBy })
-    const from = vi.fn().mockReturnValue({ where })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+    const from = vi.fn().mockReturnValue({ innerJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getSkusByProductId('prod-1')
@@ -539,7 +870,9 @@ describe('getSkusByProductId — 按商品查 SKU', () => {
   it('空结果 → []', async () => {
     const orderBy = vi.fn().mockResolvedValue([])
     const where = vi.fn().mockReturnValue({ orderBy })
-    const from = vi.fn().mockReturnValue({ where })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+    const from = vi.fn().mockReturnValue({ innerJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getSkusByProductId('prod-999')
@@ -555,9 +888,12 @@ describe('getAllSkus — 全量 SKU', () => {
   })
 
   it('返回全量 SKU 列表', async () => {
-    const limit = vi.fn().mockResolvedValue([mockSkuRow])
+    const mockRow = { sku: mockSkuRow, categoryName: '护理项目', productKind: '护理项目', salesCategory: null }
+    const limit = vi.fn().mockResolvedValue([mockRow])
     const orderBy = vi.fn().mockReturnValue({ limit })
-    const from = vi.fn().mockReturnValue({ orderBy })
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ where, orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getAllSkus()

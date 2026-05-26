@@ -12,12 +12,11 @@ export const operationLogs = pgTable(
   'operation_logs',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    /** 操作人员工编号，关联 staff_wechat_users */
+    /** 操作人员工编号，关联 staff_wechat_users（系统级操作如 cronTask、payNotify 可为 null） */
     operatorEmployeeId: varchar('operator_employee_id', { length: 30 })
-      .notNull()
       .references(() => staffWechatUsers.employeeId),
-    /** 操作人姓名快照 */
-    operatorName: text('operator_name').notNull(),
+    /** 操作人姓名快照（系统级操作可为 null） */
+    operatorName: text('operator_name'),
     /** 操作人角色快照（manager / beautician） */
     operatorRole: text('operator_role'),
     /** 操作人所属组织节点，FK → org_nodes.id */

@@ -26,6 +26,15 @@ Page({
     });
   },
 
+  onShow() {
+    const app = getApp<IAppOption>();
+    this.setData({ boundStoreName: app.globalData.boundStoreName || '' });
+  },
+
+  onSwitchStore() {
+    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+  },
+
   async onChooseAvatar() {
     try {
       const res = await wx.chooseMedia({
@@ -38,16 +47,19 @@ Page({
       if (!tempFilePath) return;
 
       wx.showLoading({ title: '上传中...', mask: true });
-      const ext = tempFilePath.split('.').pop() || 'jpg';
-      const cloudPath = `avatars/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const ext = (tempFilePath.split('.').pop() || 'jpg').toLowerCase();
 
-      const uploadRes = await wx.cloud.uploadFile({
-        cloudPath,
-        filePath: tempFilePath,
+      // 读取临时文件为 base64（小程序端直传 COS 被存储安全规则拦截，改走云函数代理）
+      const base64 = await new Promise<string>((resolve, reject) => {
+        wx.getFileSystemManager().readFile({
+          filePath: tempFilePath,
+          encoding: 'base64',
+          success: (r) => resolve(r.data as string),
+          fail: reject,
+        });
       });
-      const fileID = uploadRes.fileID;
 
-      await callClientApi('auth.updateProfile', { avatarUrl: fileID });
+      const { fileID } = await callClientApi<{ fileID: string }>('auth.uploadAvatar', { base64, ext });
       wx.setStorageSync('avatarUrl', fileID);
       this.setData({ avatarUrl: fileID });
       wx.hideLoading();
@@ -100,25 +112,32 @@ Page({
   },
 
   /**
-   * 换绑手机号
+   * 微信手机号授权回调（仅用于首绑场景）
+   * 已绑定用户的换绑由管理后台操作，前端不再提供入口
    */
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
     const { cloudID, errMsg } = e.detail;
+
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
         Toast.fail('您拒绝了授权');
+      } else if (errMsg) {
+        Toast.fail(errMsg);
       }
       return;
     }
 
-    try {
-      const { phone, updatedOrdersCount } = await bindPhoneWithCloudID(cloudID as string);
-      this.setData({ maskedPhone: maskPhone(phone) });
+    const app = getApp<IAppOption>();
 
-      const tips = updatedOrdersCount > 0
-        ? `已同步 ${updatedOrdersCount} 笔历史订单`
-        : '绑定成功';
-      Toast.success(tips);
+    try {
+      const { phone } = await bindPhoneWithCloudID(cloudID as string);
+      const newMasked = maskPhone(phone);
+      wx.setStorageSync('phone', phone);
+      if (app.globalData.userInfo) {
+        (app.globalData.userInfo as any).phone = phone;
+      }
+      this.setData({ maskedPhone: newMasked });
+      Toast.success('绑定成功');
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败');
     }

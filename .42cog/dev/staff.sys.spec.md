@@ -86,9 +86,9 @@ app.onLaunch()
 
 | 级别 | 数据范围 | SQL 过滤 |
 |------|---------|---------|
-| `headquarters` | 全局无过滤 | 无 WHERE 限制 |
-| `market` | 市场下所有门店 | `WHERE store_id IN (市场子门店列表)` |
-| `store` | 单门店 | `WHERE store_id = ?` |
+| `总部` | 全局无过滤 | 无 WHERE 限制 |
+| `市场` | 市场下所有门店 | `WHERE store_id IN (市场子门店列表)` |
+| `门店` | 单门店 | `WHERE store_id = ?` |
 
 **一人多角色 + 一角色多域**：`permission_roles` 表每条 `(employee_id, role, scope_id)` 组合独立记录，登录时聚合所有角色和权限。
 
@@ -168,12 +168,16 @@ event { action, payload }
   → 响应: { code: 0, message, data } 或 { code: -1/-400/-401/-403, message }
 ```
 
-**错误码体系**：
+**错误码体系**（9 项官方白名单，单源：`cloudfunctions/staffApi/utils/error-codes.js`）：
 - `0` — 成功
-- `-1` — 通用错误
-- `-400` — 参数错误（`INVALID_PARAMS:` 前缀）
+- `-1` — 通用错误（非白名单前缀降级）
+- `-400` — 参数错误 / 状态机阻塞 / 余额不足 / 顾客未注册（前缀 `INVALID_PARAMS:` / `INVALID_STATE:` / `INSUFFICIENT_BALANCE:` / `CLIENT_NOT_REGISTERED:`，**按 `errorType` 区分**）
 - `-401` — 未认证（`UNAUTHORIZED:` 前缀）
-- `-403` — 权限不足（`PERMISSION_DENIED:` 前缀）
+- `-403` — 手机号未绑定 / 权限不足（`PHONE_REQUIRED:` 或 `PERMISSION_DENIED:`，**按 `errorType` 区分**）
+- `-404` — 资源不存在（`NOT_FOUND:` 前缀）
+- `-409` — 并发冲突（`CONFLICT:` 前缀）
+
+跨端一致性由 `__tests__/routes/cross-end-error-codes-snapshot.test.js` snapshot 守护，任一端漂移立即报错。
 
 ## 6. 约束保障机制
 
@@ -192,35 +196,50 @@ event { action, payload }
 ### 7.1 员工开单 → 顾客扫码支付
 
 ```text
-order.create(store_id, client_phone, cart_items, preferred_employee_id)
+order.create(store_id, client_phone, cart_items, preferred_employee_id,
+             useCard?, prepaidCardAmount?)
   → 查 client_wechat_users.phone → 填入 client_user_id（可为 null）
+  → 若 useCard: 事务内 SELECT balance FROM prepaid_cards WHERE user_id=$1
+    （注意：无 FOR UPDATE，因为不写；仅做基础预选余额校验）
   → PG 写入 sale_orders(待支付) + sale_items(价格快照)
+    + 预选字段: prepaid_card_amount / paid_amount / payment_method
+      - paid_amount = 0 → payment_method 强制落 '无'
+      - paid_amount > 0 → 取前端传的建议通道
+  → **balance 不动、card_transactions 不写入**（纯预选）
   → 返回 sale_order_id
 
 order.qrcode(sale_order_id)
   → utils/wxacode.js → 微信接口生成小程序码
   → 参数: orderNo / path → 顾客端扫码解析
 
-顾客端扫码 → order.pay → payNotify / offline 确认
+顾客端扫码链路（真正扣卡发生在此处，见 client.sys.spec.md §7.2）:
+  → 顾客可调整预选方案(clientApi.order.scanAdjust)
+  → 顾客确认支付:
+    → paid=0 → clientApi.order.confirmPrepaidFull（扣卡）
+    → paid>0 + 微信 → payNotify 扣卡
+    → paid>0 + 线下 → 转待确认收款 → staffApi.order.confirmOffline 扣卡
+
   → 已支付 + preferred_employee_id → 自动创建 sale_allocations
 ```
+
+**重要行为契约**：`staffApi.order.create` 是**预选**，不扣卡。单测须断言 create 返回后 `prepaid_cards.balance` 未变、`card_transactions` 无新行。
 
 ### 7.2 营业额分配
 
 ```text
-订单进入已支付 → allocation_status: null → pending
+订单进入已支付 → allocation_status: null → 待分配
 
 店长操作:
 allocation.save(sale_order_id, allocations[])
   → 按 sale_item 级写入 sale_allocations(employee_id, ratio, amount)
-  → allocation_status: pending → allocated
+  → allocation_status: 待分配 → 已分配
 
 allocation.deleteAllocation(sale_order_id)
-  → 标记 is_void = true → allocation_status: allocated → pending
+  → 标记 is_void = true → allocation_status: 已分配 → 待分配
 
 特殊场景:
   - 指定美容师 + 顾客端支付 → 系统自动 100% 分配
-  - 未指定美容师 + 顾客端支付 → pending 等待店长手动分配
+  - 未指定美容师 + 顾客端支付 → 待分配 等待店长手动分配
   - 订单关闭/支付失败 → sale_allocations.is_void = true
 
 锁定规则:
@@ -241,14 +260,18 @@ allocation.deleteAllocation(sale_order_id)
 
 服务推进:
   service.start → 待服务→服务中
-  service.complete → 服务中→已完成
-    → 原子扣减: UPDATE sale_items SET remaining_sessions = remaining_sessions - session_used
+  service.complete → 服务中→待客户确认（员工标记完成，仅记 staff_completed_at，无副作用）
+  service.confirm → 待客户确认→已完成（店长代确认；顾客本人走 clientApi.service.confirm；后台走 admin.confirmServiceOrder）
+    → finalize 原子: UPDATE sale_items SET remaining_sessions = remaining_sessions - session_used
       WHERE sale_item_id = $1 AND remaining_sessions >= session_used
     → rowCount=0 → 次数不足，回滚
+    → 计算并写入 service_commissions（双字段模型，缺率写 operation_logs）
+    → 状态翻转 WHERE status='待客户确认'（并发锁定，rowCount=0 视为已被其它入口确认 → 幂等）
     → 归零检查:
       → remaining_sessions = 0 → 关闭关联的待确认/已确认预约
       → 订单所有行归零 → sale_orders.status → 已完成
-  service.cancel → 不扣次数
+    → finalize SQL 在 staffApi/clientApi 双端独立副本，cross-end-sql-snapshot.test.js 守护
+  service.cancel → 不扣次数（待服务/服务中/待客户确认 可取消）
 
 权限:
   - 店长：可代创建（指定美容师），可操作本店任意服务单
@@ -282,7 +305,7 @@ staff.todoList → 6 种待办:
   → 仅可选体验卡商品
   → order.create(sale_order_type='体验')
   → 支付 → 营业额分配（不计入普通业绩统计）
-  → 创建护理单(service_order_type='体验')
+  → 创建服务单(service_order_type 由顾客 customer_type 自动判定)
   → 服务完成 → 扣次
 ```
 
@@ -319,6 +342,25 @@ staff.todoList → 6 种待办:
 | 销售单 | 福利活动 | `福利活动` | 方案内价格 | 方案内项目不可增删 |
 | 回款单 | — | `回款` | 回款金额 | `ref_sale_order_id` 必填；P2 |
 | 转换单 | — | `转换` | 补差价 | `ref_sale_order_id` 必填；P2 |
+
+## 10.1 储值卡抵扣集成（员工端视角）
+
+**数据模型**：`prepaid_cards` 一户一账户（`UNIQUE(user_id)`，**无 `store_id` 列**），余额跨店共享。`paymentMethodEnum` 扩展为 4 值：`['微信', '支付宝', '线下', '无']`；`paid_amount = 0` ⇔ `payment_method = '无'`（应用层双向蕴含校验）。
+
+**扣卡契约**（员工端仅在两处扣卡）：
+
+| 触发点 | 场景 | 动作 |
+|--------|------|------|
+| `order.confirmOffline` | 顾客扫码选线下 → 店长确认收款 | 事务内 `FOR UPDATE` + 二次校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
+| `order.approveRefund` | 退款审批通过 | 按比例 `refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund - refundByCard`；储值卡部分 INSERT `type='充值'` 回冲 balance |
+
+**不扣卡的关键路径**（预选 / 转交客户端扣）：
+
+- `order.create`：仅写入预选值（`prepaid_card_amount` / `paid_amount` / `payment_method`），`balance` 不动
+- `order.createConversion` 正差额补款 / `order.createRepayment`：沿用"店长开单 → 顾客扫码确认"链路，balance 由 clientApi / payNotify / confirmOffline 处理
+- `order.createConversion` 负差额（多退给客户）：保留现有"充入储值卡"逻辑，UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id`
+
+**余额查询**：`customer.customerBalance({customerUserId})` — 跨店统一余额；`requireManager()` 权限校验。
 
 ## 11. 不包含（员工端不实现）
 

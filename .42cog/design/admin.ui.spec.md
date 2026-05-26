@@ -412,7 +412,7 @@ const STATUS_BADGE_MAP = {
 
 | 分组 | 字段 |
 |------|------|
-| 基本信息 | 门店名称、所属市场（Select 联动 org_nodes type='market'）、开业时间、床位数、营业时间、联系电话 |
+| 基本信息 | 门店名称、所属市场（Select 联动 org_nodes type='市场'）、开业时间、床位数、营业时间、联系电话 |
 | 地理位置 | 省市区（级联选择）、街道地址、经纬度（手动输入或地图选点） |
 | 展示内容 | 封面图（单图上传）、环境图（多图上传，拖拽排序）、门店简介（Textarea）、公告、停车信息 |
 
@@ -501,7 +501,7 @@ Tabs 按 `product_kind` 分栏：`福利活动` | `护理项目` | `家居产品
 | 价格 | price, special_price | Input (number) |
 | 销售属性 | sales_category, manage_scope, market_scope | Select |
 | 展示 | cover_image, detail_images[] | 图片上传 |
-| 有效期 | valid_start, valid_end, sort_order | DatePicker, Input |
+| 上下架 | is_enabled, sort_order | Switch, Input |
 
 **SKU 管理**（嵌在商品详情页内）：
 
@@ -511,7 +511,7 @@ Tabs 按 `product_kind` 分栏：`福利活动` | `护理项目` | `家居产品
 │                                                   │
 │ 规格名    产品类型   标价    会员价  次数  手工费  操作│
 │ 10次卡    疗程卡    ¥1999  ¥1800   10   ¥50  [编辑]│
-│ 单次体验  单品      ¥299   —       1    ¥30  [编辑]│
+│ 单次体验  疗程卡    ¥299   —       1    ¥30  [编辑]│
 └───────────────────────────────────────────────────┘
 ```
 
@@ -527,7 +527,7 @@ Tabs 按 `product_kind` 分栏：`福利活动` | `护理项目` | `家居产品
 |------|------|
 | 订单类型 | Select: 全部 / sale / service |
 | 角色类型 | Select: 全部 / 技师 / 推广 |
-| 销售分类 | Select: 全部 / 自采自销 / 他销自耗 / 他销他耗 / 生态合作 |
+| 销售分类 | Select: 全部 / 自销自耗 / 他销自耗 / 他销他耗 / 生态合作 |
 
 表格列：
 
@@ -677,7 +677,7 @@ Step 1          Step 2          Step 3          Step 4
 
 ### 5.13 营业额分配 `/allocations`
 
-**待分配列表**：筛选订单状态为"已支付"且 `allocation_status != 'allocated'` 的订单。
+**待分配列表**：筛选订单状态为"已支付"且 `allocation_status != '已分配'` 的订单。
 
 | 列 | 说明 |
 |------|------|
@@ -852,7 +852,7 @@ interface AuthSession {
   roles: Array<{
     role: 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr'
     scopeId: string
-    scopeType: 'headquarters' | 'market' | 'store'
+    scopeType: '总部' | '市场' | '门店'
   }>
   permissions: {
     actions: string[]     // 如 ['sale_order:create', 'employee:list']

@@ -30,7 +30,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -97,7 +97,7 @@ async function queryServiceData(mssqlPool, yearFilter) {
 // ─── 2. 处理和分组 ─────────────────────────────────────────
 
 function processData(rows, lookups) {
-  const { saleItemIds, customerMap, storeMap, employeeIds, existingServiceIds } = lookups
+  const { saleItemIds, customerMap, storeMap, employeeIds, employeeSkills, existingServiceIds } = lookups
   const orders = new Map()
 
   const stats = {
@@ -154,7 +154,7 @@ function processData(rows, lookups) {
         storeId,
         clientUserId: userId,
         assignedEmployeeId: employeeId, // 第一个明细的员工
-        serviceType: trim(row.service_type) === '售前' ? '体验' : '普通',
+        serviceType: trim(row.service_type) === '售前' ? '售前' : '售后',
         items: [],
       })
     }
@@ -163,11 +163,16 @@ function processData(rows, lookups) {
     const serviceFee = Math.max(0, parseFloat(row.service_fee) || 0)
     const unitRealPrice = parseFloat(row.unit_real_price) || 0
 
+    // role_type 派生：员工 skills[0]，缺省 '美容师'（与 backfill / payNotify 一致）
+    const skills = (employeeSkills && employeeSkills.get(employeeId)) || []
+    const roleType = skills[0] || '美容师'
+
     orders.get(serviceOrderId).items.push({
       serviceItemId,
       saleItemId: saleFlowNo,
       sessionUsed,
       employeeId,
+      roleType,
       serviceDuration: parseInt(row.duration_minutes) || null,
       unitRealPrice: Math.max(0, unitRealPrice),
       serviceFee,
@@ -276,18 +281,18 @@ async function batchInsert(pgPool, orders, dryRun) {
               ? Math.min(9.9999, Math.round((item.serviceFee / item.unitRealPrice) * 10000) / 10000)
               : 1.0000
             commRows.push([
-              item.serviceItemId, item.employeeId, rate, item.serviceFee, false,
+              item.serviceItemId, item.employeeId, item.roleType, rate, item.serviceFee, false,
             ])
           }
         }
       }
       if (commRows.length > 0) {
-        const cMv = buildMultiRowValues(commRows, 5)
+        const cMv = buildMultiRowValues(commRows, 6)
         const r3 = await client.query(`
           INSERT INTO service_commissions (
-            service_item_id, employee_id, commission_rate, commission_amount, is_void
+            service_item_id, employee_id, role_type, commission_rate, commission_amount, is_void
           ) VALUES ${cMv.placeholders}
-          ON CONFLICT (service_item_id, employee_id) WHERE is_void = false
+          ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role
           DO NOTHING
         `, cMv.values)
         commissionsInserted += r3.rowCount
@@ -382,15 +387,18 @@ async function main() {
     const storeMap = {}
     storeRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
 
-    const empRes = await pgPool.query("SELECT employee_id FROM staff_wechat_users WHERE employee_id IS NOT NULL")
+    const empRes = await pgPool.query("SELECT employee_id, skills FROM staff_wechat_users WHERE employee_id IS NOT NULL")
     const employeeIds = new Set(empRes.rows.map(r => r.employee_id))
+    const employeeSkills = new Map(
+      empRes.rows.map(r => [r.employee_id, Array.isArray(r.skills) ? r.skills : []])
+    )
 
     const existSvcRes = await pgPool.query("SELECT service_item_id FROM service_items")
     const existingServiceIds = new Set(existSvcRes.rows.map(r => r.service_item_id))
     log(`  已有护理明细: ${existingServiceIds.size}`)
 
     // Step 3: 处理
-    const { orders, stats } = processData(rows, { saleItemIds, customerMap, storeMap, employeeIds, existingServiceIds })
+    const { orders, stats } = processData(rows, { saleItemIds, customerMap, storeMap, employeeIds, employeeSkills, existingServiceIds })
 
     console.log('\n=== 数据分析 ===')
     console.log(`  源明细总数: ${stats.total}`)

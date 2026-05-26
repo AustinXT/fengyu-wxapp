@@ -122,29 +122,6 @@
   box-sizing: border-box;
 }
 
-/* ===== 订单快捷入口 ===== */
-.order-shortcuts {
-  display: flex;
-  background: var(--color-bg-card);
-  margin: 0 32rpx 24rpx;
-  border-radius: 16rpx;
-  padding: 28rpx 0;
-  box-shadow: var(--shadow-card);
-}
-
-.order-shortcut-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10rpx;
-}
-
-.order-shortcut-label {
-  font-size: 22rpx;
-  color: var(--color-text-secondary);
-}
-
 /* ===== 区块标题 ===== */
 .section-title {
   font-size: 24rpx;
@@ -158,16 +135,3 @@
   height: 60rpx;
 }
 
-/* ===== 手机号绑定按钮 ===== */
-.phone-bind-btn {
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  line-height: normal;
-  text-align: left;
-}
-
-.phone-bind-btn::after {
-  border: none;
-}

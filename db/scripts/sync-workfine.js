@@ -35,7 +35,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -140,7 +140,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
     const hqId = hashId('org', 'headquarters', '总部')
     await client.query(`
       INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-      VALUES ($1, '总部', 'headquarters', NULL, 0, true)
+      VALUES ($1, '总部', '总部', NULL, 0, true)
       ON CONFLICT (id) DO UPDATE SET name = '总部', updated_at = now()
     `, [hqId])
 
@@ -153,7 +153,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       marketIdMap[markets[i]] = marketId
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'market', $3, $4, true)
+        VALUES ($1, $2, '市场', $3, $4, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [marketId, markets[i], hqId, i])
     }
@@ -172,7 +172,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       // org_nodes store 节点
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'store', $3, 0, true)
+        VALUES ($1, $2, '门店', $3, 0, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [storeOrgNodeId, storeName, parentMarketId])
 
@@ -245,7 +245,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     })
 
     // 收集门店级部门对 + 无门店的全局部门
-    const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = 'headquarters' LIMIT 1")
+    const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = '总部' LIMIT 1")
     const hqId = hqRes.rows[0]?.id
     const storeDeptPairs = new Set()  // "storeName|deptName"
     const globalDeptNames = new Set() // 无门店员工的部门
@@ -268,7 +268,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const parentId = storeOrgNodeMap[storeName]
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'department', $3, 0, true)
+        VALUES ($1, $2, '部门', $3, 0, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [deptId, deptName, parentId])
       storeDeptMap[pair] = deptId
@@ -281,7 +281,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
         const deptId = hashId('org', 'department', deptName)
         await client.query(`
           INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-          VALUES ($1, $2, 'department', $3, 0, true)
+          VALUES ($1, $2, '部门', $3, 0, true)
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
         `, [deptId, deptName, hqId])
         globalDeptMap[deptName] = deptId
@@ -381,7 +381,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     if (hqId) {
       const { rowCount } = await client.query(`
         DELETE FROM org_nodes
-        WHERE type = 'department'
+        WHERE type = '部门'
           AND parent_id = $1
           AND id NOT IN (SELECT DISTINCT org_node_id FROM staff_wechat_users WHERE org_node_id IS NOT NULL)
       `, [hqId])
@@ -458,9 +458,9 @@ async function syncPermissionRoles(pgPool, dryRun) {
 
       // UPSERT（仅 sync 创建的记录）
       await client.query(`
-        INSERT INTO permission_roles (employee_id, role, scope_id, is_void, created_by, updated_by)
-        VALUES ($1, $2, $3, false, 'sync', 'sync')
-        ON CONFLICT (employee_id, role, scope_id) WHERE is_void = false
+        INSERT INTO permission_roles (employee_id, role, scope_id, created_by, updated_by)
+        VALUES ($1, $2, $3, 'sync', 'sync')
+        ON CONFLICT (employee_id, role, scope_id)
         DO UPDATE SET updated_by = 'sync', updated_at = now()
           WHERE permission_roles.created_by = 'sync'
       `, [emp.employee_id, role, scopeId])
@@ -611,7 +611,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        member_level = s.member_level, customer_source = s.customer_source,
+        customer_source = s.customer_source,
         category = s.category, birthday = s.birthday, occupation = s.occupation,
         is_married = s.is_married, wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
@@ -656,7 +656,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         name = EXCLUDED.name,
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
-        member_level = EXCLUDED.member_level,
         customer_source = EXCLUDED.customer_source,
         category = EXCLUDED.category,
         birthday = EXCLUDED.birthday,
@@ -675,7 +674,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        member_level = s.member_level, customer_source = s.customer_source,
+        customer_source = s.customer_source,
         category = s.category, birthday = s.birthday, occupation = s.occupation,
         is_married = s.is_married, wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
@@ -783,15 +782,16 @@ function mapProductKind(raw) {
   if (!raw) return '护理项目'
   if (raw.includes('充值')) return '充值卡'
   if (raw.includes('家居') || raw.includes('院装')) return '家居产品'
-  if (raw.includes('福利') || raw.includes('促销') || raw.includes('活动')) return '福利活动'
+  if (raw.includes('福利') || raw.includes('促销') || raw.includes('活动') || raw.includes('套餐') || raw.includes('组合')) return '组合套餐'
+  if (raw.includes('体验')) return '体验卡'
   return '护理项目'
 }
 
-/** 映射产品类型 */
+/** 映射产品类型（2026-05-21 单品合并：单品 → 疗程卡 1 次，不再产出 '单品'） */
 function mapProductType(raw) {
-  if (!raw) return '院装产品'
+  if (!raw) return '家居产品'
   if (raw.includes('疗程')) return '疗程卡'
-  if (raw.includes('单品')) return '单品'
+  if (raw.includes('单品')) return '疗程卡'
   return '疗程卡'
 }
 
@@ -946,7 +946,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_shengmei, is_bundle, price, sales_category,
           manage_scope, market_scope, sort_order)
-        VALUES ($1, $2, $3, $4, false, $5, '自采自销', $6, $7, 0)
+        VALUES ($1, $2, $3, $4, false, $5, '自销自耗', $6, $7, 0)
         ON CONFLICT (product_id) DO UPDATE SET
           category_id = EXCLUDED.category_id, name = EXCLUDED.name,
           is_shengmei = EXCLUDED.is_shengmei, price = EXCLUDED.price,
@@ -958,8 +958,9 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       // 创建 SKU
       for (const sku of group.skus) {
         const productType = mapProductType(trim(sku.product_type_raw))
-        const sessionCount = productType === '单品' ? 1 : (parseInt(sku.session_count) || null)
-        const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : (productType === '单品' ? '单次体验' : '疗程卡')
+        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        const sessionCount = productType === '家居产品' ? null : (parseInt(sku.session_count) || 1)
+        const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : '单次体验'
         const skuId = hashId('sku', productId, trim(sku.wf_item_id))
 
         await client.query(`
@@ -973,7 +974,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       }
     }
 
-    // ── 6c. 院装产品（UDT_M_341）── 每条 1:1 product + sku
+    // ── 6c. 家居产品（UDT_M_341，WorkFine 原表为"院装产品"）── 每条 1:1 product + sku
     // 优先找 product_kind='家居产品' 的分类，按名称匹配；无匹配则用 '美容耗材' 兜底
     let homeCatId = null
     for (const [, v] of Object.entries(catMap)) {
@@ -999,7 +1000,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_bundle, price, sales_category, sort_order)
-        VALUES ($1, $2, $3, false, $4, '自采自销', 0)
+        VALUES ($1, $2, $3, false, $4, '自销自耗', 0)
         ON CONFLICT (product_id) DO UPDATE SET
           name = EXCLUDED.name, price = EXCLUDED.price, updated_at = now()
       `, [productId, cat.id, name, parseFloat(row.price) || 0])
@@ -1009,7 +1010,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       const skuId = hashId('sku', productId, trim(row.wf_item_id))
       await client.query(`
         INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, sort_order, service_fee)
-        VALUES ($1, $2, '院装产品', $3, $4, 0, 0)
+        VALUES ($1, $2, '家居产品', $3, $4, 0, 0)
         ON CONFLICT (sku_id) DO UPDATE SET
           spec_name = EXCLUDED.spec_name, price = EXCLUDED.price, updated_at = now()
       `, [skuId, productId, specName, parseFloat(row.price) || 0])
@@ -1033,16 +1034,16 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       promoGroups.get(schemeId).items.push(row)
     }
 
-    // 找到或创建福利活动分类
+    // 找到或创建组合套餐分类
     let promoCatId = null
     for (const [, v] of Object.entries(catMap)) {
-      if (v.kind === '福利活动') { promoCatId = v.id; break }
+      if (v.kind === '组合套餐') { promoCatId = v.id; break }
     }
     if (!promoCatId) {
-      promoCatId = hashId('cat', '福利活动', '福利活动')
+      promoCatId = hashId('cat', '组合套餐', '组合套餐')
       await client.query(`
         INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
-        VALUES ($1, '福利活动', '福利活动', 0, true)
+        VALUES ($1, '组合套餐', '组合套餐', 0, true)
         ON CONFLICT (category_id) DO NOTHING
       `, [promoCatId])
     }
@@ -1052,7 +1053,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_bundle, price, market_scope, sales_category, sort_order)
-        VALUES ($1, $2, $3, true, $4, $5, '自采自销', 0)
+        VALUES ($1, $2, $3, true, $4, $5, '自销自耗', 0)
         ON CONFLICT (product_id) DO UPDATE SET
           name = EXCLUDED.name, price = EXCLUDED.price, market_scope = EXCLUDED.market_scope, updated_at = now()
       `, [productId, promoCatId, promo.name, promo.price, promo.marketScope])
@@ -1062,7 +1063,8 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
         const isGift = toBool(item.is_gift_raw)
         const itemPrice = isGift ? 0 : (parseFloat(item.item_price) || 0)
         const productType = mapProductType(trim(item.product_type_raw))
-        const sessionCount = productType === '单品' ? 1 : (parseInt(item.session_count) || null)
+        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        const sessionCount = productType === '家居产品' ? null : (parseInt(item.session_count) || 1)
         const specName = trim(item.item_name) || '促销项'
         const skuId = hashId('sku', productId, trim(item.wf_item_id))
 
@@ -1117,7 +1119,7 @@ async function verify(pgPool) {
 
   // permission_roles 按角色
   const { rows: roles } = await pgPool.query(
-    "SELECT role, count(*) AS cnt FROM permission_roles WHERE is_void = false GROUP BY role ORDER BY role"
+    "SELECT role, count(*) AS cnt FROM permission_roles GROUP BY role ORDER BY role"
   )
   console.log('\n  permission_roles 按角色:')
   roles.forEach(r => console.log(`    ${r.role}: ${r.cnt}`))

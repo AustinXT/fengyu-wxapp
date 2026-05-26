@@ -1,21 +1,32 @@
 .DS_Store
-node_modules/
+node_modules
 miniprogram_npm/
 project.private.config.json
 secrets/
 sources/*
 !sources/README.md
 
+# WeChat DevTools auto-generated Page({}) / Component({}) scaffold .js for TS-only entries.
+# DevTools prefers .js over .ts at runtime, silently shadowing TS implementations.
+# Pages / sub-package pages / components are 100% TypeScript in this repo, so blanket-ignore.
+fengyu-client/miniprogram/pages*/**/*.js
+fengyu-client/miniprogram/components/**/*.js
+fengyu-staff/miniprogram/pages*/**/*.js
+fengyu-staff/miniprogram/package*/**/*.js
+fengyu-staff/miniprogram/components/**/*.js
+
 # Next.js (fengyu-admin)
 .next/
 next-env.d.ts
 *.tsbuildinfo
+fengyu-admin/src/generated/
 
 # Testing
 coverage/
 playwright-report/
 test-results/
 .auth/
+.last-test-context.json
 
 # PostgreSQL & Docker
 db/.env
@@ -24,3 +35,23 @@ docker/.env
 postgres_data/
 .env
 .env.local
+
+# CloudBase
+cloudbaserc.json
+
+# 双环境配置（envs/ 含 PEM/SM4/拉卡拉密钥）
+envs/dev.env
+envs/prod.env
+envs/.active
+envs/*.pem
+envs/*.cer
+
+# Delivery build output
+delivery/
+.tree/
+.claude/worktrees/*
+
+# Progress reports (PDF output)
+reports/
+.claude/last-report.json
+.claude/scheduled_tasks.lock

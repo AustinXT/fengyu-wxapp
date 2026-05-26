@@ -3,11 +3,12 @@ import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { searchProducts } from "../../utils/format";
+import { getCosBase } from "../../utils/cloud-env";
 
 const app = getApp<IAppOption>();
 
-// CloudBase CDN 基础 URL
-const CDN_BASE = "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/fengyu-client";
+// CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
+const CDN_BASE = `${getCosBase()}/fengyu-client`;
 
 interface Banner {
   id: string;
@@ -18,18 +19,23 @@ interface Banner {
   link: string;
 }
 
+interface CategoryGroup {
+  category_id: string;
+  category_name: string;
+  sort_order: number;
+}
+
 interface Category {
   category_id: string;
   category_name: string;
+  category_group: string | null;
   category_order: number;
-  product_kind: string;
 }
 
 interface SpuItem {
   product_id: string;
   name: string;
   category_name: string;
-  product_kind: string;
   cover_image: string;
   min_price: string;
   is_recommend: boolean;
@@ -40,11 +46,9 @@ interface SidebarItem {
   id: string;
   type: "title" | "category";
   label: string;
-  categoryKey?: string;
-  bigCategory?: string;
+  categoryKey: string;
+  groupKey: string;
 }
-
-const BIG_CATEGORIES = ["福利活动", "护理项目", "家居产品", "充值卡"];
 
 Page({
   data: {
@@ -53,20 +57,12 @@ Page({
     searchResults: [] as SpuItem[],
     searchLoading: false,
     boundStoreName: "",
-    banners: [
-      { id: "1", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner1.jpg`, link: "" },
-      { id: "2", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner2.jpg`, link: "" },
-      { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
-      { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
-      { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
-    ] as Banner[], // fallback defaults, overridden by config.banners API
+    banners: [] as Banner[],
     currentBanner: 0,
 
-    // 侧边栏（统一展示所有分类，按大分类分组）
+    // 侧边栏（扁平商品分类列表）
     sidebarItems: [] as SidebarItem[],
     activeCategoryKey: "",
-    activeBigCategoryIndex: -1, // 宫格高亮
-    activeBigCategory: "", // 当前选中的大分类名称（用于侧边栏去重高亮）
     sidebarScrollIntoView: "",
 
     spuList: [] as SpuItem[],
@@ -75,7 +71,10 @@ Page({
     cartCount: 0,
   },
 
-  // 所有分类
+  // 所有一级分组
+  _allGroups: [] as CategoryGroup[],
+
+  // 所有二级分类
   _allCategories: [] as Category[],
 
   // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
@@ -91,6 +90,7 @@ Page({
   _isLoadingNext: false,
 
   onLoad() {
+    this._spuCache = {};
     const storeName = app.globalData.boundStoreName || "";
     this.setData({ boundStoreName: storeName });
     this.loadShopInit();
@@ -104,14 +104,13 @@ Page({
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
       this._spuCache = {};
+      this._allGroups = [];
       this._allCategories = [];
       this._allCategoryKeys = [];
       this.setData({
         boundStoreName: storeName,
         sidebarItems: [],
         activeCategoryKey: "",
-        activeBigCategoryIndex: -1,
-        activeBigCategory: "",
         spuList: [],
         cartCount: 0,
         isSearching: false,
@@ -203,10 +202,9 @@ Page({
     this.setData({ isSearching: false, searchResults: [], searchValue: "" });
   },
 
-  // 根据 compositeKey 查找 category_id
-  _findCategoryId(compositeKey: string): string | undefined {
-    const categoryName = compositeKey.includes("::") ? compositeKey.split("::")[1] : compositeKey;
-    const cat = this._allCategories.find((c) => c.category_name === categoryName);
+  // categoryKey 就是 category_id
+  _findCategoryId(categoryKey: string): string | undefined {
+    const cat = this._allCategories.find((c) => c.category_id === categoryKey);
     return cat?.category_id;
   },
 
@@ -271,54 +269,30 @@ Page({
     }
   },
 
-  // 宫格按钮点击 → 滚动到对应大分类区域
+  // 宫格按钮点击
   onGridTap(e: WechatMiniprogram.TouchEvent) {
     const { type } = e.currentTarget.dataset as { type: string };
 
     switch (type) {
-      case "promotion":
-        this.scrollToBigCategory("福利活动");
-        break;
-      case "service":
-        this.scrollToBigCategory("护理项目");
-        break;
-      case "product":
-        this.scrollToBigCategory("家居产品");
-        break;
       case "coupon":
         wx.navigateTo({ url: "/pagesCoupon/my-coupons/my-coupons" });
         break;
       case "treatment":
         wx.navigateTo({ url: "/pagesOrder/treatment-cards/treatment-cards" });
         break;
+      case "recharge":
+        wx.navigateTo({ url: "/pagesProfile/card-recharge/card-recharge" });
+        break;
+      case "experience":
+        // 体验卡 capability 化（ticket Round 2）：独立入口 → 列表 → 详情 → 严格独立 checkout
+        wx.navigateTo({ url: "/pagesExperience/list/list" });
+        break;
       default:
         break;
     }
   },
 
-  scrollToBigCategory(bigCategory: string) {
-    // 退出搜索模式
-    if (this.data.isSearching) {
-      this.setData({ isSearching: false, searchResults: [], searchValue: "" });
-    }
-
-    // 找到该大分类的 title 项
-    const titleItem = this.data.sidebarItems.find((i) => i.type === "title" && i.label === bigCategory);
-    if (!titleItem) return;
-
-    // 找到该大分类下的第一个子分类
-    const firstCat = this.data.sidebarItems.find((i) => i.type === "category" && i.bigCategory === bigCategory);
-    if (!firstCat?.categoryKey) return;
-
-    // 先清空 scroll-into-view 再设置，确保相同值也能触发滚动
-    this.setData({ sidebarScrollIntoView: "" });
-    setTimeout(() => {
-      this.setData({ sidebarScrollIntoView: titleItem.id });
-    }, 50);
-    this.switchToCategory(firstCat.categoryKey);
-  },
-
-  // 侧边栏分类点击
+  // 二级分类点击
   onSidebarCategoryTap(e: WechatMiniprogram.TouchEvent) {
     const { key } = e.currentTarget.dataset as { key: string };
     if (key && key !== this.data.activeCategoryKey) {
@@ -330,13 +304,10 @@ Page({
     const catItem = this.data.sidebarItems.find((i) => i.categoryKey === categoryKey);
     if (!catItem) return;
 
-    const bigCatIndex = catItem.bigCategory ? BIG_CATEGORIES.indexOf(catItem.bigCategory) : -1;
     const cached = this._spuCache[categoryKey];
 
     this.setData({
       activeCategoryKey: categoryKey,
-      activeBigCategoryIndex: bigCatIndex,
-      activeBigCategory: catItem.bigCategory || "",
       sidebarScrollIntoView: catItem.id,
       spuList: cached || [],
     });
@@ -352,11 +323,11 @@ Page({
 
     const { activeCategoryKey } = this.data;
     const currentIndex = this._allCategoryKeys.indexOf(activeCategoryKey);
-
     if (currentIndex < 0 || currentIndex >= this._allCategoryKeys.length - 1) return;
 
     const nextKey = this._allCategoryKeys[currentIndex + 1];
     this._isLoadingNext = true;
+
     this.switchToCategory(nextKey);
 
     // 防止连续触发
@@ -368,33 +339,33 @@ Page({
   // ===== 数据加载 =====
 
   async loadBanners() {
+    // 走云函数取 count/v（不受 wx.request 域名白名单限制），图片仍用 CDN_BASE 拼固定路径。
     try {
-      const data = await callClientApi<{ banners: string[] }>("config.banners", {});
-      const urls = data?.banners;
-      if (urls && urls.length > 0) {
+      const { count, v } = await callClientApi<{ count: number; v: number }>("config.banners", {});
+      if (count > 0) {
         this.setData({
-          banners: urls.map((url, i) => ({
+          banners: Array.from({ length: count }, (_, i) => ({
             id: String(i + 1),
             title: "",
             desc: "",
             bgColor: "",
-            image: url,
+            image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
             link: "",
           })),
         });
       }
-      // If empty, keep the default fallback banners
     } catch (err) {
-      console.error("loadBanners error:", err);
-      // Keep fallback banners on error
+      // 轮播图非关键路径，静默失败即可
+      console.warn("[home] loadBanners failed", err);
     }
   },
 
   async loadShopInit() {
     try {
       this.setData({ isLoading: true, loadError: false });
-      const initData = await callClientApi<{ categories: Category[]; spuList: any[] }>("product.shopInit", {});
+      const initData = await callClientApi<{ groups?: CategoryGroup[]; categories: Category[]; spuList: any[] }>("product.shopInit", {});
 
+      const groups: CategoryGroup[] = initData?.groups || [];
       const categories: Category[] = initData?.categories || [];
       const spuList: SpuItem[] = initData?.spuList || [];
 
@@ -403,41 +374,25 @@ Page({
         min_price: spu.priceFrom || "0",
       }));
 
-      // 缓存 shopInit 返回的 SPU 列表（对应全局第一个分类）
-      if (categories.length > 0) {
-        const firstCompositeKey = `${categories[0].product_kind}::${categories[0].category_name}`;
-        this._spuCache[firstCompositeKey] = listWithPrice;
-      }
-
+      this._allGroups = groups;
       this._allCategories = categories;
 
-      // 构建侧边栏
+      // 构建侧边栏（分组标题 + 二级分类）
       this.buildSidebarItems();
 
-      // 设置初始分类和商品
-      const firstKey = this._allCategoryKeys[0] || "";
-      const firstBigCat = this.data.sidebarItems.find((i) => i.categoryKey === firstKey)?.bigCategory;
-      const bigCatIndex = firstBigCat ? BIG_CATEGORIES.indexOf(firstBigCat) : -1;
-
-      // 检查缓存是否匹配第一个可见分类
-      const firstCompositeKeyCheck = categories.length > 0
-        ? `${categories[0].product_kind}::${categories[0].category_name}`
-        : "";
-      let displayList = listWithPrice;
-      if (firstKey && firstKey !== firstCompositeKeyCheck) {
-        displayList = this._spuCache[firstKey] || [];
+      // 缓存 shopInit 返回的商品列表（对应第一个二级分类）
+      const firstCatKey = this._allCategoryKeys[0] || "";
+      if (firstCatKey && listWithPrice.length > 0) {
+        this._spuCache[firstCatKey] = listWithPrice;
       }
 
       this.setData({
-        activeCategoryKey: firstKey,
-        activeBigCategoryIndex: bigCatIndex,
-        activeBigCategory: firstBigCat || "",
-        spuList: displayList,
+        activeCategoryKey: firstCatKey,
+        spuList: firstCatKey ? (this._spuCache[firstCatKey] || []) : [],
       });
 
-      // 如需单独加载首个分类的 SPU
-      if (firstKey && displayList.length === 0 && !this._spuCache[firstKey]) {
-        this.loadSpuList(firstKey);
+      if (firstCatKey && !this._spuCache[firstCatKey]) {
+        this.loadSpuList(firstCatKey);
       }
     } catch (err: any) {
       console.error("loadShopInit error:", err);
@@ -453,28 +408,27 @@ Page({
     const allCategoryKeys: string[] = [];
     let idx = 0;
 
-    for (const bigCat of BIG_CATEGORIES) {
-      const cats = this._allCategories.filter((c) => c.product_kind === bigCat);
-      if (cats.length === 0) continue;
+    if (this._allGroups.length > 0) {
+      // 有分组：按分组组织侧边栏
+      for (const group of this._allGroups) {
+        const children = this._allCategories.filter(c => c.category_group === group.category_name);
+        if (children.length === 0) continue;
 
-      items.push({
-        id: `sid-${idx}`,
-        type: "title",
-        label: bigCat,
-      });
-      idx++;
+        const groupKey = `group:${group.category_name}`;
+        // 一级分组标题
+        items.push({ id: `sid-${idx++}`, type: "title", label: group.category_name, categoryKey: groupKey, groupKey: "" });
 
-      for (const cat of cats) {
-        const compositeKey = `${bigCat}::${cat.category_name}`;
-        items.push({
-          id: `sid-${idx}`,
-          type: "category",
-          label: cat.category_name,
-          categoryKey: compositeKey,
-          bigCategory: bigCat,
-        });
-        allCategoryKeys.push(compositeKey);
-        idx++;
+        // 二级分类项（groupKey 关联所属分组）
+        for (const cat of children) {
+          items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey });
+          allCategoryKeys.push(cat.category_id);
+        }
+      }
+    } else {
+      // 降级：无分组时扁平展示
+      for (const cat of this._allCategories) {
+        items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey: "" });
+        allCategoryKeys.push(cat.category_id);
       }
     }
 

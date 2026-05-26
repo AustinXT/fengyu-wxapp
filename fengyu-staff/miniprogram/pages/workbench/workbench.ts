@@ -3,6 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { buildCalendarDays, formatMonthLabel } from '../../utils/calendar';
 import type { CalendarDay } from '../../utils/calendar';
+import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
 
@@ -13,16 +14,25 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
+    currentStoreId: '',
+    scopedStores: [] as ScopedStore[],
+    hasMultiStore: false,
+    storePickerVisible: false,
+    storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
     today: '',
     // 今日分成
     todayCommission: '0.00',
     todayOrderCount: 0,
     todayServiceCount: 0,
     storeTodayRevenue: '0.00',
-    // 本月累计
+    // 本月累计（首卡：个人分成口径）
     monthlyCommission: '0.00',
     monthlyOrderCount: 0,
     monthlyServiceCount: 0,
+    // 日历合计（整店汇总业绩口径，随日历翻月变化）
+    storeMonthAmount: '0.00',
+    storeMonthOrderCount: 0,
+    storeMonthServiceCount: 0,
     // 上月累计
     lastMonthCommission: '0.00',
     lastMonthOrderCount: 0,
@@ -38,6 +48,7 @@ Page({
     pendingCreateOrderCount: 0,
     pendingUnbindCount: 0,
     pendingAllocationCount: 0,
+    pendingRefundCount: 0,
   },
 
   onLoad() {
@@ -55,13 +66,60 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, position, boundStoreName } = app.globalData;
-    this.setData({
-      storeName: boundStoreName,
-      staffName,
-      position,
-      isManager: isManager(),
+    this.syncStoreContext();
+    this.loadWorkbench();
+  },
+
+  onReady() {
+    // 订阅门店切换事件（其他 tab 切换门店时刷新）
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, () => {
+      this.syncStoreContext();
+      this.loadWorkbench();
     });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
+
+  syncStoreContext() {
+    const { staffName, position, scopedStores, currentStoreId, boundStoreName } = app.globalData;
+    const current = scopedStores.find((s) => s.storeId === currentStoreId);
+    const displayName = current?.storeName || boundStoreName;
+    this.setData({
+      storeName: displayName || '',
+      staffName: staffName || '',
+      position: position || '',
+      isManager: isManager(),
+      currentStoreId: currentStoreId || '',
+      scopedStores: scopedStores || [],
+      hasMultiStore: (scopedStores || []).length > 1,
+    });
+  },
+
+  openStorePicker() {
+    if (!this.data.hasMultiStore) return;
+    const actions = (this.data.scopedStores || []).map((s) => ({
+      name: s.storeName,
+      storeId: s.storeId,
+      color: s.storeId === this.data.currentStoreId ? '#C0322A' : '',
+    }));
+    this.setData({ storePickerVisible: true, storePickerActions: actions });
+  },
+
+  onStorePickerClose() {
+    this.setData({ storePickerVisible: false });
+  },
+
+  onStorePickerSelect(e: WechatMiniprogram.CustomEvent<{ storeId: string; name: string }>) {
+    const { storeId } = e.detail || ({} as any);
+    this.setData({ storePickerVisible: false });
+    if (!storeId || storeId === this.data.currentStoreId) return;
+    app.setCurrentStoreId(storeId);
+    this.syncStoreContext();
+    emit(EVENT_STORE_CHANGED, storeId);
     this.loadWorkbench();
   },
 
@@ -107,6 +165,9 @@ Page({
         orderCount: number;
         serviceCount: number;
         storeTodayRevenue?: string;
+        thisMonthAmount?: string;
+        thisMonthOrderCount?: number;
+        thisMonthServiceCount?: number;
         lastMonthAmount?: string;
         lastMonthOrderCount?: number;
         lastMonthServiceCount?: number;
@@ -116,6 +177,9 @@ Page({
         todayOrderCount: data.orderCount || 0,
         todayServiceCount: data.serviceCount || 0,
         storeTodayRevenue: data.storeTodayRevenue || '0.00',
+        monthlyCommission: data.thisMonthAmount || '0.00',
+        monthlyOrderCount: data.thisMonthOrderCount || 0,
+        monthlyServiceCount: data.thisMonthServiceCount || 0,
         lastMonthCommission: data.lastMonthAmount || '0.00',
         lastMonthOrderCount: data.lastMonthOrderCount || 0,
         lastMonthServiceCount: data.lastMonthServiceCount || 0,
@@ -132,14 +196,14 @@ Page({
         totalServiceCount?: number;
       }>('staff.monthlyCalendar', { yearMonth: this.data.currentMonth });
       const days = buildCalendarDays(this.data.currentMonth, data.dailyData || []);
-      const monthlyCommission = data.totalAmount > 0
+      const storeMonthAmount = data.totalAmount > 0
         ? data.totalAmount.toFixed(2)
         : '0.00';
       this.setData({
         calendarDays: days,
-        monthlyCommission,
-        monthlyOrderCount: data.totalOrderCount || 0,
-        monthlyServiceCount: data.totalServiceCount || 0,
+        storeMonthAmount,
+        storeMonthOrderCount: data.totalOrderCount || 0,
+        storeMonthServiceCount: data.totalServiceCount || 0,
       });
     } catch (_) {
       const days = buildCalendarDays(this.data.currentMonth, []);
@@ -177,6 +241,7 @@ Page({
         pendingCreateOrderCount?: number;
         pendingUnbindCount?: number;
         pendingAllocationCount?: number;
+        pendingRefundCount?: number;
       }>('staff.todoList');
       this.setData({
         pendingAppointmentCount: data.pendingAppointmentCount || 0,
@@ -185,6 +250,7 @@ Page({
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
         pendingUnbindCount: data.pendingUnbindCount || 0,
         pendingAllocationCount: data.pendingAllocationCount || 0,
+        pendingRefundCount: data.pendingRefundCount || 0,
       });
     } catch (_) {}
   },
@@ -217,12 +283,12 @@ Page({
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 
+  goRefundList() {
+    wx.navigateTo({ url: '/packageOrder/refund-list/refund-list' });
+  },
+
   goPerformance(e: WechatMiniprogram.TouchEvent) {
     const range = e.currentTarget.dataset.range || 'today';
     wx.navigateTo({ url: `/packageOrder/staff-performance/staff-performance?range=${range}` });
-  },
-
-  goCustomerList() {
-    wx.switchTab({ url: '/pages/customer-list/customer-list' });
   },
 });

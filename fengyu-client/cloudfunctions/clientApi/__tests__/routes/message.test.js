@@ -54,14 +54,14 @@ describe('message.list', () => {
     expect(params).toEqual(['user-001', 20, 0])
   })
 
-  test('按 recipient_type=client 过滤', async () => {
+  test('按 recipient_type=客户 过滤', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({})
     await routes.list(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain("recipient_type = 'client'")
+    expect(sql).toContain("recipient_type = '客户'")
   })
 
   test('无消息返回空数组', async () => {
@@ -84,7 +84,7 @@ describe('message.read', () => {
     expect(ctx.result.success).toBe(true)
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('SET is_read = true')
-    expect(params).toEqual(['msg-001', 'client', 'user-001'])
+    expect(params).toEqual(['msg-001', '客户', 'user-001'])
   })
 
   test('缺少 messageId → INVALID_PARAMS', async () => {
@@ -97,14 +97,14 @@ describe('message.read', () => {
     await expect(routes.read(ctx)).rejects.toThrow(/INVALID_PARAMS/)
   })
 
-  test('限定 recipient_type=client 防越权', async () => {
+  test('限定 recipient_type=客户 防越权', async () => {
     pg.query.mockResolvedValueOnce({ rowCount: 1 })
 
     const ctx = createBoundCtx({ messageId: 'msg-001' })
     await routes.read(ctx)
 
     const params = pg.query.mock.calls[0][1]
-    expect(params[1]).toBe('client')
+    expect(params[1]).toBe('客户')
   })
 })
 
@@ -136,14 +136,14 @@ describe('message.unreadCount', () => {
     expect(ctx.result.count).toBe(0)
   })
 
-  test('仅统计 recipient_type=client 的未读', async () => {
+  test('仅统计 recipient_type=客户 的未读', async () => {
     pg.query.mockResolvedValueOnce([{ count: 3 }])
 
     const ctx = createBoundCtx({})
     await routes.unreadCount(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain("recipient_type = 'client'")
+    expect(sql).toContain("recipient_type = '客户'")
     expect(sql).toContain('is_read = false')
   })
 })

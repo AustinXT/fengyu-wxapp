@@ -20,7 +20,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "项目券": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
+  "品项券": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
   "折扣券": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
 }
 
@@ -162,7 +162,9 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
       header: "已发/总量",
       cell: (row) => (
         <span>
-          {row.issuedCount} / {row.totalCount ?? "不限"}
+          {row.couponType === "折扣券"
+            ? row.issuedCount
+            : `${row.issuedCount} / ${row.totalCount ?? "不限"}`}
         </span>
       ),
     },

@@ -16,7 +16,7 @@ describe('service.detail', () => {
   test('返回服务单详情及明细', async () => {
     pg.query.mockResolvedValueOnce([{
       service_order_id: 'SVC-001', status: '进行中',
-      service_order_type: '护理', store_id: 's1', store_name: '凤御A店',
+      service_order_type: '售前', store_id: 's1', store_name: '凤御A店',
     }])
     pg.query.mockResolvedValueOnce([{
       service_item_id: 'SVI-001', sale_item_id: 'SI-001',
@@ -151,5 +151,104 @@ describe('service.list', () => {
     const [, params] = pg.query.mock.calls[0]
     expect(params[1]).toBe(20)
     expect(params[2]).toBe(0)
+  })
+})
+
+describe('service.createReview', () => {
+  // user-001 名下、已完成的服务单
+  const ownedCompletedOrder = {
+    service_order_id: 'SVC-001',
+    status: '已完成',
+    client_user_id: 'user-001',
+    assigned_employee_id: 'emp-1',
+  }
+
+  test('正常评价：写入 service_reviews 并返回结果', async () => {
+    pg.query.mockResolvedValueOnce([ownedCompletedOrder]) // SELECT 服务单
+    pg.query.mockResolvedValueOnce([])                    // INSERT
+
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5, comment: ' 服务很好 ' })
+    await routes.createReview(ctx)
+
+    expect(ctx.result).toEqual({ serviceOrderId: 'SVC-001', rating: 5, comment: '服务很好' })
+    // INSERT 用被评价美容师 = 服务单 assigned_employee_id
+    const [insertSql, insertParams] = pg.query.mock.calls[1]
+    expect(insertSql).toMatch(/INSERT INTO service_reviews/)
+    expect(insertParams).toEqual(['SVC-001', 'emp-1', 'user-001', 5, '服务很好'])
+  })
+
+  test('comment 选填：留空时存 null', async () => {
+    pg.query.mockResolvedValueOnce([ownedCompletedOrder])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 4 })
+    await routes.createReview(ctx)
+
+    expect(ctx.result.comment).toBeNull()
+    expect(pg.query.mock.calls[1][1][4]).toBeNull()
+  })
+
+  test('缺少 serviceOrderId → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
+  })
+
+  test('评分越界 (6) → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 6 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/INVALID_PARAMS.*评分/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('评分非整数 (3.5) → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 3.5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/INVALID_PARAMS.*评分/)
+  })
+
+  test('评价内容超长 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5, comment: 'x'.repeat(501) })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+
+  test('未绑定手机号 → PHONE_REQUIRED', async () => {
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5 }, { phone: null })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
+  })
+
+  test('非本人服务单 → PERMISSION_DENIED', async () => {
+    pg.query.mockResolvedValueOnce([{ ...ownedCompletedOrder, client_user_id: 'other-user' }])
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('服务单不存在 → PERMISSION_DENIED', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({ serviceOrderId: 'nope', rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('服务未完成 → INVALID_STATE', async () => {
+    pg.query.mockResolvedValueOnce([{ ...ownedCompletedOrder, status: '服务中' }])
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/INVALID_STATE/)
+  })
+
+  test('重复评价 (PK 冲突 23505) → CONFLICT', async () => {
+    pg.query.mockResolvedValueOnce([ownedCompletedOrder])
+    const dupErr = new Error('duplicate key')
+    dupErr.code = '23505'
+    pg.query.mockRejectedValueOnce(dupErr)
+
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/CONFLICT.*已评价/)
+  })
+
+  test('drizzle 包装的 23505 (err.cause.code) → CONFLICT', async () => {
+    pg.query.mockResolvedValueOnce([ownedCompletedOrder])
+    const wrapped = new Error('insert failed')
+    wrapped.cause = { code: '23505' }
+    pg.query.mockRejectedValueOnce(wrapped)
+
+    const ctx = createBoundCtx({ serviceOrderId: 'SVC-001', rating: 5 })
+    await expect(routes.createReview(ctx)).rejects.toThrow(/CONFLICT/)
   })
 })

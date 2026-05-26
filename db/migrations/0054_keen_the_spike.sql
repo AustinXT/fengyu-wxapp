@@ -1,0 +1,2 @@
+ALTER TABLE "store_unbind_requests" ADD COLUMN "to_store_id" text;--> statement-breakpoint
+ALTER TABLE "store_unbind_requests" ADD CONSTRAINT "store_unbind_requests_to_store_id_stores_store_id_fk" FOREIGN KEY ("to_store_id") REFERENCES "public"."stores"("store_id") ON DELETE no action ON UPDATE no action;

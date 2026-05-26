@@ -1,0 +1,167 @@
+/* packageOrder/service-commission/service-commission.wxss */
+
+.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
+
+/* 服务单头部 */
+.order-header {
+  background: #FFFFFF;
+  padding: 32rpx;
+  margin-bottom: 24rpx;
+}
+.order-no { display: block; font-size: 22rpx; color: #999; font-family: monospace; margin-bottom: 8rpx; }
+.header-info { display: flex; align-items: center; gap: 16rpx; margin-bottom: 8rpx; }
+.customer-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.paid-at { font-size: 22rpx; color: #999; }
+
+/* 状态提示 */
+.status-notice {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 20rpx 32rpx;
+  margin-bottom: 24rpx;
+}
+.status-notice--allocated { background: #E8F5E9; }
+.status-notice--frozen { background: #FDECEC; }
+.status-notice--frozen .status-text { color: #D94040; }
+.status-text { font-size: 24rpx; color: #3D8A5A; }
+
+/* 服务明细分组 */
+.alloc-section {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  margin: 0 32rpx 24rpx;
+  padding: 24rpx;
+}
+.item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.item-name-row { display: flex; align-items: center; gap: 12rpx; flex: 1; min-width: 0; }
+.item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.item-amount { font-size: 28rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; margin-left: 16rpx; }
+.item-sub { font-size: 22rpx; color: #999; margin: 6rpx 0 20rpx; padding-bottom: 16rpx; border-bottom: 1rpx solid #F0F0F0; }
+
+/* 分配行 */
+.alloc-line {
+  background: #FAFAFA;
+  border-radius: 12rpx;
+  padding: 16rpx;
+  margin-bottom: 12rpx;
+}
+.line-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 12rpx;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  flex: 1;
+  min-width: 0;
+}
+.field--ratio { flex: 0 0 150rpx; }
+.field-label { font-size: 20rpx; color: #999; }
+.field-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4rpx;
+  background: #FFFFFF;
+  border: 1rpx solid #E0E0E0;
+  border-radius: 10rpx;
+  padding: 0 12rpx;
+  height: 60rpx;
+  font-size: 26rpx;
+  color: #2D2017;
+}
+.field-value.placeholder { color: #BBB; }
+.remove-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56rpx;
+  height: 60rpx;
+  flex-shrink: 0;
+}
+
+/* 只读派生：提成% / 分配额 / 提成额 */
+.line-derived {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-top: 14rpx;
+  padding-top: 12rpx;
+  border-top: 1rpx dashed #ECECEC;
+}
+.derived-item { font-size: 24rpx; color: #666; }
+.derived-strong { color: #2D2017; font-weight: 600; }
+.derived-warn { color: #D4820A; font-weight: 600; }
+.derived-primary { color: var(--color-primary); font-weight: 600; margin-left: auto; }
+
+/* 添加分配按钮 */
+.add-person-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 20rpx;
+  border: 2rpx dashed #E0E0E0;
+  border-radius: 12rpx;
+  margin-top: 4rpx;
+}
+.add-person-text { font-size: 26rpx; color: var(--color-primary); }
+
+/* 选人弹窗 */
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 28rpx 32rpx 20rpx;
+  border-bottom: 1rpx solid #F0F0F0;
+}
+.picker-title { font-size: 32rpx; font-weight: 600; color: #2D2017; }
+.picker-scroll { height: 720rpx; padding: 0 32rpx; }
+.picker-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 16rpx;
+  border-bottom: 1rpx solid #F5F5F5;
+}
+.picker-member:active { background: #F5F5F5; }
+.picker-member-name { font-size: 28rpx; color: #2D2017; }
+.picker-member-store { font-size: 22rpx; color: #999; }
+.picker-empty { text-align: center; font-size: 26rpx; color: #999; padding: 80rpx 0; }
+
+/* 汇总 */
+.summary-section {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  margin: 0 32rpx 24rpx;
+  padding: 24rpx;
+}
+.summary-title { font-size: 26rpx; font-weight: 600; color: #2D2017; margin-bottom: 16rpx; }
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8rpx 0;
+}
+.summary-name { font-size: 26rpx; color: #666; }
+.summary-amount { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.summary-grand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1rpx solid #F0F0F0;
+  margin-top: 12rpx;
+  padding-top: 12rpx;
+}
+.summary-grand-label { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.summary-grand-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
+
+/* 操作区 */
+.action-bar { padding: 0 32rpx 32rpx; }

@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTimeShort, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {
   sale_item_id: string;
@@ -10,10 +10,17 @@ interface OrderDetailItem {
   product_type: string;
   session_count: number;
   remaining_sessions: number | null;
+  paid_sessions: number | null;
   unit_price: number;
   quantity: number;
   received: number;
+  sale_amount: number;
   expire_date: string | null;
+  // 视图字段（前端计算注入）
+  used_sessions?: number;
+  used_pct?: number;
+  paid_unused_pct?: number;
+  unpaid_pct?: number;
 }
 
 interface OrderDetailData {
@@ -30,14 +37,51 @@ interface OrderDetailData {
   coupon_discount: number;
   coupon_name: string | null;
   expire_at: string | null;
+  // Ticket 2026-04-26 sale-order-domain-refactor:
+  //   - 字段 paid_amount → received（已到账金额聚合快照）
+  //   - 新增 refunded_amount（已退款金额聚合快照）
+  //   - 欠款额 = payable_amount - (received - refunded_amount)
+  payable_amount?: number;
+  received?: number;
+  refunded_amount?: number;
+  prepaid_card_amount?: number;
   items?: OrderDetailItem[];
   order_time_fmt?: string;
   expire_time_fmt?: string;
+  outstanding_fmt?: string;
+  refunded_fmt?: string;
+  has_refund?: boolean;
+}
+
+interface OrderPayment {
+  change_type: string;
+  amount: number;
+  payment_method: string;
+  status: string;
+  paid_at: string | null;
+  created_at: string;
+  note: string | null;
+  refund_reason?: string | null;
+  audit_at?: string | null;
+  audit_remark?: string | null;
+}
+
+interface OrderPaymentView {
+  change_type: string;
+  amount: number;
+  amount_abs_fmt: string;
+  is_refund: boolean;
+  payment_method: string;
+  status: string;
+  time_fmt: string;
+  note: string | null;
+  refund_reason: string | null;
+  audit_remark: string | null;
 }
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
-  '待确认收款': { icon: 'clock-o',   color: '#C9986A' },
+  '部分支付':   { icon: 'clock-o',   color: '#D48806' },
   '已支付':     { icon: 'passed',    color: '#52C41A' },
   '已完成':     { icon: 'success',   color: '#8C8C8C' },
   '支付失败':   { icon: 'close',     color: '#FF4D4F' },
@@ -52,12 +96,31 @@ Page({
     hasAppointableItems: false,
     isLoading: true,
     countdown: '',
+    payments: [] as OrderPaymentView[],
+    outstandingAmount: 0,
+    // Ticket 2026-04-24 PR-C：继续支付灰度开关（由 app.globalData.continuePayEnabled 控制）
+    continuePayEnabled: false,
+    // 回款弹层
+    repayModalVisible: false,
+    repayAmountInput: '' as string,
+    repayMethod: '微信' as '微信' | '支付宝' | '储值卡',
+    repayUseCard: false,
+    cardBalance: 0,
+    repaySubmitting: false,
   },
 
-  _countdownTimer: null as number | null,
+  _countdownTimer: null as ReturnType<typeof setInterval> | null,
+  // 从列表「继续支付」跳入（?repay=1）：详情加载完成后自动唤起回款弹层，触发一次后清除
+  _autoRepay: false,
 
   onLoad(options) {
-    const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
+    // 读全局灰度开关（未配置默认 false）
+    const app = getApp<IAppOption>();
+    const enabled = !!(app.globalData as any).continuePayEnabled;
+    this.setData({ continuePayEnabled: enabled });
+
+    const { saleOrderId, orderNo, repay } = options as { saleOrderId?: string; orderNo?: string; repay?: string };
+    this._autoRepay = repay === '1';
     const id = saleOrderId || orderNo;
     if (id) this.loadDetail(id);
   },
@@ -81,13 +144,37 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = (data?.order || {}) as OrderDetailData;
       const items: OrderDetailItem[] = data?.items || [];
+      const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
-      // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
+      // 是否有可预约项目（已支付 + 至少一项"已付未用" > 0 + 非家居产品）
+      // ticket 2026-05-19 paid_sessions：可消费门槛升级为"还有已付未用的次数"
       const hasAppointableItems = order.status === '已支付'
-        && items.some(i =>
-            i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
-          );
+        && items.some(i => {
+            if (i.product_type === '家居产品') return false;
+            const total = Number(i.session_count ?? 0);
+            const remaining = Number(i.remaining_sessions ?? 0);
+            const paid = Number(i.paid_sessions ?? 0);
+            const used = Math.max(0, total - remaining);
+            return paid > 0 && (paid - used) > 0;
+          });
+
+      // 注入三段进度展示字段（已用 / 已付未用 / 未付）
+      const itemsWithProgress: OrderDetailItem[] = items.map(i => {
+        const total = Number(i.session_count ?? 0);
+        const remaining = Number(i.remaining_sessions ?? 0);
+        const paid = Number(i.paid_sessions ?? 0);
+        const used = Math.max(0, total - remaining);
+        const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
+        return {
+          ...i,
+          paid_sessions: paid,
+          used_sessions: used,
+          used_pct: usedPct,
+          paid_unused_pct: paidUnusedPct,
+          unpaid_pct: unpaidPct,
+        };
+      });
 
       // 格式化支付到期时间（仅时间 HH:mm）
       let expireTimeFmt = '';
@@ -97,20 +184,69 @@ Page({
         expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
       }
 
+      // 款项流水视图（退款标红、金额绝对值显示）
+      // 2026-04-26 sale-order-domain-refactor: 退款流水来自 sale_order_payments[change_type='退款']
+      // 不再从独立的 sale_order_type='退款单' 行聚合
+      const payments: OrderPaymentView[] = paymentsRaw.map((p) => {
+        const amt = Number(p.amount) || 0;
+        const isRefund = amt < 0 || p.change_type === '退款';
+        const absAmt = Math.abs(amt);
+        const timeSrc = p.paid_at || p.created_at;
+        return {
+          change_type: p.change_type,
+          amount: amt,
+          amount_abs_fmt: (Math.round(absAmt * 100) / 100).toFixed(2),
+          is_refund: isRefund,
+          payment_method: p.payment_method,
+          status: p.status,
+          time_fmt: timeSrc ? formatDateTimeShort(timeSrc) : '',
+          note: p.note,
+          refund_reason: p.refund_reason ?? null,
+          audit_remark: p.audit_remark ?? null,
+        };
+      });
+
+      // 欠款额 = payable_amount - 净到账（received - refunded_amount）
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - paid_amount 列已 DROP；接口现返回 received / refunded_amount
+      //   - 净到账 = received - refunded_amount（与 backend invariant 对齐）
+      const payable = Number(order.payable_amount ?? 0) > 0
+        ? Number(order.payable_amount)
+        : Math.round((Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0)) * 100) / 100;
+      const received = Number(order.received ?? 0);
+      const refundedAmount = Number(order.refunded_amount ?? 0);
+      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
+      const outstanding = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      const refundedFmt = refundedAmount.toFixed(2);
+      const hasRefund = refundedAmount > 0;
+
       this.setData({
         order: {
           ...order,
-          items,
-          order_time_fmt: formatDateTime(order.sale_order_datetime),
+          items: itemsWithProgress,
+          order_time_fmt: formatDateTimeShort(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
+          outstanding_fmt: outstanding.toFixed(2),
+          refunded_fmt: refundedFmt,
+          has_refund: hasRefund,
         },
         statusIcon: iconMeta.icon,
         statusIconColor: iconMeta.color,
         hasAppointableItems,
+        payments,
+        outstandingAmount: outstanding,
       });
 
       // 启动倒计时
       this.startCountdown(order);
+
+      // 从列表「继续支付」跳入：自动唤起回款弹层（仅触发一次）
+      if (this._autoRepay) {
+        this._autoRepay = false;
+        if (order.status === '部分支付' && this.data.continuePayEnabled && outstanding > 0) {
+          this.onContinuePayTap();
+        }
+      }
     } catch {
       Toast.fail('加载失败');
     } finally {
@@ -213,6 +349,146 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
+    // 分享礼：被分享人进入首页而非分享者的订单页
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御订单', path: `/pages/home/home${invSuffix}` };
+  },
+
+  // ========== 继续支付（多次回款，Ticket 2026-04-24 PR-C） ==========
+
+  async onContinuePayTap() {
+    if (!this.data.order) return;
+    const outstanding = this.data.outstandingAmount;
+    if (!(outstanding > 0)) {
+      Toast.fail('订单无欠款');
+      return;
+    }
+    // 加载储值卡余额
+    let balance = 0;
+    try {
+      const b = await callClientApi<{ balance: number }>('card.balance', {});
+      balance = Number(b?.balance || 0);
+    } catch {
+      balance = 0;
+    }
+    this.setData({
+      repayModalVisible: true,
+      repayAmountInput: outstanding.toFixed(2),
+      repayMethod: '微信',
+      repayUseCard: false,
+      cardBalance: balance,
+    });
+  },
+
+  onRepayModalClose() {
+    this.setData({ repayModalVisible: false });
+  },
+
+  onRepayMethodChange(e: any) {
+    // 两种来源：
+    //   1) van-radio-group bind:change → e.detail = name 字符串
+    //   2) van-cell bindtap（data-name） → e.currentTarget.dataset.name
+    const fromDetail = typeof e?.detail === 'string' ? e.detail : (e?.detail?.value || '');
+    const fromDataset = e?.currentTarget?.dataset?.name || '';
+    const v = (fromDetail || fromDataset) as '微信' | '支付宝' | '储值卡';
+    if (v === '微信' || v === '支付宝' || v === '储值卡') {
+      // 顾客端继续支付强制全额：储值卡通道需余额 ≥ 全部欠款才可选
+      if (v === '储值卡' && this.data.cardBalance + 0.001 < this.data.outstandingAmount) {
+        Toast.fail('储值卡余额不足以付清全部欠款');
+        return;
+      }
+      this.setData({
+        repayMethod: v,
+        // 强制全额：金额恒为欠款额，不可改小
+        repayAmountInput: this.data.outstandingAmount.toFixed(2),
+      });
+    }
+  },
+
+  onRepayAmountInput() {
+    // 顾客端继续支付强制全额：金额锁定为欠款额，忽略任何编辑
+    this.setData({ repayAmountInput: this.data.outstandingAmount.toFixed(2) });
+  },
+
+  async onRepayConfirm() {
+    if (this.data.repaySubmitting) return;
+    const order = this.data.order;
+    if (!order) return;
+
+    // 顾客端继续支付强制全额：始终按全部欠款提交，不接受部分金额
+    const outstanding = this.data.outstandingAmount;
+    const amt = outstanding;
+    if (!(amt > 0)) {
+      Toast.fail('订单无欠款');
+      return;
+    }
+    const method = this.data.repayMethod;
+    if (method === '储值卡' && amt > this.data.cardBalance + 0.001) {
+      Toast.fail('储值卡余额不足以付清全部欠款');
+      return;
+    }
+
+    this.setData({ repaySubmitting: true });
+    try {
+      const payload = method === '储值卡'
+        ? { saleOrderId: order.sale_order_id, paymentMethod: '储值卡', repayAmount: 0, prepaidCardAmount: amt }
+        : { saleOrderId: order.sale_order_id, paymentMethod: method, repayAmount: amt, prepaidCardAmount: 0 };
+      const data = await callClientApi<{
+        repaymentOrderId: string;
+        status: string;
+        paymentParams?: any;
+        qrCodeUrl?: string;
+      }>('order.repay', payload);
+
+      // 三路径分发
+      if (method === '储值卡') {
+        this.setData({ repayModalVisible: false });
+        Toast.success('回款成功');
+        this.loadDetail(order.sale_order_id);
+        return;
+      }
+      if (method === '微信') {
+        const params = data?.paymentParams || {};
+        try {
+          await wx.requestPayment(params);
+          this.setData({ repayModalVisible: false });
+          Toast.success('支付已发起');
+          // 留少量时间等 payNotify 回调，再刷新
+          setTimeout(() => this.loadDetail(order.sale_order_id), 1200);
+        } catch (err: any) {
+          if (!(err?.errMsg || '').toLowerCase().includes('cancel')) {
+            Toast.fail(err?.errMsg || '支付失败');
+          }
+          // 取消不退出弹层，用户可换支付方式
+        }
+        return;
+      }
+      // 支付宝：mock 方式展示二维码（最简实现，保持与 checkout 相同交互：toast 提示用户扫码后人工刷新）
+      this.setData({ repayModalVisible: false });
+      wx.showModal({
+        title: '请使用支付宝扫码',
+        content: data?.qrCodeUrl || '(mock qr)',
+        confirmText: '我已完成',
+        showCancel: true,
+        success: (res) => {
+          if (res.confirm) {
+            this.loadDetail(order.sale_order_id);
+          }
+        },
+      });
+    } catch (err: any) {
+      const msg = err?.message || '';
+      if (msg.includes('INSUFFICIENT_BALANCE')) {
+        Toast.fail('储值卡余额不足');
+      } else if (msg.includes('INVALID_PARAMS')) {
+        Toast.fail(msg.replace(/^INVALID_PARAMS:\s*/, ''));
+      } else {
+        Toast.fail(msg || '回款失败');
+      }
+    } finally {
+      this.setData({ repaySubmitting: false });
+    }
   },
 });

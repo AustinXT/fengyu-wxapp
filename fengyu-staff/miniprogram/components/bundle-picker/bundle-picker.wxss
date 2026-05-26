@@ -1,0 +1,262 @@
+/* components/bundle-picker/bundle-picker.wxss */
+
+/* host：让自定义组件元素作为 .bundle-picker-wrap 的 flex 子项撑满宽高，
+   否则默认 inline 行为会导致右侧空白 + 内层 scroll 不受高度约束而溢出。 */
+:host {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.bundle-picker {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-bg-page, #F5F2EE);
+}
+
+.bundle-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+/* ===== 列表态：套餐卡片 ===== */
+.bundle-list {
+  flex: 1;
+  padding: 16rpx;
+}
+
+.bundle-card {
+  display: flex;
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+  margin-bottom: 16rpx;
+}
+
+.bundle-cover {
+  width: 200rpx;
+  flex-shrink: 0;
+}
+.bundle-cover-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.bundle-cover--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #F5F2EE 0%, #EDE8E0 100%);
+}
+
+.bundle-card-body {
+  flex: 1;
+  padding: 18rpx 20rpx 16rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.bundle-card-name {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #2A2A2A);
+  line-height: 1.45;
+  margin-bottom: 8rpx;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.bundle-card-desc {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  line-height: 1.4;
+  margin-bottom: 12rpx;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
+.bundle-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bundle-price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+.bundle-price-symbol {
+  font-size: 22rpx;
+  color: var(--color-primary, #C0322A);
+}
+.bundle-price-value {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--color-primary, #C0322A);
+}
+.bundle-price-origin {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  text-decoration: line-through;
+}
+
+.bundle-enter-btn {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  padding: 8rpx 20rpx;
+  background: var(--color-primary, #C0322A);
+  color: #FFFFFF;
+  border-radius: 32rpx;
+  font-size: 24rpx;
+}
+
+/* ===== 详情态：N 选 M ===== */
+.bundle-detail {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: #FFFFFF;
+}
+
+.bundle-detail-header {
+  display: flex;
+  flex-direction: column;
+  padding: 16rpx 24rpx;
+  border-bottom: 1rpx solid var(--color-border, #E5E0D8);
+  background: #FFFFFF;
+}
+
+.bundle-back {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  font-size: 24rpx;
+  color: var(--color-primary, #C0322A);
+  margin-bottom: 8rpx;
+}
+
+.bundle-detail-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #2A2A2A);
+  margin-bottom: 4rpx;
+}
+.bundle-detail-price {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: var(--color-primary, #C0322A);
+}
+
+.bundle-groups-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 16rpx;
+  box-sizing: border-box;
+}
+
+.bundle-group {
+  background: #F5F2EE;
+  border-radius: 12rpx;
+  padding: 16rpx;
+  margin-bottom: 16rpx;
+  box-sizing: border-box;
+}
+
+.bundle-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin-bottom: 12rpx;
+}
+.bundle-group-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #2A2A2A);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bundle-group-hint {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: var(--color-primary, #C0322A);
+}
+
+.bundle-group-skus {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.bundle-sku-item {
+  display: flex;
+  align-items: center;
+  padding: 16rpx;
+  background: #FFFFFF;
+  border-radius: 8rpx;
+  border: 2rpx solid transparent;
+  box-sizing: border-box;
+}
+.bundle-sku-item--active {
+  border-color: var(--color-primary, #C0322A);
+  background: #FFF8F0;
+}
+
+.bundle-sku-check {
+  margin-right: 12rpx;
+  flex-shrink: 0;
+}
+
+.bundle-sku-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bundle-sku-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary, #2A2A2A);
+  line-height: 1.4;
+  word-break: break-all;
+}
+.bundle-sku-meta {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  margin-top: 2rpx;
+}
+
+.bundle-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 16rpx 24rpx;
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
+  background: #FFFFFF;
+  border-top: 1rpx solid var(--color-border, #E5E0D8);
+}
+.bundle-detail-summary {
+  font-size: 26rpx;
+  color: var(--color-text-secondary, #666);
+}

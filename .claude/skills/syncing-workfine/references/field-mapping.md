@@ -94,7 +94,9 @@
 
 **分组规则：** 同 (category_name, name) → 一条 products，各规格生成 product_skus。
 
-## 6. 院装产品（UDT_M_341 → products + product_skus）
+## 6. 家居产品（UDT_M_341 → products + product_skus）
+
+> WorkFine 原始术语为"院装产品"，2026-04-25 PG 端 `product_type` enum 已重命名为"家居产品"。
 
 | WorkFine 字段 | 含义 | → PG 字段 |
 |---------------|------|-----------|
@@ -105,7 +107,7 @@
 | UDF_M_1875 | 顾客零售价 | product_skus.price |
 | UDF_M_7494 | 是否可报货 | 过滤条件（仅导入 '是'） |
 
-**规则：** 每条 1:1 product + sku，product_type='院装产品'。
+**规则：** 每条 1:1 product + sku，product_type='家居产品'。
 
 ## 7. 促销方案（UDT_S_1459 + UDT_M_1460 → products + product_skus）
 

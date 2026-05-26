@@ -3,35 +3,40 @@
 import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
-import { eq, and, or, isNull, gt, lt, ne, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { withPermission } from '@/lib/with-permission'
+import { expandVisibleMarketIds } from '@/lib/permissions'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 export interface MarketOption {
   orgId: string
   name: string
 }
 
-export async function getMarkets(): Promise<MarketOption[]> {
-  const session = await getSession()
-  requirePermission(session, 'commission:list')
+export const getMarkets = withPermission(
+  'commission:list',
+  async (session): Promise<MarketOption[]> => {
+  const visibleIds = await expandVisibleMarketIds(session)
+  // 非总部且无可见市场 → 直接返回空
+  if (visibleIds !== null && visibleIds.length === 0) return []
 
+  const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'market'))
-    .orderBy(orgNodes.sortOrder)
+    .where(and(eq(orgNodes.type, '市场'), scopeCond))
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map((r) => ({ orgId: r.id, name: r.name }))
-}
+  },
+)
 
-export async function getRates(): Promise<CommissionRate[]> {
-  const session = await getSession()
-  requirePermission(session, 'commission:list')
-
+export const getRates = withPermission(
+  'commission:list',
+  async (): Promise<CommissionRate[]> => {
   const rows = await db
     .select({
       id: commissionRateMatrix.id,
@@ -48,7 +53,8 @@ export async function getRates(): Promise<CommissionRate[]> {
     })
     .from(commissionRateMatrix)
     .leftJoin(orgNodes, eq(commissionRateMatrix.orgId, orgNodes.id))
-    .orderBy(commissionRateMatrix.id)
+    // 默认排序：最近编辑过的规则浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(commissionRateMatrix.updatedAt), desc(commissionRateMatrix.id))
     .limit(1000)
 
   return rows.map((r) => ({
@@ -64,20 +70,23 @@ export async function getRates(): Promise<CommissionRate[]> {
     updatedAt: r.updatedAt.toISOString(),
     orgName: r.orgName ?? undefined,
   }))
-}
+  },
+)
 
-export async function createRate(data: {
-  orgId: string
-  orderType: string
-  roleType: string
-  salesCategory: string
-  amountTierMin: string
-  amountTierMax?: string | null
-  commissionRate: string
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'commission:create')
-
+export const createRate = withPermission(
+  'commission:create',
+  async (
+    session,
+    data: {
+      orgId: string
+      orderType: string
+      roleType: string
+      salesCategory: string
+      amountTierMin: string
+      amountTierMax?: string | null
+      commissionRate: string
+    },
+  ): Promise<{ success: boolean; message: string }> => {
   // 金额阶段重叠校验（AC-07）
   if (await hasTierOverlap(data)) {
     return { success: false, message: '金额阶段与现有规则重叠，请调整区间范围' }
@@ -105,25 +114,26 @@ export async function createRate(data: {
   })
   revalidatePath('/commission')
   return { success: true, message: '提成规则创建成功' }
-}
-
-export async function updateRate(
-  id: number,
-  data: {
-    orgId?: string
-    orderType?: string
-    roleType?: string
-    salesCategory?: string
-    amountTierMin?: string
-    amountTierMax?: string | null
-    commissionRate?: string
   },
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'commission:update')
+)
 
+export const updateRate = withPermission(
+  'commission:update',
+  async (
+    session,
+    id: number,
+    data: {
+      orgId?: string
+      orderType?: string
+      roleType?: string
+      salesCategory?: string
+      amountTierMin?: string
+      amountTierMax?: string | null
+      commissionRate?: string
+    },
+    /** 乐观锁：提交时携带的 updated_at */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 金额阶段重叠校验（只有同时提供分类键和区间时才检查）
   if (
     data.orgId && data.orderType && data.roleType &&
@@ -140,6 +150,9 @@ export async function updateRate(
       return { success: false, message: '金额阶段与现有规则重叠，请调整区间范围' }
     }
   }
+
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(commissionRateMatrix).where(eq(commissionRateMatrix.id, id)).limit(1)
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${expectedUpdatedAt}`)
@@ -162,15 +175,15 @@ export async function updateRate(
     }
   }
 
-  await logOperation(session, 'commission.update', 'commission_rate', String(id), data)
+  await logUpdate(session, 'commission.update', 'commission_rate', String(id), before as Record<string, unknown>, data)
   revalidatePath('/commission')
   return { success: true, message: '提成规则已更新' }
-}
+  },
+)
 
-export async function deleteRate(id: number): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'commission:delete')
-
+export const deleteRate = withPermission(
+  'commission:delete',
+  async (session, id: number): Promise<{ success: boolean; message: string }> => {
   let deleteResult: any
   try {
     deleteResult = await db
@@ -187,7 +200,8 @@ export async function deleteRate(id: number): Promise<{ success: boolean; messag
   await logOperation(session, 'commission.delete', 'commission_rate', String(id))
   revalidatePath('/commission')
   return { success: true, message: '提成规则已删除' }
-}
+  },
+)
 
 /**
  * 检测给定分类键下新区间 [newMin, newMax) 是否与已有记录重叠。

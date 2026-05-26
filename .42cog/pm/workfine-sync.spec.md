@@ -42,7 +42,7 @@
 | **定期同步** | 提成比例矩阵 | UDT_S_1962 + UDT_M_1964 | `commission_rate_matrix` | 每日全量同步 |
 | **一次性导入** | 品项分类 | UDT_M_229 | `product_categories` | 导入后手动维护 |
 | **一次性导入** | 可售项目 | UDT_M_1281 + UDT_M_1383 | `products` + `product_skus` | 导入后手动维护 |
-| **一次性导入** | 院装产品 | UDT_M_341 | `products` + `product_skus` | 导入后手动维护 |
+| **一次性导入** | 家居产品（WorkFine 原称"院装产品"） | UDT_M_341 | `products` + `product_skus` | 导入后手动维护 |
 | **一次性导入** | 促销方案 | UDT_S_1459 + UDT_M_1460 | `products` + `product_skus` | 导入后手动维护 |
 
 ### 3.2 不同步的 WorkFine 表
@@ -98,11 +98,11 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 ### 4.5 org_nodes 同步附加逻辑：组织架构树生成
 
 同步脚本在读取 WorkFine 门店数据后，自动构建 org_nodes 层级树：
-1. UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL`
-2. 遍历现有门店的 `market_name` 去重，为每个市场 UPSERT 一条 `type='market'` 节点（`parent_id` 指向总部）
-3. 为每个门店 UPSERT 一条 `type='store'` 节点（`parent_id` 指向所属市场节点，`parent_name` 写入市场名）
+1. UPSERT 根节点：`type='总部', name='总部', parent_id=NULL`
+2. 遍历现有门店的 `market_name` 去重，为每个市场 UPSERT 一条 `type='市场'` 节点（`parent_id` 指向总部）
+3. 为每个门店 UPSERT 一条 `type='门店'` 节点（`parent_id` 指向所属市场节点，`parent_name` 写入市场名）
 4. org_nodes 节点作为 `permission_roles.scope_id` 的 FK 目标（替代原 stores 虚拟条目方案）
-5. stores 表仅存 `type='store'` 的门店业务详情，通过 `org_node_id` 关联对应 org_nodes 节点
+5. stores 表仅存 `type='门店'` 的门店业务详情，通过 `org_node_id` 关联对应 org_nodes 节点
 
 ### 4.6 permission_roles 自动推导
 
@@ -148,9 +148,9 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 | 步骤 | org_nodes 操作 |
 |------|---------------|
-| 1 | UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL` |
-| 2 | 遍历 `UDF_M_437`（市场）去重，UPSERT `type='market'` 节点，`parent_id` → 总部，`parent_name='总部'` |
-| 3 | 为每个门店 UPSERT `type='store'` 节点，`parent_id` → 所属市场节点，`parent_name` → 市场名 |
+| 1 | UPSERT 根节点：`type='总部', name='总部', parent_id=NULL` |
+| 2 | 遍历 `UDF_M_437`（市场）去重，UPSERT `type='市场'` 节点，`parent_id` → 总部，`parent_name='总部'` |
+| 3 | 为每个门店 UPSERT `type='门店'` 节点，`parent_id` → 所属市场节点，`parent_name` → 市场名 |
 
 #### stores 字段映射
 
@@ -161,7 +161,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | UDF_M_1777 | 开业时间 | 日期 | `opening_date` |
 | UDF_M_8590 | 可用床位 | 整数 | `bed_count` |
 | UDF_M_11956 | 是否停止营业 | 文本 | `is_closed`（'是' → true） |
-| — | 关联 org_nodes | — | `org_node_id`（查找对应 type='store' 的 org_nodes.id 写入） |
+| — | 关联 org_nodes | — | `org_node_id`（查找对应 type='门店' 的 org_nodes.id 写入） |
 
 **匹配键**: `UDF_M_438`（门店名）→ `store_name`
 
@@ -180,7 +180,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | UDF_S_1154 | 身份证号码 | 身份证 | `id_card`（高敏 PII，需评估加密方案） |
 | UDF_S_1163 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
 | UDF_S_1160 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
-| UDF_S_1513 | 职能部门 | 文本 | → 查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`；同时冗余写入 `org_node_name`（部门名）和 `org_parent_node_name`（部门父节点名） |
+| UDF_S_1513 | 职能部门 | 文本 | → 查找 `org_nodes`（type='部门'）匹配后写入 `org_node_id`；同时冗余写入 `org_node_name`（部门名）和 `org_parent_node_name`（部门父节点名） |
 | UDF_S_1161 | 工作职位 | 文本 | `position_name` |
 | UDF_S_1149 | 出生日期 | 日期 | `birthday` |
 | UDF_S_1624 | 是否离职 | 文本 | `is_resigned`（'是' → true） |
@@ -306,9 +306,11 @@ UDT_S_311（顾客档案主表）
 
 **当前可用品项分类（21 种）**: 缦之羽、蜜语生玑、中华神灸、歆笙泰妍、圣源养心、悠妃曼、美芯、安吉丽美颜之爱、科颜美、诺纤金、自定义-生美、自定义-单品、自定义-KS、自定义-SM、自定义-YM、娇莉芙-生美、娇莉芙-家居产品、娇莉芙-招牌、娇莉芙-王牌、娇莉芙-改变、娇莉芙-对外合作。
 
-### 7.2 院装产品（UDT_S_340 主表 + UDT_M_341 子表 → PG `products` + `product_skus`）
+### 7.2 家居产品（UDT_S_340 主表 + UDT_M_341 子表 → PG `products` + `product_skus`）
 
-院装产品供应商档案（19 条），子表为产品明细（1,940 条）。
+> WorkFine 原始术语为"院装产品"，2026-04-25 PG 端已重命名为"家居产品"（`product_type` enum）。
+
+家居产品供应商档案（19 条），子表为产品明细（1,940 条）。
 
 **UDT_M_341 关键字段**:
 
@@ -323,7 +325,7 @@ UDT_S_311（顾客档案主表）
 | UDF_M_1876 | 核算价 | 金额 | — 不保留 |
 | UDF_M_7494 | 是否可报货 | 文本 | `product_skus.is_active`（'是' → true） |
 
-**导入规则**: 每条院装产品生成一条 `products`（product_kind='家居产品'）+ 一条 `product_skus`（product_type='院装产品'）。
+**导入规则**: 每条 UDT_M_341 行生成一条 `products`（product_kind='家居产品'）+ 一条 `product_skus`（product_type='家居产品'）。
 
 ### 7.3 可售项目（UDT_S_1280 主表 + UDT_M_1281 子表 → PG `products` + `product_skus`）
 
@@ -334,7 +336,7 @@ UDT_S_311（顾客档案主表）
 | 字段名 | 含义 | 类型 | → PG 导入目标 |
 |--------|------|------|------|
 | UDF_M_14503 | **疗程项目编号** | 文本 | 导入参考（不保留在 PG 中） |
-| UDF_M_14502 | 产品库 | 文本 | `product_skus.product_type`（疗程卡/单品） |
+| UDF_M_14502 | 产品库 | 文本 | `product_skus.product_type`（2026-05-21 单品合并：上游"单品"→`疗程卡` session_count=1） |
 | UDF_M_14504 | 品项分类 | 文本 | → 匹配 `product_categories.category_name` → `products.category_id` |
 | UDF_M_14505 | 项目名称 | 文本 | `products.name` |
 | UDF_M_14506 | 疗程服务次数 | 整数 | `product_skus.session_count` |
@@ -344,7 +346,7 @@ UDT_S_311（顾客档案主表）
 
 **导入规则**:
 - 产品库 = "疗程卡" → `product_type='疗程卡'`，核销流程
-- 产品库 = "单品" → `product_type='单品'`，支付即结束
+- 产品库 = "单品" → `product_type='疗程卡'` + `session_count=1`（2026-05-21 单品并入疗程卡）；实物零售品（无次数）→ `product_type='家居产品'`
 - 同一品项分类+项目名称可合并为一条 `products`，不同规格（次数/价格）各生成一条 `product_skus`
 
 ### 7.4 门店自定义项目（UDT_S_1382 主表 + UDT_M_1383 子表 → PG `products` + `product_skus`）
@@ -388,7 +390,7 @@ WorkFine → PG 定期同步（组织与人员域）:
 WorkFine → PG 一次性导入（商品域，后续手动维护）:
   UDT_M_229 (品项分类)         ──import──→ PG product_categories
   UDT_M_1281 + UDT_M_1383 (可售项目) ──import──→ PG products + product_skus
-  UDT_M_341 (院装产品)         ──import──→ PG products + product_skus
+  UDT_M_341 (家居产品 / WorkFine 原称"院装产品") ──import──→ PG products + product_skus
   UDT_S_1459 + UDT_M_1460 (促销) ──import──→ PG products (is_bundle=true) + product_skus (is_bundle_sku=true)
 ```
 
@@ -524,7 +526,7 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 |---------------|-------------------|---------|
 | `UDF_M_852`（销售流水号） | `sale_item_id` | PG 加 `-WX-` 后缀：`XSLSH-WX-{YYYYMMDD}{序号}` |
 | `UDF_M_14495`（疗程项目编号） | `sku_id` | 通过 `product_skus` 匹配 |
-| `UDF_M_4728`（产品类型） | — | 辅助推断 `session_count`（疗程卡≥2，单品=1） |
+| `UDF_M_4728`（产品类型） | — | 辅助推断 `session_count`（疗程卡≥1；上游"单品"→疗程卡 session_count=1） |
 | `UDF_M_394`（疗程服务次数） | `session_count` / `remaining_sessions` | 初始 remaining_sessions = session_count |
 | `UDF_M_4949`（原价） | `unit_price` | — |
 | `UDF_M_14494`（销售数量） | `quantity` | — |
@@ -552,8 +554,8 @@ WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（�
 
 | WorkFine 行类型 | PG item_direction | 映射逻辑 |
 |----------------|-------------------|----------|
-| A 表行（转出项目） | `convert_out` | `quantity` = 退次数，`received` = 负退消耗金额，`ref_sale_item_id` = 原购买行 |
-| B 表行（转入项目） | `convert_in` | 新的 sale_item，正常金额，`session_count`/`remaining_sessions` 为新项目次数 |
+| A 表行（转出项目） | `转出` | `quantity` = 退次数，`received` = 负退消耗金额，`ref_sale_item_id` = 原购买行 |
+| B 表行（转入项目） | `转入` | 新的 sale_item，正常金额，`session_count`/`remaining_sessions` 为新项目次数 |
 
 > **区分 A/B 表行**：WorkFine 中 A 表行的 `UDF_M_399`（实收）通常为负值或零，B 表行为正值。具体区分逻辑需在迁移脚本中根据实际数据校验。
 
@@ -563,7 +565,7 @@ WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（�
 |---------------|---------|----------|
 | `UDF_M_399`（实收，负数） | `sale_items.received` | 负数直接映射 |
 | `UDF_M_394`（退款次数） | `sale_items.quantity` | 退次数 |
-| — | `sale_items.item_direction` | 固定为 `refund_out` |
+| — | `sale_items.item_direction` | 固定为 `退出` |
 | — | `sale_items.ref_sale_item_id` | 通过 `UDF_M_852` 流水号格式或业务逻辑匹配原购买行 |
 | 手续费（如有） | `sale_items.remark` | handling_fee 存入备注 |
 

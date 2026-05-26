@@ -10,7 +10,7 @@
   </view>
 
   <block wx:else>
-    <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : detail.status === '已取消' ? 'cancelled' : 'done'}}">
+    <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : detail.status === '待客户确认' ? 'awaiting' : detail.status === '已取消' ? 'cancelled' : 'done'}}">
       <text class="status-label">{{detail.status}}</text>
       <text class="service-no">{{detail.serviceOrderId}}</text>
     </view>
@@ -30,11 +30,13 @@
       </view>
       <view class="item-row" wx:for="{{detail.items}}" wx:key="saleItemId">
         <view class="item-info">
-          <text class="item-name">{{item.itemName}}</text>
+          <view class="item-name-row">
+            <text class="item-name">{{item.itemName}}</text>
+          </view>
           <view class="item-meta">
             <text class="item-spec">{{item.spec}}</text>
             <text class="item-sessions" wx:if="{{item.totalSessions > 1}}">
-              本次核销 {{item.sessionCount}} 次 · 剩余 {{item.remainingSessions}}/{{item.totalSessions}}
+              本次核销 {{item.sessionCount}} 次 · 剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} 次
             </text>
           </view>
           <text class="item-flow-no">流水号：{{item.saleItemId}}</text>
@@ -67,9 +69,18 @@
         custom-class="btn-success"
         custom-style="border-radius: 48rpx;"
         bind:click="onCompleteService"
-      >确认完成</van-button>
+      >标记完成</van-button>
       <van-button
-        wx:if="{{detail.status === '待服务' || detail.status === '服务中'}}"
+        wx:elif="{{detail.status === '待客户确认' && isManager}}"
+        type="primary" block
+        disabled="{{submitting}}"
+        loading="{{submitting}}"
+        custom-class="btn-success"
+        custom-style="border-radius: 48rpx;"
+        bind:click="onConfirmService"
+      >代客户确认</van-button>
+      <van-button
+        wx:if="{{detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认'}}"
         type="danger" block plain
         disabled="{{submitting}}"
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"

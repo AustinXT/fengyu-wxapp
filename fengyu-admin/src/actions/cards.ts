@@ -1,0 +1,549 @@
+'use server'
+
+import { db } from '@/db'
+import { saleItems, saleOrders } from '@db/order'
+import { productSkus, productCategories } from '@db/product'
+import { stores, orgNodes } from '@db/org'
+import { clientWechatUsers } from '@db/user'
+import { prepaidCards } from '@db/prepaid-card'
+import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
+
+// ============================================================================
+// 管理端卡包列表（/cards 页面）
+// ============================================================================
+
+/** 卡类型（UI segmented） */
+export type CardTypeFilter = 'all' | '疗程卡' | '单次卡'
+
+/** 状态（UI 下拉） */
+export type CardStatusFilter = 'active' | 'exhausted' | 'expired'
+
+/** 卡包列表筛选参数 */
+export interface CardFilters {
+  marketId?: string
+  storeId?: string
+  type?: CardTypeFilter
+  status?: CardStatusFilter
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 管理端卡包行模型 */
+export interface AdminCard {
+  saleItemId: string
+  saleOrderId: string
+  /** 商品名快照 */
+  productName: string | null
+  /** 规格名快照 */
+  skuSpecName: string | null
+  /** 总次数 */
+  sessionCount: number | null
+  /** 剩余次数 */
+  remainingSessions: number | null
+  /**
+   * 购买数量（B2 兜底字段）：
+   * 修写入侧（疗程卡 quantity>1 拆 N 行）后，正常情况下 quantity 应恒 = 1。
+   * 列表渲染层用此字段做"老卡 ×N"兜底显示（D8=B 决策不动历史）。
+   */
+  quantity: number
+  /** 有效期（YYYY-MM-DD 或 null） */
+  expireDate: string | null
+  /** 购买时间（paid_at，ISO） */
+  paidAt: string | null
+  storeId: string
+  storeName: string | null
+  marketName: string | null
+  clientUserId: string | null
+  clientName: string | null
+  clientPhone: string | null
+}
+
+/** 分页结果 */
+export interface PaginatedCards {
+  data: AdminCard[]
+  total: number
+}
+
+/**
+ * 服务端分页卡包列表
+ *
+ * "卡包" = sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
+ *   - session_count = 1  → UI 标记为"单次卡"
+ *   - session_count >= 2 → UI 标记为"疗程卡"
+ *
+ * scope 基于 sale_items.store_id（购买门店），与 PR-A 新增的 store_id 列绑定。
+ *
+ * 状态判定：
+ *   - active:    remaining_sessions > 0 AND (expire_date IS NULL OR expire_date >= CURRENT_DATE)
+ *   - exhausted: remaining_sessions = 0
+ *   - expired:   expire_date IS NOT NULL AND expire_date < CURRENT_DATE
+ */
+export const getCardsPaginated = withPermission(
+  'sale_item:list',
+  async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const conditions: (SQL | undefined)[] = [
+    // 基础过滤：仅购买方向的疗程卡（含余次追踪）
+    eq(saleItems.itemDirection, '购买'),
+    eq(saleItems.productType, '疗程卡'),
+    isNotNull(saleItems.remainingSessions),
+    // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
+    scopeCondition(session, saleItems.storeId),
+  ]
+
+  // 市场筛选（subquery：orgNodes.parentId = marketId 下的所有门店节点 → stores）
+  if (filters.marketId) {
+    const sub = db.select({ storeId: stores.storeId }).from(stores)
+      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+      .where(eq(orgNodes.parentId, filters.marketId))
+    conditions.push(inArray(saleItems.storeId, sub))
+  }
+  // 门店筛选
+  if (filters.storeId) {
+    conditions.push(eq(saleItems.storeId, filters.storeId))
+  }
+  // 卡类型筛选
+  if (filters.type === '疗程卡') {
+    conditions.push(gte(saleItems.sessionCount, 2))
+  } else if (filters.type === '单次卡') {
+    conditions.push(eq(saleItems.sessionCount, 1))
+  }
+  // 状态筛选
+  if (filters.status === 'active') {
+    conditions.push(sql`${saleItems.remainingSessions} > 0`)
+    conditions.push(
+      or(
+        isNull(saleItems.expireDate),
+        sql`${saleItems.expireDate} >= CURRENT_DATE`,
+      ),
+    )
+  } else if (filters.status === 'exhausted') {
+    conditions.push(eq(saleItems.remainingSessions, 0))
+  } else if (filters.status === 'expired') {
+    conditions.push(isNotNull(saleItems.expireDate))
+    conditions.push(sql`${saleItems.expireDate} < CURRENT_DATE`)
+  }
+  // 顾客姓名/手机号搜索（ILIKE 命中被 JOIN 的 clientWechatUsers 列）
+  if (filters.search) {
+    const escaped = filters.search.replace(/[%_]/g, '\\$&')
+    const pattern = `%${escaped}%`
+    conditions.push(
+      or(
+        ilike(clientWechatUsers.name, pattern),
+        ilike(clientWechatUsers.phone, pattern),
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  // 市场名称标量子查询（参考 customers.ts 范式）
+  const marketNameExpr = sql<string | null>`(
+    SELECT n.name FROM stores s
+    JOIN org_nodes sn ON sn.id = s.org_node_id
+    JOIN org_nodes n ON n.id = sn.parent_id
+    WHERE s.store_id = ${saleItems.storeId}
+  )`.as('market_name')
+
+  // COUNT 查询（同样需要 JOIN clientWechatUsers 因为 search 命中该表列）
+  const countQuery = db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(saleItems)
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+    .where(whereClause)
+
+  // DATA 查询
+  const dataQuery = db
+    .select({
+      saleItemId: saleItems.saleItemId,
+      saleOrderId: saleItems.saleOrderId,
+      productName: saleItems.productName,
+      skuSpecName: saleItems.skuSpecName,
+      sessionCount: saleItems.sessionCount,
+      remainingSessions: saleItems.remainingSessions,
+      quantity: saleItems.quantity,
+      expireDate: saleItems.expireDate,
+      paidAt: saleOrders.paidAt,
+      storeId: saleItems.storeId,
+      storeName: stores.storeName,
+      marketName: marketNameExpr,
+      clientUserId: saleOrders.clientUserId,
+      clientName: clientWechatUsers.name,
+      clientPhone: clientWechatUsers.phone,
+    })
+    .from(saleItems)
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+    .where(whereClause)
+    // 例外：业务时间优先（支付时间优于"最近编辑"）
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+    .limit(pageSize)
+    .offset(offset)
+
+  const [[countRow], rows] = await Promise.all([countQuery, dataQuery])
+
+  return {
+    data: rows.map((r) => ({
+      saleItemId: r.saleItemId,
+      saleOrderId: r.saleOrderId,
+      productName: r.productName ?? null,
+      skuSpecName: r.skuSpecName ?? null,
+      sessionCount: r.sessionCount ?? null,
+      remainingSessions: r.remainingSessions ?? null,
+      quantity: r.quantity ?? 1,
+      expireDate: r.expireDate ?? null,
+      paidAt: r.paidAt?.toISOString() ?? null,
+      storeId: r.storeId,
+      storeName: r.storeName ?? null,
+      marketName: r.marketName ?? null,
+      clientUserId: r.clientUserId ?? null,
+      clientName: r.clientName ?? null,
+      clientPhone: r.clientPhone ?? null,
+    })),
+    total: countRow?.count ?? 0,
+  }
+  },
+)
+
+// ============================================================================
+// 转换单候选卡（PR-A 新增）
+// ============================================================================
+
+/**
+ * 转换单候选卡 — 顾客在指定门店可折抵的购买行。
+ *
+ * 来源口径：sale_items 上 item_direction='购买'，且归属该顾客（通过 sale_orders
+ * 反向 JOIN client_user_id）、归属指定 store_id；状态为"已支付/已完成"的订单。
+ *
+ * 折抵对象（2026-05-21 单品合并后放开）：
+ *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
+ *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
+ *
+ * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
+ */
+export interface HeldCardCandidate {
+  saleItemId: string
+  productName: string | null
+  skuSpecName: string | null
+  productType: '疗程卡' | '家居产品'
+  /** 剩余次数（疗程卡） */
+  remainingSessions: number | null
+  /** 剩余可提货数量；疗程卡返回 null */
+  remainingQty: number | null
+  unitRealPrice: string
+  /** 折抵金额 = unitRealPrice × remainingSessions */
+  deductibleAmount: string
+}
+
+export const getCustomerHeldCards = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    clientUserId: string,
+    storeId: string,
+  ): Promise<HeldCardCandidate[]> => {
+  if (!clientUserId || !storeId) return []
+  // scope 校验：admin 可全量，其余角色需 storeId 在 scope 内
+  if (!isInScope(session, storeId)) return []
+
+  const rows = await db
+    .select({
+      saleItemId: saleItems.saleItemId,
+      productName: saleItems.productName,
+      skuSpecName: saleItems.skuSpecName,
+      productType: saleItems.productType,
+      remainingSessions: saleItems.remainingSessions,
+      quantity: saleItems.quantity,
+      pickedUpQuantity: saleItems.pickedUpQuantity,
+      unitRealPrice: saleItems.unitRealPrice,
+      productKind: productCategories.productKind,
+    })
+    .from(saleItems)
+    .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(
+      and(
+        eq(saleItems.storeId, storeId),
+        eq(saleOrders.clientUserId, clientUserId),
+        eq(saleItems.itemDirection, '购买'),
+        or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
+        // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
+        eq(saleItems.productType, '疗程卡'),
+        sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+      ),
+    )
+
+  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
+  return rows.map((r) => {
+    const unit = Number(r.unitRealPrice)
+    const remSess = r.remainingSessions ?? 0
+    return {
+      saleItemId: r.saleItemId,
+      productName: r.productName,
+      skuSpecName: r.skuSpecName,
+      productType: '疗程卡' as const,
+      remainingSessions: remSess,
+      remainingQty: null,
+      unitRealPrice: r.unitRealPrice,
+      deductibleAmount: (unit * remSess).toFixed(2),
+    }
+  })
+  },
+)
+
+// ============================================================================
+// 充值档位配置（admin 开单页 PrepaidCardPicker 数据源）
+//
+// 2026-05-20 充值卡剥离 SKU 化：档位/边界来源从 product_skus 迁到 system_configs。
+// admin / staff / client 三端均通过同步读取相同的 system_configs 行保持一致。
+// ============================================================================
+
+import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
+import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
+import { revalidatePath } from 'next/cache'
+
+/**
+ * 充值档位（system_configs 驱动；admin 开单页可选档位）
+ */
+export interface RechargeCardTier {
+  /** 面值 */
+  faceValue: number
+  /** 实付 */
+  payAmount: number
+  /** 赠送金额 = faceValue - payAmount */
+  bonus: number
+  /** 折扣 = payAmount / faceValue */
+  discount: number
+}
+
+/**
+ * 拉 admin 开单页可选的充值档位（system_configs.recharge.tiers 驱动）
+ *
+ * 权限：复用 sale_order:create —— 开单页 SSR 时一同 fetch。
+ */
+export const getRechargeCardTiers = withPermission(
+  'sale_order:create',
+  async (_session): Promise<RechargeCardTier[]> => {
+    const cfg = await loadRechargeConfig()
+    return cfg.tiers.map((t: RechargeTier) => {
+      const discount = t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1
+      return {
+        faceValue: t.faceValue,
+        payAmount: t.payAmount,
+        bonus: Math.round((t.faceValue - t.payAmount) * 100) / 100,
+        discount,
+      }
+    })
+  },
+)
+
+/**
+ * 查询顾客充值卡余额（跨店统一；admin 新增开单页"充值卡抵扣"使用）
+ *
+ * 与 staff customer.customerBalance 同 SQL，使用 prepaid_cards.balance（聚合维护的余额列）。
+ * 没有 prepaid_cards 行 / 余额 ≤ 0 → 返回 0。
+ *
+ * 权限：sale_order:create（开单上下文）
+ */
+export const getCustomerCardBalance = withPermission(
+  'sale_order:create',
+  async (_session, clientUserId: string): Promise<number> => {
+    if (!clientUserId) return 0
+    const rows = await db
+      .select({ balance: prepaidCards.balance })
+      .from(prepaidCards)
+      .where(eq(prepaidCards.userId, clientUserId))
+      .limit(1)
+    if (!rows.length) return 0
+    const n = Number(rows[0].balance)
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0
+  },
+)
+
+/**
+ * 拉充值档位配置（含 minAmount/maxAmount）—— 自建充值页表单实时校验用
+ *
+ * 与 staff card.rechargeConfig + client card.rechargeConfig 同 shape。
+ */
+export const getRechargeConfig = withPermission(
+  'sale_order:create',
+  async (_session): Promise<RechargeConfig> => {
+    const cfg = await loadRechargeConfig()
+    return {
+      tiers: cfg.tiers.map((t: RechargeTier) => ({
+        faceValue: t.faceValue,
+        payAmount: t.payAmount,
+      })),
+      minAmount: cfg.minAmount,
+      maxAmount: cfg.maxAmount,
+    }
+  },
+)
+
+/**
+ * admin 自建充值订单
+ *
+ * 与 staff card.recharge 同义：
+ *   - 校验顾客 + 门店 scope
+ *   - 拒绝并发待支付订单
+ *   - 事务内 advisory lock → 生成 saleOrderId → INSERT sale_orders type='充值单'，0 sale_items
+ *   - total_amount = faceValue，payable_amount = matchTier(faceValue).payAmount
+ *
+ * paymentMethod 支持 线下 / 微信 / 支付宝：
+ *   - 线下：创建后由 admin 在完成页「确认收款」(confirmOfflinePayment) 触发入账
+ *   - 微信/支付宝：创建后展示小程序码，顾客扫码支付 → payNotify 回调触发入账
+ * 三条路径统一走 applyRechargeOnOrderPaid（UPSERT prepaid_cards.balance += faceValue +
+ * INSERT card_transactions(type='充值')，幂等键 card-topup-{saleOrderId}）。
+ */
+export const createRechargeOrder = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
+      clientUserId: string
+      storeId: string
+      faceValue: number
+      paymentMethod: '微信' | '支付宝' | '线下'
+      remark?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; saleOrderId?: string; payAmount?: number }> => {
+    if (!data.clientUserId) return { success: false, message: '请选择顾客' }
+    if (!data.storeId) return { success: false, message: '请选择入账门店' }
+    if (!Number.isFinite(data.faceValue) || data.faceValue <= 0) {
+      return { success: false, message: '充值金额无效' }
+    }
+    if (!['微信', '支付宝', '线下'].includes(data.paymentMethod)) {
+      return { success: false, message: '支付方式无效' }
+    }
+    if (!isInScope(session, data.storeId)) {
+      return { success: false, message: '无权在该门店创建充值订单' }
+    }
+
+    let payAmount: number
+    try {
+      const cfg = await loadRechargeConfig()
+      const matched = matchTier(data.faceValue, cfg)
+      payAmount = matched.payAmount
+    } catch (err: any) {
+      return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
+    }
+
+    // 顾客 + market_name + documentType 快照
+    const [client] = await db
+      .select({
+        userId: clientWechatUsers.userId,
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+        customerType: clientWechatUsers.customerType,
+      })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (!client) return { success: false, message: '顾客不存在' }
+    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+
+    // 门店 + marketName 快照（与 staff card.recharge 同口径：跨两级 org_nodes 取上级 market）
+    const storeRows = (await db.execute(sql`
+      SELECT s.store_id, pm.name AS market_name
+      FROM stores s
+      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+      WHERE s.store_id = ${data.storeId}
+      LIMIT 1
+    `)) as unknown as Array<{ store_id: string; market_name: string | null }>
+    if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
+    const marketName = storeRows[0].market_name || ''
+
+    // 拒绝并发待支付订单（uq_sale_orders_client_pending 兜底）
+    const existing = await db
+      .select({ saleOrderId: saleOrders.saleOrderId })
+      .from(saleOrders)
+      .where(and(eq(saleOrders.clientUserId, data.clientUserId), eq(saleOrders.status, '待支付')))
+      .limit(1)
+    if (existing.length > 0) {
+      return {
+        success: false,
+        message: `该顾客已有待支付订单 ${existing[0].saleOrderId}，请先完成或关闭后再充值`,
+      }
+    }
+
+    // 事务：advisory lock → 生成 saleOrderId → INSERT sale_orders（type='充值单'，0 items）
+    let saleOrderId: string
+    try {
+      saleOrderId = await db.transaction(async (tx) => {
+        const idRows = await tx.execute(sql`
+          WITH lock AS (
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          )
+          SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+            LPAD(
+              (SELECT COALESCE(MAX(
+                CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+              ), 0) + 1
+              FROM sale_orders
+              WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+              )::TEXT, 4, '0'
+            ) AS id
+          FROM lock
+        `)
+        const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
+        if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+
+        await tx.insert(saleOrders).values({
+          saleOrderId: id,
+          status: '待支付',
+          saleOrderType: '充值单',
+          documentType,
+          marketName,
+          storeId: data.storeId,
+          saleOrderDatetime: new Date(),
+          clientUserId: data.clientUserId,
+          clientPhone: client.phone || '',
+          customerName: client.name || '',
+          totalAmount: data.faceValue.toFixed(2),
+          prepaidCardAmount: '0',
+          payableAmount: payAmount.toFixed(2),
+          received: '0',
+          firstPaymentAmount: null,
+          couponId: null,
+          couponDiscount: '0',
+          paymentMethod: data.paymentMethod,
+          openedBy: session.employeeId,
+          preferredEmployeeId: null,
+          allocationStatus: '待分配',
+          remark: data.remark || null,
+          paidAt: null,
+        })
+
+        return id
+      })
+    } catch (err: any) {
+      const msg = err?.message || '充值订单创建失败'
+      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+    }
+
+    await logOperation(session, 'sale_order.create_recharge', 'sale_order', saleOrderId, {
+      clientUserId: data.clientUserId,
+      storeId: data.storeId,
+      faceValue: data.faceValue,
+      payAmount,
+      paymentMethod: data.paymentMethod,
+    })
+
+    revalidatePath('/orders')
+    revalidatePath(`/customers/${data.clientUserId}`)
+
+    return { success: true, message: '充值订单已创建', saleOrderId, payAmount }
+  },
+)
