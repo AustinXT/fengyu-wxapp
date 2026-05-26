@@ -1,5 +1,6 @@
 // packageMy/inventory/list.ts — 库存单据列表（只读）
 import { callStaffApi } from '../../utils/cloud'
+import { formatDate } from '../../utils/formatters'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'
 
@@ -38,7 +39,8 @@ const STATUS_KEY_MAP: Record<string, string> = {
 }
 
 function withStatusKey(row: InventoryRow): InventoryRow {
-  return { ...row, statusKey: STATUS_KEY_MAP[row.status] || 'unknown' }
+  // docDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+  return { ...row, docDate: row.docDate ? formatDate(row.docDate) : row.docDate, statusKey: STATUS_KEY_MAP[row.status] || 'unknown' }
 }
 
 Page({

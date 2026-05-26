@@ -42,6 +42,18 @@ export function formatDateTime(v: any): string {
 }
 
 /**
+ * 格式化为纯日期 YYYY-MM-DD（用于 date 列：service_date / doc_date 等，
+ * 后端原始 pg date 经 JSON 序列化为 UTC 串会偏移日期，必须经本函数按本地时区还原）
+ */
+export function formatDate(v: any): string {
+  if (!v) return ''
+  const d = safeParseDate(v)
+  if (!d) return String(v)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
  * 格式化时间戳为 YYYY-MM-DD HH:mm（不含秒，用于明确不需要秒的展示位置）
  */
 export function formatDateTimeShort(v: any): string {

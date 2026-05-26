@@ -1,7 +1,7 @@
 // pages/service/service.ts — 服务 Tab
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { getElapsedTime as _getElapsedTime, formatTime as _formatTime, formatDateTime } from '../../utils/formatters';
+import { getElapsedTime as _getElapsedTime, formatTime as _formatTime, formatDateTime, formatDate } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -74,9 +74,10 @@ Page({
       const list = await callStaffApi<ServiceItem[]>('service.list', {
         status,
       });
-      // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
+      // 后端返回 service_date/started_at/completed_at 为原始 pg 值（序列化成 UTC 串），统一格式化
       const formatted = (list || []).map((it) => ({
         ...it,
+        serviceTime: it.serviceTime ? formatDate(it.serviceTime) : it.serviceTime,
         startTime: it.startTime ? formatDateTime(it.startTime) : it.startTime,
         completedTime: it.completedTime ? formatDateTime(it.completedTime) : it.completedTime,
       }));

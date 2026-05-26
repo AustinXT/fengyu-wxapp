@@ -3,6 +3,7 @@
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
+import { formatDate } from '../../utils/formatters';
 
 type ScopeType = 'all' | 'market' | 'store';
 
@@ -104,9 +105,14 @@ Page({
       };
       if (keyword) payload.keyword = keyword;
       const data = await callStaffApi<CustomerSearchResponse>('mgmtCustomer.search', payload);
+      // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+      const fmtCustomers = (data.customers || []).map(c => ({
+        ...c,
+        lastServiceDate: c.lastServiceDate ? formatDate(c.lastServiceDate) : c.lastServiceDate,
+      }));
       const newResults = reset
-        ? (data.customers || [])
-        : [...this.data.results, ...(data.customers || [])];
+        ? fmtCustomers
+        : [...this.data.results, ...fmtCustomers];
       this.setData({
         results: newResults,
         page: data.page,

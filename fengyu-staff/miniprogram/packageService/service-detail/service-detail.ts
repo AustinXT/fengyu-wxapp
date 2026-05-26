@@ -1,7 +1,7 @@
 // pages/service-detail/service-detail.ts — 服务单详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatDate } from '../../utils/formatters';
 
 interface ServiceDetail {
   id: string;
@@ -52,7 +52,8 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<ServiceDetail>('service.detail', { id });
-      // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
+      // 后端返回 service_date/started_at/completed_at 为原始 pg 值（序列化成 UTC 串），统一格式化
+      if (data.serviceTime) data.serviceTime = formatDate(data.serviceTime);
       if (data.startTime) data.startTime = formatDateTime(data.startTime);
       if (data.completedTime) data.completedTime = formatDateTime(data.completedTime);
       this.setData({ detail: data });

@@ -1,6 +1,6 @@
 // packageMy/inventory/detail.ts — 库存单据详情（只读）
 import { callStaffApi } from '../../utils/cloud'
-import { formatDateTime } from '../../utils/formatters'
+import { formatDateTime, formatDate } from '../../utils/formatters'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'
 
@@ -74,6 +74,8 @@ Page({
       const formatted = detail
         ? {
             ...detail,
+            docDate: detail.docDate ? formatDate(detail.docDate) : detail.docDate,
+            sourceDate: detail.sourceDate ? formatDate(detail.sourceDate) : detail.sourceDate,
             confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt,
             statusKey: STATUS_KEY_MAP[detail.status] || 'unknown',
           }

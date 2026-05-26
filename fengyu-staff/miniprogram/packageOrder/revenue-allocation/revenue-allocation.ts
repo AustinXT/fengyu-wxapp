@@ -4,6 +4,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../utils/allocation-calc';
+import { formatDateTime } from '../../utils/formatters';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const MAX_PER_POOL = 3;
@@ -190,7 +191,11 @@ Page({
 
       const skillSheetActions = (skillTagData.skillTags || []).map(name => ({ name }));
 
-      const order = orderData.order;
+      // paid_at 为原始 timestamp（序列化成 UTC 串），格式化为 YYYY-MM-DD HH:mm:ss
+      const order = {
+        ...orderData.order,
+        paid_at: orderData.order.paid_at ? formatDateTime(orderData.order.paid_at) : orderData.order.paid_at,
+      };
       const items: OrderItem[] = suggestData.items || orderData.items || [];
       const totalAmount = suggestData.totalAmount || Number(order.totalAmount) || 0;
       const isAllocated = order.allocation_status === '已分配';

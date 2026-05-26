@@ -6,6 +6,7 @@ import { requireManager } from '../../utils/role';
 import {
   lookupServiceRate, computeServiceLine, computeServiceSummary, ServiceRateRow,
 } from '../utils/service-commission-calc';
+import { formatDate } from '../../utils/formatters';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const MAX_PER_POOL = 3;
@@ -137,7 +138,11 @@ Page({
       ]);
       this.setData({ skillSheetActions: (skillTagData.skillTags || []).map(name => ({ name })) });
 
-      const order = detailData.order;
+      // service_date 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+      const order = {
+        ...detailData.order,
+        service_date: detailData.order.service_date ? formatDate(detailData.order.service_date) : detailData.order.service_date,
+      };
       const rates = detailData.rates || [];
       const isAllocated = order.commission_status === '已分配';
       const candidateEmployees = detailData.candidateEmployees || [];
