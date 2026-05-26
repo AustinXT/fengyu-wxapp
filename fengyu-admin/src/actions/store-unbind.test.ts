@@ -28,6 +28,7 @@ vi.mock('@db/user', () => ({
     phone: 'phone',
     boundStoreId: 'bound_store_id',
     boundEmployeeId: 'bound_employee_id',
+    boundEmployeeName: 'bound_employee_name',
   },
 }))
 
@@ -75,6 +76,7 @@ const pendingRequest = {
   requestId: 'REQ-001',
   userId: 'CLIENT-001',
   fromStoreId: 'STORE-001',
+  toStoreId: 'STORE-002',
   status: '待处理',
   note: null,
   rejectReason: null,
@@ -124,13 +126,28 @@ describe('approveUnbind — 前置校验 + 事务原子性', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('正常通过 → 走事务，两条 UPDATE 均被调用', async () => {
+  it('缺少目标门店 → 拒绝，不走事务', async () => {
+    mockSelectRequest({ ...pendingRequest, toStoreId: null })
+    const result = await approveUnbind('REQ-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('目标门店')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('正常通过 → 走事务，顾客门店转绑到目标店并清美容师绑定', async () => {
     mockSelectRequest(pendingRequest)
 
+    const clientSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let updateCall = 0
       const tx = {
-        update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+        update: vi.fn().mockImplementation(() => {
+          updateCall++
+          // call 1 = storeUnbindRequests 状态翻转；call 2 = clientWechatUsers 转绑
+          if (updateCall === 2) {
+            return { set: clientSet }
+          }
+          return { set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }
         }),
       }
       await fn(tx)
@@ -142,6 +159,12 @@ describe('approveUnbind — 前置校验 + 事务原子性', () => {
     expect(result.success).toBe(true)
     expect(result.message).toContain('已通过')
     expect(db.transaction).toHaveBeenCalledOnce()
+    // 转店：bound_store_id → toStoreId，清美容师绑定，不动 customer_source
+    expect(clientSet).toHaveBeenCalledWith({
+      boundStoreId: 'STORE-002',
+      boundEmployeeId: null,
+      boundEmployeeName: null,
+    })
   })
 
   it('事务内第一条 UPDATE 失败 → 整体回滚，返回友好错误', async () => {
