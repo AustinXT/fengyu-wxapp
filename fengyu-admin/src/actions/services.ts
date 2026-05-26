@@ -445,8 +445,10 @@ export const confirmServiceOrder = withPermission(
 
   let result: any
   try {
-    // 2026-05-20 ticket：扣减条件放宽——只校验 remaining_sessions >= sessionUsed
-    // paid_sessions 限额（旧 D6=A 规则）已废止，部分支付订单也可消费
+    // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
+    // 扣减条件叠加 paid_sessions 限额——扣减后已用次数
+    //   (session_count - remaining_sessions + session_used) 不得超 COALESCE(paid_sessions, session_count)。
+    // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
@@ -462,6 +464,7 @@ export const confirmServiceOrder = withPermission(
         WHERE sale_items.sale_item_id = si.sale_item_id
           AND si.service_order_id = ${serviceOrderId}
           AND sale_items.remaining_sessions >= si.session_used
+          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
       ),

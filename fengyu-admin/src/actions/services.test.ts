@@ -92,6 +92,7 @@ vi.mock('next/cache', () => ({
 import {
   startServiceOrder,
   completeServiceOrder,
+  confirmServiceOrder,
   cancelServiceOrder,
   createServiceOrder,
   getServiceOrdersPaginated,
@@ -300,6 +301,75 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     const result = await completeServiceOrder('svc-1')
     expect(result.success).toBe(false)
     expect(result.message).toBe('标记完成失败，请稍后重试')
+  })
+})
+
+// ── confirmServiceOrder — 待客户确认 → 已完成（原子扣减 + paid_sessions 限额）──────
+
+describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  it('非 admin + 服务单 storeId 不在 scope → 拒绝，不执行扣减', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'other-store' }]))
+
+    const result = await confirmServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+
+  it('status_updated=0（状态已变更）→ 失败', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(db.execute as any).mockResolvedValue([
+      { status_updated: 0, items_deducted: 0, items_total: 1 },
+    ])
+
+    const result = await confirmServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('状态已变更')
+  })
+
+  it('items_deducted < items_total（paid_sessions 限额拦下某行）→ 拒绝', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(db.execute as any).mockResolvedValue([
+      { status_updated: 1, items_deducted: 1, items_total: 2 },
+    ])
+
+    const result = await confirmServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已支付次数不足')
+  })
+
+  it('全部行成功扣减（items_deducted = items_total）→ 确认完成', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(db.execute as any).mockResolvedValue([
+      { status_updated: 1, items_deducted: 2, items_total: 2 },
+    ])
+
+    const result = await confirmServiceOrder('svc-1')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已确认完成')
+  })
+
+  it('admin 用户：跳过 scope 预检查，仍执行扣减', async () => {
+    mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(db.execute as any).mockResolvedValue([
+      { status_updated: 1, items_deducted: 1, items_total: 1 },
+    ])
+
+    const result = await confirmServiceOrder('svc-1')
+
+    expect(result.success).toBe(true)
+    expect(db.execute).toHaveBeenCalledOnce()
   })
 })
 
