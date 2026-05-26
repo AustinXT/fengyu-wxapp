@@ -337,7 +337,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                                 <tr key={pr.id} className="hover:bg-[#FFF0EE] transition-colors">
                                   <td className="px-3 py-2 font-medium">{pr.employeeName}</td>
                                   <td className="px-3 py-2 text-[#999999]">{pr.employeeId}</td>
-                                  <td className="px-3 py-2 text-[#999999]">{pr.createdBy || "-"}</td>
+                                  <td className="px-3 py-2 text-[#999999]">{pr.createdBy || "—"}</td>
                                   <td className="px-3 py-2 text-[#999999]">
                                     {new Date(pr.createdAt).toLocaleDateString("zh-CN")}
                                   </td>

@@ -48,7 +48,7 @@ const orderTypeColorMap: Record<string, string> = {
 }
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return "-"
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
@@ -211,7 +211,7 @@ export default function OrderDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">顾客</span>
-              <p className="font-medium mt-1">{order.customerName || "-"}</p>
+              <p className="font-medium mt-1">{order.customerName || "—"}</p>
             </div>
             <div>
               <span className="text-[#999999]">下单时间</span>
@@ -284,7 +284,7 @@ export default function OrderDetailPageClient({
                     : "家居产品"
                   return (
                   <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "-"}</td>
+                    <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "—"}</td>
                     <td className="px-4 py-3 text-right">¥{Number(item.unitPrice).toLocaleString()}</td>
                     <td className="px-4 py-3 text-right">{item.quantity}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
@@ -354,7 +354,7 @@ export default function OrderDetailPageClient({
                       )
                     }
                   }
-                  const noteLine = p.note || "-"
+                  const noteLine = p.note || "—"
                   const detailLine = refundDetailParts.join(" · ")
                   return (
                     <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
@@ -382,7 +382,7 @@ export default function OrderDetailPageClient({
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        {p.operatorName || (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "-")}
+                        {p.operatorName || (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "—")}
                       </td>
                       <td className="px-4 py-3 text-[#666666]">
                         <div>{noteLine}</div>
@@ -433,7 +433,7 @@ export default function OrderDetailPageClient({
                     {allocations.map((a) => (
                       <tr key={a.id} className="hover:bg-[#FFF0EE] transition-colors">
                         <td className="px-4 py-3 font-medium">{a.employeeName}</td>
-                        <td className="px-4 py-3">{a.departmentName || "-"}</td>
+                        <td className="px-4 py-3">{a.departmentName || "—"}</td>
                         <td className="px-4 py-3 text-right">¥{Number(a.totalAmount).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right">{(Number(a.allocationRatio) * 100).toFixed(0)}%</td>
                       </tr>

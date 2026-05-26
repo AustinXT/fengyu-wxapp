@@ -402,8 +402,8 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">
                       <StatusBadge status={order.status} />
                     </td>
-                    <td className="px-4 py-3">{order.customerName || "-"}</td>
-                    <td className="px-4 py-3">{order.storeName || "-"}</td>
+                    <td className="px-4 py-3">{order.customerName || "—"}</td>
+                    <td className="px-4 py-3">{order.storeName || "—"}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
                     {/* 实付（received） + 已退款（refunded_amount > 0 时点亮） */}
                     <td className="px-4 py-3 text-right text-xs">

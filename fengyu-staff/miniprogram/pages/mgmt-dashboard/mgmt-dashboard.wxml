@@ -310,7 +310,7 @@
           <view class="profile-row"><text class="lbl">姓名</text><text class="val">{{basicInfo.staffName}}</text></view>
           <view class="profile-row"><text class="lbl">工号</text><text class="val">{{basicInfo.staffWfId}}</text></view>
           <view class="profile-row"><text class="lbl">手机号</text><text class="val">{{basicInfo.phoneFormatted}}</text></view>
-          <view class="profile-row"><text class="lbl">职位</text><text class="val">{{basicInfo.position}}</text></view>
+          <view class="profile-row"><text class="lbl">职位</text><text class="val">{{basicInfo.position || '—'}}</text></view>
           <view class="profile-row"><text class="lbl">层级</text><text class="val">{{basicInfo.staffLevelLabel}}</text></view>
         </view>
 

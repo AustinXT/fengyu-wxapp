@@ -37,8 +37,8 @@
       <text class="items-title">订单明细</text>
       <view class="order-item" wx:for="{{order.items}}" wx:key="saleItemId">
         <view class="item-name-row">
-          <text class="item-name">{{item.itemName}}</text>
-          <text class="item-spec">{{item.spec}}</text>
+          <text class="item-name">{{item.itemName || '—'}}</text>
+          <text class="item-spec">{{item.spec || '—'}}</text>
         </view>
         <view class="item-price-row">
           <text class="item-price">实收 ¥{{item.totalPrice}}</text>

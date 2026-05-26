@@ -206,7 +206,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     {
       key: "createdAt",
       header: "分配时间",
-      cell: (row) => <span>{formatDate(row.createdAt)}</span>,
+      cell: (row) => <span>{formatDate(row.createdAt) || "—"}</span>,
     },
   ]
 

@@ -17,7 +17,8 @@ import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
-function formatDate(dt: string) {
+function formatDate(dt: string | null | undefined) {
+  if (!dt) return "—"
   return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
 }
 
@@ -201,9 +202,9 @@ export default function ServicesPageClient({
                         {so.serviceOrderType}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3">{so.customerName || "-"}</td>
-                    <td className="px-4 py-3">{so.storeName || "-"}</td>
-                    <td className="px-4 py-3">{so.employeeName || "-"}</td>
+                    <td className="px-4 py-3">{so.customerName || "—"}</td>
+                    <td className="px-4 py-3">{so.storeName || "—"}</td>
+                    <td className="px-4 py-3">{so.employeeName || "—"}</td>
                     <td className="px-4 py-3 text-[#999999]">{formatDate(so.serviceDate)}</td>
                     <td className="px-4 py-3">
                       <ServiceActions so={so} />

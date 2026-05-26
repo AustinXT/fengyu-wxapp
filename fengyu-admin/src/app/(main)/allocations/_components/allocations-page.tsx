@@ -23,7 +23,8 @@ function formatTime(dt: string) {
   return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
 }
 
-function formatDate(dt: string) {
+function formatDate(dt: string | null | undefined) {
+  if (!dt) return "—"
   return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
 }
 
@@ -216,8 +217,8 @@ function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
                         {order.saleOrderId}
                       </Link>
                     </td>
-                    <td className="px-4 py-3">{order.customerName || "-"}</td>
-                    <td className="px-4 py-3">{order.storeName || "-"}</td>
+                    <td className="px-4 py-3">{order.customerName || "—"}</td>
+                    <td className="px-4 py-3">{order.storeName || "—"}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
                     <td className="px-4 py-3">
                       <Badge variant="outline" className={statusInfo.className}>
@@ -277,9 +278,9 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
                         {so.serviceOrderId}
                       </Link>
                     </td>
-                    <td className="px-4 py-3">{so.customerName || "-"}</td>
-                    <td className="px-4 py-3">{so.storeName || "-"}</td>
-                    <td className="px-4 py-3">{so.employeeName || "-"}</td>
+                    <td className="px-4 py-3">{so.customerName || "—"}</td>
+                    <td className="px-4 py-3">{so.storeName || "—"}</td>
+                    <td className="px-4 py-3">{so.employeeName || "—"}</td>
                     <td className="px-4 py-3 text-[#999999]">{formatDate(so.serviceDate)}</td>
                     <td className="px-4 py-3">
                       <Badge variant="outline" className={statusInfo.className}>

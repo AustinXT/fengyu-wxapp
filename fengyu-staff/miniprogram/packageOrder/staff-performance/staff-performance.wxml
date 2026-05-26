@@ -97,7 +97,7 @@
       </view>
       <view class="perf-item-row">
         <text class="perf-item-label">顾客</text>
-        <text class="perf-item-value">{{item.customerName || '-'}}</text>
+        <text class="perf-item-value">{{item.customerName || '—'}}</text>
       </view>
       <view class="perf-item-footer">
         <text class="perf-item-date">{{item.date}}</text>

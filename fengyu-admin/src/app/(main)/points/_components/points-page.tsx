@@ -104,7 +104,7 @@ export default function PointsPage({
     {
       key: "createdAt",
       header: "时间",
-      cell: (row) => <span className="whitespace-nowrap text-[#666]">{formatDateTime(row.createdAt)}</span>,
+      cell: (row) => <span className="whitespace-nowrap text-[#666]">{formatDateTime(row.createdAt) || "—"}</span>,
     },
     {
       key: "customerName",

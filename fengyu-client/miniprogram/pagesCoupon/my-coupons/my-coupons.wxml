@@ -48,8 +48,8 @@ module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) 
       </text>
       <text class="coupon-card__scope" wx:else>全部门店可用</text>
       <text class="coupon-card__expire">
-        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAt ? fmt.slice(item.usedAt, 0, 10) : '-'}} 使用</block>
-        <block wx:else>有效期至 {{item.expireAtFmt}}</block>
+        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAt ? fmt.slice(item.usedAt, 0, 10) : '—'}} 使用</block>
+        <block wx:else>有效期至 {{item.expireAtFmt || '—'}}</block>
       </text>
       <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
       <text class="coupon-card__hint" wx:if="{{item.minSpendHint}}">{{item.minSpendHint}}</text>

@@ -24,7 +24,8 @@ import {
 import { approveUnbind, rejectUnbind, type UnbindRequest } from "@/actions/store-unbind"
 import { formatPhoneSafe } from "@/lib/format"
 
-function formatDate(dt: string) {
+function formatDate(dt: string | null | undefined) {
+  if (!dt) return "—"
   return new Date(dt).toLocaleString("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
@@ -113,10 +114,10 @@ export default function StoreUnbindPage({ requests }: Props) {
                   {pendingRequests.map((req) => (
                     <tr key={req.requestId} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3"><StatusBadge status="待确认" /></td>
-                      <td className="px-4 py-3 font-medium">{req.customerName || "-"}</td>
+                      <td className="px-4 py-3 font-medium">{req.customerName || "—"}</td>
                       <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
-                      <td className="px-4 py-3">{req.fromStoreName || "-"}</td>
-                      <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{req.note || "-"}</td>
+                      <td className="px-4 py-3">{req.fromStoreName || "—"}</td>
+                      <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{req.note || "—"}</td>
                       <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
@@ -180,10 +181,10 @@ export default function StoreUnbindPage({ requests }: Props) {
                         <td className="px-4 py-3">
                           <StatusBadge status={req.status === "已通过" ? "已完成" : "已取消"} />
                         </td>
-                        <td className="px-4 py-3 font-medium">{req.customerName || "-"}</td>
+                        <td className="px-4 py-3 font-medium">{req.customerName || "—"}</td>
                         <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
-                        <td className="px-4 py-3">{req.fromStoreName || "-"}</td>
-                        <td className="px-4 py-3 text-[#999999] max-w-40 truncate">{req.rejectReason || "-"}</td>
+                        <td className="px-4 py-3">{req.fromStoreName || "—"}</td>
+                        <td className="px-4 py-3 text-[#999999] max-w-40 truncate">{req.rejectReason || "—"}</td>
                         <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
                       </tr>
                     ))}

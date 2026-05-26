@@ -232,7 +232,7 @@ export default function ServiceCreatePageClient({
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
                     <div>
                       <span className="text-[#999999]">姓名</span>
-                      <p className="font-medium">{selectedCustomer.name || "-"}</p>
+                      <p className="font-medium">{selectedCustomer.name || "—"}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">手机</span>
@@ -240,15 +240,15 @@ export default function ServiceCreatePageClient({
                     </div>
                     <div>
                       <span className="text-[#999999]">会员等级</span>
-                      <p className="font-medium">{selectedCustomer.memberLevel || "-"}</p>
+                      <p className="font-medium">{selectedCustomer.memberLevel || "—"}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">绑定门店</span>
-                      <p className="font-medium">{selectedCustomer.storeName || "-"}</p>
+                      <p className="font-medium">{selectedCustomer.storeName || "—"}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">绑定美容师</span>
-                      <p className="font-medium">{selectedCustomer.employeeName || "-"}</p>
+                      <p className="font-medium">{selectedCustomer.employeeName || "—"}</p>
                     </div>
                   </div>
                 </CardContent>
@@ -313,8 +313,8 @@ export default function ServiceCreatePageClient({
                                 className="rounded"
                               />
                             </td>
-                            <td className="px-4 py-3">{item.productName || "-"}</td>
-                            <td className="px-4 py-3">{item.skuSpecName || "-"}</td>
+                            <td className="px-4 py-3">{item.productName || "—"}</td>
+                            <td className="px-4 py-3">{item.skuSpecName || "—"}</td>
                             <td className="px-4 py-3">
                               <span className={`inline-block px-2 py-0.5 rounded text-xs ${
                                 item.productType === "疗程卡"
@@ -328,7 +328,7 @@ export default function ServiceCreatePageClient({
                               {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
                               {item.sessionCount !== null
                                 ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount}`
-                                : "-"}
+                                : "—"}
                             </td>
                             <td className="px-4 py-3 text-right">
                               ¥{Number(item.unitRealPrice).toFixed(2)}
@@ -409,15 +409,15 @@ export default function ServiceCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
                 <span className="text-[#999999]">顾客</span>
-                <p className="font-medium">{selectedCustomer?.name || "-"}</p>
+                <p className="font-medium">{selectedCustomer?.name || "—"}</p>
               </div>
               <div>
                 <span className="text-[#999999]">门店</span>
-                <p className="font-medium">{stores.find(s => s.storeId === selectedStoreId)?.storeName || "-"}</p>
+                <p className="font-medium">{stores.find(s => s.storeId === selectedStoreId)?.storeName || "—"}</p>
               </div>
               <div>
                 <span className="text-[#999999]">负责美容师</span>
-                <p className="font-medium">{employees.find(e => e.employeeId === selectedEmployeeId)?.name || "-"}</p>
+                <p className="font-medium">{employees.find(e => e.employeeId === selectedEmployeeId)?.name || "—"}</p>
               </div>
               <div>
                 <span className="text-[#999999]">服务日期</span>

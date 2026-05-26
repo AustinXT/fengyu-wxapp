@@ -11,7 +11,7 @@ import type { RefundListItem } from "@/actions/refunds"
 type RefundStatus = '待审批' | '已支付' | '已关闭'
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return '-'
+  if (!dt) return '—'
   return new Date(dt).toLocaleString('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
@@ -98,9 +98,9 @@ export default function RefundsPageClient({
                           <Link href={`/orders/${r.refSaleOrderId}`} className="hover:underline">
                             {r.refSaleOrderId}
                           </Link>
-                        ) : '-'}
+                        ) : '—'}
                       </td>
-                      <td className="px-4 py-3">{r.customerName || '-'}</td>
+                      <td className="px-4 py-3">{r.customerName || '—'}</td>
                       <td className="px-4 py-3 text-right font-medium text-[#C62828]">
                         -¥{amount.toFixed(2)}
                       </td>
@@ -108,9 +108,9 @@ export default function RefundsPageClient({
                         <StatusBadge status={r.status} />
                       </td>
                       <td className="px-4 py-3 text-[#666] max-w-xs truncate" title={r.refundReason ?? ''}>
-                        {r.refundReason || '-'}
+                        {r.refundReason || '—'}
                       </td>
-                      <td className="px-4 py-3">{r.operatorName || '-'}</td>
+                      <td className="px-4 py-3">{r.operatorName || '—'}</td>
                       <td className="px-4 py-3 whitespace-nowrap">{formatDateTime(r.createdAt)}</td>
                       <td className="px-4 py-3 text-right">
                         <Link href={`/refunds/${r.refundPaymentId}`}>
