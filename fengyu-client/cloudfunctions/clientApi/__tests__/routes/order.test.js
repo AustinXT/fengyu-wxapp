@@ -589,6 +589,49 @@ describe('order.pay', () => {
     expect(reqData.trade_biz_tp).toBeUndefined()
   })
 
+  test('门店已启用拉卡拉但未配商户号 → LAKALA_NOT_CONFIGURED（不再 fallback env 默认号）', async () => {
+    const now = new Date()
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
+        sale_order_datetime: now.toISOString(),
+      }]
+      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
+      // 门店启用了拉卡拉，但 merchant_no/term_no 为空（未进件）
+      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: null, lakala_term_no: null, lakala_enabled: true }]
+      return []
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_NOT_CONFIGURED/)
+    // env 仍设有 LAKALA_DEFAULT_MERCHANT_NO，但绝不能被用来下单（去兜底后一店一商户）
+    expect(__mocks__.lakalaClient.request).not.toHaveBeenCalled()
+  })
+
+  test('门店配了商户号但无终端号 → 正常下单且 reqData 不带 term_no（term_no 非必填，SIT 实测可空）', async () => {
+    const now = new Date()
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
+        sale_order_datetime: now.toISOString(),
+      }]
+      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
+      // 门店启用拉卡拉、有商户号，但终端号为空
+      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: '82242107230052S', lakala_term_no: null, lakala_enabled: true }]
+      return []
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.lakala.counterUrl).toBe('https://pay.test/cashier')
+    const reqData = __mocks__.lakalaClient.request.mock.calls[0][0].reqData
+    expect(reqData.merchant_no).toBe('82242107230052S')
+    expect(reqData.term_no).toBeUndefined()   // 终端号空 → 不进 reqData（JSON.stringify 丢弃）
+  })
+
   test('paid_amount=0（全额抵扣）直接短路返回已支付', async () => {
     const now = new Date()
     pg.query.mockResolvedValueOnce([{

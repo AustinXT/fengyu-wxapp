@@ -24,11 +24,11 @@ async function resolveLakalaMerchant(storeId) {
   if (rows.length === 0) return null
   const row = rows[0]
   if (!row.lakala_enabled) return null
-  const cfg = lakalaConfig.readConfig()
-  const merchantNo = row.lakala_merchant_no || cfg.defaultMerchantNo
-  const termNo = row.lakala_term_no || cfg.defaultTermNo
-  if (!merchantNo || !termNo) return null
-  return { merchantNo, termNo }
+  const merchantNo = row.lakala_merchant_no
+  if (!merchantNo) return null   // 一店一商户:商户号必填，未配即视为未开通，不再 fallback env 默认号
+  // 终端号(term_no)拉卡拉收银台 special_create 非必填（SIT 实测不传也成功）：
+  // 空则返回 undefined，request() 的 JSON.stringify 会自动丢弃该字段
+  return { merchantNo, termNo: row.lakala_term_no || undefined }
 }
 
 async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmountYuan, payMode }) {
