@@ -11,6 +11,7 @@ const { recalcMemberLevel } = require('../utils/member-level')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
+const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
 const LAKALA_CASHIER_APPID = 'wx889424d565967811'
 
@@ -663,7 +664,7 @@ async function create(ctx) {
     prepaidFullPaid = paidAmount === 0 && prepaidCardAmount > 0
 
     // 生成订单号（在事务+锁内，防并发重复）
-    const dateStrOrder = now.toISOString().slice(2, 10).replace(/-/g, '')
+    const dateStrOrder = shanghaiYYMMDD(now)
     const orderSeqResult = await client.query(
       `SELECT sale_order_id FROM sale_orders
        WHERE sale_order_id LIKE $1
@@ -678,7 +679,7 @@ async function create(ctx) {
 
     // 在事务内查询今日最大序号
     const today = new Date()
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
+    const dateStr = shanghaiYMD(today)
     const maxResult = await client.query(
       `SELECT sale_item_id FROM sale_items
        WHERE sale_item_id LIKE $1
