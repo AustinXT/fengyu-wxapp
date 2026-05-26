@@ -57,16 +57,29 @@ export function parseMssqlConnString(connStr: string): {
 const CONN_STRING = process.env.MSSQL_CONNECTION_STRING
 const PARSED = CONN_STRING ? parseMssqlConnString(CONN_STRING) : {}
 
+// 超时：WorkFine 仅历史数据，绝不能成为 admin 硬阻塞。MSSQL 不可用（断网/凭证过期/
+// 服务下线）时必须秒级快速失败而非无限 hang，让上层 Dialog/页面立刻显示友好提示。
+//   - connectionTimeout：建连（TCP/登录）超时，默认 15s 太长，收紧到 8s
+//   - requestTimeout：单条查询超时，默认 15s，收紧到 10s
+//   - pool.acquireTimeoutMillis：从池里取连接的等待上限，避免连接已挂时排队卡死
+const CONNECT_TIMEOUT_MS = parseInt(process.env.MSSQL_CONNECT_TIMEOUT_MS || '8000', 10)
+const REQUEST_TIMEOUT_MS = parseInt(process.env.MSSQL_REQUEST_TIMEOUT_MS || '10000', 10)
+
 const MSSQL_CONFIG: mssql.config = {
   user: PARSED.user || process.env.MSSQL_USER || 'admin',
   password: PARSED.password || process.env.MSSQL_PASSWORD || '',
   database: PARSED.database || process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
   server: PARSED.server || process.env.MSSQL_SERVER || '47.96.87.33',
   port: PARSED.port || parseInt(process.env.MSSQL_PORT || '1433', 10),
-  pool: { max: 3, min: 0, idleTimeoutMillis: 30_000 },
+  pool: { max: 3, min: 0, idleTimeoutMillis: 30_000, acquireTimeoutMillis: CONNECT_TIMEOUT_MS },
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
-  requestTimeout: 30_000,
+  connectionTimeout: CONNECT_TIMEOUT_MS,
+  requestTimeout: REQUEST_TIMEOUT_MS,
 }
+
+/** WorkFine 不可用时统一抛出的友好错误（INVALID_STATE 在白名单内，上层显示可读文案） */
+const WORKFINE_UNAVAILABLE_MSG =
+  'INVALID_STATE: WORKFINE_UNAVAILABLE: WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员'
 
 type GlobalWithMssql = typeof globalThis & {
   __workfineMssqlPool?: mssql.ConnectionPool | null
@@ -85,10 +98,40 @@ async function getPool(): Promise<mssql.ConnectionPool> {
     })
     await pool.connect()
     g.__workfineMssqlPool = pool
-    g.__workfineMssqlPoolPromise = null
     return pool
   })()
-  return g.__workfineMssqlPoolPromise
+
+  try {
+    const pool = await g.__workfineMssqlPoolPromise
+    return pool
+  } catch (err) {
+    // 关键：连接失败必须清空缓存的 rejected promise，否则后续每次调用都会
+    // 复用同一个失败 promise，永远不再重试（一次断网卡死整个功能）。
+    g.__workfineMssqlPool = null
+    g.__workfineMssqlPoolPromise = null
+    console.error('[workfine-mssql] 连接 WorkFine MSSQL 失败', err)
+    throw new Error(WORKFINE_UNAVAILABLE_MSG)
+  } finally {
+    // 成功时也清掉 promise 引用（pool 已存入 __workfineMssqlPool）
+    if (g.__workfineMssqlPool) g.__workfineMssqlPoolPromise = null
+  }
+}
+
+/**
+ * 包裹查询执行：把任何 MSSQL 连接/查询/超时错误转成统一的 INVALID_STATE 友好错误，
+ * 让上层 action 抛出可读消息（Dialog 显示「WorkFine 暂不可用」），而不是 raw 500 / 卡死。
+ * 已经是 WORKFINE_UNAVAILABLE_MSG（来自 getPool）的错误原样透传，不重复包裹。
+ */
+async function runQuery<T>(fn: (pool: mssql.ConnectionPool) => Promise<T>): Promise<T> {
+  // getPool 失败时已抛出 WORKFINE_UNAVAILABLE_MSG，直接透传。
+  const pool = await getPool()
+  try {
+    return await fn(pool)
+  } catch (err) {
+    if (err instanceof Error && err.message === WORKFINE_UNAVAILABLE_MSG) throw err
+    console.error('[workfine-mssql] 查询 WorkFine MSSQL 失败', err)
+    throw new Error(WORKFINE_UNAVAILABLE_MSG)
+  }
 }
 
 function trim(v: unknown): string | null {
@@ -145,23 +188,24 @@ export async function searchCustomersByPhone(phone: string): Promise<WorkfineCus
   if (!normalized) return []
   if (USE_MOCK) return MOCK_CUSTOMERS.filter((c) => c.phone === normalized)
 
-  const pool = await getPool()
-  const result = await pool
-    .request()
-    .input('phone', mssql.NVarChar(50), normalized)
-    .query<{ customer_id: string; name: string | null; phone: string | null }>(`
-      SELECT
-        RTRIM(UDF_S_1475) AS customer_id,
-        RTRIM(UDF_S_1476) AS name,
-        RTRIM(UDF_S_1478) AS phone
-      FROM UDT_S_311
-      WHERE RTRIM(UDF_S_1478) = @phone
-    `)
-  return result.recordset.map((r) => ({
-    customerId: r.customer_id,
-    name: trim(r.name),
-    phone: trim(r.phone),
-  }))
+  return runQuery(async (pool) => {
+    const result = await pool
+      .request()
+      .input('phone', mssql.NVarChar(50), normalized)
+      .query<{ customer_id: string; name: string | null; phone: string | null }>(`
+        SELECT
+          RTRIM(UDF_S_1475) AS customer_id,
+          RTRIM(UDF_S_1476) AS name,
+          RTRIM(UDF_S_1478) AS phone
+        FROM UDT_S_311
+        WHERE RTRIM(UDF_S_1478) = @phone
+      `)
+    return result.recordset.map((r) => ({
+      customerId: r.customer_id,
+      name: trim(r.name),
+      phone: trim(r.phone),
+    }))
+  })
 }
 
 /**
@@ -174,25 +218,26 @@ export async function searchCustomerByCustomerId(
   if (!normalized) return null
   if (USE_MOCK) return MOCK_CUSTOMERS.find((c) => c.customerId === normalized) ?? null
 
-  const pool = await getPool()
-  const result = await pool
-    .request()
-    .input('customerId', mssql.NVarChar(50), normalized)
-    .query<{ customer_id: string; name: string | null; phone: string | null }>(`
-      SELECT TOP 1
-        RTRIM(UDF_S_1475) AS customer_id,
-        RTRIM(UDF_S_1476) AS name,
-        RTRIM(UDF_S_1478) AS phone
-      FROM UDT_S_311
-      WHERE RTRIM(UDF_S_1475) = @customerId
-    `)
-  if (result.recordset.length === 0) return null
-  const r = result.recordset[0]
-  return {
-    customerId: r.customer_id,
-    name: trim(r.name),
-    phone: trim(r.phone),
-  }
+  return runQuery(async (pool) => {
+    const result = await pool
+      .request()
+      .input('customerId', mssql.NVarChar(50), normalized)
+      .query<{ customer_id: string; name: string | null; phone: string | null }>(`
+        SELECT TOP 1
+          RTRIM(UDF_S_1475) AS customer_id,
+          RTRIM(UDF_S_1476) AS name,
+          RTRIM(UDF_S_1478) AS phone
+        FROM UDT_S_311
+        WHERE RTRIM(UDF_S_1475) = @customerId
+      `)
+    if (result.recordset.length === 0) return null
+    const r = result.recordset[0]
+    return {
+      customerId: r.customer_id,
+      name: trim(r.name),
+      phone: trim(r.phone),
+    }
+  })
 }
 
 /**
@@ -205,38 +250,38 @@ export async function queryOrdersByCustomerId(customerId: string): Promise<Workf
   if (!normalized) return []
   if (USE_MOCK) return MOCK_ORDERS.filter((o) => o.legacyCustomerId === normalized)
 
-  const pool = await getPool()
-  const result = await pool
-    .request()
-    .input('customerId', mssql.NVarChar(50), normalized)
-    .query<{
-      legacy_order_no: string
-      sale_date: Date | string
-      market_name: string | null
-      store_name: string | null
-      legacy_customer_id: string | null
-      customer_name: string | null
-      amount: number | string
-      phone: string | null
-    }>(`
-      SELECT
-        RTRIM(s.UDF_S_372)  AS legacy_order_no,
-        s.UDF_S_350          AS sale_date,
-        RTRIM(s.UDF_S_348)  AS market_name,
-        RTRIM(s.UDF_S_349)  AS store_name,
-        RTRIM(s.UDF_S_1485) AS legacy_customer_id,
-        RTRIM(s.UDF_S_370)  AS customer_name,
-        s.UDF_S_507          AS amount,
-        RTRIM(k.UDF_S_1478) AS phone
-      FROM UDT_S_209 s
-      LEFT JOIN UDT_S_311 k ON RTRIM(s.UDF_S_1485) = RTRIM(k.UDF_S_1475)
-      WHERE RTRIM(s.UDF_S_1485) = @customerId
-        AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
-      ORDER BY s.UDF_S_350
-    `)
+  return runQuery(async (pool) => {
+    const result = await pool
+      .request()
+      .input('customerId', mssql.NVarChar(50), normalized)
+      .query<{
+        legacy_order_no: string
+        sale_date: Date | string
+        market_name: string | null
+        store_name: string | null
+        legacy_customer_id: string | null
+        customer_name: string | null
+        amount: number | string
+        phone: string | null
+      }>(`
+        SELECT
+          RTRIM(s.UDF_S_372)  AS legacy_order_no,
+          s.UDF_S_350          AS sale_date,
+          RTRIM(s.UDF_S_348)  AS market_name,
+          RTRIM(s.UDF_S_349)  AS store_name,
+          RTRIM(s.UDF_S_1485) AS legacy_customer_id,
+          RTRIM(s.UDF_S_370)  AS customer_name,
+          s.UDF_S_507          AS amount,
+          RTRIM(k.UDF_S_1478) AS phone
+        FROM UDT_S_209 s
+        LEFT JOIN UDT_S_311 k ON RTRIM(s.UDF_S_1485) = RTRIM(k.UDF_S_1475)
+        WHERE RTRIM(s.UDF_S_1485) = @customerId
+          AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
+        ORDER BY s.UDF_S_350
+      `)
 
-  return result.recordset
-    .map((r) => {
+    return result.recordset
+      .map((r) => {
       const legacyOrderNo = trim(r.legacy_order_no)
       if (!legacyOrderNo) return null
       const saleDate =
@@ -253,6 +298,7 @@ export async function queryOrdersByCustomerId(customerId: string): Promise<Workf
         legacyCustomerId: trim(r.legacy_customer_id),
         phone: trim(r.phone),
       } satisfies WorkfineOrder
-    })
-    .filter((x): x is WorkfineOrder => x !== null)
+      })
+      .filter((x): x is WorkfineOrder => x !== null)
+  })
 }

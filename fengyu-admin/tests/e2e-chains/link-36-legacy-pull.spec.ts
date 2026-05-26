@@ -18,6 +18,11 @@
  *   1) Dev server 启动时必须设置 `MOCK_WORKFINE=1`，否则 actions 会去连真 MSSQL。
  *      推荐：`MOCK_WORKFINE=1 bun run dev`（或在 .env.local 加 `MOCK_WORKFINE=1`）
  *
+ *      注：未设 MOCK_WORKFINE 时，lib/workfine-mssql.ts 现在会 8s 连接超时后快速失败，
+ *      抛 `INVALID_STATE: WORKFINE_UNAVAILABLE: ...`，Dialog 显示「WorkFine 暂不可用」toast，
+ *      不再无限 hang/拖垮 admin —— 但本 spec 仍需 MOCK_WORKFINE=1 才能跑通 happy path。
+ *      （是否在 .env.local 常开 MOCK_WORKFINE 是配置决策，留给运维/开发者。）
+ *
  *   2) PG（5434 fengyu）已 seed scope fixtures（含 store-nc01 = "南昌旗舰店"），
  *      亦即 _helpers/seed-scope-fixtures.sql 已跑过；FY-TEST-ADM/MGR/HR 三账号可登录。
  *      mock fixture 的 storeName 已对齐为"南昌旗舰店"以保证 storeMatched=true。
