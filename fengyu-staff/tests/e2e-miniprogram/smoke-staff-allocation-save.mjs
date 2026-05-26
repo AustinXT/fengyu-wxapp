@@ -1,7 +1,7 @@
 // smoke-staff-allocation-save.mjs — 提成分配 UI 路径
 // 仅验证 navigate 到 allocation-list / revenue-allocation 不崩溃
 
-import { launchStaff, disconnect } from './helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToPage } from './helpers/automator.mjs';
 import { loginStaffWithTestOpenid } from './helpers/login.mjs';
 import { createTestManager, cleanupL3TestData } from './helpers/fixtures.mjs';
 import { closePool } from './helpers/pg.mjs';
@@ -15,7 +15,7 @@ async function run() {
   miniProgram = await launchStaff();
   await loginStaffWithTestOpenid(miniProgram, TEST_OPENID_MANAGER);
 
-  await miniProgram.navigateTo('/packageOrder/allocation-list/allocation-list');
+  await navigateToPage(miniProgram, '/packageOrder/allocation-list/allocation-list');
   await new Promise(r => setTimeout(r, 1500));
   const page = await miniProgram.currentPage();
   console.log('  ✓ allocation-list 加载：', page.path);

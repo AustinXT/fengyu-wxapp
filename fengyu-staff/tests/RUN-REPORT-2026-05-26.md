@@ -4,10 +4,10 @@
 
 ## 结果总览
 
-| 层 | 套件 | 首跑 | 修复 + 干净窗口复跑 | 备注 |
+| 层 | 套件 | 首跑 | 修复 + 决策项落地后最终 | 备注 |
 |----|------|------|---------------------|------|
-| L2 | e2e-cloudfn（53 smoke） | ❌ 46/53 | ✅ **53/53**（7 个失败逐个干净窗口串行复跑全 PASS） | 2 真 bug 已修 + 5 个并发污染假失败 |
-| L2 | scope-isolation（4 spec / 21 check） | ✅ **4/4** | — | S-1/S-3/S-4/S-8 全绿 |
+| L2 | e2e-cloudfn（53→**57** smoke） | ❌ 46/53 | ✅ **57/57**（含 D-3 新增 4 个 smoke） | 2 真 bug 已修 + D-1/D-2/D-3 全部落地 |
+| L2 | scope-isolation（4 spec / 21 check） | ✅ **4/4** | ✅ **4/4** | S-1/S-3/S-4/S-8 全绿（不受 NS 改动影响） |
 | L3 | e2e-miniprogram（10 smoke + 12 scenarios） | ⏸ 未跑 | — | 需微信开发者工具 9420 自动化 + 已登录态，本轮环境未就绪（见末尾） |
 
 > 首跑 7 个失败 = **2 个真问题（已直接修复）** + **5 个并发污染假失败**。首跑时
@@ -57,8 +57,8 @@
 
 ## 决策项执行（用户 2026-05-26 已批准全部三项 + 多 Agent 并行）
 
-> ⚠️ 执行期间本仓库有并行 git 操作（claude-review/MiniMax CI 分支的 checkout/merge/reset）一度把
-> 未提交的 D-1/D-2 编辑冲掉；按用户决定「在 dev 工作区重做不提交」已重新应用。这些改动**未提交**。
+> ⚠️ 执行期间本仓库有并行 git 操作一度把未提交的 D-1/D-2 编辑冲掉；按用户决定「在 dev 工作区重做」已重新应用，
+> 随后被并行工作流连同 4 个新 smoke 一起 commit 进 `5220af8a test(staff): e2e-cloudfn 夹具修复 + 库存/提货/寄存/退卡 smoke`（已固化、安全）。
 
 ### D-1. 统一 `createTestSaleOrder` 的 unit_real_price 为单次价语义 — ✅ 已改
 
@@ -95,23 +95,44 @@
 > `service.confirm`（migration 0053「待客户确认」）已被 smoke-service-lifecycle 覆盖，无需补。
 > L2 smoke 总数 53 → **57**。
 
-## L3（e2e-miniprogram）未跑说明
+## L3（e2e-miniprogram）— 用户启动 IDE 后已跑
 
-L3 需要微信开发者工具以自动化模式监听 9420（IPv6）+ **已登录态**（cloud 调用要 access_token）。
-本轮 9420 未监听，且无法自主完成扫码登录。需你在 IDE GUI 扫码登录 + 启动 automation 后我再跑：
+用户启动微信开发者工具（服务端口 56093，加载 staff 项目 appId wxe3f5d9ee6a94d22d）。
+56093 的 IPv4 是 HTTP backend（automation ws 未在其上）；automator 首次 `launch` 兜底 spawn 了
+一个 `cli auto` 自动化实例在 **IPv6 9420**，后续 smoke 用默认端口 9420 秒连复用该实例（无 60s 超时浪费）。
 
-```bash
-/Applications/wechatwebdevtools.app/Contents/MacOS/cli auto \
-  --project /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram --port 9420
-until lsof -nP -iTCP:9420 -sTCP:LISTEN | grep -q IPv6; do sleep 3; done
-bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs
-```
+### L3 smoke（run-all，10 个）：✅ **10/10 PASS**
 
-L3 历史遗留待决策项见 `RUN-REPORT-2026-05-22.md`（bs02 refund-detail 契约等），本轮未触及。
+首跑 6 PASS / 4 FAIL，4 个失败全是 `timeout`——**子包 `navigateTo` 伪超时**（IDE automation 通道里
+子包首跳成功回调延迟 ~10s，`miniProgram.navigateTo` 抛 timeout 但页面其实已加载，2026-05-22 已记录）。
+这 4 个 smoke 用了裸 `miniProgram.navigateTo` 而非吞伪超时的 `navigateToPage()` helper：
+
+| smoke | 子包页 | 修复 |
+|-------|--------|------|
+| smoke-staff-allocation-save | /packageOrder/allocation-list | navigateTo → navigateToPage |
+| smoke-staff-appt-to-service | /packageService/appointment | 同上 |
+| smoke-staff-customer-360 | /packageCustomer/customer-detail | 同上 |
+| smoke-staff-refund-approve | /packageOrder/refund-list | 同上 |
+
+改后逐个重跑全 PASS（页面确实已加载，纯 automation 通道伪超时，非真 bug）。
+
+### L3 scenarios（run-scenarios，12 个）：见下方「scenarios 结果」（历史最 flaky 一批）
+
+下次跑 L3：IDE 启动后直接 `bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs`（默认 9420 复用 cli auto 实例）。
+
+## 最终结果（2026-05-27 决策项落地后干净窗口复跑）
+
+- **L2 e2e-cloudfn：57/57 ALL PASS**（1273.9s）— 53 既有 + 4 新增（D-3），D-1/D-2 改动零回归。
+- **scope-isolation：4/4 PASS**（不依赖 NS，独立于 D-2 改动）。
+- 2 个真 bug（refund-freeze 单次价 / cleanup FK 缺口）+ 3 个决策项（D-1 单次价统一 / D-2 命名空间隔离 /
+  D-3 补 4 个 smoke）全部落地并验证通过。
+- L3 e2e-miniprogram 仍待你启动 IDE 后跑（见下）。
+- 改动已由并行工作流 commit 进 `5220af8a`（dev）固化，仅本报告 md 为未提交文档改动。
 
 ## 环境
 
-- DB：`47.113.202.7:5434/fengyu`（开发库），L2=`TE2L2_*`、scope=`FY-TEST-*` 命名空间隔离
-- 跑批工具：bun；首跑 L2 全套 ~1236s（53 smoke）
+- DB：`47.113.202.7:5434/fengyu`（开发库），L2 staff=`TE2LS_*` / 098 号段（与 client `TE2L2_*` / 099 段隔离）、
+  scope=`FY-TEST-*` 命名空间隔离
+- 跑批工具：bun；首跑 L2 全套 ~1236s（53 smoke），最终 ~1274s（57 smoke）
 </content>
 </invoke>
