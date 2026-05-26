@@ -13,6 +13,7 @@ import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
 import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
 import { formatPhoneSafe } from "@/lib/format"
+import { shanghaiToday } from "@/lib/datetime"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -68,7 +69,7 @@ export default function ServiceCreatePageClient({
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
-  const [serviceDate, setServiceDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
   const [remark, setRemark] = useState("")
 
   // Step 3: Submit

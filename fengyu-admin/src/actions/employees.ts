@@ -14,6 +14,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
+import { shanghaiToday } from '@/lib/datetime'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -372,7 +373,7 @@ export const createEmployee = withPermission(
         skills: data.skills ?? null,
         isResigned: false,
         // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
-        hiredAt: data.hiredAt ?? new Date().toISOString().slice(0, 10),
+        hiredAt: data.hiredAt ?? shanghaiToday(),
         resignedAt: null,
       })
 
@@ -460,7 +461,7 @@ export const updateEmployee = withPermission(
   // - isResigned=false：清空 resignedAt
   const updateData = { ...data }
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
-    updateData.resignedAt = data.isResigned ? new Date().toISOString().slice(0, 10) : null
+    updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }
 
   // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）
