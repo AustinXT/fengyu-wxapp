@@ -18,8 +18,15 @@ import type { ResolvedRange, ResolvedTimeRange, TimeRangeInput } from './types'
 function parse(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00Z`)
 }
+/**
+ * 由 UTC 字段拼 YYYY-MM-DD（不用 toISOString().slice()）。
+ * 这里全程 UTC 锚定纯运算，不涉时区切换；唯一时区敏感的"今天"取自 shanghaiToday()（Intl）。
+ */
 function fmt(d: Date): string {
-  return d.toISOString().slice(0, 10)
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 export function addDays(dateStr: string, n: number): string {
   const d = parse(dateStr)

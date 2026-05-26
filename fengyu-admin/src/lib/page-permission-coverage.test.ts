@@ -45,6 +45,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/inventory': [], // hub 页：仅 Link 跳转，无 SSR 数据查询
   '/legacy-orders': ['legacy_order:list', 'store:list'],
   // —— 数据管理 ——
+  '/data-center': ['data_center:dashboard'], // SSR 仅 getDataCenterScopeOptions 闸门；板块数据客户端取数
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
