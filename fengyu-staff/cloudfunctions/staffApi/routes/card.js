@@ -328,13 +328,16 @@ async function approveRefund(ctx) {
       [card.card_id, -refundFace, pay.sale_order_id, `card-refund-${paymentId}`]
     )
 
-    // 翻 status='已支付' + 记审批人 + paid_at
-    await client.query(
+    // 翻 status='已支付' + 记审批人 + paid_at（CAS 守卫：仅 '待审批' → '已支付'，防并发重复审批）
+    const casUpd = await client.query(
       `UPDATE sale_order_payments
        SET status='已支付', audit_employee_id=$1, audit_at=NOW(), paid_at=NOW()
-       WHERE id=$2`,
+       WHERE id=$2 AND status='待审批'`,
       [ctx.auth.staffWfId || null, paymentId]
     )
+    if (casUpd.rowCount !== 1) {
+      throw new Error('INVALID_STATE: 退款单状态已变更，请刷新后重试')
+    }
 
     // sale_orders.refunded_amount 累加（应用层冗余快照）
     await client.query(
