@@ -24,6 +24,9 @@ const FILES = {
   staffRecharge: path.resolve(__dirname, '../../utils/recharge.js'),
   clientCard: path.resolve(REPO_ROOT, 'fengyu-client/cloudfunctions/clientApi/routes/card.js'),
   adminRecharge: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge.ts'),
+  // matchTier 纯逻辑（含 INVALID_PARAMS 金额校验）2026-05-21 拆到 recharge-tier.ts，
+  // recharge.ts 仅 re-export matchTier + 保留 loadRechargeConfig（INVALID_STATE 配置校验）
+  adminRechargeTier: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge-tier.ts'),
 }
 
 const EXPECTED_CONFIG_KEYS = ['recharge.tiers', 'recharge.minAmount', 'recharge.maxAmount']
@@ -70,8 +73,8 @@ describe('跨端 matchTier 错误信息字面一致性', () => {
     expect(readFile(FILES.clientCard)).toContain(msg)
   })
 
-  test.each(EXPECTED_ERROR_MESSAGES)('admin lib/recharge.ts 含 "%s"', (msg) => {
-    expect(readFile(FILES.adminRecharge)).toContain(msg)
+  test.each(EXPECTED_ERROR_MESSAGES)('admin lib/recharge-tier.ts 含 "%s"', (msg) => {
+    expect(readFile(FILES.adminRechargeTier)).toContain(msg)
   })
 })
 
