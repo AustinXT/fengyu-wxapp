@@ -100,7 +100,7 @@ export async function createTestProduct({
  *
  * @param {object} opts
  * @param {string} opts.skuId - SKU id
- * @param {string} opts.productType - '单品' | '疗程卡' | '家居产品'（productTypeEnum）
+ * @param {string} opts.productType - '疗程卡' | '家居产品'（productTypeEnum，单品已并入疗程卡）
  * @param {string} opts.price
  * @param {number?} opts.sessionCount - 疗程次数（疗程卡 ≥ 2）
  * @param {boolean} opts.isExperience
@@ -110,7 +110,7 @@ export async function createTestSku({
   skuId = TEST_SKU_NORMAL_ID,
   productId = TEST_PRODUCT_ID,
   specName = `${NS}_默认规格`,
-  productType = '单品',
+  productType = '疗程卡',
   price = '100.00',
   sessionCount = null,
   isExperience = false,
@@ -397,7 +397,7 @@ export async function createTestPendingSaleOrder({
   storeId = TEST_STORE_ID,
   totalAmount = 100,
   skuId = TEST_SKU_NORMAL_ID,
-  productType = '单品',
+  productType = '疗程卡',
   isExperience = false,
   sessionCount = null,
   remainingCount = null,

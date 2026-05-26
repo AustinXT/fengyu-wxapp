@@ -71,7 +71,7 @@ async function createStaffOpenedPending({
     )
     const itemId = `${saleOrderId}_I1`.slice(0, 30)
     const isSessionCard = sessionCount != null && sessionCount > 0
-    const productType = isSessionCard ? '疗程卡' : '单品'
+    const productType = '疗程卡'  // 单品已并入疗程卡；次卡/非次卡区别下沉到 session_count
     await conn.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,

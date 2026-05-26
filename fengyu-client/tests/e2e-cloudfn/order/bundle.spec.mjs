@@ -54,7 +54,7 @@ async function seedBundle() {
   for (const skuId of [SKU_A_ID, SKU_B_ID]) {
     await createTestSku({
       skuId, productId: BUNDLE_PRODUCT_ID,
-      productType: '单品', price: '49.80', sessionCount: null,
+      productType: '疗程卡', price: '49.80', sessionCount: null,
       linkToProduct: false,
     })
   }
@@ -67,7 +67,7 @@ async function seedBundle() {
   }
   await createTestSku({
     skuId: SKU_OUTSIDE_ID, productId: OUTSIDE_PRODUCT_ID,
-    productType: '单品', price: '100.00', sessionCount: null,
+    productType: '疗程卡', price: '100.00', sessionCount: null,
   })
 
   // 3. 两个 group
