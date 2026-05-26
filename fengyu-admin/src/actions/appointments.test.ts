@@ -32,6 +32,8 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  isNull: vi.fn((col) => ({ type: 'isNull', col })),
+  inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -42,6 +44,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
+  isInScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -57,6 +60,7 @@ vi.mock('next/cache', () => ({
 import { confirmAppointment, checkinAppointment, cancelAppointment, getAppointmentsPaginated } from './appointments'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { isInScope } from '@/lib/permissions'
 import { eq, ilike } from 'drizzle-orm'
 
 const mockSession = {
@@ -116,14 +120,56 @@ describe('confirmAppointment', () => {
 
 // ── checkinAppointment ────────────────────────────────────────────────────────
 
-describe('checkinAppointment', () => {
+describe('checkinAppointment — 对齐 staff（待确认∪已确认 + 幂等 + 不翻状态）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    mockSelectBefore()
+    ;(isInScope as any).mockReturnValue(true)
+    // 默认：已确认、未签到
+    mockSelectBefore([{ status: '已确认', checkinAt: null, storeId: 'store-1', clientName: '李', appointmentTime: new Date('2026-03-15T14:00:00Z') }])
   })
 
-  it('rowCount=0 → 状态已变更或无权', async () => {
+  it('预约不存在 → 状态已变更或无权', async () => {
+    mockSelectBefore([])
+    const result = await checkinAppointment('apt-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('预约状态已变更或无权操作')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('不在 scope → 状态已变更或无权', async () => {
+    ;(isInScope as any).mockReturnValue(false)
+    const result = await checkinAppointment('apt-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('预约状态已变更或无权操作')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('status=已完成（不在待确认∪已确认）→ 不支持签到', async () => {
+    mockSelectBefore([{ status: '已完成', checkinAt: null, storeId: 'store-1', clientName: '李', appointmentTime: new Date() }])
+    const result = await checkinAppointment('apt-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不支持签到')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('已有 checkinAt（幂等）→ 成功且不覆盖、不 UPDATE', async () => {
+    mockSelectBefore([{ status: '已确认', checkinAt: new Date('2026-03-15T14:05:00Z'), storeId: 'store-1', clientName: '李', appointmentTime: new Date() }])
+    const result = await checkinAppointment('apt-001')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已签到')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('status=待确认 + 未签到 → 签到成功', async () => {
+    mockSelectBefore([{ status: '待确认', checkinAt: null, storeId: 'store-1', clientName: '李', appointmentTime: new Date() }])
+    setupUpdate(1)
+    const result = await checkinAppointment('apt-001')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('签到成功')
+  })
+
+  it('rowCount=0（并发被改）→ 状态已变更或无权', async () => {
     setupUpdate(0)
     const result = await checkinAppointment('apt-001')
     expect(result.success).toBe(false)
