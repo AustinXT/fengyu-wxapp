@@ -76,18 +76,20 @@
 
     <!-- 2. 本月业绩日历 -->
     <view class="section-card">
-      <view class="section-header">
-        <view class="section-header-left">
+      <view class="cal-header">
+        <!-- 第一行：标题 + 月份切换 -->
+        <view class="section-header">
           <text class="section-title">门店业绩</text>
-          <view class="cal-total">
-            <text class="cal-total-amount">¥ {{storeMonthAmount}}</text>
-            <text class="cal-total-detail">订单{{storeMonthOrderCount}} · 服务{{storeMonthServiceCount}}</text>
+          <view class="month-nav">
+            <van-icon name="arrow-left" size="32rpx" color="#1A1A1A" bindtap="onPrevMonth" />
+            <text class="month-label">{{monthLabel}}</text>
+            <van-icon name="arrow" size="32rpx" color="#1A1A1A" bindtap="onNextMonth" />
           </view>
         </view>
-        <view class="month-nav">
-          <van-icon name="arrow-left" size="32rpx" color="#1A1A1A" bindtap="onPrevMonth" />
-          <text class="month-label">{{monthLabel}}</text>
-          <van-icon name="arrow" size="32rpx" color="#1A1A1A" bindtap="onNextMonth" />
+        <!-- 第二行：金额 + 订单/服务数 -->
+        <view class="cal-stats-row">
+          <text class="cal-total-amount">¥ {{storeMonthAmount}}</text>
+          <text class="cal-total-detail">订单{{storeMonthOrderCount}} · 服务{{storeMonthServiceCount}}</text>
         </view>
       </view>
       <!-- 星期标题 -->
