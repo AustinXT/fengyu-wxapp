@@ -17,7 +17,7 @@
 // 5. refund-detail 路径 `/packageOrder/refund-detail/refund-detail?id=<paymentId>` —— 老前端按
 //    sale_order_id 传，本 spec 直接传 paymentId（数字），后端 refundDetail 函数兼容这两种入参。
 
-import { launchStaff, disconnect, navigateToTab, waitForData, assertElementVisible } from '../helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToTab, navigateToPage, waitForData, assertElementVisible } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid, loginAs } from '../helpers/login.mjs';
 import { installToastHook, clearToasts } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
@@ -125,7 +125,7 @@ async function run() {
   // ─── STEP 3：B navigate refund-list → 列表含步骤 1 退款 ───
   console.log('[step 3] navigate refund-list');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo('/packageOrder/refund-list/refund-list');
+  await navigateToPage(miniProgram, '/packageOrder/refund-list/refund-list');
   await new Promise(r => setTimeout(r, 1500));
   await waitForData(miniProgram, (d) =>
     Array.isArray(d.refunds) && d.refunds.length >= 1 && d.tabActive === '待审批',
