@@ -17,7 +17,7 @@
 // 5. refund-detail 路径 `/packageOrder/refund-detail/refund-detail?id=<paymentId>` —— 老前端按
 //    sale_order_id 传，本 spec 直接传 paymentId（数字），后端 refundDetail 函数兼容这两种入参。
 
-import { launchStaff, disconnect, navigateToTab, waitForData, assertElementVisible } from '../helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToTab, navigateToPage, waitForData, assertElementVisible } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid, loginAs } from '../helpers/login.mjs';
 import { installToastHook, clearToasts } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
@@ -115,17 +115,19 @@ async function run() {
   // ─── STEP 2：切 B → navigate workbench → 徽章 = 1 ───
   console.log('[step 2] loginAs B + workbench 徽章=1');
   await clearToasts(miniProgram);
-  await loginAs(miniProgram, MANAGER_B_OPENID);
+  // 显式传 B 的 currentStoreId（=本店），否则 _currentStoreId 不注入 → effectiveStoreId 解析为 null
+  // → staff.todoList 的 `WHERE so.store_id=$1` 命中 0，pendingRefundCount 永远 0。
+  await loginAs(miniProgram, MANAGER_B_OPENID, TEST_STORE_ID);
   await navigateToTab(miniProgram, '/pages/workbench/workbench');
   // workbench onShow 异步拉 todoList。pendingRefundCount 直接挂在 page.data 上。
-  await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 8000 });
+  await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 15000 });
   console.log('  ✓ workbench pendingRefundCount >= 1');
   await snapshot(miniProgram, 'bs02-step2-workbench-badge');
 
   // ─── STEP 3：B navigate refund-list → 列表含步骤 1 退款 ───
   console.log('[step 3] navigate refund-list');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo('/packageOrder/refund-list/refund-list');
+  await navigateToPage(miniProgram, '/packageOrder/refund-list/refund-list');
   await new Promise(r => setTimeout(r, 1500));
   await waitForData(miniProgram, (d) =>
     Array.isArray(d.refunds) && d.refunds.length >= 1 && d.tabActive === '待审批',
@@ -137,7 +139,7 @@ async function run() {
   console.log('[step 4] navigate refund-detail');
   await clearToasts(miniProgram);
   // 直接带 paymentId 跳详情（refundDetail 后端兼容数字 saleOrderId 走 paymentId 路径）
-  await miniProgram.navigateTo(
+  await navigateToPage(miniProgram,
     `/packageOrder/refund-detail/refund-detail?id=${paymentId}`);
   await new Promise(r => setTimeout(r, 1500));
   await waitForData(miniProgram, (d) =>

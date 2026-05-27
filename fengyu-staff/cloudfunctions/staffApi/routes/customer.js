@@ -653,6 +653,8 @@ async function stats(ctx) {
     SELECT
       c.user_id,
       c.birthday,
+      c.customer_type,
+      c.customer_status,
       MAX(so.service_date) AS last_service_date
     FROM client_wechat_users c
     LEFT JOIN service_orders so
@@ -660,14 +662,27 @@ async function stats(ctx) {
       AND so.status = '已完成'
       AND ${soScope.sql}
     WHERE ${cWhere}
-    GROUP BY c.user_id, c.birthday
+    GROUP BY c.user_id, c.birthday, c.customer_type, c.customer_status
   `, [...cParams, ...soScope.params])
 
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
   for (const r of rows) {
     // 活跃度分类
-    if (r.last_service_date) {
+    // 会员客：按 admin cron 预算的 customer_status 映射（与后台数据中心对齐）：
+    //   保有会员-稳定/有效→活跃, 沉睡→即将流失, 冰冻→流失, 休眠→沉睡
+    //   customer_status 为空（cron 未跑 / 刚升级会员）时兜底走时间衰减，避免漏桶
+    // 流量客及其它：按 last_service_date 30/60/90 天实时分桶
+    if (r.customer_type === '会员客' && r.customer_status) {
+      switch (r.customer_status) {
+        case '保有会员-稳定':
+        case '保有会员-有效': active++; break
+        case '沉睡': atRisk++; break
+        case '冰冻': lost++; break
+        case '休眠': sleeping++; break
+        default: sleeping++
+      }
+    } else if (r.last_service_date) {
       const diffDays = Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
       if (diffDays <= 30) active++
       else if (diffDays <= 60) atRisk++
@@ -694,7 +709,7 @@ async function stats(ctx) {
   }
   const memberRows = await pg.query(`
     SELECT COUNT(*) AS cnt FROM client_wechat_users
-    WHERE ${memberWhere} AND customer_id IS NOT NULL
+    WHERE ${memberWhere} AND customer_type = '会员客'
   `, memberParams)
   const memberCount = Number(memberRows[0].cnt)
 

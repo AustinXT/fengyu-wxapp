@@ -2856,7 +2856,9 @@ describe('order.approveRefund', () => {
     cardDupExists = false,  // 储值卡幂等检查是否命中已有记录
     customerType = '会员客',
     cascadeItems = [],      // cascadeRefund 内部 SELECT sale_items 时返回
-    cascadeGifts = [],      // cascadeRefund 内部 SELECT point_transactions 时返回
+    cascadeGifts = [],      // cascadeRefund 通道4 原赠送流水（用于算 G=Σamount + user_id）
+    orderReceived = 500,    // cascadeRefund 通道4 SELECT sale_orders.received（比例分母）
+    orderRefunded = 500,    // cascadeRefund 通道4 累计 refunded_amount（默认=received=整单退）
   } = {}) {
     const calls = []
     const fn = vi.fn(async (sql, _params) => {
@@ -2899,13 +2901,19 @@ describe('order.approveRefund', () => {
       if (sql.includes('UPDATE user_coupons')) {
         return { rows: [], rowCount: 0 }
       }
-      // 通道 4: SELECT point_transactions 原赠送 + INSERT 反向
-      if (sql.includes('SELECT id, user_id, type, amount') &&
-          sql.includes('FROM point_transactions')) {
-        return { rows: cascadeGifts, rowCount: cascadeGifts.length }
+      // 通道 4（目标态比例冲销）: SELECT G + user_id（整单原赠送总额）
+      if (sql.includes('AS g') && sql.includes('FROM point_transactions')) {
+        const g = cascadeGifts.reduce((s, r) => s + Number(r.amount), 0)
+        const uid = cascadeGifts[0]?.user_id ?? null
+        return { rows: [{ g, user_id: uid }], rowCount: 1 }
+      }
+      // 通道 4: SELECT received + refunded_amount FROM sale_orders（比例分母/分子）
+      if (sql.includes('SELECT received') && sql.includes('refunded') &&
+          sql.includes('FROM sale_orders')) {
+        return { rows: [{ received: orderReceived, refunded: orderRefunded }], rowCount: 1 }
       }
       if (sql.includes('INSERT INTO point_transactions')) {
-        // 通道 4 RETURNING id：返回非空 rows 才会触发后续 balance 重算（refund-cascade.js:125）
+        // 通道 4 单笔目标态冲销（ON CONFLICT DO UPDATE）
         return { rows: [{ id: 9999 }], rowCount: 1 }
       }
       if (sql.includes('UPDATE client_wechat_users') && sql.includes('points_balance')) {
@@ -3104,9 +3112,10 @@ describe('order.approveRefund', () => {
     expect(commUpdate.params[1]).toMatch(/退款审批通过.*过敏/)
   })
 
-  test('5 通道 cascade — 通道 3（user_coupons 回滚到未使用）', async () => {
+  test('5 通道 cascade — 通道 3（整单退款：user_coupons 回滚到未使用）', async () => {
     const ctx = createManagerCtx({ paymentId: 1006 })
-    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1006 })])
+    // ref_sale_item_id=null → 整单退款，券才回滚（部分退款不退券）
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1006, ref_sale_item_id: null })])
 
     const { calls } = makeApproveTxnSpy()
 
@@ -3119,33 +3128,72 @@ describe('order.approveRefund', () => {
     expect(couponUpdate.params[0]).toBe('FY-ORIG-001')
   })
 
-  test('5 通道 cascade — 通道 4（point_transactions 反向 + balance 重算）', async () => {
+  test('5 通道 cascade — 通道 3（部分退款：跳过 user_coupons，不退券）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1006 })
+    // ref_sale_item_id 非 null → 部分退款，券挂订单维度无法精确到行，跳过
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1006, ref_sale_item_id: 'orig-item-1' })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    const couponUpdate = calls.find(c => c.sql.includes('UPDATE user_coupons'))
+    expect(couponUpdate).toBeUndefined()
+  })
+
+  test('5 通道 cascade — 通道 4（整单退款：积分全额冲销 + balance 重算）', async () => {
     const ctx = createManagerCtx({ paymentId: 1007 })
-    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1007, client_user_id: 'cu-001' })])
+    // 整单退款（ref_sale_item_id=null）+ refunded=received=500 → 比例=1 → 全额冲销 G=150
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1007, client_user_id: 'cu-001', ref_sale_item_id: null })])
 
     const { calls } = makeApproveTxnSpy({
       cascadeGifts: [
         { id: 1, user_id: 'cu-001', type: '消费赠送', amount: 100 },
         { id: 2, user_id: 'cu-001', type: '回款赠送', amount: 50 },
       ],
+      orderReceived: 500,
+      orderRefunded: 500,
     })
 
     await orderRoutes.approveRefund(ctx)
 
-    // 应有 2 笔反向流水
+    // 单笔目标态冲销：amount = -round(G × refunded/received) = -round(150×500/500) = -150
     const reverseInserts = calls.filter(c =>
       c.sql.includes('INSERT INTO point_transactions') &&
       c.sql.includes("'消费冲销'")
     )
-    expect(reverseInserts.length).toBe(2)
-    expect(reverseInserts[0].params[2]).toBe(-100)
-    expect(reverseInserts[1].params[2]).toBe(-50)
+    expect(reverseInserts.length).toBe(1)
+    expect(reverseInserts[0].params[2]).toBe(-150)
 
     // balance 重算
     const balanceUpdate = calls.find(c =>
       c.sql.includes('UPDATE client_wechat_users') && c.sql.includes('points_balance')
     )
     expect(balanceUpdate).toBeDefined()
+  })
+
+  test('5 通道 cascade — 通道 4（部分退款：积分按比例冲销）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1007 })
+    // 部分退款：整单实收 1000、累计已退 200 → 比例 0.2 → 冲销 round(150×200/1000)=30
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1007, client_user_id: 'cu-001', ref_sale_item_id: 'orig-item-1' })])
+
+    const { calls } = makeApproveTxnSpy({
+      cascadeGifts: [
+        { id: 1, user_id: 'cu-001', type: '消费赠送', amount: 100 },
+        { id: 2, user_id: 'cu-001', type: '回款赠送', amount: 50 },
+      ],
+      orderReceived: 1000,
+      orderRefunded: 200,
+    })
+
+    await orderRoutes.approveRefund(ctx)
+
+    const reverseInserts = calls.filter(c =>
+      c.sql.includes('INSERT INTO point_transactions') &&
+      c.sql.includes("'消费冲销'")
+    )
+    expect(reverseInserts.length).toBe(1)
+    expect(reverseInserts[0].params[2]).toBe(-30)
   })
 
   test('5 通道 cascade — 通道 5（pickup_records 反推家居产品 picked_up_quantity）', async () => {

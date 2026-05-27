@@ -137,6 +137,7 @@ Page({
           category_name: spu.category_name || '',
           cover_image: spu.cover_image,
           description: spu.description || '',
+          detail_images: spu.detail_images || [],
           is_bundle: isBundle,
           price: Number(spu.price || 0),
           special_price: spu.special_price != null ? Number(spu.special_price) : null,
@@ -426,7 +427,7 @@ Page({
       Toast.fail('请先选择规格');
       return;
     }
-    const url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
+    const url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&productId=${encodeURIComponent(spu.product_id)}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
     wx.navigateTo({ url });
   },
 

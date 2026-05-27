@@ -3,13 +3,13 @@
 import { db } from '@/db'
 import { appointments } from '@db/appointment'
 import { stores } from '@db/org'
-import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lt, isNull, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
-import { scopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
-import { logTransition } from '@/lib/operation-log'
+import { logTransition, logOperation } from '@/lib/operation-log'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -206,26 +206,54 @@ export const confirmAppointment = withPermission(
   },
 )
 
-/** 签到 — 仅记录时间，不改状态 + scope 校验 */
+/**
+ * 签到 — 仅记录时间，不翻状态（对齐 staff appointment.checkin）
+ * - 允许 status ∈ ('待确认','已确认')
+ * - 幂等：已有 checkin_at 直接返回不覆盖原始时间
+ */
 export const checkinAppointment = withPermission(
   'appointment:checkin',
   async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
-  // 获取上下文用于日志
+  // 预查状态 + checkinAt + 上下文（用于状态/幂等判定与日志）
   const [apptCtx] = await db
-    .select({ clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+    .select({
+      status: appointments.status,
+      checkinAt: appointments.checkinAt,
+      storeId: appointments.storeId,
+      clientName: appointments.clientName,
+      appointmentTime: appointments.appointmentTime,
+    })
     .from(appointments)
-    .where(eq(appointments.appointmentId, appointmentId))
+    .where(and(
+      eq(appointments.appointmentId, appointmentId),
+      scopeCondition(session, appointments.storeId),
+    ))
     .limit(1)
 
+  if (!apptCtx || !isInScope(session, apptCtx.storeId)) {
+    return { success: false, message: '预约状态已变更或无权操作' }
+  }
+
+  if (!['待确认', '已确认'].includes(apptCtx.status)) {
+    return { success: false, message: '预约状态不支持签到' }
+  }
+
+  // 幂等：已签到不覆盖原始时间
+  if (apptCtx.checkinAt) {
+    return { success: true, message: '已签到' }
+  }
+
+  const now = new Date()
   let result: any
   try {
     result = await db
       .update(appointments)
-      .set({ checkinAt: new Date() })
+      .set({ checkinAt: now })
       .where(and(
         eq(appointments.appointmentId, appointmentId),
-        eq(appointments.status, '已确认'),
+        inArray(appointments.status, ['待确认', '已确认']),
         scopeCondition(session, appointments.storeId),
+        isNull(appointments.checkinAt),
       ))
   } catch (err: any) {
     throw err
@@ -235,8 +263,13 @@ export const checkinAppointment = withPermission(
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logTransition(session, 'appointment.checkin', 'appointment', appointmentId, '已确认', '已签到', {
-    clientName: apptCtx?.clientName, appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  // 签到仅打时间戳不翻状态，用 logOperation（旧实现误记 '已确认'→'已签到' 状态翻转，状态机无此态）
+  await logOperation(session, 'appointment.checkin', 'appointment', appointmentId, {
+    _v: 3,
+    status: apptCtx.status,
+    checkinAt: now.toISOString(),
+    clientName: apptCtx.clientName,
+    appointmentTime: apptCtx.appointmentTime?.toISOString(),
   })
 
   revalidatePath('/appointments')

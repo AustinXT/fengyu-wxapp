@@ -3,10 +3,11 @@
 import { db } from '@/db'
 import { serviceOrders, serviceItems } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
+import { productSkus } from '@db/product'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { appointments } from '@db/appointment'
-import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
@@ -14,6 +15,7 @@ import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { parseServiceOrderFilters } from '@/lib/list-filters'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -78,26 +80,11 @@ export interface ServiceOrderFilters {
   pageSize?: number
 }
 
-/** 分页结果 */
-export interface PaginatedServiceOrders {
-  data: ServiceOrder[]
-  total: number
-}
-
-/**
- * 服务端分页服务单列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * 替代 getServiceOrders() 的客户端过滤模式。
- * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
- */
-export const getServiceOrdersPaginated = withPermission(
-  'service:list',
-  async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
-
-  // 构建 WHERE 条件（DB 级过滤）
+/** 构建服务单列表 WHERE 条件（列表分页与导出共用） */
+function buildServiceOrderConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: ServiceOrderFilters,
+): (SQL | undefined)[] {
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, serviceOrders.storeId),
   ]
@@ -129,7 +116,30 @@ export const getServiceOrdersPaginated = withPermission(
     conditions.push(eq(serviceOrders.commissionStatus, filters.commissionStatus))
   }
 
-  const whereClause = and(...conditions)
+  return conditions
+}
+
+/** 分页结果 */
+export interface PaginatedServiceOrders {
+  data: ServiceOrder[]
+  total: number
+}
+
+/**
+ * 服务端分页服务单列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * 替代 getServiceOrders() 的客户端过滤模式。
+ * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
+ */
+export const getServiceOrdersPaginated = withPermission(
+  'service:list',
+  async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
+  const whereClause = and(...buildServiceOrderConditions(session, filters))
 
   // COUNT 查询
   const [countRow] = await db
@@ -158,6 +168,90 @@ export const getServiceOrdersPaginated = withPermission(
     .offset(offset)
 
   return { data: rows.map(serializeServiceOrder), total }
+  },
+)
+
+/** 服务单导出行（一行一单，服务项聚合成 itemsSummary 一列） */
+export interface ExportServiceOrderRow {
+  serviceOrderId: string
+  status: string
+  serviceOrderType: string
+  customerName: string | null
+  clientPhone: string | null
+  storeName: string | null
+  employeeName: string | null
+  serviceDate: string | null
+  createdAt: string
+  itemsSummary: string
+}
+
+/** 导出服务单（全部筛选命中，含服务项明细聚合列）。LIMIT 10000 防 OOM。 */
+export const exportServiceOrders = withPermission(
+  'service:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportServiceOrderRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseServiceOrderFilters(params)
+    const whereClause = and(...buildServiceOrderConditions(session, filters))
+
+    const orderRows = await db
+      .select({
+        service_order: serviceOrders,
+        storeName: stores.storeName,
+        employeeName: staffWechatUsers.name,
+        customerName: clientWechatUsers.name,
+        clientPhone: clientWechatUsers.phone,
+      })
+      .from(serviceOrders)
+      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+      .where(whereClause)
+      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+      .limit(LIMIT + 1)
+
+    const truncated = orderRows.length > LIMIT
+    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+    const ids = page.map((r) => r.service_order.serviceOrderId)
+
+    // 批量查服务项明细（service_items → sale_items 取名称），避免 N+1
+    const itemsMap = new Map<string, string[]>()
+    if (ids.length > 0) {
+      const itemRows = await db
+        .select({
+          serviceOrderId: serviceItems.serviceOrderId,
+          sessionUsed: serviceItems.sessionUsed,
+          productName: saleItems.productName,
+          skuName: productSkus.specName,
+        })
+        .from(serviceItems)
+        .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .where(inArray(serviceItems.serviceOrderId, ids))
+      for (const it of itemRows) {
+        const name = it.productName ?? it.skuName ?? '—'
+        const arr = itemsMap.get(it.serviceOrderId) ?? []
+        arr.push(`${name}x${it.sessionUsed}`)
+        itemsMap.set(it.serviceOrderId, arr)
+      }
+    }
+
+    const rows: ExportServiceOrderRow[] = page.map((r) => ({
+      serviceOrderId: r.service_order.serviceOrderId,
+      status: r.service_order.status,
+      serviceOrderType: r.service_order.serviceOrderType,
+      customerName: r.customerName,
+      clientPhone: r.clientPhone,
+      storeName: r.storeName,
+      employeeName: r.employeeName,
+      serviceDate: r.service_order.serviceDate,
+      createdAt: r.service_order.createdAt.toISOString(),
+      itemsSummary: (itemsMap.get(r.service_order.serviceOrderId) ?? []).join('、'),
+    }))
+
+    return { rows, truncated }
   },
 )
 
@@ -445,8 +539,10 @@ export const confirmServiceOrder = withPermission(
 
   let result: any
   try {
-    // 2026-05-20 ticket：扣减条件放宽——只校验 remaining_sessions >= sessionUsed
-    // paid_sessions 限额（旧 D6=A 规则）已废止，部分支付订单也可消费
+    // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
+    // 扣减条件叠加 paid_sessions 限额——扣减后已用次数
+    //   (session_count - remaining_sessions + session_used) 不得超 COALESCE(paid_sessions, session_count)。
+    // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
@@ -462,6 +558,7 @@ export const confirmServiceOrder = withPermission(
         WHERE sale_items.sale_item_id = si.sale_item_id
           AND si.service_order_id = ${serviceOrderId}
           AND sale_items.remaining_sessions >= si.session_used
+          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
       ),

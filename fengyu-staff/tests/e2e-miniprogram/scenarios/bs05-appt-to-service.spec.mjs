@@ -1,10 +1,8 @@
 // bs05-appt-to-service.spec.mjs — L3 BS-05 预约 → 到店 → 服务单自动创建
 // 设计文档：BUSINESS-SCENARIOS-DESIGN.md §5 BS-05
 //
-// ⚠️ 已知 prod bug（截 2026-05-17）：staffApi/routes/service.js create() 第 211 行 INSERT
-//    service_items 写了 sku_id 列，但 db/schema/service.ts 的 service_items 表**没有** sku_id 字段。
-//    step 4 提交必抛 `column "sku_id" of relation "service_items" does not exist` → toast 报错。
-//    本 spec step 4 标记 expected fail；prod bug 修复后会自动走 PASS 分支并提醒删 expected-fail 注释。
+// 注：早期（2026-05-17）service.create INSERT service_items 误写 sku_id 列的 prod bug 已修复，
+//    step 4 现为硬断言「服务单已创建」+ service_orders.appointment_id 关联。
 //
 // 不确定点：
 //   1. appointment-detail URL 参数名 = `?id=<appointmentId>`（appointment-detail.ts onLoad 取 options.id）
@@ -105,12 +103,16 @@ async function run() {
   await clearToasts(miniProgram);
   page = await miniProgram.currentPage();
   await page.callMethod('onCreateService');
+  // loadPaidOrders 是 fire-and-forget 异步（service-create onLoad 内未 await），paidOrders 初值就是
+  // [] (Array.isArray 恒真) → 不能只等"是数组"，必须等卡真正加载进来，否则云调用回填前就读到空 []。
   await waitForData(
     miniProgram,
     (d) => d.appointmentId === APPT_ID
       && d.selectedCustomer?.id === TEST_CLIENT_USER_ID
-      && Array.isArray(d.paidOrders),
-    { timeoutMs: 8000 },
+      && Array.isArray(d.paidOrders)
+      && d.paidOrders.some((o) => Array.isArray(o.items)
+        && o.items.some((i) => i.saleItemId === PAID_ITEM_ID)),
+    { timeoutMs: 15000 },
   );
   const paid = await miniProgram.evaluate(() => {
     const p = getCurrentPages().slice(-1)[0];
@@ -122,8 +124,8 @@ async function run() {
   await snapshot(miniProgram, 'bs05-step3-svc-create');
   console.log('  ✓ service-create 带入 client + paidOrders');
 
-  // Step 4: 提交（⚠️ EXPECTED FAIL — prod bug sku_id）
-  console.log('[step 4] submit (EXPECTED FAIL until prod bug fix)');
+  // Step 4: 提交 → 服务单创建（原 prod bug sku_id 已修复，改为硬断言成功）
+  console.log('[step 4] submit → 服务单创建');
   await clearToasts(miniProgram);
   await autoConfirmModal(miniProgram);
   page = await miniProgram.currentPage();
@@ -137,31 +139,19 @@ async function run() {
   });
   await page.callMethod('onSubmit');
 
-  let outcome = 'unknown';
-  try {
-    await assertToast(miniProgram, '服务单已创建', { timeoutMs: 4000 });
-    const svc = await pgPoll(
-      `SELECT service_order_id, appointment_id FROM service_orders WHERE appointment_id = $1`,
-      [APPT_ID],
-      (rows) => rows.length === 1,
-    );
-    if (svc[0].appointment_id !== APPT_ID) {
-      throw new Error(`service_orders.appointment_id 期望 ${APPT_ID} 实际 ${svc[0].appointment_id}`);
-    }
-    outcome = 'PASS_unexpected';
-    console.warn('  ⚠️ prod bug 似已修复，请删除 step 4 的 expected-fail 注释 + 头部 ⚠️ 块');
-  } catch (_) {
-    const toasts = await miniProgram.evaluate(() => wx.__e2e_toasts || []);
-    const sawErr = toasts.some(t => /sku_id|提交失败|不存在|失败/.test(t.title || ''));
-    if (!sawErr) {
-      throw new Error(`step 4 未 PASS 也未抓到预期错误 toast: ${JSON.stringify(toasts)}`);
-    }
-    outcome = 'EXPECTED_FAIL';
-    console.log(`  ✓ EXPECTED FAIL: ${toasts.map(t => t.title).join(' | ')}`);
+  await assertToast(miniProgram, '服务单已创建', { timeoutMs: 5000 });
+  const svc = await pgPoll(
+    `SELECT service_order_id, appointment_id FROM service_orders WHERE appointment_id = $1`,
+    [APPT_ID],
+    (rows) => rows.length === 1,
+  );
+  if (svc[0].appointment_id !== APPT_ID) {
+    throw new Error(`service_orders.appointment_id 期望 ${APPT_ID} 实际 ${svc[0].appointment_id}`);
   }
+  console.log('  ✓ 服务单已创建，appointment_id 关联正确');
   await snapshot(miniProgram, 'bs05-step4-submit');
 
-  console.log(`[bs05] === DONE (submit=${outcome}) ===`);
+  console.log('[bs05] === DONE ===');
 }
 
 async function main() {

@@ -76,6 +76,13 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
+# 安装时区数据并锁定东八区：alpine 默认无 tzdata，仅设 TZ 会被 musl 退回 UTC。
+# 影响 admin (server.js) 与 cron-worker（复用同一镜像）：postgres.js 解析无时区
+# timestamp（库里存的是北京墙钟时间）、Date 本地方法、日志时间戳全部按 Asia/Shanghai。
+# 缺此设置时 UTC 容器会把 11:24 误当 UTC 解析，前端再 +8 渲染成 19:24（晚 8 小时）。
+RUN apk add --no-cache tzdata
+ENV TZ=Asia/Shanghai
+
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 

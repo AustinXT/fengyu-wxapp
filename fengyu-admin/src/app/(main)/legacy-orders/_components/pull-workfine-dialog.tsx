@@ -19,6 +19,7 @@ import {
   importWorkfineOrdersByCustomer,
   type WorkfineCustomerCandidate,
   type WorkfineOrderPreview,
+  type AvailableStore,
 } from "@/actions/legacy-orders"
 
 interface Props {
@@ -49,6 +50,9 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
 
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [orders, setOrders] = useState<WorkfineOrderPreview[]>([])
+  const [availableStores, setAvailableStores] = useState<AvailableStore[]>([])
+  // WorkFine 门店名 → 新系统 storeId（默认同名匹配，可人工改选；"" = 未指派）
+  const [storeMapping, setStoreMapping] = useState<Record<string, string>>({})
   const [selectedOrderNos, setSelectedOrderNos] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
 
@@ -59,6 +63,8 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     setCandidates([])
     setPicked(null)
     setOrders([])
+    setAvailableStores([])
+    setStoreMapping({})
     setSelectedOrderNos(new Set())
     if (defaultPhone) {
       setQuery(defaultPhone)
@@ -103,10 +109,21 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     try {
       const res = await previewWorkfineOrders({ workfineCustomerId: c.customerId })
       setOrders(res.orders)
-      // 默认勾选 alreadyImported=false 且 storeMatched=true 的行
+      setAvailableStores(res.availableStores)
+
+      // 门店映射默认值：WorkFine 门店名 → 同名新系统门店的 storeId（无同名留 ""）
+      const byName = new Map(res.availableStores.map((s) => [s.storeName, s.storeId] as const))
+      const distinctStoreNames = [
+        ...new Set(res.orders.map((o) => o.storeName).filter((s): s is string => !!s)),
+      ]
+      const mapping: Record<string, string> = {}
+      for (const name of distinctStoreNames) mapping[name] = byName.get(name) ?? ""
+      setStoreMapping(mapping)
+
+      // 默认勾选：未导入 且 门店已映射（同名命中）的行
       const defaultSel = new Set(
         res.orders
-          .filter((o) => !o.alreadyImported && o.storeMatched)
+          .filter((o) => !o.alreadyImported && !!o.storeName && !!mapping[o.storeName])
           .map((o) => o.legacyOrderNo),
       )
       setSelectedOrderNos(defaultSel)
@@ -128,6 +145,24 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     })
   }
 
+  function changeStoreMapping(storeName: string, storeId: string) {
+    setStoreMapping((prev) => ({ ...prev, [storeName]: storeId }))
+    // 若该门店改为未指派（""），取消其名下已勾选的订单
+    if (!storeId) {
+      setSelectedOrderNos((prev) => {
+        const next = new Set(prev)
+        for (const o of orders) {
+          if (o.storeName === storeName) next.delete(o.legacyOrderNo)
+        }
+        return next
+      })
+    }
+  }
+
+  // 当前可导入条件：未导入 且 其 WorkFine 门店已映射到新系统门店
+  const isAllowed = (o: WorkfineOrderPreview) =>
+    !o.alreadyImported && !!o.storeName && !!storeMapping[o.storeName]
+
   async function doImport() {
     if (!picked) return
     if (selectedOrderNos.size === 0) {
@@ -139,6 +174,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       const res = await importWorkfineOrdersByCustomer({
         workfineCustomerId: picked.customerId,
         selectedOrderNos: Array.from(selectedOrderNos),
+        storeMapping,
       })
       const parts = [`已导入 ${res.insertedCount} 条`]
       if (res.skippedAlreadyExist > 0) parts.push(`已存在跳过 ${res.skippedAlreadyExist}`)
@@ -161,7 +197,12 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     }
   }
 
-  const importableCount = orders.filter((o) => !o.alreadyImported && o.storeMatched).length
+  const importableCount = orders.filter(isAllowed).length
+  // 本次预览涉及的去重 WorkFine 门店名（用于映射表）
+  const distinctStoreNames = [
+    ...new Set(orders.map((o) => o.storeName).filter((s): s is string => !!s)),
+  ]
+  const unmappedCount = distinctStoreNames.filter((n) => !storeMapping[n]).length
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} className="max-w-3xl">
@@ -244,7 +285,41 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
               该顾客在 WorkFine 中无历史订单
             </div>
           ) : (
-            <div className="border rounded-md max-h-96 overflow-auto">
+            <>
+              {distinctStoreNames.length > 0 && (
+                <div className="border rounded-md p-3 space-y-2">
+                  <div className="text-sm font-medium">
+                    门店映射（WorkFine 门店 → 新系统门店，默认同名）
+                  </div>
+                  {unmappedCount > 0 && (
+                    <div className="text-xs text-[var(--destructive)]">
+                      有 {unmappedCount} 个门店未指派，对应订单不可导入；请为其选择新系统门店。
+                    </div>
+                  )}
+                  <div className="space-y-1.5">
+                    {distinctStoreNames.map((name) => (
+                      <div key={name} className="flex items-center gap-2 text-sm">
+                        <span className="min-w-[8rem] truncate">{name}</span>
+                        <span className="text-[var(--muted-foreground)]">→</span>
+                        <select
+                          className="flex-1 h-8 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-sm"
+                          value={storeMapping[name] ?? ""}
+                          onChange={(e) => changeStoreMapping(name, e.target.value)}
+                        >
+                          <option value="">未指派</option>
+                          {availableStores.map((s) => (
+                            <option key={s.storeId} value={s.storeId}>
+                              {s.storeName}
+                              {s.isClosed ? "（已闭店）" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="border rounded-md max-h-96 overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-[var(--muted)] sticky top-0">
                   <tr className="text-left">
@@ -258,7 +333,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
                 </thead>
                 <tbody>
                   {orders.map((o) => {
-                    const allowed = !o.alreadyImported && o.storeMatched
+                    const allowed = isAllowed(o)
                     const checked = selectedOrderNos.has(o.legacyOrderNo)
                     return (
                       <tr
@@ -280,8 +355,8 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
                         <td className="px-3 py-2">
                           {o.alreadyImported ? (
                             <Badge variant="secondary">已在 PG</Badge>
-                          ) : !o.storeMatched ? (
-                            <Badge variant="destructive">门店未匹配</Badge>
+                          ) : !allowed ? (
+                            <Badge variant="destructive">待选门店</Badge>
                           ) : (
                             <Badge variant="outline">可导入</Badge>
                           )}
@@ -291,7 +366,8 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
                   })}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -304,6 +380,8 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
               setStep("search")
               setPicked(null)
               setOrders([])
+              setAvailableStores([])
+              setStoreMapping({})
               setSelectedOrderNos(new Set())
             }}
             disabled={importing}

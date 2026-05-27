@@ -19,7 +19,7 @@
 //    → 把 manager 设为 preferred_employee_id + 给 manager skills=['美容师']。
 
 import {
-  launchStaff, disconnect, navigateToTab, waitForData,
+  launchStaff, disconnect, navigateToTab, navigateToPage, waitForData,
 } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid } from '../helpers/login.mjs';
 import { installToastHook, assertToast, clearToasts, autoConfirmModal } from '../helpers/toast.mjs';
@@ -130,7 +130,7 @@ async function run() {
   // ─── Step 2：tap "待提成分配" → allocation-list 渲染 1 项 ───
   console.log('[step 2] 跳 allocation-list（直接 navigateTo，避免 tap Vant 嵌套的不稳定）');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo('/packageOrder/allocation-list/allocation-list');
+  await navigateToPage(miniProgram, '/packageOrder/allocation-list/allocation-list');
   await waitForData(miniProgram, (d) => Array.isArray(d.orders) && d.orders.length >= 1, { timeoutMs: 8000 });
   const listPage = await miniProgram.currentPage();
   const listData = await listPage.data();
@@ -142,7 +142,7 @@ async function run() {
   // ─── Step 3：进 revenue-allocation 详情 ───
   console.log('[step 3] navigateTo revenue-allocation?saleOrderId=...');
   await clearToasts(miniProgram);
-  await miniProgram.navigateTo(`/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${fixture.orderId}`);
+  await navigateToPage(miniProgram, `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${fixture.orderId}`);
   await waitForData(miniProgram, (d) => d.order && Array.isArray(d.items) && d.items.length >= 1, { timeoutMs: 10000 });
   const allocPage = await miniProgram.currentPage();
   const allocData = await allocPage.data();

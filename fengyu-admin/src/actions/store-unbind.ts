@@ -5,6 +5,7 @@ import { storeUnbindRequests } from '@db/store-unbind'
 import { clientWechatUsers } from '@db/user'
 import { stores } from '@db/org'
 import { eq, desc } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
@@ -17,6 +18,8 @@ export interface UnbindRequest {
   customerPhone: string | null
   fromStoreId: string
   fromStoreName: string | null
+  toStoreId: string | null
+  toStoreName: string | null
   status: string
   note: string | null
   rejectReason: string | null
@@ -26,16 +29,19 @@ export interface UnbindRequest {
 export const getUnbindRequests = withPermission(
   'store_unbind:list',
   async (session): Promise<UnbindRequest[]> => {
+  const toStores = alias(stores, 'to_stores')
   const rows = await db
     .select({
       request: storeUnbindRequests,
       customerName: clientWechatUsers.name,
       customerPhone: clientWechatUsers.phone,
       fromStoreName: stores.storeName,
+      toStoreName: toStores.storeName,
     })
     .from(storeUnbindRequests)
     .leftJoin(clientWechatUsers, eq(storeUnbindRequests.userId, clientWechatUsers.userId))
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
+    .leftJoin(toStores, eq(storeUnbindRequests.toStoreId, toStores.storeId))
     .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
     // 默认排序：最近审批/更新的解绑申请浮顶（admin.sys.spec.md §5）
     .orderBy(desc(storeUnbindRequests.updatedAt), desc(storeUnbindRequests.createdAt))
@@ -48,6 +54,8 @@ export const getUnbindRequests = withPermission(
     customerPhone: r.customerPhone,
     fromStoreId: r.request.fromStoreId,
     fromStoreName: r.fromStoreName,
+    toStoreId: r.request.toStoreId,
+    toStoreName: r.toStoreName,
     status: r.request.status,
     note: r.request.note,
     rejectReason: r.request.rejectReason,
@@ -72,11 +80,15 @@ export const approveUnbind = withPermission(
   if (request.status !== '待处理') {
     return { success: false, message: '该申请已处理' }
   }
+  if (!request.toStoreId) {
+    return { success: false, message: '申请缺少目标门店，无法转店' }
+  }
   if (!isInScope(session, request.fromStoreId)) {
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  // 更新请求状态 + 清除顾客绑定（原子事务，防止部分成功导致数据不一致）
+  // 更新请求状态 + 把顾客门店从 from 转绑到 to（原子事务，防止部分成功导致数据不一致）
+  // 转店仅改门店绑定 + 清美容师绑定，不动 customer_source（获客来源是历史属性，转店不改它）
   try {
     await db.transaction(async (tx) => {
       await tx
@@ -90,7 +102,7 @@ export const approveUnbind = withPermission(
 
       await tx
         .update(clientWechatUsers)
-        .set({ boundStoreId: null, boundEmployeeId: null })
+        .set({ boundStoreId: request.toStoreId, boundEmployeeId: null, boundEmployeeName: null })
         .where(eq(clientWechatUsers.userId, request.userId))
     })
   } catch {

@@ -9,6 +9,7 @@ import type { SQL } from 'drizzle-orm'
 import type { PointTransaction, PointTransactionSummary, AuthSession } from '@/lib/types'
 import { scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
+import { parsePointFilters } from '@/lib/list-filters'
 
 /**
  * 已知的 point_transactions.type 取值（自由文本字段，非 DB 枚举；下拉由 distinctTypes 动态填充）
@@ -213,5 +214,68 @@ export const getPointTransactionsPaginated = withPermission(
     },
     distinctTypes: typeRows.map((t) => t.type).filter((t): t is string => !!t).sort(),
   }
+  },
+)
+
+/** 积分流水导出行 */
+export interface ExportPointRow {
+  createdAt: string
+  customerName: string | null
+  customerPhone: string | null
+  memberLevel: string | null
+  storeName: string | null
+  type: string | null
+  amount: number
+  refOrderId: string | null
+}
+
+/** 导出积分流水（全部筛选命中）。LIMIT 10000 防 OOM。 */
+export const exportPointTransactions = withPermission(
+  'point_transaction:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportPointRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parsePointFilters(params)
+    const conditions = buildConditions(session, filters)
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+
+    const storeName = sql<string | null>`(
+      SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
+    )`
+
+    const dataRows = await db
+      .select({
+        type: pointTransactions.type,
+        amount: pointTransactions.amount,
+        refOrderId: pointTransactions.refOrderId,
+        createdAt: pointTransactions.createdAt,
+        customerName: clientWechatUsers.name,
+        customerPhone: clientWechatUsers.phone,
+        memberLevel: clientWechatUsers.memberLevel,
+        storeName,
+      })
+      .from(pointTransactions)
+      .innerJoin(clientWechatUsers, eq(pointTransactions.userId, clientWechatUsers.userId))
+      .where(whereClause)
+      .orderBy(desc(pointTransactions.createdAt))
+      .limit(LIMIT + 1)
+
+    const truncated = dataRows.length > LIMIT
+    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
+
+    const rows: ExportPointRow[] = page.map((r) => ({
+      createdAt: r.createdAt.toISOString(),
+      customerName: r.customerName,
+      customerPhone: r.customerPhone,
+      memberLevel: r.memberLevel,
+      storeName: r.storeName,
+      type: r.type,
+      amount: r.amount,
+      refOrderId: r.refOrderId,
+    }))
+
+    return { rows, truncated }
   },
 )

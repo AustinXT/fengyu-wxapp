@@ -231,22 +231,31 @@ async function shopInit(ctx) {
  * SKU 详情
  */
 async function skuDetail(ctx) {
-  const { skuId } = ctx.event.payload || {}
+  const { skuId, productId } = ctx.event.payload || {}
 
   if (!skuId) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')
   }
 
+  // cover_image 取自 products 表。同一 sku 可挂在多个商品下（mall_product_skus 唯一键
+  // 是 (product_id, sku_id) 复合），故传入 productId 时按该商品精确取封面；
+  // 缺省时确定性兜底：优先非套餐商品、再按映射插入序，避免随机命中错误封面。
   const rows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
       sk.service_fee, sk.sort_order, sk.is_shengmei,
-      pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
+      pc.category_id, pc.category_name, pc.product_kind, pc.sales_category,
+      (SELECT p.cover_image FROM mall_product_skus mps
+       JOIN products p ON mps.product_id = p.product_id
+       WHERE mps.sku_id = sk.sku_id
+         AND ($2::text IS NULL OR mps.product_id = $2)
+       ORDER BY p.is_bundle ASC, mps.id ASC
+       LIMIT 1) AS cover_image
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = $1 AND sk.deleted_at IS NULL
-  `, [skuId])
+  `, [skuId, productId || null])
 
   if (rows.length === 0) {
     throw new Error('INVALID_PARAMS: 商品不存在')

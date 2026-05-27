@@ -81,7 +81,14 @@ export async function login(page: Page, phone: string, pass = ADMIN_PASS): Promi
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
-      await page.locator('#phone').waitFor({ state: 'attached', timeout: 60_000 })
+      await page.locator('#phone').waitFor({ state: 'visible', timeout: 60_000 })
+      // 登录页是 controlled input（onChange → React state），表单提交读 state。
+      // dev server 冷编译/高负载时 hydration 慢：若在 onChange 绑定前键入，DOM 有值但
+      // React state 仍是 ""，handleSubmit 校验「请输入手机号」直接 return，永远停在 /login。
+      // 故：先 networkidle 等 hydration → 用 pressSequentially（逐字真实键事件，hydration
+      //     完成后必被 onChange 捕获）填值 → 点登录 → 等 60s 跳转。
+      // 若本轮仍因 hydration 未就绪导致「停在 /login」，外层 3 次重试会重新 goto 再来一遍。
+      await page.waitForLoadState('networkidle').catch(() => null)
       await page.locator('#phone').click()
       await page.locator('#phone').fill('')
       await page.locator('#phone').pressSequentially(phone, { delay: 30 })

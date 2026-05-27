@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getServiceOrdersPaginated } from '@/actions/services'
+import { parseServiceOrderFilters } from '@/lib/list-filters'
 import { getStores } from '@/actions/stores'
 import ServicesPageClient from './_components/services-page'
 
@@ -14,11 +15,7 @@ export default async function Page({
 
   const [{ data: serviceOrders, total }, stores] = await Promise.all([
     getServiceOrdersPaginated({
-      status: params.status,
-      storeId: params.store,
-      dateFrom: params.from,
-      dateTo: params.to,
-      search: params.q,
+      ...parseServiceOrderFilters(params),
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),

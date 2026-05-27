@@ -38,6 +38,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - COOKIE_SECURE=false
+      # 锁定东八区（与 cron-worker 对齐）。Dockerfile ENV 已是权威，这里显式声明双保险，
+      # 防止 admin 容器跑在 UTC 导致 postgres.js 把北京墙钟时间误读、时间列晚 8 小时。
+      - TZ=Asia/Shanghai
       - TENCENTCLOUD_SECRETID=${TENCENTCLOUD_SECRETID}
       - TENCENTCLOUD_SECRETKEY=${TENCENTCLOUD_SECRETKEY}
       - CLOUDBASE_ENV_ID=${CLOUDBASE_ENV_ID}

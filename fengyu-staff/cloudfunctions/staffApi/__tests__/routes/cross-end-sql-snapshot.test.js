@@ -540,7 +540,7 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
     })
   })
 
-  // 通道 3：user_coupons 状态翻转（UPDATE ... SET status = '未使用'）
+  // 通道 3：user_coupons 状态翻转（UPDATE ... SET status = '未使用'；部分退款不退券）
   describe('通道 3：user_coupons 状态翻转', () => {
     test('staff 必须 UPDATE user_coupons SET status = 未使用 + used_at = NULL', () => {
       expect(staffSrc).toMatch(/UPDATE\s+user_coupons[\s\S]*?SET[\s\S]*?status\s*=\s*'未使用'/i)
@@ -556,10 +556,14 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/expire_at[\s\S]{0,80}NOW\(\)/i)
       expect(adminSrc).toMatch(/expire_at[\s\S]{0,80}NOW\(\)/i)
     })
+    test('两端部分退款不退券：券 UPDATE 包在 if (!saleItemId) 守卫内', () => {
+      expect(staffSrc).toMatch(/if\s*\(\s*!saleItemId\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
+      expect(adminSrc).toMatch(/if\s*\(\s*!saleItemId\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
+    })
   })
 
-  // 通道 4：point_transactions 反向流水（INSERT '消费冲销' 行 + 重算 points_balance）
-  describe('通道 4：point_transactions 反向流水', () => {
+  // 通道 4：point_transactions 比例冲销（INSERT '消费冲销' 行 + 重算 points_balance）
+  describe('通道 4：point_transactions 比例冲销', () => {
     test('staff 必须 INSERT INTO point_transactions type=消费冲销', () => {
       expect(staffSrc).toMatch(/INSERT\s+INTO\s+point_transactions/i)
       expect(staffSrc).toMatch(/'消费冲销'/)
@@ -572,9 +576,20 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/UPDATE\s+client_wechat_users[\s\S]*?points_balance\s*=/i)
       expect(adminSrc).toMatch(/UPDATE\s+client_wechat_users[\s\S]*?points_balance\s*=/i)
     })
-    test('两端反向流水必须幂等（同 ref_order_id 已有冲销则不重复插）', () => {
-      expect(staffSrc).toMatch(/NOT\s+EXISTS[\s\S]*?'消费冲销'/i)
-      expect(adminSrc).toMatch(/NOT\s+EXISTS[\s\S]*?'消费冲销'/i)
+    test('两端冲销笔目标态累加（ON CONFLICT ... DO UPDATE SET amount = EXCLUDED.amount，非 DO NOTHING/NOT EXISTS）', () => {
+      expect(staffSrc).toMatch(/ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET\s+amount\s*=\s*EXCLUDED\.amount/i)
+      expect(adminSrc).toMatch(/ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET\s+amount\s*=\s*EXCLUDED\.amount/i)
+      // 反向守护：通道 4 段落不应再用 NOT EXISTS 旧幂等
+      const ch4Staff = staffSrc.match(/通道 4[\s\S]*?通道 5/)?.[0] ?? ''
+      const ch4Admin = adminSrc.match(/4\)\s+point_transactions[\s\S]*?5\)\s+sale_items/)?.[0] ?? ''
+      expect(ch4Staff).not.toMatch(/NOT\s+EXISTS/i)
+      expect(ch4Admin).not.toMatch(/NOT\s+EXISTS/i)
+    })
+    test('两端按退款占实收比例冲销（received > 0 ? Math.round + G=COALESCE(SUM(amount),0) AS g）', () => {
+      expect(staffSrc).toMatch(/received\s*>\s*0\s*\?\s*Math\.round/i)
+      expect(adminSrc).toMatch(/received\s*>\s*0\s*\?\s*Math\.round/i)
+      expect(staffSrc).toMatch(/COALESCE\s*\(\s*SUM\s*\(\s*amount\s*\)\s*,\s*0\s*\)\s+AS\s+g/i)
+      expect(adminSrc).toMatch(/COALESCE\s*\(\s*SUM\s*\(\s*amount\s*\)\s*,\s*0\s*\)\s+AS\s+g/i)
     })
   })
 

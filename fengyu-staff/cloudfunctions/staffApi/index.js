@@ -13,6 +13,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 // 导入中间件
 const { auth } = require('./middleware/auth')
 const { buildErrorResponse } = require('./utils/error-codes')
+const { extractAppVersion } = require('./utils/app-version')
 
 // 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
@@ -170,6 +171,7 @@ exports.main = async (event, context) => {
     event,
     context,
     auth: {}, // 将由认证中间件填充
+    appVersion: extractAppVersion(payload), // 前端 _appVersion（供向后兼容分流）
     result: null
   }
 

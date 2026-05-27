@@ -83,12 +83,46 @@ function calcAllocAmount(ratioPercent: string, base: number): string {
 
 // --------------- 初始化 ---------------
 
+/** 按员工 skills 推导技能标签（推广师 > 养生师 > 美容师 兜底）；无员工时回退美容师 */
+function deriveSkillTag(emp: Employee | undefined): string {
+  const skills = emp?.skills || []
+  if (skills.includes('推广师')) return '推广师'
+  if (skills.includes('养生师')) return '养生师'
+  return '美容师'
+}
+
+/** 按服务明细 + 比例计算一行提成条目（已分配回填 / 默认预填共用同一套算法） */
+function buildEntry(
+  item: ServiceItemDetail | undefined,
+  skillTag: string,
+  employeeId: string,
+  ratioPercent: string,
+  commissionRates: CommissionRate[],
+  marketName: string,
+  fallbackRate: number,
+): CommissionEntry {
+  const base = item ? consumeBase(item) : 0
+  const allocAmount = calcAllocAmount(ratioPercent, base)
+  const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, base)
+  const commRate = rateRef ? Number(rateRef.commissionRate) : fallbackRate
+  return {
+    id: Date.now() + Math.random(),
+    skillTag,
+    employeeId,
+    ratioPercent,
+    allocAmount,
+    commissionRate: commRate,
+    commissionAmount: (Number(allocAmount) * commRate).toFixed(2),
+  }
+}
+
 function initCommissions(
   serviceItems: ServiceItemDetail[],
   commissions: ServiceCommission[],
   employees: Employee[],
   commissionRates: CommissionRate[],
   marketName: string,
+  assignedEmployeeId?: string | null,
 ): Record<string, CommissionEntry[]> {
   const result: Record<string, CommissionEntry[]> = {}
   for (const item of serviceItems) result[item.serviceItemId] = []
@@ -96,33 +130,28 @@ function initCommissions(
   for (const comm of commissions) {
     if (!result[comm.serviceItemId]) continue
     const item = serviceItems.find((i) => i.serviceItemId === comm.serviceItemId)
-    const base = item ? consumeBase(item) : 0
 
     const emp = employees.find((e) => e.employeeId === comm.employeeId)
-    let skillTag = comm.roleType || ''
-    if (!skillTag && emp) {
-      const skills = emp.skills || []
-      if (skills.includes('推广师')) skillTag = '推广师'
-      else if (skills.includes('养生师')) skillTag = '养生师'
-      else skillTag = '美容师'
-    }
-    skillTag = skillTag || '美容师'
+    const skillTag = comm.roleType || deriveSkillTag(emp)
 
     const ratioPercent = (Number(comm.allocationRatio) * 100).toFixed(0)
+    result[comm.serviceItemId].push(
+      buildEntry(item, skillTag, comm.employeeId, ratioPercent, commissionRates, marketName, Number(comm.commissionRate)),
+    )
+  }
 
-    const allocAmount = calcAllocAmount(ratioPercent, base)
-    const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, base)
-    const commRate = rateRef ? Number(rateRef.commissionRate) : Number(comm.commissionRate)
-
-    result[comm.serviceItemId].push({
-      id: Date.now() + Math.random(),
-      skillTag,
-      employeeId: comm.employeeId,
-      ratioPercent,
-      allocAmount,
-      commissionRate: commRate,
-      commissionAmount: (Number(allocAmount) * commRate).toFixed(2),
-    })
+  // 未分配的服务明细默认预填 1 行：指派美容师 + 100% + 按费率算的单人提成
+  // （用户可改/可加行；提交仍走 batchSaveServiceCommissions）
+  if (assignedEmployeeId) {
+    const assignedEmp = employees.find((e) => e.employeeId === assignedEmployeeId)
+    const assignedSkillTag = deriveSkillTag(assignedEmp)
+    for (const item of serviceItems) {
+      if (result[item.serviceItemId].length === 0) {
+        result[item.serviceItemId].push(
+          buildEntry(item, assignedSkillTag, assignedEmployeeId, '100', commissionRates, marketName, 0),
+        )
+      }
+    }
   }
 
   return result
@@ -168,7 +197,7 @@ export default function ServiceCommissionDetailPageClient({
   const marketName = serviceOrder.marketName
 
   const [itemComms, setItemComms] = useState<Record<string, CommissionEntry[]>>(() =>
-    initCommissions(serviceItems, commissions, employees, commissionRates, marketName)
+    initCommissions(serviceItems, commissions, employees, commissionRates, marketName, serviceOrder.assignedEmployeeId)
   )
 
   const addEntry = (serviceItemId: string) => {

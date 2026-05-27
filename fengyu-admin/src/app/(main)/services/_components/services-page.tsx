@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useCallback } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,7 +11,9 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Pagination } from "@/components/ui/pagination"
-import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder } from "@/actions/services"
+import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
+import { ExportButton } from "@/components/ui/export-button"
+import { exportToXlsx, fmtDate, fmtDateTime } from "@/lib/export-xlsx"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
@@ -107,6 +109,35 @@ export default function ServicesPageClient({
   total: number
 }) {
   const { get, set, setMany } = useUrlFilters()
+  const searchParams = useSearchParams()
+
+  /** 导出当前筛选命中的全部服务单（跨分页，含服务项明细聚合列） */
+  const handleExport = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries())
+    const { rows, truncated } = await exportServiceOrders(raw)
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "服务单",
+      sheetName: "服务单",
+      columns: [
+        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
+        { header: "状态", accessor: (r) => r.status },
+        { header: "类型", accessor: (r) => r.serviceOrderType },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
+        { header: "门店", accessor: (r) => r.storeName },
+        { header: "负责美容师", accessor: (r) => r.employeeName },
+        { header: "服务日期", width: 14, accessor: (r) => fmtDate(r.serviceDate) },
+        { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
+        { header: "服务项明细", width: 40, accessor: (r) => r.itemsSummary },
+      ],
+      rows,
+    })
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
+  }, [searchParams])
 
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback((key: string, value: string) => {
@@ -167,6 +198,7 @@ export default function ServicesPageClient({
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
+            <ExportButton onExport={handleExport} />
           </div>
         </CardContent>
       </Card>

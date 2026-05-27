@@ -89,7 +89,7 @@ Page({
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, bundleProductId } = options as Record<string, string>;
+    const { skuId, productId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, bundleProductId } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
@@ -150,7 +150,7 @@ Page({
     } else {
       // 场景 A：自助下单
       const qty = parseInt(quantity, 10) || 1;
-      this.loadSkuPrice(skuId, qty);
+      this.loadSkuPrice(skuId, qty, productId);
       this.setData({
         skuId: skuId || '',
         spuName: decodeURIComponent(spuName || ''),
@@ -163,9 +163,9 @@ Page({
     }
   },
 
-  async loadSkuPrice(skuId: string, quantity: number = 1) {
+  async loadSkuPrice(skuId: string, quantity: number = 1, productId?: string) {
     try {
-      const data = await callClientApi('product.skuDetail', { skuId });
+      const data = await callClientApi('product.skuDetail', { skuId, productId });
       const sku = data?.sku;
       const unitPrice = Number(sku?.special_price || sku?.price || 0);
       this.setData({

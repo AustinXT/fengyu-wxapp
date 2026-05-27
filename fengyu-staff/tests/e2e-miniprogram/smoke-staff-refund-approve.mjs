@@ -1,7 +1,7 @@
 // smoke-staff-refund-approve.mjs — 退款审批 UI 路径
 // 仅验证 navigate 到 refund-list / refund-detail 不崩溃
 
-import { launchStaff, disconnect } from './helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToPage } from './helpers/automator.mjs';
 import { loginStaffWithTestOpenid } from './helpers/login.mjs';
 import { createTestManager, cleanupL3TestData } from './helpers/fixtures.mjs';
 import { closePool } from './helpers/pg.mjs';
@@ -15,7 +15,7 @@ async function run() {
   miniProgram = await launchStaff();
   await loginStaffWithTestOpenid(miniProgram, TEST_OPENID_MANAGER);
 
-  await miniProgram.navigateTo('/packageOrder/refund-list/refund-list');
+  await navigateToPage(miniProgram, '/packageOrder/refund-list/refund-list');
   await new Promise(r => setTimeout(r, 1500));
   const page = await miniProgram.currentPage();
   console.log('  ✓ refund-list 加载：', page.path);

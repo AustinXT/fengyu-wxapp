@@ -1,4 +1,15 @@
 // utils/cloud.ts — clientApi 调用封装
+import { APP_VERSION } from './version'
+
+/**
+ * 自动附加小程序前端版本号 `_appVersion`，供云函数按前端版本做向后兼容分流
+ * （上线版/测试版共用 CloudBase 环境，云函数部署即生效但前端上线有审批延迟，新旧版并存）。
+ * 调用方已显式传入 `_appVersion` 时不覆盖。
+ */
+function withClientContext(payload: Record<string, any>): Record<string, any> {
+  if (payload && payload._appVersion !== undefined) return payload
+  return { ...payload, _appVersion: APP_VERSION }
+}
 
 /**
  * 过滤技术性错误信息，确保用户看到的是友好提示
@@ -26,7 +37,7 @@ export async function callClientApi<T = any>(
   try {
     res = await wx.cloud.callFunction({
       name: 'clientApi',
-      data: { action, payload }
+      data: { action, payload: withClientContext(payload) }
     })
   } catch (sdkErr: any) {
     // 网络/SDK 层错误（超时、断网、函数不存在等）→ 友好提示
@@ -63,7 +74,7 @@ export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneRe
       name: 'clientApi',
       data: {
         action: 'auth.bindPhone',
-        payload: {},
+        payload: withClientContext({}),
         phoneData: wx.cloud.CloudID(cloudID)
       }
     }) as any

@@ -21,6 +21,8 @@ import { getMemberThreshold } from '@/lib/member-threshold'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import { shanghaiYmd } from '@/lib/datetime'
+import { parseOrderFilters } from '@/lib/list-filters'
 
 const opener = alias(staffWechatUsers, 'opener')
 
@@ -306,26 +308,11 @@ export interface OrderFilters {
   pageSize?: number
 }
 
-/** 分页结果 */
-export interface PaginatedOrders {
-  data: SaleOrder[]
-  total: number
-}
-
-/**
- * 服务端分页订单列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * 替代 getOrders() 的客户端过滤模式，支持大数据量下的高效分页。
- * 筛选条件通过 URL searchParams → Server Component → 此函数流转。
- */
-export const getOrdersPaginated = withPermission(
-  'sale_order:list',
-  async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
-
-  // 构建 WHERE 条件（DB 级过滤）
+/** 构建订单列表 WHERE 条件（列表分页与导出共用，保证筛选口径一致） */
+function buildOrderConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: OrderFilters,
+): (SQL | undefined)[] {
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, saleOrders.storeId),
   ]
@@ -372,7 +359,30 @@ export const getOrdersPaginated = withPermission(
     conditions.push(eq(saleOrders.allocationStatus, filters.allocationStatus))
   }
 
-  const whereClause = and(...conditions)
+  return conditions
+}
+
+/** 分页结果 */
+export interface PaginatedOrders {
+  data: SaleOrder[]
+  total: number
+}
+
+/**
+ * 服务端分页订单列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * 替代 getOrders() 的客户端过滤模式，支持大数据量下的高效分页。
+ * 筛选条件通过 URL searchParams → Server Component → 此函数流转。
+ */
+export const getOrdersPaginated = withPermission(
+  'sale_order:list',
+  async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
+  const whereClause = and(...buildOrderConditions(session, filters))
 
   // COUNT 查询（与数据查询共用相同 WHERE）
   const [countRow] = await db
@@ -429,6 +439,96 @@ export const getOrdersPaginated = withPermission(
   }))
 
   return { data, total }
+  },
+)
+
+/** 导出行（一行一单，明细聚合成 itemsSummary 一列） */
+export interface ExportOrderRow {
+  saleOrderId: string
+  saleOrderType: string
+  documentType: string | null
+  status: string
+  customerName: string | null
+  clientPhone: string | null
+  storeName: string | null
+  totalAmount: string
+  prepaidCardAmount: string
+  received: string
+  refundedAmount: string
+  paymentMethod: string | null
+  openedByName: string | null
+  saleOrderDatetime: string
+  createdAt: string
+  remark: string | null
+  itemsSummary: string
+}
+
+/** 导出订单（全部筛选命中，含商品明细聚合列）。LIMIT 10000 防 OOM。 */
+export const exportOrders = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportOrderRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseOrderFilters(params)
+    const whereClause = and(...buildOrderConditions(session, filters))
+
+    const orderRows = await db
+      .select({ order: saleOrders, storeName: stores.storeName, openedByName: opener.name })
+      .from(saleOrders)
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .where(whereClause)
+      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .limit(LIMIT + 1)
+
+    const truncated = orderRows.length > LIMIT
+    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+    const ids = page.map((r) => r.order.saleOrderId)
+
+    // 批量查明细，避免 N+1
+    const itemsMap = new Map<string, string[]>()
+    if (ids.length > 0) {
+      const itemRows = await db
+        .select({
+          saleOrderId: saleItems.saleOrderId,
+          productName: saleItems.productName,
+          skuName: productSkus.specName,
+          quantity: saleItems.quantity,
+        })
+        .from(saleItems)
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .where(inArray(saleItems.saleOrderId, ids))
+      for (const it of itemRows) {
+        const name = it.productName ?? it.skuName ?? '—'
+        const arr = itemsMap.get(it.saleOrderId) ?? []
+        arr.push(`${name}x${it.quantity}`)
+        itemsMap.set(it.saleOrderId, arr)
+      }
+    }
+
+    const rows: ExportOrderRow[] = page.map((r) => ({
+      saleOrderId: r.order.saleOrderId,
+      saleOrderType: r.order.saleOrderType,
+      documentType: r.order.documentType,
+      status: r.order.status,
+      customerName: r.order.customerName,
+      clientPhone: r.order.clientPhone,
+      storeName: r.storeName,
+      totalAmount: r.order.totalAmount,
+      prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+      received: r.order.received ?? '0',
+      refundedAmount: r.order.refundedAmount ?? '0',
+      paymentMethod: r.order.paymentMethod,
+      openedByName: r.openedByName,
+      saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
+      createdAt: r.order.createdAt.toISOString(),
+      remark: r.order.remark,
+      itemsSummary: (itemsMap.get(r.order.saleOrderId) ?? []).join('、'),
+    }))
+
+    return { rows, truncated }
   },
 )
 
@@ -2149,7 +2249,7 @@ export const createDepositOrder = withPermission(
         })
 
         // 生成 sale_item 流水号序列
-        const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+        const dateStr = shanghaiYmd(now)
         const maxRows = await tx.execute(sql`
           SELECT sale_item_id FROM sale_items
           WHERE sale_item_id LIKE ${`XSLSH-WX-${dateStr}%`}

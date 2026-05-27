@@ -8,6 +8,10 @@
  *   2. 其他 → 原 cloud.callFunction 入口（小程序前端 + admin callClientFunction）
  */
 
+// 强制进程时区为东八区。CloudBase 运行时默认 UTC，否则 new Date(y,m,d) / getHours/getDate
+// 等本地时间方法会偏差 8 小时（须在任何 Date 操作与模块 require 之前设置）。
+process.env.TZ = 'Asia/Shanghai'
+
 const cloud = require('wx-server-sdk')
 const crypto = require('crypto')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -15,6 +19,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 // 导入中间件
 const { auth } = require('./middleware/auth')
 const { buildErrorResponse } = require('./utils/error-codes')
+const { extractAppVersion } = require('./utils/app-version')
 
 // HTTP 触发器仅放白名单 action（其他即使签对了也 403）
 // 任何新增需要 HTTP 暴露的 action 必须显式加这里
@@ -116,6 +121,7 @@ exports.main = async (event, context) => {
     event,
     context,
     auth: {}, // 将由认证中间件填充
+    appVersion: extractAppVersion(payload), // 前端 _appVersion（供向后兼容分流），公开接口同样可读
     result: null
   }
 
@@ -223,6 +229,7 @@ async function handleHttpEntry(event, context) {
     event: { ...event, payload: payload || {}, _fromHttp: true, _hmacVerified: true },
     context,
     auth: {},
+    appVersion: extractAppVersion(payload), // 跨 env HTTP 入口无前端版本，恒为 null，仅为 ctx 结构一致
     result: null,
   }
 

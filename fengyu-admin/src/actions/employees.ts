@@ -14,6 +14,8 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
+import { shanghaiToday } from '@/lib/datetime'
+import { parseEmployeeFilters } from '@/lib/list-filters'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -154,18 +156,13 @@ export interface PaginatedEmployees {
 }
 
 /**
- * 服务端分页员工列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * status 映射：active → is_resigned = false, resigned → is_resigned = true
- * 搜索支持：姓名、员工编号、手机号（ILIKE）
+ * 构建员工列表 WHERE 条件（列表分页与导出共用）。
+ * marketId 分支需查节点类型，故为 async。
  */
-export const getEmployeesPaginated = withPermission(
-  'employee:list',
-  async (session, filters: EmployeeFilters = {}): Promise<PaginatedEmployees> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
-
+async function buildEmployeeConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: EmployeeFilters,
+): Promise<(SQL | undefined)[]> {
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, staffWechatUsers.storeId),
   ]
@@ -215,7 +212,23 @@ export const getEmployeesPaginated = withPermission(
     )
   }
 
-  const whereClause = and(...conditions)
+  return conditions
+}
+
+/**
+ * 服务端分页员工列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * status 映射：active → is_resigned = false, resigned → is_resigned = true
+ * 搜索支持：姓名、员工编号、手机号（ILIKE）
+ */
+export const getEmployeesPaginated = withPermission(
+  'employee:list',
+  async (session, filters: EmployeeFilters = {}): Promise<PaginatedEmployees> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const whereClause = and(...(await buildEmployeeConditions(session, filters)))
 
   const [[countRow], rows] = await Promise.all([
     db.select({ count: sql<number>`cast(count(*) as int)` })
@@ -241,6 +254,67 @@ export const getEmployeesPaginated = withPermission(
     })),
     total: countRow?.count ?? 0,
   }
+  },
+)
+
+/** 员工导出行（一行一员工，含档案补全字段；身份证脱敏在前端做） */
+export interface ExportEmployeeRow {
+  employeeId: string
+  name: string | null
+  gender: string | null
+  phone: string | null
+  idCard: string | null
+  marketName: string | null
+  storeName: string | null
+  positionName: string | null
+  birthday: string | null
+  skills: string | null
+  isResigned: boolean
+}
+
+/** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。LIMIT 10000 防 OOM。 */
+export const exportEmployees = withPermission(
+  'employee:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportEmployeeRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseEmployeeFilters(params)
+    const whereClause = and(...(await buildEmployeeConditions(session, filters)))
+
+    const dataRows = await db
+      .select()
+      .from(staffWechatUsers)
+      .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+      .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+      .where(whereClause)
+      .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
+      .limit(LIMIT + 1)
+
+    const truncated = dataRows.length > LIMIT
+    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
+
+    const rows: ExportEmployeeRow[] = page.map((row) => {
+      const e = row.staff_wechat_users
+      return {
+        employeeId: e.employeeId,
+        name: e.name,
+        gender: e.gender,
+        phone: e.phone,
+        idCard: e.idCard,
+        marketName: (row as { market_node?: { name?: string | null } }).market_node?.name ?? null,
+        storeName: row.stores?.storeName ?? null,
+        positionName: e.positionName,
+        birthday: e.birthday,
+        skills: e.skills?.join('、') ?? null,
+        isResigned: e.isResigned,
+      }
+    })
+
+    return { rows, truncated }
   },
 )
 
@@ -372,7 +446,7 @@ export const createEmployee = withPermission(
         skills: data.skills ?? null,
         isResigned: false,
         // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
-        hiredAt: data.hiredAt ?? new Date().toISOString().slice(0, 10),
+        hiredAt: data.hiredAt ?? shanghaiToday(),
         resignedAt: null,
       })
 
@@ -460,7 +534,7 @@ export const updateEmployee = withPermission(
   // - isResigned=false：清空 resignedAt
   const updateData = { ...data }
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
-    updateData.resignedAt = data.isResigned ? new Date().toISOString().slice(0, 10) : null
+    updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }
 
   // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）

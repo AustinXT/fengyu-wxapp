@@ -6,7 +6,7 @@
 //   3. customer 对象姓名匹配 L3 fixture 顾客名（"L3 测试顾客"）
 //   4. 反向 staffApi.customer.detail 调用结果与页面 data 一致
 
-import { launchStaff, disconnect, navigateToTab, waitForData } from './helpers/automator.mjs';
+import { launchStaff, disconnect, navigateToTab, navigateToPage, waitForData } from './helpers/automator.mjs';
 import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid } from './helpers/login.mjs';
 import { createTestManager, createTestClient, cleanupL3TestData } from './helpers/fixtures.mjs';
 import { closePool } from './helpers/pg.mjs';
@@ -32,7 +32,7 @@ async function run() {
   console.log('  ✓ customer-list 渲染 keys:', Object.keys(listData).slice(0, 10).join(','));
 
   // 深化断言 2：navigate 到 customer-detail
-  await miniProgram.navigateTo(`/packageCustomer/customer-detail/customer-detail?userId=${TEST_CLIENT_USER_ID}`);
+  await navigateToPage(miniProgram, `/packageCustomer/customer-detail/customer-detail?userId=${TEST_CLIENT_USER_ID}`);
   await new Promise(r => setTimeout(r, 1500));
 
   const detailData = await waitForData(miniProgram,

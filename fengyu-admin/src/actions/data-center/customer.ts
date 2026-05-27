@@ -60,7 +60,7 @@ const first = (rows: unknown): Record<string, unknown> =>
 
 /**
  * 注册情况单项（截面，截至区间 endDate）。
- * 会员客切 became_member_at（与首页 memberCount 对齐）；其余仍 customer_type 当前快照 + created_at 截面。
+ * 会员客切 became_member_at（精确历史截面，与首页实时 memberCount 用 customer_type 不矛盾——历史报表用成为会员时间才准）；其余 3 档仍 customer_type 当前快照 + created_at 截面。
  */
 async function queryRegistration(
   session: AuthSession,

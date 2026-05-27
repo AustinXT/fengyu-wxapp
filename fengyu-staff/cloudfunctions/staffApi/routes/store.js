@@ -146,7 +146,7 @@ async function approveUnbind(ctx) {
       )
     }
     await client.query(
-      `UPDATE client_wechat_users SET bound_store_id = $1, customer_source = '转店', updated_at = NOW() WHERE user_id = $2`,
+      `UPDATE client_wechat_users SET bound_store_id = $1, bound_employee_id = NULL, bound_employee_name = NULL, updated_at = NOW() WHERE user_id = $2`,
       [req.to_store_id, req.user_id]
     )
     // 审计日志

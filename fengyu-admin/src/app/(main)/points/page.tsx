@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getPointTransactionsPaginated } from '@/actions/points'
+import { parsePointFilters } from '@/lib/list-filters'
 import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
 import PointsPageClient from './_components/points-page'
@@ -15,12 +16,7 @@ export default async function Page({
 
   const [{ data, total, summary, distinctTypes }, stores, orgNodes] = await Promise.all([
     getPointTransactionsPaginated({
-      marketId: params.market,
-      storeId: params.store,
-      type: params.type,
-      search: params.q,
-      startDate: params.start,
-      endDate: params.end,
+      ...parsePointFilters(params),
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
