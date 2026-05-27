@@ -765,8 +765,35 @@ describe('assignCustomer — 校验 + scope + 审计', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  it('员工不在 session scope（非 admin）→ 拒绝，不更新', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(false) // 员工 store-2 不在 scope
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '李美容师', storeId: 'store-2' }]))
+    const result = await assignCustomer('user-1', 'EMP-2')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权分配给该门店的员工')
+    expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-2')
+    expect(db.update).not.toHaveBeenCalled()
+    ;(isInScope as any).mockReturnValue(true) // 恢复默认
+  })
+
+  it('admin session → 任意门店员工放行（isInScope 对 admin 返回 true）', async () => {
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true) // admin 天然放行
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '赵美容师', storeId: 'store-99' }]))
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await assignCustomer('user-1', 'EMP-3')
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalled()
+    ;(isAdminScope as any).mockReturnValue(false) // 恢复默认
+  })
+
   it('正常分配（rowCount=1）→ 成功 + 写冗余姓名 + 审计日志', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师' }]))
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师', storeId: 'store-1' }]))
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
@@ -789,7 +816,8 @@ describe('assignCustomer — 校验 + scope + 审计', () => {
   })
 
   it('scope 不符（rowCount=0）→ 失败，提示不存在或无权', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师' }]))
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师', storeId: 'store-1' }]))
     const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })

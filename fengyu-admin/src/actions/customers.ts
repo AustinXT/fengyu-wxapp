@@ -624,14 +624,21 @@ export const assignCustomer = withPermission(
   if (!userId) return { success: false, message: '缺少顾客 userId' }
   if (!employeeId) return { success: false, message: '请选择美容师' }
 
-  // 校验员工存在并取冗余姓名（与 updateCustomer 同范式）
+  // 校验员工存在并取冗余姓名 + 门店（与 updateCustomer 同范式）
   const { staffWechatUsers } = await import('@db/user')
   const [emp] = await db
-    .select({ name: staffWechatUsers.name })
+    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
     .from(staffWechatUsers)
     .where(eq(staffWechatUsers.employeeId, employeeId))
     .limit(1)
   if (!emp) return { success: false, message: '员工不存在' }
+
+  // 员工 scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 防止门店店长把本店顾客分配给其他门店的美容师。
+  // isInScope 对 admin 角色放行；员工无门店（storeId=null）时非 admin 拒绝。
+  if (!isInScope(session, emp.storeId ?? '')) {
+    return { success: false, message: '无权分配给该门店的员工' }
+  }
 
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const result: any = await db
