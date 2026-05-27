@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getEmployeesPaginated } from '@/actions/employees'
+import { parseEmployeeFilters } from '@/lib/list-filters'
 import { getOrgNodes } from '@/actions/org'
 import { getSkillTags } from '@/actions/skill-tags'
 import EmployeesPage from './_components/employees-page'
@@ -15,10 +16,7 @@ export default async function Page({
 
   const [{ data: employees, total }, orgNodes, skillTags] = await Promise.all([
     getEmployeesPaginated({
-      marketId: params.market || undefined,
-      storeId: params.store,
-      status: (params.status as 'active' | 'resigned') || undefined,
-      search: params.q,
+      ...parseEmployeeFilters(params),
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),

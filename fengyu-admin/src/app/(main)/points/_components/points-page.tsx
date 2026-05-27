@@ -1,6 +1,8 @@
 "use client"
 
 import { useState, useCallback, useMemo } from "react"
+import { useSearchParams } from "next/navigation"
+import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type {
   PointTransaction,
@@ -15,6 +17,9 @@ import { Card, CardContent } from "@/components/ui/card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatPhone, formatDateTime } from "@/lib/utils"
+import { ExportButton } from "@/components/ui/export-button"
+import { exportPointTransactions } from "@/actions/points"
+import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -59,9 +64,36 @@ export default function PointsPage({
   orgNodes: OrgNode[]
 }) {
   const { get, set, setMany } = useUrlFilters()
+  const searchParams = useSearchParams()
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
   }, [setMany])
+
+  /** 导出当前筛选命中的全部积分流水（跨分页） */
+  const handleExport = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries())
+    const { rows, truncated } = await exportPointTransactions(raw)
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "积分流水",
+      sheetName: "积分流水",
+      columns: [
+        { header: "时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
+        { header: "会员等级", width: 10, accessor: (r) => r.memberLevel },
+        { header: "归属门店", width: 18, accessor: (r) => r.storeName },
+        { header: "类型", width: 14, accessor: (r) => r.type },
+        { header: "变动积分", accessor: (r) => r.amount },
+        { header: "关联订单", width: 22, accessor: (r) => r.refOrderId },
+      ],
+      rows,
+    })
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
+  }, [searchParams])
 
   const marketFilter = get("market")
   const storeFilter = get("store")
@@ -261,6 +293,7 @@ export default function PointsPage({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
+        <ExportButton onExport={handleExport} />
       </div>
 
       <DataTable columns={columns} data={transactions} />

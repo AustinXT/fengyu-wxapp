@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,9 @@ import {
   AlertDialogFooter,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode } from "@/actions/orders";
+import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode, exportOrders } from "@/actions/orders";
+import { ExportButton } from "@/components/ui/export-button";
+import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
 
@@ -247,6 +249,42 @@ export default function OrdersPageClient({
   total: number;
 }) {
   const { get, set, setMany } = useUrlFilters();
+  const searchParams = useSearchParams();
+
+  /** 导出当前筛选命中的全部订单（跨分页，含商品明细聚合列） */
+  const handleExport = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries());
+    const { rows, truncated } = await exportOrders(raw);
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出");
+      return;
+    }
+    await exportToXlsx({
+      filename: "订单",
+      sheetName: "订单",
+      columns: [
+        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
+        { header: "类型", accessor: (r) => r.saleOrderType },
+        { header: "单据类型", accessor: (r) => r.documentType },
+        { header: "状态", accessor: (r) => r.status },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
+        { header: "门店", accessor: (r) => r.storeName },
+        { header: "订单金额", accessor: (r) => r.totalAmount },
+        { header: "储值卡抵扣", accessor: (r) => r.prepaidCardAmount },
+        { header: "实付", accessor: (r) => r.received },
+        { header: "已退", accessor: (r) => r.refundedAmount },
+        { header: "支付方式", accessor: (r) => paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod },
+        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "下单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
+        { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
+        { header: "商品明细", width: 40, accessor: (r) => r.itemsSummary },
+        { header: "备注", width: 24, accessor: (r) => r.remark },
+      ],
+      rows,
+    });
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
+  }, [searchParams]);
 
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(
@@ -361,6 +399,7 @@ export default function OrdersPageClient({
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
+            <ExportButton onExport={handleExport} />
           </div>
         </CardContent>
       </Card>

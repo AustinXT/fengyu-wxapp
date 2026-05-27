@@ -15,6 +15,8 @@ import { toast } from "sonner"
 import { toggleTemplateActive } from "@/actions/coupons"
 import { Select } from "@/components/ui/select"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { ExportButton } from "@/components/ui/export-button"
+import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -112,6 +114,32 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
     [filtered, page, pageSize]
   )
+
+  /** 导出当前筛选命中的全部优惠券（客户端已全量加载，filtered 即全部筛选结果） */
+  const handleExport = useCallback(async () => {
+    if (filtered.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "优惠券",
+      sheetName: "优惠券",
+      columns: [
+        { header: "券名称", width: 24, accessor: (r) => r.name },
+        { header: "券类型", width: 10, accessor: (r) => r.couponType },
+        { header: "面值/折扣", accessor: (r) => formatDiscount(r) },
+        { header: "使用条件", width: 16, accessor: (r) => (r.minSpend && parseFloat(r.minSpend) > 0 ? `满${formatCurrency(r.minSpend)}可用` : "无门槛") },
+        { header: "适用市场", width: 20, accessor: (r) => (!r.applicableMarketIds || r.applicableMarketIds.length === 0 ? "全部市场" : r.applicableMarketIds.map((id) => marketMap.get(id) ?? id).join("、")) },
+        { header: "有效期", width: 24, accessor: (r) => formatValidity(r) },
+        { header: "已发", accessor: (r) => r.issuedCount },
+        { header: "总量", accessor: (r) => (r.couponType === "折扣券" ? "" : r.totalCount ?? "不限") },
+        { header: "状态", width: 10, accessor: (r) => (r.isActive ? "启用" : "停用") },
+        { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
+        { header: "描述", width: 30, accessor: (r) => r.description },
+      ],
+      rows: filtered,
+    })
+  }, [filtered, marketMap])
 
   const columns: Column<CouponTemplate>[] = [
     {
@@ -233,6 +261,7 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
             <option key={m.id} value={m.id}>{m.name}</option>
           ))}
         </Select>
+        <ExportButton onExport={handleExport} />
       </div>
 
       <DataTable columns={columns} data={paged} />
