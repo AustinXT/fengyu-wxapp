@@ -31,7 +31,9 @@ docs/
 
 ### ops — 生产操作
 
-_暂无_
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| [001](changes/ops/001_admin-container-timezone.md) | 2026-05-27 | admin 容器锁定东八区（tzdata + TZ），修复后台时间列晚 8 小时 |
 
 ### fix — 故障复盘
 
