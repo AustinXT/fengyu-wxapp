@@ -83,51 +83,63 @@ async function cascadeRefund(client, params) {
     voidedCommissions = commRes.rowCount || 0
   }
 
-  // ========== 通道 3: user_coupons 回滚（仅未过期）==========
-  const couponRes = await client.query(
-    `UPDATE user_coupons
-        SET status = '未使用', used_at = NULL, used_sale_order_id = NULL
-      WHERE used_sale_order_id = $1
-        AND status = '已使用'
-        AND (expire_at IS NULL OR expire_at > NOW())`,
-    [saleOrderId],
-  )
-  const refundedCoupons = couponRes.rowCount || 0
+  // ========== 通道 3: user_coupons 回滚（仅未过期；部分退款不退券）==========
+  // 部分退款（saleItemId 非 null）：券挂在订单维度无法精确到行，整单退才退券。
+  let refundedCoupons = 0
+  if (!saleItemId) {
+    const couponRes = await client.query(
+      `UPDATE user_coupons
+          SET status = '未使用', used_at = NULL, used_sale_order_id = NULL
+        WHERE used_sale_order_id = $1
+          AND status = '已使用'
+          AND (expire_at IS NULL OR expire_at > NOW())`,
+      [saleOrderId],
+    )
+    refundedCoupons = couponRes.rowCount || 0
+  }
 
-  // ========== 通道 4: point_transactions 反向流水 ==========
-  // 写入与原"消费赠送/回款赠送/获取"对冲的"消费冲销"行；同事务重算 client_wechat_users.points_balance
+  // ========== 通道 4: point_transactions 比例冲销 ==========
+  // 写入与原"消费赠送/回款赠送/获取"对冲的"消费冲销"行（单笔目标态）；同事务重算 client_wechat_users.points_balance
+  // 部分退款按"本次累计退款额 / 整单实收"比例冲销赠送积分；整单退款 → refunded=received → 全额冲销。
   // SOT 对齐 db/schema/points.ts：列名 type / ref_order_id（不是 change_type / ref_sale_order_id）
   // point_transactions 无 note 列。
   let reversedPoints = 0
   let pointsBalanceUpdated = false
-  // 1) 查所有原赠送流水（注意：列名为 type，不是 change_type）
-  // 原脆弱 NOT EXISTS 检查已移除，改由 DB 层 uq_point_txn_order_user_type 兜底
+  // 1) 查整单原赠送总额 G + 归属顾客 user_id（一个订单的赠送都属同一顾客）
   const giftRes = await client.query(
-    `SELECT id, user_id, type, amount
+    `SELECT COALESCE(SUM(amount), 0) AS g, MIN(user_id) AS user_id
        FROM point_transactions
       WHERE ref_order_id = $1
         AND type IN ('消费赠送', '回款赠送', '获取')
         AND amount > 0`,
     [saleOrderId],
   )
-  for (const row of giftRes.rows) {
-    // partial unique (user_id, ref_order_id, type='消费冲销') 兜底；命中则 rowCount=0 静默
-    const insRes = await client.query(
+  const grantedTotal = Number(giftRes.rows[0]?.g || 0)
+  const pointUserId = giftRes.rows[0]?.user_id || null
+  if (grantedTotal > 0 && pointUserId) {
+    // 2) 取整单 received + refunded_amount（approveRefund 已先累加 refunded_amount，含本次）
+    const orderRes = await client.query(
+      `SELECT received, COALESCE(refunded_amount, 0) AS refunded
+         FROM sale_orders
+        WHERE sale_order_id = $1`,
+      [saleOrderId],
+    )
+    const received = Number(orderRes.rows[0]?.received || 0)
+    const refunded = Number(orderRes.rows[0]?.refunded || 0)
+    // 3) 目标冲销额：按退款占实收比例（received<=0 兜底全冲）；整数积分
+    const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+    // 4) 写单笔目标态消费冲销：DO UPDATE 目标态（非 DO NOTHING），解多次部分退款累加单调增长
+    await client.query(
       `INSERT INTO point_transactions
          (user_id, ref_order_id, type, amount, created_at)
        VALUES ($1, $2, '消费冲销', $3, $4)
        ON CONFLICT (user_id, ref_order_id, type)
          WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
-       DO NOTHING
-       RETURNING id`,
-      [row.user_id, saleOrderId, -Number(row.amount), now],
+       DO UPDATE SET amount = EXCLUDED.amount`,
+      [pointUserId, saleOrderId, -target, now],
     )
-    if (insRes.rows.length === 0) {
-      // 已有同 (user_id, ref_order_id, '消费冲销') 行，跳过 balance 重算（已被前一次覆盖）
-      continue
-    }
-    reversedPoints++
-    // 同事务重算 balance（合并表 client_wechat_users.points_balance，无独立 customer_points 表）
+    reversedPoints = target
+    // 5) 同事务重算 balance（合并表 client_wechat_users.points_balance，无独立 customer_points 表）
     await client.query(
       `UPDATE client_wechat_users
           SET points_balance = COALESCE((
@@ -136,7 +148,7 @@ async function cascadeRefund(client, params) {
               points_updated_at = $2,
               updated_at = $2
         WHERE user_id = $1`,
-      [row.user_id, now],
+      [pointUserId, now],
     )
     pointsBalanceUpdated = true
   }

@@ -119,9 +119,10 @@ export async function cascadeRefund(
     voidedCommissions = (res as { rowCount?: number }).rowCount ?? 0
   }
 
-  // ── 3) user_coupons 已用且未过期券恢复 ────────────────────────────
+  // ── 3) user_coupons 已用且未过期券恢复（部分退款不退券） ──────────
+  // 部分退款（saleItemId 非 null）：券挂在订单维度无法精确到行，整单退才退券。
   let refundedCoupons = 0
-  {
+  if (!saleItemId) {
     const res = await tx.execute(sql`
       UPDATE user_coupons
          SET status = '未使用',
@@ -135,45 +136,53 @@ export async function cascadeRefund(
     refundedCoupons = (res as { rowCount?: number }).rowCount ?? 0
   }
 
-  // ── 4) point_transactions 反向流水 + client_wechat_users.points_balance 重算 ──
+  // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算 ──
+  // 部分退款按"本次累计退款额 / 整单实收"比例冲销赠送积分；整单退款 → refunded=received → 全额冲销。
   let reversedPoints = 0
   {
-    // 写反向流水：amount 取负，type='消费冲销'；幂等：同 ref_order_id 已有反向流水则跳过
-    const insRes = await tx.execute(sql`
-      INSERT INTO point_transactions (
-        user_id, ref_order_id, type, amount, created_at
-      )
-      SELECT pt.user_id,
-             pt.ref_order_id,
-             '消费冲销',
-             -pt.amount,
-             NOW()
-      FROM point_transactions pt
-      WHERE pt.ref_order_id = ${saleOrderId}
-        AND pt.type IN ('消费赠送', '回款赠送', '获取')
-        AND pt.amount > 0
-        AND NOT EXISTS (
-          SELECT 1 FROM point_transactions pt2
-          WHERE pt2.user_id = pt.user_id
-            AND pt2.ref_order_id = pt.ref_order_id
-            AND pt2.type = '消费冲销'
-            AND pt2.amount = -pt.amount
-        )
+    // 1) 查整单原赠送总额 G + 归属顾客 user_id（一个订单的赠送都属同一顾客）
+    const giftRes = await tx.execute(sql`
+      SELECT COALESCE(SUM(amount), 0) AS g, MIN(user_id) AS user_id
+      FROM point_transactions
+      WHERE ref_order_id = ${saleOrderId}
+        AND type IN ('消费赠送', '回款赠送', '获取')
+        AND amount > 0
     `)
-    reversedPoints = (insRes as { rowCount?: number }).rowCount ?? 0
+    const giftRow = (giftRes as { rows?: Array<{ g: unknown; user_id: unknown }> }).rows?.[0]
+    const grantedTotal = Number(giftRow?.g ?? 0)
+    const pointUserId = giftRow?.user_id != null ? String(giftRow.user_id) : null
 
-    if (reversedPoints > 0) {
-      // 重算受影响顾客的 client_wechat_users.points_balance（缓存列，权威源是 point_transactions）
+    if (grantedTotal > 0 && pointUserId) {
+      // 2) 取整单 received + refunded_amount（approveRefund 已先累加 refunded_amount，含本次）
+      const orderRes = await tx.execute(sql`
+        SELECT received, COALESCE(refunded_amount, 0) AS refunded
+        FROM sale_orders
+        WHERE sale_order_id = ${saleOrderId}
+      `)
+      const orderRow = (orderRes as { rows?: Array<{ received: unknown; refunded: unknown }> }).rows?.[0]
+      const received = Number(orderRow?.received ?? 0)
+      const refunded = Number(orderRow?.refunded ?? 0)
+      // 3) 目标冲销额：按退款占实收比例（received<=0 兜底全冲）；整数积分
+      const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+      // 4) 写单笔目标态消费冲销：DO UPDATE 目标态（非 DO NOTHING），解多次部分退款累加单调增长
+      await tx.execute(sql`
+        INSERT INTO point_transactions (
+          user_id, ref_order_id, type, amount, created_at
+        )
+        VALUES (${pointUserId}, ${saleOrderId}, '消费冲销', ${-target}, NOW())
+        ON CONFLICT (user_id, ref_order_id, type)
+          WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+        DO UPDATE SET amount = EXCLUDED.amount
+      `)
+      reversedPoints = target
+      // 5) 重算该顾客的 client_wechat_users.points_balance（缓存列，权威源是 point_transactions）
       await tx.execute(sql`
         UPDATE client_wechat_users c
            SET points_balance = COALESCE((
                  SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id
                ), 0),
                updated_at = NOW()
-         WHERE c.user_id IN (
-                 SELECT DISTINCT user_id FROM point_transactions
-                 WHERE ref_order_id = ${saleOrderId}
-               )
+         WHERE c.user_id = ${pointUserId}
       `)
     }
   }
