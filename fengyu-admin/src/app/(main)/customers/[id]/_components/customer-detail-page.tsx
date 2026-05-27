@@ -36,6 +36,7 @@ interface CustomerDetailPageProps {
   phoneChangeLogs: PhoneChangeLog[]
   refundHistory: CustomerRefundRecord[]
   orphanProfiles: OrphanProfile[]
+  prepaidBalance?: string
   canEditPhone?: boolean
   canPullLegacy?: boolean
 }
@@ -49,6 +50,7 @@ export default function CustomerDetailPage({
   phoneChangeLogs,
   refundHistory,
   orphanProfiles,
+  prepaidBalance,
   canEditPhone = false,
   canPullLegacy = false,
 }: CustomerDetailPageProps) {
@@ -518,6 +520,10 @@ export default function CustomerDetailPage({
                   <Input value={customer.storeName ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">储值卡余额</label>
+                  <Input value={formatCurrency(prepaidBalance ?? "0")} disabled />
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">所属美容师</label>
                   {isEditing ? (
                     <Select
@@ -844,7 +850,7 @@ export default function CustomerDetailPage({
                           {r.items.map((it) => (
                             <div key={it.saleItemId} className="flex items-center gap-2 text-sm">
                               {it.direction && <Badge variant="outline">{it.direction}</Badge>}
-                              <span className="flex-1">{it.productName ?? '—'}</span>
+                              <span className="flex-1">{it.productName ?? '—'}{it.specName && ` / ${it.specName}`}</span>
                               <span className="text-[var(--muted-foreground)]">{formatCurrency(it.received)}</span>
                             </div>
                           ))}

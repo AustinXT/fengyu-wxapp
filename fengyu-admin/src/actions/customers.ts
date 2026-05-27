@@ -477,6 +477,7 @@ export const getCustomerRefundHistory = withPermission(
           saleItemId: saleItems.saleItemId,
           itemDirection: saleItems.itemDirection,
           productName: saleItems.productName,
+          skuSpecName: saleItems.skuSpecName,
           quantity: saleItems.quantity,
           received: saleItems.received,
         })
@@ -490,7 +491,7 @@ export const getCustomerRefundHistory = withPermission(
       saleItemId: i.saleItemId,
       direction: i.itemDirection,
       productName: i.productName,
-      specName: null,
+      specName: i.skuSpecName,
       quantity: i.quantity,
       received: i.received,
     })
@@ -608,6 +609,69 @@ export const updateCustomer = withPermission(
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
   return { success: true, message: '顾客信息已更新' }
+  },
+)
+
+/**
+ * 客户分配（将顾客绑定给指定美容师）— 对齐 staff 端 customer.assign。
+ *
+ * 复用 customer:update 权限（免改权限矩阵）。校验员工存在后 UPDATE
+ * bound_employee_id + bound_employee_name（冗余姓名）。scope 由 scopeCondition 守护。
+ */
+export const assignCustomer = withPermission(
+  'customer:update',
+  async (session, userId: string, employeeId: string): Promise<{ success: boolean; message: string }> => {
+  if (!userId) return { success: false, message: '缺少顾客 userId' }
+  if (!employeeId) return { success: false, message: '请选择美容师' }
+
+  // 校验员工存在并取冗余姓名（与 updateCustomer 同范式）
+  const { staffWechatUsers } = await import('@db/user')
+  const [emp] = await db
+    .select({ name: staffWechatUsers.name })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, employeeId))
+    .limit(1)
+  if (!emp) return { success: false, message: '员工不存在' }
+
+  const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
+  const result: any = await db
+    .update(clientWechatUsers)
+    .set({ boundEmployeeId: employeeId, boundEmployeeName: emp.name ?? null } as any)
+    .where(and(eq(clientWechatUsers.userId, userId), scopeCond))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '顾客不存在或无权操作' }
+  }
+
+  await logOperation(session, 'customer.assign', 'customer', userId, {
+    employeeId,
+    employeeName: emp.name ?? null,
+  })
+
+  const { revalidatePath } = await import('next/cache')
+  revalidatePath(`/customers/${userId}`)
+  return { success: true, message: `已分配给 ${emp.name ?? employeeId}` }
+  },
+)
+
+/**
+ * 顾客储值卡余额（基本档案 Tab 展示）— 对齐 staff 端 customer.customerBalance。
+ *
+ * 账户级资产：prepaid_cards 一户一账户、跨店共享、无 store_id 列，故不加 scope 过滤
+ * （未绑定门店的顾客余额仍可查）。无行返回 { cardId: null, balance: '0' }。
+ */
+export const getCustomerPrepaidBalance = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<{ cardId: string | null; balance: string }> => {
+  const { prepaidCards } = await import('@db/prepaid-card')
+  const [row] = await db
+    .select({ cardId: prepaidCards.cardId, balance: prepaidCards.balance })
+    .from(prepaidCards)
+    .where(eq(prepaidCards.userId, userId))
+    .limit(1)
+
+  if (!row) return { cardId: null, balance: '0' }
+  return { cardId: row.cardId, balance: row.balance }
   },
 )
 

@@ -6,6 +6,7 @@ import {
   getCustomerPhoneChangeLogs,
   getCustomerRefundHistory,
   getOrphanProfilesByUserId,
+  getCustomerPrepaidBalance,
 } from '@/actions/customers'
 import { getStores } from '@/actions/stores'
 import { getEmployees } from '@/actions/employees'
@@ -22,7 +23,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canListEmployees = session ? hasPermission(session, 'employee:list') : false
   const canListStores = session ? hasPermission(session, 'store:list') : false
 
-  const [customer, orders, appointments, stores, employees, phoneChangeLogs, refundHistory, orphanProfiles] = await Promise.all([
+  const [customer, orders, appointments, stores, employees, phoneChangeLogs, refundHistory, orphanProfiles, prepaidBalance] = await Promise.all([
     getCustomerById(id),
     getCustomerOrders(id),
     getCustomerAppointments(id),
@@ -31,6 +32,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     getCustomerPhoneChangeLogs(id),
     getCustomerRefundHistory(id),
     getOrphanProfilesByUserId(id),
+    getCustomerPrepaidBalance(id),
   ])
 
   if (!customer) notFound()
@@ -52,6 +54,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       phoneChangeLogs={phoneChangeLogs}
       refundHistory={refundHistory}
       orphanProfiles={orphanProfiles}
+      prepaidBalance={prepaidBalance.balance}
       canEditPhone={canEditPhone}
       canPullLegacy={canPullLegacy}
     />

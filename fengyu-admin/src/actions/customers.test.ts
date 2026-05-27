@@ -25,6 +25,10 @@ vi.mock('@db/user', () => ({
   staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
 }))
 
+vi.mock('@db/prepaid-card', () => ({
+  prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
+}))
+
 vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
   orgNodes: { id: 'id', name: 'name', type: 'type', parentId: 'parent_id' },
@@ -69,7 +73,7 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, assignCustomer, getCustomerPrepaidBalance } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, requirePermission, scopeCondition } from '@/lib/permissions'
@@ -735,5 +739,98 @@ describe('getCustomerRefundHistory — scope + 空结果', () => {
     mockRefundChain()
     await getCustomerRefundHistory('user-1')
     expect(scopeCondition).toHaveBeenCalled()
+  })
+})
+
+// ── assignCustomer（客户分配）─────────────────────────────────────────────────
+
+describe('assignCustomer — 校验 + scope + 审计', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('缺少 employeeId → 拒绝，不查 DB', async () => {
+    const result = await assignCustomer('user-1', '')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('请选择美容师')
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('员工不存在 → 拒绝，不更新', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await assignCustomer('user-1', 'EMP-404')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('员工不存在')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('正常分配（rowCount=1）→ 成功 + 写冗余姓名 + 审计日志', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师' }]))
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await assignCustomer('user-1', 'EMP-1')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('王美容师')
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ boundEmployeeId: 'EMP-1', boundEmployeeName: '王美容师' }),
+    )
+    const { logOperation } = await import('@/lib/operation-log')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'customer.assign',
+      'customer',
+      'user-1',
+      expect.objectContaining({ employeeId: 'EMP-1', employeeName: '王美容师' }),
+    )
+  })
+
+  it('scope 不符（rowCount=0）→ 失败，提示不存在或无权', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师' }]))
+    const where = vi.fn().mockResolvedValue({ count: 0 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await assignCustomer('user-1', 'EMP-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在或无权')
+  })
+
+  it('权限拒绝：requirePermission 抛出 → action 失败', async () => {
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 缺少 customer:update 权限')
+    })
+    await expect(assignCustomer('user-1', 'EMP-1')).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.update).not.toHaveBeenCalled()
+  })
+})
+
+// ── getCustomerPrepaidBalance（储值卡余额）──────────────────────────────────────
+
+describe('getCustomerPrepaidBalance — 账户级、未绑定放行', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('有卡 → 返回 cardId + balance', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ cardId: 'CARD-1', balance: '188.50' }]))
+    const result = await getCustomerPrepaidBalance('user-1')
+    expect(result).toEqual({ cardId: 'CARD-1', balance: '188.50' })
+  })
+
+  it('无卡 → 返回 { cardId: null, balance: "0" }', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await getCustomerPrepaidBalance('user-1')
+    expect(result).toEqual({ cardId: null, balance: '0' })
+  })
+
+  it('不施加 scope 过滤（账户级资产）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    await getCustomerPrepaidBalance('user-1')
+    expect(scopeCondition).not.toHaveBeenCalled()
   })
 })
