@@ -1727,8 +1727,10 @@ async function createRefund(ctx) {
         refundPaymentMethod,
         ctx.auth.staffWfId,
         refundReason,
-        refundDetails[0]?.refSaleItemId || null,
-        refundDetails[0]?.quantity || null,
+        // 镜像 admin refunds.ts 规则（方案 D）：单项退款 → 存首项 → cascade 走 partial 分支（按 saleItemId 精确回滚）；
+        // 多项/整单退款 → 存 null → cascade 走 whole-order 分支（按 sale_order_id 全量回滚），避免欠回滚首项外的分成/提成/提货
+        refundDetails.length === 1 ? (refundDetails[0].refSaleItemId || null) : null,
+        refundDetails.length === 1 ? (refundDetails[0].quantity || null) : null,
         detailNote,
         now,
       ]
