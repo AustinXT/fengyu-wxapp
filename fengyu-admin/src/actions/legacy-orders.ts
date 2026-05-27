@@ -7,7 +7,7 @@ import { clientWechatUsers } from '@db/user'
 import { and, desc, eq, gte, ilike, isNotNull, isNull, lt, or, sql, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import {
@@ -452,8 +452,15 @@ export interface WorkfineCustomerCandidate extends WorkfineCustomer {
 export interface WorkfineOrderPreview extends WorkfineOrder {
   /** 该 legacy_order_no 是否已在 PG sale_orders 中（无论状态） */
   alreadyImported: boolean
-  /** 该 store_name 是否能反查到 PG store_id（用户勾选时此行不可勾） */
+  /** 该 store_name 是否存在同名新系统门店（仅用于前端下拉默认值，不再作为勾选硬门槛） */
   storeMatched: boolean
+}
+
+/** 可映射的新系统门店（按操作员 scope 过滤） */
+export interface AvailableStore {
+  storeId: string
+  storeName: string
+  isClosed: boolean
 }
 
 /**
@@ -520,14 +527,26 @@ export const searchWorkfineCustomer = withPermission(
 export const previewWorkfineOrders = withPermission(
   'legacy_order:pull',
   async (
-    _session,
+    session,
     params: { workfineCustomerId: string },
-  ): Promise<{ orders: WorkfineOrderPreview[] }> => {
+  ): Promise<{ orders: WorkfineOrderPreview[]; availableStores: AvailableStore[] }> => {
     const customerId = params.workfineCustomerId?.trim()
     if (!customerId) throw new Error('INVALID_PARAMS: workfineCustomerId 必传')
 
+    // 可映射门店：按操作员 scope 过滤（admin 全部，manager 仅 scope 内）。
+    // 闭店门店仍列出（历史单可能归属现已闭店门店），前端标注但不禁用。
+    const availableStores: AvailableStore[] = await db
+      .select({
+        storeId: stores.storeId,
+        storeName: stores.storeName,
+        isClosed: stores.isClosed,
+      })
+      .from(stores)
+      .where(scopeCondition(session, stores.storeId))
+      .orderBy(stores.storeName)
+
     const wfOrders = await wfQueryOrdersByCustomerId(customerId)
-    if (wfOrders.length === 0) return { orders: [] }
+    if (wfOrders.length === 0) return { orders: [], availableStores }
 
     // 标记 alreadyImported（按 sale_order_id 命中）
     const orderNos = wfOrders.map((o) => o.legacyOrderNo)
@@ -553,6 +572,7 @@ export const previewWorkfineOrders = withPermission(
         alreadyImported: existingSet.has(o.legacyOrderNo),
         storeMatched: !!o.storeName && storeSet.has(o.storeName),
       })),
+      availableStores,
     }
   },
 )
@@ -563,14 +583,20 @@ export const previewWorkfineOrders = withPermission(
  * 设计要点：
  * - 用 ON CONFLICT DO NOTHING 保证幂等
  * - 单顾客粒度（N 通常 < 100），lookup map 当场建
- * - storeName 反查 PG stores.store_id；未匹配的行直接 skip 并计入 skippedNoStore
+ * - storeMapping（WorkFine 门店名 → 新系统 storeId）由操作员在预览弹窗人工指派，
+ *   默认同名匹配；未配映射或映射为空的行直接 skip 并计入 skippedNoStore
  * - 不触发标签重算（标签重算只在 approve 时跑，本 action 仅落库 unreviewed 行）
  */
 export const importWorkfineOrdersByCustomer = withPermission(
   'legacy_order:pull',
   async (
     session,
-    params: { workfineCustomerId: string; selectedOrderNos: string[] },
+    params: {
+      workfineCustomerId: string
+      selectedOrderNos: string[]
+      /** WorkFine 门店名 → 新系统 storeId；缺失/空值的门店名对应订单会被跳过 */
+      storeMapping?: Record<string, string>
+    },
   ): Promise<{
     success: true
     insertedCount: number
@@ -602,11 +628,32 @@ export const importWorkfineOrdersByCustomer = withPermission(
       }
     }
 
-    // 建 lookup（单顾客粒度，几个唯一手机号 + 几个唯一门店）
-    const phones = [...new Set(toImport.map((o) => o.phone).filter((p): p is string => !!p))]
-    const storeNames = [
-      ...new Set(toImport.map((o) => o.storeName).filter((s): s is string => !!s)),
+    // 门店映射（WorkFine 门店名 → 新系统 storeId），人工指派，过滤空值
+    const storeMapping = params.storeMapping ?? {}
+    const mappedStoreIds = [
+      ...new Set(Object.values(storeMapping).filter((id): id is string => !!id)),
     ]
+    // 越权校验：每个被指派的 storeId 必须在操作员 scope 内（防伪造 request 绕过 UI 限制）
+    for (const id of mappedStoreIds) {
+      if (!isInScope(session, id)) {
+        throw new Error('PERMISSION_DENIED: legacy_order:pull（门店不在数据权限范围）')
+      }
+    }
+    // 存在性校验：被指派的 storeId 必须真实存在
+    if (mappedStoreIds.length) {
+      const existRows = await db
+        .select({ storeId: stores.storeId })
+        .from(stores)
+        .where(inArray(stores.storeId, mappedStoreIds))
+      const existSet = new Set(existRows.map((r) => r.storeId))
+      const missing = mappedStoreIds.filter((id) => !existSet.has(id))
+      if (missing.length) {
+        throw new Error(`INVALID_PARAMS: 门店不存在：${missing.join(', ')}`)
+      }
+    }
+
+    // 建 lookup（单顾客粒度，几个唯一手机号）
+    const phones = [...new Set(toImport.map((o) => o.phone).filter((p): p is string => !!p))]
 
     const phoneRows = phones.length
       ? await db
@@ -622,14 +669,6 @@ export const importWorkfineOrdersByCustomer = withPermission(
       .where(eq(clientWechatUsers.customerId, customerId))
     const customerIdToUser = customerIdRows[0]?.userId ?? null
 
-    const storeRows = storeNames.length
-      ? await db
-          .select({ storeId: stores.storeId, storeName: stores.storeName })
-          .from(stores)
-          .where(inArray(stores.storeName, storeNames))
-      : []
-    const storeNameToId = new Map(storeRows.map((r) => [r.storeName, r.storeId] as const))
-
     let skippedNoStore = 0
     let skippedAlreadyExist = 0
     let inserted = 0
@@ -638,11 +677,11 @@ export const importWorkfineOrdersByCustomer = withPermission(
 
     await db.transaction(async (tx) => {
       for (const o of toImport) {
-        if (!o.storeName || !storeNameToId.has(o.storeName)) {
+        const storeId = o.storeName ? storeMapping[o.storeName] : undefined
+        if (!storeId) {
           skippedNoStore++
           continue
         }
-        const storeId = storeNameToId.get(o.storeName)!
 
         // 选 client_user_id：优先 phone，其次 WorkFine customer_id
         const clientUserId =

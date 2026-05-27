@@ -27,7 +27,7 @@ vi.mock('@db/order', () => ({
 }))
 
 vi.mock('@db/org', () => ({
-  stores: { storeId: 'store_id', storeName: 'store_name' },
+  stores: { storeId: 'store_id', storeName: 'store_name', isClosed: 'is_closed' },
 }))
 
 vi.mock('@db/user', () => ({
@@ -97,6 +97,7 @@ import {
 } from './legacy-orders'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { and, isNotNull, isNull } from 'drizzle-orm'
 import {
@@ -469,13 +470,24 @@ describe('previewWorkfineOrders', () => {
     await expect(previewWorkfineOrders({ workfineCustomerId: '' })).rejects.toThrow(/INVALID_PARAMS/)
   })
 
-  it('WorkFine 无订单 → orders=[]', async () => {
+  it('WorkFine 无订单 → orders=[]，仍返回 availableStores', async () => {
+    // availableStores 查询先于 wfOrders，无订单也会执行
+    ;(db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockResolvedValue([
+            { storeId: 'S1', storeName: '门店A', isClosed: false },
+          ]),
+        }),
+      }),
+    })
     ;(queryOrdersByCustomerId as any).mockResolvedValue([])
     const res = await previewWorkfineOrders({ workfineCustomerId: 'WF-1' })
     expect(res.orders).toEqual([])
+    expect(res.availableStores).toEqual([{ storeId: 'S1', storeName: '门店A', isClosed: false }])
   })
 
-  it('正常路径 → 标记 alreadyImported + storeMatched', async () => {
+  it('正常路径 → 标记 alreadyImported + storeMatched + availableStores', async () => {
     ;(queryOrdersByCustomerId as any).mockResolvedValue([
       {
         legacyOrderNo: 'O-1',
@@ -498,14 +510,24 @@ describe('previewWorkfineOrders', () => {
         phone: '13800138000',
       },
     ])
-    // first select: existing sale_orders by saleOrderId
     ;(db.select as any)
+      // first select: availableStores（scope 过滤 + orderBy）
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              { storeId: 'S-A', storeName: '门店A', isClosed: false },
+            ]),
+          }),
+        }),
+      })
+      // second select: existing sale_orders by saleOrderId
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([{ saleOrderId: 'O-1' }]),
         }),
       })
-      // second select: stores by storeName
+      // third select: stores by storeName（同名建议值）
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([{ storeName: '门店A' }]),
@@ -516,6 +538,7 @@ describe('previewWorkfineOrders', () => {
     expect(res.orders).toHaveLength(2)
     expect(res.orders[0]).toMatchObject({ legacyOrderNo: 'O-1', alreadyImported: true, storeMatched: true })
     expect(res.orders[1]).toMatchObject({ legacyOrderNo: 'O-2', alreadyImported: false, storeMatched: false })
+    expect(res.availableStores).toEqual([{ storeId: 'S-A', storeName: '门店A', isClosed: false }])
   })
 })
 
@@ -525,6 +548,8 @@ describe('importWorkfineOrdersByCustomer', () => {
     ;(db.select as any).mockReset()
     ;(db.transaction as any).mockReset()
     ;(getSession as any).mockResolvedValue(pullSession)
+    // clearAllMocks 不重置实现，显式恢复 isInScope 默认放行（PERMISSION_DENIED 用例会临时置 false）
+    ;(isInScope as any).mockReturnValue(true)
   })
 
   it('空 selectedOrderNos → INVALID_PARAMS', async () => {
@@ -550,7 +575,7 @@ describe('importWorkfineOrdersByCustomer', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('门店未匹配 → 该行 skippedNoStore++，不 INSERT', async () => {
+  it('门店未指派（storeMapping 无对应）→ 该行 skippedNoStore++，不 INSERT', async () => {
     ;(queryOrdersByCustomerId as any).mockResolvedValue([
       {
         legacyOrderNo: 'O-A',
@@ -563,13 +588,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         phone: '13800138000',
       },
     ])
-    // lookup queries: phone, customerId, stores
+    // storeMapping 为空 → 无门店存在性校验 select；lookup queries: phone, customerId
     ;(db.select as any)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([]),
-        }),
-      })
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([]),
@@ -595,10 +615,66 @@ describe('importWorkfineOrdersByCustomer', () => {
     const res = await importWorkfineOrdersByCustomer({
       workfineCustomerId: 'WF-1',
       selectedOrderNos: ['O-A'],
+      storeMapping: {},
     })
     expect(res).toMatchObject({ insertedCount: 0, skippedNoStore: 1 })
     // 只有 logOperation 的 execute，没有 INSERT execute（logOperation 自己是 mock 不走 tx.execute）
     expect(txExecuteCalls).toBe(0)
+  })
+
+  it('storeId 不在操作员 scope → PERMISSION_DENIED（不发起任何 select/事务）', async () => {
+    ;(queryOrdersByCustomerId as any).mockResolvedValue([
+      {
+        legacyOrderNo: 'O-A',
+        saleDate: '2023-01-01',
+        marketName: '市场',
+        storeName: '门店A',
+        customerName: '张三',
+        amount: 100,
+        legacyCustomerId: 'WF-1',
+        phone: '13800138000',
+      },
+    ])
+    ;(isInScope as any).mockReturnValue(false)
+
+    await expect(
+      importWorkfineOrdersByCustomer({
+        workfineCustomerId: 'WF-1',
+        selectedOrderNos: ['O-A'],
+        storeMapping: { 门店A: 'STORE-X' },
+      }),
+    ).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('指派的 storeId 不存在 → INVALID_PARAMS', async () => {
+    ;(queryOrdersByCustomerId as any).mockResolvedValue([
+      {
+        legacyOrderNo: 'O-A',
+        saleDate: '2023-01-01',
+        marketName: '市场',
+        storeName: '门店A',
+        customerName: '张三',
+        amount: 100,
+        legacyCustomerId: 'WF-1',
+        phone: '13800138000',
+      },
+    ])
+    // 存在性校验 select 返回空 → storeId 不存在
+    ;(db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })
+
+    await expect(
+      importWorkfineOrdersByCustomer({
+        workfineCustomerId: 'WF-1',
+        selectedOrderNos: ['O-A'],
+        storeMapping: { 门店A: 'STORE-GONE' },
+      }),
+    ).rejects.toThrow(/INVALID_PARAMS/)
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('正常路径：INSERT 成功 → insertedCount=1，affectedPhone 返回', async () => {
@@ -615,19 +691,22 @@ describe('importWorkfineOrdersByCustomer', () => {
       },
     ])
     ;(db.select as any)
+      // first select: 门店存在性校验
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ storeId: 'STORE-1' }]),
+        }),
+      })
+      // second select: phone lookup
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([{ userId: 'PG-USR-1', phone: '13800138000' }]),
         }),
       })
+      // third select: customerId lookup
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([]),
-        }),
-      })
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ storeId: 'STORE-1', storeName: '门店A' }]),
         }),
       })
 
@@ -641,6 +720,7 @@ describe('importWorkfineOrdersByCustomer', () => {
     const res = await importWorkfineOrdersByCustomer({
       workfineCustomerId: 'WF-1',
       selectedOrderNos: ['O-OK'],
+      storeMapping: { 门店A: 'STORE-1' },
     })
     expect(res).toMatchObject({
       insertedCount: 1,
@@ -670,16 +750,16 @@ describe('importWorkfineOrdersByCustomer', () => {
         phone: null,
       },
     ])
-    // phone is null → phone query skipped；只剩 customerId 和 stores 两次 select
+    // phone is null → phone query skipped；只剩 门店存在性校验 + customerId 两次 select
     ;(db.select as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([{ storeId: 'STORE-1' }]),
         }),
       })
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ storeId: 'STORE-1', storeName: '门店A' }]),
+          where: vi.fn().mockResolvedValue([]),
         }),
       })
 
@@ -693,6 +773,7 @@ describe('importWorkfineOrdersByCustomer', () => {
     const res = await importWorkfineOrdersByCustomer({
       workfineCustomerId: 'WF-1',
       selectedOrderNos: ['O-DUP'],
+      storeMapping: { 门店A: 'STORE-1' },
     })
     expect(res).toMatchObject({ insertedCount: 0, skippedAlreadyExist: 1, skippedNoStore: 0 })
   })
