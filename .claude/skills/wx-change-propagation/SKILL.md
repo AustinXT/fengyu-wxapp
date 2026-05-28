@@ -14,6 +14,7 @@ metadata:
   description_zh: 结构性变更全量扫描 → 变更清单 → 确认后一次性执行
   author: nvoyager
   version: 1.0.0
+  license: 42plugin-personal
 ---
 
 # 结构性变更传播

@@ -4,12 +4,13 @@ description: |
   用于从业务需求描述出发，追踪相关代码路径，审计当前实现与新需求的差异，
   帮助生成差异报告和修改计划。适用于业务规则调整、概念重定义、流程变更。
   当用户说"规则改了"、"流程调整"、"需求变更"、"概念变了"时使用。
-argument-hint: '<需求变更描述>'
+argument-hint: <需求变更描述>
 metadata:
   title: 需求变更适配
   description_zh: 业务需求变更的代码路径追踪、差异审计与修改计划
   author: nvoyager
   version: 1.0.0
+  license: 42plugin-personal
 ---
 
 # 需求变更适配

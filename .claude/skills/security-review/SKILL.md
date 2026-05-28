@@ -12,6 +12,7 @@ metadata:
   description_zh: 云函数 SQL 注入 + OPENID 认证 + 输入校验 + 权限审计
   author: nvoyager
   version: 1.0.0
+  license: 42plugin-personal
 ---
 
 # 安全审查

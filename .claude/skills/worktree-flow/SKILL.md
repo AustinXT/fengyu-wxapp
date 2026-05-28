@@ -5,14 +5,15 @@ description: |
   在 worktree 内执行修改 → 提交 → 退出 → merge --no-ff 回原分支 → 清理。
   当用户说"开个 worktree 做 X"、"隔离试一下 X"、"用 worktree 改 X"、
   "/worktree-flow ..." 时激活。
-argument-hint: '<修改要求描述>'
+argument-hint: <修改要求描述>
 user-invocable: true
 disable-model-invocation: false
 metadata:
   title: Worktree 自动化流水线
   description_zh: 创建隔离 worktree 执行修改后自动合并回原分支
   author: nvoyager
-  version: 1.2.0
+  version: 1.0.0
+  license: MIT
 ---
 
 # Worktree 自动化流水线

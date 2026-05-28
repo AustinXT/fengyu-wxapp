@@ -6,9 +6,10 @@ description: |
   不适用于：实时数据流、写入 WorkFine、商品手动维护后的重新导入。
 metadata:
   author: 42ailab
-  version: '1.1'
   title: WorkFine 数据同步
   description_zh: WorkFine SQL Server → PostgreSQL 全量/增量数据同步工作流
+  version: 1.0.0
+  license: 42plugin-personal
 user-invocable: true
 argument-hint: '[full|sync-only|import-only|incremental|dry-run|verify]'
 ---

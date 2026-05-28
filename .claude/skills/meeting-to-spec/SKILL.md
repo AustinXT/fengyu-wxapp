@@ -10,6 +10,7 @@ metadata:
   description_zh: 会议决策提取、需求澄清、spec 文档更新
   author: nvoyager
   version: 1.0.0
+  license: MIT
 ---
 
 # 会议纪要→需求规范

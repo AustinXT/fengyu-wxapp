@@ -16,9 +16,10 @@ description: >
 alwaysApply: false
 metadata:
   author: nvoyager
-  version: 1.1.0
   title: CloudBase 云函数部署
   description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数（首选），MCP 不可用时回退到 tcb CLI
+  version: 1.0.2
+  license: 42plugin-personal
 ---
 
 # CloudBase 云函数部署指南

@@ -11,6 +11,7 @@ metadata:
   description_zh: 预设 QA/功能/重构/修复四种 /loop prompt 模板
   author: nvoyager
   version: 1.0.0
+  license: MIT
 ---
 
 # 自驱式开发循环
