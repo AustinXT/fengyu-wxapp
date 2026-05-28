@@ -1,0 +1,21 @@
+---
+# pandoc metadata for XeLaTeX Chinese PDF
+documentclass: article
+CJKmainfont: Songti SC
+CJKsansfont: Heiti SC
+CJKmonofont: Heiti SC
+mainfont: Songti SC
+sansfont: Heiti SC
+monofont: Menlo
+header-includes:
+  - |
+    \usepackage{fancyhdr}
+    \pagestyle{fancy}
+    \fancyhead[L]{凤御美容院 — 项目进度汇报}
+    \fancyhead[R]{\today}
+    \fancyfoot[C]{\thepage}
+    \usepackage{xcolor}
+    \definecolor{brand}{HTML}{C0322A}
+    \let\oldsection\section
+    \renewcommand{\section}[1]{\oldsection{\color{brand}#1}}
+---
