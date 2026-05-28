@@ -140,6 +140,23 @@ function trim(v: unknown): string | null {
   return s === '' ? null : s
 }
 
+/**
+ * 还原 WorkFine 金额：WorkFine MSSQL 所有金额列按真实金额的 1/10 存储
+ *（系统固有缩放约定，非个别数据脏值），凡是从 WorkFine 取金额一律 ×10
+ * 还原为真实业务金额。
+ *
+ * 用整数运算（先 ×1000 再 /100）规避 IEEE 754 浮点末位误差；对负数 /
+ * NaN / 非数字 fallback 0（WorkFine 不应出现负金额，防御性兜底以免溢出
+ * PG numeric(10,2)）。
+ *
+ * 凡是从 workfine-mssql 取金额的代码必须经过此函数。
+ */
+export function normalizeWorkfineAmount(raw: number | string | null | undefined): number {
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw ?? ''))
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.round(n * 1000) / 100
+}
+
 export interface WorkfineCustomer {
   customerId: string
   name: string | null
@@ -248,7 +265,11 @@ export async function searchCustomerByCustomerId(
 export async function queryOrdersByCustomerId(customerId: string): Promise<WorkfineOrder[]> {
   const normalized = trim(customerId)
   if (!normalized) return []
-  if (USE_MOCK) return MOCK_ORDERS.filter((o) => o.legacyCustomerId === normalized)
+  if (USE_MOCK) {
+    return MOCK_ORDERS
+      .filter((o) => o.legacyCustomerId === normalized)
+      .map((o) => ({ ...o, amount: normalizeWorkfineAmount(o.amount) }))
+  }
 
   return runQuery(async (pool) => {
     const result = await pool
@@ -294,7 +315,7 @@ export async function queryOrdersByCustomerId(customerId: string): Promise<Workf
         marketName: trim(r.market_name),
         storeName: trim(r.store_name),
         customerName: trim(r.customer_name),
-        amount: typeof r.amount === 'number' ? r.amount : parseFloat(String(r.amount)) || 0,
+        amount: normalizeWorkfineAmount(r.amount),
         legacyCustomerId: trim(r.legacy_customer_id),
         phone: trim(r.phone),
       } satisfies WorkfineOrder

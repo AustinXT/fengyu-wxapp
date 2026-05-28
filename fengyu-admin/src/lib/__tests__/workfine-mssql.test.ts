@@ -5,7 +5,7 @@
  * 空密码登录失败（ELOGIN）。本测试守护连接字符串解析与 envs/*.env 格式对齐。
  */
 import { describe, it, expect } from 'vitest'
-import { parseMssqlConnString } from '../workfine-mssql'
+import { normalizeWorkfineAmount, parseMssqlConnString } from '../workfine-mssql'
 
 describe('parseMssqlConnString', () => {
   it('解析 envs/prod.env 实际格式（Server 含端口）', () => {
@@ -38,5 +38,41 @@ describe('parseMssqlConnString', () => {
     const r = parseMssqlConnString('Server=;Encrypt=false;Foo=bar;Password=p')
     expect(r.server).toBeUndefined()
     expect(r.password).toBe('p')
+  })
+})
+
+describe('normalizeWorkfineAmount', () => {
+  it('整数 ×10', () => {
+    expect(normalizeWorkfineAmount(99)).toBe(990)
+    expect(normalizeWorkfineAmount(0)).toBe(0)
+  })
+
+  it('1 位小数 ×10 还原为整数', () => {
+    expect(normalizeWorkfineAmount(99.8)).toBe(998)
+  })
+
+  it('2 位小数 ×10 保留 1 位小数（无浮点末位误差）', () => {
+    expect(normalizeWorkfineAmount(99.85)).toBe(998.5)
+    // IEEE 754 边界检查：0.29 * 10 在浮点下为 2.9000000000000004，
+    // helper 用整数运算应得到精确 2.9
+    expect(normalizeWorkfineAmount(0.29)).toBe(2.9)
+  })
+
+  it('字符串入参（mssql decimal 大数返回 string 的情况）', () => {
+    expect(normalizeWorkfineAmount('99.85')).toBe(998.5)
+    expect(normalizeWorkfineAmount('  99.8 ')).toBe(998)
+  })
+
+  it('null / undefined / NaN / 空串 → 0', () => {
+    expect(normalizeWorkfineAmount(null)).toBe(0)
+    expect(normalizeWorkfineAmount(undefined)).toBe(0)
+    expect(normalizeWorkfineAmount(NaN)).toBe(0)
+    expect(normalizeWorkfineAmount('')).toBe(0)
+    expect(normalizeWorkfineAmount('abc')).toBe(0)
+  })
+
+  it('负数 → 0（防御性兜底，WorkFine 不应出现负金额）', () => {
+    expect(normalizeWorkfineAmount(-1)).toBe(0)
+    expect(normalizeWorkfineAmount('-99.8')).toBe(0)
   })
 })
