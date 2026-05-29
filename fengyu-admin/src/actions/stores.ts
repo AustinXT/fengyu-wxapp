@@ -6,12 +6,13 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { scopeCondition } from '@/lib/permissions'
+import { scopeCondition, hasPermission } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
+import { _internalApplyLakalaLink } from './lakala-onboarding'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -44,6 +45,7 @@ function rowToStore(row: {
     lakalaMerchantNo: s.lakalaMerchantNo,
     lakalaTermNo: s.lakalaTermNo,
     lakalaSubAppid: s.lakalaSubAppid,
+    lakalaMerchantId: s.lakalaMerchantId,
     lakalaEnabled: s.lakalaEnabled,
     createdAt: s.createdAt.toISOString(),
     updatedAt: s.updatedAt.toISOString(),
@@ -215,10 +217,25 @@ export const updateStore = withPermission(
       lakalaTermNo: string | null
       lakalaSubAppid: string | null
       lakalaEnabled: boolean
+      /**
+       * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id）。
+       * - admin 角色可写；hr 只读（涉及收款配置）。
+       * - 非空 → 调内部 _internalApplyLakalaLink 验证商户态 + 刷快照 2 列（merchantNo/subAppid）
+       * - 显式 null → 解绑：清快照 + 强置 lakalaEnabled=false
+       * - undefined → 不动 lakala_merchant_id（保留原绑定关系）
+       */
+      lakalaMerchantId: string | null
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
+  // 关联商户权限拦截：hr 不可改 lakala_merchant_id（涉及收款配置），仅 admin 持 lakala:onboarding:update
+  if (data.lakalaMerchantId !== undefined) {
+    if (!hasPermission(session, 'lakala:onboarding:update')) {
+      return { success: false, message: '无权修改门店的拉卡拉商户关联' }
+    }
+  }
+
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
 
@@ -236,6 +253,15 @@ export const updateStore = withPermission(
   if (data.isClosed !== undefined && data.closedAt === undefined) {
     updateData.closedAt = data.isClosed ? shanghaiToday() : null
   }
+  // lakala_merchant_id 由 _internalApplyLakalaLink 在事务内单独处理（含商户态校验 + 快照刷新 + enabled 强置）
+  // 不能让 generic SET 把 merchantNo / subAppid 当成 caller 直接传值（admin UI 不再手填）
+  const lakalaMerchantIdChange = data.lakalaMerchantId
+  if (lakalaMerchantIdChange !== undefined) {
+    delete (updateData as Partial<typeof updateData>).lakalaMerchantId
+    // 同时 strip 掉 merchantNo / subAppid（不允许 admin UI 同时传，避免 race）
+    delete (updateData as Partial<typeof updateData>).lakalaMerchantNo
+    delete (updateData as Partial<typeof updateData>).lakalaSubAppid
+  }
 
   let result: any
   try {
@@ -249,6 +275,10 @@ export const updateStore = withPermission(
         data.storeName !== before.storeName
       ) {
         await tx.update(orgNodes).set({ name: data.storeName }).where(eq(orgNodes.id, before.orgNodeId))
+      }
+      // 关联商户的事务内子动作：仅在显式传 lakalaMerchantId 时执行
+      if (r.count > 0 && lakalaMerchantIdChange !== undefined && lakalaMerchantIdChange !== before?.lakalaMerchantId) {
+        await _internalApplyLakalaLink(tx, storeId, lakalaMerchantIdChange)
       }
       return r
     })

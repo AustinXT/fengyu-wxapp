@@ -27,6 +27,7 @@ import {
 	History,
 	Boxes,
 	LineChart,
+	Building2,
 	type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -137,6 +138,17 @@ export const MENU_CONFIG: MenuGroup[] = [
 				href: "/card-transactions",
 				requiredRoles: ["admin", "manager"],
 				readonlyRoles: ["finance"],
+			},
+		],
+	},
+	{
+		label: "商户入网",
+		items: [
+			{
+				label: "商户入网",
+				icon: Building2,
+				href: "/lakala-onboarding",
+				requiredRoles: ["admin"],
 			},
 		],
 	},

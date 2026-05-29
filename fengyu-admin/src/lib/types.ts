@@ -36,6 +36,8 @@ export interface Store {
   lakalaTermNo: string | null
   /** 拉卡拉收银台跳转子 appid（本期未启用，留空即可） */
   lakalaSubAppid: string | null
+  /** 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007） */
+  lakalaMerchantId: string | null
   /** 是否开启拉卡拉真实支付通道；false=回 mock 兜底，true=走 special_create */
   lakalaEnabled: boolean
   createdAt: string

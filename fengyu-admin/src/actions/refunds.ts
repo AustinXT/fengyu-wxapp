@@ -744,11 +744,10 @@ export const createRefund = withPermission(
  *
  * 联调开启 checklist：
  *  1. admin 运行时 env 设 `LAKALA_REFUND_ENABLED=true` + 完整 `LAKALA_*`（私钥/平台证书/商户号）。
- *  2. 用一笔真实已支付的拉卡拉订单退款，核对 `sale_order_payments.external_trade_info`
- *     （payNotify 已落库的回调 order_trade_info）里哪个字段对应
- *     `/v3/rfd/refund_front/refund` 的 origin_trade_no（拉卡拉交易流水）/ origin_log_no（对账单流水号）。
- *     当前按 `acc_trade_no→origin_trade_no`、`log_no→origin_log_no` 猜测，需按真实回调字段修正下方 TODO。
- *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（收银台商户订单号）兜底。
+ *  2. 字段路径在聚合主扫迁移（2026-05-29）后已澄清：payNotify 把扁平回调 body 完整存进
+ *     `external_trade_info` JSONB，顶层字段 `acc_trade_no`（微信 transaction_id / 支付宝交易号）
+ *     用作 `origin_trade_no`；`trade_no`（拉卡拉交易流水）为兜底；`log_no`（对账单流水）→ `origin_log_no`。
+ *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（聚合主扫商户流水号，含 _unixSec 后缀）兜底。
  *  4. requestIp 必须改用 admin 操作人真实 IP（风控必送），现用 env 占位。
  *  5. 处理 requestRefund 返回 trade_state：SUCCESS=同步成功；PROCESSING/INIT/TIMEOUT=异步，
  *     需 cron poll-lakala-refunds（queryRefund 推进，仍为 follow-up）。
@@ -794,7 +793,7 @@ async function refundViaLakalaIfEnabled(opts: {
       termNo: row.termNo,
       outTradeNo: `refund-${opts.refundPaymentId}`,
       refundAmountFen: opts.refundByOriginFen,
-      // TODO[联调]：核对 order_trade_info 字段名 → origin 引用（按拉卡拉文档/真实回调）
+      // 聚合主扫迁移后字段路径已澄清（2026-05-29）：扁平 body 顶层直接取
       originTradeNo: tradeInfo.acc_trade_no || tradeInfo.trade_no,
       originLogNo: tradeInfo.log_no,
       originOutTradeNo: row.outOrderNo || undefined,

@@ -60,7 +60,12 @@ plugin({
     }))
     // mock @/lib/operation-log
     build.module('@/lib/operation-log', () => ({
-      exports: { logOperation: async () => {}, logTransition: async () => {} },
+      exports: {
+        logOperation: async () => {},
+        logTransition: async () => {},
+        logUpdate: async () => {},
+        computeChanges: () => null,
+      },
       loader: 'object',
     }))
     // mock next/cache
