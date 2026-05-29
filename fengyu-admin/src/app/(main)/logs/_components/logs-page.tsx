@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
@@ -148,10 +149,7 @@ function formatValue(val: unknown): string {
   if (typeof val === "boolean") return val ? "是" : "否"
   if (Array.isArray(val)) return val.length === 0 ? "-" : val.join(", ")
   if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
-    return new Date(val).toLocaleString("zh-CN", {
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit",
-    })
+    return fmtDateTime(val)
   }
   return String(val)
 }
@@ -240,10 +238,7 @@ function LogDetail({ detail }: { detail: Record<string, unknown> }) {
 
 function formatDateTime(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {

@@ -11,6 +11,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SaleOrder, ServiceOrder, Store } from "@/lib/types"
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -20,12 +21,12 @@ const allocationStatusMap: Record<string, { label: string; className: string }> 
 }
 
 function formatTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+  return fmtDateTime(dt)
 }
 
 function formatDate(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+  return fmtDate(dt)
 }
 
 /**

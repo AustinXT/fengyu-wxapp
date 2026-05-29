@@ -5,13 +5,11 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { ServiceOrder } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 export default function ServiceDetailPageClient({
@@ -113,7 +111,7 @@ export default function ServiceDetailPageClient({
                     : null
                   const sessionCell = item.sessionCount !== null
                     ? `${used ?? 0}/${item.paidSessions ?? 0}/${item.sessionCount}`
-                    : "—"
+                    : "-"
                   return (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3 font-medium">{item.productName || "—"}</td>
@@ -121,7 +119,7 @@ export default function ServiceDetailPageClient({
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice
                         ? `¥${Number(item.unitRealPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
+                        : "-"}
                     </td>
                     <td className="px-4 py-3 text-right">{item.sessionUsed}</td>
                     <td className="px-4 py-3 text-right">{sessionCell}</td>

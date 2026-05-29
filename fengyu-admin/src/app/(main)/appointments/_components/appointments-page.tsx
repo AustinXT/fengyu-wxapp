@@ -13,14 +13,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { Appointment, Store } from "@/lib/types"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 const TAB_OPTIONS = [
@@ -176,7 +175,7 @@ export default function AppointmentsPageClient({
                     <td className="px-4 py-3">{formatDateTime(appt.appointmentTime)}</td>
                     <td className="px-4 py-3">{appt.storeName || "—"}</td>
                     <td className="px-4 py-3">{appt.employeeName}</td>
-                    <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
+                    <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1">
                         {appt.status === "待确认" && (
