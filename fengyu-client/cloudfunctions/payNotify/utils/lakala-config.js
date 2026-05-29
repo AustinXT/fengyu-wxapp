@@ -13,19 +13,19 @@
  *   LAKALA_PRIVATE_KEY_PEM      接入方加签私钥 PEM（含 BEGIN/END 头尾）
  *   LAKALA_PLATFORM_CERT_PEM    拉卡拉平台公钥证书 PEM（验签用）
  *
- *   LAKALA_DEFAULT_MERCHANT_NO  门店未配置时的默认商户号
- *   LAKALA_DEFAULT_TERM_NO      门店未配置时的默认终端号
- *
  *   LAKALA_NOTIFY_URL           异步通知 HTTPS URL（CloudBase HTTP 触发器地址）
  *   LAKALA_CALLBACK_IP_WHITELIST  逗号分隔的回调 IP 白名单（'*' 跳过校验）
  *
- *   LAKALA_SM4_KEY              SM4 Key（base64，仅 special_create_encry 加密变体用）
  *   LAKALA_ENV                  'release' / 'trial'（前端跳转小程序 envVersion，聚合主扫已不用，保留兼容）
  *
  *   LAKALA_SUB_APPID            微信小程序 sub_appid（聚合主扫 trans_type=71 必送，
  *                                 client 小程序固定 wx811eb4ded3dfba3f，未配置时兜底硬编码）
  *   LAKALA_ALIPAY_SHARE_SOURCE  支付宝吱口令 acc_busi_fields.source（ISV 公司名缩写，
  *                                 由拉卡拉商务对接确认；未配置时 alipayPay 自动报 ALIPAY_NOT_AVAILABLE）
+ *
+ * 已删除（一店一商户原则，env 不留默认；支付失败就让失败，不兜底）：
+ *   LAKALA_DEFAULT_MERCHANT_NO / LAKALA_DEFAULT_TERM_NO — stores 表必填，未配则报 LAKALA_NOT_CONFIGURED/LAKALA_TERM_NO_MISSING
+ *   LAKALA_SM4_KEY — special_create_encry 加密变体从未启用，聚合主扫迁移后彻底无引用
  *
  * 加签算法见 sources/documents/拉卡拉接口规范-补充.md「安全统一接入规范」。
  */
@@ -38,8 +38,6 @@ const REQUIRED_VARS = Object.freeze([
   'LAKALA_SERIAL_NO',
   'LAKALA_PRIVATE_KEY_PEM',
   'LAKALA_PLATFORM_CERT_PEM',
-  'LAKALA_DEFAULT_MERCHANT_NO',
-  'LAKALA_DEFAULT_TERM_NO',
 ])
 
 /**
@@ -58,11 +56,8 @@ function readConfig() {
   const serialNo = process.env.LAKALA_SERIAL_NO || ''
   const privateKeyPem = normalizePem(process.env.LAKALA_PRIVATE_KEY_PEM || '')
   const platformCertPem = normalizePem(process.env.LAKALA_PLATFORM_CERT_PEM || '')
-  const defaultMerchantNo = process.env.LAKALA_DEFAULT_MERCHANT_NO || ''
-  const defaultTermNo = process.env.LAKALA_DEFAULT_TERM_NO || ''
   const notifyUrl = process.env.LAKALA_NOTIFY_URL || ''
   const ipWhitelist = process.env.LAKALA_CALLBACK_IP_WHITELIST || ''
-  const sm4Key = process.env.LAKALA_SM4_KEY || ''
   const env = process.env.LAKALA_ENV || 'trial'
   // 微信小程序 sub_appid（聚合主扫 trans_type=71 必送）：兜底硬编码 client appid
   const subAppid = process.env.LAKALA_SUB_APPID || 'wx811eb4ded3dfba3f'
@@ -75,12 +70,9 @@ function readConfig() {
     serialNo,
     privateKeyPem,
     platformCertPem,
-    defaultMerchantNo,
-    defaultTermNo,
     notifyUrl,
     ipWhitelist: ipWhitelist === '*' ? null : ipWhitelist.split(',').map((s) => s.trim()).filter(Boolean),
     ipWhitelistOpen: ipWhitelist === '*',
-    sm4Key,
     env: env === 'release' ? 'release' : 'trial',
     subAppid,
     alipayShareSource,

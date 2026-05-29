@@ -17,9 +17,9 @@ const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 /**
  * 解析门店的拉卡拉商户号 + 终端号
  *
- * 聚合主扫 (preorder) term_no 是必填（M），与旧收银台 special_create 不同（旧版可不传）。
- * resolveLakalaMerchant 必须保证返回的 termNo 非空：先取 stores.lakala_term_no，
- * 空则兜底 LAKALA_DEFAULT_TERM_NO，仍空则抛 LAKALA_TERM_NO_MISSING 引导运维补配置。
+ * 一店一商户、一店一终端，env 不留默认；支付失败就让失败，不兜底。
+ * - stores.lakala_enabled=false 或 lakala_merchant_no 为空 → 返回 null（上层报 LAKALA_NOT_CONFIGURED）
+ * - lakala_term_no 为空（聚合主扫 term_no 必填 M）→ 抛 LAKALA_TERM_NO_MISSING 引导运维补配置
  */
 async function resolveLakalaMerchant(storeId) {
   if (!lakalaConfig.isReady()) return null
@@ -32,9 +32,8 @@ async function resolveLakalaMerchant(storeId) {
   const row = rows[0]
   if (!row.lakala_enabled) return null
   const merchantNo = row.lakala_merchant_no
-  if (!merchantNo) return null   // 一店一商户:商户号必填，未配即视为未开通，不再 fallback env 默认号
-  const cfg = lakalaConfig.readConfig()
-  const termNo = row.lakala_term_no || cfg.defaultTermNo || ''
+  if (!merchantNo) return null
+  const termNo = row.lakala_term_no
   if (!termNo) {
     throw new Error('INVALID_STATE: LAKALA_TERM_NO_MISSING: 该门店未配置拉卡拉终端号，请联系管理员')
   }

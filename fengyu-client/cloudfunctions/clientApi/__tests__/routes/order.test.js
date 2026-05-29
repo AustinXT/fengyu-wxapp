@@ -534,8 +534,6 @@ describe('order.pay', () => {
     LAKALA_SERIAL_NO: '00dfba8194c41b84cf',
     LAKALA_PRIVATE_KEY_PEM: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----',
     LAKALA_PLATFORM_CERT_PEM: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
-    LAKALA_DEFAULT_MERCHANT_NO: '822290059430BFA',
-    LAKALA_DEFAULT_TERM_NO: 'D9261078',
     LAKALA_NOTIFY_URL: 'https://notify.test/lakala/notify',
     LAKALA_ENV: 'release',
   }
@@ -616,11 +614,11 @@ describe('order.pay', () => {
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_NOT_CONFIGURED/)
-    // env 仍设有 LAKALA_DEFAULT_MERCHANT_NO，但绝不能被用来下单（去兜底后一店一商户）
+    // 一店一商户：商户号 null → 视为未开通，不调拉卡拉
     expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 
-  test('门店配了商户号但无终端号 → 兜底 LAKALA_DEFAULT_TERM_NO（聚合主扫 term_no 必填）', async () => {
+  test('门店配了商户号但无终端号 → 抛 LAKALA_TERM_NO_MISSING（一店一商户、env 不兜底）', async () => {
     const now = new Date()
     pg.query.mockImplementation(async (sql) => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [{
@@ -629,18 +627,14 @@ describe('order.pay', () => {
         sale_order_datetime: now.toISOString(),
       }]
       if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
-      // 门店启用拉卡拉、有商户号，但终端号为空 → 应兜底 LAKALA_DEFAULT_TERM_NO（聚合主扫必填）
+      // 门店启用拉卡拉、有商户号，但终端号为空 → 应抛 LAKALA_TERM_NO_MISSING（聚合主扫 term_no M 必填，env 不兜底）
       if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: '82242107230052S', lakala_term_no: null, lakala_enabled: true }]
       return []
     })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
-    await routes.pay(ctx)
-
-    expect(ctx.result.paymentParams.paySign).toBe('mock-pay-sign-001')
-    const args = __mocks__.lakalaClient.requestPreorder.mock.calls[0][0]
-    expect(args.merchantNo).toBe('82242107230052S')
-    expect(args.termNo).toBe('D9261078')  // 兜底 env LAKALA_DEFAULT_TERM_NO
+    await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_TERM_NO_MISSING/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 
   test('paid_amount=0（全额抵扣）直接短路返回已支付', async () => {
@@ -1021,7 +1015,6 @@ describe('order.queryLakalaStatus', () => {
   const env = {
     LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
     LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
-    LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
   }
   const snap = {}
   beforeEach(() => { for (const [k, v] of Object.entries(env)) { snap[k] = process.env[k]; process.env[k] = v } })

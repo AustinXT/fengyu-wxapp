@@ -32,8 +32,6 @@ interface LakalaEnv {
   serialNo: string
   privateKeyPem: string
   platformCertPem: string
-  defaultMerchantNo: string
-  defaultTermNo: string
   notifyUrl: string
 }
 
@@ -53,12 +51,19 @@ function readEnv(): LakalaEnv {
     serialNo: process.env.LAKALA_SERIAL_NO || '',
     privateKeyPem: normalizePem(process.env.LAKALA_PRIVATE_KEY_PEM || ''),
     platformCertPem: normalizePem(process.env.LAKALA_PLATFORM_CERT_PEM || ''),
-    defaultMerchantNo: process.env.LAKALA_DEFAULT_MERCHANT_NO || '',
-    defaultTermNo: process.env.LAKALA_DEFAULT_TERM_NO || '',
     notifyUrl: process.env.LAKALA_NOTIFY_URL || '',
   }
 }
 
+/**
+ * 加签 env 就绪检查。
+ *
+ * 含义 = "加签私钥/平台证书/appid/序列号/基地址" 五项齐全；
+ * 不再检查 defaultMerchantNo/defaultTermNo（一店一商户原则，商户号/终端号从 stores 表查，
+ * env 不留默认；2026-05-29 PR-6 清理）。
+ *
+ * 用法：admin 退款 (refunds.ts:refundViaLakalaIfEnabled) 调一次决定是否走拉卡拉退款通道。
+ */
 export function isReady(): boolean {
   const env = readEnv()
   return !!(
@@ -66,15 +71,12 @@ export function isReady(): boolean {
     env.appid &&
     env.serialNo &&
     env.privateKeyPem &&
-    env.platformCertPem &&
-    env.defaultMerchantNo &&
-    env.defaultTermNo
+    env.platformCertPem
   )
 }
 
 /**
- * 入网相关方法所需的最小 env 校验（不强制要求 defaultMerchantNo/defaultTermNo，
- * 因为入网时还没拿到 merchant_no/term_no）。
+ * 入网相关方法所需的最小 env 校验（与 isReady 内容一致；保留独立函数仅为语义清晰）。
  *
  * **PEM 配置 fail-fast 改懒加载**：仅在 `request()` 首次被调用时执行；
  * 模块 import 期不抛错，避免 admin docker build 阶段缺 LAKALA_PRIVATE_KEY_PEM

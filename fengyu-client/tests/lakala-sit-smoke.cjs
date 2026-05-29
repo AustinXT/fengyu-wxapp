@@ -26,8 +26,13 @@ async function main() {
     process.exit(2)
   }
   const cfg = lakalaConfig.readConfig()
-  const merchantNo = process.env.LAKALA_SMOKE_MERCHANT || cfg.defaultMerchantNo
-  const termNo = process.env.LAKALA_SMOKE_TERM || cfg.defaultTermNo
+  const merchantNo = process.env.LAKALA_SMOKE_MERCHANT
+  const termNo = process.env.LAKALA_SMOKE_TERM
+  if (!merchantNo || !termNo) {
+    console.error('✗ 必须显式传 LAKALA_SMOKE_MERCHANT 和 LAKALA_SMOKE_TERM（一店一商户，env 不留默认）')
+    console.error('  例：LAKALA_SMOKE_MERCHANT=822290059430BCY LAKALA_SMOKE_TERM=D9285650 node fengyu-client/tests/lakala-sit-smoke.cjs')
+    process.exit(2)
+  }
   const openid = process.env.LAKALA_SMOKE_OPENID || 'oMock00000000000000000000-smoke'
   const subAppid = cfg.subAppid
   console.log(`>>> ${cfg.apiBase}/v3/labs/trans/preorder`)

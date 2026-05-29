@@ -60,9 +60,8 @@ require.cache[lakalaConfigPath] = {
     readConfig: () => ({
       apiBase: 'https://test.wsmsd.cn/sit/api',
       appid: 'OP00000003', serialNo: 'sn', privateKeyPem: '', platformCertPem: '',
-      defaultMerchantNo: '822290059430BFA', defaultTermNo: 'D9261078',
       notifyUrl: '', ipWhitelist: [], ipWhitelistOpen: true,  // 跳过 IP 白名单
-      sm4Key: '', env: 'trial', subAppid: 'wx811eb4ded3dfba3f', alipayShareSource: 'FENGYU',
+      env: 'trial', subAppid: 'wx811eb4ded3dfba3f', alipayShareSource: 'FENGYU',
     }),
     isReady: () => true,
     missingVars: () => [],

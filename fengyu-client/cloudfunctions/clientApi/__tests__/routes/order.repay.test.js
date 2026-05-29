@@ -131,7 +131,6 @@ describe('order.repay', () => {
     const lakalaEnv = {
       LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
       LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
-      LAKALA_DEFAULT_MERCHANT_NO: 'M', LAKALA_DEFAULT_TERM_NO: 'T',
     }
     const snap = {}
     for (const [k, v] of Object.entries(lakalaEnv)) { snap[k] = process.env[k]; process.env[k] = v }

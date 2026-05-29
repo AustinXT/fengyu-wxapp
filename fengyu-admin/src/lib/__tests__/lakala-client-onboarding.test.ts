@@ -34,8 +34,6 @@ function applyValidEnv(): void {
   process.env.LAKALA_SERIAL_NO = 'TEST_SERIAL'
   process.env.LAKALA_PRIVATE_KEY_PEM = VALID_PEM_PRIV
   process.env.LAKALA_PLATFORM_CERT_PEM = VALID_PEM_CERT
-  process.env.LAKALA_DEFAULT_MERCHANT_NO = 'M_DEFAULT'
-  process.env.LAKALA_DEFAULT_TERM_NO = 'T_DEFAULT'
   process.env.LAKALA_NOTIFY_URL = 'https://admin.example.com/api/lakala/callback/pay'
 }
 

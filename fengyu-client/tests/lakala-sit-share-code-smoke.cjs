@@ -29,8 +29,12 @@ async function main() {
     process.exit(2)
   }
 
-  const merchantNo = process.env.LAKALA_SMOKE_MERCHANT || cfg.defaultMerchantNo
-  const termNo = process.env.LAKALA_SMOKE_TERM || cfg.defaultTermNo
+  const merchantNo = process.env.LAKALA_SMOKE_MERCHANT
+  const termNo = process.env.LAKALA_SMOKE_TERM
+  if (!merchantNo || !termNo) {
+    console.error('✗ 必须显式传 LAKALA_SMOKE_MERCHANT 和 LAKALA_SMOKE_TERM（一店一商户，env 不留默认）')
+    process.exit(2)
+  }
   console.log(`>>> ${cfg.apiBase}/v3/labs/trans/preorder (ALIPAY/41)`)
   console.log(`    merchant=${merchantNo} term=${termNo}`)
   console.log(`    alipay_share_source=${cfg.alipayShareSource}`)
