@@ -4,6 +4,7 @@ import { isManager } from '../../utils/role';
 import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
+import { formatDate } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -141,6 +142,8 @@ interface CouponInfo {
   name: string;
   discount: number;
   description?: string;
+  /** 券有效期（后端返回原始 timestamp，前端格式化为 YYYY-MM-DD 供「有效期至」展示） */
+  expireAt?: string;
 }
 
 /** 侧边栏分组（"普通商品"模式，按 productKind 聚合） */
@@ -1221,7 +1224,9 @@ Page({
         clientPhone: customerInfo.phone,
         items,
       });
-      this.setData({ availableCoupons: data?.coupons || [] });
+      // expireAt 为原始 timestamp（序列化成 UTC 串），格式化为 YYYY-MM-DD 供「有效期至」展示
+      const coupons = (data?.coupons || []).map(c => ({ ...c, expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt }));
+      this.setData({ availableCoupons: coupons });
     } catch {
       this.setData({ availableCoupons: [] });
     } finally {
