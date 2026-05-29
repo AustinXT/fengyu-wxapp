@@ -91,7 +91,7 @@ const STEPS = [
       productName: 'TEST_E2E_L3_测试商品',
       skuSpecName: 'TEST_E2E_L3_普通规格',
       unitPrice: 100,
-      productType: '单品',
+      productType: '疗程卡',
       storeId: TEST_STORE_ID,
     }
     await ctx.mp.evaluate((item) => {

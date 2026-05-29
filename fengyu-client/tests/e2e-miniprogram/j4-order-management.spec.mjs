@@ -60,7 +60,7 @@ async function insertPendingOrder({ userId, saleOrderId, quantity = 1, unitPrice
        is_experience
      )
      VALUES ($1, $2, $3, '购买'::item_direction,
-             $4, $5, '默认', '单品'::product_type,
+             $4, $5, '默认', '疗程卡'::product_type,
              $6, $7, $6, $8, 0, false)`,
     [itemId, saleOrderId, TEST_STORE_ID, L3_SKU_NORMAL_ID,
      `${NS}_测试商品`, unitPrice, quantity, totalAmount]

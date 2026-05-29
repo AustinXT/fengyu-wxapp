@@ -71,10 +71,12 @@ export async function ensureClientProductCatalog() {
     [L3_PRODUCT_ID, L3_MALL_CATEGORY_ID, `${NS}_测试商品`]
   )
 
+  // product_type 枚举 2026-05-21 由 3→2 值（'单品' 并入 '疗程卡'，详见 migration 0050）
+  // 历史"单品"语义 = 1 次性消耗，现统一用 '疗程卡' + session_count=null/1 表达
   const skus = [
-    [L3_SKU_NORMAL_ID, '单品', `${NS}_普通规格`, '100.00', null, false],
+    [L3_SKU_NORMAL_ID, '疗程卡', `${NS}_普通规格`, '100.00', null, false],
     [L3_SKU_COURSE_ID, '疗程卡', `${NS}_5次卡`, '500.00', 5, false],
-    [L3_SKU_EXP_ID, '单品', `${NS}_体验装`, '9.90', null, true],
+    [L3_SKU_EXP_ID, '疗程卡', `${NS}_体验装`, '9.90', null, true],
   ]
   for (const [skuId, type, name, price, sessions, isExp] of skus) {
     await query(
@@ -233,7 +235,7 @@ export async function createPendingSaleOrderForScan({
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               $4, $5, '默认', '单品'::product_type,
+               $4, $5, '默认', '疗程卡'::product_type,
                $6, 1, $6, $6, 0, false)`,
       [itemId, saleOrderId, TEST_STORE_ID, skuId, `${NS}_测试商品`, totalAmount]
     )

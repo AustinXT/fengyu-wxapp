@@ -212,15 +212,21 @@ describe('order.create', () => {
   }
 
   function mockCreateTransaction() {
+    // 按 SQL pattern 匹配 rowCount，比顺序 mock 鲁棒：
+    // 路由在 2026-05 调整了事务内 SQL 顺序（INSERT order 现在在 coupon claim 之前），
+    // 序号 mock 会让 coupon claim 拿到错的 rowCount=0 → throw '优惠券已失效'。
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // advisory lock
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // order seq
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // item seq
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // coupon claim
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // INSERT order
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // INSERT item
+        query: vi.fn(async (sql) => {
+          const s = String(sql)
+          // coupon claim 严格期待 rowCount=1（路由判 rowCount!==1 → throw）
+          if (/UPDATE\s+user_coupons/i.test(s)) {
+            return { rows: [], rowCount: 1 }
+          }
+          // 其它 query（advisory lock / seq SELECT / INSERT / paid_sessions UPDATE / settlePoints / operation_logs）
+          // 默认 rowCount=0 + 空 rows，路由不严格校验
+          return { rows: [], rowCount: 0 }
+        }),
       }
       return cb(client)
     })
@@ -372,16 +378,13 @@ describe('order.create', () => {
     // mock 7: 顾客名
     pg.query.mockResolvedValueOnce([{ name: '李四' }])
 
+    // 同 mockCreateTransaction：按 SQL pattern match coupon claim rowCount=1
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // advisory lock
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // order seq
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // item seq
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // coupon claim
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // INSERT order
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // INSERT item A
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // INSERT item B
+        query: vi.fn(async (sql) => {
+          if (/UPDATE\s+user_coupons/i.test(String(sql))) return { rows: [], rowCount: 1 }
+          return { rows: [], rowCount: 0 }
+        }),
       }
       return cb(client)
     })

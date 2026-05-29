@@ -5,6 +5,12 @@
 const path = require('path')
 const { vi } = await import('vitest')
 
+// L1 单测开启 phoneNumber 直传与 _testOpenid 测试通道
+// 路由用 testBypassAllowed('ALLOW_DIRECT_PHONE') / ('ALLOW_TEST_OPENID') 守卫
+// （prod 由 runtime-guard 硬闸禁用，L1 测试环境 NODE_ENV !== 'production' 必须配 env 才能走 bypass 分支）
+process.env.ALLOW_DIRECT_PHONE = process.env.ALLOW_DIRECT_PHONE || 'true'
+process.env.ALLOW_TEST_OPENID = process.env.ALLOW_TEST_OPENID || 'true'
+
 // ====== Mock: db/pg ======
 const pgPath = require.resolve('../db/pg')
 const mockPg = {

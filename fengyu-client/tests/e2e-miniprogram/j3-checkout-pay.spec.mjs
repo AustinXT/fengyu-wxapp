@@ -36,7 +36,7 @@ const STEPS = [
       unitPrice: 100,
       price: 100,
       quantity: 1,
-      productType: '单品',
+      productType: '疗程卡',
       storeId: TEST_STORE_ID,
     }
     await ctx.mp.reLaunch('/pages/home/home')

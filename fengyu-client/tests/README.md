@@ -5,7 +5,7 @@
 | 层 | 路径 | 作用 | 速度 | 依赖 |
 |----|------|------|------|------|
 | L1 unit | `cloudfunctions/clientApi/__tests__/` | mock PG，路由内部逻辑 | <1s | bun test |
-| **L2 e2e-cloudfn** | `tests/e2e-cloudfn/` | 本地 require clientApi + 真 PG，覆盖每个 action 全分支 | 单 spec 3-10s | PG 主库 + `ALLOW_TEST_OPENID=true`（本地进程注入） |
+| **L2 e2e-cloudfn** | `tests/e2e-cloudfn/` | 本地 require clientApi + 真 PG，覆盖每个 action 全分支（35 spec / ~190 用例 / 53 action） | 单 spec 3-10s | PG 主库 + `ALLOW_TEST_OPENID=true`（本地进程注入） |
 | **L2X e2e-cross-end** | `tests/e2e-cross-end/` | 同一 Node 进程内同时 require clientApi + staffApi，验真跨端流（扫码支付 / HMAC 桥 / 历史单可见性 / coupon schema 桥 / paynotify guard） | 单 spec 5-12s | 同 L2 + `CLIENT_SECRET` 注入（setup.mjs 默认设了 mock 值）|
 | **L3 e2e-miniprogram** | `tests/e2e-miniprogram/` | IDE automator 驱动真小程序，覆盖完整用户旅程 | 单 journey 30-60s | 微信开发者工具 IDE + IPv6 9420 |
 
