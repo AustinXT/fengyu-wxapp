@@ -1,13 +1,16 @@
 /**
- * 拉卡拉 SIT/联调 smoke（手动跑，非 CI）—— 用真实环境变量对拉卡拉网关打一发收银台下单，
- * 验证：加签链路 / envelope / 字段类型 / 成功码 / counter_url / 响应验签 一次性全通。
+ * 拉卡拉 SIT/联调 smoke（手动跑，非 CI）—— 用真实环境变量对拉卡拉网关打一发聚合主扫 preorder，
+ * 验证：加签链路 / envelope / 字段类型 / 成功码 BBS00000 / wx.requestPayment 5 字段 / 响应验签 一次性全通。
  *
  * 用法（先把 LAKALA_* 注入环境，例如从 envs/dev.env 导出）：
  *   set -a; . envs/dev.env; set +a
  *   node fengyu-client/tests/lakala-sit-smoke.cjs
- * 可选覆盖：LAKALA_SMOKE_MERCHANT / LAKALA_SMOKE_TERM（默认取 LAKALA_DEFAULT_*）
+ * 可选覆盖：LAKALA_SMOKE_MERCHANT / LAKALA_SMOKE_TERM（默认取 LAKALA_DEFAULT_*）/ LAKALA_SMOKE_OPENID（默认 mock）
  *
  * 复用生产同款 utils（含 PEM \n 归一化 + 响应验签），因此跑通即证明部署态可用。
+ *
+ * 注：SIT 沙箱微信支付预期下单成功后，wx.requestPayment 调起会因 "sub mch id 与 sub appid 不匹配" 报错（文档明示）；
+ *     smoke 只验证 preorder 下单 + acc_resp_fields 字段完整，不验证实际支付到账。
  */
 'use strict'
 const path = require('path')
@@ -25,30 +28,52 @@ async function main() {
   const cfg = lakalaConfig.readConfig()
   const merchantNo = process.env.LAKALA_SMOKE_MERCHANT || cfg.defaultMerchantNo
   const termNo = process.env.LAKALA_SMOKE_TERM || cfg.defaultTermNo
-  console.log(`>>> ${cfg.apiBase}  merchant=${merchantNo} term=${termNo}`)
+  const openid = process.env.LAKALA_SMOKE_OPENID || 'oMock00000000000000000000-smoke'
+  const subAppid = cfg.subAppid
+  console.log(`>>> ${cfg.apiBase}/v3/labs/trans/preorder`)
+  console.log(`    merchant=${merchantNo} term=${termNo}`)
+  console.log(`    sub_appid=${subAppid} openid=${openid}`)
 
-  const reqData = {
-    out_order_no: `SMOKE${Date.now()}`,
-    merchant_no: merchantNo,
-    term_no: termNo,
-    total_amount: 100, // 数字（对齐 SDK V3CcssCounterOrderSpecialCreateRequest.totalAmount=Long）
-    order_efficient_time: lakalaClient.formatReqTime(new Date(Date.now() + 10 * 60 * 1000)),
-    notify_url: cfg.notifyUrl || 'https://run.mocky.io/v3/b02c9448-20a2-4ff6-a678-38ecab30161d',
-    order_info: '凤御 SIT smoke',
-    support_refund: 1,
-    support_repeat_pay: 1,
-    support_cancel: 0,
-    counter_param: JSON.stringify({ pay_mode: 'WECHAT' }),
-  }
-  const resp = await lakalaClient.request({ path: '/v3/ccss/counter/order/special_create', reqData })
-  console.log(`<<< code=${resp.code} msg=${resp.msg} ok=${resp.ok}`)
-  if (resp.ok && resp.resp_data && resp.resp_data.counter_url) {
-    console.log('<<< counter_url =', resp.resp_data.counter_url)
-    console.log('<<< pay_order_no =', resp.resp_data.pay_order_no)
-    console.log('\n✓ PASS —— 加签/envelope/字段类型/成功码/counter_url/响应验签 全通')
+  const outTradeNo = `SMOKE${Date.now()}`
+  try {
+    const resp = await lakalaClient.requestPreorder({
+      merchantNo,
+      termNo,
+      outTradeNo,
+      accountType: 'WECHAT',
+      transType: '71',
+      totalAmountFen: 1,  // 1 分（最小金额）
+      requestIp: '0.0.0.0',
+      subject: '凤御 SIT 烟测',
+      attach: outTradeNo,
+      subAppid,
+      openid,
+      timeoutExpressMin: 10,
+    })
+    console.log(`<<< code=${resp.code} msg=${resp.msg} ok=${resp.ok}`)
+    console.log('<<< tradeNo =', resp.tradeNo)
+    console.log('<<< logNo =', resp.logNo)
+    console.log('<<< lakala_app_id =', resp.lakalaAppId, '(校验等于 sub_appid)')
+    console.log('<<< paymentParams = {')
+    for (const [k, v] of Object.entries(resp.paymentParams || {})) {
+      console.log(`      ${k}: ${v && String(v).slice(0, 60)}${String(v).length > 60 ? '...' : ''}`)
+    }
+    console.log('    }')
+    const pp = resp.paymentParams || {}
+    const missingPp = ['timeStamp', 'nonceStr', 'package', 'signType', 'paySign'].filter((k) => !pp[k])
+    if (missingPp.length) {
+      console.error('\n✗ FAIL —— wx.requestPayment 缺字段：', missingPp.join(','))
+      process.exit(1)
+    }
+    if (resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      console.error(`\n✗ FAIL —— lakalaAppId=${resp.lakalaAppId} != sub_appid=${subAppid}`)
+      process.exit(1)
+    }
+    console.log('\n✓ PASS —— preorder 下单 / BBS00000 成功码 / wx.requestPayment 5 字段 / app_id 一致校验 全通')
     process.exit(0)
+  } catch (err) {
+    console.error('\n✗ FAIL：', err.message)
+    process.exit(1)
   }
-  console.error('\n✗ FAIL —— 下单未成功，见上方 code/msg')
-  process.exit(1)
 }
 main().catch((e) => { console.error('✗ ERROR:', e.message); process.exit(1) })

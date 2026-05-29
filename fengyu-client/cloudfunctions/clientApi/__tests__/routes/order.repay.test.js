@@ -126,8 +126,8 @@ describe('order.repay', () => {
     expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
   })
 
-  test('微信线上回款 → 调拉卡拉收银台，返回 counter_url（不写 payments 行）', async () => {
-    // 线上通道走拉卡拉收银台：需 lakala env 就绪；lakala-client.request 已在 setup.js mock
+  test('微信线上回款 → 调聚合主扫 preorder，返回 wx.requestPayment 参数（不写 payments 行）', async () => {
+    // 线上通道走聚合主扫：需 lakala env 就绪；lakala-client.requestPreorder 已在 setup.js mock
     const lakalaEnv = {
       LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
       LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
@@ -145,7 +145,7 @@ describe('order.repay', () => {
         { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
       ])
       pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
-      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores + createLakalaCounterOrder 持久化 out_order_no
+      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores + createLakalaPreorder 持久化 out_trade_no
       pg.query.mockImplementation(async (sql) => {
         if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
         return []
@@ -161,12 +161,17 @@ describe('order.repay', () => {
 
       expect(ctx.result.status).toBe('待支付')
       expect(ctx.result.paymentMethod).toBe('微信')
-      expect(ctx.result.lakala.counterUrl).toBe('https://pay.test/cashier')
+      expect(ctx.result.paymentParams.paySign).toBe('mock-pay-sign-001')
+      expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_mock_001')
+      expect(ctx.result.lakala).toBeUndefined()  // 不再有 counterUrl
       expect(ctx.result.saleOrderId).toBe('FY-XSD-WX-2604240001')
       expect(ctx.result.repaymentOrderId).toBeUndefined()
-      // 收银台下单金额按本次回款额（数字分）
-      const reqData = globalThis.__mocks__.lakalaClient.request.mock.calls[0][0].reqData
-      expect(reqData.total_amount).toBe(20000) // 200 元 → 20000 分
+      // 聚合主扫下单金额按本次回款额（分）
+      const args = globalThis.__mocks__.lakalaClient.requestPreorder.mock.calls[0][0]
+      expect(args.totalAmountFen).toBe(20000) // 200 元 → 20000 分
+      expect(args.accountType).toBe('WECHAT')
+      expect(args.transType).toBe('71')
+      expect(args.subAppid).toBe('wx811eb4ded3dfba3f')
 
       // 微信通道：事务内不应写 payments / card_transactions / 凭证单 sale_orders
       const calls = router.mock.calls.map((c) => c[0])

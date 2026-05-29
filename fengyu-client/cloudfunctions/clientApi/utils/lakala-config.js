@@ -20,7 +20,12 @@
  *   LAKALA_CALLBACK_IP_WHITELIST  逗号分隔的回调 IP 白名单（'*' 跳过校验）
  *
  *   LAKALA_SM4_KEY              SM4 Key（base64，仅 special_create_encry 加密变体用）
- *   LAKALA_ENV                  'release' / 'trial'（前端跳转小程序 envVersion）
+ *   LAKALA_ENV                  'release' / 'trial'（前端跳转小程序 envVersion，聚合主扫已不用，保留兼容）
+ *
+ *   LAKALA_SUB_APPID            微信小程序 sub_appid（聚合主扫 trans_type=71 必送，
+ *                                 client 小程序固定 wx811eb4ded3dfba3f，未配置时兜底硬编码）
+ *   LAKALA_ALIPAY_SHARE_SOURCE  支付宝吱口令 acc_busi_fields.source（ISV 公司名缩写，
+ *                                 由拉卡拉商务对接确认；未配置时 alipayPay 自动报 ALIPAY_NOT_AVAILABLE）
  *
  * 加签算法见 sources/documents/拉卡拉接口规范-补充.md「安全统一接入规范」。
  */
@@ -59,6 +64,10 @@ function readConfig() {
   const ipWhitelist = process.env.LAKALA_CALLBACK_IP_WHITELIST || ''
   const sm4Key = process.env.LAKALA_SM4_KEY || ''
   const env = process.env.LAKALA_ENV || 'trial'
+  // 微信小程序 sub_appid（聚合主扫 trans_type=71 必送）：兜底硬编码 client appid
+  const subAppid = process.env.LAKALA_SUB_APPID || 'wx811eb4ded3dfba3f'
+  // 支付宝吱口令 source：不硬编码，未配置时 alipayPay 自动报 ALIPAY_NOT_AVAILABLE
+  const alipayShareSource = process.env.LAKALA_ALIPAY_SHARE_SOURCE || ''
 
   return {
     apiBase: apiBase.replace(/\/+$/, ''),
@@ -73,6 +82,8 @@ function readConfig() {
     ipWhitelistOpen: ipWhitelist === '*',
     sm4Key,
     env: env === 'release' ? 'release' : 'trial',
+    subAppid,
+    alipayShareSource,
   }
 }
 

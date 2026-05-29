@@ -56,6 +56,7 @@ async function auth(ctx, next) {
   if (users.length === 0) {
     ctx.auth = {
       isOpenid: true,
+      openid: effectiveOpenid,
       userId: null,
       phone: null,
       boundStoreId: null,
@@ -65,6 +66,7 @@ async function auth(ctx, next) {
   } else {
     ctx.auth = {
       isOpenid: true,
+      openid: effectiveOpenid,
       userId: users[0].user_id,
       phone: users[0].phone,
       boundStoreId: users[0].bound_store_id,

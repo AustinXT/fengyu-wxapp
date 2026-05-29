@@ -61,10 +61,17 @@ function isPayNotifyEnabled() {
 /**
  * 解析拉卡拉 HTTP 触发器回调，校验 IP 白名单 + 3 行异步通知签名，转换为内部 event 格式。
  *
- * 拉卡拉回调约定（详见 sources/documents/拉卡拉接口规范-补充.md）：
+ * 拉卡拉聚合主扫回调约定（详见 sources/documents/拉卡拉接口规范-补充.md）：
  *   - HTTP POST，event.body = 原始 JSON 字符串（验签必须用原始字节，禁止 JSON.parse 再 stringify）
  *   - event.headers.authorization = 'LKLAPI-SHA256withRSA timestamp="...",nonce_str="...",signature="..."'
- *   - body 为扁平 JSON：{ pay_order_no, out_order_no, order_status, total_amount, order_trade_info:{...} }
+ *   - body 为扁平 JSON（聚合主扫规范）：
+ *       out_trade_no  商户交易流水号（含 `_unixSec` 后缀，需剥离得 saleOrderId）
+ *       trade_no      拉卡拉交易流水号（落 sale_order_payments.external_txn_id 作幂等键）
+ *       trade_state   INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
+ *       account_type  WECHAT / ALIPAY / UQRCODEPAY ...
+ *       acc_trade_no  微信 transaction_id 或支付宝交易号（落 external_trade_info 供 admin 退款取 origin）
+ *       total_amount  订单金额（分）
+ *       payer_amount  实际付款金额（分，含微信营销减扣；入账金额必须用此字段，防少收）
  *
  * 返回：
  *   - null              非 HTTP 入口（走原 callFunction 路径）
@@ -115,31 +122,43 @@ function parseHttpTriggerEvent(event) {
     throw err
   }
 
-  const tradeInfo = body.order_trade_info || {}
-  const payOrderNo = body.pay_order_no
-  const outOrderNo = body.out_order_no
-  const orderStatus = body.order_status
+  // 聚合主扫扁平字段映射
+  const outTradeNo = body.out_trade_no
+  const tradeNo = body.trade_no
+  const tradeState = String(body.trade_state || '').toUpperCase()
+  const accountType = String(body.account_type || '').toUpperCase()
   const totalAmountFen = Number(body.total_amount || 0)
+  const payerAmountFen = Number(body.payer_amount || 0)
 
-  // 退款回调 / 非成功状态：ack 让拉卡拉停重试，退款流程由 admin 退款 cron 推进（Phase 5）
-  if (orderStatus === '6' || tradeInfo.trade_type === 'REFUND') {
+  // 退款回调：ack 让拉卡拉停重试，退款流程由 admin 退款 cron 推进
+  if (tradeState === 'REFUND' || tradeState === 'PART_REFUND') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
   }
-  if (orderStatus !== '2' && tradeInfo.trade_status !== 'S') {
-    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${orderStatus} ack` } }
+  // 非成功状态（INIT/CREATE/FAIL/DEAL/UNKNOWN/CLOSE）：ack 跳过业务，等下次成功回调
+  if (tradeState !== 'SUCCESS') {
+    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${tradeState} ack` } }
   }
 
-  // 推断付款方式
-  const payMode = String(tradeInfo.pay_mode || '').toUpperCase()
-  const paymentMethod = payMode === 'ALIPAY' ? '支付宝' : '微信'
+  // 入账金额优先用 payer_amount（实付，含微信营销减扣）；缺失/0 兜底 total_amount 并告警
+  let effectiveFen = payerAmountFen
+  if (!effectiveFen || effectiveFen <= 0) {
+    if (totalAmountFen > 0) {
+      console.warn('[payNotify] payer_amount 缺失，兜底 total_amount=', totalAmountFen, 'outTradeNo=', outTradeNo)
+      effectiveFen = totalAmountFen
+    }
+  }
+
+  // 推断付款方式（聚合主扫：account_type 顶层字段直接用）
+  const paymentMethod = accountType === 'ALIPAY' ? '支付宝' : '微信'
 
   return {
-    orderNo: outOrderNo,
-    transactionId: payOrderNo,
-    payAmount: Math.round(totalAmountFen) / 100,
+    orderNo: outTradeNo,           // out_trade_no（含 _unixSec 后缀，下游 replace(/_\d+$/, '') 剥）
+    transactionId: tradeNo,        // 拉卡拉交易流水号，作 external_txn_id 幂等键
+    payAmount: Math.round(effectiveFen) / 100,
     paymentMethod,
-    // 透传受单交易信息（acc_trade_no/log_no/trade_no 等），落 sale_order_payments.external_trade_info 供退款取 origin 引用
-    tradeInfo,
+    // 透传整个扁平 body 作为 sale_order_payments.external_trade_info JSONB 快照；
+    // admin 退款 cron 取 .acc_trade_no / .trade_no / .log_no 字段路径与原嵌套 order_trade_info.* 在顶层下访问保持一致
+    tradeInfo: body,
     _httpEntry: true,
   }
 }

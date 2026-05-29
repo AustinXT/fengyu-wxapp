@@ -6,7 +6,7 @@
   "functions": [
     {
       "name": "clientApi",
-      "timeout": 30,
+      "timeout": 60,
       "path": "/cloudfunctions/clientApi",
       "envVariables": {
         "PG_CONNECTION_STRING": "${PG_CONNECTION_STRING}",
@@ -26,7 +26,9 @@
         "LAKALA_ENV": "${LAKALA_ENV}",
         "LAKALA_NOTIFY_URL": "${LAKALA_NOTIFY_URL}",
         "LAKALA_PRIVATE_KEY_PEM": "${LAKALA_PRIVATE_KEY_PEM}",
-        "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}"
+        "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
+        "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
       },
       "triggers": [
         {
@@ -57,7 +59,9 @@
         "PAYNOTIFY_ENABLED": "${PAYNOTIFY_ENABLED}",
         "LAKALA_NOTIFY_URL": "${LAKALA_NOTIFY_URL}",
         "LAKALA_PRIVATE_KEY_PEM": "${LAKALA_PRIVATE_KEY_PEM}",
-        "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}"
+        "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
+        "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",

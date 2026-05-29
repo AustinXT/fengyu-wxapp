@@ -3,6 +3,7 @@
  * 客户端订单相关接口
  */
 
+const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
@@ -13,8 +14,13 @@ const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
-const LAKALA_CASHIER_APPID = 'wx889424d565967811'
-
+/**
+ * 解析门店的拉卡拉商户号 + 终端号
+ *
+ * 聚合主扫 (preorder) term_no 是必填（M），与旧收银台 special_create 不同（旧版可不传）。
+ * resolveLakalaMerchant 必须保证返回的 termNo 非空：先取 stores.lakala_term_no，
+ * 空则兜底 LAKALA_DEFAULT_TERM_NO，仍空则抛 LAKALA_TERM_NO_MISSING 引导运维补配置。
+ */
 async function resolveLakalaMerchant(storeId) {
   if (!lakalaConfig.isReady()) return null
   if (!storeId) return null
@@ -27,53 +33,107 @@ async function resolveLakalaMerchant(storeId) {
   if (!row.lakala_enabled) return null
   const merchantNo = row.lakala_merchant_no
   if (!merchantNo) return null   // 一店一商户:商户号必填，未配即视为未开通，不再 fallback env 默认号
-  // 终端号(term_no)拉卡拉收银台 special_create 非必填（SIT 实测不传也成功）：
-  // 空则返回 undefined，request() 的 JSON.stringify 会自动丢弃该字段
-  return { merchantNo, termNo: row.lakala_term_no || undefined }
+  const cfg = lakalaConfig.readConfig()
+  const termNo = row.lakala_term_no || cfg.defaultTermNo || ''
+  if (!termNo) {
+    throw new Error('INVALID_STATE: LAKALA_TERM_NO_MISSING: 该门店未配置拉卡拉终端号，请联系管理员')
+  }
+  return { merchantNo, termNo }
 }
 
-async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmountYuan, payMode }) {
-  const cfg = lakalaConfig.readConfig()
-  const efficientTime = lakalaClient.formatReqTime(new Date(Date.now() + 10 * 60 * 1000))
+/**
+ * 提取客户端 IP（拉卡拉风控字段 location_info.request_ip 必送）。
+ * CloudBase 云函数走 cloud.getWXContext().CLIENTIP；某些 callFunction 调用下可能为空，兜底 '0.0.0.0'。
+ */
+function getRequestIp() {
+  try {
+    const ctx = cloud.getWXContext() || {}
+    return ctx.CLIENTIP || '0.0.0.0'
+  } catch {
+    return '0.0.0.0'
+  }
+}
+
+/**
+ * 调聚合主扫 preorder 拿到支付参数。
+ *
+ * out_trade_no = `${orderNo}_${unixSec}`（30 字符 ≤ 32 上限），同一 saleOrderId 多次发起支付会生成不同号。
+ * payNotify 收到回调时按 `replace(/_\d+$/, '')` 剥离后缀得 saleOrderId（仍兼容旧规则）。
+ *
+ * @returns {Promise<{
+ *   outTradeNo: string, tradeNo: string,
+ *   paymentParams?: object,     // 微信小程序：wx.requestPayment 5 字段
+ *   alipayQrUrl?: string,       // 支付宝 NATIVE：二维码 URL（喂给 share_code）
+ * }>}
+ */
+async function createLakalaPreorder({
+  orderNo, merchantNo, termNo,
+  payAmountYuan, accountType, transType,
+  openid, subAppid, requestIp,
+  subject, attach,
+}) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
-  // out_order_no 加秒级时间戳后缀避免拉卡拉判重（同一 sale_order_id 多次发起支付场景）
-  // FY-XSD-WX-YYMMDDXXXX (19) + '_' + ts10 = 30 字符 ≤ 32 上限
-  // pay_order_no（拉卡拉平台号）落 sale_order_payments.external_txn_id 维护跨次幂等，不依赖此后缀
-  const outOrderNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
-  const reqData = {
-    out_order_no: outOrderNo,
-    merchant_no: merchantNo,
-    term_no: termNo,
-    total_amount: totalAmountFen,
-    order_efficient_time: efficientTime,
-    notify_url: cfg.notifyUrl || '',
-    order_info: `凤御美容订单 ${orderNo}`,
-    // 字段类型对齐拉卡拉 SDK 实体 V3CcssCounterOrderSpecialCreateRequest：
-    // total_amount=Long、support_*=Integer（发数字而非字符串）。SIT 实测两种类型均接受，
-    // 但 SDK 权威类型为数字，故对齐；trade_biz_tp 非该接口字段（SDK 实体无），已移除。
-    support_refund: 1,
-    support_repeat_pay: 1,
-    support_cancel: 0,
-    counter_param: JSON.stringify({ pay_mode: payMode }),
-  }
-  const resp = await lakalaClient.request({
-    path: '/v3/ccss/counter/order/special_create',
-    reqData,
+  const outTradeNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
+
+  const resp = await lakalaClient.requestPreorder({
+    merchantNo, termNo, outTradeNo,
+    accountType, transType,
+    totalAmountFen,
+    requestIp: requestIp || '0.0.0.0',
+    subject: subject || `凤御美容订单 ${orderNo}`,
+    attach: attach || orderNo,
+    subAppid, openid,
+    timeoutExpressMin: 10,
   })
-  if (!resp.ok) {
-    throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
+
+  // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
+  if (accountType === 'WECHAT' && transType === '71') {
+    if (subAppid && resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      throw new Error(`INVALID_STATE: LAKALA_APPID_MISMATCH: 拉卡拉返回 app_id=${resp.lakalaAppId} 与 sub_appid=${subAppid} 不一致`)
+    }
   }
-  // 持久化本次收银台商户订单号，供后续「查询/关单」按 out_order_no 寻单（取消防迟付 / 轮询兜底）。
-  // CAS-EXEMPT：仅写 lakala_out_order_no，不翻 status。
+
+  // 持久化本次商户流水号（聚合主扫的 out_trade_no），供后续 queryLakalaStatus 兜底查询。
+  // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
   await pg.query(
     'UPDATE sale_orders SET lakala_out_order_no = $1 WHERE sale_order_id = $2',
-    [outOrderNo, orderNo]
+    [outTradeNo, orderNo]
   )
-  return {
-    counterUrl: resp.resp_data.counter_url,
-    payOrderNo: resp.resp_data.pay_order_no,
-    outOrderNo,
+
+  if (accountType === 'WECHAT' && transType === '71') {
+    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
   }
+  if (accountType === 'ALIPAY' && transType === '41') {
+    return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
+  }
+  return { outTradeNo, tradeNo: resp.tradeNo }
+}
+
+/**
+ * 调拉卡拉「申请支付宝吱口令」拿到 share_token，前端展示给用户复制后切到支付宝识别。
+ *
+ * 用同一笔 outTradeNo + 同金额（必须先调 preorder 走过流水落账后再调 share_code）。
+ *
+ * @returns {Promise<{ shareToken: string, expireDate: string, tradeNo: string }>}
+ */
+async function createLakalaAlipayShareCode({
+  orderNo, merchantNo, termNo,
+  payAmountYuan, requestIp, bizLink,
+  outTradeNo,  // 与 preorder 同一笔 outTradeNo
+}) {
+  const cfg = lakalaConfig.readConfig()
+  if (!cfg.alipayShareSource) {
+    throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+  }
+  const totalAmountFen = Math.round(payAmountYuan * 100)
+  const resp = await lakalaClient.requestAlipayShareCode({
+    merchantNo, termNo, outTradeNo,
+    totalAmountFen,
+    requestIp: requestIp || '0.0.0.0',
+    source: cfg.alipayShareSource,
+    bizLink,
+  })
+  return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
 }
 
 /**
@@ -973,12 +1033,17 @@ async function pay(ctx) {
   if (!merchant) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+  const cfg = lakalaConfig.readConfig()
+  const { paymentParams } = await createLakalaPreorder({
     orderNo,
     merchantNo: merchant.merchantNo,
     termNo: merchant.termNo,
     payAmountYuan: thisPayAmount,
-    payMode: 'WECHAT',
+    accountType: 'WECHAT',
+    transType: '71',
+    openid: ctx.auth.openid,
+    subAppid: cfg.subAppid,
+    requestIp: getRequestIp(),
   })
   // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
   // 仅清空非空值，避免无谓写；不影响 NULL 默认（全额）订单
@@ -986,19 +1051,12 @@ async function pay(ctx) {
     'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
     [now, orderNo]
   )
-  const envCfg = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '微信',
-    lakala: {
-      counterUrl,
-      payOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: envCfg.env,
-      openMode: 'embedded',
-    },
+    paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
 }
 
@@ -1412,21 +1470,9 @@ async function cancel(ctx) {
     }
   })
 
-  // 关闭拉卡拉收银台订单，防止已取消的线上单被迟到支付。
-  // best-effort：本地取消已提交，关单失败不回滚（收银台订单也会到期自动失效）。
-  if (order.lakala_out_order_no) {
-    try {
-      const merchant = await resolveLakalaMerchant(order.store_id)
-      if (merchant) {
-        await lakalaClient.closeCashierOrder({
-          merchantNo: merchant.merchantNo,
-          outOrderNo: order.lakala_out_order_no,
-        })
-      }
-    } catch (e) {
-      console.warn('[lakala] 取消订单时关单失败（不影响本地取消）:', orderNo, e.message)
-    }
-  }
+  // 聚合主扫订单按 timeout_express=10min 自动失效，无显式关单接口；
+  // 不再调用旧收银台 closeCashierOrder。本地取消即可，迟到回调会被 payNotify 的状态机
+  // CAS 守卫挡掉（订单已 '已关闭' 时回调 trade_state=SUCCESS 也不会再翻成 '已支付'）。
 
   ctx.result = {
     orderNo,
@@ -1632,31 +1678,43 @@ async function alipayPay(ctx) {
   if (!merchantAli) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+  const cfgAli = lakalaConfig.readConfig()
+  if (!cfgAli.alipayShareSource) {
+    throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+  }
+  const requestIpAli = getRequestIp()
+  // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
+  const preorderRespAli = await createLakalaPreorder({
     orderNo,
     merchantNo: merchantAli.merchantNo,
     termNo: merchantAli.termNo,
     payAmountYuan: thisPayAmount,
-    payMode: 'ALIPAY',
+    accountType: 'ALIPAY',
+    transType: '41',
+    requestIp: requestIpAli,
+  })
+  // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
+  const shareCodeResp = await createLakalaAlipayShareCode({
+    orderNo,
+    merchantNo: merchantAli.merchantNo,
+    termNo: merchantAli.termNo,
+    outTradeNo: preorderRespAli.outTradeNo,
+    payAmountYuan: thisPayAmount,
+    requestIp: requestIpAli,
+    bizLink: preorderRespAli.alipayQrUrl,
   })
   // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
   await pg.query(
     'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
     [now, orderNo]
   )
-  const envCfgAli = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '支付宝',
-    lakala: {
-      counterUrl,
-      payOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: envCfgAli.env,
-      openMode: 'embedded',
-    },
+    alipayShareToken: shareCodeResp.shareToken,
+    alipayExpireDate: shareCodeResp.expireDate,
     status: order.status,
   }
 }
@@ -2139,45 +2197,78 @@ async function repay(ctx) {
     return
   }
 
-  // 线上通道：调拉卡拉收银台 special_create 拿 counter_url
+  // 线上通道：调聚合主扫 preorder（微信） / preorder+share_code（支付宝）
   const repayMerchant = await resolveLakalaMerchant(storeId)
   if (!repayMerchant) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl: repayCounterUrl, payOrderNo: repayPayOrderNo } = await createLakalaCounterOrder({
-    orderNo: saleOrderId,
-    merchantNo: repayMerchant.merchantNo,
-    termNo: repayMerchant.termNo,
-    payAmountYuan: repayAmountInput,
-    payMode: paymentMethod === '微信' ? 'WECHAT' : 'ALIPAY',
-  })
-  const repayEnvCfg = lakalaConfig.readConfig()
-  ctx.result = {
-    saleOrderId,
-    status: '待支付',
-    paymentMethod,
-    repayAmount: repayAmountInput,
-    prepaidCardAmount: prepaidCardAmountInput,
-    lakala: {
-      counterUrl: repayCounterUrl,
-      payOrderNo: repayPayOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: repayEnvCfg.env,
-      openMode: 'embedded',
-    },
+  const repayCfg = lakalaConfig.readConfig()
+  const repayRequestIp = getRequestIp()
+
+  if (paymentMethod === '微信') {
+    const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      payAmountYuan: repayAmountInput,
+      accountType: 'WECHAT',
+      transType: '71',
+      openid: ctx.auth.openid,
+      subAppid: repayCfg.subAppid,
+      requestIp: repayRequestIp,
+    })
+    ctx.result = {
+      saleOrderId,
+      status: '待支付',
+      paymentMethod,
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: prepaidCardAmountInput,
+      paymentParams: repayPaymentParams,
+    }
+  } else {
+    // 支付宝：preorder + share_code
+    if (!repayCfg.alipayShareSource) {
+      throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+    }
+    const repayPreorderResp = await createLakalaPreorder({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      payAmountYuan: repayAmountInput,
+      accountType: 'ALIPAY',
+      transType: '41',
+      requestIp: repayRequestIp,
+    })
+    const repayShareCodeResp = await createLakalaAlipayShareCode({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      outTradeNo: repayPreorderResp.outTradeNo,
+      payAmountYuan: repayAmountInput,
+      requestIp: repayRequestIp,
+      bizLink: repayPreorderResp.alipayQrUrl,
+    })
+    ctx.result = {
+      saleOrderId,
+      status: '待支付',
+      paymentMethod,
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: prepaidCardAmountInput,
+      alipayShareToken: repayShareCodeResp.shareToken,
+      alipayExpireDate: repayShareCodeResp.expireDate,
+    }
   }
 }
 
 /**
- * 查询拉卡拉收银台支付状态（只读轮询兜底）
+ * 查询拉卡拉聚合主扫交易状态（只读轮询兜底）
  *
  * 前端轮询 order.detail 仍 '待支付' 时可调本接口，主动问拉卡拉该单是否已支付，
  * 避免 payNotify 延迟/丢失时死等。**不改 DB**——订单结算（置已支付/积分/储值卡等）仍由
- * payNotify 单源负责（payNotify 是独立云函数，避免在此重复结算逻辑）；本接口仅把拉卡拉视角的
- * order_status 透出给前端做 UX 决策。
+ * payNotify 单源负责；本接口仅把拉卡拉视角的 trade_state 透出给前端做 UX 决策。
  *
- * resp_data.order_status 拉卡拉枚举（SIT 实测：'0'=未支付/处理中，'7'=已关闭；
- * 已支付对应值需联调时按拉卡拉文档确认，故此处只透传原始值不做语义判定）。
+ * trade_state ∈ INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
+ * 'SUCCESS' 才表示真实到账（'BBS00000' 成功码仅说明查到了交易记录）
  */
 async function queryLakalaStatus(ctx) {
   const { userId } = ctx.auth
@@ -2199,7 +2290,7 @@ async function queryLakalaStatus(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查询该订单')
   }
 
-  // 未经拉卡拉发起支付，或门店未启用：无可查的收银台订单，仅回本地状态
+  // 未经拉卡拉发起支付，或门店未启用：无可查的拉卡拉订单，仅回本地状态
   let merchant = null
   if (order.lakala_out_order_no) {
     merchant = await resolveLakalaMerchant(order.store_id)
@@ -2209,16 +2300,17 @@ async function queryLakalaStatus(ctx) {
     return
   }
 
-  const resp = await lakalaClient.queryCashierOrder({
+  const resp = await lakalaClient.queryTrade({
     merchantNo: merchant.merchantNo,
-    outOrderNo: order.lakala_out_order_no,
+    termNo: merchant.termNo,
+    outTradeNo: order.lakala_out_order_no,
   })
   ctx.result = {
     orderNo,
     localStatus: order.status,
     lakalaQueried: true,
     lakalaOk: resp.ok,
-    lakalaOrderStatus: resp.ok ? (resp.resp_data.order_status || null) : null,
+    lakalaTradeState: resp.tradeState || null,  // 'SUCCESS' 才算到账
     lakalaCode: resp.code,
   }
 }
