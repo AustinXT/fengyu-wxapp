@@ -114,6 +114,11 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('prepaid_cards') && s.includes('card_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('payable_amount') && s.includes('total_amount'))).toBe(true)
+    // I5 必须只校验正向销售链（销售单/内部单/转换单/寄存单），充值单的「面额-实付」差是赠送差，业务正确
+    const i5 = sqlTexts.find((s) => s.includes('payable_amount') && s.includes('total_amount'))!
+    expect(i5).toContain('销售单')
+    expect(i5).toContain('寄存单')
+    expect(i5).not.toContain('充值单')
   })
 
   it('E. 多个不变量同时违反 → details 累积，notifyOps 仅一次', async () => {

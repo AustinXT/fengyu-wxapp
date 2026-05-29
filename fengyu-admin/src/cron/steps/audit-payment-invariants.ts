@@ -124,15 +124,18 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   }
 
   // ── I5: payable_amount = total_amount - prepaid_card_amount ──
-  // 仅校验非退款冲销链（销售单 / 内部单 / 转换单）。重构后 saleOrderType 已无 '退款单'，
-  // 但保险起见仍仅在正向单上校验，未来若再加单据类型不会误报。
+  // 白名单：销售单 / 内部单 / 转换单 / 寄存单 满足该不变量。
+  // 排除「充值单」—— total_amount 是充值卡面额、payable_amount 是顾客实付，
+  // 差额 = 充值卡赠送（例：充1000送20、充10万送5000），业务正向差，非不变量违规。
+  // 白名单形式而非黑名单：未来再加单据类型默认不校验，加入时主动决策。
   const r5 = (await db.execute(sql`
     SELECT sale_order_id,
            total_amount::numeric        AS total_amount,
            prepaid_card_amount::numeric AS prepaid_card_amount,
            payable_amount::numeric      AS payable_amount
     FROM sale_orders
-    WHERE ABS(payable_amount::numeric - (total_amount::numeric - prepaid_card_amount::numeric)) > ${MONEY_EPSILON}
+    WHERE sale_order_type IN ('销售单','内部单','转换单','寄存单')
+      AND ABS(payable_amount::numeric - (total_amount::numeric - prepaid_card_amount::numeric)) > ${MONEY_EPSILON}
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<{
     sale_order_id: string
