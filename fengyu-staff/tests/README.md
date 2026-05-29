@@ -31,11 +31,22 @@ npm run test -- routes/order.test.js  # 单文件
 
 | 类别 | 数量 | 重点 | filter 关键字 |
 |------|------|------|---------------|
-| 业务功能 smoke | 35 | 单 action × 状态分支（store-level manager 视角） | order, service, alloc, customer, card, appointment, staff, store, product, auth, coupon, confirm |
+| 业务功能 smoke | 36 | 单 action × 状态分支（store-level manager 视角） | order, service, alloc, customer, card, appointment, staff, store, product, auth, coupon, confirm |
 | **rbac 准入矩阵** | 4 文件 / 59 case | 7 种角色 × 3 种 scope（HQ/市场/门店）合法配对 + 多绑定归并 | `rbac` |
 | **deny 越权拒绝** | 3 文件 / 12 case | 跨店/跨市场/越级 mgmt-* / 部门 scope 拒绝路径 | `deny` |
 | **mgmt 三视角** | 4 文件 / 29 case | mgmtDashboard/Customer/Product/Traffic 在 all/market/store 三种 scope 下的可见性 + 跨范围拒绝 | `mgmt` |
 | **xend 跨端链** | 3 文件 / 12 case | staff confirmOffline → client card.history、refund 审批 → client 可见、同单 4 视角 | `xend` |
+
+> 2026-05-28 补强（共 8 个文件改动 / 1 个新 smoke + 7 处既有 smoke 末尾追加）：新增
+> `smoke-order-refund-list-detail.mjs`（refundList/refundDetail + 老 saleOrderId 兼容 + 跨店 deny），
+> 既有 7 处末尾追加：`smoke-staff-departments`(+skillTags) /
+> `smoke-service-lifecycle`(+service.list/counts/detail) /
+> `smoke-customer-detail`(+customer.appointments/phoneChangeLogs) /
+> `smoke-order-refund`(+customer.refundHistory) /
+> `smoke-alloc-suggest`(+allocation.pendingList/rates) /
+> `smoke-service-commission`(+serviceCommission.pendingList/detail) /
+> `smoke-mgmt-dashboard`(+mgmtDashboard.salesData × 3 scope) /
+> `smoke-appointment-confirm`(+appointment.list/detail)。详见 RUN-REPORT-2026-05-28.md。
 
 ```bash
 # 全套

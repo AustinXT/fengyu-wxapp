@@ -194,6 +194,29 @@ async function main() {
     rec(`  ✓ createRefund C: 超净已收(200) 退款 800 被拒 — ${refC.message}`)
   }
 
+  // ─── D. customer.refundHistory — 复用 A(已通过) + B(已作废) 的 fixture ───
+  // refundHistory 返回扁平数组（routes/customer.js:963 [...refunds, ...conversions]），每行 type='退款' 或 '转换单'
+  const histR = await invokeStaffApi('customer.refundHistory', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+  })
+  if (histR.code !== 0) {
+    errors.push(`customer.refundHistory 应成功，实际 code=${histR.code} msg=${histR.message}`)
+  } else {
+    const rows = Array.isArray(histR.data) ? histR.data : []
+    const refundRows = rows.filter(x => x.type === '退款')
+    const orderAHit = refundRows.find(x => x.refOrderId === orderA && x.status === '已支付')
+    const orderBHit = refundRows.find(x => x.refOrderId === orderB && x.status === '已作废')
+    if (!orderAHit) {
+      errors.push(`refundHistory 应含 A 已通过退款（refOrderId=${orderA}, status='已支付'）`)
+    } else {
+      if (Number(orderAHit.totalAmount) !== -800) errors.push(`A 行 totalAmount 应=-800，实际=${orderAHit.totalAmount}`)
+      if (!orderAHit.approvedAt) errors.push(`A 行 approvedAt 应非空`)
+    }
+    if (!orderBHit) errors.push(`refundHistory 应含 B 已作废退款（refOrderId=${orderB}, status='已作废'）`)
+    rec(`  ✓ customer.refundHistory: 含 A(已通过) + B(已作废) 退款`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)

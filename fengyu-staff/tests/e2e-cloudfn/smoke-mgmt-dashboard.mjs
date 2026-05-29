@@ -94,6 +94,39 @@ async function run() {
       `HQ.staffRanking.${s.name}`))
   }
 
+  // 5) salesData × 3 scope（入参格式不同：scope 嵌套 {type, id}，period 'month'|'lastMonth'|'year'）
+  const salesScopes = [
+    { name: 'all',      payload: { period: 'month', scope: { type: 'all' } } },
+    { name: 'market_A', payload: { period: 'month', scope: { type: 'market', id: TEST_MARKETS.A.orgId } } },
+    { name: 'store_A1', payload: { period: 'month', scope: { type: 'store',  id: TEST_STORES_MULTI.A1.storeId } } },
+  ]
+  for (const s of salesScopes) {
+    const sdR = await invokeStaffApi('mgmtDashboard.salesData',
+      { _testOpenid: FIN_HQ.oid, _loginLevel: 'management', ...s.payload })
+    if (sdR.code !== 0) {
+      results.push({ ok: false, label: `HQ.salesData.${s.name}`, reason: `code=${sdR.code} msg=${sdR.message}` })
+    } else {
+      // routes/mgmt-dashboard.js:1303 返回 totalRevenue / 分客型业绩 / totalConsume / 品项汇总 等
+      const d = sdR.data || {}
+      const required = ['totalRevenue', 'totalConsume']
+      const missing = required.filter(k => !(k in d))
+      if (missing.length) {
+        results.push({ ok: false, label: `HQ.salesData.${s.name}`, reason: `缺字段 ${missing.join(',')}` })
+      } else {
+        results.push({ ok: true, label: `HQ.salesData.${s.name}: totalRevenue=${d.totalRevenue}` })
+      }
+    }
+  }
+
+  // 6) 入参非法分支：未知 period → INVALID_PARAMS
+  const badPeriod = await invokeStaffApi('mgmtDashboard.salesData',
+    { _testOpenid: FIN_HQ.oid, _loginLevel: 'management', period: 'week', scope: { type: 'all' } })
+  if (badPeriod.code === 0) {
+    results.push({ ok: false, label: 'salesData.invalidPeriod', reason: '应 INVALID_PARAMS' })
+  } else {
+    results.push({ ok: true, label: `salesData.invalidPeriod → ${badPeriod.message}` })
+  }
+
   return results
 }
 

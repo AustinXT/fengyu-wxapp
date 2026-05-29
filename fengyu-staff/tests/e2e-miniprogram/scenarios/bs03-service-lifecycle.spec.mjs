@@ -219,11 +219,36 @@ async function run() {
   );
   const today = new Date().toISOString().slice(0, 10);
   // customer-detail 是子包，navigateToPage 已吞首跳伪 timeout；给足 15s 等 onLoad 回填
-  const d4 = await waitForData(miniProgram, (d) =>
-    d.customer && d.customer.lastServiceDate &&
-    String(d.customer.lastServiceDate).slice(0, 10) === today,
-    { timeoutMs: 15000 },
-  );
+  let d4;
+  try {
+    d4 = await waitForData(miniProgram, (d) =>
+      d.customer && d.customer.lastServiceDate &&
+      String(d.customer.lastServiceDate).slice(0, 10) === today,
+      { timeoutMs: 15000 },
+    );
+  } catch (e) {
+    // F2 修复（2026-05-28）：15s 超时前打诊断快照，区分「服务端未写」vs「前端缓存」
+    const page = await miniProgram.currentPage();
+    const pageData = await page.data();
+    const pageRoute = page.route;
+    // PG 实查：服务端是否已真写入 MAX(service_date)
+    const maxRows = await query(
+      `SELECT MAX(service_date)::text AS max_date FROM service_orders WHERE client_user_id = $1`,
+      [TEST_CLIENT_USER_ID],
+    );
+    const pgMaxDate = maxRows[0]?.max_date || null;
+    const diagnose = pgMaxDate === today
+      ? '服务端已写 today，前端未刷（page.data.customer 缓存？检查 customer-detail onShow 是否触发 reload）'
+      : `服务端 service_date 最新=${pgMaxDate}（非 today=${today}），先排查 service_orders.service_date 真实落库`;
+    throw new Error(
+      `[bs03 step4] waitForData 15s 超时：lastServiceDate≠${today}\n` +
+      `  - currentPage.route: ${pageRoute}\n` +
+      `  - page.data.customer.lastServiceDate: ${pageData?.customer?.lastServiceDate || '<空>'}\n` +
+      `  - PG MAX(service_date) for ${TEST_CLIENT_USER_ID}: ${pgMaxDate}\n` +
+      `  - 诊断: ${diagnose}\n` +
+      `  原始错误: ${e.message}`
+    );
+  }
   await snapshot(miniProgram, 'bs03-step4-customer-detail');
   console.log('  ✓ customer.lastServiceDate =', d4.customer.lastServiceDate);
 

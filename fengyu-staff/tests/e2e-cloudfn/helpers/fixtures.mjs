@@ -445,10 +445,10 @@ export async function createTestClient({
  * @param {object} opts
  * @param {string} opts.suffix - 唯一后缀，用于生成 categoryId/skuId（默认 '1'）
  * @param {string} opts.productKind - 一级品项类型（如 '护理项目' / '充值卡' / '体验卡' / '家居产品'）
- * @param {string} opts.productType - SKU 产品类型枚举值（'疗程卡' / '单品' / '家居产品'）
+ * @param {string} opts.productType - SKU 产品类型枚举值（'疗程卡' / '家居产品'，2026-05-21 '单品' 并入 '疗程卡'）
  * @param {string} opts.salesCategory - 销售分类（'自销自耗' / '他销自耗' / '他销他耗' / '生态合作'）
  * @param {number} opts.price - 标价
- * @param {number|null} opts.sessionCount - 疗程次数（疗程卡>=2，单品=1，家居=null）
+ * @param {number|null} opts.sessionCount - 疗程次数（多次卡>=2，单次性=1 或 null，家居=null）
  * @param {boolean} opts.isShengmei - 是否生美（护理项目用）
  * @param {boolean} opts.isExperience - 是否体验卡
  * @param {boolean} opts.isRechargeCard - 是否充值卡
@@ -626,7 +626,7 @@ export async function createTestSaleOrder({
  * @param {string} opts.saleItemId    - 新行 ID（调用方控制，建议 ${saleOrderId}_ITEM_N）
  * @param {string} opts.skuId
  * @param {string} opts.productName
- * @param {string} opts.productType   - '疗程卡' / '单品' / '家居产品'
+ * @param {string} opts.productType   - '疗程卡' / '家居产品'（2026-05-21 '单品' 并入 '疗程卡'）
  * @param {number} opts.quantity
  * @param {number} opts.unitPrice     - 单价（= unit_real_price 默认）
  * @param {number} opts.salesCategory - 必填

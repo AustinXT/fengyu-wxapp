@@ -146,6 +146,54 @@ async function main() {
     errors.push(`幂等 confirm 后 remaining_sessions 应仍=4，实际=${remainStillAfter[0].remaining_sessions}`)
   }
 
+  // ─── 5. service.list — 按 status 过滤 + service.counts 2 桶 + service.detail ───
+  // 此服务单当前 status='已完成'，按状态过滤校验：
+  //   list(status='已完成') 应含本单；list(status='待服务') 不含；list(status='服务中') 不含
+  for (const [filter, shouldContain] of [['已完成', true], ['待服务', false], ['服务中', false]]) {
+    const lr = await invokeStaffApi('service.list', {
+      _testOpenid: TEST_MANAGER_OPENID,
+      status: filter,
+      page: 1,
+      pageSize: 50,
+    })
+    if (lr.code !== 0) {
+      errors.push(`service.list(status='${filter}') 应成功，实际 code=${lr.code} msg=${lr.message}`)
+      continue
+    }
+    // service.list 顶层就是数组（routes/service.js:779 ctx.result = serviceOrders.map(...)）
+    const rows = Array.isArray(lr.data) ? lr.data : []
+    const ids = rows.map(x => x.serviceOrderId || x.id)
+    const contains = ids.includes(serviceOrderId)
+    if (contains !== shouldContain) {
+      errors.push(`service.list(status='${filter}') ${shouldContain ? '应' : '不该'}含 ${serviceOrderId}，实际 ids=${JSON.stringify(ids.slice(0, 5))}…`)
+    } else {
+      rec(`  ✓ service.list(status='${filter}'): ${shouldContain ? '含' : '不含'} ${serviceOrderId}`)
+    }
+  }
+
+  // service.counts 仅 2 桶（pending/processing，不含已完成 — routes/service.js:1016-1030）
+  const cr = await invokeStaffApi('service.counts', { _testOpenid: TEST_MANAGER_OPENID })
+  if (cr.code !== 0) {
+    errors.push(`service.counts 应成功，实际 code=${cr.code} msg=${cr.message}`)
+  } else {
+    if (typeof cr.data?.pending !== 'number') errors.push(`counts.pending 应是 number，实际=${typeof cr.data?.pending}`)
+    if (typeof cr.data?.processing !== 'number') errors.push(`counts.processing 应是 number，实际=${typeof cr.data?.processing}`)
+    rec(`  ✓ service.counts: pending=${cr.data?.pending} processing=${cr.data?.processing}`)
+  }
+
+  // service.detail — 按 id 拉本单，断 status/items/staffName 完整
+  const dr = await invokeStaffApi('service.detail', { _testOpenid: TEST_MANAGER_OPENID, id: serviceOrderId })
+  if (dr.code !== 0) {
+    errors.push(`service.detail 应成功，实际 code=${dr.code} msg=${dr.message}`)
+  } else {
+    if (dr.data?.status !== '已完成') errors.push(`detail.status 应='已完成'，实际='${dr.data?.status}'`)
+    if (!dr.data?.staffName) errors.push(`detail.staffName 应非空（JOIN staff_wechat_users）`)
+    if (!Array.isArray(dr.data?.items) || dr.data.items.length !== 1) {
+      errors.push(`detail.items 应=1 行，实际=${dr.data?.items?.length}`)
+    }
+    rec(`  ✓ service.detail: status/staffName/items 齐全`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -154,7 +202,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — start + complete + confirm 生命周期 + 幂等正确`)
+  rec(`  ✅ PASS — start + complete + confirm 生命周期 + 幂等 + list/counts/detail 读链路`)
 }
 
 try {

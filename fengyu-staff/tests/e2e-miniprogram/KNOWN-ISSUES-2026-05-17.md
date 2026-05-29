@@ -1,4 +1,19 @@
-# L3 业务场景 E2E — 已知问题（基线 2026-05-17）
+# L3 业务场景 E2E — 已知问题（基线 2026-05-17，2026-05-28 增量更新）
+
+## 2026-05-28 增量修复 / 跳过策略
+
+- **bs02 step2** ✅ 已改：`navigateToTab` → `miniProgram.reLaunch('/pages/workbench/workbench')`。
+  原因：switchTab 复用既有 workbench Page 实例，loginAs 切 globalData 后 onShow 不会自动触发，
+  pendingRefundCount 仍是上一个 actor 的快照。reLaunch 强制销毁页面栈重挂 → 触发新 onShow → loadWorkbench()。
+- **bs03 step4** ✅ 已改：waitForData 15s 超时前打 page.data + route 快照 + PG MAX(service_date) 实查，
+  错误信息含明确诊断（区分「服务端未写」vs「前端缓存」），便于下次定位。
+- **bs01 / bs04 子包硬挂 300s** ⏭ 引入 `SKIP_FLAKY` env 变量（run-scenarios.mjs 顶部解析）：
+  `SKIP_FLAKY=bs01,bs04 bun ... run-scenarios.mjs` 命中即标 SKIPPED 不计 FAIL，spec 一字不改。
+  现网默认仍跑全部 12 个；CI / 不稳环境按需注入 env 临时跳过。
+
+---
+
+# 原基线（2026-05-17）
 
 > 完整跑一次 `./fengyu-staff/tests/run-staff-l3.sh --scenarios` 后固化的状态。
 >
