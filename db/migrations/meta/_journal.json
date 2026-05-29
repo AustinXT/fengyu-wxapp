@@ -407,6 +407,13 @@
       "when": 1779728834930,
       "tag": "0057_simple_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1780048606973,
+      "tag": "0058_eager_wind_dancer",
+      "breakpoints": true
     }
   ]
 }
