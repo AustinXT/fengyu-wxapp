@@ -35,7 +35,8 @@ export const lakalaMerchants = pgTable(
   {
     id: text('id').primaryKey(),
     /** 入网申请人（legacy 迁入行可为 NULL）；引用 admin_passwords.id */
-    applicantUserId: integer('applicant_user_id').references(() => adminPasswords.id),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    applicantUserId: integer('applicant_user_id').references((): any => adminPasswords.id),
     merchantName: text('merchant_name').notNull(),
     /** 进件流水号；createDraft 时生成（lm-{ksuid}），用于回调匹配 + 复议幂等 */
     outOrgCode: text('out_org_code').notNull().unique(),

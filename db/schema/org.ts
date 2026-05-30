@@ -78,7 +78,8 @@ export const stores = pgTable(
      * 关联的拉卡拉商户主表（N:1 多对一，一店一商户，plan §1.4）；
      * ON UPDATE CASCADE / ON DELETE SET NULL：防孤悬，商户被硬删时门店快照自动清空。
      */
-    lakalaMerchantId: text("lakala_merchant_id").references(() => lakalaMerchants.id, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lakalaMerchantId: text("lakala_merchant_id").references((): any => lakalaMerchants.id, {
       onDelete: "set null",
       onUpdate: "cascade",
     }),
