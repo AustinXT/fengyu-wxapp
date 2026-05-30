@@ -333,6 +333,57 @@ describe('order.create', () => {
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不适用于当前商品/)
   })
 
+  test('B14: 5次卡 1000 + 298 现金券 → sale_amount=702 / unit_real_price=140.4 / received=702（券必须摊到行 saleAmount）', async () => {
+    // ticket 2026-05-30 client coupon not allocated to sale_items：
+    // 历史 bug 是只摊 received，sale_amount/unit_real_price 残留 pre-coupon 1000/200。
+    // 修复后券摊到 saleAmount，per-session 重派 unit_real_price = 702/5 = 140.4。
+    mockBaseCreateQueries({
+      price: '1000', session_count: 5, product_type: '疗程卡',
+    })
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-298', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '现金券', discount_value: 298, min_spend: 0,
+      applicable_category_ids: null, applicable_store_ids: null,
+      applicable_product_ids: null, applicable_market_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1', product_id: 'p1' }])
+    pg.query.mockResolvedValueOnce([{ name: '张三' }])
+
+    let insertItemCall
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          const s = String(sql)
+          if (/INSERT INTO sale_items/i.test(s)) {
+            insertItemCall = [s, params]
+          }
+          if (/UPDATE\s+user_coupons/i.test(s)) return { rows: [], rowCount: 1 }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-298',
+    })
+    await routes.create(ctx)
+
+    expect(insertItemCall).toBeDefined()
+    // params: [0]=saleItemId [1]=orderNo [2]=storeId [3]=skuId [4]=productName [5]=skuSpecName
+    //         [6]=productType [7]=session_count [8]=remaining_sessions [9]=unitPrice
+    //         [10]=quantity [11]=unitRealPrice [12]=saleAmount [13]=received [14]=salesCategory [15]=isExperience
+    expect(insertItemCall[1][7]).toBe(5)                          // session_count
+    expect(Number(insertItemCall[1][9])).toBe(200)                // unit_price (per-session 标价 1000/5)
+    expect(Number(insertItemCall[1][11])).toBeCloseTo(140.4, 2)   // unit_real_price (702/5)
+    expect(Number(insertItemCall[1][12])).toBe(702)               // sale_amount (1000-298)
+    expect(Number(insertItemCall[1][13])).toBe(702)               // received = sale_amount
+    expect(ctx.result.totalAmount).toBe(702)
+  })
+
   test('优惠券未满足满减条件 → INVALID_PARAMS', async () => {
     mockBaseCreateQueries({ price: '80' })
     pg.query.mockResolvedValueOnce([{

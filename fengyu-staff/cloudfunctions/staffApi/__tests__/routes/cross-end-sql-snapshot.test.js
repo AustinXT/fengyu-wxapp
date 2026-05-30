@@ -928,6 +928,37 @@ describe('Wave 2 S1：三端 order.create eligibleTotal 守护（防 B9 资损 b
   })
 })
 
+describe('Wave 3 S2：三端 order.create 优惠券摊薄目标必须是 saleAmount（防 B14 回归）', () => {
+  // ticket 2026-05-30 — client 端历史只摊 received 不改 saleAmount，导致 sale_items.unit_real_price 残留 pre-coupon 值
+  // 下游服务单单价/分配单次价/提成基数/paid_sessions 全错。修复后三端必须把券摊到 saleAmount，再按 sessionCount/quantity 重派 unit_real_price。
+  test('三端摊薄循环必须修改 item.saleAmount，不得仅修改 item.received', () => {
+    const adminSrc = readFile(FILES.adminOrdersTs)
+    const staffSrc = readFile(FILES.staffOrderJs)
+    const clientSrc = readFile(FILES.clientOrderJs)
+
+    // staff/client 形态：item.saleAmount = Math.max(0, ... - share)
+    const STAFF_CLIENT_RE = /\.saleAmount\s*=\s*Math\.max\(0[\s\S]{0,80}-\s*share/
+    expect(staffSrc).toMatch(STAFF_CLIENT_RE)
+    expect(clientSrc).toMatch(STAFF_CLIENT_RE)
+
+    // admin 形态：const newSale = Math.max(0, Math.round((itSale - share) ...)); it.saleAmount = newSale.toFixed(2)
+    const ADMIN_RE = /(itSale\s*-\s*share)|(\.saleAmount\s*=\s*[\w.]+\.toFixed\()/
+    expect(adminSrc).toMatch(ADMIN_RE)
+  })
+
+  test('三端必须按 sessionCount/quantity 重派 unit_real_price（per-session 模型）', () => {
+    const adminSrc = readFile(FILES.adminOrdersTs)
+    const staffSrc = readFile(FILES.staffOrderJs)
+    const clientSrc = readFile(FILES.clientOrderJs)
+
+    // 三端都必须有 sessionCount > 0 ? sessionCount : quantity 的 denom 分支
+    const DENOM_RE = /sessionCount[\s\S]{0,30}>\s*0[\s\S]{0,40}quantity/
+    expect(staffSrc).toMatch(DENOM_RE)
+    expect(clientSrc).toMatch(DENOM_RE)
+    expect(adminSrc).toMatch(DENOM_RE)
+  })
+})
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Block 7: paid_sessions 重算 SQL 四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）

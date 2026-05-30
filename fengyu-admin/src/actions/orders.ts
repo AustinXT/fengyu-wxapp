@@ -1287,6 +1287,36 @@ export const createOrder = withPermission(
     }
     couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, eligibleTotal)
     couponDiscount = Math.round(couponDiscount * 100) / 100
+
+    // 把订单级券折扣按 saleAmount 比例摊到 eligibleItems 各行（与 client/staff 对齐）
+    // 后端为权威源；前端提交体仍传 pre-coupon saleAmount，后端首次摊到行（不会双扣）
+    // 覆盖入参 item.saleAmount / item.received 使 L1480-1521 INSERT 落库为 post-coupon
+    if (couponDiscount > 0 && eligibleItems.length > 0) {
+      // 浅克隆 data.items 避免污染调用方传入对象（与 L1100 内部单 / L1135 B2 拆行模式一致）
+      // 否则 baseOrderData 等共享 fixture 被改后跨用例污染
+      const eligibleIdx = eligibleItems.map((it) => data.items.indexOf(it))
+      data = { ...data, items: data.items.map((it) => ({ ...it })) }
+      eligibleItems = eligibleIdx.map((i) => data.items[i])
+
+      let distributed = 0
+      for (let i = 0; i < eligibleItems.length; i++) {
+        const it = eligibleItems[i]
+        const itSaleRaw = it.saleAmount ? Number(it.saleAmount) : Number(it.unitRealPrice) * it.quantity
+        const itSale = Math.round(itSaleRaw * 100) / 100
+        let share: number
+        if (i === eligibleItems.length - 1) {
+          share = Math.round((couponDiscount - distributed) * 100) / 100
+        } else {
+          share = Math.round(couponDiscount * (itSale / eligibleTotal) * 100) / 100
+          distributed += share
+        }
+        const newSale = Math.max(0, Math.round((itSale - share) * 100) / 100)
+        it.saleAmount = newSale.toFixed(2)
+        const inputReceived = it.received != null ? Number(it.received) : null
+        const finalReceived = inputReceived != null ? Math.min(inputReceived, newSale) : newSale
+        it.received = finalReceived.toFixed(2)
+      }
+    }
   }
 
   const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100

@@ -524,6 +524,95 @@ describe('createOrder — 优惠券校验', () => {
     expect(calcCouponDiscount).toHaveBeenCalledOnce()
     expect(result.success).toBe(true)
   })
+
+  // ticket 2026-05-30 client-coupon-not-allocated-to-sale-items：admin 同类 bug 守护
+  // 修复前：couponDiscount 仅在订单层 totalAmount = rawTotal - couponDiscount 扣；
+  // INSERT sale_items 用前端传入的 pre-coupon saleAmount → unit_real_price/sale_amount 残留原价。
+  // 修复后：couponDiscount > 0 时按 saleAmount 比例摊到 eligibleItems 各行，覆盖 it.saleAmount/it.received。
+  it('B14: 5次卡 1000 + 298 现金券 → sale_items 落 saleAmount=702 / unitRealPrice=140.4 / received=702', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({ ...validCoupon, minSpend: '0' }))
+    ;(calcCouponDiscount as any).mockReturnValue(298)
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260530001')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientUserId: 'user-1',
+      couponId: 'cpn-298',
+      items: [{
+        skuId: 'sku-5card',
+        productName: '面部三重维养',
+        skuSpecName: '5次卡',
+        productType: '疗程卡' as const,
+        sessionCount: 5,        // 行总次数（B2 拆行后 quantity=1 不触发；这里 mock skuSessionMap 空 → fallback item.sessionCount）
+        unitPrice: '1000.00',   // per-card 标价
+        unitRealPrice: '1000.00',
+        quantity: 1,
+        saleAmount: '1000.00',  // pre-coupon 应付（前端 getItemAmounts 不扣券）
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(1)
+    const v = saleItemInserts[0].values
+    expect(v.sessionCount).toBe(5)
+    expect(Number(v.saleAmount)).toBe(702)            // 1000 - 298
+    expect(Number(v.received)).toBe(702)              // received = saleAmount
+    expect(Number(v.unitRealPrice)).toBeCloseTo(140.4, 2)  // 702 / 5
+    expect(Number(v.unitPrice)).toBe(200)             // per-session 标价 1000/5（不变）
+  })
+
+  it('B14 多行：1000(5次卡 eligible) + 200(单品 eligible) + 300 券 → 按 saleAmount 比例摊；尾差归最后行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({ ...validCoupon, minSpend: '0' }))
+    ;(calcCouponDiscount as any).mockReturnValue(300)
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260530002')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientUserId: 'user-1',
+      couponId: 'cpn-300',
+      items: [
+        {
+          skuId: 'sku-card',
+          productName: '5次卡',
+          skuSpecName: '5次',
+          productType: '疗程卡' as const,
+          sessionCount: 5,
+          unitPrice: '1000.00',
+          unitRealPrice: '1000.00',
+          quantity: 1,
+          saleAmount: '1000.00',
+          salesCategory: '自销自耗' as const,
+        },
+        {
+          skuId: 'sku-home',
+          productName: '家居产品',
+          skuSpecName: '50ml',
+          productType: '家居产品' as const,
+          sessionCount: null,
+          unitPrice: '200.00',
+          unitRealPrice: '200.00',
+          quantity: 1,
+          saleAmount: '200.00',
+          salesCategory: '自销自耗' as const,
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(2)
+    // 摊比 1000:200 = 5:1，券 300 → 250/50
+    // 第一行 saleAmount = 1000 - 250 = 750；第二行 200 - 50 = 150
+    // 但末行吸收尾差：250 = round(300*1000/1200, 2) = 250；50 = 300 - 250 = 50
+    const totalSaleAmount = saleItemInserts.reduce((s, c) => s + Number(c.values.saleAmount), 0)
+    expect(Math.round(totalSaleAmount * 100)).toBe(90_000)  // 1200 - 300 = 900
+  })
 })
 
 describe('createOrder — 事务异常捕获', () => {

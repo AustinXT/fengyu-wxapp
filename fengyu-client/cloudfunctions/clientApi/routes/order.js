@@ -498,6 +498,7 @@ async function create(ctx) {
       productType: sku.product_type,
       sessionCount,
       remainingSessions: sessionCount,
+      listUnit,                       // per-card 标价快照（供摊券后 per-session 重派 unit_price 使用）
       unitPrice,
       unitRealPrice,
       quantity,
@@ -616,23 +617,38 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 按比例分摊到各行的 received（尾差修正：最后一项吸收舍入误差）
+    // 按 saleAmount 比例摊到各行：saleAmount 是权威源（券摊后行应付总额）
+    // received 默认 = saleAmount（顾客端开单即应付=实付，无 inputReceived 概念）
+    // 与 staff order.js L576-591 同义；A1 listUnit 字段保留 per-card 标价供 per-session 重派
     let distributedDiscount = 0
     for (let i = 0; i < eligibleItems.length; i++) {
       const item = eligibleItems[i]
       let share
       if (i === eligibleItems.length - 1) {
-        // 最后一项吸收尾差
         share = couponDiscount - distributedDiscount
       } else {
         share = Math.round(couponDiscount * (item.saleAmount / eligibleTotal) * 100) / 100
         distributedDiscount += share
       }
-      item.received -= share
-      item.received = Math.round(item.received * 100) / 100
+      item.saleAmount = Math.max(0, Math.round((item.saleAmount - share) * 100) / 100)
+      item.received = item.saleAmount
     }
 
-    totalAmount = itemsData.reduce((s, d) => s + d.received, 0)
+    // per-session 重派 unit_real_price / unit_price（sale_amount 为权威行总额）
+    // 卡 = 行总额 / 总次数；非卡 = 行总额 / 数量（per-unit 退化）
+    // 与 staff order.js L604-612 同义
+    for (const d of itemsData) {
+      const denom = (d.sessionCount != null && d.sessionCount > 0) ? d.sessionCount : (d.quantity || 1)
+      const listTotalRow = Math.round(Number(d.listUnit || 0) * (d.quantity || 1) * 100) / 100
+      d.unitRealPrice = denom > 0
+        ? Math.round((Number(d.saleAmount || 0) / denom) * 100) / 100
+        : Number(d.saleAmount || 0)
+      d.unitPrice = denom > 0
+        ? Math.round((listTotalRow / denom) * 100) / 100
+        : listTotalRow
+    }
+
+    totalAmount = itemsData.reduce((s, d) => s + d.saleAmount, 0)
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 

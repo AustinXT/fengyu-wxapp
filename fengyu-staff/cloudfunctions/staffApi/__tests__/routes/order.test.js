@@ -536,10 +536,10 @@ describe('order.create', () => {
       totalSaleAmount += Number(call[1][12])  // sale_amount
     }
 
-    // 守恒：sum(received) = 1000 - 50 = 950（券抵扣 50 元）
+    // 守恒：sum(sale_amount) = 1000 - 50 = 950（券摊到 saleAmount，行级权威）
+    expect(Math.round(totalSaleAmount * 100)).toBe(95_000)
+    // 守恒：sum(received) = 950（received 默认 = saleAmount，无 inputReceived 裁剪）
     expect(Math.round(totalReceived * 100)).toBe(95_000)
-    // 守恒：sum(sale_amount) = 1000（原价不变，券作用在 received）
-    expect(Math.round(totalSaleAmount * 100)).toBe(100_000)
     expect(ctx.result.totalAmount).toBe(950)
   })
 
