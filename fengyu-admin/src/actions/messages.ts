@@ -91,8 +91,9 @@ export const getMessagesPaginated = withPermission(
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
   // 别名 JOIN：按 recipientType 匹配对应表，避免两表 ID 交叉
-  const clientRecipient = alias(clientWechatUsers, 'client_recipient')
-  const staffRecipient = alias(staffWechatUsers, 'staff_recipient')
+  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const clientRecipient = alias(clientWechatUsers, 'client_recipient') as unknown as typeof clientWechatUsers
+  const staffRecipient = alias(staffWechatUsers, 'staff_recipient') as unknown as typeof staffWechatUsers
 
   const [[countRow], rows] = await Promise.all([
     db

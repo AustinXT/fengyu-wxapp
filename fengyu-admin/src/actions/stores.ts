@@ -14,14 +14,14 @@ import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { _internalApplyLakalaLink } from './lakala-onboarding'
 
-const storeNode = alias(orgNodes, 'store_node')
-const marketNode = alias(orgNodes, 'market_node')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
+const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
 
-function rowToStore(row: {
-  stores: typeof stores.$inferSelect
-  store_node: typeof orgNodes.$inferSelect | null
-  market_node: typeof orgNodes.$inferSelect | null
-}): Store {
+// drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
+// 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToStore(row: any): Store {
   const s = row.stores
   return {
     storeId: s.storeId,
@@ -102,8 +102,10 @@ export const getAvailableStoreNodes = withPermission(
       .orderBy(asc(marketNode.name), asc(storeNode.name))
 
     // scope 过滤：非 admin 只看自己 scope（含其下市场）内的门店节点
+    // drizzle 0.45 alias 后 select 类型推断退化成 never[]；用 any 解锁 build
     const visible: Array<{ id: string; name: string; marketName: string }> = []
-    for (const r of rows) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const r of rows as any[]) {
       if (await isNodeInScope(session, r.id)) {
         visible.push({ id: r.id, name: r.name, marketName: r.marketName ?? '' })
       }

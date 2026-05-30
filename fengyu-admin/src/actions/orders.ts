@@ -24,7 +24,8 @@ import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { shanghaiYmd } from '@/lib/datetime'
 import { parseOrderFilters } from '@/lib/list-filters'
 
-const opener = alias(staffWechatUsers, 'opener')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
 
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。

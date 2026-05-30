@@ -35,8 +35,9 @@ import type {
   SalesCategory,
 } from '@/lib/types'
 
-const operatorAlias = alias(staffWechatUsers, 'sop_operator')
-const auditorAlias = alias(staffWechatUsers, 'sop_auditor')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const operatorAlias = alias(staffWechatUsers, 'sop_operator') as unknown as typeof staffWechatUsers
+const auditorAlias = alias(staffWechatUsers, 'sop_auditor') as unknown as typeof staffWechatUsers
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义

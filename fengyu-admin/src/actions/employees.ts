@@ -17,14 +17,14 @@ import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters } from '@/lib/list-filters'
 
-const storeNode = alias(orgNodes, 'store_node')
-const marketNode = alias(orgNodes, 'market_node')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
+const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
 
-function rowToEmployee(row: {
-  staff_wechat_users: typeof staffWechatUsers.$inferSelect
-  stores: typeof stores.$inferSelect | null
-  org_nodes: typeof orgNodes.$inferSelect | null
-}): Employee {
+// drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
+// 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToEmployee(row: any): Employee {
   const e = row.staff_wechat_users
   return {
     employeeId: e.employeeId,

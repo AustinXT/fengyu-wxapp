@@ -29,7 +29,8 @@ export interface UnbindRequest {
 export const getUnbindRequests = withPermission(
   'store_unbind:list',
   async (session): Promise<UnbindRequest[]> => {
-  const toStores = alias(stores, 'to_stores')
+  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const toStores = alias(stores, 'to_stores') as unknown as typeof stores
   const rows = await db
     .select({
       request: storeUnbindRequests,

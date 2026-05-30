@@ -258,7 +258,8 @@ export const getCustomerOrders = withPermission(
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
 
-  const opener = alias(staffWechatUsers, 'opener')
+  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
 
   const rows = await db
     .select({

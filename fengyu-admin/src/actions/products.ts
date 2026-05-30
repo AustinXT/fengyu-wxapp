@@ -108,7 +108,8 @@ export const getCategories = withPermission(
   async (_session): Promise<ProductCategory[]> => {
     // LEFT JOIN 父级一级行（productKind IS NULL AND categoryName = child.productKind），
     // 把父级 capability 列回填到二级行；一级行 parent.* 列均为 NULL（自身字段已带）。
-    const parent = alias(productCategories, 'parent_cat')
+    // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+    const parent = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
     const rows = await db
       .select({
         child: productCategories,
@@ -125,7 +126,9 @@ export const getCategories = withPermission(
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(productCategories.sortOrder))
 
-    return rows.map((r) => ({
+    // drizzle 0.45 alias 后 select 类型推断退化成 never[]；用 any 解锁 build
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return rows.map((r: any) => ({
       categoryId: r.child.categoryId,
       categoryName: r.child.categoryName,
       productKind: r.child.productKind ?? null,
@@ -1692,7 +1695,8 @@ export const getProductsByKind = withPermission(
     // 普通商品：排除卡类 + 必须有非 bundle 有效 SKU 的二级分类
     // JOIN 一级行（parent.productKind IS NULL AND parent.categoryName = child.productKind）
     // 以便按一级行 sortOrder 排序 group。
-    const parentCat = alias(productCategories, 'parent_cat')
+    // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+    const parentCat = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
 
     const rows = await db
       .select({
