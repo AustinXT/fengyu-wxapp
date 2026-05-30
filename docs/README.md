@@ -35,6 +35,7 @@ docs/
 | 编号 | 日期 | 标题 |
 |------|------|------|
 | [001](changes/ops/001_admin-container-timezone.md) | 2026-05-27 | admin 容器锁定东八区（tzdata + TZ），修复后台时间列晚 8 小时 |
+| [002](changes/ops/002_lakala-3-merchants-backfill.md) | 2026-05-30 | 凤御 3 个拉卡拉商户 legacy 行手抄入库 + admin 加「反查开户状态」按钮 |
 
 ### fix — 故障复盘
 
