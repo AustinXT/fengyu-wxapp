@@ -235,6 +235,43 @@ describe('endpoint 路由 + v2/v3 envelope 分支 + reqId 幂等', () => {
     expect(captured[0].envelope.reqId).toBe('fixed-id-1234567890abcdef')
     expect(captured[1].envelope.reqId).toBe('fixed-id-1234567890abcdef')
   })
+
+  // ── v3 风格网关错误 fallback（2026-05-30 修复）
+  // 拉卡拉网关层异常（如 GW0004 / GW0001）不论 envType 都返回 v3 风格 { code, message } 顶层结构，
+  // v2 envelope 接口若仅看 retCode/retMsg 会把网关层错误吃成空字符串，掩盖真错误。
+  test('v2 envelope 兜底解析网关层 GW0004 风格响应 → code/message 不再丢失', async () => {
+    mockResponseBuilder = () =>
+      JSON.stringify({ code: 'GW0004', message: '访问授权不通过！【禁止外网访问！】' })
+    const { queryMerchant } = await import('@/lib/lakala-client')
+    const resp = await queryMerchant({ orderNo: 'O1', orgCode: '31318393', contractId: 'C1' })
+    expect(resp.code).toBe('GW0004')
+    expect(resp.msg).toContain('禁止外网访问')
+    expect(resp.ok).toBe(false)
+  })
+
+  test('v3 envelope 兜底解析仅 message 字段（无 msg）的响应', async () => {
+    mockResponseBuilder = () => JSON.stringify({ code: 'GW0001', message: '签名校验失败' })
+    const { applyContract } = await import('@/lib/lakala-client')
+    const resp = await applyContract({
+      orderNo: 'O1',
+      orgId: 31318393,
+      ecTypeCode: 'EC015',
+      certType: 'RESIDENT_ID',
+      certName: 't',
+      certNo: '1',
+      mobile: '13800138000',
+      businessLicenseNo: 'x',
+      businessLicenseName: 'x',
+      openningBankCode: 'x',
+      openningBankName: 'x',
+      acctTypeCode: '57',
+      acctNo: 'x',
+      acctName: 'x',
+      ecContentParameters: '{}',
+    } as Parameters<typeof applyContract>[0])
+    expect(resp.code).toBe('GW0001')
+    expect(resp.msg).toBe('签名校验失败')
+  })
 })
 
 // ---------------------------------------------------------------------------

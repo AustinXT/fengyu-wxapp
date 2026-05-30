@@ -291,18 +291,21 @@ export async function request({
 
   // v3: { code, msg, resp_time, resp_data }
   // v2: { retCode, retMsg, respData }
+  // 网关层异常（如 GW0004 / GW0001）不论 envType 都返回 v3 风格的 { code, message } 顶层结构，
+  // v2 解析若仅看 retCode 会把 SIT/网关错误吃成空字符串，掩盖真错误。所以 v2 解析时也对
+  // `code` / `message` 兜底，让网关层错误能透出。
   let code: string
   let msg: string
   let respData: Record<string, unknown>
   let respTime: string
   if (envType === 'v3') {
     code = String(parsedRaw.code ?? '')
-    msg = String(parsedRaw.msg ?? '')
+    msg = String(parsedRaw.msg ?? parsedRaw.message ?? '')
     respTime = String(parsedRaw.resp_time ?? '')
     respData = (parsedRaw.resp_data as Record<string, unknown>) || {}
   } else {
-    code = String(parsedRaw.retCode ?? '')
-    msg = String(parsedRaw.retMsg ?? '')
+    code = String(parsedRaw.retCode ?? parsedRaw.code ?? '')
+    msg = String(parsedRaw.retMsg ?? parsedRaw.msg ?? parsedRaw.message ?? '')
     respTime = ''
     respData = (parsedRaw.respData as Record<string, unknown>) || {}
   }
