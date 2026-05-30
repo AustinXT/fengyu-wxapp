@@ -34,4 +34,4 @@
 
 | 编号 | 日期 | 标题 |
 |------|------|------|
-| _暂无_ | | |
+| [001](fix/001_drop-stores-lakala-sub-appid.md) | 2026-05-30 | stores 删除冗余 lakala_sub_appid 列（双源风险预防性清理） |

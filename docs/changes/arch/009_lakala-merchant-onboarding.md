@@ -24,6 +24,7 @@ related: ["arch/003", "arch/008"]
 - **门店与商户 N:1**：`stores.lakala_merchant_id text references lakala_merchants(id) ON DELETE SET NULL` — 一家门店至多绑一个商户，一个商户可被多家门店选用。不引入中间表。
 - **stores 4 列语义分流**：
   - `lakala_merchant_no` / `lakala_sub_appid`：由商户派生的**快照**（admin UI 不再手填）
+    > 后续修正：`lakala_sub_appid` 列已于 fix/001 移除，sub_appid 改由云函数 env `LAKALA_SUB_APPID` 全局供给（凤御主小程序跨门店一致，从无个性化需求）。stores 上仅剩 `lakala_merchant_no` 一列快照。
   - `lakala_term_no`：store 级独立维护（虚拟终端可空）
   - `lakala_enabled`：store 级"是否启用收款"开关
 - **历史数据搬迁**：migration 0058 内嵌一次性 SQL — 扫描 `WHERE lakala_merchant_no IS NOT NULL` 的 stores 自动建 `lm_legacy_{store_id}` stub 商户行（status=`completed`、applicant_user_id=NULL）并回填 FK，避免"有快照无主表"。
@@ -84,7 +85,7 @@ related: ["arch/003", "arch/008"]
 ## 跨端影响
 
 - **fengyu-client / payNotify 零改动**：现有 `resolveLakalaMerchant`（[lakala-per-store-merchant]）仍读 stores 上的 4 列；admin 绑定时刷快照即可。
-- **stores 编辑页**：手填 `lakala_merchant_no` + `lakala_sub_appid` 替换为「关联商户」单选下拉（admin 可改、hr 只读）；`lakala_term_no` + `lakala_enabled` 仍是 store 级独立编辑。
+- **stores 编辑页**：手填 `lakala_merchant_no` + `lakala_sub_appid` 替换为「关联商户」单选下拉（admin 可改、hr 只读）；`lakala_term_no` + `lakala_enabled` 仍是 store 级独立编辑。（注：`lakala_sub_appid` 列已于 fix/001 移除，本句保留是为记录决策演化）
 - **菜单**：新增顶级「商户入网」（仅 admin），独立 6 项权限 `lakala:onboarding:read/create/update/submit/realname/delete`，其他角色不开。
 
 ## 部署 checklist
@@ -103,6 +104,40 @@ related: ["arch/003", "arch/008"]
 - 字典数据（地区码 / MCC / 业务类型等）首版静态硬编码，迭代时再接拉卡拉「数据字典表」接口同步
 - 实名子页扫码 `receOrgNo` / `channelId` 当前要 admin 手填，可后续加 `queryRealnameContext` action 自动填
 - drizzle 0.45 跨表推断的 26 处 pre-existing tsc error 与本次无关，独立 follow-up
+
+## 联调记录（2026-05-30，v3 修订）
+
+### 角色定位确认
+凤御作为「接入服务商」角色接入拉卡拉：
+- **接入应用机构（服务商）**：分公司-本牛信息 lsy，编号 `31318393` = OpenAPI `org_id` / `org_code`
+- **合作方**：邵冬，合作方编号 `24583784`（部分接口可能用 `partnerNo`）
+- **法人**：邵冬，身份证 3301**********621X，手机 158****4551
+- env：`LAKALA_ORG_CODE=31318393` / `LAKALA_PARTNER_NO=24583784`
+
+### v2 包络解析 fallback bug 修复（lakala-client.ts L292-308）
+拉卡拉网关层异常（GW0004 / GW0001 等）不论 envType 都返回 v3 风格 `{ code, message }` 顶层，
+原 v2 envelope 仅读 `parsedRaw.retCode` / `retMsg` 把网关错误吃成空字符串，掩盖真错误。
+修复：v2/v3 都对顶层 `code` / `message` 字段兜底解析。新增 2 个单测守护（v2/v3 各 1），36 单测全绿。
+
+### SIT 联调链路验证
+- HTTP 通讯、签名 SHA256withRSA、平台证书验签、PEM 字面量 `\n` 还原 — 全部已验证 ✅
+- 4 个只读接口（querySubMerchantId / queryWxRealname / queryAlipayRealname / queryWxConfig）实际打到 SIT，
+  返回 `HTTP 403 + {"code":"GW0004","message":"访问授权不通过！【禁止外网访问！】"}`
+- 这证实：代码层、签名层、网络层全通；阻塞 100% 在拉卡拉 SIT 网关 IP 白名单
+
+### 联调阻塞清单（业务侧任务）
+1. **SIT IP 白名单**（最阻塞，跟 ORG_CODE 无关）：当前开发出口 IP 不在拉卡拉 SIT 网关白名单内 → 业务方
+   联系拉卡拉客户经理把开发出口 IP 加白名单（SIT + prod 是两套独立白名单）
+2. **真实附件文件**：18 类企业证件（营业执照 / 法人身份证正反 / 结算卡 / 门头照 等）
+3. **法人手机验证码**：step 13 法人扫码授权环节需邵冬本人手机配合
+4. **prod 域名 + https 证书**：当前 admin 47.113.202.7:3000，回调 NOTIFY_URL 需 https 域名
+
+### 误判与撤回（用于后续团队避坑）
+联调期间基于不完整证据一度判定"凤御是普通商户"，提议**简化方案删除 20+ 文件**，并已动手改
+`db/schema/lakala.ts` 与 `enums.ts`。用户提供商户后台截图（服务商编号 31318393 / 合作方编号 24583784）
+证实**凤御实际是接入服务商角色**，简化方向错误。
+撤回路径：`git restore db/schema/lakala.ts db/schema/enums.ts`，**未污染生产数据**（5434/5433 migration 0058
+已成功上线、未生成 0059）。整套 32 文件 / ~9670 行代码 / 330 单测保留不变。
 
 ## 相关项目记忆
 

@@ -38,4 +38,6 @@ docs/
 
 ### fix — 故障复盘
 
-_暂无_
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| [001](changes/fix/001_drop-stores-lakala-sub-appid.md) | 2026-05-30 | stores 删除冗余 lakala_sub_appid 列（双源风险预防性清理） |
