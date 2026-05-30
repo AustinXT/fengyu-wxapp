@@ -112,7 +112,6 @@ vi.mock('@db/index', () => ({
     storeName: 'store_name',
     lakalaMerchantId: 'lakala_merchant_id',
     lakalaMerchantNo: 'lakala_merchant_no',
-    lakalaSubAppid: 'lakala_sub_appid',
     lakalaTermNo: 'lakala_term_no',
     lakalaEnabled: 'lakala_enabled',
   },
@@ -429,7 +428,7 @@ describe('linkStoreToMerchant', () => {
   }
   const store = { storeId: 'S-1', lakalaMerchantId: null, lakalaEnabled: false, lakalaTermNo: 'T-1' }
 
-  it('成功：刷快照 merchantNo/subAppid，不动 term_no/enabled', async () => {
+  it('成功：刷快照 merchantNo，不动 term_no/enabled', async () => {
     mockSelectOnce([completedMerchant])
     mockSelectOnce([store])
 
@@ -446,7 +445,6 @@ describe('linkStoreToMerchant', () => {
     expect(result.success).toBe(true)
     expect(setArgs.lakalaMerchantId).toBe('lm_ok')
     expect(setArgs.lakalaMerchantNo).toBe('MN-001')
-    expect(setArgs.lakalaSubAppid).toBe('wxsub-001')
     // 关键守护：不传 term_no / enabled，保留原门店配置
     expect(setArgs.lakalaTermNo).toBeUndefined()
     expect(setArgs.lakalaEnabled).toBeUndefined()
@@ -479,7 +477,6 @@ describe('unlinkStoreFromMerchant', () => {
     expect(result.success).toBe(true)
     expect(setArgs.lakalaMerchantId).toBeNull()
     expect(setArgs.lakalaMerchantNo).toBeNull()
-    expect(setArgs.lakalaSubAppid).toBeNull()
     expect(setArgs.lakalaEnabled).toBe(false)
   })
 })
@@ -534,7 +531,6 @@ describe('updateLakalaMerchantInfo', () => {
     // 联动刷店
     expect(storesSetArgs).toEqual({
       lakalaMerchantNo: 'MN-001',
-      lakalaSubAppid: 'wxsub-001',
     })
     // 返回不含费率
     const ser = JSON.stringify(result)

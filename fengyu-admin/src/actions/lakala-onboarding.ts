@@ -1102,10 +1102,11 @@ export const updateLakalaMerchantInfo = withPermission(
 // ===========================================================================
 
 /**
- * 把 lakala_merchants.merchant_no / wx_sub_appid 同步到所有绑该商户的 stores 行。
- * - admin UI 不再手填 stores 上这两列，由本函数派生；
+ * 把 lakala_merchants.merchant_no 同步到所有绑该商户的 stores 行。
+ * - admin UI 不再手填 stores 上 merchantNo，由本函数派生；
  * - term_no / enabled 是 store 级独立字段，本函数不动；
- * - 在 linkStoreToMerchant / updateLakalaMerchantInfo / submitWxRealname（拿到 subAppid 时）调用。
+ * - sub_appid 走 env LAKALA_SUB_APPID 全局共享，不入表；
+ * - 在 linkStoreToMerchant / updateLakalaMerchantInfo 等位置调用。
  */
 async function syncStoreSnapshots(merchantId: string): Promise<void> {
   const [m] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, merchantId)).limit(1)
@@ -1113,7 +1114,6 @@ async function syncStoreSnapshots(merchantId: string): Promise<void> {
   await db.update(stores)
     .set({
       lakalaMerchantNo: m.merchantNo,
-      lakalaSubAppid: m.wxSubAppid,
     })
     .where(eq(stores.lakalaMerchantId, merchantId))
 }
@@ -1133,12 +1133,11 @@ export const linkStoreToMerchant = withPermission(
     const [s] = await db.select().from(stores).where(eq(stores.storeId, data.storeId)).limit(1)
     if (!s) return { success: false, message: '门店不存在' }
 
-    // 事务：覆盖 lakala_merchant_id + 刷快照 2 列；不动 term_no / enabled
+    // 事务：覆盖 lakala_merchant_id + 刷快照 merchantNo；不动 term_no / enabled
     await db.transaction(async (tx) => {
       await tx.update(stores).set({
         lakalaMerchantId: data.lakalaMerchantId,
         lakalaMerchantNo: m.merchantNo,
-        lakalaSubAppid: m.wxSubAppid,
       }).where(eq(stores.storeId, data.storeId))
     })
 
@@ -1163,11 +1162,10 @@ export const unlinkStoreFromMerchant = withPermission(
     const oldMid = s.lakalaMerchantId
 
     await db.transaction(async (tx) => {
-      // SET NULL + 清快照 2 列 + 强置 enabled=false（plan §3 deltable）
+      // SET NULL + 清快照 merchantNo + 强置 enabled=false（plan §3 deltable）
       await tx.update(stores).set({
         lakalaMerchantId: null,
         lakalaMerchantNo: null,
-        lakalaSubAppid: null,
         lakalaEnabled: false,
       }).where(eq(stores.storeId, data.storeId))
     })
@@ -1204,7 +1202,6 @@ export const cancelOnboarding = withPermission(
         await tx.update(stores).set({
           lakalaMerchantId: null,
           lakalaMerchantNo: null,
-          lakalaSubAppid: null,
           lakalaEnabled: false,
         }).where(eq(stores.lakalaMerchantId, merchantId))
         await tx.update(lakalaMerchants).set({ onboardingStatus: next })
@@ -1267,7 +1264,6 @@ export async function _internalApplyLakalaLink(
     await tx.update(stores).set({
       lakalaMerchantId: null,
       lakalaMerchantNo: null,
-      lakalaSubAppid: null,
       lakalaEnabled: false,
     }).where(eq(stores.storeId, storeId))
     return
@@ -1280,7 +1276,6 @@ export async function _internalApplyLakalaLink(
   await tx.update(stores).set({
     lakalaMerchantId,
     lakalaMerchantNo: m.merchantNo,
-    lakalaSubAppid: m.wxSubAppid,
   }).where(eq(stores.storeId, storeId))
 }
 

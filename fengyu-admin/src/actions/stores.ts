@@ -44,7 +44,6 @@ function rowToStore(row: {
     parkingInfo: s.parkingInfo,
     lakalaMerchantNo: s.lakalaMerchantNo,
     lakalaTermNo: s.lakalaTermNo,
-    lakalaSubAppid: s.lakalaSubAppid,
     lakalaMerchantId: s.lakalaMerchantId,
     lakalaEnabled: s.lakalaEnabled,
     createdAt: s.createdAt.toISOString(),
@@ -215,12 +214,11 @@ export const updateStore = withPermission(
       parkingInfo: string | null
       lakalaMerchantNo: string | null
       lakalaTermNo: string | null
-      lakalaSubAppid: string | null
       lakalaEnabled: boolean
       /**
        * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id）。
        * - admin 角色可写；hr 只读（涉及收款配置）。
-       * - 非空 → 调内部 _internalApplyLakalaLink 验证商户态 + 刷快照 2 列（merchantNo/subAppid）
+       * - 非空 → 调内部 _internalApplyLakalaLink 验证商户态 + 刷快照 merchantNo
        * - 显式 null → 解绑：清快照 + 强置 lakalaEnabled=false
        * - undefined → 不动 lakala_merchant_id（保留原绑定关系）
        */
@@ -254,13 +252,12 @@ export const updateStore = withPermission(
     updateData.closedAt = data.isClosed ? shanghaiToday() : null
   }
   // lakala_merchant_id 由 _internalApplyLakalaLink 在事务内单独处理（含商户态校验 + 快照刷新 + enabled 强置）
-  // 不能让 generic SET 把 merchantNo / subAppid 当成 caller 直接传值（admin UI 不再手填）
+  // 不能让 generic SET 把 merchantNo 当成 caller 直接传值（admin UI 不再手填）
   const lakalaMerchantIdChange = data.lakalaMerchantId
   if (lakalaMerchantIdChange !== undefined) {
     delete (updateData as Partial<typeof updateData>).lakalaMerchantId
-    // 同时 strip 掉 merchantNo / subAppid（不允许 admin UI 同时传，避免 race）
+    // 同时 strip 掉 merchantNo（不允许 admin UI 同时传，避免 race）
     delete (updateData as Partial<typeof updateData>).lakalaMerchantNo
-    delete (updateData as Partial<typeof updateData>).lakalaSubAppid
   }
 
   let result: any

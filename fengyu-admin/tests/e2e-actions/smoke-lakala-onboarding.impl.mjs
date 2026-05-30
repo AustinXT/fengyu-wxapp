@@ -54,7 +54,7 @@ async function cleanupLakala() {
   // 解绑测试门店（防 stores.lakala_merchant_id FK 阻塞 lakala_merchants 删除）
   await pgQuery(
     `UPDATE stores SET lakala_merchant_id = NULL,
-        lakala_merchant_no = NULL, lakala_sub_appid = NULL, lakala_enabled = false
+        lakala_merchant_no = NULL, lakala_enabled = false
        WHERE store_id LIKE $1 OR lakala_merchant_id IN (
          SELECT id FROM lakala_merchants WHERE id LIKE $2
        )`,
@@ -262,7 +262,7 @@ async function main() {
   // 先把状态推到 completed 以满足 link 条件
   await pgQuery(`UPDATE lakala_merchants SET onboarding_status='completed' WHERE id=$1`, [newId])
   const beforeStore = await pgQuery(
-    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_sub_appid, lakala_term_no, lakala_enabled
+    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_term_no, lakala_enabled
        FROM stores WHERE store_id = $1`,
     [TEST_STORE_ID],
   )
@@ -272,16 +272,13 @@ async function main() {
   const link = await actionsMod.linkStoreToMerchant({ storeId: TEST_STORE_ID, lakalaMerchantId: newId })
   if (!link.success) throw new Error(`STEP9 link 失败: ${link.message}`)
   const afterLink = await pgQuery(
-    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_sub_appid, lakala_term_no, lakala_enabled
+    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_term_no, lakala_enabled
        FROM stores WHERE store_id = $1`,
     [TEST_STORE_ID],
   )
   if (afterLink[0].lakala_merchant_id !== newId) throw new Error('STEP9 lakala_merchant_id 未刷')
   if (afterLink[0].lakala_merchant_no !== 'MOCK_MER_001') {
     throw new Error(`STEP9 快照 merchantNo 错: ${afterLink[0].lakala_merchant_no}`)
-  }
-  if (afterLink[0].lakala_sub_appid !== 'wxchannel-app') {
-    throw new Error(`STEP9 快照 subAppid 错: ${afterLink[0].lakala_sub_appid}`)
   }
   // 关键守护：term_no / enabled 不动
   if (afterLink[0].lakala_term_no !== 'STORE_TERM_KEEP') {
@@ -290,20 +287,19 @@ async function main() {
   if (afterLink[0].lakala_enabled !== beforeStore[0].lakala_enabled) {
     throw new Error(`STEP9 ★ lakala_enabled 被改动`)
   }
-  console.log(`  ✓ STEP9 linkStoreToMerchant → 快照刷 merchantNo/subAppid，term_no/enabled 保留`)
+  console.log(`  ✓ STEP9 linkStoreToMerchant → 快照刷 merchantNo，term_no/enabled 保留`)
 
   // ---- STEP 10. unlinkStoreFromMerchant → 清快照 + enabled=false ----------
   await pgQuery(`UPDATE stores SET lakala_enabled = true WHERE store_id = $1`, [TEST_STORE_ID])
   const ul = await actionsMod.unlinkStoreFromMerchant({ storeId: TEST_STORE_ID })
   if (!ul.success) throw new Error(`STEP10 unlink 失败: ${ul.message}`)
   const afterUnlink = await pgQuery(
-    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_sub_appid, lakala_term_no, lakala_enabled
+    `SELECT lakala_merchant_id, lakala_merchant_no, lakala_term_no, lakala_enabled
        FROM stores WHERE store_id = $1`,
     [TEST_STORE_ID],
   )
   if (afterUnlink[0].lakala_merchant_id !== null) throw new Error('STEP10 lakala_merchant_id 未清')
   if (afterUnlink[0].lakala_merchant_no !== null) throw new Error('STEP10 lakala_merchant_no 未清')
-  if (afterUnlink[0].lakala_sub_appid !== null) throw new Error('STEP10 lakala_sub_appid 未清')
   if (afterUnlink[0].lakala_enabled !== false) throw new Error('STEP10 ★ enabled 未被强置 false')
   // term_no 在 unlink 时不动（仅清空快照 + enabled=false；plan §3 注释）
   if (afterUnlink[0].lakala_term_no !== 'STORE_TERM_KEEP') {

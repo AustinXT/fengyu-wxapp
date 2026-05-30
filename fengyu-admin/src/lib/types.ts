@@ -30,12 +30,10 @@ export interface Store {
   description: string | null
   announcement: string | null
   parkingInfo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的商户号；NULL 时云函数 fallback 到 env 默认测试号 */
+  /** 拉卡拉聚合支付：门店在拉卡拉侧的商户号（来自关联商户 lakala_merchants 的快照） */
   lakalaMerchantNo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的终端号；NULL 时云函数 fallback 到 env 默认测试号 */
+  /** 拉卡拉聚合支付：门店在拉卡拉侧的终端号（store-level 独立配置） */
   lakalaTermNo: string | null
-  /** 拉卡拉收银台跳转子 appid（本期未启用，留空即可） */
-  lakalaSubAppid: string | null
   /** 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007） */
   lakalaMerchantId: string | null
   /** 是否开启拉卡拉真实支付通道；false=回 mock 兜底，true=走 special_create */
