@@ -11,6 +11,7 @@ import { getLakalaMerchant } from "@/actions/lakala-onboarding"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import StepProgress from "@/components/lakala/StepProgress"
+import { RefreshStatusButton } from "./_components/refresh-status-button"
 import type { LakalaOnboardingStatus } from "@/lib/lakala-onboarding-state"
 
 export const dynamic = "force-dynamic"
@@ -123,6 +124,20 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <Field label="最近回调时间" value={m.lastCallbackAt?.slice(0, 19).replace("T", " ") ?? "—"} />
             <Field label="最近主动查询时间" value={m.lastQueryAt?.slice(0, 19).replace("T", " ") ?? "—"} />
           </div>
+        </CardContent>
+      </Card>
+
+      {/* 开户状态反查（legacy 行也能跑，不依赖 outOrgCode/contractId） */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">开户状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+            <Field label="微信实名状态 (wx_realname_status)" value={m.wxRealnameStatus} />
+            <Field label="支付宝实名状态 (alipay_realname_status)" value={m.alipayRealnameStatus} />
+          </div>
+          <RefreshStatusButton merchantId={id} />
         </CardContent>
       </Card>
 

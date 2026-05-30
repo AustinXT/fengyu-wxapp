@@ -38,6 +38,7 @@ const { dbMock, lakalaClientMock, loadRateConfigMock } = vi.hoisted(() => ({
     modifyAlipayRealname: vi.fn(),
     updateLakalaMerchantInfo: vi.fn(),
     querySubMerchantId: vi.fn(),
+    queryWxConfig: vi.fn(),
   },
   loadRateConfigMock: vi.fn(),
 }))
@@ -161,6 +162,7 @@ import {
   cancelOnboarding,
   saveDraft,
   applyContract,
+  refreshMerchantStatusFromLakala,
 } from '../lakala-onboarding'
 import { getSession } from '@/lib/auth'
 import { logOperation, logTransition } from '@/lib/operation-log'
@@ -593,5 +595,112 @@ describe('cancelOnboarding', () => {
 describe('依赖守护', () => {
   it('reuploadToFixedPath 是 cloudbase 模块导出（mock 命中）', () => {
     expect(typeof reuploadToFixedPath).toBe('function')
+  })
+})
+
+// ===========================================================================
+// 8. refreshMerchantStatusFromLakala — 微信/支付宝开户状态反查
+// ===========================================================================
+
+describe('refreshMerchantStatusFromLakala', () => {
+  const legacyMerchant = {
+    id: 'lm_legacy_x',
+    merchantNo: '82242107230052S',
+    formData: { merInnerNo: '4002026052582608078' },
+    onboardingStatus: 'completed',
+    lastReqIds: {},
+  }
+
+  function mockOkResp(authStatus: string) {
+    return {
+      code: '000000',
+      msg: 'success',
+      resp_data: { authStatus },
+      ok: true,
+      reqId: 'r1',
+      expectedCode: '000000',
+      resp_time: '',
+    }
+  }
+
+  it('legacy 行：调 queryWxConfig × 2（WECHAT + ALIPAY），用 form_data.merInnerNo 作 subMerchantId，AUTHED 映射 success', async () => {
+    mockSelectOnce([legacyMerchant])
+    // callLakala WECHAT 内部：先 SELECT last_req_ids
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()  // log
+    // callLakala ALIPAY 内部
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()
+    mockUpdateChain()  // 最终 UPDATE lakala_merchants
+
+    lakalaClientMock.queryWxConfig
+      .mockResolvedValueOnce(mockOkResp('AUTHED'))     // WECHAT
+      .mockResolvedValueOnce(mockOkResp('SUCCESS'))    // ALIPAY
+
+    const r = await refreshMerchantStatusFromLakala('lm_legacy_x')
+    expect(r.success).toBe(true)
+    expect(r.wx?.mapped).toBe('success')
+    expect(r.alipay?.mapped).toBe('success')
+
+    // 两次调用：tradeMode 区分 + 同一 merchantNo + subMerchantId 来自 form_data.merInnerNo
+    expect(lakalaClientMock.queryWxConfig).toHaveBeenCalledTimes(2)
+    const c1 = lakalaClientMock.queryWxConfig.mock.calls[0][0]
+    const c2 = lakalaClientMock.queryWxConfig.mock.calls[1][0]
+    expect(c1.tradeMode).toBe('WECHAT')
+    expect(c2.tradeMode).toBe('ALIPAY')
+    expect(c1.merchantNo).toBe('82242107230052S')
+    expect(c1.subMerchantId).toBe('4002026052582608078')
+
+    expect(logOperation).toHaveBeenCalledWith(
+      expect.any(Object), 'lakala_merchant.refreshStatus', 'lakala_merchant', 'lm_legacy_x',
+      expect.objectContaining({ wxRaw: 'AUTHED', wxMapped: 'success', alipayRaw: 'SUCCESS', alipayMapped: 'success' }),
+    )
+  })
+
+  it('merchant_no 缺失：返回 false 且不调拉卡拉', async () => {
+    mockSelectOnce([{ id: 'lm_no_merch', merchantNo: null, formData: null }])
+    const r = await refreshMerchantStatusFromLakala('lm_no_merch')
+    expect(r.success).toBe(false)
+    expect(r.message).toMatch(/merchant_no/)
+    expect(lakalaClientMock.queryWxConfig).not.toHaveBeenCalled()
+  })
+
+  it('GW0004 网关拒（IP 白名单未通）：success=true 但无 mapped，不动 DB', async () => {
+    mockSelectOnce([legacyMerchant])
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()
+
+    lakalaClientMock.queryWxConfig
+      .mockResolvedValueOnce({ code: 'GW0004', msg: '访问授权不通过！【禁止外网访问！】', resp_data: {}, ok: false, expectedCode: '000000', resp_time: '' })
+      .mockResolvedValueOnce({ code: 'GW0004', msg: '访问授权不通过！【禁止外网访问！】', resp_data: {}, ok: false, expectedCode: '000000', resp_time: '' })
+
+    const r = await refreshMerchantStatusFromLakala('lm_legacy_x')
+    expect(r.success).toBe(true)
+    expect(r.wx?.code).toBe('GW0004')
+    expect(r.wx?.mapped).toBeUndefined()
+    expect(r.alipay?.mapped).toBeUndefined()
+    // 未触发对 lakala_merchants 的最终 UPDATE（updates 空）
+    expect(dbMock.update).not.toHaveBeenCalled()
+  })
+
+  it('subMerchantId fallback：form_data 无 merInnerNo 时用 merchantNo', async () => {
+    mockSelectOnce([{ id: 'lm_no_inner', merchantNo: 'M-X', formData: {}, lastReqIds: {} }])
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()
+    mockSelectOnce([{ lastReqIds: {} }])
+    mockInsertOnce()
+    mockUpdateChain()  // 最终 UPDATE lakala_merchants
+
+    lakalaClientMock.queryWxConfig
+      .mockResolvedValueOnce(mockOkResp('PENDING'))
+      .mockResolvedValueOnce(mockOkResp('REJECTED'))
+
+    const r = await refreshMerchantStatusFromLakala('lm_no_inner')
+    expect(r.success).toBe(true)
+    expect(lakalaClientMock.queryWxConfig.mock.calls[0][0].subMerchantId).toBe('M-X')
+    expect(r.wx?.mapped).toBe('modifying')
+    expect(r.alipay?.mapped).toBe('fail')
   })
 })

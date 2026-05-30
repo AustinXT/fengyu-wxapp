@@ -1180,6 +1180,108 @@ export const unlinkStoreFromMerchant = withPermission(
 )
 
 // ===========================================================================
+// 8.5 反查开户状态（legacy 行也能跑）
+// ===========================================================================
+
+/**
+ * 调拉卡拉 queryWxConfig (`/api/v2/mms/sme/mrchAuthStateQuery`) 反查微信 + 支付宝开户状态，
+ * 回写 lakala_merchants.wx_realname_status / alipay_realname_status。
+ *
+ * 适用场景：
+ *   - legacy 行（applicant_user_id=NULL，out_org_code 是占位符）无 contractId，但仍能调本接口
+ *     因为 queryWxConfig 只要 merchantNo + subMerchantId + tradeMode，不依赖进件上下文。
+ *   - 上线前确认 3 个商户的开户状态，避免因未实名导致支付失败。
+ *
+ * subMerchantId 取自 form_data.merInnerNo（手抄商户后台 "内部商户号"），fallback merchantNo。
+ *
+ * **状态字段映射注意**（IP 白名单通后实测确认）：
+ *   拉卡拉响应字段名 + 取值需要 SIT/prod 反查实测，本函数当前用宽容多键匹配：
+ *     resp_data.authStatus / status / openStatus 中任一非空即取
+ *   映射到 lakala_realname_status 枚举（5 值）：
+ *     AUTHED / SUCCESS / OPEN → 'success'
+ *     FAIL / REJECTED / CLOSED → 'fail'
+ *     PENDING / MODIFYING → 'modifying'
+ *     SUBMITTED → 'submitted'
+ *     其他/未识别 → 不动 DB（保守）
+ *   TODO(IP 白名单通后)：跑 sit-lakala-query-3-merchants.mjs 实测响应字段，回来修映射表。
+ */
+export const refreshMerchantStatusFromLakala = withPermission(
+  'lakala:onboarding:update',
+  async (
+    session,
+    merchantId: string,
+  ): Promise<{
+    success: boolean
+    message?: string
+    wx?: { code: string; msg: string; raw?: string | null; mapped?: string }
+    alipay?: { code: string; msg: string; raw?: string | null; mapped?: string }
+  }> => {
+    const [m] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, merchantId)).limit(1)
+    if (!m) return { success: false, message: '商户不存在' }
+    if (!m.merchantNo) return { success: false, message: 'merchant_no 缺失，无法反查' }
+
+    // subMerchantId 取 form_data.merInnerNo（手抄回填），fallback merchantNo
+    const formData = (m.formData as Record<string, unknown> | null) || {}
+    const subId = (typeof formData.merInnerNo === 'string' && formData.merInnerNo)
+                  || m.merchantNo
+
+    const updates: Partial<typeof lakalaMerchants.$inferInsert> = {}
+
+    async function queryOne(tradeMode: 'WECHAT' | 'ALIPAY') {
+      const resp = await callLakala(
+        merchantId,
+        tradeMode === 'WECHAT' ? 'queryWxConfig' : 'queryAlipayConfig',
+        '/api/v2/mms/sme/mrchAuthStateQuery',
+        session,
+        (hint) => lakalaClient.queryWxConfig({
+          tradeMode,
+          merchantNo: m.merchantNo!,
+          subMerchantId: subId,
+          reqIdHint: hint,
+        }),
+        { tradeMode, merchantNo: m.merchantNo, subMerchantId: subId },
+      )
+      const raw = resp.ok
+        ? String(
+            (resp.resp_data?.authStatus as string | undefined)
+            ?? (resp.resp_data?.status as string | undefined)
+            ?? (resp.resp_data?.openStatus as string | undefined)
+            ?? '',
+          ) || null
+        : null
+      const mapped: typeof lakalaRealnameStatusEnumValues[number] | undefined =
+        raw === 'AUTHED' || raw === 'SUCCESS' || raw === 'OPEN' ? 'success' :
+        raw === 'FAIL' || raw === 'REJECTED' || raw === 'CLOSED' ? 'fail' :
+        raw === 'PENDING' || raw === 'MODIFYING' ? 'modifying' :
+        raw === 'SUBMITTED' ? 'submitted' :
+        undefined
+      return { code: resp.code, msg: resp.msg, raw, mapped }
+    }
+
+    const wx = await queryOne('WECHAT')
+    if (wx.mapped) updates.wxRealnameStatus = wx.mapped
+
+    const alipay = await queryOne('ALIPAY')
+    if (alipay.mapped) updates.alipayRealnameStatus = alipay.mapped
+
+    if (Object.keys(updates).length > 0) {
+      Object.assign(updates, { lastQueryAt: new Date() })
+      await db.update(lakalaMerchants).set(updates).where(eq(lakalaMerchants.id, merchantId))
+    }
+
+    await logOperation(session, 'lakala_merchant.refreshStatus', 'lakala_merchant', merchantId, {
+      wxCode: wx.code, wxRaw: wx.raw, wxMapped: wx.mapped,
+      alipayCode: alipay.code, alipayRaw: alipay.raw, alipayMapped: alipay.mapped,
+    })
+    revalidatePath(`/lakala-onboarding/${merchantId}`)
+    return { success: true, wx, alipay }
+  },
+)
+
+// 字面量枚举校验数组（与 db/schema/enums.ts 的 lakalaRealnameStatusEnum 严格同步）
+const lakalaRealnameStatusEnumValues = ['not_submitted', 'submitted', 'success', 'fail', 'modifying'] as const
+
+// ===========================================================================
 // 9. 取消 / 删除
 // ===========================================================================
 
