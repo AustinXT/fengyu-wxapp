@@ -414,6 +414,13 @@
       "when": 1780048606973,
       "tag": "0058_eager_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1780073387551,
+      "tag": "0059_aromatic_loki",
+      "breakpoints": true
     }
   ]
 }
