@@ -1357,6 +1357,7 @@ export const deleteLakalaMerchant = withPermission(
  *
  * 仅供 server-side import；不通过 withPermission 包装（调用方 updateStore 已经 require store:update）。
  */
+// eslint-disable-next-line no-restricted-syntax -- 内部 helper（_internal* 命名），调用方 updateStore 已 require store:update，故 ESLint 强制 HOF 规则豁免
 export async function _internalApplyLakalaLink(
   tx: any,
   storeId: string,
