@@ -141,28 +141,23 @@ Page({
     });
   },
 
-  onCloseOrder() {
+  async onCloseOrder() {
+    // 滑动确认组件触发：滑到右端 ≥80% 才发事件，物理动作即承诺，无需额外 modal
     if ((!this.data.isManager && !this.data.isCreator) || this.data.submitting) return;
-    wx.showModal({
-      title: '关闭订单',
-      content: '确认关闭该订单？关闭后不可恢复。',
-      confirmText: '确认关闭',
-      confirmColor: '#D94040',
-      success: async (res) => {
-        if (!res.confirm) return;
-        this.setData({ submitting: true });
-        try {
-          await callStaffApi('order.close', { saleOrderId: this.data.saleOrderId });
-          wx.showToast({ title: '订单已关闭', icon: 'success' });
-          this.stopPolling();
-          setTimeout(() => wx.navigateBack(), 1500);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : '操作失败';
-          wx.showToast({ title: msg, icon: 'none' });
-        } finally {
-          this.setData({ submitting: false });
-        }
-      },
-    });
+    this.setData({ submitting: true });
+    try {
+      await callStaffApi('order.close', { saleOrderId: this.data.saleOrderId });
+      wx.showToast({ title: '订单已作废', icon: 'success' });
+      this.stopPolling();
+      setTimeout(() => wx.navigateBack(), 1500);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
+      // 失败时重置滑块允许重试
+      const slider = this.selectComponent('#closeSlider') as { reset?: () => void } | null;
+      slider?.reset?.();
+    } finally {
+      this.setData({ submitting: false });
+    }
   },
 });

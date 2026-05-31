@@ -105,14 +105,19 @@
         disabled="{{submitting}}"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
-      <van-button
+      <view
         wx:if="{{(isManager || isCreator) && status !== '已支付' && status !== '已关闭'}}"
-        block plain
-        custom-style="color:#D94040;border-color:#D94040;border-radius:48rpx;margin-top:24rpx;"
-        loading="{{submitting}}"
-        disabled="{{submitting}}"
-        bind:click="onCloseOrder"
-      >关闭订单</van-button>
+        class="close-slider-wrap"
+      >
+        <slide-to-confirm
+          id="closeSlider"
+          label="向右滑动作废订单"
+          confirmed-label="作废中…"
+          accent-color="#D94040"
+          disabled="{{submitting}}"
+          bind:confirm="onCloseOrder"
+        />
+      </view>
     </view>
   </block>
 

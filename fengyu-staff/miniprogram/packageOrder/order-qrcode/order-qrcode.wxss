@@ -109,3 +109,7 @@
   width: 100%;
   padding: 40rpx 32rpx 0;
 }
+
+.close-slider-wrap {
+  margin-top: 32rpx;
+}

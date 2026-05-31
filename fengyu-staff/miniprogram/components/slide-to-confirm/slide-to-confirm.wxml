@@ -1,0 +1,21 @@
+<!-- slide-to-confirm: 滑动到右端触发 confirm 事件，防误点 -->
+<view class="stc-wrap {{disabled ? 'stc-wrap--disabled' : ''}}">
+  <movable-area class="stc-area">
+    <view class="stc-track-label">{{confirmed ? confirmedLabel : label}}</view>
+    <movable-view
+      class="stc-thumb"
+      direction="horizontal"
+      x="{{thumbX}}"
+      damping="40"
+      friction="6"
+      disabled="{{disabled || confirmed}}"
+      bindchange="onMove"
+      bindtouchend="onRelease"
+      animation="{{!dragging}}"
+    >
+      <view class="stc-thumb-inner" style="background:{{accentColor}};">
+        <text class="stc-thumb-arrow">{{confirmed ? '✓' : '›'}}</text>
+      </view>
+    </movable-view>
+  </movable-area>
+</view>
