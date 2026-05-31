@@ -2,6 +2,8 @@ import { Suspense } from 'react'
 import { getOrdersPaginated } from '@/actions/orders'
 import { parseOrderFilters } from '@/lib/list-filters'
 import { getStores } from '@/actions/stores'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import OrdersPageClient from './_components/orders-page'
 
 export const dynamic = 'force-dynamic'
@@ -12,6 +14,8 @@ export default async function Page({
   searchParams: Promise<Record<string, string | undefined>>
 }) {
   const params = await searchParams
+  const session = await getSession()
+  const canCreateOrder = !!(session && hasPermission(session, 'sale_order:create'))
 
   const [{ data: orders, total }, stores] = await Promise.all([
     getOrdersPaginated({
@@ -24,7 +28,7 @@ export default async function Page({
 
   return (
     <Suspense>
-      <OrdersPageClient orders={orders} stores={stores} total={total} />
+      <OrdersPageClient orders={orders} stores={stores} total={total} canCreateOrder={canCreateOrder} />
     </Suspense>
   )
 }
