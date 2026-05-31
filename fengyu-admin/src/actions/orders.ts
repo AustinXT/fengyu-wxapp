@@ -1131,7 +1131,11 @@ export const createOrder = withPermission(
   // 应在 sale_items 写成 N 行（每行 quantity=1, session_count=sku.session_count）。
   // 家居产品（productType='家居产品'）继续合行（quantity 累加）。
   // 与 staff order.js 同步（见 cross-end-sql-snapshot 守护）。
-  // saleAmount / received 按 N 等分，最后一行吸收尾差，确保 sum 守恒。
+  //
+  // saleAmount 按 N 等分，最后一行吸收尾差（sum 守恒）。
+  // received **改贪心填满**（2026-06-01 bundle-paid-sessions fix）：前几行先吃满 cap=perSaleAmount，
+  // 最后一行收剩余。避免均分稀释导致 paid_sessions=0（净化美人付 800 应解锁 1 次而非 0 次）。
+  // 与 staff order.js B2 拆行算法字节同义。
   data = {
     ...data,
     items: data.items.flatMap((item) => {
@@ -1146,29 +1150,31 @@ export const createOrder = withPermission(
         ? Number(item.received)
         : totalSale
       const perSaleCents = Math.round((totalSale * 100) / n)
-      const perReceivedCents = Math.round((totalReceived * 100) / n)
       const totalSaleCents = Math.round(totalSale * 100)
-      const totalReceivedCents = Math.round(totalReceived * 100)
+      let remainingReceivedCents = item.received !== undefined ? Math.round(totalReceived * 100) : null
       const rows: typeof item[] = []
       for (let i = 0; i < n; i++) {
         const isLast = i === n - 1
         const saleCents = isLast
           ? totalSaleCents - perSaleCents * (n - 1)
           : perSaleCents
-        const receivedCents = isLast
-          ? totalReceivedCents - perReceivedCents * (n - 1)
-          : perReceivedCents
         const saleStr = (saleCents / 100).toFixed(2)
-        const receivedStr = (receivedCents / 100).toFixed(2)
+        // received 贪心填满：本行最多吃 cap = saleCents，剩余进下一行
+        let receivedStr: string | undefined = undefined
+        if (remainingReceivedCents !== null) {
+          const takenCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
+          remainingReceivedCents -= takenCents
+          receivedStr = (takenCents / 100).toFixed(2)
+        }
         rows.push({
           ...item,
           quantity: 1,
-          // unitRealPrice 重写为本行实付金额（每行 quantity=1）
-          unitRealPrice: receivedStr,
+          // unitRealPrice 重写为本行 per-card 单价（保持入参 unitRealPrice 不变；不再以 received 覆盖）
+          unitRealPrice: item.unitRealPrice,
           // saleAmount / received 仅在原入参显式提供时保留分行覆盖；
           // 否则保留原入参的 undefined（让后续按 unitRealPrice × 1 计算）
           saleAmount: item.saleAmount !== undefined ? saleStr : undefined,
-          received: item.received !== undefined ? receivedStr : undefined,
+          received: receivedStr,
         })
       }
       return rows
@@ -1568,9 +1574,32 @@ export const createOrder = withPermission(
         })
       }
 
-      // paid_sessions 初始写入（ticket 2026-05-19）：admin createOrder 通常 received=0 → paid_sessions=0；
-      // 全额抵扣时 received=prepaid → paid_sessions 按已结清推进。
-      await recalcPaidSessionsForOrder(tx, id)
+      // paid_sessions 初始写入（ticket 2026-05-19 + 2026-06-01 bundle-paid-sessions fix）：
+      // - 全额储值卡抵扣：sale_orders.received = prepaid_card_amount，需 STEP 1 摊到行让 paid_sessions = session_count
+      // - 其他场景：admin createOrder 通常 received=0 → paid_sessions=0；带 received 的场景则按行直接 floor，
+      //   绕开 STEP 1 的全订单 cap 比例摊（避免稀释 sku 内贪心；跨端与 staff order.js 同义）
+      if (isFullCardCoverage) {
+        await recalcPaidSessionsForOrder(tx, id)
+      } else {
+        // 复用 STEP 2 公式（lib/paid-sessions FLOOR(received × session / sale_amount)）按行 UPDATE
+        const itemRows = await tx.execute(sql`
+          SELECT sale_item_id, session_count, sale_amount, received
+          FROM sale_items
+          WHERE sale_order_id = ${id} AND session_count IS NOT NULL
+        `)
+        for (const r of (itemRows as unknown as Array<{ sale_item_id: string; session_count: number; sale_amount: string; received: string }>)) {
+          const sa = Number(r.sale_amount) || 0
+          const rc = Number(r.received) || 0
+          const sc = Number(r.session_count)
+          const ps = sa > 0
+            ? Math.max(0, Math.min(sc, Math.floor(rc * sc / sa)))
+            : sc
+          await tx.execute(sql`
+            UPDATE sale_items SET paid_sessions = ${ps}, updated_at = NOW()
+            WHERE sale_item_id = ${r.sale_item_id}
+          `)
+        }
+      }
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
       if (isFullCardCoverage) {

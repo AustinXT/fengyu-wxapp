@@ -476,8 +476,10 @@ async function todoList(ctx) {
 
   // 店长专属
   if (isManager) {
+    // 「待支付」语义包含「部分支付」（未结清未关闭都算待店长确认收款；
+    //  覆盖部分付场景，店长能在首页待办看到欠款单）
     const offlineRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND payment_method = '线下'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status IN ('待支付', '部分支付') AND payment_method = '线下'`,
       [storeId]
     )
     const createRows = await pg.query(

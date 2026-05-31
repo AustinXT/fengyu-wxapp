@@ -1382,6 +1382,15 @@ Page({
           spuName: c.spuName,
           specName: c.specName,
           quantity: c.quantity,
+          // 价格三件套（套餐场景下 c.price=bundle_price、c.listPrice=sku 标价）：
+          //   unitPrice     = sku 标价 per-card（落 sale_items.unit_price 标价快照）
+          //   unitRealPrice = 成交价 per-card（落 unit_real_price；套餐 = bundle_price）
+          //   saleAmount    = pre-coupon 行小计（= price × quantity，与 c.priceLine 同义；
+          //                   ⚠️ 不是 c.saleAmount 那个已扣券值，避免后端摊券时双扣）
+          // 内部单后端会忽略价格字段强制 sku.price × 50% 重算
+          unitPrice: ((c.listPrice ?? c.price) || 0).toFixed(2),
+          unitRealPrice: (c.price || 0).toFixed(2),
+          saleAmount: c.priceLine,
           // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
           received: parseFloat(c.received) || 0,
         })),

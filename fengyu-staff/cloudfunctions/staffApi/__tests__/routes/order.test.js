@@ -2022,7 +2022,11 @@ describe('order.list', () => {
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('AND o.status')
     expect(sql).toContain('AND o.preferred_employee_id')
-    expect(params).toContain('待支付')
+    // 「待支付」语义合并「部分支付」（与 staff.todoList 同步），实现走 ANY($n::text[])
+    // params 含 ['待支付','部分支付'] 数组，flatten 后应含两个状态
+    const paramsFlat = params.flatMap(p => Array.isArray(p) ? p : [p])
+    expect(paramsFlat).toContain('待支付')
+    expect(paramsFlat).toContain('部分支付')
     expect(params).toContain('emp-beautician-001')
   })
 

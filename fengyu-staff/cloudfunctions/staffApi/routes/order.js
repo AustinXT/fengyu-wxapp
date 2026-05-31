@@ -20,7 +20,7 @@ const { getMemberThreshold } = require('../utils/config')
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
-const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
+const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
 const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
@@ -359,26 +359,53 @@ async function create(ctx) {
       }
       const sku = skuRows[0]
 
-      let unitPrice
       let sessionCount = null
       let salesCategory = sku.sales_category || null
-      // 「价格」= 会员价优先（specialPrice），否则 price（两端统一）
-      const basePrice = Number(sku.special_price || sku.price)
+      // sku 标价（会员价优先）：作为防御性上界 + sale_items.unit_price 标价快照基线
+      const skuListPrice = Number(sku.special_price || sku.price)
 
+      // 入参价格三件套（与 admin createOrder 对齐）；缺省 fallback 到 sku 标价（向后兼容旧前端）
+      let inputListUnit, inputRealUnit, useFrontendPrice
       if (saleOrderType === '内部单') {
-        // 内部单（员工消费）统一半价
-        unitPrice = Math.round(basePrice * 50) / 100
+        // ⚠️ 内部单 ½ 必须服务端权威；忽略前端透传的所有价格字段
+        // 即使前端误传 bundle_price，也以 sku.price × 50% 落库（兼防员工套餐价）
+        inputListUnit = skuListPrice
+        inputRealUnit = Math.round(skuListPrice * 50) / 100
+        useFrontendPrice = false
       } else {
-        unitPrice = basePrice
+        inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : skuListPrice
+        inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : inputListUnit
+        // 防御性上界：unitRealPrice ≤ unitPrice ≤ sku 实际标价（防前端涨价）
+        if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
+            || inputListUnit > skuListPrice + 0.005
+            || inputRealUnit > inputListUnit + 0.005
+            || inputRealUnit < 0) {
+          throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
+        }
+        useFrontendPrice = true
       }
+      const unitPrice = inputRealUnit  // 进入后续 priceLine / 摊券逻辑（成交单价）
+
       sessionCount = sku.session_count != null ? Number(sku.session_count) : null
 
       const quantity = item.quantity || 1
       // sale_items.session_count / remaining_sessions 是"次"维度（service.complete 按次扣减），
       // 应 = sku.session_count × quantity；之前漏乘 quantity 导致剩余次数显示 1/1 而非 N/N
       if (sessionCount != null) sessionCount = sessionCount * quantity
-      // priceLine = 价格 × 数量（订单级券摊算的基准），暂存为 saleAmount；摊券后再覆盖
-      const priceLine = Math.round(unitPrice * quantity * 100) / 100
+      // priceLine = 行 pre-coupon 小计（订单级券摊算的基准），暂存为 saleAmount；摊券后再覆盖
+      // 销售单：优先采纳前端 saleAmount（已是 pre-coupon = price × quantity）；缺省 fallback 后端算
+      // 内部单：忽略前端，按后端 ½ 单价 × quantity
+      const priceLine = (useFrontendPrice && item.saleAmount != null)
+        ? Math.round(Number(item.saleAmount) * 100) / 100
+        : Math.round(unitPrice * quantity * 100) / 100
+      if (!Number.isFinite(priceLine) || priceLine < 0) {
+        throw new Error('INVALID_PARAMS: 行小计金额非法')
+      }
+      // 防御：priceLine 不应超过 inputListUnit × quantity（防前端 saleAmount 反向超额）
+      const listLineMax = Math.round(inputListUnit * quantity * 100) / 100
+      if (priceLine > listLineMax + 0.005) {
+        throw new Error('INVALID_PARAMS: 行小计金额不能高于标价小计')
+      }
 
       // 前端传入行实付（默认 = 应付金额，店长可向下调；这里先记录原始值，摊券后再做最终裁剪）
       const inputReceived = item.received !== undefined && item.received !== null
@@ -401,6 +428,8 @@ async function create(ctx) {
         sessionCount,
         remainingSessions: sessionCount,
         unitPrice,
+        // listUnitPrice：sku 标价（per-card），用于 sale_items.unit_price 标价快照派生
+        listUnitPrice: inputListUnit,
         quantity,
         // unitRealPrice / saleAmount / received 由后续摊券步骤一并计算（saleAmount 初值=priceLine）
         unitRealPrice: unitPrice,
@@ -422,7 +451,9 @@ async function create(ctx) {
   // 业务语义：每张卡（无论 sku.session_count 是 1 还是 N）都是独立可转换/核销的实体，
   // 应在 sale_items 写成 N 行（每行 quantity=1, session_count=sku.session_count）。
   // 家居产品（productType='家居产品'）继续合行（quantity 累加）。
-  // 折扣/服务费/sale_amount/received 按 N 等分，最后一行吸收尾差，确保 sum 守恒。
+  // 折扣/服务费/sale_amount 按 N 等分，最后一行吸收尾差，确保 sum 守恒。
+  // inputReceived **不均分**：保留原 SKU group 总额，由后续裁剪步骤按 sku 内贪心填满分配，
+  // 避免均分稀释导致 paid_sessions 误算为 0（净化美人付 800 应该解锁 1 次而非 0 次）。
   const itemDataList = []
   for (const d of rawItemDataList) {
     if (d.productType === '疗程卡' && d.quantity > 1) {
@@ -431,10 +462,6 @@ async function create(ctx) {
       const perSaleAmount = Math.round((d.saleAmount * 100) / n) / 100
       const perPriceLine = Math.round((d.priceLine * 100) / n) / 100
       const perServiceFee = Math.round((d.serviceFee * 100) / n) / 100
-      // 入参 received（行实付）按 N 等分，最后一行吸收尾差；缺省时各行也 null
-      const perInputReceived = d.inputReceived !== null && d.inputReceived !== undefined
-        ? Math.round((d.inputReceived * 100) / n) / 100
-        : null
       for (let i = 0; i < n; i++) {
         const isLast = i === n - 1
         const saleAmountRow = isLast
@@ -446,9 +473,6 @@ async function create(ctx) {
         const serviceFeeRow = isLast
           ? Math.round((d.serviceFee - perServiceFee * (n - 1)) * 100) / 100
           : perServiceFee
-        const inputReceivedRow = perInputReceived !== null
-          ? (isLast ? Math.round((d.inputReceived - perInputReceived * (n - 1)) * 100) / 100 : perInputReceived)
-          : null
         itemDataList.push({
           ...d,
           quantity: 1,
@@ -456,10 +480,11 @@ async function create(ctx) {
           remainingSessions: perSession,
           priceLine: priceLineRow,
           saleAmount: saleAmountRow,
-          // received / unitRealPrice 由后续摊券+inputReceived 裁剪步骤计算
+          // received / unitRealPrice 由后续摊券+裁剪步骤计算
           received: saleAmountRow,
           unitRealPrice: saleAmountRow,
-          inputReceived: inputReceivedRow,
+          // inputReceived 保留原 group 总额（所有拆出来的行都填同值；裁剪时 group-wise 贪心）
+          inputReceived: d.inputReceived,
           serviceFee: serviceFeeRow,
         })
       }
@@ -591,22 +616,47 @@ async function create(ctx) {
     }
   }
 
-  // 行 received 最终裁剪：默认 = saleAmount（应付小计），inputReceived 非空时取 min(inputReceived, saleAmount)
+  // 行 received 最终裁剪：按 sku_id 分组贪心填满（B2 拆行后同 SKU 多行共享同一 inputReceived 总额）
+  // - 单行（家居/B2 未拆）：直接 min(inputReceived, saleAmount)
+  // - 多行（B2 拆行的同 SKU group）：前几行先吃满 cap=saleAmount，最后行收剩余
+  //   这样净化美人付 800、sale_amount=650/行 → 行 received = 650/150/0
+  //   → paid_sessions = 1/0/0（净化美人 SKU 解锁 1 次）
+  //   而非均分 266.67/行 → paid_sessions = 0 全部
+  const skuGroups = new Map()  // sku_id → [d, d, d]（保持插入顺序）
   for (const d of itemDataList) {
-    if (d.inputReceived !== null && d.inputReceived !== undefined) {
-      d.received = Math.min(d.inputReceived, d.saleAmount)
-      d.received = Math.round(d.received * 100) / 100
+    if (!skuGroups.has(d.skuId)) skuGroups.set(d.skuId, [])
+    skuGroups.get(d.skuId).push(d)
+  }
+  for (const group of skuGroups.values()) {
+    // group 内所有行的 inputReceived 都是同一原 SKU 总额（B2 拆行时复制；非拆行场景只有 1 行）
+    const groupInputReceived = group[0].inputReceived
+    if (groupInputReceived === null || groupInputReceived === undefined) {
+      // 未传 received：每行 = saleAmount（满付）
+      for (const d of group) d.received = d.saleAmount
     } else {
-      d.received = d.saleAmount
+      let remainingCents = Math.round(Number(groupInputReceived) * 100)
+      for (const d of group) {
+        const capCents = Math.round(Number(d.saleAmount || 0) * 100)
+        const takenCents = Math.max(0, Math.min(remainingCents, capCents))
+        d.received = Math.round(takenCents) / 100
+        remainingCents -= takenCents
+      }
+      // 若仍有剩余（inputReceived > Σ saleAmount，理论上已被 L597 priceLine 上界校验阻止），加到末行
+      if (remainingCents > 0 && group.length > 0) {
+        const last = group[group.length - 1]
+        last.received = Math.round((last.received * 100 + remainingCents)) / 100
+      }
     }
   }
 
   // per-session 派生（sale_amount 为权威行总额）：
   //   unit_real_price = 卡? round(sale_amount/session_count) : round(sale_amount/quantity)（非卡 per-unit 退化）
-  //   unit_price      = 卡? round(标价行总额/session_count) : per-unit 标价；标价行总额 = (原 per-card unit_price) × quantity
+  //   unit_price      = 卡? round(标价行总额/session_count) : per-unit 标价；
+  //                      标价行总额 = (sku 标价 listUnitPrice) × quantity（不受成交价/套餐价影响，保留"标价快照"语义）
   for (const d of itemDataList) {
     const denom = (d.sessionCount != null && d.sessionCount > 0) ? d.sessionCount : (d.quantity || 1)
-    const listTotalRow = Math.round(Number(d.unitPrice || 0) * (d.quantity || 1) * 100) / 100
+    const listBase = Number(d.listUnitPrice != null ? d.listUnitPrice : d.unitPrice || 0)
+    const listTotalRow = Math.round(listBase * (d.quantity || 1) * 100) / 100
     d.unitRealPrice = denom > 0 ? Math.round((Number(d.saleAmount || 0) / denom) * 100) / 100 : Number(d.saleAmount || 0)
     d.unitPrice = denom > 0 ? Math.round((listTotalRow / denom) * 100) / 100 : listTotalRow
   }
@@ -815,6 +865,8 @@ async function create(ctx) {
     for (let i = 0; i < itemDataList.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
+      // 暂存 saleItemId 到行数据，供后续按行直写 paid_sessions 引用
+      d.saleItemId = saleItemId
 
       // 家居产品无 session_count
       const sc = d.productType === '家居产品' ? null : d.sessionCount
@@ -860,9 +912,28 @@ async function create(ctx) {
       })
     }
 
-    // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
-    // 按行级 floor 计算；部分支付订单 paid_sessions < session_count，限定后续 service.create 上限。
-    await recalcPaidSessionsForOrder(client, saleOrderId)
+    // paid_sessions 初始写入（ticket 2026-05-19 + bundle-paid-sessions fix）：
+    // - 全额储值卡抵扣：sale_orders.received = prepaid_card_amount，需 STEP 1 把它摊到行让 paid_sessions = session_count
+    // - 销售单/部分付现金：sale_items.received 已在 sku 内贪心阶段写入正确值，直接按行 floor，
+    //   绕开 STEP 1 的全订单 cap 比例摊（否则会把净化美人 650/150/0 稀释成 506.25/506.25/506.25 → 全 0）
+    if (isFullCardCoverage) {
+      await recalcPaidSessionsForOrder(client, saleOrderId)
+    } else {
+      for (const d of itemDataList) {
+        if (d.sessionCount == null) continue  // 家居等非次数卡跳过
+        const ps = computePaidSessionsForItem({
+          itemReceived: d.received,
+          itemSaleAmount: d.saleAmount,
+          itemSessionCount: d.sessionCount,
+          orderTotal: totalAmount,
+          orderRefunded: 0,
+        })
+        await client.query(
+          `UPDATE sale_items SET paid_sessions = $2, updated_at = NOW() WHERE sale_item_id = $1`,
+          [d.saleItemId, ps]
+        )
+      }
+    }
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
     if (isFullCardCoverage) {
@@ -1431,8 +1502,14 @@ async function list(ctx) {
   let whereExtra = ''
 
   if (status) {
-    params.push(status)
-    whereExtra += ` AND o.status = $${params.length}`
+    // 「待支付」语义合并「部分支付」（与 staff.todoList 同步：未结清都算待店长收款）
+    if (status === '待支付') {
+      params.push(['待支付', '部分支付'])
+      whereExtra += ` AND o.status = ANY($${params.length}::text[])`
+    } else {
+      params.push(status)
+      whereExtra += ` AND o.status = $${params.length}`
+    }
   }
 
   // 美容师只能看到指定自己的订单
