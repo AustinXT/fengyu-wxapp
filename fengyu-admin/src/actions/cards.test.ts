@@ -48,6 +48,27 @@ vi.mock('@db/user', () => ({
     name: 'name',
     phone: 'phone',
   },
+  staffWechatUsers: {
+    employeeId: 'employee_id',
+    name: 'name',
+  },
+}))
+
+vi.mock('@db/service', () => ({
+  serviceItems: {
+    serviceItemId: 'service_item_id',
+    serviceOrderId: 'service_order_id',
+    saleItemId: 'sale_item_id',
+    sessionUsed: 'session_used',
+    unitRealPrice: 'unit_real_price',
+    employeeId: 'employee_id',
+    createdAt: 'created_at',
+  },
+  serviceOrders: {
+    serviceOrderId: 'service_order_id',
+    status: 'status',
+    serviceDate: 'service_date',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -72,15 +93,16 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAnyPermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
   isAdminScope: vi.fn(() => false),
   isInScope: vi.fn(),
 }))
 
-import { getCardsPaginated, getCustomerHeldCards } from './cards'
+import { getCardsPaginated, getCustomerHeldCards, getCardById, getCardTransactions } from './cards'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope } from '@/lib/permissions'
+import { isInScope, scopeCondition } from '@/lib/permissions'
 import { eq, gte, ilike, isNotNull, isNull, inArray } from 'drizzle-orm'
 
 // ============================================================================
@@ -428,5 +450,183 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(row.remainingSessions).toBe(0)
     expect(row.remainingQty).toBeNull()
     expect(row.deductibleAmount).toBe('0.00')
+  })
+})
+
+// ============================================================================
+// getCardById / getCardTransactions tests（卡详情页 PR）
+// ============================================================================
+
+const mockCardDetailSession = {
+  employeeId: 'MGR-001',
+  roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
+  permissions: {
+    actions: ['sale_item:list'],
+    scopeStoreIds: ['store-1'],
+  },
+}
+
+const mockCardDetailRow = {
+  saleItemId: 'SI-001',
+  saleOrderId: 'FY-XSD-WX-2604100001',
+  productName: '蜜语水润嫩肤护理',
+  skuSpecName: '蜜语水润嫩肤护理 10次卡',
+  sessionCount: 10,
+  remainingSessions: 7,
+  paidSessions: 10,
+  unitPrice: '500.00',
+  unitRealPrice: '400.00',
+  saleAmount: '4000.00',
+  received: '4000.00',
+  quantity: 1,
+  expireDate: '2026-12-31',
+  itemDirection: '购买',
+  productType: '疗程卡',
+  storeId: 'store-1',
+  storeName: '南昌旗舰店',
+  marketName: '南昌市场',
+  clientUserId: 'FYGK-001',
+  clientName: '李女士',
+  clientPhone: '13812345678',
+  paidAt: new Date('2026-04-01T10:00:00Z'),
+  orderCreatedAt: new Date('2026-04-01T09:55:00Z'),
+  orderStatus: '已支付',
+}
+
+/** mock select 单查链：.from.leftJoin*.innerJoin?.where.limit/orderBy → Promise */
+function mockSelectChain(rows: any[]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.orderBy = vi.fn().mockResolvedValue(rows)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
+describe('getCardById — 卡详情', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockCardDetailSession)
+  })
+
+  it('命中：返回完整 CardDetail，timestamp 字段转 ISO 字符串', async () => {
+    mockSelectChain([mockCardDetailRow])
+
+    const result = await getCardById('SI-001')
+
+    expect(result).not.toBeNull()
+    expect(result!.saleItemId).toBe('SI-001')
+    expect(result!.saleOrderId).toBe('FY-XSD-WX-2604100001')
+    expect(result!.productName).toBe('蜜语水润嫩肤护理')
+    expect(result!.sessionCount).toBe(10)
+    expect(result!.remainingSessions).toBe(7)
+    expect(result!.paidSessions).toBe(10)
+    expect(result!.productType).toBe('疗程卡')
+    expect(result!.itemDirection).toBe('购买')
+    expect(result!.storeName).toBe('南昌旗舰店')
+    expect(result!.marketName).toBe('南昌市场')
+    expect(result!.clientName).toBe('李女士')
+    expect(result!.clientPhone).toBe('13812345678')
+    expect(result!.paidAt).toBe('2026-04-01T10:00:00.000Z')
+    expect(result!.orderCreatedAt).toBe('2026-04-01T09:55:00.000Z')
+    expect(result!.orderStatus).toBe('已支付')
+    expect(result!.expireDate).toBe('2026-12-31')
+    // 强制 item_direction='购买'
+    expect(eq).toHaveBeenCalledWith('item_direction', '购买')
+    // saleItemId 锁定
+    expect(eq).toHaveBeenCalledWith('sale_item_id', 'SI-001')
+  })
+
+  it('未命中：返回 null（覆盖 saleItemId 不存在 / item_direction 非购买 / 跨门店 scope 失败三种）', async () => {
+    mockSelectChain([])
+
+    const result = await getCardById('SI-NOT-EXIST')
+
+    expect(result).toBeNull()
+  })
+
+  it('saleItemId 为空字符串 → 直接返回 null，不查 DB', async () => {
+    const result = await getCardById('')
+
+    expect(result).toBeNull()
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('非 admin 角色：scopeCondition 被嵌入 WHERE 做门店隔离', async () => {
+    mockSelectChain([mockCardDetailRow])
+
+    await getCardById('SI-001')
+
+    expect(scopeCondition).toHaveBeenCalledWith(mockCardDetailSession, 'store_id')
+  })
+
+  it('paidAt / orderCreatedAt 为 null 时不爆，返回 null', async () => {
+    mockSelectChain([{
+      ...mockCardDetailRow,
+      paidAt: null,
+      orderCreatedAt: null,
+    }])
+
+    const result = await getCardById('SI-001')
+
+    expect(result!.paidAt).toBeNull()
+    expect(result!.orderCreatedAt).toBeNull()
+  })
+})
+
+describe('getCardTransactions — 划卡明细', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockCardDetailSession)
+  })
+
+  it('返回划卡记录数组，按 service_date DESC 排序', async () => {
+    mockSelectChain([
+      {
+        serviceItemId: 'SVI-001-01',
+        serviceOrderId: 'FY-FW-2604200001',
+        serviceDate: '2026-04-20',
+        serviceOrderStatus: '已完成',
+        sessionUsed: 1,
+        unitRealPriceSnapshot: '400.00',
+        employeeId: 'EMP-001',
+        employeeName: '王美容师',
+      },
+      {
+        serviceItemId: 'SVI-002-01',
+        serviceOrderId: 'FY-FW-2604150002',
+        serviceDate: '2026-04-15',
+        serviceOrderStatus: '已完成',
+        sessionUsed: 1,
+        unitRealPriceSnapshot: '400.00',
+        employeeId: 'EMP-002',
+        employeeName: '张美容师',
+      },
+    ])
+
+    const rows = await getCardTransactions('SI-001')
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0].serviceOrderId).toBe('FY-FW-2604200001')
+    expect(rows[0].sessionUsed).toBe(1)
+    expect(rows[0].employeeName).toBe('王美容师')
+    expect(rows[1].serviceOrderId).toBe('FY-FW-2604150002')
+  })
+
+  it('空结果：尚未划卡 → 返回空数组', async () => {
+    mockSelectChain([])
+
+    const rows = await getCardTransactions('SI-001')
+
+    expect(rows).toEqual([])
+  })
+
+  it('saleItemId 为空 → 直接返回空数组，不查 DB', async () => {
+    const rows = await getCardTransactions('')
+
+    expect(rows).toEqual([])
+    expect(db.select).not.toHaveBeenCalled()
   })
 })

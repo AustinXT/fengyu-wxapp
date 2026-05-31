@@ -114,7 +114,18 @@ export default function ServiceDetailPageClient({
                     : "-"
                   return (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{item.productName || "—"}</td>
+                    <td className="px-4 py-3 font-medium">
+                      {item.saleItemId ? (
+                        <Link
+                          href={`/cards/${item.saleItemId}`}
+                          className="text-[var(--primary)] hover:underline"
+                        >
+                          {item.productName || "—"}
+                        </Link>
+                      ) : (
+                        item.productName || "—"
+                      )}
+                    </td>
                     <td className="px-4 py-3">{item.skuName || "—"}</td>
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice
