@@ -43,6 +43,79 @@
   color: var(--color-text-primary);
 }
 
+/* 门店信息卡 */
+.info-card {
+  margin: 24rpx 32rpx 0;
+  padding: 8rpx 28rpx;
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+}
+
+/* 服务顾客 + 营业时间 顶部行 */
+.info-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12rpx 32rpx;
+  padding: 24rpx 4rpx;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.info-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.info-meta-text {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+
+/* 地址 / 电话 可操作行 */
+.info-line {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 24rpx 4rpx;
+}
+
+.info-line + .info-line {
+  border-top: 1rpx solid var(--color-border);
+}
+
+.info-line-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+
+.info-line-label {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.info-line-value {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.info-action {
+  flex-shrink: 0;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  background: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* 门店公告 */
 .announcement {
   margin: 24rpx 32rpx 0;

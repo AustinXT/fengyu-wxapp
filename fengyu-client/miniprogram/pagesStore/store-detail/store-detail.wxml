@@ -45,18 +45,44 @@
       <text class="announcement-body">{{store.announcement}}</text>
     </view>
 
-    <!-- 门店信息 -->
-    <van-cell-group inset title="门店信息">
-      <van-cell title="所属市场" value="{{store.market_name || '—'}}" />
-      <van-cell title="开业时间" value="{{store.open_date || '—'}}" />
-      <van-cell title="可用床位" value="{{store.available_beds || '—'}}" />
-      <van-cell title="在职员工" value="{{store.staff_count ? store.staff_count + '人' : '—'}}" />
-      <van-cell title="服务顾客" value="{{store.customer_count ? store.customer_count + '人' : '—'}}" />
-      <van-cell wx:if="{{store.business_hours}}" title="营业时间" value="{{store.business_hours}}" />
-      <van-cell wx:if="{{store.phone}}" title="联系电话" value="{{store.phone}}" is-link bindtap="onCallPhone" />
-      <van-cell wx:if="{{store.fullAddress}}" title="地址" label="{{store.fullAddress}}" is-link bindtap="onOpenMap" />
-      <van-cell wx:if="{{store.parking_info}}" title="停车信息" value="{{store.parking_info}}" />
-    </van-cell-group>
+    <!-- 门店信息卡 -->
+    <view class="info-card">
+      <!-- 服务顾客 + 营业时间 顶部行 -->
+      <view wx:if="{{store.customer_count || store.business_hours}}" class="info-meta-row">
+        <view wx:if="{{store.customer_count}}" class="info-meta-item">
+          <van-icon name="like" size="32rpx" color="#C0322A" />
+          <text class="info-meta-text">已服务 {{store.customer_count}} 位顾客</text>
+        </view>
+        <view wx:if="{{store.business_hours}}" class="info-meta-item">
+          <van-icon name="clock-o" size="32rpx" color="#999999" />
+          <text class="info-meta-text">{{store.business_hours}}</text>
+        </view>
+      </view>
+
+      <!-- 地址 -->
+      <view wx:if="{{store.fullAddress}}" class="info-line" bindtap="onOpenMap">
+        <van-icon name="location-o" size="36rpx" color="#C0322A" />
+        <view class="info-line-content">
+          <text class="info-line-label">地址</text>
+          <text class="info-line-value">{{store.fullAddress}}</text>
+        </view>
+        <view class="info-action">
+          <van-icon name="guide-o" size="40rpx" color="#FFFFFF" />
+        </view>
+      </view>
+
+      <!-- 联系电话 -->
+      <view wx:if="{{store.phone}}" class="info-line" bindtap="onCallPhone">
+        <van-icon name="phone-o" size="36rpx" color="#C0322A" />
+        <view class="info-line-content">
+          <text class="info-line-label">联系电话</text>
+          <text class="info-line-value">{{store.phone}}</text>
+        </view>
+        <view class="info-action">
+          <van-icon name="phone" size="40rpx" color="#FFFFFF" />
+        </view>
+      </view>
+    </view>
 
     <!-- 门店简介 -->
     <van-cell-group wx:if="{{store.description}}" inset title="门店简介">
