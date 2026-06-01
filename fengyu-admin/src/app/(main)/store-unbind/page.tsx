@@ -1,9 +1,12 @@
 import { getUnbindRequests } from '@/actions/store-unbind'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import StoreUnbindPage from './_components/store-unbind-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const requests = await getUnbindRequests()
-  return <StoreUnbindPage requests={requests} />
+  const [requests, session] = await Promise.all([getUnbindRequests(), getSession()])
+  const canDelete = session ? hasPermission(session, 'store_unbind:delete') : false
+  return <StoreUnbindPage requests={requests} canDelete={canDelete} />
 }

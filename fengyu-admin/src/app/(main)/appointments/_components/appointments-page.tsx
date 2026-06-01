@@ -10,7 +10,8 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Pagination } from "@/components/ui/pagination"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
-import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
+import { confirmAppointment, checkinAppointment, cancelAppointment, deleteAppointment } from "@/actions/appointments"
+import { RowDeleteMenu } from "@/components/delete-action"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { Appointment, Store } from "@/lib/types"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
@@ -43,12 +44,15 @@ export default function AppointmentsPageClient({
   total,
   pendingCount,
   confirmedCount,
+  canDelete = false,
 }: {
   appointments: Appointment[]
   stores: Store[]
   total: number
   pendingCount: number
   confirmedCount: number
+  /** 是否展示行内删除入口（仅系统管理员 appointment:delete） */
+  canDelete?: boolean
 }) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
@@ -189,6 +193,13 @@ export default function AppointmentsPageClient({
                             <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
                             <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
                           </>
+                        )}
+                        {canDelete && (appt.status === "已取消" || appt.status === "已完成" || appt.status === "已关闭") && (
+                          <RowDeleteMenu
+                            entityLabel="预约"
+                            onConfirm={() => deleteAppointment(appt.appointmentId)}
+                            description={<>确定要删除该预约（{appt.clientName}）吗？此操作不可恢复。</>}
+                          />
                         )}
                       </div>
                     </td>

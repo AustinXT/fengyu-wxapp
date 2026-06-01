@@ -9,6 +9,8 @@ import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { RowDeleteMenu } from "@/components/delete-action"
+import { deleteOperationLog } from "@/actions/logs"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
@@ -243,9 +245,11 @@ function formatDateTime(dt: string | null | undefined) {
 
 interface Props {
   logs: OperationLog[]
+  /** 是否展示行内删除入口（仅系统管理员 operation_log:delete） */
+  canDelete?: boolean
 }
 
-export default function LogsPage({ logs }: Props) {
+export default function LogsPage({ logs, canDelete = false }: Props) {
   const { get, set, setMany } = useUrlFilters()
 
   /** 筛选变更时重置到第 1 页 */
@@ -364,6 +368,7 @@ export default function LogsPage({ logs }: Props) {
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">目标</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">详情</th>
+                  {canDelete && <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -402,10 +407,19 @@ export default function LogsPage({ logs }: Props) {
                           )
                         })()}
                       </td>
+                      {canDelete && (
+                        <td className="px-4 py-3">
+                          <RowDeleteMenu
+                            entityLabel="日志"
+                            onConfirm={() => deleteOperationLog(log.id)}
+                            description={<>确定要删除该条操作日志吗？此操作不可恢复。</>}
+                          />
+                        </td>
+                      )}
                     </tr>
                     {expandedId === log.id && log.detail && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-3 bg-gray-50">
+                        <td colSpan={canDelete ? 6 : 5} className="px-4 py-3 bg-gray-50">
                           <LogDetail detail={log.detail} />
                         </td>
                       </tr>
@@ -414,7 +428,7 @@ export default function LogsPage({ logs }: Props) {
                 ))}
                 {paged.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-[#999999]">
+                    <td colSpan={canDelete ? 6 : 5} className="px-4 py-12 text-center text-[#999999]">
                       {filtered.length === 0 ? "暂无日志数据" : "未找到匹配结果，请调整筛选条件"}
                     </td>
                   </tr>

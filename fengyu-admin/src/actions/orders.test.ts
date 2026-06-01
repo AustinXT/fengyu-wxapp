@@ -181,7 +181,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -3163,5 +3163,125 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
     expectStringAt2Decimals(captured.order.totalAmount)
     // 0.29 * 7 = 2.0299999999999994 → round 2.03，减 0.50 = 1.53
     expectAt2Decimals(Number(captured.order.totalAmount))
+  })
+})
+
+// ── deleteOrder — 物理删除守卫 + 级联 ────────────────────────────────────
+
+describe('deleteOrder — 守卫 + 级联删除', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  /** FIFO 顺序返回 db.select().from().where().limit() 结果 */
+  function enqueueSelect(resultsList: any[][]) {
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      const rows = resultsList[i++] ?? []
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      return chain
+    })
+  }
+  /** FIFO 顺序返回 db.execute() 结果（point/card/downstream 三次） */
+  function enqueueExecute(resultsList: any[][]) {
+    let i = 0
+    ;(db.execute as any).mockImplementation(async () => resultsList[i++] ?? [])
+  }
+  function setupTx(deleteCount: number) {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
+      }
+      return fn(tx)
+    })
+  }
+  const okOrder = { status: '待支付', received: '0', customerName: '甲', totalAmount: '200.00', saleOrderType: '销售单' }
+
+  it('订单不存在 → 拒绝，不进事务', async () => {
+    enqueueSelect([[]])
+    const result = await deleteOrder('FY-404')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('有实收 → 拒绝（财务保护）', async () => {
+    enqueueSelect([[{ ...okOrder, received: '100' }]])
+    const result = await deleteOrder('FY-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实收')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('已支付状态 → 拒绝', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已支付' }]])
+    const result = await deleteOrder('FY-2')
+    expect(result.success).toBe(false)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('存在已支付款项流水 → 拒绝', async () => {
+    enqueueSelect([[okOrder], [{ id: 1 }]]) // order, paidPayment
+    const result = await deleteOrder('FY-3')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('款项流水')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('关联积分流水 → 拒绝', async () => {
+    enqueueSelect([[okOrder], []]) // order, paidPayment(none)
+    enqueueExecute([[{ one: 1 }]]) // ptRef hit
+    const result = await deleteOrder('FY-4')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('积分')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('明细被服务/提货/预约引用 → 拒绝', async () => {
+    enqueueSelect([[okOrder], []])
+    enqueueExecute([[], [], [{ one: 1 }]]) // pt none, ct none, downstream hit
+    const result = await deleteOrder('FY-5')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('服务单')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('被子单引用 → 拒绝', async () => {
+    enqueueSelect([[okOrder], [], [{ id: 'FY-CHILD' }]]) // order, paidPayment, childOrder hit
+    enqueueExecute([[], [], []])
+    const result = await deleteOrder('FY-6')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('单据')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('干净测试单 → 级联删除成功 + 审计', async () => {
+    enqueueSelect([[okOrder], [], []]) // order, paidPayment, childOrder
+    enqueueExecute([[], [], []])
+    setupTx(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteOrder('FY-OK')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'order.delete', 'sale_order', 'FY-OK',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+  })
+
+  it('事务内主单删除 rowCount=0 → 回滚提示', async () => {
+    enqueueSelect([[okOrder], [], []])
+    enqueueExecute([[], [], []])
+    setupTx(0)
+    const result = await deleteOrder('FY-RACE')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已变更')
   })
 })
