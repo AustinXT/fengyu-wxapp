@@ -15,7 +15,7 @@ import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
-import { parseServiceOrderFilters } from '@/lib/list-filters'
+import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -249,6 +249,61 @@ export const exportServiceOrders = withPermission(
       serviceDate: r.service_order.serviceDate,
       createdAt: r.service_order.createdAt.toISOString(),
       itemsSummary: (itemsMap.get(r.service_order.serviceOrderId) ?? []).join('、'),
+    }))
+
+    return { rows, truncated }
+  },
+)
+
+/** 营业额分配「服务提成」导出行（对齐分配列表展示列） */
+export interface ExportAllocationServiceRow {
+  serviceOrderId: string
+  customerName: string | null
+  storeName: string | null
+  employeeName: string | null
+  serviceDate: string | null
+  commissionStatus: string | null
+}
+
+/**
+ * 导出营业额分配「服务提成」（已完成服务单，全部筛选命中）。LIMIT 10000 防 OOM。
+ * 筛选口径与 allocations 页 getServiceOrdersPaginated 一致（状态锁定已完成，allocStatus 走提成状态）。
+ */
+export const exportAllocationServiceOrders = withPermission(
+  'service:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseAllocationServiceFilters(params)
+    const whereClause = and(...buildServiceOrderConditions(session, filters))
+
+    const orderRows = await db
+      .select({
+        service_order: serviceOrders,
+        storeName: stores.storeName,
+        employeeName: staffWechatUsers.name,
+        customerName: clientWechatUsers.name,
+      })
+      .from(serviceOrders)
+      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+      .where(whereClause)
+      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+      .limit(LIMIT + 1)
+
+    const truncated = orderRows.length > LIMIT
+    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+
+    const rows: ExportAllocationServiceRow[] = page.map((r) => ({
+      serviceOrderId: r.service_order.serviceOrderId,
+      customerName: r.customerName,
+      storeName: r.storeName,
+      employeeName: r.employeeName,
+      serviceDate: r.service_order.serviceDate,
+      commissionStatus: r.service_order.commissionStatus,
     }))
 
     return { rows, truncated }

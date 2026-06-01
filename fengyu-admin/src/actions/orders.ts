@@ -22,7 +22,7 @@ import { getMemberThreshold } from '@/lib/member-threshold'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { shanghaiYmd } from '@/lib/datetime'
-import { parseOrderFilters } from '@/lib/list-filters'
+import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -527,6 +527,54 @@ export const exportOrders = withPermission(
       createdAt: r.order.createdAt.toISOString(),
       remark: r.order.remark,
       itemsSummary: (itemsMap.get(r.order.saleOrderId) ?? []).join('、'),
+    }))
+
+    return { rows, truncated }
+  },
+)
+
+/** 营业额分配「销售提成」导出行（对齐分配列表展示列） */
+export interface ExportAllocationOrderRow {
+  saleOrderId: string
+  customerName: string | null
+  storeName: string | null
+  totalAmount: string
+  allocationStatus: string | null
+  paidAt: string | null
+}
+
+/**
+ * 导出营业额分配「销售提成」（已支付订单，全部筛选命中）。LIMIT 10000 防 OOM。
+ * 筛选口径与 allocations 页 getOrdersPaginated 一致（状态锁定已支付，allocStatus 走分配状态）。
+ */
+export const exportAllocationOrders = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseAllocationOrderFilters(params)
+    const whereClause = and(...buildOrderConditions(session, filters))
+
+    const orderRows = await db
+      .select({ order: saleOrders, storeName: stores.storeName })
+      .from(saleOrders)
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .where(whereClause)
+      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .limit(LIMIT + 1)
+
+    const truncated = orderRows.length > LIMIT
+    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+
+    const rows: ExportAllocationOrderRow[] = page.map((r) => ({
+      saleOrderId: r.order.saleOrderId,
+      customerName: r.order.customerName,
+      storeName: r.storeName,
+      totalAmount: r.order.totalAmount,
+      allocationStatus: r.order.allocationStatus,
+      paidAt: r.order.paidAt?.toISOString() ?? null,
     }))
 
     return { rows, truncated }

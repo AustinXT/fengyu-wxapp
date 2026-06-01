@@ -34,6 +34,38 @@ export function parseServiceOrderFilters(params: Record<string, string | undefin
   }
 }
 
+/**
+ * 营业额分配「销售提成」页筛选解析。
+ * 与 orders 列表不同：状态锁定「已支付」，分配状态走 allocStatus URL 参数
+ * （与 page.tsx 的 getOrdersPaginated 入参口径一致，避免列表/导出漂移）。
+ */
+export function parseAllocationOrderFilters(params: Record<string, string | undefined>): OrderFilters {
+  return {
+    status: '已支付',
+    storeId: params.store,
+    dateFrom: params.from,
+    dateTo: params.to,
+    search: params.q,
+    allocationStatus: params.allocStatus,
+  }
+}
+
+/**
+ * 营业额分配「服务提成」页筛选解析。
+ * 状态锁定「已完成」，提成状态走 allocStatus URL 参数
+ * （与 page.tsx 的 getServiceOrdersPaginated 入参口径一致）。
+ */
+export function parseAllocationServiceFilters(params: Record<string, string | undefined>): ServiceOrderFilters {
+  return {
+    status: '已完成',
+    storeId: params.store,
+    dateFrom: params.from,
+    dateTo: params.to,
+    search: params.q,
+    commissionStatus: params.allocStatus,
+  }
+}
+
 export function parseEmployeeFilters(params: Record<string, string | undefined>): EmployeeFilters {
   return {
     marketId: params.market || undefined,
