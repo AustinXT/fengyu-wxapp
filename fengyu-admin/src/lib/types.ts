@@ -58,11 +58,15 @@ export interface Employee {
   avatarUrl: string | null
   birthday: string | null
   skills: string[] | null
+  /** 是否缴纳社保；默认否 */
+  socialInsurance: boolean
   isResigned: boolean
   /** 入职日期（YYYY-MM-DD） */
   hiredAt: string | null
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
+  /** 离职原因（自由文本）；NULL 表示在职或未填 */
+  resignationReason: string | null
   lastLoginAt: string | null
   createdAt: string
   updatedAt: string

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
@@ -18,6 +19,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
+import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
@@ -54,6 +56,13 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     birthday: employee.birthday ?? "",
     hiredAt: employee.hiredAt ?? "",
     skills: employee.skills ?? ([] as string[]),
+    socialInsurance: employee.socialInsurance,
+  })
+
+  // 离职弹窗表单（离职日期 + 离职原因）
+  const [resignForm, setResignForm] = useState({
+    resignedAt: shanghaiToday(),
+    resignationReason: "",
   })
 
   // Inline role editing state
@@ -98,11 +107,25 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       birthday: employee.birthday ?? "",
       hiredAt: employee.hiredAt ?? "",
       skills: employee.skills ?? ([] as string[]),
+      socialInsurance: employee.socialInsurance,
     })
     setIsEditing(false)
   }
 
   async function handleSave() {
+    // 姓名 / 身份证必填校验（与新建表单 + Server Action 一致）
+    if (!form.name.trim()) {
+      toast.error("姓名不能为空")
+      return
+    }
+    if (!form.idCard.trim()) {
+      toast.error("请输入身份证号")
+      return
+    }
+    if (!/^\d{17}[\dXx]$/.test(form.idCard.trim())) {
+      toast.error("身份证号格式不正确")
+      return
+    }
     setSaving(true)
     try {
       const result = await updateEmployee(employee.employeeId, {
@@ -117,6 +140,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
+        socialInsurance: form.socialInsurance,
       }, employee.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -230,7 +254,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
           {employee.isResigned ? "已离职" : "在职"}
         </Badge>
         {!employee.isResigned && (
-          <Button variant="ghost" size="sm" className="text-[#D94040] ml-auto" onClick={() => setResignDialogOpen(true)}>
+          <Button variant="ghost" size="sm" className="text-[#D94040] ml-auto" onClick={() => {
+            setResignForm({ resignedAt: shanghaiToday(), resignationReason: "" })
+            setResignDialogOpen(true)
+          }}>
             标记离职
           </Button>
         )}
@@ -338,6 +365,20 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                   )}
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">是否缴纳社保</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.socialInsurance ? "true" : "false"}
+                      onChange={(e) => setForm((prev) => ({ ...prev, socialInsurance: e.target.value === "true" }))}
+                    >
+                      <option value="false">否</option>
+                      <option value="true">是</option>
+                    </Select>
+                  ) : (
+                    <Input value={employee.socialInsurance ? "是" : "否"} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">生日</label>
                   {isEditing ? (
                     <Input
@@ -364,6 +405,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 <div className="space-y-2">
                   <label className="text-sm font-medium">离职日期</label>
                   <Input value={employee.resignedAt ?? "—"} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">离职原因</label>
+                  <Input value={employee.resignationReason ?? "—"} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">所属组织</label>
@@ -563,17 +608,53 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         </TabsContent>
       </Tabs>
 
-      {/* 离职确认 */}
+      {/* 离职确认 — 填报离职日期 + 离职原因 */}
       <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
-        <AlertDialogTitle>确认标记离职？</AlertDialogTitle>
+        <AlertDialogTitle>标记离职</AlertDialogTitle>
         <AlertDialogDescription>
           将标记「{employee.name}」为已离职，并自动作废其所有有效权限角色。此操作不可撤销。
         </AlertDialogDescription>
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              离职日期 <span className="text-[#D94040]">*</span>
+            </label>
+            <Input
+              type="date"
+              value={resignForm.resignedAt}
+              onChange={(e) => setResignForm((prev) => ({ ...prev, resignedAt: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              离职原因 <span className="text-[#D94040]">*</span>
+            </label>
+            <Textarea
+              rows={3}
+              value={resignForm.resignationReason}
+              onChange={(e) => setResignForm((prev) => ({ ...prev, resignationReason: e.target.value }))}
+              placeholder="请填写离职原因"
+            />
+          </div>
+        </div>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={() => setResignDialogOpen(false)}>取消</AlertDialogCancel>
+          <AlertDialogCancel onClick={() => setResignDialogOpen(false)} disabled={saving}>取消</AlertDialogCancel>
           <AlertDialogAction onClick={async () => {
+            if (!resignForm.resignedAt) {
+              toast.error('请选择离职日期')
+              return
+            }
+            if (!resignForm.resignationReason.trim()) {
+              toast.error('请填写离职原因')
+              return
+            }
+            setSaving(true)
             try {
-              const result = await updateEmployee(employee.employeeId, { isResigned: true }, employee.updatedAt)
+              const result = await updateEmployee(employee.employeeId, {
+                isResigned: true,
+                resignedAt: resignForm.resignedAt,
+                resignationReason: resignForm.resignationReason.trim(),
+              }, employee.updatedAt)
               if (!result.success) {
                 toast.error(result.message)
                 if (result.message.includes('已被其他人修改')) router.refresh()
@@ -584,8 +665,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
               router.refresh()
             } catch {
               toast.error('操作失败')
+            } finally {
+              setSaving(false)
             }
-          }}>确认离职</AlertDialogAction>
+          }} disabled={saving}>确认离职</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
 

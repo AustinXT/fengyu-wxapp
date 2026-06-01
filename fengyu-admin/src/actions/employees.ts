@@ -39,9 +39,11 @@ function rowToEmployee(row: any): Employee {
     avatarUrl: e.avatarUrl,
     birthday: e.birthday,
     skills: e.skills,
+    socialInsurance: e.socialInsurance,
     isResigned: e.isResigned,
     hiredAt: e.hiredAt,
     resignedAt: e.resignedAt,
+    resignationReason: e.resignationReason,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
     createdAt: e.createdAt?.toISOString() ?? '',
     updatedAt: e.updatedAt?.toISOString() ?? '',
@@ -269,7 +271,9 @@ export interface ExportEmployeeRow {
   positionName: string | null
   birthday: string | null
   skills: string | null
+  socialInsurance: boolean
   isResigned: boolean
+  resignationReason: string | null
 }
 
 /** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。LIMIT 10000 防 OOM。 */
@@ -310,7 +314,9 @@ export const exportEmployees = withPermission(
         positionName: e.positionName,
         birthday: e.birthday,
         skills: e.skills?.join('、') ?? null,
+        socialInsurance: e.socialInsurance,
         isResigned: e.isResigned,
+        resignationReason: e.resignationReason,
       }
     })
 
@@ -374,6 +380,8 @@ export const createEmployee = withPermission(
       avatarUrl?: string | null
       /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
       hiredAt?: string | null
+      /** 是否缴纳社保；默认否 */
+      socialInsurance?: boolean
     },
   ): Promise<{ success: boolean; message: string; employeeId?: string }> => {
   // 服务端输入校验（手机号格式 + 必填字段）
@@ -386,7 +394,11 @@ export const createEmployee = withPermission(
   if (!/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
-  if (data.idCard && !/^\d{17}[\dXx]$/.test(data.idCard)) {
+  // 身份证号必填（应用层强制）
+  if (!data.idCard?.trim()) {
+    return { success: false, message: '请输入身份证号' }
+  }
+  if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
     return { success: false, message: '身份证号格式不正确' }
   }
 
@@ -444,6 +456,7 @@ export const createEmployee = withPermission(
         avatarUrl: data.avatarUrl ?? null,
         birthday: data.birthday ?? null,
         skills: data.skills ?? null,
+        socialInsurance: data.socialInsurance ?? false,
         isResigned: false,
         // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
         hiredAt: data.hiredAt ?? shanghaiToday(),
@@ -486,11 +499,15 @@ export const updateEmployee = withPermission(
       avatarUrl: string | null
       birthday: string | null
       skills: string[] | null
+      /** 是否缴纳社保 */
+      socialInsurance: boolean
       isResigned: boolean
       /** 入职日期（YYYY-MM-DD） */
       hiredAt: string | null
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null
+      /** 离职原因（自由文本）；与 isResigned 联动：复职时由 action 自动清空 */
+      resignationReason: string | null
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,
@@ -499,8 +516,18 @@ export const updateEmployee = withPermission(
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
-  if (data.idCard !== undefined && data.idCard !== null && !/^\d{17}[\dXx]$/.test(data.idCard)) {
-    return { success: false, message: '身份证号格式不正确' }
+  // 姓名必填（仅当本次显式传入 name 时校验，避免拦截只改其它字段的更新）
+  if (data.name !== undefined && !data.name?.trim()) {
+    return { success: false, message: '姓名不能为空' }
+  }
+  // 身份证号必填（仅当本次显式传入 idCard 时校验）
+  if (data.idCard !== undefined) {
+    if (!data.idCard?.trim()) {
+      return { success: false, message: '请输入身份证号' }
+    }
+    if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
+      return { success: false, message: '身份证号格式不正确' }
+    }
   }
 
   // 校验手机号唯一性（如果更新了手机号）
@@ -535,6 +562,10 @@ export const updateEmployee = withPermission(
   const updateData = { ...data }
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
+  }
+  // 复职 / 撤销离职：连带清空离职原因
+  if (data.isResigned === false) {
+    updateData.resignationReason = null
   }
 
   // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）

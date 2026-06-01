@@ -64,7 +64,9 @@ export default function EmployeesPage({
         { header: "职位", accessor: (r) => r.positionName },
         { header: "生日", width: 14, accessor: (r) => fmtDate(r.birthday) },
         { header: "技能", width: 24, accessor: (r) => r.skills },
+        { header: "社保", width: 8, accessor: (r) => (r.socialInsurance ? "是" : "否") },
         { header: "在职状态", width: 10, accessor: (r) => (r.isResigned ? "已离职" : "在职") },
+        { header: "离职原因", width: 24, accessor: (r) => r.resignationReason },
       ],
       rows,
     });
