@@ -279,6 +279,8 @@
               wx:key="clientUserId"
               title="{{item.name || '未命名'}}"
               label="{{item.phoneMasked || item.phone}}"
+              value="{{item.crossStore ? '非本店·' + item.storeName : item.storeName}}"
+              value-class="{{item.crossStore ? 'customer-cross-store' : ''}}"
               is-link
               data-customer="{{item}}"
               bind:click="onSelectCustomer"
@@ -290,7 +292,8 @@
             <van-cell
               title="{{customerInfo.name || customerInfo.phone}}"
               label="{{customerInfo.phoneMasked || customerInfo.phone}}"
-              value="已选"
+              value="{{customerInfo.crossStore ? '非本店·' + customerInfo.storeName : '已选'}}"
+              value-class="{{customerInfo.crossStore ? 'customer-cross-store' : ''}}"
               icon="manager-o"
             />
           </van-cell-group>

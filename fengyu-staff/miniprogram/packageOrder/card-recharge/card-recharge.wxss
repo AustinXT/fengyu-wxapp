@@ -122,6 +122,7 @@
 .customer-result-item:active { background: #FAFAFA; }
 .customer-result-name { font-size: 28rpx; color: #333333; }
 .customer-result-phone { font-size: 24rpx; color: #999999; }
+.customer-cross-store { margin-left: 12rpx; font-size: 22rpx; color: #C0322A; }
 
 /* ===== 加载 ===== */
 .loading-block { padding: 80rpx 0; text-align: center; }

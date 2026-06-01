@@ -16,6 +16,7 @@
 
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
+const { isStoreInScope } = require('../utils/scope')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
@@ -78,11 +79,15 @@ async function recharge(ctx) {
 
   // 查顾客 + document_type
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
+  // 非本店顾客禁止充值（同 order.create 口径：账户余额可跨店查看，但充值按门店结算）
+  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法充值')
+  }
   const clientPhone = user.phone || null
   const customerName = user.name || null
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'

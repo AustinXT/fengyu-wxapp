@@ -331,6 +331,10 @@ async function create(ctx) {
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
+  // 非本店顾客禁止开单：账户级资产（余额/积分）可跨店查看，但出单按门店结算
+  if (!isStoreInScope(ctx.auth, clientUsers[0].bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
+  }
   const clientUserId = clientUsers[0].user_id
 
   // 检查是否已有待支付订单
@@ -2400,6 +2404,10 @@ async function createConversion(ctx) {
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
+  // 非本店顾客禁止开转换单（同 order.create 口径）
+  if (!isStoreInScope(ctx.auth, client.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
+  }
 
   const now = new Date()
   // convOrderId 在事务内由 generateOrderNo('FY-XSD-WX-', tx) 生成，保证 advisory lock
@@ -3388,6 +3396,10 @@ async function createDeposit(ctx) {
   const client = clientRows[0]
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未绑定门店')
+  }
+  // 非本店顾客禁止开寄存单（同 order.create 口径）
+  if (!isStoreInScope(ctx.auth, client.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
 
   // 拉 SKU 信息（参考 createConversion 的 SKU JOIN 模式）

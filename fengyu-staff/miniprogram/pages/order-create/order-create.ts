@@ -1,6 +1,6 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, getCurrentStoreId } from '../../utils/role';
 import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
@@ -135,6 +135,17 @@ interface CustomerInfo {
   name: string;
   phone: string;
   phoneMasked?: string;
+  /** 顾客绑定门店 ID（后端 customer.search 返回，用于实时判断是否本店） */
+  boundStoreId?: string | null;
+  /** 顾客绑定门店名（搜索结果展示「非本店」标签用） */
+  storeName?: string;
+  /** 是否非本店顾客（前端按 boundStoreId vs 当前门店实时计算；缺 boundStoreId 时为 false，放行后端兜底） */
+  crossStore?: boolean;
+}
+
+/** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
+function markCrossStore(c: CustomerInfo): CustomerInfo {
+  return { ...c, crossStore: !!c.boundStoreId && c.boundStoreId !== getCurrentStoreId() };
 }
 
 interface CouponInfo {
@@ -564,6 +575,15 @@ Page({
     // 所有员工均可浏览充值卡面板；真正提交时在 card-recharge.onSubmit 处统一校验店长权限
     if (nextChoice === '充值卡') {
       const customer = this.data.customerInfo;
+      if (customer?.crossStore) {
+        wx.showModal({
+          title: '无法充值',
+          content: `该顾客属于「${customer.storeName || '其他'}」门店，非本店顾客无法充值。`,
+          showCancel: false,
+          confirmText: '知道了',
+        });
+        return;
+      }
       const params: string[] = [];
       if (customer?.clientUserId) {
         params.push(`clientUserId=${encodeURIComponent(customer.clientUserId)}`);
@@ -1003,9 +1023,10 @@ Page({
     }
     this.setData({ customerSearching: true });
     try {
-      // 跨门店模糊检索：绑定任意门店的顾客均可开单
-      const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
-      if (!results || results.length === 0) {
+      // 跨门店模糊检索：可搜到任意门店顾客，但非本店者在下一步被拦截（crossStore 标记）
+      const raw = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
+      const results = (raw || []).map(markCrossStore);
+      if (results.length === 0) {
         this.setData({ customerInfo: null, customerResults: [] });
         wx.showToast({ title: '未找到该顾客（需已绑定门店）', icon: 'none' });
       } else if (results.length === 1) {
@@ -1022,12 +1043,12 @@ Page({
   },
 
   onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerResults: [], customerKeyword: customer.phone || customer.name });
   },
 
   onSelectRecentCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerKeyword: customer.phone, customerResults: [] });
   },
 
@@ -1036,6 +1057,15 @@ Page({
       wx.showModal({
         title: '无法开单',
         content: '请先用手机号搜索并选择已绑定门店的顾客。',
+        showCancel: false,
+        confirmText: '知道了',
+      });
+      return;
+    }
+    if (this.data.customerInfo.crossStore) {
+      wx.showModal({
+        title: '无法开单',
+        content: `该顾客属于「${this.data.customerInfo.storeName || '其他'}」门店，非本店顾客无法开单。`,
         showCancel: false,
         confirmText: '知道了',
       });

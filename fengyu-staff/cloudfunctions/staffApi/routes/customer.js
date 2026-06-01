@@ -177,6 +177,7 @@ async function search(ctx) {
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : "",
+    boundStoreId: r.bound_store_id || null,
     lastServiceDate: null,
     lastPurchaseName: null,
     source: r.customer_id ? "both" : "miniprogram",
