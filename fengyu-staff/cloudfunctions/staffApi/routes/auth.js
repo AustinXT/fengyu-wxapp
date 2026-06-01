@@ -3,8 +3,9 @@
  * auth.login, auth.bindPhone
  *
  * employee_id 是 staff_wechat_users 的唯一主键。
- * 行来源：(a) WorkFine 历史同步，或 (b) bindPhone 时自动建档。
- * login 仅按 openid 查询；bindPhone 按 phone 匹配已有行或新建行。
+ * 行来源仅：WorkFine 历史同步 或 管理后台建档。员工端不建行。
+ * login 仅按 openid 查询；bindPhone 按 phone 匹配已建档行写入 openid，
+ * 找不到则拒绝（非员工不落库）。
  */
 
 const cloud = require('wx-server-sdk')
@@ -18,34 +19,6 @@ const {
   deriveAvailableLoginLevels,
   expandScopeStoreIds,
 } = require('../utils/scope')
-
-/**
- * 生成员工编号：FY-WX-{YYMMDD}{3位序号}
- * 使用 advisory lock 防并发
- */
-async function generateEmployeeId(client) {
-  const now = new Date()
-  const yy = String(now.getFullYear()).slice(2)
-  const mm = String(now.getMonth() + 1).padStart(2, '0')
-  const dd = String(now.getDate()).padStart(2, '0')
-  const prefix = `FY-WX-${yy}${mm}${dd}`
-
-  // advisory lock key: 固定前缀 hash
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('gen_employee_id'))")
-
-  const { rows } = await client.query(
-    "SELECT employee_id FROM staff_wechat_users WHERE employee_id LIKE $1 ORDER BY employee_id DESC LIMIT 1",
-    [prefix + '%']
-  )
-
-  let seq = 1
-  if (rows.length > 0) {
-    const last = rows[0].employee_id
-    seq = parseInt(last.slice(prefix.length), 10) + 1
-  }
-
-  return prefix + String(seq).padStart(3, '0')
-}
 
 /**
  * 查询员工权限角色（带 scope 类型）
@@ -176,7 +149,7 @@ async function login(ctx) {
  *
  * 逻辑：
  *   1. 按 phone 找到已有行 → 写入 openid（关联历史同步/管理后台创建的档案）
- *   2. 找不到 → 自动建档（生成 FY-WX-{YYMMDD}{序号} employee_id）
+ *   2. 找不到 → 抛 NOT_FOUND（非员工，不落库；员工档案须由后台/同步先建）
  */
 async function bindPhone(ctx) {
   const { OPENID: realOpenid } = cloud.getWXContext()
@@ -291,37 +264,9 @@ async function bindPhone(ctx) {
     return
   }
 
-  // 未找到 → 自动建档
-  const employeeId = await pg.transaction(async (client) => {
-    const id = await generateEmployeeId(client)
-
-    await client.query(
-      `INSERT INTO staff_wechat_users (employee_id, openid, phone, last_login_at, created_at, updated_at)
-       VALUES ($1, $2, $3, now(), now(), now())`,
-      [id, OPENID, phoneNumber]
-    )
-
-    return id
-  })
-
-  invalidateAuthCache(OPENID)
-
-  ctx.result = {
-    success: true,
-    phone: phoneNumber,
-    staffWfId: employeeId,
-    staffName: null,
-    position: null,
-    roles: [],
-    roleBindings: [],
-    staffLevel: null,
-    availableLoginLevels: [],
-    scopedStores: [],
-    skills: [],
-    avatarUrl: null,
-    boundStoreName: null,
-    boundStoreId: null,
-  }
+  // 未找到已建档行 → 该手机号不是员工，拒绝登录（不再自动建档）
+  // 合法员工档案由管理后台/历史同步预先建立，员工端仅负责绑定 openid
+  throw new Error('NOT_FOUND: 手机号未关联员工档案，请联系管理员')
 }
 
 module.exports = {

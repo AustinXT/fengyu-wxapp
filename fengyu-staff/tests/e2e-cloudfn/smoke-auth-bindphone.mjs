@@ -55,6 +55,22 @@ async function main() {
     rec(`  ✓ directPhone 直传被拒（安全守护）`)
   }
 
+  // 守护：未建档手机号（非员工）必须被拒且不落库（不再自动建档）
+  const unknownPhone = `199${String(Date.now()).slice(-8)}`
+  const before = (await pgQuery(`SELECT count(*)::int AS c FROM staff_wechat_users WHERE phone = $1`, [unknownPhone]))[0].c
+  globalThis.__e2e_current_openid__ = `${NS}_UNKNOWN_OPENID`
+  const rUnknown = await invokeStaffApi('auth.bindPhone', {}, { phoneData: { data: { purePhoneNumber: unknownPhone } } })
+  globalThis.__e2e_current_openid__ = bindOpenid
+  if (rUnknown.code === 0) {
+    errors.push('未建档手机号绑定却成功（应被拒 NOT_FOUND）')
+  } else if (rUnknown.errorType !== 'NOT_FOUND') {
+    errors.push(`未建档手机号拒绝 errorType 应=NOT_FOUND，实际='${rUnknown.errorType}' msg='${rUnknown.message}'`)
+  } else {
+    const after = (await pgQuery(`SELECT count(*)::int AS c FROM staff_wechat_users WHERE phone = $1`, [unknownPhone]))[0].c
+    if (after !== before) errors.push(`非员工不应落库，phone 行数 ${before}→${after}`)
+    else rec(`  ✓ 未建档手机号被拒（NOT_FOUND）且未落库`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL`); for (const e of errors) rec(`    - ${e}`); return
   }
