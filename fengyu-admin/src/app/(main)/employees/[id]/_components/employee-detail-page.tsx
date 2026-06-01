@@ -21,7 +21,8 @@ import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
-import { updateEmployee } from "@/actions/employees"
+import { updateEmployee, deleteEmployee } from "@/actions/employees"
+import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
 import { ROLE_LABELS } from "@/lib/types"
@@ -35,9 +36,11 @@ interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
   skillTags: SkillTag[]
+  /** 是否展示「危险操作」删除入口（仅系统管理员 employee:delete） */
+  canDelete?: boolean
 }
 
-export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, skillTags }: Props) {
+export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, skillTags, canDelete = false }: Props) {
   const router = useRouter()
 
   // Edit info state
@@ -685,6 +688,21 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
+
+      {/* 危险操作：物理删除员工（仅系统管理员，仅无业务关联的测试号可删） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="员工"
+          redirectTo="/employees"
+          onConfirm={() => deleteEmployee(employee.employeeId)}
+          description={
+            <>
+              确定要删除员工 <span className="font-medium">{employee.name || employee.employeeId}</span> 吗？
+              将一并移除其登录密码与权限角色，此操作不可恢复。有订单 / 服务 / 分配 / 预约 / 库存等业务关联的员工不可删除（建议改为离职）。
+            </>
+          }
+        />
+      )}
     </div>
   )
 }

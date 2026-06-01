@@ -12,6 +12,7 @@ import { isInScope, scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { revalidatePath } from 'next/cache'
 
 export interface AdminPickupRecord {
   id: number
@@ -392,5 +393,73 @@ export const createPickupRecord = withPermission(
     }
     return { success: false, message: msg }
   }
+  },
+)
+
+/**
+ * 物理删除提货记录（仅系统管理员；数据治理用）。
+ *
+ * 关键：提货记录创建时原子累加了 sale_items.picked_up_quantity，
+ * 删除必须在同事务内回退该计数（GREATEST 防越界为负），否则"可提数量"虚低。
+ * pickup_records 无任何 inbound FK，无级联。
+ */
+export const deletePickupRecord = withPermission(
+  'pickup_record:delete',
+  async (session, id: number): Promise<{ success: boolean; message: string }> => {
+    const [rec] = await db
+      .select({
+        saleItemId: pickupRecords.saleItemId,
+        pickupQuantity: pickupRecords.pickupQuantity,
+        storeId: pickupRecords.storeId,
+        clientUserId: pickupRecords.clientUserId,
+        confirmedBy: pickupRecords.confirmedBy,
+      })
+      .from(pickupRecords)
+      .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
+      .limit(1)
+
+    if (!rec) {
+      return { success: false, message: '提货记录不存在或无权操作' }
+    }
+
+    try {
+      const ok = await db.transaction(async (tx) => {
+        const result = await tx
+          .delete(pickupRecords)
+          .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
+        if ((result as any).count === 0) {
+          throw new Error('PICKUP_ROW_GONE')
+        }
+        // 回退已提数量（不低于 0）
+        await tx.execute(sql`
+          UPDATE sale_items
+             SET picked_up_quantity = GREATEST(COALESCE(picked_up_quantity, 0) - ${rec.pickupQuantity}, 0),
+                 updated_at = NOW()
+           WHERE sale_item_id = ${rec.saleItemId}
+        `)
+        return true
+      })
+      if (!ok) {
+        return { success: false, message: '提货记录已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'PICKUP_ROW_GONE') {
+        return { success: false, message: '提货记录已变更，请刷新重试' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'pickup_record.delete', 'pickup_record', String(id), {
+      snapshot: {
+        saleItemId: rec.saleItemId,
+        pickupQuantity: rec.pickupQuantity,
+        storeId: rec.storeId,
+        clientUserId: rec.clientUserId,
+        confirmedBy: rec.confirmedBy,
+      },
+    })
+
+    revalidatePath('/pickup-records')
+    return { success: true, message: '提货记录已删除' }
   },
 )

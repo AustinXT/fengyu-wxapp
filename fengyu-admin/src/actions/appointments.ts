@@ -10,6 +10,7 @@ import type { Appointment } from '@/lib/types'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
+import { pgErrorCode } from '@/lib/pg-error'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -312,5 +313,67 @@ export const cancelAppointment = withPermission(
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已取消' }
+  },
+)
+
+/**
+ * 物理删除预约（仅系统管理员；数据治理用，清理历史/测试预约）。
+ *
+ * 守卫：仅 已取消 / 已完成 / 已关闭 可删（待确认 / 已确认 为活跃态，禁删）；
+ *       被服务单（service_orders.appointment_id）引用 → 禁删。
+ * 无从属子表，直接删 + 23503 兜底。
+ */
+export const deleteAppointment = withPermission(
+  'appointment:delete',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
+    const [appt] = await db
+      .select({ status: appointments.status, clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+      .from(appointments)
+      .where(and(eq(appointments.appointmentId, appointmentId), scopeCondition(session, appointments.storeId)))
+      .limit(1)
+
+    if (!appt) {
+      return { success: false, message: '预约不存在或无权操作' }
+    }
+    if (!(['已取消', '已完成', '已关闭'] as string[]).includes(appt.status)) {
+      return { success: false, message: '仅「已取消 / 已完成 / 已关闭」预约可删除' }
+    }
+
+    const [svcRef] = await db.execute<{ one: number }>(
+      sql`SELECT 1 AS one FROM service_orders WHERE appointment_id = ${appointmentId} LIMIT 1`,
+    ) as unknown as Array<{ one: number }>
+    if (svcRef) {
+      return { success: false, message: '该预约已关联服务单，不可删除' }
+    }
+
+    let result: any
+    try {
+      result = await db
+        .delete(appointments)
+        .where(and(
+          eq(appointments.appointmentId, appointmentId),
+          inArray(appointments.status, ['已取消', '已完成', '已关闭']),
+          scopeCondition(session, appointments.storeId),
+        ))
+    } catch (e) {
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '该预约存在关联数据，无法删除' }
+      }
+      throw e
+    }
+    if ((result as any).count === 0) {
+      return { success: false, message: '预约状态已变更，请刷新重试' }
+    }
+
+    await logOperation(session, 'appointment.delete', 'appointment', appointmentId, {
+      snapshot: {
+        status: appt.status,
+        clientName: appt.clientName,
+        appointmentTime: appt.appointmentTime?.toISOString(),
+      },
+    })
+
+    revalidatePath('/appointments')
+    return { success: true, message: '预约已删除' }
   },
 )

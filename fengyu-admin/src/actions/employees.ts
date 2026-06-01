@@ -4,6 +4,7 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
+import { adminPasswords } from '@db/admin-auth'
 import { eq, and, or, sql, ilike, inArray, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -13,6 +14,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters } from '@/lib/list-filters'
@@ -658,5 +660,75 @@ export const updateEmployee = withPermission(
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }
+  },
+)
+
+/**
+ * 物理删除员工（仅系统管理员；数据治理用，清理测试员工账号）。
+ *
+ * 仅适用于"无任何业务关联"的测试号：员工被 25+ 张业务表（订单/服务/分配/预约/库存/解绑/操作日志…）
+ * 引用即由 PG FK RESTRICT 拦截，pgErrorCode 23503 兜底回滚并提示「改为离职」。
+ * 事务内先删可随删的从属行（admin_passwords 登录凭证 + 该员工 permission_roles），再删主表。
+ * 守卫：不能删自己；不能删系统最后一个活跃 admin。
+ */
+export const deleteEmployee = withPermission(
+  'employee:delete',
+  async (session, employeeId: string): Promise<{ success: boolean; message: string }> => {
+    if (employeeId === session.employeeId) {
+      return { success: false, message: '不能删除当前登录的自己' }
+    }
+
+    const [emp] = await db
+      .select({ name: staffWechatUsers.name, phone: staffWechatUsers.phone, storeId: staffWechatUsers.storeId, isResigned: staffWechatUsers.isResigned })
+      .from(staffWechatUsers)
+      .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+      .limit(1)
+
+    if (!emp) {
+      return { success: false, message: '员工不存在或无权操作' }
+    }
+
+    // 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）
+    if (await isAdminEmployee(employeeId)) {
+      const adminCount = await countActiveAdmins()
+      if (adminCount <= 1) {
+        return { success: false, message: '该员工是系统最后一个活跃管理员，请先转移角色' }
+      }
+    }
+
+    try {
+      const txResult = await db.transaction(async (tx) => {
+        // 先删可随员工删除的从属行（登录凭证 + 权限角色）
+        await tx.delete(adminPasswords).where(eq(adminPasswords.employeeId, employeeId))
+        await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
+        // 删主表（被任一业务表引用会在此抛 23503，回滚上面的删除）
+        const result = await tx
+          .delete(staffWechatUsers)
+          .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+        if ((result as any).count === 0) {
+          throw new Error('EMPLOYEE_ROW_GONE')
+        }
+        return true
+      })
+      if (!txResult) {
+        return { success: false, message: '员工状态已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'EMPLOYEE_ROW_GONE') {
+        return { success: false, message: '员工状态已变更，请刷新重试' }
+      }
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '该员工已有业务关联（订单 / 服务 / 分配 / 预约 / 库存等），无法删除，建议改为离职' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'employee.delete', 'employee', employeeId, {
+      snapshot: { name: emp.name, phone: emp.phone, storeId: emp.storeId, isResigned: emp.isResigned },
+    })
+
+    revalidatePath('/employees')
+    revalidatePath('/permissions')
+    return { success: true, message: '员工已删除' }
   },
 )

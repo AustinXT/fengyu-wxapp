@@ -5,6 +5,8 @@ import { operationLogs } from '@db/operation-log'
 import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
 import type { OperationLog } from '@/lib/types'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
+import { logOperation } from '@/lib/operation-log'
+import { revalidatePath } from 'next/cache'
 
 export interface LogFilter {
   operatorName?: string
@@ -102,5 +104,44 @@ export const getOrderLogs = withAnyPermission(
     source: r.source,
     createdAt: r.createdAt.toISOString(),
   }))
+  },
+)
+
+/**
+ * 物理删除单条操作日志（仅系统管理员；数据治理用，清理无意义的噪音日志）。
+ *
+ * operation_logs 无任何 inbound FK，物理删除无级联风险。
+ * 删除动作本身仍写一条新审计日志（who deleted which log）。
+ */
+export const deleteOperationLog = withPermission(
+  'operation_log:delete',
+  async (session, id: number): Promise<{ success: boolean; message: string }> => {
+    const [snapshot] = await db
+      .select({ action: operationLogs.action, targetType: operationLogs.targetType, targetId: operationLogs.targetId, operatorName: operationLogs.operatorName, createdAt: operationLogs.createdAt })
+      .from(operationLogs)
+      .where(eq(operationLogs.id, id))
+      .limit(1)
+
+    if (!snapshot) {
+      return { success: false, message: '日志不存在或已被删除' }
+    }
+
+    const result = await db.delete(operationLogs).where(eq(operationLogs.id, id))
+    if ((result as any).count === 0) {
+      return { success: false, message: '日志不存在或已被删除' }
+    }
+
+    await logOperation(session, 'operation_log.delete', 'operation_log', String(id), {
+      snapshot: {
+        action: snapshot.action,
+        targetType: snapshot.targetType,
+        targetId: snapshot.targetId,
+        operatorName: snapshot.operatorName,
+        createdAt: snapshot.createdAt?.toISOString(),
+      },
+    })
+
+    revalidatePath('/logs')
+    return { success: true, message: '日志已删除' }
   },
 )

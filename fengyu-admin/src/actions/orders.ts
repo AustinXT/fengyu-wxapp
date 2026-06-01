@@ -16,6 +16,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
@@ -1043,6 +1044,143 @@ export const resetOrderFailed = withPermission(
 
   revalidatePath('/orders')
   return { success: true, message: '已重置为待支付' }
+  },
+)
+
+/**
+ * 物理删除订单（仅系统管理员；数据治理用，清理无意义的测试单据）。
+ *
+ * 强守卫：有实收 / 已支付状态 / 有已支付款项流水 / 关联积分·储值卡流水 /
+ *         明细被服务·提货·预约引用 / 存在引用本单的回款·退款·转换子单 → 一律禁删。
+ * 财务/资产流水（point_transactions / card_transactions / 已支付 payment）绝不级联删除，只做守卫拦截。
+ * 可删时事务内：释放优惠券 → 删 sale_allocations → 删（仅剩的待支付）payment → 删 sale_items → 删主单。
+ * 任何残留外键引用由 pgErrorCode 23503 兜底回滚，安全失败而非误删。
+ */
+export const deleteOrder = withPermission(
+  'sale_order:delete',
+  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
+    // 1. 读取 + 业务守卫
+    const [order] = await db
+      .select({
+        status: saleOrders.status,
+        received: saleOrders.received,
+        customerName: saleOrders.customerName,
+        totalAmount: saleOrders.totalAmount,
+        saleOrderType: saleOrders.saleOrderType,
+      })
+      .from(saleOrders)
+      .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
+      .limit(1)
+
+    if (!order) {
+      return { success: false, message: '订单不存在或无权操作' }
+    }
+    if (Number(order.received) > 0 || (['已支付', '已完成', '部分支付'] as string[]).includes(order.status)) {
+      return { success: false, message: '订单已有实收或已支付，不可删除（财务数据受保护）' }
+    }
+
+    // 已支付款项流水（财务，禁删）
+    const [paidPayment] = await db
+      .select({ id: saleOrderPayments.id })
+      .from(saleOrderPayments)
+      .where(and(eq(saleOrderPayments.saleOrderId, saleOrderId), eq(saleOrderPayments.status, '已支付')))
+      .limit(1)
+    if (paidPayment) {
+      return { success: false, message: '订单存在已支付款项流水，不可删除' }
+    }
+
+    // 积分 / 储值卡流水关联（账户级资产，禁删）
+    const [ptRef] = await db.execute<{ one: number }>(
+      sql`SELECT 1 AS one FROM point_transactions WHERE ref_order_id = ${saleOrderId} LIMIT 1`,
+    ) as unknown as Array<{ one: number }>
+    const [ctRef] = await db.execute<{ one: number }>(
+      sql`SELECT 1 AS one FROM card_transactions WHERE ref_order_id = ${saleOrderId} LIMIT 1`,
+    ) as unknown as Array<{ one: number }>
+    if (ptRef || ctRef) {
+      return { success: false, message: '订单关联了积分或储值卡流水，不可删除' }
+    }
+
+    // 明细被服务单 / 提货记录 / 预约引用（已产生下游业务，禁删）
+    const [downstream] = await db.execute<{ one: number }>(
+      sql`SELECT 1 AS one
+          FROM sale_items si
+          WHERE si.sale_order_id = ${saleOrderId}
+            AND (
+              EXISTS (SELECT 1 FROM service_items WHERE sale_item_id = si.sale_item_id)
+              OR EXISTS (SELECT 1 FROM pickup_records WHERE sale_item_id = si.sale_item_id)
+              OR EXISTS (SELECT 1 FROM appointments WHERE sale_item_id = si.sale_item_id)
+            )
+          LIMIT 1`,
+    ) as unknown as Array<{ one: number }>
+    if (downstream) {
+      return { success: false, message: '订单已产生服务单 / 提货 / 预约，不可删除' }
+    }
+
+    // 被回款 / 退款 / 转换子单引用
+    const [childOrder] = await db
+      .select({ id: saleOrders.saleOrderId })
+      .from(saleOrders)
+      .where(eq(saleOrders.refSaleOrderId, saleOrderId))
+      .limit(1)
+    if (childOrder) {
+      return { success: false, message: '存在引用本单的回款 / 退款 / 转换单据，不可删除' }
+    }
+
+    // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
+    try {
+      const txResult = await db.transaction(async (tx) => {
+        await tx
+          .update(userCoupons)
+          .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
+          .where(eq(userCoupons.usedSaleOrderId, saleOrderId))
+
+        await tx.execute(sql`
+          DELETE FROM sale_allocations
+          WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId})
+        `)
+        // 仅剩待支付/已作废流水（已支付已被守卫拦截）
+        await tx.execute(sql`DELETE FROM sale_order_payments WHERE sale_order_id = ${saleOrderId}`)
+        await tx.execute(sql`DELETE FROM sale_items WHERE sale_order_id = ${saleOrderId}`)
+
+        const result = await tx
+          .delete(saleOrders)
+          .where(and(
+            eq(saleOrders.saleOrderId, saleOrderId),
+            inArray(saleOrders.status, ['待支付', '支付失败', '已关闭']),
+            scopeCondition(session, saleOrders.storeId),
+          ))
+        if ((result as any).count === 0) {
+          // 状态在读取后被改（并发），抛出以回滚全部子表删除
+          throw new Error('ORDER_STATE_CHANGED')
+        }
+        return true
+      })
+      if (!txResult) {
+        return { success: false, message: '订单状态已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'ORDER_STATE_CHANGED') {
+        return { success: false, message: '订单状态已变更，请刷新重试' }
+      }
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '订单存在关联业务数据，无法删除' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'order.delete', 'sale_order', saleOrderId, {
+      snapshot: {
+        status: order.status,
+        received: order.received,
+        totalAmount: order.totalAmount,
+        customerName: order.customerName,
+        saleOrderType: order.saleOrderType,
+      },
+    })
+
+    revalidatePath('/orders')
+    revalidatePath('/allocations')
+    return { success: true, message: '订单已删除' }
   },
 )
 

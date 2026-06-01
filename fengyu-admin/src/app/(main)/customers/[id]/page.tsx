@@ -43,6 +43,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     : false
 
   const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
+  // 物理删除顾客：仅系统管理员（customer:delete）
+  const canDelete = session ? hasPermission(session, 'customer:delete') : false
 
   return (
     <CustomerDetailPage
@@ -57,6 +59,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       prepaidBalance={prepaidBalance.balance}
       canEditPhone={canEditPhone}
       canPullLegacy={canPullLegacy}
+      canDelete={canDelete}
     />
   )
 }

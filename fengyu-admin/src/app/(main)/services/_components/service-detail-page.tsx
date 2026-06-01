@@ -6,6 +6,8 @@ import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { ServiceOrder } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { DangerZoneDelete } from "@/components/delete-action"
+import { deleteServiceOrder } from "@/actions/services"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
@@ -15,9 +17,12 @@ function formatDateTime(dt: string | null) {
 export default function ServiceDetailPageClient({
   serviceOrder,
   serviceItems,
+  canDelete = false,
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
+  /** 是否展示「危险操作」删除入口（仅系统管理员 service:delete） */
+  canDelete?: boolean
 }) {
   return (
     <div className="space-y-6">
@@ -147,6 +152,21 @@ export default function ServiceDetailPageClient({
           </div>
         </CardContent>
       </Card>
+
+      {/* 危险操作：物理删除服务单（仅系统管理员） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="服务单"
+          redirectTo="/services"
+          onConfirm={() => deleteServiceOrder(serviceOrder.serviceOrderId)}
+          description={
+            <>
+              确定要删除服务单 <span className="font-medium">{serviceOrder.serviceOrderId}</span> 吗？
+              将一并删除其服务明细与评价，此操作不可恢复。仅「待服务 / 已取消」可删，进行中或已完成不可删除。
+            </>
+          }
+        />
+      )}
     </div>
   )
 }

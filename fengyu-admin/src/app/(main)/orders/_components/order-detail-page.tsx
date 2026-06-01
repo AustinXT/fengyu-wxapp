@@ -11,6 +11,8 @@ import { ConfirmOfflineDialog } from "./confirm-offline-dialog"
 import { DepositReceiptDialog } from "./deposit-receipt-dialog"
 import { RefundForm } from "@/components/orders/refund-form"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { DangerZoneDelete } from "@/components/delete-action"
+import { deleteOrder } from "@/actions/orders"
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -64,6 +66,7 @@ export default function OrderDetailPageClient({
   cardBalance = null,
   canListAllocations = true,
   canEditDepositReceipt = false,
+  canDelete = false,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
@@ -84,6 +87,8 @@ export default function OrderDetailPageClient({
   canListAllocations?: boolean
   /** 是否展示寄存单「修改实收」按钮（与开寄存单同权限 sale_order:create） */
   canEditDepositReceipt?: boolean
+  /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
+  canDelete?: boolean
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
@@ -522,6 +527,22 @@ export default function OrderDetailPageClient({
             productName: it.skuName || it.productName || it.saleItemId,
             received: String(it.received ?? "0"),
           }))}
+        />
+      )}
+
+      {/* 危险操作：物理删除订单（仅系统管理员） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="订单"
+          redirectTo="/orders"
+          onConfirm={() => deleteOrder(order.saleOrderId)}
+          description={
+            <>
+              确定要删除订单 <span className="font-medium">{order.saleOrderId}</span>
+              （{order.customerName || "—"}，¥{Number(order.totalAmount).toLocaleString()}）吗？
+              将一并删除其明细与分配，此操作不可恢复。有实收 / 已支付 / 已产生服务的订单不可删除。
+            </>
+          }
         />
       )}
     </div>
