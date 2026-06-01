@@ -30,6 +30,7 @@ describe('customer.search', () => {
     expect(zhangSan.source).toBe('both') // customer_id 非空
     expect(zhangSan.clientUserId).toBe('u1')
     expect(zhangSan.storeName).toBe('测试店')
+    expect(zhangSan.boundStoreId).toBe('store-001') // 供前端实时比对当前门店
     const zhangSi = ctx.result.find(r => r.name === '张四')
     expect(zhangSi.source).toBe('miniprogram') // customer_id 为空
     expect(zhangSi.clientUserId).toBe('u2')

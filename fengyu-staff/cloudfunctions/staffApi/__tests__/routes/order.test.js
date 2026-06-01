@@ -188,6 +188,21 @@ describe('order.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已有待支付订单/)
   })
 
+  test('非本店顾客（bound_store_id ≠ effectiveStoreId）拒绝开单', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '外店顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-999', bound_store_id: 'store-999' }]) // 绑定其他门店
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+  })
+
   test('未注册顾客同店有待支付订单时拒绝', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
@@ -3772,6 +3787,20 @@ describe('order.createConversion', () => {
       .rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
   })
 
+  test('非本店顾客拒绝开转换单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-999',
+      convertOutSaleItemIds: ['item-001'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 10 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999',
+    }])
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+  })
+
   test('转出项目为空拒绝', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
@@ -4114,6 +4143,23 @@ describe('order.createConversion', () => {
     expect(updateCall[0]).not.toMatch(/picked_up_quantity = quantity/)
     // 参数 $4 = 折抵数量（剩余 3）
     expect(updateCall[1][3]).toBe(3)
+  })
+})
+
+describe('order.createDeposit', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  test('非本店顾客拒绝开寄存单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-999',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999',
+    }])
+    await expect(orderRoutes.createDeposit(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
   })
 })
 
