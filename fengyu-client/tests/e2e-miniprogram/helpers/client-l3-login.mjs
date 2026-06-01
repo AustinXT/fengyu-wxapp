@@ -34,7 +34,9 @@ export const INJECT_MODE = process.env.ALLOW_TEST_OPENID_REMOTE === 'true'
  * 注意：automator.callWxMethod 不支持 wx.cloud 命名空间下的方法（仅支持顶层 wx.xxx），
  * 必须用 mp.evaluate(() => wx.cloud.callFunction(...)) 进入小程序运行时调用。
  *
- * 返回 { userId, openid }
+ * login 直接回传调用者自己的 openid（新访客不再建库行，userId 可能为 null）。
+ *
+ * 返回 { userId, openid }（新访客 userId=null，由调用方按 openid UPSERT 建档）
  */
 async function probeRealOpenid(miniProgram) {
   const result = await miniProgram.evaluate(async () => {
@@ -47,15 +49,9 @@ async function probeRealOpenid(miniProgram) {
   if (!result || result.code !== 0) {
     throw new Error(`probe auth.login failed: ${JSON.stringify(result)}`)
   }
-  const userId = result.data?.userId
-  if (!userId) throw new Error('probe auth.login: no userId returned')
-
-  const rows = await query(
-    `SELECT openid FROM client_wechat_users WHERE user_id = $1`,
-    [userId]
-  )
-  if (!rows[0]?.openid) throw new Error('probe: openid not found in DB')
-  return { userId, openid: rows[0].openid }
+  const openid = result.data?.openid
+  if (!openid) throw new Error('probe auth.login: no openid returned')
+  return { userId: result.data?.userId || null, openid }
 }
 
 /**
@@ -94,17 +90,40 @@ export async function loginAsTestClient(miniProgram, opts = {}) {
   }
 
   // PROBE 模式
-  const { userId, openid } = await probeRealOpenid(miniProgram)
-  // 将真实 IDE OPENID 对应行升级为"测试顾客态"（保留原 user_id）
-  await query(
-    `UPDATE client_wechat_users
-       SET phone = COALESCE(phone, $1),
-           bound_store_id = $2,
-           name = COALESCE(NULLIF(name, ''), $3),
-           updated_at = NOW()
-     WHERE user_id = $4`,
-    [TEST_CLIENT_PHONE, TEST_STORE_ID, `${NS}_顾客`, userId]
+  const { openid } = await probeRealOpenid(miniProgram)
+  // 新访客 login 不再建行 → 按 openid UPSERT 测试顾客态（已绑店 + 已绑手机）。
+  // 已存在行则保留其 user_id 并升级；无行则用固定 TEST_CLIENT_USER_ID 建档。
+  const existing = await query(
+    `SELECT user_id FROM client_wechat_users WHERE openid = $1`,
+    [openid]
   )
+  let userId
+  if (existing.length > 0) {
+    userId = existing[0].user_id
+    await query(
+      `UPDATE client_wechat_users
+         SET phone = COALESCE(phone, $1),
+             bound_store_id = $2,
+             name = COALESCE(NULLIF(name, ''), $3),
+             updated_at = NOW()
+       WHERE user_id = $4`,
+      [TEST_CLIENT_PHONE, TEST_STORE_ID, `${NS}_顾客`, userId]
+    )
+  } else {
+    userId = TEST_CLIENT_USER_ID
+    await query(
+      `INSERT INTO client_wechat_users (
+         user_id, openid, phone, name, gender, bound_store_id,
+         customer_type, spending_tier, points_balance
+       )
+       VALUES ($1, $2, $3, $4, '女', $5,
+               '流量客'::customer_type, '<1990'::spending_tier, 0)
+       ON CONFLICT (user_id) DO UPDATE
+         SET openid = EXCLUDED.openid, phone = EXCLUDED.phone,
+             bound_store_id = EXCLUDED.bound_store_id`,
+      [userId, openid, TEST_CLIENT_PHONE, `${NS}_顾客`, TEST_STORE_ID]
+    )
+  }
   return {
     userId,
     openid,

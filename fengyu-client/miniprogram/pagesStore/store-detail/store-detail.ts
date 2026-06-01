@@ -1,6 +1,6 @@
 // pages/store-detail/store-detail.ts
 import Toast from '@vant/weapp/toast/toast';
-import { callClientApi } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatStoreAddress, haversineKm, formatDistance } from '../utils/distance';
 import { getCurrentLocation } from '../utils/location';
 
@@ -65,6 +65,8 @@ Page({
     showSourcePopup: false,
     sourceChannel: '',
     promoterName: '',
+    // 绑手机号弹窗（绑门店前若未授权手机号则弹出）
+    showPhoneBind: false,
     sourceGroups: [
       { label: '线上来源', channels: ['美团', '抖音', '小程序'] },
       { label: '线下来源', channels: ['推带新', '地推卡', '拓客卡', '老带新', '转让店', '自进店', '内部员工或家属'] },
@@ -202,7 +204,34 @@ Page({
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
+      // 未授权手机号 → 弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
+      if (err?.errorType === 'PHONE_REQUIRED') {
+        this.setData({ showPhoneBind: true });
+        return;
+      }
       Toast.fail(err?.message || '绑定失败');
+    }
+  },
+
+  onPhoneBindClose() {
+    this.setData({ showPhoneBind: false });
+  },
+
+  async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    const { cloudID, errMsg } = e.detail || {};
+    if (!cloudID) {
+      if (errMsg?.includes('auth deny')) {
+        Toast.fail('您拒绝了授权');
+      }
+      return;
+    }
+    try {
+      await bindPhoneWithCloudID(cloudID);
+      this.setData({ showPhoneBind: false });
+      // 绑定手机号成功后自动重提交绑门店
+      setTimeout(() => this.onConfirmBind(), 600);
+    } catch (err: any) {
+      Toast.fail(err?.message || '绑定失败，请重试');
     }
   },
 

@@ -3,7 +3,7 @@
  * clientApi.auth.login 全分支
  *
  * 用例：
- *   1. 新用户登录 → 创建 client_wechat_users 行，isNewUser=true，userId 格式 FYGK-YYYYMMDD-NNNNN
+ *   1. 新访客登录 → 不建 client_wechat_users 行，isNewUser=true，userId=null（仅浏览不持久化）
  *   2. 老用户再登录 → isNewUser=false，last_login_at 更新
  *   3. 老用户已绑店 → 返回 boundStoreName / boundMarketName（JOIN stores + org_nodes）
  */
@@ -25,19 +25,14 @@ async function caseNewUser() {
   const res = await invokeAs(TEST_OPENID, 'auth.login', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   if (!res.data.isNewUser) throw new Error(`expect isNewUser=true, got ${res.data.isNewUser}`)
-  if (!/^FYGK-\d{8}-\d{5}$/.test(res.data.userId)) {
-    throw new Error(`userId format mismatch: ${res.data.userId}`)
-  }
+  if (res.data.userId !== null) throw new Error(`expect userId=null, got ${res.data.userId}`)
 
-  // PG 断言
+  // PG 断言：新访客不建行，避免顾客管理出现空壳档案
   const rows = await pgQuery(
-    'SELECT user_id, phone, bound_store_id FROM client_wechat_users WHERE openid = $1',
+    'SELECT user_id FROM client_wechat_users WHERE openid = $1',
     [TEST_OPENID]
   )
-  if (rows.length !== 1) throw new Error(`expect 1 row, got ${rows.length}`)
-  if (rows[0].user_id !== res.data.userId) throw new Error('user_id mismatch')
-  if (rows[0].phone !== null) throw new Error('expect phone null')
-  if (rows[0].bound_store_id !== null) throw new Error('expect bound_store_id null')
+  if (rows.length !== 0) throw new Error(`expect 0 row (no persistence), got ${rows.length}`)
 }
 
 async function caseExistingUser() {
@@ -98,7 +93,7 @@ async function caseExistingUserBoundStore() {
 }
 
 const CASES = [
-  ['new user → create row + isNewUser=true', caseNewUser],
+  ['new visitor → no row persisted + isNewUser=true + userId=null', caseNewUser],
   ['existing user → isNewUser=false + last_login_at refreshed', caseExistingUser],
   ['existing user with bound store → JOIN returns store/market name', caseExistingUserBoundStore],
 ]

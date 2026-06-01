@@ -20,19 +20,20 @@ beforeEach(() => {
 })
 
 describe('auth.login', () => {
-  test('新用户：创建记录，返回 isNewUser=true', async () => {
+  test('新访客：不建库行，返回 isNewUser=true, userId=null', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'new-openid' })
-    pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createCtx()
     await routes.login(ctx)
 
     expect(ctx.result.isNewUser).toBe(true)
-    expect(ctx.result.userId).toBeTruthy()
+    expect(ctx.result.userId).toBeNull()
     expect(ctx.result.phone).toBeNull()
-    expect(pg.query).toHaveBeenCalledTimes(2)
-    expect(pg.query.mock.calls[1][0]).toContain('INSERT INTO client_wechat_users')
+    // 仅一次 SELECT，绝不 INSERT（避免顾客管理出现空壳档案）
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
+    expect(allSql).not.toContain('INSERT INTO client_wechat_users')
   })
 
   test('老用户：更新登录时间，返回 isNewUser=false', async () => {
@@ -57,12 +58,14 @@ describe('auth.login', () => {
 })
 
 describe('auth.bindPhone', () => {
-  test('直接传入手机号绑定成功', async () => {
+  // 新调用序列：byOpenid SELECT → phone SELECT → (attach UPDATE | INSERT) → 订单回填 → legacy count
+  test('walk-in 新客直传手机号 → 懒建库行', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: null }])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce({ rowCount: 2 })
+    pg.query.mockResolvedValueOnce([])                  // byOpenid: 无行
+    pg.query.mockResolvedValueOnce([])                  // byPhone: 无行
+    pg.query.mockResolvedValueOnce([])                  // INSERT
+    pg.query.mockResolvedValueOnce({ rowCount: 2 })     // 订单回填
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])        // legacy count
 
     const ctx = createCtx({ payload: { phoneNumber: '13800001111' } })
     await routes.bindPhone(ctx)
@@ -70,14 +73,19 @@ describe('auth.bindPhone', () => {
     expect(ctx.result.success).toBe(true)
     expect(ctx.result.phone).toBe('13800001111')
     expect(ctx.result.updatedOrdersCount).toBe(2)
+    // userId 由 generateUserId 现场生成（FYGK-* 前缀）
+    expect(ctx.result.userId).toMatch(/^FYGK-/)
+    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
+    expect(allSql).toContain('INSERT INTO client_wechat_users')
   })
 
-  test('CloudID 方式绑定成功', async () => {
+  test('CloudID 方式 walk-in 绑定成功', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: null }])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce({ rowCount: 0 })
+    pg.query.mockResolvedValueOnce([])                  // byOpenid
+    pg.query.mockResolvedValueOnce([])                  // byPhone
+    pg.query.mockResolvedValueOnce([])                  // INSERT
+    pg.query.mockResolvedValueOnce({ rowCount: 0 })     // 订单回填
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])        // legacy count
 
     const ctx = createCtx({
       payload: {},
@@ -91,10 +99,31 @@ describe('auth.bindPhone', () => {
     expect(ctx.result.phone).toBe('13900009999')
   })
 
-  test('手机号已被其他用户绑定 → 拒绝', async () => {
+  test('孤儿档案回流：按 phone 命中 openid 为 NULL 的行 → attach openid（复用 user_id）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: null }])
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-other' }])
+    pg.query.mockResolvedValueOnce([])                  // byOpenid: 无行
+    pg.query.mockResolvedValueOnce([{ user_id: 'WF-CUST-9', openid: null }]) // byPhone: 孤儿行
+    pg.query.mockResolvedValueOnce([])                  // attach UPDATE
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })     // 订单回填
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])        // legacy count
+
+    const ctx = createCtx({ payload: { phoneNumber: '13800001111' } })
+    await routes.bindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.userId).toBe('WF-CUST-9')  // 复用孤儿行 user_id，不新建
+    const attachSql = pg.query.mock.calls[2][0]
+    expect(attachSql).toContain('UPDATE client_wechat_users')
+    expect(attachSql).toContain('openid = $1')
+    // 不应 INSERT
+    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
+    expect(allSql).not.toContain('INSERT INTO client_wechat_users')
+  })
+
+  test('手机号已被其他 openid 占用 → 拒绝', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
+    pg.query.mockResolvedValueOnce([])                  // byOpenid: 无行
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-other', openid: 'other-openid' }]) // byPhone: 他人已绑
 
     const ctx = createCtx({ payload: { phoneNumber: '13800001111' } })
     await expect(routes.bindPhone(ctx))
@@ -103,22 +132,10 @@ describe('auth.bindPhone', () => {
 
   test('缺少 phoneData 和 phoneNumber → 报错', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: null }])
 
     const ctx = createCtx({ payload: {} })
     await expect(routes.bindPhone(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*phoneData.*phoneNumber/)
-  })
-
-  test('用户不存在 → UNAUTHORIZED', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'unknown-openid' })
-    // bindPhone 内部先查 users，返回空
-    pg.query.mockResolvedValueOnce([])
-
-    const ctx = createCtx({ payload: { phoneNumber: '138' } })
-    // bindPhone 在 routes/auth.js 内部调用 cloud.getWXContext
-    await expect(routes.bindPhone(ctx))
-      .rejects.toThrow(/UNAUTHORIZED.*用户不存在/)
   })
 
   test('CloudID 解密失败 → INVALID_PARAMS', async () => {
@@ -134,15 +151,15 @@ describe('auth.bindPhone', () => {
       .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
   })
 
-  test('首绑守卫：用户已绑定手机号 → INVALID_PARAMS（提示联系门店）', async () => {
+  test('首绑守卫：openid 已绑定手机号 → INVALID_PARAMS（提示联系门店）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
-    // SELECT 返回 phone 已有值
+    // byOpenid 返回 phone 已有值
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
 
     const ctx = createCtx({ payload: { phoneNumber: '13911112222' } })
     await expect(routes.bindPhone(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*已绑定手机号.*门店/)
-    // 不应执行 UPDATE（仅一次 SELECT）
+    // 命中守卫即止，仅一次 SELECT
     expect(pg.query).toHaveBeenCalledTimes(1)
   })
 })
@@ -184,13 +201,22 @@ describe('auth.bindStore', () => {
       .rejects.toThrow(/INVALID_PARAMS.*storeId/)
   })
 
-  test('用户不存在 → UNAUTHORIZED', async () => {
+  test('未建档（无行）→ PHONE_REQUIRED（先绑手机号）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'unknown-openid' })
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createCtx({ payload: { storeId: 'store-001' } })
     await expect(routes.bindStore(ctx))
-      .rejects.toThrow(/UNAUTHORIZED/)
+      .rejects.toThrow(/PHONE_REQUIRED/)
+  })
+
+  test('行存在但未绑手机号 → PHONE_REQUIRED', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'nophone-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: null }])
+
+    const ctx = createCtx({ payload: { storeId: 'store-001' } })
+    await expect(routes.bindStore(ctx))
+      .rejects.toThrow(/PHONE_REQUIRED/)
   })
 
   // ===== 分享礼：inviterUserId 一次性绑定 =====

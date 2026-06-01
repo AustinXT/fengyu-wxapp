@@ -50,6 +50,48 @@ function bindPhoneCloudID(openid, phone) {
   return invokeAs(openid, 'auth.bindPhone', {}, { phoneData: { data: { purePhoneNumber: phone } } })
 }
 
+// 新核心：访客从未 login 建行（无 openid 行、无 phone 行）→ bindPhone 懒建顾客档案
+async function caseWalkInLazyCreate() {
+  await ensureTestStore()
+  // 不 seed 任何行
+  const res = await bindPhoneCloudID(TEST_OPENID, PHONE_OK)
+  expectSuccess(res)
+  if (res.data.phone !== PHONE_OK) throw new Error(`phone mismatch: ${res.data.phone}`)
+  if (!/^FYGK-\d{8}-\d{5}$/.test(res.data.userId)) {
+    throw new Error(`expect FYGK userId, got ${res.data.userId}`)
+  }
+  const rows = await pgQuery(
+    'SELECT user_id, phone FROM client_wechat_users WHERE openid = $1',
+    [TEST_OPENID]
+  )
+  if (rows.length !== 1) throw new Error(`expect 1 row created, got ${rows.length}`)
+  if (rows[0].phone !== PHONE_OK) throw new Error(`PG phone mismatch: ${rows[0].phone}`)
+}
+
+// 新核心：孤儿档案回流 —— 按 phone 命中 openid 为 NULL 的行（WorkFine/后台建档）→ attach openid，复用 user_id，不新建
+async function caseOrphanAttach() {
+  await ensureTestStore()
+  const orphanUserId = `${NS}_BP_ORPHAN`
+  await pgQuery(
+    `INSERT INTO client_wechat_users (user_id, openid, phone)
+     VALUES ($1, NULL, $2)
+     ON CONFLICT (user_id) DO UPDATE SET openid = NULL, phone = EXCLUDED.phone`,
+    [orphanUserId, PHONE_OK]
+  )
+  const res = await bindPhoneCloudID(TEST_OPENID, PHONE_OK)
+  expectSuccess(res)
+  if (res.data.userId !== orphanUserId) {
+    throw new Error(`expect reuse orphan user_id=${orphanUserId}, got ${res.data.userId}`)
+  }
+  // openid 被写入孤儿行，且该 phone 仍只有 1 行（无重复档案）
+  const rows = await pgQuery(
+    'SELECT user_id, openid FROM client_wechat_users WHERE phone = $1',
+    [PHONE_OK]
+  )
+  if (rows.length !== 1) throw new Error(`expect 1 row (no dup), got ${rows.length}`)
+  if (rows[0].openid !== TEST_OPENID) throw new Error(`openid not attached: ${rows[0].openid}`)
+}
+
 async function caseHappy() {
   await ensureTestStore()
   await seedLoggedInUser()
@@ -148,6 +190,8 @@ async function caseDirectPhoneDisabled() {
 }
 
 const CASES = [
+  ['walk-in lazy create: no prior row → bindPhone creates customer', caseWalkInLazyCreate],
+  ['orphan attach: phone-matched openid-NULL row → attach openid, reuse user_id', caseOrphanAttach],
   ['happy: bindPhone writes phone + updatedOrdersCount=0', caseHappy],
   ['backfill historical orders (client_user_id IS NULL → set)', caseBackfillHistoricalOrders],
   ['already bound → INVALID_PARAMS', caseAlreadyBound],

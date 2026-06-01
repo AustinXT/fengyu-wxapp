@@ -302,3 +302,36 @@
   margin-top: 32rpx;
 }
 
+.phone-bind-popup {
+  width: 560rpx;
+  padding: 48rpx 40rpx;
+  padding-bottom: calc(40rpx + env(safe-area-inset-bottom));
+  text-align: center;
+}
+
+.phone-bind-popup__title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 16rpx;
+}
+
+.phone-bind-popup__tips {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  margin-bottom: 40rpx;
+}
+
+.phone-bind-popup__btn {
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 30rpx;
+  border-radius: 44rpx;
+  line-height: 88rpx;
+  height: 88rpx;
+}
+
+.phone-bind-popup__btn::after {
+  border: none;
+}
+

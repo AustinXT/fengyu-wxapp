@@ -250,3 +250,21 @@
     </view>
   </view>
 </van-popup>
+
+<!-- 绑门店前未授权手机号 → 引导绑定手机号（授权后自动重提交绑门店） -->
+<van-popup
+  show="{{ showPhoneBind }}"
+  round
+  closeable
+  bind:close="onPhoneBindClose"
+>
+  <view class="phone-bind-popup">
+    <view class="phone-bind-popup__title">绑定手机号</view>
+    <view class="phone-bind-popup__tips">绑定门店前请先授权手机号</view>
+    <button
+      class="phone-bind-popup__btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >授权并继续绑定</button>
+  </view>
+</van-popup>

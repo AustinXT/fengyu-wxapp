@@ -32,20 +32,12 @@ async function login(ctx) {
   const now = new Date()
 
   if (users.length === 0) {
-    // 新用户,创建记录
-    const userId = await generateUserId()
-    await pg.query(
-      `INSERT INTO client_wechat_users (user_id, openid, created_at, updated_at, last_login_at)
-       VALUES ($1, $2, $3, $3, $3)`,
-      [userId, OPENID, now]
-    )
-
-    // 清除认证缓存，确保后续请求获取到新建的 userId
-    invalidateAuthCache(OPENID)
-
+    // 仅浏览、未授权手机号的访客不建库行（避免顾客管理出现纯空壳档案）。
+    // 顾客档案在 bindPhone 时才懒建/合并，对齐 staff 端 login 不建行的模式。
     ctx.result = {
       isNewUser: true,
-      userId,
+      userId: null,
+      openid: OPENID,
       phone: null,
       boundStoreId: null,
       boundStoreName: null,
@@ -61,6 +53,7 @@ async function login(ctx) {
     ctx.result = {
       isNewUser: false,
       userId: users[0].user_id,
+      openid: OPENID,
       phone: users[0].phone,
       name: users[0].name,
       avatarUrl: users[0].avatar_url,
@@ -118,38 +111,55 @@ async function bindPhone(ctx) {
 
   const now = new Date()
 
-  // 查询当前用户
-  const users = await pg.query(
-    'SELECT user_id, phone FROM client_wechat_users WHERE openid = $1',
+  // openid 预检：拦截换绑 / 残留行场景，避免后续 INSERT 命中 uq_client_users_openid。
+  // 顾客端 bindPhone 仅负责首次绑定；换手机号由管理后台操作。
+  const byOpenid = await pg.query(
+    'SELECT user_id, phone FROM client_wechat_users WHERE openid = $1 LIMIT 1',
     [OPENID]
   )
-
-  if (users.length === 0) {
-    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
-  }
-
-  // 首绑守卫：已绑定手机号的用户禁止走 bindPhone（换绑改由管理后台操作）
-  if (users[0].phone) {
+  if (byOpenid.length > 0 && byOpenid[0].phone) {
+    // 已绑定手机号 → 首绑守卫（phone 相同也视为已绑，换绑走后台）
     throw new Error('INVALID_PARAMS: 已绑定手机号，如需修改请联系门店')
   }
+  // byOpenid.length === 0 → 继续按 phone 查 / INSERT
+  // byOpenid.length > 0 且 phone 为空 → 残留行，下面 phone 查询命中后走 attach UPDATE
 
-  const userId = users[0].user_id
-
-  // 检查手机号是否已被其他用户绑定
-  const phoneUsers = await pg.query(
-    'SELECT user_id FROM client_wechat_users WHERE phone = $1 AND user_id != $2',
-    [phoneNumber, userId]
+  // 按手机号查找已有行（含 WorkFine 同步、管理后台手动建的孤儿档案）
+  const phoneRows = await pg.query(
+    'SELECT user_id, openid FROM client_wechat_users WHERE phone = $1 ORDER BY user_id DESC LIMIT 1',
+    [phoneNumber]
   )
 
-  if (phoneUsers.length > 0) {
-    throw new Error('INVALID_PARAMS: 该手机号已被其他用户绑定')
+  let userId
+  if (phoneRows.length > 0) {
+    // 按 phone 找到已有行
+    const row = phoneRows[0]
+    if (row.openid && row.openid !== OPENID) {
+      throw new Error('INVALID_PARAMS: 该手机号已被其他用户绑定')
+    }
+    // openid 为 NULL（孤儿档案回流）或就是本人 → 关联 openid，复用其 user_id
+    userId = row.user_id
+    await pg.query(
+      'UPDATE client_wechat_users SET openid = $1, last_login_at = $2, updated_at = $2 WHERE user_id = $3',
+      [OPENID, now, userId]
+    )
+  } else if (byOpenid.length > 0) {
+    // 残留 openid 行（phone 为空，如清库前的旧登录行）→ 直接写入手机号，复用其 user_id，
+    // 避免下面 INSERT 命中 uq_client_users_openid。
+    userId = byOpenid[0].user_id
+    await pg.query(
+      'UPDATE client_wechat_users SET phone = $1, last_login_at = $2, updated_at = $2 WHERE user_id = $3',
+      [phoneNumber, now, userId]
+    )
+  } else {
+    // 未找到任何行 → walk-in 新客，懒建顾客档案
+    userId = await generateUserId()
+    await pg.query(
+      `INSERT INTO client_wechat_users (user_id, openid, phone, created_at, updated_at, last_login_at)
+       VALUES ($1, $2, $3, $4, $4, $4)`,
+      [userId, OPENID, phoneNumber, now]
+    )
   }
-
-  // 更新手机号
-  await pg.query(
-    'UPDATE client_wechat_users SET phone = $1, updated_at = $2 WHERE user_id = $3',
-    [phoneNumber, now, userId]
-  )
 
   // 清除认证缓存，避免 requirePhone 仍读到旧的 phone: null
   invalidateAuthCache(OPENID)
@@ -238,8 +248,10 @@ async function bindStore(ctx) {
     [OPENID]
   )
 
-  if (users.length === 0) {
-    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
+  // 未授权手机号者不建顾客档案 → 绑门店前必须先绑手机号。
+  // 抛 PHONE_REQUIRED 让前端按 errorType 弹绑手机号弹窗。
+  if (users.length === 0 || !users[0].phone) {
+    throw new Error('PHONE_REQUIRED: 请先绑定手机号')
   }
 
   // 验证门店是否存在（从 PG stores + org_nodes 查询）
