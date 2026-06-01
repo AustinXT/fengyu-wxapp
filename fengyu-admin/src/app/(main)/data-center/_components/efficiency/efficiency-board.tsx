@@ -88,6 +88,7 @@ export function EfficiencyBoard() {
   }
 
   const kpis = data?.kpis ?? {}
+  const label = data?.timeRange.presetLabel ?? ""
 
   return (
     <div className="flex flex-col gap-6">
@@ -110,6 +111,8 @@ export function EfficiencyBoard() {
             columns={MARKET_COLUMNS}
             firstColLabel="市场"
             loading={loading}
+            exportFilename={`人效明细_按市场_${label}`}
+            exportSheetName="人效明细_按市场"
           />
         </TabsContent>
         <TabsContent value="store-rank">
@@ -119,6 +122,7 @@ export function EfficiencyBoard() {
             metrics={STORE_RANK_METRICS}
             showMarket
             loading={loading}
+            exportFilenamePrefix={`人效_门店排名榜_${label}`}
           />
         </TabsContent>
         <TabsContent value="staff-rank">
@@ -128,6 +132,7 @@ export function EfficiencyBoard() {
             metrics={STAFF_RANK_METRICS}
             showMarket
             loading={loading}
+            exportFilenamePrefix={`人效_员工排名榜_${label}`}
           />
         </TabsContent>
       </Tabs>

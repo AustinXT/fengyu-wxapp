@@ -1,7 +1,10 @@
 "use client"
 
 import { DataTable, type Column } from "@/components/ui/data-table"
+import { ExportButton } from "@/components/ui/export-button"
 import { formatByUnit } from "@/lib/data-center/format"
+import { exportToXlsx, type ExportColumn } from "@/lib/export-xlsx"
+import { headerWithUnit, metricCell } from "@/lib/data-center/export"
 import type { BreakdownRow, MetricUnit } from "@/lib/data-center/types"
 
 export interface BreakdownColumn {
@@ -13,6 +16,7 @@ export interface BreakdownColumn {
 /**
  * 按市场/按门店明细表（泛化，4 板块复用）。
  * 第一列为分组名（市场/门店）；showMarket=true 时额外插入「所属市场」列（按门店分组用）。
+ * 传入 exportFilename 时，标题行右侧显示导出按钮（导出当前 rows，原始数值）。
  */
 export function BreakdownTable({
   title,
@@ -21,6 +25,8 @@ export function BreakdownTable({
   firstColLabel = "名称",
   showMarket = false,
   loading = false,
+  exportFilename,
+  exportSheetName = "明细",
 }: {
   title?: string
   rows: BreakdownRow[]
@@ -28,6 +34,8 @@ export function BreakdownTable({
   firstColLabel?: string
   showMarket?: boolean
   loading?: boolean
+  exportFilename?: string
+  exportSheetName?: string
 }) {
   const tableColumns: Column<BreakdownRow>[] = [
     {
@@ -46,9 +54,40 @@ export function BreakdownTable({
     })),
   ]
 
+  async function handleExport() {
+    if (!exportFilename) return
+    const exportColumns: ExportColumn<BreakdownRow>[] = [
+      { header: firstColLabel, width: 18, accessor: (r) => r.groupName },
+      ...(showMarket
+        ? [{ header: "所属市场", width: 16, accessor: (r: BreakdownRow) => r.marketName ?? "" }]
+        : []),
+      ...columns.map((c) => ({
+        header: headerWithUnit(c.label, c.unit),
+        accessor: (r: BreakdownRow) => metricCell(r.metrics[c.key], c.unit),
+      })),
+    ]
+    await exportToXlsx({
+      filename: exportFilename,
+      sheetName: exportSheetName,
+      columns: exportColumns,
+      rows,
+    })
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      {title && <h3 className="text-sm font-semibold text-[var(--foreground)]">{title}</h3>}
+      {(title || exportFilename) && (
+        <div className="flex items-center justify-between gap-2">
+          {title ? (
+            <h3 className="text-sm font-semibold text-[var(--foreground)]">{title}</h3>
+          ) : (
+            <span />
+          )}
+          {exportFilename && (
+            <ExportButton onExport={handleExport} disabled={loading || rows.length === 0} />
+          )}
+        </div>
+      )}
       <DataTable columns={tableColumns} data={rows} loading={loading} emptyText="暂无数据" />
     </div>
   )
