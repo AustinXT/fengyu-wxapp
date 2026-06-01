@@ -47,8 +47,8 @@
 
     <!-- 门店信息卡 -->
     <view class="info-card">
-      <!-- 服务顾客 + 营业时间 顶部行 -->
-      <view wx:if="{{store.customer_count || store.business_hours}}" class="info-meta-row">
+      <!-- 服务顾客 + 营业时间 + 距离 顶部行 -->
+      <view wx:if="{{store.customer_count || store.business_hours || distanceText}}" class="info-meta-row">
         <view wx:if="{{store.customer_count}}" class="info-meta-item">
           <van-icon name="like" size="32rpx" color="#C0322A" />
           <text class="info-meta-text">已服务 {{store.customer_count}} 位顾客</text>
@@ -56,6 +56,10 @@
         <view wx:if="{{store.business_hours}}" class="info-meta-item">
           <van-icon name="clock-o" size="32rpx" color="#999999" />
           <text class="info-meta-text">{{store.business_hours}}</text>
+        </view>
+        <view wx:if="{{distanceText}}" class="info-meta-item">
+          <van-icon name="location-o" size="32rpx" color="#999999" />
+          <text class="info-meta-text">距您 {{distanceText}}</text>
         </view>
       </view>
 
@@ -80,6 +84,15 @@
         </view>
         <view class="info-action">
           <van-icon name="phone" size="40rpx" color="#FFFFFF" />
+        </view>
+      </view>
+
+      <!-- 停车信息 -->
+      <view wx:if="{{store.parking_info}}" class="info-line info-line-static">
+        <van-icon name="info-o" size="36rpx" color="#C0322A" />
+        <view class="info-line-content">
+          <text class="info-line-label">停车</text>
+          <text class="info-line-value">{{store.parking_info}}</text>
         </view>
       </view>
     </view>
