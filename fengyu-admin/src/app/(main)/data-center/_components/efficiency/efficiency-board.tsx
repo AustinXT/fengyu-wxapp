@@ -35,6 +35,23 @@ const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "techAvgProjects", label: "技师人均项目数", unit: "count" },
 ]
 
+// ── 按技师人效明细列（key 对应 byStaff[].metrics；销/耗同名枚举用 ·销/·耗 后缀区分）──
+const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
+  { key: "revenue", label: "当月业绩", unit: "amount" },
+  { key: "saleZxzh", label: "自销自耗·销", unit: "amount" },
+  { key: "saleTxzh", label: "他销自耗·销", unit: "amount" },
+  { key: "saleTxth", label: "他销他耗·销", unit: "amount" },
+  { key: "saleEco", label: "生态合作·销", unit: "amount" },
+  { key: "consumeZxzh", label: "自销自耗·耗", unit: "amount" },
+  { key: "consumeTxzh", label: "他销自耗·耗", unit: "amount" },
+  { key: "consumeTxth", label: "他销他耗·耗", unit: "amount" },
+  { key: "consumeEco", label: "生态合作·耗", unit: "amount" },
+  { key: "newMember", label: "纳客数", unit: "count" },
+  { key: "projectCount", label: "项目数", unit: "count" },
+  { key: "serviceHeadcount", label: "服务人头", unit: "count" },
+  { key: "serviceVisits", label: "服务人次", unit: "count" },
+]
+
 // ── 门店排名榜 metric（key 对应 storeRankings）────────────────────────
 const STORE_RANK_METRICS: RankingMetric[] = [
   { key: "revenue", label: "业绩", unit: "amount" },
@@ -102,6 +119,7 @@ export function EfficiencyBoard() {
       <Tabs defaultValue="detail">
         <TabsList>
           <TabsTrigger value="detail">按市场人效</TabsTrigger>
+          <TabsTrigger value="staff-detail">按技师人效</TabsTrigger>
           <TabsTrigger value="store-rank">门店排名榜</TabsTrigger>
           <TabsTrigger value="staff-rank">员工排名榜</TabsTrigger>
         </TabsList>
@@ -113,6 +131,20 @@ export function EfficiencyBoard() {
             loading={loading}
             exportFilename={`人效明细_按市场_${label}`}
             exportSheetName="人效明细_按市场"
+          />
+        </TabsContent>
+        <TabsContent value="staff-detail">
+          <BreakdownTable
+            rows={data?.byStaff ?? []}
+            columns={STAFF_DETAIL_COLUMNS}
+            firstColLabel="姓名"
+            textColumns={[
+              { key: "store", label: "门店" },
+              { key: "position", label: "职级" },
+            ]}
+            loading={loading}
+            exportFilename={`人效明细_按技师_${label}`}
+            exportSheetName="人效明细_按技师"
           />
         </TabsContent>
         <TabsContent value="store-rank">

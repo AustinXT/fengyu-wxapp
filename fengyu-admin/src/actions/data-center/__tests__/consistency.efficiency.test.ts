@@ -197,6 +197,32 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
+  describe('★ Part E 按技师人效明细 — 销/耗按 sales_category 拆分（员工维度全口径）', () => {
+    it('销售额按 sale_items.sales_category FILTER 四枚举值齐全', () => {
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'自销自耗'\s*\)/)
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'他销自耗'\s*\)/)
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'他销他耗'\s*\)/)
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'生态合作'\s*\)/)
+    })
+    it('销售额与当月业绩同源（revenue_by_emp_cat 含 SUM(sa.total_amount) AS total）', () => {
+      expect(adminBody).toMatch(/revenue_by_emp_cat\s+AS\s*\(/i)
+      expect(adminBody).toMatch(/COALESCE\(\s*SUM\(sa\.total_amount::numeric\)\s*,\s*0\)\s+AS\s+total/i)
+    })
+    it('实耗端纳入 他销他耗/生态合作（员工维度放开，区别于门店口径排除）', () => {
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+sit\.sales_category\s*=\s*'他销他耗'\s*\)/)
+      expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+sit\.sales_category\s*=\s*'生态合作'\s*\)/)
+    })
+    it('服务人头 COUNT(DISTINCT client_user_id) 区别于服务人次 COUNT(DISTINCT service_order_id)', () => {
+      expect(adminBody).toMatch(/COUNT\(DISTINCT\s+so2\.client_user_id\)\s+AS\s+headcount/i)
+      expect(adminBody).toMatch(/COUNT\(DISTINCT\s+sit\.service_order_id\)\s+AS\s+visits/i)
+    })
+    it('byStaff 行带门店/职级文本列（producer CTE 取 position_name + labels 映射）', () => {
+      expect(adminBody).toMatch(/sw\.position_name/i)
+      expect(adminSrc).toMatch(/store:\s*r\.store_name/)
+      expect(adminSrc).toMatch(/position:\s*r\.position_name/)
+    })
+  })
+
   describe('维护者提醒 — admin 注释提及移植源防漂移', () => {
     it('admin efficiency.ts 注释提及 mgmt-dashboard / 员工端移植源', () => {
       expect(adminSrc).toMatch(/mgmt-?dashboard|员工端|staffApi/i)
