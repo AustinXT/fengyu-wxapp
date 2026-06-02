@@ -106,6 +106,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
                     <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                     <th className="px-4 py-3 text-left font-medium text-gray-500">手机号</th>
                     <th className="px-4 py-3 text-left font-medium text-gray-500">原门店</th>
+                    <th className="px-4 py-3 text-left font-medium text-gray-500">目标门店</th>
                     <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
                     <th className="px-4 py-3 text-left font-medium text-gray-500">申请时间</th>
                     <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
@@ -118,6 +119,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
                       <td className="px-4 py-3 font-medium">{req.customerName || "—"}</td>
                       <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
                       <td className="px-4 py-3">{req.fromStoreName || "—"}</td>
+                      <td className="px-4 py-3">{req.toStoreName || "—"}</td>
                       <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{req.note || "—"}</td>
                       <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
                       <td className="px-4 py-3">
@@ -172,6 +174,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
                       <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">手机号</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">原门店</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">目标门店</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">原因</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">申请时间</th>
                       {canDelete && <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>}
@@ -186,6 +189,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
                         <td className="px-4 py-3 font-medium">{req.customerName || "—"}</td>
                         <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
                         <td className="px-4 py-3">{req.fromStoreName || "—"}</td>
+                        <td className="px-4 py-3">{req.toStoreName || "—"}</td>
                         <td className="px-4 py-3 text-[#999999] max-w-40 truncate">{req.rejectReason || "—"}</td>
                         <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
                         {canDelete && (
@@ -209,9 +213,9 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
 
       {/* 通过确认 */}
       <AlertDialog open={!!approveTarget} onOpenChange={(open) => !open && setApproveTarget(null)}>
-        <AlertDialogTitle>确认通过解绑？</AlertDialogTitle>
+        <AlertDialogTitle>确认通过转店？</AlertDialogTitle>
         <AlertDialogDescription>
-          通过后将清除该顾客的绑定门店和指定美容师，此操作不可撤销。
+          通过后将把该顾客的绑定门店转至目标门店，并清除原指定美容师，此操作不可撤销。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setApproveTarget(null)}>返回</AlertDialogCancel>
