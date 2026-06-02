@@ -328,7 +328,24 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
                       </td>
                       <td className="px-4 py-3 font-mono">{formatPhoneSafe(o.clientPhone) || "—"}</td>
                       <td className="px-4 py-3">{o.customerName || o.clientName || "—"}</td>
-                      <td className="px-4 py-3">{o.storeName || "—"}</td>
+                      <td className="px-4 py-3">
+                        {(() => {
+                          // 核对对象是 WorkFine 原始门店名（存于快照）；o.storeName 是映射后的新系统门店
+                          const snap = o.legacyRawSnapshot as { store_name?: string } | null
+                          const legacyStoreName = snap?.store_name || null
+                          const mappedStoreName = o.storeName || null
+                          return (
+                            <>
+                              <div>{legacyStoreName || mappedStoreName || "—"}</div>
+                              {legacyStoreName && mappedStoreName && legacyStoreName !== mappedStoreName && (
+                                <div className="text-[10px] text-[#999999]">
+                                  已归入 {mappedStoreName}
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </td>
                       <td className="px-4 py-3 text-right font-medium">
                         ¥ {Number(o.totalAmount).toFixed(2)}
                         {(() => {
