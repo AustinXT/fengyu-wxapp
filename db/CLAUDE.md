@@ -50,10 +50,10 @@ npm run db:studio     # Drizzle Studio 可视化管理
 2. `npm run db:generate` — drizzle-kit 产出 `migrations/00NN_<name>.sql` + 对应 `meta/00NN_snapshot.json` + 更新 `meta/_journal.json`
 3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
 4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
-5. **部署**：PR merge 后，对生产业务库跑 `npm run db:migrate`
-   - **5434/fengyu**（唯一生产业务库，admin + 全部云函数共用）
-   - 5433/fengyu_wxapp（冷备库）可选双跑，仅作灾备演练；不双跑不影响业务
-   - 详见下文「生产库与冷备库」小节
+5. **部署**：PR merge 后，**两个库都要迁**（双活，不是生产 + 冷备）：
+   - 开发期：`npm run db:migrate` 默认打 **5434/fengyu**（开发库，`db/.env` 里的 URL）
+   - 生产变更：显式传 URL 再对 **5433/fengyu_wxapp**（生产库）迁一次：`DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate`
+   - 详见下文「生产库与开发库（双活）」小节
 
 ### 严格禁止
 
@@ -71,24 +71,25 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
 - **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
 
-## 生产库与冷备库（2026-04-25 修订）
+## 生产库与开发库（双活，2026-06-06 修订）
 
-项目过去存在两个独立 PG 实例（详见 `project_db_dual_env.md` memory）。**2026-04-24** env drift 主动修复后，admin 与全部云函数（staffApi / clientApi / payNotify）已统一连同一个业务库；5433 自此停止接收业务写入：
+项目有两个独立 PG 实例，**自 2026-05-20 起按「开发库 / 生产库」双活划分**（取代 2026-04-24 的旧「生产 / 冷备」拓扑，旧拓扑已作废；详见 `project_db_dual_env.md` memory）。**两个库都在使用，schema 必须同时维护——不是生产 + 冷备的关系。**
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| **生产业务库** | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | admin web、staffApi、clientApi、payNotify、`db/.env` 的 `DATABASE_URL`（`db:migrate` 主目标） |
-| **冷备库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | 仅作历史镜像；不再接业务写入；schema 可选双跑作为灾备演练 |
+| **生产业务库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | 线上 admin（`docker-compose.prod.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序**。2026-06-05 实测仍在活跃写入（顾客/订单当日更新） |
+| **开发库** | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | 本地 admin（`.env.local`）、dev CloudBase env 的云函数、**仅 develop 版小程序**、**全部 e2e**、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标） |
 
-**任何 schema 变更必须**在 5434 跑 `db:migrate`，本地 `db:migrate` 默认目标已经是它（`db/.env` 里的 URL）。
+**schema 变更两个库都要迁**：
 
-如需把 schema 变更也镜像到 5433（作为灾备演练或保留快速回滚窗口）：
+- 开发期：`npm run db:migrate` 默认打 **5434/fengyu**（开发库，`db/.env` 里的 URL）。
+- 生产变更：显式传 URL 再对 **5433/fengyu_wxapp**（生产库）迁一次：
 
 ```bash
 DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate
 ```
 
-冷备库已自 2026-03-23 起几乎冻结，预计 1–2 周后彻底退役（参考 `notes/tickets/2026-04-25-staffapi-pg-connection-mismatch.md`）。在此之前，对它执行 migration 是**可选**操作，不双跑不影响业务。
+**数据修复 / backfill**：先分清目标库——开发 / 测试改 5434、生产改 5433，**永远显式传 `DATABASE_URL`**。**e2e 全部打 5434，绝不碰 5433 生产库。**
 
 ## Baseline reset 历史
 
@@ -125,7 +126,7 @@ docker rm -f drizzle-migrate-test
 
 1. **0018_black_madrox.sql**：同事务 `ALTER TYPE payment_flow_status ADD VALUE '待审批'` + 后续 `WHERE status='待审批'` 谓词 → PG 错误码 55P04（"New enum values must be committed before they can be used"）
 2. **0023_keen_freak.sql L44-L47**：与 0022 重复 `ADD CONSTRAINT chk_sale_alloc_ratio` 等 4 个约束（baseline reset 时这两个 migration 在生产是手工 INSERT 的，从未真正 apply）
-3. **0028_fine_maelstrom.sql 末尾**：硬编码 `ALTER DATABASE fengyu SET timezone=...`（生产库名）
+3. **0028_fine_maelstrom.sql 末尾**：硬编码 `ALTER DATABASE fengyu SET timezone=...`（`fengyu` 是开发库 5434 的库名，非通用）
 
 使用 bootstrap 脚本一键解决：
 
@@ -149,7 +150,7 @@ docker rm -f pg-from-zero
 - 幂等：再跑一次会全 SKIP
 - 与后续 `npm run db:migrate` 完全兼容
 
-**生产 5434 / 冷备 5433 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
+**生产 5433 / 开发 5434 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
 
 ## 同步脚本
 
