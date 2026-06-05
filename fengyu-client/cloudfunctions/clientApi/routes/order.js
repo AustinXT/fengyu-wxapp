@@ -677,6 +677,10 @@ async function create(ctx) {
   let finalPaymentMethod = paymentMethod
   let cardIdForDeduction = null
   let prepaidFullPaid = false
+  // zeroPayable：应付实金 = 0（券全额抵扣 / 储值卡全额抵扣 / 二者叠加把应付抵到 0）。
+  // 这类订单无款可付，创建即结清为 '已支付'，否则会卡在 '待支付' 死循环（0 元发不起线上支付、
+  // payment_method='无' 也走不了 confirmOffline）。prepaidFullPaid 是其"含储值卡"的子集。
+  let zeroPayable = false
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复序号
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
@@ -737,6 +741,7 @@ async function create(ctx) {
     finalPaymentMethod = effectivePaymentMethod
     cardIdForDeduction = cardId
     prepaidFullPaid = paidAmount === 0 && prepaidCardAmount > 0
+    zeroPayable = paidAmount === 0  // 券全额（prepaidCardAmount=0）也命中，prepaidFullPaid 不命中
 
     // 生成订单号（在事务+锁内，防并发重复）
     const dateStrOrder = shanghaiYYMMDD(now)
@@ -772,9 +777,9 @@ async function create(ctx) {
     // 2026-04-26 sale-order-domain-refactor:
     //   - paid_amount 列已 DROP；统一改用 received（已到账金额，初始 0；全额储值卡抵扣时 = prepaidCardAmount）
     //   - payable_amount = total_amount - prepaid_card_amount（应付实金，取代旧 paid_amount 在 create 时的语义）
-    //   - 全额储值卡抵扣单的 received = prepaidCardAmount（由储值卡抵扣支付，等同已收）
-    const initialStatus = prepaidFullPaid ? '已支付' : '待支付'
-    const initialReceived = prepaidFullPaid ? prepaidCardAmount : 0
+    //   - 全额抵扣单的 received = prepaidCardAmount（储值卡抵扣等同已收；券全额抵扣 prepaidCardAmount=0 → received=0）
+    const initialStatus = zeroPayable ? '已支付' : '待支付'
+    const initialReceived = zeroPayable ? prepaidCardAmount : 0
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
