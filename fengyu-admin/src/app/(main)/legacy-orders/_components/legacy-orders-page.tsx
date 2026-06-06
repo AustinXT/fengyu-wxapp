@@ -31,6 +31,7 @@ import {
 } from "@/actions/legacy-orders"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import PullWorkfineDialog from "./pull-workfine-dialog"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
@@ -88,7 +89,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       }
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "通过失败")
+      toast.error(actionErrorMessage(err, "通过失败"))
     } finally {
       setPending(false)
       setApproveTarget(null)
@@ -103,7 +104,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success("已作废")
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "作废失败")
+      toast.error(actionErrorMessage(err, "作废失败"))
     } finally {
       setPending(false)
       setRejectTarget(null)
@@ -126,7 +127,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       }
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "更新失败")
+      toast.error(actionErrorMessage(err, "更新失败"))
     } finally {
       setPending(false)
       setPhoneTarget(null)
@@ -151,7 +152,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success(`金额已更新：¥${res.from} → ¥${res.to}（核对通过后才重算标签）`)
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "更新失败")
+      toast.error(actionErrorMessage(err, "更新失败"))
     } finally {
       setPending(false)
       setAmountTarget(null)
@@ -170,7 +171,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success(`批量通过成功 ${res.approvedCount} 条；影响 ${res.affectedUserIds.length} 位顾客`)
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "批量通过失败")
+      toast.error(actionErrorMessage(err, "批量通过失败"))
     } finally {
       setPending(false)
       setBatchOpen(false)

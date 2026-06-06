@@ -22,6 +22,7 @@ import {
   type AvailableStore,
 } from "@/actions/legacy-orders"
 import { formatDate as fmtDate } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 
 interface Props {
   open: boolean
@@ -95,7 +96,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
         pickCandidate(res[0])
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "搜索失败")
+      toast.error(actionErrorMessage(err, "搜索失败"))
     } finally {
       setSearching(false)
     }
@@ -127,7 +128,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       )
       setSelectedOrderNos(defaultSel)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "预览失败")
+      toast.error(actionErrorMessage(err, "预览失败"))
       setStep("search")
     } finally {
       setLoadingOrders(false)
@@ -190,7 +191,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
         router.refresh()
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "导入失败")
+      toast.error(actionErrorMessage(err, "导入失败"))
     } finally {
       setImporting(false)
     }
