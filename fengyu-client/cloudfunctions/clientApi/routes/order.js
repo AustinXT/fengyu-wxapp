@@ -793,7 +793,7 @@ async function create(ctx) {
         ctx.auth.phone || null, customerName,
         totalAmount, prepaidCardAmount, initialReceived, paidAmount, effectivePaymentMethod,
         preferredStaffWfId || null, inputCouponId || null, couponDiscount,
-        prepaidFullPaid ? now : null
+        zeroPayable ? now : null
       ]
     )
 
@@ -871,9 +871,18 @@ async function create(ctx) {
         )
       }
     }
+
+    // 零应付单（券/卡全额抵扣）补结算：积分链净额差值法（幂等）+ 会员等级即时重算。
+    // 券全额单 received=0 → netSettled=0 → delta=0 → 无积分写入；卡全额单 received=卡额，
+    // 与既有 confirmPrepaidFull 口径一致。零应付单永远不会有 payNotify/confirmOffline 来触发结算，
+    // 故必须在创建时就地结算（与"所有转已支付的触发点走同一入口"原则一致）。
+    if (zeroPayable) {
+      await settlePointsSafe(client, orderNo, 'clientApi.create.zeroPayable')
+      await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
+    }
   })
 
-  if (prepaidFullPaid) {
+  if (zeroPayable) {
     ctx.result = {
       orderNo,
       saleOrderId: orderNo,
@@ -882,7 +891,9 @@ async function create(ctx) {
       paidAmount: finalPaidAmount,
       paymentMethod: finalPaymentMethod,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      // 卡全额抵扣保留 'prepaid_card_full'（前端老逻辑判定）；券全额抵扣用 'coupon_full'。
+      // 两者前端处理一致（跳详情、不唤起支付），reason 仅供文案/埋点区分。
+      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : 'coupon_full',
       paymentParams: null,
     }
     return

@@ -281,6 +281,64 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(0)
   })
 
+  test('券全额抵扣（totalAmount=0）→ 创建即结清「已支付」+ reason=coupon_full，不扣卡、不写 amount=0 流水', async () => {
+    // 回归 2026-06-05 bug：券全额抵扣订单卡在「待支付」死循环
+    //   （0 元发不起线上支付、payment_method='无' 也走不了 confirmOffline → 顾客端两界面循环）
+    mockBaseCreateQueries({ price: '200' })
+    // 现金券 ¥200 足额抵掉 ¥200 → totalAmount=0、prepaidCardAmount=0（无卡）
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-full', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '现金券', discount_value: 200, min_spend: 0,
+      applicable_category_ids: null, applicable_store_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1' }]) // 品项分类
+    pg.query.mockResolvedValueOnce([{ name: '张三' }]) // 顾客名
+
+    const txnQueries = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          const s = String(sql)
+          txnQueries.push({ sql: s, params })
+          if (/UPDATE\s+user_coupons/i.test(s)) return { rows: [], rowCount: 1 }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-full',
+      useCard: false,
+    })
+    await routes.create(ctx)
+
+    // 1) 应付为 0 → 创建即结清，不进任何支付/收款通道
+    expect(ctx.result.totalAmount).toBe(0)
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.reason).toBe('coupon_full')
+    expect(ctx.result.paymentParams).toBeNull()
+
+    // 2) 订单主表 INSERT：status='已支付'、received=0、payment_method='无'、paid_at 非空
+    // params: [0]orderNo [1]status [2]docType [3]market [4]store [5]now [6]userId
+    //         [7]phone [8]name [9]total [10]prepaidCard [11]received [12]payable [13]payment_method
+    //         [14]preferredStaff [15]couponId [16]couponDiscount [17]paid_at
+    const orderInsert = txnQueries.find(q => /INSERT INTO sale_orders/.test(q.sql))
+    expect(orderInsert).toBeDefined()
+    expect(orderInsert.params[1]).toBe('已支付')
+    expect(orderInsert.params[11]).toBe(0)   // received=0（券抵扣无到账）
+    expect(orderInsert.params[13]).toBe('无') // payment_method
+    expect(orderInsert.params[17]).not.toBeNull() // paid_at=now
+
+    // 3) 无储值卡（prepaidCardAmount=0）：不扣卡、不写 amount=0 储值卡抵扣流水（否则违 chk_sop_amount_sign）
+    expect(txnQueries.find(q => /UPDATE prepaid_cards/.test(q.sql))).toBeUndefined()
+    expect(txnQueries.find(q => /INSERT INTO card_transactions/.test(q.sql))).toBeUndefined()
+    expect(txnQueries.find(q => /INSERT INTO sale_order_payments/.test(q.sql))).toBeUndefined()
+  })
+
   test('优惠券已失效 → INVALID_PARAMS', async () => {
     mockBaseCreateQueries()
     // 优惠券不存在或已过期

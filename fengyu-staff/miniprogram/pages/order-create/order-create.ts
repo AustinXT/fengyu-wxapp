@@ -176,8 +176,10 @@ interface ShopInitResponse {
 
 interface OrderCreateResponse {
   saleOrderId: string;
-  /** 订单初始状态；全额储值卡抵扣时云端直接结清为 '已支付'（无需进 QR/收款页） */
+  /** 订单初始状态；应付实金=0（券/卡全额抵扣）时云端直接结清为 '已支付'（无需进 QR/收款页） */
   status?: string;
+  /** 储值卡抵扣金额；用于区分"卡全额抵扣"与"券全额抵扣"的结清 Toast 文案 */
+  prepaidCardAmount?: number;
 }
 
 interface CouponAvailableResponse {
@@ -1444,9 +1446,12 @@ Page({
         couponDiscount: 0,
         paymentMethod: '微信',
       });
-      // 全额储值卡抵扣（payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
+      // 应付实金=0（券/卡全额抵扣，payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
       if (res.status === '已支付') {
-        wx.showToast({ title: '储值卡已全额抵扣，订单已结清', icon: 'none', duration: 2500 });
+        const title = Number(res.prepaidCardAmount || 0) > 0
+          ? '储值卡已全额抵扣，订单已结清'
+          : '优惠券已全额抵扣，订单已结清';
+        wx.showToast({ title, icon: 'none', duration: 2500 });
       } else {
         wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
       }

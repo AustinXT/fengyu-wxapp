@@ -707,6 +707,10 @@ async function create(ctx) {
   // ========== 款项流水（sale_order_payments）语义 ==========
   // payable_amount = total - prepaid_card_amount（扣卡后的"应付现金金额"冗余列）
   const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+  // zeroPayable：应付实金 = 0（券全额抵扣 / 储值卡全额抵扣 / 二者叠加把应付抵到 0）。
+  // 无款可付，创建即结清为'已支付'，否则卡在'待支付'死循环（0 元发不起线上支付、
+  // payment_method='无' 也走不了 confirmOffline）。isFullCardCoverage（含储值卡）是其子集。
+  const zeroPayable = payableAmount === 0
 
   // receivedAmount（本次现场实收）= Σ 行实付（前端传入，默认 = 行应付）
   //   - 充值卡抵扣 + 行实付汇总 不应超过 totalAmount；若超出（默认场景下勾上充值卡）自动 cap 至 payableAmount
@@ -727,10 +731,10 @@ async function create(ctx) {
   const paidAmount = isOnlineMethod ? 0 : receivedAmount
 
   // effectivePaymentMethod 仅影响 sale_orders.payment_method 展示（与原逻辑对齐）：
-  //   - 储值卡全额抵扣（payable_amount=0，即 prepaid=total）→ '无'（现金通道无需使用）
+  //   - 应付实金=0（券/卡全额抵扣，payable_amount=0）→ '无'（现金通道无需使用）
   //   - 其他：保留前端传入的 paymentMethod
   let effectivePaymentMethod
-  if (payableAmount === 0 && prepaidCardAmount > 0) {
+  if (zeroPayable) {
     effectivePaymentMethod = '无'
   } else {
     effectivePaymentMethod = paymentMethod
@@ -779,12 +783,13 @@ async function create(ctx) {
     //   0 < paid + prepaid < total_amount      → '部分支付'
     //   paid + prepaid == total_amount         → '待支付'（线下全额仍待店长 confirmOffline 入账；
     //                                              通过 payment_method='线下' 识别"已选线下、待确认"）
-    // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，事务内即时扣卡 + 结清。
-    // 优先于线上判定——线上全额抵扣同样无需等 payNotify。
+    // 零应付（payable==0：券全额 / 储值卡全额 / 二者叠加）：无现金可收，创建即结清。
+    // 优先于线上判定——线上零应付同样无需等 payNotify。isFullCardCoverage 是其"含储值卡"子集，
+    // 仅用于"是否需要事务内扣卡 + recalc"分支（券全额 card=0 无卡可扣、走 per-item 摊次）。
     const isFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
     const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
     let initialStatus
-    if (isFullCardCoverage) {
+    if (zeroPayable) {
       initialStatus = '已支付'
     } else if (isOnlineMethod) {
       initialStatus = '待支付'
@@ -795,11 +800,12 @@ async function create(ctx) {
     } else {
       initialStatus = '待支付'
     }
-    // received 列：全额抵扣 = prepaid（已结清，与 '储值卡抵扣' 流水一致）；其余 = 本次现金 paidAmount。
-    const receivedColumn = isFullCardCoverage ? prepaidCardAmount : paidAmount
+    // received 列：零应付 = prepaid（券全额时 prepaid=0 → received=0；卡全额时 = 卡额，与 '储值卡抵扣' 流水一致）；
+    // 其余 = 本次现金 paidAmount。
+    const receivedColumn = zeroPayable ? prepaidCardAmount : paidAmount
     // paid_at 语义：payments 行已支付即"有钱到账"时间，冗余到 sale_orders.paid_at；
-    // 挂账订单无入账 → NULL。线下全额 / 全额储值卡抵扣订单已结清，paid_at 落 now。
-    const paidAtValue = (paidAmount > 0 || isFullCardCoverage) ? now : null
+    // 挂账订单无入账 → NULL。线下全额 / 零应付（券/卡全额抵扣）订单已结清，paid_at 落 now。
+    const paidAtValue = (paidAmount > 0 || zeroPayable) ? now : null
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -939,8 +945,9 @@ async function create(ctx) {
       }
     }
 
-    // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
-    if (isFullCardCoverage) {
+    // 零应付即结清：触发与 confirmOffline 已支付分支一致的结算副作用（档位/客户分类/会员/积分/分享礼）。
+    // 券全额单 receivedAmount=prepaidCardAmount=0 → 积分链净额=0 无写入、grantShareGift 自带 paid>0 门控跳过。
+    if (zeroPayable) {
       await settlePaidByCardAtCreation(client, {
         saleOrderId,
         clientUserId,
@@ -962,12 +969,11 @@ async function create(ctx) {
   })
 
   // PR-2: status 与事务内 initialStatus 决策树保持一致
-  //   全额储值卡抵扣 → '已支付'（创建即扣卡结清）；线上 → '待支付'；paid+prepaid=0 → '待支付'；
+  //   零应付（券/卡全额抵扣）→ '已支付'（创建即结清）；线上 → '待支付'；paid+prepaid=0 → '待支付'；
   //   部分 → '部分支付'；线下全额（现金）→ '待支付'（待店长 confirmOffline）
-  const resolvedFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
   const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
   let resolvedStatus
-  if (resolvedFullCardCoverage) {
+  if (zeroPayable) {
     resolvedStatus = '已支付'
   } else if (isOnlineMethod) {
     resolvedStatus = '待支付'

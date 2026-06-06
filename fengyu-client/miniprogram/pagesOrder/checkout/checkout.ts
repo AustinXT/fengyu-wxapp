@@ -559,14 +559,15 @@ Page({
       const saleOrderId = data?.saleOrderId || data?.orderNo;
       if (!saleOrderId) throw new Error('创建订单失败');
 
-      // 全额抵扣：后端已置 '已支付'，跳详情页不唤起支付
+      // 全额抵扣（券/卡）：后端已置 '已支付'，跳详情页不唤起支付
       const isPrepaidFull = data?.status === '已支付'
         || data?.reason === 'prepaid_card_full'
+        || data?.reason === 'coupon_full'
         || (data?.paymentParams === null && Number(data?.paidAmount || 0) === 0);
       if (isPrepaidFull) {
         if (this.data.fromCart) clearCart();
         if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
-        Toast.success('已使用储值卡支付');
+        Toast.success(Number(data?.prepaidCardAmount || 0) > 0 ? '已使用储值卡支付' : '已使用优惠券抵扣');
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
         return;
       }
