@@ -21,6 +21,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 
 export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -82,7 +83,7 @@ export async function cascadeRefund(
                  )
              AND is_void = false
         `)
-    voidedAllocations = (res as { rowCount?: number }).rowCount ?? 0
+    voidedAllocations = rowsAffected(res)
   }
 
   // ── 2) service_commissions 软删（voided_at + voided_reason + is_void） ──
@@ -116,7 +117,7 @@ export async function cascadeRefund(
                  )
              AND voided_at IS NULL
         `)
-    voidedCommissions = (res as { rowCount?: number }).rowCount ?? 0
+    voidedCommissions = rowsAffected(res)
   }
 
   // ── 3) user_coupons 已用且未过期券恢复（部分退款不退券） ──────────
@@ -133,7 +134,7 @@ export async function cascadeRefund(
          AND status = '已使用'
          AND expire_at > NOW()
     `)
-    refundedCoupons = (res as { rowCount?: number }).rowCount ?? 0
+    refundedCoupons = rowsAffected(res)
   }
 
   // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算 ──
@@ -210,7 +211,7 @@ export async function cascadeRefund(
              AND product_type = '家居产品'
              AND COALESCE(picked_up_quantity, 0) > 0
         `)
-    rolledBackPickups = (res as { rowCount?: number }).rowCount ?? 0
+    rolledBackPickups = rowsAffected(res)
   }
 
   return {

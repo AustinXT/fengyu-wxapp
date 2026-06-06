@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
@@ -171,7 +172,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
             END)
      RETURNING customer_type
   `)
-  const updRowCount = (updRes as { rowCount?: number }).rowCount ?? 0
+  const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount > 0 && updRows[0]?.customer_type === '会员客') {
     await tx.execute(sql`
@@ -892,7 +893,7 @@ export const confirmOfflinePayment = withPermission(
             updated_at = NOW()
         WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
       `)
-      if ((updRes as any).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         // 并发：状态在本事务可见性内已变更
         return { matched: false as const }
       }
@@ -3125,7 +3126,7 @@ export const recordPayment = withPermission(
             updated_at = NOW()
         WHERE sale_order_id = ${saleOrderId} AND status = ${locked.status}
       `)
-      if ((updRes as any).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
       }
 

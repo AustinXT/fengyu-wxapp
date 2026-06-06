@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
@@ -897,7 +898,7 @@ export const approveRefund = withPermission(
                audit_at = ${nowIso}
          WHERE id = ${idNum} AND status = '待审批'
       `)
-      if ((updRes as { rowCount?: number }).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
 
@@ -1093,7 +1094,7 @@ export const rejectRefund = withPermission(
                audit_remark = ${reason}
          WHERE id = ${idNum} AND status = '待审批'
       `)
-      if ((updRes as { rowCount?: number }).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
     })
