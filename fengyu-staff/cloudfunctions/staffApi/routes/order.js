@@ -1515,7 +1515,7 @@ async function list(ctx) {
     // 「待支付」语义合并「部分支付」（与 staff.todoList 同步：未结清都算待店长收款）
     if (status === '待支付') {
       params.push(['待支付', '部分支付'])
-      whereExtra += ` AND o.status = ANY($${params.length}::text[])`
+      whereExtra += ` AND o.status = ANY($${params.length}::order_status[])`
     } else {
       params.push(status)
       whereExtra += ` AND o.status = $${params.length}`
