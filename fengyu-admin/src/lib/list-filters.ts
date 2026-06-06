@@ -47,6 +47,8 @@ export function parseAllocationOrderFilters(params: Record<string, string | unde
     dateTo: params.to,
     search: params.q,
     allocationStatus: params.allocStatus,
+    // 只保留参与营业额分配的订单类型（排除寄存单/充值单/内部单）
+    allocationEligibleOnly: true,
   }
 }
 

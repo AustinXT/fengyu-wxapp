@@ -19,6 +19,10 @@ const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','
 const MAX_PER_POOL = 3
 const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
 
+// 营业额口径白名单：仅「销售单」「转换单」产生营业额、参与销售提成分配。
+// 寄存单/充值单/内部单不计营业额（与 dashboard / staff.js / mgmt-dashboard.js 口径一致）。
+const ALLOCATABLE_ORDER_TYPES = ['销售单', '转换单']
+
 // 分配冻结窗口：订单支付（paid_at）超过 N 天后，店长端禁止再修改分配（admin 后台不受限）
 const FREEZE_DAYS = 3
 
@@ -114,7 +118,7 @@ async function save(ctx) {
 
   // 查询订单
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at, sale_order_type FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -124,6 +128,9 @@ async function save(ctx) {
 
   const order = orders[0]
 
+  if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
+    throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
   if (order.status !== '已支付') {
     throw new Error('PERMISSION_DENIED: 仅已支付订单可进行提成分配')
   }
@@ -432,6 +439,7 @@ async function pendingList(ctx) {
     WHERE o.store_id = $1
       AND o.status = '已支付'
       AND o.allocation_status = $2
+      AND o.sale_order_type IN ('销售单', '转换单')
     ORDER BY o.paid_at DESC
     LIMIT $3 OFFSET $4
   `, [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset])
@@ -485,7 +493,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
-            preferred_employee_id, client_phone, customer_name, paid_at
+            preferred_employee_id, client_phone, customer_name, paid_at, sale_order_type
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
@@ -493,6 +501,10 @@ async function suggest(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
   }
   const order = orders[0]
+
+  if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
+    throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
 
   // 2. 解析指定员工（P2-14 Q5：按 skills 建议角色池）
   let beauticianInfo = null

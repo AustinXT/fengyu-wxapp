@@ -307,6 +307,11 @@ export interface OrderFilters {
   hasPrepaidDeduction?: boolean
   /** 分配状态筛选（'待分配' | '已分配'，用于营业额分配页） */
   allocationStatus?: string
+  /**
+   * 仅营业额分配页/导出传 true：只保留参与营业额分配的订单类型（销售单/转换单），
+   * 排除寄存单/充值单/内部单（口径与 dashboard 待分配计数一致）。
+   */
+  allocationEligibleOnly?: boolean
   page?: number
   pageSize?: number
 }
@@ -360,6 +365,10 @@ function buildOrderConditions(
   }
   if (filters.allocationStatus === '待分配' || filters.allocationStatus === '已分配') {
     conditions.push(eq(saleOrders.allocationStatus, filters.allocationStatus))
+  }
+  // 营业额分配页/导出：只保留参与营业额分配的订单类型，排除寄存单/充值单/内部单
+  if (filters.allocationEligibleOnly) {
+    conditions.push(inArray(saleOrders.saleOrderType, ['销售单', '转换单']))
   }
 
   return conditions

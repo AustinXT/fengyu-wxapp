@@ -41,6 +41,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000' },
@@ -72,6 +73,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000' },
@@ -112,6 +114,7 @@ describe('allocation.save', () => {
       status: '待支付',
       allocation_status: null,
       store_id: 'store-001',
+      sale_order_type: '销售单',
     }])
 
     await expect(allocationRoutes.save(ctx))
@@ -132,6 +135,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000' },
@@ -163,6 +167,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000' },
@@ -192,6 +197,7 @@ describe('allocation.save', () => {
       status: '已支付',
       allocation_status: 'done', // 非 pending/allocated → 异常
       store_id: 'store-001',
+      sale_order_type: '销售单',
     }])
     await expect(allocationRoutes.save(ctx))
       .rejects.toThrow(/PERMISSION_DENIED.*分配状态异常/)
@@ -206,6 +212,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([]) // 空 orderItems → itemIds.length === 0 → 跳过 DELETE
 
@@ -232,6 +239,7 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
 
@@ -252,11 +260,46 @@ describe('allocation.save', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
 
     await expect(allocationRoutes.save(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*roleType/)
+  })
+
+  test('寄存单拒绝营业额分配（INVALID_STATE）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-DEP-001',
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '美容师', allocationRatio: 0.3 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-DEP-001',
+      status: '已支付',
+      allocation_status: '待分配',
+      store_id: 'store-001',
+      sale_order_type: '寄存单',
+    }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_STATE.*不参与营业额分配/)
+  })
+
+  test('充值单拒绝营业额分配（INVALID_STATE）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-RC-001',
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '美容师', allocationRatio: 0.3 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-RC-001',
+      status: '已支付',
+      allocation_status: '待分配',
+      store_id: 'store-001',
+      sale_order_type: '充值单',
+    }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_STATE.*不参与营业额分配/)
   })
 })
 
@@ -279,6 +322,7 @@ describe('allocation.save — skills-based pools (P2-14)', () => {
         status: '已支付',
         allocation_status: '待分配',
         store_id: 'store-001',
+        sale_order_type: '销售单',
       }])
       .mockResolvedValueOnce(items)
   }
@@ -527,6 +571,16 @@ describe('allocation.pendingList', () => {
     expect(ctx.result.page).toBe(1)
   })
 
+  test('SQL 仅查营业额口径订单类型（排除寄存单/充值单/内部单）', async () => {
+    const ctx = createManagerCtx({ page: 1, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([])
+
+    await allocationRoutes.pendingList(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("sale_order_type IN ('销售单', '转换单')")
+  })
+
   test('支持 allocationStatus=已分配（状态切换）', async () => {
     const ctx = createManagerCtx({ page: 1, pageSize: 10, allocationStatus: '已分配' })
 
@@ -649,7 +703,7 @@ describe('allocation.suggest', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
-        store_id: 'store-001', market_name: '华东市场',
+        store_id: 'store-001', market_name: '华东市场', sale_order_type: '销售单',
         preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -675,7 +729,9 @@ describe('allocation.suggest', () => {
     expect(ctx.result.allocLines).toHaveLength(1)
     expect(ctx.result.allocLines[0].roleType).toBe('美容师')
     expect(ctx.result.allocLines[0].commissionRate).toBe(0.3)
-    expect(ctx.result.allocLines[0].amount).toBe('300.00')
+    // P2-14：allocLine 不再下发 amount（金额由前端按 实收 × allocationRatio 计算），默认比例 100%
+    expect(ctx.result.allocLines[0].amount).toBeUndefined()
+    expect(ctx.result.allocLines[0].allocationRatio).toBe(1.00)
     expect(ctx.result.totalAmount).toBe(1000)
   })
 
@@ -685,7 +741,7 @@ describe('allocation.suggest', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
-        store_id: 'store-001', market_name: '华东市场',
+        store_id: 'store-001', market_name: '华东市场', sale_order_type: '销售单',
         preferred_employee_id: 'emp-multi',
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -717,7 +773,7 @@ describe('allocation.suggest', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-002', status: '已支付', allocation_status: '待分配',
-        store_id: 'store-001', market_name: '华东市场',
+        store_id: 'store-001', market_name: '华东市场', sale_order_type: '销售单',
  preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -740,7 +796,7 @@ describe('allocation.suggest', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-003', status: '已支付', allocation_status: '待分配',
-        store_id: 'store-001', market_name: '华东市场',
+        store_id: 'store-001', market_name: '华东市场', sale_order_type: '销售单',
  preferred_employee_id: 'emp-b2',
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -782,7 +838,7 @@ describe('allocation.suggest', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-004', status: '已支付', allocation_status: '待分配',
-        store_id: 'store-001', market_name: '',
+        store_id: 'store-001', market_name: '', sale_order_type: '销售单',
  preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -795,5 +851,19 @@ describe('allocation.suggest', () => {
 
     expect(ctx.result.rates).toEqual([])
     expect(ctx.result.allocLines).toEqual([])
+  })
+
+  test('寄存单拒绝分配建议（INVALID_STATE）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-DEP-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-DEP-001', status: '已支付', allocation_status: '待分配',
+      store_id: 'store-001', market_name: '华东市场', sale_order_type: '寄存单',
+      preferred_employee_id: 'emp-b1',
+      client_phone: '13800001111', customer_name: '张三',
+    }])
+
+    await expect(allocationRoutes.suggest(ctx))
+      .rejects.toThrow(/INVALID_STATE.*不参与营业额分配/)
   })
 })

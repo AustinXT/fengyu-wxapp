@@ -187,7 +187,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt, gt } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 
@@ -1670,6 +1670,26 @@ describe('getOrdersPaginated — 服务端分页', () => {
       (c: any[]) => c[0] === 'prepaid_card_amount',
     )
     expect(prepaidGtCalls).toHaveLength(0)
+  })
+
+  it('allocationEligibleOnly=true → inArray(sale_order_type, [销售单, 转换单]) 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ allocationEligibleOnly: true })
+
+    expect(inArray).toHaveBeenCalledWith('sale_order_type', ['销售单', '转换单'])
+  })
+
+  it('allocationEligibleOnly 缺省 → 不按订单类型白名单过滤', async () => {
+    mockPaginatedChain(0, [])
+    ;(inArray as any).mockClear()
+
+    await getOrdersPaginated({})
+
+    const typeWhitelistCalls = (inArray as any).mock.calls.filter(
+      (c: any[]) => c[0] === 'sale_order_type',
+    )
+    expect(typeWhitelistCalls).toHaveLength(0)
   })
 
   it('paymentMethod=无 筛选 → eq(payment_method, 无) 被调用', async () => {

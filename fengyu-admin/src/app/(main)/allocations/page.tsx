@@ -47,6 +47,8 @@ export default async function Page({
   const { data: orders, total } = await getOrdersPaginated({
     status: '已支付',
     allocationStatus: allocStatus,
+    // 只保留参与营业额分配的订单类型（排除寄存单/充值单/内部单）
+    allocationEligibleOnly: true,
     storeId,
     dateFrom,
     dateTo,
