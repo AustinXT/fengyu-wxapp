@@ -19,7 +19,7 @@
         <view class="profile-main">
           <view class="profile-name-row">
             <text class="profile-name">{{customer.name || '—'}}</text>
-            <view wx:if="{{customer.memberLevel === 'VIP'}}" class="vip-badge">VIP</view>
+            <view wx:if="{{customer.memberLevel}}" class="vip-badge">{{customer.memberLevel}}</view>
           </view>
           <text class="profile-phone">{{isManager ? customer.phone : customer.phoneMasked}}</text>
         </view>
