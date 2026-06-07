@@ -1015,17 +1015,15 @@ export default function OrderCreatePageClient({
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
                 <Select className="mt-1" value={paymentMethod} onChange={(e) => {
-                  const v = e.target.value
-                  setPaymentMethod(v)
-                  // 切到线下：开单不收款，逐行"实付金额"不可改，清掉已设的实付覆盖避免汇总歧义
-                  if (v === '线下') setPriceOverrides({})
+                  // 线下与线上一致：逐行实付可编辑，切换支付方式保留已填实付
+                  setPaymentMethod(e.target.value)
                 }}>
                   <option value="微信">微信支付</option>
                   <option value="支付宝">支付宝</option>
                   <option value="线下">线下支付</option>
                 </Select>
                 {paymentMethod === '线下' && (
-                  <p className="text-xs text-[#999999] mt-1">开单不收款，提交后在「确认收款」环节登记实收</p>
+                  <p className="text-xs text-[#999999] mt-1">逐行填实付（同线上），提交后按明细实付合计「确认收款」入账（等同线上扫码）</p>
                 )}
               </div>
               <div>
@@ -1114,8 +1112,8 @@ export default function OrderCreatePageClient({
                   {cart.map((item, idx) => {
                     const a = perItemAmounts[idx]
                     if (!a) return null
-                    // 线下：开单不收款，逐行实付不可改（实收在「确认收款」登记）；内部单同样锁定
-                    const lockReceived = suppressOverride || paymentMethod === '线下'
+                    // 内部单锁定逐行实付（禁用改价）；线下与线上一致，逐行实付可编辑（实收合计在「确认收款」一键入账）
+                    const lockReceived = suppressOverride
                     const override = lockReceived ? undefined : priceOverrides[item.sku.skuId]
                     const hasReceivedOverride = !lockReceived && override?.received != null && override.received !== ''
 
@@ -1392,8 +1390,8 @@ export default function OrderCreatePageClient({
                     setCreatedOrderId(res.saleOrderId || "")
                     setCreatedStatus(res.status ?? null)
                     setCreatedPayable(salePayable)
-                    // 线下：预填确认金额 = 抵扣后应付现金（顾客若现场只付一部分，可在确认收款时下调）
-                    setConfirmAmountInput(paymentMethod === '线下' ? salePayable.toFixed(2) : "")
+                    // 线下：确认收款金额 = 逐行实付合计（totalReceived）；有储值卡抵扣时 min 兜底防超额
+                    setConfirmAmountInput(paymentMethod === '线下' ? Math.min(totalReceived, salePayable).toFixed(2) : "")
                     setConfirmResultStatus(null)
                     setConversionResult(null)
                     setStep(3)
@@ -1492,7 +1490,7 @@ export default function OrderCreatePageClient({
                   : createdStatus === '已支付'
                     ? `订单已由储值卡全额抵扣 ¥${saleCardAmount.toFixed(2)}，已结清`
                     : paymentMethod === '线下'
-                      ? '线下支付订单：开单时未收款，请在下方核对实收金额后点击「确认收款」'
+                      ? '线下收款（等同线上扫码）：按商品明细实付合计，点「确认收款」入账'
                       : '请将二维码展示给顾客，扫码进入小程序完成支付'}
               </p>
             )}
@@ -1514,17 +1512,17 @@ export default function OrderCreatePageClient({
               <div className="pt-2 space-y-2 max-w-xs mx-auto">
                 {!rechargeResult && !conversionResult && (
                   <>
-                    <label className="block text-sm text-[#999999] text-left">本次确认收款金额（¥）</label>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      className="text-right"
-                      value={confirmAmountInput}
-                      onChange={(e) => setConfirmAmountInput(e.target.value)}
-                    />
+                    <div className="rounded bg-[#F5F5F5] px-4 py-3 text-left">
+                      <p className="text-sm text-[#999999]">将确认收款（按商品明细实付合计）</p>
+                      <p className="text-2xl font-semibold text-[var(--primary)]">¥{Number(confirmAmountInput || 0).toFixed(2)}</p>
+                      {Number(confirmAmountInput || 0) + 0.005 < createdPayable && (
+                        <p className="text-xs text-[#D4820A] mt-1">
+                          较应付现金 ¥{createdPayable.toFixed(2)} 少 ¥{(createdPayable - Number(confirmAmountInput || 0)).toFixed(2)}，将落「部分支付」
+                        </p>
+                      )}
+                    </div>
                     <p className="text-xs text-[#999999] text-left">
-                      默认全额；可下调做部分确认，剩余在订单详情「录入回款」补齐
+                      实付在商品清单逐行录入；少收的剩余可在订单详情「录入回款」补齐
                     </p>
                   </>
                 )}
