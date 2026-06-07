@@ -10,11 +10,11 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_MANAGER_OPENID, TEST_CLIENT_PHONE, pgQuery, closePool,
+  NS, TEST_MANAGER_OPENID, TEST_CLIENT_PHONE, TEST_MARKET_ORG_ID, pgQuery, closePool,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
-  ensureTestStore, createTestStaff, createTestClient, cleanupTestData,
+  ensureTestStore, createTestStaff, createTestPermissionRole, createTestClient, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
 let pass = false; let exitCode = 1
@@ -26,6 +26,14 @@ async function main() {
   await ensureTestStore()
   await createTestStaff()
   await createTestClient()  // 默认 customer，bound 本店
+
+  // 市场层级员工（可管理层登录）：验证管理层模式 customer.search 不再空数组
+  const MKT_OPENID = `${NS}_MKT_OPENID`
+  await createTestStaff({
+    employeeId: `${NS}_MKT`, openid: MKT_OPENID, phone: '19999098003',
+    name: `${NS}_市场经理`, isManager: false,
+  })
+  await createTestPermissionRole({ employeeId: `${NS}_MKT`, role: 'manager', scopeId: TEST_MARKET_ORG_ID })
 
   const errors = []
 
@@ -68,11 +76,21 @@ async function main() {
   if (r4.code !== 0) errors.push(`listByTag sleeping code=${r4.code} msg=${r4.message}`)
   else rec(`  ✓ listByTag sleeping: ${r4.data.total} customers`)
 
+  // 5. 管理层模式 search（回归：旧实现裸用 effectiveStoreId=null → bound_store_id=NULL → 空数组）
+  //    市场经理管理层登录，门店过滤应走 ANY(scopeStoreIds)，返回管辖门店顾客
+  const r5 = await invokeStaffApi('customer.search', {
+    _testOpenid: MKT_OPENID, _loginLevel: 'management', profileScope: true,
+  })
+  if (r5.code !== 0) errors.push(`management search code=${r5.code} msg=${r5.message}`)
+  else if (!r5.data.find(c => c.name.includes(NS))) {
+    errors.push(`management search 应返回管辖门店顾客（修复前 effectiveStoreId=null 致空数组），实际 ${r5.data.length} 条`)
+  } else rec(`  ✓ management search: ${r5.data.length} customers（ANY(scopeStoreIds) 口径）`)
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项`); for (const e of errors) rec(`    - ${e}`); return
   }
   pass = true; exitCode = 0
-  rec(`  ✅ PASS — search/stats/listByTag 4 路径正确`)
+  rec(`  ✅ PASS — search/stats/listByTag + 管理层 search 5 路径正确`)
 }
 
 try { await main() } catch (e) { console.error('EXCEPTION:', e.message); console.error(e.stack) }

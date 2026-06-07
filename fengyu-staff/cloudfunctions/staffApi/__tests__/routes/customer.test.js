@@ -68,6 +68,32 @@ describe('customer.search', () => {
     expect(ctx.result).toEqual([])
   })
 
+  test('管理模式默认列表用 ANY(scopeStoreIds) 且不按员工收紧（回归：effectiveStoreId=null 致空数组）', async () => {
+    // loginLevel=management, effectiveStoreId=null, scopeStoreIds=['store-001','store-002']
+    const ctx = createManagementCtx({ profileScope: true })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', phone: '13800001111', name: '李一', customer_id: 'C001', member_level: null, bound_store_id: 'store-002', store_name: '二店' },
+      ])
+      .mockResolvedValueOnce([]) // svcDateRows
+      .mockResolvedValueOnce([]) // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/c\.bound_store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+    expect(sql).not.toContain('bound_employee_id') // market 层不按员工收紧
+    expect(params).toContainEqual(['store-001', 'store-002'])
+    expect(ctx.result).toHaveLength(1) // 修复前 effectiveStoreId=null → 空数组
+  })
+
+  test('管理模式 keyword 检索门店范围用 ANY(scopeStoreIds)（$2 起）', async () => {
+    const ctx = createManagementCtx({ keyword: '李' })
+    pg.query.mockResolvedValueOnce([]) // 主查询空 → 不发后续补充查询
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/c\.bound_store_id\s*=\s*ANY\(\$2::text\[\]\)/)
+    expect(params).toEqual(['%李%', ['store-001', 'store-002'], 20])
+  })
+
   test('customerType=会员客 按 customer_type 枚举等值过滤', async () => {
     const ctx = createManagerCtx({ customerType: '会员客' })
     pg.query.mockResolvedValueOnce([])

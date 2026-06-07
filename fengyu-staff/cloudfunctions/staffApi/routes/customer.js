@@ -132,11 +132,16 @@ async function search(ctx) {
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
       // 顾客 Tab（profileScope）普通员工额外按 bound_employee_id 收紧
-      const base = restrictEmp
-        ? [kw, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
-        : [kw, ctx.auth.effectiveStoreId];
-      const empClause = restrictEmp ? ' AND c.bound_employee_id = $3' : '';
-      const fStart = base.length + 1;
+      // 门店范围对齐统一 helper：门店模式=单一 effectiveStoreId；管理层模式=ANY(scopeStoreIds)
+      // $1 = kw，门店范围从 $2 起
+      const scope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 2);
+      const params = [kw, ...scope.params];
+      let empClause = '';
+      if (restrictEmp) {
+        empClause = ` AND c.bound_employee_id = $${params.length + 1}`;
+        params.push(ctx.auth.staffWfId);
+      }
+      const fStart = params.length + 1;
       const fSql = renderProfileFilters(filters, fStart);
       const limitIdx = fStart + filters.values.length;
       rows = await pg.query(
@@ -144,17 +149,23 @@ async function search(ctx) {
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${empClause}${fSql}
+         WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND ${scope.sql}${empClause}${fSql}
          LIMIT $${limitIdx}`,
-        [...base, ...filters.values, limit],
+        [...params, ...filters.values, limit],
       );
     }
   } else {
-    const base = restrictEmp
-      ? [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
-      : [ctx.auth.effectiveStoreId];
-    const empClause = restrictEmp ? ' AND c.bound_employee_id = $2' : '';
-    const fStart = base.length + 1;
+    // 无 keyword 全量拉取：门店范围对齐统一 helper
+    // 门店模式=单一 effectiveStoreId；管理层模式=ANY(scopeStoreIds)
+    // （修复管理层模式 effectiveStoreId=null 致 bound_store_id=NULL 空数组）
+    const scope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1);
+    const params = [...scope.params];
+    let empClause = '';
+    if (restrictEmp) {
+      empClause = ` AND c.bound_employee_id = $${params.length + 1}`;
+      params.push(ctx.auth.staffWfId);
+    }
+    const fStart = params.length + 1;
     const fSql = renderProfileFilters(filters, fStart);
     const limitIdx = fStart + filters.values.length;
     rows = await pg.query(
@@ -162,9 +173,9 @@ async function search(ctx) {
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.bound_store_id = $1${empClause}${fSql}
+       WHERE ${scope.sql}${empClause}${fSql}
        LIMIT $${limitIdx}`,
-      [...base, ...filters.values, limit],
+      [...params, ...filters.values, limit],
     );
   }
 
