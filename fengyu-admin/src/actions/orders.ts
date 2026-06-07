@@ -637,6 +637,7 @@ export const getOrderById = withAnyPermission(
     unitRealPrice: ir.item.unitRealPrice,
     saleAmount: ir.item.saleAmount,
     received: ir.item.received,
+    pendingReceived: ir.item.pendingReceived,
     expireDate: ir.item.expireDate,
     remark: ir.item.remark,
     salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
@@ -674,6 +675,8 @@ export const getOrderById = withAnyPermission(
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
     openedByName: r.openedByName ?? undefined,
+    // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocations.ts 白名单一致），控制详情页分配入口显隐
+    allocatable: ['销售单', '转换单'].includes(r.order.saleOrderType) && r.order.legacySource !== 'workfine',
     items,
   }
   },
@@ -778,10 +781,20 @@ export const confirmOfflinePayment = withPermission(
         : Math.round((orderTotal - orderPrepaid) * 100) / 100
       const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
 
-      // 本次确认现金金额：缺省 = 剩余应付现金；传入则校验 0 ≤ v ≤ remainingPayable
+      // 缺省确认金额（两步式 2026-06-07）= 开单约定实付草稿合计（pending_received）− 已收，cap 到剩余应付；
+      // 无草稿（旧订单）回退全额 remainingPayable。前端 dialog 通常显式传 confirmAmount（已按 pending 预填），
+      // 此默认主要兜底"不传金额"的调用，与 staff confirmOffline 对齐。
+      const pendRes = await tx.execute(sql`
+        SELECT COALESCE(SUM(pending_received), 0) AS pt FROM sale_items WHERE sale_order_id = ${saleOrderId}
+      `)
+      const pendingTotal = Math.round(Number((pendRes as unknown as Array<{ pt: number | string }>)[0]?.pt || 0) * 100) / 100
+
+      // 本次确认现金金额：缺省 = 约定实付差额（无草稿回退剩余应付）；传入则校验 0 ≤ v ≤ remainingPayable
       let cashAmount: number
       if (confirmAmount === undefined || confirmAmount === null) {
-        cashAmount = remainingPayable
+        cashAmount = pendingTotal > 0
+          ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderReceived) * 100) / 100))
+          : remainingPayable
       } else {
         cashAmount = Math.round(Number(confirmAmount) * 100) / 100
         if (!Number.isFinite(cashAmount) || cashAmount < 0) {
@@ -1711,7 +1724,12 @@ export const createOrder = withPermission(
         const saleItemId = `${id}-${String(i + 1).padStart(2, '0')}`
         const computedSaleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
         const saleAmount = item.saleAmount ?? computedSaleAmount
-        const received = item.received ?? saleAmount
+        // 实付草稿（开单填的逐行实付）落 pending_received，**不进** received（资金铁律：
+        // received/paid_sessions 只认 status='已支付' 流水）。行级 received 开单一律写 0，
+        // 由下方 recalcPaidSessionsForOrder STEP1 从订单级 sale_orders.received 派生填充
+        // （待支付=0；全额储值卡抵扣=prepaid 分摊）。修复"待支付可消费疗程卡" P0。
+        const pendingReceived = item.received ?? saleAmount
+        const received = '0.00'
 
         // 固定手工费快照 = product_skus.service_fee × quantity
         const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
@@ -1751,6 +1769,7 @@ export const createOrder = withPermission(
           unitRealPrice,
           saleAmount,
           received,
+          pendingReceived,
           salesCategory: item.salesCategory || null,
           serviceFee,
           isExperience,
@@ -1770,32 +1789,13 @@ export const createOrder = withPermission(
         })
       }
 
-      // paid_sessions 初始写入（ticket 2026-05-19 + 2026-06-01 bundle-paid-sessions fix）：
-      // - 全额储值卡抵扣：sale_orders.received = prepaid_card_amount，需 STEP 1 摊到行让 paid_sessions = session_count
-      // - 其他场景：admin createOrder 通常 received=0 → paid_sessions=0；带 received 的场景则按行直接 floor，
-      //   绕开 STEP 1 的全订单 cap 比例摊（避免稀释 sku 内贪心；跨端与 staff order.js 同义）
-      if (isFullCardCoverage) {
-        await recalcPaidSessionsForOrder(tx, id)
-      } else {
-        // 复用 STEP 2 公式（lib/paid-sessions FLOOR(received × session / sale_amount)）按行 UPDATE
-        const itemRows = await tx.execute(sql`
-          SELECT sale_item_id, session_count, sale_amount, received
-          FROM sale_items
-          WHERE sale_order_id = ${id} AND session_count IS NOT NULL
-        `)
-        for (const r of (itemRows as unknown as Array<{ sale_item_id: string; session_count: number; sale_amount: string; received: string }>)) {
-          const sa = Number(r.sale_amount) || 0
-          const rc = Number(r.received) || 0
-          const sc = Number(r.session_count)
-          const ps = sa > 0
-            ? Math.max(0, Math.min(sc, Math.floor(rc * sc / sa)))
-            : sc
-          await tx.execute(sql`
-            UPDATE sale_items SET paid_sessions = ${ps}, updated_at = NOW()
-            WHERE sale_item_id = ${r.sale_item_id}
-          `)
-        }
-      }
+      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从订单级 sale_orders.received
+      // 按比例摊到行级 received → STEP2 floor）：
+      // - 全额储值卡抵扣：received=prepaid_card_amount → paid_sessions=session_count（创建即结清）
+      // - 待支付（线下/线上，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
+      // 不再按行级实付草稿直算 paid_sessions（旧 else 分支是"待支付可消费疗程卡" P0 资金漏洞根因：
+      // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
+      await recalcPaidSessionsForOrder(tx, id)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
       if (isFullCardCoverage) {

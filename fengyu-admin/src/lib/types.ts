@@ -360,6 +360,8 @@ export interface SaleOrder {
   storeName?: string
   openedByName?: string
   items?: SaleItem[]
+  /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
+  allocatable?: boolean
 }
 
 export interface SaleItem {
@@ -376,6 +378,8 @@ export interface SaleItem {
   unitRealPrice: string
   saleAmount: string
   received: string
+  /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
+  pendingReceived: string
   expireDate: string | null
   remark: string | null
   salesCategory: SalesCategory | null

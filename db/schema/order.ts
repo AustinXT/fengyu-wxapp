@@ -226,6 +226,14 @@ export const saleItems = pgTable(
      * 保证 Σ received = sale_orders.received。**不是行单价**（行价看 sale_amount）。
      */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
+    /**
+     * 待确认实付草稿（开单时填的逐行实付，行级）。
+     * **不参与** received / paid_sessions（资金铁律：received/paid_sessions 只认 status='已支付' 流水）；
+     * 仅供订单详情展示「约定实付」+ 确认收款时作 confirmAmount 预填/入账参考。
+     * 待支付订单：received=0、paid_sessions=0（不可消费），pending_received 保留约定值；
+     * 确认收款后 received 由订单级 sale_order_payments SUM 经 recalcPaidSessionsForOrder STEP1 派生填充。
+     */
+    pendingReceived: numeric("pending_received", { precision: 10, scale: 2 }).notNull().default("0"),
     expireDate: date("expire_date"),
     /** 已提货数量（家居产品用，原子累加，可提 = quantity - picked_up_quantity） */
     pickedUpQuantity: integer("picked_up_quantity").default(0),

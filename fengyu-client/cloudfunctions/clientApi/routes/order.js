@@ -816,14 +816,17 @@ async function create(ctx) {
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemsData[i]
+      // 行级 received 开单写 0（资金铁律：received/paid_sessions 只认 status='已支付' 流水），
+      // 由下方 recalcPaidSessionsForOrder 从 sale_orders.received 派生（待支付=0；全额抵扣=prepaid 分摊）。
+      // 顾客端应付=实付，pending_received 记下单应付（与 admin/staff 三端 INSERT 模式一致）。
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, sku_id,
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sale_amount, received, pending_received, sales_category, is_experience
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,

@@ -725,10 +725,11 @@ async function create(ctx) {
     receivedAmount = Math.round(receivedAmount * 100) / 100
   }
 
-  // 落账部分（paid_amount 快照）：
-  //   线下/储值卡/无 → 本次现场实收 = receivedAmount（立即落"已支付"payments 行）
-  //   微信/支付宝    → 0（create 不写 payments，由后续回调写入）
-  const paidAmount = isOnlineMethod ? 0 : receivedAmount
+  // 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）：开单一律不收现金、不写"已支付"流水。
+  //   线下/储值卡：实收改由店长 confirmOffline「确认收款」入账；线上：payNotify 回调入账。
+  //   receivedAmount（逐行实付汇总）仅作 pending_received 草稿存档，不进 sale_orders.received。
+  //   例外：zeroPayable（券/卡全额抵扣，payable=0）无现金可收，仍创建即结清（下方扣卡 + recalc）。
+  const paidAmount = 0
 
   // effectivePaymentMethod 仅影响 sale_orders.payment_method 展示（与原逻辑对齐）：
   //   - 应付实金=0（券/卡全额抵扣，payable_amount=0）→ '无'（现金通道无需使用）
@@ -787,19 +788,10 @@ async function create(ctx) {
     // 优先于线上判定——线上零应付同样无需等 payNotify。isFullCardCoverage 是其"含储值卡"子集，
     // 仅用于"是否需要事务内扣卡 + recalc"分支（券全额 card=0 无卡可扣、走 per-item 摊次）。
     const isFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
-    const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
-    let initialStatus
-    if (zeroPayable) {
-      initialStatus = '已支付'
-    } else if (isOnlineMethod) {
-      initialStatus = '待支付'
-    } else if (settledAmount === 0) {
-      initialStatus = '待支付'
-    } else if (settledAmount + 0.001 < totalAmount) {
-      initialStatus = '部分支付'
-    } else {
-      initialStatus = '待支付'
-    }
+    // 两步式（2026-06-07 修 P0）：开单不收款（paidAmount=0），非 zeroPayable 一律 '待支付'，
+    // 由 confirmOffline（线下/储值卡）/ payNotify（线上）入账翻态（'部分支付'/'已支付'）。
+    // zeroPayable（券/卡全额抵扣）无现金可收、create 内即扣卡结清，落 '已支付'。
+    const initialStatus = zeroPayable ? '已支付' : '待支付'
     // received 列：零应付 = prepaid（券全额时 prepaid=0 → received=0；卡全额时 = 卡额，与 '储值卡抵扣' 流水一致）；
     // 其余 = 本次现金 paidAmount。
     const receivedColumn = zeroPayable ? prepaidCardAmount : paidAmount
@@ -844,32 +836,12 @@ async function create(ctx) {
       }
     }
 
-    // ========== PR-2 写 sale_order_payments 流水 ==========
-    // 规则：
-    //   - 线下/储值卡/无（!isOnlineMethod） + paidAmount > 0 → 写 1 行 payments change_type='首次支付' status='已支付'
-    //     （paidAmount 是本次现场现金入账部分，立即落"已支付"流水）
-    //   - 线下/储值卡/无 + paidAmount = 0 → 无 payments 行（纯挂账，或全额储值卡抵扣订单由 confirmOffline 扣卡+写流水）
-    //   - 微信/支付宝（isOnlineMethod）：sale_orders 停在 '待支付'，payments 行由 payNotify 回调写入
-    //
-    // 储值卡抵扣：prepaid_card_amount 写入 sale_orders 作为"预选"金额；
-    //   扣卡余额 + 写 '储值卡抵扣' payments 行统一由 confirmOffline 执行（staffApi 唯一扣卡点，
-    //   见 fengyu-staff/CLAUDE.md）。
-    if (!isOnlineMethod && paidAmount > 0) {
-      const insRes = await client.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)
-        ON CONFLICT (sale_order_id)
-          WHERE change_type = '首次支付' AND status = '已支付'
-        DO NOTHING
-        RETURNING id`,
-        [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
-      )
-      if (insRes.rows.length === 0) {
-        throw new Error('CONFLICT: 订单已收款，请勿重复提交')
-      }
-    }
+    // ========== 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）：开单不写收款流水 ==========
+    // 线下/储值卡的现金实收由店长 confirmOffline「确认收款」入账（写 '首次支付'/已支付流水 + 翻态 + recalc）；
+    // 线上（微信/支付宝）由 payNotify 回调入账。开单时一律不写 '已支付' payments 行（received=0、paid_sessions=0，
+    // 杜绝未付款消费）。储值卡抵扣的 prepaid_card_amount 仅作"预选"，真正扣卡 + 写 '储值卡抵扣' 流水：
+    //   - zeroPayable（券/卡全额抵扣）：下方 deductPrepaidCardAtCreation 在 create 事务内即扣即结清；
+    //   - 非 zeroPayable（部分储值卡 + 待付现金）：由 confirmOffline 扣卡（staffApi 唯一扣卡点，见 CLAUDE.md）。
 
     // 创建订单明细
     for (let i = 0; i < itemDataList.length; i++) {
@@ -882,14 +854,17 @@ async function create(ctx) {
       const sc = d.productType === '家居产品' ? null : d.sessionCount
       const rs = d.productType === '家居产品' ? null : d.remainingSessions
 
+      // 行级 received 开单一律写 0（资金铁律：received/paid_sessions 只认 status='已支付' 流水）；
+      // 由下方 recalcPaidSessionsForOrder STEP1 从 sale_orders.received 派生（待支付=0；zeroPayable=prepaid 分摊）。
+      // 逐行实付草稿（d.received）落 pending_received，仅作确认收款入账参考，不进 received/paid_sessions。
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction, sku_id,
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
-          unit_price, quantity, unit_real_price, sale_amount, received,
+          unit_price, quantity, unit_real_price, sale_amount, received, pending_received,
           sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16, $17, $18)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -922,28 +897,12 @@ async function create(ctx) {
       })
     }
 
-    // paid_sessions 初始写入（ticket 2026-05-19 + bundle-paid-sessions fix）：
-    // - 全额储值卡抵扣：sale_orders.received = prepaid_card_amount，需 STEP 1 把它摊到行让 paid_sessions = session_count
-    // - 销售单/部分付现金：sale_items.received 已在 sku 内贪心阶段写入正确值，直接按行 floor，
-    //   绕开 STEP 1 的全订单 cap 比例摊（否则会把净化美人 650/150/0 稀释成 506.25/506.25/506.25 → 全 0）
-    if (isFullCardCoverage) {
-      await recalcPaidSessionsForOrder(client, saleOrderId)
-    } else {
-      for (const d of itemDataList) {
-        if (d.sessionCount == null) continue  // 家居等非次数卡跳过
-        const ps = computePaidSessionsForItem({
-          itemReceived: d.received,
-          itemSaleAmount: d.saleAmount,
-          itemSessionCount: d.sessionCount,
-          orderTotal: totalAmount,
-          orderRefunded: 0,
-        })
-        await client.query(
-          `UPDATE sale_items SET paid_sessions = $2, updated_at = NOW() WHERE sale_item_id = $1`,
-          [d.saleItemId, ps]
-        )
-      }
-    }
+    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 sale_orders.received 摊到行 → STEP2 floor）：
+    // - zeroPayable（券/卡全额抵扣）：received=prepaid 或 sale_amount<=0 兜底 → paid_sessions=session_count（创建即结清）
+    // - 非 zeroPayable（待支付，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
+    // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
+    // 行级实付草稿现落 sale_items.pending_received，由 confirmOffline/payNotify 入账后才驱动 received→paid_sessions）。
+    await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 零应付即结清：触发与 confirmOffline 已支付分支一致的结算副作用（档位/客户分类/会员/积分/分享礼）。
     // 券全额单 receivedAmount=prepaidCardAmount=0 → 积分链净额=0 无写入、grantShareGift 自带 paid>0 门控跳过。
@@ -968,22 +927,9 @@ async function create(ctx) {
     })
   })
 
-  // PR-2: status 与事务内 initialStatus 决策树保持一致
-  //   零应付（券/卡全额抵扣）→ '已支付'（创建即结清）；线上 → '待支付'；paid+prepaid=0 → '待支付'；
-  //   部分 → '部分支付'；线下全额（现金）→ '待支付'（待店长 confirmOffline）
-  const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
-  let resolvedStatus
-  if (zeroPayable) {
-    resolvedStatus = '已支付'
-  } else if (isOnlineMethod) {
-    resolvedStatus = '待支付'
-  } else if (resolvedSettled === 0) {
-    resolvedStatus = '待支付'
-  } else if (resolvedSettled + 0.001 < totalAmount) {
-    resolvedStatus = '部分支付'
-  } else {
-    resolvedStatus = '待支付'
-  }
+  // status 与事务内 initialStatus 一致（两步式）：zeroPayable（券/卡全额抵扣）→ '已支付'（创建即结清）；
+  // 其余开单 → '待支付'（线下/储值卡待 confirmOffline、线上待 payNotify 入账翻态）。
+  const resolvedStatus = zeroPayable ? '已支付' : '待支付'
 
   ctx.result = {
     saleOrderId,
@@ -1137,18 +1083,23 @@ async function confirmOffline(ctx) {
 
   // 查询订单明细
   const items = await pg.query(
-    `SELECT si.sale_item_id, si.sku_id, si.received, si.product_type
+    `SELECT si.sale_item_id, si.sku_id, si.received, si.pending_received, si.product_type
      FROM sale_items si
      WHERE si.sale_order_id = $1`,
     [saleOrderId]
   )
 
   const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
+  // 两步式（2026-06-07）：开单约定实付草稿合计（pending_received），作 confirmAmount 缺省依据，
+  // 使店长「一键确认」收的是开单约定的实付（含折扣/首付），而非全额应付。
+  const pendingTotal = Math.round(items.reduce((s, i) => s + Number(i.pending_received || 0), 0) * 100) / 100
 
-  // ========== PR-2: 本次确认收款金额 + 目标订单状态 ==========
-  // confirmAmount 默认 = 剩余应付现金 = payable_amount - 当前 received
-  // payable_amount 旧订单可能 NULL，这里用 total - prepaid 兜底
-  // 2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received
+  // ========== 本次确认收款金额 + 目标订单状态 ==========
+  // confirmAmount 默认（两步式 2026-06-07）= 开单约定实付草稿合计 − 已收，cap 到剩余应付现金：
+  //   - 无折扣（pending_received=应付）：缺省 = remainingPayable（全额，行为不变）；
+  //   - 有折扣/首付（pending_received<应付）：缺省 = 约定实付差额（避免一键确认多收）；
+  //   - 无草稿（旧订单 pending_received=0）：回退全额 remainingPayable。
+  // 店长可显式传 confirmAmount 覆盖。payable_amount 旧订单 NULL 时用 total - prepaid 兜底。
   const orderTotal = Number(order.total_amount || 0)
   const orderPrepaid = Number(order.prepaid_card_amount || 0)
   const orderReceived = Number(order.received || 0)
@@ -1156,10 +1107,13 @@ async function confirmOffline(ctx) {
     ? Number(order.payable_amount)
     : Math.round((orderTotal - orderPrepaid) * 100) / 100
   const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
+  const pendingRemaining = pendingTotal > 0
+    ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderReceived) * 100) / 100))
+    : remainingPayable
 
   let confirmAmount
   if (inputConfirmAmount === undefined || inputConfirmAmount === null) {
-    confirmAmount = remainingPayable
+    confirmAmount = pendingRemaining
   } else {
     confirmAmount = Number(inputConfirmAmount)
     if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
@@ -1672,7 +1626,12 @@ async function detail(ctx) {
   }))
 
   ctx.result = {
-    order: { ...order, coupon_name: couponName },
+    order: {
+      ...order,
+      coupon_name: couponName,
+      // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制详情页分配入口显隐
+      allocatable: ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine',
+    },
     items,
     allocations,
     payments,

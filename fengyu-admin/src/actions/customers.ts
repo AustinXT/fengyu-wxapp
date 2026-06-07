@@ -342,6 +342,7 @@ export const getCustomerOrders = withPermission(
         unitRealPrice: ir.item.unitRealPrice,
         saleAmount: ir.item.saleAmount,
         received: ir.item.received,
+        pendingReceived: ir.item.pendingReceived,
         expireDate: ir.item.expireDate,
         remark: ir.item.remark,
         salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],

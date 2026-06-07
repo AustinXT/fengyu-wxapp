@@ -1,0 +1,1 @@
+ALTER TABLE "sale_items" ADD COLUMN "pending_received" numeric(10, 2) DEFAULT '0' NOT NULL;

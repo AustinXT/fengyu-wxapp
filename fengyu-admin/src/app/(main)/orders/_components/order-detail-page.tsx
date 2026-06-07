@@ -102,6 +102,8 @@ export default function OrderDetailPageClient({
   const totalAmount = Number(order.totalAmount ?? "0");
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100);
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
+  // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
+  const pendingReceivedTotal = Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
   // 确认收款：线下「待支付」订单的首次收款入账入口
   const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 
@@ -283,7 +285,8 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">应收</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">约定实付</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">已确认实收</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">状态/次数（已用/已付/共）</th>
                 </tr>
               </thead>
@@ -301,6 +304,7 @@ export default function OrderDetailPageClient({
                       <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toLocaleString()}</td>
                       <td className="px-4 py-3 text-right">{item.quantity}</td>
                       <td className="px-4 py-3 text-right">¥{Number(item.saleAmount).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right text-[#999999]">¥{Number(item.pendingReceived ?? "0").toLocaleString()}</td>
                       <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
                       <td className="px-4 py-3">{sessionCell}</td>
                     </tr>
@@ -308,7 +312,7 @@ export default function OrderDetailPageClient({
                 })}
                 {items.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-[#999999]">
+                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
                       暂无明细
                     </td>
                   </tr>
@@ -420,8 +424,8 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 营业额分配 — 仅 allocation:list 权限可见（admin 不参与分配流程） */}
-      {canListAllocations && (
+      {/* 营业额分配 — 仅 allocation:list 权限可见 + 该订单类型参与分配（销售单/转换单，非历史订单） */}
+      {canListAllocations && order.allocatable && (
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>营业额分配</CardTitle>
@@ -516,6 +520,7 @@ export default function OrderDetailPageClient({
           onOpenChange={setConfirmOfflineDialogOpen}
           saleOrderId={order.saleOrderId}
           remainingPayable={remainingPayable}
+          suggestedAmount={pendingReceivedTotal}
           cardBalance={cardBalance}
         />
       )}

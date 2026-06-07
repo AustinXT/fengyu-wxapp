@@ -560,7 +560,10 @@ describe('createOrder — 优惠券校验', () => {
     const v = saleItemInserts[0].values
     expect(v.sessionCount).toBe(5)
     expect(Number(v.saleAmount)).toBe(702)            // 1000 - 298
-    expect(Number(v.received)).toBe(702)              // received = saleAmount
+    // 两步式（2026-06-07 修 P0）：开单行级 received=0（资金铁律：只认已支付流水），
+    // 实付草稿落 pending_received = 券摊后应付（确认收款入账后才驱动 received/paid_sessions）。
+    expect(Number(v.received)).toBe(0)
+    expect(Number(v.pendingReceived)).toBe(702)
     expect(Number(v.unitRealPrice)).toBeCloseTo(140.4, 2)  // 702 / 5
     expect(Number(v.unitPrice)).toBe(200)             // per-session 标价 1000/5（不变）
   })
