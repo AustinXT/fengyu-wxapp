@@ -36,6 +36,23 @@ const qrcodeCache = new Map()
 // 编辑寄存单实收时按此标记删重建；与 admin 端 actions/orders.ts 字面量保持一致。
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
+// 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
+// 实付=0 的行回落标价单价 unit_price（保持现状，非置 0）；仅 product_type='疗程卡'，家居产品行(session_count NULL)保持标价。
+// ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
+//   - 通用 recalc 对所有订单类型生效，普通欠款单 received<sale_amount 是常态，
+//     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在 deposit 函数内调用，勿 DRY 进 helper。
+//   - INSERT 时 received 写死 0，真实 per-row received 由 recalc STEP1 定向落定后才存在；提前跑会让每行误命中 ELSE。
+// 与 admin actions/orders.ts recomputeDepositRealPrice 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
+const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
+      SET unit_real_price = CASE
+            WHEN session_count > 0 AND received > 0
+              THEN ROUND(received::numeric / session_count, 2)
+            ELSE unit_price
+          END,
+          updated_at = NOW()
+      WHERE sale_order_id = $1 AND item_direction = '购买' AND product_type = '疗程卡'
+      -- DEPOSIT_REAL_PRICE`
+
 /**
  * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位
  *
@@ -365,8 +382,12 @@ async function create(ctx) {
 
       let sessionCount = null
       let salesCategory = sku.sales_category || null
-      // sku 标价（会员价优先）：作为防御性上界 + sale_items.unit_price 标价快照基线
+      // sku 会员价（special_price 优先）：仅供内部单 ½ 折基线
       const skuListPrice = Number(sku.special_price || sku.price)
+      // sku 原始挂牌价（划线价）：防御性上界 + sale_items.unit_price 标价快照基线。
+      // 套餐内单价（bundle_price）允许高于会员特价但不超原价；上界须用原价而非 special_price，
+      // 否则含会员特价（special<price）的套餐/普通商品会被误杀（client/admin 均按原价，无此校验）。
+      const skuPriceCeil = Number(sku.price)
 
       // 入参价格三件套（与 admin createOrder 对齐）；缺省 fallback 到 sku 标价（向后兼容旧前端）
       let inputListUnit, inputRealUnit, useFrontendPrice
@@ -379,9 +400,10 @@ async function create(ctx) {
       } else {
         inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : skuListPrice
         inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : inputListUnit
-        // 防御性上界：unitRealPrice ≤ unitPrice ≤ sku 实际标价（防前端涨价）
+        // 防御性上界：unitRealPrice ≤ unitPrice ≤ sku 原始标价（防前端涨价）；
+        // 缺省 fallback 仍用 skuListPrice（会员价优先，不传价时行为不变），仅上界放宽到原价 skuPriceCeil。
         if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
-            || inputListUnit > skuListPrice + 0.005
+            || inputListUnit > skuPriceCeil + 0.005
             || inputRealUnit > inputListUnit + 0.005
             || inputRealUnit < 0) {
           throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
@@ -671,6 +693,9 @@ async function create(ctx) {
   let saleOrderId
   // 订单应付合计 = Σ 行应付小计（saleAmount 已含订单级优惠券摊算）
   const totalAmount = Math.round(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0) * 100) / 100
+  // 当下实付合计 = Σ 行实付（欠款场景下店长逐行下调；默认 = 应付）。充值卡从「当下实付」里抵，
+  // 故预选上界 + 现金口径都以此为基线（见下方 maxPrepayable / confirmOffline）。
+  const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
 
   // ========== 充值卡预选（店长开单 = 预选，不扣卡；DB 字段 prepaid_card_amount 命名保持不变）==========
   // 查询顾客当前余额（不加 FOR UPDATE，因为不写 balance）；仅店长预选为参考
@@ -682,8 +707,9 @@ async function create(ctx) {
     )
     const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
 
-    // 计算预选额上限 = totalAmount（券已在 saleAmount 中扣除）
-    const maxPrepayable = totalAmount
+    // 预选额上限 = min(应付合计, 当下实付)：充值卡从「当下实付」里抵，欠款单不得抵超过当下实付
+    // （无欠款时 sumItemReceived === totalAmount，等价旧口径）。与前端 recompute 基准 receivedTotal 对齐。
+    const maxPrepayable = Math.min(totalAmount, sumItemReceived)
 
     if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
       const inputAmount = Number(inputPrepaidCardAmount)
@@ -705,7 +731,10 @@ async function create(ctx) {
   }
 
   // ========== 款项流水（sale_order_payments）语义 ==========
-  // payable_amount = total - prepaid_card_amount（扣卡后的"应付现金金额"冗余列）
+  // payable_amount = total - prepaid_card_amount（整单生命周期"应收现金"冗余列，含未来回款的欠款部分）。
+  //   本单当下应收现金 = 当下实付 − 卡 = sumItemReceived − prepaid（由 confirmOffline 默认收取）；
+  //   欠款 = total − 当下实付，经 createRepayment 回款累加进 received 直到 received = payable 结清。
+  //   故此处保持 total − prepaid 不变（勿改成 当下实付 − prepaid，否则欠款单会被误判为已结清）。
   const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
   // zeroPayable：应付实金 = 0（券全额抵扣 / 储值卡全额抵扣 / 二者叠加把应付抵到 0）。
   // 无款可付，创建即结清为'已支付'，否则卡在'待支付'死循环（0 元发不起线上支付、
@@ -716,7 +745,6 @@ async function create(ctx) {
   //   - 充值卡抵扣 + 行实付汇总 不应超过 totalAmount；若超出（默认场景下勾上充值卡）自动 cap 至 payableAmount
   //   - 线上（微信/支付宝）：禁止 staffApi 端写入 payments 流水；强制 0，由 payNotify 回调写
   const isOnlineMethod = paymentMethod === '微信' || paymentMethod === '支付宝'
-  const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
   let receivedAmount
   if (isOnlineMethod) {
     receivedAmount = 0
@@ -1095,10 +1123,12 @@ async function confirmOffline(ctx) {
   const pendingTotal = Math.round(items.reduce((s, i) => s + Number(i.pending_received || 0), 0) * 100) / 100
 
   // ========== 本次确认收款金额 + 目标订单状态 ==========
-  // confirmAmount 默认（两步式 2026-06-07）= 开单约定实付草稿合计 − 已收，cap 到剩余应付现金：
+  // confirmAmount 默认（两步式 2026-06-07）= 当下应收现金 = 当下实付 − 储值卡 − 已收，cap 到剩余应付现金：
   //   - 无折扣（pending_received=应付）：缺省 = remainingPayable（全额，行为不变）；
-  //   - 有折扣/首付（pending_received<应付）：缺省 = 约定实付差额（避免一键确认多收）；
+  //   - 有折扣/首付（pending_received<应付）：缺省 = 约定实付 − 卡 − 已收（避免一键确认多收）；
   //   - 无草稿（旧订单 pending_received=0）：回退全额 remainingPayable。
+  // ⚠️ 充值卡从「当下实付」里抵：现金 = pending − prepaid（而非 pending 全当现金再叠加扣卡，
+  //    否则欠款+卡订单会多收一笔卡额）。外层 max(0,…) 兜底 pending < prepaid 边缘（卡只抵到 pending）。
   // 店长可显式传 confirmAmount 覆盖。payable_amount 旧订单 NULL 时用 total - prepaid 兜底。
   const orderTotal = Number(order.total_amount || 0)
   const orderPrepaid = Number(order.prepaid_card_amount || 0)
@@ -1108,7 +1138,7 @@ async function confirmOffline(ctx) {
     : Math.round((orderTotal - orderPrepaid) * 100) / 100
   const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
   const pendingRemaining = pendingTotal > 0
-    ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderReceived) * 100) / 100))
+    ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPrepaid - orderReceived) * 100) / 100))
     : remainingPayable
 
   let confirmAmount
@@ -3527,6 +3557,10 @@ async function createDeposit(ctx) {
     // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
     await recalcPaidSessionsForOrder(tx, saleOrderId)
 
+    // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 回落标价）。
+    // 必须在 recalc 之后（STEP1 落定各行 received 后才能算）。
+    await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
+
     // 审计日志
     await logOperation(tx, ctx, 'order.createDeposit', 'sale_order', saleOrderId, {
       _v: 3,
@@ -3628,6 +3662,9 @@ async function updateDepositReceived(ctx) {
 
     // STEP1 把 targeted 落回各行 received；STEP2 因 total_amount=0 兜底 paid_sessions=session_count
     await recalcPaidSessionsForOrder(tx, saleOrderId)
+
+    // 实收变更后同步重算疗程卡实际单价（received→0 的行自动回落标价单价 unit_price）
+    await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
 
     await logOperation(tx, ctx, 'order.updateDepositReceived', 'sale_order', saleOrderId, {
       _v: 1,

@@ -495,10 +495,10 @@
             </view>
           </view>
 
-          <!-- 实付汇总行（Σ 行实付） -->
+          <!-- 现金应收行（= 当下实付 − 充值卡抵扣；computePrepaidDeduction 以 receivedTotal 为基准产出 paidAmount） -->
           <view class="prepaid-paid-summary">
-            <text class="prepaid-paid-label">实付金额</text>
-            <text class="prepaid-paid-amount">¥{{receivedTotal}}</text>
+            <text class="prepaid-paid-label">现金应收</text>
+            <text class="prepaid-paid-amount">¥{{paidAmount}}</text>
           </view>
           <view wx:if="{{!showPayMethodGroup}}" class="prepaid-paid-fullcover-hint">
             <text>全额抵扣，支付方式：无</text>

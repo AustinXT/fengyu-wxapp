@@ -1130,9 +1130,12 @@ Page({
       this.setData({ prepaidCardAmount: 0, paidAmount: '0.00', showPayMethodGroup: true });
       return;
     }
-    const payable = parseFloat(this.data.payableTotal) || 0;
+    // 充值卡从「当下实付」（receivedTotal = Σ行实付 = 客户当下要付的钱，欠款时已逐行下调）里抵，
+    // 而非应付合计。无欠款时 receivedTotal === payableTotal，口径等价；与后端 create maxPrepayable
+    // = min(total, Σpending_received) 对齐，避免卡抵超过当下实付。
+    const baseForPrepaid = parseFloat(this.data.receivedTotal) || 0;
     const result = computePrepaidDeduction({
-      payableAmount: payable,
+      payableAmount: baseForPrepaid,
       customerCardBalance: this.data.customerCardBalance || 0,
       useCard: !!this.data.useCard,
     });
