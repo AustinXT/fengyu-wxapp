@@ -1,4 +1,4 @@
-import { safeParseDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL } from '../../utils/formatters'
+import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL } from '../../utils/formatters'
 
 describe('safeParseDate', () => {
   test('ISO 含 T 串原样解析（回归：旧 replace(/-/g,"/") 逻辑会破坏 T 串变 NaN）', () => {
@@ -95,6 +95,34 @@ describe('formatDateTime', () => {
 
   test('falsy 数字 0 返回空字符串（非 epoch）', () => {
     expect(formatDateTime(0)).toBe('')
+  })
+})
+
+describe('formatDate', () => {
+  test('Date 对象 → 仅日期', () => {
+    expect(formatDate(new Date(2025, 2, 14, 10, 30, 45))).toBe('2025-03-14')
+  })
+
+  test('dash-space 串截取日期部分', () => {
+    expect(formatDate('2025-03-14 10:30:45')).toBe('2025-03-14')
+  })
+
+  test('仅日期串', () => {
+    expect(formatDate('2025-03-14')).toBe('2025-03-14')
+  })
+
+  test('ISO 含 T 串不产生 NaN，格式正确', () => {
+    expect(formatDate('2026-05-21T09:00:00.000Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  test('null / undefined / 空串返回空字符串', () => {
+    expect(formatDate(null)).toBe('')
+    expect(formatDate(undefined)).toBe('')
+    expect(formatDate('')).toBe('')
+  })
+
+  test('无效串原样返回', () => {
+    expect(formatDate('not-a-date')).toBe('not-a-date')
   })
 })
 

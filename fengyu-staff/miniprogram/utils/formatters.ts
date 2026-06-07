@@ -53,6 +53,18 @@ export function formatDateTimeShort(v: any): string {
 }
 
 /**
+ * 格式化为 YYYY-MM-DD（仅日期，不含时间）
+ * 用于 pg date 列（如 service_date / 优惠券过期日）展示，避免裸绑定 UTC 串偏移日期
+ */
+export function formatDate(v: any): string {
+  if (!v) return ''
+  const d = safeParseDate(v)
+  if (!d) return String(v)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
  * 截取时间字符串的时分部分 (HH:mm)
  */
 export function formatTime(timeStr: string | null): string {
