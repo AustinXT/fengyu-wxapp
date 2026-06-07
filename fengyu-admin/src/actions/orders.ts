@@ -33,6 +33,26 @@ const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWecha
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
+// 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
+type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+// 寄存单疗程卡「实际单价按实付重算」—— unit_real_price = 实付received / 总次数session_count。
+// 实付=0 的行回落标价单价 unit_price（保持现状，非置 0）；仅 product_type='疗程卡'，家居产品行(session_count NULL)保持标价。
+// ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后调用（理由见 staff routes/order.js 同名注释）：
+//   并进通用 recalc 会腰斩所有欠款单 per-session 价（腐蚀提成/退款/转换）；勿 DRY 进 recalcPaidSessionsForOrder。
+// 与 staff routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
+async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Promise<void> {
+  await tx.execute(sql`UPDATE sale_items
+      SET unit_real_price = CASE
+            WHEN session_count > 0 AND received > 0
+              THEN ROUND(received::numeric / session_count, 2)
+            ELSE unit_price
+          END,
+          updated_at = NOW()
+      WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买' AND product_type = '疗程卡'
+      -- DEPOSIT_REAL_PRICE`)
+}
+
 /**
  * 充值卡订单入账（2026-05-20 重构：充值卡剥离 SKU 化）
  *
@@ -2593,6 +2613,9 @@ export const createDepositOrder = withPermission(
         // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
         await recalcPaidSessionsForOrder(tx, id)
 
+        // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 回落标价）。必须在 recalc 之后。
+        await recomputeDepositRealPrice(tx, id)
+
         return id
       })
     } catch (err: any) {
@@ -2723,6 +2746,9 @@ export const updateDepositReceived = withPermission(
 
         // STEP1 把 targeted 落回各行 received；STEP2 因 total_amount=0 兜底 paid_sessions=session_count
         await recalcPaidSessionsForOrder(tx, saleOrderId)
+
+        // 实收变更后同步重算疗程卡实际单价（received→0 的行自动回落标价单价 unit_price）
+        await recomputeDepositRealPrice(tx, saleOrderId)
       })
     } catch (err: any) {
       if (err instanceof ApiError) return { success: false, message: err.message }

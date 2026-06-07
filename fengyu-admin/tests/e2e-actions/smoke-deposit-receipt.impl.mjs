@@ -9,6 +9,8 @@
  *   3. sale_orders.received = Σ录入；total_amount 仍 = 0（统计排除 + 兜底全开的关键）
  *   4. updateDepositReceived 全量重设：改值后 received 更新、流水重建为单条、total_amount 仍 0
  *   5. recalc 不冲掉：手动再跑一次 recalc 后 received 仍稳定
+ *   6. 疗程卡 unit_real_price = 实付received / session_count（实付=0 回落标价单价 unit_price）；
+ *      unit_price（标价单次价）保持不变。编辑实收后 unit_real_price 同步重算。
  */
 import path from 'node:path'
 
@@ -70,7 +72,7 @@ async function cleanupSku() {
 
 async function fetchState(orderId) {
   const ord = (await q(`SELECT total_amount::numeric AS total, received::numeric AS recv FROM sale_orders WHERE sale_order_id = $1`, [orderId])).rows[0]
-  const items = (await q(`SELECT sale_item_id, received::numeric AS recv, paid_sessions, session_count, remaining_sessions FROM sale_items WHERE sale_order_id = $1 ORDER BY sale_item_id`, [orderId])).rows
+  const items = (await q(`SELECT sale_item_id, received::numeric AS recv, paid_sessions, session_count, remaining_sessions, unit_real_price::numeric AS urp, unit_price::numeric AS up FROM sale_items WHERE sale_order_id = $1 ORDER BY sale_item_id`, [orderId])).rows
   const pays = (await q(`SELECT change_type, amount::numeric AS amt, payment_method, note, ref_sale_item_id FROM sale_order_payments WHERE sale_order_id = $1 ORDER BY id`, [orderId])).rows
   return { ord, items, pays }
 }
@@ -113,6 +115,9 @@ async function main() {
     if (Number(it.recv) !== 800) errors.push(`[create] sale_items.received 应=800, 实际=${it.recv}`)
     if (Number(it.paid_sessions) !== 10) errors.push(`[create] paid_sessions 应=10(全开), 实际=${it.paid_sessions}`)
     if (Number(it.remaining_sessions) !== 10) errors.push(`[create] remaining_sessions 应=10, 实际=${it.remaining_sessions}`)
+    // unit_real_price = 实付800 / 次数10 = 80（实付口径）；unit_price 仍为标价单次价 100/10 = 10（不变）
+    if (Number(it.urp) !== 80) errors.push(`[create] unit_real_price 应=80(实付800/10), 实际=${it.urp}`)
+    if (Number(it.up) !== 10) errors.push(`[create] unit_price 应仍=10(标价100/10,不变), 实际=${it.up}`)
   }
   const depPays = st.pays.filter(p => p.note === '寄存单初始化实收')
   if (depPays.length !== 1) errors.push(`[create] 寄存实收流水应=1 条, 实际=${depPays.length}`)
@@ -151,6 +156,8 @@ async function main() {
     if (Number(st.ord.recv) !== 500) errors.push(`[update] sale_orders.received 应=500, 实际=${st.ord.recv}`)
     if (Number(st.items[0]?.recv) !== 500) errors.push(`[update] sale_items.received 应=500, 实际=${st.items[0]?.recv}`)
     if (Number(st.items[0]?.paid_sessions) !== 10) errors.push(`[update] paid_sessions 应仍=10, 实际=${st.items[0]?.paid_sessions}`)
+    // 改实收 800→500 后 unit_real_price 同步重算 = 500/10 = 50
+    if (Number(st.items[0]?.urp) !== 50) errors.push(`[update] unit_real_price 应=50(实付500/10), 实际=${st.items[0]?.urp}`)
     const dp = st.pays.filter(p => p.note === '寄存单初始化实收')
     if (dp.length !== 1) errors.push(`[update] 流水应重建为 1 条, 实际=${dp.length}`)
     else if (Number(dp[0].amt) !== 500) errors.push(`[update] 流水 amount 应=500, 实际=${dp[0].amt}`)

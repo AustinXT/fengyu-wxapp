@@ -7,7 +7,8 @@
  *   2. sale_items：session_count/remaining_sessions 正常写、received=0
  *   3. **paid_sessions = session_count**（total<=0 订单级兜底；曾因 5df8192 公式漂移归零，
  *      导致寄存卡 service.create 时被 D6 限额挡住完全不可消费 —— 本测试守护回归）
- *   4. unit_real_price = per-session 单次价（sale_amount / session_count）
+ *   4. unit_real_price：本单未录入实付（received=0）→ 回落标价单价 unit_price（=sale_amount/session_count=100）。
+ *      实付>0 时按 received/session_count 重算的口径由 smoke-order-deposit-received 守护。
  */
 import './setup.mjs'
 import {
@@ -92,9 +93,9 @@ async function main() {
     if (Number(it.paid_sessions) !== 10) {
       errors.push(`paid_sessions 应=10（total<=0 全付兜底；=0 则寄存卡不可消费），实际=${it.paid_sessions}`)
     }
-    // per-session 单价 = sale_amount / session_count = 1000/10 = 100
+    // 本单 received=0 → unit_real_price 回落标价单价 = sale_amount/session_count = 1000/10 = 100
     if (Number(it.unit_real_price) !== 100) {
-      errors.push(`unit_real_price 应=100（per-session=1000/10），实际=${it.unit_real_price}`)
+      errors.push(`unit_real_price 应=100（实付0 回落标价单价 1000/10），实际=${it.unit_real_price}`)
     }
   }
 

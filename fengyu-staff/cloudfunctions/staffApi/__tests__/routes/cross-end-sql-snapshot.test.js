@@ -1179,3 +1179,69 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 寄存单疗程卡「实际单价按实付重算」SQL — staff / admin 双端字节同义
+//   需求：从寄存单产生的疗程卡，unit_real_price = 实付received / 总次数session_count
+//        （实付=0 回落标价单价 unit_price）。
+//   staff: routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL（pg）
+//   admin: actions/orders.ts recomputeDepositRealPrice 内 sql`...`（Drizzle）
+//   仅这两端有寄存单创建路径（client/payNotify 无），故不纳入四端 paid-sessions 守护。
+//   ⚠️ 调用顺序（必须在 recalcPaidSessionsForOrder 之后）由 e2e smoke 守护：若提前跑，
+//      received 仍为 0 → 全部回落标价 → smoke 断言 unit_real_price=80 会失败。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
+  const MARKER_DEPOSIT_PRICE = 'DEPOSIT_REAL_PRICE'
+  let depositPriceSqls
+  let staffSrc, adminSrc
+
+  beforeAll(() => {
+    staffSrc = readFile(FILES.staffOrderJs)
+    adminSrc = readFile(FILES.adminOrdersTs)
+    depositPriceSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_DEPOSIT_PRICE)),
+      adminTs: normalizeSql(extractBacktickStringContaining(adminSrc, MARKER_DEPOSIT_PRICE)),
+    }
+  })
+
+  describe('特征守护（公式 + 范围 + fallback 不可漂移）', () => {
+    test('两端 unit_real_price = ROUND(received/session_count, 2)', () => {
+      const pattern = /ROUND\(received::numeric\s*\/\s*session_count,\s*2\)/i
+      expect(depositPriceSqls.staff).toMatch(pattern)
+      expect(depositPriceSqls.adminTs).toMatch(pattern)
+    })
+    test('两端实付=0 回落标价单价（ELSE unit_price，反向守护防删 fallback）', () => {
+      expect(depositPriceSqls.staff).toContain('ELSE unit_price')
+      expect(depositPriceSqls.adminTs).toContain('ELSE unit_price')
+    })
+    test("两端仅作用于疗程卡购买行（product_type='疗程卡' AND item_direction='购买'）", () => {
+      expect(depositPriceSqls.staff).toContain("product_type = '疗程卡'")
+      expect(depositPriceSqls.staff).toContain("item_direction = '购买'")
+      expect(depositPriceSqls.adminTs).toContain("product_type = '疗程卡'")
+      expect(depositPriceSqls.adminTs).toContain("item_direction = '购买'")
+    })
+  })
+
+  describe('双端镜像比对（任一端漂移 → fail，提示同步另一端）', () => {
+    test('staff vs admin（pg 与 Drizzle 占位符归一化后等价）', () => {
+      expect(depositPriceSqls.adminTs).toBe(depositPriceSqls.staff)
+    })
+  })
+
+  describe('触发点防回归（定义了 SQL 却没接线即形同虚设）', () => {
+    test('staff createDeposit + updateDepositReceived 两处都调用 DEPOSIT_REAL_PRICE_RECALC_SQL', () => {
+      const calls = staffSrc.match(/tx\.query\(\s*DEPOSIT_REAL_PRICE_RECALC_SQL\s*,\s*\[/g) || []
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+    })
+    test('admin createDepositOrder + updateDepositReceived 两处都调用 recomputeDepositRealPrice', () => {
+      const calls = adminSrc.match(/await\s+recomputeDepositRealPrice\(\s*tx\s*,/g) || []
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  describe('Snapshot 守护', () => {
+    test('寄存单实际单价重算 SQL 文本快照', () => {
+      expect(depositPriceSqls.staff).toMatchSnapshot()
+    })
+  })
+})
+

@@ -12,12 +12,15 @@
  *
  * 验证点：
  *   1. 建寄存单（createDeposit）时 received=0 → 0 条历史实收流水、sale_orders.received=0
+ *      + unit_real_price 回落标价单价 unit_price（=1000/10=100），非置 0
  *   2. updateDepositReceived 录入 600 → sale_orders.received=600
  *      + 恰 1 条 change_type='回款'/note='寄存单初始化实收'/source_end='staff'/amount=600 流水（ref=该行）
  *      + sale_items.received 被 recalc 落回 600（total_amount 仍=0）
+ *      + unit_real_price 按实付重算 = 600/10 = 60
  *   3. 全量重设：再次调改成 300 → 旧流水删重建为恰 1 条 amount=300、sale_orders.received=300
- *      （不会累积成 2 条；这是"删重建"语义守护）
+ *      （不会累积成 2 条；这是"删重建"语义守护）+ unit_real_price = 300/10 = 30
  *   4. 录入 0（清空）→ 0 条历史实收流水、received=0
+ *      + unit_real_price 回落标价单价 100（reset 必须恢复 unit_price 的守护点）
  *   5. 边界 a：received 为负 → INVALID_PARAMS（不落库，received 不变）
  *   6. 边界 b：对非寄存单（销售单）调用 → INVALID_STATE
  *   7. 边界 c：非店长（普通员工）调用 → PERMISSION_DENIED
@@ -61,6 +64,15 @@ async function orderReceived(saleOrderId) {
   const rows = await pgQuery(
     `SELECT received, total_amount FROM sale_orders WHERE sale_order_id = $1`,
     [saleOrderId]
+  )
+  return rows[0]
+}
+// 查某明细行的实收 + 实际单价（unit_real_price）+ 标价单价（unit_price）
+async function itemPrices(saleItemId) {
+  const rows = await pgQuery(
+    `SELECT received::numeric AS recv, unit_real_price::numeric AS urp, unit_price::numeric AS up
+       FROM sale_items WHERE sale_item_id = $1`,
+    [saleItemId]
   )
   return rows[0]
 }
@@ -129,6 +141,10 @@ async function main() {
     if (Number(o.total_amount) !== 0) errors.push(`初始 total_amount 应=0，实际=${o.total_amount}`)
     const r = await depositReceipts(saleOrderId)
     if (r.length !== 0) errors.push(`初始历史实收流水应=0 条，实际=${r.length}`)
+    // 实付=0 → unit_real_price 回落标价单价 unit_price（=1000/10=100），不置 0
+    const pr = await itemPrices(saleItemId)
+    if (Number(pr.up) !== 100) errors.push(`初始 unit_price 应=100（标价1000/10），实际=${pr.up}`)
+    if (Number(pr.urp) !== 100) errors.push(`初始(实付0) unit_real_price 应回落=100（标价单价），实际=${pr.urp}`)
   }
 
   // ─── 2. 录入 600 ───
@@ -155,11 +171,11 @@ async function main() {
         if (p.status !== '已支付') errors.push(`流水 status 应='已支付'，实际='${p.status}'`)
         if (p.ref_sale_item_id !== saleItemId) errors.push(`流水 ref_sale_item_id 应=${saleItemId}，实际=${p.ref_sale_item_id}`)
       }
-      // recalc STEP1 把 targeted 流水落回各行 received
-      const li = await pgQuery(
-        `SELECT received FROM sale_items WHERE sale_item_id = $1`, [saleItemId]
-      )
-      if (Number(li[0].received) !== 600) errors.push(`录入600后 sale_items.received 应=600（recalc落回），实际=${li[0].received}`)
+      // recalc STEP1 把 targeted 流水落回各行 received；unit_real_price 按实付重算 = 600/10 = 60
+      const pr = await itemPrices(saleItemId)
+      if (Number(pr.recv) !== 600) errors.push(`录入600后 sale_items.received 应=600（recalc落回），实际=${pr.recv}`)
+      if (Number(pr.urp) !== 60) errors.push(`录入600后 unit_real_price 应=60（实付600/10），实际=${pr.urp}`)
+      if (Number(pr.up) !== 100) errors.push(`录入600后 unit_price 应仍=100（标价不变），实际=${pr.up}`)
     }
   }
 
@@ -178,6 +194,9 @@ async function main() {
       const r = await depositReceipts(saleOrderId)
       if (r.length !== 1) errors.push(`改300后历史实收流水应=1 条（删重建非累积），实际=${r.length}`)
       else if (Number(r[0].amount) !== 300) errors.push(`改300后流水 amount 应=300，实际=${r[0].amount}`)
+      // unit_real_price 跟随重算 = 300/10 = 30
+      const pr = await itemPrices(saleItemId)
+      if (Number(pr.urp) !== 30) errors.push(`改300后 unit_real_price 应=30（实付300/10），实际=${pr.urp}`)
     }
   }
 
@@ -195,6 +214,9 @@ async function main() {
       if (Number(o.received) !== 0) errors.push(`清空后 sale_orders.received 应=0，实际=${o.received}`)
       const r = await depositReceipts(saleOrderId)
       if (r.length !== 0) errors.push(`清空后历史实收流水应=0 条，实际=${r.length}`)
+      // reset 守护：实付清空后 unit_real_price 必须回落标价单价 100，不能残留旧实付价 30
+      const pr = await itemPrices(saleItemId)
+      if (Number(pr.urp) !== 100) errors.push(`清空后 unit_real_price 应回落=100（标价单价，不残留旧30），实际=${pr.urp}`)
     }
   }
 
@@ -271,7 +293,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec('  ✅ PASS — updateDepositReceived 录入/重设/清空 + 流水删重建 + received落回 + 4 项边界(负值/非寄存单/越权/外来行)')
+  rec('  ✅ PASS — updateDepositReceived 录入/重设/清空 + 流水删重建 + received落回 + unit_real_price 按实付重算(60/30/回落100) + 4 项边界(负值/非寄存单/越权/外来行)')
 }
 
 try {
