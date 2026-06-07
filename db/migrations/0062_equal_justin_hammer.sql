@@ -1,0 +1,2 @@
+ALTER TABLE "product_skus" ADD COLUMN "is_manager_special" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD COLUMN "is_manager_special" boolean DEFAULT false NOT NULL;

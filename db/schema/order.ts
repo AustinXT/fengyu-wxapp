@@ -250,6 +250,12 @@ export const saleItems = pgTable(
      * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
      */
     isExperience: boolean("is_experience").notNull().default(false),
+    /**
+     * 店长特别优惠快照（开单时从 product_skus.is_manager_special 拷贝）。
+     * 标识该行应付金额是店长用「店长特别优惠」权限手动改的价（仅销售单 + 普通商品）。
+     * 与价格快照族同属，admin 后续修改 product_skus.is_manager_special 不影响历史订单。仅供审计/详情标注。
+     */
+    isManagerSpecial: boolean("is_manager_special").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

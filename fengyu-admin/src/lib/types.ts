@@ -278,6 +278,11 @@ export interface ProductSku {
    * 仅在 SKU 编辑/查询表单上下文需要，前端运行时按需读取。
    */
   isExperience?: boolean
+  /**
+   * 店长特别优惠 capability 列（与 product_skus.is_manager_special 同名同义）。
+   * true 时 admin/staff 开单（销售单 + 普通商品）允许店长改应付金额。
+   */
+  isManagerSpecial?: boolean
   // 充值卡 capability 列已退出（2026-05-20 充值卡剥离 SKU 化，DB 列已 DROP）
   /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
   projectSeriesId?: number | null

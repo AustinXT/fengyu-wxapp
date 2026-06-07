@@ -1639,6 +1639,8 @@ export const createOrder = withPermission(
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuExperienceMap = new Map<string, boolean>()
+  // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
+  const skuManagerSpecialMap = new Map<string, boolean>()
   if (skuIdList.length > 0) {
     const skuRows = await db
       .select({
@@ -1646,6 +1648,7 @@ export const createOrder = withPermission(
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
         isExperience: productSkus.isExperience,
+        isManagerSpecial: productSkus.isManagerSpecial,
       })
       .from(productSkus)
       .where(and(inArray(productSkus.skuId, skuIdList), isNull(productSkus.deletedAt)))
@@ -1653,6 +1656,7 @@ export const createOrder = withPermission(
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
+      skuManagerSpecialMap.set(r.skuId, r.isManagerSpecial === true)
     }
   }
 
@@ -1776,6 +1780,9 @@ export const createOrder = withPermission(
         // 用于客户分类跃迁 SQL（SUM(received) FILTER WHERE si.is_experience）。
         const isExperience = skuExperienceMap.get(item.skuId) ?? false
 
+        // 店长特别优惠行级快照：以服务端 product_skus.is_manager_special 为权威
+        const isManagerSpecial = skuManagerSpecialMap.get(item.skuId) ?? false
+
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
@@ -1796,6 +1803,7 @@ export const createOrder = withPermission(
           salesCategory: item.salesCategory || null,
           serviceFee,
           isExperience,
+          isManagerSpecial,
         })
       }
 

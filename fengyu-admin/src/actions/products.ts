@@ -497,6 +497,7 @@ export const getAllSkus = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
+      isManagerSpecial: r.sku.isManagerSpecial,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -542,6 +543,7 @@ export const getSkuById = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
+      isManagerSpecial: r.sku.isManagerSpecial,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -586,6 +588,7 @@ export const getSkusByProductId = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
+      isManagerSpecial: r.sku.isManagerSpecial,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -617,6 +620,8 @@ export const createSku = withPermission(
       isShengmei?: boolean | null
       /** 体验卡 capability 列 */
       isExperience?: boolean
+      /** 店长特别优惠 capability 列（开单可改应付金额） */
+      isManagerSpecial?: boolean
       /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
       projectSeriesId?: number | null
       marketScope?: string | null
@@ -681,6 +686,8 @@ export const updateSku = withPermission(
       isShengmei: boolean | null
       /** 体验卡 capability 列 */
       isExperience: boolean
+      /** 店长特别优惠 capability 列（开单可改应付金额） */
+      isManagerSpecial: boolean
       /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
       projectSeriesId: number | null
       marketScope: string | null
@@ -1514,6 +1521,8 @@ export interface OrderPickerSku {
   sessionCount: number | null
   serviceFee: string
   sortOrder: number
+  /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
+  isManagerSpecial: boolean
 }
 
 export interface OrderPickerCategory {
@@ -1768,6 +1777,7 @@ export const getProductsByKind = withPermission(
         sessionCount: r.sku.sessionCount,
         serviceFee: r.sku.serviceFee,
         sortOrder: r.sku.sortOrder,
+        isManagerSpecial: r.sku.isManagerSpecial,
       })
     }
 
@@ -1826,6 +1836,7 @@ export const getProductsByKind = withPermission(
       sessionCount: r.sku.sessionCount,
       serviceFee: r.sku.serviceFee,
       sortOrder: r.sku.sortOrder,
+      isManagerSpecial: r.sku.isManagerSpecial,
     })
   }
   const categories = Array.from(catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder)

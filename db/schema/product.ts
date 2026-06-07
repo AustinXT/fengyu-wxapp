@@ -77,6 +77,13 @@ export const productSkus = pgTable(
      * 行级语义在 sale_items.is_experience 快照保留，开单时拷贝，与价格快照同模式。
      */
     isExperience: boolean("is_experience").notNull().default(false),
+    /**
+     * 是否「店长特别优惠」（capability 列）。
+     * true 时 admin / staff 开单（仅销售单 + 普通商品，组合套餐不适用）允许店长手动修改
+     * 该明细行的应付金额（最小 0，最大不超过标价）。行级语义在 sale_items.is_manager_special
+     * 快照保留，开单时拷贝（权威来源为 DB，不信前端）。
+     */
+    isManagerSpecial: boolean("is_manager_special").notNull().default(false),
     /** 项目系列（lookup 表外键，NULL=未设置） */
     projectSeriesId: bigint("project_series_id", { mode: "number" }).references(
       () => projectSeriesLookup.id,
