@@ -135,6 +135,16 @@ async function main() {
   console.log(`  [2] approve: ${JSON.stringify(appr)}`)
   check(appr.success === true, `approve success 应=true`)
   check((await getStatus(LEG1)) === '已支付', `LEG1 approve 后 status 应='已支付', 实际='${await getStatus(LEG1)}'`)
+  // 历史单核对通过：补 received=total_amount + paid_at=销售日期 + 补「首次支付」流水维持资金不变量 I1
+  const leg1Paid = (await pgQuery(`SELECT received::numeric AS received, paid_at, sale_order_datetime FROM sale_orders WHERE sale_order_id=$1`, [LEG1]))[0]
+  check(Number(leg1Paid?.received) === 1280, `LEG1 approve 后 received 应补=1280, 实际=${leg1Paid?.received}`)
+  check(leg1Paid?.paid_at != null, `LEG1 approve 后 paid_at 应=销售日期(非空)`)
+  const leg1Sop = await pgQuery(`SELECT change_type, status, amount::numeric AS amount, payment_method FROM sale_order_payments WHERE sale_order_id=$1`, [LEG1])
+  check(leg1Sop.length === 1, `LEG1 approve 后应补 1 条 sale_order_payments, 实际=${leg1Sop.length}`)
+  check(
+    leg1Sop[0]?.change_type === '首次支付' && leg1Sop[0]?.status === '已支付' && Number(leg1Sop[0]?.amount) === 1280,
+    `LEG1 sop 应=首次支付/已支付/1280, 实际=${JSON.stringify(leg1Sop[0])}`,
+  )
 
   // ── 3) approve 重复提交（旧 updatedAt）：CAS 守卫命中 0 行 → CONFLICT ──
   let conflictThrown = false
