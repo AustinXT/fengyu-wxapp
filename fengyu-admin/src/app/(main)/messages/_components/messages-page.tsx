@@ -47,6 +47,21 @@ const MEMBER_LEVEL_OPTIONS = ['黑钻', '金钻', '粉钻', '星钻', '初钻'] 
 /** 批量发送对话框：单次最多发送的人数上限（需与 Server Action 保持一致） */
 const BATCH_SEND_MAX = 1000
 
+/** 消息分类英文枚举 → 中文展示（未知值回退原值） */
+const MESSAGE_TYPE_LABELS: Record<string, string> = {
+  order: '订单',
+  promotion: '促销',
+  service: '服务',
+  system: '系统',
+}
+
+/** 关联实体类型英文枚举 → 中文展示（未知值回退原值） */
+const REF_ENTITY_TYPE_LABELS: Record<string, string> = {
+  sale_order: '销售订单',
+  service_order: '服务单',
+  appointment: '预约',
+}
+
 function formatDateTime(dt: string | null | undefined) {
   if (!dt) return "—"
   return fmtDateTime(dt)
@@ -309,7 +324,9 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       header: '分类',
       cell: (row) =>
         row.messageType ? (
-          <span className="text-xs text-[#666666]">{row.messageType}</span>
+          <span className="text-xs text-[#666666]">
+            {MESSAGE_TYPE_LABELS[row.messageType] ?? row.messageType}
+          </span>
         ) : (
           '—'
         ),
@@ -340,7 +357,9 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       cell: (row) =>
         row.refEntityType ? (
           <div className="flex flex-col">
-            <span className="text-xs text-[#666666]">{row.refEntityType}</span>
+            <span className="text-xs text-[#666666]">
+              {REF_ENTITY_TYPE_LABELS[row.refEntityType] ?? row.refEntityType}
+            </span>
             {row.refEntityId && (
               <span className="font-mono text-xs text-[#999999]">
                 {row.refEntityId}
@@ -409,7 +428,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
               <option value="">全部分类</option>
               {messageTypes.map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {MESSAGE_TYPE_LABELS[t] ?? t}
                 </option>
               ))}
             </Select>
@@ -481,7 +500,11 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
             </div>
             <div className="flex justify-between gap-4">
               <span className="text-[#999999]">分类</span>
-              <span>{detail.messageType ?? '—'}</span>
+              <span>
+                {detail.messageType
+                  ? (MESSAGE_TYPE_LABELS[detail.messageType] ?? detail.messageType)
+                  : '—'}
+              </span>
             </div>
             <div className="flex justify-between gap-4">
               <span className="text-[#999999]">状态</span>
@@ -491,7 +514,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
               <div className="flex justify-between gap-4">
                 <span className="text-[#999999]">关联实体</span>
                 <span>
-                  {detail.refEntityType}
+                  {REF_ENTITY_TYPE_LABELS[detail.refEntityType] ?? detail.refEntityType}
                   {detail.refEntityId && (
                     <span className="ml-1 font-mono text-xs">
                       {detail.refEntityId}

@@ -16,6 +16,15 @@ import type { LakalaOnboardingStatus } from "@/lib/lakala-onboarding-state"
 
 export const dynamic = "force-dynamic"
 
+/** 实名状态英文枚举 → 中文展示（lakala_realname_status，未知值回退占位） */
+const REALNAME_STATUS_LABELS: Record<string, string> = {
+  not_submitted: "未提交",
+  submitted: "审核中",
+  success: "已实名",
+  fail: "失败",
+  modifying: "修改中",
+}
+
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const detail = await getLakalaMerchant(id).catch(() => null)
@@ -111,14 +120,14 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4 text-sm">
-            <Field label="进件流水号 (out_org_code)" value={m.outOrgCode} mono />
-            <Field label="电子合同号 (contract_no)" value={m.contractNo} mono />
-            <Field label="拉卡拉商户号 (merchant_no)" value={m.merchantNo} mono />
-            <Field label="终端号 (term_no)" value={m.termNo} mono />
+            <Field label="进件流水号" value={m.outOrgCode} mono />
+            <Field label="电子合同号" value={m.contractNo} mono />
+            <Field label="拉卡拉商户号" value={m.merchantNo} mono />
+            <Field label="终端号" value={m.termNo} mono />
             <Field label="微信子商户号" value={m.wxSubMchid} mono />
             <Field label="微信子 AppId" value={m.wxSubAppid} mono />
             <Field label="支付宝子商户号" value={m.alipaySubMchid} mono />
-            <Field label="申请人 (user_id)" value={m.applicantUserId == null ? "—" : String(m.applicantUserId)} />
+            <Field label="申请人" value={m.applicantUserId == null ? "—" : String(m.applicantUserId)} />
             <Field label="创建时间" value={m.createdAt?.slice(0, 19).replace("T", " ")} />
             <Field label="更新时间" value={m.updatedAt?.slice(0, 19).replace("T", " ")} />
             <Field label="最近回调时间" value={m.lastCallbackAt?.slice(0, 19).replace("T", " ") ?? "—"} />
@@ -134,8 +143,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-            <Field label="微信实名状态 (wx_realname_status)" value={m.wxRealnameStatus} />
-            <Field label="支付宝实名状态 (alipay_realname_status)" value={m.alipayRealnameStatus} />
+            <Field label="微信实名状态" value={REALNAME_STATUS_LABELS[m.wxRealnameStatus] ?? m.wxRealnameStatus} />
+            <Field label="支付宝实名状态" value={REALNAME_STATUS_LABELS[m.alipayRealnameStatus] ?? m.alipayRealnameStatus} />
           </div>
           <RefreshStatusButton merchantId={id} />
         </CardContent>
