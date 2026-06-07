@@ -51,6 +51,19 @@
       <van-cell wx:if="{{detail.remark}}" title="备注" value="{{detail.remark}}" />
     </van-cell-group>
 
+    <!-- 顾客评价：仅店长可见，且仅已完成单 -->
+    <van-cell-group title="顾客评价" class="section-group" wx:if="{{isManager && detail.status === '已完成'}}">
+      <view wx:if="{{detail.review}}" class="review-box">
+        <view class="review-rate-row">
+          <van-rate value="{{detail.review.rating}}" readonly size="28rpx" color="#C0322A" void-color="#E8E8E8" />
+          <text class="review-score">{{detail.review.rating}} 分</text>
+        </view>
+        <text wx:if="{{detail.review.comment}}" class="review-comment">{{detail.review.comment}}</text>
+        <text class="review-time">{{detail.review.createdAt}}</text>
+      </view>
+      <view wx:else class="review-empty">顾客暂未评价</view>
+    </van-cell-group>
+
     <view class="action-bar">
       <van-button
         wx:if="{{detail.status === '待服务'}}"

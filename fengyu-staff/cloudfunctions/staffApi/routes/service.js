@@ -881,6 +881,18 @@ async function detail(ctx) {
     }
   }
 
+  // 顾客评价：仅店长可见（防普通员工抓包）；评价仅存在于已完成单
+  let review
+  if (ctx.auth.roles.includes('manager') && so.status === '已完成') {
+    const reviewRows = await pg.query(
+      `SELECT rating, comment, created_at FROM service_reviews WHERE service_order_id = $1`,
+      [id]
+    )
+    review = reviewRows.length > 0
+      ? { rating: reviewRows[0].rating, comment: reviewRows[0].comment || '', createdAt: reviewRows[0].created_at }
+      : null
+  }
+
   ctx.result = {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
@@ -893,6 +905,7 @@ async function detail(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
+    review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       itemName: i.product_name || '',

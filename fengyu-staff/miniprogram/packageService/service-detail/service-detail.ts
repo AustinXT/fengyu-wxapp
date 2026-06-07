@@ -24,6 +24,8 @@ interface ServiceDetail {
     totalSessions: number;
     paidSessions: number | null;
   }>;
+  // 顾客评价（仅店长可见；后端按 manager 角色下发）
+  review?: { rating: number; comment: string; createdAt: string } | null;
 }
 
 Page({
@@ -55,6 +57,7 @@ Page({
       // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
       if (data.startTime) data.startTime = formatDateTime(data.startTime);
       if (data.completedTime) data.completedTime = formatDateTime(data.completedTime);
+      if (data.review?.createdAt) data.review.createdAt = formatDateTime(data.review.createdAt);
       this.setData({ detail: data });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';

@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { serviceOrders, serviceItems } from '@db/service'
+import { serviceOrders, serviceItems, serviceReviews } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus } from '@db/product'
 import { stores } from '@db/org'
@@ -388,6 +388,34 @@ export const getServiceItems = withPermission(
     paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
     quantity: r.sli_quantity !== null && r.sli_quantity !== undefined ? Number(r.sli_quantity) : null,
   }))
+  },
+)
+
+/** 顾客对已完成服务单的评价（一单一评，service_order_id 作 PK） */
+export interface ServiceReview {
+  rating: number
+  comment: string | null
+  createdAt: string
+}
+
+export const getServiceReview = withPermission(
+  'service:list',
+  async (_session, serviceOrderId: string): Promise<ServiceReview | null> => {
+    const rows = await db
+      .select({
+        rating: serviceReviews.rating,
+        comment: serviceReviews.comment,
+        createdAt: serviceReviews.createdAt,
+      })
+      .from(serviceReviews)
+      .where(eq(serviceReviews.serviceOrderId, serviceOrderId))
+      .limit(1)
+    if (rows.length === 0) return null
+    return {
+      rating: rows[0].rating,
+      comment: rows[0].comment,
+      createdAt: rows[0].createdAt.toISOString(),
+    }
   },
 )
 
