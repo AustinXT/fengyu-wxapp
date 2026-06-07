@@ -446,8 +446,8 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       <AlertDialog open={!!approveTarget} onOpenChange={(open) => !open && setApproveTarget(null)}>
         <AlertDialogTitle>确认通过核对？</AlertDialogTitle>
         <AlertDialogDescription>
-          确认 WorkFine 历史订单数据无误（金额、日期、门店、手机号匹配该顾客）。通过后订单 status 将变为
-          已支付，顾客的 customer_type / spending_tier / member_level 会立即重算。
+          确认 WorkFine 历史订单数据无误（金额、日期、门店、手机号匹配该顾客）。通过后订单状态将变为
+          「已支付」，顾客的顾客类型 / 消费档位 / 会员等级会立即重算。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setApproveTarget(null)}>返回</AlertDialogCancel>
@@ -459,7 +459,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       <AlertDialog open={!!rejectTarget} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <AlertDialogTitle>确认作废这条历史订单？</AlertDialogTitle>
         <AlertDialogDescription>
-          作废后订单 status 将变为已作废，不再参与任何统计。仅在确认 WorkFine 数据本身错误时使用
+          作废后订单状态将变为已作废，不再参与任何统计。仅在确认 WorkFine 数据本身错误时使用
           （如重复录入、金额错误无法核对）。
         </AlertDialogDescription>
         <AlertDialogFooter>
