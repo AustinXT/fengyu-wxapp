@@ -101,7 +101,7 @@
     </view>
 
     <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
-    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
+    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
       <text class="items-title">营业额分配</text>
       <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="staffName">
         <text class="alloc-staff">{{item.staffName}}（{{item.department}}）</text>
@@ -117,7 +117,7 @@
     </view>
 
     <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
-    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
+    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
       <van-button block plain type="primary"
         custom-class="btn-outline-brand"
         bind:click="onReAllocation"

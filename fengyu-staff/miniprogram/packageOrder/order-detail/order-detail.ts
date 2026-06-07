@@ -33,6 +33,7 @@ interface RawOrder {
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
+  allocatable?: boolean;
 }
 
 interface RawOrderItem {
@@ -141,6 +142,7 @@ interface DisplayOrder {
   items: DisplayOrderItem[];
   allocation: DisplayAllocation[];
   payments: DisplayPayment[];
+  allocatable: boolean;
 }
 
 Page({
@@ -286,6 +288,7 @@ Page({
           items,
           allocation,
           payments,
+          allocatable: o.allocatable ?? false,
         },
         currentRemainingPayable: remainingPayable,
         isCreator: o.opened_by === getStaffWfId(),

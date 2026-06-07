@@ -235,7 +235,6 @@
   <van-popup
     show="{{showCheckout}}"
     position="bottom"
-    round
     safe-area-inset-bottom
     bind:close="onCloseCheckout"
   >
@@ -502,7 +501,7 @@
             <text class="prepaid-paid-amount">¥{{receivedTotal}}</text>
           </view>
           <view wx:if="{{!showPayMethodGroup}}" class="prepaid-paid-fullcover-hint">
-            <text>全额抵扣，payment_method='无'</text>
+            <text>全额抵扣，支付方式：无</text>
           </view>
 
           <!-- 支付方式：3 选 1（销售单 / 内部单）；转换单由 ConversionPanel 内部 picker 管理 -->
