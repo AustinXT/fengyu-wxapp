@@ -793,8 +793,10 @@ export const confirmOfflinePayment = withPermission(
       // 本次确认现金金额：缺省 = 约定实付差额（无草稿回退剩余应付）；传入则校验 0 ≤ v ≤ remainingPayable
       let cashAmount: number
       if (confirmAmount === undefined || confirmAmount === null) {
+        // ⚠️ 充值卡从「当下实付」里抵：现金 = pending − prepaid − 已收（与 staff confirmOffline 字面对齐，
+        //    否则欠款+卡订单会多收一笔卡额）。外层 max(0,…) 兜底 pending < prepaid。
         cashAmount = pendingTotal > 0
-          ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderReceived) * 100) / 100))
+          ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPrepaid - orderReceived) * 100) / 100))
           : remainingPayable
       } else {
         cashAmount = Math.round(Number(confirmAmount) * 100) / 100
