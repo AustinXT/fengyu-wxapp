@@ -118,7 +118,7 @@ async function save(ctx) {
 
   // 查询订单
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at, sale_order_type FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at, sale_order_type, legacy_source FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -130,6 +130,10 @@ async function save(ctx) {
 
   if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
     throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（与 admin allocations.ts / order.detail allocatable 口径一致）
+  if (order.legacy_source === 'workfine') {
+    throw new Error('INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE: 历史订单不参与营业额分配')
   }
   if (order.status !== '已支付') {
     throw new Error('PERMISSION_DENIED: 仅已支付订单可进行提成分配')
@@ -494,7 +498,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
-            preferred_employee_id, client_phone, customer_name, paid_at, sale_order_type
+            preferred_employee_id, client_phone, customer_name, paid_at, sale_order_type, legacy_source
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
@@ -505,6 +509,10 @@ async function suggest(ctx) {
 
   if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
     throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（与 admin allocations.ts / order.detail allocatable 口径一致）
+  if (order.legacy_source === 'workfine') {
+    throw new Error('INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE: 历史订单不参与营业额分配')
   }
 
   // 2. 解析指定员工（P2-14 Q5：按 skills 建议角色池）

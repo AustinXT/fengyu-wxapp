@@ -16,7 +16,8 @@
  *   1. order.list {status:'待支付'} → code 0（修前必回 -1）；且合并「部分支付」（待支付 tab
  *      语义 = 待支付 + 部分支付，二者都属未结清），不含已支付。← 核心回归点
  *   2. order.list {status:'已支付'} → code 0，含已支付、不含待支付/部分支付。
- *   3. order.list {} 无 status → code 0，三张单全在。
+ *   3. order.list {} 无 status → code 0，四张单全在。
+ *   4. order.list 返回 allocatable 字段：销售单=true / 寄存单=false（控制列表页「营业额分配」按钮显隐，与 order.detail 同口径）。
  */
 import './setup.mjs'
 import {
@@ -39,6 +40,7 @@ function rec(line) { console.log(line) }
 const ORDER_PEND = `${NS}_OL_PEND`
 const ORDER_PART = `${NS}_OL_PART`
 const ORDER_PAID = `${NS}_OL_PAID`
+const ORDER_DEPOSIT = `${NS}_OL_DEPOSIT`
 
 async function main() {
   rec(`[smoke-order-list] start | ${new Date().toISOString()}`)
@@ -52,6 +54,8 @@ async function main() {
   await createTestSaleOrder({ saleOrderId: ORDER_PEND, clientUserId: TEST_CLIENT_USER_ID, status: '待支付' })
   await createTestSaleOrder({ saleOrderId: ORDER_PART, clientUserId: TEST_CLIENT_USER_ID, status: '部分支付' })
   await createTestSaleOrder({ saleOrderId: ORDER_PAID, clientUserId: TEST_CLIENT_USER_ID, status: '已支付' })
+  // 寄存单（已支付）：验证 allocatable=false —— 列表页不显示「营业额分配」按钮
+  await createTestSaleOrder({ saleOrderId: ORDER_DEPOSIT, clientUserId: TEST_CLIENT_USER_ID, status: '已支付', saleOrderType: '寄存单' })
 
   const errors = []
   // 门店视图：显式指定当前门店（与员工端 cloud.ts 自动附加 _currentStoreId/_loginLevel 一致）
@@ -81,15 +85,23 @@ async function main() {
     else rec(`  ✓ order.list(已支付) code 0，仅含已支付`)
   }
 
-  // ─── 3. 全部 tab（无 status）───
+  // ─── 3. 全部 tab（无 status）+ allocatable 字段口径 ───
   const all = await invokeStaffApi('order.list', { ...storeCtx, page: 1, pageSize: 50 })
   if (all.code !== 0) {
     errors.push(`order.list(全部) 应 code 0，实际 code=${all.code} msg=${all.message}`)
   } else {
     const ids = idsOf(all)
-    const missing = [ORDER_PEND, ORDER_PART, ORDER_PAID].filter(id => !ids.includes(id))
-    if (missing.length) errors.push(`全部结果应含三张单，缺=${JSON.stringify(missing)}`)
-    else rec(`  ✓ order.list(全部) code 0，三张单全在`)
+    const missing = [ORDER_PEND, ORDER_PART, ORDER_PAID, ORDER_DEPOSIT].filter(id => !ids.includes(id))
+    if (missing.length) errors.push(`全部结果应含四张单，缺=${JSON.stringify(missing)}`)
+    else rec(`  ✓ order.list(全部) code 0，四张单全在`)
+
+    // allocatable：销售单可分配 / 寄存单不可分配（控制列表页「营业额分配」按钮显隐，与 order.detail 同口径）
+    const orderById = (id) => (all.data?.orders || []).find(o => o.sale_order_id === id)
+    const sale = orderById(ORDER_PAID)
+    const deposit = orderById(ORDER_DEPOSIT)
+    if (sale && sale.allocatable !== true) errors.push(`销售单 ${ORDER_PAID} allocatable 应为 true，实际=${JSON.stringify(sale.allocatable)}`)
+    if (deposit && deposit.allocatable !== false) errors.push(`寄存单 ${ORDER_DEPOSIT} allocatable 应为 false，实际=${JSON.stringify(deposit.allocatable)}`)
+    if (sale?.allocatable === true && deposit?.allocatable === false) rec(`  ✓ allocatable：销售单 true / 寄存单 false`)
   }
 
   if (errors.length) {

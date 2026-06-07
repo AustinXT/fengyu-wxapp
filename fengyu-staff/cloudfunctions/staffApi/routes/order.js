@@ -1488,6 +1488,8 @@ async function list(ctx) {
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
       o.paid_at, o.created_at, o.opened_by, o.total_amount,
+      -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
+      (o.sale_order_type IN ('销售单','转换单') AND o.legacy_source IS DISTINCT FROM 'workfine') AS allocatable,
       EXISTS(
         SELECT 1 FROM sale_order_payments sop
         WHERE sop.sale_order_id = o.sale_order_id

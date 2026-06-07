@@ -14,6 +14,7 @@ interface OrderItem {
   customerPhoneMasked: string;
   status: OrderStatus;
   orderType: string;
+  allocatable: boolean;
   payType: string | null;
   totalAmount: string;
   createdAt: string;
@@ -30,6 +31,7 @@ interface RawOrderRow {
   client_phone: string;
   status: string;
   sale_order_type: string;
+  allocatable?: boolean;
   payment_method: string | null;
   total_amount: string;
   created_at: string;
@@ -121,6 +123,7 @@ Page({
         customerPhoneMasked: r.client_phone || '',
         status: r.status as OrderStatus,
         orderType: r.sale_order_type,
+        allocatable: !!r.allocatable,
         payType: r.payment_method,
         totalAmount: r.total_amount,
         createdAt: formatDateTime(r.created_at),

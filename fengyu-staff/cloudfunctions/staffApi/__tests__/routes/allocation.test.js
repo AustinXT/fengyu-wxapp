@@ -301,6 +301,25 @@ describe('allocation.save', () => {
     await expect(allocationRoutes.save(ctx))
       .rejects.toThrow(/INVALID_STATE.*不参与营业额分配/)
   })
+
+  test('workfine 历史销售单拒绝营业额分配（INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE）', async () => {
+    // 订单类型是「销售单」（白名单内），但 legacy_source='workfine' → 历史订单不参与分配
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-LEGACY-001',
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '美容师', allocationRatio: 0.3 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-LEGACY-001',
+      status: '已支付',
+      allocation_status: '待分配',
+      store_id: 'store-001',
+      sale_order_type: '销售单',
+      legacy_source: 'workfine',
+    }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_STATE.*LEGACY_ORDER_NOT_ALLOCATABLE.*历史订单不参与营业额分配/)
+  })
 })
 
 /**
@@ -865,5 +884,21 @@ describe('allocation.suggest', () => {
 
     await expect(allocationRoutes.suggest(ctx))
       .rejects.toThrow(/INVALID_STATE.*不参与营业额分配/)
+  })
+
+  test('workfine 历史销售单拒绝分配建议（INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE）', async () => {
+    // 订单类型「销售单」在白名单内，但 legacy_source='workfine' → 历史订单不参与分配
+    const ctx = createManagerCtx({ saleOrderId: 'FY-LEGACY-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-LEGACY-001', status: '已支付', allocation_status: '待分配',
+      store_id: 'store-001', market_name: '华东市场', sale_order_type: '销售单',
+      legacy_source: 'workfine',
+      preferred_employee_id: 'emp-b1',
+      client_phone: '13800001111', customer_name: '张三',
+    }])
+
+    await expect(allocationRoutes.suggest(ctx))
+      .rejects.toThrow(/INVALID_STATE.*LEGACY_ORDER_NOT_ALLOCATABLE.*历史订单不参与营业额分配/)
   })
 })
