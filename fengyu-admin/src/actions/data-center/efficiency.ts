@@ -367,6 +367,7 @@ export const getEfficiencyBoard = withPermission(
         ON so.store_id = s.store_id
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
+        AND so.legacy_source IS DISTINCT FROM 'workfine'
         AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
       WHERE ${scopeFilterSql(session, scope, 's.store_id')}
       GROUP BY s.store_id, s.store_name, o.name

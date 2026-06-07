@@ -70,6 +70,7 @@ export const getSalesBoard = withPermission(
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND so.sale_order_type IN ('销售单', '转换单')
             AND so.status = '已支付'
+            AND so.legacy_source IS DISTINCT FROM 'workfine'
             AND so.paid_at::date BETWEEN ${range.start} AND ${range.end}
         `),
       )
@@ -293,6 +294,7 @@ export const getSalesBoard = withPermission(
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND so.sale_order_type IN ('销售单', '转换单')
           AND so.status = '已支付'
+          AND so.legacy_source IS DISTINCT FROM 'workfine'
           AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),

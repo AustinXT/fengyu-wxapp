@@ -447,6 +447,7 @@ async function queryMemberOps(scopeType, scopeId, period) {
         WHERE ${sc.sql}
           AND o.sale_order_type IN ('销售单', '转换单')
           AND o.status = '已支付'
+          AND o.legacy_source IS DISTINCT FROM 'workfine'
           AND o.paid_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
           AND c.customer_type = '会员客'
         GROUP BY o.client_user_id
@@ -514,6 +515,7 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
         AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
     sc.params,
   )

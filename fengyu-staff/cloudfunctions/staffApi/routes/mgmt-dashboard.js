@@ -233,6 +233,7 @@ async function queryStoreRevenue(scopeType, scopeId, date, mode) {
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
+        AND so.legacy_source IS DISTINCT FROM 'workfine'
         AND ${timeWindow('so.paid_at', mode, 1, false)}`,
     [date, ...sc.params],
   )
@@ -759,6 +760,7 @@ async function rankingRevenue(period, storeFilter) {
        ON so.store_id = s.store_id
        AND so.sale_order_type IN ('销售单', '转换单')
        AND so.status = '已支付'
+       AND so.legacy_source IS DISTINCT FROM 'workfine'
        AND ${timeWindowPeriod('so.paid_at', period, false)}
      WHERE ${storeFilter.sql}
      GROUP BY s.store_id, s.store_name, o.name
@@ -1309,6 +1311,7 @@ async function salesData(ctx) {
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
+            AND o.legacy_source IS DISTINCT FROM 'workfine'
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
@@ -1334,6 +1337,7 @@ async function salesData(ctx) {
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
+            AND o.legacy_source IS DISTINCT FROM 'workfine'
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),

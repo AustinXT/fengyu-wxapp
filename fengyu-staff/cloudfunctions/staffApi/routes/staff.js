@@ -347,6 +347,7 @@ async function todayCommission(ctx) {
       WHERE ${sc.sql}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at >= $${sc.params.length + 1}
         AND o.paid_at < $${sc.params.length + 2}
     `, [...sc.params, todayStart, todayEnd])
@@ -390,6 +391,7 @@ async function monthlyCalendar(ctx) {
     WHERE ${sc.sql}
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
       AND o.paid_at >= $${sc.params.length + 1}
       AND o.paid_at < $${sc.params.length + 2}
     GROUP BY DATE(o.paid_at)
@@ -405,6 +407,7 @@ async function monthlyCalendar(ctx) {
     WHERE ${sc.sql}
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
       AND o.paid_at >= $${sc.params.length + 1}
       AND o.paid_at < $${sc.params.length + 2}
   `, [...sc.params, monthStart, monthEnd])
