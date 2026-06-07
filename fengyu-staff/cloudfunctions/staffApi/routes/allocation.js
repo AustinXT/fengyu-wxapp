@@ -440,6 +440,7 @@ async function pendingList(ctx) {
       AND o.status = '已支付'
       AND o.allocation_status = $2
       AND o.sale_order_type IN ('销售单', '转换单')
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
     ORDER BY o.paid_at DESC
     LIMIT $3 OFFSET $4
   `, [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset])

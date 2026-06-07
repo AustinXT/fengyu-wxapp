@@ -288,12 +288,16 @@ export const batchSaveAllocations = withPermission(
 
   // 营业额口径白名单：仅销售单/转换单参与营业额分配，拒绝寄存单/充值单/内部单
   const [typeRow] = await db
-    .select({ saleOrderType: saleOrders.saleOrderType })
+    .select({ saleOrderType: saleOrders.saleOrderType, legacySource: saleOrders.legacySource })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
   if (!typeRow || !['销售单', '转换单'].includes(typeRow.saleOrderType)) {
     return { success: false, message: '该订单类型不参与营业额分配' }
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（无 sale_items 天然不可分，补显式拦截防绕过）
+  if (typeRow.legacySource === 'workfine') {
+    return { success: false, message: '历史订单不参与营业额分配' }
   }
 
   // 校验所有 saleItemId 属于该订单（防跨订单分配篡改）

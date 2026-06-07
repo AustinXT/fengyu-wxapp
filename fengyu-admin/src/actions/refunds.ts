@@ -531,6 +531,10 @@ export const createRefund = withPermission(
   if (!origOrder) {
     return { success: false, error: { code: 'NOT_FOUND', message: '原订单不存在或无权访问' } }
   }
+  // 历史订单（WorkFine 核对补登）不支持退款（无 sale_items 天然无可退项，补显式拦截防绕过）
+  if (origOrder.legacySource === 'workfine') {
+    return { success: false, error: { code: 'INVALID_STATE', message: '历史订单不支持退款' } }
+  }
   if (origOrder.saleOrderType !== '销售单') {
     if (origOrder.saleOrderType === '充值单') {
       return {
