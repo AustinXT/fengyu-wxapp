@@ -498,9 +498,10 @@ async function todoList(ctx) {
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
-    // 待提成分配订单
+    // 待提成分配订单（口径对齐 allocation.pendingList：仅销售单/转换单且非历史订单，避免内部单/寄存单/充值单/历史单致计数虚高）
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'
+         AND sale_order_type IN ('销售单', '转换单') AND legacy_source IS DISTINCT FROM 'workfine'`,
       [storeId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
