@@ -71,12 +71,15 @@ WHERE sale_items.sale_order_id = $1`
  * 抛 CONFLICT，提示调用方先取消已生成的服务单。
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
-  // STEP 1: 定向回款落到指定行 + 其余按剩余产能比例摊到 sale_items.received
-  // 「定向 + 剩余产能比例」混合（ticket 2026-05-21 按子项定向回款）：
+  // STEP 1: 定向回款落到指定行 + 无定向额按两段式瀑布摊到 sale_items.received
+  // 「定向 + 两段式瀑布」混合（2026-06-08 组合套餐按逐行实付 pending_received 累加分摊）：
   //   targeted_i = Σ(已支付 payments ref_sale_item_id=i, change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
-  //   untargeted = order.received - Σtargeted；cap_i = sale_amount_i - targeted_i；
-  //   received_i = targeted_i + untargeted × cap_i / Σcap。
-  // 无定向时（ref 仅退款写 → targeted=0）退化为按 sale_amount 比例 = 旧 STEP 1，向后兼容。
+  //   untargeted = order.received - Σtargeted；
+  //   pend_cap_i = pending_received_i - targeted_i（第一段：朝逐行实付草稿铺）；
+  //   sale_cap_i = sale_amount_i - max(pending_received_i, targeted_i)（第二段：实付→应付余量）；
+  //   received_i = targeted_i + [untargeted 先按 pend_cap 铺满 Σpend_cap，溢出再按 sale_cap 铺开]。
+  // 无定向额（首付/无 items 回款）先填逐行实付、补全款后回升到应付（不冻结）。
+  // pending_received=0（转换/寄存/充值）或 =sale_amount（默认）时退化为旧「按 sale_amount 比例」，零回归。
   // 保证 sum(sale_items.received) = sale_orders.received。与三端 cloudfunction 副本字节同义。
   await tx.execute(sql`
     WITH tg AS (
@@ -88,21 +91,30 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     ),
     caps AS (
       SELECT si.sale_item_id,
-             GREATEST(0, si.sale_amount::numeric - COALESCE(tg.targeted, 0)::numeric) AS cap,
-             COALESCE(tg.targeted, 0)::numeric AS targeted
+             COALESCE(tg.targeted, 0)::numeric AS targeted,
+             GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
+             GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
       FROM sale_items si
       LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
     ),
     agg AS (
       SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
-             COALESCE(SUM(cap), 0)::numeric AS cap_total
+             COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
+             COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
       FROM caps
     )
     UPDATE sale_items si
     SET received = CASE
-          WHEN agg.cap_total > 0
-            THEN caps.targeted + ROUND(agg.untargeted * caps.cap / agg.cap_total, 2)
+          WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
+            THEN caps.targeted
+              + ROUND(
+                  (CASE WHEN agg.pend_cap_total > 0
+                        THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
+                        ELSE 0 END)
+                + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
+                        THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
+                        ELSE 0 END), 2)
           ELSE caps.targeted
         END,
         updated_at = NOW()

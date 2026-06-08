@@ -556,9 +556,9 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/expire_at[\s\S]{0,80}NOW\(\)/i)
       expect(adminSrc).toMatch(/expire_at[\s\S]{0,80}NOW\(\)/i)
     })
-    test('两端部分退款不退券：券 UPDATE 包在 if (!saleItemId) 守卫内', () => {
-      expect(staffSrc).toMatch(/if\s*\(\s*!saleItemId\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
-      expect(adminSrc).toMatch(/if\s*\(\s*!saleItemId\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
+    test('两端部分退款不退券：券 UPDATE 包在 if (wholeOrder) 守卫内（仅整单全退才回滚券，Bug Q/M 重构后）', () => {
+      expect(staffSrc).toMatch(/if\s*\(\s*wholeOrder\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
+      expect(adminSrc).toMatch(/if\s*\(\s*wholeOrder\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
     })
   })
 
@@ -1060,9 +1060,11 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Block 7b: STEP 1 received 分摊 SQL 四端字节同义
-//   recalcPaidSessionsForOrder 在跑 paid_sessions 公式前，先按 sale_amount 比例把
-//   sale_orders.received 摊到各 sale_items.received（仅 item_direction='购买' 行；
-//   转出/转入/退出行 received 由业务逻辑权威设置 total=0 时不被清零）。
+//   recalcPaidSessionsForOrder 在跑 paid_sessions 公式前，用「定向 + 两段式瀑布」把
+//   sale_orders.received 摊到各 sale_items.received（仅 item_direction='购买' 行）：
+//   定向额(targeted)精确归位；无定向额先按 pend_cap(逐行实付 pending_received)铺满、
+//   溢出再按 sale_cap(应付余量)铺开（2026-06-08 组合套餐按逐行实付累加、付清不冻结）。
+//   pending_received=0/=sale_amount 时数学上退化为旧「按 sale_amount 比例」。
 //   admin（Drizzle）+ staff/client/payNotify（pg）四端必须字节同义。
 // ─────────────────────────────────────────────────────────────────────────────
 describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
@@ -1078,7 +1080,7 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
     }
   })
 
-  describe("特征守护（定向 + 剩余产能比例混合，ticket 2026-05-21）", () => {
+  describe("特征守护（定向 + 两段式瀑布，2026-06-08 逐行实付累加）", () => {
     test("四端定向回款按 ref_sale_item_id 汇总（退款 change_type 排除）", () => {
       const pattern = /ref_sale_item_id IS NOT NULL[\s\S]*change_type IN\s*\('首次支付','回款','储值卡抵扣'\)|change_type IN\s*\('首次支付','回款','储值卡抵扣'\)[\s\S]*ref_sale_item_id IS NOT NULL/i
       expect(allocSqls.staff).toMatch(pattern)
@@ -1086,17 +1088,34 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    test("四端未定向额按剩余产能 cap 比例分摊且 ROUND 2 位", () => {
-      const pattern = /ROUND\(agg\.untargeted\s*\*\s*caps\.cap\s*\/\s*agg\.cap_total,\s*2\)/i
+    test("四端第一段产能 pend_cap = GREATEST(0, pending_received - targeted)（朝逐行实付草稿铺）", () => {
+      const pattern = /GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)/i
       expect(allocSqls.staff).toMatch(pattern)
       expect(allocSqls.client).toMatch(pattern)
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    test("四端 cap_i = GREATEST(0, sale_amount - targeted)（剩余产能，已满行 cap=0）", () => {
-      const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)/i
+    test("四端第二段产能 sale_cap = GREATEST(0, sale_amount - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
+      const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
       expect(allocSqls.staff).toMatch(pattern)
+      expect(allocSqls.client).toMatch(pattern)
+      expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端无定向额先按 pend_cap 铺满（LEAST 封顶 Σpend_cap）", () => {
+      const pattern = /LEAST\(agg\.untargeted,\s*agg\.pend_cap_total\)\s*\*\s*caps\.pend_cap\s*\/\s*agg\.pend_cap_total/i
+      expect(allocSqls.staff).toMatch(pattern)
+      expect(allocSqls.client).toMatch(pattern)
+      expect(allocSqls.payNotify).toMatch(pattern)
+      expect(allocSqls.adminTs).toMatch(pattern)
+    })
+    test("四端溢出额再按 sale_cap 铺开（untargeted > Σpend_cap 时）且整体 ROUND 2 位", () => {
+      const overflow = /\(agg\.untargeted\s*-\s*agg\.pend_cap_total\)\s*\*\s*caps\.sale_cap\s*\/\s*agg\.sale_cap_total/i
+      const round2 = /ROUND\([\s\S]*,\s*2\)/i
+      for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
+        expect(sql).toMatch(overflow)
+        expect(sql).toMatch(round2)
+      }
     })
     test("四端仅分摊 item_direction='购买' 行（转出/转入 received 不被清零）", () => {
       const pattern = /item_direction\s*=\s*'购买'/
@@ -1265,8 +1284,9 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
     adminRefunds = readFile(FILES.adminRefundsTs)
   })
 
-  test('staff order.js 含 寄存单/历史订单 的 退款+回款 拦截', () => {
-    expect(staffOrder).toContain('寄存单不支持退款')
+  test('staff order.js 含 仅销售单退款白名单（Bug L）+ 寄存单/历史订单 回款拦截', () => {
+    // Bug L：退款改正向白名单（仅销售单），原「寄存单不支持退款」黑名单已被「仅销售单支持退款」取代
+    expect(staffOrder).toContain('仅销售单支持退款')
     expect(staffOrder).toContain('历史订单不支持退款')
     expect(staffOrder).toContain('寄存单不支持回款')
     expect(staffOrder).toContain('历史订单不支持回款')
