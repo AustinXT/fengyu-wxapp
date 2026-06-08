@@ -412,12 +412,15 @@ export interface SaleAllocation {
   allocationRatio: string
   roleType?: string
   totalAmount: string
+  commissionRate?: string
+  commissionAmount?: string
   isVoid: boolean
   createdAt: string
   updatedAt: string
   // joined
   employeeName?: string
   departmentName?: string
+  saleItemName?: string
 }
 
 export interface ServiceOrder {

@@ -126,27 +126,28 @@ export const getOrderAllocations = withPermission(
     rows = await db.execute(sql`
       SELECT
         sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
-        sa.role_type, sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
+        sa.role_type, sa.total_amount, sa.commission_rate, sa.commission_amount,
+        sa.is_void, sa.created_at, sa.updated_at,
+        swu.name AS employee_name, orn.name AS department_name,
+        si.product_name AS sale_item_name
       FROM sale_allocations sa
+      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
       LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
       LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sa.sale_item_id IN (
-        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
-      ) AND sa.is_void = false
+      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
     `) as any[]
   } catch {
     rows = await db.execute(sql`
       SELECT
         sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
         sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
+        swu.name AS employee_name, orn.name AS department_name,
+        si.product_name AS sale_item_name
       FROM sale_allocations sa
+      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
       LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
       LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sa.sale_item_id IN (
-        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
-      ) AND sa.is_void = false
+      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
     `) as any[]
   }
 
@@ -157,11 +158,14 @@ export const getOrderAllocations = withPermission(
     allocationRatio: r.allocation_ratio,
     roleType: r.role_type ?? undefined,
     totalAmount: r.total_amount,
+    commissionRate: r.commission_rate ?? undefined,
+    commissionAmount: r.commission_amount ?? undefined,
     isVoid: r.is_void,
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
     employeeName: r.employee_name ?? undefined,
     departmentName: r.department_name ?? undefined,
+    saleItemName: r.sale_item_name ?? undefined,
   }))
   },
 )

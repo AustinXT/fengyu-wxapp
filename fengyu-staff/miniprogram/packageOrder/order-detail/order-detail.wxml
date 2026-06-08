@@ -117,11 +117,13 @@
     <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
     <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
       <text class="items-title">营业额分配</text>
-      <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="staffName">
-        <text class="alloc-staff">{{item.staffName}}（{{item.department}}）</text>
-        <view class="alloc-right">
-          <text class="alloc-amount">¥{{item.amount}}</text>
-          <text class="alloc-ratio"> · {{item.ratio}}</text>
+      <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="id">
+        <view class="alloc-row-left">
+          <text class="alloc-staff">{{item.staffName}}<text wx:if="{{item.roleType}}">（{{item.roleType}}）</text></text>
+          <text class="alloc-meta">{{item.saleItemName}} · 比例{{item.ratio}} · 提成率{{item.commissionRate}} · 分配额¥{{item.totalAmount}}</text>
+        </view>
+        <view class="alloc-row-right">
+          <text class="alloc-amount">¥{{item.commissionAmount}}</text>
         </view>
       </view>
       <view class="re-alloc-btn">

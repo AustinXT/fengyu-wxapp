@@ -60,11 +60,16 @@ interface RawOrderItem {
 }
 
 interface RawAllocation {
+  id?: number;
   employee_name?: string;
   employee_id?: string;
   department_name?: string;
   total_amount?: string;
   allocation_ratio?: number;
+  role_type?: string;
+  commission_rate?: string;
+  commission_amount?: string;
+  sale_item_name?: string;
 }
 
 interface RawPayment {
@@ -128,10 +133,14 @@ interface DisplayOrderItem {
 }
 
 interface DisplayAllocation {
+  id: number;
   staffName: string;
-  department: string;
-  amount: string;
+  roleType: string;
+  saleItemName: string;
   ratio: string;
+  commissionRate: string;
+  totalAmount: string;
+  commissionAmount: string;
 }
 
 interface DisplayOrder {
@@ -248,11 +257,15 @@ Page({
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
         };
       });
-      const allocation: DisplayAllocation[] = (res.allocations || []).map((a) => ({
+      const allocation: DisplayAllocation[] = (res.allocations || []).map((a, index) => ({
+        id: a.id != null ? Number(a.id) : index,
         staffName: a.employee_name || a.employee_id || '',
-        department: a.department_name || '',
-        amount: a.total_amount || '0',
+        roleType: a.role_type || '',
+        saleItemName: a.sale_item_name || '',
         ratio: `${Number(a.allocation_ratio) * 100}%`,
+        commissionRate: a.commission_rate != null ? `${(Number(a.commission_rate) * 100).toFixed(2)}%` : '—',
+        totalAmount: Number(a.total_amount || 0).toFixed(2),
+        commissionAmount: a.commission_amount != null ? Number(a.commission_amount).toFixed(2) : '—',
       }));
 
       // Ticket 2 PR-A：payments 流水 + 欠款计算

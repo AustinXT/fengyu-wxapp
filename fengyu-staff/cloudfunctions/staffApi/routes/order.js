@@ -1667,6 +1667,8 @@ async function detail(ctx) {
     SELECT
       sa.id, sa.sale_item_id, sa.employee_id, sa.department_name,
       sa.allocation_ratio, sa.total_amount, sa.is_void,
+      sa.role_type, sa.commission_rate, sa.commission_amount,
+      si.product_name AS sale_item_name,
       sw.name AS employee_name
     FROM sale_allocations sa
     JOIN sale_items si ON sa.sale_item_id = si.sale_item_id

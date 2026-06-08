@@ -88,16 +88,17 @@
 
 .alloc-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 12rpx 0;
+  padding: 16rpx 0;
   border-bottom: 1rpx solid #F0EDE9;
 }
 .alloc-row:last-of-type { border-bottom: none; }
-.alloc-staff { font-size: 26rpx; color: #2D2017; }
-.alloc-right { display: flex; align-items: baseline; }
+.alloc-row-left { display: flex; flex-direction: column; gap: 6rpx; flex: 1; min-width: 0; }
+.alloc-staff { font-size: 26rpx; font-weight: 600; color: #2D2017; }
+.alloc-meta { font-size: 22rpx; color: var(--color-text-hint); }
+.alloc-row-right { display: flex; flex-direction: column; align-items: flex-end; margin-left: 16rpx; }
 .alloc-amount { font-size: 28rpx; font-weight: 600; color: var(--color-primary); }
-.alloc-ratio { font-size: 22rpx; color: var(--color-text-hint); }
 
 .re-alloc-btn { margin-top: 20rpx; text-align: right; }
 

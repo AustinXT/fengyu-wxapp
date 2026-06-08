@@ -540,8 +540,12 @@ export default function OrderDetailPageClient({
                     <tr>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">员工</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">部门</th>
-                      <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
-                      <th className="px-4 py-3 text-right font-medium text-gray-500">比例</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">角色</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">项目</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">分配金额</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">分配比例</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">提成比例</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">提成金额</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -549,8 +553,12 @@ export default function OrderDetailPageClient({
                       <tr key={a.id} className="hover:bg-[#FFF0EE] transition-colors">
                         <td className="px-4 py-3 font-medium">{a.employeeName}</td>
                         <td className="px-4 py-3">{a.departmentName || "—"}</td>
+                        <td className="px-4 py-3">{a.roleType || "—"}</td>
+                        <td className="px-4 py-3">{a.saleItemName || "—"}</td>
                         <td className="px-4 py-3 text-right">¥{Number(a.totalAmount).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right">{(Number(a.allocationRatio) * 100).toFixed(0)}%</td>
+                        <td className="px-4 py-3 text-right">{a.commissionRate != null ? `${(Number(a.commissionRate) * 100).toFixed(2)}%` : "—"}</td>
+                        <td className="px-4 py-3 text-right">{a.commissionAmount != null ? `¥${Number(a.commissionAmount).toLocaleString()}` : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
