@@ -358,6 +358,37 @@ describe('ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护', () =
     })
   })
 
+  describe('§2.3 confirmOffline received 重聚合 SQL（admin/staff 字面对齐，2026-06-08 修 I1 储值卡抵扣漏记）', () => {
+    // 背景：staff confirmOffline 原用 newReceived = orderReceived + confirmAmount 直接加法，漏储值卡抵扣，
+    //       破坏 I1（received = Σ[首次支付/回款/储值卡抵扣]）→ recalcPaidSessionsForOrder 把缺卡的 received
+    //       按 pending_received 比例摊到各行 → admin 订单详情"已确认实收"被现金比例稀释。
+    //       改为与 admin confirmOfflinePayment / staff createRepayment 同款双列重聚合（new_received + new_prepaid）。
+    test('staff confirmOffline 与 admin confirmOfflinePayment 的 received 聚合 SQL 归一化后字面相等', () => {
+      // 两端源码首个含 'AS new_received' 的 backtick 即各自 confirmOffline(Payment) 的重聚合块
+      const staffSql = normalizeSql(extractBacktickStringContaining(staffSrc, 'AS new_received'))
+      const adminSql = normalizeSql(extractBacktickStringContaining(adminSrc, 'AS new_received'))
+      expect(staffSql).toBe(adminSql)
+    })
+
+    test('该聚合 SQL 必须按 首次支付/回款/储值卡抵扣 三类已支付流水汇总 received（维护 I1）+ 含 new_prepaid', () => {
+      const staffSql = normalizeSql(extractBacktickStringContaining(staffSrc, 'AS new_received'))
+      expect(staffSql).toMatch(/change_type IN \('首次支付','回款','储值卡抵扣'\)/)
+      expect(staffSql).toMatch(/AS new_received/)
+      expect(staffSql).toMatch(/AS new_prepaid/)
+    })
+
+    test('staff confirmOffline 函数体不得残留 orderReceived + confirmAmount 直接加法（回归守护）', () => {
+      const fnMatch = staffSrc.match(/async function confirmOffline\b[\s\S]*?(?=\nasync function )/)
+      expect(fnMatch, '未截取到 confirmOffline 函数体').not.toBeNull()
+      const fnBody = fnMatch[0]
+      // received 权威值必须来自流水重聚合（new_received），杜绝退回漏卡的直接加法
+      expect(fnBody).toMatch(/sumRes\.rows\[0\]\.new_received/)
+      // strip 注释后再查，避免本修复说明注释（提及历史写法）误触发回归断言
+      const code = fnBody.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      expect(code, 'confirmOffline 不得用 orderReceived+confirmAmount 直接加法写 received').not.toMatch(/orderReceived\s*\+\s*confirmAmount/)
+    })
+  })
+
   describe('Snapshot 守护：admin 关键 SQL 整体文本快照', () => {
     test('admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见）', () => {
       const lockOrder = normalizeSql(

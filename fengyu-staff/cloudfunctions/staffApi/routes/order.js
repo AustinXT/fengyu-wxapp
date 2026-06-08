@@ -1264,19 +1264,25 @@ async function confirmOffline(ctx) {
       }
     }
 
-    // ========== 从流水重聚合 received（跨端字面对齐 admin confirmOfflinePayment）==========
-    // received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
-    // 含储值卡抵扣流水 → 维护 I1 不变量（原 orderReceived+confirmAmount 漏卡，致后续 STEP1 把缺卡的
-    // received 按 pending_received 比例摊到各行 → sale_items.received 被现金比例稀释）。
-    // 幂等：储值卡/现金流水 INSERT 各自去重，重复确认聚合结果一致。
-    const aggRes = await client.query(
-      `SELECT COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
-                                THEN amount::numeric ELSE 0 END), 0) AS new_received
-         FROM sale_order_payments WHERE sale_order_id = $1`,
+    // ========== 从流水重聚合 received / prepaid_card_amount（跨端字面对齐 admin confirmOfflinePayment + staff createRepayment）==========
+    // 不变量：
+    //   received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))  → I1
+    //   prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')                        → I5 配套
+    // 含储值卡抵扣流水 → 维护 I1（原 orderReceived+confirmAmount 漏卡，致后续 STEP1 把缺卡的 received 按
+    // pending_received 比例摊到各行 → sale_items.received 被现金比例稀释）。幂等：储值卡/现金流水各自去重，重复确认聚合一致。
+    const sumRes = await client.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
+                           THEN amount::numeric ELSE 0 END), 0) AS new_received,
+         COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
+                           THEN amount::numeric ELSE 0 END), 0) AS new_prepaid
+       FROM sale_order_payments
+       WHERE sale_order_id = $1`,
       [saleOrderId]
     )
-    newReceived = Math.round(Number(aggRes.rows[0].new_received) * 100) / 100
-    // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid)，与 admin orders.ts 一致
+    newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
+    const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
+    // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid 锁单快照)，与 admin orders.ts / createRepayment 一致
     targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
 
     // ========== 更新 sale_orders（C4 合规：WHERE 锁定当前状态防并发竞态）==========
@@ -1284,11 +1290,11 @@ async function confirmOffline(ctx) {
     const paidAtValue = targetStatus === '已支付' ? now : (order.paid_at || null)
     const updateResult = await client.query(
       `UPDATE sale_orders
-       SET status = $1, received = $2, paid_at = $3, updated_at = $4,
-           offline_confirmed_by = $5, offline_confirmed_at = $4,
+       SET status = $1, received = $2, prepaid_card_amount = $3, paid_at = $4, updated_at = $5,
+           offline_confirmed_by = $6, offline_confirmed_at = $5,
            allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
-       WHERE sale_order_id = $6 AND status = $7`,
-      [targetStatus, newReceived, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
+       WHERE sale_order_id = $7 AND status = $8`,
+      [targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
