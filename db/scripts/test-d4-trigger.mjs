@@ -24,16 +24,16 @@ try {
   const storeId = storeRow[0].store_id;
   await c.query(`
     INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
-      product_name, sku_spec_name, unit_price, quantity, unit_real_price, sale_amount,
+      product_name, unit_price, quantity, unit_real_price, sale_amount,
       received, is_recharge_card)
-    VALUES ('TEST_D4_R1_' || floor(random()*1e9), $1, $2, '购买', 'TEST_R', 'TEST_R',
+    VALUES ('TEST_D4_R1_' || floor(random()*1e9), $1, $2, '购买', 'TEST_R',
       100, 1, 100, 100, 100, true)
   `, [orderId, storeId]);
   await c.query(`
     INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
-      product_name, sku_spec_name, unit_price, quantity, unit_real_price, sale_amount,
+      product_name, unit_price, quantity, unit_real_price, sale_amount,
       received, is_recharge_card)
-    VALUES ('TEST_D4_N1_' || floor(random()*1e9), $1, $2, '购买', 'TEST_N', 'TEST_N',
+    VALUES ('TEST_D4_N1_' || floor(random()*1e9), $1, $2, '购买', 'TEST_N',
       200, 1, 200, 200, 200, false)
   `, [orderId, storeId]);
   console.log('Both rows inserted (deferred trigger)');
