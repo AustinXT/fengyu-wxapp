@@ -27,7 +27,7 @@ clientApi/
     ├── points.js     # balance, history
     ├── message.js    # list, read, unreadCount
     ├── card.js       # list, history, balance, rechargeConfig, recharge
-    └── config.js     # banners, fengyuguan, shareGift, invalidateConfig
+    └── config.js     # banners, fengyuguan, shareGift, consumeAgreement, invalidateConfig
 ```
 
 ## 认证

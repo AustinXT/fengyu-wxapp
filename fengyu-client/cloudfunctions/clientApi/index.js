@@ -88,7 +88,8 @@ const routes = {
   'config.banners': () => require('./routes/config').banners,
   'config.fengyuguan': () => require('./routes/config').fengyuguan,
   'config.shareGift': () => require('./routes/config').shareGift,
-  'config.invalidateConfig': () => require('./routes/config').invalidateConfig
+  'config.invalidateConfig': () => require('./routes/config').invalidateConfig,
+  'config.consumeAgreement': () => require('./routes/config').consumeAgreement
 }
 
 /**
@@ -128,7 +129,7 @@ exports.main = async (event, context) => {
   // 无需认证的公开接口
   // config.invalidateConfig 虽列于此，但授信前提是 admin 通过 CloudBase node-sdk 持密调用；
   // 被恶意调用的副作用仅限清一次进程内缓存，不涉及数据写入。
-  const publicActions = ['config.banners', 'config.fengyuguan', 'config.shareGift', 'config.invalidateConfig', 'card.rechargeConfig']
+  const publicActions = ['config.banners', 'config.fengyuguan', 'config.shareGift', 'config.consumeAgreement', 'config.invalidateConfig', 'card.rechargeConfig']
 
   try {
     if (publicActions.includes(action)) {

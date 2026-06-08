@@ -97,6 +97,41 @@ async function shareGift(ctx) {
 }
 
 /**
+ * 获取消费协议（标题 + 正文 + 缓存版本号，无需认证）。
+ *
+ * 读 system_configs.consume_agreement（admin 系统配置「消费协议」Tab 写入，
+ * value 为 JSON 字符串 {title, content}）。返回 { title, content, v }：
+ *   - v 取 updated_at 毫秒戳，供客户端做缓存版本（与 banners 同款）
+ *   - 无配置 / JSON 损坏 / 显式空内容 → 返回 { title:'服务消费协议', content:'', v:0 }；
+ *     content 为空时由客户端用内置兜底文案展示，绝不阻塞下单。
+ * 无需认证，公开接口（与 shareGift 一致：协议预览不要求登录态）。
+ */
+async function consumeAgreement(ctx) {
+  const fallback = { title: '服务消费协议', content: '', v: 0 }
+  const rows = await pg.query(
+    "SELECT value, EXTRACT(EPOCH FROM updated_at) * 1000 AS v FROM system_configs WHERE key = 'consume_agreement'"
+  )
+  if (rows.length === 0 || !rows[0].value) {
+    ctx.result = fallback
+    return
+  }
+  let cfg
+  try {
+    cfg = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value
+  } catch (e) {
+    ctx.result = fallback
+    return
+  }
+  if (!cfg || typeof cfg !== 'object') {
+    ctx.result = fallback
+    return
+  }
+  const title = typeof cfg.title === 'string' && cfg.title.trim() ? cfg.title.trim() : '服务消费协议'
+  const content = typeof cfg.content === 'string' ? cfg.content : ''
+  ctx.result = { title, content, v: Math.floor(Number(rows[0].v)) || 0 }
+}
+
+/**
  * 主动清空 utils/config 的内存缓存。
  *
  * 调用者：admin saveSettings 在 newMemberThreshold 变化时广播。
@@ -108,4 +143,4 @@ async function invalidateConfig(ctx) {
   ctx.result = { success: true }
 }
 
-module.exports = { banners, fengyuguan, shareGift, invalidateConfig }
+module.exports = { banners, fengyuguan, shareGift, consumeAgreement, invalidateConfig }

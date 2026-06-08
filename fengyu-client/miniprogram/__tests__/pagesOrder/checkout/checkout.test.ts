@@ -12,7 +12,7 @@
  *  8. 浮点金额：prepaid+paid = netBeforeCard 精确闭合
  */
 
-import { recomputeAmounts } from '../../../pagesOrder/checkout/checkout-helpers';
+import { recomputeAmounts, parseAgreement } from '../../../pagesOrder/checkout/checkout-helpers';
 
 describe('recomputeAmounts — 储值卡抵扣计算', () => {
   test('case 1: 余额充足（balance ≥ netBeforeCard）→ 全额抵扣，paid=0，支付方式区隐藏', () => {
@@ -110,6 +110,37 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     expect(r.prepaidCardAmount).toBe(99.95);
     expect(r.paidAmount).toBe(200.05);
     expect(r.showPayMethodGroup).toBe(true);
+  });
+});
+
+describe('parseAgreement — 协议正文解析为段落', () => {
+  test('多段文本 → 过滤空行 + 标识「一、」标题行', () => {
+    const paras = parseAgreement('一、服务内容\n本协议适用于...\n\n二、付款\n顾客购买后...');
+    expect(paras).toEqual([
+      { text: '一、服务内容', heading: true },
+      { text: '本协议适用于...', heading: false },
+      { text: '二、付款', heading: true },
+      { text: '顾客购买后...', heading: false },
+    ]);
+  });
+
+  test('「第N条」格式识别为标题', () => {
+    const paras = parseAgreement('第一条 总则\n内容\n第十二条 其他');
+    expect(paras[0].heading).toBe(true);
+    expect(paras[1].heading).toBe(false);
+    expect(paras[2].heading).toBe(true);
+  });
+
+  test('空内容 / 纯空白 / undefined → 空数组', () => {
+    expect(parseAgreement('')).toEqual([]);
+    expect(parseAgreement('   \n  \n')).toEqual([]);
+    expect(parseAgreement(undefined as unknown as string)).toEqual([]);
+  });
+
+  test('行首尾空白被 trim', () => {
+    const paras = parseAgreement('  一、标题  \n  正文内容  ');
+    expect(paras[0]).toEqual({ text: '一、标题', heading: true });
+    expect(paras[1]).toEqual({ text: '正文内容', heading: false });
   });
 });
 

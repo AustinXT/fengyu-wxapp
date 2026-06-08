@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
-import { recomputeAmounts } from './checkout-helpers';
+import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -78,6 +78,12 @@ Page({
     rechargePayAmount: 0,
     rechargeBonus: 0,
     rechargeDiscountLabel: '',
+    // 消费协议预览（点击《协议》懒加载 config.consumeAgreement，底部弹层滚动）
+    showAgreement: false,
+    agreementLoading: false,
+    agreementLoaded: false,
+    agreementTitle: '服务消费协议',
+    agreementParas: [] as { text: string; heading: boolean }[],
   },
 
   onLoad(options) {
@@ -453,12 +459,40 @@ Page({
     this.setData({ paymentMethod: method });
   },
 
-  onViewAgreement() {
-    wx.showModal({
-      title: '服务消费协议',
-      content: '本协议为凤御美容服务消费协议（内容由运营方补充）。购买服务即代表您同意本协议条款。',
-      showCancel: false,
-    });
+  async onViewAgreement() {
+    this.setData({ showAgreement: true });
+    // 首次打开懒加载协议，后续直接复用页面缓存
+    if (this.data.agreementLoaded) return;
+    this.setData({ agreementLoading: true });
+    try {
+      const data = await callClientApi<{ title?: string; content?: string }>(
+        'config.consumeAgreement', {}
+      );
+      const title = (data?.title || '').trim() || '服务消费协议';
+      const content = (data?.content || '').trim() || DEFAULT_AGREEMENT_TEXT;
+      this.setData({
+        agreementTitle: title,
+        agreementParas: parseAgreement(content),
+        agreementLoaded: true,
+      });
+    } catch {
+      // 接口异常用内置兜底文案，不阻塞下单
+      this.setData({
+        agreementParas: parseAgreement(DEFAULT_AGREEMENT_TEXT),
+        agreementLoaded: true,
+      });
+    } finally {
+      this.setData({ agreementLoading: false });
+    }
+  },
+
+  onCloseAgreement() {
+    this.setData({ showAgreement: false });
+  },
+
+  /** 协议弹层底部「我已阅读并同意」：直接勾选 + 关闭 */
+  onAgreeFromPopup() {
+    this.setData({ agreed: true, showAgreement: false });
   },
 
   async onSubmitOrder() {

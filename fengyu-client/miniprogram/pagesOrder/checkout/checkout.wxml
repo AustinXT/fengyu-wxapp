@@ -135,17 +135,19 @@ module.exports.date = function(s) {
   </van-cell-group>
 
   <!-- 消费协议（充值单已在充值页底部展示充值条款，此处不再勾选） -->
+  <!-- 链接移到 checkbox 外 + catchtap 阻断冒泡：点链接只预览、点「我已阅读并同意」/圆圈才切换勾选 -->
   <van-cell-group wx:if="{{!isRecharge}}" title="消费协议" inset>
     <van-cell>
       <view slot="title" class="agreement-row">
         <van-checkbox
           value="{{agreed}}"
           shape="round"
+          icon-size="36rpx"
           bind:change="onAgreementChange"
         >
           <text class="agreement-text">我已阅读并同意</text>
-          <text class="agreement-link" bindtap="onViewAgreement">《服务消费协议》</text>
         </van-checkbox>
+        <text class="agreement-link" catchtap="onViewAgreement">《{{agreementTitle}}》</text>
       </view>
     </van-cell>
   </van-cell-group>
@@ -248,3 +250,32 @@ module.exports.date = function(s) {
   bind:select="onStaffSelect"
   bind:close="onCloseStaffPopup"
 />
+
+<!-- 消费协议预览 Popup（底部弹层 + 滚动 + 保留段落/标题排版） -->
+<van-popup
+  show="{{showAgreement}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onCloseAgreement"
+>
+  <view class="agreement-popup">
+    <view class="agreement-popup__title">{{agreementTitle}}</view>
+    <scroll-view scroll-y class="agreement-popup__body">
+      <view wx:if="{{agreementLoading}}" class="agreement-popup__loading">
+        <van-loading size="48rpx" />
+      </view>
+      <block wx:elif="{{agreementParas.length > 0}}">
+        <text
+          wx:for="{{agreementParas}}"
+          wx:key="text"
+          class="agreement-popup__para {{item.heading ? 'agreement-popup__para--heading' : ''}}"
+        >{{item.text}}</text>
+      </block>
+      <view wx:else class="agreement-popup__empty">协议内容即将更新，如有疑问请咨询门店</view>
+    </scroll-view>
+    <view class="agreement-popup__footer">
+      <van-button block round color="#C0322A" bindtap="onAgreeFromPopup">我已阅读并同意</van-button>
+    </view>
+  </view>
+</van-popup>
