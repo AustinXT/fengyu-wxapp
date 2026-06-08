@@ -12,9 +12,15 @@ import {
   normalizeShareGiftConfig,
 } from '@/lib/share-gift-config'
 import { rechargeCardConfigSchema, type RechargeCardConfigInput } from '@/lib/schemas'
+import {
+  type ConsumeAgreementConfig,
+  DEFAULT_CONSUME_AGREEMENT,
+  normalizeConsumeAgreement,
+} from '@/lib/consume-agreement'
 
 export type { ShareGiftConfig }
 export type { RechargeCardConfigInput }
+export type { ConsumeAgreementConfig }
 
 /**
  * 单个等级的权益配置
@@ -547,6 +553,82 @@ export const saveRechargeCardConfig = withPermission(
     return { success: true, message: '充值卡配置保存成功' }
   } catch (err) {
     console.error('Save recharge card config error:', err)
+    return { success: false, message: '保存失败，请稍后重试' }
+  }
+  },
+)
+
+// ─── 消费协议配置（系统配置 → 消费协议 Tab；存 system_configs.consume_agreement） ───
+
+const CONSUME_AGREEMENT_KEY = 'consume_agreement'
+
+/**
+ * 读取消费协议配置（标题 + 正文）。
+ * 行缺失 / JSON 损坏均降级为 DEFAULT_CONSUME_AGREEMENT（含默认文案）。
+ */
+export const getConsumeAgreement = withPermission(
+  'system:config',
+  async (): Promise<ConsumeAgreementConfig> => {
+  try {
+    const rows = await db.execute<{ value: string }>(sql`
+      SELECT value FROM system_configs WHERE key = ${CONSUME_AGREEMENT_KEY} LIMIT 1
+    `)
+    const raw = (rows as any[])[0]?.value
+    if (!raw) return { ...DEFAULT_CONSUME_AGREEMENT }
+    try {
+      return normalizeConsumeAgreement(JSON.parse(raw))
+    } catch {
+      return { ...DEFAULT_CONSUME_AGREEMENT }
+    }
+  } catch {
+    return { ...DEFAULT_CONSUME_AGREEMENT }
+  }
+  },
+)
+
+/**
+ * 保存消费协议配置（规范化 + UPSERT system_configs + 审计日志 + revalidate）。
+ * 顾客端 clientApi config.consumeAgreement 读同键，保存后下次拉取即生效（无内存缓存）。
+ */
+export const saveConsumeAgreement = withPermission(
+  'system:config',
+  async (
+    session,
+    config: ConsumeAgreementConfig,
+  ): Promise<{ success: boolean; message: string }> => {
+  try {
+    const oldConfig = await getConsumeAgreement()
+    const normalized = normalizeConsumeAgreement(config)
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS system_configs (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    const value = JSON.stringify(normalized)
+    await db.execute(sql`
+      INSERT INTO system_configs (key, value, updated_at)
+      VALUES (${CONSUME_AGREEMENT_KEY}, ${value}, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = NOW()
+    `)
+
+    await logUpdate(
+      session,
+      'system.saveConsumeAgreement',
+      'system_config',
+      'consume_agreement',
+      oldConfig as unknown as Record<string, unknown>,
+      normalized as unknown as Record<string, unknown>,
+    )
+
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/settings')
+    return { success: true, message: '消费协议已保存' }
+  } catch (err) {
+    console.error('Save consume agreement error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
   },

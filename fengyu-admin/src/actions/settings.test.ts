@@ -47,11 +47,17 @@ import {
   saveShareGiftConfig,
   getRechargeCardConfig,
   saveRechargeCardConfig,
+  getConsumeAgreement,
+  saveConsumeAgreement,
 } from './settings'
 import {
   normalizeShareGiftConfig,
   DEFAULT_SHARE_GIFT_CONFIG,
 } from '@/lib/share-gift-config'
+import {
+  normalizeConsumeAgreement,
+  DEFAULT_CONSUME_AGREEMENT,
+} from '@/lib/consume-agreement'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
@@ -682,5 +688,103 @@ describe('saveRechargeCardConfig — 充值卡档位保存', () => {
     const result = await saveRechargeCardConfig({ tiers: [], minAmount: 100, maxAmount: 50000 })
     expect(result.success).toBe(false)
     expect(result.message).toContain('至少配置一个充值档位')
+  })
+})
+
+// ── normalizeConsumeAgreement ─────────────────────────────────────────────────
+
+describe('normalizeConsumeAgreement — 消费协议规范化', () => {
+  it('空输入 → 返回默认配置（含默认文案）', () => {
+    expect(normalizeConsumeAgreement(null)).toEqual(DEFAULT_CONSUME_AGREEMENT)
+    expect(normalizeConsumeAgreement(undefined)).toEqual(DEFAULT_CONSUME_AGREEMENT)
+    expect(normalizeConsumeAgreement('x')).toEqual(DEFAULT_CONSUME_AGREEMENT)
+  })
+
+  it('title 空白 → 回退默认标题；content 保留原换行', () => {
+    const r = normalizeConsumeAgreement({ title: '   ', content: 'a\n\nb' })
+    expect(r.title).toBe('服务消费协议')
+    expect(r.content).toBe('a\n\nb')
+  })
+
+  it('title trim + 截断到 50 字；content 截断到 20000 字', () => {
+    const r = normalizeConsumeAgreement({
+      title: `  ${'标'.repeat(80)}  `,
+      content: '正'.repeat(25000),
+    })
+    expect(r.title.length).toBe(50)
+    expect(r.content.length).toBe(20000)
+  })
+
+  it('content 非字符串 → 空字符串（允许空，前端用兜底文案）', () => {
+    const r = normalizeConsumeAgreement({ title: '协议', content: 123 })
+    expect(r.title).toBe('协议')
+    expect(r.content).toBe('')
+  })
+})
+
+// ── getConsumeAgreement ───────────────────────────────────────────────────────
+
+describe('getConsumeAgreement — 消费协议读取', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('DB 无记录 → 返回默认配置', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await getConsumeAgreement()
+    expect(result).toEqual(DEFAULT_CONSUME_AGREEMENT)
+  })
+
+  it('JSON 损坏 → 返回默认配置', async () => {
+    ;(db.execute as any).mockResolvedValue([{ value: '{bad json' }])
+    const result = await getConsumeAgreement()
+    expect(result).toEqual(DEFAULT_CONSUME_AGREEMENT)
+  })
+
+  it('DB 异常 → 返回默认配置', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('table missing'))
+    const result = await getConsumeAgreement()
+    expect(result).toEqual(DEFAULT_CONSUME_AGREEMENT)
+  })
+
+  it('合法 JSON → 返回规范化后的配置', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { value: JSON.stringify({ title: '凤御服务协议', content: '一、总则\n正文' }) },
+    ])
+    const result = await getConsumeAgreement()
+    expect(result.title).toBe('凤御服务协议')
+    expect(result.content).toBe('一、总则\n正文')
+  })
+})
+
+// ── saveConsumeAgreement ──────────────────────────────────────────────────────
+
+describe('saveConsumeAgreement — 消费协议保存', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('正常保存 → CREATE TABLE + SELECT + UPSERT + 日志', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveConsumeAgreement({ title: '协议', content: '正文' })
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('消费协议已保存')
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession,
+      'system.saveConsumeAgreement',
+      'system_config',
+      'consume_agreement',
+      expect.any(Object),
+      expect.objectContaining({ title: '协议', content: '正文' }),
+    )
+  })
+
+  it('DB 异常 → 返回失败消息', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('pg down'))
+    const result = await saveConsumeAgreement({ title: '协议', content: '正文' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('保存失败')
   })
 })
