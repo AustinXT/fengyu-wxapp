@@ -100,7 +100,12 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			header: "商品/规格",
 			cell: (row) => (
 				<div className="flex flex-col">
-					<span className="line-clamp-1 font-medium">{row.productName ?? "—"}</span>
+					<Link
+						href={`/cards/${row.saleItemId}`}
+						className="line-clamp-1 font-medium text-[var(--primary)] hover:underline"
+					>
+						{row.productName ?? "—"}
+					</Link>
 				</div>
 			),
 		},
