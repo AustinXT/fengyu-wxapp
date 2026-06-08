@@ -52,6 +52,10 @@ interface CartItem {
   halfPriceSaleAmount: string;
   /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
   received: string;
+  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单可改应付 */
+  isManagerSpecial?: boolean;
+  /** 店长手填的应付金额（仅店长特价行；undefined=未改，用 price×quantity） */
+  saleAmountOverride?: string;
   /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
   refBundleId?: string;
 }
@@ -78,6 +82,8 @@ interface SkuItem {
   isShengmei: boolean | null;
   /** 体验卡 capability（product_skus.is_experience） */
   isExperience?: boolean;
+  /** 店长特别优惠 capability（product_skus.is_manager_special） */
+  isManagerSpecial?: boolean;
   /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
   isBundle?: boolean;
 }
@@ -126,6 +132,8 @@ interface DisplayItem {
   productType: string;
   sessionCount: number | null;
   isBundle?: boolean;
+  /** 店长特别优惠 capability（仅普通商品开单时放开应付编辑） */
+  isManagerSpecial?: boolean;
 }
 
 interface CustomerInfo {
@@ -204,6 +212,7 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
     productType: sku.productType,
     sessionCount: sku.sessionCount,
     isBundle: !!sku.isBundle,
+    isManagerSpecial: !!sku.isManagerSpecial,
   }
 }
 
@@ -414,6 +423,7 @@ Page({
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
+            isManagerSpecial: !!pending.isManagerSpecial,
             priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
           });
         }
@@ -801,6 +811,7 @@ Page({
         sessionCount: item.sessionCount || 0,
         productType: item.productKind || item.productType,
         workfineItemId: '',
+        isManagerSpecial: !!item.isManagerSpecial,
         priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
       });
     }
@@ -898,6 +909,36 @@ Page({
     this.updateCart(cart, { preserveReceived: true });
   },
 
+  /**
+   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单 + 普通商品）。
+   * - 区间 0 ≤ 应付 ≤ price×quantity（向下调，不许涨价）
+   * - 空字符串等同于默认（=标准价线 price×quantity）
+   * - 改应付后实付默认回归新应付（不保留旧实付，避免实付>应付）
+   */
+  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = (e.detail?.value ?? '') as string;
+    const cart = [...this.data.cart];
+    const idx = cart.findIndex(c => c.skuId === skuId);
+    if (idx < 0) return;
+    const row = cart[idx];
+    // 仅店长特价行 + 销售单 + 普通商品放行（组合套餐不适用）
+    if (this.data.saleOrderType !== '销售单' || !row.isManagerSpecial
+        || row.refBundleId || row.productType === '组合套餐') {
+      return;
+    }
+    const stdLine = row.price * row.quantity;
+    const parsed = parseFloat(raw);
+    if (!raw || Number.isNaN(parsed) || parsed < 0) {
+      row.saleAmountOverride = undefined;
+    } else {
+      const clamped = Math.min(parsed, stdLine);
+      row.saleAmountOverride = (Math.round(clamped * 100) / 100).toFixed(2);
+    }
+    // 改应付后实付回归默认（=新应付），避免残留旧实付超过新应付
+    this.updateCart(cart);
+  },
+
   /** 寄存单历史实收输入（独立于 cart.received，避免和销售单实付逻辑纠缠） */
   onDepositReceivedChange(e: WechatMiniprogram.CustomEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
@@ -918,18 +959,30 @@ Page({
    * - 否则 received 全部回归默认值（= 当前订单类型下的应付）
    */
   updateCart(cart: CartItem[], opts?: { preserveReceived?: boolean }) {
-    // 1) 先填 priceLine（"价格"列）
+    const isInternal = this.data.saleOrderType === '内部单';
+    const isSales = this.data.saleOrderType === '销售单';
+    // 店长特别优惠（仅销售单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
+    // 钳制到 [0, price×qty]（向下调，不许涨价）；未改时回退标准价线 price×qty。
+    const effBase = cart.map(c => {
+      const stdLine = c.price * c.quantity;
+      const editable = isSales && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+      if (editable && c.saleAmountOverride != null && c.saleAmountOverride !== '') {
+        const v = parseFloat(c.saleAmountOverride);
+        if (!Number.isNaN(v)) return Math.max(0, Math.min(v, stdLine));
+      }
+      return stdLine;
+    });
+    // 1) priceLine（"价格"列）= 标准价线（店长改应付不影响划线价展示）
     for (const c of cart) {
       c.priceLine = (c.price * c.quantity).toFixed(2);
     }
-    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = price × qty；内部单 = price × 0.5 × qty
-    const isInternal = this.data.saleOrderType === '内部单';
-    const baseLines = cart.map(c => {
+    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = price × 0.5 × qty
+    const baseLines = cart.map((c, i) => {
       if (isInternal) {
         const halfUnit = Math.round(c.price * 50) / 100;
         return halfUnit * c.quantity;
       }
-      return c.price * c.quantity;
+      return effBase[i];
     });
     // 3) 按行应付比例摊订单级优惠券折扣（couponDiscount 已在 onCouponPick 时落到 data）
     const shares = allocateCouponPerLine(baseLines, this.data.couponDiscount || 0);
@@ -937,8 +990,8 @@ Page({
       const c = cart[i];
       const share = shares[i] || 0;
       c.couponShare = share.toFixed(2);
-      // 销售单/寄存单的应付金额（不走半价）
-      const saleAmountNum = Math.max(0, Math.round((c.price * c.quantity - share) * 100) / 100);
+      // 销售单/寄存单的应付金额（不走半价；店长特价行用 effBase 基线）
+      const saleAmountNum = Math.max(0, Math.round((effBase[i] - share) * 100) / 100);
       c.saleAmount = saleAmountNum.toFixed(2);
       // 内部单专用的应付金额（先半价、再扣摊到的券）
       const halfUnit = Math.round(c.price * 50) / 100;
@@ -1411,24 +1464,34 @@ Page({
         // Wave 3G：实付=0 时由后端强制覆盖为 '无'，前端仍传 paymentMethod 作为建议通道
         paymentMethod: this.data.paymentMethod,
         saleOrderType,
-        items: cart.map(c => ({
-          skuId: c.skuId,
-          workfineItemId: c.workfineItemId,
-          spuName: c.spuName,
-          specName: c.specName,
-          quantity: c.quantity,
-          // 价格三件套（套餐场景下 c.price=bundle_price、c.listPrice=sku 标价）：
-          //   unitPrice     = sku 标价 per-card（落 sale_items.unit_price 标价快照）
-          //   unitRealPrice = 成交价 per-card（落 unit_real_price；套餐 = bundle_price）
-          //   saleAmount    = pre-coupon 行小计（= price × quantity，与 c.priceLine 同义；
-          //                   ⚠️ 不是 c.saleAmount 那个已扣券值，避免后端摊券时双扣）
-          // 内部单后端会忽略价格字段强制 sku.price × 50% 重算
-          unitPrice: ((c.listPrice ?? c.price) || 0).toFixed(2),
-          unitRealPrice: (c.price || 0).toFixed(2),
-          saleAmount: c.priceLine,
-          // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
-          received: parseFloat(c.received) || 0,
-        })),
+        items: cart.map(c => {
+          // 店长特别优惠（仅销售单 + 普通商品）：手填应付覆盖 pre-coupon 行小计与成交单价。
+          // 钳制 [0, price×qty]；未改时与原行为字节一致（unitRealPrice=c.price、saleAmount=c.priceLine）。
+          const editable = saleOrderType === '销售单' && !!c.isManagerSpecial
+            && !c.refBundleId && c.productType !== '组合套餐';
+          const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
+          const effSale = hasOv
+            ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
+            : c.price * c.quantity;
+          return {
+            skuId: c.skuId,
+            workfineItemId: c.workfineItemId,
+            spuName: c.spuName,
+            specName: c.specName,
+            quantity: c.quantity,
+            // 价格三件套（套餐场景下 c.price=bundle_price、c.listPrice=sku 标价）：
+            //   unitPrice     = sku 标价 per-card（落 sale_items.unit_price 标价快照）
+            //   unitRealPrice = 成交价 per-card（落 unit_real_price；套餐 = bundle_price；店长特价 = 应付÷数量）
+            //   saleAmount    = pre-coupon 行小计（= price × quantity，与 c.priceLine 同义；店长特价 = 手填应付）
+            //                   ⚠️ 不是 c.saleAmount 那个已扣券值，避免后端摊券时双扣
+            // 内部单后端会忽略价格字段强制 sku.price × 50% 重算
+            unitPrice: ((c.listPrice ?? c.price) || 0).toFixed(2),
+            unitRealPrice: hasOv ? (effSale / c.quantity).toFixed(2) : (c.price || 0).toFixed(2),
+            saleAmount: hasOv ? effSale.toFixed(2) : c.priceLine,
+            // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
+            received: parseFloat(c.received) || 0,
+          };
+        }),
         remark,
         // 内部单不允许优惠券（云函数已守卫）
         couponId: saleOrderType === '销售单'

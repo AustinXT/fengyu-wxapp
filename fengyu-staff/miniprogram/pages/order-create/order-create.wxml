@@ -423,10 +423,25 @@
                 <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
               </view>
 
-              <!-- 应付金额：不可编辑，仅由订单级优惠券冲抵（内部单走半价） -->
+              <!-- 应付金额：店长特别优惠（销售单+普通商品）可向下编辑至 0；否则只读（内部单走半价，仅由优惠券冲抵） -->
               <view class="confirm-item-row">
                 <text class="confirm-item-label">应付金额</text>
-                <block wx:if="{{saleOrderType === '内部单'}}">
+                <view
+                  wx:if="{{item.isManagerSpecial && saleOrderType === '销售单' && !item.refBundleId && item.productType !== '组合套餐'}}"
+                  class="confirm-discount-input-wrap"
+                >
+                  <text class="confirm-special-badge">店长特价</text>
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{item.saleAmount}}"
+                    placeholder="0"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onSaleAmountChange"
+                  />
+                </view>
+                <block wx:elif="{{saleOrderType === '内部单'}}">
                   <view class="confirm-internal-price">
                     <text class="confirm-item-origprice">¥{{item.saleAmount}}</text>
                     <text class="confirm-item-receivable">¥{{item.halfPriceSaleAmount}}</text>

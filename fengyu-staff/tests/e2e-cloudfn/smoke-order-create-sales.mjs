@@ -105,7 +105,7 @@ async function main() {
   // 3.5 PG: sale_items 行
   const items = await pgQuery(
     `SELECT sale_item_id, sku_id, product_type, quantity, unit_price, unit_real_price,
-            session_count, remaining_sessions, is_shengmei, received, pending_received
+            session_count, remaining_sessions, is_shengmei, is_manager_special, received, pending_received
      FROM sale_items WHERE sale_order_id = $1`,
     [saleOrderId]
   )
@@ -123,6 +123,8 @@ async function main() {
       // 疗程卡每行 session_count = sku.session_count = 5
       if (Number(i.session_count) !== 5) errors.push(`session_count 应=5（疗程卡），实际=${i.session_count}`)
       if (i.is_shengmei !== true) errors.push(`is_shengmei 应=true（快照），实际=${i.is_shengmei}`)
+      // 普通 SKU（未标店长特价）→ is_manager_special 快照默认 false
+      if (i.is_manager_special !== false) errors.push(`is_manager_special 应=false（普通 SKU 快照），实际=${i.is_manager_special}`)
       // 两步式（2026-06-07 修 P0）：开单行级 received=0（资金铁律：只认已支付流水）；
       // 实付草稿落 pending_received=500（行应付，500/卡），确认收款后才驱动 received/paid_sessions。
       if (Number(i.received) !== 0) errors.push(`received 应=0（两步式开单不记账），实际=${i.received}`)

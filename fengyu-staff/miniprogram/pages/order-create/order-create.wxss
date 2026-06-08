@@ -330,6 +330,16 @@
 .confirm-discount-prefix { font-size: 24rpx; color: var(--color-text-hint); margin-right: 4rpx; }
 .confirm-discount-input { flex: 1; font-size: 24rpx; color: var(--color-text-primary); height: 48rpx; }
 .confirm-item-receivable { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
+/* 店长特别优惠：应付输入框内的小徽章 */
+.confirm-special-badge {
+  font-size: 18rpx;
+  color: var(--color-primary);
+  background: rgba(192, 50, 42, 0.08);
+  border-radius: 4rpx;
+  padding: 0 6rpx;
+  margin-right: 6rpx;
+  white-space: nowrap;
+}
 .confirm-total-row {
   display: flex;
   align-items: center;

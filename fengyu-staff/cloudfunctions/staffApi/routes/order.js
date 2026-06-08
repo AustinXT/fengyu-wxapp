@@ -368,7 +368,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                s.service_fee, s.is_shengmei, s.is_experience,
+                s.service_fee, s.is_shengmei, s.is_experience, s.is_manager_special,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -468,6 +468,8 @@ async function create(ctx) {
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        // 店长特别优惠行级快照（权威 = DB，不信前端）
+        isManagerSpecial: sku.is_manager_special === true,
       }
     })
   )
@@ -891,8 +893,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, pending_received,
-          sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16, $17, $18)`,
+          sales_category, service_fee, is_shengmei, is_experience, is_manager_special
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16, $17, $18, $19)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -905,6 +907,8 @@ async function create(ctx) {
           // is_experience 行级快照（capability 列，2026-04-26 ticket）：从 product_skus.is_experience
           // 拷贝；用于客户分类跃迁（per-order SUM FILTER WHERE si.is_experience）。
           d.isExperience === true,
+          // is_manager_special 行级快照：从 product_skus.is_manager_special 拷贝（权威 = DB）
+          d.isManagerSpecial === true,
         ]
       )
     }
@@ -1717,6 +1721,14 @@ async function createRefund(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
   const origOrder = origOrders[0]
 
+  // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持退款
+  if (origOrder.sale_order_type === '寄存单') {
+    throw new Error('INVALID_STATE: 寄存单不支持退款')
+  }
+  if (origOrder.legacy_source === 'workfine') {
+    throw new Error('INVALID_STATE: 历史订单不支持退款')
+  }
+
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
   const inflightRefunds = await pg.query(
     `SELECT id FROM sale_order_payments
@@ -2149,6 +2161,14 @@ async function createRepayment(ctx) {
     )
     if (lockRes.rows.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在')
     const locked = lockRes.rows[0]
+
+    // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持回款
+    if (locked.sale_order_type === '寄存单') {
+      throw new Error('INVALID_STATE: 寄存单不支持回款')
+    }
+    if (locked.legacy_source === 'workfine') {
+      throw new Error('INVALID_STATE: 历史订单不支持回款')
+    }
 
     if (!['部分支付', '待支付'].includes(locked.status)) {
       throw new Error(`INVALID_STATE: 订单当前状态"${locked.status}"不允许回款`)

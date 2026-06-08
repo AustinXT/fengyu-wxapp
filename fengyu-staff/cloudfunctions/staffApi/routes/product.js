@@ -119,6 +119,7 @@ function _formatSkuRow(sk) {
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
     isExperience: !!sk.is_experience,
+    isManagerSpecial: !!sk.is_manager_special,
     isBundle: !!sk.is_bundle,
   }
 }
@@ -165,7 +166,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
-           sk.is_experience,
+           sk.is_experience, sk.is_manager_special,
            pc.category_name, pc.product_kind, pc.sales_category,
            COALESCE((
              SELECT bool_or(p.is_bundle)
@@ -196,7 +197,7 @@ async function _queryExperienceSkus() {
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
-           sk.is_experience,
+           sk.is_experience, sk.is_manager_special,
            pc.category_name, pc.product_kind, pc.sales_category,
            false AS is_bundle
     FROM product_skus sk
@@ -450,7 +451,7 @@ async function spuDetail(ctx) {
   // 供前端 product-detail 顶部 tag 渲染（颜色 DB 驱动）
   const skuList = await pg.query(`
     SELECT sk.sku_id, sk.product_type, sk.spec_name, sk.price, sk.special_price,
-           sk.session_count, sk.sort_order, sk.service_fee,
+           sk.session_count, sk.sort_order, sk.service_fee, sk.is_manager_special,
            mps.bundle_price, mps.sort_order AS display_order,
            mps.bundle_group_id,
            bg.group_name, bg.pick_count AS group_pick_count,
