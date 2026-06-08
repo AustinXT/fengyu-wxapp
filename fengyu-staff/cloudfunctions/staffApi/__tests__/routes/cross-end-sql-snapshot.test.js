@@ -1228,13 +1228,18 @@ describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
   })
 
   describe('触发点防回归（定义了 SQL 却没接线即形同虚设）', () => {
-    test('staff createDeposit + updateDepositReceived 两处都调用 DEPOSIT_REAL_PRICE_RECALC_SQL', () => {
+    // updateDepositReceived 已停用（寄存单建单后实收不可改）→ 仅 createDeposit 一处调用
+    test('staff createDeposit 调用 DEPOSIT_REAL_PRICE_RECALC_SQL（恰 1 处；updateDepositReceived 已停用）', () => {
       const calls = staffSrc.match(/tx\.query\(\s*DEPOSIT_REAL_PRICE_RECALC_SQL\s*,\s*\[/g) || []
-      expect(calls.length).toBeGreaterThanOrEqual(2)
+      expect(calls.length).toBe(1)
     })
-    test('admin createDepositOrder + updateDepositReceived 两处都调用 recomputeDepositRealPrice', () => {
+    test('admin createDepositOrder 调用 recomputeDepositRealPrice（恰 1 处；updateDepositReceived 已停用）', () => {
       const calls = adminSrc.match(/await\s+recomputeDepositRealPrice\(\s*tx\s*,/g) || []
-      expect(calls.length).toBeGreaterThanOrEqual(2)
+      expect(calls.length).toBe(1)
+    })
+    test('两端 updateDepositReceived 已移除（不得残留 export/函数）', () => {
+      expect(staffSrc).not.toMatch(/async function updateDepositReceived/)
+      expect(adminSrc).not.toMatch(/export const updateDepositReceived/)
     })
   })
 
@@ -1245,3 +1250,35 @@ describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
   })
 })
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 寄存单 / 历史订单(legacy_source='workfine') 资金操作锁定守护
+//   需求（用户两轮指示）：寄存单 + 历史订单 禁止退款 / 回款 / 改实收。
+//   源码级守护：任一端删了拦截即失败（行为面由 staff smoke-order-deposit 端到端验证；
+//   admin recordPayment 因并行 migration 0062 暂不可跑 smoke，靠此源码守护兜底）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('寄存单/历史订单 资金操作锁定守护', () => {
+  let staffOrder, adminOrders, adminRefunds
+  beforeAll(() => {
+    staffOrder = readFile(FILES.staffOrderJs)
+    adminOrders = readFile(FILES.adminOrdersTs)
+    adminRefunds = readFile(FILES.adminRefundsTs)
+  })
+
+  test('staff order.js 含 寄存单/历史订单 的 退款+回款 拦截', () => {
+    expect(staffOrder).toContain('寄存单不支持退款')
+    expect(staffOrder).toContain('历史订单不支持退款')
+    expect(staffOrder).toContain('寄存单不支持回款')
+    expect(staffOrder).toContain('历史订单不支持回款')
+  })
+
+  test('admin recordPayment 含 寄存单/历史订单 回款拦截', () => {
+    expect(adminOrders).toContain('寄存单不支持回款')
+    expect(adminOrders).toContain('历史订单不支持回款')
+  })
+
+  test('admin createRefund 含 历史订单/仅销售单 退款拦截（寄存单走"仅销售单"通用拒绝）', () => {
+    expect(adminRefunds).toContain('历史订单不支持退款')
+    expect(adminRefunds).toContain('仅销售单支持退款')
+  })
+})

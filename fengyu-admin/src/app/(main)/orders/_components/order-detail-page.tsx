@@ -8,7 +8,6 @@ import { StatusBadge, Badge } from "@/components/ui/badge";
 import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types";
 import { RecordPaymentDialog } from "./record-payment-dialog";
 import { ConfirmOfflineDialog } from "./confirm-offline-dialog";
-import { DepositReceiptDialog } from "./deposit-receipt-dialog";
 import { RefundForm } from "@/components/orders/refund-form";
 import { formatDateTime as fmtDateTime } from "@/lib/utils";
 import { DangerZoneDelete } from "@/components/delete-action";
@@ -65,7 +64,6 @@ export default function OrderDetailPageClient({
   canRefund = false,
   cardBalance = null,
   canListAllocations = true,
-  canEditDepositReceipt = false,
   canDelete = false,
 }: {
   order: SaleOrder;
@@ -85,8 +83,6 @@ export default function OrderDetailPageClient({
    * 缺该权限的角色（如 admin）不展示"营业额分配"分区，避免误导（admin 不参与分配流程）。
    */
   canListAllocations?: boolean;
-  /** 是否展示寄存单「修改实收」按钮（与开寄存单同权限 sale_order:create） */
-  canEditDepositReceipt?: boolean;
   /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
   canDelete?: boolean;
 }) {
@@ -109,8 +105,11 @@ export default function OrderDetailPageClient({
 
   // 录入回款：用于已开始收款的订单补尾款。
   // 与确认收款互斥——线下「待支付」走确认收款，避免双按钮歧义（录入回款写'回款'且不自动扣预选卡）。
+  // 回款仅对销售单 + 非历史订单可见（寄存单/历史订单禁止事后资金变更，后端亦兜底拒绝）
   const canShowRecordPayment =
     canRecordPayment &&
+    order.saleOrderType === "销售单" &&
+    order.legacySource !== "workfine" &&
     remainingPayable > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
     !canShowConfirmOffline;
@@ -118,15 +117,13 @@ export default function OrderDetailPageClient({
   const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false);
   const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false);
   const [refundFormOpen, setRefundFormOpen] = useState(false);
-  const [depositReceiptDialogOpen, setDepositReceiptDialogOpen] = useState(false);
 
-  // 寄存单「修改实收」入口：仅寄存单 + 有权限时可见
-  const canShowEditDepositReceipt = canEditDepositReceipt && order.saleOrderType === "寄存单";
-
-  // 退款按钮仅对销售单 + 已支付/已完成/部分支付 可见
+  // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
+  // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
   const canShowRefund =
     canRefund &&
     order.saleOrderType === "销售单" &&
+    order.legacySource !== "workfine" &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
   // 是否存在待审批中的退款（payments 中有 change_type='退款' status∈{'待审批','待支付'}）
@@ -171,13 +168,8 @@ export default function OrderDetailPageClient({
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
           <span>
             此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 /
-            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录。
+            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。
           </span>
-          {canShowEditDepositReceipt && (
-            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setDepositReceiptDialogOpen(true)}>
-              修改实收
-            </Button>
-          )}
         </div>
       )}
 
@@ -528,20 +520,6 @@ export default function OrderDetailPageClient({
       {/* 创建退款弹层（ticket 2026-04-24 退款 PR-Y） */}
       {canShowRefund && (
         <RefundForm open={refundFormOpen} onOpenChange={setRefundFormOpen} saleOrderId={order.saleOrderId} />
-      )}
-
-      {/* 寄存单历史实收编辑弹层 */}
-      {canShowEditDepositReceipt && (
-        <DepositReceiptDialog
-          open={depositReceiptDialogOpen}
-          onOpenChange={setDepositReceiptDialogOpen}
-          saleOrderId={order.saleOrderId}
-          items={items.map((it) => ({
-            saleItemId: it.saleItemId,
-            productName: it.skuName || it.productName || it.saleItemId,
-            received: String(it.received ?? "0"),
-          }))}
-        />
       )}
 
       {/* 危险操作：物理删除订单（仅系统管理员） */}

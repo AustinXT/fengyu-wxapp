@@ -168,10 +168,6 @@ Page({
     repayGrandTotal: '0.00',
     // 当前订单欠款（弹层内引用）
     currentRemainingPayable: 0,
-    // 寄存单历史实收编辑弹层
-    showDepositPopup: false,
-    depositLines: [] as Array<{ saleItemId: string; itemName: string; received: string }>,
-    depositTotal: '0.00',
   },
 
   onLoad(options: Record<string, string>) {
@@ -601,62 +597,4 @@ Page({
     }
   },
 
-  // ===== 寄存单历史实收编辑 =====
-  _recalcDepositTotal(lines: Array<{ received: string }>) {
-    const total = Math.round(lines.reduce((s, l) => s + (Number(l.received) || 0), 0) * 100) / 100;
-    this.setData({ depositTotal: total.toFixed(2) });
-  },
-
-  onDepositEditTap() {
-    const o = this.data.order;
-    if (!o || o.orderType !== '寄存单') return;
-    const lines = (o.items || []).map((it) => ({
-      saleItemId: it.saleItemId,
-      itemName: it.itemName,
-      received: Number(it.received) > 0 ? Number(it.received).toFixed(2) : '',
-    }));
-    this.setData({ showDepositPopup: true, depositLines: lines });
-    this._recalcDepositTotal(lines);
-  },
-
-  onCloseDepositPopup() {
-    this.setData({ showDepositPopup: false });
-  },
-
-  onDepositLineChange(e: WechatMiniprogram.CustomEvent) {
-    const idx = Number(e.currentTarget.dataset.index);
-    const val = (e.detail as unknown as string) || '';
-    const lines = this.data.depositLines.slice();
-    if (!lines[idx]) return;
-    lines[idx] = { ...lines[idx], received: val };
-    this.setData({ depositLines: lines });
-    this._recalcDepositTotal(lines);
-  },
-
-  async onConfirmDepositEdit() {
-    if (this.data.submitting) return;
-    const { order, depositLines } = this.data;
-    if (!order || !order.saleOrderId) return;
-    const r2 = (n: number) => Math.round(n * 100) / 100;
-    const items = depositLines.map((l) => ({
-      saleItemId: l.saleItemId,
-      received: Math.max(0, r2(Number(l.received) || 0)),
-    }));
-
-    this.setData({ submitting: true });
-    try {
-      await callStaffApi('order.updateDepositReceived', {
-        saleOrderId: order.saleOrderId,
-        items,
-      });
-      wx.showToast({ title: '实收已更新', icon: 'success' });
-      this.setData({ showDepositPopup: false });
-      this.loadDetail(this.data._saleOrderId);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '修改失败';
-      wx.showToast({ title: msg.replace(/^[A-Z_]+:\s*/, '') || '修改失败', icon: 'none' });
-    } finally {
-      this.setData({ submitting: false });
-    }
-  },
 });

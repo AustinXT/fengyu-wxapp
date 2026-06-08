@@ -20,7 +20,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestProduct, cleanupTestData, invalidateStaffAuthCache,
+  createTestProduct, createTestSaleOrder, cleanupTestData, invalidateStaffAuthCache,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -99,6 +99,68 @@ async function main() {
     }
   }
 
+  // ─── 5. received>0 路径：建单录历史实付 → unit_real_price = 实付/次数（主功能正向覆盖）───
+  const result2 = await invokeStaffApi('order.createDeposit', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+    items: [{ skuId: sku.skuId, quantity: 1, received: 800 }],
+    remark: 'e2e-deposit-received',
+  })
+  if (result2.code !== 0) {
+    errors.push(`[received>0] createDeposit 失败 code=${result2.code} msg=${result2.message}`)
+  } else {
+    const r2 = await pgQuery(
+      `SELECT received, unit_real_price, unit_price FROM sale_items WHERE sale_order_id = $1`,
+      [result2.data?.saleOrderId]
+    )
+    const it2 = r2[0]
+    // recalc STEP1 把定向回款落回 received=800；unit_real_price = 实付800/次数10 = 80；unit_price 仍标价 1000/10=100
+    if (Number(it2?.received) !== 800) errors.push(`[received>0] sale_items.received 应=800，实际=${it2?.received}`)
+    if (Number(it2?.unit_real_price) !== 80) errors.push(`[received>0] unit_real_price 应=80（实付800/10），实际=${it2?.unit_real_price}`)
+    if (Number(it2?.unit_price) !== 100) errors.push(`[received>0] unit_price 应=100（标价1000/10，不变），实际=${it2?.unit_price}`)
+    rec(`  ✓ received>0 asserted (received=${it2?.received}, unit_real_price=${it2?.unit_real_price})`)
+  }
+
+  // ─── 6. 资金操作锁定：寄存单 + 历史订单 禁止退款/回款（updateDepositReceived 已停用）───
+  const depItem = (await pgQuery(
+    `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 LIMIT 1`, [saleOrderId]
+  ))[0]
+  // 6a 寄存单退款 → 我的 guard 在加载原单后即拒（先于退款封顶逻辑）
+  const depRefund = await invokeStaffApi('order.createRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: saleOrderId,
+    items: [{ saleItemId: depItem?.sale_item_id, refundQuantity: 1 }],
+    refundReason: 'e2e-lock',
+  })
+  if (depRefund.errorType !== 'INVALID_STATE' || !/寄存单/.test(depRefund.message || '')) {
+    errors.push(`[lock] 寄存单退款应=INVALID_STATE/寄存单，实际 code=${depRefund.code} type=${depRefund.errorType} msg=${depRefund.message}`)
+  }
+  // 6b 寄存单回款 → INVALID_STATE（guard 先于状态校验）
+  const depRepay = await invokeStaffApi('order.createRepayment', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: saleOrderId,
+    paymentMethod: '线下',
+    repayAmount: 100,
+  })
+  if (depRepay.errorType !== 'INVALID_STATE' || !/寄存单/.test(depRepay.message || '')) {
+    errors.push(`[lock] 寄存单回款应=INVALID_STATE/寄存单，实际 code=${depRepay.code} type=${depRepay.errorType} msg=${depRepay.message}`)
+  }
+  // 6c 历史订单退款 → INVALID_STATE（seed 一张 legacy 销售单）
+  const legacyId = `${NS}_LEGACY_REJECT`
+  await createTestSaleOrder({ saleOrderId: legacyId, clientUserId: TEST_CLIENT_USER_ID, status: '已支付', saleOrderType: '销售单', totalAmount: 1000 })
+  await pgQuery(`UPDATE sale_orders SET legacy_source = 'workfine' WHERE sale_order_id = $1`, [legacyId])
+  const legItem = (await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 LIMIT 1`, [legacyId]))[0]
+  const legRefund = await invokeStaffApi('order.createRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: legacyId,
+    items: [{ saleItemId: legItem?.sale_item_id, refundQuantity: 1 }],
+    refundReason: 'e2e-lock',
+  })
+  if (legRefund.errorType !== 'INVALID_STATE' || !/历史订单/.test(legRefund.message || '')) {
+    errors.push(`[lock] 历史订单退款应=INVALID_STATE/历史订单，实际 code=${legRefund.code} type=${legRefund.errorType} msg=${legRefund.message}`)
+  }
+  rec(`  ✓ 资金锁定 asserted (寄存单退款/回款 + 历史订单退款 均被拒)`)
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -107,7 +169,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 寄存单 total=0 + paid_sessions=session_count（可消费）+ per-session 单价正确`)
+  rec(`  ✅ PASS — 寄存单 total=0 + paid_sessions=session_count（可消费）+ 实付0回落标价100 + 实付800→单价80`)
 }
 
 try {

@@ -165,15 +165,6 @@
         bind:click="onRepayTap"
       >发起回款（欠 ¥{{order.remainingPayable}}）</van-button>
 
-      <!-- 寄存单历史实收编辑（店长） -->
-      <van-button
-        wx:if="{{isManager && order.orderType === '寄存单'}}"
-        block plain type="primary"
-        custom-class="btn-outline-brand"
-        custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onDepositEditTap"
-      >修改历史实收</van-button>
-
       <!-- 创建服务单（已支付 + 非家居产品订单） -->
       <van-button
         wx:if="{{order.status === '已支付'}}"
@@ -323,54 +314,6 @@
           disabled="{{submitting}}"
           bind:click="onConfirmRepay"
         >确认回款</van-button>
-      </view>
-    </view>
-  </van-popup>
-
-  <!-- 寄存单历史实收编辑弹层 -->
-  <van-popup
-    show="{{showDepositPopup}}"
-    position="bottom"
-    round
-    custom-style="padding: 32rpx 0; max-height: 85vh;"
-    bind:close="onCloseDepositPopup"
-    closeable
-  >
-    <view class="repay-popup">
-      <view class="repay-title">修改历史实收</view>
-      <view class="repay-debt">
-        <text class="repay-debt-tip">录入各明细当时实际收了多少钱，仅作账目记录，不收款、不计营业额、不影响可核销次数。</text>
-      </view>
-
-      <view class="repay-lines">
-        <view wx:for="{{depositLines}}" wx:key="saleItemId" class="repay-line">
-          <view class="repay-line-info">
-            <text class="repay-line-name">{{item.itemName}}</text>
-          </view>
-          <van-field
-            type="digit"
-            placeholder="实收 ¥"
-            value="{{item.received}}"
-            data-index="{{index}}"
-            bind:change="onDepositLineChange"
-            custom-class="repay-line-input"
-          />
-        </view>
-      </view>
-
-      <view class="repay-debt">
-        合计实收：<text class="repay-debt-hot">¥{{depositTotal}}</text>
-      </view>
-
-      <view class="repay-actions">
-        <van-button block plain type="default" bind:click="onCloseDepositPopup">取消</van-button>
-        <van-button
-          block type="primary"
-          custom-class="btn-primary-brand"
-          loading="{{submitting}}"
-          disabled="{{submitting}}"
-          bind:click="onConfirmDepositEdit"
-        >保存</van-button>
       </view>
     </view>
   </van-popup>

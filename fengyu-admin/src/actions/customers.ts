@@ -306,6 +306,7 @@ export const getCustomerOrders = withPermission(
       saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
       documentType: r.order.documentType as SaleOrder['documentType'],
       refSaleOrderId: r.order.refSaleOrderId,
+      legacySource: r.order.legacySource ?? null,
       marketName: r.order.marketName,
       storeId: r.order.storeId,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),

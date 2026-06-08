@@ -335,6 +335,8 @@ export interface SaleOrder {
   saleOrderType: SaleOrderType
   documentType: DocumentType | null
   refSaleOrderId: string | null
+  /** 历史订单来源标记：'workfine'=WorkFine 历史导入（禁止退款/回款/改实收）；null=系统原生 */
+  legacySource: string | null
   marketName: string
   storeId: string
   saleOrderDatetime: string

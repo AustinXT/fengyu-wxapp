@@ -7,10 +7,9 @@
  *   1. createDepositOrder items[].received>0 → 写 '回款'(线下,note=寄存单初始化实收) 流水
  *   2. sale_items.received = 录入值；paid_sessions = session_count（次数全开）
  *   3. sale_orders.received = Σ录入；total_amount 仍 = 0（统计排除 + 兜底全开的关键）
- *   4. updateDepositReceived 全量重设：改值后 received 更新、流水重建为单条、total_amount 仍 0
+ *   4. 疗程卡 unit_real_price = 实付received / session_count（实付=0 回落标价单价 unit_price）；建单一次性算定
  *   5. recalc 不冲掉：手动再跑一次 recalc 后 received 仍稳定
- *   6. 疗程卡 unit_real_price = 实付received / session_count（实付=0 回落标价单价 unit_price）；
- *      unit_price（标价单次价）保持不变。编辑实收后 unit_real_price 同步重算。
+ *   6. updateDepositReceived 已停用：export 已移除（寄存单建单后实收不可改、不支持回款/退款）
  */
 import path from 'node:path'
 
@@ -142,26 +141,11 @@ async function main() {
     console.log(`  · 跳过 recalc 复跑（db import 失败，非致命）`)
   }
 
-  // ===== 3) 编辑：改实收为 500 =====
-  const itemId = st.items[0].sale_item_id
-  const updated = await ordersMod.updateDepositReceived({
-    saleOrderId: createdOrderId,
-    items: [{ saleItemId: itemId, received: 500 }],
-  })
-  console.log(`  update result: ${JSON.stringify(updated)}`)
-  if (!updated.success) errors.push(`[update] updateDepositReceived 失败: ${updated.message}`)
-  else {
-    st = await fetchState(createdOrderId)
-    if (Number(st.ord.total) !== 0) errors.push(`[update] total_amount 应仍=0, 实际=${st.ord.total}`)
-    if (Number(st.ord.recv) !== 500) errors.push(`[update] sale_orders.received 应=500, 实际=${st.ord.recv}`)
-    if (Number(st.items[0]?.recv) !== 500) errors.push(`[update] sale_items.received 应=500, 实际=${st.items[0]?.recv}`)
-    if (Number(st.items[0]?.paid_sessions) !== 10) errors.push(`[update] paid_sessions 应仍=10, 实际=${st.items[0]?.paid_sessions}`)
-    // 改实收 800→500 后 unit_real_price 同步重算 = 500/10 = 50
-    if (Number(st.items[0]?.urp) !== 50) errors.push(`[update] unit_real_price 应=50(实付500/10), 实际=${st.items[0]?.urp}`)
-    const dp = st.pays.filter(p => p.note === '寄存单初始化实收')
-    if (dp.length !== 1) errors.push(`[update] 流水应重建为 1 条, 实际=${dp.length}`)
-    else if (Number(dp[0].amt) !== 500) errors.push(`[update] 流水 amount 应=500, 实际=${dp[0].amt}`)
-    console.log(`  ✓ update asserted (recv=${st.ord.recv}, total=${st.ord.total}, pays=${dp.length})`)
+  // ===== 3) 历史实收编辑入口已停用：updateDepositReceived 已移除（寄存单建单后实收不可改）=====
+  if (typeof ordersMod.updateDepositReceived !== 'undefined') {
+    errors.push(`[disabled] updateDepositReceived 应已移除（寄存单建单后不可改实收），实际仍导出`)
+  } else {
+    console.log(`  ✓ updateDepositReceived 已停用（export 已移除）`)
   }
 
   if (errors.length) {

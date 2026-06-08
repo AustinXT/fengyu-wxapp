@@ -3601,100 +3601,6 @@ async function createDeposit(ctx) {
   }
 }
 
-/**
- * 修改寄存单明细的历史实收金额（创建后编辑，店长专用）。
- *
- * 全量重设：用传入 items 覆盖该单所有「寄存单初始化实收」流水（删重建），重算 received。
- * total_amount 始终保持 0 → 次数全开、统计排除不变。与 admin updateDepositReceived 逻辑对齐。
- */
-async function updateDepositReceived(ctx) {
-  await requireManager()(ctx, async () => {})
-
-  const payload = ctx.event.payload || {}
-  const saleOrderId = String(payload.saleOrderId || '').trim()
-  const items = payload.items
-  if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
-  if (!Array.isArray(items)) throw new Error('INVALID_PARAMS: items 必须为数组')
-  const receiptRows = []
-  for (const it of items) {
-    if (!it || !it.saleItemId) throw new Error('INVALID_PARAMS: items 缺少 saleItemId')
-    const received = Math.round((Number(it.received) || 0) * 100) / 100
-    if (!Number.isFinite(received) || received < 0) {
-      throw new Error('INVALID_PARAMS: received 必须为非负数')
-    }
-    if (received > 0) receiptRows.push({ saleItemId: it.saleItemId, received })
-  }
-
-  await pg.transaction(async (tx) => {
-    // 锁单 + 校验类型 + scope
-    const lockRows = await tx.query(
-      `SELECT sale_order_id, store_id, sale_order_type
-         FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
-      [saleOrderId]
-    )
-    if (lockRows.rows.length === 0) throw new Error('NOT_FOUND: 订单不存在')
-    const locked = lockRows.rows[0]
-    if (!isStoreInScope(ctx.auth, locked.store_id)) {
-      throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
-    }
-    if (locked.sale_order_type !== '寄存单') {
-      throw new Error('INVALID_STATE: 仅寄存单可修改历史实收金额')
-    }
-
-    // 校验 items 行都属于本单
-    const itemRows = await tx.query(
-      `SELECT sale_item_id FROM sale_items
-        WHERE sale_order_id = $1 AND item_direction = '购买'`,
-      [saleOrderId]
-    )
-    const validIds = new Set(itemRows.rows.map(r => r.sale_item_id))
-    for (const r of receiptRows) {
-      if (!validIds.has(r.saleItemId)) {
-        throw new Error(`INVALID_PARAMS: 明细行 ${r.saleItemId} 不属于本订单`)
-      }
-    }
-
-    // 删除旧的「寄存单初始化实收」流水（寄存单不会有真实回款，按标记安全删重建）
-    await tx.query(
-      `DELETE FROM sale_order_payments
-        WHERE sale_order_id = $1 AND change_type = '回款' AND note = $2`,
-      [saleOrderId, DEPOSIT_RECEIPT_NOTE]
-    )
-
-    // 按新值重写流水
-    const now = new Date()
-    for (const r of receiptRows) {
-      await tx.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-        ) VALUES ($1, '回款', $2, '线下', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
-        [saleOrderId, r.received, ctx.auth.staffWfId, r.saleItemId, DEPOSIT_RECEIPT_NOTE, now]
-      )
-    }
-
-    // 重算 received（total_amount 不动，仍为 0）
-    const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
-    await tx.query(
-      `UPDATE sale_orders SET received = $1, updated_at = NOW() WHERE sale_order_id = $2`,
-      [totalReceived, saleOrderId]
-    )
-
-    // STEP1 把 targeted 落回各行 received；STEP2 因 total_amount=0 兜底 paid_sessions=session_count
-    await recalcPaidSessionsForOrder(tx, saleOrderId)
-
-    // 实收变更后同步重算疗程卡实际单价（received→0 的行自动回落标价单价 unit_price）
-    await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
-
-    await logOperation(tx, ctx, 'order.updateDepositReceived', 'sale_order', saleOrderId, {
-      _v: 1,
-      items: receiptRows.map(r => ({ saleItemId: r.saleItemId, received: r.received.toFixed(2) })),
-    })
-  })
-
-  ctx.result = { saleOrderId, message: '实收金额已更新' }
-}
-
 module.exports = {
   create,
   qrcode,
@@ -3713,7 +3619,6 @@ module.exports = {
   customerHeldCards,
   createPickup,
   createDeposit,
-  updateDepositReceived,
   availablePickupItems,
   pickupRecordsList,
 }

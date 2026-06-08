@@ -1233,6 +1233,7 @@ export const getRefundById = withAnyPermission(
       saleOrderType: o.saleOrderType as SaleOrder['saleOrderType'],
       documentType: o.documentType as SaleOrder['documentType'],
       refSaleOrderId: o.refSaleOrderId,
+      legacySource: o.legacySource ?? null,
       marketName: o.marketName,
       storeId: o.storeId,
       saleOrderDatetime: o.saleOrderDatetime.toISOString(),
