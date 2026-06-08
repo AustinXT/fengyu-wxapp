@@ -64,6 +64,24 @@ async function probeRealOpenid(miniProgram) {
  *
  * @returns {Promise<{userId, openid, invoke}>}
  */
+/**
+ * L3 隔离：把小程序前端 app.globalData 全局态对齐到测试顾客态。
+ * IDE 单实例的 app.globalData 跨 spec 持久，会被前序 journey（如 j10 切门店）污染；
+ * 每个 journey 登录后统一对齐 boundStoreId=TEST_STORE_ID，避免 appointment-create
+ * 跨店过滤等依赖前端门店态的逻辑读到污染值（j14 全套偶发失败的隔离根因）。
+ */
+async function alignFrontendGlobalState(miniProgram) {
+  try {
+    await miniProgram.evaluate((sid, sname) => {
+      const a = getApp()
+      if (a?.globalData) { a.globalData.boundStoreId = sid; a.globalData.boundStoreName = sname }
+    }, TEST_STORE_ID, `${NS}_测试店`)
+  } catch (e) {
+    // 对齐失败不阻断测试（IDE 偶发不稳定时降级）
+    console.warn('[L3] alignFrontendGlobalState 警告（可忽略）:', e.message)
+  }
+}
+
 export async function loginAsTestClient(miniProgram, opts = {}) {
   await ensureBaseFixtures()
 
@@ -82,6 +100,7 @@ export async function loginAsTestClient(miniProgram, opts = {}) {
       [TEST_CLIENT_USER_ID, TEST_OPENID_CLIENT, TEST_CLIENT_PHONE,
        `${NS}_顾客`, TEST_STORE_ID]
     )
+    await alignFrontendGlobalState(miniProgram)
     return {
       userId: TEST_CLIENT_USER_ID,
       openid: TEST_OPENID_CLIENT,
@@ -124,6 +143,7 @@ export async function loginAsTestClient(miniProgram, opts = {}) {
       [userId, openid, TEST_CLIENT_PHONE, `${NS}_顾客`, TEST_STORE_ID]
     )
   }
+  await alignFrontendGlobalState(miniProgram)
   return {
     userId,
     openid,

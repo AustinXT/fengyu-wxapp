@@ -208,6 +208,14 @@ export async function cleanupL3TestData(prefix = NS) {
          SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
        )`, [like],
     ],
+    // service_commissions FK → service_items.service_item_id，必须在 service_items 之前删
+    [
+      `DELETE FROM service_commissions WHERE service_item_id IN (
+         SELECT service_item_id FROM service_items WHERE sale_item_id IN (
+           SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
+         )
+       )`, [like],
+    ],
     [
       `DELETE FROM service_items WHERE sale_item_id IN (
          SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
@@ -237,6 +245,19 @@ export async function cleanupL3TestData(prefix = NS) {
        )`, [testPhones],
     ],
     [`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [like]],
+    // user_coupons FK → sale_orders.used_sale_order_id，删 sale_orders 前先清（client_user_id/openid + phone 两轨）
+    [
+      `DELETE FROM user_coupons WHERE used_sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`, [like],
+    ],
+    [
+      `DELETE FROM user_coupons WHERE used_sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE ${probePhoneFilter}
+       )`, [testPhones],
+    ],
     [
       `DELETE FROM sale_orders WHERE client_user_id IN (
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
@@ -280,6 +301,14 @@ export async function cleanupL3TestData(prefix = NS) {
 
     // 预约 / 服务单
     [`DELETE FROM appointments WHERE client_user_id LIKE $1 OR employee_id LIKE $1`, [like]],
+    // service_commissions FK → service_items.service_item_id，必须在 service_items 之前删
+    [
+      `DELETE FROM service_commissions WHERE service_item_id IN (
+         SELECT service_item_id FROM service_items WHERE service_order_id IN (
+           SELECT service_order_id FROM service_orders WHERE service_order_id LIKE $1
+         )
+       )`, [like],
+    ],
     [
       `DELETE FROM service_items WHERE service_order_id IN (
          SELECT service_order_id FROM service_orders WHERE service_order_id LIKE $1
