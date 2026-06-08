@@ -587,7 +587,8 @@ export const getEfficiencyBoard = withPermission(
     //  Part E — 按技师人效明细（员工粒度，单查询多 CTE，列出全部产能员工）
     // ═══════════════════════════════════════════════════════════════════
     // 复用 producer_employees（hired_at/resigned_at 历史化）。销售额/实耗各按
-    // sales_category 四枚举值 FILTER 摊平成 4 列。
+    // sales_category 四枚举值 FILTER 摊平成 4 列；byStaff 装配处：销售额按 4 枚举值
+    // 原样展示（之和=当月业绩），实耗 4 列求和为单列「实耗合计」。
     // ⚠️ 员工维度口径：实耗不做 sales_category 排除（metrics.md「他销他耗/生态合作不
     //    计本店实耗」是门店口径，技师实际服务即计入其个人实耗）。
     //    项目数沿用员工榜口径（仅自销自耗+他销自耗，受一致性测试守护）。
@@ -836,16 +837,18 @@ export const getEfficiencyBoard = withPermission(
         store: r.store_name == null ? '' : String(r.store_name),
         position: r.position_name == null ? '' : String(r.position_name),
       },
+      // 销/耗各 4 枚举值在 SQL 已算好。销售额按 salesCategoryEnum 4 枚举值原样展示
+      // （4 列之和 = 当月业绩 revenue），实耗合并为单列「实耗合计」（员工维度全口径，
+      // 含他销他耗/生态合作；现实数据几乎只有「自销自耗·耗」非零，拆 4 列意义不大）。
       metrics: {
         revenue: Number(r.revenue ?? 0),
-        saleZxzh: Number(r.sale_zxzh ?? 0),
-        saleTxzh: Number(r.sale_txzh ?? 0),
-        saleTxth: Number(r.sale_txth ?? 0),
-        saleEco: Number(r.sale_eco ?? 0),
-        consumeZxzh: Number(r.consume_zxzh ?? 0),
-        consumeTxzh: Number(r.consume_txzh ?? 0),
-        consumeTxth: Number(r.consume_txth ?? 0),
-        consumeEco: Number(r.consume_eco ?? 0),
+        saleZxzh: Number(r.sale_zxzh ?? 0), // 自销自耗(销售额)
+        saleTxzh: Number(r.sale_txzh ?? 0), // 他销自耗
+        saleTxth: Number(r.sale_txth ?? 0), // 他销他耗
+        saleEco: Number(r.sale_eco ?? 0), // 生态合作
+        consumeTotal: // 实耗合计 = 4 枚举值实耗之和
+          Number(r.consume_zxzh ?? 0) + Number(r.consume_txzh ?? 0) +
+          Number(r.consume_txth ?? 0) + Number(r.consume_eco ?? 0),
         newMember: Number(r.new_member ?? 0),
         projectCount: Number(r.project_count ?? 0),
         serviceHeadcount: Number(r.service_headcount ?? 0),

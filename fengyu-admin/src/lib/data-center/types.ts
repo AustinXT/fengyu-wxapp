@@ -114,7 +114,8 @@ export interface CustomerBoardResult extends BoardMeta {
 export interface EfficiencyBoardResult extends BoardMeta {
   kpis: Record<string, KpiCell>
   byMarket: BreakdownRow[]
-  /** 按技师人效明细（员工粒度，labels 带门店/职级，metrics 为 13 个销/耗/客流指标列） */
+  /** 按技师人效明细（员工粒度，labels 带门店/职级；metrics = 当月业绩 + 销售额按
+   *  salesCategoryEnum 4 枚举值拆分 + 实耗合计 + 纳客数/项目数/服务人头/服务人次） */
   byStaff: BreakdownRow[]
   /** metric → 排名行（门店排名榜，metric: revenue/consume/retainedMember/newMember/projectCount） */
   storeRankings: Record<string, RankingRow[]>

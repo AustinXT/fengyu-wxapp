@@ -35,17 +35,15 @@ const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "techAvgProjects", label: "技师人均项目数", unit: "count" },
 ]
 
-// ── 按技师人效明细列（key 对应 byStaff[].metrics；销/耗同名枚举用 ·销/·耗 后缀区分）──
+// ── 按技师人效明细列（key 对应 byStaff[].metrics）──
+// 销售额按 salesCategoryEnum 4 枚举值拆分（4 列之和=当月业绩），实耗合并为单列「实耗合计」。
 const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
   { key: "revenue", label: "当月业绩", unit: "amount" },
-  { key: "saleZxzh", label: "自销自耗·销", unit: "amount" },
-  { key: "saleTxzh", label: "他销自耗·销", unit: "amount" },
-  { key: "saleTxth", label: "他销他耗·销", unit: "amount" },
-  { key: "saleEco", label: "生态合作·销", unit: "amount" },
-  { key: "consumeZxzh", label: "自销自耗·耗", unit: "amount" },
-  { key: "consumeTxzh", label: "他销自耗·耗", unit: "amount" },
-  { key: "consumeTxth", label: "他销他耗·耗", unit: "amount" },
-  { key: "consumeEco", label: "生态合作·耗", unit: "amount" },
+  { key: "saleZxzh", label: "自销自耗", unit: "amount" },
+  { key: "saleTxzh", label: "他销自耗", unit: "amount" },
+  { key: "saleTxth", label: "他销他耗", unit: "amount" },
+  { key: "saleEco", label: "生态合作", unit: "amount" },
+  { key: "consumeTotal", label: "实耗合计", unit: "amount" },
   { key: "newMember", label: "纳客数", unit: "count" },
   { key: "projectCount", label: "项目数", unit: "count" },
   { key: "serviceHeadcount", label: "服务人头", unit: "count" },
