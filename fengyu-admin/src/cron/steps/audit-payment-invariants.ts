@@ -87,6 +87,19 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'refunded_amount_eq_neg_sum_refund_payments', count: r2.length, samples: r2 as unknown as Array<Record<string, unknown>> })
   }
 
+  // ── I2b: refunded_amount ≤ received（监控-1，守护 Bug A 超额退款资损：累计退款不得超过实收）──
+  const r2b = (await db.execute(sql`
+    SELECT so.sale_order_id,
+           so.received::numeric        AS received,
+           so.refunded_amount::numeric AS refunded_amount
+    FROM sale_orders so
+    WHERE so.refunded_amount::numeric > so.received::numeric + ${MONEY_EPSILON}
+    LIMIT ${SAMPLE_LIMIT}
+  `)) as Array<{ sale_order_id: string; received: string | number; refunded_amount: string | number }>
+  if (r2b.length > 0) {
+    details.push({ invariant: 'refunded_le_received', count: r2b.length, samples: r2b as unknown as Array<Record<string, unknown>> })
+  }
+
   // ── I3: client_wechat_users.points_balance = Σ point_transactions.amount ──
   // 与 STEP 5 (audit-points-balance) 重叠，但语义独立：本处作为"5 项不变量"统一报表的一项。
   // 容差严格相等（integer 无浮点误差）。
