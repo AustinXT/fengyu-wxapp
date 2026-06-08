@@ -13,9 +13,11 @@
  *
  * 断言：
  *   - result.code === 0
- *   - sale_order_payments[change_type='首次支付'].amount === 3100（现金口径，核心修复点）
+ *   - sale_order_payments[change_type='首次支付'].amount === 3100（现金口径，bug A 核心修复点）
  *   - sale_order_payments[change_type='储值卡抵扣'].amount === 900
- *   - sale_orders.received === 3100（纯现金）、status === '部分支付'（欠款 1000 未结清）
+ *   - sale_orders.received === 4000（= 现金 3100 + 卡 900 = 当下实付 pending，含卡 I1 不变量；
+ *     2026-06-08 修 bug B：原断言 3100 漏卡，与上方「合计当下收 4000」自相矛盾且与 admin/createRepayment 四端不一致）、
+ *     status === '部分支付'（欠款 1000 未结清）
  *   - prepaid_cards.balance 扣减 900（1000 → 100）
  */
 import './setup.mjs'
@@ -38,7 +40,8 @@ const TOTAL = 5000             // 应付合计
 const PENDING = 4000           // 当下实付（欠 1000）
 const PREPAID = 900            // 充值卡抵扣（从当下实付里抵）
 const BALANCE = 1000           // 卡余额（≥ PREPAID）
-const EXPECT_CASH = PENDING - PREPAID // 3100 现金（修复点：不是 pending 全额）
+const EXPECT_CASH = PENDING - PREPAID // 3100 现金（bug A 修复点：不是 pending 全额）
+const EXPECT_RECEIVED = PENDING       // 4000 = 现金 3100 + 卡 900；received 含储值卡抵扣（I1，bug B 2026-06-08）
 
 let pass = false
 let exitCode = 1
@@ -110,8 +113,8 @@ async function main() {
   }
 
   const ord = after.sale_orders[0]
-  if (Number(ord?.received) !== EXPECT_CASH) {
-    errors.push(`sale_orders.received 应=${EXPECT_CASH}（纯现金），实际=${ord?.received}`)
+  if (Number(ord?.received) !== EXPECT_RECEIVED) {
+    errors.push(`sale_orders.received 应=${EXPECT_RECEIVED}（现金 ${EXPECT_CASH} + 卡 ${PREPAID}，含卡 I1），实际=${ord?.received}`)
   }
   if (ord?.status !== '部分支付') {
     errors.push(`sale_orders.status 应='部分支付'（欠款 ${TOTAL - PENDING} 未结清），实际='${ord?.status}'`)
