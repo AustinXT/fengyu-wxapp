@@ -14,9 +14,9 @@ export const STATUS_CLASS: Record<string, string> = {
 export const ORDER_TYPE_LABEL: Record<string, string> = {
   销售单: '销售单',
   内部单: '内部单',
-  回款单: '回款单',
   转换单: '转换单',
-  退款单: '退款单',
+  充值单: '充值卡',
+  寄存单: '寄存单',
 }
 
 /**

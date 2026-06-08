@@ -8,6 +8,7 @@ import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { hasPendingRefund } from '@/lib/refund-cascade'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -198,6 +199,10 @@ export const saveAllocation = withPermission(
   const [itemRow] = (await db.execute(sql`
     SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
   `)) as any[]
+  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配。两端镜像 staff allocation.js
+  if (itemRow?.sale_order_id && (await hasPendingRefund(db, itemRow.sale_order_id as string))) {
+    return { success: false, message: '该订单退款审批中，暂不可修改分配' }
+  }
   const { marketName, orderTotalReceived, salesCategoryByItem } = await loadOrderCommissionContext(
     itemRow?.sale_order_id as string,
   )
@@ -241,6 +246,14 @@ export const deleteAllocation = withPermission(
 
   if (!(await verifySaleItemScope(alloc.saleItemId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
+  }
+
+  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
+  const [delItemRow] = (await db.execute(sql`
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.saleItemId} LIMIT 1
+  `)) as any[]
+  if (delItemRow?.sale_order_id && (await hasPendingRefund(db, delItemRow.sale_order_id as string))) {
+    return { success: false, message: '该订单退款审批中，暂不可删除分配' }
   }
 
   await db

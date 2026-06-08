@@ -16,6 +16,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { pgErrorCode } from '@/lib/pg-error'
+import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
 
 function serializeServiceOrder(r: {
@@ -619,6 +620,11 @@ export const confirmServiceOrder = withPermission(
     if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
       return { success: false, message: '无权操作该服务单' }
     }
+  }
+
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销。两端镜像 staff service.js
+  if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
+    return { success: false, message: '关联订单退款审批中，暂不可确认' }
   }
 
   let result: any

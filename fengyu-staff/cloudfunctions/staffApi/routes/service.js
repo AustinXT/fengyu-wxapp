@@ -13,6 +13,7 @@ const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
+const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 
 /**
  * 创建服务单
@@ -635,6 +636,9 @@ async function confirm(ctx) {
   if (so.status !== '待客户确认') {
     throw new Error(`INVALID_STATE: 服务单当前状态为"${so.status}"，不可确认`)
   }
+
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销（否则扣次数与退款冲突 → 孤儿服务单/账实错乱）
+  await assertNoPendingRefundByServiceOrder(pg, serviceOrderId)
 
   const items = await loadServiceItems(serviceOrderId)
   const now = new Date()

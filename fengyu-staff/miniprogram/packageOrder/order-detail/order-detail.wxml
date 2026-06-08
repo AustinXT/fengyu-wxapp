@@ -13,6 +13,7 @@
     <!-- 状态条 -->
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
+      <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
 
@@ -189,20 +190,7 @@
         bind:click="onCreateCardRefund"
       >充值卡退款</van-button>
 
-      <!-- P2: 退款审批按钮（待审批 + 退款单 + 店长） -->
-      <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
-        block type="primary"
-        custom-class="btn-primary-brand"
-        custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onApproveRefund"
-      >通过退款</van-button>
-      <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
-        block plain type="danger"
-        custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onRejectRefund"
-      >驳回退款</van-button>
+      <!-- 退款审批已收口到 refund-list/refund-detail 页（后端 sale_order_type 枚举已无「退款单」，此处按钮恒不命中，已删除死代码 Bug D） -->
 
       <!-- 终态：返回工作台 -->
       <van-button

@@ -25,6 +25,9 @@ const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
+  assertNoPendingRefund,
+  notifyRefundCreated,
+  notifyRefundResult,
 } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
@@ -66,9 +69,9 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
  */
 async function refreshSpendingTier(client, clientUserId) {
   if (!clientUserId) return
-  // 与 admin refreshSpendingTierTx (refunds.ts) / payNotify 同名 SQL 跨端字面对齐：
-  // 仅纳入"销售单 + 转换单"做消费档位累计；
-  // 充值单（预收，2026-05-20 充值卡剥离 SKU 化新增）/ 内部单 / 寄存单不算消费。
+  // 修复（Bug N）：消费档位改用净额 SUM(GREATEST(received - refunded_amount, 0))，原毛额 total_amount 不减退款/欠款。
+  // 与 admin refreshSpendingTierTx (refunds.ts) / cron refresh-spending-tier / payNotify 净额口径字面对齐。
+  // 仅纳入"销售单 + 转换单"；充值单（预收）/ 内部单 / 寄存单不算消费。
   await client.query(
     `UPDATE client_wechat_users
      SET spending_tier = CASE
@@ -81,7 +84,7 @@ async function refreshSpendingTier(client, clientUserId) {
      END::spending_tier,
      updated_at = NOW()
      FROM (
-       SELECT COALESCE(SUM(total_amount), 0) AS total
+       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
@@ -1714,7 +1717,9 @@ const { cascadeRefund } = require('../helpers/refund-cascade')
  * 返回：{ paymentIds: number[], status: '待审批', totalRefund, refundByCard, refundByOrigin, message }
  */
 async function createRefund(ctx) {
-  await requireManager()(ctx, async () => {})
+  // 权限放开（Bug E）：普通员工可发起退款申请（店长审批）；scope 由 assertOrderInScope 守护，防越店发起。
+  // 与 admin refund_create（全角色）对齐，呼应「员工发起 → 通知店长审批」流程。
+  await requireStaffBound()(ctx, async () => {})
 
   const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
 
@@ -1849,6 +1854,7 @@ async function createRefund(ctx) {
     })),
   })
 
+  try {
   await pg.transaction(async (client) => {
     const sopRes = await client.query(
       `INSERT INTO sale_order_payments (
@@ -1882,7 +1888,24 @@ async function createRefund(ctx) {
       refundByOrigin,
       handlingFee: fee,
     })
+
+    // 通知门店店长审批（Bug C）
+    await notifyRefundCreated(client, {
+      paymentId,
+      saleOrderId: refSaleOrderId,
+      storeId: origOrder.store_id,
+      operatorId: ctx.auth.staffWfId,
+      amount: finalRefundAmount,
+      customerName: origOrder.customer_name,
+    })
   })
+  } catch (e) {
+    // 修复（Bug T）：in-flight SELECT 与 INSERT 间竞态由 DB uq_sop_status_audit 兜底；
+    // 捕获 23505 转 CONFLICT，否则 raw pg 错误无白名单前缀会降级为「服务器内部错误」
+    const code = e && (e.code || (e.cause && e.cause.code))
+    if (code === '23505') throw new Error('CONFLICT: 存在未完结退款')
+    throw e
+  }
 
   ctx.result = {
     paymentId,
@@ -1918,7 +1941,7 @@ async function approveRefund(ctx) {
   // 预查 + scope 校验（ctx.auth.effectiveStoreId 必须等于原单 store_id）
   const sopRows = await pg.query(
     `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.payment_method,
-            sop.refund_reason, sop.ref_sale_item_id, sop.session_count, sop.note,
+            sop.refund_reason, sop.ref_sale_item_id, sop.session_count, sop.note, sop.operator_employee_id,
             so.store_id, so.client_user_id, so.received, so.refunded_amount, so.sale_order_type
        FROM sale_order_payments sop
        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -1969,13 +1992,18 @@ async function approveRefund(ctx) {
       throw new Error('INVALID_STATE: 退款流水状态已变更，请刷新后重试')
     }
 
-    // 2. 累加 sale_orders.refunded_amount
-    // CAS-EXEMPT: 仅累加资金列 refunded_amount，不翻 status
+    // 2. 重算 sale_orders.refunded_amount = -SUM(已支付退款)（Bug F：累加→重算，幂等、自愈，对齐 admin/schema 不变量）
+    // CAS-EXEMPT: 仅维护资金列 refunded_amount，不翻 status。本笔已在上方 CAS 翻为'已支付'，SUM 含本笔。
     await client.query(
-      `UPDATE sale_orders
-          SET refunded_amount = COALESCE(refunded_amount, 0) + $1, updated_at = $2
-        WHERE sale_order_id = $3`,
-      [refundAbs, now, refSaleOrderId]
+      `UPDATE sale_orders so
+          SET refunded_amount = COALESCE((
+                SELECT -SUM(sop.amount) FROM sale_order_payments sop
+                WHERE sop.sale_order_id = so.sale_order_id
+                  AND sop.change_type = '退款' AND sop.status = '已支付'
+              ), 0),
+              updated_at = $1
+        WHERE so.sale_order_id = $2`,
+      [now, refSaleOrderId]
     )
 
     // 3. 储值卡通道（修复 Bug H）：读 note.refundByCard 回冲，不再依赖 payment_method==='储值卡'。
@@ -1987,10 +2015,11 @@ async function approveRefund(ctx) {
       noteRefundByCard = Number(noteObj?.refundByCard || 0)
     } catch (_) { noteRefundByCard = 0 }
     if (noteRefundByCard > 0 && sopRow.client_user_id) {
+      // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
+      // 原写 'SOP-'+paymentId 会违反 card_transactions_ref_order_id FK（H 修复后回冲分支真正执行才暴露）
       const dupCheck = await client.query(
-        `SELECT 1 FROM card_transactions
-           WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
-        [`SOP-${paymentId}`]
+        `SELECT 1 FROM card_transactions WHERE external_ref = $1 LIMIT 1`,
+        [`card-refund-${paymentId}`]
       )
       if (dupCheck.rows.length === 0) {
         // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK
@@ -2008,7 +2037,7 @@ async function approveRefund(ctx) {
           `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
            VALUES ($1, '充值', $2, $3, $4, NOW())
            ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-          [cardId, noteRefundByCard, `SOP-${paymentId}`, `card-refund-${paymentId}`]
+          [cardId, noteRefundByCard, refSaleOrderId, `card-refund-${paymentId}`]
         )
       }
     }
@@ -2059,6 +2088,17 @@ async function approveRefund(ctx) {
       cascade: cascadeResult,
     })
 
+    // 通知发起人审批通过（Bug C；自审降噪：审批人=发起人则跳过）
+    if (sopRow.operator_employee_id && sopRow.operator_employee_id !== ctx.auth.staffWfId) {
+      await notifyRefundResult(client, {
+        paymentId,
+        saleOrderId: refSaleOrderId,
+        recipientEmployeeId: sopRow.operator_employee_id,
+        approved: true,
+        amount: refundAbs,
+      })
+    }
+
     // 注意：放弃旧的 settlePointsSafe 链式重算路径——cascadeRefund 内已写
     // point_transactions 反向流水 + 重算 customer_points.balance；二者职责重叠
     // 时优先 cascade（颗粒度更细：可关联具体 saleItemId）
@@ -2087,7 +2127,7 @@ async function rejectRefund(ctx) {
   const remark = auditRemark || rejectedReason || ''
 
   const sopRows = await pg.query(
-    `SELECT sop.id, sop.sale_order_id, sop.status, so.store_id, so.sale_order_type
+    `SELECT sop.id, sop.sale_order_id, sop.status, sop.operator_employee_id, so.store_id, so.sale_order_type
        FROM sale_order_payments sop
        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.id = $1 AND sop.change_type = '退款'`,
@@ -2126,6 +2166,17 @@ async function rejectRefund(ctx) {
       saleOrderId: sopRow.sale_order_id,
       rejectedReason: remark,
     })
+
+    // 通知发起人驳回（Bug C；自审降噪）
+    if (sopRow.operator_employee_id && sopRow.operator_employee_id !== ctx.auth.staffWfId) {
+      await notifyRefundResult(client, {
+        paymentId,
+        saleOrderId: sopRow.sale_order_id,
+        recipientEmployeeId: sopRow.operator_employee_id,
+        approved: false,
+        reason: remark,
+      })
+    }
   })
 
   ctx.result = { paymentId, status: '已作废', message: '退款已驳回' }
@@ -2189,6 +2240,9 @@ async function createRepayment(ctx) {
   if (paymentMethod === '微信') {
     throw new Error('INVALID_PARAMS: 微信扫码回款暂未开放')
   }
+
+  // 冻结闭环（Bug I）：退款审批中禁止回款（一笔订单不应同时退款审批中又补款）
+  await assertNoPendingRefund(pg, refSaleOrderId)
 
   // 按子项回款明细（items[]）：每行可含现金 repayAmount + 储值卡 prepaidCardAmount，
   // 写带 ref_sale_item_id 的 payment 行（定向回款）。未传 items[] 退回订单级单行（ref=null，比例分摊），向后兼容。
@@ -2986,6 +3040,10 @@ async function createPickup(ctx) {
       return
     }
   }
+
+  // 冻结闭环（Bug I）：退款审批中禁止提货（家居退款 cascade 会回滚 picked_up，待审批期提货会冲突）
+  const pickupOrderRows = await pg.query(`SELECT sale_order_id FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
+  if (pickupOrderRows.length > 0) await assertNoPendingRefund(pg, pickupOrderRows[0].sale_order_id)
 
   let updated
   await pg.transaction(async (client) => {

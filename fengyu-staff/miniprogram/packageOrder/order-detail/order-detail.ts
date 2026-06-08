@@ -152,6 +152,7 @@ Page({
     isManager: false,
     isCreator: false,
     statusClass: '',
+    refundBadge: '',
     _saleOrderId: '',
     // P2: 退款
     showRefundDialog: false,
@@ -289,6 +290,10 @@ Page({
         currentRemainingPayable: remainingPayable,
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
+        // 退款后状态角标（Bug B）：按 refunded_amount 派生「已退款/部分退款」，订单主状态不变（对齐 admin）
+        refundBadge: refundedAmount > 0
+          ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
+          : '',
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -445,7 +450,7 @@ Page({
         refundReason: refundReason.trim(),
       });
       this.setData({ showRefundDialog: false });
-      wx.showToast({ title: '退款单已创建', icon: 'success' });
+      wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });
       this.loadDetail(this.data._saleOrderId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
@@ -459,54 +464,8 @@ Page({
     this.setData({ showRefundDialog: false });
   },
 
-  // ===== P2: 审批退款 =====
-  onApproveRefund() {
-    if (this.data.submitting) return;
-    wx.showModal({
-      title: '审批退款',
-      content: '确认通过此退款申请？审批后将扣减对应次数。',
-      confirmText: '通过',
-      confirmColor: '#C0322A',
-      success: async (res) => {
-        if (!res.confirm) return;
-        this.setData({ submitting: true });
-        try {
-          await callStaffApi('order.approveRefund', { saleOrderId: this.data._saleOrderId });
-          wx.showToast({ title: '退款已审批', icon: 'success' });
-          this.loadDetail(this.data._saleOrderId);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : '操作失败';
-          wx.showToast({ title: msg, icon: 'none' });
-        } finally {
-          this.setData({ submitting: false });
-        }
-      },
-    });
-  },
-
-  onRejectRefund() {
-    if (this.data.submitting) return;
-    wx.showModal({
-      title: '驳回退款',
-      content: '确认驳回此退款申请？',
-      confirmText: '驳回',
-      confirmColor: '#D94040',
-      success: async (res) => {
-        if (!res.confirm) return;
-        this.setData({ submitting: true });
-        try {
-          await callStaffApi('order.rejectRefund', { saleOrderId: this.data._saleOrderId });
-          wx.showToast({ title: '退款已驳回', icon: 'success' });
-          this.loadDetail(this.data._saleOrderId);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : '操作失败';
-          wx.showToast({ title: msg, icon: 'none' });
-        } finally {
-          this.setData({ submitting: false });
-        }
-      },
-    });
-  },
+  // 退款审批已收口到 refund-list/refund-detail 页；原 onApproveRefund/onRejectRefund 传 saleOrderId（后端需 paymentId）
+  // 且依赖恒不命中的 orderType==='退款单'，属死代码 + 传参错误，已删除（Bug D）。
 
   // ===== Ticket 2026-05-21：按子项发起回款 =====
   // 合计当前各行金额（线下=cash 列，储值卡=card 列）

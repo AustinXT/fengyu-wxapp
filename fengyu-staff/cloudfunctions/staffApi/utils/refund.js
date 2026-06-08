@@ -177,6 +177,49 @@ async function assertNoPendingRefundByServiceOrder(client, serviceOrderId) {
   }
 }
 
+/**
+ * 退款通知（Bug C）：发起 → 通知门店店长（自审降噪）。client 须事务内（与写 sop 原子）。
+ * 店长解析：permission_roles role='manager' 且 scope 直接绑定该 store 节点（store 级店长）。
+ * SQL 谓词镜像 admin lib/refund-cascade.ts。
+ */
+async function notifyRefundCreated(client, { paymentId, saleOrderId, storeId, operatorId, amount, customerName }) {
+  if (!storeId) return
+  const mgrs = await client.query(
+    `SELECT DISTINCT pr.employee_id FROM permission_roles pr
+       JOIN stores s ON s.org_node_id = pr.scope_id
+      WHERE pr.role = 'manager' AND s.store_id = $1`,
+    [storeId],
+  )
+  const rows = mgrs && mgrs.rows ? mgrs.rows : mgrs
+  for (const m of rows || []) {
+    if (m.employee_id === operatorId) continue // 自审降噪：店长自己发起不通知自己
+    await client.query(
+      `INSERT INTO messages (recipient_type, recipient_id, title, body, message_type, idempotency_key, ref_entity_type, ref_entity_id, created_at)
+       VALUES ('员工', $1, $2, $3, 'order', $4, 'sale_order_payment', $5, NOW())
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+      [m.employee_id, '退款待审批', `${customerName || '顾客'}的订单 ${saleOrderId} 发起退款 ¥${amount}，请及时审批`, `refund-created-${paymentId}-${m.employee_id}`, String(paymentId)],
+    )
+  }
+}
+
+/**
+ * 退款审批结果通知（Bug C）：审批通过/驳回 → 通知发起人。client 须事务内。
+ */
+async function notifyRefundResult(client, { paymentId, saleOrderId, recipientEmployeeId, approved, reason, amount }) {
+  if (!recipientEmployeeId) return
+  const title = approved ? '退款已通过' : '退款已驳回'
+  const body = approved
+    ? `订单 ${saleOrderId} 退款 ¥${amount} 已审批通过`
+    : `订单 ${saleOrderId} 退款申请被驳回${reason ? '：' + reason : ''}`
+  const key = approved ? `refund-approved-${paymentId}` : `refund-rejected-${paymentId}`
+  await client.query(
+    `INSERT INTO messages (recipient_type, recipient_id, title, body, message_type, idempotency_key, ref_entity_type, ref_entity_id, created_at)
+     VALUES ('员工', $1, $2, $3, 'order', $4, 'sale_order_payment', $5, NOW())
+     ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+    [recipientEmployeeId, title, body, key, String(paymentId)],
+  )
+}
+
 module.exports = {
   calculateUnusedQuantity,
   buildRefundDetails,
@@ -184,4 +227,6 @@ module.exports = {
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
   assertNoPendingRefundByServiceOrder,
+  notifyRefundCreated,
+  notifyRefundResult,
 }

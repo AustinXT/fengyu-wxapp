@@ -24,7 +24,8 @@ import {
   splitRefundByOriginalPayment,
   type RefundSourceItem,
 } from '@/lib/refund'
-import { cascadeRefund } from '@/lib/refund-cascade'
+import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/refund-cascade'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import * as lakalaClient from '@/lib/lakala-client'
 import type {
@@ -739,12 +740,22 @@ export const createRefund = withPermission(
 
       if (!paymentRow) throw new ApiError('INVALID_STATE', 'PAYMENT_INSERT_FAILED: 退款流水写入失败')
 
+      // 通知门店店长审批（Bug C）
+      await notifyRefundCreated(tx, {
+        paymentId: paymentRow.id,
+        saleOrderId: refSaleOrderId,
+        storeId: origOrder.storeId,
+        operatorId: session.employeeId,
+        amount: adjustedRefundAmount,
+        customerName: origOrder.customerName,
+      })
+
       return paymentRow.id
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    const pgErr = err as { code?: string; constraint?: string }
-    if (pgErr.code === '23505' && pgErr.constraint === 'uq_sop_status_audit') {
+    // 修复（Bug S）：drizzle 0.45 把 pg 错误码包进 err.cause；用 pgErrorCode/pgErrorConstraint 读取，否则永不命中 → 落 UNKNOWN
+    if (pgErrorCode(err) === '23505' && pgErrorConstraint(err) === 'uq_sop_status_audit') {
       return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
     }
     if (msg.includes('PAYMENT_INSERT_FAILED')) {
@@ -978,10 +989,11 @@ export const approveRefund = withPermission(
       const sessionCount = pre.payment.sessionCount ?? null
 
       if (refundByCard > 0 && pre.orderClientUserId) {
-        const refOrderTag = `refund-payment-${idNum}`
+        // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
+        // 原写 'refund-payment-'+idNum 会违反 card_transactions_ref_order_id FK。两端镜像 staff order.js
+        const cardRefundExtRef = `card-refund-${idNum}`
         const dupRes = await tx.execute(sql`
-          SELECT 1 FROM card_transactions
-          WHERE ref_order_id = ${refOrderTag} AND type = '充值' LIMIT 1
+          SELECT 1 FROM card_transactions WHERE external_ref = ${cardRefundExtRef} LIMIT 1
         `)
         if ((dupRes as unknown as unknown[]).length === 0) {
           // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK。两端镜像 staff order.js
@@ -997,8 +1009,8 @@ export const approveRefund = withPermission(
           if (!cardId) throw new ApiError('INVALID_STATE', 'CARD_UPSERT_FAILED: 储值卡回冲失败')
 
           await tx.execute(sql`
-            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refOrderTag}, NOW())
+            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refSaleOrderId}, ${cardRefundExtRef}, NOW())
           `)
         }
       }
@@ -1039,6 +1051,17 @@ export const approveRefund = withPermission(
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {
         await refreshSpendingTierTx(tx, pre.orderClientUserId)
+      }
+
+      // 7) 通知发起人审批通过（Bug C；自审降噪）
+      if (pre.payment.operatorEmployeeId && pre.payment.operatorEmployeeId !== session.employeeId) {
+        await notifyRefundResult(tx, {
+          paymentId: idNum,
+          saleOrderId: refSaleOrderId,
+          recipientEmployeeId: pre.payment.operatorEmployeeId,
+          approved: true,
+          amount: refundAmount,
+        })
       }
 
       return result
@@ -1171,6 +1194,18 @@ export const rejectRefund = withPermission(
       `)
       if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
+      }
+
+      // 通知发起人驳回（Bug C；自审降噪）
+      if (pre.payment.operatorEmployeeId && pre.payment.operatorEmployeeId !== session.employeeId) {
+        await notifyRefundResult(tx, {
+          paymentId: idNum,
+          saleOrderId: refSaleOrderId,
+          recipientEmployeeId: pre.payment.operatorEmployeeId,
+          approved: false,
+          reason,
+          amount: Math.abs(Number(pre.payment.amount || 0)),
+        })
       }
     })
   } catch (err: unknown) {

@@ -21,6 +21,76 @@ import { rowsAffected } from '@/lib/pg-rows'
 
 export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
+/** 可执行 SQL 的对象（db 顶层或事务 tx 均可） */
+type SqlExecutor = Pick<typeof db, 'execute'> | TransactionLike
+
+/**
+ * 待审批退款冻结判定（Bug I）：订单存在待审批退款时返回 true，调用方返回 {success:false} 阻止操作。
+ * admin action 范式用返回值（throw 会冒泡成 500 且生产脱敏）；SQL 谓词镜像 staff utils/refund.js。
+ */
+export async function hasPendingRefund(executor: SqlExecutor, saleOrderId: string): Promise<boolean> {
+  if (!saleOrderId) return false
+  const r = await executor.execute(sql`
+    SELECT 1 FROM sale_order_payments
+    WHERE sale_order_id = ${saleOrderId} AND change_type = '退款' AND status = '待审批' LIMIT 1
+  `)
+  return (r as unknown as unknown[]).length > 0
+}
+
+/** 按服务单反查其涉及的所有订单是否有待审批退款（confirmServiceOrder 用）。 */
+export async function hasPendingRefundByServiceOrder(
+  executor: SqlExecutor,
+  serviceOrderId: string,
+): Promise<boolean> {
+  if (!serviceOrderId) return false
+  const r = await executor.execute(sql`
+    SELECT 1 FROM service_items sit
+      JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+      JOIN sale_order_payments sop ON sop.sale_order_id = si.sale_order_id
+     WHERE sit.service_order_id = ${serviceOrderId} AND sop.change_type = '退款' AND sop.status = '待审批' LIMIT 1
+  `)
+  return (r as unknown as unknown[]).length > 0
+}
+
+/** 退款通知：发起 → 门店店长（自审降噪）。executor 须事务内 tx。Bug C；SQL 谓词镜像 staff utils/refund.js。 */
+export async function notifyRefundCreated(
+  executor: SqlExecutor,
+  p: { paymentId: number; saleOrderId: string; storeId: string | null; operatorId: string | null; amount: number; customerName: string | null },
+): Promise<void> {
+  if (!p.storeId) return
+  const mgrs = await executor.execute(sql`
+    SELECT DISTINCT pr.employee_id FROM permission_roles pr
+      JOIN stores s ON s.org_node_id = pr.scope_id
+     WHERE pr.role = 'manager' AND s.store_id = ${p.storeId}
+  `)
+  for (const m of mgrs as unknown as Array<{ employee_id: string }>) {
+    if (m.employee_id === p.operatorId) continue
+    await executor.execute(sql`
+      INSERT INTO messages (recipient_type, recipient_id, title, body, message_type, idempotency_key, ref_entity_type, ref_entity_id, created_at)
+      VALUES ('员工', ${m.employee_id}, '退款待审批', ${`${p.customerName || '顾客'}的订单 ${p.saleOrderId} 发起退款 ¥${p.amount}，请及时审批`}, 'order', ${`refund-created-${p.paymentId}-${m.employee_id}`}, 'sale_order_payment', ${String(p.paymentId)}, NOW())
+      ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+    `)
+  }
+}
+
+/** 退款审批结果通知：通过/驳回 → 发起人。executor 须事务内 tx。Bug C。 */
+export async function notifyRefundResult(
+  executor: SqlExecutor,
+  p: { paymentId: number; saleOrderId: string; recipientEmployeeId: string | null; approved: boolean; reason?: string; amount: number },
+): Promise<void> {
+  if (!p.recipientEmployeeId) return
+  const title = p.approved ? '退款已通过' : '退款已驳回'
+  const body = p.approved
+    ? `订单 ${p.saleOrderId} 退款 ¥${p.amount} 已审批通过`
+    : `订单 ${p.saleOrderId} 退款申请被驳回${p.reason ? '：' + p.reason : ''}`
+  const key = p.approved ? `refund-approved-${p.paymentId}` : `refund-rejected-${p.paymentId}`
+  await executor.execute(sql`
+    INSERT INTO messages (recipient_type, recipient_id, title, body, message_type, idempotency_key, ref_entity_type, ref_entity_id, created_at)
+    VALUES ('员工', ${p.recipientEmployeeId}, ${title}, ${body}, 'order', ${key}, 'sale_order_payment', ${String(p.paymentId)}, NOW())
+    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+  `)
+}
+
 export interface CascadeRefundItem {
   saleItemId: string
   /** 退疗程卡/家居的数量；NULL 时通道 5 跳过 */

@@ -12,6 +12,7 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
+const { assertNoPendingRefund } = require('../utils/refund')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
@@ -145,6 +146,8 @@ async function save(ctx) {
   if (isFrozen(order.paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
+  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配（审批通过后 cascade 会作废分配，待审批期改分配会账实错乱）
+  await assertNoPendingRefund(pg, saleOrderId)
 
   // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount + 提成率查找）
   const orderItems = await pg.query(
@@ -338,6 +341,8 @@ async function deleteAllocation(ctx) {
   if (isFrozen(orders[0].paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
+  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
+  await assertNoPendingRefund(pg, saleOrderId)
 
   const now = new Date()
 
