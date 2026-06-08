@@ -104,7 +104,7 @@ async function categories(ctx) {
 /**
  * 内部函数：按分类获取商城商品列表（含 SKU）
  */
-async function getProductListByCategory({ categoryId, marketName }) {
+async function getProductListByCategory({ categoryId, marketName, keyword }) {
   const params = []
 
   let marketFilter
@@ -120,6 +120,12 @@ async function getProductListByCategory({ categoryId, marketName }) {
   if (categoryId) {
     params.push(categoryId)
     whereClause += ` AND p.category_id = $${params.length}`
+  }
+
+  // 全量搜索：按商品名模糊匹配（首页搜索框，跨全部分类）
+  if (keyword) {
+    params.push(`%${keyword}%`)
+    whereClause += ` AND p.name ILIKE $${params.length}`
   }
 
   // 仅返回有有效 SKU 的商品
@@ -194,6 +200,22 @@ async function spuList(ctx) {
   const { categoryId } = ctx.event.payload || {}
   const marketName = ctx.auth?.boundMarketName || null
   const result = await getProductListByCategory({ categoryId, marketName })
+  ctx.result = { spuList: result }
+}
+
+/**
+ * 全量商品搜索（首页搜索框）
+ * 按商品名模糊匹配、跨全部分类——替代纯前端本地缓存搜索，
+ * 让顾客能搜到任何可见商品（含未浏览过分类的商品）。
+ */
+async function search(ctx) {
+  const kw = (ctx.event.payload?.keyword || '').trim()
+  if (!kw) {
+    ctx.result = { spuList: [] }
+    return
+  }
+  const marketName = ctx.auth?.boundMarketName || null
+  const result = await getProductListByCategory({ marketName, keyword: kw })
   ctx.result = { spuList: result }
 }
 
@@ -456,6 +478,7 @@ async function experienceCardList(ctx) {
 module.exports = {
   categories,
   spuList,
+  search,
   skuDetail,
   spuDetail,
   hotList,

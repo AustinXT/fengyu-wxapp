@@ -2,7 +2,6 @@
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
-import { searchProducts } from "../../utils/format";
 import { getCosBase } from "../../utils/cloud-env";
 
 const app = getApp<IAppOption>();
@@ -184,13 +183,23 @@ Page({
   async _doSearch(value: string) {
     this.setData({ isSearching: true, searchLoading: true });
 
-    // 加载所有未缓存的分类 SPU
-    await this.loadAllSpus();
-
-    const results = searchProducts(value, this._spuCache, this._allCategoryKeys);
-    // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
-    if (this.data.searchValue.trim() === value) {
-      this.setData({ searchResults: results, searchLoading: false });
+    try {
+      // 全量搜索：调云函数按商品名跨全部分类搜索，不依赖前端 _spuCache/侧边栏分类结构
+      //（旧版 loadAllSpus 仅加载已挂进 _allCategoryKeys 的分类，会漏掉未挂侧边栏的分类商品）
+      const data = await callClientApi<{ spuList: SpuItem[] }>("product.search", { keyword: value });
+      const results = (data?.spuList || []).map((spu: any) => ({
+        ...spu,
+        min_price: spu.priceFrom || "0",
+      }));
+      // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
+      if (this.data.searchValue.trim() === value) {
+        this.setData({ searchResults: results, searchLoading: false });
+      }
+    } catch (err) {
+      console.error("_doSearch error:", err);
+      if (this.data.searchValue.trim() === value) {
+        this.setData({ searchResults: [], searchLoading: false });
+      }
     }
   },
 
@@ -206,28 +215,6 @@ Page({
   _findCategoryId(categoryKey: string): string | undefined {
     const cat = this._allCategories.find((c) => c.category_id === categoryKey);
     return cat?.category_id;
-  },
-
-  async loadAllSpus() {
-    const uncached = this._allCategoryKeys.filter((key) => !this._spuCache[key]);
-    if (uncached.length === 0) return;
-
-    await Promise.all(
-      uncached.map(async (key) => {
-        const categoryId = this._findCategoryId(key);
-        if (!categoryId) return;
-        try {
-          const data = await callClientApi<{ spuList: any[] }>("product.spuList", { categoryId });
-          const spuList = (data?.spuList || []).map((spu: any) => ({
-            ...spu,
-            min_price: spu.priceFrom || "0",
-          }));
-          this._spuCache[key] = spuList;
-        } catch (err) {
-          console.error("loadAllSpus error:", key, err);
-        }
-      })
-    );
   },
 
   // ===== 事件处理 =====
