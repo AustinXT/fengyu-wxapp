@@ -22,6 +22,8 @@ interface HeldCard {
   remainingQuantity: number | null;
   unitRealPrice: string;
   deductibleAmount: string;
+  /** 渲染用选中标记：WXML {{}} 不支持 selectedIds.indexOf()，选中态必须落到每张卡上 */
+  selected?: boolean;
 }
 
 interface HeldCardsResponse {
@@ -132,7 +134,8 @@ Component({
         });
         // 旧回包丢弃（已有更新请求发出）
         if (seq !== this._requestSeq) return;
-        const cards = data?.cards || [];
+        // 重置选中标记（selectedIds 同步清空，二者由构造保持一致）
+        const cards = (data?.cards || []).map((c) => ({ ...c, selected: false }));
         this.setData({
           cards,
           selectedIds: [],
@@ -158,7 +161,13 @@ Component({
         selected.push(saleItemId);
       }
       const sum = this._calcDeductibleSum(selected);
+      // WXML {{}} 不支持 selectedIds.indexOf()（真机不生效），选中态必须落到每张卡 selected 字段上渲染
+      const cards = this.data.cards.map((c: HeldCard) => ({
+        ...c,
+        selected: selected.indexOf(c.saleItemId) >= 0,
+      }));
       this.setData({
+        cards,
         selectedIds: selected,
         deductibleSum: sum,
         deductibleSumDisplay: sum.toFixed(2),
