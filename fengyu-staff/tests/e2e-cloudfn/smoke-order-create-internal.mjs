@@ -125,7 +125,10 @@ async function main() {
       [saleOrderId]
     )
     if (items.length === 1) {
-      if (Number(items[0].unit_price) !== 400) errors.push(`unit_price 应=400（5 折后），实际=${items[0].unit_price}`)
+      // 现金额模型（sale-items-money-fields）：unit_price = 标价快照（不打折），
+      // 5 折成交价落在 unit_real_price；内部单 sku 标价 800 → unit_real_price=400 / unit_price=800。
+      if (Number(items[0].unit_real_price) !== 400) errors.push(`unit_real_price 应=400（5 折成交价），实际=${items[0].unit_real_price}`)
+      if (Number(items[0].unit_price) !== 800) errors.push(`unit_price 应=800（标价快照，不随折扣变），实际=${items[0].unit_price}`)
     }
   }
 

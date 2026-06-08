@@ -125,15 +125,16 @@ async function main() {
   const depItem = (await pgQuery(
     `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 LIMIT 1`, [saleOrderId]
   ))[0]
-  // 6a 寄存单退款 → 我的 guard 在加载原单后即拒（先于退款封顶逻辑）
+  // 6a 寄存单退款 → 退款 Bug-L 正向白名单（order.js 78b268b8）：仅销售单支持退款，
+  // 寄存单落入「仅销售单支持退款」兜底（errorType 仍 INVALID_STATE，退款仍被拒）。
   const depRefund = await invokeStaffApi('order.createRefund', {
     _testOpenid: TEST_MANAGER_OPENID,
     refSaleOrderId: saleOrderId,
     items: [{ saleItemId: depItem?.sale_item_id, refundQuantity: 1 }],
     refundReason: 'e2e-lock',
   })
-  if (depRefund.errorType !== 'INVALID_STATE' || !/寄存单/.test(depRefund.message || '')) {
-    errors.push(`[lock] 寄存单退款应=INVALID_STATE/寄存单，实际 code=${depRefund.code} type=${depRefund.errorType} msg=${depRefund.message}`)
+  if (depRefund.errorType !== 'INVALID_STATE' || !/仅销售单支持退款/.test(depRefund.message || '')) {
+    errors.push(`[lock] 寄存单退款应=INVALID_STATE/仅销售单支持退款，实际 code=${depRefund.code} type=${depRefund.errorType} msg=${depRefund.message}`)
   }
   // 6b 寄存单回款 → INVALID_STATE（guard 先于状态校验）
   const depRepay = await invokeStaffApi('order.createRepayment', {
