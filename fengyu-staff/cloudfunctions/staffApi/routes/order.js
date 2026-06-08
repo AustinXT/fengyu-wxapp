@@ -1172,13 +1172,15 @@ async function confirmOffline(ctx) {
     confirmAmount = Math.round(confirmAmount * 100) / 100
   }
 
-  const newReceived = Math.round((orderReceived + confirmAmount) * 100) / 100
-  const newSettled = Math.round((newReceived + orderPrepaid) * 100) / 100
   // 结清判定基准 = payable_amount + prepaid（顾客应付现金 + 储值卡抵扣），不用 total_amount。
   // 普通单 payable = total - prepaid，故 payable + prepaid === total（行为不变）；
   // 充值单 payable(实付 980) ≠ total(面额 1000)，须用 payable 否则永远判为部分支付。
   const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
-  const targetStatus = newSettled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+  // received / targetStatus 的权威值由事务内「从流水重聚合」产出（维护 I1：received = Σ[首次支付/回款/储值卡抵扣]，
+  // 跨端字面对齐 admin confirmOfflinePayment）。原 orderReceived+confirmAmount 漏算储值卡抵扣，会让
+  // recalcPaidSessionsForOrder 把缺卡的 received 按 pending_received 比例摊到各行 → sale_items.received 被现金比例稀释。
+  let newReceived = 0
+  let targetStatus = '部分支付'
 
   // 仅在本次"确认现金到账"(confirmAmount > 0) 时写 payments 行
   // 已有 payments 则本次为"回款"，否则为"首次支付"
@@ -1242,28 +1244,10 @@ async function confirmOffline(ctx) {
       }
     }
 
-    // ========== PR-2: 插入 payments 流水 + 更新 sale_orders ==========
-    // 事务内单调递增 paid_amount、按决策树决定 status
-    // C4 合规：WHERE 锁定当前状态防止并发竞态
-    //
-    // paid_at 语义：
-    //   - 目标状态 '已支付' → 设为本次确认时间（作为"最后一次到账时间"快照）
-    //   - 目标状态 '部分支付' → 保留原值（若原为 NULL 则继续 NULL）
-    const paidAtValue = targetStatus === '已支付' ? now : (order.paid_at || null)
-    const updateResult = await client.query(
-      `UPDATE sale_orders
-       SET status = $1, received = $2, paid_at = $3, updated_at = $4,
-           offline_confirmed_by = $5, offline_confirmed_at = $4,
-           allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
-       WHERE sale_order_id = $6 AND status = $7`,
-      [targetStatus, newReceived, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
-    )
-    if (updateResult.rowCount === 0) {
-      throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
-    }
-
+    // ========== PR-2: 现金流水（首次支付/回款）：先落流水，再由流水聚合 received（维护 I1）==========
+    // change_type='首次支付' 时由 uq_sop_first_payment 兜底 TOCTOU；'回款' 不受影响。
+    // 必须在「从流水重聚合 received」之前 INSERT，否则本次现金不进聚合。
     if (confirmAmount > 0) {
-      // change_type='首次支付' 时由 uq_sop_first_payment 兜底 TOCTOU；'回款' 不受影响
       const insRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
@@ -1278,6 +1262,36 @@ async function confirmOffline(ctx) {
       if (insRes.rows.length === 0) {
         throw new Error('CONFLICT: 订单已收款，请勿重复提交')
       }
+    }
+
+    // ========== 从流水重聚合 received（跨端字面对齐 admin confirmOfflinePayment）==========
+    // received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
+    // 含储值卡抵扣流水 → 维护 I1 不变量（原 orderReceived+confirmAmount 漏卡，致后续 STEP1 把缺卡的
+    // received 按 pending_received 比例摊到各行 → sale_items.received 被现金比例稀释）。
+    // 幂等：储值卡/现金流水 INSERT 各自去重，重复确认聚合结果一致。
+    const aggRes = await client.query(
+      `SELECT COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
+                                THEN amount::numeric ELSE 0 END), 0) AS new_received
+         FROM sale_order_payments WHERE sale_order_id = $1`,
+      [saleOrderId]
+    )
+    newReceived = Math.round(Number(aggRes.rows[0].new_received) * 100) / 100
+    // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid)，与 admin orders.ts 一致
+    targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+
+    // ========== 更新 sale_orders（C4 合规：WHERE 锁定当前状态防并发竞态）==========
+    // paid_at 语义：'已支付' → 本次确认时间（"最后一次到账时间"快照）；'部分支付' → 保留原值（NULL 续 NULL）
+    const paidAtValue = targetStatus === '已支付' ? now : (order.paid_at || null)
+    const updateResult = await client.query(
+      `UPDATE sale_orders
+       SET status = $1, received = $2, paid_at = $3, updated_at = $4,
+           offline_confirmed_by = $5, offline_confirmed_at = $4,
+           allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+       WHERE sale_order_id = $6 AND status = $7`,
+      [targetStatus, newReceived, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
+    )
+    if (updateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
 
     // 2026-05-21 单品合并：单品 1 年有效期自动赋值已移除（原在此按 product_type='单品' 写 expire_date）

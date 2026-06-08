@@ -176,7 +176,9 @@ async function closeExpiredOrdersByUser(userId) {
  *
  * 仅当 order.create payload 含 bundleProductId 时调用：
  *   - 校验该 productId 存在且 is_bundle = true
- *   - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为"必须全选"）
+ *   - 校验每个 mall_bundle_groups 的配额：选 N 项（pick_count != null）按"数量合计 = pick_count"
+ *     （同一 SKU 可选多件，与员工端口径一致，故 4 个商品可凑出"4 选 8"）；
+ *     全选（pick_count IS NULL）按"SKU 种类数 = 组内 SKU 总数"
  *   - 校验所有 items.skuId 都属于该 bundle（mall_product_skus.product_id 等值）
  *
  * 返回 Map<skuId, bundlePrice|null>；调用方据此把 unit_real_price 切换到 bundle_price。
@@ -223,13 +225,19 @@ async function _loadAndValidateBundle(bundleProductId, items) {
     }
   }
 
-  // 5. 按 group_id 统计 items 勾选数 + 校验配额
-  const pickedByGroup = new Map() // groupId → Set<skuId>
+  // 5. 按 group_id 统计 items + 校验配额
+  //    pick_count != null（选 N 项）：按"数量合计"校验（同一 SKU 可选多件，员工端口径），
+  //                                   故 4 个候选商品可凑出"4 选 8"等数量。
+  //    pick_count IS NULL（全选）：按"种类数"校验，每个 SKU 必须都在（数量恒 1）。
+  const pickedQtyByGroup = new Map()  // groupId → Σ quantity（选 N 项用）
+  const pickedSkusByGroup = new Map() // groupId → Set<skuId>（全选组用）
   for (const item of items) {
     const gid = skuToGroupId.get(item.skuId)
     if (gid == null) continue // 未分组 SKU，直接通过（mall_product_skus.bundle_group_id 为 NULL 的 SKU）
-    if (!pickedByGroup.has(gid)) pickedByGroup.set(gid, new Set())
-    pickedByGroup.get(gid).add(item.skuId)
+    const qty = Number(item.quantity) || 0
+    pickedQtyByGroup.set(gid, (pickedQtyByGroup.get(gid) || 0) + qty)
+    if (!pickedSkusByGroup.has(gid)) pickedSkusByGroup.set(gid, new Set())
+    pickedSkusByGroup.get(gid).add(item.skuId)
   }
 
   // 每组 SKU 总数（pick_count IS NULL 时校验"全选"用）
@@ -242,16 +250,18 @@ async function _loadAndValidateBundle(bundleProductId, items) {
 
   for (const g of groupRows) {
     const gid = Number(g.id)
-    const pickedCount = pickedByGroup.has(gid) ? pickedByGroup.get(gid).size : 0
     if (g.pick_count == null) {
-      // 全选组：必须等于该组 SKU 总数
+      // 全选组：勾选的 SKU 种类数必须等于该组 SKU 总数
       const total = totalSkusByGroup.get(gid) || 0
-      if (pickedCount !== total) {
-        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${pickedCount} 项`)
+      const distinct = pickedSkusByGroup.has(gid) ? pickedSkusByGroup.get(gid).size : 0
+      if (distinct !== total) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${distinct} 项`)
       }
     } else {
-      if (pickedCount !== Number(g.pick_count)) {
-        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 项，实际 ${pickedCount} 项`)
+      // 选 N 项组：数量合计必须等于 pick_count
+      const pickedQty = pickedQtyByGroup.get(gid) || 0
+      if (pickedQty !== Number(g.pick_count)) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 件，实际 ${pickedQty} 件`)
       }
     }
   }
@@ -464,7 +474,7 @@ async function create(ctx) {
   // bundleProductId 出现时：
   // - 校验该商品 is_bundle=true
   // - 校验 items 中每个 skuId 都在 mall_product_skus 里属于该 bundle
-  // - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为全选）
+  // - 校验每个 mall_bundle_groups 的配额：选 N 项按数量合计 = pick_count，全选按种类数全覆盖
   // - 返回每个 skuId 对应的 bundle_price，下面用作 unit_real_price
   const bundlePriceMap = await _loadAndValidateBundle(bundleProductId, items)
 
