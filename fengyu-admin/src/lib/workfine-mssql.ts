@@ -77,9 +77,26 @@ const MSSQL_CONFIG: mssql.config = {
   requestTimeout: REQUEST_TIMEOUT_MS,
 }
 
-/** WorkFine 不可用时统一抛出的友好错误（INVALID_STATE 在白名单内，上层显示可读文案） */
-const WORKFINE_UNAVAILABLE_MSG =
+/** server 日志用：带 WORKFINE_UNAVAILABLE 子标签便于故障归类排查 */
+const WORKFINE_UNAVAILABLE_LOG_MSG =
   'INVALID_STATE: WORKFINE_UNAVAILABLE: WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员'
+
+/**
+ * WorkFine 不可用时统一抛出的友好错误。
+ *
+ * 关键：必须带自定义 `digest` 才能扛住 Next.js 生产构建对 Server Action `error.message`
+ * 的脱敏——普通 `Error` 在 prod 只剩通用「Server Components render」文案，前端
+ * `actionErrorMessage`（lib/action-error.ts）拿不到友好提示，会退化成无意义哈希/兜底文案。
+ * 仿 legacy-orders.ts 的 LegacyOrderError，但 `digest` 刻意**不含** WORKFINE_UNAVAILABLE
+ * 子标签：前端剥一级前缀 `INVALID_STATE:` 后即得干净文案；子标签仅留在 `message` 供 server 日志归类。
+ */
+export class WorkfineUnavailableError extends Error {
+  readonly digest = 'INVALID_STATE: WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员'
+  constructor() {
+    super(WORKFINE_UNAVAILABLE_LOG_MSG)
+    this.name = 'WorkfineUnavailableError'
+  }
+}
 
 type GlobalWithMssql = typeof globalThis & {
   __workfineMssqlPool?: mssql.ConnectionPool | null
@@ -110,7 +127,7 @@ async function getPool(): Promise<mssql.ConnectionPool> {
     g.__workfineMssqlPool = null
     g.__workfineMssqlPoolPromise = null
     console.error('[workfine-mssql] 连接 WorkFine MSSQL 失败', err)
-    throw new Error(WORKFINE_UNAVAILABLE_MSG)
+    throw new WorkfineUnavailableError()
   } finally {
     // 成功时也清掉 promise 引用（pool 已存入 __workfineMssqlPool）
     if (g.__workfineMssqlPool) g.__workfineMssqlPoolPromise = null
@@ -118,19 +135,19 @@ async function getPool(): Promise<mssql.ConnectionPool> {
 }
 
 /**
- * 包裹查询执行：把任何 MSSQL 连接/查询/超时错误转成统一的 INVALID_STATE 友好错误，
+ * 包裹查询执行：把任何 MSSQL 连接/查询/超时错误转成统一的 WorkfineUnavailableError，
  * 让上层 action 抛出可读消息（Dialog 显示「WorkFine 暂不可用」），而不是 raw 500 / 卡死。
- * 已经是 WORKFINE_UNAVAILABLE_MSG（来自 getPool）的错误原样透传，不重复包裹。
+ * 已经是 WorkfineUnavailableError（来自 getPool）的错误原样透传，不重复包裹。
  */
 async function runQuery<T>(fn: (pool: mssql.ConnectionPool) => Promise<T>): Promise<T> {
-  // getPool 失败时已抛出 WORKFINE_UNAVAILABLE_MSG，直接透传。
+  // getPool 失败时已抛出 WorkfineUnavailableError，直接透传。
   const pool = await getPool()
   try {
     return await fn(pool)
   } catch (err) {
-    if (err instanceof Error && err.message === WORKFINE_UNAVAILABLE_MSG) throw err
+    if (err instanceof WorkfineUnavailableError) throw err
     console.error('[workfine-mssql] 查询 WorkFine MSSQL 失败', err)
-    throw new Error(WORKFINE_UNAVAILABLE_MSG)
+    throw new WorkfineUnavailableError()
   }
 }
 

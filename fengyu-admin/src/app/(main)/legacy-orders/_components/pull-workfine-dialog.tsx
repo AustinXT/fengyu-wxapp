@@ -45,6 +45,8 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
   const [step, setStep] = useState<Step>("search")
   const [query, setQuery] = useState("")
   const [searching, setSearching] = useState(false)
+  // WorkFine 不可用 / 搜索 / 预览失败的常驻错误（不随 toast 消失，附「重试」），绑定 search 步骤
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<WorkfineCustomerCandidate[]>([])
   const [picked, setPicked] = useState<WorkfineCustomerCandidate | null>(null)
 
@@ -66,6 +68,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     setAvailableStores([])
     setStoreMapping({})
     setSelectedOrderNos(new Set())
+    setErrorMsg(null)
     if (defaultPhone) {
       setQuery(defaultPhone)
       // 自动触发一次搜索
@@ -82,6 +85,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       toast.error("请输入手机号或顾客编号")
       return
     }
+    setErrorMsg(null)
     setSearching(true)
     try {
       const isPhone = /^1\d{10}$/.test(q)
@@ -96,13 +100,16 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
         pickCandidate(res[0])
       }
     } catch (err) {
-      toast.error(actionErrorMessage(err, "搜索失败"))
+      const msg = actionErrorMessage(err, "搜索失败")
+      setErrorMsg(msg)
+      toast.error(msg)
     } finally {
       setSearching(false)
     }
   }
 
   async function pickCandidate(c: WorkfineCustomerCandidate) {
+    setErrorMsg(null)
     setPicked(c)
     setLoadingOrders(true)
     setStep("preview")
@@ -128,7 +135,9 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       )
       setSelectedOrderNos(defaultSel)
     } catch (err) {
-      toast.error(actionErrorMessage(err, "预览失败"))
+      const msg = actionErrorMessage(err, "预览失败")
+      setErrorMsg(msg)
+      toast.error(msg)
       setStep("search")
     } finally {
       setLoadingOrders(false)
@@ -219,6 +228,29 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
 
       {step === "search" && (
         <div className="space-y-4 mt-4">
+          {errorMsg && (
+            <div className="flex items-start gap-2 rounded-md border border-[var(--destructive)]/40 bg-[var(--destructive)]/[0.06] px-3 py-2.5 text-sm text-[var(--destructive)]">
+              <span aria-hidden className="mt-0.5 shrink-0 font-medium">⚠</span>
+              <span className="flex-1 leading-relaxed">{errorMsg}</span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0 border-[var(--destructive)]/50 text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                onClick={() => doSearch(query)}
+                disabled={searching || !query.trim()}
+              >
+                重试
+              </Button>
+              <button
+                type="button"
+                aria-label="关闭提示"
+                className="shrink-0 rounded p-0.5 opacity-60 hover:bg-[var(--destructive)]/10 hover:opacity-100"
+                onClick={() => setErrorMsg(null)}
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
             <Input
               placeholder="手机号（11 位）或 WorkFine 顾客编号"

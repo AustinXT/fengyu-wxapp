@@ -5,7 +5,12 @@
  * 空密码登录失败（ELOGIN）。本测试守护连接字符串解析与 envs/*.env 格式对齐。
  */
 import { describe, it, expect } from 'vitest'
-import { normalizeWorkfineAmount, parseMssqlConnString } from '../workfine-mssql'
+import {
+  normalizeWorkfineAmount,
+  parseMssqlConnString,
+  WorkfineUnavailableError,
+} from '../workfine-mssql'
+import { actionErrorMessage } from '../action-error'
 
 describe('parseMssqlConnString', () => {
   it('解析 envs/prod.env 实际格式（Server 含端口）', () => {
@@ -74,5 +79,29 @@ describe('normalizeWorkfineAmount', () => {
   it('负数 → 0（防御性兜底，WorkFine 不应出现负金额）', () => {
     expect(normalizeWorkfineAmount(-1)).toBe(0)
     expect(normalizeWorkfineAmount('-99.8')).toBe(0)
+  })
+})
+
+describe('WorkfineUnavailableError（WorkFine 不可用提示在 prod 的透传守护）', () => {
+  // 根因：普通 Error 在 Next.js 生产构建会被脱敏（message 只剩通用文案），前端拿不到
+  // 友好提示。必须带自定义 digest，前端 actionErrorMessage 才能从 digest 取回可读文案。
+  it('带非空 digest 以扛住 prod 对 Server Action message 的脱敏', () => {
+    const err = new WorkfineUnavailableError()
+    expect(typeof err.digest).toBe('string')
+    expect(err.digest.length).toBeGreaterThan(0)
+  })
+
+  it('前端展示干净友好文案，不暴露 INVALID_STATE / WORKFINE_UNAVAILABLE 前缀', () => {
+    // actionErrorMessage 优先读 digest、剥一级前缀后展示——模拟 PullWorkfineDialog 的 catch
+    const shown = actionErrorMessage(new WorkfineUnavailableError(), '搜索失败')
+    expect(shown).toBe('WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员')
+    expect(shown).not.toContain('WORKFINE_UNAVAILABLE')
+    expect(shown).not.toContain('INVALID_STATE')
+  })
+
+  it('message 保留 WORKFINE_UNAVAILABLE 子标签供 server 日志归类', () => {
+    const err = new WorkfineUnavailableError()
+    expect(err.message).toContain('WORKFINE_UNAVAILABLE')
+    expect(err.name).toBe('WorkfineUnavailableError')
   })
 })
