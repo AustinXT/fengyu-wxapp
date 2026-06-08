@@ -42,10 +42,10 @@ async function seedFixture(mgr, cli) {
   );
   await query(
     `INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
-        product_name, sku_spec_name, product_type, unit_price, quantity, unit_real_price,
+        product_name, product_type, unit_price, quantity, unit_real_price,
         sale_amount, received, service_fee, is_shengmei, is_experience,
         session_count, remaining_sessions, paid_sessions)
-     VALUES ($1, $2, $3, '购买', 'L3 疗程卡', '5次卡', '疗程卡', 1500, 1, 1500,
+     VALUES ($1, $2, $3, '购买', 'L3 疗程卡', '疗程卡', 1500, 1, 1500,
         1500, 1500, 0, false, false, 5, 5, 5)`,
     [PAID_ITEM_ID, PAID_ORDER_ID, mgr.storeId],
   );

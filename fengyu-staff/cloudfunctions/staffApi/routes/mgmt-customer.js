@@ -647,7 +647,7 @@ async function paidOrders(ctx) {
     `SELECT
        si.sale_order_id, si.sale_item_id, si.store_id,
        si.session_count, si.remaining_sessions, si.paid_sessions,
-       si.sku_id, si.product_type, si.sku_spec_name, si.product_name
+       si.sku_id, si.product_type, si.product_name
      FROM sale_items si
      WHERE si.sale_order_id = ANY($1)
      ORDER BY si.sale_item_id`,
@@ -661,7 +661,7 @@ async function paidOrders(ctx) {
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
       itemName: item.product_name || '',
-      spec: item.sku_spec_name || '',
+      spec: item.product_name || '',
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
@@ -725,9 +725,10 @@ async function giftHistory(ctx) {
     params,
   )
 
-  // 套餐内赠品（received=0 的明细行）
+  // 套餐内赠品（从未收款的明细行：received=0 且 pending_received=0）。
+  // 2026-06-08 received 转净额后：pending_received>0 但 received=0 是「全额退款后净额归零」，非赠品，须用 pending_received=0 排除。
   const giftItems = await pg.query(
-    `SELECT si.sale_item_id, si.sale_order_id, si.product_name, si.sku_spec_name,
+    `SELECT si.sale_item_id, si.sale_order_id, si.product_name,
             si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions,
             si.received, o.created_at, o.paid_at
        FROM sale_items si
@@ -737,6 +738,7 @@ async function giftHistory(ctx) {
         AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
         AND si.item_direction = '购买'
         AND si.received::numeric = 0
+        AND si.pending_received::numeric = 0
       ORDER BY o.created_at DESC`,
     params,
   )
@@ -745,7 +747,7 @@ async function giftHistory(ctx) {
   let promoItems = []
   if (promoOrderIds.length > 0) {
     promoItems = await pg.query(
-      `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.sku_spec_name,
+      `SELECT si.sale_order_id, si.sale_item_id, si.product_name,
               si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received
          FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [promoOrderIds],
@@ -757,7 +759,7 @@ async function giftHistory(ctx) {
     if (!promoItemsByOrder[i.sale_order_id]) promoItemsByOrder[i.sale_order_id] = []
     promoItemsByOrder[i.sale_order_id].push({
       productName: i.product_name,
-      specName: i.sku_spec_name,
+      specName: i.product_name,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -781,7 +783,7 @@ async function giftHistory(ctx) {
       saleItemId: i.sale_item_id,
       saleOrderId: i.sale_order_id,
       productName: i.product_name,
-      specName: i.sku_spec_name,
+      specName: i.product_name,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -867,7 +869,7 @@ async function refundHistory(ctx) {
   if (convOrderIds.length > 0) {
     convItems = await pg.query(
       `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
-              si.product_name, si.sku_spec_name, si.quantity, si.received
+              si.product_name, si.quantity, si.received
          FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [convOrderIds],
     )
@@ -879,7 +881,7 @@ async function refundHistory(ctx) {
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
-      specName: i.sku_spec_name,
+      specName: i.product_name,
       quantity: i.quantity,
       received: Number(i.received),
     })

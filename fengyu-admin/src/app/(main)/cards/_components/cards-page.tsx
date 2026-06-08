@@ -101,9 +101,6 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			cell: (row) => (
 				<div className="flex flex-col">
 					<span className="line-clamp-1 font-medium">{row.productName ?? "—"}</span>
-					{row.skuSpecName && row.skuSpecName !== row.productName && (
-						<span className="text-xs text-[#999999]">{row.skuSpecName}</span>
-					)}
 				</div>
 			),
 		},

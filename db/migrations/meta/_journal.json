@@ -442,6 +442,13 @@
       "when": 1780857555848,
       "tag": "0062_equal_justin_hammer",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1780897195960,
+      "tag": "0063_drop_sale_items_sku_spec_name",
+      "breakpoints": true
     }
   ]
 }

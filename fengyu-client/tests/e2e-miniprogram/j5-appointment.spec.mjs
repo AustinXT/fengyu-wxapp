@@ -60,12 +60,12 @@ async function insertPaidCourseOrder({ userId }) {
   await query(
     `INSERT INTO sale_items (
        sale_item_id, sale_order_id, store_id, item_direction,
-       sku_id, product_name, sku_spec_name, product_type,
+       sku_id, product_name, product_type,
        unit_price, quantity, unit_real_price, sale_amount, received,
        session_count, remaining_sessions, is_experience
      )
      VALUES ($1, $2, $3, '购买'::item_direction,
-             $4, $5, '5次卡', '疗程卡'::product_type,
+             $4, $5, '疗程卡'::product_type,
              500, 1, 500, 500, 500,
              5, 5, false)`,
     [saleItemId, saleOrderId, TEST_STORE_ID, L3_SKU_COURSE_ID, `${NS}_疗程卡商品`]

@@ -103,7 +103,7 @@ async function detail(ctx) {
     SELECT sit.service_item_id, sit.sale_item_id, sit.session_used, sit.unit_real_price,
            sit.sales_category, sit.employee_id,
            si.service_fee, si.session_count, si.quantity,
-           si.product_name, si.sku_spec_name
+           si.product_name
     FROM service_items sit
     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
     WHERE sit.service_order_id = $1

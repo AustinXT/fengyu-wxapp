@@ -52,7 +52,6 @@ const auditorAlias = alias(staffWechatUsers, 'sop_auditor') as unknown as typeof
 export interface RefundableItem {
   saleItemId: string
   productName: string
-  skuSpecName: string
   productType: ProductType | null
   unitRealPrice: number
   unusedQuantity: number
@@ -226,7 +225,6 @@ export const getRefundable = withAnyPermission(
       sale_item_id: r.saleItemId,
       sku_id: r.skuId,
       product_name: r.productName,
-      sku_spec_name: r.skuSpecName,
       product_type: r.productType as ProductType | null,
       session_count: r.sessionCount,
       remaining_sessions: r.remainingSessions,
@@ -245,7 +243,6 @@ export const getRefundable = withAnyPermission(
     return {
       saleItemId: r.saleItemId,
       productName: r.productName || '-',
-      skuSpecName: r.skuSpecName || '',
       productType: r.productType as ProductType | null,
       unitRealPrice,
       unusedQuantity: unused,
@@ -596,7 +593,6 @@ export const createRefund = withPermission(
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
-    sku_spec_name: r.skuSpecName,
     product_type: r.productType as ProductType | null,
     session_count: r.sessionCount,
     remaining_sessions: r.remainingSessions,

@@ -21,7 +21,7 @@ describe('service.detail', () => {
     pg.query.mockResolvedValueOnce([{
       service_item_id: 'SVI-001', sale_item_id: 'SI-001',
       session_used: 1, employee_id: 'emp-1',
-      product_name: '美白护理', sku_spec_name: '10次卡',
+      product_name: '美白护理',
     }])
 
     const ctx = createBoundCtx({ serviceOrderId: 'SVC-001' })
@@ -69,7 +69,7 @@ describe('service.list', () => {
       {
         service_order_id: 'SVC-001', service_item_id: 'SVI-001',
         session_used: 1, service_duration: 90,
-        product_name: '深层清洁护理', sku_spec_name: '10次卡',
+        product_name: '深层清洁护理',
       },
     ])
 

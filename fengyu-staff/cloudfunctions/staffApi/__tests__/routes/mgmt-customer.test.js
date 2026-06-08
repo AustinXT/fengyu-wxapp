@@ -786,7 +786,6 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
           remaining_sessions: 8,
           sku_id: 'sku-1',
           product_type: '疗程卡',
-          sku_spec_name: 'A 规格',
           product_name: '深层补水',
         },
       ],
@@ -1052,9 +1051,9 @@ describe('mgmtCustomer 出数完整路径', () => {
         { sale_order_id: 'so-2', status: '已支付', paid_at: '2026-04-21T11:00:00Z', store_id: 'store-001', store_name: 'A 店' },
       ],
       paidOrderItems: [
-        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: 'A 规', product_name: '深层补水' },
-        { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', sku_spec_name: 'B 规', product_name: '基础护理' },
-        { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', sku_spec_name: 'C 规', product_name: '面部清洁' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', product_name: '基础护理' },
+        { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', product_name: '面部清洁' },
       ],
     })
     const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'all' })
@@ -1123,7 +1122,7 @@ describe('mgmtCustomer 出数完整路径', () => {
         { sale_order_id: 'so-promo-1', status: '已支付', sale_order_type: '销售单', total_amount: '1200.00', created_at: '2026-04-15T10:00:00Z', paid_at: '2026-04-15T10:05:00Z' },
       ],
       giftItemsRows: [
-        { sale_item_id: 'gi-1', sale_order_id: 'so-gift-1', product_name: '赠品面膜', sku_spec_name: '单片', quantity: 5, session_count: null, remaining_sessions: null, received: '0', created_at: '2026-04-16T10:00:00Z', paid_at: '2026-04-16T10:05:00Z' },
+        { sale_item_id: 'gi-1', sale_order_id: 'so-gift-1', product_name: '赠品面膜', quantity: 5, session_count: null, remaining_sessions: null, received: '0', created_at: '2026-04-16T10:00:00Z', paid_at: '2026-04-16T10:05:00Z' },
       ],
     })
     // 给 promoItems 查询补 mock（按 sale_order_id ANY $1）
@@ -1135,8 +1134,8 @@ describe('mgmtCustomer 出数完整路径', () => {
         Array.isArray(params?.[0]) && params[0].includes('so-promo-1')
       ) {
         return [
-          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-1', product_name: '套餐子项A', sku_spec_name: 'X', quantity: 1, session_count: 10, remaining_sessions: 9, received: '600.00' },
-          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-2', product_name: '套餐子项B', sku_spec_name: 'Y', quantity: 1, session_count: 5, remaining_sessions: 5, received: '600.00' },
+          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-1', product_name: '套餐子项A', quantity: 1, session_count: 10, remaining_sessions: 9, received: '600.00' },
+          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-2', product_name: '套餐子项B', quantity: 1, session_count: 5, remaining_sessions: 5, received: '600.00' },
         ]
       }
       return baseImpl(sql, params)
@@ -1192,7 +1191,7 @@ describe('mgmtCustomer 出数完整路径', () => {
         { sale_order_id: 'so-r2', status: '已转换', sale_order_type: '转换单', total_amount: '300.00', created_at: '2026-04-23T10:00:00Z', paid_at: '2026-04-23T12:00:00Z' },
       ],
       refundConvItemRows: [
-        { sale_order_id: 'so-r2', sale_item_id: 'sri-2', item_direction: '转换', product_name: '换购套餐', sku_spec_name: 'C 规', quantity: 1, received: '300.00' },
+        { sale_order_id: 'so-r2', sale_item_id: 'sri-2', item_direction: '转换', product_name: '换购套餐', quantity: 1, received: '300.00' },
       ],
     })
     const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'market', scopeId: 'mkt-A' })

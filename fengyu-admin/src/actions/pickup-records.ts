@@ -225,7 +225,6 @@ export interface AvailablePickupItem {
   saleItemId: string
   saleOrderId: string
   productName: string | null
-  skuSpecName: string | null
   quantity: number
   pickedUpQuantity: number
   remaining: number
@@ -245,7 +244,6 @@ export const getAvailablePickupItems = withPermission(
       si.sale_item_id,
       si.sale_order_id,
       si.product_name,
-      si.sku_spec_name,
       si.quantity,
       COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
       si.unit_real_price,
@@ -268,7 +266,6 @@ export const getAvailablePickupItems = withPermission(
     saleItemId: r.sale_item_id as string,
     saleOrderId: r.sale_order_id as string,
     productName: (r.product_name as string | null) ?? null,
-    skuSpecName: (r.sku_spec_name as string | null) ?? null,
     quantity: Number(r.quantity),
     pickedUpQuantity: Number(r.picked_up_quantity ?? 0),
     remaining: Number(r.quantity) - Number(r.picked_up_quantity ?? 0),

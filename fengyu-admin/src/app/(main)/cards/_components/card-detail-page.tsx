@@ -89,7 +89,7 @@ export default function CardDetailPageClient({
 						</div>
 						<div>
 							<span className="text-[#999999]">规格</span>
-							<p className="font-medium mt-1">{card.skuSpecName || "—"}</p>
+							<p className="font-medium mt-1">{card.productName || "—"}</p>
 						</div>
 						<div>
 							<span className="text-[#999999]">总次数</span>

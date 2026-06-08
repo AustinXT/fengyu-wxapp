@@ -185,8 +185,6 @@ export const saleItems = pgTable(
     skuId: text("sku_id").references(() => productSkus.skuId),
     /** 商品名称快照（开单时持久化，防止商品改名后历史订单显示错误） */
     productName: text("product_name"),
-    /** 规格名称快照 */
-    skuSpecName: text("sku_spec_name"),
     /** 商品类型快照（疗程卡/家居产品） */
     productType: productTypeEnum("product_type"),
     /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
@@ -221,18 +219,20 @@ export const saleItems = pgTable(
      */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
     /**
-     * 实收金额加总（该行权威累计实收；convert_out/refund_out 行为负数）。
-     * 由 recalcPaidSessionsForOrder 的 STEP 1「定向 + 两段式瀑布」从 sale_orders.received 重算：
-     * 无定向额先按 pending_received 铺满、溢出再按 sale_amount 余量铺开
-     * （pending_received=0 或 =sale_amount 时退化为旧「按 sale_amount 比例」）。
-     * 保证 Σ received = sale_orders.received。**不是行单价**（行价看 sale_amount）。
+     * 行级**净实收**（毛实收 − 该行被退；convert_out/refund_out 行为负数）。
+     * 由 recalcPaidSessionsForOrder 两步重算：
+     *   STEP 1「定向 + 两段式瀑布」从 sale_orders.received 摊**毛额**（无定向额先按 pending_received 铺满、
+     *   溢出再按 sale_amount 余量铺开；pending=0 或 =sale_amount 时退化为旧比例）；
+     *   STEP 1.5 按已支付退款流水 note.items[].refundAmount 逐项扣退款 → 转**净额**（2026-06-08 退款侧）。
+     * 效果：被退项 received 单独减少、SUM(购买行 received)=净实收（统计方便）。
+     * Σ(购买行) = sale_orders.received − Σ逐项退款（不再恒等毛额 received）。**不是行单价**（行价看 sale_amount）。
      */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
     /**
      * 逐行实付草稿（开单首付 UI 填的单次每项实付金额快照，行级）。
      * 作为 STEP 1 两段式瀑布的「第一段产能」权重：无定向额（首付/无 items 回款）优先按 pending_received
      * 分摊到各行 received（2026-06-08 组合套餐逐行实付累加），但**本身不增加 received 总额**——
-     * 资金铁律不变：Σreceived 仍 = sale_orders.received（只认 status='已支付' 流水）。
+     * 资金铁律不变：受款额只认 status='已支付' 流水（pending_received 仅作 STEP1 分摊权重，不进受款）。
      * 待支付订单：received=0、paid_sessions=0（不可消费），pending_received 保留约定值；
      * 同时供订单详情展示「约定实付」+ 确认收款时作 confirmAmount 预填/入账参考。
      */

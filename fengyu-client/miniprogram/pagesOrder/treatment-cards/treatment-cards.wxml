@@ -43,7 +43,6 @@
             text-color="#FFF"
           >疗程卡</van-tag>
         </view>
-        <text class="tc-card__sku">{{item.skuSpecName}}</text>
       </view>
 
       <!-- 进度区（三段：已用 / 已付未用 / 未付） -->

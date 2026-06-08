@@ -60,8 +60,7 @@ async function detail(ctx) {
       si_svc.employee_id,
       si_svc.service_duration,
       si_svc.unit_real_price,
-      si_sale.product_name,
-      si_sale.sku_spec_name
+      si_sale.product_name
     FROM service_items si_svc
     LEFT JOIN sale_items si_sale ON si_svc.sale_item_id = si_sale.sale_item_id
     WHERE si_svc.service_order_id = $1
@@ -118,8 +117,7 @@ async function list(ctx) {
         si.session_used,
         si.service_duration,
         si.unit_real_price,
-        sal.product_name,
-        sal.sku_spec_name
+        sal.product_name
       FROM service_items si
       LEFT JOIN sale_items sal ON si.sale_item_id = sal.sale_item_id
       WHERE si.service_order_id = ANY($1)

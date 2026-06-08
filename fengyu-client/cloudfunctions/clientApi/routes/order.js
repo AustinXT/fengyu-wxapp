@@ -321,7 +321,7 @@ async function scanDetail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
-      si.product_name, si.sku_spec_name,
+      si.product_name,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
@@ -363,7 +363,6 @@ async function scanDetail(ctx) {
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,
-      skuSpecName: i.sku_spec_name,
       unitPrice: i.unit_price,
       quantity: i.quantity,
       received: i.received,
@@ -494,7 +493,6 @@ async function create(ctx) {
     return {
       skuId: item.skuId,
       productName: sku.spec_name,
-      skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount,
       remainingSessions: sessionCount,
@@ -822,14 +820,14 @@ async function create(ctx) {
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, sku_id,
-          product_name, sku_spec_name, product_type,
+          product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
           sale_amount, received, pending_received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
-          d.productName, d.skuSpecName, d.productType,
+          d.productName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
           d.saleAmount, d.received, d.salesCategory || null, d.isExperience
@@ -1253,7 +1251,6 @@ async function list(ctx) {
         si.remaining_sessions,
         si.paid_sessions,
         si.product_name,
-        si.sku_spec_name,
         si.product_type,
         (SELECT p.cover_image FROM mall_product_skus mps
          JOIN products p ON mps.product_id = p.product_id
@@ -1320,7 +1317,6 @@ async function detail(ctx) {
       si.sale_item_id,
       si.sku_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -1538,7 +1534,6 @@ async function appointableItems(ctx) {
       si.sale_item_id,
       si.sku_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -1593,7 +1588,6 @@ async function appointableItems(ctx) {
       saleItemId: item.sale_item_id,
       skuId: item.sku_id,
       productName: item.product_name,
-      skuSpecName: item.sku_spec_name,
       productType: item.product_type,
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,

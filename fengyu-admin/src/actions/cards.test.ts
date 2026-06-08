@@ -14,7 +14,6 @@ vi.mock('@db/order', () => ({
     itemDirection: 'item_direction',
     productType: 'product_type',
     productName: 'product_name',
-    skuSpecName: 'sku_spec_name',
     sessionCount: 'session_count',
     remainingSessions: 'remaining_sessions',
     expireDate: 'expire_date',
@@ -147,7 +146,6 @@ const mockCardRow = {
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
-  skuSpecName: '蜜语水润嫩肤护理 10次卡',
   sessionCount: 10,
   remainingSessions: 7,
   expireDate: '2026-12-31',
@@ -380,7 +378,6 @@ describe('getCustomerHeldCards — 数据映射', () => {
     mockSelectRows([{
       saleItemId: 'si-1',
       productName: '经络护理',
-      skuSpecName: '10次卡',
       productType: '疗程卡',
       remainingSessions: 5,
       quantity: 1,
@@ -400,7 +397,6 @@ describe('getCustomerHeldCards — 数据映射', () => {
     mockSelectRows([{
       saleItemId: 'si-2',
       productName: '体验项目',
-      skuSpecName: '单次',
       productType: '疗程卡',
       remainingSessions: 2,
       quantity: 1,
@@ -418,12 +414,12 @@ describe('getCustomerHeldCards — 数据映射', () => {
   it('多张疗程卡合并列表：均按 remaining_sessions 返回', async () => {
     mockSelectRows([
       {
-        saleItemId: 'si-1', productName: '疗程A', skuSpecName: '10次',
+        saleItemId: 'si-1', productName: '疗程A',
         productType: '疗程卡', remainingSessions: 5, quantity: 1,
         pickedUpQuantity: 0, unitRealPrice: '200.00', productKind: '护理项目',
       },
       {
-        saleItemId: 'si-2', productName: '体验B', skuSpecName: '单次',
+        saleItemId: 'si-2', productName: '体验B',
         productType: '疗程卡', remainingSessions: 2, quantity: 1,
         pickedUpQuantity: 0, unitRealPrice: '99.00', productKind: '体验卡',
       },
@@ -442,7 +438,7 @@ describe('getCustomerHeldCards — 数据映射', () => {
 
   it('remainingSessions = null 时按 0 处理（deductibleAmount=0.00）', async () => {
     mockSelectRows([{
-      saleItemId: 'si-3', productName: '疗程C', skuSpecName: '单次',
+      saleItemId: 'si-3', productName: '疗程C',
       productType: '疗程卡', remainingSessions: null, quantity: 1,
       pickedUpQuantity: null, unitRealPrice: '100.00', productKind: '护理项目',
     }])
@@ -470,7 +466,6 @@ const mockCardDetailRow = {
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
-  skuSpecName: '蜜语水润嫩肤护理 10次卡',
   sessionCount: 10,
   remainingSessions: 7,
   paidSessions: 10,

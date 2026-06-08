@@ -39,8 +39,6 @@ export interface AdminCard {
   saleOrderId: string
   /** 商品名快照 */
   productName: string | null
-  /** 规格名快照 */
-  skuSpecName: string | null
   /** 总次数 */
   sessionCount: number | null
   /** 剩余次数 */
@@ -167,7 +165,6 @@ export const getCardsPaginated = withPermission(
       saleItemId: saleItems.saleItemId,
       saleOrderId: saleItems.saleOrderId,
       productName: saleItems.productName,
-      skuSpecName: saleItems.skuSpecName,
       sessionCount: saleItems.sessionCount,
       remainingSessions: saleItems.remainingSessions,
       quantity: saleItems.quantity,
@@ -197,7 +194,6 @@ export const getCardsPaginated = withPermission(
       saleItemId: r.saleItemId,
       saleOrderId: r.saleOrderId,
       productName: r.productName ?? null,
-      skuSpecName: r.skuSpecName ?? null,
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
       quantity: r.quantity ?? 1,
@@ -228,7 +224,6 @@ export interface CardDetail {
   saleItemId: string
   saleOrderId: string
   productName: string | null
-  skuSpecName: string | null
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
@@ -271,7 +266,6 @@ export const getCardById = withPermission(
         saleItemId: saleItems.saleItemId,
         saleOrderId: saleItems.saleOrderId,
         productName: saleItems.productName,
-        skuSpecName: saleItems.skuSpecName,
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
         paidSessions: saleItems.paidSessions,
@@ -313,7 +307,6 @@ export const getCardById = withPermission(
       saleItemId: r.saleItemId,
       saleOrderId: r.saleOrderId,
       productName: r.productName ?? null,
-      skuSpecName: r.skuSpecName ?? null,
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
@@ -403,7 +396,6 @@ export const getCardTransactions = withPermission(
 export interface HeldCardCandidate {
   saleItemId: string
   productName: string | null
-  skuSpecName: string | null
   productType: '疗程卡' | '家居产品'
   /** 剩余次数（疗程卡） */
   remainingSessions: number | null
@@ -429,7 +421,6 @@ export const getCustomerHeldCards = withPermission(
     .select({
       saleItemId: saleItems.saleItemId,
       productName: saleItems.productName,
-      skuSpecName: saleItems.skuSpecName,
       productType: saleItems.productType,
       remainingSessions: saleItems.remainingSessions,
       quantity: saleItems.quantity,
@@ -464,7 +455,6 @@ export const getCustomerHeldCards = withPermission(
     return {
       saleItemId: r.saleItemId,
       productName: r.productName,
-      skuSpecName: r.skuSpecName,
       productType: '疗程卡' as const,
       remainingSessions: remSess,
       remainingQty: null,

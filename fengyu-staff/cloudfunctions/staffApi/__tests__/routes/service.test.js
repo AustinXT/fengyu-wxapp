@@ -1331,7 +1331,7 @@ describe('service.list', () => {
       // 2. 服务明细 (soIds.length > 0)
       .mockResolvedValueOnce([{
         service_order_id: 'HLD-001', product_name: '面部护理',
-        sku_spec_name: '10次卡', remaining_sessions: 8, session_count: 10, service_duration: 60,
+        remaining_sessions: 8, session_count: 10, service_duration: 60,
       }])
       // 3. 员工姓名 (staffWfIds.length > 0)
       .mockResolvedValueOnce([{ employee_id: 'emp-001', name: '张三' }])
@@ -1415,7 +1415,6 @@ describe('service.detail', () => {
         service_duration: 60,
         session_count: 10,
         remaining_sessions: 9,
-        sku_spec_name: '基础款',
         product_type: '疗程卡',
         product_name: '面部护理',
       }])
@@ -1646,7 +1645,6 @@ describe('service.list 深层覆盖', () => {
     .mockResolvedValueOnce([{
       service_order_id: 'HLD-001',
       product_name: '面部护理',
-      sku_spec_name: '10次卡',
       remaining_sessions: 8,
       session_count: 10,
       service_duration: 60,

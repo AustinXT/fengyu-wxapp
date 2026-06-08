@@ -18,7 +18,6 @@ export interface RefundSourceItem {
   sale_item_id: string
   sku_id: string | null
   product_name: string | null
-  sku_spec_name: string | null
   product_type: ProductType | null
   session_count: number | null
   remaining_sessions: number | null
@@ -42,7 +41,6 @@ export interface RefundDetail {
   refSaleItemId: string
   skuId: string | null
   productName: string | null
-  skuSpecName: string | null
   productType: ProductType | null
   sessionCount: number | null
   unitPrice: number
@@ -124,7 +122,6 @@ export function buildRefundDetails(
       refSaleItemId: req.saleItemId,
       skuId: orig.sku_id,
       productName: orig.product_name,
-      skuSpecName: orig.sku_spec_name,
       productType: orig.product_type,
       sessionCount: orig.session_count,
       unitPrice: Number(orig.unit_price),

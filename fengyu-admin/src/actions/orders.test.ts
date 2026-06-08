@@ -208,7 +208,6 @@ const baseOrderData = {
   items: [{
     skuId: 'sku-001',
     productName: '美容套餐',
-    skuSpecName: '标准',
     productType: '疗程卡' as const,
     sessionCount: null,
     unitPrice: '200.00',
@@ -541,7 +540,6 @@ describe('createOrder — 优惠券校验', () => {
       items: [{
         skuId: 'sku-5card',
         productName: '面部三重维养',
-        skuSpecName: '5次卡',
         productType: '疗程卡' as const,
         sessionCount: 5,        // 行总次数（B2 拆行后 quantity=1 不触发；这里 mock skuSessionMap 空 → fallback item.sessionCount）
         unitPrice: '1000.00',   // per-card 标价
@@ -581,7 +579,6 @@ describe('createOrder — 优惠券校验', () => {
         {
           skuId: 'sku-card',
           productName: '5次卡',
-          skuSpecName: '5次',
           productType: '疗程卡' as const,
           sessionCount: 5,
           unitPrice: '1000.00',
@@ -593,7 +590,6 @@ describe('createOrder — 优惠券校验', () => {
         {
           skuId: 'sku-home',
           productName: '家居产品',
-          skuSpecName: '50ml',
           productType: '家居产品' as const,
           sessionCount: null,
           unitPrice: '200.00',
@@ -814,7 +810,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-single',
         productName: '单次身体护理',
-        skuSpecName: '单次',
         productType: '疗程卡' as const,
         sessionCount: 1,
         unitPrice: '200.00',
@@ -848,7 +843,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-multi',
         productName: '10次面部护理',
-        skuSpecName: '10次',
         productType: '疗程卡' as const,
         sessionCount: 10,
         unitPrice: '1000.00',
@@ -880,7 +874,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-home',
         productName: '精华液',
-        skuSpecName: '50ml',
         productType: '家居产品' as const,
         sessionCount: null,
         unitPrice: '300.00',
@@ -1952,7 +1945,6 @@ describe('createConversionOrder — 权限与入参校验', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -2062,7 +2054,6 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -2075,7 +2066,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '5次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
         quantity: 1, picked_up_quantity: 0, unit_price: '1000.00',
         unit_real_price: '200.00', sales_category: '自销自耗', service_fee: '0',
@@ -2103,7 +2094,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2132,7 +2123,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '8次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 8, remaining_sessions: 8,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2210,7 +2201,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const captured = mockConvDeductTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2249,7 +2240,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const captured = mockConvDeductTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2296,7 +2287,6 @@ describe('createConversionOrder — 异常路径', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -2367,7 +2357,7 @@ describe('createConversionOrder — 异常路径', () => {
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
-            product_name: 'xx', sku_spec_name: 'yy', sales_category: '自销自耗',
+            product_name: 'xx', sales_category: '自销自耗',
           }]
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
@@ -3054,7 +3044,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-01',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.10',
@@ -3077,7 +3066,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-02',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '1.10',
@@ -3100,7 +3088,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-03',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.29',
@@ -3124,7 +3111,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
         {
           skuId: 'sku-float-a',
           productName: '浮点 A',
-          skuSpecName: '标准',
           productType: '疗程卡' as const,
           sessionCount: null,
           unitPrice: '0.10',
@@ -3135,7 +3121,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
         {
           skuId: 'sku-float-b',
           productName: '浮点 B',
-          skuSpecName: '标准',
           productType: '疗程卡' as const,
           sessionCount: null,
           unitPrice: '0.20',
@@ -3172,7 +3157,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-c',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.29',

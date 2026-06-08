@@ -307,7 +307,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
-        product_name: '面部护理', sku_spec_name: '基础款', sales_category: '自销自耗',
+        product_name: '面部护理', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: '张三', client_phone: '138',
         paid_at: '2024-06-15', store_id: 'store-001',
@@ -320,7 +320,7 @@ describe('staff.performanceDetail', () => {
         commission_amount: '200.00', fixed_fee: '120.00', consume_amount: '80.00',
         role_type: '美容师', commission_rate: '0.0800',
         session_used: 2, service_unit_price: '500.00',
-        product_name: '身体护理', sku_spec_name: '高级款', sales_category: '自销自耗',
+        product_name: '身体护理', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: '李四', client_phone: '139',
       },
@@ -347,7 +347,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '500', allocation_ratio: 0.5, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
+        product_name: 'P1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
@@ -356,7 +356,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         service_price: '80', session_used: 1,
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
+        product_name: 'P2', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: 'C2', client_phone: '139',
       },
@@ -379,7 +379,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
+        product_name: 'P1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
@@ -388,7 +388,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         service_price: '100', session_used: 1,
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
+        product_name: 'P2', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: 'C2', client_phone: '139',
       },
@@ -467,14 +467,14 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '100', allocation_ratio: 0.1, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
+        product_name: 'P1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
       },
       {
         alloc_amount: '200', allocation_ratio: 0.2, department_name: '美容部',
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
+        product_name: 'P2', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-002', customer_name: 'C2', client_phone: '139',
         paid_at: '2024-06-05', store_id: 'store-001',
@@ -519,7 +519,7 @@ describe('staff.performanceDetail', () => {
         commission_amount: '150.00', fixed_fee: '150.00', consume_amount: '0.00',
         role_type: '美容师', commission_rate: '0.0000',
         session_used: 1, service_unit_price: '500.00',
-        product_name: 'P-null', sku_spec_name: 'S-null',
+        product_name: 'P-null',
         sales_category: null, // || '未分类' 分支
         service_order_id: 'SVC-null', service_date: '2024-06-25',
         store_id: 'store-001', customer_name: '客户X', client_phone: '138',
@@ -561,7 +561,6 @@ describe('staff.performanceDetail', () => {
         session_used: 1,
         service_unit_price: '500.00',
         product_name: '面部护理',
-        sku_spec_name: '单次',
         sales_category: '自销自耗',
         service_order_id: `HLD-WX-2603${String(i).padStart(4, '0')}`,
         service_date: '2026-03-10',
@@ -587,14 +586,14 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
+        product_name: '面部护理', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
       {
         commission_amount: '200.00', fixed_fee: '100.00', consume_amount: '100.00',
         role_type: '推广师', commission_rate: '0.1000', session_used: 1, service_unit_price: '1000.00',
-        product_name: '家居产品', sku_spec_name: '单瓶', sales_category: '他销他耗',
+        product_name: '家居产品', sales_category: '他销他耗',
         service_order_id: 'HLD-WX-2603-0002', service_date: '2026-03-11', store_id: 'store-001',
         customer_name: '李四', client_phone: null,
       },
@@ -616,7 +615,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '800.00', allocation_ratio: '0.80', department_name: '美容部',
-        product_name: '销售商品', sku_spec_name: '10次卡', sales_category: '自销自耗',
+        product_name: '销售商品', sales_category: '自销自耗',
         unit_real_price: '1000.00', received: '1000.00',
         sale_order_id: 'FY-XSD-WX-260310-0001', customer_name: '张三', client_phone: null,
         paid_at: new Date('2026-03-10'), store_id: 'store-001',
@@ -627,7 +626,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '护理项目', sku_spec_name: '单次', sales_category: '自销自耗',
+        product_name: '护理项目', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
@@ -648,7 +647,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1200', session_used: 2, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
+        product_name: '面部护理', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
@@ -675,7 +674,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
+        product_name: '面部护理', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },

@@ -99,7 +99,6 @@ export const createOrderSchema = z.object({
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
     productName: z.string(),
-    skuSpecName: z.string(),
     productType: z.enum(['疗程卡', '家居产品']),
     sessionCount: z.number().int().min(1).nullable(),
     unitPrice: z.string(),

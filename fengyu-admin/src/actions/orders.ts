@@ -1286,7 +1286,6 @@ export const createOrder = withPermission(
   items: Array<{
     skuId: string
     productName: string
-    skuSpecName: string
     productType: '疗程卡' | '家居产品'
     sessionCount: number | null
     unitPrice: string
@@ -1805,7 +1804,6 @@ export const createOrder = withPermission(
           itemDirection: '购买',
           skuId: item.skuId,
           productName: item.productName,
-          skuSpecName: item.skuSpecName,
           productType: item.productType,
           sessionCount,
           remainingSessions: sessionCount,
@@ -1936,7 +1934,6 @@ export const createConversionOrder = withPermission(
   convertInItems: Array<{
     skuId: string
     productName: string
-    skuSpecName: string
     productType: '疗程卡' | '家居产品'
     sessionCount: number | null
     unitPrice: string
@@ -2006,7 +2003,6 @@ export const createConversionOrder = withPermission(
           si.item_direction,
           si.sku_id,
           si.product_name,
-          si.sku_spec_name,
           si.product_type,
           si.session_count,
           si.remaining_sessions,
@@ -2041,7 +2037,6 @@ export const createConversionOrder = withPermission(
         refSaleItemId: string
         skuId: string | null
         productName: string | null
-        skuSpecName: string | null
         productType: '疗程卡' | '家居产品' | null
         sessionCount: number | null
         unitPrice: string
@@ -2091,7 +2086,6 @@ export const createConversionOrder = withPermission(
           refSaleItemId: row.sale_item_id as string,
           skuId: (row.sku_id as string) ?? null,
           productName: (row.product_name as string) ?? null,
-          skuSpecName: (row.sku_spec_name as string) ?? null,
           productType: productType as OutItem['productType'],
           sessionCount: row.session_count !== null ? Number(row.session_count) : null,
           unitPrice: String(row.unit_price),
@@ -2220,7 +2214,6 @@ export const createConversionOrder = withPermission(
           refSaleItemId: out.refSaleItemId,
           skuId: out.skuId,
           productName: out.productName,
-          skuSpecName: out.skuSpecName,
           productType: out.productType,
           sessionCount: out.sessionCount,
           unitPrice: out.unitPrice,
@@ -2271,7 +2264,6 @@ export const createConversionOrder = withPermission(
           itemDirection: '转入',
           skuId: inRow.item.skuId,
           productName: inRow.item.productName,
-          skuSpecName: inRow.item.skuSpecName,
           productType: inRow.item.productType,
           sessionCount,
           remainingSessions: sessionCount,
@@ -2594,7 +2586,6 @@ export const createDepositOrder = withPermission(
             itemDirection: '购买',
             skuId: sku.skuId,
             productName: sku.specName,
-            skuSpecName: sku.specName,
             productType: sku.productType,
             sessionCount: sc,
             remainingSessions: sc,
@@ -2707,7 +2698,7 @@ export const getRepayable = withPermission(
     session,
     saleOrderId: string,
   ): Promise<{
-    items: Array<{ saleItemId: string; productName: string; skuSpecName: string; saleAmount: string; received: string; remaining: string }>
+    items: Array<{ saleItemId: string; productName: string; saleAmount: string; received: string; remaining: string }>
     remainingPayable: number
     cardBalance: number | null
     clientUserId: string | null
@@ -2739,7 +2730,6 @@ export const getRepayable = withPermission(
       return {
         saleItemId: r.saleItemId,
         productName: r.productName || '-',
-        skuSpecName: r.skuSpecName || '',
         saleAmount: r.saleAmount,
         received: r.received,
         remaining: Math.max(0, remaining).toFixed(2),

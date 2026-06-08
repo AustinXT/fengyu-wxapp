@@ -357,6 +357,8 @@ export interface SaleOrder {
   openedBy: string | null
   preferredEmployeeId: string | null
   paidAt: string | null
+  /** 线下确认收款时间（offline_confirmed_at；订单详情页填充，列表查询不取） */
+  offlineConfirmedAt?: string | null
   allocationStatus: AllocationStatus | null
   couponId: string | null
   couponDiscount: string | null
@@ -366,6 +368,10 @@ export interface SaleOrder {
   // joined
   storeName?: string
   openedByName?: string
+  /** 指定美容师姓名（preferred_employee_id → staff_wechat_users.name） */
+  preferredEmployeeName?: string
+  /** 线下确认人姓名（offline_confirmed_by → staff_wechat_users.name） */
+  offlineConfirmedByName?: string
   items?: SaleItem[]
   /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
   allocatable?: boolean
@@ -388,6 +394,8 @@ export interface SaleItem {
   /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
   pendingReceived: string
   expireDate: string | null
+  /** 已提货数量（家居产品；picked_up_quantity；订单详情页填充，其它查询不取） */
+  pickedUpQuantity?: number | null
   remark: string | null
   salesCategory: SalesCategory | null
   createdAt: string

@@ -125,7 +125,7 @@ export function ConversionPanel({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium truncate">
-                          {c.productName ?? c.skuSpecName ?? c.saleItemId}
+                          {c.productName ?? c.saleItemId}
                         </span>
                         <span className="text-[var(--primary)] font-semibold shrink-0">
                           ¥{c.deductibleAmount}

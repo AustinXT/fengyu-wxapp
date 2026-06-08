@@ -246,7 +246,7 @@ Page({
           : (firstItem.product_name || ''),
         skuDisplayName: items.length > 1
           ? items.map((i: any) => i.product_name).join('、')
-          : (firstItem.sku_spec_name || ''),
+          : (firstItem.product_name || ''),
         unitPrice: preDiscountTotal,
         storeName: order.store_name || '',
         quantity: 1,
@@ -259,7 +259,7 @@ Page({
         displayItems: items.map((i: any) => ({
           skuId: i.sale_item_id || '',
           spuName: i.product_name || '',
-          skuDisplayName: i.sku_spec_name || '',
+          skuDisplayName: i.product_name || '',
           coverImage: i.cover_image || '',
           price: Number(i.unit_price || 0),
           quantity: Number(i.quantity || 1),

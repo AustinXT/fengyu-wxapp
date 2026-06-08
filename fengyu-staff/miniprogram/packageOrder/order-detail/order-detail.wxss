@@ -50,6 +50,16 @@
 .item-sessions { font-size: 22rpx; color: var(--color-text-hint); }
 .item-flow-no { font-size: 20rpx; color: #BBB; font-family: monospace; display: block; margin-top: 4rpx; }
 
+/* 明细扩展信息（单价/原价划线、销售分类、过期日期、已提货数量） */
+.item-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6rpx 16rpx;
+  margin-top: 8rpx;
+}
+.item-extra-tag { font-size: 22rpx; color: var(--color-text-hint); }
+.item-origin-price { text-decoration: line-through; color: #BBB; }
+
 /* 疗程卡三段进度条（剩余可用 / 已付未用 / 未付） */
 .session-bar {
   display: flex;

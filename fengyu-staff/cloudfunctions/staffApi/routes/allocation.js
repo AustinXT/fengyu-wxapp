@@ -539,7 +539,7 @@ async function suggest(ctx) {
   // 5. 加载订单项
   const items = await pg.query(`
     SELECT si.sale_item_id, si.received, si.sales_category,
-           si.product_name, si.sku_spec_name, si.product_type
+           si.product_name, si.product_type
     FROM sale_items si
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id

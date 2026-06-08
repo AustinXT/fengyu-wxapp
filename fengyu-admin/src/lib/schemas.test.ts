@@ -122,7 +122,6 @@ describe('createOrderSchema', () => {
   const validItem = {
     skuId: 'sku-001',
     productName: '蜜语生玑',
-    skuSpecName: '10次卡',
     productType: '疗程卡' as const,
     sessionCount: 10,
     unitPrice: '1999.00',
@@ -337,7 +336,6 @@ describe('paymentMethodSchema', () => {
       items: [{
         skuId: 'sku-001',
         productName: '蜜语生玑',
-        skuSpecName: '10次卡',
         productType: '疗程卡' as const,
         sessionCount: 10,
         unitPrice: '1999.00',

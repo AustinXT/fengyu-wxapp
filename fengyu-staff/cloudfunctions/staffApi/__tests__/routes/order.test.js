@@ -347,11 +347,11 @@ describe('order.create', () => {
     const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
     expect(insertItemCalls).toHaveLength(4)  // 拆为 4 行
     for (const call of insertItemCalls) {
-      // params: $1=saleItemId $2=saleOrderId $3=storeId $4=skuId $5=productName $6=skuSpecName
-      //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
-      expect(call[1][7]).toBe(3)   // session_count = sku.session_count（不再 × quantity）
-      expect(call[1][8]).toBe(3)   // remaining_sessions = session_count
-      expect(call[1][10]).toBe(1)  // quantity = 1（每张卡独立）
+      // params: $1=saleItemId $2=saleOrderId $3=storeId $4=skuId $5=productName
+      //         $6=productType $7=session_count $8=remaining_sessions $9=unit_price $10=quantity ...
+      expect(call[1][6]).toBe(3)   // session_count = sku.session_count（不再 × quantity）
+      expect(call[1][7]).toBe(3)   // remaining_sessions = session_count
+      expect(call[1][9]).toBe(1)  // quantity = 1（每张卡独立）
     }
   })
 
@@ -390,11 +390,11 @@ describe('order.create', () => {
     expect(insertItemCalls).toHaveLength(10)  // 单次卡 ×10 → 10 行
     let totalReceived = 0
     for (const call of insertItemCalls) {
-      expect(call[1][7]).toBe(1)   // session_count = 1
-      expect(call[1][8]).toBe(1)   // remaining_sessions = 1
-      expect(call[1][10]).toBe(1)  // quantity = 1
-      // params[13] = received（unit_price=$10 quantity=$11 unit_real_price=$12 sale_amount=$13 received=$14）
-      totalReceived += Number(call[1][13])
+      expect(call[1][6]).toBe(1)   // session_count = 1
+      expect(call[1][7]).toBe(1)   // remaining_sessions = 1
+      expect(call[1][9]).toBe(1)  // quantity = 1
+      // params[12] = received（unit_price=$9 quantity=$10 unit_real_price=$11 sale_amount=$12 received=$13）
+      totalReceived += Number(call[1][12])
     }
     // 守恒：sum(received) ≈ 200 × 10 = 2000
     expect(Math.round(totalReceived * 100)).toBe(200_000)
@@ -434,10 +434,10 @@ describe('order.create', () => {
 
     const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
     expect(insertItemCalls).toHaveLength(1)  // 家居产品合行
-    expect(insertItemCalls[0][1][10]).toBe(10)  // quantity = 10（合行）
+    expect(insertItemCalls[0][1][9]).toBe(10)  // quantity = 10（合行）
     // 家居产品 session_count/remaining_sessions 强制 null（order.js L654 sc/rs 三元）
+    expect(insertItemCalls[0][1][6]).toBeNull()
     expect(insertItemCalls[0][1][7]).toBeNull()
-    expect(insertItemCalls[0][1][8]).toBeNull()
   })
 
   // ===== 优惠券路径覆盖 =====
@@ -545,10 +545,10 @@ describe('order.create', () => {
     let totalReceived = 0
     let totalSaleAmount = 0
     for (const call of insertItemCalls) {
-      expect(call[1][10]).toBe(1)  // quantity = 1
-      expect(call[1][7]).toBe(1)   // session_count = 1
-      totalReceived += Number(call[1][13])  // received
-      totalSaleAmount += Number(call[1][12])  // sale_amount
+      expect(call[1][9]).toBe(1)  // quantity = 1
+      expect(call[1][6]).toBe(1)   // session_count = 1
+      totalReceived += Number(call[1][12])  // received
+      totalSaleAmount += Number(call[1][11])  // sale_amount
     }
 
     // 守恒：sum(sale_amount) = 1000 - 50 = 950（券摊到 saleAmount，行级权威）
@@ -2309,7 +2309,7 @@ describe('order.qrcode', () => {
         total_amount: '500', prepaid_card_amount: '0',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理', sku_spec_name: '基础款' },
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
       ])
 
     await orderRoutes.qrcode(ctx)
@@ -2336,7 +2336,7 @@ describe('order.qrcode', () => {
         total_amount: '500', prepaid_card_amount: '200',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理', sku_spec_name: '基础款' },
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
       ])
 
     await orderRoutes.qrcode(ctx)
@@ -2356,7 +2356,7 @@ describe('order.qrcode', () => {
         paid_at: '2024-06-15', store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-1', received: '1000', product_name: 'P1', sku_spec_name: 'S1' },
+        { sale_item_id: 'item-1', received: '1000', product_name: 'P1' },
       ])
 
     await orderRoutes.qrcode(ctx)
@@ -2491,7 +2491,7 @@ describe.skip('order.createRefund', () => {
       // SELECT sale_items 原单明细（疗程卡 1 次）
       .mockResolvedValueOnce([{
         sale_item_id: 'item-001', sku_id: 'sku-001', product_name: '面部护理',
-        sku_spec_name: '基础款', product_type: '疗程卡', session_count: 10,
+        product_type: '疗程卡', session_count: 10,
         remaining_sessions: 10,
         unit_price: '1000', unit_real_price: '1000', quantity: 1,
         sales_category: '自销自耗', service_fee: '0',
@@ -2556,7 +2556,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-pick', product_type: '家居产品',
         quantity: 5, picked_up_quantity: 2,
         unit_real_price: '200', session_count: 0,
-        product_name: 'X', sku_spec_name: 'S', sku_id: 'sku-pick',
+        product_name: 'X', sku_id: 'sku-pick',
         unit_price: '200', sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2592,7 +2592,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-card', product_type: '疗程卡',
         remaining_sessions: 1, session_count: 1,
         unit_real_price: '200', quantity: 1, product_name: '储值卡商品',
-        sku_spec_name: 'S', sku_id: 'sku-card', unit_price: '200',
+        sku_id: 'sku-card', unit_price: '200',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2635,7 +2635,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-wx', product_type: '疗程卡',
         remaining_sessions: 1, session_count: 1,
         unit_real_price: '300', quantity: 1, product_name: 'X',
-        sku_spec_name: 'S', sku_id: 'sku-wx', unit_price: '300',
+        sku_id: 'sku-wx', unit_price: '300',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2707,7 +2707,7 @@ describe.skip('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_item_id: 'item-001', product_type: '疗程卡', remaining_sessions: 1,
         unit_real_price: '100', quantity: 1, sku_id: 'sku-001',
-        product_name: 'X', sku_spec_name: 'S', unit_price: '100', sales_category: '自销自耗',
+        product_name: 'X', unit_price: '100', sales_category: '自销自耗',
         service_fee: '0', session_count: 1,
       }])
 
@@ -2732,7 +2732,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-001', product_type: '疗程卡',
         session_count: 3, remaining_sessions: 3,
         unit_price: '1000', unit_real_price: '500', quantity: 3,
-        sku_id: 'sku-001', product_name: 'X', sku_spec_name: 'S',
+        sku_id: 'sku-001', product_name: 'X',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2762,7 +2762,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-002', product_type: '家居产品',
         session_count: 0, picked_up_quantity: 0,
         unit_price: '800', unit_real_price: '800', quantity: 2,
-        sku_id: 'sku-002', product_name: 'Y', sku_spec_name: 'S',
+        sku_id: 'sku-002', product_name: 'Y',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2792,7 +2792,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-used', product_type: '疗程卡',
         remaining_sessions: 0, session_count: 5,
         unit_real_price: '100', quantity: 1, sku_id: 'sku-used',
-        product_name: 'X', sku_spec_name: 'S', unit_price: '100',
+        product_name: 'X', unit_price: '100',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2817,7 +2817,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-over', product_type: '家居产品',
         quantity: 5, picked_up_quantity: 0,
         unit_real_price: '100', session_count: 0,
-        sku_id: 'sku-over', product_name: 'X', sku_spec_name: 'S',
+        sku_id: 'sku-over', product_name: 'X',
         unit_price: '100', sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -2843,7 +2843,7 @@ describe.skip('order.createRefund', () => {
         sale_item_id: 'item-fee', product_type: '家居产品',
         quantity: 1, picked_up_quantity: 0,
         unit_real_price: '100', session_count: 0,
-        sku_id: 'sku-fee', product_name: 'X', sku_spec_name: 'S',
+        sku_id: 'sku-fee', product_name: 'X',
         unit_price: '100', sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -3771,7 +3771,7 @@ describe('order.createConversion', () => {
           .mockResolvedValueOnce({
             rows: [{
               sale_item_id: 'item-001', store_id: 'store-001', item_direction: '购买',
-              sku_id: 'sku-old', product_name: '旧项目', sku_spec_name: '标准',
+              sku_id: 'sku-old', product_name: '旧项目',
               product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
               quantity: 1, picked_up_quantity: 0,
               unit_price: '1000', unit_real_price: '1000',
@@ -3895,7 +3895,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-eq-001', store_id: 'store-001', item_direction: '购买',
-          sku_id: 'sku-eq-old', product_name: '旧项目', sku_spec_name: '标准',
+          sku_id: 'sku-eq-old', product_name: '旧项目',
           product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '500', unit_real_price: '500',
@@ -3947,7 +3947,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-neg-001', store_id: 'store-001', item_direction: '购买',
-          sku_id: 'sku-neg-old', product_name: '高价旧项目', sku_spec_name: '2次卡',
+          sku_id: 'sku-neg-old', product_name: '高价旧项目',
           product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '1000', unit_real_price: '1000',
@@ -4022,7 +4022,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-other', store_id: 'store-999', item_direction: '购买',
-          sku_id: 'sku-old', product_name: 'X', sku_spec_name: 'S',
+          sku_id: 'sku-old', product_name: 'X',
           product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
@@ -4056,7 +4056,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-exhausted', store_id: 'store-001', item_direction: '购买',
-          sku_id: 'sku-old', product_name: 'X', sku_spec_name: 'S',
+          sku_id: 'sku-old', product_name: 'X',
           product_type: '疗程卡', session_count: 5, remaining_sessions: 0,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
@@ -4087,7 +4087,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-race', store_id: 'store-001', item_direction: '购买',
-          sku_id: 'sku-old', product_name: 'X', sku_spec_name: 'S',
+          sku_id: 'sku-old', product_name: 'X',
           product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
@@ -4135,7 +4135,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-exp-001', store_id: 'store-001', item_direction: '购买',
-          sku_id: 'sku-exp-old', product_name: '体验项目', sku_spec_name: '体验装',
+          sku_id: 'sku-exp-old', product_name: '体验项目',
           product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '200', unit_real_price: '200',
@@ -4206,13 +4206,13 @@ describe('order.customerHeldCards', () => {
     pg.query.mockResolvedValueOnce([
       {
         sale_item_id: 'it-liao-1', source_sale_order_id: 'FY-A',
-        product_name: '疗程A', sku_spec_name: '10次卡', product_type: '疗程卡',
+        product_name: '疗程A', product_type: '疗程卡',
         remaining_sessions: 4, remaining_quantity: 1,
         unit_real_price: '300.00', deductible_amount: '1200.00',
       },
       {
         sale_item_id: 'it-exp-1', source_sale_order_id: 'FY-B',
-        product_name: '体验B', sku_spec_name: '体验装', product_type: '疗程卡',
+        product_name: '体验B', product_type: '疗程卡',
         remaining_sessions: 3, remaining_quantity: 1,
         unit_real_price: '100.00', deductible_amount: '300.00',
       },
@@ -4296,7 +4296,7 @@ describe('order.customerHeldCards', () => {
     pg.query.mockResolvedValueOnce([
       {
         sale_item_id: 'it-1', source_sale_order_id: 'FY-X',
-        product_name: 'P', sku_spec_name: 'S', product_type: '疗程卡',
+        product_name: 'P', product_type: '疗程卡',
         remaining_sessions: 7, remaining_quantity: 1,
         unit_real_price: '150.5', deductible_amount: 1053.5,
       },
@@ -4851,7 +4851,7 @@ describe.skip('order.createRefund — 按比例拆分退款（refundByCard/refun
         session_count: sessionCount, remaining_sessions: remainingSessions,
         quantity, picked_up_quantity: 0,
         unit_price: unitRealPrice, unit_real_price: unitRealPrice,
-        sku_id: `sku-${saleItemId}`, product_name: 'X', sku_spec_name: 'S',
+        sku_id: `sku-${saleItemId}`, product_name: 'X',
         sales_category: '自销自耗', service_fee: '0',
       }])
 
@@ -5009,7 +5009,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return {
               rows: [{
                 sale_item_id: 'item-neg-x', store_id: 'store-001', item_direction: '购买',
-                sku_id: 'sku-old', product_name: '旧', sku_spec_name: 'S',
+                sku_id: 'sku-old', product_name: '旧',
                 product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
                 quantity: 1, picked_up_quantity: 0,
                 unit_price: '1000', unit_real_price: '1000',
@@ -5071,7 +5071,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return {
               rows: [{
                 sale_item_id: 'item-pos-x', store_id: 'store-001', item_direction: '购买',
-                sku_id: 'sku-old', product_name: '旧', sku_spec_name: 'S',
+                sku_id: 'sku-old', product_name: '旧',
                 product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
                 quantity: 1, picked_up_quantity: 0,
                 unit_price: '500', unit_real_price: '500',

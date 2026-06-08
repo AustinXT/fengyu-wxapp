@@ -481,7 +481,6 @@ export const getCustomerRefundHistory = withPermission(
           saleItemId: saleItems.saleItemId,
           itemDirection: saleItems.itemDirection,
           productName: saleItems.productName,
-          skuSpecName: saleItems.skuSpecName,
           quantity: saleItems.quantity,
           received: saleItems.received,
         })
@@ -495,7 +494,7 @@ export const getCustomerRefundHistory = withPermission(
       saleItemId: i.saleItemId,
       direction: i.itemDirection,
       productName: i.productName,
-      specName: i.skuSpecName,
+      specName: i.productName,
       quantity: i.quantity,
       received: i.received,
     })

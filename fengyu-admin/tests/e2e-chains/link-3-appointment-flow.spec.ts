@@ -132,12 +132,12 @@ async function ensurePaidSaleItemFixture() {
     `INSERT INTO sale_items ` +
     `(sale_item_id, sale_order_id, item_direction, sku_id, session_count, remaining_sessions, paid_sessions, ` +
     ` unit_price, quantity, unit_real_price, sale_amount, received, ` +
-    ` product_name, sku_spec_name, product_type, store_id, created_at, updated_at) ` +
+    ` product_name, product_type, store_id, created_at, updated_at) ` +
     `VALUES ` +
     `('${PRE_SALE_ITEM_ID}', '${PRE_SALE_ORDER_ID}', '购买', '${PRE_SALE_SKU_ID}', ` +
     ` 10, 10, 10, ` +
     ` 1999.00, 1, 1999.00, 1999.00, 1999.00, ` +
-    ` '${PRE_SALE_PRODUCT_NAME}', '${PRE_SALE_SKU_NAME}', '疗程卡', '${FIX_STORE_ID}', NOW(), NOW()) ` +
+    ` '${PRE_SALE_PRODUCT_NAME}', '疗程卡', '${FIX_STORE_ID}', NOW(), NOW()) ` +
     `ON CONFLICT (sale_item_id) DO NOTHING`,
   )
   injectedSaleItem = true

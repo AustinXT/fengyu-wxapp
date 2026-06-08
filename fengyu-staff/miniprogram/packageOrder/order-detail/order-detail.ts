@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
-import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime } from '../../utils/formatters';
+import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
 
 const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
@@ -33,18 +33,30 @@ interface RawOrder {
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
+  // 详情扩展字段（云函数 order SELECT * + coupon_name/offline_confirmed_by_name 衍生）
+  document_type?: string;
+  market_name?: string;
+  coupon_discount?: string;
+  coupon_name?: string;
+  allocation_status?: string;
+  legacy_source?: string;
+  offline_confirmed_by_name?: string;
   allocatable?: boolean;
 }
 
 interface RawOrderItem {
   sale_item_id: string;
   product_name?: string;
-  sku_spec_name?: string;
   sale_amount?: string;
   received?: string;
   session_count?: number;
   remaining_sessions?: number;
   paid_sessions?: number | null;
+  unit_price?: string;
+  unit_real_price?: string;
+  expire_date?: string;
+  sales_category?: string;
+  picked_up_quantity?: number;
 }
 
 interface RawAllocation {
@@ -105,6 +117,14 @@ interface DisplayOrderItem {
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
+  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已提货数量（家居，0=不展示） */
+  salesCategory: string;
+  expireDate: string;
+  pickedUpQuantity: number;
+  /** 单次现价 / 原价 + 是否有折扣（原价划线展示） */
+  unitRealPrice: string;
+  unitPrice: string;
+  hasDiscount: boolean;
 }
 
 interface DisplayAllocation {
@@ -139,6 +159,13 @@ interface DisplayOrder {
   payableAmount: string;
   remainingPayable: string;
   hasDebt: boolean;
+  /** 详情扩展：单据类型 / 所属市场 / 券名 / 券抵扣 / 分配状态 / 历史订单标记 */
+  documentType: string;
+  marketName: string;
+  couponName: string;
+  couponDiscount: string;
+  allocationStatus: string;
+  isLegacy: boolean;
   items: DisplayOrderItem[];
   allocation: DisplayAllocation[];
   payments: DisplayPayment[];
@@ -198,8 +225,8 @@ Page({
         const repayable = Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
-          itemName: it.product_name || it.sku_spec_name || '—',
-          spec: it.sku_spec_name || '',
+          itemName: it.product_name || '—',
+          spec: it.product_name || '',
           totalPrice: it.received || '0',
           saleAmount: saleAmt.toFixed(2),
           received: recv.toFixed(2),
@@ -212,6 +239,13 @@ Page({
           remainPct: pct(remain),
           paidUnusedPct: pct(paidUnused),
           unpaidPct: pct(unpaid),
+          salesCategory: it.sales_category || '',
+          // expire_date 是 pg date 列，必须 formatDate 避免 UTC 串偏移日期
+          expireDate: it.expire_date ? formatDate(it.expire_date) : '',
+          pickedUpQuantity: Number(it.picked_up_quantity || 0),
+          unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
+          unitPrice: Number(it.unit_price || 0).toFixed(2),
+          hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
         };
       });
       const allocation: DisplayAllocation[] = (res.allocations || []).map((a) => ({
@@ -272,7 +306,7 @@ Page({
           customerPhone: o.client_phone || '',
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           preferredStaffName: o.preferred_staff_name || '',
-          confirmedBy: o.offline_confirmed_by || '',
+          confirmedBy: o.offline_confirmed_by_name || o.offline_confirmed_by || '',
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
@@ -282,6 +316,12 @@ Page({
           payableAmount: payableAmount.toFixed(2),
           remainingPayable: remainingPayable.toFixed(2),
           hasDebt,
+          documentType: o.document_type || '',
+          marketName: o.market_name || '',
+          couponName: o.coupon_name || '',
+          couponDiscount: Number(o.coupon_discount || 0) > 0 ? Number(o.coupon_discount).toFixed(2) : '',
+          allocationStatus: o.allocation_status || '',
+          isLegacy: o.legacy_source === 'workfine',
           items,
           allocation,
           payments,

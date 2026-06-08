@@ -32,7 +32,6 @@ const STEPS = [
       skuId: L3_SKU_NORMAL_ID,
       productId: L3_PRODUCT_ID,
       productName: 'TEST_E2E_L3_测试商品',
-      skuSpecName: 'TEST_E2E_L3_普通规格',
       unitPrice: 100,
       price: 100,
       quantity: 1,

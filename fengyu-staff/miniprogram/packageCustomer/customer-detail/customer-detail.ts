@@ -130,7 +130,7 @@ interface RefundRecord {
   handlingFee: number | null;
   refundReason: string | null;
   createdAt: string;
-  items: Array<{ productName: string; skuSpecName: string; quantity: number; received: string }>;
+  items: Array<{ productName: string; quantity: number; received: string }>;
 }
 
 // 预约记录

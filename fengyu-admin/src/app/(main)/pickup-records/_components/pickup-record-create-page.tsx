@@ -262,9 +262,6 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                           </td>
                           <td className="px-4 py-3">
                             <div className="font-medium">{item.productName || '—'}</div>
-                            {item.skuSpecName && (
-                              <div className="text-xs text-[#999999]">{item.skuSpecName}</div>
-                            )}
                           </td>
                           <td className="px-4 py-3 font-mono text-xs text-[#666666]">
                             {item.saleItemId}

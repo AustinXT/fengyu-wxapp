@@ -122,13 +122,13 @@ async function createCardOrder({
     await client.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
-         sku_id, product_name, sku_spec_name, product_type,
+         sku_id, product_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions, paid_sessions,
          sales_category, service_fee, is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               NULL, $4, '默认', '疗程卡'::product_type,
+               NULL, $4, '疗程卡'::product_type,
                $5, 1, $5, 1000, 1000,
                $6, $7, $8,
                $9::sales_category, $10, false)`,

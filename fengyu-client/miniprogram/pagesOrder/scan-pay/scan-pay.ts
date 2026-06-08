@@ -31,7 +31,6 @@ interface ScanOrder {
 interface ScanOrderItem {
   saleItemId: string;
   productName: string;
-  skuSpecName: string;
   unitPrice: number;
   quantity: number;
   received: number;

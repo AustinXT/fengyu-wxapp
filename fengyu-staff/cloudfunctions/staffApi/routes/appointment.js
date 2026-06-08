@@ -85,7 +85,6 @@ async function list(ctx) {
       a.created_at,
       si.sale_order_id,
       COALESCE(si.product_name, '到店预约') AS service_name,
-      si.sku_spec_name,
       wu.phone AS customer_phone
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
@@ -105,7 +104,7 @@ async function list(ctx) {
     appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
-    serviceItemName: a.service_name || a.sku_spec_name || '',
+    serviceItemName: a.service_name || '',
     remark: a.notes || '',
     checkinAt: a.checkin_at,
   }))
@@ -135,7 +134,6 @@ async function detail(ctx) {
       a.sale_item_id,
       a.checkin_at,
       COALESCE(si.product_name, '到店预约') AS service_name,
-      si.sku_spec_name,
       wu.phone AS customer_phone,
       so.service_order_id AS service_order_id
     FROM appointments a
@@ -165,7 +163,7 @@ async function detail(ctx) {
     appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
-    serviceItemName: a.service_name || a.sku_spec_name || '',
+    serviceItemName: a.service_name || '',
     remark: a.notes || '',
     serviceOrderId: a.service_order_id || null,
     checkinAt: a.checkin_at,

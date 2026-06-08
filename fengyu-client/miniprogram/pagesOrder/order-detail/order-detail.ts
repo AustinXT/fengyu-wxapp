@@ -6,7 +6,6 @@ import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../uti
 interface OrderDetailItem {
   sale_item_id: string;
   product_name: string;
-  sku_spec_name: string;
   product_type: string;
   session_count: number;
   remaining_sessions: number | null;

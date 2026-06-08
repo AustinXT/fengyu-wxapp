@@ -29,7 +29,7 @@ describe('order.scanDetail', () => {
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,
-        product_name: '美白护理', sku_spec_name: '10次卡',
+        product_name: '美白护理',
         cover_image: 'https://img.example.com/a.jpg',
       }])
 
@@ -141,11 +141,11 @@ describe('order.create', () => {
     const insertItemCall = clientQuery.mock.calls.find(c => /INSERT INTO sale_items/.test(c[0]))
     expect(insertItemCall).toBeDefined()
     // INSERT 列顺序: ... product_type, session_count, remaining_sessions, unit_price, quantity, ...
-    // params: $1=saleItemId $2=orderNo $3=storeId $4=skuId $5=productName $6=skuSpecName
-    //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
-    expect(insertItemCall[1][7]).toBe(10)  // session_count = 2 × 5
-    expect(insertItemCall[1][8]).toBe(10)  // remaining_sessions = 2 × 5
-    expect(insertItemCall[1][10]).toBe(5)  // quantity 透传
+    // params: $1=saleItemId $2=orderNo $3=storeId $4=skuId $5=productName
+    //         $6=productType $7=session_count $8=remaining_sessions $9=unit_price $10=quantity ...
+    expect(insertItemCall[1][6]).toBe(10)  // session_count = 2 × 5
+    expect(insertItemCall[1][7]).toBe(10)  // remaining_sessions = 2 × 5
+    expect(insertItemCall[1][9]).toBe(5)   // quantity 透传
   })
 
   test('无手机号 → PHONE_REQUIRED', async () => {
@@ -431,14 +431,14 @@ describe('order.create', () => {
     await routes.create(ctx)
 
     expect(insertItemCall).toBeDefined()
-    // params: [0]=saleItemId [1]=orderNo [2]=storeId [3]=skuId [4]=productName [5]=skuSpecName
-    //         [6]=productType [7]=session_count [8]=remaining_sessions [9]=unitPrice
-    //         [10]=quantity [11]=unitRealPrice [12]=saleAmount [13]=received [14]=salesCategory [15]=isExperience
-    expect(insertItemCall[1][7]).toBe(5)                          // session_count
-    expect(Number(insertItemCall[1][9])).toBe(200)                // unit_price (per-session 标价 1000/5)
-    expect(Number(insertItemCall[1][11])).toBeCloseTo(140.4, 2)   // unit_real_price (702/5)
-    expect(Number(insertItemCall[1][12])).toBe(702)               // sale_amount (1000-298)
-    expect(Number(insertItemCall[1][13])).toBe(702)               // received = sale_amount
+    // params: [0]=saleItemId [1]=orderNo [2]=storeId [3]=skuId [4]=productName
+    //         [5]=productType [6]=session_count [7]=remaining_sessions [8]=unitPrice
+    //         [9]=quantity [10]=unitRealPrice [11]=saleAmount [12]=received [13]=salesCategory [14]=isExperience
+    expect(insertItemCall[1][6]).toBe(5)                          // session_count
+    expect(Number(insertItemCall[1][8])).toBe(200)                // unit_price (per-session 标价 1000/5)
+    expect(Number(insertItemCall[1][10])).toBeCloseTo(140.4, 2)   // unit_real_price (702/5)
+    expect(Number(insertItemCall[1][11])).toBe(702)               // sale_amount (1000-298)
+    expect(Number(insertItemCall[1][12])).toBe(702)               // received = sale_amount
     expect(ctx.result.totalAmount).toBe(702)
   })
 
@@ -1188,7 +1188,7 @@ describe('order.appointableItems', () => {
       sale_order_id: 'FY-001', order_status: '已支付',
       store_id: 's1', store_name: '测试店', market_name: '华东',
       preferred_employee_id: null, sale_item_id: 'SI-001',
-      sku_id: 'sku-1', product_name: '护理A', sku_spec_name: '10次卡',
+      sku_id: 'sku-1', product_name: '护理A',
       product_type: '疗程卡', session_count: 10, remaining_sessions: 8,
       unit_price: 100, unit_real_price: 80, sale_amount: 800, expire_date: null,
     }])

@@ -362,7 +362,7 @@ export const getServiceItems = withPermission(
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
-      sli.sku_spec_name AS sku_name,
+      sli.product_name AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
       sli.session_count,
@@ -425,7 +425,6 @@ export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
   productName: string | null
-  skuSpecName: string | null
   productType: string | null
   sessionCount: number | null
   remainingSessions: number | null
@@ -442,7 +441,6 @@ export const getAvailableSaleItems = withPermission(
       si.sale_item_id,
       si.sale_order_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -481,7 +479,6 @@ export const getAvailableSaleItems = withPermission(
     saleItemId: r.sale_item_id,
     saleOrderId: r.sale_order_id,
     productName: r.product_name,
-    skuSpecName: r.sku_spec_name,
     productType: r.product_type,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,

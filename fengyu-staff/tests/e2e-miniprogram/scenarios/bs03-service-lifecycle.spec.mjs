@@ -75,13 +75,13 @@ async function createTreatmentCardAndServiceOrder() {
     await c.query(
       `INSERT INTO sale_items
          (sale_item_id, sale_order_id, store_id, item_direction,
-          product_name, sku_spec_name, product_type,
+          product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           service_fee, is_shengmei, is_experience)
        VALUES
          ($1, $2, $3, '购买',
-          'L3 测试疗程卡', '5次卡', '疗程卡',
+          'L3 测试疗程卡', '疗程卡',
           5, 5,
           1500, 1, 1500, 1500, 1500,
           0, false, false)`,

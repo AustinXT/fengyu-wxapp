@@ -587,7 +587,6 @@ async function paidOrders(ctx) {
       si.paid_sessions,
       si.sku_id,
       si.product_type,
-      si.sku_spec_name,
       si.product_name
     FROM sale_items si
     WHERE si.sale_order_id = ANY($1)
@@ -618,7 +617,7 @@ async function paidOrders(ctx) {
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
       itemName: item.product_name || "",
-      spec: item.sku_spec_name || "",
+      spec: item.product_name || "",
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
@@ -918,7 +917,7 @@ async function refundHistory(ctx) {
   if (convOrderIds.length > 0) {
     convItems = await pg.query(
       `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
-              si.product_name, si.sku_spec_name, si.quantity, si.received
+              si.product_name, si.quantity, si.received
        FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [convOrderIds]
     )
@@ -930,7 +929,7 @@ async function refundHistory(ctx) {
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
-      specName: i.sku_spec_name,
+      specName: i.product_name,
       quantity: i.quantity,
       received: Number(i.received),
     })
@@ -1124,7 +1123,7 @@ async function appointments(ctx) {
     SELECT
       a.appointment_id, a.status, a.client_user_id, a.client_name,
       a.employee_name, a.appointment_time, a.notes, a.checkin_at, a.created_at,
-      COALESCE(si.product_name, '到店预约') AS service_name, si.sku_spec_name
+      COALESCE(si.product_name, '到店预约') AS service_name
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
@@ -1139,7 +1138,7 @@ async function appointments(ctx) {
     staffName: a.employee_name,
     appointmentTime: a.appointment_time,
     statusText: a.status,
-    serviceItemName: a.service_name || a.sku_spec_name || '',
+    serviceItemName: a.service_name || '',
     remark: a.notes || '',
     checkinAt: a.checkin_at,
     createdAt: a.created_at,

@@ -435,13 +435,13 @@ export async function createTestPendingSaleOrder({
     await client.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
-         sku_id, product_name, sku_spec_name, product_type,
+         sku_id, product_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions,
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               $4, $5, '默认', $6::product_type,
+               $4, $5, $6::product_type,
                $7, 1, $7, $7, 0,
                $8, $9,
                $10)`,

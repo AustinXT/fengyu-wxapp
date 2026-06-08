@@ -203,6 +203,22 @@ describe('allocation.save', () => {
       .rejects.toThrow(/PERMISSION_DENIED.*分配状态异常/)
   })
 
+  // 回款分配缺口根因守护：allocation_status=NULL（收款路径未初始化的已支付单）被 save 拒。
+  // 这正是为何 createRepayment / recordPayment / payNotify / confirmOffline 收款路径必须
+  // COALESCE 初始化 allocation_status='待分配'——否则回款/线上支付结清的销售单永远进不了店长营业额分配流程。
+  test('allocation_status=NULL 时拒绝分配（回款分配缺口根因：收款路径必须初始化）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001',
+      status: '已支付',
+      allocation_status: null, // 收款路径未初始化 → NULL → save 拒（pendingList 同样不匹配）
+      store_id: 'store-001',
+      sale_order_type: '销售单',
+    }])
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*分配状态异常/)
+  })
+
   test('空分配且订单无明细时直接更新状态（line 73 FALSE 分支）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
 
@@ -730,7 +746,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', skills: ['美容师'] }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '1000', sales_category: '自销自耗', product_name: '面部护理', sku_spec_name: '基础款', product_type: '疗程卡' },
+        { sale_item_id: 'item-001', received: '1000', sales_category: '自销自耗', product_name: '面部护理', product_type: '疗程卡' },
       ])
       // 6. PG 提成比例（role_type 为角色名）
       .mockResolvedValueOnce([
@@ -768,7 +784,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{ employee_id: 'emp-multi', name: '全能', skills: ['美容师', '推广师'] }])
       .mockResolvedValueOnce([{ cnt: 1 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '1000', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
+        { sale_item_id: 'item-001', received: '1000', sales_category: '自销自耗', product_name: 'P1', product_type: '疗程卡' },
       ])
       .mockResolvedValueOnce([
         { role_type: '美容师', sales_category: '自销自耗', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
@@ -798,7 +814,7 @@ describe('allocation.suggest', () => {
       }])
       .mockResolvedValueOnce([{ cnt: 3 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', product_type: '疗程卡' },
       ])
       .mockResolvedValueOnce([])  // 无提成配置
 
@@ -822,7 +838,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{ employee_id: 'emp-b2', name: '王五', department: '咨询部' }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', product_type: '疗程卡' },
       ])
       .mockResolvedValueOnce([])
 
@@ -863,7 +879,7 @@ describe('allocation.suggest', () => {
       }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
+        { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', product_type: '疗程卡' },
       ])
 
     await allocationRoutes.suggest(ctx)

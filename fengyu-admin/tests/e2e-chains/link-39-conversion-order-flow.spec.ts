@@ -85,12 +85,12 @@ function simulateConversion(opts: {
   psql(`
     INSERT INTO sale_items (
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-      product_name, sku_spec_name, product_type, session_count, remaining_sessions,
+      product_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${origSiid}', '${origSoid}', '${STORE_ID}', '购买', '${SKU_OUT}',
-      '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '疗程卡',
+      '洗-无创纹身 疗程卡', '疗程卡',
       ${opts.origRemaining + 2}, ${opts.origRemaining},
       ${opts.origUnitPrice}, 1, ${opts.origUnitPrice}, ${opts.origUnitPrice * (opts.origRemaining + 2)}, ${opts.origUnitPrice * (opts.origRemaining + 2)},
       0, false, NOW() - interval '1 day', NOW() - interval '1 day'
@@ -124,12 +124,12 @@ function simulateConversion(opts: {
   psql(`
     INSERT INTO sale_items (
       sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id, sku_id,
-      product_name, sku_spec_name, product_type, session_count,
+      product_name, product_type, session_count,
       unit_price, quantity, unit_real_price, sale_amount, received,
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${outSiid}', '${convSoid}', '${STORE_ID}', '转出', '${origSiid}', '${SKU_OUT}',
-      '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '疗程卡', ${opts.origRemaining},
+      '洗-无创纹身 疗程卡', '疗程卡', ${opts.origRemaining},
       ${opts.origUnitPrice}, 1, ${opts.origUnitPrice}, ${-totalOut}, ${-totalOut},
       0, false, NOW(), NOW()
     )
@@ -139,12 +139,12 @@ function simulateConversion(opts: {
   psql(`
     INSERT INTO sale_items (
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-      product_name, sku_spec_name, product_type, session_count, remaining_sessions,
+      product_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${inSiid}', '${convSoid}', '${STORE_ID}', '转入', '${SKU_IN}',
-      '假性皱纹', '假性皱纹', '疗程卡', ${opts.inQuantity}, ${opts.inQuantity},
+      '假性皱纹', '疗程卡', ${opts.inQuantity}, ${opts.inQuantity},
       ${opts.inUnitPrice}, ${opts.inQuantity}, ${opts.inUnitPrice}, ${totalIn}, ${priceDiff > 0 ? '0' : totalIn},
       0, false, NOW(), NOW()
     )

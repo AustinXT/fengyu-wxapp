@@ -74,13 +74,13 @@ async function createPaidCourseOrder(userId) {
     await client.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
-         sku_id, product_name, sku_spec_name, product_type,
+         sku_id, product_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions,
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               $4, 'TEST_E2E_L3_5次疗程卡', 'TEST_E2E_L3_5次卡',
+               $4, 'TEST_E2E_L3_5次疗程卡',
                '疗程卡'::product_type,
                100, 1, 100, 500, 500,
                5, 5,

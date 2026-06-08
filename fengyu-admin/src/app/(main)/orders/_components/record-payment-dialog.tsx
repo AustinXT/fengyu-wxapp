@@ -21,7 +21,6 @@ import { recordPayment, getRepayable } from "@/actions/orders"
 type RepayableItem = {
   saleItemId: string
   productName: string
-  skuSpecName: string
   saleAmount: string
   received: string
   remaining: string

@@ -61,7 +61,6 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
         </view>
         <view class="item-info">
           <text class="item-name">{{item.productName}}</text>
-          <text class="item-spec">{{item.skuSpecName}}</text>
         </view>
         <text class="item-price">¥{{fmt.price(item.unitPrice)}}</text>
       </view>

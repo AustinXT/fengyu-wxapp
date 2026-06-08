@@ -641,8 +641,8 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础款', product_name: '面部护理' },
-      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', sku_spec_name: '高级款', product_name: '身体护理' },
+      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
+      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(2)
@@ -672,7 +672,7 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-003', status: '已支付', paid_at: '2024-07-01T10:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', sku_spec_name: '标准', product_name: '头疗' },
+      { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', product_name: '头疗' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(1)
@@ -699,7 +699,7 @@ describe('customer.paidOrders', () => {
       }
       // items 查询：FROM sale_items si
       return [
-        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础', product_name: '面部护理' },
+        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
       ]
     })
     await customerRoutes.paidOrders(ctx)
@@ -1000,7 +1000,7 @@ describe('customer.refundHistory', () => {
     ])
     // Q3: 转换单明细
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
+      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', quantity: 1, received: '300' },
     ])
 
     await customerRoutes.refundHistory(ctx)
@@ -1542,7 +1542,7 @@ describe('customer.appointments', () => {
     pg.query.mockResolvedValueOnce([
       { appointment_id: 'A1', status: '已确认', client_user_id: 'u1', client_name: '张三',
         employee_name: '美容师', appointment_time: '2026-05-20T03:00:00Z', notes: '准时',
-        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理', sku_spec_name: null },
+        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理' },
     ])
     await customerRoutes.appointments(ctx)
     expect(ctx.result).toHaveLength(1)

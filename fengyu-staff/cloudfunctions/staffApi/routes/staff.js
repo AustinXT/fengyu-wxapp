@@ -616,7 +616,6 @@ async function performanceDetail(ctx) {
       sa.allocation_ratio,
       sa.department_name,
       si.product_name,
-      si.sku_spec_name,
       si.sales_category,
       si.unit_real_price,
       si.received,
@@ -660,7 +659,6 @@ async function performanceDetail(ctx) {
       sit.session_used,
       sit.unit_real_price AS service_unit_price,
       si.product_name,
-      si.sku_spec_name,
       si.sales_category,
       so.service_order_id,
       so.service_date,
@@ -708,7 +706,7 @@ async function performanceDetail(ctx) {
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
-    specName: r.sku_spec_name,
+    specName: r.product_name,
     salesCategory: r.sales_category,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
     allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
@@ -725,7 +723,7 @@ async function performanceDetail(ctx) {
   const serviceItems = svcRows.map(r => ({
     type: 'service',
     productName: r.product_name,
-    specName: r.sku_spec_name,
+    specName: r.product_name,
     salesCategory: r.sales_category,
     roleType: r.role_type,
     amount: Number(r.commission_amount),

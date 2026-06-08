@@ -60,7 +60,7 @@ const q = (sql, params) => pool.query(sql, params)
 
 async function fetchOrder() {
   const r = await q(
-    `SELECT status, received::numeric AS recv FROM sale_orders WHERE sale_order_id = $1`,
+    `SELECT status, received::numeric AS recv, allocation_status AS alloc FROM sale_orders WHERE sale_order_id = $1`,
     [ORDER_ID],
   )
   return r.rows[0]
@@ -83,6 +83,9 @@ async function main() {
     status: '待支付',
     paymentMethod: '线下',
   })
+  // 模拟普通销售单 order.create 现实：allocation_status 出生为 NULL（schema 无默认值，回款分配缺口根因）。
+  // fixtures 写死'待分配'，这里抹回 NULL，以验证收款路径（confirmOfflinePayment / recordPayment）的 COALESCE 初始化。
+  await q(`UPDATE sale_orders SET allocation_status = NULL WHERE sale_order_id = $1`, [ORDER_ID])
 
   // 不变量：创建态 received=0 / 待支付 / 无已支付流水
   const created = await fetchOrder()
@@ -109,6 +112,9 @@ async function main() {
   if (Number(st.recv) !== 100) errors.push(`[step1] received 应累加到=100, 实际=${st.recv}`)
   if (st.status !== '部分支付') errors.push(`[step1] DB status 应=部分支付, 实际=${st.status}`)
   else console.log(`  ✓ STEP1 部分支付 received=${st.recv}`)
+  // 回款分配缺口修复：confirmOfflinePayment 应把 NULL allocation_status 初始化为'待分配'（COALESCE）
+  if (st.alloc !== '待分配') errors.push(`[step1] confirmOfflinePayment 应把 NULL allocation_status 初始化为'待分配', 实际=${st.alloc}`)
+  else console.log(`  ✓ STEP1 allocation_status NULL→待分配`)
 
   // ===== STEP2：confirmOfflinePayment 再次调用 → 不匹配（仅吃首次待支付）=====
   const r2 = await ordersMod.confirmOfflinePayment(ORDER_ID, 200)
@@ -140,6 +146,9 @@ async function main() {
     if (Number(st.recv) !== 300) errors.push(`[step2'] received 应累加到=300, 实际=${st.recv}`)
     if (st.status !== '已支付') errors.push(`[step2'] DB status 应=已支付, 实际=${st.status}`)
     else console.log(`  ✓ STEP2' 部分支付 → 已支付 received=${st.recv}`)
+    // 回款分配缺口修复：recordPayment 结清后 allocation_status 仍为'待分配'（COALESCE 对已初始化值 no-op），可进店长营业额分配
+    if (st.alloc !== '待分配') errors.push(`[step2'] recordPayment 结清后 allocation_status 应保持'待分配', 实际=${st.alloc}`)
+    else console.log(`  ✓ STEP2' allocation_status 保持待分配（可进店长分配流程）`)
   }
 
   // ===== STEP3：不超额不变量 — 另起一单，确认超过应付金额应被拒 =====

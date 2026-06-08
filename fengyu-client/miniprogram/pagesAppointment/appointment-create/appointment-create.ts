@@ -90,7 +90,6 @@ Page({
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
-            sku_spec_name: item.skuSpecName,
             remaining_sessions: remaining,
             session_count: total,
             paid_sessions: paid,

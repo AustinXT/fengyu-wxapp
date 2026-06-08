@@ -230,12 +230,12 @@ export async function createPendingSaleOrderForScan({
     await client.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
-         sku_id, product_name, sku_spec_name, product_type,
+         sku_id, product_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               $4, $5, '默认', '疗程卡'::product_type,
+               $4, $5, '疗程卡'::product_type,
                $6, 1, $6, $6, 0, false)`,
       [itemId, saleOrderId, TEST_STORE_ID, skuId, `${NS}_测试商品`, totalAmount]
     )

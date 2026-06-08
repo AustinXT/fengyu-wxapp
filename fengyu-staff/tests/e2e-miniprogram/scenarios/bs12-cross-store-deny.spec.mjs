@@ -48,12 +48,12 @@ async function createTestOrderInStoreB() {
   await query(
     `INSERT INTO sale_items
        (sale_item_id, sale_order_id, store_id, item_direction,
-        product_name, sku_spec_name, product_type,
+        product_name, product_type,
         unit_price, quantity, unit_real_price, sale_amount, received,
         service_fee, is_shengmei, is_experience)
      VALUES
        ($1, $2, $3, '购买',
-        'L3 B 店商品', '标准', '疗程卡',
+        'L3 B 店商品', '疗程卡',
         500, 1, 500, 500, 500,
         0, false, false)`,
     [itemId, orderId, TEST_STORE_B1_ID],

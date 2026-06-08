@@ -715,7 +715,6 @@ async function list(ctx) {
       SELECT
         si.service_order_id,
         COALESCE(sli.product_name, '') AS product_name,
-        sli.sku_spec_name,
         sli.remaining_sessions,
         sli.session_count,
         sli.paid_sessions,
@@ -731,7 +730,7 @@ async function list(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.sku_spec_name || '',
+      spec: i.product_name || '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
       paidSessions: i.paid_sessions,
@@ -846,7 +845,6 @@ async function detail(ctx) {
       sli.session_count,
       sli.remaining_sessions,
       sli.paid_sessions,
-      sli.sku_spec_name,
       sli.product_type,
       sli.product_name
     FROM service_items si
@@ -913,7 +911,7 @@ async function detail(ctx) {
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       itemName: i.product_name || '',
-      spec: i.sku_spec_name || '',
+      spec: i.product_name || '',
       sessionCount: i.session_used,
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,

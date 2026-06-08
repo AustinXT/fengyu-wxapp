@@ -9,7 +9,8 @@ import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "
 import { RecordPaymentDialog } from "./record-payment-dialog";
 import { ConfirmOfflineDialog } from "./confirm-offline-dialog";
 import { RefundForm } from "@/components/orders/refund-form";
-import { formatDateTime as fmtDateTime } from "@/lib/utils";
+import { formatDateTime as fmtDateTime, formatDate } from "@/lib/utils";
+import { maskPhone } from "@/lib/pii";
 import { DangerZoneDelete } from "@/components/delete-action";
 import { deleteOrder } from "@/actions/orders";
 
@@ -93,6 +94,9 @@ export default function OrderDetailPageClient({
   const hasPrepaidDeduction = prepaidCardAmount > 0;
   // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
   const hasRefund = refundedAmount > 0;
+  const couponDiscount = Number(order.couponDiscount ?? "0");
+  // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
+  const isLegacy = order.legacySource === "workfine";
 
   // 剩余欠款 = payable_amount - received（payable_amount = total_amount - prepaid_card_amount）
   const totalAmount = Number(order.totalAmount ?? "0");
@@ -192,7 +196,7 @@ export default function OrderDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">类型</span>
-              <p className="mt-1 flex items-center gap-2">
+              <p className="mt-1 flex items-center gap-2 flex-wrap">
                 <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                   {order.saleOrderType}
                 </Badge>
@@ -202,20 +206,63 @@ export default function OrderDetailPageClient({
                     已退款
                   </Badge>
                 )}
+                {/* 历史订单（WorkFine 导入）角标 */}
+                {isLegacy && (
+                  <Badge variant="secondary" className="bg-[#F3F4F6] text-[#6B7280]">
+                    历史订单
+                  </Badge>
+                )}
               </p>
             </div>
+            {order.documentType && (
+              <div>
+                <span className="text-[#999999]">单据类型</span>
+                <p className="font-medium mt-1">{order.documentType}</p>
+              </div>
+            )}
+            {order.refSaleOrderId && (
+              <div>
+                <span className="text-[#999999]">关联原单</span>
+                <p className="font-medium mt-1">
+                  <Link
+                    href={`/orders/${order.refSaleOrderId}`}
+                    className="text-[var(--primary)] hover:underline"
+                  >
+                    {order.refSaleOrderId}
+                  </Link>
+                </p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">门店</span>
               <p className="font-medium mt-1">{order.storeName}</p>
             </div>
+            {order.marketName && (
+              <div>
+                <span className="text-[#999999]">所属市场</span>
+                <p className="font-medium mt-1">{order.marketName}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">开单人</span>
               <p className="font-medium mt-1">{order.openedByName || "顾客自助"}</p>
             </div>
+            {order.preferredEmployeeName && (
+              <div>
+                <span className="text-[#999999]">指定美容师</span>
+                <p className="font-medium mt-1">{order.preferredEmployeeName}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">顾客</span>
               <p className="font-medium mt-1">{order.customerName || "—"}</p>
             </div>
+            {order.clientPhone && (
+              <div>
+                <span className="text-[#999999]">顾客电话</span>
+                <p className="font-medium mt-1">{maskPhone(order.clientPhone)}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">下单时间</span>
               <p className="font-medium mt-1">{formatDateTime(order.saleOrderDatetime)}</p>
@@ -228,12 +275,36 @@ export default function OrderDetailPageClient({
               <span className="text-[#999999]">支付方式</span>
               <p className="font-medium mt-1">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</p>
             </div>
+            {order.offlineConfirmedByName && (
+              <div>
+                <span className="text-[#999999]">线下确认人</span>
+                <p className="font-medium mt-1">{order.offlineConfirmedByName}</p>
+              </div>
+            )}
+            {order.offlineConfirmedAt && (
+              <div>
+                <span className="text-[#999999]">线下确认时间</span>
+                <p className="font-medium mt-1">{formatDateTime(order.offlineConfirmedAt)}</p>
+              </div>
+            )}
+            {order.allocationStatus && (
+              <div>
+                <span className="text-[#999999]">分配状态</span>
+                <p className="font-medium mt-1">{order.allocationStatus}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">订单总额</span>
               <p className="font-bold text-lg mt-1 text-[var(--primary)]">
                 ¥{Number(order.totalAmount).toLocaleString()}
               </p>
             </div>
+            {couponDiscount > 0 && (
+              <div>
+                <span className="text-[#999999]">优惠券抵扣</span>
+                <p className="font-bold text-lg mt-1 text-[#C0322A]">-¥{couponDiscount.toLocaleString()}</p>
+              </div>
+            )}
             {hasPrepaidDeduction && (
               <>
                 <div>
@@ -292,8 +363,24 @@ export default function OrderDetailPageClient({
                       : "家居产品";
                   return (
                     <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                      <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "—"}</td>
-                      <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toLocaleString()}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.skuName || item.productName || "—"}</div>
+                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0) && (
+                          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
+                            {item.salesCategory && <span>{item.salesCategory}</span>}
+                            {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提 {item.pickedUpQuantity}</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {Number(item.unitPrice) !== Number(item.unitRealPrice) && (
+                          <span className="text-[#999999] line-through mr-1">
+                            ¥{Number(item.unitPrice).toLocaleString()}
+                          </span>
+                        )}
+                        ¥{Number(item.unitRealPrice).toLocaleString()}
+                      </td>
                       <td className="px-4 py-3 text-right">{item.quantity}</td>
                       <td className="px-4 py-3 text-right">¥{Number(item.saleAmount).toLocaleString()}</td>
                       <td className="px-4 py-3 text-right text-[#999999]">¥{Number(item.pendingReceived ?? "0").toLocaleString()}</td>
@@ -412,6 +499,9 @@ export default function OrderDetailPageClient({
                       <td className="px-4 py-3 text-[#666666]">
                         <div>{noteLine}</div>
                         {detailLine && <div className="text-xs text-[#999999] mt-0.5">{detailLine}</div>}
+                        {p.externalTxnId && (
+                          <div className="text-xs text-[#999999] mt-0.5">交易号 {p.externalTxnId}</div>
+                        )}
                       </td>
                     </tr>
                   );

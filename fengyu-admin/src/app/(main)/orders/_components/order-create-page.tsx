@@ -1345,7 +1345,6 @@ export default function OrderCreatePageClient({
                       convertInItems: cart.map((item) => ({
                         skuId: item.sku.skuId,
                         productName: item.product.name,
-                        skuSpecName: item.sku.specName,
                         productType: item.sku.productType as '疗程卡' | '家居产品',
                         sessionCount: item.sku.sessionCount,
                         unitPrice: item.sku.price,
@@ -1420,7 +1419,6 @@ export default function OrderCreatePageClient({
                       return {
                         skuId: item.sku.skuId,
                         productName: item.product.name,
-                        skuSpecName: item.sku.specName,
                         productType: item.sku.productType as '疗程卡' | '家居产品',
                         sessionCount: item.sku.sessionCount,
                         unitPrice: item.sku.price,
