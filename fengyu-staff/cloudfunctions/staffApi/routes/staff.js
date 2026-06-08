@@ -441,7 +441,7 @@ async function monthlyCalendar(ctx) {
 async function todoList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeId, roles } = ctx.auth
+  const { staffWfId, roles, effectiveStoreId } = ctx.auth
   const isManager = roles.includes('manager')
 
   // 待确认预约
@@ -449,7 +449,7 @@ async function todoList(ctx) {
   if (isManager) {
     appointmentCount = await pg.query(
       `SELECT COUNT(*) AS cnt FROM appointments WHERE store_id = $1 AND status = '待确认'`,
-      [storeId]
+      [effectiveStoreId]
     )
   } else {
     appointmentCount = await pg.query(
@@ -463,7 +463,7 @@ async function todoList(ctx) {
   if (isManager) {
     serviceCount = await pg.query(
       `SELECT COUNT(*) AS cnt FROM service_orders WHERE store_id = $1 AND status IN ('待服务', '服务中')`,
-      [storeId]
+      [effectiveStoreId]
     )
   } else {
     serviceCount = await pg.query(
@@ -483,18 +483,18 @@ async function todoList(ctx) {
     //  覆盖部分付场景，店长能在首页待办看到欠款单）
     const offlineRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status IN ('待支付', '部分支付') AND payment_method = '线下'`,
-      [storeId]
+      [effectiveStoreId]
     )
     const createRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND opened_by IS NULL`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)
     result.pendingCreateOrderCount = Number(createRows[0].cnt)
 
     const unbindRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = '待处理'`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
@@ -502,7 +502,7 @@ async function todoList(ctx) {
     const allocRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'
          AND sale_order_type IN ('销售单', '转换单') AND legacy_source IS DISTINCT FROM 'workfine'`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
 
@@ -512,7 +512,7 @@ async function todoList(ctx) {
          FROM sale_order_payments sop
          JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         WHERE so.store_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批'`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingRefundCount = Number(refundRows[0].cnt)
   }

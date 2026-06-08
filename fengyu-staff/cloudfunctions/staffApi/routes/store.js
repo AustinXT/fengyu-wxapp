@@ -66,7 +66,7 @@ async function list(ctx) {
 async function unbindRequests(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { storeId } = ctx.auth
+  const { effectiveStoreId } = ctx.auth
 
   const rows = await pg.query(`
     SELECT
@@ -85,7 +85,7 @@ async function unbindRequests(ctx) {
     LEFT JOIN stores st ON st.store_id = r.to_store_id
     WHERE r.from_store_id = $1 AND r.status = '待处理'
     ORDER BY r.created_at ASC
-  `, [storeId])
+  `, [effectiveStoreId])
 
   ctx.result = {
     requests: rows.map(r => ({
@@ -109,7 +109,7 @@ async function unbindRequests(ctx) {
 async function approveUnbind(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { storeId, staffWfId } = ctx.auth
+  const { effectiveStoreId, staffWfId } = ctx.auth
   const { requestId } = ctx.event.payload || {}
   if (!requestId) throw new Error('INVALID_PARAMS: 缺少 requestId')
 
@@ -119,7 +119,7 @@ async function approveUnbind(ctx) {
   )
   if (rows.length === 0) throw new Error('INVALID_PARAMS: 申请不存在')
   const req = rows[0]
-  if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
+  if (req.from_store_id !== effectiveStoreId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
   if (!req.to_store_id) throw new Error('INVALID_STATE: 申请缺少目标门店，无法转店')
 
@@ -167,7 +167,7 @@ async function approveUnbind(ctx) {
 async function rejectUnbind(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { storeId, staffWfId } = ctx.auth
+  const { effectiveStoreId, staffWfId } = ctx.auth
   const { requestId, rejectReason } = ctx.event.payload || {}
   if (!requestId) throw new Error('INVALID_PARAMS: 缺少 requestId')
 
@@ -177,7 +177,7 @@ async function rejectUnbind(ctx) {
   )
   if (rows.length === 0) throw new Error('INVALID_PARAMS: 申请不存在')
   const req = rows[0]
-  if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
+  if (req.from_store_id !== effectiveStoreId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
   await pg.transaction(async (client) => {
