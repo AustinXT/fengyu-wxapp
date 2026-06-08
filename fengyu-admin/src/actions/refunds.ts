@@ -229,6 +229,7 @@ export const getRefundable = withAnyPermission(
       product_type: r.productType as ProductType | null,
       session_count: r.sessionCount,
       remaining_sessions: r.remainingSessions,
+      paid_sessions: r.paidSessions,
       unit_price: r.unitPrice,
       quantity: r.quantity,
       unit_real_price: r.unitRealPrice,
@@ -573,6 +574,18 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
   }
 
+  // P 前置校验（Bug P）：有未终结服务单（待服务/服务中/待客户确认）时禁止退款，否则退款压低 paid_sessions
+  // 会让该服务单 confirm 卡死、员工提成丢失（孤儿服务单）。两端镜像 staff order.js。
+  const openSvcRows = await db.execute(sql`
+    SELECT 1 FROM service_orders so2
+      JOIN service_items sit ON sit.service_order_id = so2.service_order_id
+      JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+     WHERE si.sale_order_id = ${refSaleOrderId} AND so2.status IN ('待服务','服务中','待客户确认') LIMIT 1
+  `)
+  if ((openSvcRows as unknown as unknown[]).length > 0) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '该订单有未完成的服务单，请先完成或取消后再退款' } }
+  }
+
   const origRows = await db
     .select()
     .from(saleItems)
@@ -586,6 +599,7 @@ export const createRefund = withPermission(
     product_type: r.productType as ProductType | null,
     session_count: r.sessionCount,
     remaining_sessions: r.remainingSessions,
+    paid_sessions: r.paidSessions,
     unit_price: r.unitPrice,
     quantity: r.quantity,
     unit_real_price: r.unitRealPrice,
@@ -612,6 +626,12 @@ export const createRefund = withPermission(
   }
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
+  // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次。
+  // 限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居不受影响。完整任意 fee 支持见 follow-up。两端镜像 staff order.js。
+  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
+  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
+  }
   const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
@@ -628,7 +648,9 @@ export const createRefund = withPermission(
   const paymentsNet = Number(
     (paymentsNetRows as unknown as Array<{ net: string | number }>)[0]?.net || 0,
   )
-  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0))
+  // 修复（Bug A 重复退款）：received 是不减的毛实收，必须减去 refundedAmount 得净可退；
+  // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数。两端镜像 staff order.js。
+  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refundedAmount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
     return {
       success: false,
@@ -669,10 +691,25 @@ export const createRefund = withPermission(
   const primarySessionCount =
     refundDetails.length === 1 ? refundDetails[0].sessionCount ?? refundDetails[0].quantity : null
 
-  const noteLines: string[] = [`reason=${refundReason}`]
-  if (fee > 0) noteLines.push(`fee=${fee.toFixed(2)}`)
-  if (overdraftDeduction > 0) noteLines.push(`overdraft=${overdraftDeduction.toFixed(2)}`)
-  const paymentNote = noteLines.join('; ')
+  // 整单全退判定（Bug Q/M）：所有购买项都在本次退款且全退 → cascade 通道3（券）才回滚
+  const isWholeOrderRefund = sourceItems.length > 0 && sourceItems.every((oi) =>
+    refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
+  )
+  // note 存 JSON（含展示字段 + 逐 item 明细），approveRefund 据此逐 item 级联（Bug Q/M）。两端对齐 staff note。
+  const paymentNote = JSON.stringify({
+    refundByCard,
+    refundByOrigin,
+    handlingFee: fee,
+    overdraftDeduction,
+    isWholeOrderRefund,
+    items: refundDetails.map((d) => ({
+      refSaleItemId: d.refSaleItemId,
+      quantity: d.quantity,
+      refundAmount: d.refundAmount,
+      productType: d.productType,
+      isFullItemRefund: d.isFullItemRefund,
+    })),
+  })
 
   let refundPaymentId: number
   try {
@@ -828,6 +865,8 @@ export const approveRefund = withPermission(
       orderTotalAmount: saleOrders.totalAmount,
       orderPrepaidCardAmount: saleOrders.prepaidCardAmount,
       orderSaleOrderType: saleOrders.saleOrderType,
+      orderReceived: saleOrders.received,
+      orderRefundedAmount: saleOrders.refundedAmount,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -873,6 +912,18 @@ export const approveRefund = withPermission(
 
   const refSaleOrderId = pre.payment.saleOrderId
   const refundAmount = Math.abs(Number(pre.payment.amount || 0))
+
+  // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。两端镜像 staff order.js。
+  const capNowRes = await db.execute<{ net: string }>(sql`
+    SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
+    WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
+  `)
+  const paymentsNetNow = Number((capNowRes as unknown as Array<{ net: string | number }>)[0]?.net || 0)
+  const refundCapNow = Math.max(paymentsNetNow, Number(pre.orderReceived || 0) - Number(pre.orderRefundedAmount || 0))
+  if (refundAmount > refundCapNow + 0.001) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
+  }
+
   const origPrepaidCardAmount = Number(pre.orderPrepaidCardAmount || 0)
   const origTotalAmount = Number(pre.orderTotalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
@@ -933,9 +984,8 @@ export const approveRefund = withPermission(
           WHERE ref_order_id = ${refOrderTag} AND type = '充值' LIMIT 1
         `)
         if ((dupRes as unknown as unknown[]).length === 0) {
-          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
-            .toString()
-            .padStart(3, '0')}`
+          // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK。两端镜像 staff order.js
+          const newCardId = `FY-CARD-${pre.orderClientUserId}`
           const upsertRes = await tx.execute(sql`
             INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
             VALUES (${newCardId}, ${pre.orderClientUserId}, ${refundByCard.toFixed(2)}::numeric, NOW(), NOW())
@@ -953,11 +1003,32 @@ export const approveRefund = withPermission(
         }
       }
 
-      // 5) 5 通道 cascade
+      // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; isFullItemRefund: boolean }> = []
+      let cascadeWholeOrder = false
+      try {
+        const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
+        if (noteObj && Array.isArray(noteObj.items)) {
+          cascadeItems = noteObj.items.map(
+            (it: { refSaleItemId: string; quantity: number; isFullItemRefund?: boolean }) => ({
+              saleItemId: it.refSaleItemId,
+              sessionCount: it.quantity,
+              isFullItemRefund: !!it.isFullItemRefund,
+            }),
+          )
+          cascadeWholeOrder = !!noteObj.isWholeOrderRefund
+        }
+      } catch {
+        cascadeItems = []
+      }
+      // 兜底（老退款行无 note.items）：用 refSaleItemId 单 item；为空则 cascade 内部兜底整单
+      if (cascadeItems.length === 0 && refSaleItemId) {
+        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, isFullItemRefund: true }]
+      }
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
-        saleItemId: refSaleItemId,
-        sessionCount,
+        items: cascadeItems,
+        isWholeOrderRefund: cascadeWholeOrder,
         refundReason: pre.payment.refundReason ?? '',
       })
 

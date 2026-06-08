@@ -392,6 +392,32 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 
+  // ===== 充值卡退款（充值单专用，走 card.createRefund）=====
+  onCreateCardRefund() {
+    const o = this.data.order;
+    if (!o) return;
+    wx.showModal({
+      title: '充值卡退款',
+      content: '确认发起充值卡退款？将退还卡内剩余余额（按该充值单实付比例原路退款），提交后需店长审批。',
+      confirmText: '发起退款',
+      confirmColor: '#C0322A',
+      success: async (res) => {
+        if (!res.confirm) return;
+        wx.showLoading({ title: '提交中', mask: true });
+        try {
+          await callStaffApi('card.createRefund', { saleOrderId: o.saleOrderId });
+          wx.hideLoading();
+          wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });
+          this.loadDetail(this.data._saleOrderId);
+        } catch (err: unknown) {
+          wx.hideLoading();
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        }
+      },
+    });
+  },
+
   // ===== P2: 退款 =====
   onCreateRefund() {
     const o = this.data.order;

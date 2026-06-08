@@ -10,6 +10,7 @@ interface RawPayment {
   status: string;
   paymentMethod: string;
   changeType: string;
+  saleOrderType?: string;
   createdAt: string;
   paidAt: string | null;
 }
@@ -103,6 +104,7 @@ Page({
     origOrder: null as DisplayOrigOrder | null,
     rejectPopup: false,
     rejectReason: '',
+    saleOrderType: '',
   },
 
   onLoad(options: { id?: string }) {
@@ -157,7 +159,7 @@ Page({
           ? Number(res.origOrder.prepaidCardAmount).toFixed(2)
           : '',
       } : null;
-      this.setData({ refund, refundItems, origOrder });
+      this.setData({ refund, refundItems, origOrder, saleOrderType: p.saleOrderType || '' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -173,16 +175,21 @@ Page({
   },
 
   onApprove() {
+    // 充值单退款走 card.approveRefund（扣 prepaid_cards.balance）；销售单退款走 order.approveRefund（5 通道 cascade）
+    const isRecharge = this.data.saleOrderType === '充值单';
     wx.showModal({
       title: '审批通过',
-      content: '确认通过此退款单？通过后将扣减对应次数/库存，并回冲储值卡、退现金。',
+      content: isRecharge
+        ? '确认通过此充值卡退款？通过后将扣减卡内余额并按原路退款。'
+        : '确认通过此退款单？通过后将扣减对应次数/库存，并回冲储值卡、退现金。',
       confirmText: '确认通过',
       confirmColor: '#C0322A',
       success: async (res) => {
         if (!res.confirm) return;
         wx.showLoading({ title: '审批中', mask: true });
         try {
-          await callStaffApi('order.approveRefund', { paymentId: Number(this.data.refundId) });
+          const action = isRecharge ? 'card.approveRefund' : 'order.approveRefund';
+          await callStaffApi(action, { paymentId: Number(this.data.refundId) });
           wx.hideLoading();
           wx.showToast({ title: '审批已通过', icon: 'success' });
           this.loadDetail();
@@ -215,9 +222,12 @@ Page({
     }
     wx.showLoading({ title: '提交中', mask: true });
     try {
-      await callStaffApi('order.rejectRefund', {
+      // 充值单退款走 card.rejectRefund（读 reason），销售单走 order.rejectRefund（读 auditRemark）；传两字段兼容
+      const action = this.data.saleOrderType === '充值单' ? 'card.rejectRefund' : 'order.rejectRefund';
+      await callStaffApi(action, {
         paymentId: Number(this.data.refundId),
         auditRemark: reason,
+        reason,
       });
       wx.hideLoading();
       wx.showToast({ title: '已驳回', icon: 'success' });

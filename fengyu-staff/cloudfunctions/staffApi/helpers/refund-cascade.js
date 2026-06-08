@@ -1,8 +1,12 @@
 /**
- * 退款审批通过 5 通道级联回滚 helper
+ * 退款审批通过级联回滚 helper（逐 item + 语义收敛）
  *
- * 2026-04-26 sale-order-domain-refactor §1.5 落地：
- * 退款审批通过时同事务级联回滚 5 类衍生数据（与 admin/cascadeRefund 同思路）。
+ * 2026-04-26 sale-order-domain-refactor §1.5 落地；2026-06-08 重构（Bug Q/M）：
+ *   - 改为按本次退款明细逐 item 级联（params.items），不再用单 saleItemId / null 整单分支；
+ *     修复「多项退真子集（退 A、B 不退 C）误走整单分支清掉 C 的分配/提成/券/提货」（Bug Q）。
+ *   - 通道 1/2（分配/提成）仅作废「被全退」的 item（isFullItemRefund），部分次数退款不动二者，
+ *     保护已发生服务的提成（Bug M 语义收敛）。
+ *   - 通道 3（券）仅整单全退（isWholeOrderRefund）才回滚。
  *
  * **修改本文件必须同步 fengyu-admin/src/lib/refund-cascade.ts**
  * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
@@ -10,29 +14,24 @@
  * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
  *
  * 通道：
- *   1. sale_allocations:    UPDATE SET is_void=true, voided_at=NOW()  (sale_allocations 无 voided_reason)
- *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$
- *   3. user_coupons:        UPDATE SET status='未使用', used_at=NULL, used_sale_order_id=NULL（仅未过期）
- *   4. point_transactions:  INSERT 反向流水（type='消费冲销'）+ client_wechat_users.points_balance 重算
- *   5. pickup_records:      UPDATE picked_up_quantity 反向恢复（家居产品退款时）
+ *   1. sale_allocations:    UPDATE SET is_void=true, voided_at=NOW()（仅全退 item）
+ *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$（仅全退 item）
+ *   3. user_coupons:        UPDATE SET status='未使用'（仅整单全退）
+ *   4. point_transactions:  INSERT 反向流水（type='消费冲销'）+ client_wechat_users.points_balance 重算（订单级比例）
+ *   5. pickup_records:      UPDATE sale_items.picked_up_quantity 反向恢复（逐被退家居 item，按 sessionCount）
  *
- * 列名 SOT（与 db/schema/points.ts 完全对齐）：
- *   - point_transactions.type        （不是 change_type）
- *   - point_transactions.ref_order_id（不是 ref_sale_order_id）
- *   - point_transactions 无 note 列；balance 重算写 client_wechat_users.points_balance（无独立 customer_points 表）
- *
- * 调用约定：必须在 pg.transaction(client => ...) 内调用，传入事务 client。
+ * 列名 SOT 与 db/schema/points.ts 对齐：point_transactions.type / ref_order_id；无 note 列。
  *
  * @param {object} client - 事务内 pg 客户端
  * @param {object} params
- * @param {string} params.saleOrderId          - 原销售单号（refSaleOrderId）
- * @param {string|null} params.saleItemId      - 关联具体 sale_item（部分退款时传，否则按 saleOrderId 全单）
- * @param {number|null} params.sessionCount    - 退疗程卡次数（pickup 反推用）
- * @param {string} params.refundReason         - 退款原因（写入 voided_reason）
+ * @param {string} params.saleOrderId               - 原销售单号
+ * @param {Array<{saleItemId:string, sessionCount:number|null, isFullItemRefund:boolean}>} params.items - 本次退款明细
+ * @param {boolean} params.isWholeOrderRefund        - 是否整单全退（控制券回滚）
+ * @param {string} params.refundReason               - 退款原因（写入 voided_reason）
  * @returns {Promise<object>} cascade 结果摘要
  */
 async function cascadeRefund(client, params) {
-  const { saleOrderId, saleItemId, sessionCount, refundReason } = params || {}
+  const { saleOrderId, items, isWholeOrderRefund, refundReason } = params || {}
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: cascadeRefund 缺少 saleOrderId')
   }
@@ -42,35 +41,36 @@ async function cascadeRefund(client, params) {
     : '退款审批通过'
   const now = new Date()
 
-  // 关联 sale_items：若传 saleItemId 仅作单行级联；否则按订单全行级联
-  // 这里统一收口为 itemIds 数组，避免 SQL 双分支
-  let itemIds = []
-  if (saleItemId) {
-    itemIds = [saleItemId]
-  } else {
-    const itemRes = await client.query(
+  // 兜底：items 为空（老退款行无 note.items / 整单退无明细）→ 查所有购买项视为全退（兼容历史数据）
+  let effItems = Array.isArray(items) ? items.filter((it) => it && it.saleItemId) : []
+  let wholeOrder = !!isWholeOrderRefund
+  if (effItems.length === 0) {
+    const r = await client.query(
       `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
       [saleOrderId],
     )
-    itemIds = itemRes.rows.map((r) => r.sale_item_id)
+    effItems = r.rows.map((x) => ({ saleItemId: x.sale_item_id, sessionCount: null, isFullItemRefund: true }))
+    wholeOrder = true
   }
 
-  // ========== 通道 1: sale_allocations 软删 ==========
+  // 仅「全退」的 item 才作废分配/提成（Bug M 语义收敛）
+  const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
+
+  // ========== 通道 1: sale_allocations 软删（仅全退 item）==========
   let voidedAllocations = 0
-  if (itemIds.length > 0) {
+  if (fullItemIds.length > 0) {
     const allocRes = await client.query(
       `UPDATE sale_allocations
           SET is_void = true, voided_at = $1, updated_at = $1
         WHERE sale_item_id = ANY($2) AND is_void = false`,
-      [now, itemIds],
+      [now, fullItemIds],
     )
     voidedAllocations = allocRes.rowCount || 0
   }
 
-  // ========== 通道 2: service_commissions 软删 ==========
-  // 关联：service_commissions → service_items.sale_item_id ∈ itemIds
+  // ========== 通道 2: service_commissions 软删（仅全退 item）==========
   let voidedCommissions = 0
-  if (itemIds.length > 0) {
+  if (fullItemIds.length > 0) {
     const commRes = await client.query(
       `UPDATE service_commissions sc
           SET is_void = true, voided_at = $1, voided_reason = $2, updated_at = $1
@@ -78,15 +78,14 @@ async function cascadeRefund(client, params) {
         WHERE sc.service_item_id = sit.service_item_id
           AND sit.sale_item_id = ANY($3)
           AND sc.is_void = false`,
-      [now, voidedReason, itemIds],
+      [now, voidedReason, fullItemIds],
     )
     voidedCommissions = commRes.rowCount || 0
   }
 
-  // ========== 通道 3: user_coupons 回滚（仅未过期；部分退款不退券）==========
-  // 部分退款（saleItemId 非 null）：券挂在订单维度无法精确到行，整单退才退券。
+  // ========== 通道 3: user_coupons 回滚（仅整单全退；部分退款不退券）==========
   let refundedCoupons = 0
-  if (!saleItemId) {
+  if (wholeOrder) {
     const couponRes = await client.query(
       `UPDATE user_coupons
           SET status = '未使用', used_at = NULL, used_sale_order_id = NULL
@@ -98,14 +97,9 @@ async function cascadeRefund(client, params) {
     refundedCoupons = couponRes.rowCount || 0
   }
 
-  // ========== 通道 4: point_transactions 比例冲销 ==========
-  // 写入与原"消费赠送/回款赠送/获取"对冲的"消费冲销"行（单笔目标态）；同事务重算 client_wechat_users.points_balance
-  // 部分退款按"本次累计退款额 / 整单实收"比例冲销赠送积分；整单退款 → refunded=received → 全额冲销。
-  // SOT 对齐 db/schema/points.ts：列名 type / ref_order_id（不是 change_type / ref_sale_order_id）
-  // point_transactions 无 note 列。
+  // ========== 通道 4: point_transactions 比例冲销（订单级，按 refunded/received 比例）==========
   let reversedPoints = 0
   let pointsBalanceUpdated = false
-  // 1) 查整单原赠送总额 G + 归属顾客 user_id（一个订单的赠送都属同一顾客）
   const giftRes = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS g, MIN(user_id) AS user_id
        FROM point_transactions
@@ -117,7 +111,6 @@ async function cascadeRefund(client, params) {
   const grantedTotal = Number(giftRes.rows[0]?.g || 0)
   const pointUserId = giftRes.rows[0]?.user_id || null
   if (grantedTotal > 0 && pointUserId) {
-    // 2) 取整单 received + refunded_amount（approveRefund 已先累加 refunded_amount，含本次）
     const orderRes = await client.query(
       `SELECT received, COALESCE(refunded_amount, 0) AS refunded
          FROM sale_orders
@@ -126,9 +119,7 @@ async function cascadeRefund(client, params) {
     )
     const received = Number(orderRes.rows[0]?.received || 0)
     const refunded = Number(orderRes.rows[0]?.refunded || 0)
-    // 3) 目标冲销额：按退款占实收比例（received<=0 兜底全冲）；整数积分
     const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
-    // 4) 写单笔目标态消费冲销：DO UPDATE 目标态（非 DO NOTHING），解多次部分退款累加单调增长
     await client.query(
       `INSERT INTO point_transactions
          (user_id, ref_order_id, type, amount, created_at)
@@ -139,7 +130,6 @@ async function cascadeRefund(client, params) {
       [pointUserId, saleOrderId, -target, now],
     )
     reversedPoints = target
-    // 5) 同事务重算 balance（合并表 client_wechat_users.points_balance，无独立 customer_points 表）
     await client.query(
       `UPDATE client_wechat_users
           SET points_balance = COALESCE((
@@ -153,35 +143,23 @@ async function cascadeRefund(client, params) {
     pointsBalanceUpdated = true
   }
 
-  // ========== 通道 5: pickup_records 反向恢复 ==========
-  // 部分退款（传 saleItemId）：按 sessionCount 反推数量，仅减该行；
-  // 整单退款（saleItemId 为 null）：把原单下所有家居产品行 picked_up_quantity 清零。
-  // 两端均带 product_type='家居产品' 守卫 + COALESCE(...)>0 过滤。
+  // ========== 通道 5: pickup_records 反向恢复（逐被退家居 item，按 sessionCount）==========
+  // 仅作用于本次被退的 item（Bug Q：不再整单清掉未退 item 的提货账）；sessionCount 为空跳过。
+  // 家居提货账与退款的完整厘清（neuter + 已退数量追踪）见 follow-up；当前金额门已封顶防超退。
   let rolledBackPickups = 0
-  if (saleItemId) {
-    if (sessionCount && Number(sessionCount) > 0) {
-      const pickupRes = await client.query(
-        `UPDATE sale_items
-            SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - $1),
-                updated_at = $2
-          WHERE sale_item_id = $3
-            AND product_type = '家居产品'
-            AND COALESCE(picked_up_quantity, 0) > 0`,
-        [Number(sessionCount), now, saleItemId],
-      )
-      rolledBackPickups = pickupRes.rowCount || 0
-    }
-  } else {
+  for (const it of effItems) {
+    const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
+    if (!qty) continue
     const pickupRes = await client.query(
       `UPDATE sale_items
-          SET picked_up_quantity = 0,
-              updated_at = $1
-        WHERE sale_order_id = $2
+          SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - $1),
+              updated_at = $2
+        WHERE sale_item_id = $3
           AND product_type = '家居产品'
           AND COALESCE(picked_up_quantity, 0) > 0`,
-      [now, saleOrderId],
+      [qty, now, it.saleItemId],
     )
-    rolledBackPickups = pickupRes.rowCount || 0
+    rolledBackPickups += pickupRes.rowCount || 0
   }
 
   return {

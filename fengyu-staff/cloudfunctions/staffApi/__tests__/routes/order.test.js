@@ -2306,9 +2306,10 @@ describe('order.qrcode', () => {
         sale_order_id: 'FY-QR-001', status: '待支付', sale_order_type: '销售单',
         client_phone: '138', customer_name: '张三', payment_method: '微信',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '500', prepaid_card_amount: '0',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-1', received: '500', product_name: '面部护理', sku_spec_name: '基础款' },
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理', sku_spec_name: '基础款' },
       ])
 
     await orderRoutes.qrcode(ctx)
@@ -2318,8 +2319,31 @@ describe('order.qrcode', () => {
     expect(ctx.result.qrcodeUrl).toBe('cloud://mock-file-id/wxacode.png')
     expect(ctx.result.qrcodeError).toBe('')
     expect(ctx.result.totalAmount).toBe(500)
+    // 实际需支付 = Σ商品实付(pending_received 500) − 储值卡抵扣(0) = 500
+    expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.items).toHaveLength(1)
     expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String))
+  })
+
+  test('储值卡抵扣后实际需支付 = 商品实付 − 储值卡（不显示应付）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CARD' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-CARD', status: '待支付', sale_order_type: '销售单',
+        client_phone: '138', customer_name: '李四', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '500', prepaid_card_amount: '200',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理', sku_spec_name: '基础款' },
+      ])
+
+    await orderRoutes.qrcode(ctx)
+
+    // 应付仍是 total_amount=500，但付款码展示的实际需支付 = 实付500 − 储值卡200 = 300
+    expect(ctx.result.totalAmount).toBe(500)
+    expect(ctx.result.actualPayable).toBe(300)
   })
 
   test('已支付订单不生成二维码', async () => {

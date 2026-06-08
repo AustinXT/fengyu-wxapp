@@ -19,7 +19,14 @@
 function calculateUnusedQuantity(item) {
   if (!item) return 0
   if (item.product_type === '疗程卡') {
-    return Number(item.remaining_sessions || 0)
+    // 修复（Bug A 数量门）：退款不减 remaining_sessions（Model X），仅靠 remaining 算可退会让全额退后
+    // 仍显示全部可退 → 重复退款。真正可退 = 已付次数 − 已消费次数 = paid_sessions − (session_count − remaining)。
+    // paid_sessions 已反映所有已审批退款（approveRefund 末尾 recalc），全额退后为 0 → 可退 0。
+    // paid_sessions 为 null（历史行）回退 remaining_sessions，金额门仍兜底。两端镜像 admin lib/refund.ts。
+    const remaining = Number(item.remaining_sessions || 0)
+    if (item.paid_sessions == null) return remaining
+    const consumed = Number(item.session_count || 0) - remaining
+    return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed))
   }
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
@@ -80,6 +87,8 @@ function buildRefundDetails(origItems, requestItems) {
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
       isShengmei: orig.is_shengmei ?? null,
+      // 修复（Bug M）：本次是否全退该明细（退款数量 >= 当前可退数量）→ cascade 仅全退才作废分配/提成
+      isFullItemRefund: requested >= maxUnused,
     })
   }
 
@@ -133,9 +142,46 @@ function resolveRefundPaymentMethod(origPaymentMethod) {
   return origPaymentMethod
 }
 
+/**
+ * 待审批退款冻结守卫（Bug I）：订单存在待审批退款时禁止改动其衍生数据（核销/分配/提货/回款）。
+ * client 可为顶层 pg（query 返回数组）或事务内 client（返回 {rows}），兼容两种。
+ */
+async function assertNoPendingRefund(client, saleOrderId) {
+  if (!saleOrderId) return
+  const r = await client.query(
+    `SELECT 1 FROM sale_order_payments
+      WHERE sale_order_id = $1 AND change_type = '退款' AND status = '待审批' LIMIT 1`,
+    [saleOrderId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_IN_PROGRESS: 该订单退款审批中，暂不可操作')
+  }
+}
+
+/**
+ * 按服务单反查其涉及的所有订单是否有待审批退款（service.confirm 用，一服务单可跨多订单核销）。
+ */
+async function assertNoPendingRefundByServiceOrder(client, serviceOrderId) {
+  if (!serviceOrderId) return
+  const r = await client.query(
+    `SELECT 1 FROM service_items sit
+       JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+       JOIN sale_order_payments sop ON sop.sale_order_id = si.sale_order_id
+      WHERE sit.service_order_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批' LIMIT 1`,
+    [serviceOrderId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_IN_PROGRESS: 关联订单退款审批中，暂不可确认')
+  }
+}
+
 module.exports = {
   calculateUnusedQuantity,
   buildRefundDetails,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
+  assertNoPendingRefund,
+  assertNoPendingRefundByServiceOrder,
 }

@@ -22,6 +22,8 @@ export interface RefundSourceItem {
   product_type: ProductType | null
   session_count: number | null
   remaining_sessions: number | null
+  /** 已付费次数（已反映已审批退款）；疗程卡数量门用，null 视为历史行回退 remaining_sessions */
+  paid_sessions: number | null
   unit_price: string | number
   quantity: number
   unit_real_price: string | number
@@ -49,6 +51,8 @@ export interface RefundDetail {
   refundAmount: number
   salesCategory: SalesCategory | null
   serviceFee: number
+  /** 本次是否全退该明细（退款数量 >= 当前可退数量）→ 控制 cascade 是否作废其分配/提成（Bug M） */
+  isFullItemRefund: boolean
 }
 
 /**
@@ -57,7 +61,13 @@ export interface RefundDetail {
 export function calculateUnusedQuantity(item: RefundSourceItem | null | undefined): number {
   if (!item) return 0
   if (item.product_type === '疗程卡') {
-    return Number(item.remaining_sessions || 0)
+    // 修复（Bug A 数量门）：退款不减 remaining_sessions（Model X），真正可退 = paid_sessions − 已消费次数。
+    // paid_sessions 已反映所有已审批退款，全额退后为 0 → 可退 0。null（历史行）回退 remaining，金额门兜底。
+    // 两端镜像 staff utils/refund.js。
+    const remaining = Number(item.remaining_sessions || 0)
+    if (item.paid_sessions == null) return remaining
+    const consumed = Number(item.session_count || 0) - remaining
+    return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed))
   }
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
@@ -115,6 +125,8 @@ export function buildRefundDetails(
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
+      // 修复（Bug M）：本次是否全退该明细 → cascade 仅全退才作废分配/提成
+      isFullItemRefund: requested >= maxUnused,
     })
   }
 

@@ -220,8 +220,10 @@ async function createRefund(ctx) {
 
   const totalAmount = Number(order.total_amount)
   const payableAmount = Number(order.payable_amount)
-  const refundFace = balanceNow
   if (!(totalAmount > 0)) throw new Error('INVALID_STATE: 订单总额异常，无法计算退款金额')
+  // 修复（Bug K）：prepaid_cards 是一户一钱包（聚合所有充值/转换/回冲），不能退整个 balance。
+  // 退款面值上限 = 该充值单自身面值；取 min(该单面值, 当前余额) → 退款现金 ≤ 该单实付，不超退、不殃及其它充值单的钱。
+  const refundFace = Math.min(totalAmount, balanceNow)
   const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
 
   // 写 sale_order_payments：change_type='退款' status='待审批' amount=负

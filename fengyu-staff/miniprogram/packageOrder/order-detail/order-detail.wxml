@@ -173,13 +173,21 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成 + 店长 + 非退款/转换/回款单） -->
+      <!-- P2: 退款按钮（已支付/已完成 + 店长 + 仅销售单；对齐后端白名单，充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType !== '退款单' && order.orderType !== '转换单' && order.orderType !== '回款单'}}"
+        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType === '销售单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"
       >申请退款</van-button>
+
+      <!-- 充值卡退款（充值单专用，走 card.createRefund 退卡内余额，员工可发起→店长审批） -->
+      <van-button
+        wx:if="{{order.status === '已支付' && order.orderType === '充值单'}}"
+        block plain type="danger"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onCreateCardRefund"
+      >充值卡退款</van-button>
 
       <!-- P2: 退款审批按钮（待审批 + 退款单 + 店长） -->
       <van-button

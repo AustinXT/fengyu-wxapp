@@ -1733,12 +1733,16 @@ async function createRefund(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
   const origOrder = origOrders[0]
 
-  // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持退款
-  if (origOrder.sale_order_type === '寄存单') {
-    throw new Error('INVALID_STATE: 寄存单不支持退款')
-  }
+  // 修复（Bug L）：改正向白名单——仅销售单支持退款。原黑名单只挡寄存单/legacy，漏了内部单/转换单/充值单。
+  // 两端镜像 admin refunds.ts。充值卡退款走员工端「充值卡」入口（card.createRefund，扣 prepaid_cards.balance）。
   if (origOrder.legacy_source === 'workfine') {
     throw new Error('INVALID_STATE: 历史订单不支持退款')
+  }
+  if (origOrder.sale_order_type !== '销售单') {
+    if (origOrder.sale_order_type === '充值单') {
+      throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口发起')
+    }
+    throw new Error('INVALID_STATE: 仅销售单支持退款')
   }
 
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
@@ -1751,6 +1755,20 @@ async function createRefund(ctx) {
     throw new Error('CONFLICT: 存在未完结退款')
   }
 
+  // P 前置校验（Bug P）：有未终结服务单（待服务/服务中/待客户确认）时禁止退款。
+  // 否则退款压低 paid_sessions 会让该服务单 confirm 被闸门拦截而永久卡死、员工提成丢失（孤儿服务单）。
+  // 两端镜像 admin refunds.ts。
+  const openSvc = await pg.query(
+    `SELECT 1 FROM service_orders so2
+       JOIN service_items sit ON sit.service_order_id = so2.service_order_id
+       JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+      WHERE si.sale_order_id = $1 AND so2.status IN ('待服务','服务中','待客户确认') LIMIT 1`,
+    [refSaleOrderId]
+  )
+  if (openSvc.length > 0) {
+    throw new Error('INVALID_STATE: 该订单有未完成的服务单，请先完成或取消后再退款')
+  }
+
   // 查原单明细（构建 + 校验未使用数量）
   const origItems = await pg.query(
     "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'",
@@ -1760,6 +1778,13 @@ async function createRefund(ctx) {
   const { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
 
   const fee = Number(handlingFee) || 0
+  // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
+  // 顾客退钱后仍能消费）。限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居无 session_count 不受影响。
+  // 完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
+  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
+  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+    throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
+  }
   const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     throw new Error('INVALID_STATE: 无可退项')
@@ -1778,7 +1803,10 @@ async function createRefund(ctx) {
     [refSaleOrderId],
   )
   const paymentsNet = Number(paymentsNetRows[0]?.net || 0)
-  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0))
+  // 修复（Bug A 重复退款）：received 是不减的毛实收，必须减去已退 refunded_amount 得净可退；
+  // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数（流水完整单的净可退）；
+  // received - refunded_amount 为 legacy/流水缺失单兜底。两端镜像 admin refunds.ts。
+  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refunded_amount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
     throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
   }
@@ -1801,17 +1829,23 @@ async function createRefund(ctx) {
   // status='待审批')。退款总额 = refundByCard + refundByOrigin 合计写入 amount=-finalRefundAmount，
   // payment_method 取原路径（refundPaymentMethod）；储值卡部分 vs 原路径部分的拆分以及 handling_fee
   // 等明细全部存入 note 字段（JSON）。审批通过时根据 payment_method 决定储值卡是否回冲。
+  // 整单全退判定（Bug Q/M）：所有购买项都在本次退款且全退 → cascade 通道3（券）才回滚
+  const isWholeOrderRefund = origItems.length > 0 && origItems.every((oi) =>
+    refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
+  )
   const detailNote = JSON.stringify({
-    _v: 1,
+    _v: 2,
     refundByCard,
     refundByOrigin,
     handlingFee: fee,
     refundPaymentMethod,
+    isWholeOrderRefund,
     items: refundDetails.map(d => ({
       refSaleItemId: d.refSaleItemId,
       quantity: d.quantity,
       refundAmount: d.refundAmount,
       productType: d.productType,
+      isFullItemRefund: d.isFullItemRefund,
     })),
   })
 
@@ -1884,8 +1918,8 @@ async function approveRefund(ctx) {
   // 预查 + scope 校验（ctx.auth.effectiveStoreId 必须等于原单 store_id）
   const sopRows = await pg.query(
     `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.payment_method,
-            sop.refund_reason, sop.ref_sale_item_id, sop.session_count,
-            so.store_id, so.client_user_id
+            sop.refund_reason, sop.ref_sale_item_id, sop.session_count, sop.note,
+            so.store_id, so.client_user_id, so.received, so.refunded_amount, so.sale_order_type
        FROM sale_order_payments sop
        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.id = $1 AND sop.change_type = '退款'`,
@@ -1899,12 +1933,30 @@ async function approveRefund(ctx) {
   if (sopRow.status !== '待审批') {
     throw new Error('INVALID_STATE: 退款流水状态不是待审批')
   }
+  // 修复（Bug J）：充值单退款必须走 card.approveRefund（扣 prepaid_cards.balance）。
+  // order.approveRefund 储值卡通道只回冲销售单的卡内抵扣，对充值单余额完全不动 → 顾客留余额又拿现金。两端镜像 admin。
+  if (sopRow.sale_order_type === '充值单') {
+    throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口审批')
+  }
 
   const refSaleOrderId = sopRow.sale_order_id
   const refundAbs = Math.abs(Number(sopRow.amount || 0))
   const now = new Date()
 
   await pg.transaction(async (client) => {
+    // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。
+    // create 时已校验，但其间回款/其它操作可能改变余额；in-flight 唯一约束保证本笔是唯一待审批。两端镜像 admin refunds.ts。
+    const capNowRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
+        WHERE sale_order_id = $1 AND status = '已支付'`,
+      [refSaleOrderId]
+    )
+    const paymentsNetNow = Number(capNowRes.rows[0]?.net || 0)
+    const refundCapNow = Math.max(paymentsNetNow, Number(sopRow.received || 0) - Number(sopRow.refunded_amount || 0))
+    if (refundAbs > refundCapNow + 0.001) {
+      throw new Error('INVALID_STATE: 订单可退余额已变化，请刷新后重新发起退款')
+    }
+
     // 1. CAS 翻转流水状态 + 同一条 UPDATE 写审批人/时间/备注（幂等哨兵）
     const cas = await client.query(
       `UPDATE sale_order_payments
@@ -1926,38 +1978,63 @@ async function approveRefund(ctx) {
       [refundAbs, now, refSaleOrderId]
     )
 
-    // 3. 储值卡通道：仅当 payment_method='储值卡' 时回冲 prepaid_cards
-    if (sopRow.payment_method === '储值卡' && sopRow.client_user_id && refundAbs > 0) {
+    // 3. 储值卡通道（修复 Bug H）：读 note.refundByCard 回冲，不再依赖 payment_method==='储值卡'。
+    //    原单全额抵卡落 '无'、混合落现金通道，退款行 payment_method 几乎不是 '储值卡'，旧条件导致纯卡/混合单都漏回冲。
+    //    refundByCard 在 createRefund 已按储值卡占比拆分存入 note。两端镜像 admin refunds.ts。
+    let noteRefundByCard = 0
+    try {
+      const noteObj = sopRow.note ? (typeof sopRow.note === 'string' ? JSON.parse(sopRow.note) : sopRow.note) : null
+      noteRefundByCard = Number(noteObj?.refundByCard || 0)
+    } catch (_) { noteRefundByCard = 0 }
+    if (noteRefundByCard > 0 && sopRow.client_user_id) {
       const dupCheck = await client.query(
         `SELECT 1 FROM card_transactions
            WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
         [`SOP-${paymentId}`]
       )
       if (dupCheck.rows.length === 0) {
-        const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+        // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK
+        const newCardId = `FY-CARD-${sopRow.client_user_id}`
         const upsertRes = await client.query(
           `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
            VALUES ($1, $2, $3, NOW(), NOW())
            ON CONFLICT (user_id) DO UPDATE
              SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
            RETURNING card_id`,
-          [newCardId, sopRow.client_user_id, refundAbs]
+          [newCardId, sopRow.client_user_id, noteRefundByCard]
         )
         const cardId = upsertRes.rows[0].card_id
         await client.query(
           `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
            VALUES ($1, '充值', $2, $3, $4, NOW())
            ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-          [cardId, refundAbs, `SOP-${paymentId}`, `card-refund-${paymentId}`]
+          [cardId, noteRefundByCard, `SOP-${paymentId}`, `card-refund-${paymentId}`]
         )
       }
     }
 
-    // 4. 5 通道 cascade
+    // 4. 级联回滚（Bug Q/M）：按本次退款明细逐 item 级联（从 note.items 读），仅全退 item 作废分配/提成
+    let cascadeItems = []
+    let cascadeWholeOrder = false
+    try {
+      const noteObj = sopRow.note ? (typeof sopRow.note === 'string' ? JSON.parse(sopRow.note) : sopRow.note) : null
+      if (noteObj && Array.isArray(noteObj.items)) {
+        cascadeItems = noteObj.items.map((it) => ({
+          saleItemId: it.refSaleItemId,
+          sessionCount: it.quantity,
+          isFullItemRefund: !!it.isFullItemRefund,
+        }))
+        cascadeWholeOrder = !!noteObj.isWholeOrderRefund
+      }
+    } catch (_) { cascadeItems = [] }
+    // 兜底（老退款行无 note.items）：用 ref_sale_item_id 单 item；为空则 cascade 内部兜底整单
+    if (cascadeItems.length === 0 && sopRow.ref_sale_item_id) {
+      cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, isFullItemRefund: true }]
+    }
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
-      saleItemId: sopRow.ref_sale_item_id,
-      sessionCount: sopRow.session_count,
+      items: cascadeItems,
+      isWholeOrderRefund: cascadeWholeOrder,
       refundReason: sopRow.refund_reason || '退款审批通过',
     })
 
@@ -2010,7 +2087,7 @@ async function rejectRefund(ctx) {
   const remark = auditRemark || rejectedReason || ''
 
   const sopRows = await pg.query(
-    `SELECT sop.id, sop.sale_order_id, sop.status, so.store_id
+    `SELECT sop.id, sop.sale_order_id, sop.status, so.store_id, so.sale_order_type
        FROM sale_order_payments sop
        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.id = $1 AND sop.change_type = '退款'`,
@@ -2023,6 +2100,10 @@ async function rejectRefund(ctx) {
   }
   if (sopRow.status !== '待审批') {
     throw new Error('INVALID_STATE: 退款流水状态不是待审批')
+  }
+  // 修复（Bug J）：充值单退款走 card.rejectRefund，order 端拒绝（与 approveRefund 对称）。两端镜像 admin。
+  if (sopRow.sale_order_type === '充值单') {
+    throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口审批')
   }
 
   const now = new Date()
@@ -3215,7 +3296,7 @@ async function refundList(ctx) {
       sop.sale_order_id AS ref_sale_order_id,
       sop.amount, sop.status, sop.payment_method,
       sop.created_at, sop.paid_at,
-      so.client_phone, so.customer_name,
+      so.client_phone, so.customer_name, so.sale_order_type,
       sop.refund_reason, sop.audit_remark,
       sop.operator_employee_id AS opened_by,
       sop.audit_employee_id AS approved_by,
@@ -3254,7 +3335,7 @@ async function refundDetail(ctx) {
     `SELECT
        sop.id AS payment_id, sop.sale_order_id, sop.amount, sop.status,
        sop.payment_method, sop.change_type, sop.created_at, sop.paid_at,
-       so.store_id, so.client_user_id, so.client_phone, so.customer_name,
+       so.store_id, so.client_user_id, so.client_phone, so.customer_name, so.sale_order_type,
        so.total_amount AS orig_total_amount, so.received AS orig_received,
        so.prepaid_card_amount AS orig_prepaid, so.payment_method AS orig_payment_method,
        so.sale_order_datetime,
@@ -3325,6 +3406,7 @@ async function refundDetail(ctx) {
       status: r.status,
       paymentMethod: r.payment_method,
       changeType: r.change_type,
+      saleOrderType: r.sale_order_type,
       createdAt: r.created_at,
       paidAt: r.paid_at,
     },

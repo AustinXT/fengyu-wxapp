@@ -369,7 +369,20 @@ export default function OrderDetailPageClient({
                       );
                     }
                   }
-                  const noteLine = p.note || "—";
+                  // 退款行 note 现为 JSON（含 items/拆分）；只提取手续费/超额扣除文案展示，非退款行原样
+                  let noteLine = p.note || "—";
+                  if (isRefund && p.note) {
+                    try {
+                      const n = JSON.parse(p.note);
+                      const parts: string[] = [];
+                      if (Number(n.handlingFee) > 0) parts.push(`手续费 ¥${Number(n.handlingFee).toLocaleString()}`);
+                      if (Number(n.overdraftDeduction) > 0)
+                        parts.push(`超额扣除 ¥${Number(n.overdraftDeduction).toLocaleString()}`);
+                      noteLine = parts.join(" · ") || "—";
+                    } catch {
+                      /* 旧文本 note 原样展示 */
+                    }
+                  }
                   const detailLine = refundDetailParts.join(" · ");
                   return (
                     <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
