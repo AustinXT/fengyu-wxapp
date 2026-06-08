@@ -11,6 +11,7 @@ Page({
     saleOrderId: '',
     customerName: '',
     totalAmount: '',
+    actualPayable: '',
     qrcodeUrl: '',
     qrcodeError: '',
     retryCount: 0,
@@ -26,7 +27,6 @@ Page({
       this.setData({
         saleOrderId,
         customerName: options.customerName ? decodeURIComponent(options.customerName) : '',
-        totalAmount: options.totalAmount || '',
       });
       this.loadQrcode(saleOrderId);
     }
@@ -57,6 +57,7 @@ Page({
           saleOrderId: data.saleOrderId || '',
           customerName: data.customerName || '',
           totalAmount: data.totalAmount || '',
+          actualPayable: data.actualPayable != null ? data.actualPayable : '',
           qrcodeUrl: '',
           qrcodeError: data.qrcodeError,
           retryCount,
@@ -76,6 +77,7 @@ Page({
         saleOrderId: data.saleOrderId || '',
         customerName: data.customerName || '',
         totalAmount: data.totalAmount || '',
+        actualPayable: data.actualPayable != null ? data.actualPayable : '',
         qrcodeUrl: data.qrcodeUrl || '',
         qrcodeError: '',
         retryCount: 0,

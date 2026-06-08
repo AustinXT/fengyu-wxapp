@@ -1015,7 +1015,8 @@ async function qrcode(ctx) {
 
   const items = await pg.query(`
     SELECT
-      si.sale_item_id, si.received, si.product_name, si.sku_spec_name
+      si.sale_item_id, si.received, si.pending_received, si.sale_amount,
+      si.product_name, si.sku_spec_name
     FROM sale_items si
     WHERE si.sale_order_id = $1
   `, [saleOrderId])
@@ -1023,6 +1024,16 @@ async function qrcode(ctx) {
   // 订单应付金额取 sale_orders.total_amount（权威）：待支付订单 received 全为 0，
   // 不能用 sum(received) 否则金额显示为空（前端 totalAmount || '' 会把 0 吞成空串）
   const totalAmount = Number(order.total_amount || 0)
+
+  // 实际需支付金额（付款码顶部展示给顾客扫码）= Σ各商品明细实付 − 储值卡抵扣
+  // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
+  // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
+  const sumItemReal = items.reduce(
+    (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
+    0
+  )
+  const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
 
   // 推导二维码显示状态（UI-only 标签，不写库）
   //   待支付 + payment_method='线下' → 顾客已选线下，待店长确认收款（UI 标签 '待确认收款'）
@@ -1068,6 +1079,7 @@ async function qrcode(ctx) {
     paidAt: order.paid_at,
     openedBy: order.opened_by,
     totalAmount,
+    actualPayable,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,

@@ -10,7 +10,7 @@
     <!-- 顾客 + 金额 -->
     <view class="order-summary">
       <text class="summary-customer">{{customerName}}</text>
-      <text class="summary-amount">¥{{totalAmount}}</text>
+      <text class="summary-amount">¥{{actualPayable}}</text>
     </view>
 
     <!-- 状态区域 -->
@@ -70,7 +70,7 @@
         <view class="success-icon-area">
           <van-icon name="success" size="120rpx" color="#3D8A5A" />
         </view>
-        <text class="success-amount">¥{{totalAmount}} 已支付</text>
+        <text class="success-amount">¥{{actualPayable}} 已支付</text>
       </block>
 
       <!-- 部分支付：已收部分款，仍可继续收款或关闭 -->
