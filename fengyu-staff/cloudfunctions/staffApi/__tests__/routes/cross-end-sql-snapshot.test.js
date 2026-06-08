@@ -593,13 +593,13 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
     })
   })
 
-  // 通道 5：sale_items.picked_up_quantity 反向恢复
-  describe('通道 5：picked_up_quantity 反向恢复', () => {
-    test('staff 必须 UPDATE sale_items SET picked_up_quantity = GREATEST(0, ...)', () => {
-      expect(staffSrc).toMatch(/UPDATE\s+sale_items[\s\S]*?SET[\s\S]*?picked_up_quantity\s*=\s*GREATEST/i)
+  // 通道 5：家居退款计入已结算（2026-06-08 schema-free 止血：picked_up = LEAST(quantity, picked_up + 已退)）
+  describe('通道 5：picked_up_quantity 计入已退（LEAST 封顶）', () => {
+    test('staff 必须 UPDATE sale_items SET picked_up_quantity = LEAST(quantity, ...)', () => {
+      expect(staffSrc).toMatch(/UPDATE\s+sale_items[\s\S]*?SET[\s\S]*?picked_up_quantity\s*=\s*LEAST\(\s*quantity/i)
     })
-    test('admin 必须 UPDATE sale_items SET picked_up_quantity = GREATEST(0, ...)', () => {
-      expect(adminSrc).toMatch(/UPDATE\s+sale_items[\s\S]*?SET[\s\S]*?picked_up_quantity\s*=\s*GREATEST/i)
+    test('admin 必须 UPDATE sale_items SET picked_up_quantity = LEAST(quantity, ...)', () => {
+      expect(adminSrc).toMatch(/UPDATE\s+sale_items[\s\S]*?SET[\s\S]*?picked_up_quantity\s*=\s*LEAST\(\s*quantity/i)
     })
   })
 

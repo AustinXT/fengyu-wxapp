@@ -143,20 +143,23 @@ async function cascadeRefund(client, params) {
     pointsBalanceUpdated = true
   }
 
-  // ========== 通道 5: pickup_records 反向恢复（逐被退家居 item，按 sessionCount）==========
-  // 仅作用于本次被退的 item（Bug Q：不再整单清掉未退 item 的提货账）；sessionCount 为空跳过。
-  // 家居提货账与退款的完整厘清（neuter + 已退数量追踪）见 follow-up；当前金额门已封顶防超退。
+  // ========== 通道 5: 家居退款计入已结算（逐被退家居 item，按退款数量）==========
+  // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
+  // 原 `GREATEST(0, picked_up - qty)` 错把退款数从已提货里减 → 损坏提货账 + refundable
+  // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
+  // 「已结算」= 已提货 + 已退），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
+  // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
+  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
   let rolledBackPickups = 0
   for (const it of effItems) {
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
     if (!qty) continue
     const pickupRes = await client.query(
       `UPDATE sale_items
-          SET picked_up_quantity = GREATEST(0, COALESCE(picked_up_quantity, 0) - $1),
+          SET picked_up_quantity = LEAST(quantity, COALESCE(picked_up_quantity, 0) + $1),
               updated_at = $2
         WHERE sale_item_id = $3
-          AND product_type = '家居产品'
-          AND COALESCE(picked_up_quantity, 0) > 0`,
+          AND product_type = '家居产品'`,
       [qty, now, it.saleItemId],
     )
     rolledBackPickups += pickupRes.rowCount || 0

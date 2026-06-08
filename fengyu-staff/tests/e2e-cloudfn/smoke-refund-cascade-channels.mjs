@@ -188,7 +188,8 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────
-  // C5：通道5 家居提货 — 退未提货数量不应误改 picked_up_quantity
+  // C5：通道5 家居退款计入已结算（schema-free 止血）—— 防超退/重复退
+  //   家居 5 件、已提货 2、退 3 未提货 → picked_up 计入已退变 5（已结算）→ refundable=0 → 不可再退。
   // ───────────────────────────────────────────────────────────────────────
   const orderC5 = `${NS}_RFCH_C5`
   await createTestSaleOrder({
@@ -213,17 +214,17 @@ async function main() {
   if (payC5) {
     const c5b = await invokeStaffApi('order.approveRefund', { _testOpenid: TEST_MANAGER_OPENID, paymentId: payC5 })
     if (c5b.code !== 0) errors.push(`C5 approveRefund 应成功，code=${c5b.code} msg=${c5b.message}`)
-    // 通道5 路径资金侧硬断言：退款落账正确
     const o5 = await pgQuery(`SELECT refunded_amount FROM sale_orders WHERE sale_order_id = $1`, [orderC5])
     if (Number(o5[0]?.refunded_amount) !== 300) errors.push(`C5 家居退 3 件 refunded_amount 应=300，实际=${o5[0]?.refunded_amount}`)
-    // 提货账（已知 follow-up bug，不阻塞套件）：通道5 用退款数量去减 picked_up_quantity，
-    // 但退的是「未提货」数量 → 误改已提货计数。理想行为应为 picked_up 不变 + 引入「已退数量」列（需 schema 变更）。
-    const pk = await pgQuery(`SELECT picked_up_quantity, quantity FROM sale_items WHERE sale_item_id = $1`, [c5Item])
-    if (Number(pk[0]?.picked_up_quantity) === 2) {
-      rec(`  ✓ C5 通道5: 家居退未提货 → refunded=300 + picked_up 保持 2`)
-    } else {
-      rec(`  ⚠️ C5 通道5 资金侧 OK（refunded=300），但 picked_up=${pk[0]?.picked_up_quantity}（应=2）——已知「家居提货账」follow-up bug（通道5 误改已提货数 + 家居可重复退款），待加「已退数量」列修复，不阻塞本守护`)
-    }
+    // 通道5：已退 3 件计入 picked_up（已结算）→ LEAST(5, 2+3)=5
+    const pk = await pgQuery(`SELECT picked_up_quantity FROM sale_items WHERE sale_item_id = $1`, [c5Item])
+    if (Number(pk[0]?.picked_up_quantity) !== 5) errors.push(`C5 退后 picked_up 应=5（已结算 2提货+3退），实际=${pk[0]?.picked_up_quantity}`)
+    // 防超退：refundable = quantity(5) - picked_up(5) = 0 → 二次退被拒
+    const c5dup = await invokeStaffApi('order.createRefund', {
+      _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: orderC5, items: [{ saleItemId: c5Item, refundQuantity: 1 }], refundReason: 'e2e_C5_dup',
+    })
+    if (c5dup.code === 0) errors.push(`C5 家居已结算后二次退应被拒（防退已提货的货·资损），实际成功`)
+    else if (Number(pk[0]?.picked_up_quantity) === 5) rec(`  ✓ C5 通道5: 家居退 3 件计入已结算(picked_up=5) + refunded=300 + 二次退被拒`)
   }
 
   if (errors.length) {
