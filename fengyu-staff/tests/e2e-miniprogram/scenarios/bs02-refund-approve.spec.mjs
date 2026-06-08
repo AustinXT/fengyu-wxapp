@@ -123,7 +123,9 @@ async function run() {
   // 导致 pendingRefundCount 仍是 A 视角的快照（≈0），15s 等空跑。
   // 改成 reLaunch 强制销毁页面栈重挂 workbench Page → 触发新 onShow → loadWorkbench()
   // → staff.todoList 用 B 的 _testOpenid（callStaffApiWithTestOpenid 已绑定）拉本店待退款数。
-  await miniProgram.reLaunch({ url: '/pages/workbench/workbench' });
+  // ⚠️ automator 的 reLaunch 入参是字符串（非 wx 风格的 { url } 对象），否则报
+  //   「parameter.url should be String instead of Object」。
+  await miniProgram.reLaunch('/pages/workbench/workbench');
   await new Promise(r => setTimeout(r, 1000));  // 给 onShow + loadWorkbench setData 留时间
   await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 15000 });
   console.log('  ✓ workbench pendingRefundCount >= 1');
