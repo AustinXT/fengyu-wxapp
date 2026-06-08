@@ -978,14 +978,21 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
   })
 
   describe("公式特征守护（防止公式漂移成不安全形态）", () => {
-    test("五端公式必须按 sale_amount 比例下分订单级 refund（item_refund_share）", () => {
-      // 新公式行级 settled = GREATEST(0, sale_items.received - op.refunded_amount × sale_amount / total_amount)
-      const pattern = /GREATEST\(0,\s*sale_items\.received::numeric\s*-\s*\(\s*op\.refunded_amount::numeric\s*\*\s*sale_items\.sale_amount::numeric\s*\/\s*NULLIF\(op\.total_amount::numeric,\s*0\)\)\)/i
+    test("五端公式直接用净额 received（2026-06-08 退款侧：STEP 1.5 已逐项扣退款，无订单级 refund_share）", () => {
+      const pattern = /FLOOR\(sale_items\.received::numeric\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
       expect(paidSessionsSqls.adminTs).toMatch(pattern)
       expect(paidSessionsSqls.scriptFix).toMatch(pattern)
+    })
+
+    test("五端 paid_sessions 公式不得再含订单级 refunded_amount（退款已由 STEP 1.5 逐项归因进 received）", () => {
+      expect(paidSessionsSqls.staff).not.toContain("refunded_amount")
+      expect(paidSessionsSqls.client).not.toContain("refunded_amount")
+      expect(paidSessionsSqls.payNotify).not.toContain("refunded_amount")
+      expect(paidSessionsSqls.adminTs).not.toContain("refunded_amount")
+      expect(paidSessionsSqls.scriptFix).not.toContain("refunded_amount")
     })
 
     test("五端必须用 FLOOR 取整（D1=A 保守策略），不得改 round/ceil", () => {
@@ -1026,13 +1033,12 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       expect(paidSessionsSqls.scriptFix).toMatch(pattern)
     })
 
-    test("五端必须用 NULLIF(op.total_amount, 0) 防 total=0 时除零", () => {
-      const pattern = /NULLIF\(op\.total_amount::numeric,\s*0\)/i
-      expect(paidSessionsSqls.staff).toMatch(pattern)
-      expect(paidSessionsSqls.client).toMatch(pattern)
-      expect(paidSessionsSqls.payNotify).toMatch(pattern)
-      expect(paidSessionsSqls.adminTs).toMatch(pattern)
-      expect(paidSessionsSqls.scriptFix).toMatch(pattern)
+    test("五端 paid_sessions 不再除以订单级 total（无 NULLIF(op.total)；分母为 sale_amount + 行级 <=0 兜底）", () => {
+      expect(paidSessionsSqls.staff).not.toMatch(/NULLIF\(op\.total_amount/i)
+      expect(paidSessionsSqls.client).not.toMatch(/NULLIF\(op\.total_amount/i)
+      expect(paidSessionsSqls.payNotify).not.toMatch(/NULLIF\(op\.total_amount/i)
+      expect(paidSessionsSqls.adminTs).not.toMatch(/NULLIF\(op\.total_amount/i)
+      expect(paidSessionsSqls.scriptFix).not.toMatch(/NULLIF\(op\.total_amount/i)
     })
   })
 
@@ -1135,6 +1141,72 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
   describe("Snapshot 守护", () => {
     test("STEP 1 分摊 SQL 文本快照", () => {
       expect(allocSqls.staff).toMatchSnapshot()
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Block 7c: STEP 1.5 逐项退款净额 SQL 四端字节同义（2026-06-08 退款侧）
+//   recalcPaidSessionsForOrder 在 STEP1（毛额分摊）之后、STEP2 之前，从已支付退款流水
+//   note.items[].refundAmount 按 refSaleItemId 聚合扣减 sale_items.received → 净额（被退项单独减少）。
+//   note→jsonb 三重防线：① WHERE 仅 退款+已支付；② note LIKE '{%' 纯文本守门；③ 嵌套 CASE 保 ::jsonb cast。
+//   admin（Drizzle ${id}）+ staff/client/payNotify（pg $1）四端归一化后字节同义。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
+  const MARKER_REFUND_DEDUCT = "received = GREATEST(0, si.received"
+  let deductSqls
+
+  beforeAll(() => {
+    deductSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_REFUND_DEDUCT)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_REFUND_DEDUCT)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_REFUND_DEDUCT)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_REFUND_DEDUCT)),
+    }
+  })
+
+  describe("特征守护（note 解析三重防线 + 逐项聚合）", () => {
+    test("四端仅聚合 退款+已支付 流水（reject='已作废'自动排除→自愈）", () => {
+      const pattern = /change_type\s*=\s*'退款'\s*AND\s*sop\.status\s*=\s*'已支付'/i
+      expect(deductSqls.staff).toMatch(pattern)
+      expect(deductSqls.client).toMatch(pattern)
+      expect(deductSqls.payNotify).toMatch(pattern)
+      expect(deductSqls.adminTs).toMatch(pattern)
+    })
+    test("四端 note→jsonb 守门：note LIKE '{%' 外层 + jsonb_typeof items 数组（防 22P02/25P02）", () => {
+      const guard = /sop\.note LIKE '\{%'/i
+      const typ = /jsonb_typeof\(\(sop\.note\)::jsonb -> 'items'\)\s*=\s*'array'/i
+      for (const s of [deductSqls.staff, deductSqls.client, deductSqls.payNotify, deductSqls.adminTs]) {
+        expect(s).toMatch(guard)
+        expect(s).toMatch(typ)
+      }
+    })
+    test("四端按 refSaleItemId 聚合 refundAmount（逐项归因）", () => {
+      const pattern = /SUM\(refund_amount\)\s*AS\s*refunded/i
+      expect(deductSqls.staff).toMatch(pattern)
+      expect(deductSqls.client).toMatch(pattern)
+      expect(deductSqls.payNotify).toMatch(pattern)
+      expect(deductSqls.adminTs).toMatch(pattern)
+    })
+    test("四端从毛额 GREATEST(0) clamp 扣减 + 仅 item_direction='购买' 行", () => {
+      const deduct = /received\s*=\s*GREATEST\(0,\s*si\.received::numeric\s*-\s*COALESCE\(agg\.refunded,\s*0\)\)/i
+      const buyOnly = /item_direction\s*=\s*'购买'/
+      for (const s of [deductSqls.staff, deductSqls.client, deductSqls.payNotify, deductSqls.adminTs]) {
+        expect(s).toMatch(deduct)
+        expect(s).toMatch(buyOnly)
+      }
+    })
+  })
+
+  describe("四端镜像比对", () => {
+    test("staff vs client", () => { expect(deductSqls.client).toBe(deductSqls.staff) })
+    test("staff vs payNotify", () => { expect(deductSqls.payNotify).toBe(deductSqls.staff) })
+    test("staff vs admin（归一化后等价）", () => { expect(deductSqls.adminTs).toBe(deductSqls.staff) })
+  })
+
+  describe("Snapshot 守护", () => {
+    test("STEP 1.5 逐项退款净额 SQL 文本快照", () => {
+      expect(deductSqls.staff).toMatchSnapshot()
     })
   })
 })
@@ -1300,5 +1372,58 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
   test('admin createRefund 含 历史订单/仅销售单 退款拦截（寄存单走"仅销售单"通用拒绝）', () => {
     expect(adminRefunds).toContain('历史订单不支持退款')
     expect(adminRefunds).toContain('仅销售单支持退款')
+  })
+})
+
+/**
+ * 回款营业额分配缺口修复：收款路径 allocation_status 初始化四端守护
+ *
+ * 根因：sale_orders.allocation_status 列 DB 默认 NULL（db/schema/order.ts），
+ * 普通销售单 order.create 不写该列 → NULL；唯一初始化点曾只有 staff confirmOffline。
+ * 回款（createRepayment / recordPayment）、admin 线下确认收款（confirmOfflinePayment）、
+ * 线上支付（payNotify）把订单翻「已支付」时漏初始化 allocation_status，导致 staff 店长端
+ * 「营业额分配」对这些单失效：pendingList 要 allocation_status='待分配'（NULL 不匹配），
+ * allocation.save 拒 NULL（抛"订单分配状态异常"）。
+ *
+ * 修复：所有"把销售单推进到已支付"的收款 UPDATE 一律对齐 confirmOffline 的字面：
+ *   allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+ * 任一端漂移/缺失即触发本守护失败，提醒同步另外几端（独立副本规范）。
+ */
+describe('回款营业额分配：四端收款路径 allocation_status 初始化守护', () => {
+  const ALLOC_INIT = "allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)"
+
+  function countOccurrences(src, needle) {
+    return src.split(needle).length - 1
+  }
+
+  let staffOrderSrc
+  let adminOrdersSrc
+  let payNotifySrc
+  beforeAll(() => {
+    staffOrderSrc = readFile(FILES.staffOrderJs)
+    adminOrdersSrc = readFile(FILES.adminOrdersTs)
+    payNotifySrc = readFile(FILES.payNotifyIndexJs)
+  })
+
+  test('staff order.js：confirmOffline + createRepayment 两处收款 UPDATE 均含 COALESCE 初始化', () => {
+    expect(countOccurrences(staffOrderSrc, ALLOC_INIT)).toBeGreaterThanOrEqual(2)
+  })
+
+  test('admin orders.ts：confirmOfflinePayment + recordPayment 两处收款 UPDATE 均含 COALESCE 初始化', () => {
+    expect(countOccurrences(adminOrdersSrc, ALLOC_INIT)).toBeGreaterThanOrEqual(2)
+  })
+
+  test('payNotify index.js：CAS 入账 UPDATE 含 COALESCE 初始化', () => {
+    expect(payNotifySrc).toContain(ALLOC_INIT)
+  })
+
+  test('payNotify index.js：preferred 自动分配后翻「已分配」（避免落入店长待分配列表诱导重分）', () => {
+    expect(payNotifySrc).toContain("SET allocation_status = '已分配'")
+  })
+
+  test('四端 COALESCE 初始化片段字面完全一致（pg 与 Drizzle sql 模板此片段无占位符，可直接字面比对）', () => {
+    expect(staffOrderSrc).toContain(ALLOC_INIT)
+    expect(adminOrdersSrc).toContain(ALLOC_INIT)
+    expect(payNotifySrc).toContain(ALLOC_INIT)
   })
 })
