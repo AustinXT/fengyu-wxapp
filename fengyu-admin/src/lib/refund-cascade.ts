@@ -184,7 +184,7 @@ export async function cascadeRefund(
              updated_at = NOW()
        WHERE used_sale_order_id = ${saleOrderId}
          AND status = '已使用'
-         AND expire_at > NOW()
+         AND (expire_at IS NULL OR expire_at > NOW())
     `)
     refundedCoupons = rowsAffected(res)
   }
@@ -228,6 +228,7 @@ export async function cascadeRefund(
            SET points_balance = COALESCE((
                  SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id
                ), 0),
+               points_updated_at = NOW(),
                updated_at = NOW()
          WHERE c.user_id = ${pointUserId}
       `)

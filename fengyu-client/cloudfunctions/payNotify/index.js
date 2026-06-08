@@ -386,7 +386,8 @@ exports.main = async (event) => {
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
-             updated_at = $3
+             updated_at = $3,
+             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
          WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付')`,
         [newStatus, newPaidSum, now, targetOrderNo]
@@ -442,7 +443,8 @@ exports.main = async (event) => {
             [targetOrderNo]
           )
           if (dupCheck.rows.length === 0) {
-            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+            // 确定性 card_id（Bug U）：一户一卡，避免 Date.now()+random 并发撞 PK
+            const newCardId = `FY-CARD-${targetOrder.client_user_id}`
             const upsertRes = await client.query(
               `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
                VALUES ($1, $2, $3, NOW(), NOW())
@@ -494,7 +496,9 @@ exports.main = async (event) => {
              ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
             [cardId, -prepaidAmount, targetOrderNo, `card-deduct-${targetOrderNo}`]
           )
-          // 写储值卡抵扣流水（与 confirmOffline/staffApi 一致，amount 为负数）
+          // 写储值卡抵扣流水（修复 2026-06-08：amount 为**正数**，与 staff confirmOffline / admin 及
+          // received = Σ[首次支付/回款/储值卡抵扣] 不变量 I1 跨端一致；原写负数会让混合线上单 received 少记、
+          // refundCap 算少致全退被卡 + I1 cron 误报）。
           await client.query(
             `INSERT INTO sale_order_payments (
               sale_order_id, change_type, amount, payment_method,
@@ -502,8 +506,15 @@ exports.main = async (event) => {
               note, created_at, paid_at
             ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
               $3, NOW(), NOW())`,
-            [targetOrderNo, -prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
+            [targetOrderNo, prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
           )
+          // received 口径含储值卡抵扣：上面 received 仅累加了线上付款，此处补记卡抵扣部分使 received=线上+卡=总实收，
+          // 随后重算 paid_sessions（received 增长 → 可消费次数单调上升）。
+          await client.query(
+            `UPDATE sale_orders SET received = received + $1, updated_at = NOW() WHERE sale_order_id = $2`,
+            [prepaidAmount, targetOrderNo]
+          )
+          await recalcPaidSessionsForOrder(client, targetOrderNo)
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
           console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
@@ -586,6 +597,14 @@ exports.main = async (event) => {
              commissionRate, commissionAmount, now]
           )
         }
+
+        // 自动分配已建（preferred 美容师 100% 全行）→ 翻「已分配」，
+        // 避免落入店长「待分配」列表诱导重复分配（店长仍可从「已分配」Tab 复核改派）。
+        // 无 preferred 的线上单不进此块，保持 CAS 落定的 '待分配' 让店长手动分。
+        await client.query(
+          `UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2`,
+          [now, targetOrderNo]
+        )
       }
 
       // 4. 重算顾客历史消费档位

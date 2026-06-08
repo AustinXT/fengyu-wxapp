@@ -450,6 +450,10 @@ export const getCustomerHeldCards = withPermission(
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
         eq(saleItems.productType, '疗程卡'),
         sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+        // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
+        sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
+        // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+        sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 

@@ -112,6 +112,14 @@ export function buildRefundDetails(
     const origQty = Number(orig.quantity) || 1
     const refundServiceFee = -Math.round((origServiceFee * requested) / origQty * 100) / 100
 
+    // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
+    // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
+    // 保护「已完成服务的提成」与「已实现营收的分配」不被退剩余次数误删（两端镜像 staff utils/refund.js）。
+    const consumedQty =
+      orig.product_type === '疗程卡'
+        ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0)
+        : Number(orig.picked_up_quantity || 0)
+
     refundDetails.push({
       refSaleItemId: req.saleItemId,
       skuId: orig.sku_id,
@@ -125,8 +133,7 @@ export function buildRefundDetails(
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
-      // 修复（Bug M）：本次是否全退该明细 → cascade 仅全退才作废分配/提成
-      isFullItemRefund: requested >= maxUnused,
+      isFullItemRefund: requested >= maxUnused && consumedQty <= 0,
     })
   }
 

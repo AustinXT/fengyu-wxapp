@@ -451,7 +451,6 @@ async function create(ctx) {
       return {
         skuId: item.skuId,
         productName: sku.spec_name,
-        skuSpecName: sku.spec_name,
         productType: sku.product_type,
         productKind: sku.product_kind,
         sessionCount,
@@ -836,10 +835,10 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount, remark,
+        preferred_employee_id, coupon_id, coupon_discount, remark, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -893,14 +892,14 @@ async function create(ctx) {
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-          product_name, sku_spec_name, product_type,
+          product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, pending_received,
           sales_category, service_fee, is_shengmei, is_experience, is_manager_special
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0', $14, $15, $16, $17, $18, $19)`,
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16, $17, $18)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
-          d.productName, d.skuSpecName, d.productType,
+          d.productName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,
           d.saleAmount, d.received,
@@ -1019,7 +1018,7 @@ async function qrcode(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.received, si.pending_received, si.sale_amount,
-      si.product_name, si.sku_spec_name
+      si.product_name
     FROM sale_items si
     WHERE si.sale_order_id = $1
   `, [saleOrderId])
@@ -1086,7 +1085,6 @@ async function qrcode(ctx) {
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,
-      skuSpecName: i.sku_spec_name,
       received: i.received
     })),
     qrcodeUrl,
@@ -1296,7 +1294,8 @@ async function confirmOffline(ctx) {
           [saleOrderId]
         )
         if (dupCheck.rows.length === 0) {
-          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+          // 确定性 card_id（Bug U）：一户一卡，避免 Date.now()+random 并发撞 PK
+          const newCardId = `FY-CARD-${order.client_user_id}`
           const upsertRes = await client.query(
             `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
              VALUES ($1, $2, $3, NOW(), NOW())
@@ -1620,13 +1619,24 @@ async function detail(ctx) {
     }
   }
 
+  // 解析线下确认人姓名（offline_confirmed_by 存的是 employee_id，前端原先直接显示工号）
+  if (order.offline_confirmed_by) {
+    const confirmerRows = await pg.query(
+      'SELECT name FROM staff_wechat_users WHERE employee_id = $1',
+      [order.offline_confirmed_by]
+    )
+    if (confirmerRows.length > 0) {
+      order.offline_confirmed_by_name = (confirmerRows[0].name || '').trim()
+    }
+  }
+
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.sku_id, si.session_count, si.remaining_sessions,
       si.paid_sessions,
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
       si.expire_date, si.remark, si.sales_category,
-      si.product_name, si.sku_spec_name, si.product_type
+      si.product_name, si.product_type, si.picked_up_quantity
     FROM sale_items si
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
@@ -1782,7 +1792,7 @@ async function createRefund(ctx) {
 
   const { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
 
-  const fee = Number(handlingFee) || 0
+  const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
   // 顾客退钱后仍能消费）。限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居无 session_count 不受影响。
   // 完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
@@ -2460,7 +2470,8 @@ async function createRepayment(ctx) {
     const updateRes = await client.query(
       `UPDATE sale_orders
          SET status = $1, received = $2, prepaid_card_amount = $3,
-             paid_at = $4, updated_at = $5
+             paid_at = $4, updated_at = $5,
+             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
        WHERE sale_order_id = $6 AND status = $7`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, refSaleOrderId, locked.status]
     )
@@ -2585,11 +2596,11 @@ async function createConversion(ctx) {
     // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
     const heldResult = await tx.query(
       `SELECT si.sale_item_id,
+              si.sale_order_id,
               si.store_id,
               si.item_direction,
               si.sku_id,
               si.product_name,
-              si.sku_spec_name,
               si.product_type,
               si.session_count,
               si.remaining_sessions,
@@ -2635,6 +2646,8 @@ async function createConversion(ctx) {
       if (row.order_status !== '已支付' && row.order_status !== '已完成') {
         throw new Error('INVALID_PARAMS: 原订单状态不允许转换')
       }
+      // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵转换（转换会置 remaining_sessions=0，与在途退款冲突）
+      await assertNoPendingRefund(tx, row.sale_order_id)
 
       const unit = Number(row.unit_real_price)
       const productType = row.product_type
@@ -2660,7 +2673,6 @@ async function createConversion(ctx) {
         refSaleItemId: row.sale_item_id,
         skuId: row.sku_id,
         productName: row.product_name,
-        skuSpecName: row.sku_spec_name,
         productType,
         sessionCount: row.session_count != null ? Number(row.session_count) : null,
         unitPrice: Number(row.unit_price),
@@ -2701,7 +2713,6 @@ async function createConversion(ctx) {
       inItems.push({
         skuId: sku.sku_id,
         productName: sku.spec_name,
-        skuSpecName: sku.spec_name,
         productType: sku.product_type,
         sessionCount: inSessionCount,
         unitPrice: inPerSessionUnit,
@@ -2783,13 +2794,13 @@ async function createConversion(ctx) {
       await tx.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
-          sku_id, product_name, sku_spec_name, product_type,
+          sku_id, product_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
-          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.skuId, d.productName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
           -d.amount, -d.amount,
           d.salesCategory, d.serviceFee,
@@ -2823,14 +2834,14 @@ async function createConversion(ctx) {
       await tx.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction,
-          sku_id, product_name, sku_spec_name, product_type,
+          sku_id, product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13, $14, $15)`,
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11, $12, $13, $14)`,
         [
           saleItemId, convOrderId, storeId,
-          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.skuId, d.productName, d.productType,
           d.sessionCount,
           d.unitPrice, d.quantity, d.amount,
           d.salesCategory, d.serviceFee,
@@ -2932,7 +2943,7 @@ async function createConversion(ctx) {
  * 查询顾客在当前门店可折抵的卡（转换单备选）
  *
  * payload: { clientUserId: string }
- * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, skuSpecName, productType,
+ * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, productType,
  *                    remainingSessions, remainingQuantity, unitRealPrice, deductibleAmount }] }
  *
  * 口径与 admin getCustomerHeldCards 保持一致（2026-05-21 单品合并后放开）：
@@ -2950,7 +2961,6 @@ async function customerHeldCards(ctx) {
     `SELECT si.sale_item_id,
             si.sale_order_id AS source_sale_order_id,
             si.product_name,
-            si.sku_spec_name,
             si.product_type,
             si.remaining_sessions,
             (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
@@ -2993,7 +3003,6 @@ async function customerHeldCards(ctx) {
       saleItemId: r.sale_item_id,
       sourceSaleOrderId: r.source_sale_order_id,
       productName: r.product_name,
-      skuSpecName: r.sku_spec_name,
       productType: r.product_type,
       remainingSessions: r.remaining_sessions != null ? Number(r.remaining_sessions) : null,
       remainingQuantity: r.remaining_quantity != null ? Number(r.remaining_quantity) : null,
@@ -3137,7 +3146,7 @@ async function availablePickupItems(ctx) {
     `SELECT si.sale_item_id,
             si.sale_order_id,
             si.product_name,
-            si.sku_spec_name AS spec_name,
+            si.product_name AS spec_name,
             si.quantity,
             COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
             si.unit_real_price,
@@ -3241,7 +3250,7 @@ async function pickupRecordsList(ctx) {
            cw.phone AS client_phone,
            sw.name AS confirmed_by_name,
            si.product_name,
-           si.sku_spec_name AS spec_name,
+           si.product_name AS spec_name,
            si.quantity AS item_quantity,
            si.picked_up_quantity AS item_picked_up_quantity,
            si.sale_order_id
@@ -3436,7 +3445,7 @@ async function refundDetail(ctx) {
   const nameMap = {}
   if (itemIds.length > 0) {
     const siRows = await pg.query(
-      `SELECT sale_item_id, product_name, sku_spec_name AS spec_name, product_type
+      `SELECT sale_item_id, product_name, product_name AS spec_name, product_type
          FROM sale_items WHERE sale_item_id = ANY($1)`,
       [itemIds]
     )
@@ -3612,7 +3621,6 @@ async function createDeposit(ctx) {
     return {
       skuId: item.skuId,
       productName: sku.spec_name,
-      skuSpecName: sku.spec_name,
       productType: sku.product_type,
       productKind: sku.product_kind,
       sessionCount,
@@ -3685,14 +3693,14 @@ async function createDeposit(ctx) {
       await tx.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-          product_name, sku_spec_name, product_type,
+          product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16)`,
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13, 0, $14, $15)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
-          d.productName, d.skuSpecName, d.productType,
+          d.productName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,
           d.saleAmount,

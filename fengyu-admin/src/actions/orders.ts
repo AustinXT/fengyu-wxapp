@@ -17,6 +17,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
@@ -28,6 +29,9 @@ import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filte
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
+// 订单详情：指定美容师 / 线下确认人 各自 JOIN staff_wechat_users 取姓名
+const preferredStaff = alias(staffWechatUsers, 'preferredStaff') as unknown as typeof staffWechatUsers
+const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown as typeof staffWechatUsers
 
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
@@ -88,9 +92,8 @@ async function applyRechargeOnOrderPaid(
   `)
   if ((dup as unknown as any[]).length > 0) return
 
-  const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, '0')}`
+  // 确定性 card_id（Bug U）：一户一卡，避免 Date.now()+random 并发撞 PK
+  const newCardId = `FY-CARD-${order.clientUserId}`
 
   const upsertRows = await tx.execute(sql`
     INSERT INTO prepaid_cards (card_id, user_id, balance)
@@ -625,10 +628,14 @@ export const getOrderById = withAnyPermission(
       order: saleOrders,
       storeName: stores.storeName,
       openedByName: opener.name,
+      preferredEmployeeName: preferredStaff.name,
+      offlineConfirmedByName: offlineConfirmer.name,
     })
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .leftJoin(preferredStaff, eq(saleOrders.preferredEmployeeId, preferredStaff.employeeId))
+    .leftJoin(offlineConfirmer, eq(saleOrders.offlineConfirmedBy, offlineConfirmer.employeeId))
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
@@ -662,6 +669,7 @@ export const getOrderById = withAnyPermission(
     received: ir.item.received,
     pendingReceived: ir.item.pendingReceived,
     expireDate: ir.item.expireDate,
+    pickedUpQuantity: ir.item.pickedUpQuantity,
     remark: ir.item.remark,
     salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
     createdAt: ir.item.createdAt.toISOString(),
@@ -699,6 +707,9 @@ export const getOrderById = withAnyPermission(
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
     openedByName: r.openedByName ?? undefined,
+    preferredEmployeeName: r.preferredEmployeeName ?? undefined,
+    offlineConfirmedByName: r.offlineConfirmedByName ?? undefined,
+    offlineConfirmedAt: r.order.offlineConfirmedAt?.toISOString() ?? null,
     // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocations.ts 白名单一致），控制详情页分配入口显隐
     allocatable: ['销售单', '转换单'].includes(r.order.saleOrderType) && r.order.legacySource !== 'workfine',
     items,
@@ -938,7 +949,8 @@ export const confirmOfflinePayment = withPermission(
             paid_at = ${paidAtIso},
             offline_confirmed_by = ${session.employeeId},
             offline_confirmed_at = NOW(),
-            updated_at = NOW()
+            updated_at = NOW(),
+            allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
         WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
       `)
       if (rowsAffected(updRes) === 0) {
@@ -1989,6 +2001,7 @@ export const createConversionOrder = withPermission(
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
+          si.sale_order_id,
           si.store_id,
           si.item_direction,
           si.sku_id,
@@ -2048,6 +2061,10 @@ export const createConversionOrder = withPermission(
         if (row.item_direction !== '购买') throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行非购买行，不可折抵')
         if (row.order_status !== '已支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
+        }
+        // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵（与 staff createConversion 对齐）
+        if (await hasPendingRefund(tx, row.sale_order_id as string)) {
+          throw new ApiError('INVALID_STATE', 'REFUND_IN_PROGRESS: 部分卡所属订单退款审批中，暂不可折抵')
         }
 
         const unit = Number(row.unit_real_price)
@@ -2856,6 +2873,11 @@ export const recordPayment = withPermission(
         throw new ApiError('INVALID_STATE', '历史订单不支持回款')
       }
 
+      // 冻结闭环（Bug I）：订单有待审批退款时禁止回款（与 staff createRepayment 对齐，防 received 在 create→approve 间漂移）
+      if (await hasPendingRefund(tx, saleOrderId)) {
+        throw new ApiError('INVALID_STATE', 'REFUND_IN_PROGRESS: 该订单退款审批中，暂不可回款')
+      }
+
       if (!['部分支付', '待支付'].includes(locked.status)) {
         throw new Error(`INVALID_STATE:${locked.status}`)
       }
@@ -3069,7 +3091,8 @@ export const recordPayment = withPermission(
             refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
             paid_at = ${paidAtValue},
-            updated_at = NOW()
+            updated_at = NOW(),
+            allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
         WHERE sale_order_id = ${saleOrderId} AND status = ${locked.status}
       `)
       if (rowsAffected(updRes) === 0) {

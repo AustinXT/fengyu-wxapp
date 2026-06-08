@@ -12,6 +12,7 @@ import { isInScope, scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { hasPendingRefund } from '@/lib/refund-cascade'
 import { revalidatePath } from 'next/cache'
 
 export interface AdminPickupRecord {
@@ -311,6 +312,15 @@ export const createPickupRecord = withPermission(
   }
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建提货记录' }
+  }
+
+  // 冻结闭环（Bug I）：该明细所属订单有待审批退款时禁止提货（与 staff createPickup 对齐；
+  // 退款 cascade 通道5 会回滚 picked_up_quantity，待审批期提货会被随后 approve 静默回滚 → 提货账漂移）
+  const ordRows = (await db.execute(sql`
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
+  `)) as unknown as Array<{ sale_order_id: string }>
+  if (ordRows.length > 0 && (await hasPendingRefund(db, ordRows[0].sale_order_id))) {
+    return { success: false, message: '该订单退款审批中，暂不可提货' }
   }
 
   // 幂等前置：若传 idempotencyKey 且已存在对应行，直接返回当前 ID（不再 UPDATE/INSERT）

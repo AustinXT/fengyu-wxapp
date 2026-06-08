@@ -22,14 +22,20 @@
       <van-cell title="下单人" value="{{order.customerName || '—'}}" />
       <van-cell title="手机号" value="{{isManager ? order.customerPhone : order.customerPhoneMasked}}" />
       <van-cell title="所属门店" value="{{order.storeName || '—'}}" />
+      <van-cell wx:if="{{order.marketName}}" title="所属市场" value="{{order.marketName}}" />
       <van-cell title="订单来源" value="{{order.orderSourceLabel}}" />
       <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
+      <van-cell wx:if="{{order.documentType}}" title="单据类型" value="{{order.documentType}}" />
+      <van-cell wx:if="{{order.refOrderId}}" title="关联原单" value="{{order.refOrderId}}" />
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
       <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
+      <van-cell wx:if="{{order.couponName || order.couponDiscount}}" title="优惠券" value="{{order.couponName}}{{order.couponDiscount ? ' -¥' + order.couponDiscount : ''}}" />
       <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
       <van-cell wx:if="{{order.confirmedAt}}" title="确认时间" value="{{order.confirmedAt}}" />
+      <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />
       <van-cell title="创建时间" value="{{order.createdAt}}" />
       <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
+      <van-cell wx:if="{{order.isLegacy}}" title="数据来源" value="历史导入订单" />
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>
 
@@ -52,6 +58,13 @@
           <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
+        </view>
+        <!-- 明细扩展：原价划线 / 销售分类 / 过期日期 / 已提货数量 -->
+        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0}}" class="item-extra">
+          <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
+          <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
+          <text wx:if="{{item.expireDate}}" class="item-extra-tag">有效期至 {{item.expireDate}}</text>
+          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提 {{item.pickedUpQuantity}}</text>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>
@@ -174,9 +187,9 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成 + 店长 + 仅销售单；对齐后端白名单，充值单走下方专用按钮） -->
+      <!-- P2: 退款按钮（已支付/已完成 + 仅销售单；员工可发起→店长审批，对齐后端 requireStaffBound + 充值卡退款按钮；充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType === '销售单'}}"
+        wx:if="{{(order.status === '已支付' || order.status === '已完成') && order.orderType === '销售单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"

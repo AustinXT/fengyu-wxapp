@@ -12,6 +12,7 @@ import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 
 /** 校验服务单是否在用户 scope 内 */
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
@@ -88,6 +89,12 @@ export const batchSaveServiceCommissions = withPermission(
   ): Promise<{ success: boolean; message: string }> => {
   if (!(await verifyServiceOrderScope(serviceOrderId, session))) {
     return { success: false, message: '无权操作该服务单的提成分配' }
+  }
+
+  // 冻结闭环（Bug I）：关联订单有待审批退款时禁止改提成（与 staff serviceCommission.save 对齐；
+  // 退款 cascade 通道2 会作废服务提成，待审批期改提成会被随后 approve 静默作废）
+  if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
+    return { success: false, message: '关联订单退款审批中，暂不可调整提成分配' }
   }
 
   // 校验所有 serviceItemId 属于该服务单
