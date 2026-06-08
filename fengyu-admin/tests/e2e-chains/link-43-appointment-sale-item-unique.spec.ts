@@ -58,12 +58,12 @@ function seed(): void {
   psql(`
     INSERT INTO sale_items (
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-      product_name, sku_spec_name, product_type, session_count, remaining_sessions,
+      product_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID}', '${SOID}', '${STORE_ID}', '购买', 'c79157b29c9e974c',
-      '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '疗程卡', 2, 2,
+      '洗-无创纹身 疗程卡', '疗程卡', 2, 2,
       100, 1, 100, 200, 200,
       0, false, NOW(), NOW()
     )

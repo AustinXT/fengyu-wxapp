@@ -65,6 +65,7 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   notExists: vi.fn((subq) => ({ type: 'notExists', subq })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -96,6 +97,7 @@ import {
   cancelServiceOrder,
   createServiceOrder,
   getServiceOrdersPaginated,
+  deleteServiceOrder,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -676,5 +678,62 @@ describe('getServiceOrdersPaginated — 服务端分页', () => {
     expect(result.data[0].storeName).toBeUndefined()
     expect(result.data[0].employeeName).toBeUndefined()
     expect(result.data[0].customerName).toBeUndefined()
+  })
+})
+
+// ── deleteServiceOrder — 物理删除守卫 + 级联 ──────────────────────────────
+
+describe('deleteServiceOrder — 守卫 + 级联删除', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  function setupTx(deleteCount: number) {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
+      }
+      return fn(tx)
+    })
+  }
+
+  it('服务单不存在 → 拒绝，不进事务', async () => {
+    mockSelectBefore([])
+    const result = await deleteServiceOrder('SVC-404')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('已完成服务单 → 拒绝（仅待服务/已取消可删）', async () => {
+    mockSelectBefore([{ status: '已完成', serviceDate: '2026-05-01', assignedEmployeeId: 'E1', commissionStatus: '已分配' }])
+    const result = await deleteServiceOrder('SVC-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('待服务')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('已取消服务单 → 级联删除成功 + 审计', async () => {
+    mockSelectBefore([{ status: '已取消', serviceDate: '2026-05-01', assignedEmployeeId: 'E1', commissionStatus: null }])
+    setupTx(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteServiceOrder('SVC-2')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'service.delete', 'service_order', 'SVC-2',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+  })
+
+  it('主表删除 rowCount=0（并发）→ 回滚提示', async () => {
+    mockSelectBefore([{ status: '待服务', serviceDate: '2026-05-01', assignedEmployeeId: 'E1', commissionStatus: null }])
+    setupTx(0)
+    const result = await deleteServiceOrder('SVC-3')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已变更')
   })
 })

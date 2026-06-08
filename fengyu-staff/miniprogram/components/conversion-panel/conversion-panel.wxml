@@ -36,7 +36,6 @@
       </view>
       <view class="conv-card-info">
         <text class="conv-card-name">{{item.productName}}</text>
-        <text class="conv-card-spec">{{item.skuSpecName}}</text>
         <view class="conv-card-meta">
           <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} 次</text>
           <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>

@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { serviceOrders, serviceItems } from '@db/service'
+import { serviceOrders, serviceItems, serviceReviews } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus } from '@db/product'
 import { stores } from '@db/org'
@@ -15,7 +15,9 @@ import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
-import { parseServiceOrderFilters } from '@/lib/list-filters'
+import { pgErrorCode } from '@/lib/pg-error'
+import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
+import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -255,6 +257,61 @@ export const exportServiceOrders = withPermission(
   },
 )
 
+/** 营业额分配「服务提成」导出行（对齐分配列表展示列） */
+export interface ExportAllocationServiceRow {
+  serviceOrderId: string
+  customerName: string | null
+  storeName: string | null
+  employeeName: string | null
+  serviceDate: string | null
+  commissionStatus: string | null
+}
+
+/**
+ * 导出营业额分配「服务提成」（已完成服务单，全部筛选命中）。LIMIT 10000 防 OOM。
+ * 筛选口径与 allocations 页 getServiceOrdersPaginated 一致（状态锁定已完成，allocStatus 走提成状态）。
+ */
+export const exportAllocationServiceOrders = withPermission(
+  'service:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseAllocationServiceFilters(params)
+    const whereClause = and(...buildServiceOrderConditions(session, filters))
+
+    const orderRows = await db
+      .select({
+        service_order: serviceOrders,
+        storeName: stores.storeName,
+        employeeName: staffWechatUsers.name,
+        customerName: clientWechatUsers.name,
+      })
+      .from(serviceOrders)
+      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+      .where(whereClause)
+      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+      .limit(LIMIT + 1)
+
+    const truncated = orderRows.length > LIMIT
+    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+
+    const rows: ExportAllocationServiceRow[] = page.map((r) => ({
+      serviceOrderId: r.service_order.serviceOrderId,
+      customerName: r.customerName,
+      storeName: r.storeName,
+      employeeName: r.employeeName,
+      serviceDate: r.service_order.serviceDate,
+      commissionStatus: r.service_order.commissionStatus,
+    }))
+
+    return { rows, truncated }
+  },
+)
+
 export const getServiceOrderById = withPermission(
   'service:list',
   async (session, serviceOrderId: string): Promise<ServiceOrder | null> => {
@@ -305,7 +362,7 @@ export const getServiceItems = withPermission(
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
-      sli.sku_spec_name AS sku_name,
+      sli.product_name AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
       sli.session_count,
@@ -335,12 +392,39 @@ export const getServiceItems = withPermission(
   },
 )
 
+/** 顾客对已完成服务单的评价（一单一评，service_order_id 作 PK） */
+export interface ServiceReview {
+  rating: number
+  comment: string | null
+  createdAt: string
+}
+
+export const getServiceReview = withPermission(
+  'service:list',
+  async (_session, serviceOrderId: string): Promise<ServiceReview | null> => {
+    const rows = await db
+      .select({
+        rating: serviceReviews.rating,
+        comment: serviceReviews.comment,
+        createdAt: serviceReviews.createdAt,
+      })
+      .from(serviceReviews)
+      .where(eq(serviceReviews.serviceOrderId, serviceOrderId))
+      .limit(1)
+    if (rows.length === 0) return null
+    return {
+      rating: rows[0].rating,
+      comment: rows[0].comment,
+      createdAt: rows[0].createdAt.toISOString(),
+    }
+  },
+)
+
 /** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡） */
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
   productName: string | null
-  skuSpecName: string | null
   productType: string | null
   sessionCount: number | null
   remainingSessions: number | null
@@ -357,7 +441,6 @@ export const getAvailableSaleItems = withPermission(
       si.sale_item_id,
       si.sale_order_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -396,7 +479,6 @@ export const getAvailableSaleItems = withPermission(
     saleItemId: r.sale_item_id,
     saleOrderId: r.sale_order_id,
     productName: r.product_name,
-    skuSpecName: r.sku_spec_name,
     productType: r.product_type,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
@@ -537,6 +619,11 @@ export const confirmServiceOrder = withPermission(
     }
   }
 
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销。两端镜像 staff service.js
+  if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
+    return { success: false, message: '关联订单退款审批中，暂不可确认' }
+  }
+
   let result: any
   try {
     // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
@@ -628,6 +715,83 @@ export const cancelServiceOrder = withPermission(
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
+  },
+)
+
+/**
+ * 物理删除服务单（仅系统管理员；数据治理用，清理测试服务单）。
+ *
+ * 守卫：仅 待服务 / 已取消 可删（服务中 / 待客户确认 / 已完成 一律禁删，避免误删已计提成的服务记录）。
+ * 可删时事务内级联删：service_commissions → service_items → service_reviews → service_orders。
+ * 23503 兜底回滚。
+ */
+export const deleteServiceOrder = withPermission(
+  'service:delete',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+    const [svc] = await db
+      .select({
+        status: serviceOrders.status,
+        serviceDate: serviceOrders.serviceDate,
+        assignedEmployeeId: serviceOrders.assignedEmployeeId,
+        commissionStatus: serviceOrders.commissionStatus,
+      })
+      .from(serviceOrders)
+      .where(and(eq(serviceOrders.serviceOrderId, serviceOrderId), scopeCondition(session, serviceOrders.storeId)))
+      .limit(1)
+
+    if (!svc) {
+      return { success: false, message: '服务单不存在或无权操作' }
+    }
+    if (svc.status !== '待服务' && svc.status !== '已取消') {
+      return { success: false, message: '仅「待服务 / 已取消」服务单可删除（进行中或已完成不可删）' }
+    }
+
+    try {
+      const txResult = await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          DELETE FROM service_commissions
+          WHERE service_item_id IN (SELECT service_item_id FROM service_items WHERE service_order_id = ${serviceOrderId})
+        `)
+        await tx.execute(sql`DELETE FROM service_items WHERE service_order_id = ${serviceOrderId}`)
+        await tx.execute(sql`DELETE FROM service_reviews WHERE service_order_id = ${serviceOrderId}`)
+
+        const result = await tx
+          .delete(serviceOrders)
+          .where(and(
+            eq(serviceOrders.serviceOrderId, serviceOrderId),
+            inArray(serviceOrders.status, ['待服务', '已取消']),
+            scopeCondition(session, serviceOrders.storeId),
+          ))
+        if ((result as any).count === 0) {
+          throw new Error('SERVICE_STATE_CHANGED')
+        }
+        return true
+      })
+      if (!txResult) {
+        return { success: false, message: '服务单状态已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'SERVICE_STATE_CHANGED') {
+        return { success: false, message: '服务单状态已变更，请刷新重试' }
+      }
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '服务单存在关联业务数据，无法删除' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'service.delete', 'service_order', serviceOrderId, {
+      snapshot: {
+        status: svc.status,
+        serviceDate: svc.serviceDate,
+        assignedEmployeeId: svc.assignedEmployeeId,
+        commissionStatus: svc.commissionStatus,
+      },
+    })
+
+    revalidatePath('/services')
+    revalidatePath('/allocations')
+    return { success: true, message: '服务单已删除' }
   },
 )
 

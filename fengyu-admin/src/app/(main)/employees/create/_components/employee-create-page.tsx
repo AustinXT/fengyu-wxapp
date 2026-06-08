@@ -41,6 +41,8 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
     // 默认今天作为入职日，可在表单内调整；DB 兜底为 created_at::date
     hiredAt: shanghaiToday(),
     skills: [] as string[],
+    // 是否缴纳社保（默认否）
+    socialInsurance: false,
   })
 
   // 根据所属组织的市场过滤门店
@@ -67,6 +69,14 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
       toast.error("请输入手机号")
       return
     }
+    if (!form.idCard.trim()) {
+      toast.error("请输入身份证号")
+      return
+    }
+    if (!/^\d{17}[\dXx]$/.test(form.idCard.trim())) {
+      toast.error("身份证号格式不正确")
+      return
+    }
 
     setSaving(true)
     try {
@@ -82,6 +92,7 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
+        socialInsurance: form.socialInsurance,
       })
 
       if (!result.success) {
@@ -154,12 +165,27 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">身份证号</label>
+              <label className="text-sm font-medium">
+                身份证号 <span className="text-[#D94040]">*</span>
+              </label>
               <Input
                 value={form.idCard}
                 onChange={(e) => handleChange("idCard", e.target.value)}
                 placeholder="请输入身份证号"
               />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">是否缴纳社保</label>
+              <Select
+                value={form.socialInsurance ? "true" : "false"}
+                onChange={(e) => {
+                  setFormDirty(true)
+                  setForm((prev) => ({ ...prev, socialInsurance: e.target.value === "true" }))
+                }}
+              >
+                <option value="false">否</option>
+                <option value="true">是</option>
+              </Select>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">所属组织</label>

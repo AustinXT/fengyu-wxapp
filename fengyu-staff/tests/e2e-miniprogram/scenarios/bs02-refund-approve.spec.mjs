@@ -112,14 +112,19 @@ async function run() {
   console.log('  ✓ PG sop:', sops[0]);
   await snapshot(miniProgram, 'bs02-step1-after-createRefund');
 
-  // ─── STEP 2：切 B → navigate workbench → 徽章 = 1 ───
+  // ─── STEP 2：切 B → reLaunch workbench → 徽章 = 1 ───
   console.log('[step 2] loginAs B + workbench 徽章=1');
   await clearToasts(miniProgram);
   // 显式传 B 的 currentStoreId（=本店），否则 _currentStoreId 不注入 → effectiveStoreId 解析为 null
   // → staff.todoList 的 `WHERE so.store_id=$1` 命中 0，pendingRefundCount 永远 0。
   await loginAs(miniProgram, MANAGER_B_OPENID, TEST_STORE_ID);
-  await navigateToTab(miniProgram, '/pages/workbench/workbench');
-  // workbench onShow 异步拉 todoList。pendingRefundCount 直接挂在 page.data 上。
+  // F1 修复（2026-05-28）：原 `navigateToTab` 经 switchTab 复用既有 workbench tab 实例，
+  // loginAs 切 globalData 后**没有触发新一轮 onShow**（Page 实例已存在 onShow 不会被自动激活），
+  // 导致 pendingRefundCount 仍是 A 视角的快照（≈0），15s 等空跑。
+  // 改成 reLaunch 强制销毁页面栈重挂 workbench Page → 触发新 onShow → loadWorkbench()
+  // → staff.todoList 用 B 的 _testOpenid（callStaffApiWithTestOpenid 已绑定）拉本店待退款数。
+  await miniProgram.reLaunch({ url: '/pages/workbench/workbench' });
+  await new Promise(r => setTimeout(r, 1000));  // 给 onShow + loadWorkbench setData 留时间
   await waitForData(miniProgram, (d) => Number(d.pendingRefundCount) >= 1, { timeoutMs: 15000 });
   console.log('  ✓ workbench pendingRefundCount >= 1');
   await snapshot(miniProgram, 'bs02-step2-workbench-badge');

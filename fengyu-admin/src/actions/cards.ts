@@ -4,7 +4,8 @@ import { db } from '@/db'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus, productCategories } from '@db/product'
 import { stores, orgNodes } from '@db/org'
-import { clientWechatUsers } from '@db/user'
+import { serviceItems, serviceOrders } from '@db/service'
+import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { prepaidCards } from '@db/prepaid-card'
 import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
@@ -38,8 +39,6 @@ export interface AdminCard {
   saleOrderId: string
   /** 商品名快照 */
   productName: string | null
-  /** 规格名快照 */
-  skuSpecName: string | null
   /** 总次数 */
   sessionCount: number | null
   /** 剩余次数 */
@@ -166,7 +165,6 @@ export const getCardsPaginated = withPermission(
       saleItemId: saleItems.saleItemId,
       saleOrderId: saleItems.saleOrderId,
       productName: saleItems.productName,
-      skuSpecName: saleItems.skuSpecName,
       sessionCount: saleItems.sessionCount,
       remainingSessions: saleItems.remainingSessions,
       quantity: saleItems.quantity,
@@ -196,7 +194,6 @@ export const getCardsPaginated = withPermission(
       saleItemId: r.saleItemId,
       saleOrderId: r.saleOrderId,
       productName: r.productName ?? null,
-      skuSpecName: r.skuSpecName ?? null,
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
       quantity: r.quantity ?? 1,
@@ -211,6 +208,172 @@ export const getCardsPaginated = withPermission(
     })),
     total: countRow?.count ?? 0,
   }
+  },
+)
+
+// ============================================================================
+// 卡详情（/cards/[id] 页面）
+//
+// 权限：sale_item:list（admin/manager/finance/customer_mgr 均默认持有）。
+//   - scope 由 saleItems.storeId 约束，非 admin 角色跨门店 saleItemId 直接返回 null。
+//   - 强制 item_direction='购买'：转换出/退款出的 sale_item 是流水副本不是卡，详情入口不展示。
+// ============================================================================
+
+export interface CardDetail {
+  // sale_items 快照
+  saleItemId: string
+  saleOrderId: string
+  productName: string | null
+  sessionCount: number | null
+  remainingSessions: number | null
+  paidSessions: number | null
+  unitPrice: string
+  unitRealPrice: string
+  saleAmount: string
+  received: string
+  quantity: number
+  expireDate: string | null
+  itemDirection: string
+  productType: '疗程卡' | '家居产品' | null
+  // 顾客 / 门店
+  storeId: string
+  storeName: string | null
+  marketName: string | null
+  clientUserId: string | null
+  clientName: string | null
+  clientPhone: string | null
+  // 关联订单
+  paidAt: string | null
+  orderCreatedAt: string | null
+  orderStatus: string | null
+}
+
+export const getCardById = withPermission(
+  'sale_item:list',
+  async (session, saleItemId: string): Promise<CardDetail | null> => {
+    if (!saleItemId) return null
+
+    // 复用 cards 列表的市场名 scalar subquery 范式（cards.ts:148-153）
+    const marketNameExpr = sql<string | null>`(
+      SELECT n.name FROM stores s
+      JOIN org_nodes sn ON sn.id = s.org_node_id
+      JOIN org_nodes n ON n.id = sn.parent_id
+      WHERE s.store_id = ${saleItems.storeId}
+    )`.as('market_name')
+
+    const rows = await db
+      .select({
+        saleItemId: saleItems.saleItemId,
+        saleOrderId: saleItems.saleOrderId,
+        productName: saleItems.productName,
+        sessionCount: saleItems.sessionCount,
+        remainingSessions: saleItems.remainingSessions,
+        paidSessions: saleItems.paidSessions,
+        unitPrice: saleItems.unitPrice,
+        unitRealPrice: saleItems.unitRealPrice,
+        saleAmount: saleItems.saleAmount,
+        received: saleItems.received,
+        quantity: saleItems.quantity,
+        expireDate: saleItems.expireDate,
+        itemDirection: saleItems.itemDirection,
+        productType: saleItems.productType,
+        storeId: saleItems.storeId,
+        storeName: stores.storeName,
+        marketName: marketNameExpr,
+        clientUserId: saleOrders.clientUserId,
+        clientName: clientWechatUsers.name,
+        clientPhone: clientWechatUsers.phone,
+        paidAt: saleOrders.paidAt,
+        orderCreatedAt: saleOrders.createdAt,
+        orderStatus: saleOrders.status,
+      })
+      .from(saleItems)
+      .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .where(
+        and(
+          eq(saleItems.saleItemId, saleItemId),
+          eq(saleItems.itemDirection, '购买'),
+          scopeCondition(session, saleItems.storeId),
+        ),
+      )
+      .limit(1)
+
+    if (rows.length === 0) return null
+    const r = rows[0]
+
+    return {
+      saleItemId: r.saleItemId,
+      saleOrderId: r.saleOrderId,
+      productName: r.productName ?? null,
+      sessionCount: r.sessionCount ?? null,
+      remainingSessions: r.remainingSessions ?? null,
+      paidSessions: r.paidSessions ?? null,
+      unitPrice: r.unitPrice,
+      unitRealPrice: r.unitRealPrice,
+      saleAmount: r.saleAmount,
+      received: r.received,
+      quantity: r.quantity ?? 1,
+      expireDate: r.expireDate ?? null,
+      itemDirection: r.itemDirection,
+      productType: (r.productType as '疗程卡' | '家居产品' | null) ?? null,
+      storeId: r.storeId,
+      storeName: r.storeName ?? null,
+      marketName: r.marketName ?? null,
+      clientUserId: r.clientUserId ?? null,
+      clientName: r.clientName ?? null,
+      clientPhone: r.clientPhone ?? null,
+      paidAt: r.paidAt?.toISOString() ?? null,
+      orderCreatedAt: r.orderCreatedAt?.toISOString() ?? null,
+      orderStatus: r.orderStatus ?? null,
+    }
+  },
+)
+
+export interface CardTransaction {
+  serviceItemId: string
+  serviceOrderId: string
+  serviceDate: string
+  serviceOrderStatus: string
+  sessionUsed: number
+  unitRealPriceSnapshot: string | null
+  employeeId: string | null
+  employeeName: string | null
+}
+
+export const getCardTransactions = withPermission(
+  'sale_item:list',
+  async (_session, saleItemId: string): Promise<CardTransaction[]> => {
+    if (!saleItemId) return []
+
+    const rows = await db
+      .select({
+        serviceItemId: serviceItems.serviceItemId,
+        serviceOrderId: serviceItems.serviceOrderId,
+        serviceDate: serviceOrders.serviceDate,
+        serviceOrderStatus: serviceOrders.status,
+        sessionUsed: serviceItems.sessionUsed,
+        unitRealPriceSnapshot: serviceItems.unitRealPrice,
+        employeeId: serviceItems.employeeId,
+        employeeName: staffWechatUsers.name,
+      })
+      .from(serviceItems)
+      .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+      .leftJoin(staffWechatUsers, eq(serviceItems.employeeId, staffWechatUsers.employeeId))
+      .where(eq(serviceItems.saleItemId, saleItemId))
+      .orderBy(desc(serviceOrders.serviceDate), desc(serviceItems.createdAt))
+
+    return rows.map((r) => ({
+      serviceItemId: r.serviceItemId,
+      serviceOrderId: r.serviceOrderId,
+      serviceDate: r.serviceDate,
+      serviceOrderStatus: r.serviceOrderStatus,
+      sessionUsed: r.sessionUsed,
+      unitRealPriceSnapshot: r.unitRealPriceSnapshot ?? null,
+      employeeId: r.employeeId ?? null,
+      employeeName: r.employeeName ?? null,
+    }))
   },
 )
 
@@ -233,7 +396,6 @@ export const getCardsPaginated = withPermission(
 export interface HeldCardCandidate {
   saleItemId: string
   productName: string | null
-  skuSpecName: string | null
   productType: '疗程卡' | '家居产品'
   /** 剩余次数（疗程卡） */
   remainingSessions: number | null
@@ -259,7 +421,6 @@ export const getCustomerHeldCards = withPermission(
     .select({
       saleItemId: saleItems.saleItemId,
       productName: saleItems.productName,
-      skuSpecName: saleItems.skuSpecName,
       productType: saleItems.productType,
       remainingSessions: saleItems.remainingSessions,
       quantity: saleItems.quantity,
@@ -280,6 +441,10 @@ export const getCustomerHeldCards = withPermission(
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
         eq(saleItems.productType, '疗程卡'),
         sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+        // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
+        sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
+        // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+        sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 
@@ -290,7 +455,6 @@ export const getCustomerHeldCards = withPermission(
     return {
       saleItemId: r.saleItemId,
       productName: r.productName,
-      skuSpecName: r.skuSpecName,
       productType: '疗程卡' as const,
       remainingSessions: remSess,
       remainingQty: null,

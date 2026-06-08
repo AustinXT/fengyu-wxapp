@@ -60,8 +60,7 @@ async function detail(ctx) {
       si_svc.employee_id,
       si_svc.service_duration,
       si_svc.unit_real_price,
-      si_sale.product_name,
-      si_sale.sku_spec_name
+      si_sale.product_name
     FROM service_items si_svc
     LEFT JOIN sale_items si_sale ON si_svc.sale_item_id = si_sale.sale_item_id
     WHERE si_svc.service_order_id = $1
@@ -118,8 +117,7 @@ async function list(ctx) {
         si.session_used,
         si.service_duration,
         si.unit_real_price,
-        sal.product_name,
-        sal.sku_spec_name
+        sal.product_name
       FROM service_items si
       LEFT JOIN sale_items sal ON si.sale_item_id = sal.sale_item_id
       WHERE si.service_order_id = ANY($1)
@@ -246,6 +244,18 @@ async function confirm(ctx) {
 
   if (so.status !== '待客户确认') {
     throw new Error('INVALID_STATE: 服务单当前状态不可确认')
+  }
+
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销（顾客端）。SQL 谓词镜像 staff/admin
+  const pendRefund = await pg.query(
+    `SELECT 1 FROM service_items sit
+       JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+       JOIN sale_order_payments sop ON sop.sale_order_id = si.sale_order_id
+      WHERE sit.service_order_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批' LIMIT 1`,
+    [id]
+  )
+  if (pendRefund.length > 0) {
+    throw new Error('INVALID_STATE: 关联订单退款审批中，暂不可确认')
   }
 
   const items = await loadServiceItems(id)

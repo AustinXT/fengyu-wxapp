@@ -26,6 +26,8 @@ import { formatPhoneSafe } from "@/lib/format"
 import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile, type CustomerRefundRecord } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
+import { DangerZoneDelete } from "@/components/delete-action"
+import { deleteCustomer } from "@/actions/customers"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -39,6 +41,8 @@ interface CustomerDetailPageProps {
   prepaidBalance?: string
   canEditPhone?: boolean
   canPullLegacy?: boolean
+  /** 是否展示「危险操作」删除入口（仅系统管理员 customer:delete） */
+  canDelete?: boolean
 }
 
 export default function CustomerDetailPage({
@@ -53,6 +57,7 @@ export default function CustomerDetailPage({
   prepaidBalance,
   canEditPhone = false,
   canPullLegacy = false,
+  canDelete = false,
 }: CustomerDetailPageProps) {
   const router = useRouter()
   const [merging, setMerging] = useState<string | null>(null)
@@ -914,6 +919,21 @@ export default function CustomerDetailPage({
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
+
+      {/* 危险操作：物理删除顾客（仅系统管理员，仅无业务关联的测试号可删） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="顾客"
+          redirectTo="/customers"
+          onConfirm={() => deleteCustomer(customer.userId)}
+          description={
+            <>
+              确定要删除顾客 <span className="font-medium">{customer.name || customer.phone || customer.userId}</span> 吗？
+              此操作不可恢复。有订单 / 服务 / 预约 / 积分 / 储值卡 / 优惠券等业务关联的顾客不可删除。
+            </>
+          }
+        />
+      )}
     </div>
   )
 }

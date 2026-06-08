@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/db', () => ({
-  db: { select: vi.fn() },
+  db: { select: vi.fn(), delete: vi.fn() },
 }))
 
 vi.mock('@db/operation-log', () => ({
@@ -34,6 +34,14 @@ vi.mock('@/lib/auth', () => ({
   getSession: vi.fn(),
 }))
 
+vi.mock('@/lib/operation-log', () => ({
+  logOperation: vi.fn(),
+}))
+
+vi.mock('next/cache', () => ({
+  revalidatePath: vi.fn(),
+}))
+
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   requireAnyPermission: vi.fn((session: any, actions: string[]) => {
@@ -43,9 +51,10 @@ vi.mock('@/lib/permissions', () => ({
   }),
 }))
 
-import { getLogs, getOrderLogs } from './logs'
+import { getLogs, getOrderLogs, deleteOperationLog } from './logs'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { logOperation } from '@/lib/operation-log'
 import { eq, like, gte, lte } from 'drizzle-orm'
 
 const mockSession = {
@@ -248,5 +257,50 @@ describe('getOrderLogs — 订单操作日志', () => {
     })
 
     await expect(getOrderLogs('FY-XSD-WX-260315-0001')).rejects.toThrow('PERMISSION_DENIED')
+  })
+})
+
+// ── deleteOperationLog — 物理删除 ─────────────────────────────────────────
+
+describe('deleteOperationLog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  function mockSelectRow(rows: any[]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    ;(db.select as any).mockReturnValue(chain)
+  }
+
+  it('日志不存在 → 拒绝，不删除', async () => {
+    mockSelectRow([])
+    const result = await deleteOperationLog(999)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('日志存在 → 物理删除 + 审计', async () => {
+    mockSelectRow([{ action: 'order.create', targetType: 'sale_order', targetId: 'O-1', operatorName: '张三', createdAt: new Date('2026-05-01T00:00:00Z') }])
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    const result = await deleteOperationLog(1)
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'operation_log.delete', 'operation_log', '1',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+  })
+
+  it('删除 rowCount=0 → 拒绝', async () => {
+    mockSelectRow([{ action: 'x', targetType: 'y', targetId: 'z', operatorName: null, createdAt: new Date() }])
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 0 }) })
+    const result = await deleteOperationLog(1)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
   })
 })

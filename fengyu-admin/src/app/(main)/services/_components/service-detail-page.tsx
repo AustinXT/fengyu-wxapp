@@ -4,22 +4,38 @@ import Link from "next/link"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { ServiceOrder } from "@/lib/types"
-import type { ServiceItemDetail } from "@/actions/services"
+import type { ServiceItemDetail, ServiceReview } from "@/actions/services"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { DangerZoneDelete } from "@/components/delete-action"
+import { deleteServiceOrder } from "@/actions/services"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
+}
+
+/** 只读星级展示（admin 无现成组件，内联实现，品牌色 #C0322A） */
+function StarDisplay({ rating }: { rating: number }) {
+  const r = Math.max(0, Math.min(5, rating))
+  return (
+    <span className="text-lg leading-none tracking-wide text-[#C0322A]">
+      {"★".repeat(r)}
+      <span className="text-[#E8E8E8]">{"★".repeat(5 - r)}</span>
+    </span>
+  )
 }
 
 export default function ServiceDetailPageClient({
   serviceOrder,
   serviceItems,
+  serviceReview,
+  canDelete = false,
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
+  serviceReview: ServiceReview | null
+  /** 是否展示「危险操作」删除入口（仅系统管理员 service:delete） */
+  canDelete?: boolean
 }) {
   return (
     <div className="space-y-6">
@@ -113,15 +129,26 @@ export default function ServiceDetailPageClient({
                     : null
                   const sessionCell = item.sessionCount !== null
                     ? `${used ?? 0}/${item.paidSessions ?? 0}/${item.sessionCount}`
-                    : "—"
+                    : "-"
                   return (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{item.productName || "—"}</td>
+                    <td className="px-4 py-3 font-medium">
+                      {item.saleItemId ? (
+                        <Link
+                          href={`/cards/${item.saleItemId}`}
+                          className="text-[var(--primary)] hover:underline"
+                        >
+                          {item.productName || "—"}
+                        </Link>
+                      ) : (
+                        item.productName || "—"
+                      )}
+                    </td>
                     <td className="px-4 py-3">{item.skuName || "—"}</td>
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice
                         ? `¥${Number(item.unitRealPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
+                        : "-"}
                     </td>
                     <td className="px-4 py-3 text-right">{item.sessionUsed}</td>
                     <td className="px-4 py-3 text-right">{sessionCell}</td>
@@ -138,6 +165,46 @@ export default function ServiceDetailPageClient({
           </div>
         </CardContent>
       </Card>
+
+      {/* 客户评价（仅已完成单展示；service:list 权限已在 action 层限定，所有有权限用户可见） */}
+      {serviceOrder.status === "已完成" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>客户评价</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {serviceReview ? (
+              <div className="space-y-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <StarDisplay rating={serviceReview.rating} />
+                  <span className="font-medium text-[#C0322A]">{serviceReview.rating} 分</span>
+                </div>
+                {serviceReview.comment && (
+                  <p className="whitespace-pre-wrap text-[var(--foreground)]">{serviceReview.comment}</p>
+                )}
+                <p className="text-[#999999]">{formatDateTime(serviceReview.createdAt)}</p>
+              </div>
+            ) : (
+              <p className="text-sm text-[#999999]">顾客暂未评价</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 危险操作：物理删除服务单（仅系统管理员） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="服务单"
+          redirectTo="/services"
+          onConfirm={() => deleteServiceOrder(serviceOrder.serviceOrderId)}
+          description={
+            <>
+              确定要删除服务单 <span className="font-medium">{serviceOrder.serviceOrderId}</span> 吗？
+              将一并删除其服务明细与评价，此操作不可恢复。仅「待服务 / 已取消」可删，进行中或已完成不可删除。
+            </>
+          }
+        />
+      )}
     </div>
   )
 }

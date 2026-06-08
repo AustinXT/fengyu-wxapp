@@ -24,11 +24,11 @@ async function testApproveRefund() {
     `)
     
     await db.execute(sql`
-      INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction, 
-        product_name, sku_spec_name, session_count, remaining_sessions, unit_price, quantity, 
+      INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
+        product_name, session_count, remaining_sessions, unit_price, quantity,
         unit_real_price, sale_amount, received, sales_category, service_fee, sku_id)
       VALUES ('XSLSH-WX-TEST0001', 'FY-XSD-WX-TEST9001', 'store-nc01', '购买',
-        '安吉丽面膜', '默认', 1, 1, '100', 1, '100', '100', '100', '自销自耗', '0', ${REAL_SKU_ID})
+        '安吉丽面膜', 1, 1, '100', 1, '100', '100', '100', '自销自耗', '0', ${REAL_SKU_ID})
     `)
     
     await db.execute(sql`
@@ -48,10 +48,10 @@ async function testApproveRefund() {
     
     await db.execute(sql`
       INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, item_direction,
-        ref_sale_item_id, product_name, sku_spec_name, session_count, 
+        ref_sale_item_id, product_name, session_count,
         unit_price, quantity, unit_real_price, sale_amount, received, sales_category, service_fee, sku_id)
       VALUES ('XSLSH-WX-TEST0002', 'FY-TKD-WX-TEST9001', 'store-nc01', '退出',
-        'XSLSH-WX-TEST0001', '安吉丽面膜', '默认', 1,
+        'XSLSH-WX-TEST0001', '安吉丽面膜', 1,
         '100', 1, '100', '-100', '-100', '自销自耗', '0', ${REAL_SKU_ID})
     `)
     

@@ -1,5 +1,7 @@
 import { getAppointmentsPaginated } from '@/actions/appointments'
 import { getStores } from '@/actions/stores'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import AppointmentsPageClient from './_components/appointments-page'
 
 export const dynamic = 'force-dynamic'
@@ -13,7 +15,7 @@ export default async function Page({
 
   const tab = (params.tab || 'pending') as 'pending' | 'confirmed' | 'today' | 'all'
 
-  const [result, stores] = await Promise.all([
+  const [result, stores, session] = await Promise.all([
     getAppointmentsPaginated({
       tab,
       storeId: params.store,
@@ -24,7 +26,10 @@ export default async function Page({
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getStores(),
+    getSession(),
   ])
+
+  const canDelete = session ? hasPermission(session, 'appointment:delete') : false
 
   return (
     <AppointmentsPageClient
@@ -33,6 +38,7 @@ export default async function Page({
       total={result.total}
       pendingCount={result.pendingCount}
       confirmedCount={result.confirmedCount}
+      canDelete={canDelete}
     />
   )
 }

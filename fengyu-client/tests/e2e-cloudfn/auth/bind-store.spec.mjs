@@ -30,17 +30,22 @@ import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 const TEST_OPENID = `${NS}_BS_OPENID`
 const INVITER_OPENID = `${NS}_BS_INV_OPENID`
 
+// 绑门店前必须已绑手机号（bindStore 守卫），故 seed 带 phone 的已建档用户。
+let _bsPhoneSeq = 0
 async function seedLoggedInUser(openid = TEST_OPENID, userId = `${NS}_BS_USR`) {
+  // phone 走唯一约束 + 格式校验，给每个 user 唯一手机号
+  const phone = `1990000${String(7000 + (_bsPhoneSeq++)).padStart(4, '0')}`
   await pgQuery(
-    `INSERT INTO client_wechat_users (user_id, openid)
-     VALUES ($1, $2)
+    `INSERT INTO client_wechat_users (user_id, openid, phone)
+     VALUES ($1, $2, $3)
      ON CONFLICT (user_id) DO UPDATE
        SET openid = EXCLUDED.openid,
+           phone = EXCLUDED.phone,
            bound_store_id = NULL,
            customer_source = NULL,
            inviter_user_id = NULL,
            invited_at = NULL`,
-    [userId, openid]
+    [userId, openid, phone]
   )
   return userId
 }
@@ -171,12 +176,21 @@ async function caseStoreNotExist() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '门店不存在或已停业' })
 }
 
+// 未授权手机号（无行 / 行无 phone）→ 绑门店前必须先绑手机号
+async function casePhoneRequired() {
+  await ensureTestStore()
+  // 不 seed 任何行（模拟仅浏览、未授权手机号的访客）
+  const res = await invokeAs(TEST_OPENID, 'auth.bindStore', { storeId: TEST_STORE_ID })
+  expectError(res, 'PHONE_REQUIRED', { messageIncludes: '请先绑定手机号' })
+}
+
 const CASES = [
   ['happy: bindStore writes bound_store_id + returns names', caseHappy],
   ['switch store A → B', caseSwitchStore],
   ['sourceChannel 抖音 → customer_source', caseSourceChannel],
   ['inviter first bind sets, second bind keeps first', caseInviter],
   ['storeId not exist → INVALID_PARAMS', caseStoreNotExist],
+  ['no phone bound → PHONE_REQUIRED', casePhoneRequired],
 ]
 
 let pass = 0, fail = 0

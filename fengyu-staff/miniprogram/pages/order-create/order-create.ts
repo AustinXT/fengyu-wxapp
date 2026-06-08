@@ -1,9 +1,10 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, getCurrentStoreId } from '../../utils/role';
 import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
+import { formatDate } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -51,6 +52,10 @@ interface CartItem {
   halfPriceSaleAmount: string;
   /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
   received: string;
+  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单可改应付 */
+  isManagerSpecial?: boolean;
+  /** 店长手填的应付金额（仅店长特价行；undefined=未改，用 price×quantity） */
+  saleAmountOverride?: string;
   /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
   refBundleId?: string;
 }
@@ -77,6 +82,8 @@ interface SkuItem {
   isShengmei: boolean | null;
   /** 体验卡 capability（product_skus.is_experience） */
   isExperience?: boolean;
+  /** 店长特别优惠 capability（product_skus.is_manager_special） */
+  isManagerSpecial?: boolean;
   /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
   isBundle?: boolean;
 }
@@ -125,6 +132,8 @@ interface DisplayItem {
   productType: string;
   sessionCount: number | null;
   isBundle?: boolean;
+  /** 店长特别优惠 capability（仅普通商品开单时放开应付编辑） */
+  isManagerSpecial?: boolean;
 }
 
 interface CustomerInfo {
@@ -134,6 +143,17 @@ interface CustomerInfo {
   name: string;
   phone: string;
   phoneMasked?: string;
+  /** 顾客绑定门店 ID（后端 customer.search 返回，用于实时判断是否本店） */
+  boundStoreId?: string | null;
+  /** 顾客绑定门店名（搜索结果展示「非本店」标签用） */
+  storeName?: string;
+  /** 是否非本店顾客（前端按 boundStoreId vs 当前门店实时计算；缺 boundStoreId 时为 false，放行后端兜底） */
+  crossStore?: boolean;
+}
+
+/** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
+function markCrossStore(c: CustomerInfo): CustomerInfo {
+  return { ...c, crossStore: !!c.boundStoreId && c.boundStoreId !== getCurrentStoreId() };
 }
 
 interface CouponInfo {
@@ -141,6 +161,8 @@ interface CouponInfo {
   name: string;
   discount: number;
   description?: string;
+  /** 券有效期（后端返回原始 timestamp，前端格式化为 YYYY-MM-DD 供「有效期至」展示） */
+  expireAt?: string;
 }
 
 /** 侧边栏分组（"普通商品"模式，按 productKind 聚合） */
@@ -162,8 +184,10 @@ interface ShopInitResponse {
 
 interface OrderCreateResponse {
   saleOrderId: string;
-  /** 订单初始状态；全额储值卡抵扣时云端直接结清为 '已支付'（无需进 QR/收款页） */
+  /** 订单初始状态；应付实金=0（券/卡全额抵扣）时云端直接结清为 '已支付'（无需进 QR/收款页） */
   status?: string;
+  /** 储值卡抵扣金额；用于区分"卡全额抵扣"与"券全额抵扣"的结清 Toast 文案 */
+  prepaidCardAmount?: number;
 }
 
 interface CouponAvailableResponse {
@@ -188,6 +212,7 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
     productType: sku.productType,
     sessionCount: sku.sessionCount,
     isBundle: !!sku.isBundle,
+    isManagerSpecial: !!sku.isManagerSpecial,
   }
 }
 
@@ -398,6 +423,7 @@ Page({
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
+            isManagerSpecial: !!pending.isManagerSpecial,
             priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
           });
         }
@@ -561,6 +587,15 @@ Page({
     // 所有员工均可浏览充值卡面板；真正提交时在 card-recharge.onSubmit 处统一校验店长权限
     if (nextChoice === '充值卡') {
       const customer = this.data.customerInfo;
+      if (customer?.crossStore) {
+        wx.showModal({
+          title: '无法充值',
+          content: `该顾客属于「${customer.storeName || '其他'}」门店，非本店顾客无法充值。`,
+          showCancel: false,
+          confirmText: '知道了',
+        });
+        return;
+      }
       const params: string[] = [];
       if (customer?.clientUserId) {
         params.push(`clientUserId=${encodeURIComponent(customer.clientUserId)}`);
@@ -776,6 +811,7 @@ Page({
         sessionCount: item.sessionCount || 0,
         productType: item.productKind || item.productType,
         workfineItemId: '',
+        isManagerSpecial: !!item.isManagerSpecial,
         priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
       });
     }
@@ -873,6 +909,36 @@ Page({
     this.updateCart(cart, { preserveReceived: true });
   },
 
+  /**
+   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单 + 普通商品）。
+   * - 区间 0 ≤ 应付 ≤ price×quantity（向下调，不许涨价）
+   * - 空字符串等同于默认（=标准价线 price×quantity）
+   * - 改应付后实付默认回归新应付（不保留旧实付，避免实付>应付）
+   */
+  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = (e.detail?.value ?? '') as string;
+    const cart = [...this.data.cart];
+    const idx = cart.findIndex(c => c.skuId === skuId);
+    if (idx < 0) return;
+    const row = cart[idx];
+    // 仅店长特价行 + 销售单 + 普通商品放行（组合套餐不适用）
+    if (this.data.saleOrderType !== '销售单' || !row.isManagerSpecial
+        || row.refBundleId || row.productType === '组合套餐') {
+      return;
+    }
+    const stdLine = row.price * row.quantity;
+    const parsed = parseFloat(raw);
+    if (!raw || Number.isNaN(parsed) || parsed < 0) {
+      row.saleAmountOverride = undefined;
+    } else {
+      const clamped = Math.min(parsed, stdLine);
+      row.saleAmountOverride = (Math.round(clamped * 100) / 100).toFixed(2);
+    }
+    // 改应付后实付回归默认（=新应付），避免残留旧实付超过新应付
+    this.updateCart(cart);
+  },
+
   /** 寄存单历史实收输入（独立于 cart.received，避免和销售单实付逻辑纠缠） */
   onDepositReceivedChange(e: WechatMiniprogram.CustomEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
@@ -893,18 +959,30 @@ Page({
    * - 否则 received 全部回归默认值（= 当前订单类型下的应付）
    */
   updateCart(cart: CartItem[], opts?: { preserveReceived?: boolean }) {
-    // 1) 先填 priceLine（"价格"列）
+    const isInternal = this.data.saleOrderType === '内部单';
+    const isSales = this.data.saleOrderType === '销售单';
+    // 店长特别优惠（仅销售单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
+    // 钳制到 [0, price×qty]（向下调，不许涨价）；未改时回退标准价线 price×qty。
+    const effBase = cart.map(c => {
+      const stdLine = c.price * c.quantity;
+      const editable = isSales && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+      if (editable && c.saleAmountOverride != null && c.saleAmountOverride !== '') {
+        const v = parseFloat(c.saleAmountOverride);
+        if (!Number.isNaN(v)) return Math.max(0, Math.min(v, stdLine));
+      }
+      return stdLine;
+    });
+    // 1) priceLine（"价格"列）= 标准价线（店长改应付不影响划线价展示）
     for (const c of cart) {
       c.priceLine = (c.price * c.quantity).toFixed(2);
     }
-    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = price × qty；内部单 = price × 0.5 × qty
-    const isInternal = this.data.saleOrderType === '内部单';
-    const baseLines = cart.map(c => {
+    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = price × 0.5 × qty
+    const baseLines = cart.map((c, i) => {
       if (isInternal) {
         const halfUnit = Math.round(c.price * 50) / 100;
         return halfUnit * c.quantity;
       }
-      return c.price * c.quantity;
+      return effBase[i];
     });
     // 3) 按行应付比例摊订单级优惠券折扣（couponDiscount 已在 onCouponPick 时落到 data）
     const shares = allocateCouponPerLine(baseLines, this.data.couponDiscount || 0);
@@ -912,8 +990,8 @@ Page({
       const c = cart[i];
       const share = shares[i] || 0;
       c.couponShare = share.toFixed(2);
-      // 销售单/寄存单的应付金额（不走半价）
-      const saleAmountNum = Math.max(0, Math.round((c.price * c.quantity - share) * 100) / 100);
+      // 销售单/寄存单的应付金额（不走半价；店长特价行用 effBase 基线）
+      const saleAmountNum = Math.max(0, Math.round((effBase[i] - share) * 100) / 100);
       c.saleAmount = saleAmountNum.toFixed(2);
       // 内部单专用的应付金额（先半价、再扣摊到的券）
       const halfUnit = Math.round(c.price * 50) / 100;
@@ -1000,9 +1078,10 @@ Page({
     }
     this.setData({ customerSearching: true });
     try {
-      // 跨门店模糊检索：绑定任意门店的顾客均可开单
-      const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
-      if (!results || results.length === 0) {
+      // 跨门店模糊检索：可搜到任意门店顾客，但非本店者在下一步被拦截（crossStore 标记）
+      const raw = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
+      const results = (raw || []).map(markCrossStore);
+      if (results.length === 0) {
         this.setData({ customerInfo: null, customerResults: [] });
         wx.showToast({ title: '未找到该顾客（需已绑定门店）', icon: 'none' });
       } else if (results.length === 1) {
@@ -1019,12 +1098,12 @@ Page({
   },
 
   onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerResults: [], customerKeyword: customer.phone || customer.name });
   },
 
   onSelectRecentCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerKeyword: customer.phone, customerResults: [] });
   },
 
@@ -1033,6 +1112,15 @@ Page({
       wx.showModal({
         title: '无法开单',
         content: '请先用手机号搜索并选择已绑定门店的顾客。',
+        showCancel: false,
+        confirmText: '知道了',
+      });
+      return;
+    }
+    if (this.data.customerInfo.crossStore) {
+      wx.showModal({
+        title: '无法开单',
+        content: `该顾客属于「${this.data.customerInfo.storeName || '其他'}」门店，非本店顾客无法开单。`,
         showCancel: false,
         confirmText: '知道了',
       });
@@ -1095,9 +1183,12 @@ Page({
       this.setData({ prepaidCardAmount: 0, paidAmount: '0.00', showPayMethodGroup: true });
       return;
     }
-    const payable = parseFloat(this.data.payableTotal) || 0;
+    // 充值卡从「当下实付」（receivedTotal = Σ行实付 = 客户当下要付的钱，欠款时已逐行下调）里抵，
+    // 而非应付合计。无欠款时 receivedTotal === payableTotal，口径等价；与后端 create maxPrepayable
+    // = min(total, Σpending_received) 对齐，避免卡抵超过当下实付。
+    const baseForPrepaid = parseFloat(this.data.receivedTotal) || 0;
     const result = computePrepaidDeduction({
-      payableAmount: payable,
+      payableAmount: baseForPrepaid,
       customerCardBalance: this.data.customerCardBalance || 0,
       useCard: !!this.data.useCard,
     });
@@ -1221,7 +1312,9 @@ Page({
         clientPhone: customerInfo.phone,
         items,
       });
-      this.setData({ availableCoupons: data?.coupons || [] });
+      // expireAt 为原始 timestamp（序列化成 UTC 串），格式化为 YYYY-MM-DD 供「有效期至」展示
+      const coupons = (data?.coupons || []).map(c => ({ ...c, expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt }));
+      this.setData({ availableCoupons: coupons });
     } catch {
       this.setData({ availableCoupons: [] });
     } finally {
@@ -1371,15 +1464,34 @@ Page({
         // Wave 3G：实付=0 时由后端强制覆盖为 '无'，前端仍传 paymentMethod 作为建议通道
         paymentMethod: this.data.paymentMethod,
         saleOrderType,
-        items: cart.map(c => ({
-          skuId: c.skuId,
-          workfineItemId: c.workfineItemId,
-          spuName: c.spuName,
-          specName: c.specName,
-          quantity: c.quantity,
-          // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
-          received: parseFloat(c.received) || 0,
-        })),
+        items: cart.map(c => {
+          // 店长特别优惠（仅销售单 + 普通商品）：手填应付覆盖 pre-coupon 行小计与成交单价。
+          // 钳制 [0, price×qty]；未改时与原行为字节一致（unitRealPrice=c.price、saleAmount=c.priceLine）。
+          const editable = saleOrderType === '销售单' && !!c.isManagerSpecial
+            && !c.refBundleId && c.productType !== '组合套餐';
+          const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
+          const effSale = hasOv
+            ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
+            : c.price * c.quantity;
+          return {
+            skuId: c.skuId,
+            workfineItemId: c.workfineItemId,
+            spuName: c.spuName,
+            specName: c.specName,
+            quantity: c.quantity,
+            // 价格三件套（套餐场景下 c.price=bundle_price、c.listPrice=sku 标价）：
+            //   unitPrice     = sku 标价 per-card（落 sale_items.unit_price 标价快照）
+            //   unitRealPrice = 成交价 per-card（落 unit_real_price；套餐 = bundle_price；店长特价 = 应付÷数量）
+            //   saleAmount    = pre-coupon 行小计（= price × quantity，与 c.priceLine 同义；店长特价 = 手填应付）
+            //                   ⚠️ 不是 c.saleAmount 那个已扣券值，避免后端摊券时双扣
+            // 内部单后端会忽略价格字段强制 sku.price × 50% 重算
+            unitPrice: ((c.listPrice ?? c.price) || 0).toFixed(2),
+            unitRealPrice: hasOv ? (effSale / c.quantity).toFixed(2) : (c.price || 0).toFixed(2),
+            saleAmount: hasOv ? effSale.toFixed(2) : c.priceLine,
+            // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
+            received: parseFloat(c.received) || 0,
+          };
+        }),
         remark,
         // 内部单不允许优惠券（云函数已守卫）
         couponId: saleOrderType === '销售单'
@@ -1400,9 +1512,12 @@ Page({
         couponDiscount: 0,
         paymentMethod: '微信',
       });
-      // 全额储值卡抵扣（payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
+      // 应付实金=0（券/卡全额抵扣，payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
       if (res.status === '已支付') {
-        wx.showToast({ title: '储值卡已全额抵扣，订单已结清', icon: 'none', duration: 2500 });
+        const title = Number(res.prepaidCardAmount || 0) > 0
+          ? '储值卡已全额抵扣，订单已结清'
+          : '优惠券已全额抵扣，订单已结清';
+        wx.showToast({ title, icon: 'none', duration: 2500 });
       } else {
         wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
       }

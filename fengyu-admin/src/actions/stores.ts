@@ -6,21 +6,22 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { scopeCondition } from '@/lib/permissions'
+import { scopeCondition, hasPermission } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
+import { _internalApplyLakalaLink } from './lakala-onboarding'
 
-const storeNode = alias(orgNodes, 'store_node')
-const marketNode = alias(orgNodes, 'market_node')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
+const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
 
-function rowToStore(row: {
-  stores: typeof stores.$inferSelect
-  store_node: typeof orgNodes.$inferSelect | null
-  market_node: typeof orgNodes.$inferSelect | null
-}): Store {
+// drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
+// 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToStore(row: any): Store {
   const s = row.stores
   return {
     storeId: s.storeId,
@@ -43,7 +44,7 @@ function rowToStore(row: {
     parkingInfo: s.parkingInfo,
     lakalaMerchantNo: s.lakalaMerchantNo,
     lakalaTermNo: s.lakalaTermNo,
-    lakalaSubAppid: s.lakalaSubAppid,
+    lakalaMerchantId: s.lakalaMerchantId,
     lakalaEnabled: s.lakalaEnabled,
     createdAt: s.createdAt.toISOString(),
     updatedAt: s.updatedAt.toISOString(),
@@ -101,8 +102,10 @@ export const getAvailableStoreNodes = withPermission(
       .orderBy(asc(marketNode.name), asc(storeNode.name))
 
     // scope 过滤：非 admin 只看自己 scope（含其下市场）内的门店节点
+    // drizzle 0.45 alias 后 select 类型推断退化成 never[]；用 any 解锁 build
     const visible: Array<{ id: string; name: string; marketName: string }> = []
-    for (const r of rows) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const r of rows as any[]) {
       if (await isNodeInScope(session, r.id)) {
         visible.push({ id: r.id, name: r.name, marketName: r.marketName ?? '' })
       }
@@ -213,12 +216,26 @@ export const updateStore = withPermission(
       parkingInfo: string | null
       lakalaMerchantNo: string | null
       lakalaTermNo: string | null
-      lakalaSubAppid: string | null
       lakalaEnabled: boolean
+      /**
+       * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id）。
+       * - admin 角色可写；hr 只读（涉及收款配置）。
+       * - 非空 → 调内部 _internalApplyLakalaLink 验证商户态 + 刷快照 merchantNo
+       * - 显式 null → 解绑：清快照 + 强置 lakalaEnabled=false
+       * - undefined → 不动 lakala_merchant_id（保留原绑定关系）
+       */
+      lakalaMerchantId: string | null
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
+  // 关联商户权限拦截：hr 不可改 lakala_merchant_id（涉及收款配置），仅 admin 持 lakala:onboarding:update
+  if (data.lakalaMerchantId !== undefined) {
+    if (!hasPermission(session, 'lakala:onboarding:update')) {
+      return { success: false, message: '无权修改门店的拉卡拉商户关联' }
+    }
+  }
+
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
 
@@ -236,6 +253,14 @@ export const updateStore = withPermission(
   if (data.isClosed !== undefined && data.closedAt === undefined) {
     updateData.closedAt = data.isClosed ? shanghaiToday() : null
   }
+  // lakala_merchant_id 由 _internalApplyLakalaLink 在事务内单独处理（含商户态校验 + 快照刷新 + enabled 强置）
+  // 不能让 generic SET 把 merchantNo 当成 caller 直接传值（admin UI 不再手填）
+  const lakalaMerchantIdChange = data.lakalaMerchantId
+  if (lakalaMerchantIdChange !== undefined) {
+    delete (updateData as Partial<typeof updateData>).lakalaMerchantId
+    // 同时 strip 掉 merchantNo（不允许 admin UI 同时传，避免 race）
+    delete (updateData as Partial<typeof updateData>).lakalaMerchantNo
+  }
 
   let result: any
   try {
@@ -249,6 +274,10 @@ export const updateStore = withPermission(
         data.storeName !== before.storeName
       ) {
         await tx.update(orgNodes).set({ name: data.storeName }).where(eq(orgNodes.id, before.orgNodeId))
+      }
+      // 关联商户的事务内子动作：仅在显式传 lakalaMerchantId 时执行
+      if (r.count > 0 && lakalaMerchantIdChange !== undefined && lakalaMerchantIdChange !== before?.lakalaMerchantId) {
+        await _internalApplyLakalaLink(tx, storeId, lakalaMerchantIdChange)
       }
       return r
     })

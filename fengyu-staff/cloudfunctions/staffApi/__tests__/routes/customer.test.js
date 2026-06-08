@@ -30,6 +30,7 @@ describe('customer.search', () => {
     expect(zhangSan.source).toBe('both') // customer_id 非空
     expect(zhangSan.clientUserId).toBe('u1')
     expect(zhangSan.storeName).toBe('测试店')
+    expect(zhangSan.boundStoreId).toBe('store-001') // 供前端实时比对当前门店
     const zhangSi = ctx.result.find(r => r.name === '张四')
     expect(zhangSi.source).toBe('miniprogram') // customer_id 为空
     expect(zhangSi.clientUserId).toBe('u2')
@@ -65,6 +66,32 @@ describe('customer.search', () => {
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
     expect(ctx.result).toEqual([])
+  })
+
+  test('管理模式默认列表用 ANY(scopeStoreIds) 且不按员工收紧（回归：effectiveStoreId=null 致空数组）', async () => {
+    // loginLevel=management, effectiveStoreId=null, scopeStoreIds=['store-001','store-002']
+    const ctx = createManagementCtx({ profileScope: true })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', phone: '13800001111', name: '李一', customer_id: 'C001', member_level: null, bound_store_id: 'store-002', store_name: '二店' },
+      ])
+      .mockResolvedValueOnce([]) // svcDateRows
+      .mockResolvedValueOnce([]) // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/c\.bound_store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+    expect(sql).not.toContain('bound_employee_id') // market 层不按员工收紧
+    expect(params).toContainEqual(['store-001', 'store-002'])
+    expect(ctx.result).toHaveLength(1) // 修复前 effectiveStoreId=null → 空数组
+  })
+
+  test('管理模式 keyword 检索门店范围用 ANY(scopeStoreIds)（$2 起）', async () => {
+    const ctx = createManagementCtx({ keyword: '李' })
+    pg.query.mockResolvedValueOnce([]) // 主查询空 → 不发后续补充查询
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/c\.bound_store_id\s*=\s*ANY\(\$2::text\[\]\)/)
+    expect(params).toEqual(['%李%', ['store-001', 'store-002'], 20])
   })
 
   test('customerType=会员客 按 customer_type 枚举等值过滤', async () => {
@@ -614,8 +641,8 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础款', product_name: '面部护理' },
-      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', sku_spec_name: '高级款', product_name: '身体护理' },
+      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
+      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(2)
@@ -645,7 +672,7 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-003', status: '已支付', paid_at: '2024-07-01T10:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', sku_spec_name: '标准', product_name: '头疗' },
+      { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', product_name: '头疗' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(1)
@@ -672,7 +699,7 @@ describe('customer.paidOrders', () => {
       }
       // items 查询：FROM sale_items si
       return [
-        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础', product_name: '面部护理' },
+        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
       ]
     })
     await customerRoutes.paidOrders(ctx)
@@ -973,7 +1000,7 @@ describe('customer.refundHistory', () => {
     ])
     // Q3: 转换单明细
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
+      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', quantity: 1, received: '300' },
     ])
 
     await customerRoutes.refundHistory(ctx)
@@ -1515,7 +1542,7 @@ describe('customer.appointments', () => {
     pg.query.mockResolvedValueOnce([
       { appointment_id: 'A1', status: '已确认', client_user_id: 'u1', client_name: '张三',
         employee_name: '美容师', appointment_time: '2026-05-20T03:00:00Z', notes: '准时',
-        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理', sku_spec_name: null },
+        checkin_at: null, created_at: '2026-05-19T00:00:00Z', service_name: '面部护理' },
     ])
     await customerRoutes.appointments(ctx)
     expect(ctx.result).toHaveLength(1)

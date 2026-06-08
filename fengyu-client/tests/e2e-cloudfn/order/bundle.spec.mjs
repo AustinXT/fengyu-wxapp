@@ -105,6 +105,42 @@ async function seedBundle() {
   return { grp1, grp2 }
 }
 
+/**
+ * 数量模型套餐：1 组 pick_count=3，仅 2 个候选 SKU（A/B，bundlePrice=50）。
+ * 验证"从 2 个商品选出 3 件"——同一 SKU 可选多件（员工端口径），单纯去重计数永远凑不满 3。
+ */
+async function seedBundleQty() {
+  await ensureTestCategories()
+  await createTestProduct({
+    productId: BUNDLE_PRODUCT_ID,
+    name: `${NS}_数量套餐`,
+    price: '150.00',
+    isBundle: true,
+  })
+  for (const skuId of [SKU_A_ID, SKU_B_ID]) {
+    await createTestSku({
+      skuId, productId: BUNDLE_PRODUCT_ID,
+      productType: '疗程卡', price: '60.00', sessionCount: null,
+      linkToProduct: false,
+    })
+  }
+  const grpRows = await pgQuery(
+    `INSERT INTO mall_bundle_groups (product_id, group_name, pick_count, sort_order)
+     VALUES ($1, $2, 3, 0) RETURNING id`,
+    [BUNDLE_PRODUCT_ID, `${NS}_组选3`]
+  )
+  const grp = grpRows[0].id
+  await pgQuery(
+    `INSERT INTO mall_product_skus (product_id, sku_id, bundle_group_id, bundle_price, sort_order)
+     VALUES ($1, $2, $3, 50.00, 0), ($1, $4, $3, 50.00, 1)
+     ON CONFLICT (product_id, sku_id) DO UPDATE
+       SET bundle_group_id = EXCLUDED.bundle_group_id,
+           bundle_price = EXCLUDED.bundle_price`,
+    [BUNDLE_PRODUCT_ID, SKU_A_ID, grp, SKU_B_ID]
+  )
+  return { grp }
+}
+
 async function ensureClient() {
   // createTestClient 复用：sale_orders FK 依赖 client_wechat_users + 手机号
   const { createTestClient } = await import('../helpers/fixtures.mjs')
@@ -268,8 +304,78 @@ async function caseNonBundleFlowStillWorks() {
   if (res.code !== 0) throw new Error(`non-bundle path regression: ${res.message}`)
 }
 
+async function caseQtyHappy() {
+  await ensureClient()
+  await seedBundleQty()
+  await clearExistingPendings()
+
+  // 选 3 件：A×2 + B×1（同一 SKU 多件）→ 数量合计 3 = pick_count
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    bundleProductId: BUNDLE_PRODUCT_ID,
+    items: [
+      { skuId: SKU_A_ID, quantity: 2 },
+      { skuId: SKU_B_ID, quantity: 1 },
+    ],
+    paymentMethod: '线下',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const orderNo = res.data?.saleOrderId
+  const items = await pgQuery(
+    `SELECT sku_id, quantity, unit_real_price, sale_amount
+     FROM sale_items WHERE sale_order_id = $1 ORDER BY sku_id`,
+    [orderNo]
+  )
+  if (items.length !== 2) throw new Error(`expect 2 sale_items, got ${items.length}`)
+  const byKey = Object.fromEntries(items.map(i => [i.sku_id, i]))
+  // SKU_A：quantity=2、sale_amount=bundle_price×2=100、unit_real_price=per-unit=50
+  if (Number(byKey[SKU_A_ID].quantity) !== 2) {
+    throw new Error(`SKU_A quantity expect 2, got ${byKey[SKU_A_ID].quantity}`)
+  }
+  if (Number(byKey[SKU_A_ID].sale_amount) !== 100) {
+    throw new Error(`SKU_A sale_amount expect 100 (50×2), got ${byKey[SKU_A_ID].sale_amount}`)
+  }
+  if (Number(byKey[SKU_A_ID].unit_real_price) !== 50) {
+    throw new Error(`SKU_A unit_real_price expect 50, got ${byKey[SKU_A_ID].unit_real_price}`)
+  }
+  if (Number(byKey[SKU_B_ID].quantity) !== 1) {
+    throw new Error(`SKU_B quantity expect 1, got ${byKey[SKU_B_ID].quantity}`)
+  }
+  // total = 100 + 50 = 150
+  const orderRows = await pgQuery(
+    `SELECT total_amount FROM sale_orders WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  if (Number(orderRows[0].total_amount) !== 150) {
+    throw new Error(`total_amount expect 150 (50×2 + 50), got ${orderRows[0].total_amount}`)
+  }
+}
+
+async function caseQtyMismatch() {
+  await ensureClient()
+  await seedBundleQty()
+  await clearExistingPendings()
+
+  // 数量合计 2（A×1 + B×1）≠ pick_count 3 → BUNDLE_GROUP_PICK_MISMATCH
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    bundleProductId: BUNDLE_PRODUCT_ID,
+    items: [
+      { skuId: SKU_A_ID, quantity: 1 },
+      { skuId: SKU_B_ID, quantity: 1 },
+    ],
+    paymentMethod: '线下',
+  })
+  if (res.code === 0) throw new Error(`expect error, got success`)
+  if (!/BUNDLE_GROUP_PICK_MISMATCH/.test(res.message || '')) {
+    throw new Error(`expect BUNDLE_GROUP_PICK_MISMATCH, got: ${res.message}`)
+  }
+}
+
 const CASES = [
   ['bundle happy path → 3 sale_items + unit_real_price=bundle_price + total=340', caseHappy],
+  ['bundle 数量模型 2选3：A×2+B×1 → quantity 落库 + total=150', caseQtyHappy],
+  ['bundle 数量模型 数量合计不足(2≠3) → BUNDLE_GROUP_PICK_MISMATCH', caseQtyMismatch],
   ['bundle 组1 漏选 → BUNDLE_GROUP_PICK_MISMATCH', caseMissingPickFromGroup1],
   ['bundle 组2(全选) 漏一个 → BUNDLE_GROUP_PICK_MISMATCH', caseAllSelectGroupMissingOne],
   ['bundle items 混入跨 bundle SKU → BUNDLE_SKU_NOT_BELONG', caseSkuNotBelong],

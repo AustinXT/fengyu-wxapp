@@ -160,9 +160,22 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       // grep 无匹配时 exit 1，stdout 仍可读
       stdout = (err.stdout && err.stdout.toString()) || ''
     }
-    const violationCount = stdout.split('\n').filter((line) => line.trim()).length
+    // 事务内回滚哨兵白名单：throw 一个内部 sentinel message 触发 tx 回滚，
+    // 紧邻外层 catch（同文件下方 ~8 行）按 message 匹配后转成白名单 ApiError，
+    // 用户最终仍只见 9 项官方错误码，非野生前缀 throw。由 2026-06-01 d1e22022
+    // 「物理删除入口（数据治理）」引入，4 处已逐一核对外层 catch 落 CONFLICT/NOT_FOUND。
+    const TX_SENTINELS = [
+      'ORDER_STATE_CHANGED', // orders.ts: 删除前状态被并发改 → CONFLICT
+      'SERVICE_STATE_CHANGED', // services.ts: 同上 → CONFLICT
+      'EMPLOYEE_ROW_GONE', // employees.ts: 行已被删 → NOT_FOUND
+      'PICKUP_ROW_GONE', // pickup-records.ts: 行已被删 → NOT_FOUND
+    ]
+    const violationCount = stdout
+      .split('\n')
+      .filter((line) => line.trim())
+      .filter((line) => !TX_SENTINELS.some((s) => line.includes(s))).length
     // ticket-10c（2026-05-17）已全量收敛 admin actions/ 内 33 处野生前缀 throw → ApiError。
-    // 守护"不增"——禁止任何新 PR 再引入未在 9 项白名单内的裸 throw。
+    // 守护"不增"——禁止任何新 PR 再引入未在 9 项白名单内的裸 throw（事务哨兵见上方白名单）。
     expect(violationCount).toBe(0)
   })
 })

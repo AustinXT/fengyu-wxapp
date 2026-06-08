@@ -61,7 +61,6 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
         </view>
         <view class="item-info">
           <text class="item-name">{{item.productName}}</text>
-          <text class="item-spec">{{item.skuSpecName}}</text>
         </view>
         <text class="item-price">¥{{fmt.price(item.unitPrice)}}</text>
       </view>
@@ -158,22 +157,23 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
 
 </view>
 
-<!-- 支付宝二维码弹窗（保留以兼容旧路径） -->
+<!-- 支付宝吱口令弹窗（聚合主扫 share_code 方案）-->
 <van-popup
-  show="{{showAlipayQr}}"
+  show="{{showAlipayShare}}"
   round
   closeable
   close-on-click-overlay="{{false}}"
-  bind:close="onAlipayClose"
+  bind:close="onAlipayShareClose"
 >
   <view class="alipay-qr-popup">
-    <view class="alipay-qr-popup__title">请使用支付宝扫码付款</view>
-    <image src="{{alipayQrUrl}}" mode="widthFix" class="alipay-qr-popup__image" />
+    <view class="alipay-qr-popup__title">支付宝吱口令</view>
     <view class="alipay-qr-popup__amount">
       <text class="alipay-qr-popup__symbol">¥</text>
       <text class="alipay-qr-popup__price">{{alipayAmount}}</text>
     </view>
-    <view class="alipay-qr-popup__tips">长按保存图片，打开支付宝扫码支付</view>
-    <van-button type="primary" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
+    <view class="alipay-share-token" selectable="true">{{alipayShareToken}}</view>
+    <view class="alipay-qr-popup__tips">复制吱口令 → 打开支付宝 App → 自动识别后完成支付</view>
+    <van-button type="primary" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayShareCopy">复制吱口令</van-button>
+    <van-button type="default" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayShareDone">我已完成支付</van-button>
   </view>
 </van-popup>

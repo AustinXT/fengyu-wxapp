@@ -9,7 +9,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
-import { logTransition } from '@/lib/operation-log'
+import { logTransition, logOperation } from '@/lib/operation-log'
 
 export interface UnbindRequest {
   requestId: string
@@ -29,7 +29,8 @@ export interface UnbindRequest {
 export const getUnbindRequests = withPermission(
   'store_unbind:list',
   async (session): Promise<UnbindRequest[]> => {
-  const toStores = alias(stores, 'to_stores')
+  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const toStores = alias(stores, 'to_stores') as unknown as typeof stores
   const rows = await db
     .select({
       request: storeUnbindRequests,
@@ -161,5 +162,46 @@ export const rejectUnbind = withPermission(
 
   revalidatePath('/store-unbind')
   return { success: true, message: '解绑申请已拒绝' }
+  },
+)
+
+/**
+ * 物理删除解绑申请（仅系统管理员；数据治理用，清理已处理的历史申请）。
+ *
+ * 守卫：仅「已通过 / 已拒绝 / 已取消」可删，'待处理'（进行中）禁删。
+ * store_unbind_requests 无 inbound FK，直接删。
+ */
+export const deleteUnbindRequest = withPermission(
+  'store_unbind:delete',
+  async (session, requestId: string): Promise<{ success: boolean; message: string }> => {
+    const [request] = await db
+      .select({ status: storeUnbindRequests.status, fromStoreId: storeUnbindRequests.fromStoreId, userId: storeUnbindRequests.userId })
+      .from(storeUnbindRequests)
+      .where(eq(storeUnbindRequests.requestId, requestId))
+      .limit(1)
+
+    if (!request) {
+      return { success: false, message: '解绑申请不存在' }
+    }
+    if (!isInScope(session, request.fromStoreId)) {
+      return { success: false, message: '无权操作该门店的解绑申请' }
+    }
+    if (request.status === '待处理') {
+      return { success: false, message: '待处理申请不可删除，请先通过或拒绝' }
+    }
+
+    const result = await db
+      .delete(storeUnbindRequests)
+      .where(eq(storeUnbindRequests.requestId, requestId))
+    if ((result as any).count === 0) {
+      return { success: false, message: '解绑申请已变更，请刷新重试' }
+    }
+
+    await logOperation(session, 'store_unbind.delete', 'store_unbind_request', requestId, {
+      snapshot: { status: request.status, fromStoreId: request.fromStoreId, userId: request.userId },
+    })
+
+    revalidatePath('/store-unbind')
+    return { success: true, message: '解绑申请已删除' }
   },
 )

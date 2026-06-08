@@ -28,6 +28,7 @@ export default async function Page({
   ])
 
   const canCreate = session ? hasPermission(session, 'pickup_record:create') : false
+  const canDelete = session ? hasPermission(session, 'pickup_record:delete') : false
 
   return (
     <Suspense>
@@ -36,6 +37,7 @@ export default async function Page({
         stores={stores}
         total={total}
         canCreate={canCreate}
+        canDelete={canDelete}
       />
     </Suspense>
   )

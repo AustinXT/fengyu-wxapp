@@ -76,7 +76,7 @@ const STEPS = [
     const skuId = L3_SKU_NORMAL_ID
     const productId = L3_PRODUCT_ID
     // 注意：shopping-cart.ts 的 CartItemDisplay 使用 spuId/spuName/skuDisplayName/price/quantity
-    // （非 productId/productName/skuSpecName/unitPrice）。两套字段并存以兼容 checkoutItems 旧调用。
+    // （非 productId/productName/unitPrice）。两套字段并存以兼容 checkoutItems 旧调用。
     const cartItem = {
       skuId,
       spuId: productId,
@@ -89,9 +89,8 @@ const STEPS = [
       // 兼容字段
       productId,
       productName: 'TEST_E2E_L3_测试商品',
-      skuSpecName: 'TEST_E2E_L3_普通规格',
       unitPrice: 100,
-      productType: '单品',
+      productType: '疗程卡',
       storeId: TEST_STORE_ID,
     }
     await ctx.mp.evaluate((item) => {

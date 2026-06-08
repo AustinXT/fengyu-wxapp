@@ -18,7 +18,6 @@ interface ServiceRecord {
   review_comment: string | null;
   items: Array<{
     product_name: string;
-    sku_spec_name: string;
     session_used: number;
     service_duration: number;
   }>;

@@ -137,4 +137,15 @@ describe('audit-17 dashboard 两端公式一致性守护（SUMMARY v3 §2 #15）
       expect(adminMentionsStaff || staffMentionsAdmin).toBe(true)
     })
   })
+
+  describe('历史订单隔离 — 营收口径必须排除 legacy workfine（核对补登 received 后防污染）', () => {
+    // WorkFine 历史单核对通过会补 received=total_amount（供会员体系重算），
+    // 经营营收/业绩口径必须排除它，否则污染 dashboard/排行/数据中心。两端同步守护。
+    it('admin dashboard.ts 营收查询必须排除 legacy_source = workfine', () => {
+      expect(adminSrc).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+    })
+    it('staff mgmt-dashboard.js 营收查询必须排除 legacy_source = workfine', () => {
+      expect(staffSrc).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+    })
+  })
 })

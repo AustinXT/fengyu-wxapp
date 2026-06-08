@@ -1,15 +1,18 @@
-"use client"
+"use client";
 
-import { useState } from "react"
-import Link from "next/link"
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { StatusBadge, Badge } from "@/components/ui/badge"
-import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types"
-import { RecordPaymentDialog } from "./record-payment-dialog"
-import { ConfirmOfflineDialog } from "./confirm-offline-dialog"
-import { DepositReceiptDialog } from "./deposit-receipt-dialog"
-import { RefundForm } from "@/components/orders/refund-form"
+import { useState } from "react";
+import Link from "next/link";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { StatusBadge, Badge } from "@/components/ui/badge";
+import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types";
+import { RecordPaymentDialog } from "./record-payment-dialog";
+import { ConfirmOfflineDialog } from "./confirm-offline-dialog";
+import { RefundForm } from "@/components/orders/refund-form";
+import { formatDateTime as fmtDateTime, formatDate } from "@/lib/utils";
+import { maskPhone } from "@/lib/pii";
+import { DangerZoneDelete } from "@/components/delete-action";
+import { deleteOrder } from "@/actions/orders";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -17,7 +20,7 @@ const paymentChangeTypeLabelMap: Record<string, string> = {
   回款: "回款",
   退款: "退款",
   储值卡抵扣: "储值卡抵扣",
-}
+};
 /**
  * 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 4→5 值，新增 '待审批'
  * （退款审批流："发起 → 待审批 → 已支付 / 已作废"）
@@ -28,31 +31,28 @@ const paymentFlowStatusColorMap: Record<string, string> = {
   已支付: "bg-[#F0F9F2] text-[#3D8A5A]",
   已作废: "bg-gray-100 text-[#888888]",
   已退款: "bg-[#FFEBEE] text-[#C62828]",
-}
+};
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
   支付宝: "支付宝",
   线下: "线下支付",
   无: "无（全额抵扣）",
-}
+};
 
 // 2026-04-26 sale-order-domain-refactor：5→3 值
 // 历史"回款单"/"退款单"语义已迁至 sale_order_payments[change_type]
 // 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
 const orderTypeColorMap: Record<string, string> = {
-  "销售单": "bg-[#E8F0FE] text-[#3574C4]",
-  "内部单": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "转换单": "bg-[#E3F2FD] text-[#1565C0]",
-  "寄存单": "bg-[#F3F4F6] text-[#6B7280]",
-}
+  销售单: "bg-[#E8F0FE] text-[#3574C4]",
+  内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
+  转换单: "bg-[#E3F2FD] text-[#1565C0]",
+  寄存单: "bg-[#F3F4F6] text-[#6B7280]",
+};
 
 function formatDateTime(dt: string | null) {
-  if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  if (!dt) return "—";
+  return fmtDateTime(dt);
 }
 
 export default function OrderDetailPageClient({
@@ -65,73 +65,76 @@ export default function OrderDetailPageClient({
   canRefund = false,
   cardBalance = null,
   canListAllocations = true,
-  canEditDepositReceipt = false,
+  canDelete = false,
 }: {
-  order: SaleOrder
-  allocations: SaleAllocation[]
-  logs: OperationLog[]
-  payments?: SaleOrderPayment[]
+  order: SaleOrder;
+  allocations: SaleAllocation[];
+  logs: OperationLog[];
+  payments?: SaleOrderPayment[];
   /** ticket 2026-04-24 多次回款 PR-B — 是否展示"录入回款"按钮 */
-  canRecordPayment?: boolean
+  canRecordPayment?: boolean;
   /** 是否展示"确认收款"按钮（线下待支付首次收款入账，权限 sale_order:update） */
-  canConfirmOffline?: boolean
+  canConfirmOffline?: boolean;
   /** ticket 2026-04-24 退款 PR-Y — 是否展示"创建退款"按钮 */
-  canRefund?: boolean
+  canRefund?: boolean;
   /** 顾客当前储值卡余额（元，null=未查询或无账户） */
-  cardBalance?: number | null
+  cardBalance?: number | null;
   /**
    * 是否拥有 `allocation:list` 权限。
    * 缺该权限的角色（如 admin）不展示"营业额分配"分区，避免误导（admin 不参与分配流程）。
    */
-  canListAllocations?: boolean
-  /** 是否展示寄存单「修改实收」按钮（与开寄存单同权限 sale_order:create） */
-  canEditDepositReceipt?: boolean
+  canListAllocations?: boolean;
+  /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
+  canDelete?: boolean;
 }) {
-  const items = order.items || []
-  const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
-  const paidAmount = Number(order.received ?? "0")
-  const refundedAmount = Number(order.refundedAmount ?? "0")
-  const hasPrepaidDeduction = prepaidCardAmount > 0
+  const items = order.items || [];
+  const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0");
+  const paidAmount = Number(order.received ?? "0");
+  const refundedAmount = Number(order.refundedAmount ?? "0");
+  const hasPrepaidDeduction = prepaidCardAmount > 0;
   // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
-  const hasRefund = refundedAmount > 0
+  const hasRefund = refundedAmount > 0;
+  const couponDiscount = Number(order.couponDiscount ?? "0");
+  // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
+  const isLegacy = order.legacySource === "workfine";
 
   // 剩余欠款 = payable_amount - received（payable_amount = total_amount - prepaid_card_amount）
-  const totalAmount = Number(order.totalAmount ?? "0")
-  const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
-  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100)
+  const totalAmount = Number(order.totalAmount ?? "0");
+  const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100);
+  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
+  // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
+  const pendingReceivedTotal = Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
   // 确认收款：线下「待支付」订单的首次收款入账入口
-  const canShowConfirmOffline =
-    canConfirmOffline &&
-    order.paymentMethod === "线下" &&
-    order.status === "待支付"
+  const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 
   // 录入回款：用于已开始收款的订单补尾款。
   // 与确认收款互斥——线下「待支付」走确认收款，避免双按钮歧义（录入回款写'回款'且不自动扣预选卡）。
+  // 回款仅对销售单 + 非历史订单可见（寄存单/历史订单禁止事后资金变更，后端亦兜底拒绝）
   const canShowRecordPayment =
     canRecordPayment &&
+    order.saleOrderType === "销售单" &&
+    order.legacySource !== "workfine" &&
     remainingPayable > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
-    !canShowConfirmOffline
+    !canShowConfirmOffline;
 
-  const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false)
-  const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false)
-  const [refundFormOpen, setRefundFormOpen] = useState(false)
-  const [depositReceiptDialogOpen, setDepositReceiptDialogOpen] = useState(false)
+  const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false);
+  const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false);
+  const [refundFormOpen, setRefundFormOpen] = useState(false);
 
-  // 寄存单「修改实收」入口：仅寄存单 + 有权限时可见
-  const canShowEditDepositReceipt = canEditDepositReceipt && order.saleOrderType === "寄存单"
-
-  // 退款按钮仅对销售单 + 已支付/已完成/部分支付 可见
+  // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
+  // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
   const canShowRefund =
     canRefund &&
     order.saleOrderType === "销售单" &&
-    (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付")
+    order.legacySource !== "workfine" &&
+    (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
   // 是否存在待审批中的退款（payments 中有 change_type='退款' status∈{'待审批','待支付'}）
   // 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 新增 '待审批'；兼容旧数据保留 '待支付' 检测
   const hasPendingRefund = (payments ?? []).some(
     (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
-  )
+  );
 
   return (
     <div className="space-y-6">
@@ -139,7 +142,9 @@ export default function OrderDetailPageClient({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
           </Link>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">订单详情</h1>
         </div>
@@ -156,19 +161,19 @@ export default function OrderDetailPageClient({
       {hasPendingRefund && (
         <div className="rounded-[var(--radius)] bg-[#FFF7E6] border border-[#F3C77E] px-4 py-3 text-sm text-[#D4820A]">
           该订单有退款申请正在审批中，审批完成后可再次发起退款。
-          <Link href="/refunds" className="ml-2 underline">查看退款管理</Link>
+          <Link href="/refunds" className="ml-2 underline">
+            查看退款管理
+          </Link>
         </div>
       )}
 
       {/* B5 — 寄存单提示：不计入营业额 / 提成 / 客单价等统计；仅次数维度纳入 cardHolders */}
       {order.saleOrderType === "寄存单" && (
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
-          <span>此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 / 客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录。</span>
-          {canShowEditDepositReceipt && (
-            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setDepositReceiptDialogOpen(true)}>
-              修改实收
-            </Button>
-          )}
+          <span>
+            此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 /
+            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。
+          </span>
         </div>
       )}
 
@@ -185,11 +190,13 @@ export default function OrderDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">状态</span>
-              <p className="mt-1"><StatusBadge status={order.status} /></p>
+              <p className="mt-1">
+                <StatusBadge status={order.status} />
+              </p>
             </div>
             <div>
               <span className="text-[#999999]">类型</span>
-              <p className="mt-1 flex items-center gap-2">
+              <p className="mt-1 flex items-center gap-2 flex-wrap">
                 <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                   {order.saleOrderType}
                 </Badge>
@@ -199,20 +206,63 @@ export default function OrderDetailPageClient({
                     已退款
                   </Badge>
                 )}
+                {/* 历史订单（WorkFine 导入）角标 */}
+                {isLegacy && (
+                  <Badge variant="secondary" className="bg-[#F3F4F6] text-[#6B7280]">
+                    历史订单
+                  </Badge>
+                )}
               </p>
             </div>
+            {order.documentType && (
+              <div>
+                <span className="text-[#999999]">单据类型</span>
+                <p className="font-medium mt-1">{order.documentType}</p>
+              </div>
+            )}
+            {order.refSaleOrderId && (
+              <div>
+                <span className="text-[#999999]">关联原单</span>
+                <p className="font-medium mt-1">
+                  <Link
+                    href={`/orders/${order.refSaleOrderId}`}
+                    className="text-[var(--primary)] hover:underline"
+                  >
+                    {order.refSaleOrderId}
+                  </Link>
+                </p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">门店</span>
               <p className="font-medium mt-1">{order.storeName}</p>
             </div>
+            {order.marketName && (
+              <div>
+                <span className="text-[#999999]">所属市场</span>
+                <p className="font-medium mt-1">{order.marketName}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">开单人</span>
               <p className="font-medium mt-1">{order.openedByName || "顾客自助"}</p>
             </div>
+            {order.preferredEmployeeName && (
+              <div>
+                <span className="text-[#999999]">指定美容师</span>
+                <p className="font-medium mt-1">{order.preferredEmployeeName}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">顾客</span>
               <p className="font-medium mt-1">{order.customerName || "—"}</p>
             </div>
+            {order.clientPhone && (
+              <div>
+                <span className="text-[#999999]">顾客电话</span>
+                <p className="font-medium mt-1">{maskPhone(order.clientPhone)}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">下单时间</span>
               <p className="font-medium mt-1">{formatDateTime(order.saleOrderDatetime)}</p>
@@ -225,10 +275,36 @@ export default function OrderDetailPageClient({
               <span className="text-[#999999]">支付方式</span>
               <p className="font-medium mt-1">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</p>
             </div>
+            {order.offlineConfirmedByName && (
+              <div>
+                <span className="text-[#999999]">线下确认人</span>
+                <p className="font-medium mt-1">{order.offlineConfirmedByName}</p>
+              </div>
+            )}
+            {order.offlineConfirmedAt && (
+              <div>
+                <span className="text-[#999999]">线下确认时间</span>
+                <p className="font-medium mt-1">{formatDateTime(order.offlineConfirmedAt)}</p>
+              </div>
+            )}
+            {order.allocationStatus && (
+              <div>
+                <span className="text-[#999999]">分配状态</span>
+                <p className="font-medium mt-1">{order.allocationStatus}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">订单总额</span>
-              <p className="font-bold text-lg mt-1 text-[var(--primary)]">¥{Number(order.totalAmount).toLocaleString()}</p>
+              <p className="font-bold text-lg mt-1 text-[var(--primary)]">
+                ¥{Number(order.totalAmount).toLocaleString()}
+              </p>
             </div>
+            {couponDiscount > 0 && (
+              <div>
+                <span className="text-[#999999]">优惠券抵扣</span>
+                <p className="font-bold text-lg mt-1 text-[#C0322A]">-¥{couponDiscount.toLocaleString()}</p>
+              </div>
+            )}
             {hasPrepaidDeduction && (
               <>
                 <div>
@@ -271,7 +347,9 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">应收</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">约定实付</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">已确认实收</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">状态/次数（已用/已付/共）</th>
                 </tr>
               </thead>
@@ -279,21 +357,44 @@ export default function OrderDetailPageClient({
                 {items.map((item) => {
                   // ticket 2026-05-19 D10=A：三段次数展示
                   // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
-                  const sessionCell = item.sessionCount !== null
-                    ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
-                    : "家居产品"
+                  const sessionCell =
+                    item.sessionCount !== null
+                      ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
+                      : "家居产品";
                   return (
-                  <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "—"}</td>
-                    <td className="px-4 py-3 text-right">¥{Number(item.unitPrice).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right">{item.quantity}</td>
-                    <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
-                    <td className="px-4 py-3">{sessionCell}</td>
-                  </tr>
-                  )
+                    <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.skuName || item.productName || "—"}</div>
+                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0) && (
+                          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
+                            {item.salesCategory && <span>{item.salesCategory}</span>}
+                            {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提 {item.pickedUpQuantity}</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {Number(item.unitPrice) !== Number(item.unitRealPrice) && (
+                          <span className="text-[#999999] line-through mr-1">
+                            ¥{Number(item.unitPrice).toLocaleString()}
+                          </span>
+                        )}
+                        ¥{Number(item.unitRealPrice).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">{item.quantity}</td>
+                      <td className="px-4 py-3 text-right">¥{Number(item.saleAmount).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right text-[#999999]">¥{Number(item.pendingReceived ?? "0").toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
+                      <td className="px-4 py-3">{sessionCell}</td>
+                    </tr>
+                  );
                 })}
                 {items.length === 0 && (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-[#999999]">暂无明细</td></tr>
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
+                      暂无明细
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -307,13 +408,15 @@ export default function OrderDetailPageClient({
           <div>
             <CardTitle>款项流水</CardTitle>
             {remainingPayable > 0 && (
-              <p className="text-xs text-[#C0322A] mt-1">
-                剩余欠款 ¥{remainingPayable.toFixed(2)}
-              </p>
+              <p className="text-xs text-[#C0322A] mt-1">剩余欠款 ¥{remainingPayable.toFixed(2)}</p>
             )}
           </div>
           {canShowConfirmOffline && (
-            <Button size="sm" className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white" onClick={() => setConfirmOfflineDialogOpen(true)}>
+            <Button
+              size="sm"
+              className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white"
+              onClick={() => setConfirmOfflineDialogOpen(true)}
+            >
               确认收款
             </Button>
           )}
@@ -339,31 +442,39 @@ export default function OrderDetailPageClient({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {(payments ?? []).map((p) => {
-                  const amt = Number(p.amount)
-                  const isRefund = p.changeType === "退款" || amt < 0
+                  const amt = Number(p.amount);
+                  const isRefund = p.changeType === "退款" || amt < 0;
                   // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
-                  const refundDetailParts: string[] = []
+                  const refundDetailParts: string[] = [];
                   if (isRefund) {
-                    if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`)
-                    if (p.refSaleItemId) refundDetailParts.push(`关联明细 ${p.refSaleItemId}`)
-                    if (p.sessionCount != null) refundDetailParts.push(`次数：${p.sessionCount}`)
+                    if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`);
+                    if (p.refSaleItemId) refundDetailParts.push(`关联明细 ${p.refSaleItemId}`);
+                    if (p.sessionCount != null) refundDetailParts.push(`次数：${p.sessionCount}`);
                     if (p.auditAt) {
                       refundDetailParts.push(
-                        `审批：${formatDateTime(p.auditAt)}` +
-                          (p.auditRemark ? `（${p.auditRemark}）` : ""),
-                      )
+                        `审批：${formatDateTime(p.auditAt)}` + (p.auditRemark ? `（${p.auditRemark}）` : ""),
+                      );
                     }
                   }
-                  const noteLine = p.note || "—"
-                  const detailLine = refundDetailParts.join(" · ")
+                  // 退款行 note 现为 JSON（含 items/拆分）；只提取手续费/超额扣除文案展示，非退款行原样
+                  let noteLine = p.note || "—";
+                  if (isRefund && p.note) {
+                    try {
+                      const n = JSON.parse(p.note);
+                      const parts: string[] = [];
+                      if (Number(n.handlingFee) > 0) parts.push(`手续费 ¥${Number(n.handlingFee).toLocaleString()}`);
+                      if (Number(n.overdraftDeduction) > 0)
+                        parts.push(`超额扣除 ¥${Number(n.overdraftDeduction).toLocaleString()}`);
+                      noteLine = parts.join(" · ") || "—";
+                    } catch {
+                      /* 旧文本 note 原样展示 */
+                    }
+                  }
+                  const detailLine = refundDetailParts.join(" · ");
                   return (
                     <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        {formatDateTime(p.paidAt || p.createdAt)}
-                      </td>
-                      <td className="px-4 py-3">
-                        {paymentChangeTypeLabelMap[p.changeType] ?? p.changeType}
-                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">{formatDateTime(p.paidAt || p.createdAt)}</td>
+                      <td className="px-4 py-3">{paymentChangeTypeLabelMap[p.changeType] ?? p.changeType}</td>
                       <td
                         className={`px-4 py-3 text-right font-medium ${
                           isRefund ? "text-[#C62828]" : "text-[var(--foreground)]"
@@ -382,16 +493,18 @@ export default function OrderDetailPageClient({
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        {p.operatorName || (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "—")}
+                        {p.operatorName ||
+                          (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "—")}
                       </td>
                       <td className="px-4 py-3 text-[#666666]">
                         <div>{noteLine}</div>
-                        {detailLine && (
-                          <div className="text-xs text-[#999999] mt-0.5">{detailLine}</div>
+                        {detailLine && <div className="text-xs text-[#999999] mt-0.5">{detailLine}</div>}
+                        {p.externalTxnId && (
+                          <div className="text-xs text-[#999999] mt-0.5">交易号 {p.externalTxnId}</div>
                         )}
                       </td>
                     </tr>
-                  )
+                  );
                 })}
                 {(payments ?? []).length === 0 && (
                   <tr>
@@ -406,14 +519,16 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 营业额分配 — 仅 allocation:list 权限可见（admin 不参与分配流程） */}
-      {canListAllocations && (
+      {/* 营业额分配 — 仅 allocation:list 权限可见 + 该订单类型参与分配（销售单/转换单，非历史订单） */}
+      {canListAllocations && order.allocatable && (
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>营业额分配</CardTitle>
-            {order.status === '已支付' && (
+            {order.status === "已支付" && (
               <Link href={`/allocations/${order.saleOrderId}`}>
-                <Button size="sm" variant="outline">编辑分配</Button>
+                <Button size="sm" variant="outline">
+                  编辑分配
+                </Button>
               </Link>
             )}
           </CardHeader>
@@ -425,8 +540,12 @@ export default function OrderDetailPageClient({
                     <tr>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">员工</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">部门</th>
-                      <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
-                      <th className="px-4 py-3 text-right font-medium text-gray-500">比例</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">角色</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">项目</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">分配金额</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">分配比例</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">提成比例</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">提成金额</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -434,8 +553,12 @@ export default function OrderDetailPageClient({
                       <tr key={a.id} className="hover:bg-[#FFF0EE] transition-colors">
                         <td className="px-4 py-3 font-medium">{a.employeeName}</td>
                         <td className="px-4 py-3">{a.departmentName || "—"}</td>
+                        <td className="px-4 py-3">{a.roleType || "—"}</td>
+                        <td className="px-4 py-3">{a.saleItemName || "—"}</td>
                         <td className="px-4 py-3 text-right">¥{Number(a.totalAmount).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right">{(Number(a.allocationRatio) * 100).toFixed(0)}%</td>
+                        <td className="px-4 py-3 text-right">{a.commissionRate != null ? `${(Number(a.commissionRate) * 100).toFixed(2)}%` : "—"}</td>
+                        <td className="px-4 py-3 text-right">{a.commissionAmount != null ? `¥${Number(a.commissionAmount).toLocaleString()}` : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -500,32 +623,31 @@ export default function OrderDetailPageClient({
           onOpenChange={setConfirmOfflineDialogOpen}
           saleOrderId={order.saleOrderId}
           remainingPayable={remainingPayable}
+          suggestedAmount={pendingReceivedTotal}
           cardBalance={cardBalance}
         />
       )}
 
       {/* 创建退款弹层（ticket 2026-04-24 退款 PR-Y） */}
       {canShowRefund && (
-        <RefundForm
-          open={refundFormOpen}
-          onOpenChange={setRefundFormOpen}
-          saleOrderId={order.saleOrderId}
-        />
+        <RefundForm open={refundFormOpen} onOpenChange={setRefundFormOpen} saleOrderId={order.saleOrderId} />
       )}
 
-      {/* 寄存单历史实收编辑弹层 */}
-      {canShowEditDepositReceipt && (
-        <DepositReceiptDialog
-          open={depositReceiptDialogOpen}
-          onOpenChange={setDepositReceiptDialogOpen}
-          saleOrderId={order.saleOrderId}
-          items={items.map((it) => ({
-            saleItemId: it.saleItemId,
-            productName: it.skuName || it.productName || it.saleItemId,
-            received: String(it.received ?? "0"),
-          }))}
+      {/* 危险操作：物理删除订单（仅系统管理员） */}
+      {canDelete && (
+        <DangerZoneDelete
+          entityLabel="订单"
+          redirectTo="/orders"
+          onConfirm={() => deleteOrder(order.saleOrderId)}
+          description={
+            <>
+              确定要删除订单 <span className="font-medium">{order.saleOrderId}</span>（{order.customerName || "—"}，¥
+              {Number(order.totalAmount).toLocaleString()}）吗？ 将一并删除其明细与分配，此操作不可恢复。有实收 / 已支付
+              / 已产生服务的订单不可删除。
+            </>
+          }
         />
       )}
     </div>
-  )
+  );
 }

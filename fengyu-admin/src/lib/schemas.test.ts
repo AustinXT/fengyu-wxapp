@@ -66,6 +66,7 @@ describe('employeeSchema', () => {
     employeeId: 'FY-260313-0001',
     name: '张三',
     storeId: 'store-nc01',
+    idCard: '360102199001011234',
   }
 
   it('最小合法数据通过', () => {
@@ -105,6 +106,12 @@ describe('employeeSchema', () => {
     expect(employeeSchema.safeParse({ ...valid, idCard: '1234' }).success).toBe(false)
   })
 
+  it('空身份证号拒绝（必填）', () => {
+    expect(employeeSchema.safeParse({ ...valid, idCard: '' }).success).toBe(false)
+    const { idCard: _omit, ...withoutIdCard } = valid
+    expect(employeeSchema.safeParse(withoutIdCard).success).toBe(false)
+  })
+
   it('带技能数组通过', () => {
     expect(employeeSchema.safeParse({ ...valid, skills: ['美容师', '养生师'] }).success).toBe(true)
   })
@@ -115,7 +122,6 @@ describe('createOrderSchema', () => {
   const validItem = {
     skuId: 'sku-001',
     productName: '蜜语生玑',
-    skuSpecName: '10次卡',
     productType: '疗程卡' as const,
     sessionCount: 10,
     unitPrice: '1999.00',
@@ -330,7 +336,6 @@ describe('paymentMethodSchema', () => {
       items: [{
         skuId: 'sku-001',
         productName: '蜜语生玑',
-        skuSpecName: '10次卡',
         productType: '疗程卡' as const,
         sessionCount: 10,
         unitPrice: '1999.00',

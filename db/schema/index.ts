@@ -63,3 +63,6 @@ export * from './system-config'
 
 // 查找表（职位 + 技能标签）
 export * from './lookup'
+
+// 拉卡拉商户入网（主表 + 附件 + 调用日志）
+export * from './lakala'

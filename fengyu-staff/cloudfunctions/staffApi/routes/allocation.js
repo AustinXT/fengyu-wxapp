@@ -12,12 +12,17 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
+const { assertNoPendingRefund } = require('../utils/refund')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
 const MAX_PER_POOL = 3
 const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
+
+// 营业额口径白名单：仅「销售单」「转换单」产生营业额、参与销售提成分配。
+// 寄存单/充值单/内部单不计营业额（与 dashboard / staff.js / mgmt-dashboard.js 口径一致）。
+const ALLOCATABLE_ORDER_TYPES = ['销售单', '转换单']
 
 // 分配冻结窗口：订单支付（paid_at）超过 N 天后，店长端禁止再修改分配（admin 后台不受限）
 const FREEZE_DAYS = 3
@@ -114,7 +119,7 @@ async function save(ctx) {
 
   // 查询订单
   const orders = await pg.query(
-    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    'SELECT sale_order_id, status, allocation_status, store_id, market_name, paid_at, sale_order_type, legacy_source FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
@@ -124,6 +129,13 @@ async function save(ctx) {
 
   const order = orders[0]
 
+  if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
+    throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（与 admin allocations.ts / order.detail allocatable 口径一致）
+  if (order.legacy_source === 'workfine') {
+    throw new Error('INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE: 历史订单不参与营业额分配')
+  }
   if (order.status !== '已支付') {
     throw new Error('PERMISSION_DENIED: 仅已支付订单可进行提成分配')
   }
@@ -134,6 +146,8 @@ async function save(ctx) {
   if (isFrozen(order.paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
+  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配（审批通过后 cascade 会作废分配，待审批期改分配会账实错乱）
+  await assertNoPendingRefund(pg, saleOrderId)
 
   // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount + 提成率查找）
   const orderItems = await pg.query(
@@ -327,6 +341,8 @@ async function deleteAllocation(ctx) {
   if (isFrozen(orders[0].paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，订单支付超过 ${FREEZE_DAYS} 天不可修改`)
   }
+  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
+  await assertNoPendingRefund(pg, saleOrderId)
 
   const now = new Date()
 
@@ -432,6 +448,8 @@ async function pendingList(ctx) {
     WHERE o.store_id = $1
       AND o.status = '已支付'
       AND o.allocation_status = $2
+      AND o.sale_order_type IN ('销售单', '转换单')
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
     ORDER BY o.paid_at DESC
     LIMIT $3 OFFSET $4
   `, [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset])
@@ -485,7 +503,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
-            preferred_employee_id, client_phone, customer_name, paid_at
+            preferred_employee_id, client_phone, customer_name, paid_at, sale_order_type, legacy_source
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
     [saleOrderId, ctx.auth.effectiveStoreId]
   )
@@ -493,6 +511,14 @@ async function suggest(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
   }
   const order = orders[0]
+
+  if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
+    throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（与 admin allocations.ts / order.detail allocatable 口径一致）
+  if (order.legacy_source === 'workfine') {
+    throw new Error('INVALID_STATE: LEGACY_ORDER_NOT_ALLOCATABLE: 历史订单不参与营业额分配')
+  }
 
   // 2. 解析指定员工（P2-14 Q5：按 skills 建议角色池）
   let beauticianInfo = null
@@ -513,7 +539,7 @@ async function suggest(ctx) {
   // 5. 加载订单项
   const items = await pg.query(`
     SELECT si.sale_item_id, si.received, si.sales_category,
-           si.product_name, si.sku_spec_name, si.product_type
+           si.product_name, si.product_type
     FROM sale_items si
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id

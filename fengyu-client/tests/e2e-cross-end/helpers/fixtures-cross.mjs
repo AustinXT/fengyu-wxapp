@@ -145,7 +145,7 @@ export async function ensureCrossSku({
        sku_id, category_id, product_type, spec_name, price,
        sort_order, service_fee, is_experience, is_enabled
      )
-     VALUES ($1, $2, '单品'::product_type, $3, $4::numeric, 0, 0, false, true)
+     VALUES ($1, $2, '疗程卡'::product_type, $3, $4::numeric, 0, 0, false, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET price = EXCLUDED.price, is_enabled = true`,
     [skuId, productCategoryId, `${NS}_默认规格`, price]

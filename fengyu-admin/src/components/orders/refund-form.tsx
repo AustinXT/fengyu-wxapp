@@ -189,7 +189,6 @@ export function RefundForm({
                 <tr>
                   <th className="px-3 py-2 text-left font-medium text-gray-500 w-10">选</th>
                   <th className="px-3 py-2 text-left font-medium text-gray-500">名称</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-500">规格</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">单次价</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">可退</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500 w-28">退款数量</th>
@@ -220,7 +219,6 @@ export function RefundForm({
                         />
                       </td>
                       <td className="px-3 py-2">{it.productName}</td>
-                      <td className="px-3 py-2 text-[#666]">{it.skuSpecName}</td>
                       <td className="px-3 py-2 text-right">¥{it.unitRealPrice.toFixed(2)}</td>
                       <td className="px-3 py-2 text-right">{it.unusedQuantity}</td>
                       <td className="px-3 py-2">

@@ -16,6 +16,7 @@ function createCtx(overrides = {}) {
     context: {},
     auth: {
       isOpenid: true,
+      openid: 'test-openid-001',
       userId: 'user-001',
       phone: '13800001111',
       boundStoreId: 'store-001',

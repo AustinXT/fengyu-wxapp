@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { saveSettings, type RechargeCardConfigInput } from "@/actions/settings"
+import { saveSettings, type RechargeCardConfigInput, type ConsumeAgreementConfig } from "@/actions/settings"
 import RechargeConfigForm from "./recharge-config-form"
+import ConsumeAgreementForm from "./consume-agreement-form"
 
 const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
@@ -23,9 +24,10 @@ interface SettingsPageProps {
     fengyuguanImage: string
   }
   rechargeCardConfig: RechargeCardConfigInput
+  consumeAgreement: ConsumeAgreementConfig
 }
 
-export default function SettingsPageClient({ initialSettings, rechargeCardConfig }: SettingsPageProps) {
+export default function SettingsPageClient({ initialSettings, rechargeCardConfig, consumeAgreement }: SettingsPageProps) {
   const [newMemberThreshold, setNewMemberThreshold] = useState(initialSettings.newMemberThreshold)
   const [orderTimeout, setOrderTimeout] = useState(initialSettings.orderTimeout)
   const [saving, setSaving] = useState(false)
@@ -67,6 +69,7 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
         <TabsList>
           <TabsTrigger value="basic">基础配置</TabsTrigger>
           <TabsTrigger value="recharge">充值卡配置</TabsTrigger>
+          <TabsTrigger value="agreement">消费协议</TabsTrigger>
         </TabsList>
 
         <TabsContent value="basic">
@@ -142,6 +145,10 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
 
         <TabsContent value="recharge">
           <RechargeConfigForm initialConfig={rechargeCardConfig} />
+        </TabsContent>
+
+        <TabsContent value="agreement">
+          <ConsumeAgreementForm initialConfig={consumeAgreement} />
         </TabsContent>
       </Tabs>
     </div>

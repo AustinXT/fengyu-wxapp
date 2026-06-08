@@ -188,3 +188,89 @@ export const inventoryTransferSubtypeEnum = pgEnum(
   "inventory_transfer_subtype",
   ["调拨出库", "调拨入库"],
 );
+
+/**
+ * 拉卡拉商户入网 · 电子合同状态（lakala_merchants.contract_status）
+ *
+ * 14 步流程中合同子状态机：
+ *   draft → applied → pending_manual_review → signed
+ *                          ↓ (087900 转人工)
+ *                     pending_manual_review
+ *   任意步可 failed / cancelled
+ *
+ * 与拉卡拉 ec_status（UNDONE / COMPLETED）映射：
+ *   applied = 已申请 + UNDONE
+ *   signed  = COMPLETED
+ */
+export const lakalaContractStatusEnum = pgEnum("lakala_contract_status", [
+  "draft",
+  "applied",
+  "pending_manual_review",
+  "signed",
+  "failed",
+  "cancelled",
+]);
+
+/**
+ * 拉卡拉商户入网 · 14 步主状态机（lakala_merchants.onboarding_status）
+ *
+ * 标准路径：draft → contract_signing → contract_signed → attachments_uploading →
+ *           submitted → callback_pending → (approved | rejected | under_review)
+ *           → (under_review → appealing → 回 submitted)
+ *           → (approved → realname_pending → completed)
+ *
+ * 回退路径：contract_signing 合同申请失败 → 可回 draft 重做（plan §1.5）
+ * 任意态可 cancelled（cancelOnboarding action）
+ */
+export const lakalaOnboardingStatusEnum = pgEnum("lakala_onboarding_status", [
+  "draft",
+  "contract_signing",
+  "contract_signed",
+  "attachments_uploading",
+  "submitted",
+  "callback_pending",
+  "approved",
+  "rejected",
+  "under_review",
+  "appealing",
+  "realname_pending",
+  "completed",
+  "cancelled",
+]);
+
+/**
+ * 拉卡拉实名认证状态（lakala_merchants.wx_realname_status / alipay_realname_status）
+ */
+export const lakalaRealnameStatusEnum = pgEnum("lakala_realname_status", [
+  "not_submitted",
+  "submitted",
+  "success",
+  "fail",
+  "modifying",
+]);
+
+/**
+ * 拉卡拉附件类型（lakala_merchant_attachments.attachment_type）
+ *
+ * 与拉卡拉 attType 枚举（plan §0 抓取的 18 项）的逻辑分类，
+ * 实际调用时由 lib/lakala-dicts.ts 映射成拉卡拉 attType 字面量。
+ */
+export const lakalaAttachmentTypeEnum = pgEnum("lakala_attachment_type", [
+  "biz_license",
+  "id_card_front",
+  "id_card_back",
+  "settle_card",
+  "storefront",
+  "cashier_desk",
+  "premises",
+  "agreement",
+  "other",
+]);
+
+/**
+ * 拉卡拉日志方向（lakala_merchant_logs.direction）
+ */
+export const lakalaLogDirectionEnum = pgEnum("lakala_log_direction", [
+  "outbound",
+  "inbound_callback",
+]);

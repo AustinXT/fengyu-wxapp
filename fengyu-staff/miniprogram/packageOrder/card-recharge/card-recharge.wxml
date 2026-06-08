@@ -20,7 +20,10 @@
 
     <view wx:if="{{customerInfo}}" class="customer-card customer-card--selected">
       <view class="customer-info">
-        <view class="customer-name">{{customerInfo.name || '未命名'}}</view>
+        <view class="customer-name">
+          {{customerInfo.name || '未命名'}}
+          <text wx:if="{{customerInfo.crossStore}}" class="customer-cross-store">非本店·{{customerInfo.storeName}}</text>
+        </view>
         <view class="customer-phone">{{customerInfo.phoneMasked || customerInfo.phone}}</view>
       </view>
       <view class="customer-action" bindtap="onClearCustomer">
@@ -55,11 +58,14 @@
           data-customer="{{item}}"
           bindtap="onSelectCustomer"
         >
-          <view class="customer-result-name">{{item.name || '未命名'}}</view>
+          <view class="customer-result-name">
+            {{item.name || '未命名'}}
+            <text wx:if="{{item.crossStore}}" class="customer-cross-store">非本店·{{item.storeName}}</text>
+          </view>
           <view class="customer-result-phone">{{item.phoneMasked || item.phone}}</view>
         </view>
       </view>
-      <view class="customer-hint">仅已注册小程序的顾客可充值</view>
+      <view class="customer-hint">仅已注册小程序的本店顾客可充值</view>
     </view>
   </view>
 

@@ -61,10 +61,17 @@ function isPayNotifyEnabled() {
 /**
  * 解析拉卡拉 HTTP 触发器回调，校验 IP 白名单 + 3 行异步通知签名，转换为内部 event 格式。
  *
- * 拉卡拉回调约定（详见 sources/documents/拉卡拉接口规范-补充.md）：
+ * 拉卡拉聚合主扫回调约定（详见 sources/documents/拉卡拉接口规范-补充.md）：
  *   - HTTP POST，event.body = 原始 JSON 字符串（验签必须用原始字节，禁止 JSON.parse 再 stringify）
  *   - event.headers.authorization = 'LKLAPI-SHA256withRSA timestamp="...",nonce_str="...",signature="..."'
- *   - body 为扁平 JSON：{ pay_order_no, out_order_no, order_status, total_amount, order_trade_info:{...} }
+ *   - body 为扁平 JSON（聚合主扫规范）：
+ *       out_trade_no  商户交易流水号（含 `_unixSec` 后缀，需剥离得 saleOrderId）
+ *       trade_no      拉卡拉交易流水号（落 sale_order_payments.external_txn_id 作幂等键）
+ *       trade_state   INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
+ *       account_type  WECHAT / ALIPAY / UQRCODEPAY ...
+ *       acc_trade_no  微信 transaction_id 或支付宝交易号（落 external_trade_info 供 admin 退款取 origin）
+ *       total_amount  订单金额（分）
+ *       payer_amount  实际付款金额（分，含微信营销减扣；入账金额必须用此字段，防少收）
  *
  * 返回：
  *   - null              非 HTTP 入口（走原 callFunction 路径）
@@ -115,31 +122,43 @@ function parseHttpTriggerEvent(event) {
     throw err
   }
 
-  const tradeInfo = body.order_trade_info || {}
-  const payOrderNo = body.pay_order_no
-  const outOrderNo = body.out_order_no
-  const orderStatus = body.order_status
+  // 聚合主扫扁平字段映射
+  const outTradeNo = body.out_trade_no
+  const tradeNo = body.trade_no
+  const tradeState = String(body.trade_state || '').toUpperCase()
+  const accountType = String(body.account_type || '').toUpperCase()
   const totalAmountFen = Number(body.total_amount || 0)
+  const payerAmountFen = Number(body.payer_amount || 0)
 
-  // 退款回调 / 非成功状态：ack 让拉卡拉停重试，退款流程由 admin 退款 cron 推进（Phase 5）
-  if (orderStatus === '6' || tradeInfo.trade_type === 'REFUND') {
+  // 退款回调：ack 让拉卡拉停重试，退款流程由 admin 退款 cron 推进
+  if (tradeState === 'REFUND' || tradeState === 'PART_REFUND') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
   }
-  if (orderStatus !== '2' && tradeInfo.trade_status !== 'S') {
-    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${orderStatus} ack` } }
+  // 非成功状态（INIT/CREATE/FAIL/DEAL/UNKNOWN/CLOSE）：ack 跳过业务，等下次成功回调
+  if (tradeState !== 'SUCCESS') {
+    return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${tradeState} ack` } }
   }
 
-  // 推断付款方式
-  const payMode = String(tradeInfo.pay_mode || '').toUpperCase()
-  const paymentMethod = payMode === 'ALIPAY' ? '支付宝' : '微信'
+  // 入账金额优先用 payer_amount（实付，含微信营销减扣）；缺失/0 兜底 total_amount 并告警
+  let effectiveFen = payerAmountFen
+  if (!effectiveFen || effectiveFen <= 0) {
+    if (totalAmountFen > 0) {
+      console.warn('[payNotify] payer_amount 缺失，兜底 total_amount=', totalAmountFen, 'outTradeNo=', outTradeNo)
+      effectiveFen = totalAmountFen
+    }
+  }
+
+  // 推断付款方式（聚合主扫：account_type 顶层字段直接用）
+  const paymentMethod = accountType === 'ALIPAY' ? '支付宝' : '微信'
 
   return {
-    orderNo: outOrderNo,
-    transactionId: payOrderNo,
-    payAmount: Math.round(totalAmountFen) / 100,
+    orderNo: outTradeNo,           // out_trade_no（含 _unixSec 后缀，下游 replace(/_\d+$/, '') 剥）
+    transactionId: tradeNo,        // 拉卡拉交易流水号，作 external_txn_id 幂等键
+    payAmount: Math.round(effectiveFen) / 100,
     paymentMethod,
-    // 透传受单交易信息（acc_trade_no/log_no/trade_no 等），落 sale_order_payments.external_trade_info 供退款取 origin 引用
-    tradeInfo,
+    // 透传整个扁平 body 作为 sale_order_payments.external_trade_info JSONB 快照；
+    // admin 退款 cron 取 .acc_trade_no / .trade_no / .log_no 字段路径与原嵌套 order_trade_info.* 在顶层下访问保持一致
+    tradeInfo: body,
     _httpEntry: true,
   }
 }
@@ -367,7 +386,8 @@ exports.main = async (event) => {
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
-             updated_at = $3
+             updated_at = $3,
+             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
          WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付')`,
         [newStatus, newPaidSum, now, targetOrderNo]
@@ -423,7 +443,8 @@ exports.main = async (event) => {
             [targetOrderNo]
           )
           if (dupCheck.rows.length === 0) {
-            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+            // 确定性 card_id（Bug U）：一户一卡，避免 Date.now()+random 并发撞 PK
+            const newCardId = `FY-CARD-${targetOrder.client_user_id}`
             const upsertRes = await client.query(
               `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
                VALUES ($1, $2, $3, NOW(), NOW())
@@ -475,7 +496,9 @@ exports.main = async (event) => {
              ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
             [cardId, -prepaidAmount, targetOrderNo, `card-deduct-${targetOrderNo}`]
           )
-          // 写储值卡抵扣流水（与 confirmOffline/staffApi 一致，amount 为负数）
+          // 写储值卡抵扣流水（修复 2026-06-08：amount 为**正数**，与 staff confirmOffline / admin 及
+          // received = Σ[首次支付/回款/储值卡抵扣] 不变量 I1 跨端一致；原写负数会让混合线上单 received 少记、
+          // refundCap 算少致全退被卡 + I1 cron 误报）。
           await client.query(
             `INSERT INTO sale_order_payments (
               sale_order_id, change_type, amount, payment_method,
@@ -483,8 +506,15 @@ exports.main = async (event) => {
               note, created_at, paid_at
             ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
               $3, NOW(), NOW())`,
-            [targetOrderNo, -prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
+            [targetOrderNo, prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
           )
+          // received 口径含储值卡抵扣：上面 received 仅累加了线上付款，此处补记卡抵扣部分使 received=线上+卡=总实收，
+          // 随后重算 paid_sessions（received 增长 → 可消费次数单调上升）。
+          await client.query(
+            `UPDATE sale_orders SET received = received + $1, updated_at = NOW() WHERE sale_order_id = $2`,
+            [prepaidAmount, targetOrderNo]
+          )
+          await recalcPaidSessionsForOrder(client, targetOrderNo)
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
           console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
@@ -567,6 +597,14 @@ exports.main = async (event) => {
              commissionRate, commissionAmount, now]
           )
         }
+
+        // 自动分配已建（preferred 美容师 100% 全行）→ 翻「已分配」，
+        // 避免落入店长「待分配」列表诱导重复分配（店长仍可从「已分配」Tab 复核改派）。
+        // 无 preferred 的线上单不进此块，保持 CAS 落定的 '待分配' 让店长手动分。
+        await client.query(
+          `UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2`,
+          [now, targetOrderNo]
+        )
       }
 
       // 4. 重算顾客历史消费档位
@@ -588,7 +626,7 @@ exports.main = async (event) => {
            END::spending_tier,
            updated_at = NOW()
            FROM (
-             SELECT COALESCE(SUM(total_amount), 0) AS total
+             SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
              FROM sale_orders
              WHERE client_user_id = $1
                AND status IN ('已支付', '已完成')

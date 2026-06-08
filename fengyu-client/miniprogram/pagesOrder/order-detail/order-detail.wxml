@@ -70,7 +70,6 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           </view>
           <view class="order-item__info">
             <text class="oi-name">{{item.product_name || '—'}}</text>
-            <text class="oi-spec">{{item.sku_spec_name || '—'}}</text>
             <text class="oi-qty">×{{item.quantity}}</text>
           </view>
           <view class="order-item__right">

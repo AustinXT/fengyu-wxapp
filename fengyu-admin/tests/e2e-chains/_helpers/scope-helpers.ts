@@ -54,15 +54,28 @@ export const SCOPE_CLIENTS = {
 export const CRON_CLIENTS = ['FY-TEST-CRON-01', 'FY-TEST-CRON-02', 'FY-TEST-CRON-03', 'FY-TEST-CRON-04', 'FY-TEST-CRON-05']
 
 export function psql(sql: string): string {
-  try {
-    return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
-      { encoding: 'utf8', timeout: 15000 },
-    ).trim()
-  } catch (e) {
-    const err = e as { message?: string; stderr?: string }
-    throw new Error(`psql failed: ${err.message ?? ''}\n${err.stderr ?? ''}`)
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return execSync(
+        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+        { encoding: 'utf8', timeout: 15000 },
+      ).trim()
+    } catch (e) {
+      lastErr = e
+      const msg = ((e as { stderr?: string; message?: string }).stderr ?? '') +
+        ((e as { message?: string }).message ?? '')
+      // 仅对网络抖动类错误重试（连接被关闭/超时）；语法错误等不重试
+      const retriable = /server closed the connection|timeout|connection refused|EHOSTUNREACH|EPIPE/i.test(msg)
+      if (!retriable || attempt === 3) break
+      // 退避 1s/2s/3s
+      const wait = attempt * 1000
+      const start = Date.now()
+      while (Date.now() - start < wait) {/* spin: execSync 同步不便用 setTimeout */}
+    }
   }
+  const err = lastErr as { message?: string; stderr?: string }
+  throw new Error(`psql failed: ${err?.message ?? ''}\n${err?.stderr ?? ''}`)
 }
 
 /**

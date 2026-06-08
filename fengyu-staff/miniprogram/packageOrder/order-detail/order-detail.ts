@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
-import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime } from '../../utils/formatters';
+import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
 
 const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
@@ -33,25 +33,43 @@ interface RawOrder {
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
+  // 详情扩展字段（云函数 order SELECT * + coupon_name/offline_confirmed_by_name 衍生）
+  document_type?: string;
+  market_name?: string;
+  coupon_discount?: string;
+  coupon_name?: string;
+  allocation_status?: string;
+  legacy_source?: string;
+  offline_confirmed_by_name?: string;
+  allocatable?: boolean;
 }
 
 interface RawOrderItem {
   sale_item_id: string;
   product_name?: string;
-  sku_spec_name?: string;
   sale_amount?: string;
   received?: string;
   session_count?: number;
   remaining_sessions?: number;
   paid_sessions?: number | null;
+  unit_price?: string;
+  unit_real_price?: string;
+  expire_date?: string;
+  sales_category?: string;
+  picked_up_quantity?: number;
 }
 
 interface RawAllocation {
+  id?: number;
   employee_name?: string;
   employee_id?: string;
   department_name?: string;
   total_amount?: string;
   allocation_ratio?: number;
+  role_type?: string;
+  commission_rate?: string;
+  commission_amount?: string;
+  sale_item_name?: string;
 }
 
 interface RawPayment {
@@ -104,13 +122,25 @@ interface DisplayOrderItem {
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
+  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已提货数量（家居，0=不展示） */
+  salesCategory: string;
+  expireDate: string;
+  pickedUpQuantity: number;
+  /** 单次现价 / 原价 + 是否有折扣（原价划线展示） */
+  unitRealPrice: string;
+  unitPrice: string;
+  hasDiscount: boolean;
 }
 
 interface DisplayAllocation {
+  id: number;
   staffName: string;
-  department: string;
-  amount: string;
+  roleType: string;
+  saleItemName: string;
   ratio: string;
+  commissionRate: string;
+  totalAmount: string;
+  commissionAmount: string;
 }
 
 interface DisplayOrder {
@@ -138,9 +168,17 @@ interface DisplayOrder {
   payableAmount: string;
   remainingPayable: string;
   hasDebt: boolean;
+  /** 详情扩展：单据类型 / 所属市场 / 券名 / 券抵扣 / 分配状态 / 历史订单标记 */
+  documentType: string;
+  marketName: string;
+  couponName: string;
+  couponDiscount: string;
+  allocationStatus: string;
+  isLegacy: boolean;
   items: DisplayOrderItem[];
   allocation: DisplayAllocation[];
   payments: DisplayPayment[];
+  allocatable: boolean;
 }
 
 Page({
@@ -150,6 +188,7 @@ Page({
     isManager: false,
     isCreator: false,
     statusClass: '',
+    refundBadge: '',
     _saleOrderId: '',
     // P2: 退款
     showRefundDialog: false,
@@ -166,10 +205,6 @@ Page({
     repayGrandTotal: '0.00',
     // 当前订单欠款（弹层内引用）
     currentRemainingPayable: 0,
-    // 寄存单历史实收编辑弹层
-    showDepositPopup: false,
-    depositLines: [] as Array<{ saleItemId: string; itemName: string; received: string }>,
-    depositTotal: '0.00',
   },
 
   onLoad(options: Record<string, string>) {
@@ -199,8 +234,8 @@ Page({
         const repayable = Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
-          itemName: it.product_name || it.sku_spec_name || '—',
-          spec: it.sku_spec_name || '',
+          itemName: it.product_name || '—',
+          spec: it.product_name || '',
           totalPrice: it.received || '0',
           saleAmount: saleAmt.toFixed(2),
           received: recv.toFixed(2),
@@ -213,13 +248,24 @@ Page({
           remainPct: pct(remain),
           paidUnusedPct: pct(paidUnused),
           unpaidPct: pct(unpaid),
+          salesCategory: it.sales_category || '',
+          // expire_date 是 pg date 列，必须 formatDate 避免 UTC 串偏移日期
+          expireDate: it.expire_date ? formatDate(it.expire_date) : '',
+          pickedUpQuantity: Number(it.picked_up_quantity || 0),
+          unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
+          unitPrice: Number(it.unit_price || 0).toFixed(2),
+          hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
         };
       });
-      const allocation: DisplayAllocation[] = (res.allocations || []).map((a) => ({
+      const allocation: DisplayAllocation[] = (res.allocations || []).map((a, index) => ({
+        id: a.id != null ? Number(a.id) : index,
         staffName: a.employee_name || a.employee_id || '',
-        department: a.department_name || '',
-        amount: a.total_amount || '0',
+        roleType: a.role_type || '',
+        saleItemName: a.sale_item_name || '',
         ratio: `${Number(a.allocation_ratio) * 100}%`,
+        commissionRate: a.commission_rate != null ? `${(Number(a.commission_rate) * 100).toFixed(2)}%` : '—',
+        totalAmount: Number(a.total_amount || 0).toFixed(2),
+        commissionAmount: a.commission_amount != null ? Number(a.commission_amount).toFixed(2) : '—',
       }));
 
       // Ticket 2 PR-A：payments 流水 + 欠款计算
@@ -273,7 +319,7 @@ Page({
           customerPhone: o.client_phone || '',
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           preferredStaffName: o.preferred_staff_name || '',
-          confirmedBy: o.offline_confirmed_by || '',
+          confirmedBy: o.offline_confirmed_by_name || o.offline_confirmed_by || '',
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
@@ -283,13 +329,24 @@ Page({
           payableAmount: payableAmount.toFixed(2),
           remainingPayable: remainingPayable.toFixed(2),
           hasDebt,
+          documentType: o.document_type || '',
+          marketName: o.market_name || '',
+          couponName: o.coupon_name || '',
+          couponDiscount: Number(o.coupon_discount || 0) > 0 ? Number(o.coupon_discount).toFixed(2) : '',
+          allocationStatus: o.allocation_status || '',
+          isLegacy: o.legacy_source === 'workfine',
           items,
           allocation,
           payments,
+          allocatable: o.allocatable ?? false,
         },
         currentRemainingPayable: remainingPayable,
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
+        // 退款后状态角标（Bug B）：按 refunded_amount 派生「已退款/部分退款」，订单主状态不变（对齐 admin）
+        refundBadge: refundedAmount > 0
+          ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
+          : '',
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -393,6 +450,32 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 
+  // ===== 充值卡退款（充值单专用，走 card.createRefund）=====
+  onCreateCardRefund() {
+    const o = this.data.order;
+    if (!o) return;
+    wx.showModal({
+      title: '充值卡退款',
+      content: '确认发起充值卡退款？将退还卡内剩余余额（按该充值单实付比例原路退款），提交后需店长审批。',
+      confirmText: '发起退款',
+      confirmColor: '#C0322A',
+      success: async (res) => {
+        if (!res.confirm) return;
+        wx.showLoading({ title: '提交中', mask: true });
+        try {
+          await callStaffApi('card.createRefund', { saleOrderId: o.saleOrderId });
+          wx.hideLoading();
+          wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });
+          this.loadDetail(this.data._saleOrderId);
+        } catch (err: unknown) {
+          wx.hideLoading();
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        }
+      },
+    });
+  },
+
   // ===== P2: 退款 =====
   onCreateRefund() {
     const o = this.data.order;
@@ -420,7 +503,7 @@ Page({
         refundReason: refundReason.trim(),
       });
       this.setData({ showRefundDialog: false });
-      wx.showToast({ title: '退款单已创建', icon: 'success' });
+      wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });
       this.loadDetail(this.data._saleOrderId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
@@ -434,54 +517,8 @@ Page({
     this.setData({ showRefundDialog: false });
   },
 
-  // ===== P2: 审批退款 =====
-  onApproveRefund() {
-    if (this.data.submitting) return;
-    wx.showModal({
-      title: '审批退款',
-      content: '确认通过此退款申请？审批后将扣减对应次数。',
-      confirmText: '通过',
-      confirmColor: '#C0322A',
-      success: async (res) => {
-        if (!res.confirm) return;
-        this.setData({ submitting: true });
-        try {
-          await callStaffApi('order.approveRefund', { saleOrderId: this.data._saleOrderId });
-          wx.showToast({ title: '退款已审批', icon: 'success' });
-          this.loadDetail(this.data._saleOrderId);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : '操作失败';
-          wx.showToast({ title: msg, icon: 'none' });
-        } finally {
-          this.setData({ submitting: false });
-        }
-      },
-    });
-  },
-
-  onRejectRefund() {
-    if (this.data.submitting) return;
-    wx.showModal({
-      title: '驳回退款',
-      content: '确认驳回此退款申请？',
-      confirmText: '驳回',
-      confirmColor: '#D94040',
-      success: async (res) => {
-        if (!res.confirm) return;
-        this.setData({ submitting: true });
-        try {
-          await callStaffApi('order.rejectRefund', { saleOrderId: this.data._saleOrderId });
-          wx.showToast({ title: '退款已驳回', icon: 'success' });
-          this.loadDetail(this.data._saleOrderId);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : '操作失败';
-          wx.showToast({ title: msg, icon: 'none' });
-        } finally {
-          this.setData({ submitting: false });
-        }
-      },
-    });
-  },
+  // 退款审批已收口到 refund-list/refund-detail 页；原 onApproveRefund/onRejectRefund 传 saleOrderId（后端需 paymentId）
+  // 且依赖恒不命中的 orderType==='退款单'，属死代码 + 传参错误，已删除（Bug D）。
 
   // ===== Ticket 2026-05-21：按子项发起回款 =====
   // 合计当前各行金额（线下=cash 列，储值卡=card 列）
@@ -598,62 +635,4 @@ Page({
     }
   },
 
-  // ===== 寄存单历史实收编辑 =====
-  _recalcDepositTotal(lines: Array<{ received: string }>) {
-    const total = Math.round(lines.reduce((s, l) => s + (Number(l.received) || 0), 0) * 100) / 100;
-    this.setData({ depositTotal: total.toFixed(2) });
-  },
-
-  onDepositEditTap() {
-    const o = this.data.order;
-    if (!o || o.orderType !== '寄存单') return;
-    const lines = (o.items || []).map((it) => ({
-      saleItemId: it.saleItemId,
-      itemName: it.itemName,
-      received: Number(it.received) > 0 ? Number(it.received).toFixed(2) : '',
-    }));
-    this.setData({ showDepositPopup: true, depositLines: lines });
-    this._recalcDepositTotal(lines);
-  },
-
-  onCloseDepositPopup() {
-    this.setData({ showDepositPopup: false });
-  },
-
-  onDepositLineChange(e: WechatMiniprogram.CustomEvent) {
-    const idx = Number(e.currentTarget.dataset.index);
-    const val = (e.detail as unknown as string) || '';
-    const lines = this.data.depositLines.slice();
-    if (!lines[idx]) return;
-    lines[idx] = { ...lines[idx], received: val };
-    this.setData({ depositLines: lines });
-    this._recalcDepositTotal(lines);
-  },
-
-  async onConfirmDepositEdit() {
-    if (this.data.submitting) return;
-    const { order, depositLines } = this.data;
-    if (!order || !order.saleOrderId) return;
-    const r2 = (n: number) => Math.round(n * 100) / 100;
-    const items = depositLines.map((l) => ({
-      saleItemId: l.saleItemId,
-      received: Math.max(0, r2(Number(l.received) || 0)),
-    }));
-
-    this.setData({ submitting: true });
-    try {
-      await callStaffApi('order.updateDepositReceived', {
-        saleOrderId: order.saleOrderId,
-        items,
-      });
-      wx.showToast({ title: '实收已更新', icon: 'success' });
-      this.setData({ showDepositPopup: false });
-      this.loadDetail(this.data._saleOrderId);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '修改失败';
-      wx.showToast({ title: msg.replace(/^[A-Z_]+:\s*/, '') || '修改失败', icon: 'none' });
-    } finally {
-      this.setData({ submitting: false });
-    }
-  },
 });

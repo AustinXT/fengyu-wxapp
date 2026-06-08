@@ -10,6 +10,7 @@ import { hasRole } from '@/lib/auth'
 import { scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { pgErrorCode } from '@/lib/pg-error'
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
 const storeName = sql<string | null>`(
@@ -258,7 +259,8 @@ export const getCustomerOrders = withPermission(
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
 
-  const opener = alias(staffWechatUsers, 'opener')
+  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
 
   const rows = await db
     .select({
@@ -304,6 +306,7 @@ export const getCustomerOrders = withPermission(
       saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
       documentType: r.order.documentType as SaleOrder['documentType'],
       refSaleOrderId: r.order.refSaleOrderId,
+      legacySource: r.order.legacySource ?? null,
       marketName: r.order.marketName,
       storeId: r.order.storeId,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
@@ -340,6 +343,7 @@ export const getCustomerOrders = withPermission(
         unitRealPrice: ir.item.unitRealPrice,
         saleAmount: ir.item.saleAmount,
         received: ir.item.received,
+        pendingReceived: ir.item.pendingReceived,
         expireDate: ir.item.expireDate,
         remark: ir.item.remark,
         salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
@@ -477,7 +481,6 @@ export const getCustomerRefundHistory = withPermission(
           saleItemId: saleItems.saleItemId,
           itemDirection: saleItems.itemDirection,
           productName: saleItems.productName,
-          skuSpecName: saleItems.skuSpecName,
           quantity: saleItems.quantity,
           received: saleItems.received,
         })
@@ -491,7 +494,7 @@ export const getCustomerRefundHistory = withPermission(
       saleItemId: i.saleItemId,
       direction: i.itemDirection,
       productName: i.productName,
-      specName: i.skuSpecName,
+      specName: i.productName,
       quantity: i.quantity,
       received: i.received,
     })
@@ -1069,5 +1072,55 @@ export const mergeClientProfile = withPermission(
   revalidatePath(`/customers/${sourceUserId}`)
 
   return { success: true, message: `已合并 ${fieldsMigrated.length} 个字段，${ordersReassigned} 笔订单归属已更新`, fieldsMigrated, ordersReassigned }
+  },
+)
+
+/**
+ * 物理删除顾客（仅系统管理员；数据治理用，清理测试顾客账号）。
+ *
+ * 仅适用于"无任何业务关联"的测试号：顾客被订单/服务/预约/积分/储值卡/优惠券等引用即由
+ * PG FK RESTRICT 拦截，pgErrorCode 23503 兜底并提示。顾客无可随删的从属表（messages 无 FK 快照），
+ * 故直接删主表 + 兜底。注意：积分/储值卡/券等资产流水绝不级联删除。
+ */
+export const deleteCustomer = withPermission(
+  'customer:delete',
+  async (session, userId: string): Promise<{ success: boolean; message: string }> => {
+    const [cust] = await db
+      .select({
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+        boundStoreId: clientWechatUsers.boundStoreId,
+        memberLevel: clientWechatUsers.memberLevel,
+      })
+      .from(clientWechatUsers)
+      .where(and(eq(clientWechatUsers.userId, userId), scopeCondition(session, clientWechatUsers.boundStoreId)))
+      .limit(1)
+
+    if (!cust) {
+      return { success: false, message: '顾客不存在或无权操作' }
+    }
+
+    let result: any
+    try {
+      result = await db
+        .delete(clientWechatUsers)
+        .where(and(eq(clientWechatUsers.userId, userId), scopeCondition(session, clientWechatUsers.boundStoreId)))
+    } catch (e) {
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '该顾客已有业务关联（订单 / 服务 / 预约 / 积分 / 储值卡 / 优惠券等），无法删除' }
+      }
+      throw e
+    }
+    if ((result as any).count === 0) {
+      return { success: false, message: '顾客状态已变更，请刷新重试' }
+    }
+
+    await logOperation(session, 'customer.delete', 'customer', userId, {
+      snapshot: { name: cust.name, phone: cust.phone, boundStoreId: cust.boundStoreId, memberLevel: cust.memberLevel },
+    })
+
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/customers')
+    return { success: true, message: '顾客已删除' }
   },
 )

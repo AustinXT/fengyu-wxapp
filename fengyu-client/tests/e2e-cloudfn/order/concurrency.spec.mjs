@@ -49,7 +49,14 @@ async function createNClients(n, { storeId = TEST_STORE_ID } = {}) {
 }
 
 function todayPrefix() {
-  const d = new Date().toISOString().slice(2, 10).replace(/-/g, '')
+  // 云函数 process.env.TZ='Asia/Shanghai'，订单号 YYMMDD 用东八区本地日期。
+  // spec 必须按同一时区算前缀，否则跨午夜（UTC < 16:00 时北京已次日）会前缀对不上。
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: '2-digit', month: '2-digit', day: '2-digit',
+  })
+  // en-CA 输出 'YY-MM-DD'，去掉破折号得 'YYMMDD'
+  const d = fmt.format(new Date()).replace(/-/g, '')
   return `FY-XSD-WX-${d}`
 }
 

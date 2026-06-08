@@ -171,8 +171,7 @@ async function list(ctx) {
       a.sale_item_id,
       a.created_at,
       si.sale_order_id,
-      COALESCE(si.product_name, '到店预约') AS service_name,
-      si.sku_spec_name
+      COALESCE(si.product_name, '到店预约') AS service_name
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN stores s ON a.store_id = s.store_id

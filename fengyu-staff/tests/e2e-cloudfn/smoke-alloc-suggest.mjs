@@ -297,6 +297,65 @@ async function main() {
     }
   }
 
+  // ─── E. allocation.pendingList — 复用 A/B/D 的待分配订单（已设 allocation_status='待分配' + received=total）
+  // 但 paid_at 仍为 NULL（fixture 未填）；pendingList SQL 按 paid_at DESC 排序，paid_at NULL 仍含在结果（PG 默认 NULLS LAST）
+  const pendR = await invokeStaffApi('allocation.pendingList', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    allocationStatus: '待分配',
+    page: 1, pageSize: 50,
+  })
+  if (pendR.code !== 0) {
+    errors.push(`allocation.pendingList 应成功，实际 code=${pendR.code} msg=${pendR.message}`)
+  } else {
+    const orders = pendR.data?.orders || []
+    const nsOrders = orders.filter(o => String(o.sale_order_id || '').startsWith(NS))
+    if (nsOrders.length === 0) {
+      errors.push(`pendingList(待分配) 应含 NS 前缀订单（fixture 已 UPDATE allocation_status='待分配'），实际 0 条`)
+    } else {
+      const o0 = nsOrders[0]
+      // 字段完整性（routes/allocation.js:427-431）
+      for (const k of ['sale_order_id', 'status', 'sale_order_type', 'client_phone', 'customer_name',
+                       'payment_method', 'allocation_status', 'total_amount']) {
+        if (!(k in o0)) errors.push(`pendingList row 缺字段 '${k}'`)
+      }
+      rec(`  ✓ allocation.pendingList: ${nsOrders.length} 张 NS 待分配单`)
+    }
+  }
+
+  // pendingList(allocationStatus='非法值') → INVALID_PARAMS
+  const pendBadR = await invokeStaffApi('allocation.pendingList', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    allocationStatus: '不存在',
+  })
+  if (pendBadR.code === 0) errors.push(`pendingList(非法 allocationStatus) 应 INVALID_PARAMS，实际成功`)
+
+  // ─── F. allocation.rates — 用 NS 市场名 ───
+  const ratesR = await invokeStaffApi('allocation.rates', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    marketName: `${NS}_市场`,
+  })
+  if (ratesR.code !== 0) {
+    errors.push(`allocation.rates(${NS}_市场) 应成功（ensureTestCommissionMatrix 已注入规则），实际 code=${ratesR.code} msg=${ratesR.message}`)
+  } else {
+    const rates = ratesR.data?.rates || []
+    if (rates.length === 0) {
+      errors.push(`allocation.rates 应返回 ≥1 行 rate 配置，实际 0`)
+    } else {
+      const r0 = rates[0]
+      for (const k of ['department', 'amountMin', 'amountMax', 'orderRates', 'serviceRates']) {
+        if (!(k in r0)) errors.push(`rates[0] 缺字段 '${k}'`)
+      }
+      rec(`  ✓ allocation.rates(${NS}_市场): ${rates.length} 行 × {department,tier,orderRates,serviceRates}`)
+    }
+  }
+
+  // rates(marketName=不存在) → INVALID_PARAMS
+  const ratesBadR = await invokeStaffApi('allocation.rates', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    marketName: `${NS}_不存在`,
+  })
+  if (ratesBadR.code === 0) errors.push(`rates(不存在市场) 应 INVALID_PARAMS，实际成功`)
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -305,7 +364,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — A/B/C/D 四用例均通过：SKU×sales_category×市场隔离×tier 阶梯`)
+  rec(`  ✅ PASS — A/B/C/D + pendingList/rates 6 路径全过`)
 }
 
 try {

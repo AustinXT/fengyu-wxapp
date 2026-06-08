@@ -93,13 +93,13 @@ export async function seedDetailFixtures(): Promise<DetailFixtureIds> {
         await client.query(
           `INSERT INTO sale_items (
              sale_item_id, sale_order_id, store_id, item_direction,
-             sku_id, product_name, sku_spec_name, product_type,
+             sku_id, product_name, product_type,
              session_count, remaining_sessions,
              unit_price, quantity, unit_real_price, sale_amount, received,
              is_experience
            )
            VALUES ($1, $2, $3, '购买'::item_direction,
-                   NULL, $4, '默认', '疗程卡'::product_type,
+                   NULL, $4, '疗程卡'::product_type,
                    10, 10,
                    100, 1, 100, 1000, 200,
                    false)
@@ -145,13 +145,13 @@ export async function seedDetailFixtures(): Promise<DetailFixtureIds> {
         await client.query(
           `INSERT INTO sale_items (
              sale_item_id, sale_order_id, store_id, item_direction,
-             sku_id, product_name, sku_spec_name, product_type,
+             sku_id, product_name, product_type,
              session_count, remaining_sessions,
              unit_price, quantity, unit_real_price, sale_amount, received,
              is_experience
            )
            VALUES ($1, $2, $3, '购买'::item_direction,
-                   NULL, $4, '默认', '疗程卡'::product_type,
+                   NULL, $4, '疗程卡'::product_type,
                    5, 5,
                    100, 1, 100, 500, 500,
                    false)

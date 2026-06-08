@@ -95,7 +95,7 @@ describe('serviceCommission.detail', () => {
     const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
     pg.query
       .mockResolvedValueOnce([{ service_order_id: 'SO-1', status: '已完成', market_name: '测试市场', commission_status: '待分配' }])
-      .mockResolvedValueOnce([{ service_item_id: 'si-1', unit_real_price: '700', session_used: 1, sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1, product_name: 'P1', sku_spec_name: 'S1' }])
+      .mockResolvedValueOnce([{ service_item_id: 'si-1', unit_real_price: '700', session_used: 1, sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1, product_name: 'P1' }])
       .mockResolvedValueOnce([]) // 无已有提成
       .mockResolvedValueOnce([
         { role_type: '美容师', sales_category: '护理项目', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },

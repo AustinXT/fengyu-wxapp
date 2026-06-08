@@ -86,6 +86,7 @@ export function ProductBoard() {
   }
 
   const kpis = data?.kpis ?? {}
+  const label = data?.timeRange.presetLabel ?? ""
 
   return (
     <div className="flex flex-col gap-6">
@@ -151,6 +152,8 @@ export function ProductBoard() {
             columns={BREAKDOWN_COLUMNS}
             firstColLabel="市场"
             loading={loading}
+            exportFilename={`品项明细_按市场_${label}`}
+            exportSheetName="品项明细_按市场"
           />
         </TabsContent>
         <TabsContent value="store">
@@ -160,6 +163,8 @@ export function ProductBoard() {
             firstColLabel="门店"
             showMarket
             loading={loading}
+            exportFilename={`品项明细_按门店_${label}`}
+            exportSheetName="品项明细_按门店"
           />
         </TabsContent>
       </Tabs>

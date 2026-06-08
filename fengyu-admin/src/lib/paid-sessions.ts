@@ -1,17 +1,17 @@
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
  *
- * 语义：净已支付金额按比例可换到的次数，**行级**比例 floor。
- * 公式：paid_sessions = min( session_count, floor( (item.received - item_refund_share) × session_count / item.sale_amount ) )
+ * 语义：行级**净实收**按比例可换到的次数，**行级**比例 floor。
+ * 公式：paid_sessions = min( session_count, floor( item.received × session_count / item.sale_amount ) )
  *   先乘后除（D9=A 整数精度）：避免先除产生 0.13333…×15=1.9999… 被 FLOOR 误舍成 1（应为 2）；封顶交给外层 LEAST(session_count)
- *   - item_refund_share = order.refunded × item.sale_amount / order.total （订单级退款按 sale_amount 按比例下分到行）
- *     之所以按订单级而非行级是因为目前没有行级退款追踪
+ *   - item.received 已是**净额**：STEP1 分摊毛额 → STEP 1.5（recalc 内 tx.execute）按 note.items[].refundAmount
+ *     逐项扣退款（2026-06-08 退款侧），不再按订单级 order.refunded × sale_amount / total 均摊（退一项不连累其它行）
  *   - sale_items.received 已含 '储值卡抵扣' change_type 行
  *     （admin confirmOfflinePayment / recordPayment SUM 公式跨端对齐 staff/order.js），不重复计 prepaid_card_amount
  *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
  *
- * D3=A 退款扣减：order.refunded 增加 → 行下分 refund_share 增加 → item_settled 下降 → paid_sessions 自动倒退；
+ * D3=A 退款扣减：退款审批通过 → STEP 1.5 把该行 received 扣减（净额下降）→ paid_sessions 自动倒退；
  * 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，
  * recalcPaidSessionsForOrder 抛 CONFLICT 阻止退款，保护"已消费次数不可撤销"不变量。
  *
@@ -59,10 +59,10 @@ SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+  ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = $1) op
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
 
 /**
@@ -71,13 +71,16 @@ WHERE sale_items.sale_order_id = $1`
  * 抛 CONFLICT，提示调用方先取消已生成的服务单。
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
-  // STEP 1: 定向回款落到指定行 + 其余按剩余产能比例摊到 sale_items.received
-  // 「定向 + 剩余产能比例」混合（ticket 2026-05-21 按子项定向回款）：
+  // STEP 1: 定向回款落到指定行 + 无定向额按两段式瀑布摊到 sale_items.received
+  // 「定向 + 两段式瀑布」混合（2026-06-08 组合套餐按逐行实付 pending_received 累加分摊）：
   //   targeted_i = Σ(已支付 payments ref_sale_item_id=i, change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
-  //   untargeted = order.received - Σtargeted；cap_i = sale_amount_i - targeted_i；
-  //   received_i = targeted_i + untargeted × cap_i / Σcap。
-  // 无定向时（ref 仅退款写 → targeted=0）退化为按 sale_amount 比例 = 旧 STEP 1，向后兼容。
-  // 保证 sum(sale_items.received) = sale_orders.received。与三端 cloudfunction 副本字节同义。
+  //   untargeted = order.received - Σtargeted；
+  //   pend_cap_i = pending_received_i - targeted_i（第一段：朝逐行实付草稿铺）；
+  //   sale_cap_i = sale_amount_i - max(pending_received_i, targeted_i)（第二段：实付→应付余量）；
+  //   received_i = targeted_i + [untargeted 先按 pend_cap 铺满 Σpend_cap，溢出再按 sale_cap 铺开]。
+  // 无定向额（首付/无 items 回款）先填逐行实付、补全款后回升到应付（不冻结）。
+  // pending_received=0（转换/寄存/充值）或 =sale_amount（默认）时退化为旧「按 sale_amount 比例」，零回归。
+  // STEP1 后 sum(sale_items.received) = sale_orders.received（毛额）；STEP 1.5 扣退款后转净额。与三端 cloudfunction 副本字节同义。
   await tx.execute(sql`
     WITH tg AS (
       SELECT ref_sale_item_id, SUM(amount) AS targeted
@@ -88,21 +91,30 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     ),
     caps AS (
       SELECT si.sale_item_id,
-             GREATEST(0, si.sale_amount::numeric - COALESCE(tg.targeted, 0)::numeric) AS cap,
-             COALESCE(tg.targeted, 0)::numeric AS targeted
+             COALESCE(tg.targeted, 0)::numeric AS targeted,
+             GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
+             GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
       FROM sale_items si
       LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
     ),
     agg AS (
       SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
-             COALESCE(SUM(cap), 0)::numeric AS cap_total
+             COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
+             COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
       FROM caps
     )
     UPDATE sale_items si
     SET received = CASE
-          WHEN agg.cap_total > 0
-            THEN caps.targeted + ROUND(agg.untargeted * caps.cap / agg.cap_total, 2)
+          WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
+            THEN caps.targeted
+              + ROUND(
+                  (CASE WHEN agg.pend_cap_total > 0
+                        THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
+                        ELSE 0 END)
+                + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
+                        THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
+                        ELSE 0 END), 2)
           ELSE caps.targeted
         END,
         updated_at = NOW()
@@ -110,17 +122,46 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     WHERE si.sale_item_id = caps.sale_item_id
   `)
 
-  // STEP 2: 按行级公式重算 paid_sessions（公式守 cross-end-sql-snapshot，不改字面）
+  // STEP 1.5: 从毛额扣逐项退款（note.items[].refundAmount 按 refSaleItemId 聚合）→ received 变净额（被退项单独减少）
+  // note→jsonb 三重防线（WHERE 仅 退款+已支付 / note LIKE '{%' 守门 / 嵌套 CASE 保 cast）；仅购买行；GREATEST(0) clamp；幂等。
+  // 与三端 cloudfunction RECEIVED_REFUNDED_DEDUCT_SQL 字节同义。
+  await tx.execute(sql`
+    WITH refund_items AS (
+      SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+      FROM sale_order_payments sop
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN sop.note LIKE '{%'
+             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                       THEN (sop.note)::jsonb -> 'items'
+                       ELSE '[]'::jsonb END
+             ELSE '[]'::jsonb END
+      ) AS elem
+      WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
+    ),
+    agg AS (
+      SELECT sale_item_id, SUM(refund_amount) AS refunded
+      FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
+    )
+    UPDATE sale_items si
+    SET received = GREATEST(0, si.received::numeric - COALESCE(agg.refunded, 0)),
+        updated_at = NOW()
+    FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
+    LEFT JOIN agg ON agg.sale_item_id = ai.sale_item_id
+    WHERE si.sale_item_id = ai.sale_item_id
+  `)
+
+  // STEP 2: 按行级公式重算 paid_sessions（received 已净额，不再下分订单级退款；守 cross-end-sql-snapshot）
   await tx.execute(sql`
     UPDATE sale_items
     SET paid_sessions = CASE
       WHEN sale_items.session_count IS NULL THEN NULL
       WHEN op.total_amount <= 0 THEN sale_items.session_count
       WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-      ELSE LEAST(sale_items.session_count, FLOOR(GREATEST(0, sale_items.received::numeric - (op.refunded_amount::numeric * sale_items.sale_amount::numeric / NULLIF(op.total_amount::numeric, 0))) * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+      ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
     END,
     updated_at = NOW()
-    FROM (SELECT total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
+    FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
     WHERE sale_items.sale_order_id = ${saleOrderId}
   `)
   const violation = await tx.execute(sql`

@@ -3,6 +3,7 @@
  * 客户端订单相关接口
  */
 
+const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
@@ -13,8 +14,13 @@ const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
-const LAKALA_CASHIER_APPID = 'wx889424d565967811'
-
+/**
+ * 解析门店的拉卡拉商户号 + 终端号
+ *
+ * 一店一商户、一店一终端，env 不留默认；支付失败就让失败，不兜底。
+ * - stores.lakala_enabled=false 或 lakala_merchant_no 为空 → 返回 null（上层报 LAKALA_NOT_CONFIGURED）
+ * - lakala_term_no 为空（聚合主扫 term_no 必填 M）→ 抛 LAKALA_TERM_NO_MISSING 引导运维补配置
+ */
 async function resolveLakalaMerchant(storeId) {
   if (!lakalaConfig.isReady()) return null
   if (!storeId) return null
@@ -26,54 +32,107 @@ async function resolveLakalaMerchant(storeId) {
   const row = rows[0]
   if (!row.lakala_enabled) return null
   const merchantNo = row.lakala_merchant_no
-  if (!merchantNo) return null   // 一店一商户:商户号必填，未配即视为未开通，不再 fallback env 默认号
-  // 终端号(term_no)拉卡拉收银台 special_create 非必填（SIT 实测不传也成功）：
-  // 空则返回 undefined，request() 的 JSON.stringify 会自动丢弃该字段
-  return { merchantNo, termNo: row.lakala_term_no || undefined }
+  if (!merchantNo) return null
+  const termNo = row.lakala_term_no
+  if (!termNo) {
+    throw new Error('INVALID_STATE: LAKALA_TERM_NO_MISSING: 该门店未配置拉卡拉终端号，请联系管理员')
+  }
+  return { merchantNo, termNo }
 }
 
-async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmountYuan, payMode }) {
-  const cfg = lakalaConfig.readConfig()
-  const efficientTime = lakalaClient.formatReqTime(new Date(Date.now() + 10 * 60 * 1000))
+/**
+ * 提取客户端 IP（拉卡拉风控字段 location_info.request_ip 必送）。
+ * CloudBase 云函数走 cloud.getWXContext().CLIENTIP；某些 callFunction 调用下可能为空，兜底 '0.0.0.0'。
+ */
+function getRequestIp() {
+  try {
+    const ctx = cloud.getWXContext() || {}
+    return ctx.CLIENTIP || '0.0.0.0'
+  } catch {
+    return '0.0.0.0'
+  }
+}
+
+/**
+ * 调聚合主扫 preorder 拿到支付参数。
+ *
+ * out_trade_no = `${orderNo}_${unixSec}`（30 字符 ≤ 32 上限），同一 saleOrderId 多次发起支付会生成不同号。
+ * payNotify 收到回调时按 `replace(/_\d+$/, '')` 剥离后缀得 saleOrderId（仍兼容旧规则）。
+ *
+ * @returns {Promise<{
+ *   outTradeNo: string, tradeNo: string,
+ *   paymentParams?: object,     // 微信小程序：wx.requestPayment 5 字段
+ *   alipayQrUrl?: string,       // 支付宝 NATIVE：二维码 URL（喂给 share_code）
+ * }>}
+ */
+async function createLakalaPreorder({
+  orderNo, merchantNo, termNo,
+  payAmountYuan, accountType, transType,
+  openid, subAppid, requestIp,
+  subject, attach,
+}) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
-  // out_order_no 加秒级时间戳后缀避免拉卡拉判重（同一 sale_order_id 多次发起支付场景）
-  // FY-XSD-WX-YYMMDDXXXX (19) + '_' + ts10 = 30 字符 ≤ 32 上限
-  // pay_order_no（拉卡拉平台号）落 sale_order_payments.external_txn_id 维护跨次幂等，不依赖此后缀
-  const outOrderNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
-  const reqData = {
-    out_order_no: outOrderNo,
-    merchant_no: merchantNo,
-    term_no: termNo,
-    total_amount: totalAmountFen,
-    order_efficient_time: efficientTime,
-    notify_url: cfg.notifyUrl || '',
-    order_info: `凤御美容订单 ${orderNo}`,
-    // 字段类型对齐拉卡拉 SDK 实体 V3CcssCounterOrderSpecialCreateRequest：
-    // total_amount=Long、support_*=Integer（发数字而非字符串）。SIT 实测两种类型均接受，
-    // 但 SDK 权威类型为数字，故对齐；trade_biz_tp 非该接口字段（SDK 实体无），已移除。
-    support_refund: 1,
-    support_repeat_pay: 1,
-    support_cancel: 0,
-    counter_param: JSON.stringify({ pay_mode: payMode }),
-  }
-  const resp = await lakalaClient.request({
-    path: '/v3/ccss/counter/order/special_create',
-    reqData,
+  const outTradeNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
+
+  const resp = await lakalaClient.requestPreorder({
+    merchantNo, termNo, outTradeNo,
+    accountType, transType,
+    totalAmountFen,
+    requestIp: requestIp || '0.0.0.0',
+    subject: subject || `凤御美容订单 ${orderNo}`,
+    attach: attach || orderNo,
+    subAppid, openid,
+    timeoutExpressMin: 10,
   })
-  if (!resp.ok) {
-    throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
+
+  // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
+  if (accountType === 'WECHAT' && transType === '71') {
+    if (subAppid && resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      throw new Error(`INVALID_STATE: LAKALA_APPID_MISMATCH: 拉卡拉返回 app_id=${resp.lakalaAppId} 与 sub_appid=${subAppid} 不一致`)
+    }
   }
-  // 持久化本次收银台商户订单号，供后续「查询/关单」按 out_order_no 寻单（取消防迟付 / 轮询兜底）。
-  // CAS-EXEMPT：仅写 lakala_out_order_no，不翻 status。
+
+  // 持久化本次商户流水号（聚合主扫的 out_trade_no），供后续 queryLakalaStatus 兜底查询。
+  // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
   await pg.query(
     'UPDATE sale_orders SET lakala_out_order_no = $1 WHERE sale_order_id = $2',
-    [outOrderNo, orderNo]
+    [outTradeNo, orderNo]
   )
-  return {
-    counterUrl: resp.resp_data.counter_url,
-    payOrderNo: resp.resp_data.pay_order_no,
-    outOrderNo,
+
+  if (accountType === 'WECHAT' && transType === '71') {
+    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
   }
+  if (accountType === 'ALIPAY' && transType === '41') {
+    return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
+  }
+  return { outTradeNo, tradeNo: resp.tradeNo }
+}
+
+/**
+ * 调拉卡拉「申请支付宝吱口令」拿到 share_token，前端展示给用户复制后切到支付宝识别。
+ *
+ * 用同一笔 outTradeNo + 同金额（必须先调 preorder 走过流水落账后再调 share_code）。
+ *
+ * @returns {Promise<{ shareToken: string, expireDate: string, tradeNo: string }>}
+ */
+async function createLakalaAlipayShareCode({
+  orderNo, merchantNo, termNo,
+  payAmountYuan, requestIp, bizLink,
+  outTradeNo,  // 与 preorder 同一笔 outTradeNo
+}) {
+  const cfg = lakalaConfig.readConfig()
+  if (!cfg.alipayShareSource) {
+    throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+  }
+  const totalAmountFen = Math.round(payAmountYuan * 100)
+  const resp = await lakalaClient.requestAlipayShareCode({
+    merchantNo, termNo, outTradeNo,
+    totalAmountFen,
+    requestIp: requestIp || '0.0.0.0',
+    source: cfg.alipayShareSource,
+    bizLink,
+  })
+  return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
 }
 
 /**
@@ -117,7 +176,9 @@ async function closeExpiredOrdersByUser(userId) {
  *
  * 仅当 order.create payload 含 bundleProductId 时调用：
  *   - 校验该 productId 存在且 is_bundle = true
- *   - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为"必须全选"）
+ *   - 校验每个 mall_bundle_groups 的配额：选 N 项（pick_count != null）按"数量合计 = pick_count"
+ *     （同一 SKU 可选多件，与员工端口径一致，故 4 个商品可凑出"4 选 8"）；
+ *     全选（pick_count IS NULL）按"SKU 种类数 = 组内 SKU 总数"
  *   - 校验所有 items.skuId 都属于该 bundle（mall_product_skus.product_id 等值）
  *
  * 返回 Map<skuId, bundlePrice|null>；调用方据此把 unit_real_price 切换到 bundle_price。
@@ -164,13 +225,19 @@ async function _loadAndValidateBundle(bundleProductId, items) {
     }
   }
 
-  // 5. 按 group_id 统计 items 勾选数 + 校验配额
-  const pickedByGroup = new Map() // groupId → Set<skuId>
+  // 5. 按 group_id 统计 items + 校验配额
+  //    pick_count != null（选 N 项）：按"数量合计"校验（同一 SKU 可选多件，员工端口径），
+  //                                   故 4 个候选商品可凑出"4 选 8"等数量。
+  //    pick_count IS NULL（全选）：按"种类数"校验，每个 SKU 必须都在（数量恒 1）。
+  const pickedQtyByGroup = new Map()  // groupId → Σ quantity（选 N 项用）
+  const pickedSkusByGroup = new Map() // groupId → Set<skuId>（全选组用）
   for (const item of items) {
     const gid = skuToGroupId.get(item.skuId)
     if (gid == null) continue // 未分组 SKU，直接通过（mall_product_skus.bundle_group_id 为 NULL 的 SKU）
-    if (!pickedByGroup.has(gid)) pickedByGroup.set(gid, new Set())
-    pickedByGroup.get(gid).add(item.skuId)
+    const qty = Number(item.quantity) || 0
+    pickedQtyByGroup.set(gid, (pickedQtyByGroup.get(gid) || 0) + qty)
+    if (!pickedSkusByGroup.has(gid)) pickedSkusByGroup.set(gid, new Set())
+    pickedSkusByGroup.get(gid).add(item.skuId)
   }
 
   // 每组 SKU 总数（pick_count IS NULL 时校验"全选"用）
@@ -183,16 +250,18 @@ async function _loadAndValidateBundle(bundleProductId, items) {
 
   for (const g of groupRows) {
     const gid = Number(g.id)
-    const pickedCount = pickedByGroup.has(gid) ? pickedByGroup.get(gid).size : 0
     if (g.pick_count == null) {
-      // 全选组：必须等于该组 SKU 总数
+      // 全选组：勾选的 SKU 种类数必须等于该组 SKU 总数
       const total = totalSkusByGroup.get(gid) || 0
-      if (pickedCount !== total) {
-        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${pickedCount} 项`)
+      const distinct = pickedSkusByGroup.has(gid) ? pickedSkusByGroup.get(gid).size : 0
+      if (distinct !== total) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${distinct} 项`)
       }
     } else {
-      if (pickedCount !== Number(g.pick_count)) {
-        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 项，实际 ${pickedCount} 项`)
+      // 选 N 项组：数量合计必须等于 pick_count
+      const pickedQty = pickedQtyByGroup.get(gid) || 0
+      if (pickedQty !== Number(g.pick_count)) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 件，实际 ${pickedQty} 件`)
       }
     }
   }
@@ -262,7 +331,7 @@ async function scanDetail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
-      si.product_name, si.sku_spec_name,
+      si.product_name,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
@@ -304,7 +373,6 @@ async function scanDetail(ctx) {
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,
-      skuSpecName: i.sku_spec_name,
       unitPrice: i.unit_price,
       quantity: i.quantity,
       received: i.received,
@@ -406,7 +474,7 @@ async function create(ctx) {
   // bundleProductId 出现时：
   // - 校验该商品 is_bundle=true
   // - 校验 items 中每个 skuId 都在 mall_product_skus 里属于该 bundle
-  // - 校验每个 mall_bundle_groups 的勾选数 = pick_count（pick_count IS NULL 视为全选）
+  // - 校验每个 mall_bundle_groups 的配额：选 N 项按数量合计 = pick_count，全选按种类数全覆盖
   // - 返回每个 skuId 对应的 bundle_price，下面用作 unit_real_price
   const bundlePriceMap = await _loadAndValidateBundle(bundleProductId, items)
 
@@ -435,10 +503,10 @@ async function create(ctx) {
     return {
       skuId: item.skuId,
       productName: sku.spec_name,
-      skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount,
       remainingSessions: sessionCount,
+      listUnit,                       // per-card 标价快照（供摊券后 per-session 重派 unit_price 使用）
       unitPrice,
       unitRealPrice,
       quantity,
@@ -557,23 +625,38 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 按比例分摊到各行的 received（尾差修正：最后一项吸收舍入误差）
+    // 按 saleAmount 比例摊到各行：saleAmount 是权威源（券摊后行应付总额）
+    // received 默认 = saleAmount（顾客端开单即应付=实付，无 inputReceived 概念）
+    // 与 staff order.js L576-591 同义；A1 listUnit 字段保留 per-card 标价供 per-session 重派
     let distributedDiscount = 0
     for (let i = 0; i < eligibleItems.length; i++) {
       const item = eligibleItems[i]
       let share
       if (i === eligibleItems.length - 1) {
-        // 最后一项吸收尾差
         share = couponDiscount - distributedDiscount
       } else {
         share = Math.round(couponDiscount * (item.saleAmount / eligibleTotal) * 100) / 100
         distributedDiscount += share
       }
-      item.received -= share
-      item.received = Math.round(item.received * 100) / 100
+      item.saleAmount = Math.max(0, Math.round((item.saleAmount - share) * 100) / 100)
+      item.received = item.saleAmount
     }
 
-    totalAmount = itemsData.reduce((s, d) => s + d.received, 0)
+    // per-session 重派 unit_real_price / unit_price（sale_amount 为权威行总额）
+    // 卡 = 行总额 / 总次数；非卡 = 行总额 / 数量（per-unit 退化）
+    // 与 staff order.js L604-612 同义
+    for (const d of itemsData) {
+      const denom = (d.sessionCount != null && d.sessionCount > 0) ? d.sessionCount : (d.quantity || 1)
+      const listTotalRow = Math.round(Number(d.listUnit || 0) * (d.quantity || 1) * 100) / 100
+      d.unitRealPrice = denom > 0
+        ? Math.round((Number(d.saleAmount || 0) / denom) * 100) / 100
+        : Number(d.saleAmount || 0)
+      d.unitPrice = denom > 0
+        ? Math.round((listTotalRow / denom) * 100) / 100
+        : listTotalRow
+    }
+
+    totalAmount = itemsData.reduce((s, d) => s + d.saleAmount, 0)
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
@@ -602,6 +685,10 @@ async function create(ctx) {
   let finalPaymentMethod = paymentMethod
   let cardIdForDeduction = null
   let prepaidFullPaid = false
+  // zeroPayable：应付实金 = 0（券全额抵扣 / 储值卡全额抵扣 / 二者叠加把应付抵到 0）。
+  // 这类订单无款可付，创建即结清为 '已支付'，否则会卡在 '待支付' 死循环（0 元发不起线上支付、
+  // payment_method='无' 也走不了 confirmOffline）。prepaidFullPaid 是其"含储值卡"的子集。
+  let zeroPayable = false
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复序号
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
@@ -662,6 +749,7 @@ async function create(ctx) {
     finalPaymentMethod = effectivePaymentMethod
     cardIdForDeduction = cardId
     prepaidFullPaid = paidAmount === 0 && prepaidCardAmount > 0
+    zeroPayable = paidAmount === 0  // 券全额（prepaidCardAmount=0）也命中，prepaidFullPaid 不命中
 
     // 生成订单号（在事务+锁内，防并发重复）
     const dateStrOrder = shanghaiYYMMDD(now)
@@ -697,9 +785,9 @@ async function create(ctx) {
     // 2026-04-26 sale-order-domain-refactor:
     //   - paid_amount 列已 DROP；统一改用 received（已到账金额，初始 0；全额储值卡抵扣时 = prepaidCardAmount）
     //   - payable_amount = total_amount - prepaid_card_amount（应付实金，取代旧 paid_amount 在 create 时的语义）
-    //   - 全额储值卡抵扣单的 received = prepaidCardAmount（由储值卡抵扣支付，等同已收）
-    const initialStatus = prepaidFullPaid ? '已支付' : '待支付'
-    const initialReceived = prepaidFullPaid ? prepaidCardAmount : 0
+    //   - 全额抵扣单的 received = prepaidCardAmount（储值卡抵扣等同已收；券全额抵扣 prepaidCardAmount=0 → received=0）
+    const initialStatus = zeroPayable ? '已支付' : '待支付'
+    const initialReceived = zeroPayable ? prepaidCardAmount : 0
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -713,7 +801,7 @@ async function create(ctx) {
         ctx.auth.phone || null, customerName,
         totalAmount, prepaidCardAmount, initialReceived, paidAmount, effectivePaymentMethod,
         preferredStaffWfId || null, inputCouponId || null, couponDiscount,
-        prepaidFullPaid ? now : null
+        zeroPayable ? now : null
       ]
     )
 
@@ -736,17 +824,20 @@ async function create(ctx) {
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemsData[i]
+      // 行级 received 开单写 0（资金铁律：received/paid_sessions 只认 status='已支付' 流水），
+      // 由下方 recalcPaidSessionsForOrder 从 sale_orders.received 派生（待支付=0；全额抵扣=prepaid 分摊）。
+      // 顾客端应付=实付，pending_received 记下单应付（与 admin/staff 三端 INSERT 模式一致）。
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, sku_id,
-          product_name, sku_spec_name, product_type,
+          product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sale_amount, received, pending_received, sales_category, is_experience
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
-          d.productName, d.skuSpecName, d.productType,
+          d.productName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
           d.saleAmount, d.received, d.salesCategory || null, d.isExperience
@@ -791,9 +882,18 @@ async function create(ctx) {
         )
       }
     }
+
+    // 零应付单（券/卡全额抵扣）补结算：积分链净额差值法（幂等）+ 会员等级即时重算。
+    // 券全额单 received=0 → netSettled=0 → delta=0 → 无积分写入；卡全额单 received=卡额，
+    // 与既有 confirmPrepaidFull 口径一致。零应付单永远不会有 payNotify/confirmOffline 来触发结算，
+    // 故必须在创建时就地结算（与"所有转已支付的触发点走同一入口"原则一致）。
+    if (zeroPayable) {
+      await settlePointsSafe(client, orderNo, 'clientApi.create.zeroPayable')
+      await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
+    }
   })
 
-  if (prepaidFullPaid) {
+  if (zeroPayable) {
     ctx.result = {
       orderNo,
       saleOrderId: orderNo,
@@ -802,7 +902,9 @@ async function create(ctx) {
       paidAmount: finalPaidAmount,
       paymentMethod: finalPaymentMethod,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      // 卡全额抵扣保留 'prepaid_card_full'（前端老逻辑判定）；券全额抵扣用 'coupon_full'。
+      // 两者前端处理一致（跳详情、不唤起支付），reason 仅供文案/埋点区分。
+      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : 'coupon_full',
       paymentParams: null,
     }
     return
@@ -973,12 +1075,17 @@ async function pay(ctx) {
   if (!merchant) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+  const cfg = lakalaConfig.readConfig()
+  const { paymentParams } = await createLakalaPreorder({
     orderNo,
     merchantNo: merchant.merchantNo,
     termNo: merchant.termNo,
     payAmountYuan: thisPayAmount,
-    payMode: 'WECHAT',
+    accountType: 'WECHAT',
+    transType: '71',
+    openid: ctx.auth.openid,
+    subAppid: cfg.subAppid,
+    requestIp: getRequestIp(),
   })
   // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
   // 仅清空非空值，避免无谓写；不影响 NULL 默认（全额）订单
@@ -986,19 +1093,12 @@ async function pay(ctx) {
     'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
     [now, orderNo]
   )
-  const envCfg = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '微信',
-    lakala: {
-      counterUrl,
-      payOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: envCfg.env,
-      openMode: 'embedded',
-    },
+    paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
 }
 
@@ -1161,7 +1261,6 @@ async function list(ctx) {
         si.remaining_sessions,
         si.paid_sessions,
         si.product_name,
-        si.sku_spec_name,
         si.product_type,
         (SELECT p.cover_image FROM mall_product_skus mps
          JOIN products p ON mps.product_id = p.product_id
@@ -1228,7 +1327,6 @@ async function detail(ctx) {
       si.sale_item_id,
       si.sku_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -1412,21 +1510,9 @@ async function cancel(ctx) {
     }
   })
 
-  // 关闭拉卡拉收银台订单，防止已取消的线上单被迟到支付。
-  // best-effort：本地取消已提交，关单失败不回滚（收银台订单也会到期自动失效）。
-  if (order.lakala_out_order_no) {
-    try {
-      const merchant = await resolveLakalaMerchant(order.store_id)
-      if (merchant) {
-        await lakalaClient.closeCashierOrder({
-          merchantNo: merchant.merchantNo,
-          outOrderNo: order.lakala_out_order_no,
-        })
-      }
-    } catch (e) {
-      console.warn('[lakala] 取消订单时关单失败（不影响本地取消）:', orderNo, e.message)
-    }
-  }
+  // 聚合主扫订单按 timeout_express=10min 自动失效，无显式关单接口；
+  // 不再调用旧收银台 closeCashierOrder。本地取消即可，迟到回调会被 payNotify 的状态机
+  // CAS 守卫挡掉（订单已 '已关闭' 时回调 trade_state=SUCCESS 也不会再翻成 '已支付'）。
 
   ctx.result = {
     orderNo,
@@ -1458,7 +1544,6 @@ async function appointableItems(ctx) {
       si.sale_item_id,
       si.sku_id,
       si.product_name,
-      si.sku_spec_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
@@ -1513,7 +1598,6 @@ async function appointableItems(ctx) {
       saleItemId: item.sale_item_id,
       skuId: item.sku_id,
       productName: item.product_name,
-      skuSpecName: item.sku_spec_name,
       productType: item.product_type,
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
@@ -1632,31 +1716,43 @@ async function alipayPay(ctx) {
   if (!merchantAli) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+  const cfgAli = lakalaConfig.readConfig()
+  if (!cfgAli.alipayShareSource) {
+    throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+  }
+  const requestIpAli = getRequestIp()
+  // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
+  const preorderRespAli = await createLakalaPreorder({
     orderNo,
     merchantNo: merchantAli.merchantNo,
     termNo: merchantAli.termNo,
     payAmountYuan: thisPayAmount,
-    payMode: 'ALIPAY',
+    accountType: 'ALIPAY',
+    transType: '41',
+    requestIp: requestIpAli,
+  })
+  // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
+  const shareCodeResp = await createLakalaAlipayShareCode({
+    orderNo,
+    merchantNo: merchantAli.merchantNo,
+    termNo: merchantAli.termNo,
+    outTradeNo: preorderRespAli.outTradeNo,
+    payAmountYuan: thisPayAmount,
+    requestIp: requestIpAli,
+    bizLink: preorderRespAli.alipayQrUrl,
   })
   // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
   await pg.query(
     'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
     [now, orderNo]
   )
-  const envCfgAli = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '支付宝',
-    lakala: {
-      counterUrl,
-      payOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: envCfgAli.env,
-      openMode: 'embedded',
-    },
+    alipayShareToken: shareCodeResp.shareToken,
+    alipayExpireDate: shareCodeResp.expireDate,
     status: order.status,
   }
 }
@@ -2139,45 +2235,78 @@ async function repay(ctx) {
     return
   }
 
-  // 线上通道：调拉卡拉收银台 special_create 拿 counter_url
+  // 线上通道：调聚合主扫 preorder（微信） / preorder+share_code（支付宝）
   const repayMerchant = await resolveLakalaMerchant(storeId)
   if (!repayMerchant) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-  const { counterUrl: repayCounterUrl, payOrderNo: repayPayOrderNo } = await createLakalaCounterOrder({
-    orderNo: saleOrderId,
-    merchantNo: repayMerchant.merchantNo,
-    termNo: repayMerchant.termNo,
-    payAmountYuan: repayAmountInput,
-    payMode: paymentMethod === '微信' ? 'WECHAT' : 'ALIPAY',
-  })
-  const repayEnvCfg = lakalaConfig.readConfig()
-  ctx.result = {
-    saleOrderId,
-    status: '待支付',
-    paymentMethod,
-    repayAmount: repayAmountInput,
-    prepaidCardAmount: prepaidCardAmountInput,
-    lakala: {
-      counterUrl: repayCounterUrl,
-      payOrderNo: repayPayOrderNo,
-      appId: LAKALA_CASHIER_APPID,
-      envVersion: repayEnvCfg.env,
-      openMode: 'embedded',
-    },
+  const repayCfg = lakalaConfig.readConfig()
+  const repayRequestIp = getRequestIp()
+
+  if (paymentMethod === '微信') {
+    const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      payAmountYuan: repayAmountInput,
+      accountType: 'WECHAT',
+      transType: '71',
+      openid: ctx.auth.openid,
+      subAppid: repayCfg.subAppid,
+      requestIp: repayRequestIp,
+    })
+    ctx.result = {
+      saleOrderId,
+      status: '待支付',
+      paymentMethod,
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: prepaidCardAmountInput,
+      paymentParams: repayPaymentParams,
+    }
+  } else {
+    // 支付宝：preorder + share_code
+    if (!repayCfg.alipayShareSource) {
+      throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+    }
+    const repayPreorderResp = await createLakalaPreorder({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      payAmountYuan: repayAmountInput,
+      accountType: 'ALIPAY',
+      transType: '41',
+      requestIp: repayRequestIp,
+    })
+    const repayShareCodeResp = await createLakalaAlipayShareCode({
+      orderNo: saleOrderId,
+      merchantNo: repayMerchant.merchantNo,
+      termNo: repayMerchant.termNo,
+      outTradeNo: repayPreorderResp.outTradeNo,
+      payAmountYuan: repayAmountInput,
+      requestIp: repayRequestIp,
+      bizLink: repayPreorderResp.alipayQrUrl,
+    })
+    ctx.result = {
+      saleOrderId,
+      status: '待支付',
+      paymentMethod,
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: prepaidCardAmountInput,
+      alipayShareToken: repayShareCodeResp.shareToken,
+      alipayExpireDate: repayShareCodeResp.expireDate,
+    }
   }
 }
 
 /**
- * 查询拉卡拉收银台支付状态（只读轮询兜底）
+ * 查询拉卡拉聚合主扫交易状态（只读轮询兜底）
  *
  * 前端轮询 order.detail 仍 '待支付' 时可调本接口，主动问拉卡拉该单是否已支付，
  * 避免 payNotify 延迟/丢失时死等。**不改 DB**——订单结算（置已支付/积分/储值卡等）仍由
- * payNotify 单源负责（payNotify 是独立云函数，避免在此重复结算逻辑）；本接口仅把拉卡拉视角的
- * order_status 透出给前端做 UX 决策。
+ * payNotify 单源负责；本接口仅把拉卡拉视角的 trade_state 透出给前端做 UX 决策。
  *
- * resp_data.order_status 拉卡拉枚举（SIT 实测：'0'=未支付/处理中，'7'=已关闭；
- * 已支付对应值需联调时按拉卡拉文档确认，故此处只透传原始值不做语义判定）。
+ * trade_state ∈ INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
+ * 'SUCCESS' 才表示真实到账（'BBS00000' 成功码仅说明查到了交易记录）
  */
 async function queryLakalaStatus(ctx) {
   const { userId } = ctx.auth
@@ -2199,7 +2328,7 @@ async function queryLakalaStatus(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查询该订单')
   }
 
-  // 未经拉卡拉发起支付，或门店未启用：无可查的收银台订单，仅回本地状态
+  // 未经拉卡拉发起支付，或门店未启用：无可查的拉卡拉订单，仅回本地状态
   let merchant = null
   if (order.lakala_out_order_no) {
     merchant = await resolveLakalaMerchant(order.store_id)
@@ -2209,16 +2338,17 @@ async function queryLakalaStatus(ctx) {
     return
   }
 
-  const resp = await lakalaClient.queryCashierOrder({
+  const resp = await lakalaClient.queryTrade({
     merchantNo: merchant.merchantNo,
-    outOrderNo: order.lakala_out_order_no,
+    termNo: merchant.termNo,
+    outTradeNo: order.lakala_out_order_no,
   })
   ctx.result = {
     orderNo,
     localStatus: order.status,
     lakalaQueried: true,
     lakalaOk: resp.ok,
-    lakalaOrderStatus: resp.ok ? (resp.resp_data.order_status || null) : null,
+    lakalaTradeState: resp.tradeState || null,  // 'SUCCESS' 才算到账
     lakalaCode: resp.code,
   }
 }

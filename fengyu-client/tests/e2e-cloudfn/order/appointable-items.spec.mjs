@@ -4,7 +4,7 @@
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/order.js (line 1216)
  *   - 无入参：返回当前 userId 的所有可预约 sale_items（grouped by order）
- *   - 过滤：WHERE o.client_user_id=$1 AND o.status='已支付' AND si.product_type IN ('疗程卡','单品')
+ *   - 过滤：WHERE o.client_user_id=$1 AND o.status='已支付' AND si.product_type='疗程卡'
  *           AND si.remaining_sessions > 0 AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
  *   - includeInactive=true 时不过滤 remaining/expire
  *   - response: { orders: [{ saleOrderId, items: [...] }] }
@@ -14,8 +14,8 @@
  *   - 实际 schema 字段是 sale_items.remaining_sessions（NOT remaining_count）
  *     ⇒ helper createTestPendingSaleOrder 中传 remaining_count 是 bug；
  *       本 spec 不传该参数，下单后直接 UPDATE remaining_sessions
- *   - 单品 (product_type='单品') 也属可预约范围；本 spec 的"单品 vs 疗程卡"区分
- *     测的是 product_type='家居产品'（不在 IN 列表内）
+ *   - product_type 枚举 2026-05-21 由 3→2 值（'单品' 并入 '疗程卡'）；现仅 '疗程卡' 可预约；
+ *     '家居产品' 不可预约（本 spec 的对比用例）
  */
 import '../setup.mjs'
 import {
@@ -92,7 +92,7 @@ async function caseZeroRemainingExcluded() {
 async function caseNonAppointableProductTypeExcluded() {
   await createTestClient()
   const orderNo = `${NS}_AP_NA1`.slice(0, 30)
-  // productType='家居产品' 不在 IN ('疗程卡','单品') 列表，应被排除
+  // productType='家居产品' 不在 '疗程卡' 列表，应被排除
   await newPaidCourseOrder({
     orderNo, sessionCount: 1, remainingSessions: 1, productType: '家居产品',
   })
@@ -214,7 +214,7 @@ async function casePendingRefundExcluded() {
 const CASES = [
   ['happy (paid + remaining>0) returns the order/item', caseHappyHasRemaining],
   ['remaining=0 excluded by default filter', caseZeroRemainingExcluded],
-  ['product_type=家居产品 excluded (not in 疗程卡/单品)', caseNonAppointableProductTypeExcluded],
+  ['product_type=家居产品 excluded (not 疗程卡)', caseNonAppointableProductTypeExcluded],
   ['no saleOrderId param → returns all (route does not require it)', caseNoSaleOrderIdParam],
   ['cross-store: 两单都返回（documented: route 不按 storeId 过滤）', caseAppointableItemsCrossStoreFilter],
   ['在途退款(待审批)排除整单, 驳回后恢复', casePendingRefundExcluded],

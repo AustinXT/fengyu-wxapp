@@ -8,15 +8,16 @@ description: |
   payNotify) to production — all targeting prod PG 5433/fengyu_wxapp.
   Use when the user says 发版 / 上线 / 发布生产 / release / ship to prod.
   This is an UPDATE release — never runs DB migrations, never wipes the DB.
-argument-hint: "[skip-tests|skip-version|skip-admin|skip-cloudfn]"
+argument-hint: '[skip-tests|skip-version|skip-admin|skip-cloudfn]'
 disable-model-invocation: true
 user-invocable: true
-allowed-tools: Bash, Read, Grep
+allowed-tools: 'Bash, Read, Grep'
 metadata:
   author: NightVoyager
   version: 1.0.0
   title: 生产发版
   description_zh: 预检门禁 + admin 交叉编译发布 ali-demo + client/staff 云函数发布生产 + 版本号更新
+  license: 42plugin-personal
 ---
 
 # release-prod — fengyu-wxapp 生产代码发版

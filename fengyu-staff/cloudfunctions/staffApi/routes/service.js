@@ -13,6 +13,7 @@ const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
+const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 
 /**
  * 创建服务单
@@ -636,6 +637,9 @@ async function confirm(ctx) {
     throw new Error(`INVALID_STATE: 服务单当前状态为"${so.status}"，不可确认`)
   }
 
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销（否则扣次数与退款冲突 → 孤儿服务单/账实错乱）
+  await assertNoPendingRefundByServiceOrder(pg, serviceOrderId)
+
   const items = await loadServiceItems(serviceOrderId)
   const now = new Date()
 
@@ -711,7 +715,6 @@ async function list(ctx) {
       SELECT
         si.service_order_id,
         COALESCE(sli.product_name, '') AS product_name,
-        sli.sku_spec_name,
         sli.remaining_sessions,
         sli.session_count,
         sli.paid_sessions,
@@ -727,7 +730,7 @@ async function list(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.sku_spec_name || '',
+      spec: i.product_name || '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
       paidSessions: i.paid_sessions,
@@ -842,7 +845,6 @@ async function detail(ctx) {
       sli.session_count,
       sli.remaining_sessions,
       sli.paid_sessions,
-      sli.sku_spec_name,
       sli.product_type,
       sli.product_name
     FROM service_items si
@@ -881,6 +883,18 @@ async function detail(ctx) {
     }
   }
 
+  // 顾客评价：仅店长可见（防普通员工抓包）；评价仅存在于已完成单
+  let review
+  if (ctx.auth.roles.includes('manager') && so.status === '已完成') {
+    const reviewRows = await pg.query(
+      `SELECT rating, comment, created_at FROM service_reviews WHERE service_order_id = $1`,
+      [id]
+    )
+    review = reviewRows.length > 0
+      ? { rating: reviewRows[0].rating, comment: reviewRows[0].comment || '', createdAt: reviewRows[0].created_at }
+      : null
+  }
+
   ctx.result = {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
@@ -893,10 +907,11 @@ async function detail(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
+    review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       itemName: i.product_name || '',
-      spec: i.sku_spec_name || '',
+      spec: i.product_name || '',
       sessionCount: i.session_used,
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,

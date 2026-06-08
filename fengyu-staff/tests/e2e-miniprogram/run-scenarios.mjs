@@ -4,6 +4,9 @@
 //   bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs
 //   bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs --filter bs01
 //   bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs --bail   # 任一失败立即停
+//   SKIP_FLAKY=bs01,bs04 bun ... run-scenarios.mjs                    # 跳过子包 automation 通道
+//     已知环境硬挂的场景，命中 spec 名称（包含匹配）即标 SKIPPED 不计入 FAIL。
+//     用于 IDE automation 通道偶发 300s 硬挂的 KNOWN-ISSUES（bs01 step1、bs04 step2）。
 //
 // 设计：
 // - 自动发现 scenarios/bs*.spec.mjs
@@ -28,6 +31,9 @@ const filterIdx = args.indexOf('--filter');
 const filters = filterIdx >= 0 && args[filterIdx + 1]
   ? args[filterIdx + 1].split(',').map(s => s.trim()).filter(Boolean)
   : [];
+// F3 (2026-05-28): SKIP_FLAKY env 跳过 IDE automation 通道环境硬挂场景（非 spec 逻辑 bug）
+const skipFlaky = (process.env.SKIP_FLAKY || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
 if (!fs.existsSync(SCENARIOS_DIR)) {
   console.error(`[run-scenarios] scenarios/ 目录不存在: ${SCENARIOS_DIR}`);
@@ -113,6 +119,13 @@ function run(spec) {
 const results = [];
 for (let i = 0; i < specs.length; i++) {
   const s = specs[i];
+  // F3 SKIP_FLAKY 命中（包含匹配，与 --filter 同语义）→ 不 spawn 子进程，记 skipped
+  if (skipFlaky.length > 0 && skipFlaky.some(f => s.includes(f))) {
+    console.log(`\n========== ${s} ==========`);
+    console.log(`  ⏭ SKIPPED (SKIP_FLAKY=${skipFlaky.join(',')} 命中)`);
+    results.push({ spec: s, code: 0, elapsedMs: 0, logPath: null, timedOut: false, skipped: true });
+    continue;
+  }
   console.log(`\n========== ${s} ==========`);
   const r = await run(s);
   results.push(r);
@@ -124,14 +137,17 @@ for (let i = 0; i < specs.length; i++) {
 }
 
 console.log('\n========== SUMMARY ==========');
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 for (const r of results) {
-  const tag = r.code === 0 ? 'PASS' : 'FAIL';
+  const tag = r.skipped ? 'SKIP' : (r.code === 0 ? 'PASS' : 'FAIL');
   console.log(`  ${tag}  ${r.spec.padEnd(38)} ${(r.elapsedMs / 1000).toFixed(2)}s`);
-  if (r.code === 0) passed++; else failed++;
+  if (r.skipped) skipped++;
+  else if (r.code === 0) passed++;
+  else failed++;
 }
 console.log(
-  `\n${failed === 0 ? '✅ ALL PASS' : `❌ ${failed} FAILED`} | ${passed} pass / ${results.length} ran / ${specs.length} total | ` +
+  `\n${failed === 0 ? '✅ ALL PASS' : `❌ ${failed} FAILED`} | ` +
+  `${passed} pass / ${skipped} skip / ${results.length} ran / ${specs.length} total | ` +
   `${(results.reduce((s, r) => s + r.elapsedMs, 0) / 1000).toFixed(1)}s`
 );
 

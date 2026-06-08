@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
@@ -23,7 +24,8 @@ import {
   splitRefundByOriginalPayment,
   type RefundSourceItem,
 } from '@/lib/refund'
-import { cascadeRefund } from '@/lib/refund-cascade'
+import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/refund-cascade'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import * as lakalaClient from '@/lib/lakala-client'
 import type {
@@ -35,8 +37,9 @@ import type {
   SalesCategory,
 } from '@/lib/types'
 
-const operatorAlias = alias(staffWechatUsers, 'sop_operator')
-const auditorAlias = alias(staffWechatUsers, 'sop_auditor')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const operatorAlias = alias(staffWechatUsers, 'sop_operator') as unknown as typeof staffWechatUsers
+const auditorAlias = alias(staffWechatUsers, 'sop_auditor') as unknown as typeof staffWechatUsers
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -49,7 +52,6 @@ const auditorAlias = alias(staffWechatUsers, 'sop_auditor')
 export interface RefundableItem {
   saleItemId: string
   productName: string
-  skuSpecName: string
   productType: ProductType | null
   unitRealPrice: number
   unusedQuantity: number
@@ -223,10 +225,10 @@ export const getRefundable = withAnyPermission(
       sale_item_id: r.saleItemId,
       sku_id: r.skuId,
       product_name: r.productName,
-      sku_spec_name: r.skuSpecName,
       product_type: r.productType as ProductType | null,
       session_count: r.sessionCount,
       remaining_sessions: r.remainingSessions,
+      paid_sessions: r.paidSessions,
       unit_price: r.unitPrice,
       quantity: r.quantity,
       unit_real_price: r.unitRealPrice,
@@ -241,7 +243,6 @@ export const getRefundable = withAnyPermission(
     return {
       saleItemId: r.saleItemId,
       productName: r.productName || '-',
-      skuSpecName: r.skuSpecName || '',
       productType: r.productType as ProductType | null,
       unitRealPrice,
       unusedQuantity: unused,
@@ -529,6 +530,10 @@ export const createRefund = withPermission(
   if (!origOrder) {
     return { success: false, error: { code: 'NOT_FOUND', message: '原订单不存在或无权访问' } }
   }
+  // 历史订单（WorkFine 核对补登）不支持退款（无 sale_items 天然无可退项，补显式拦截防绕过）
+  if (origOrder.legacySource === 'workfine') {
+    return { success: false, error: { code: 'INVALID_STATE', message: '历史订单不支持退款' } }
+  }
   if (origOrder.saleOrderType !== '销售单') {
     if (origOrder.saleOrderType === '充值单') {
       return {
@@ -567,6 +572,18 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
   }
 
+  // P 前置校验（Bug P）：有未终结服务单（待服务/服务中/待客户确认）时禁止退款，否则退款压低 paid_sessions
+  // 会让该服务单 confirm 卡死、员工提成丢失（孤儿服务单）。两端镜像 staff order.js。
+  const openSvcRows = await db.execute(sql`
+    SELECT 1 FROM service_orders so2
+      JOIN service_items sit ON sit.service_order_id = so2.service_order_id
+      JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+     WHERE si.sale_order_id = ${refSaleOrderId} AND so2.status IN ('待服务','服务中','待客户确认') LIMIT 1
+  `)
+  if ((openSvcRows as unknown as unknown[]).length > 0) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '该订单有未完成的服务单，请先完成或取消后再退款' } }
+  }
+
   const origRows = await db
     .select()
     .from(saleItems)
@@ -576,10 +593,10 @@ export const createRefund = withPermission(
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
-    sku_spec_name: r.skuSpecName,
     product_type: r.productType as ProductType | null,
     session_count: r.sessionCount,
     remaining_sessions: r.remainingSessions,
+    paid_sessions: r.paidSessions,
     unit_price: r.unitPrice,
     quantity: r.quantity,
     unit_real_price: r.unitRealPrice,
@@ -606,6 +623,12 @@ export const createRefund = withPermission(
   }
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
+  // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次。
+  // 限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居不受影响。完整任意 fee 支持见 follow-up。两端镜像 staff order.js。
+  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
+  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
+  }
   const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
@@ -622,7 +645,9 @@ export const createRefund = withPermission(
   const paymentsNet = Number(
     (paymentsNetRows as unknown as Array<{ net: string | number }>)[0]?.net || 0,
   )
-  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0))
+  // 修复（Bug A 重复退款）：received 是不减的毛实收，必须减去 refundedAmount 得净可退；
+  // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数。两端镜像 staff order.js。
+  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refundedAmount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
     return {
       success: false,
@@ -663,10 +688,25 @@ export const createRefund = withPermission(
   const primarySessionCount =
     refundDetails.length === 1 ? refundDetails[0].sessionCount ?? refundDetails[0].quantity : null
 
-  const noteLines: string[] = [`reason=${refundReason}`]
-  if (fee > 0) noteLines.push(`fee=${fee.toFixed(2)}`)
-  if (overdraftDeduction > 0) noteLines.push(`overdraft=${overdraftDeduction.toFixed(2)}`)
-  const paymentNote = noteLines.join('; ')
+  // 整单全退判定（Bug Q/M）：所有购买项都在本次退款且全退 → cascade 通道3（券）才回滚
+  const isWholeOrderRefund = sourceItems.length > 0 && sourceItems.every((oi) =>
+    refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
+  )
+  // note 存 JSON（含展示字段 + 逐 item 明细），approveRefund 据此逐 item 级联（Bug Q/M）。两端对齐 staff note。
+  const paymentNote = JSON.stringify({
+    refundByCard,
+    refundByOrigin,
+    handlingFee: fee,
+    overdraftDeduction,
+    isWholeOrderRefund,
+    items: refundDetails.map((d) => ({
+      refSaleItemId: d.refSaleItemId,
+      quantity: d.quantity,
+      refundAmount: d.refundAmount,
+      productType: d.productType,
+      isFullItemRefund: d.isFullItemRefund,
+    })),
+  })
 
   let refundPaymentId: number
   try {
@@ -696,12 +736,22 @@ export const createRefund = withPermission(
 
       if (!paymentRow) throw new ApiError('INVALID_STATE', 'PAYMENT_INSERT_FAILED: 退款流水写入失败')
 
+      // 通知门店店长审批（Bug C）
+      await notifyRefundCreated(tx, {
+        paymentId: paymentRow.id,
+        saleOrderId: refSaleOrderId,
+        storeId: origOrder.storeId,
+        operatorId: session.employeeId,
+        amount: adjustedRefundAmount,
+        customerName: origOrder.customerName,
+      })
+
       return paymentRow.id
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    const pgErr = err as { code?: string; constraint?: string }
-    if (pgErr.code === '23505' && pgErr.constraint === 'uq_sop_status_audit') {
+    // 修复（Bug S）：drizzle 0.45 把 pg 错误码包进 err.cause；用 pgErrorCode/pgErrorConstraint 读取，否则永不命中 → 落 UNKNOWN
+    if (pgErrorCode(err) === '23505' && pgErrorConstraint(err) === 'uq_sop_status_audit') {
       return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
     }
     if (msg.includes('PAYMENT_INSERT_FAILED')) {
@@ -744,11 +794,10 @@ export const createRefund = withPermission(
  *
  * 联调开启 checklist：
  *  1. admin 运行时 env 设 `LAKALA_REFUND_ENABLED=true` + 完整 `LAKALA_*`（私钥/平台证书/商户号）。
- *  2. 用一笔真实已支付的拉卡拉订单退款，核对 `sale_order_payments.external_trade_info`
- *     （payNotify 已落库的回调 order_trade_info）里哪个字段对应
- *     `/v3/rfd/refund_front/refund` 的 origin_trade_no（拉卡拉交易流水）/ origin_log_no（对账单流水号）。
- *     当前按 `acc_trade_no→origin_trade_no`、`log_no→origin_log_no` 猜测，需按真实回调字段修正下方 TODO。
- *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（收银台商户订单号）兜底。
+ *  2. 字段路径在聚合主扫迁移（2026-05-29）后已澄清：payNotify 把扁平回调 body 完整存进
+ *     `external_trade_info` JSONB，顶层字段 `acc_trade_no`（微信 transaction_id / 支付宝交易号）
+ *     用作 `origin_trade_no`；`trade_no`（拉卡拉交易流水）为兜底；`log_no`（对账单流水）→ `origin_log_no`。
+ *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（聚合主扫商户流水号，含 _unixSec 后缀）兜底。
  *  4. requestIp 必须改用 admin 操作人真实 IP（风控必送），现用 env 占位。
  *  5. 处理 requestRefund 返回 trade_state：SUCCESS=同步成功；PROCESSING/INIT/TIMEOUT=异步，
  *     需 cron poll-lakala-refunds（queryRefund 推进，仍为 follow-up）。
@@ -794,7 +843,7 @@ async function refundViaLakalaIfEnabled(opts: {
       termNo: row.termNo,
       outTradeNo: `refund-${opts.refundPaymentId}`,
       refundAmountFen: opts.refundByOriginFen,
-      // TODO[联调]：核对 order_trade_info 字段名 → origin 引用（按拉卡拉文档/真实回调）
+      // 聚合主扫迁移后字段路径已澄清（2026-05-29）：扁平 body 顶层直接取
       originTradeNo: tradeInfo.acc_trade_no || tradeInfo.trade_no,
       originLogNo: tradeInfo.log_no,
       originOutTradeNo: row.outOrderNo || undefined,
@@ -823,6 +872,8 @@ export const approveRefund = withPermission(
       orderTotalAmount: saleOrders.totalAmount,
       orderPrepaidCardAmount: saleOrders.prepaidCardAmount,
       orderSaleOrderType: saleOrders.saleOrderType,
+      orderReceived: saleOrders.received,
+      orderRefundedAmount: saleOrders.refundedAmount,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -868,6 +919,18 @@ export const approveRefund = withPermission(
 
   const refSaleOrderId = pre.payment.saleOrderId
   const refundAmount = Math.abs(Number(pre.payment.amount || 0))
+
+  // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。两端镜像 staff order.js。
+  const capNowRes = await db.execute<{ net: string }>(sql`
+    SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
+    WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
+  `)
+  const paymentsNetNow = Number((capNowRes as unknown as Array<{ net: string | number }>)[0]?.net || 0)
+  const refundCapNow = Math.max(paymentsNetNow, Number(pre.orderReceived || 0) - Number(pre.orderRefundedAmount || 0))
+  if (refundAmount > refundCapNow + 0.001) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
+  }
+
   const origPrepaidCardAmount = Number(pre.orderPrepaidCardAmount || 0)
   const origTotalAmount = Number(pre.orderTotalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
@@ -897,7 +960,7 @@ export const approveRefund = withPermission(
                audit_at = ${nowIso}
          WHERE id = ${idNum} AND status = '待审批'
       `)
-      if ((updRes as { rowCount?: number }).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
 
@@ -922,15 +985,15 @@ export const approveRefund = withPermission(
       const sessionCount = pre.payment.sessionCount ?? null
 
       if (refundByCard > 0 && pre.orderClientUserId) {
-        const refOrderTag = `refund-payment-${idNum}`
+        // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
+        // 原写 'refund-payment-'+idNum 会违反 card_transactions_ref_order_id FK。两端镜像 staff order.js
+        const cardRefundExtRef = `card-refund-${idNum}`
         const dupRes = await tx.execute(sql`
-          SELECT 1 FROM card_transactions
-          WHERE ref_order_id = ${refOrderTag} AND type = '充值' LIMIT 1
+          SELECT 1 FROM card_transactions WHERE external_ref = ${cardRefundExtRef} LIMIT 1
         `)
         if ((dupRes as unknown as unknown[]).length === 0) {
-          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
-            .toString()
-            .padStart(3, '0')}`
+          // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK。两端镜像 staff order.js
+          const newCardId = `FY-CARD-${pre.orderClientUserId}`
           const upsertRes = await tx.execute(sql`
             INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
             VALUES (${newCardId}, ${pre.orderClientUserId}, ${refundByCard.toFixed(2)}::numeric, NOW(), NOW())
@@ -942,17 +1005,38 @@ export const approveRefund = withPermission(
           if (!cardId) throw new ApiError('INVALID_STATE', 'CARD_UPSERT_FAILED: 储值卡回冲失败')
 
           await tx.execute(sql`
-            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refOrderTag}, NOW())
+            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refSaleOrderId}, ${cardRefundExtRef}, NOW())
           `)
         }
       }
 
-      // 5) 5 通道 cascade
+      // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; isFullItemRefund: boolean }> = []
+      let cascadeWholeOrder = false
+      try {
+        const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
+        if (noteObj && Array.isArray(noteObj.items)) {
+          cascadeItems = noteObj.items.map(
+            (it: { refSaleItemId: string; quantity: number; isFullItemRefund?: boolean }) => ({
+              saleItemId: it.refSaleItemId,
+              sessionCount: it.quantity,
+              isFullItemRefund: !!it.isFullItemRefund,
+            }),
+          )
+          cascadeWholeOrder = !!noteObj.isWholeOrderRefund
+        }
+      } catch {
+        cascadeItems = []
+      }
+      // 兜底（老退款行无 note.items）：用 refSaleItemId 单 item；为空则 cascade 内部兜底整单
+      if (cascadeItems.length === 0 && refSaleItemId) {
+        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, isFullItemRefund: true }]
+      }
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
-        saleItemId: refSaleItemId,
-        sessionCount,
+        items: cascadeItems,
+        isWholeOrderRefund: cascadeWholeOrder,
         refundReason: pre.payment.refundReason ?? '',
       })
 
@@ -963,6 +1047,17 @@ export const approveRefund = withPermission(
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {
         await refreshSpendingTierTx(tx, pre.orderClientUserId)
+      }
+
+      // 7) 通知发起人审批通过（Bug C；自审降噪）
+      if (pre.payment.operatorEmployeeId && pre.payment.operatorEmployeeId !== session.employeeId) {
+        await notifyRefundResult(tx, {
+          paymentId: idNum,
+          saleOrderId: refSaleOrderId,
+          recipientEmployeeId: pre.payment.operatorEmployeeId,
+          approved: true,
+          amount: refundAmount,
+        })
       }
 
       return result
@@ -1093,8 +1188,20 @@ export const rejectRefund = withPermission(
                audit_remark = ${reason}
          WHERE id = ${idNum} AND status = '待审批'
       `)
-      if ((updRes as { rowCount?: number }).rowCount === 0) {
+      if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
+      }
+
+      // 通知发起人驳回（Bug C；自审降噪）
+      if (pre.payment.operatorEmployeeId && pre.payment.operatorEmployeeId !== session.employeeId) {
+        await notifyRefundResult(tx, {
+          paymentId: idNum,
+          saleOrderId: refSaleOrderId,
+          recipientEmployeeId: pre.payment.operatorEmployeeId,
+          approved: false,
+          reason,
+          amount: Math.abs(Number(pre.payment.amount || 0)),
+        })
       }
     })
   } catch (err: unknown) {
@@ -1228,6 +1335,7 @@ export const getRefundById = withAnyPermission(
       saleOrderType: o.saleOrderType as SaleOrder['saleOrderType'],
       documentType: o.documentType as SaleOrder['documentType'],
       refSaleOrderId: o.refSaleOrderId,
+      legacySource: o.legacySource ?? null,
       marketName: o.marketName,
       storeId: o.storeId,
       saleOrderDatetime: o.saleOrderDatetime.toISOString(),

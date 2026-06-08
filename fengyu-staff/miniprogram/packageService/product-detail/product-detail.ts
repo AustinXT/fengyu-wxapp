@@ -21,6 +21,7 @@ interface Sku {
   price: number;
   session_count: number | null;
   product_type: string;
+  isManagerSpecial?: boolean;
 }
 
 interface RawSku {
@@ -30,6 +31,7 @@ interface RawSku {
   special_price: number | null;
   session_count: number | null;
   product_type: string;
+  is_manager_special?: boolean;
 }
 
 interface SpuDetailResponse {
@@ -86,6 +88,7 @@ Page({
           price: Number(sku.special_price || sku.price) || 0,
           session_count: sku.session_count != null ? Number(sku.session_count) : null,
           product_type: sku.product_type,
+          isManagerSpecial: !!sku.is_manager_special,
         })),
       });
       wx.setNavigationBarTitle({ title: spu.name || '商品详情' });
@@ -121,6 +124,7 @@ Page({
       sessionCount: selectedSku.session_count || 0,
       productType: selectedSku.product_type || spu.product_kind,
       workfineItemId: '',
+      isManagerSpecial: !!selectedSku.isManagerSpecial,
       directCheckout,
     };
   },

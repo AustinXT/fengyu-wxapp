@@ -35,6 +35,21 @@ const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "techAvgProjects", label: "技师人均项目数", unit: "count" },
 ]
 
+// ── 按技师人效明细列（key 对应 byStaff[].metrics）──
+// 销售额按 salesCategoryEnum 4 枚举值拆分（4 列之和=当月业绩），实耗合并为单列「实耗合计」。
+const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
+  { key: "revenue", label: "当月业绩", unit: "amount" },
+  { key: "saleZxzh", label: "自销自耗", unit: "amount" },
+  { key: "saleTxzh", label: "他销自耗", unit: "amount" },
+  { key: "saleTxth", label: "他销他耗", unit: "amount" },
+  { key: "saleEco", label: "生态合作", unit: "amount" },
+  { key: "consumeTotal", label: "实耗合计", unit: "amount" },
+  { key: "newMember", label: "纳客数", unit: "count" },
+  { key: "projectCount", label: "项目数", unit: "count" },
+  { key: "serviceHeadcount", label: "服务人头", unit: "count" },
+  { key: "serviceVisits", label: "服务人次", unit: "count" },
+]
+
 // ── 门店排名榜 metric（key 对应 storeRankings）────────────────────────
 const STORE_RANK_METRICS: RankingMetric[] = [
   { key: "revenue", label: "业绩", unit: "amount" },
@@ -88,6 +103,7 @@ export function EfficiencyBoard() {
   }
 
   const kpis = data?.kpis ?? {}
+  const label = data?.timeRange.presetLabel ?? ""
 
   return (
     <div className="flex flex-col gap-6">
@@ -101,6 +117,7 @@ export function EfficiencyBoard() {
       <Tabs defaultValue="detail">
         <TabsList>
           <TabsTrigger value="detail">按市场人效</TabsTrigger>
+          <TabsTrigger value="staff-detail">按技师人效</TabsTrigger>
           <TabsTrigger value="store-rank">门店排名榜</TabsTrigger>
           <TabsTrigger value="staff-rank">员工排名榜</TabsTrigger>
         </TabsList>
@@ -110,6 +127,22 @@ export function EfficiencyBoard() {
             columns={MARKET_COLUMNS}
             firstColLabel="市场"
             loading={loading}
+            exportFilename={`人效明细_按市场_${label}`}
+            exportSheetName="人效明细_按市场"
+          />
+        </TabsContent>
+        <TabsContent value="staff-detail">
+          <BreakdownTable
+            rows={data?.byStaff ?? []}
+            columns={STAFF_DETAIL_COLUMNS}
+            firstColLabel="姓名"
+            textColumns={[
+              { key: "store", label: "门店" },
+              { key: "position", label: "职级" },
+            ]}
+            loading={loading}
+            exportFilename={`人效明细_按技师_${label}`}
+            exportSheetName="人效明细_按技师"
           />
         </TabsContent>
         <TabsContent value="store-rank">
@@ -119,6 +152,7 @@ export function EfficiencyBoard() {
             metrics={STORE_RANK_METRICS}
             showMarket
             loading={loading}
+            exportFilenamePrefix={`人效_门店排名榜_${label}`}
           />
         </TabsContent>
         <TabsContent value="staff-rank">
@@ -128,6 +162,7 @@ export function EfficiencyBoard() {
             metrics={STAFF_RANK_METRICS}
             showMarket
             loading={loading}
+            exportFilenamePrefix={`人效_员工排名榜_${label}`}
           />
         </TabsContent>
       </Tabs>

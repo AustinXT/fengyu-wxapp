@@ -13,15 +13,16 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
 import { ExportButton } from "@/components/ui/export-button"
-import { exportToXlsx, fmtDate, fmtDateTime } from "@/lib/export-xlsx"
+import { exportToXlsx, fmtDate as xlsxFmtDate, fmtDateTime } from "@/lib/export-xlsx"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
+import { formatDate as fmtDate } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDate(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+  return fmtDate(dt)
 }
 
 function ServiceActions({ so }: { so: ServiceOrder }) {
@@ -130,7 +131,7 @@ export default function ServicesPageClient({
         { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
         { header: "门店", accessor: (r) => r.storeName },
         { header: "负责美容师", accessor: (r) => r.employeeName },
-        { header: "服务日期", width: 14, accessor: (r) => fmtDate(r.serviceDate) },
+        { header: "服务日期", width: 14, accessor: (r) => xlsxFmtDate(r.serviceDate) },
         { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
         { header: "服务项明细", width: 40, accessor: (r) => r.itemsSummary },
       ],

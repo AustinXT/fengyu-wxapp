@@ -48,6 +48,7 @@ interface IAppOption {
       sessionCount: number;
       productType: string;
       workfineItemId?: string;
+      isManagerSpecial?: boolean;
       directCheckout?: boolean;
     } | null;
     _serviceCreatePreload?: {

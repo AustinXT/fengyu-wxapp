@@ -140,14 +140,16 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   }
 
   // ── C4: point_transactions 反向流水必须存在 ──
-  // 若同 (user_id, ref_order_id) 存在正向赠送/获取，则必须存在等额负值的 '消费冲销'。
+  // 修复（Bug O）：cascadeRefund 通道4 写的是「订单维度合并比例冲销」（一行 '消费冲销'，
+  // amount = -round(grantedTotal × refunded/received)），非每笔赠送的等额负孪生。
+  // 故改为「有正向赠送的已退款订单必须存在 '消费冲销' 行」，去掉精确等额匹配以消除部分/分期退款误报。
   const c4 = (await db.execute(sql`
     WITH refunds AS (
       SELECT DISTINCT sop.sale_order_id
       FROM sale_order_payments sop
       WHERE sop.change_type = '退款' AND sop.status = '已支付'
     )
-    SELECT DISTINCT r.sale_order_id, pt_pos.user_id, pt_pos.amount AS unmatched_amount
+    SELECT r.sale_order_id, MIN(pt_pos.user_id) AS user_id
     FROM refunds r
     JOIN point_transactions pt_pos
       ON pt_pos.ref_order_id = r.sale_order_id
@@ -156,10 +158,9 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     WHERE NOT EXISTS (
       SELECT 1 FROM point_transactions pt_neg
       WHERE pt_neg.ref_order_id = r.sale_order_id
-        AND pt_neg.user_id = pt_pos.user_id
         AND pt_neg.type = '消费冲销'
-        AND pt_neg.amount = -pt_pos.amount
     )
+    GROUP BY r.sale_order_id
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c4.length > 0) {

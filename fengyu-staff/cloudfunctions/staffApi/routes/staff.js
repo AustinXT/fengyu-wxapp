@@ -347,6 +347,7 @@ async function todayCommission(ctx) {
       WHERE ${sc.sql}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at >= $${sc.params.length + 1}
         AND o.paid_at < $${sc.params.length + 2}
     `, [...sc.params, todayStart, todayEnd])
@@ -390,6 +391,7 @@ async function monthlyCalendar(ctx) {
     WHERE ${sc.sql}
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
       AND o.paid_at >= $${sc.params.length + 1}
       AND o.paid_at < $${sc.params.length + 2}
     GROUP BY DATE(o.paid_at)
@@ -405,6 +407,7 @@ async function monthlyCalendar(ctx) {
     WHERE ${sc.sql}
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
       AND o.paid_at >= $${sc.params.length + 1}
       AND o.paid_at < $${sc.params.length + 2}
   `, [...sc.params, monthStart, monthEnd])
@@ -438,7 +441,7 @@ async function monthlyCalendar(ctx) {
 async function todoList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeId, roles } = ctx.auth
+  const { staffWfId, roles, effectiveStoreId } = ctx.auth
   const isManager = roles.includes('manager')
 
   // 待确认预约
@@ -446,7 +449,7 @@ async function todoList(ctx) {
   if (isManager) {
     appointmentCount = await pg.query(
       `SELECT COUNT(*) AS cnt FROM appointments WHERE store_id = $1 AND status = '待确认'`,
-      [storeId]
+      [effectiveStoreId]
     )
   } else {
     appointmentCount = await pg.query(
@@ -460,7 +463,7 @@ async function todoList(ctx) {
   if (isManager) {
     serviceCount = await pg.query(
       `SELECT COUNT(*) AS cnt FROM service_orders WHERE store_id = $1 AND status IN ('待服务', '服务中')`,
-      [storeId]
+      [effectiveStoreId]
     )
   } else {
     serviceCount = await pg.query(
@@ -476,27 +479,30 @@ async function todoList(ctx) {
 
   // 店长专属
   if (isManager) {
+    // 「待支付」语义包含「部分支付」（未结清未关闭都算待店长确认收款；
+    //  覆盖部分付场景，店长能在首页待办看到欠款单）
     const offlineRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND payment_method = '线下'`,
-      [storeId]
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status IN ('待支付', '部分支付') AND payment_method = '线下'`,
+      [effectiveStoreId]
     )
     const createRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND opened_by IS NULL`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)
     result.pendingCreateOrderCount = Number(createRows[0].cnt)
 
     const unbindRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = '待处理'`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
-    // 待提成分配订单
+    // 待提成分配订单（口径对齐 allocation.pendingList：仅销售单/转换单且非历史订单，避免内部单/寄存单/充值单/历史单致计数虚高）
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'`,
-      [storeId]
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'
+         AND sale_order_type IN ('销售单', '转换单') AND legacy_source IS DISTINCT FROM 'workfine'`,
+      [effectiveStoreId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
 
@@ -506,7 +512,7 @@ async function todoList(ctx) {
          FROM sale_order_payments sop
          JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         WHERE so.store_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批'`,
-      [storeId]
+      [effectiveStoreId]
     )
     result.pendingRefundCount = Number(refundRows[0].cnt)
   }
@@ -610,7 +616,6 @@ async function performanceDetail(ctx) {
       sa.allocation_ratio,
       sa.department_name,
       si.product_name,
-      si.sku_spec_name,
       si.sales_category,
       si.unit_real_price,
       si.received,
@@ -654,7 +659,6 @@ async function performanceDetail(ctx) {
       sit.session_used,
       sit.unit_real_price AS service_unit_price,
       si.product_name,
-      si.sku_spec_name,
       si.sales_category,
       so.service_order_id,
       so.service_date,
@@ -702,7 +706,7 @@ async function performanceDetail(ctx) {
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
-    specName: r.sku_spec_name,
+    specName: r.product_name,
     salesCategory: r.sales_category,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
     allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
@@ -719,7 +723,7 @@ async function performanceDetail(ctx) {
   const serviceItems = svcRows.map(r => ({
     type: 'service',
     productName: r.product_name,
-    specName: r.sku_spec_name,
+    specName: r.product_name,
     salesCategory: r.sales_category,
     roleType: r.role_type,
     amount: Number(r.commission_amount),

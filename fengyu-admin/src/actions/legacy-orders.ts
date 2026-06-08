@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders } from '@db/order'
 import { stores } from '@db/org'
 import { clientWechatUsers } from '@db/user'
@@ -21,6 +22,21 @@ import {
   type WorkfineCustomer,
   type WorkfineOrder,
 } from '@/lib/workfine-mssql'
+
+/**
+ * 业务错误：把可读 message 同时写入 `digest`。
+ * Next.js 生产构建会脱敏 Server Action 抛出的 `error.message`（客户端只剩通用「Server
+ * Components render」文案），但**原样转发自定义 `digest`**，故前端 catch 可从 digest
+ * 取回真实文案（见 legacy-orders-page.tsx 的 actionErrorMessage）。
+ */
+class LegacyOrderError extends Error {
+  readonly digest: string
+  constructor(message: string) {
+    super(message)
+    this.name = 'LegacyOrderError'
+    this.digest = message
+  }
+}
 
 export interface LegacyOrderFilters {
   phone?: string
@@ -149,7 +165,8 @@ export const listLegacyOrders = withPermission(
 /**
  * 核对通过：status → '已支付' + audited_at/by + 触发单顾客标签重算
  *
- * CAS 守卫：WHERE updated_at = expectedUpdatedAt；rowCount=0 → CONFLICT
+ * CAS 守卫：WHERE date_trunc('milliseconds', updated_at) = expectedUpdatedAt（字符串参数，
+ * 走无时区 timestamp 比较，避免 Date→timestamptz 触发 session 时区偏移）；命中 0 行 → CONFLICT
  */
 export const approveLegacyOrder = withPermission(
   'legacy_order:approve',
@@ -158,26 +175,42 @@ export const approveLegacyOrder = withPermission(
     saleOrderId: string,
     expectedUpdatedAt: string,
   ): Promise<{ success: true; clientUserId: string | null }> => {
-    const expectedDate = new Date(expectedUpdatedAt)
-
     const clientUserId = await db.transaction(async (tx) => {
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
            SET status = '已支付'::order_status,
+               received = total_amount,
+               paid_at = sale_order_datetime,
                audited_at = NOW(),
                audited_by = ${session.employeeId},
                updated_at = NOW()
          WHERE sale_order_id = ${saleOrderId}
            AND legacy_source = 'workfine'
            AND status = '未审核'
-           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+           AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
          RETURNING client_user_id
       `)
       const rows = updRes as unknown as Array<{ client_user_id: string | null }>
       if (rows.length === 0) {
-        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+        throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
       }
       const uid = rows[0].client_user_id
+
+      // 补一条「首次支付/已支付」流水，维持资金不变量 I1（received = Σ sop[已支付].amount）。
+      // 历史单导入时 received=0、无流水；审核通过视同已结清：金额=total_amount、时间=销售日期。
+      // INSERT…SELECT 全程在 SQL 内取值，避免 JS Date 往返触发无时区 timestamp 时区偏移；
+      // total_amount=0 时 SELECT 0 行不插入，received=0 与空流水仍满足 I1。
+      await tx.execute(sql`
+        INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method,
+          status, source_end, operator_employee_id, paid_at, note
+        )
+        SELECT sale_order_id, '首次支付'::payment_change_type, total_amount, '无'::payment_method,
+               '已支付'::payment_flow_status, 'admin'::payment_source_end, ${session.employeeId},
+               sale_order_datetime, '历史订单核对通过补登'
+          FROM sale_orders
+         WHERE sale_order_id = ${saleOrderId} AND total_amount > 0
+      `)
 
       if (uid) {
         await recomputeCustomerTagsInTx(tx, uid)
@@ -213,7 +246,6 @@ export const approveLegacyOrder = withPermission(
 export const rejectLegacyOrder = withPermission(
   'legacy_order:reject',
   async (session, saleOrderId: string, expectedUpdatedAt: string): Promise<{ success: true }> => {
-    const expectedDate = new Date(expectedUpdatedAt)
     const updRes = await db.execute(sql`
       UPDATE sale_orders
          SET status = '已作废'::order_status,
@@ -223,10 +255,10 @@ export const rejectLegacyOrder = withPermission(
        WHERE sale_order_id = ${saleOrderId}
          AND legacy_source = 'workfine'
          AND status = '未审核'
-         AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+         AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
     `)
-    if (((updRes as { rowCount?: number }).rowCount ?? 0) === 0) {
-      throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+    if (((updRes as { count?: number }).count ?? 0) === 0) {
+      throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
     }
 
     await logOperation(session, 'legacy_order.reject', 'sale_order', saleOrderId, {
@@ -252,31 +284,45 @@ export const batchApproveLegacyOrders = withPermission(
   ): Promise<{ success: true; approvedCount: number; affectedUserIds: string[] }> => {
     if (items.length === 0) return { success: true, approvedCount: 0, affectedUserIds: [] }
     if (items.length > 200) {
-      throw new Error('INVALID_PARAMS: 单次批量上限 200 条')
+      throw new LegacyOrderError('INVALID_PARAMS: 单次批量上限 200 条')
     }
 
     const affectedUserIds = new Set<string>()
 
     await db.transaction(async (tx) => {
       for (const it of items) {
-        const expectedDate = new Date(it.expectedUpdatedAt)
         const updRes = await tx.execute(sql`
           UPDATE sale_orders
              SET status = '已支付'::order_status,
+                 received = total_amount,
+                 paid_at = sale_order_datetime,
                  audited_at = NOW(),
                  audited_by = ${session.employeeId},
                  updated_at = NOW()
            WHERE sale_order_id = ${it.saleOrderId}
              AND legacy_source = 'workfine'
              AND status = '未审核'
-             AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+             AND date_trunc('milliseconds', updated_at) = ${it.expectedUpdatedAt}
            RETURNING client_user_id
         `)
         const rows = updRes as unknown as Array<{ client_user_id: string | null }>
         if (rows.length === 0) {
-          throw new Error(`CONFLICT: 订单 ${it.saleOrderId} 已被审核或状态变更，整批已回滚`)
+          throw new LegacyOrderError(`CONFLICT: 订单 ${it.saleOrderId} 已被审核或状态变更，整批已回滚`)
         }
         if (rows[0].client_user_id) affectedUserIds.add(rows[0].client_user_id)
+
+        // 补流水维持资金不变量 I1（同 approveLegacyOrder）
+        await tx.execute(sql`
+          INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method,
+            status, source_end, operator_employee_id, paid_at, note
+          )
+          SELECT sale_order_id, '首次支付'::payment_change_type, total_amount, '无'::payment_method,
+                 '已支付'::payment_flow_status, 'admin'::payment_source_end, ${session.employeeId},
+                 sale_order_datetime, '历史订单核对通过补登'
+            FROM sale_orders
+           WHERE sale_order_id = ${it.saleOrderId} AND total_amount > 0
+        `)
 
         await logOperation(session, 'legacy_order.approve', 'sale_order', it.saleOrderId, {
           _v: 3,
@@ -325,14 +371,13 @@ export const updateLegacyOrderAmount = withPermission(
     expectedUpdatedAt: string,
   ): Promise<{ success: true; from: string; to: string }> => {
     if (!Number.isFinite(newAmount) || newAmount <= 0) {
-      throw new Error('INVALID_PARAMS: 金额必须为正数')
+      throw new LegacyOrderError('INVALID_PARAMS: 金额必须为正数')
     }
     // 限制小数位数 + 上限，防错填
     if (newAmount > 9999999.99) {
-      throw new Error('INVALID_PARAMS: 金额过大')
+      throw new LegacyOrderError('INVALID_PARAMS: 金额过大')
     }
     const newAmountStr = newAmount.toFixed(2)
-    const expectedDate = new Date(expectedUpdatedAt)
 
     const previousAmount = await db.transaction(async (tx) => {
       // 读旧值（用作精确 from / to 审计；与 CAS 同条件，确保读到的就是即将被更新的行）
@@ -342,11 +387,11 @@ export const updateLegacyOrderAmount = withPermission(
          WHERE sale_order_id = ${saleOrderId}
            AND legacy_source = 'workfine'
            AND status = '未审核'
-           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+           AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
       `)
       const oldRows = oldRes as unknown as Array<{ total_amount: string }>
       if (oldRows.length === 0) {
-        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+        throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
       }
       const prev = oldRows[0].total_amount
 
@@ -370,10 +415,10 @@ export const updateLegacyOrderAmount = withPermission(
          WHERE sale_order_id = ${saleOrderId}
            AND legacy_source = 'workfine'
            AND status = '未审核'
-           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+           AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
       `)
-      if (((updRes as { rowCount?: number }).rowCount ?? 0) === 0) {
-        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+      if (rowsAffected(updRes) === 0) {
+        throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
       }
       return prev
     })
@@ -400,10 +445,8 @@ export const updateLegacyOrderPhone = withPermission(
     expectedUpdatedAt: string,
   ): Promise<{ success: true; matchedUserId: string | null }> => {
     if (!/^1\d{10}$/.test(newPhone)) {
-      throw new Error('INVALID_PARAMS: 手机号格式不正确')
+      throw new LegacyOrderError('INVALID_PARAMS: 手机号格式不正确')
     }
-    const expectedDate = new Date(expectedUpdatedAt)
-
     const matchedUserId = await db.transaction(async (tx) => {
       const matchRes = await tx.execute(sql`
         SELECT user_id FROM client_wechat_users WHERE phone = ${newPhone} LIMIT 1
@@ -419,10 +462,10 @@ export const updateLegacyOrderPhone = withPermission(
          WHERE sale_order_id = ${saleOrderId}
            AND legacy_source = 'workfine'
            AND status = '未审核'
-           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+           AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
       `)
-      if (((updRes as { rowCount?: number }).rowCount ?? 0) === 0) {
-        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+      if (rowsAffected(updRes) === 0) {
+        throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
       }
 
       await logOperation(session, 'legacy_order.update_phone', 'sale_order', saleOrderId, {
@@ -476,7 +519,7 @@ export const searchWorkfineCustomer = withPermission(
     const phone = params.phone?.trim()
     const customerId = params.customerId?.trim()
     if (!phone && !customerId) {
-      throw new Error('INVALID_PARAMS: 手机号或顾客编号至少传一个')
+      throw new LegacyOrderError('INVALID_PARAMS: 手机号或顾客编号至少传一个')
     }
 
     let candidates: WorkfineCustomer[] = []
@@ -531,7 +574,7 @@ export const previewWorkfineOrders = withPermission(
     params: { workfineCustomerId: string },
   ): Promise<{ orders: WorkfineOrderPreview[]; availableStores: AvailableStore[] }> => {
     const customerId = params.workfineCustomerId?.trim()
-    if (!customerId) throw new Error('INVALID_PARAMS: workfineCustomerId 必传')
+    if (!customerId) throw new LegacyOrderError('INVALID_PARAMS: workfineCustomerId 必传')
 
     // 可映射门店：按操作员 scope 过滤（admin 全部，manager 仅 scope 内）。
     // 闭店门店仍列出（历史单可能归属现已闭店门店），前端标注但不禁用。
@@ -605,12 +648,12 @@ export const importWorkfineOrdersByCustomer = withPermission(
     affectedPhone: string | null
   }> => {
     const customerId = params.workfineCustomerId?.trim()
-    if (!customerId) throw new Error('INVALID_PARAMS: workfineCustomerId 必传')
+    if (!customerId) throw new LegacyOrderError('INVALID_PARAMS: workfineCustomerId 必传')
     if (!Array.isArray(params.selectedOrderNos) || params.selectedOrderNos.length === 0) {
-      throw new Error('INVALID_PARAMS: selectedOrderNos 至少 1 条')
+      throw new LegacyOrderError('INVALID_PARAMS: selectedOrderNos 至少 1 条')
     }
     if (params.selectedOrderNos.length > 500) {
-      throw new Error('INVALID_PARAMS: 单次最多 500 条')
+      throw new LegacyOrderError('INVALID_PARAMS: 单次最多 500 条')
     }
 
     // 重新从 WorkFine 拉取以拿到最新数据（不信任前端传的预览快照）
@@ -636,7 +679,7 @@ export const importWorkfineOrdersByCustomer = withPermission(
     // 越权校验：每个被指派的 storeId 必须在操作员 scope 内（防伪造 request 绕过 UI 限制）
     for (const id of mappedStoreIds) {
       if (!isInScope(session, id)) {
-        throw new Error('PERMISSION_DENIED: legacy_order:pull（门店不在数据权限范围）')
+        throw new LegacyOrderError('PERMISSION_DENIED: legacy_order:pull（门店不在数据权限范围）')
       }
     }
     // 存在性校验：被指派的 storeId 必须真实存在
@@ -648,7 +691,7 @@ export const importWorkfineOrdersByCustomer = withPermission(
       const existSet = new Set(existRows.map((r) => r.storeId))
       const missing = mappedStoreIds.filter((id) => !existSet.has(id))
       if (missing.length) {
-        throw new Error(`INVALID_PARAMS: 门店不存在：${missing.join(', ')}`)
+        throw new LegacyOrderError(`INVALID_PARAMS: 门店不存在：${missing.join(', ')}`)
       }
     }
 
@@ -718,8 +761,8 @@ export const importWorkfineOrdersByCustomer = withPermission(
           )
           ON CONFLICT (sale_order_id) DO NOTHING
         `)
-        const rowCount = (insRes as { rowCount?: number }).rowCount ?? 0
-        if (rowCount === 1) inserted++
+        const insertedRows = rowsAffected(insRes)
+        if (insertedRows === 1) inserted++
         else skippedAlreadyExist++
       }
 

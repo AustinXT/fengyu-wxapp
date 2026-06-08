@@ -1,12 +1,11 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTimeShort, calculateTriProgress } from '../../utils/format';
+import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {
   sale_item_id: string;
   product_name: string;
-  sku_spec_name: string;
   product_type: string;
   session_count: number;
   remaining_sessions: number | null;
@@ -168,6 +167,8 @@ Page({
         const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
         return {
           ...i,
+          // expire_date 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+          expire_date: i.expire_date ? formatDate(i.expire_date) : i.expire_date,
           paid_sessions: paid,
           used_sessions: used,
           used_pct: usedPct,
@@ -439,7 +440,7 @@ Page({
         repaymentOrderId: string;
         status: string;
         paymentParams?: any;
-        qrCodeUrl?: string;
+        alipayShareToken?: string;
       }>('order.repay', payload);
 
       // 三路径分发
@@ -450,7 +451,12 @@ Page({
         return;
       }
       if (method === '微信') {
-        const params = data?.paymentParams || {};
+        // 聚合主扫微信通道：直接拿 wx.requestPayment 5 字段
+        const params = data?.paymentParams;
+        if (!params || !params.paySign) {
+          Toast.fail('支付参数获取失败');
+          return;
+        }
         try {
           await wx.requestPayment(params);
           this.setData({ repayModalVisible: false });
@@ -465,18 +471,29 @@ Page({
         }
         return;
       }
-      // 支付宝：mock 方式展示二维码（最简实现，保持与 checkout 相同交互：toast 提示用户扫码后人工刷新）
+      // 支付宝：聚合主扫 share_code 返回吱口令；用 showModal 展示并提示复制
+      const shareToken = data?.alipayShareToken;
+      if (!shareToken) {
+        Toast.fail('支付宝吱口令获取失败');
+        return;
+      }
       this.setData({ repayModalVisible: false });
-      wx.showModal({
-        title: '请使用支付宝扫码',
-        content: data?.qrCodeUrl || '(mock qr)',
-        confirmText: '我已完成',
-        showCancel: true,
-        success: (res) => {
-          if (res.confirm) {
-            this.loadDetail(order.sale_order_id);
-          }
+      wx.setClipboardData({
+        data: shareToken,
+        success: () => {
+          wx.showModal({
+            title: '吱口令已复制',
+            content: `${shareToken}\n\n打开支付宝 App → 自动识别后完成支付`,
+            confirmText: '我已支付',
+            showCancel: true,
+            success: (res) => {
+              if (res.confirm) {
+                this.loadDetail(order.sale_order_id);
+              }
+            },
+          });
         },
+        fail: () => Toast.fail('复制失败'),
       });
     } catch (err: any) {
       const msg = err?.message || '';

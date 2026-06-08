@@ -17,19 +17,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, formatDateTime as fmtDateTime } from '@/lib/utils'
+import { RowDeleteMenu } from '@/components/delete-action'
+import { deletePickupRecord } from '@/actions/pickup-records'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null | undefined) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  if (!dt) return "—"
+  return fmtDateTime(dt)
 }
 
 interface Props {
@@ -37,6 +33,8 @@ interface Props {
   stores: Store[]
   total: number
   canCreate: boolean
+  /** 是否展示行内删除入口（仅系统管理员 pickup_record:delete） */
+  canDelete?: boolean
 }
 
 /**
@@ -45,7 +43,7 @@ interface Props {
  * scope 过滤基于 pickup_records.store_id，非 admin 角色仅看到 scopeStoreIds 内的门店记录。
  * canCreate=true 时（manager 角色）显示"新建提货记录"入口。
  */
-export default function PickupRecordsPage({ records, stores, total, canCreate }: Props) {
+export default function PickupRecordsPage({ records, stores, total, canCreate, canDelete = false }: Props) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
     (key: string, value: string) => {
@@ -144,14 +142,25 @@ export default function PickupRecordsPage({ records, stores, total, canCreate }:
       key: 'actions',
       header: '操作',
       cell: (row) => (
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto p-0"
-          onClick={() => setDetail(row)}
-        >
-          详情
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            onClick={() => setDetail(row)}
+          >
+            详情
+          </Button>
+          {canDelete && (
+            <RowDeleteMenu
+              entityLabel="提货记录"
+              onConfirm={() => deletePickupRecord(row.id)}
+              description={
+                <>确定要删除该提货记录吗？将回退对应销售明细的已提数量，此操作不可恢复。</>
+              }
+            />
+          )}
+        </div>
       ),
     },
   ]

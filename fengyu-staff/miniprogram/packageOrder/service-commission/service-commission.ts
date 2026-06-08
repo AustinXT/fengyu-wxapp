@@ -22,7 +22,6 @@ interface ServiceItem {
   session_count: number | null;
   quantity: number | null;
   product_name: string;
-  sku_spec_name: string;
 }
 
 interface ExistingCommission {
@@ -80,7 +79,6 @@ interface CommLine {
 interface DisplayItem {
   service_item_id: string;
   product_name: string;
-  sku_spec_name: string;
   sales_category: string | null;
   session_used: number;
   consumeBase: number;  // unit_real_price × session_used（整池基数）
@@ -184,7 +182,6 @@ Page({
         return {
           service_item_id: item.service_item_id,
           product_name: item.product_name,
-          sku_spec_name: item.sku_spec_name,
           sales_category: item.sales_category,
           session_used: sessionUsed,
           consumeBase,

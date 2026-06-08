@@ -136,6 +136,25 @@
 
 .alipay-qr-popup__btn {
   width: 100% !important;
+  margin-bottom: 16rpx;
+}
+
+/* 支付宝吱口令文本框（聚合主扫 share_code 方案）*/
+.alipay-share-token {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 24rpx 20rpx;
+  margin-bottom: 24rpx;
+  background: var(--color-bg-section);
+  border: 2rpx dashed var(--color-border);
+  border-radius: 12rpx;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', monospace;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  word-break: break-all;
+  text-align: center;
+  line-height: 1.5;
+  user-select: text;
 }
 
 /* ===== 优惠券选择 ===== */
@@ -381,4 +400,63 @@
   width: 56rpx;
   height: 56rpx;
   border-radius: 28rpx;
+}
+
+/* ===== 消费协议预览 Popup ===== */
+.agreement-popup {
+  display: flex;
+  flex-direction: column;
+}
+
+.agreement-popup__title {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  /* 右侧留空给 closeable 关闭图标 */
+  padding: 32rpx 64rpx 20rpx;
+}
+
+.agreement-popup__body {
+  max-height: 56vh;
+  padding: 0 40rpx;
+  box-sizing: border-box;
+}
+
+.agreement-popup__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320rpx;
+}
+
+.agreement-popup__empty {
+  text-align: center;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+  padding: 100rpx 0;
+}
+
+/* 每段独占一行（text 默认 inline，需 block） */
+.agreement-popup__para {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  margin-bottom: 14rpx;
+}
+
+.agreement-popup__para--heading {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-top: 24rpx;
+  margin-bottom: 10rpx;
+}
+
+.agreement-popup__footer {
+  flex-shrink: 0;
+  padding: 20rpx 40rpx calc(24rpx + env(safe-area-inset-bottom));
+  border-top: 1rpx solid var(--color-border);
 }

@@ -19,6 +19,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { rowsAffected } from '@/lib/pg-rows'
 import { getMemberThreshold } from '@/cron/config'
 import { loadJsonConfig } from '@/cron/lib/benefits-loader'
 import { determineMemberLevel, isUpgrade, isDowngrade } from '@/cron/lib/member-level'
@@ -70,7 +71,7 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
        AND u.user_id = vs.client_user_id
        AND u.customer_type = '会员客'
   `)
-  return ((res as { rowCount?: number }).rowCount ?? 0) > 0
+  return rowsAffected(res) > 0
 }
 
 /**
@@ -143,7 +144,7 @@ async function recomputeCustomerTypeForUser(
             END)
      RETURNING customer_type
   `)
-  const updRowCount = (updRes as { rowCount?: number }).rowCount ?? 0
+  const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount === 0) return null
 
@@ -182,7 +183,7 @@ async function recomputeSpendingTierForUser(tx: Tx, clientUserId: string): Promi
        ) t
      WHERE user_id = ${clientUserId}
   `)
-  return ((res as { rowCount?: number }).rowCount ?? 0) > 0
+  return rowsAffected(res) > 0
 }
 
 /**

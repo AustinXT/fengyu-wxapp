@@ -121,6 +121,7 @@
     "navigationBarTextStyle": "black"
   },
   "sitemapLocation": "sitemap.json",
+  "resizable": true,
   "lazyCodeLoading": "requiredComponents",
   "usingComponents": {}
 }

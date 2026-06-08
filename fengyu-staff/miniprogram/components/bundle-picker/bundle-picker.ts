@@ -43,6 +43,8 @@ interface CartItemOut {
   spuName: string;
   specName: string;
   price: number;
+  /** sku 标价（与 price 不同：套餐场景 price=bundle_price，listPrice=sku.listPrice） */
+  listPrice: number;
   quantity: number;
   discount: number;
   sessionCount: number;
@@ -60,6 +62,7 @@ interface DisplaySku {
   specName: string;
   sessionCount: number | null;
   bundlePrice: number;
+  listPrice: number;
   /** 全选组：是否勾选 */
   selected: boolean;
   /** 选N项组：当前数量 */
@@ -227,6 +230,7 @@ Component({
             spuName: sku.specName,
             specName: sku.specName,
             price: sku.bundlePrice,
+            listPrice: sku.listPrice,
             quantity: qty,
             discount: 0,
             sessionCount: sku.sessionCount || 0,
@@ -287,6 +291,7 @@ Component({
               specName: s.specName,
               sessionCount: s.sessionCount,
               bundlePrice: s.bundlePrice,
+              listPrice: s.listPrice,
               selected: qty > 0,
               qty,
               // 选N项步进器上限 = 当前数量 + 组内剩余可选额度

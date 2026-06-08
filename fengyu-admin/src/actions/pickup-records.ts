@@ -12,6 +12,8 @@ import { isInScope, scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { hasPendingRefund } from '@/lib/refund-cascade'
+import { revalidatePath } from 'next/cache'
 
 export interface AdminPickupRecord {
   id: number
@@ -223,7 +225,6 @@ export interface AvailablePickupItem {
   saleItemId: string
   saleOrderId: string
   productName: string | null
-  skuSpecName: string | null
   quantity: number
   pickedUpQuantity: number
   remaining: number
@@ -243,7 +244,6 @@ export const getAvailablePickupItems = withPermission(
       si.sale_item_id,
       si.sale_order_id,
       si.product_name,
-      si.sku_spec_name,
       si.quantity,
       COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
       si.unit_real_price,
@@ -266,7 +266,6 @@ export const getAvailablePickupItems = withPermission(
     saleItemId: r.sale_item_id as string,
     saleOrderId: r.sale_order_id as string,
     productName: (r.product_name as string | null) ?? null,
-    skuSpecName: (r.sku_spec_name as string | null) ?? null,
     quantity: Number(r.quantity),
     pickedUpQuantity: Number(r.picked_up_quantity ?? 0),
     remaining: Number(r.quantity) - Number(r.picked_up_quantity ?? 0),
@@ -310,6 +309,15 @@ export const createPickupRecord = withPermission(
   }
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建提货记录' }
+  }
+
+  // 冻结闭环（Bug I）：该明细所属订单有待审批退款时禁止提货（与 staff createPickup 对齐；
+  // 退款 cascade 通道5 会回滚 picked_up_quantity，待审批期提货会被随后 approve 静默回滚 → 提货账漂移）
+  const ordRows = (await db.execute(sql`
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
+  `)) as unknown as Array<{ sale_order_id: string }>
+  if (ordRows.length > 0 && (await hasPendingRefund(db, ordRows[0].sale_order_id))) {
+    return { success: false, message: '该订单退款审批中，暂不可提货' }
   }
 
   // 幂等前置：若传 idempotencyKey 且已存在对应行，直接返回当前 ID（不再 UPDATE/INSERT）
@@ -392,5 +400,73 @@ export const createPickupRecord = withPermission(
     }
     return { success: false, message: msg }
   }
+  },
+)
+
+/**
+ * 物理删除提货记录（仅系统管理员；数据治理用）。
+ *
+ * 关键：提货记录创建时原子累加了 sale_items.picked_up_quantity，
+ * 删除必须在同事务内回退该计数（GREATEST 防越界为负），否则"可提数量"虚低。
+ * pickup_records 无任何 inbound FK，无级联。
+ */
+export const deletePickupRecord = withPermission(
+  'pickup_record:delete',
+  async (session, id: number): Promise<{ success: boolean; message: string }> => {
+    const [rec] = await db
+      .select({
+        saleItemId: pickupRecords.saleItemId,
+        pickupQuantity: pickupRecords.pickupQuantity,
+        storeId: pickupRecords.storeId,
+        clientUserId: pickupRecords.clientUserId,
+        confirmedBy: pickupRecords.confirmedBy,
+      })
+      .from(pickupRecords)
+      .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
+      .limit(1)
+
+    if (!rec) {
+      return { success: false, message: '提货记录不存在或无权操作' }
+    }
+
+    try {
+      const ok = await db.transaction(async (tx) => {
+        const result = await tx
+          .delete(pickupRecords)
+          .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
+        if ((result as any).count === 0) {
+          throw new Error('PICKUP_ROW_GONE')
+        }
+        // 回退已提数量（不低于 0）
+        await tx.execute(sql`
+          UPDATE sale_items
+             SET picked_up_quantity = GREATEST(COALESCE(picked_up_quantity, 0) - ${rec.pickupQuantity}, 0),
+                 updated_at = NOW()
+           WHERE sale_item_id = ${rec.saleItemId}
+        `)
+        return true
+      })
+      if (!ok) {
+        return { success: false, message: '提货记录已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'PICKUP_ROW_GONE') {
+        return { success: false, message: '提货记录已变更，请刷新重试' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'pickup_record.delete', 'pickup_record', String(id), {
+      snapshot: {
+        saleItemId: rec.saleItemId,
+        pickupQuantity: rec.pickupQuantity,
+        storeId: rec.storeId,
+        clientUserId: rec.clientUserId,
+        confirmedBy: rec.confirmedBy,
+      },
+    })
+
+    revalidatePath('/pickup-records')
+    return { success: true, message: '提货记录已删除' }
   },
 )

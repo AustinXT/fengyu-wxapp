@@ -8,7 +8,8 @@
  *
  * 关键引用：
  *   - actions/legacy-orders.ts            searchWorkfineCustomer / previewWorkfineOrders / importWorkfineOrdersByCustomer
- *   - lib/workfine-mssql.ts               MOCK_WORKFINE=1 走 fixtures（WF-MOCK-001 / WF-ORD-001 / ¥998 / 南昌旗舰店）
+ *   - lib/workfine-mssql.ts               MOCK_WORKFINE=1 走 fixtures（WF-MOCK-001 / WF-ORD-001 / 南昌旗舰店）
+ *                                         MOCK 字面 amount=998 经 normalizeWorkfineAmount ×10 后展示 ¥9980.00
  *   - _components/pull-workfine-dialog.tsx Dialog UI
  *   - _components/legacy-orders-page.tsx  顶部"拉取顾客历史"按钮（仅 canPull=true 时渲染）
  *
@@ -118,10 +119,10 @@ test.describe('链路36：admin 手动拉取 WorkFine 历史订单', () => {
       // 单一候选会自动进入预览步骤 — Dialog 标题切换到"预览订单 — ..."
       await expect(previewTitle).toBeVisible({ timeout: 15_000 })
 
-      // 预览表展示 WF-ORD-001 / ¥998.00
+      // 预览表展示 WF-ORD-001 / ¥9980.00（MOCK 字面 998 经 normalizeWorkfineAmount ×10 还原）
       const orderNoCell = page.getByText(MOCK_ORDER_NO).first()
       await expect(orderNoCell).toBeVisible({ timeout: 10_000 })
-      await expect(page.getByText('¥998.00').first()).toBeVisible()
+      await expect(page.getByText('¥9980.00').first()).toBeVisible()
 
       // 该行默认勾选（!alreadyImported && storeMatched）
       // 导入按钮文案：导入选中 1 条

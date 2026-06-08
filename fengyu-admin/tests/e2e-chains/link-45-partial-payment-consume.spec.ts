@@ -126,12 +126,12 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
     `INSERT INTO sale_items ` +
     `(sale_item_id, sale_order_id, item_direction, sku_id, session_count, remaining_sessions, paid_sessions, ` +
     `unit_price, quantity, unit_real_price, sale_amount, received, ` +
-    `product_name, sku_spec_name, product_type, store_id, created_at, updated_at) ` +
+    `product_name, product_type, store_id, created_at, updated_at) ` +
     `VALUES ` +
     `('${PRE_SALE_ITEM_ID}', '${PRE_SALE_ORDER_ID}', '购买', '${MULTI_SESSION_SKU_ID}', ` +
     `${MULTI_SESSION_COUNT}, ${MULTI_SESSION_COUNT}, ${INITIAL_PAID_SESSIONS}, ` +
     `${TOTAL_AMOUNT}.00, 1, ${TOTAL_AMOUNT}.00, ${TOTAL_AMOUNT}.00, ${INITIAL_RECEIVED}.00, ` +
-    `'蜜语水润嫩肤护理', '${MULTI_SESSION_SKU_NAME}', '疗程卡', '${storeId}', NOW(), NOW()) ` +
+    `'蜜语水润嫩肤护理', '疗程卡', '${storeId}', NOW(), NOW()) ` +
     `ON CONFLICT (sale_item_id) DO NOTHING`
   )
   console.log(`[链路45] Step0 INSERT sale_item: ${insertItem}`)

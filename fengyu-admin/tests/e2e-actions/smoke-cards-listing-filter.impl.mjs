@@ -75,13 +75,13 @@ async function seedSaleOrder() {
       await client.query(
         `INSERT INTO sale_items (
            sale_item_id, sale_order_id, store_id, item_direction,
-           sku_id, product_name, sku_spec_name, product_type,
+           sku_id, product_name, product_type,
            session_count, remaining_sessions,
            unit_price, quantity, unit_real_price, sale_amount, received,
            is_experience
          )
          VALUES ($1, $2, $3, $4::item_direction,
-                 NULL, $5, '默认', $6::product_type,
+                 NULL, $5, $6::product_type,
                  $7, $8,
                  100, 1, 100, 100, 100,
                  false)`,

@@ -8,6 +8,7 @@ import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
@@ -15,7 +16,22 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { RegionSelect } from "@/components/ui/region-select"
 
-export default function StoreEditPage({ store }: { store: Store }) {
+interface LakalaMerchantOption {
+  id: string
+  merchantName: string
+  merchantNo: string | null
+  onboardingStatus: string
+}
+
+export default function StoreEditPage({
+  store,
+  merchantOptions = [],
+  canEditMerchant = false,
+}: {
+  store: Store
+  merchantOptions?: LakalaMerchantOption[]
+  canEditMerchant?: boolean
+}) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -24,10 +40,13 @@ export default function StoreEditPage({ store }: { store: Store }) {
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
   const [lakalaEnabled, setLakalaEnabled] = useState(store.lakalaEnabled)
+  const [linkedMerchantId, setLinkedMerchantId] = useState<string>(store.lakalaMerchantId ?? "")
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
     try {
+      // 「关联商户」走 linkStoreToMerchant / unlinkStoreFromMerchant 的事务（Phase 2D 在 updateStore 内编排）
+      // 这里把 lakalaMerchantId 作为单选下拉值传给 updateStore；服务端按 link/unlink 处理快照 2 列
       const result = await updateStore(store.storeId, {
         storeName: formData.get("storeName") as string,
         phone: (formData.get("phone") as string) || null,
@@ -43,9 +62,9 @@ export default function StoreEditPage({ store }: { store: Store }) {
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        lakalaMerchantNo: ((formData.get("lakalaMerchantNo") as string) || "").trim() || null,
+        // 关联商户 / 解绑（admin 才编辑；其它角色 disabled，发起请求时也只发原值）
+        lakalaMerchantId: linkedMerchantId || null,
         lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
-        lakalaSubAppid: ((formData.get("lakalaSubAppid") as string) || "").trim() || null,
         lakalaEnabled,
       }, store.updatedAt)
       if (!result.success) {
@@ -208,21 +227,35 @@ export default function StoreEditPage({ store }: { store: Store }) {
         </CardHeader>
         <CardContent>
           <div className="text-xs text-muted-foreground mb-3">
-            该门店在拉卡拉的商户号 / 终端号。留空时云函数 fallback 到环境变量默认测试号；
-            正式上线前必须完成本店进件 + 录入。开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
+            「关联商户」从已审核通过的拉卡拉商户列表中选择（在
+            <a href="/lakala-onboarding" className="mx-1 text-[var(--primary)] hover:underline">商户入网</a>
+            页发起入网申请）。商户号 / 子 AppId 由关联商户派生（保存时自动刷新本店快照），无需手填。
+            终端号 / 启用开关仍按门店单独维护；开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">商户号（merchant_no）</label>
-              <Input
-                name="lakalaMerchantNo"
-                defaultValue={store.lakalaMerchantNo ?? ""}
-                placeholder="如：822290059430BFA"
-                maxLength={32}
-              />
+              <label className="text-sm font-medium">关联商户</label>
+              <Select
+                value={linkedMerchantId}
+                onChange={(e) => {
+                  setLinkedMerchantId(e.target.value)
+                  setFormDirty(true)
+                }}
+                disabled={!canEditMerchant}
+              >
+                <option value="">未关联（解绑）</option>
+                {merchantOptions.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.merchantName} {m.merchantNo ? `· ${m.merchantNo}` : ""}（{m.onboardingStatus}）
+                  </option>
+                ))}
+              </Select>
+              {!canEditMerchant && (
+                <p className="text-xs text-[var(--muted-foreground)]">仅 admin 角色可修改关联商户（收款配置）</p>
+              )}
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">终端号（term_no）</label>
+              <label className="text-sm font-medium">终端号(term_no)</label>
               <Input
                 name="lakalaTermNo"
                 defaultValue={store.lakalaTermNo ?? ""}
@@ -231,13 +264,8 @@ export default function StoreEditPage({ store }: { store: Store }) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">子 appid（lakala_sub_appid）</label>
-              <Input
-                name="lakalaSubAppid"
-                defaultValue={store.lakalaSubAppid ?? ""}
-                placeholder="本期留空即可"
-                maxLength={32}
-              />
+              <label className="text-sm font-medium">商户号（派生快照）</label>
+              <Input value={store.lakalaMerchantNo ?? ""} placeholder="保存后自动同步" disabled />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">启用真实支付通道</label>

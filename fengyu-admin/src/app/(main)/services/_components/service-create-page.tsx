@@ -288,7 +288,6 @@ export default function ServiceCreatePageClient({
                       <tr>
                         <th className="px-4 py-3 text-left font-medium text-gray-500 w-10"></th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
-                        <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">类型</th>
                         <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
                         <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
@@ -315,7 +314,6 @@ export default function ServiceCreatePageClient({
                               />
                             </td>
                             <td className="px-4 py-3">{item.productName || "—"}</td>
-                            <td className="px-4 py-3">{item.skuSpecName || "—"}</td>
                             <td className="px-4 py-3">
                               <span className={`inline-block px-2 py-0.5 rounded text-xs ${
                                 item.productType === "疗程卡"
@@ -442,7 +440,7 @@ export default function ServiceCreatePageClient({
                   if (!item) return null
                   return (
                     <div key={si.saleItemId} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
-                      <span>{item.productName} - {item.skuSpecName || item.productType}</span>
+                      <span>{item.productName} - {item.productType}</span>
                       <span className="font-medium">划卡 {si.sessionUsed} 次</span>
                     </div>
                   )

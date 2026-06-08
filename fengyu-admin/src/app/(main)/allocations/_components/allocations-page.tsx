@@ -2,6 +2,8 @@
 
 import { useCallback, useRef, useState, useTransition } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
+import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -9,8 +11,13 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { exportAllocationOrders } from "@/actions/orders"
+import { exportAllocationServiceOrders } from "@/actions/services"
+import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate } from "@/lib/export-xlsx"
 import type { SaleOrder, ServiceOrder, Store } from "@/lib/types"
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -20,12 +27,12 @@ const allocationStatusMap: Record<string, { label: string; className: string }> 
 }
 
 function formatTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+  return fmtDateTime(dt)
 }
 
 function formatDate(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+  return fmtDate(dt)
 }
 
 /**
@@ -78,6 +85,55 @@ export default function AllocationsPageClient({
     },
     [setFilter],
   )
+
+  // 导出走当前 URL 全部筛选（跨分页），与列表口径一致
+  const searchParams = useSearchParams()
+
+  const handleExportSale = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries())
+    const { rows, truncated } = await exportAllocationOrders(raw)
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "营业额分配-销售提成",
+      sheetName: "销售提成",
+      columns: [
+        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "门店", width: 18, accessor: (r) => r.storeName },
+        { header: "订单金额", accessor: (r) => r.totalAmount },
+        { header: "分配状态", accessor: (r) => r.allocationStatus },
+        { header: "支付时间", width: 20, accessor: (r) => xlsxDateTime(r.paidAt) },
+      ],
+      rows,
+    })
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
+  }, [searchParams])
+
+  const handleExportService = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries())
+    const { rows, truncated } = await exportAllocationServiceOrders(raw)
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "营业额分配-服务提成",
+      sheetName: "服务提成",
+      columns: [
+        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "门店", width: 18, accessor: (r) => r.storeName },
+        { header: "美容师", accessor: (r) => r.employeeName },
+        { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
+        { header: "提成状态", accessor: (r) => r.commissionStatus },
+      ],
+      rows,
+    })
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
+  }, [searchParams])
 
   const handleTabChange = (value: string) => {
     startTransition(() => {
@@ -143,6 +199,9 @@ export default function AllocationsPageClient({
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
+            <div className="ml-auto">
+              <ExportButton onExport={tab === 'service' ? handleExportService : handleExportSale} />
+            </div>
           </div>
         </CardContent>
       </Card>

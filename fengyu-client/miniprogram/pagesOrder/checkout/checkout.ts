@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
-import { recomputeAmounts } from './checkout-helpers';
+import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -46,9 +46,9 @@ Page({
     bundleProductId: '',
     totalPrice: 0,
     quantity: 1,
-    // 支付宝二维码弹窗
-    showAlipayQr: false,
-    alipayQrUrl: '',
+    // 支付宝吱口令弹窗（聚合主扫 share_code 方案）
+    showAlipayShare: false,
+    alipayShareToken: '',
     alipayAmount: '0.00',
     alipayOrderNo: '',
     // 手机号绑定弹窗
@@ -78,14 +78,12 @@ Page({
     rechargePayAmount: 0,
     rechargeBonus: 0,
     rechargeDiscountLabel: '',
-    // 拉卡拉收银台跳转：跳走时记录 saleOrderId，跳回 onShow 启动轮询
-    awaitingLakalaOrderId: '',
-  },
-
-  onShow() {
-    if (this.data.awaitingLakalaOrderId) {
-      this.pollOrderAfterLakala();
-    }
+    // 消费协议预览（点击《协议》懒加载 config.consumeAgreement，底部弹层滚动）
+    showAgreement: false,
+    agreementLoading: false,
+    agreementLoaded: false,
+    agreementTitle: '服务消费协议',
+    agreementParas: [] as { text: string; heading: boolean }[],
   },
 
   onLoad(options) {
@@ -254,7 +252,7 @@ Page({
           : (firstItem.product_name || ''),
         skuDisplayName: items.length > 1
           ? items.map((i: any) => i.product_name).join('、')
-          : (firstItem.sku_spec_name || ''),
+          : (firstItem.product_name || ''),
         unitPrice: preDiscountTotal,
         storeName: order.store_name || '',
         quantity: 1,
@@ -267,7 +265,7 @@ Page({
         displayItems: items.map((i: any) => ({
           skuId: i.sale_item_id || '',
           spuName: i.product_name || '',
-          skuDisplayName: i.sku_spec_name || '',
+          skuDisplayName: i.product_name || '',
           coverImage: i.cover_image || '',
           price: Number(i.unit_price || 0),
           quantity: Number(i.quantity || 1),
@@ -461,12 +459,40 @@ Page({
     this.setData({ paymentMethod: method });
   },
 
-  onViewAgreement() {
-    wx.showModal({
-      title: '服务消费协议',
-      content: '本协议为凤御美容服务消费协议（内容由运营方补充）。购买服务即代表您同意本协议条款。',
-      showCancel: false,
-    });
+  async onViewAgreement() {
+    this.setData({ showAgreement: true });
+    // 首次打开懒加载协议，后续直接复用页面缓存
+    if (this.data.agreementLoaded) return;
+    this.setData({ agreementLoading: true });
+    try {
+      const data = await callClientApi<{ title?: string; content?: string }>(
+        'config.consumeAgreement', {}
+      );
+      const title = (data?.title || '').trim() || '服务消费协议';
+      const content = (data?.content || '').trim() || DEFAULT_AGREEMENT_TEXT;
+      this.setData({
+        agreementTitle: title,
+        agreementParas: parseAgreement(content),
+        agreementLoaded: true,
+      });
+    } catch {
+      // 接口异常用内置兜底文案，不阻塞下单
+      this.setData({
+        agreementParas: parseAgreement(DEFAULT_AGREEMENT_TEXT),
+        agreementLoaded: true,
+      });
+    } finally {
+      this.setData({ agreementLoading: false });
+    }
+  },
+
+  onCloseAgreement() {
+    this.setData({ showAgreement: false });
+  },
+
+  /** 协议弹层底部「我已阅读并同意」：直接勾选 + 关闭 */
+  onAgreeFromPopup() {
+    this.setData({ agreed: true, showAgreement: false });
   },
 
   async onSubmitOrder() {
@@ -567,14 +593,15 @@ Page({
       const saleOrderId = data?.saleOrderId || data?.orderNo;
       if (!saleOrderId) throw new Error('创建订单失败');
 
-      // 全额抵扣：后端已置 '已支付'，跳详情页不唤起支付
+      // 全额抵扣（券/卡）：后端已置 '已支付'，跳详情页不唤起支付
       const isPrepaidFull = data?.status === '已支付'
         || data?.reason === 'prepaid_card_full'
+        || data?.reason === 'coupon_full'
         || (data?.paymentParams === null && Number(data?.paidAmount || 0) === 0);
       if (isPrepaidFull) {
         if (this.data.fromCart) clearCart();
         if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
-        Toast.success('已使用储值卡支付');
+        Toast.success(Number(data?.prepaidCardAmount || 0) > 0 ? '已使用储值卡支付' : '已使用优惠券抵扣');
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
         return;
       }
@@ -652,28 +679,39 @@ Page({
       }), 1200);
       return;
     }
-    if (data?.lakala?.counterUrl) {
-      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+    // 聚合主扫支付宝方案：后端串调 preorder(41) + share_code 返回吱口令
+    // 前端弹"复制吱口令"popup，引导用户切到支付宝识别
+    const shareToken = data?.alipayShareToken;
+    if (!shareToken) {
+      Toast.fail('支付宝吱口令获取失败');
       return;
     }
-    // 充值单 total_amount 是面值（¥1000），paidAmount 才是实付（¥980）；用 paidAmount 避免弹窗金额与实付不符
-    // 普通订单 fallback 到 totalAmount，保留原行为
     const displayAmount = this.data.isRecharge
       ? Number(data?.paidAmount || 0)
       : Number(data?.totalAmount || 0);
-    // 兜底：mock 二维码
     this.setData({
-      showAlipayQr: true,
-      alipayQrUrl: data?.qrCodeUrl || '',
+      showAlipayShare: true,
+      alipayShareToken: shareToken,
       alipayAmount: displayAmount.toFixed(2),
       alipayOrderNo: saleOrderId,
     });
   },
 
-  onAlipayDone() {
+  onAlipayShareCopy() {
+    const token: string = this.data.alipayShareToken;
+    if (!token) return;
+    wx.setClipboardData({
+      data: token,
+      success: () => Toast.success('吱口令已复制，请打开支付宝粘贴'),
+      fail: () => Toast.fail('复制失败'),
+    });
+  },
+
+  onAlipayShareDone() {
+    // 用户点"我已支付"：跳订单详情，订单状态由 payNotify 异步推进
     const saleOrderId = this.data.alipayOrderNo;
     const isRecharge = this.data.isRecharge;
-    this.setData({ showAlipayQr: false });
+    this.setData({ showAlipayShare: false });
     wx.redirectTo({
       url: isRecharge
         ? '/pagesProfile/prepaid-cards/prepaid-cards'
@@ -681,15 +719,14 @@ Page({
     });
   },
 
-  onAlipayClose() {
-    // 关闭弹窗但不跳转，用户可能还想选其他支付方式
-    this.setData({ showAlipayQr: false });
+  onAlipayShareClose() {
+    // 关闭弹窗但不跳转，用户可能改选其他支付方式
+    this.setData({ showAlipayShare: false });
   },
 
   async doWechatPay(saleOrderId: string) {
     const data = await callClientApi<any>('order.pay', { saleOrderId });
-    // 防御性短路：后端识别为全额储值卡抵扣（payable_amount=0）→ 直接跳详情页，
-    // 不能掉到下方 wx.requestPayment(空参) 兜底——会触发"由于小程序违规"弹窗
+    // 防御性短路：后端识别为全额储值卡抵扣（payable_amount=0）→ 直接跳详情页
     if (data?.status === '已支付' || data?.reason === 'prepaid_card_full') {
       Toast.success('已使用储值卡支付');
       setTimeout(() => wx.redirectTo({
@@ -697,20 +734,19 @@ Page({
       }), 1200);
       return;
     }
-    if (data?.lakala?.counterUrl) {
-      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+    // 聚合主扫微信通道：直接拿 wx.requestPayment 5 字段（timeStamp/nonceStr/package/signType/paySign）
+    const paymentParams = data?.paymentParams;
+    if (!paymentParams || !paymentParams.paySign) {
+      Toast.fail('支付参数获取失败');
       return;
     }
-    // 兜底：原 mock 流程（wx.requestPayment + mock 参数）
-    const paymentParams = data?.paymentParams || {};
     const isRecharge = this.data.isRecharge;
     const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
     const successUrl = isRecharge ? '/pagesProfile/prepaid-cards/prepaid-cards' : detailUrl;
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
-      // 用户主动取消支付，跳订单详情（订单仍处于待支付，可重新支付）
-      // 充值单同样跳 order-detail（不去 prepaid-cards，避免"充值成功？余额怎么没变"的错觉）
+      // 用户主动取消支付，跳订单详情（订单仍 '待支付'，可重新支付）
       if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
         wx.redirectTo({ url: detailUrl });
         return;
@@ -719,85 +755,6 @@ Page({
     }
     Toast.success(isRecharge ? '充值成功' : '支付成功');
     setTimeout(() => wx.redirectTo({ url: successUrl }), 1200);
-  },
-
-  async jumpLakalaCashier(
-    saleOrderId: string,
-    lakala: { counterUrl: string; appId: string; envVersion: 'release' | 'trial'; openMode?: 'embedded' | 'fullscreen' }
-  ) {
-    const path = `payment-cashier/pages/checkout/index?source=WECHATMINI&counterUrl=${encodeURIComponent(lakala.counterUrl)}`;
-    this.setData({ awaitingLakalaOrderId: saleOrderId });
-
-    const tryFullscreen = () => new Promise<void>((resolve, reject) => {
-      wx.navigateToMiniProgram({
-        appId: lakala.appId,
-        path,
-        envVersion: lakala.envVersion,
-        success: () => resolve(),
-        fail: reject,
-      });
-    });
-
-    const tryEmbedded = () => new Promise<void>((resolve, reject) => {
-      (wx as any).openEmbeddedMiniProgram({
-        appId: lakala.appId,
-        path,
-        envVersion: lakala.envVersion,
-        success: () => resolve(),
-        fail: reject,
-      });
-    });
-
-    try {
-      if (lakala.openMode === 'embedded') {
-        try {
-          await tryEmbedded();
-        } catch {
-          // 半屏失败兜底降级到全屏
-          await tryFullscreen();
-        }
-      } else {
-        await tryFullscreen();
-      }
-    } catch (err: any) {
-      this.setData({ awaitingLakalaOrderId: '' });
-      Toast.fail(err?.errMsg || '调起收银台失败');
-      throw err;
-    }
-  },
-
-  async pollOrderAfterLakala() {
-    const saleOrderId: string = this.data.awaitingLakalaOrderId;
-    if (!saleOrderId) return;
-    const isRecharge = this.data.isRecharge;
-    const successUrl = isRecharge
-      ? '/pagesProfile/prepaid-cards/prepaid-cards'
-      : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
-    const maxAttempts = 30;
-    const interval = 2000;
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        const order = await callClientApi<any>('order.detail', { saleOrderId });
-        const status = order?.order?.status || order?.status;
-        if (status === '已支付' || status === '部分支付') {
-          this.setData({ awaitingLakalaOrderId: '' });
-          Toast.success(isRecharge ? '充值成功' : '支付成功');
-          setTimeout(() => wx.redirectTo({ url: successUrl }), 800);
-          return;
-        }
-        if (status === '已关闭' || status === '支付失败') {
-          this.setData({ awaitingLakalaOrderId: '' });
-          Toast.fail('订单已关闭');
-          return;
-        }
-      } catch {
-        // 网络异常忽略，下次再试
-      }
-      await new Promise((r) => setTimeout(r, interval));
-    }
-    this.setData({ awaitingLakalaOrderId: '' });
-    Toast.fail('未检测到支付到账，请刷新订单详情');
-    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onShareAppMessage() {

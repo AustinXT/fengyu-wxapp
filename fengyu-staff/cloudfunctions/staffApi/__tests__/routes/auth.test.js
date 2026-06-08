@@ -202,19 +202,10 @@ describe('auth.bindPhone', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已被其他账号绑定/)
   })
 
-  test('未找到已有行 — 自动建档', async () => {
-    pg.query.mockResolvedValueOnce([]) // 未找到已有行
-
-    // transaction mock
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [] }) // advisory lock
-          .mockResolvedValueOnce({ rows: [] }) // SELECT max employee_id
-          .mockResolvedValueOnce({ rows: [] }), // INSERT
-      }
-      return await cb(client)
-    })
+  test('未找到已有行 — 拒绝登录，不建档（非员工不落库）', async () => {
+    pg.query
+      .mockResolvedValueOnce([]) // openid 预检：未占用
+      .mockResolvedValueOnce([]) // 按 phone 查找：未找到已建档行
 
     const ctx = {
       event: { payload: { phoneNumber: '13899998888' } },
@@ -222,15 +213,11 @@ describe('auth.bindPhone', () => {
       auth: {},
       result: null,
     }
-    await authRoutes.bindPhone(ctx)
 
-    expect(ctx.result.success).toBe(true)
-    expect(ctx.result.phone).toBe('13899998888')
-    // staffWfId 应为新生成的 FY-WX-YYMMDD001 格式
-    expect(ctx.result.staffWfId).toMatch(/^FY-WX-\d{6}\d{3}$/)
-    expect(ctx.result.staffName).toBeNull()
-    expect(ctx.result.roles).toEqual([])
-    expect(pg.transaction).toHaveBeenCalled()
+    await expect(authRoutes.bindPhone(ctx))
+      .rejects.toThrow(/NOT_FOUND.*未关联员工档案/)
+    // 不得触发任何建档事务
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('缺少 phoneData 和 phoneNumber 抛出 INVALID_PARAMS', async () => {
@@ -356,31 +343,5 @@ describe('auth.bindPhone', () => {
 
     await expect(authRoutes.bindPhone(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*无法从 CloudID 获取手机号/)
-  })
-
-  test('自动建档当日已有记录时序号递增（generateEmployeeId line 36 TRUE 分支）', async () => {
-    pg.query.mockResolvedValueOnce([]) // 未找到已有行 → 走自动建档
-
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [] })                                      // advisory lock
-          .mockResolvedValueOnce({ rows: [{ employee_id: 'FY-WX-260315001' }] })   // 当日已有 → seq+1
-          .mockResolvedValueOnce({ rows: [] }),                                     // INSERT
-      }
-      return await cb(client)
-    })
-
-    const ctx = {
-      event: { payload: { phoneNumber: '13800007777' } },
-      context: {},
-      auth: {},
-      result: null,
-    }
-    await authRoutes.bindPhone(ctx)
-
-    // seq = parseInt('001', 10) + 1 = 2 → 末3位应为 002
-    expect(ctx.result.staffWfId).toMatch(/002$/)
-    expect(ctx.result.success).toBe(true)
   })
 })

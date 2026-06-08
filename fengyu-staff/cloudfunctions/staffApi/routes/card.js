@@ -16,6 +16,7 @@
 
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
+const { isStoreInScope } = require('../utils/scope')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
@@ -78,11 +79,15 @@ async function recharge(ctx) {
 
   // 查顾客 + document_type
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
+  // 非本店顾客禁止充值（同 order.create 口径：账户余额可跨店查看，但充值按门店结算）
+  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法充值')
+  }
   const clientPhone = user.phone || null
   const customerName = user.name || null
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'
@@ -215,8 +220,10 @@ async function createRefund(ctx) {
 
   const totalAmount = Number(order.total_amount)
   const payableAmount = Number(order.payable_amount)
-  const refundFace = balanceNow
   if (!(totalAmount > 0)) throw new Error('INVALID_STATE: 订单总额异常，无法计算退款金额')
+  // 修复（Bug K）：prepaid_cards 是一户一钱包（聚合所有充值/转换/回冲），不能退整个 balance。
+  // 退款面值上限 = 该充值单自身面值；取 min(该单面值, 当前余额) → 退款现金 ≤ 该单实付，不超退、不殃及其它充值单的钱。
+  const refundFace = Math.min(totalAmount, balanceNow)
   const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
 
   // 写 sale_order_payments：change_type='退款' status='待审批' amount=负

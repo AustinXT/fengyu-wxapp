@@ -28,13 +28,18 @@ docs/
 | [005](changes/arch/005_beautician-picker-include-wellness.md) | 2026-05-21 | 开单/下单/服务单的美容师选择列表放开养生师 |
 | [006](changes/arch/006_service-order-customer-confirmation.md) | 2026-05-23 | 服务单新增「顾客确认」步骤（待客户确认 中间态） |
 | [007](changes/arch/007_store-unbind-to-transfer-flow.md) | 2026-05-23 | 门店解绑流程改为「转店」（前置选新门店）+ 修复审批缓存陈旧 bug |
+| [008](changes/arch/008_lakala-preorder-migration.md) | 2026-05-29 | 拉卡拉支付从收银台模式整体迁移到聚合主扫模式（+ 支付宝吱口令） |
 
 ### ops — 生产操作
 
 | 编号 | 日期 | 标题 |
 |------|------|------|
 | [001](changes/ops/001_admin-container-timezone.md) | 2026-05-27 | admin 容器锁定东八区（tzdata + TZ），修复后台时间列晚 8 小时 |
+| [002](changes/ops/002_lakala-3-merchants-backfill.md) | 2026-05-30 | 凤御 3 个拉卡拉商户 legacy 行手抄入库 + admin 加「反查开户状态」按钮 |
 
 ### fix — 故障复盘
 
-_暂无_
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| [001](changes/fix/001_drop-stores-lakala-sub-appid.md) | 2026-05-30 | stores 删除冗余 lakala_sub_appid 列（双源风险预防性清理） |
+| [002](changes/fix/002_zero-payable-order-stuck-pending.md) | 2026-06-06 | 优惠券全额抵扣（应付实金为 0）订单卡在「待支付」死循环 |

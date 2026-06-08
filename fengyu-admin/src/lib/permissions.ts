@@ -32,23 +32,23 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
     'org:list', 'org:create', 'org:update', 'org:delete',
     'store:list', 'store:create', 'store:update',
-    'employee:list', 'employee:create', 'employee:update',
+    'employee:list', 'employee:create', 'employee:update', 'employee:delete',
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
     // 业务数据（订单/明细/分配/服务/预约/顾客/疗程卡/提货/数据中心）
-    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:record_payment',
+    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:record_payment', 'sale_order:delete',
     'sale_item:list',
     'allocation:list', 'allocation:save',
-    'service:list', 'service:create', 'service:update',
-    'appointment:list', 'appointment:confirm', 'appointment:checkin',
-    'customer:list', 'customer:create', 'customer:update',
-    'pickup_record:list', 'pickup_record:create',
+    'service:list', 'service:create', 'service:update', 'service:delete',
+    'appointment:list', 'appointment:confirm', 'appointment:checkin', 'appointment:delete',
+    'customer:list', 'customer:create', 'customer:update', 'customer:delete',
+    'pickup_record:list', 'pickup_record:create', 'pickup_record:delete',
     'data_center:dashboard',
-    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
+    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject', 'store_unbind:delete',
     // 系统管理（权限/日志/消息/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-    'operation_log:list',
+    'operation_log:list', 'operation_log:delete',
     'point_transaction:list',
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
@@ -62,6 +62,9 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
+    // 拉卡拉商户入网（arch-007；admin 专属，其他角色不开）
+    'lakala:onboarding:read', 'lakala:onboarding:create', 'lakala:onboarding:update',
+    'lakala:onboarding:submit', 'lakala:onboarding:realname', 'lakala:onboarding:delete',
   ],
   manager: [
     'dashboard:view',

@@ -99,13 +99,13 @@ async function main() {
     if (o.client_user_id !== TEST_CLIENT_USER_ID) errors.push(`client_user_id 应=${TEST_CLIENT_USER_ID}, 实际=${o.client_user_id}`)
     if (o.opened_by !== TEST_MANAGER_EMP_ID) errors.push(`opened_by 应=${TEST_MANAGER_EMP_ID}, 实际=${o.opened_by}`)
     if (o.sale_order_type !== '销售单') errors.push(`sale_order_type 应='销售单'，实际='${o.sale_order_type}'`)
-    if (Number(o.received) !== 1000) errors.push(`received 应=1000（线下全额已落账），实际=${o.received}`)
+    if (Number(o.received) !== 0) errors.push(`received 应=0（两步式：开单不记账，待 confirmOffline 入账），实际=${o.received}`)
   }
 
   // 3.5 PG: sale_items 行
   const items = await pgQuery(
     `SELECT sale_item_id, sku_id, product_type, quantity, unit_price, unit_real_price,
-            session_count, remaining_sessions, is_shengmei
+            session_count, remaining_sessions, is_shengmei, is_manager_special, received, pending_received
      FROM sale_items WHERE sale_order_id = $1`,
     [saleOrderId]
   )
@@ -123,24 +123,23 @@ async function main() {
       // 疗程卡每行 session_count = sku.session_count = 5
       if (Number(i.session_count) !== 5) errors.push(`session_count 应=5（疗程卡），实际=${i.session_count}`)
       if (i.is_shengmei !== true) errors.push(`is_shengmei 应=true（快照），实际=${i.is_shengmei}`)
+      // 普通 SKU（未标店长特价）→ is_manager_special 快照默认 false
+      if (i.is_manager_special !== false) errors.push(`is_manager_special 应=false（普通 SKU 快照），实际=${i.is_manager_special}`)
+      // 两步式（2026-06-07 修 P0）：开单行级 received=0（资金铁律：只认已支付流水）；
+      // 实付草稿落 pending_received=500（行应付，500/卡），确认收款后才驱动 received/paid_sessions。
+      if (Number(i.received) !== 0) errors.push(`received 应=0（两步式开单不记账），实际=${i.received}`)
+      if (Number(i.pending_received) !== 500) errors.push(`pending_received 应=500（行实付草稿=行应付），实际=${i.pending_received}`)
     }
   }
 
-  // 3.6 PG: sale_order_payments 立即写"首次支付/已支付"
+  // 3.6 PG: 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）— 开单不写收款流水。
+  // 线下实收由店长 confirmOffline「确认收款」入账（写 '首次支付'/已支付 + 翻态 + recalc paid_sessions）。
   const payments = await pgQuery(
     `SELECT change_type, amount, status, source_end, operator_employee_id
      FROM sale_order_payments WHERE sale_order_id = $1`,
     [saleOrderId]
   )
-  if (payments.length !== 1) errors.push(`sale_order_payments 行数应=1（线下全额开单立即落 '首次支付'），实际=${payments.length}`)
-  else {
-    const p = payments[0]
-    if (p.change_type !== '首次支付') errors.push(`payments.change_type 应='首次支付'，实际='${p.change_type}'`)
-    if (Number(p.amount) !== 1000) errors.push(`payments.amount 应=1000，实际=${p.amount}`)
-    if (p.status !== '已支付') errors.push(`payments.status 应='已支付'，实际='${p.status}'`)
-    if (p.source_end !== 'staff') errors.push(`payments.source_end 应='staff'，实际='${p.source_end}'`)
-    if (p.operator_employee_id !== TEST_MANAGER_EMP_ID) errors.push(`payments.operator 应=${TEST_MANAGER_EMP_ID}, 实际=${p.operator_employee_id}`)
-  }
+  if (payments.length !== 0) errors.push(`sale_order_payments 行数应=0（两步式：开单不记账，待 confirmOffline 入账），实际=${payments.length}`)
 
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)

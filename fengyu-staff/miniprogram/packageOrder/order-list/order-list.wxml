@@ -71,7 +71,7 @@
             data-id="{{item.id}}"
           >重置支付</van-button>
           <van-button
-            wx:if="{{item.status === '已支付' && isManager}}"
+            wx:if="{{item.allocatable && (item.status === '已支付' || item.status === '已完成') && isManager}}"
             size="small" plain type="primary"
             catchtap="onAllocate"
             data-id="{{item.id}}"

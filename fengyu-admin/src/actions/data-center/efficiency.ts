@@ -367,6 +367,7 @@ export const getEfficiencyBoard = withPermission(
         ON so.store_id = s.store_id
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
+        AND so.legacy_source IS DISTINCT FROM 'workfine'
         AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
       WHERE ${scopeFilterSql(session, scope, 's.store_id')}
       GROUP BY s.store_id, s.store_name, o.name
@@ -459,7 +460,7 @@ export const getEfficiencyBoard = withPermission(
     const producerCte = sql`
       WITH producer_employees AS (
         SELECT sw.employee_id, sw.name AS employee_name, sw.store_id, s.store_name,
-               o_mkt.name AS market_name
+               sw.position_name, o_mkt.name AS market_name
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -582,6 +583,97 @@ export const getEfficiencyBoard = withPermission(
       ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  Part E — 按技师人效明细（员工粒度，单查询多 CTE，列出全部产能员工）
+    // ═══════════════════════════════════════════════════════════════════
+    // 复用 producer_employees（hired_at/resigned_at 历史化）。销售额/实耗各按
+    // sales_category 四枚举值 FILTER 摊平成 4 列；byStaff 装配处：销售额按 4 枚举值
+    // 原样展示（之和=当月业绩），实耗 4 列求和为单列「实耗合计」。
+    // ⚠️ 员工维度口径：实耗不做 sales_category 排除（metrics.md「他销他耗/生态合作不
+    //    计本店实耗」是门店口径，技师实际服务即计入其个人实耗）。
+    //    项目数沿用员工榜口径（仅自销自耗+他销自耗，受一致性测试守护）。
+    // 销售额 4 列之和 = 当月业绩 revenue（同一 sale_allocations 口径，仅拆分维度不同）。
+    const qStaffDetail = db.execute(sql`
+      ${producerCte},
+      revenue_by_emp_cat AS (
+        SELECT sa.employee_id,
+          COALESCE(SUM(sa.total_amount::numeric), 0) AS total,
+          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
+          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
+          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
+          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
+        FROM sale_allocations sa
+        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        WHERE sa.is_void = FALSE
+          AND sa.role_type IN ('美容师', '养生师')
+          AND so.sale_order_type IN ('销售单', '转换单')
+          AND so.status = '已支付'
+          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        GROUP BY sa.employee_id
+      ),
+      consume_by_emp_cat AS (
+        SELECT sit.employee_id,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '自销自耗'), 0) AS consume_zxzh,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '他销自耗'), 0) AS consume_txzh,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '他销他耗'), 0) AS consume_txth,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '生态合作'), 0) AS consume_eco
+        FROM service_items sit
+        JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+        WHERE so2.status = '已完成'
+          AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+        GROUP BY sit.employee_id
+      ),
+      new_member_by_emp AS (
+        SELECT c.bound_employee_id AS employee_id, COUNT(*) AS v
+        FROM client_wechat_users c
+        WHERE c.bound_employee_id IS NOT NULL
+          AND c.became_member_at IS NOT NULL
+          AND c.became_member_at::date BETWEEN ${cur.start} AND ${cur.end}
+        GROUP BY c.bound_employee_id
+      ),
+      project_by_emp AS (
+        SELECT sit.employee_id, COALESCE(SUM(sit.session_used), 0) AS v
+        FROM service_items sit
+        JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+        WHERE so2.status = '已完成'
+          AND sit.sales_category IN ('自销自耗', '他销自耗')
+          AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+        GROUP BY sit.employee_id
+      ),
+      service_count_by_emp AS (
+        SELECT sit.employee_id,
+          COUNT(DISTINCT so2.client_user_id) AS headcount,
+          COUNT(DISTINCT sit.service_order_id) AS visits
+        FROM service_items sit
+        JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+        WHERE so2.status = '已完成'
+          AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+        GROUP BY sit.employee_id
+      )
+      SELECT pe.employee_id, pe.employee_name, pe.store_name, pe.position_name, pe.market_name,
+        COALESCE(r.total, 0)::numeric AS revenue,
+        COALESCE(r.sale_zxzh, 0)::numeric AS sale_zxzh,
+        COALESCE(r.sale_txzh, 0)::numeric AS sale_txzh,
+        COALESCE(r.sale_txth, 0)::numeric AS sale_txth,
+        COALESCE(r.sale_eco, 0)::numeric AS sale_eco,
+        COALESCE(c.consume_zxzh, 0)::numeric AS consume_zxzh,
+        COALESCE(c.consume_txzh, 0)::numeric AS consume_txzh,
+        COALESCE(c.consume_txth, 0)::numeric AS consume_txth,
+        COALESCE(c.consume_eco, 0)::numeric AS consume_eco,
+        COALESCE(nm.v, 0)::int AS new_member,
+        COALESCE(p.v, 0)::int AS project_count,
+        COALESCE(scnt.headcount, 0)::int AS service_headcount,
+        COALESCE(scnt.visits, 0)::int AS service_visits
+      FROM producer_employees pe
+      LEFT JOIN revenue_by_emp_cat r ON r.employee_id = pe.employee_id
+      LEFT JOIN consume_by_emp_cat c ON c.employee_id = pe.employee_id
+      LEFT JOIN new_member_by_emp nm ON nm.employee_id = pe.employee_id
+      LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
+      LEFT JOIN service_count_by_emp scnt ON scnt.employee_id = pe.employee_id
+      ORDER BY revenue DESC, pe.employee_name ASC, pe.employee_id ASC
+    `)
+
     // ── 并行执行全部查询 ──────────────────────────────────────────────
     const [
       // Part A
@@ -595,6 +687,8 @@ export const getEfficiencyBoard = withPermission(
       storeRankRevenueR, storeRankConsumeR, storeRankRetainedR, storeRankNewMemberR, storeRankProjectR,
       // Part D
       staffRankRevenueR, staffRankConsumeR, staffRankNewMemberR, staffRankProjectR, staffRankIncomeR,
+      // Part E
+      staffDetailR,
     ] = await Promise.all([
       qRevenueTotal, qConsumeTotal, qSalesCommTotal, qServiceCommTotal,
       qFootfallTotal, qProjectCountTotal, qMemberCount, qTechnicianCount, qManagerCount,
@@ -603,6 +697,7 @@ export const getEfficiencyBoard = withPermission(
       qFootfallByStore, qProjectByStore,
       qStoreRankRevenue, qStoreRankConsume, qStoreRankRetainedMember, qStoreRankNewMember, qStoreRankProjectCount,
       qStaffRankRevenue, qStaffRankConsume, qStaffRankNewMember, qStaffRankProjectCount, qStaffRankIncome,
+      qStaffDetail,
     ])
 
     // ── KPI 装配（人均派生，分母为 0 → null）───────────────────────────
@@ -733,10 +828,39 @@ export const getEfficiencyBoard = withPermission(
       income: mapStaffRank(staffRankIncomeR),
     }
 
+    // ── byStaff 装配（按技师人效明细，labels 带门店/职级）─────────────────
+    const byStaff: BreakdownRow[] = (staffDetailR as Array<Record<string, unknown>>).map((r) => ({
+      groupId: String(r.employee_id),
+      groupName: String(r.employee_name ?? ''),
+      marketName: r.market_name == null ? undefined : String(r.market_name),
+      labels: {
+        store: r.store_name == null ? '' : String(r.store_name),
+        position: r.position_name == null ? '' : String(r.position_name),
+      },
+      // 销/耗各 4 枚举值在 SQL 已算好。销售额按 salesCategoryEnum 4 枚举值原样展示
+      // （4 列之和 = 当月业绩 revenue），实耗合并为单列「实耗合计」（员工维度全口径，
+      // 含他销他耗/生态合作；现实数据几乎只有「自销自耗·耗」非零，拆 4 列意义不大）。
+      metrics: {
+        revenue: Number(r.revenue ?? 0),
+        saleZxzh: Number(r.sale_zxzh ?? 0), // 自销自耗(销售额)
+        saleTxzh: Number(r.sale_txzh ?? 0), // 他销自耗
+        saleTxth: Number(r.sale_txth ?? 0), // 他销他耗
+        saleEco: Number(r.sale_eco ?? 0), // 生态合作
+        consumeTotal: // 实耗合计 = 4 枚举值实耗之和
+          Number(r.consume_zxzh ?? 0) + Number(r.consume_txzh ?? 0) +
+          Number(r.consume_txth ?? 0) + Number(r.consume_eco ?? 0),
+        newMember: Number(r.new_member ?? 0),
+        projectCount: Number(r.project_count ?? 0),
+        serviceHeadcount: Number(r.service_headcount ?? 0),
+        serviceVisits: Number(r.service_visits ?? 0),
+      },
+    }))
+
     return {
       ...ctx.meta,
       kpis,
       byMarket,
+      byStaff,
       storeRankings,
       staffRankings,
     }

@@ -14,11 +14,9 @@ beforeEach(() => {
   }
   ENV_SNAPSHOT.LAKALA_NOTIFY_URL = process.env.LAKALA_NOTIFY_URL
   ENV_SNAPSHOT.LAKALA_CALLBACK_IP_WHITELIST = process.env.LAKALA_CALLBACK_IP_WHITELIST
-  ENV_SNAPSHOT.LAKALA_SM4_KEY = process.env.LAKALA_SM4_KEY
   ENV_SNAPSHOT.LAKALA_ENV = process.env.LAKALA_ENV
   delete process.env.LAKALA_NOTIFY_URL
   delete process.env.LAKALA_CALLBACK_IP_WHITELIST
-  delete process.env.LAKALA_SM4_KEY
   delete process.env.LAKALA_ENV
 })
 
@@ -38,8 +36,6 @@ function setAllRequired() {
   process.env.LAKALA_SERIAL_NO = '00dfba8194c41b84cf'
   process.env.LAKALA_PRIVATE_KEY_PEM = '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----'
   process.env.LAKALA_PLATFORM_CERT_PEM = '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----'
-  process.env.LAKALA_DEFAULT_MERCHANT_NO = '822290059430BFA'
-  process.env.LAKALA_DEFAULT_TERM_NO = 'D9261078'
 }
 
 describe('lakala-config', () => {

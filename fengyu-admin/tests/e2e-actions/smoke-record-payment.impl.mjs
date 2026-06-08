@@ -36,7 +36,7 @@ const setup = await import(setupUrl)
 const fixtures = await import(fixturesUrl)
 const snapMod = await import(snapUrl)
 
-const { NS, TEST_CLIENT_USER_ID, TEST_MANAGER_EMP_ID, TEST_STORE_ID, closePool } = setup
+const { NS, TEST_CLIENT_USER_ID, TEST_MANAGER_EMP_ID, TEST_STORE_ID, getPool, closePool } = setup
 const { cleanupTestData, ensureTestStore, createTestStaff, createTestClient, createTestSaleOrder } = fixtures
 const { snapshot, diff, fmtDiff } = snapMod
 
@@ -64,7 +64,10 @@ async function main() {
     status: '待支付',
     paymentMethod: '线下',
   })
-  console.log(`  ✓ fixtures ready: order=${ORDER_ID} ¥${REPAY_AMOUNT}`)
+  // 模拟普通销售单 order.create 现实：allocation_status 出生为 NULL（schema 无默认值，回款分配缺口根因）。
+  // fixtures 写死'待分配'，这里抹回 NULL，以验证 recordPayment 收款路径的 COALESCE 初始化。
+  await getPool().query(`UPDATE sale_orders SET allocation_status = NULL WHERE sale_order_id = $1`, [ORDER_ID])
+  console.log(`  ✓ fixtures ready: order=${ORDER_ID} ¥${REPAY_AMOUNT}（allocation_status 抹回 NULL 模拟根因）`)
 
   const snapSpec = {
     point_transactions: { where: 'ref_order_id = $1 OR user_id = $2', params: [ORDER_ID, TEST_CLIENT_USER_ID] },
@@ -111,6 +114,14 @@ async function main() {
   // sale_order_payments 应+1（首次支付 or 回款）
   if (d.sale_order_payments.added !== 1) {
     errors.push(`sale_order_payments 应+1, 实际+${d.sale_order_payments.added}`)
+  }
+  // 回款分配缺口修复：造单后 allocation_status=NULL，recordPayment 结清应 COALESCE 初始化为'待分配'，
+  // 使该单可进 staff 店长「营业额分配」流程（pendingList 要'待分配'、save 拒 NULL）。
+  if (before.sale_orders[0]?.allocation_status !== null) {
+    errors.push(`前置：造单后 allocation_status 应=NULL（模拟根因）, 实际=${before.sale_orders[0]?.allocation_status}`)
+  }
+  if (after.sale_orders[0]?.allocation_status !== '待分配') {
+    errors.push(`recordPayment 应把 NULL allocation_status 初始化为'待分配', 实际=${after.sale_orders[0]?.allocation_status}`)
   }
 
   if (errors.length) {

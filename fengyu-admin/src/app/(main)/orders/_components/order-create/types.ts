@@ -86,6 +86,8 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
     sortOrder: sku.sortOrder,
     serviceFee: sku.serviceFee,
     isShengmei: null,
+    // 店长特别优惠 capability 透传到购物车，Step3 据此放开应付编辑（仅普通商品）
+    isManagerSpecial: sku.isManagerSpecial,
     marketScope: null,
     isEnabled: true,
     createdAt: '',

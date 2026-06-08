@@ -11,7 +11,6 @@ const MAX_PER_POOL = 3;
 interface OrderItem {
   sale_item_id: string;
   product_name: string;
-  sku_spec_name: string;
   received: string;
   sales_category: string | null;
   product_type: string;
@@ -71,7 +70,6 @@ interface SuggestLine {
 interface DisplayItem {
   sale_item_id: string;
   product_name: string;
-  sku_spec_name: string;
   received: string;
   sales_category: string | null;
   allocLines: AllocLine[];
@@ -275,7 +273,6 @@ Page({
       return {
         sale_item_id: item.sale_item_id,
         product_name: item.product_name,
-        sku_spec_name: item.sku_spec_name,
         received: item.received,
         sales_category: item.sales_category,
         allocLines: lines,
@@ -319,7 +316,6 @@ Page({
     const displayItems: DisplayItem[] = items.map(item => ({
       sale_item_id: item.sale_item_id,
       product_name: item.product_name,
-      sku_spec_name: item.sku_spec_name,
       received: item.received,
       sales_category: item.sales_category,
       allocLines: linesMap.get(item.sale_item_id) || [],

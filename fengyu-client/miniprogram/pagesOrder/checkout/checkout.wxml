@@ -135,17 +135,19 @@ module.exports.date = function(s) {
   </van-cell-group>
 
   <!-- 消费协议（充值单已在充值页底部展示充值条款，此处不再勾选） -->
+  <!-- 链接移到 checkbox 外 + catchtap 阻断冒泡：点链接只预览、点「我已阅读并同意」/圆圈才切换勾选 -->
   <van-cell-group wx:if="{{!isRecharge}}" title="消费协议" inset>
     <van-cell>
       <view slot="title" class="agreement-row">
         <van-checkbox
           value="{{agreed}}"
           shape="round"
+          icon-size="36rpx"
           bind:change="onAgreementChange"
         >
           <text class="agreement-text">我已阅读并同意</text>
-          <text class="agreement-link" bindtap="onViewAgreement">《服务消费协议》</text>
         </van-checkbox>
+        <text class="agreement-link" catchtap="onViewAgreement">《{{agreementTitle}}》</text>
       </view>
     </van-cell>
   </van-cell-group>
@@ -175,23 +177,24 @@ module.exports.date = function(s) {
 </view>
 
 
-<!-- 支付宝二维码弹窗 -->
+<!-- 支付宝吱口令弹窗（聚合主扫 share_code 方案：复制吱口令 → 切到支付宝识别）-->
 <van-popup
-  show="{{showAlipayQr}}"
+  show="{{showAlipayShare}}"
   round
   closeable
   close-on-click-overlay="{{false}}"
-  bind:close="onAlipayClose"
+  bind:close="onAlipayShareClose"
 >
   <view class="alipay-qr-popup">
-    <view class="alipay-qr-popup__title">请使用支付宝扫码付款</view>
-    <image src="{{alipayQrUrl}}" mode="widthFix" class="alipay-qr-popup__image" />
+    <view class="alipay-qr-popup__title">支付宝吱口令</view>
     <view class="alipay-qr-popup__amount">
       <text class="alipay-qr-popup__symbol">¥</text>
       <text class="alipay-qr-popup__price">{{alipayAmount}}</text>
     </view>
-    <view class="alipay-qr-popup__tips">长按保存图片，打开支付宝扫码支付</view>
-    <van-button type="primary" block custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
+    <view class="alipay-share-token" selectable="true">{{alipayShareToken}}</view>
+    <view class="alipay-qr-popup__tips">复制吱口令 → 打开支付宝 App → 自动识别后完成支付</view>
+    <van-button type="primary" block custom-class="alipay-qr-popup__btn" bindtap="onAlipayShareCopy">复制吱口令</van-button>
+    <van-button type="default" block custom-class="alipay-qr-popup__btn" bindtap="onAlipayShareDone">我已完成支付</van-button>
   </view>
 </van-popup>
 
@@ -247,3 +250,32 @@ module.exports.date = function(s) {
   bind:select="onStaffSelect"
   bind:close="onCloseStaffPopup"
 />
+
+<!-- 消费协议预览 Popup（底部弹层 + 滚动 + 保留段落/标题排版） -->
+<van-popup
+  show="{{showAgreement}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onCloseAgreement"
+>
+  <view class="agreement-popup">
+    <view class="agreement-popup__title">{{agreementTitle}}</view>
+    <scroll-view scroll-y class="agreement-popup__body">
+      <view wx:if="{{agreementLoading}}" class="agreement-popup__loading">
+        <van-loading size="48rpx" />
+      </view>
+      <block wx:elif="{{agreementParas.length > 0}}">
+        <text
+          wx:for="{{agreementParas}}"
+          wx:key="text"
+          class="agreement-popup__para {{item.heading ? 'agreement-popup__para--heading' : ''}}"
+        >{{item.text}}</text>
+      </block>
+      <view wx:else class="agreement-popup__empty">协议内容即将更新，如有疑问请咨询门店</view>
+    </scroll-view>
+    <view class="agreement-popup__footer">
+      <van-button block round color="#C0322A" bindtap="onAgreeFromPopup">我已阅读并同意</van-button>
+    </view>
+  </view>
+</van-popup>

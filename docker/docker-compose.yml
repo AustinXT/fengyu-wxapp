@@ -68,7 +68,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["node", "cron-worker.mjs"]
+    # stdout/stderr 同时 tee 到挂载卷 → 容器重建不丢历史（`docker compose up` 会重建容器，
+    # 默认 json-file 驱动的日志文件随旧容器目录一起删除）。文件名按月自然归档。
+    # 注意：$$ 是 compose 变量转义，容器内 sh 实际拿到 $(date +%Y%m)
+    volumes:
+      - ./logs/cron-worker:/var/log/app
+    command:
+      - sh
+      - -c
+      - 'node cron-worker.mjs 2>&1 | tee -a "/var/log/app/cron-worker-$$(date +%Y%m).log"'
+    # docker logs 自身加滚动（即便容器不重建，避免单次容器寿命内日志无限增长）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   postgres_data:

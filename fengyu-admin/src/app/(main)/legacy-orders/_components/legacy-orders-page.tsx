@@ -31,14 +31,13 @@ import {
 } from "@/actions/legacy-orders"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import PullWorkfineDialog from "./pull-workfine-dialog"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDateTime(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {
@@ -90,7 +89,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       }
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "通过失败")
+      toast.error(actionErrorMessage(err, "通过失败"))
     } finally {
       setPending(false)
       setApproveTarget(null)
@@ -105,7 +104,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success("已作废")
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "作废失败")
+      toast.error(actionErrorMessage(err, "作废失败"))
     } finally {
       setPending(false)
       setRejectTarget(null)
@@ -128,7 +127,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       }
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "更新失败")
+      toast.error(actionErrorMessage(err, "更新失败"))
     } finally {
       setPending(false)
       setPhoneTarget(null)
@@ -153,7 +152,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success(`金额已更新：¥${res.from} → ¥${res.to}（核对通过后才重算标签）`)
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "更新失败")
+      toast.error(actionErrorMessage(err, "更新失败"))
     } finally {
       setPending(false)
       setAmountTarget(null)
@@ -172,7 +171,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       toast.success(`批量通过成功 ${res.approvedCount} 条；影响 ${res.affectedUserIds.length} 位顾客`)
       refreshAndClear()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "批量通过失败")
+      toast.error(actionErrorMessage(err, "批量通过失败"))
     } finally {
       setPending(false)
       setBatchOpen(false)
@@ -447,8 +446,8 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       <AlertDialog open={!!approveTarget} onOpenChange={(open) => !open && setApproveTarget(null)}>
         <AlertDialogTitle>确认通过核对？</AlertDialogTitle>
         <AlertDialogDescription>
-          确认 WorkFine 历史订单数据无误（金额、日期、门店、手机号匹配该顾客）。通过后订单 status 将变为
-          已支付，顾客的 customer_type / spending_tier / member_level 会立即重算。
+          确认 WorkFine 历史订单数据无误（金额、日期、门店、手机号匹配该顾客）。通过后订单状态将变为
+          「已支付」，顾客的顾客类型 / 消费档位 / 会员等级会立即重算。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setApproveTarget(null)}>返回</AlertDialogCancel>
@@ -460,7 +459,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
       <AlertDialog open={!!rejectTarget} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <AlertDialogTitle>确认作废这条历史订单？</AlertDialogTitle>
         <AlertDialogDescription>
-          作废后订单 status 将变为已作废，不再参与任何统计。仅在确认 WorkFine 数据本身错误时使用
+          作废后订单状态将变为已作废，不再参与任何统计。仅在确认 WorkFine 数据本身错误时使用
           （如重复录入、金额错误无法核对）。
         </AlertDialogDescription>
         <AlertDialogFooter>

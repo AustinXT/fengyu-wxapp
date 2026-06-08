@@ -16,6 +16,7 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
+const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
@@ -102,7 +103,7 @@ async function detail(ctx) {
     SELECT sit.service_item_id, sit.sale_item_id, sit.session_used, sit.unit_real_price,
            sit.sales_category, sit.employee_id,
            si.service_fee, si.session_count, si.quantity,
-           si.product_name, si.sku_spec_name
+           si.product_name
     FROM service_items sit
     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
     WHERE sit.service_order_id = $1
@@ -220,6 +221,8 @@ async function save(ctx) {
   if (isFrozen(order.completed_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，服务单完成超过 ${FREEZE_DAYS} 天不可修改`)
   }
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止改服务提成（退款 cascade 会作废提成）
+  await assertNoPendingRefundByServiceOrder(pg, serviceOrderId)
 
   // 寄存单不参与提成分配（寄存单仅初始化剩余次数，不计营业额/客单价/提成）
   const depositChk = await pg.query(`

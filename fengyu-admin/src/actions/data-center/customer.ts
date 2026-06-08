@@ -297,6 +297,7 @@ async function queryOperatedMembers(
       WHERE ${sc}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
@@ -323,6 +324,7 @@ async function queryMemberAvgTicket(
       WHERE ${sc}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
@@ -368,6 +370,7 @@ async function queryNewMemberSpend(
       AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.status = '已支付'
+      AND o.legacy_source IS DISTINCT FROM 'workfine'
       AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
   `)
   return num(first(rows).v)
@@ -642,6 +645,7 @@ async function queryOpsBreakdown(
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${start} AND ${end}
         AND c.customer_type = '会员客'
       GROUP BY o.store_id, o.client_user_id
@@ -679,6 +683,7 @@ async function queryOpsBreakdown(
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
+        AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${start} AND ${end}
       GROUP BY o.store_id
     ),

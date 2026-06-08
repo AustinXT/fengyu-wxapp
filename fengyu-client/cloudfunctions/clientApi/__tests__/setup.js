@@ -5,6 +5,12 @@
 const path = require('path')
 const { vi } = await import('vitest')
 
+// L1 单测开启 phoneNumber 直传与 _testOpenid 测试通道
+// 路由用 testBypassAllowed('ALLOW_DIRECT_PHONE') / ('ALLOW_TEST_OPENID') 守卫
+// （prod 由 runtime-guard 硬闸禁用，L1 测试环境 NODE_ENV !== 'production' 必须配 env 才能走 bypass 分支）
+process.env.ALLOW_DIRECT_PHONE = process.env.ALLOW_DIRECT_PHONE || 'true'
+process.env.ALLOW_TEST_OPENID = process.env.ALLOW_TEST_OPENID || 'true'
+
 // ====== Mock: db/pg ======
 const pgPath = require.resolve('../db/pg')
 const mockPg = {
@@ -61,19 +67,33 @@ const lakalaClientPath = require.resolve('../utils/lakala-client')
 const realLakalaClient = require('../utils/lakala-client')
 const mockLakalaClient = {
   ...realLakalaClient,
+  // 底层 request 兜底（旧测试用，新代码走 requestPreorder/requestAlipayShareCode/queryTrade 高级封装）
   request: vi.fn(async () => ({
-    code: '000000',
-    msg: '操作成功',
-    resp_data: { counter_url: 'https://pay.test/cashier', pay_order_no: 'PO-TEST-1' },
-    expectedCode: '000000',
-    ok: true,
+    code: 'BBS00000', msg: '操作成功', resp_data: {}, expectedCode: 'BBS00000', ok: true,
   })),
-  // query/close helper 也 mock，避免单测走真网络
-  queryCashierOrder: vi.fn(async () => ({
-    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '0' },
+  // 聚合主扫 preorder 默认返回微信 wx.requestPayment 5 字段
+  requestPreorder: vi.fn(async () => ({
+    ok: true, code: 'BBS00000', msg: '操作成功',
+    tradeNo: 'LAK-T-001', logNo: 'LAK-L-001',
+    paymentParams: {
+      timeStamp: '1700000000',
+      nonceStr: 'mock-nonce-001',
+      package: 'prepay_id=wx_mock_001',
+      signType: 'RSA',
+      paySign: 'mock-pay-sign-001',
+    },
+    lakalaAppId: 'wx811eb4ded3dfba3f',
+    raw: {},
   })),
-  closeCashierOrder: vi.fn(async () => ({
-    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '7' },
+  // 支付宝吱口令默认返回 share_token
+  requestAlipayShareCode: vi.fn(async () => ({
+    tradeNo: 'LAK-T-001-AC', shareToken: '¥mock-share-token¥', expireDate: '',
+  })),
+  // 聚合主扫 query 默认返回 SUCCESS
+  queryTrade: vi.fn(async () => ({
+    ok: true, code: 'BBS00000', msg: '操作成功',
+    tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
+    payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
   })),
 }
 require.cache[lakalaClientPath] = {
@@ -103,16 +123,27 @@ beforeEach(() => {
   mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
   mockConfig.invalidateCache.mockReset()
   mockLakalaClient.request.mockReset().mockResolvedValue({
-    code: '000000',
-    msg: '操作成功',
-    resp_data: { counter_url: 'https://pay.test/cashier', pay_order_no: 'PO-TEST-1' },
-    expectedCode: '000000',
-    ok: true,
+    code: 'BBS00000', msg: '操作成功', resp_data: {}, expectedCode: 'BBS00000', ok: true,
   })
-  mockLakalaClient.queryCashierOrder.mockReset().mockResolvedValue({
-    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '0' },
+  mockLakalaClient.requestPreorder.mockReset().mockResolvedValue({
+    ok: true, code: 'BBS00000', msg: '操作成功',
+    tradeNo: 'LAK-T-001', logNo: 'LAK-L-001',
+    paymentParams: {
+      timeStamp: '1700000000',
+      nonceStr: 'mock-nonce-001',
+      package: 'prepay_id=wx_mock_001',
+      signType: 'RSA',
+      paySign: 'mock-pay-sign-001',
+    },
+    lakalaAppId: 'wx811eb4ded3dfba3f',
+    raw: {},
   })
-  mockLakalaClient.closeCashierOrder.mockReset().mockResolvedValue({
-    code: '000000', msg: '操作成功', ok: true, resp_data: { order_status: '7' },
+  mockLakalaClient.requestAlipayShareCode.mockReset().mockResolvedValue({
+    tradeNo: 'LAK-T-001-AC', shareToken: '¥mock-share-token¥', expireDate: '',
+  })
+  mockLakalaClient.queryTrade.mockReset().mockResolvedValue({
+    ok: true, code: 'BBS00000', msg: '操作成功',
+    tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
+    payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
   })
 })

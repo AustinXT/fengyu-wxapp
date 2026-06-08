@@ -8,6 +8,7 @@ import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { hasPendingRefund } from '@/lib/refund-cascade'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -125,27 +126,28 @@ export const getOrderAllocations = withPermission(
     rows = await db.execute(sql`
       SELECT
         sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
-        sa.role_type, sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
+        sa.role_type, sa.total_amount, sa.commission_rate, sa.commission_amount,
+        sa.is_void, sa.created_at, sa.updated_at,
+        swu.name AS employee_name, orn.name AS department_name,
+        si.product_name AS sale_item_name
       FROM sale_allocations sa
+      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
       LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
       LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sa.sale_item_id IN (
-        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
-      ) AND sa.is_void = false
+      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
     `) as any[]
   } catch {
     rows = await db.execute(sql`
       SELECT
         sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
         sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
+        swu.name AS employee_name, orn.name AS department_name,
+        si.product_name AS sale_item_name
       FROM sale_allocations sa
+      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
       LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
       LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sa.sale_item_id IN (
-        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
-      ) AND sa.is_void = false
+      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
     `) as any[]
   }
 
@@ -156,11 +158,14 @@ export const getOrderAllocations = withPermission(
     allocationRatio: r.allocation_ratio,
     roleType: r.role_type ?? undefined,
     totalAmount: r.total_amount,
+    commissionRate: r.commission_rate ?? undefined,
+    commissionAmount: r.commission_amount ?? undefined,
     isVoid: r.is_void,
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
     employeeName: r.employee_name ?? undefined,
     departmentName: r.department_name ?? undefined,
+    saleItemName: r.sale_item_name ?? undefined,
   }))
   },
 )
@@ -198,6 +203,10 @@ export const saveAllocation = withPermission(
   const [itemRow] = (await db.execute(sql`
     SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
   `)) as any[]
+  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配。两端镜像 staff allocation.js
+  if (itemRow?.sale_order_id && (await hasPendingRefund(db, itemRow.sale_order_id as string))) {
+    return { success: false, message: '该订单退款审批中，暂不可修改分配' }
+  }
   const { marketName, orderTotalReceived, salesCategoryByItem } = await loadOrderCommissionContext(
     itemRow?.sale_order_id as string,
   )
@@ -243,6 +252,14 @@ export const deleteAllocation = withPermission(
     return { success: false, message: '无权操作该订单的分配' }
   }
 
+  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
+  const [delItemRow] = (await db.execute(sql`
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.saleItemId} LIMIT 1
+  `)) as any[]
+  if (delItemRow?.sale_order_id && (await hasPendingRefund(db, delItemRow.sale_order_id as string))) {
+    return { success: false, message: '该订单退款审批中，暂不可删除分配' }
+  }
+
   await db
     .update(saleAllocations)
     .set({ isVoid: true, voidedAt: new Date() })
@@ -284,6 +301,20 @@ export const batchSaveAllocations = withPermission(
   // 校验订单 scope
   if (!(await verifyOrderScope(saleOrderId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
+  }
+
+  // 营业额口径白名单：仅销售单/转换单参与营业额分配，拒绝寄存单/充值单/内部单
+  const [typeRow] = await db
+    .select({ saleOrderType: saleOrders.saleOrderType, legacySource: saleOrders.legacySource })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
+  if (!typeRow || !['销售单', '转换单'].includes(typeRow.saleOrderType)) {
+    return { success: false, message: '该订单类型不参与营业额分配' }
+  }
+  // 历史订单（WorkFine 核对补登）不参与营业额分配（无 sale_items 天然不可分，补显式拦截防绕过）
+  if (typeRow.legacySource === 'workfine') {
+    return { success: false, message: '历史订单不参与营业额分配' }
   }
 
   // 校验所有 saleItemId 属于该订单（防跨订单分配篡改）

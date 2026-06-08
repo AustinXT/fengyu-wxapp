@@ -158,6 +158,13 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(result.message).toContain('手机号格式不正确')
   })
 
+  it('身份证为空 → 拒绝（必填）', async () => {
+    const result = await createEmployee({ name: '张三', phone: '13812345678' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('请输入身份证号')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('身份证格式错误 → 拒绝', async () => {
     const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '12345' })
     expect(result.success).toBe(false)
@@ -169,7 +176,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.select as any).mockImplementation(
       mockSelectFound({ employeeId: 'FY-001' }),
     )
-    const result = await createEmployee({ name: '张三', phone: '13812345678' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('手机号已被其他员工使用')
     expect(db.transaction).not.toHaveBeenCalled()
@@ -178,7 +185,7 @@ describe('createEmployee — 服务端输入校验', () => {
   it('storeId 不在 scope 内 → 拒绝，不进事务', async () => {
     ;(isInScope as any).mockReturnValue(false)
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678', storeId: 'other-store' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888', storeId: 'other-store' })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('无权')
@@ -190,7 +197,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678', storeId: 'store-1' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888', storeId: 'store-1' })
 
     expect(result.success).toBe(true)
   })
@@ -200,7 +207,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678', storeId: null })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888', storeId: null })
 
     expect(result.success).toBe(true)
     // isInScope 不应被调用（storeId=null 时跳过校验）
@@ -211,7 +218,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' })
 
     expect(result.success).toBe(true)
     expect(result.employeeId).toBe('FY-260315001')
@@ -226,7 +233,7 @@ describe('createEmployee — 服务端输入校验', () => {
     })
     ;(db.transaction as any).mockRejectedValue(pgError)
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('手机号已被其他员工使用')
@@ -240,7 +247,7 @@ describe('createEmployee — 服务端输入校验', () => {
     })
     ;(db.transaction as any).mockRejectedValue(pgError)
 
-    const result = await createEmployee({ name: '张三', phone: '13812345678' })
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('数据冲突')
@@ -251,7 +258,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
     await expect(
-      createEmployee({ name: '张三', phone: '13812345678' }),
+      createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' }),
     ).rejects.toThrow('connection lost')
   })
 })

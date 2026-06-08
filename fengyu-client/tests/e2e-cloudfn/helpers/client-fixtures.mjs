@@ -435,13 +435,13 @@ export async function createTestPendingSaleOrder({
     await client.query(
       `INSERT INTO sale_items (
          sale_item_id, sale_order_id, store_id, item_direction,
-         sku_id, product_name, sku_spec_name, product_type,
+         sku_id, product_name, product_type,
          unit_price, quantity, unit_real_price, sale_amount, received,
          session_count, remaining_sessions,
          is_experience
        )
        VALUES ($1, $2, $3, '购买'::item_direction,
-               $4, $5, '默认', $6::product_type,
+               $4, $5, $6::product_type,
                $7, 1, $7, $7, 0,
                $8, $9,
                $10)`,
@@ -499,13 +499,9 @@ export async function cleanupClientExtras(prefix = NS) {
     ],
     [`DELETE FROM coupon_templates WHERE template_id LIKE $1`, [like]],
 
-    // 3) 预约（FK → sale_items → sale_orders）
-    [
-      `DELETE FROM appointments WHERE client_user_id LIKE $1 OR sale_item_id LIKE $1`,
-      [like],
-    ],
-
-    // 4) 服务单（FK → sale_orders / service_items 反向）
+    // 3) 服务单（必须先于 appointments，因 service_orders.appointment_id FK → appointments；
+    //    若先删 appointments 会触发 service_orders_appointment_id_appointments_appointment_id_fk
+    //    级联失败，使后续 sale_items / sale_orders / cwu / staff / stores 全部 skip 阻塞）
     [
       `DELETE FROM service_items WHERE service_order_id IN (
          SELECT service_order_id FROM service_orders WHERE service_order_id LIKE $1
@@ -513,6 +509,18 @@ export async function cleanupClientExtras(prefix = NS) {
       [like],
     ],
     [`DELETE FROM service_orders WHERE service_order_id LIKE $1`, [like]],
+
+    // 4) 预约（FK：appointments.sale_item_id → sale_items / .client_user_id → cwu / .store_id → stores
+    //    /.employee_id → staff；必须在 sale_items / cwu / staff / stores 之前删，
+    //    且必须在 service_orders 之后删——三方维度合并到此处一次性清理）
+    [
+      `DELETE FROM appointments
+       WHERE client_user_id LIKE $1
+          OR sale_item_id LIKE $1
+          OR store_id LIKE $1
+          OR employee_id LIKE $1`,
+      [like],
+    ],
 
     // 4.5) FY-XSD-WX-* 路由生成订单残留（card.recharge / order.create 用 advisory lock 生成的订单号
     //      不带 TE2L2 前缀，仅 client_user_id 在 NS 范围或 openid LIKE NS 可定位）。
@@ -594,8 +602,7 @@ export async function cleanupClientExtras(prefix = NS) {
       [like],
     ],
 
-    // 10) Appointments（FK → staff_wechat_users / stores）必须在 staff/stores 清理前清掉
-    [`DELETE FROM appointments WHERE store_id LIKE $1 OR employee_id LIKE $1`, [like]],
+    // 10) Appointments by store/employee 维度已在 step 4 合并清理（删除原冗余）
 
     // 11) 强清 permission_roles —— FK 链：permission_roles.employee_id → staff_wechat_users.
     //     必须先于 staff_wechat_users / stores 删除，否则会卡 FK 阻塞所有后续清理。

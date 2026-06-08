@@ -110,7 +110,6 @@ interface TreatmentCard {
 interface GiftItem {
   saleItemId: string;
   productName: string;
-  skuSpecName: string;
   specName?: string;
   quantity: number;
   sessionCount: number;
@@ -126,7 +125,6 @@ interface PromoOrder {
   paidAt?: string;
   items: Array<{
     productName: string;
-    skuSpecName: string;
     specName?: string;
     quantity: number;
     sessionCount?: number;
@@ -151,7 +149,6 @@ interface RefundRecord {
   createdAt: string;
   items: Array<{
     productName: string;
-    skuSpecName: string;
     quantity: number;
     received: string;
     direction?: string;

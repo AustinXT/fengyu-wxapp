@@ -52,7 +52,12 @@ interface BundleViewSku {
   specName: string;
   bundlePrice: number;
   sessionCount: number | null;
+  /** 是否已选（qty>0） */
   selected: boolean;
+  /** 选 N 项组：当前数量（全选组恒 0/1） */
+  qty: number;
+  /** 选 N 项组：步进器上限（= qty + 组内剩余可选额度）；全选组恒 1 */
+  maxQty: number;
 }
 
 interface BundleViewGroup {
@@ -60,6 +65,8 @@ interface BundleViewGroup {
   groupName: string;
   pickCount: number | null;
   isAllSelect: boolean;
+  /** 'pick' = 选 N 项（数量步进器）；'all' = 全选（锁定复选框） */
+  mode: 'pick' | 'all';
   selectedCount: number;
   hint: string;
   skus: BundleViewSku[];
@@ -91,7 +98,8 @@ Page({
     // 组合套餐多选状态
     bundleGroupsRaw: [] as BundleGroupRaw[],
     bundleSkuMap: {} as Record<string, BundleSku>,
-    bundleSelections: {} as Record<number, string[]>,
+    // 选择状态：bundleSelections[groupId][skuId] = 数量（选 N 项支持同一 SKU 多件；全选组恒 1）
+    bundleSelections: {} as Record<number, Record<string, number>>,
     bundleViewGroups: [] as BundleViewGroup[],
     bundleCanSubmit: false,
     bundleTotalPrice: 0,
@@ -182,10 +190,16 @@ Page({
       };
     }
 
-    const selections: Record<number, string[]> = {};
+    const selections: Record<number, Record<string, number>> = {};
     for (const g of bundleGroups) {
-      // 全选组（pick_count IS NULL）→ 默认全选；N 选 M → 空数组
-      selections[g.id] = g.pickCount == null ? [...g.skuIds] : [];
+      // 全选组（pick_count IS NULL）→ 默认每项 1 件（锁定全选）；选 N 项 → 空
+      if (g.pickCount == null) {
+        const m: Record<string, number> = {};
+        for (const id of g.skuIds) m[id] = 1;
+        selections[g.id] = m;
+      } else {
+        selections[g.id] = {};
+      }
     }
 
     this.setData({
@@ -205,38 +219,44 @@ Page({
     let totalSelected = 0;
 
     for (const g of bundleGroupsRaw) {
-      const picked = bundleSelections[g.id] || [];
+      const picked = bundleSelections[g.id] || {};
+      const isAllSelect = g.pickCount == null;
+      // 组内数量合计（选 N 项按数量统计，非种类数）
+      const groupTotal = g.skuIds.reduce((s, id) => s + (picked[id] || 0), 0);
       const skus: BundleViewSku[] = g.skuIds.map(skuId => {
         const sku = bundleSkuMap[skuId];
+        const qty = picked[skuId] || 0;
         return {
           skuId,
           specName: sku?.spec_name || skuId,
           bundlePrice: sku?.bundle_price ?? 0,
           sessionCount: sku?.session_count ?? null,
-          selected: picked.includes(skuId),
+          selected: qty > 0,
+          qty,
+          // 选 N 项步进器上限 = 当前数量 + 组内剩余可选额度；全选组恒 1
+          maxQty: isAllSelect ? 1 : qty + ((g.pickCount as number) - groupTotal),
         };
       });
-      const isAllSelect = g.pickCount == null;
-      const selectedCount = picked.length;
-      totalSelected += selectedCount;
-      total += picked.reduce((s, id) => s + (bundleSkuMap[id]?.bundle_price ?? 0), 0);
+      totalSelected += groupTotal;
+      total += g.skuIds.reduce((s, id) => s + (bundleSkuMap[id]?.bundle_price ?? 0) * (picked[id] || 0), 0);
 
       let hint = '';
       if (isAllSelect) {
         hint = `全选 ${g.skuIds.length} 项`;
+        // 全选组：每项都须选中（防止后台配错空组）
+        if (g.skuIds.length === 0 || groupTotal !== g.skuIds.length) canSubmit = false;
       } else {
-        hint = `请选 ${g.pickCount} 项（已选 ${selectedCount}/${g.pickCount}）`;
-        if (selectedCount !== g.pickCount) canSubmit = false;
+        hint = `${g.skuIds.length} 选 ${g.pickCount}（已选 ${groupTotal}/${g.pickCount}）`;
+        if (groupTotal !== g.pickCount) canSubmit = false;
       }
-      // 全选组要求至少 1 个（防止后台配错空组）
-      if (isAllSelect && g.skuIds.length === 0) canSubmit = false;
 
       viewGroups.push({
         id: g.id,
         groupName: g.groupName,
         pickCount: g.pickCount,
         isAllSelect,
-        selectedCount,
+        mode: isAllSelect ? 'all' : 'pick',
+        selectedCount: groupTotal,
         hint,
         skus,
       });
@@ -308,28 +328,24 @@ Page({
     this.setData({ selectedSku: sku, quantity: 1 });
   },
 
-  /** 套餐 SKU 勾选切换 */
-  onBundleSkuToggle(e: WechatMiniprogram.TouchEvent) {
+  /** 选 N 项组数量步进：同一 SKU 可选多件，组内合计夹紧到 pickCount */
+  onBundleSkuQtyChange(e: WechatMiniprogram.CustomEvent) {
     const { groupId, skuId } = e.currentTarget.dataset as { groupId: number | string; skuId: string };
     const gid = Number(groupId);
     const group = this.data.bundleGroupsRaw.find(g => g.id === gid);
-    if (!group) return;
-    // 全选组不允许手动切换
-    if (group.pickCount == null) return;
+    if (!group || group.pickCount == null) return; // 仅选 N 项组走此 handler
 
-    const current = this.data.bundleSelections[gid] ? [...this.data.bundleSelections[gid]] : [];
-    const idx = current.indexOf(skuId);
-    if (idx >= 0) {
-      current.splice(idx, 1);
-    } else {
-      if (current.length >= group.pickCount) {
-        Toast(`该组最多选 ${group.pickCount} 项`);
-        return;
-      }
-      current.push(skuId);
-    }
-    const next = { ...this.data.bundleSelections, [gid]: current };
-    this.setData({ bundleSelections: next });
+    const cur = { ...(this.data.bundleSelections[gid] || {}) };
+    const prevQty = cur[skuId] || 0;
+    const otherTotal = Object.entries(cur).reduce((s, [k, v]) => s + (k === skuId ? 0 : v), 0);
+    const allowed = group.pickCount - otherTotal; // 该 SKU 可达上限
+    const raw = parseInt(e.detail as unknown as string) || 0;
+    const next = Math.max(0, Math.min(raw, allowed));
+    // van-stepper 初始化会触发一次 change；值未变则跳过（避免无谓 setData）
+    if (next === prevQty) return;
+    if (next > 0) cur[skuId] = next;
+    else delete cur[skuId];
+    this.setData({ bundleSelections: { ...this.data.bundleSelections, [gid]: cur } });
     this._refreshBundleView();
   },
 
@@ -444,8 +460,10 @@ Page({
       sessionCount: number | null;
     }> = [];
     for (const groupId of Object.keys(bundleSelections)) {
-      const picked = bundleSelections[Number(groupId)] || [];
-      for (const skuId of picked) {
+      const picked = bundleSelections[Number(groupId)] || {};
+      for (const skuId of Object.keys(picked)) {
+        const qty = picked[skuId] || 0;
+        if (qty <= 0) continue;
         const sku = bundleSkuMap[skuId];
         if (!sku) continue;
         items.push({
@@ -454,7 +472,7 @@ Page({
           skuDisplayName: sku.spec_name,
           coverImage: spu.cover_image,
           price: sku.bundle_price,
-          quantity: 1,
+          quantity: qty,
           sessionCount: sku.session_count,
         });
       }

@@ -28,7 +28,7 @@
         wx:for="{{appointableItems}}"
         wx:key="sale_item_id"
         title="{{item.product_name || '—'}}"
-        label="{{item.sku_spec_name || '—'}} · 已用 {{item.used_sessions}} / 已付 {{item.paid_sessions}} / 共 {{item.session_count}} 次{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
+        label="已用 {{item.used_sessions}} / 已付 {{item.paid_sessions}} / 共 {{item.session_count}} 次{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
         clickable
         bind:click="onSelectItem"
         data-item="{{item}}"

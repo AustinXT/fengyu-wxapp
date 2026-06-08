@@ -1,7 +1,8 @@
 // pages/store-detail/store-detail.ts
 import Toast from '@vant/weapp/toast/toast';
-import { callClientApi } from '../../utils/cloud';
-import { formatStoreAddress } from '../utils/distance';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { formatStoreAddress, haversineKm, formatDistance } from '../utils/distance';
+import { getCurrentLocation } from '../utils/location';
 
 const app = getApp<IAppOption>();
 
@@ -52,6 +53,7 @@ Page({
     isLoading: true,
     storeId: '',
     storeName: '',
+    distanceText: '',
     bindState: 'no-binding' as BindState,
     boundStoreName: '',
     pendingRequest: null as TransferRequest | null,
@@ -63,6 +65,8 @@ Page({
     showSourcePopup: false,
     sourceChannel: '',
     promoterName: '',
+    // 绑手机号弹窗（绑门店前若未授权手机号则弹出）
+    showPhoneBind: false,
     sourceGroups: [
       { label: '线上来源', channels: ['美团', '抖音', '小程序'] },
       { label: '线下来源', channels: ['推带新', '地推卡', '拓客卡', '老带新', '转让店', '自进店', '内部员工或家属'] },
@@ -120,11 +124,34 @@ Page({
         boundStoreName,
         bindState,
       });
+      // 异步计算距离（懒定位 + 缓存），失败静默不展示
+      this.computeDistanceText(store);
     } catch (err: any) {
       console.error('[store-detail] loadAll error:', err);
       Toast.fail('加载门店失败');
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  // 用户定位缓存：避免 onShow 重复 loadAll 反复弹定位授权
+  _userLoc: null as { latitude: number; longitude: number } | null,
+
+  // 计算门店距离文案；定位失败 / 门店缺经纬度时静默不展示
+  async computeDistanceText(store: StoreInfo | null) {
+    if (!store || store.latitude == null || store.longitude == null) return;
+    const lat = Number(store.latitude);
+    const lng = Number(store.longitude);
+    if (isNaN(lat) || isNaN(lng)) return;
+    try {
+      if (!this._userLoc) {
+        const loc = await getCurrentLocation();
+        this._userLoc = { latitude: loc.latitude, longitude: loc.longitude };
+      }
+      const km = haversineKm(this._userLoc.latitude, this._userLoc.longitude, lat, lng);
+      this.setData({ distanceText: formatDistance(km) });
+    } catch (err) {
+      console.warn('[store-detail] 距离计算失败（定位被拒或不可用）:', err);
     }
   },
 
@@ -177,7 +204,34 @@ Page({
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
+      // 未授权手机号 → 弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
+      if (err?.errorType === 'PHONE_REQUIRED') {
+        this.setData({ showPhoneBind: true });
+        return;
+      }
       Toast.fail(err?.message || '绑定失败');
+    }
+  },
+
+  onPhoneBindClose() {
+    this.setData({ showPhoneBind: false });
+  },
+
+  async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    const { cloudID, errMsg } = e.detail || {};
+    if (!cloudID) {
+      if (errMsg?.includes('auth deny')) {
+        Toast.fail('您拒绝了授权');
+      }
+      return;
+    }
+    try {
+      await bindPhoneWithCloudID(cloudID);
+      this.setData({ showPhoneBind: false });
+      // 绑定手机号成功后自动重提交绑门店
+      setTimeout(() => this.onConfirmBind(), 600);
+    } catch (err: any) {
+      Toast.fail(err?.message || '绑定失败，请重试');
     }
   },
 

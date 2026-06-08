@@ -186,30 +186,56 @@ module.exports.fmt = function(val) {
               <text class="sku-popup__group-hint">{{g.hint}}</text>
             </view>
             <view class="sku-popup__group-skus">
-              <view
-                wx:for="{{g.skus}}"
-                wx:for-item="sku"
-                wx:key="skuId"
-                class="bundle-sku-row {{sku.selected ? 'bundle-sku-row--active' : ''}} {{g.isAllSelect ? 'bundle-sku-row--locked' : ''}}"
-                data-group-id="{{g.id}}"
-                data-sku-id="{{sku.skuId}}"
-                bindtap="onBundleSkuToggle"
-              >
-                <view class="bundle-sku-row__check">
-                  <van-icon
-                    name="{{sku.selected ? 'checked' : 'circle'}}"
-                    size="40rpx"
-                    color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+              <!-- 选 N 项组：数量步进器（同一 SKU 可选多件，组内合计 = pickCount） -->
+              <block wx:if="{{g.mode === 'pick'}}">
+                <view
+                  wx:for="{{g.skus}}"
+                  wx:for-item="sku"
+                  wx:key="skuId"
+                  class="bundle-sku-row {{sku.selected ? 'bundle-sku-row--active' : ''}}"
+                >
+                  <view class="bundle-sku-row__info">
+                    <text class="bundle-sku-row__name">{{sku.specName}}</text>
+                    <view class="bundle-sku-row__meta">
+                      <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
+                      <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+                    </view>
+                  </view>
+                  <van-stepper
+                    value="{{sku.qty}}"
+                    min="0"
+                    max="{{sku.maxQty}}"
+                    integer
+                    data-group-id="{{g.id}}"
+                    data-sku-id="{{sku.skuId}}"
+                    bind:change="onBundleSkuQtyChange"
                   />
                 </view>
-                <view class="bundle-sku-row__info">
-                  <text class="bundle-sku-row__name">{{sku.specName}}</text>
-                  <view class="bundle-sku-row__meta">
-                    <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
-                    <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+              </block>
+              <!-- 全选组：复选框（默认全选、锁定） -->
+              <block wx:else>
+                <view
+                  wx:for="{{g.skus}}"
+                  wx:for-item="sku"
+                  wx:key="skuId"
+                  class="bundle-sku-row {{sku.selected ? 'bundle-sku-row--active' : ''}} bundle-sku-row--locked"
+                >
+                  <view class="bundle-sku-row__check">
+                    <van-icon
+                      name="{{sku.selected ? 'checked' : 'circle'}}"
+                      size="40rpx"
+                      color="{{sku.selected ? '#C0322A' : '#CCC'}}"
+                    />
+                  </view>
+                  <view class="bundle-sku-row__info">
+                    <text class="bundle-sku-row__name">{{sku.specName}}</text>
+                    <view class="bundle-sku-row__meta">
+                      <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
+                      <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+                    </view>
                   </view>
                 </view>
-              </view>
+              </block>
             </view>
           </view>
         </view>

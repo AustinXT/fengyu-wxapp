@@ -35,6 +35,7 @@ export default function SkuCreatePageClient({
 
   const [isShengmei, setIsShengmei] = useState<boolean>(false)
   const [isExperience, setIsExperience] = useState<boolean>(false)
+  const [isManagerSpecial, setIsManagerSpecial] = useState<boolean>(false)
   const [projectSeriesId, setProjectSeriesId] = useState<number | null>(null)
   const [allMarkets, setAllMarkets] = useState(true)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
@@ -95,6 +96,7 @@ export default function SkuCreatePageClient({
         serviceFee,
         isShengmei,
         isExperience,
+        isManagerSpecial,
         projectSeriesId,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
@@ -301,6 +303,21 @@ export default function SkuCreatePageClient({
               </label>
               <p className="pl-6 text-xs text-[var(--muted-foreground)]">
                 勾选后该商品仅在小程序体验卡入口展示，不出现在商城；现有订单的快照不受改动影响
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={isManagerSpecial}
+                  onChange={(e) => { setIsManagerSpecial(e.target.checked); setFormDirty(true) }}
+                  className="h-4 w-4 rounded border-[var(--input)]"
+                />
+                <span className="text-sm font-medium">店长特别优惠</span>
+              </label>
+              <p className="pl-6 text-xs text-[var(--muted-foreground)]">
+                勾选后店长在开单（销售单·普通商品）时可手动修改该商品的应付金额（最低 0，不超过标价）；组合套餐不适用
               </p>
             </div>
 

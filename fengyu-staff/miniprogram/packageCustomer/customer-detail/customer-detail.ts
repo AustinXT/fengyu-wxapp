@@ -1,7 +1,7 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatDate } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -130,7 +130,7 @@ interface RefundRecord {
   handlingFee: number | null;
   refundReason: string | null;
   createdAt: string;
-  items: Array<{ productName: string; skuSpecName: string; quantity: number; received: string }>;
+  items: Array<{ productName: string; quantity: number; received: string }>;
 }
 
 // 预约记录
@@ -235,6 +235,8 @@ Page({
     this.setData({ loading: true });
     try {
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
+      // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+      if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
       this.setData({ customer, notesValue: customer.notes || '', notesDirty: false });
       // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
       void this.loadCardBalance();

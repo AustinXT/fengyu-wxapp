@@ -74,6 +74,7 @@ export interface BreakdownRow {
   groupName: string // 市场名 / 门店名
   marketName?: string // 按门店分组时带出所属市场
   metrics: Record<string, number | null> // 列名 → 值
+  labels?: Record<string, string> // 额外文本维度（如按技师明细的门店/职级），非数值列
 }
 
 /** 排名榜一行 */
@@ -113,6 +114,9 @@ export interface CustomerBoardResult extends BoardMeta {
 export interface EfficiencyBoardResult extends BoardMeta {
   kpis: Record<string, KpiCell>
   byMarket: BreakdownRow[]
+  /** 按技师人效明细（员工粒度，labels 带门店/职级；metrics = 当月业绩 + 销售额按
+   *  salesCategoryEnum 4 枚举值拆分 + 实耗合计 + 纳客数/项目数/服务人头/服务人次） */
+  byStaff: BreakdownRow[]
   /** metric → 排名行（门店排名榜，metric: revenue/consume/retainedMember/newMember/projectCount） */
   storeRankings: Record<string, RankingRow[]>
   /** metric → 排名行（员工排名榜，metric: revenue/consume/newMember/projectCount/income） */

@@ -31,7 +31,6 @@ interface ScanOrder {
 interface ScanOrderItem {
   saleItemId: string;
   productName: string;
-  skuSpecName: string;
   unitPrice: number;
   quantity: number;
   received: number;
@@ -64,8 +63,9 @@ Page({
     // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
     balanceUpdatedAt: null as string | null,
     // 支付宝二维码弹窗（保留以兼容 wxml，但 §4.6 推荐路径仅微信/线下/全额抵扣）
-    showAlipayQr: false,
-    alipayQrUrl: '',
+    // 支付宝吱口令弹窗（聚合主扫 share_code 方案）
+    showAlipayShare: false,
+    alipayShareToken: '',
     alipayAmount: '0.00',
   },
 
@@ -272,14 +272,18 @@ Page({
       return;
     }
 
-    // wechatPay：首付场景下显式传 payAmount，后端按约束扣款 + 清空 first_payment_amount；
-    // 后续扫码默认按剩余应付走
+    // wechatPay：聚合主扫直接拿 wx.requestPayment 5 字段
+    // 首付场景下显式传 payAmount，后端按约束扣款 + 清空 first_payment_amount；后续扫码默认按剩余应付走
     const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
     if (isFirstPartialScan && firstPaymentAmount > 0) {
       payPayload.payAmount = firstPaymentAmount;
     }
     const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
-    const payParams = data.paymentParams || {};
+    const payParams = data.paymentParams;
+    if (!payParams || !payParams.paySign) {
+      Toast.fail('支付参数获取失败');
+      return;
+    }
     await wx.requestPayment(payParams);
     Toast.success('支付成功');
     setTimeout(() => {
@@ -335,14 +339,24 @@ Page({
     }
   },
 
-  // 兼容旧 wxml 中的支付宝弹窗回调（保留以避免事件未定义警告）
-  onAlipayDone() {
-    this.setData({ showAlipayQr: false });
+  // 支付宝吱口令弹窗回调（聚合主扫 share_code 方案）
+  onAlipayShareCopy() {
+    const token: string = this.data.alipayShareToken;
+    if (!token) return;
+    wx.setClipboardData({
+      data: token,
+      success: () => Toast.success('吱口令已复制，请打开支付宝粘贴'),
+      fail: () => Toast.fail('复制失败'),
+    });
+  },
+
+  onAlipayShareDone() {
+    this.setData({ showAlipayShare: false });
     wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}` });
   },
 
-  onAlipayClose() {
-    this.setData({ showAlipayQr: false });
+  onAlipayShareClose() {
+    this.setData({ showAlipayShare: false });
   },
 
   onShareAppMessage() {

@@ -18,10 +18,11 @@ export interface RefundSourceItem {
   sale_item_id: string
   sku_id: string | null
   product_name: string | null
-  sku_spec_name: string | null
   product_type: ProductType | null
   session_count: number | null
   remaining_sessions: number | null
+  /** 已付费次数（已反映已审批退款）；疗程卡数量门用，null 视为历史行回退 remaining_sessions */
+  paid_sessions: number | null
   unit_price: string | number
   quantity: number
   unit_real_price: string | number
@@ -40,7 +41,6 @@ export interface RefundDetail {
   refSaleItemId: string
   skuId: string | null
   productName: string | null
-  skuSpecName: string | null
   productType: ProductType | null
   sessionCount: number | null
   unitPrice: number
@@ -49,6 +49,8 @@ export interface RefundDetail {
   refundAmount: number
   salesCategory: SalesCategory | null
   serviceFee: number
+  /** 本次是否全退该明细（退款数量 >= 当前可退数量）→ 控制 cascade 是否作废其分配/提成（Bug M） */
+  isFullItemRefund: boolean
 }
 
 /**
@@ -57,7 +59,13 @@ export interface RefundDetail {
 export function calculateUnusedQuantity(item: RefundSourceItem | null | undefined): number {
   if (!item) return 0
   if (item.product_type === '疗程卡') {
-    return Number(item.remaining_sessions || 0)
+    // 修复（Bug A 数量门）：退款不减 remaining_sessions（Model X），真正可退 = paid_sessions − 已消费次数。
+    // paid_sessions 已反映所有已审批退款，全额退后为 0 → 可退 0。null（历史行）回退 remaining，金额门兜底。
+    // 两端镜像 staff utils/refund.js。
+    const remaining = Number(item.remaining_sessions || 0)
+    if (item.paid_sessions == null) return remaining
+    const consumed = Number(item.session_count || 0) - remaining
+    return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed))
   }
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
@@ -102,11 +110,18 @@ export function buildRefundDetails(
     const origQty = Number(orig.quantity) || 1
     const refundServiceFee = -Math.round((origServiceFee * requested) / origQty * 100) / 100
 
+    // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
+    // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
+    // 保护「已完成服务的提成」与「已实现营收的分配」不被退剩余次数误删（两端镜像 staff utils/refund.js）。
+    const consumedQty =
+      orig.product_type === '疗程卡'
+        ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0)
+        : Number(orig.picked_up_quantity || 0)
+
     refundDetails.push({
       refSaleItemId: req.saleItemId,
       skuId: orig.sku_id,
       productName: orig.product_name,
-      skuSpecName: orig.sku_spec_name,
       productType: orig.product_type,
       sessionCount: orig.session_count,
       unitPrice: Number(orig.unit_price),
@@ -115,6 +130,7 @@ export function buildRefundDetails(
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
+      isFullItemRefund: requested >= maxUnused && consumedQty <= 0,
     })
   }
 

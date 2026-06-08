@@ -267,7 +267,6 @@ describe('appointment.list', () => {
       created_at: '2024-01-15',
       sale_order_id: null,
       service_name: '到店预约',
-      sku_spec_name: null,
       customer_phone: '138',
     }])
 
@@ -335,7 +334,6 @@ describe('appointment.detail', () => {
       sale_item_id: null,
       checkin_at: null,
       service_name: '面部护理',
-      sku_spec_name: '基础款',
       customer_phone: '13800001111',
       service_order_id: null,
     }])
@@ -379,7 +377,6 @@ describe('appointment.detail', () => {
       sale_item_id: null,
       checkin_at: null,
       service_name: '到店预约',
-      sku_spec_name: null,
       customer_phone: '',
       service_order_id: null,
     }])
@@ -403,7 +400,6 @@ describe('appointment.detail', () => {
       sale_item_id: 'si-001',
       checkin_at: null,
       service_name: '面部护理',
-      sku_spec_name: '10次卡',
       customer_phone: '138****1111',
       service_order_id: null,
     }])
@@ -430,7 +426,6 @@ describe('appointment.detail', () => {
       sale_item_id: null,
       checkin_at: '2024-01-15T09:55:00Z',
       service_name: '面部护理',
-      sku_spec_name: '10次卡',
       customer_phone: '138',
       service_order_id: 'HLD-WX-001',
     }])
@@ -490,7 +485,6 @@ describe('appointment.list 补充', () => {
       created_at: '2024-01-15',
       sale_order_id: null,
       service_name: '到店预约',
-      sku_spec_name: null,
       customer_phone: '138',
     }])
 
@@ -512,34 +506,7 @@ describe('appointment.list 补充', () => {
     expect(params).toContain('待确认')
   })
 
-  test('service_name 为 null 时回退到 sku_spec_name', async () => {
-    const ctx = createManagerCtx({ page: 1 })
-
-    pg.query.mockResolvedValueOnce([{
-      appointment_id: 'appt-sku',
-      status: '待确认',
-      client_user_id: 'c1',
-      client_name: '顾客A',
-      employee_id: 'emp-001',
-      employee_name: '员工A',
-      appointment_time: '2024-06-01T10:00:00Z',
-      notes: '',
-      sale_item_id: 'si-001',
-      checkin_at: null,
-      created_at: '2024-06-01',
-      sale_order_id: 'SO-001',
-      service_name: null,
-      sku_spec_name: '10次卡',
-      customer_phone: '138',
-    }])
-
-    await appointmentRoutes.list(ctx)
-
-    // service_name null → 回退到 sku_spec_name
-    expect(ctx.result[0].serviceItemName).toBe('10次卡')
-  })
-
-  test('service_name 和 sku_spec_name 都为 null 时返回空字符串', async () => {
+  test('service_name 为 null 时返回空字符串', async () => {
     const ctx = createManagerCtx({ page: 1 })
 
     pg.query.mockResolvedValueOnce([{
@@ -556,7 +523,6 @@ describe('appointment.list 补充', () => {
       created_at: '2024-06-01',
       sale_order_id: null,
       service_name: null,
-      sku_spec_name: null,
       customer_phone: '138',
     }])
 
@@ -596,7 +562,6 @@ describe('appointment.list 补充', () => {
       created_at: '2024-01-15',
       sale_order_id: null,
       service_name: '到店预约',
-      sku_spec_name: null,
       customer_phone: '138',
     }])
 

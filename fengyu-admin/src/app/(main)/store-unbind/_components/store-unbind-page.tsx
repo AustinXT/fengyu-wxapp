@@ -21,22 +21,23 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { approveUnbind, rejectUnbind, type UnbindRequest } from "@/actions/store-unbind"
+import { approveUnbind, rejectUnbind, deleteUnbindRequest, type UnbindRequest } from "@/actions/store-unbind"
+import { RowDeleteMenu } from "@/components/delete-action"
 import { formatPhoneSafe } from "@/lib/format"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 function formatDate(dt: string | null | undefined) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 interface Props {
   requests: UnbindRequest[]
+  /** 是否展示行内删除入口（仅系统管理员 store_unbind:delete） */
+  canDelete?: boolean
 }
 
-export default function StoreUnbindPage({ requests }: Props) {
+export default function StoreUnbindPage({ requests, canDelete = false }: Props) {
   const router = useRouter()
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [approveTarget, setApproveTarget] = useState<UnbindRequest | null>(null)
@@ -176,6 +177,7 @@ export default function StoreUnbindPage({ requests }: Props) {
                       <th className="px-4 py-3 text-left font-medium text-gray-500">目标门店</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">原因</th>
                       <th className="px-4 py-3 text-left font-medium text-gray-500">申请时间</th>
+                      {canDelete && <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -190,6 +192,15 @@ export default function StoreUnbindPage({ requests }: Props) {
                         <td className="px-4 py-3">{req.toStoreName || "—"}</td>
                         <td className="px-4 py-3 text-[#999999] max-w-40 truncate">{req.rejectReason || "—"}</td>
                         <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
+                        {canDelete && (
+                          <td className="px-4 py-3">
+                            <RowDeleteMenu
+                              entityLabel="解绑申请"
+                              onConfirm={() => deleteUnbindRequest(req.requestId)}
+                              description={<>确定要删除该已处理的解绑申请吗？此操作不可恢复。</>}
+                            />
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

@@ -77,12 +77,12 @@ async function ensureSourceSaleOrder({ storeId, clientUserId, managerEmpId }) {
   await query(
     `INSERT INTO sale_items (
        sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-       product_name, sku_spec_name, product_type,
+       product_name, product_type,
        session_count, remaining_sessions,
        unit_price, quantity, unit_real_price, sale_amount, received,
        sales_category, is_shengmei, is_experience)
      VALUES ($1, $2, $3, '购买'::item_direction, $4,
-             'L3 源卡 5x500', 'L3 源卡 5x500', '疗程卡'::product_type,
+             'L3 源卡 5x500', '疗程卡'::product_type,
              5, 5,
              500, 1, 500, 500, 500,
              '他销他耗'::sales_category, true, false)

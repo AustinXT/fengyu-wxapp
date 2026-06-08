@@ -17,7 +17,6 @@ interface HeldCard {
   saleItemId: string;
   sourceSaleOrderId: string;
   productName: string;
-  skuSpecName: string;
   productType: string;
   remainingSessions: number | null;
   remainingQuantity: number | null;

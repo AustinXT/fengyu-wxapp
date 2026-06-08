@@ -109,7 +109,8 @@ export const staffWechatUsers = pgTable(
     /** 身份证号码（AES-256-GCM 加密存储） */
     idCard: varchar('id_card', { length: 200 }),
     // Layer 3 — 组织归属
-    storeId: text('store_id').references(() => stores.storeId),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    storeId: text('store_id').references((): any => stores.storeId),
     /** 指向 type='部门' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     positionName: varchar('position_name', { length: 50 }),
@@ -119,11 +120,15 @@ export const staffWechatUsers = pgTable(
     birthday: date('birthday'),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
+    /** 是否缴纳社保；默认否 */
+    socialInsurance: boolean('social_insurance').notNull().default(false),
     isResigned: boolean('is_resigned').notNull().default(false),
     /** 入职日期；用于 mgmt-dashboard 员工数历史化（按 selectedDate 判定在职状态） */
     hiredAt: date('hired_at'),
     /** 离职日期；NULL 表示在职。与 is_resigned 双写一致（is_resigned = resigned_at IS NOT NULL） */
     resignedAt: date('resigned_at'),
+    /** 离职原因（自由文本）；NULL 表示在职或未填 */
+    resignationReason: text('resignation_reason'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),

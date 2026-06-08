@@ -7,15 +7,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/ui/badge"
 import type { RefundListItem } from "@/actions/refunds"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 type RefundStatus = '待审批' | '已支付' | '已关闭'
 
 function formatDateTime(dt: string | null) {
   if (!dt) return '—'
-  return new Date(dt).toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
+  return fmtDateTime(dt)
 }
 
 export default function RefundsPageClient({

@@ -181,13 +181,13 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt, gt } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 
@@ -208,7 +208,6 @@ const baseOrderData = {
   items: [{
     skuId: 'sku-001',
     productName: '美容套餐',
-    skuSpecName: '标准',
     productType: '疗程卡' as const,
     sessionCount: null,
     unitPrice: '200.00',
@@ -524,6 +523,95 @@ describe('createOrder — 优惠券校验', () => {
     expect(calcCouponDiscount).toHaveBeenCalledOnce()
     expect(result.success).toBe(true)
   })
+
+  // ticket 2026-05-30 client-coupon-not-allocated-to-sale-items：admin 同类 bug 守护
+  // 修复前：couponDiscount 仅在订单层 totalAmount = rawTotal - couponDiscount 扣；
+  // INSERT sale_items 用前端传入的 pre-coupon saleAmount → unit_real_price/sale_amount 残留原价。
+  // 修复后：couponDiscount > 0 时按 saleAmount 比例摊到 eligibleItems 各行，覆盖 it.saleAmount/it.received。
+  it('B14: 5次卡 1000 + 298 现金券 → sale_items 落 saleAmount=702 / unitRealPrice=140.4 / received=702', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({ ...validCoupon, minSpend: '0' }))
+    ;(calcCouponDiscount as any).mockReturnValue(298)
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260530001')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientUserId: 'user-1',
+      couponId: 'cpn-298',
+      items: [{
+        skuId: 'sku-5card',
+        productName: '面部三重维养',
+        productType: '疗程卡' as const,
+        sessionCount: 5,        // 行总次数（B2 拆行后 quantity=1 不触发；这里 mock skuSessionMap 空 → fallback item.sessionCount）
+        unitPrice: '1000.00',   // per-card 标价
+        unitRealPrice: '1000.00',
+        quantity: 1,
+        saleAmount: '1000.00',  // pre-coupon 应付（前端 getItemAmounts 不扣券）
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(1)
+    const v = saleItemInserts[0].values
+    expect(v.sessionCount).toBe(5)
+    expect(Number(v.saleAmount)).toBe(702)            // 1000 - 298
+    // 两步式（2026-06-07 修 P0）：开单行级 received=0（资金铁律：只认已支付流水），
+    // 实付草稿落 pending_received = 券摊后应付（确认收款入账后才驱动 received/paid_sessions）。
+    expect(Number(v.received)).toBe(0)
+    expect(Number(v.pendingReceived)).toBe(702)
+    expect(Number(v.unitRealPrice)).toBeCloseTo(140.4, 2)  // 702 / 5
+    expect(Number(v.unitPrice)).toBe(200)             // per-session 标价 1000/5（不变）
+  })
+
+  it('B14 多行：1000(5次卡 eligible) + 200(单品 eligible) + 300 券 → 按 saleAmount 比例摊；尾差归最后行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({ ...validCoupon, minSpend: '0' }))
+    ;(calcCouponDiscount as any).mockReturnValue(300)
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260530002')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientUserId: 'user-1',
+      couponId: 'cpn-300',
+      items: [
+        {
+          skuId: 'sku-card',
+          productName: '5次卡',
+          productType: '疗程卡' as const,
+          sessionCount: 5,
+          unitPrice: '1000.00',
+          unitRealPrice: '1000.00',
+          quantity: 1,
+          saleAmount: '1000.00',
+          salesCategory: '自销自耗' as const,
+        },
+        {
+          skuId: 'sku-home',
+          productName: '家居产品',
+          productType: '家居产品' as const,
+          sessionCount: null,
+          unitPrice: '200.00',
+          unitRealPrice: '200.00',
+          quantity: 1,
+          saleAmount: '200.00',
+          salesCategory: '自销自耗' as const,
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(2)
+    // 摊比 1000:200 = 5:1，券 300 → 250/50
+    // 第一行 saleAmount = 1000 - 250 = 750；第二行 200 - 50 = 150
+    // 但末行吸收尾差：250 = round(300*1000/1200, 2) = 250；50 = 300 - 250 = 50
+    const totalSaleAmount = saleItemInserts.reduce((s, c) => s + Number(c.values.saleAmount), 0)
+    expect(Math.round(totalSaleAmount * 100)).toBe(90_000)  // 1200 - 300 = 900
+  })
 })
 
 describe('createOrder — 事务异常捕获', () => {
@@ -722,7 +810,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-single',
         productName: '单次身体护理',
-        skuSpecName: '单次',
         productType: '疗程卡' as const,
         sessionCount: 1,
         unitPrice: '200.00',
@@ -756,7 +843,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-multi',
         productName: '10次面部护理',
-        skuSpecName: '10次',
         productType: '疗程卡' as const,
         sessionCount: 10,
         unitPrice: '1000.00',
@@ -788,7 +874,6 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
       items: [{
         skuId: 'sku-home',
         productName: '精华液',
-        skuSpecName: '50ml',
         productType: '家居产品' as const,
         sessionCount: null,
         unitPrice: '300.00',
@@ -1583,6 +1668,26 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(prepaidGtCalls).toHaveLength(0)
   })
 
+  it('allocationEligibleOnly=true → inArray(sale_order_type, [销售单, 转换单]) 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ allocationEligibleOnly: true })
+
+    expect(inArray).toHaveBeenCalledWith('sale_order_type', ['销售单', '转换单'])
+  })
+
+  it('allocationEligibleOnly 缺省 → 不按订单类型白名单过滤', async () => {
+    mockPaginatedChain(0, [])
+    ;(inArray as any).mockClear()
+
+    await getOrdersPaginated({})
+
+    const typeWhitelistCalls = (inArray as any).mock.calls.filter(
+      (c: any[]) => c[0] === 'sale_order_type',
+    )
+    expect(typeWhitelistCalls).toHaveLength(0)
+  })
+
   it('paymentMethod=无 筛选 → eq(payment_method, 无) 被调用', async () => {
     mockPaginatedChain(0, [])
 
@@ -1840,7 +1945,6 @@ describe('createConversionOrder — 权限与入参校验', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -1950,7 +2054,6 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -1963,7 +2066,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '5次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
         quantity: 1, picked_up_quantity: 0, unit_price: '1000.00',
         unit_real_price: '200.00', sales_category: '自销自耗', service_fee: '0',
@@ -1991,7 +2094,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2020,7 +2123,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '8次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 8, remaining_sessions: 8,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2098,7 +2201,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const captured = mockConvDeductTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2137,7 +2240,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const captured = mockConvDeductTx({
       heldRows: [{
         sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
-        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        sku_id: 'sku-old-1', product_name: '老疗程',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
         unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
@@ -2184,7 +2287,6 @@ describe('createConversionOrder — 异常路径', () => {
     convertInItems: [{
       skuId: 'sku-new-1',
       productName: '新项目',
-      skuSpecName: '10次卡',
       productType: '疗程卡' as const,
       sessionCount: 10,
       unitPrice: '1000.00',
@@ -2255,7 +2357,7 @@ describe('createConversionOrder — 异常路径', () => {
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
-            product_name: 'xx', sku_spec_name: 'yy', sales_category: '自销自耗',
+            product_name: 'xx', sales_category: '自销自耗',
           }]
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
@@ -2942,7 +3044,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-01',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.10',
@@ -2965,7 +3066,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-02',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '1.10',
@@ -2988,7 +3088,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-03',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.29',
@@ -3012,7 +3111,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
         {
           skuId: 'sku-float-a',
           productName: '浮点 A',
-          skuSpecName: '标准',
           productType: '疗程卡' as const,
           sessionCount: null,
           unitPrice: '0.10',
@@ -3023,7 +3121,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
         {
           skuId: 'sku-float-b',
           productName: '浮点 B',
-          skuSpecName: '标准',
           productType: '疗程卡' as const,
           sessionCount: null,
           unitPrice: '0.20',
@@ -3060,7 +3157,6 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
       items: [{
         skuId: 'sku-float-c',
         productName: '浮点驱动商品',
-        skuSpecName: '标准',
         productType: '疗程卡' as const,
         sessionCount: null,
         unitPrice: '0.29',
@@ -3074,5 +3170,125 @@ describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
     expectStringAt2Decimals(captured.order.totalAmount)
     // 0.29 * 7 = 2.0299999999999994 → round 2.03，减 0.50 = 1.53
     expectAt2Decimals(Number(captured.order.totalAmount))
+  })
+})
+
+// ── deleteOrder — 物理删除守卫 + 级联 ────────────────────────────────────
+
+describe('deleteOrder — 守卫 + 级联删除', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  /** FIFO 顺序返回 db.select().from().where().limit() 结果 */
+  function enqueueSelect(resultsList: any[][]) {
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      const rows = resultsList[i++] ?? []
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      return chain
+    })
+  }
+  /** FIFO 顺序返回 db.execute() 结果（point/card/downstream 三次） */
+  function enqueueExecute(resultsList: any[][]) {
+    let i = 0
+    ;(db.execute as any).mockImplementation(async () => resultsList[i++] ?? [])
+  }
+  function setupTx(deleteCount: number) {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
+      }
+      return fn(tx)
+    })
+  }
+  const okOrder = { status: '待支付', received: '0', customerName: '甲', totalAmount: '200.00', saleOrderType: '销售单' }
+
+  it('订单不存在 → 拒绝，不进事务', async () => {
+    enqueueSelect([[]])
+    const result = await deleteOrder('FY-404')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('有实收 → 拒绝（财务保护）', async () => {
+    enqueueSelect([[{ ...okOrder, received: '100' }]])
+    const result = await deleteOrder('FY-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实收')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('已支付状态 → 拒绝', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已支付' }]])
+    const result = await deleteOrder('FY-2')
+    expect(result.success).toBe(false)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('存在已支付款项流水 → 拒绝', async () => {
+    enqueueSelect([[okOrder], [{ id: 1 }]]) // order, paidPayment
+    const result = await deleteOrder('FY-3')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('款项流水')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('关联积分流水 → 拒绝', async () => {
+    enqueueSelect([[okOrder], []]) // order, paidPayment(none)
+    enqueueExecute([[{ one: 1 }]]) // ptRef hit
+    const result = await deleteOrder('FY-4')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('积分')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('明细被服务/提货/预约引用 → 拒绝', async () => {
+    enqueueSelect([[okOrder], []])
+    enqueueExecute([[], [], [{ one: 1 }]]) // pt none, ct none, downstream hit
+    const result = await deleteOrder('FY-5')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('服务单')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('被子单引用 → 拒绝', async () => {
+    enqueueSelect([[okOrder], [], [{ id: 'FY-CHILD' }]]) // order, paidPayment, childOrder hit
+    enqueueExecute([[], [], []])
+    const result = await deleteOrder('FY-6')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('单据')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('干净测试单 → 级联删除成功 + 审计', async () => {
+    enqueueSelect([[okOrder], [], []]) // order, paidPayment, childOrder
+    enqueueExecute([[], [], []])
+    setupTx(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteOrder('FY-OK')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'order.delete', 'sale_order', 'FY-OK',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+  })
+
+  it('事务内主单删除 rowCount=0 → 回滚提示', async () => {
+    enqueueSelect([[okOrder], [], []])
+    enqueueExecute([[], [], []])
+    setupTx(0)
+    const result = await deleteOrder('FY-RACE')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已变更')
   })
 })

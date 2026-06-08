@@ -4,6 +4,7 @@ vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     execute: vi.fn(),
   },
 }))
@@ -57,7 +58,7 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { confirmAppointment, checkinAppointment, cancelAppointment, getAppointmentsPaginated } from './appointments'
+import { confirmAppointment, checkinAppointment, cancelAppointment, getAppointmentsPaginated, deleteAppointment } from './appointments'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -406,5 +407,66 @@ describe('getAppointmentsPaginated — 服务端分页 + Tab badge', () => {
     const result = await getAppointmentsPaginated()
 
     expect(result.data[0].storeName).toBeUndefined()
+  })
+})
+
+// ── deleteAppointment — 物理删除守卫 ──────────────────────────────────────
+
+describe('deleteAppointment — 守卫 + 删除', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  function setupDelete(count: number) {
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({ count }) })
+  }
+
+  it('预约不存在 → 拒绝', async () => {
+    mockSelectBefore([])
+    const result = await deleteAppointment('APT-404')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('待确认（活跃）预约 → 拒绝', async () => {
+    mockSelectBefore([{ status: '待确认', clientName: '王', appointmentTime: new Date('2026-05-01T10:00:00Z') }])
+    const result = await deleteAppointment('APT-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已取消')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('已取消但关联服务单 → 拒绝', async () => {
+    mockSelectBefore([{ status: '已取消', clientName: '王', appointmentTime: new Date('2026-05-01T10:00:00Z') }])
+    ;(db.execute as any).mockResolvedValue([{ one: 1 }])
+    const result = await deleteAppointment('APT-2')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('服务单')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('已完成且无服务单引用 → 删除成功 + 审计', async () => {
+    mockSelectBefore([{ status: '已完成', clientName: '王', appointmentTime: new Date('2026-05-01T10:00:00Z') }])
+    ;(db.execute as any).mockResolvedValue([])
+    setupDelete(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteAppointment('APT-3')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'appointment.delete', 'appointment', 'APT-3',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+  })
+
+  it('删除 rowCount=0（并发）→ 提示刷新', async () => {
+    mockSelectBefore([{ status: '已关闭', clientName: '王', appointmentTime: new Date('2026-05-01T10:00:00Z') }])
+    ;(db.execute as any).mockResolvedValue([])
+    setupDelete(0)
+    const result = await deleteAppointment('APT-4')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已变更')
   })
 })

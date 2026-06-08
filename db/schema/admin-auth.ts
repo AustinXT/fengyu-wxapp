@@ -13,7 +13,8 @@ export const adminPasswords = pgTable(
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
-      .references(() => staffWechatUsers.employeeId),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .references((): any => staffWechatUsers.employeeId),
     /** bcrypt（cost ≥ 12） */
     passwordHash: text('password_hash').notNull(),
     /** 首次登录强制改密 */

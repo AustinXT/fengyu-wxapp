@@ -26,6 +26,7 @@ vi.mock('@db/order', () => ({
     saleOrderId: 'sale_order_id',
     storeId: 'store_id',
     allocationStatus: 'allocation_status',
+    saleOrderType: 'sale_order_type',
   },
   saleItems: {
     saleOrderId: 'sale_order_id',
@@ -187,6 +188,7 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope OK
+      if (callCount === 2) return makeSelectChain([{ saleOrderType: '销售单' }])() // 订单类型白名单 OK
       return makeSelectChain([{ saleItemId: 'item-1', received }])() // item validation OK
     })
   }
@@ -219,6 +221,7 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope OK
+      if (callCount === 2) return makeSelectChain([{ saleOrderType: '销售单' }])() // 订单类型白名单 OK
       return makeSelectChain([])() // item validation: not found
     })
 
@@ -232,13 +235,14 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
   })
 
   it('空分配列表 → 跳过 saleItemId 校验，直接进事务（allocationStatus=pending）', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1', saleOrderType: '销售单' }]))
     mockTx()
 
     const result = await batchSaveAllocations('order-1', [])
 
     expect(result.success).toBe(true)
-    expect(db.select).toHaveBeenCalledTimes(1)
+    // scope 查询 + 订单类型白名单查询（空分配跳过 item 校验）
+    expect(db.select).toHaveBeenCalledTimes(2)
     expect(db.transaction).toHaveBeenCalledOnce()
   })
 
@@ -249,7 +253,8 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     const result = await batchSaveAllocations('order-1', validAllocations)
 
     expect(result.success).toBe(true)
-    expect(db.select).toHaveBeenCalledTimes(2)
+    // scope + 订单类型白名单 + item 归属
+    expect(db.select).toHaveBeenCalledTimes(3)
     expect(db.transaction).toHaveBeenCalledOnce()
   })
 
@@ -283,7 +288,8 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     const result = await batchSaveAllocations('order-1', dupeAllocations)
 
     expect(result.success).toBe(true)
-    expect(db.select).toHaveBeenCalledTimes(2)
+    // scope + 订单类型白名单 + item 归属
+    expect(db.select).toHaveBeenCalledTimes(3)
   })
 })
 
@@ -302,6 +308,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])()
+      if (callCount === 2) return makeSelectChain([{ saleOrderType: '销售单' }])() // 订单类型白名单 OK
       return makeSelectChain(items)()
     })
   }
@@ -510,5 +517,39 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(capturedRows[0].totalAmount).toBe('300.00')
     expect(capturedRows[0].commissionRate).toBe('0.0800')
     expect(capturedRows[0].commissionAmount).toBe('24.00')
+  })
+
+  it('寄存单 → 拒绝营业额分配，不进事务', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope OK
+      return makeSelectChain([{ saleOrderType: '寄存单' }])() // 订单类型白名单拒绝
+    })
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.50', totalAmount: '100.00' },
+    ])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('该订单类型不参与营业额分配')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值单 → 拒绝营业额分配，不进事务', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope OK
+      return makeSelectChain([{ saleOrderType: '充值单' }])() // 订单类型白名单拒绝
+    })
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.50', totalAmount: '100.00' },
+    ])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('该订单类型不参与营业额分配')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 })

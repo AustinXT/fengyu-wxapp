@@ -266,6 +266,70 @@ async function main() {
   })
   allErrors.push(...r4.errors)
 
+  // ─── 5. serviceCommission.pendingList(已分配) + detail — 复用 4 个已 confirm 服务单 ───
+  // confirm 后 service_orders.status='已完成' + commission_status='已分配'（routes/service.js:523）
+  const pendR = await invokeStaffApi('serviceCommission.pendingList', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    commissionStatus: '已分配',
+    page: 1, pageSize: 50,
+  })
+  if (pendR.code !== 0) {
+    allErrors.push(`serviceCommission.pendingList(已分配) 应成功，实际 code=${pendR.code} msg=${pendR.message}`)
+  } else {
+    const orders = pendR.data?.orders || []
+    const nsOrders = orders.filter(o => String(o.service_order_id || '').startsWith(NS))
+    if (nsOrders.length < 4) {
+      allErrors.push(`pendingList(已分配) 应含 ≥4 张 NS fixture 服务单（4 用例），实际 NS=${nsOrders.length}`)
+    } else {
+      // 字段完整性（routes/serviceCommission.js:50-57）
+      for (const k of ['service_order_id', 'status', 'service_date', 'commission_status', 'customer_name', 'employee_name']) {
+        if (!(k in nsOrders[0])) allErrors.push(`pendingList row 缺字段 '${k}'`)
+      }
+      if (nsOrders[0].status !== '已完成') allErrors.push(`pendingList row status 应='已完成'，实际='${nsOrders[0].status}'`)
+      rec(`  ✓ serviceCommission.pendingList(已分配): ${nsOrders.length} 张 NS 已完成单`)
+    }
+  }
+
+  // 非法 commissionStatus → INVALID_PARAMS
+  const pendBadR = await invokeStaffApi('serviceCommission.pendingList', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    commissionStatus: '不存在',
+  })
+  if (pendBadR.code === 0) allErrors.push(`pendingList(非法 commissionStatus) 应 INVALID_PARAMS`)
+
+  // ─── 6. serviceCommission.detail — CASE1 的服务单 ───
+  const detSid = `${NS}_SVC_CASE1_HLD`
+  const detR = await invokeStaffApi('serviceCommission.detail', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    serviceOrderId: detSid,
+  })
+  if (detR.code !== 0) {
+    allErrors.push(`serviceCommission.detail(${detSid}) 应成功，实际 code=${detR.code} msg=${detR.message}`)
+  } else {
+    const d = detR.data || {}
+    if (!d.order || d.order.service_order_id !== detSid) allErrors.push(`detail.order.service_order_id 应=${detSid}`)
+    if (!Array.isArray(d.items) || d.items.length !== 1) allErrors.push(`detail.items 应=1 行，实际=${d.items?.length}`)
+    if (!Array.isArray(d.commissions) || d.commissions.length !== 1) {
+      allErrors.push(`detail.commissions 应=1 行（CASE1 单提成），实际=${d.commissions?.length}`)
+    } else {
+      // CASE1: rate=0.10 + commission_amount=30
+      if (Math.abs(Number(d.commissions[0].commission_rate) - 0.10) > 0.0001) {
+        allErrors.push(`detail.commissions[0].commission_rate 应=0.10，实际=${d.commissions[0].commission_rate}`)
+      }
+    }
+    if (!Array.isArray(d.rates)) allErrors.push(`detail.rates 应是数组（serviceRates 矩阵）`)
+    if (!Array.isArray(d.candidateEmployees)) allErrors.push(`detail.candidateEmployees 应是数组`)
+    if (d.orderStoreId !== TEST_STORE_ID) allErrors.push(`detail.orderStoreId 应=${TEST_STORE_ID}，实际=${d.orderStoreId}`)
+    rec(`  ✓ serviceCommission.detail: order/items/commissions/rates/candidateEmployees 齐全`)
+  }
+
+  // detail 不存在的服务单 → NOT_FOUND
+  const detNotFound = await invokeStaffApi('serviceCommission.detail', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    serviceOrderId: `${NS}_SVC_NOT_EXIST`,
+  })
+  if (detNotFound.code === 0) allErrors.push(`detail(不存在) 应 NOT_FOUND，实际成功`)
+
   if (allErrors.length) {
     rec(`  ✗ FAIL: ${allErrors.length} 项断言失败`)
     for (const e of allErrors) rec(`    - ${e}`)
@@ -274,7 +338,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 4 用例全过：sales_category 命中 + tier 阶梯切换 + 矩阵未配兜底`)
+  rec(`  ✅ PASS — 4 用例 + pendingList/detail 6 路径全过`)
 }
 
 try {

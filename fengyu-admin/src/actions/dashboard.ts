@@ -140,6 +140,8 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
         END), 0) AS total_paid_amount
       FROM sale_orders
       WHERE store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+        -- 历史订单（WorkFine 核对补登）不计入经营营收/待分配（仅供会员体系重算）
+        AND legacy_source IS DISTINCT FROM 'workfine'
     `)
 
     /**

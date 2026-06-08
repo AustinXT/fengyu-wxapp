@@ -69,6 +69,8 @@ if [[ "$ENV" == "prod" ]]; then
 fi
 
 echo "=== 4/5 远程重启服务 ==="
+# cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
+ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker && chown 1001:1001 $REMOTE_DIR/logs/cron-worker"
 if [[ "$ENV" == "prod" ]]; then
   # prod：base + override，且 disabled profile 排除 postgres 容器
   ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker"

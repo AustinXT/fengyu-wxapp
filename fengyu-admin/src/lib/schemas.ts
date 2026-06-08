@@ -35,19 +35,23 @@ export const employeeSchema = z.object({
     .optional()
     .or(z.literal('')),
   gender: z.enum(['男', '女']).optional().nullable(),
+  // 身份证号必填（应用层强制；DB 列仍可空以兼容历史/同步行）
   idCard: z.string()
-    .regex(/^\d{17}[\dXx]$/, '身份证号格式不正确')
-    .optional()
-    .or(z.literal('')),
+    .min(1, '请输入身份证号')
+    .regex(/^\d{17}[\dXx]$/, '身份证号格式不正确'),
   storeId: z.string().min(1, '请选择门店'),
   orgNodeId: z.string().optional().nullable(),
   positionName: z.string().optional().nullable(),
   birthday: z.string().optional().nullable(),
   skills: z.array(z.string()).optional().nullable(),
+  /** 是否缴纳社保；默认否 */
+  socialInsurance: z.boolean().optional(),
   /** 入职日期；mgmt-dashboard 员工数历史化所需（ticket 2026-04-25 T3） */
   hiredAt: dateStringSchema.optional().nullable().or(z.literal('')),
   /** 离职日期；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: dateStringSchema.optional().nullable().or(z.literal('')),
+  /** 离职原因（自由文本） */
+  resignationReason: z.string().optional().nullable(),
 })
 export type EmployeeInput = z.infer<typeof employeeSchema>
 
@@ -95,7 +99,6 @@ export const createOrderSchema = z.object({
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
     productName: z.string(),
-    skuSpecName: z.string(),
     productType: z.enum(['疗程卡', '家居产品']),
     sessionCount: z.number().int().min(1).nullable(),
     unitPrice: z.string(),

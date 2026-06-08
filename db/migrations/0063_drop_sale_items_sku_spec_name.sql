@@ -1,0 +1,1 @@
+ALTER TABLE "sale_items" DROP COLUMN "sku_spec_name";

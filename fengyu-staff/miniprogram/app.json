@@ -111,6 +111,7 @@
     "backgroundColor": "#FFFFFF"
   },
   "sitemapLocation": "sitemap.json",
+  "resizable": true,
   "lazyCodeLoading": "requiredComponents",
   "usingComponents": {}
 }

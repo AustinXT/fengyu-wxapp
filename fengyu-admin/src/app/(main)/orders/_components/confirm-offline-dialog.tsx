@@ -21,6 +21,8 @@ export function ConfirmOfflineDialog({
   saleOrderId,
   /** 订单剩余应付现金（payable_amount - received），单位元 */
   remainingPayable,
+  /** 开单约定实付草稿合计（pending_received 之和，已 cap 到 remainingPayable），用作默认预填；缺省回退 remainingPayable */
+  suggestedAmount,
   /** 顾客当前储值卡余额，单位元（null 表示未查询或无账户） */
   cardBalance,
 }: {
@@ -28,12 +30,13 @@ export function ConfirmOfflineDialog({
   onOpenChange: (open: boolean) => void
   saleOrderId: string
   remainingPayable: number
+  suggestedAmount?: number
   cardBalance: number | null
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  // 默认确认金额 = 剩余应付现金（两位小数字符串便于受控 input）
-  const [amount, setAmount] = useState<string>(remainingPayable.toFixed(2))
+  // 默认确认金额 = 开单约定实付（pending_received 合计）；无则回退剩余应付现金（两位小数字符串便于受控 input）
+  const [amount, setAmount] = useState<string>((suggestedAmount != null ? suggestedAmount : remainingPayable).toFixed(2))
 
   const handleSubmit = () => {
     const amt = Math.round(Number(amount || "0") * 100) / 100

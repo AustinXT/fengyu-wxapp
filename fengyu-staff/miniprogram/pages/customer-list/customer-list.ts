@@ -1,6 +1,12 @@
 // pages/customer-list/customer-list.ts
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { formatDate } from '../../utils/formatters';
+
+// lastServiceDate 为后端原始 pg date（序列化成 UTC 串会偏移日期），统一格式化为 YYYY-MM-DD
+function fmtCustomerDates<T extends { lastServiceDate: string | null }>(list: T[]): T[] {
+  return list.map(c => ({ ...c, lastServiceDate: c.lastServiceDate ? formatDate(c.lastServiceDate) : c.lastServiceDate }));
+}
 
 type TagType = 'active' | 'atRisk' | 'lost' | 'sleeping' | 'birthday' | 'birthdayNext';
 
@@ -166,7 +172,7 @@ Page({
       if (monthlyActivity) params.monthlyActivity = monthlyActivity;
       if (customerStatus) params.customerStatus = customerStatus;
       const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
-      this.setData({ results: data || [], searched: false });
+      this.setData({ results: fmtCustomerDates(data || []), searched: false });
     } catch (_) {
       this.setData({ results: [] });
     } finally {
@@ -191,7 +197,7 @@ Page({
     this.setData({ loading: true, searched: true, activeTag: '' });
     try {
       const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
-      this.setData({ results: data || [] });
+      this.setData({ results: fmtCustomerDates(data || []) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '搜索失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -256,7 +262,7 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: 20 });
-      const newResults = reset ? (data.customers || []) : [...this.data.results, ...(data.customers || [])];
+      const newResults = reset ? fmtCustomerDates(data.customers || []) : [...this.data.results, ...fmtCustomerDates(data.customers || [])];
       this.setData({
         results: newResults,
         tagPage: page,

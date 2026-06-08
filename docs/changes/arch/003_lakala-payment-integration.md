@@ -39,7 +39,7 @@ related: []
 |---|---|---|
 | `lakala_merchant_no` | text nullable | 门店在拉卡拉的商户号 |
 | `lakala_term_no` | text nullable | 终端号 |
-| `lakala_sub_appid` | text nullable | 子 appid 占位（本期不用）|
+| `lakala_sub_appid` | text nullable | 子 appid 占位（本期不用）— **已于 fix/001 移除**，sub_appid 改由云函数 env `LAKALA_SUB_APPID` 全局供给 |
 | `lakala_enabled` | boolean not null default false | 是否启用真实支付通道 |
 
 未填 / `enabled=false` 时云函数 fallback 到 env `LAKALA_DEFAULT_MERCHANT_NO/TERM_NO`（测试号）或走 mock。

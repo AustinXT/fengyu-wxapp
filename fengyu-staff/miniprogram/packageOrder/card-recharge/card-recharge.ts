@@ -1,6 +1,6 @@
 // packageOrder/card-recharge/card-recharge.ts — 店长替顾客充值
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, getCurrentStoreId } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
@@ -32,6 +32,17 @@ interface CustomerInfo {
   name: string;
   phone: string;
   phoneMasked?: string;
+  /** 顾客绑定门店 ID（customer.search 返回，判断是否本店） */
+  boundStoreId?: string | null;
+  /** 顾客绑定门店名（展示「非本店」标签用） */
+  storeName?: string;
+  /** 是否非本店顾客（boundStoreId 缺失时为 false，放行后端兜底） */
+  crossStore?: boolean;
+}
+
+/** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
+function markCrossStore(c: CustomerInfo): CustomerInfo {
+  return { ...c, crossStore: !!c.boundStoreId && c.boundStoreId !== getCurrentStoreId() };
 }
 
 interface RechargeResponse {
@@ -197,7 +208,7 @@ Page({
     try {
       // 跨门店模糊检索：储值卡跨店统一，绑定任意门店的顾客均可充值
       const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
-      const valid = (results || []).filter(r => r.clientUserId);
+      const valid = (results || []).filter(r => r.clientUserId).map(markCrossStore);
       if (valid.length === 0) {
         this.setData({ customerInfo: null, customerResults: [] });
         wx.showModal({
@@ -220,7 +231,7 @@ Page({
   },
 
   onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as CustomerInfo;
+    const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerResults: [] });
     this.updateCta();
   },
@@ -381,6 +392,15 @@ Page({
     const { customerInfo, selectedFaceValue, customMode, customInput, paymentMethod } = this.data;
     if (!customerInfo?.clientUserId) {
       wx.showToast({ title: '请选择顾客', icon: 'none' });
+      return;
+    }
+    if (customerInfo.crossStore) {
+      wx.showModal({
+        title: '无法充值',
+        content: `该顾客属于「${customerInfo.storeName || '其他'}」门店，非本店顾客无法充值。`,
+        showCancel: false,
+        confirmText: '知道了',
+      });
       return;
     }
 

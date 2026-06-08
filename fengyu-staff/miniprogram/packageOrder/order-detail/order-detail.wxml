@@ -13,6 +13,7 @@
     <!-- 状态条 -->
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
+      <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
 
@@ -21,14 +22,20 @@
       <van-cell title="下单人" value="{{order.customerName || '—'}}" />
       <van-cell title="手机号" value="{{isManager ? order.customerPhone : order.customerPhoneMasked}}" />
       <van-cell title="所属门店" value="{{order.storeName || '—'}}" />
+      <van-cell wx:if="{{order.marketName}}" title="所属市场" value="{{order.marketName}}" />
       <van-cell title="订单来源" value="{{order.orderSourceLabel}}" />
       <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
+      <van-cell wx:if="{{order.documentType}}" title="单据类型" value="{{order.documentType}}" />
+      <van-cell wx:if="{{order.refOrderId}}" title="关联原单" value="{{order.refOrderId}}" />
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
       <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
+      <van-cell wx:if="{{order.couponName || order.couponDiscount}}" title="优惠券" value="{{order.couponName}}{{order.couponDiscount ? ' -¥' + order.couponDiscount : ''}}" />
       <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
       <van-cell wx:if="{{order.confirmedAt}}" title="确认时间" value="{{order.confirmedAt}}" />
+      <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />
       <van-cell title="创建时间" value="{{order.createdAt}}" />
       <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
+      <van-cell wx:if="{{order.isLegacy}}" title="数据来源" value="历史导入订单" />
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>
 
@@ -51,6 +58,13 @@
           <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
+        </view>
+        <!-- 明细扩展：原价划线 / 销售分类 / 过期日期 / 已提货数量 -->
+        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0}}" class="item-extra">
+          <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
+          <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
+          <text wx:if="{{item.expireDate}}" class="item-extra-tag">有效期至 {{item.expireDate}}</text>
+          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提 {{item.pickedUpQuantity}}</text>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>
@@ -101,13 +115,15 @@
     </view>
 
     <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
-    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
+    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
       <text class="items-title">营业额分配</text>
-      <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="staffName">
-        <text class="alloc-staff">{{item.staffName}}（{{item.department}}）</text>
-        <view class="alloc-right">
-          <text class="alloc-amount">¥{{item.amount}}</text>
-          <text class="alloc-ratio"> · {{item.ratio}}</text>
+      <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="id">
+        <view class="alloc-row-left">
+          <text class="alloc-staff">{{item.staffName}}<text wx:if="{{item.roleType}}">（{{item.roleType}}）</text></text>
+          <text class="alloc-meta">{{item.saleItemName}} · 比例{{item.ratio}} · 提成率{{item.commissionRate}} · 分配额¥{{item.totalAmount}}</text>
+        </view>
+        <view class="alloc-row-right">
+          <text class="alloc-amount">¥{{item.commissionAmount}}</text>
         </view>
       </view>
       <view class="re-alloc-btn">
@@ -117,7 +133,7 @@
     </view>
 
     <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
-    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
+    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
       <van-button block plain type="primary"
         custom-class="btn-outline-brand"
         bind:click="onReAllocation"
@@ -165,15 +181,6 @@
         bind:click="onRepayTap"
       >发起回款（欠 ¥{{order.remainingPayable}}）</van-button>
 
-      <!-- 寄存单历史实收编辑（店长） -->
-      <van-button
-        wx:if="{{isManager && order.orderType === '寄存单'}}"
-        block plain type="primary"
-        custom-class="btn-outline-brand"
-        custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onDepositEditTap"
-      >修改历史实收</van-button>
-
       <!-- 创建服务单（已支付 + 非家居产品订单） -->
       <van-button
         wx:if="{{order.status === '已支付'}}"
@@ -182,28 +189,23 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成 + 店长 + 非退款/转换/回款单） -->
+      <!-- P2: 退款按钮（已支付/已完成 + 仅销售单；员工可发起→店长审批，对齐后端 requireStaffBound + 充值卡退款按钮；充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType !== '退款单' && order.orderType !== '转换单' && order.orderType !== '回款单'}}"
+        wx:if="{{(order.status === '已支付' || order.status === '已完成') && order.orderType === '销售单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"
       >申请退款</van-button>
 
-      <!-- P2: 退款审批按钮（待审批 + 退款单 + 店长） -->
+      <!-- 充值卡退款（充值单专用，走 card.createRefund 退卡内余额，员工可发起→店长审批） -->
       <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
-        block type="primary"
-        custom-class="btn-primary-brand"
-        custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onApproveRefund"
-      >通过退款</van-button>
-      <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
+        wx:if="{{order.status === '已支付' && order.orderType === '充值单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
-        bind:click="onRejectRefund"
-      >驳回退款</van-button>
+        bind:click="onCreateCardRefund"
+      >充值卡退款</van-button>
+
+      <!-- 退款审批已收口到 refund-list/refund-detail 页（后端 sale_order_type 枚举已无「退款单」，此处按钮恒不命中，已删除死代码 Bug D） -->
 
       <!-- 终态：返回工作台 -->
       <van-button
@@ -323,54 +325,6 @@
           disabled="{{submitting}}"
           bind:click="onConfirmRepay"
         >确认回款</van-button>
-      </view>
-    </view>
-  </van-popup>
-
-  <!-- 寄存单历史实收编辑弹层 -->
-  <van-popup
-    show="{{showDepositPopup}}"
-    position="bottom"
-    round
-    custom-style="padding: 32rpx 0; max-height: 85vh;"
-    bind:close="onCloseDepositPopup"
-    closeable
-  >
-    <view class="repay-popup">
-      <view class="repay-title">修改历史实收</view>
-      <view class="repay-debt">
-        <text class="repay-debt-tip">录入各明细当时实际收了多少钱，仅作账目记录，不收款、不计营业额、不影响可核销次数。</text>
-      </view>
-
-      <view class="repay-lines">
-        <view wx:for="{{depositLines}}" wx:key="saleItemId" class="repay-line">
-          <view class="repay-line-info">
-            <text class="repay-line-name">{{item.itemName}}</text>
-          </view>
-          <van-field
-            type="digit"
-            placeholder="实收 ¥"
-            value="{{item.received}}"
-            data-index="{{index}}"
-            bind:change="onDepositLineChange"
-            custom-class="repay-line-input"
-          />
-        </view>
-      </view>
-
-      <view class="repay-debt">
-        合计实收：<text class="repay-debt-hot">¥{{depositTotal}}</text>
-      </view>
-
-      <view class="repay-actions">
-        <van-button block plain type="default" bind:click="onCloseDepositPopup">取消</van-button>
-        <van-button
-          block type="primary"
-          custom-class="btn-primary-brand"
-          loading="{{submitting}}"
-          disabled="{{submitting}}"
-          bind:click="onConfirmDepositEdit"
-        >保存</van-button>
       </view>
     </view>
   </van-popup>

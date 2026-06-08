@@ -30,12 +30,12 @@ export interface Store {
   description: string | null
   announcement: string | null
   parkingInfo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的商户号；NULL 时云函数 fallback 到 env 默认测试号 */
+  /** 拉卡拉聚合支付：门店在拉卡拉侧的商户号（来自关联商户 lakala_merchants 的快照） */
   lakalaMerchantNo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的终端号；NULL 时云函数 fallback 到 env 默认测试号 */
+  /** 拉卡拉聚合支付：门店在拉卡拉侧的终端号（store-level 独立配置） */
   lakalaTermNo: string | null
-  /** 拉卡拉收银台跳转子 appid（本期未启用，留空即可） */
-  lakalaSubAppid: string | null
+  /** 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007） */
+  lakalaMerchantId: string | null
   /** 是否开启拉卡拉真实支付通道；false=回 mock 兜底，true=走 special_create */
   lakalaEnabled: boolean
   createdAt: string
@@ -58,11 +58,15 @@ export interface Employee {
   avatarUrl: string | null
   birthday: string | null
   skills: string[] | null
+  /** 是否缴纳社保；默认否 */
+  socialInsurance: boolean
   isResigned: boolean
   /** 入职日期（YYYY-MM-DD） */
   hiredAt: string | null
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
+  /** 离职原因（自由文本）；NULL 表示在职或未填 */
+  resignationReason: string | null
   lastLoginAt: string | null
   createdAt: string
   updatedAt: string
@@ -274,6 +278,11 @@ export interface ProductSku {
    * 仅在 SKU 编辑/查询表单上下文需要，前端运行时按需读取。
    */
   isExperience?: boolean
+  /**
+   * 店长特别优惠 capability 列（与 product_skus.is_manager_special 同名同义）。
+   * true 时 admin/staff 开单（销售单 + 普通商品）允许店长改应付金额。
+   */
+  isManagerSpecial?: boolean
   // 充值卡 capability 列已退出（2026-05-20 充值卡剥离 SKU 化，DB 列已 DROP）
   /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
   projectSeriesId?: number | null
@@ -326,6 +335,8 @@ export interface SaleOrder {
   saleOrderType: SaleOrderType
   documentType: DocumentType | null
   refSaleOrderId: string | null
+  /** 历史订单来源标记：'workfine'=WorkFine 历史导入（禁止退款/回款/改实收）；null=系统原生 */
+  legacySource: string | null
   marketName: string
   storeId: string
   saleOrderDatetime: string
@@ -346,6 +357,8 @@ export interface SaleOrder {
   openedBy: string | null
   preferredEmployeeId: string | null
   paidAt: string | null
+  /** 线下确认收款时间（offline_confirmed_at；订单详情页填充，列表查询不取） */
+  offlineConfirmedAt?: string | null
   allocationStatus: AllocationStatus | null
   couponId: string | null
   couponDiscount: string | null
@@ -355,7 +368,13 @@ export interface SaleOrder {
   // joined
   storeName?: string
   openedByName?: string
+  /** 指定美容师姓名（preferred_employee_id → staff_wechat_users.name） */
+  preferredEmployeeName?: string
+  /** 线下确认人姓名（offline_confirmed_by → staff_wechat_users.name） */
+  offlineConfirmedByName?: string
   items?: SaleItem[]
+  /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
+  allocatable?: boolean
 }
 
 export interface SaleItem {
@@ -372,7 +391,11 @@ export interface SaleItem {
   unitRealPrice: string
   saleAmount: string
   received: string
+  /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
+  pendingReceived: string
   expireDate: string | null
+  /** 已提货数量（家居产品；picked_up_quantity；订单详情页填充，其它查询不取） */
+  pickedUpQuantity?: number | null
   remark: string | null
   salesCategory: SalesCategory | null
   createdAt: string
@@ -389,12 +412,15 @@ export interface SaleAllocation {
   allocationRatio: string
   roleType?: string
   totalAmount: string
+  commissionRate?: string
+  commissionAmount?: string
   isVoid: boolean
   createdAt: string
   updatedAt: string
   // joined
   employeeName?: string
   departmentName?: string
+  saleItemName?: string
 }
 
 export interface ServiceOrder {

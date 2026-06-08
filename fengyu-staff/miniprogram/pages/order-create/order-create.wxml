@@ -217,7 +217,7 @@
               wx:if="{{!item.refBundleId}}"
               value="{{item.quantity}}"
               min="1"
-              max="10"
+              max="99"
               data-sku-id="{{item.skuId}}"
               bind:change="onCartQtyChange"
             />
@@ -235,7 +235,6 @@
   <van-popup
     show="{{showCheckout}}"
     position="bottom"
-    round
     safe-area-inset-bottom
     bind:close="onCloseCheckout"
   >
@@ -279,6 +278,8 @@
               wx:key="clientUserId"
               title="{{item.name || '未命名'}}"
               label="{{item.phoneMasked || item.phone}}"
+              value="{{item.crossStore ? '非本店·' + item.storeName : item.storeName}}"
+              value-class="{{item.crossStore ? 'customer-cross-store' : ''}}"
               is-link
               data-customer="{{item}}"
               bind:click="onSelectCustomer"
@@ -290,7 +291,8 @@
             <van-cell
               title="{{customerInfo.name || customerInfo.phone}}"
               label="{{customerInfo.phoneMasked || customerInfo.phone}}"
-              value="已选"
+              value="{{customerInfo.crossStore ? '非本店·' + customerInfo.storeName : '已选'}}"
+              value-class="{{customerInfo.crossStore ? 'customer-cross-store' : ''}}"
               icon="manager-o"
             />
           </van-cell-group>
@@ -421,10 +423,25 @@
                 <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
               </view>
 
-              <!-- 应付金额：不可编辑，仅由订单级优惠券冲抵（内部单走半价） -->
+              <!-- 应付金额：店长特别优惠（销售单+普通商品）可向下编辑至 0；否则只读（内部单走半价，仅由优惠券冲抵） -->
               <view class="confirm-item-row">
                 <text class="confirm-item-label">应付金额</text>
-                <block wx:if="{{saleOrderType === '内部单'}}">
+                <view
+                  wx:if="{{item.isManagerSpecial && saleOrderType === '销售单' && !item.refBundleId && item.productType !== '组合套餐'}}"
+                  class="confirm-discount-input-wrap"
+                >
+                  <text class="confirm-special-badge">店长特价</text>
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{item.saleAmount}}"
+                    placeholder="0"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onSaleAmountChange"
+                  />
+                </view>
+                <block wx:elif="{{saleOrderType === '内部单'}}">
                   <view class="confirm-internal-price">
                     <text class="confirm-item-origprice">¥{{item.saleAmount}}</text>
                     <text class="confirm-item-receivable">¥{{item.halfPriceSaleAmount}}</text>
@@ -493,13 +510,13 @@
             </view>
           </view>
 
-          <!-- 实付汇总行（Σ 行实付） -->
+          <!-- 现金应收行（= 当下实付 − 充值卡抵扣；computePrepaidDeduction 以 receivedTotal 为基准产出 paidAmount） -->
           <view class="prepaid-paid-summary">
-            <text class="prepaid-paid-label">实付金额</text>
-            <text class="prepaid-paid-amount">¥{{receivedTotal}}</text>
+            <text class="prepaid-paid-label">现金应收</text>
+            <text class="prepaid-paid-amount">¥{{paidAmount}}</text>
           </view>
           <view wx:if="{{!showPayMethodGroup}}" class="prepaid-paid-fullcover-hint">
-            <text>全额抵扣，payment_method='无'</text>
+            <text>全额抵扣，支付方式：无</text>
           </view>
 
           <!-- 支付方式：3 选 1（销售单 / 内部单）；转换单由 ConversionPanel 内部 picker 管理 -->

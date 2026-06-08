@@ -3,7 +3,7 @@
  *
  * 主题：验证"线下开单不记款"新流程：
  *       1) admin 开单选线下 → 提交后订单为 '待支付'、received=0、**无任何款项流水**；
- *       2) 在完成页「确认收款」输入部分金额 → 订单转 '部分支付'、写 1 行首次支付流水；
+ *       2) 商品清单逐行实付填部分金额（同线上）→ 完成页一键「确认收款」→ 订单转 '部分支付'、写 1 行首次支付流水；
  *       3) 再通过订单详情页「录入回款」两次补齐尾款 → '已支付'。
  *       期间 sale_items.paid_sessions 按逐行公式 floor(min(1, received/sale_amount)*session_count) 进阶。
  *
@@ -13,7 +13,7 @@
  * SKU：动态发现一张 session_count=2 + 启用 + 非体验 + 非删除的 2 次疗程卡（按 price ASC 取最便宜）。
  *
  * 金额分布（按 SKU 价格 P / 次数 N=2 表达）：
- *   first  = round(P / 2)        ← 确认收款输入的部分金额（floor(1/2 * 2) = 1）
+ *   first  = round(P / 2)        ← Step2 逐行实付填的部分金额（floor(1/2 * 2) = 1）
  *   repay1 = round(P / 4)        ← 第 1 笔回款（仍处 paid=1，不应进阶）
  *   repay2 = P - first - repay1  ← 第 2 笔回款（凑齐到 P，paid 升至 2）
  *
@@ -21,7 +21,7 @@
  *   提交后（确认前）:
  *     sale_orders.status = '待支付'；received = 0；total_amount = P
  *     sale_order_payments 0 行（开单不记款）
- *   确认收款（输入 first）后:
+ *   确认收款（Step2 逐行实付 = first）后:
  *     sale_orders.status = '部分支付'；received = first
  *     sale_items.paid_sessions = floor(min(1, first/P) * 2) = 1
  *     sale_order_payments 存在 1 行 change_type='首次支付', amount=first, status='已支付'
@@ -175,7 +175,7 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await page.getByRole('button', { name: '下一步' }).click()
 
   // ============================================================
-  // Step 3: 选线下支付 → 提交（线下开单不收款，逐行实付不可改）
+  // Step 3: 选线下支付 → 逐行实付填部分金额（同线上）→ 提交（开单不记款，确认收款按明细合计入账）
   // ============================================================
   await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({
     timeout: 10000,
@@ -187,15 +187,17 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await paySelect.selectOption({ label: '线下支付' })
   await page.waitForTimeout(300)
 
-  // 线下：商品清单逐行"实付金额" number input 应禁用（开单不收款，实收在确认收款环节登记）
+  // 线下：商品清单逐行"实付金额" number input 可编辑（与线上一致）；填部分金额 FIRST_RECEIVED 制造部分支付
   const receivedInput = page.locator('input[type="number"]').first()
   await expect(receivedInput).toBeVisible({ timeout: 5000 })
-  await expect(receivedInput).toBeDisabled()
+  await expect(receivedInput).toBeEnabled()
+  await receivedInput.fill('')
+  await receivedInput.fill(FIRST_RECEIVED.toFixed(2))
 
   // 提交
   await page.getByRole('button', { name: /提交订单/ }).click()
 
-  // 线下创建 → 待支付：Step 4 标题"订单创建成功"，并出现确认收款金额输入 + 按钮
+  // 线下创建 → 待支付：Step 4 标题"订单创建成功"，确认收款按只读合计一键确认（无总额输入框）
   await expect(page.getByRole('heading', { name: '订单创建成功' })).toBeVisible({ timeout: 20000 })
   await expect(page.getByRole('button', { name: '确认收款' })).toBeVisible({ timeout: 5000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-03-step4-created.png` })
@@ -241,13 +243,11 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   })
 
   // ============================================================
-  // 确认收款：在 Step 4 输入部分金额 FIRST_RECEIVED → 部分支付
+  // 确认收款：金额 = Step2 逐行实付合计（FIRST_RECEIVED，只读展示）→ 一键确认 → 部分支付
   // ============================================================
-  const confirmInput = page.locator('input[type="number"]').first()
-  await expect(confirmInput).toBeVisible({ timeout: 5000 })
-  await confirmInput.fill('')
-  await confirmInput.fill(FIRST_RECEIVED.toFixed(2))
-  await page.getByRole('button', { name: '确认收款' }).click()
+  const confirmBtn = page.getByRole('button', { name: '确认收款' })
+  await expect(confirmBtn).toBeEnabled({ timeout: 5000 })
+  await confirmBtn.click()
   // 部分确认 → 标题切换为「已确认部分收款」
   await expect(page.getByRole('heading', { name: '已确认部分收款' })).toBeVisible({ timeout: 20000 })
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-46-04-confirmed-partial.png` })

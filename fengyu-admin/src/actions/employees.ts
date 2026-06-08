@@ -4,6 +4,7 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
+import { adminPasswords } from '@db/admin-auth'
 import { eq, and, or, sql, ilike, inArray, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -13,18 +14,19 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters } from '@/lib/list-filters'
 
-const storeNode = alias(orgNodes, 'store_node')
-const marketNode = alias(orgNodes, 'market_node')
+// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
+const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
 
-function rowToEmployee(row: {
-  staff_wechat_users: typeof staffWechatUsers.$inferSelect
-  stores: typeof stores.$inferSelect | null
-  org_nodes: typeof orgNodes.$inferSelect | null
-}): Employee {
+// drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
+// 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToEmployee(row: any): Employee {
   const e = row.staff_wechat_users
   return {
     employeeId: e.employeeId,
@@ -39,9 +41,11 @@ function rowToEmployee(row: {
     avatarUrl: e.avatarUrl,
     birthday: e.birthday,
     skills: e.skills,
+    socialInsurance: e.socialInsurance,
     isResigned: e.isResigned,
     hiredAt: e.hiredAt,
     resignedAt: e.resignedAt,
+    resignationReason: e.resignationReason,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
     createdAt: e.createdAt?.toISOString() ?? '',
     updatedAt: e.updatedAt?.toISOString() ?? '',
@@ -269,7 +273,9 @@ export interface ExportEmployeeRow {
   positionName: string | null
   birthday: string | null
   skills: string | null
+  socialInsurance: boolean
   isResigned: boolean
+  resignationReason: string | null
 }
 
 /** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。LIMIT 10000 防 OOM。 */
@@ -310,7 +316,9 @@ export const exportEmployees = withPermission(
         positionName: e.positionName,
         birthday: e.birthday,
         skills: e.skills?.join('、') ?? null,
+        socialInsurance: e.socialInsurance,
         isResigned: e.isResigned,
+        resignationReason: e.resignationReason,
       }
     })
 
@@ -374,6 +382,8 @@ export const createEmployee = withPermission(
       avatarUrl?: string | null
       /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
       hiredAt?: string | null
+      /** 是否缴纳社保；默认否 */
+      socialInsurance?: boolean
     },
   ): Promise<{ success: boolean; message: string; employeeId?: string }> => {
   // 服务端输入校验（手机号格式 + 必填字段）
@@ -386,7 +396,11 @@ export const createEmployee = withPermission(
   if (!/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
-  if (data.idCard && !/^\d{17}[\dXx]$/.test(data.idCard)) {
+  // 身份证号必填（应用层强制）
+  if (!data.idCard?.trim()) {
+    return { success: false, message: '请输入身份证号' }
+  }
+  if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
     return { success: false, message: '身份证号格式不正确' }
   }
 
@@ -444,6 +458,7 @@ export const createEmployee = withPermission(
         avatarUrl: data.avatarUrl ?? null,
         birthday: data.birthday ?? null,
         skills: data.skills ?? null,
+        socialInsurance: data.socialInsurance ?? false,
         isResigned: false,
         // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
         hiredAt: data.hiredAt ?? shanghaiToday(),
@@ -486,11 +501,15 @@ export const updateEmployee = withPermission(
       avatarUrl: string | null
       birthday: string | null
       skills: string[] | null
+      /** 是否缴纳社保 */
+      socialInsurance: boolean
       isResigned: boolean
       /** 入职日期（YYYY-MM-DD） */
       hiredAt: string | null
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null
+      /** 离职原因（自由文本）；与 isResigned 联动：复职时由 action 自动清空 */
+      resignationReason: string | null
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,
@@ -499,8 +518,18 @@ export const updateEmployee = withPermission(
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
-  if (data.idCard !== undefined && data.idCard !== null && !/^\d{17}[\dXx]$/.test(data.idCard)) {
-    return { success: false, message: '身份证号格式不正确' }
+  // 姓名必填（仅当本次显式传入 name 时校验，避免拦截只改其它字段的更新）
+  if (data.name !== undefined && !data.name?.trim()) {
+    return { success: false, message: '姓名不能为空' }
+  }
+  // 身份证号必填（仅当本次显式传入 idCard 时校验）
+  if (data.idCard !== undefined) {
+    if (!data.idCard?.trim()) {
+      return { success: false, message: '请输入身份证号' }
+    }
+    if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
+      return { success: false, message: '身份证号格式不正确' }
+    }
   }
 
   // 校验手机号唯一性（如果更新了手机号）
@@ -535,6 +564,10 @@ export const updateEmployee = withPermission(
   const updateData = { ...data }
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
+  }
+  // 复职 / 撤销离职：连带清空离职原因
+  if (data.isResigned === false) {
+    updateData.resignationReason = null
   }
 
   // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）
@@ -627,5 +660,75 @@ export const updateEmployee = withPermission(
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }
+  },
+)
+
+/**
+ * 物理删除员工（仅系统管理员；数据治理用，清理测试员工账号）。
+ *
+ * 仅适用于"无任何业务关联"的测试号：员工被 25+ 张业务表（订单/服务/分配/预约/库存/解绑/操作日志…）
+ * 引用即由 PG FK RESTRICT 拦截，pgErrorCode 23503 兜底回滚并提示「改为离职」。
+ * 事务内先删可随删的从属行（admin_passwords 登录凭证 + 该员工 permission_roles），再删主表。
+ * 守卫：不能删自己；不能删系统最后一个活跃 admin。
+ */
+export const deleteEmployee = withPermission(
+  'employee:delete',
+  async (session, employeeId: string): Promise<{ success: boolean; message: string }> => {
+    if (employeeId === session.employeeId) {
+      return { success: false, message: '不能删除当前登录的自己' }
+    }
+
+    const [emp] = await db
+      .select({ name: staffWechatUsers.name, phone: staffWechatUsers.phone, storeId: staffWechatUsers.storeId, isResigned: staffWechatUsers.isResigned })
+      .from(staffWechatUsers)
+      .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+      .limit(1)
+
+    if (!emp) {
+      return { success: false, message: '员工不存在或无权操作' }
+    }
+
+    // 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）
+    if (await isAdminEmployee(employeeId)) {
+      const adminCount = await countActiveAdmins()
+      if (adminCount <= 1) {
+        return { success: false, message: '该员工是系统最后一个活跃管理员，请先转移角色' }
+      }
+    }
+
+    try {
+      const txResult = await db.transaction(async (tx) => {
+        // 先删可随员工删除的从属行（登录凭证 + 权限角色）
+        await tx.delete(adminPasswords).where(eq(adminPasswords.employeeId, employeeId))
+        await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
+        // 删主表（被任一业务表引用会在此抛 23503，回滚上面的删除）
+        const result = await tx
+          .delete(staffWechatUsers)
+          .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+        if ((result as any).count === 0) {
+          throw new Error('EMPLOYEE_ROW_GONE')
+        }
+        return true
+      })
+      if (!txResult) {
+        return { success: false, message: '员工状态已变更，请刷新重试' }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message === 'EMPLOYEE_ROW_GONE') {
+        return { success: false, message: '员工状态已变更，请刷新重试' }
+      }
+      if (pgErrorCode(e) === '23503') {
+        return { success: false, message: '该员工已有业务关联（订单 / 服务 / 分配 / 预约 / 库存等），无法删除，建议改为离职' }
+      }
+      throw e
+    }
+
+    await logOperation(session, 'employee.delete', 'employee', employeeId, {
+      snapshot: { name: emp.name, phone: emp.phone, storeId: emp.storeId, isResigned: emp.isResigned },
+    })
+
+    revalidatePath('/employees')
+    revalidatePath('/permissions')
+    return { success: true, message: '员工已删除' }
   },
 )

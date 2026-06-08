@@ -59,7 +59,7 @@ module.exports.pct = function(rate) {
       <!-- item 标题 -->
       <view class="item-header">
         <view class="item-name-row">
-          <text class="item-name">{{dItem.product_name || dItem.sku_spec_name}}</text>
+          <text class="item-name">{{dItem.product_name}}</text>
           <van-tag wx:if="{{dItem.sales_category}}" plain color="#666" size="medium">{{dItem.sales_category}}</van-tag>
         </view>
         <text class="item-amount">¥{{dItem.received}}</text>

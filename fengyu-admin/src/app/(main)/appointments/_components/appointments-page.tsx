@@ -10,17 +10,17 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Pagination } from "@/components/ui/pagination"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
-import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
+import { confirmAppointment, checkinAppointment, cancelAppointment, deleteAppointment } from "@/actions/appointments"
+import { RowDeleteMenu } from "@/components/delete-action"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { Appointment, Store } from "@/lib/types"
+import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
-  return new Date(dt).toLocaleString("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  })
+  return fmtDateTime(dt)
 }
 
 const TAB_OPTIONS = [
@@ -44,12 +44,15 @@ export default function AppointmentsPageClient({
   total,
   pendingCount,
   confirmedCount,
+  canDelete = false,
 }: {
   appointments: Appointment[]
   stores: Store[]
   total: number
   pendingCount: number
   confirmedCount: number
+  /** 是否展示行内删除入口（仅系统管理员 appointment:delete） */
+  canDelete?: boolean
 }) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
@@ -176,7 +179,7 @@ export default function AppointmentsPageClient({
                     <td className="px-4 py-3">{formatDateTime(appt.appointmentTime)}</td>
                     <td className="px-4 py-3">{appt.storeName || "—"}</td>
                     <td className="px-4 py-3">{appt.employeeName}</td>
-                    <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
+                    <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1">
                         {appt.status === "待确认" && (
@@ -190,6 +193,13 @@ export default function AppointmentsPageClient({
                             <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
                             <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
                           </>
+                        )}
+                        {canDelete && (appt.status === "已取消" || appt.status === "已完成" || appt.status === "已关闭") && (
+                          <RowDeleteMenu
+                            entityLabel="预约"
+                            onConfirm={() => deleteAppointment(appt.appointmentId)}
+                            description={<>确定要删除该预约（{appt.clientName}）吗？此操作不可恢复。</>}
+                          />
                         )}
                       </div>
                     </td>

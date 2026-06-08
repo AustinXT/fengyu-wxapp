@@ -62,12 +62,12 @@ async function seedTempNc02Order() {
   await pgQuery(`
     INSERT INTO sale_items (
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-      product_name, sku_spec_name, product_type, session_count, remaining_sessions,
+      product_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
       service_fee, is_experience, created_at, updated_at
     ) VALUES (
       $1, $2, $3, '购买', 'c79157b29c9e974c',
-      '洗-无创纹身', '洗-无创纹身 疗程卡', '疗程卡', 1, 1,
+      '洗-无创纹身', '疗程卡', 1, 1,
       100.00, 1, 100.00, 100.00, 100.00,
       0, false, NOW(), NOW()
     )

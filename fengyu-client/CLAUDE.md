@@ -22,18 +22,18 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 
 | 模块 | 接口 |
 |------|------|
-| auth | login, bindPhone, bindStore（含来源渠道）, updateProfile |
+| auth | login, bindPhone, bindStore（含来源渠道）, updateProfile, uploadAvatar, uploadStaffAvatar（HTTP 触发器跨 env 转上传） |
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode |
-| product | categories, spuList, skuDetail, spuDetail, hotList, shopInit |
+| product | categories, spuList, skuDetail, spuDetail, hotList, shopInit, experienceCardList |
 | staff | list, default, detail |
-| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull |
+| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull, repay, queryLakalaStatus |
 | appointment | create, list, cancel |
-| service | detail, list |
+| service | detail, list, confirm, createReview |
 | coupon | list, available |
 | points | balance, history |
 | message | list, read, unreadCount |
 | card | list, history, balance, rechargeConfig, recharge |
-| config | banners, fengyuguan |
+| config | banners, fengyuguan, shareGift, consumeAgreement, invalidateConfig |
 
 ### 储值卡抵扣相关接口说明
 
@@ -72,7 +72,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | **L2X e2e-cross-end** | `tests/e2e-cross-end/` | bun .../run-all.mjs | ~30 秒 5 spec | 否（同进程 require client + staff，PG 5434）|
 | **L3 e2e-miniprogram** | `tests/e2e-miniprogram/` | bun .../run-all.mjs | ~12 分钟 15 journey | 是（automator + IDE 9420） |
 
-**L2 覆盖**：32 spec / ~155 用例，穷举所有 12 模块 ~54 个 action 的 happy + 边界 + 错误 + 并发 + 状态机 + 原子性分支。命名空间 `TE2L2_*`。
+**L2 覆盖**：35 spec / ~190 用例，穷举所有 12 模块 53 个 action 的 happy + 边界 + 错误 + 并发 + 状态机 + 原子性分支。命名空间 `TE2L2_*`。
 
 **L2X 覆盖**：5 spec / 16 用例 — 真跨端 staff→client 扫码支付链、HMAC HTTP 桥 7 项守卫矩阵、admin schema 桥 coupon 可见性、历史单 client 不可见、payNotify disabled guard。命名空间 `TE2X_*`。
 
