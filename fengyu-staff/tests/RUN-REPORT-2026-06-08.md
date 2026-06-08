@@ -99,19 +99,47 @@
 
 ---
 
-## 待决策清单
+## 本轮决策与修复（2026-06-08）
 
-按工作量从小到大，均**未在本轮修改**：
+用户拍板：修测试侧 4 项（⑥④③⑤）；② 先查生产库再决定。
 
-| # | 项 | 类型 | 建议 | 工作量 |
-|---|----|----|------|--------|
-| ⑥ | **bs02 reLaunch 对象参数** | 测试基建 bug | 改 `spec:126` `reLaunch({url:'...'})` → `reLaunch('...')` | 1 行 |
-| ④ | **order-deposit 退款消息断言** | 测试漂移 | lock 断言 `/寄存单/` → `/仅销售单支持退款/`（对齐 Bug-L 白名单文案） | 1 行 |
-| ③ | **order-create-internal unit_price 断言** | 测试漂移 | 断言改 `unit_real_price===400`（或 `sale_amount===400`），保留 `unit_price===800`（标价快照） | 数行 |
-| ⑤ | **bs01 普通商品 categories 空** | fixture/契约 | 补 bs01 fixture 的一级父类目行 + 合格 SKU，使 shopInit categories 非空（需核对 product_kind 动态契约） | 中 |
-| ② | **service-commission 提成率未按 org 过滤** | 疑似产品 bug | 决策：`routes/service.js` 提成率 SELECT 加 org 过滤（治本，影响线上提成计算口径），还是仅在 fixture 层覆盖（治标）。**建议核查生产 commission_rate_matrix 是否真有跨市场污染。** | 需评估 |
+| # | 项 | 修法 | 文件 | 验证 |
+|---|----|------|------|------|
+| ⑥ | bs02 reLaunch 对象参数 | `reLaunch({url})` → `reLaunch('...')`（automator 入参是字符串） | `scenarios/bs02-refund-approve.spec.mjs:126` | ✅ **PASS**（全链路含 workbench 徽章联动） |
+| ④ | order-deposit 退款消息断言 | lock 断言 `/寄存单/` → `/仅销售单支持退款/`（对齐 Bug-L 白名单；errorType 仍 INVALID_STATE） | `smoke-order-deposit.mjs` 6a | ✅ PASS |
+| ③ | order-create-internal unit_price 断言 | 改断言 `unit_real_price===400` + `unit_price===800`（标价快照模型） | `smoke-order-create-internal.mjs` | ✅ PASS |
+| ⑤ | bs01 普通商品类目空（+ 连带 step2/step6 字段漂移） | ①fixture 补一级父类目行（`product_kind=NULL`，命名空间 kind `L3护理项目`）+ 二级行 product_kind 对齐；②step2 断言由 `d.categories`（普通商品 Tab 恒为 `[]`）改查 `d.groupedCategories` 含 L3 + 加 `waitForData` 等异步加载；③step6 选顾客匹配键 `customerInfo.id`（=customer_id，测试顾客为 null）→ `customerInfo.clientUserId`（=user_id） | `scenarios/bs01-order-flow.spec.mjs` | ⚠️ **部分**（见下） |
 
-① mgmt-dashboard 为基础设施 flaky（PG 池超时，隔离复跑 PASS），无需修，仅建议 L2 跑测时避免与 client E2E 并发。
+> ⑤ 多根因（之前 05-28 因 bs01 step1 300s 硬挂被 SKIP，step2 起从未真正跑过，逐步暴露）：
+> (a) fixture 用了**生产已不存在的 product_kind「护理项目」**，shopInit 的 `withParentJoin` INNER JOIN（`parent.category_name=child.product_kind`）找不到一级父行 → 类目被丢弃。生产实际 kind 是 `招牌/王牌/明星/加项/家居/其他/拓客引流卡`（DB 驱动）。
+> (b) order-create.ts 的「普通商品」Tab 用 `groupedCategories` 渲染，`categories` 恒为 `[]`，旧断言查错了字段。
+> (c) step6 选顾客匹配键用错（`.id` vs `.clientUserId`）。
+>
+> **修复已验证正确**：DB 层跑 shopInit 等价查询（withParentJoin+EXISTS）返回 **6 组含 L3护理项目**；某次热 IDE 运行 bs01 step2 PASS（`groupedCategories=6 已含 L3`）且 step3/4/5 通过（`cartTotal=2100`）。
+>
+> **但 bs01 端到端仍未跑绿**，卡在**远程 dev staffApi 的 `product.shopInit` 间歇返回空 groupedCategories**（`groups=0, catalogLoading=false`，被页面 `loadShopInit` try/catch 吞成空数据）：
+> - 同一份 fixture + 同一份 DB，本地 require 的 L2 `smoke-product-shopinit` **PASS**、DB 等价查询返回 6 组 → 数据与代码逻辑正确；
+> - 多次重启后远程 shopInit 持续 0 组（连生产 6 组都没有）→ 属**云函数侧 PG 连接池冷启/抖动 flaky**（与 ① mgmt-dashboard 同类，今日 5434 多次抖动）；
+> - 另：bs01 重跑若不重启 IDE 会有**购物车 data 跨次泄漏**（step3 badge=3），是 harness 重跑假象（全套跑时 IDE 全新启动无此问题）。
+> - **结论**：⑤ 的数据/字段修复均正确且为净改进（把 bs01 从「step2 必挂」推进到「step5 通过」），但 bs01 完整跑绿被远程 shopInit flaky 阻塞，且 step7-9 仍未验证 → **建议另起 bs01 专项稳定化**（含 shopInit 空结果重试兜底），超出本轮「补一级类目」范畴。
+
+### ② service-commission 提成率未按 org 过滤 — 生产库核查结论
+
+只读查询生产 `commission_rate_matrix`：
+
+```
+总行数 = 14，org 数 = 1
+跨 org 同 (order_type, role_type, sales_category, tier_min) 多 rate 的组 = 0 行
+```
+
+**结论：生产环境无跨市场污染，提成率计算线上正确（单 org 无歧义）。** 测试里出现的 0.15 是 fixture 造的第 2 个 test org 规则，被 `routes/service.js` 不带 org 过滤的 SELECT 跨 org 取到。
+
+- **今天不是生产 bug**，无需急修。
+- 残留：① service.js 提成率 SELECT 不带 `org_id` 过滤是**潜在隐患**（未来真上线第 2 个 market 才会触发跨 org 取错率）；② service-commission smoke 的 fixture 隔离 gap。两者按 follow-up 处理（低优先级硬化项），用户暂未要求修。
+
+### ① mgmt-dashboard
+
+基础设施 flaky（PG 连接池首调超时，隔离复跑 15/15 PASS），无需修。建议：**L2 跑测时避免与 client E2E 并发**（本轮并发是超时主因）。
 
 ---
 

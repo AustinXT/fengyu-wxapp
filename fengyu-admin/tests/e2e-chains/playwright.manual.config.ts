@@ -13,7 +13,7 @@ export default defineConfig({
     screenshot: 'off',
     navigationTimeout: 45_000,
     actionTimeout: 15_000,
-    headless: false,
+    headless: process.env.PW_HEADED === '1' ? false : true,
   },
   projects: [
     {
