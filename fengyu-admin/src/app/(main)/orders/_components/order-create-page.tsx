@@ -80,9 +80,14 @@ function getItemAmounts(item: CartItem, override?: ItemPriceOverride) {
     : Number(item.sku.price)
   const defaultSaleAmount = defaultUnitPrice * item.quantity
 
-  const saleAmount = override?.saleAmount != null && override.saleAmount !== ''
+  // 应付金额：店长特别优惠可手填覆盖，统一钳制到 [0, 标价小计]（向下调，不许涨价）。
+  // 未设 override.saleAmount 的普通项 → defaultSaleAmount（钳制为恒等，零行为变化）。
+  const rawSale = override?.saleAmount != null && override.saleAmount !== ''
     ? Number(override.saleAmount)
     : defaultSaleAmount
+  const saleAmount = Number.isNaN(rawSale)
+    ? defaultSaleAmount
+    : Math.max(0, Math.min(rawSale, defaultSaleAmount))
 
   const received = override?.received != null && override.received !== ''
     ? Number(override.received)
@@ -469,13 +474,25 @@ export default function OrderCreatePageClient({
     ? Number(selectedCouponForCalc.discountAmount)
     : 0
 
-  // 各行「价格」（含内部单半价处理）
+  // 店长特别优惠：仅销售单 + SKU 标记 + 非套餐行（套餐 sku 带 bundlePrice/bundleGroupId）时
+  // 允许店长在 Step3 手动修改应付金额（最低 0，不超过标价）。
+  const canEditSaleAmount = (item: CartItem) =>
+    !isInternal && !isConversion &&
+    item.sku.isManagerSpecial === true &&
+    item.sku.bundlePrice == null && item.sku.bundleGroupId == null
+
+  // 各行「价格」（含内部单半价处理；店长特价行用手填应付作为 pre-coupon 基线）
   const cartPriceLines = useMemo(() => {
     return cart.map((item) => {
+      // 店长特价行：pre-coupon 基线 = 手填应付（getItemAmounts 内已钳制 [0, 标价小计]）
+      if (canEditSaleAmount(item)) {
+        return Math.round(getItemAmounts(item, priceOverrides[item.sku.skuId]).saleAmount * 100) / 100
+      }
       const a = getItemAmounts(item)
       return Math.round(a.defaultSaleAmount * internalRatio * 100) / 100
     })
-  }, [cart, internalRatio])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, internalRatio, priceOverrides, isInternal, isConversion])
 
   // 各行摊到的券折扣（按 priceLines 比例，末行吸收尾差）
   const couponShares = useMemo(
@@ -1116,6 +1133,12 @@ export default function OrderCreatePageClient({
                     const lockReceived = suppressOverride
                     const override = lockReceived ? undefined : priceOverrides[item.sku.skuId]
                     const hasReceivedOverride = !lockReceived && override?.received != null && override.received !== ''
+                    // 店长特别优惠：该普通商品行允许手动改应付金额（销售单 + 非套餐）
+                    const canEditSale = canEditSaleAmount(item)
+                    const hasSaleOverride = canEditSale && override?.saleAmount != null && override.saleAmount !== ''
+                    // 标价小计（pre-coupon 应付上界）
+                    const defaultSale = a.defaultUnitPrice * item.quantity
+                    const hasAnyOverride = hasReceivedOverride || hasSaleOverride
 
                     return (
                       <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
@@ -1133,13 +1156,37 @@ export default function OrderCreatePageClient({
                             <>¥{a.priceLine.toFixed(2)}</>
                           )}
                         </span>
-                        {/* 应付金额：只读（仅由订单级优惠券冲抵） */}
-                        <span className="col-span-2 text-right">
-                          ¥{a.saleAmount.toFixed(2)}
-                          {a.couponShare > 0 && (
-                            <span className="ml-1 text-[10px] text-[#3D8A5A]">-¥{a.couponShare.toFixed(2)}</span>
-                          )}
-                        </span>
+                        {/* 应付金额：店长特别优惠可编辑（向下调，0 ≤ 应付 ≤ 标价），否则只读（仅由订单级优惠券冲抵） */}
+                        {canEditSale ? (
+                          <div className="col-span-2">
+                            <Input
+                              type="number"
+                              min="0"
+                              max={defaultSale}
+                              step="0.01"
+                              title="店长特别优惠：可向下调应付金额（最低 0）"
+                              className="h-8 text-sm text-right border-[var(--primary)]"
+                              value={hasSaleOverride ? (override!.saleAmount as string) : defaultSale.toFixed(2)}
+                              onChange={(e) => {
+                                setPriceOverrides(prev => ({
+                                  ...prev,
+                                  [item.sku.skuId]: {
+                                    saleAmount: e.target.value,
+                                    received: prev[item.sku.skuId]?.received ?? null,
+                                    receivedTouched: prev[item.sku.skuId]?.receivedTouched ?? false,
+                                  }
+                                }))
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <span className="col-span-2 text-right">
+                            ¥{a.saleAmount.toFixed(2)}
+                            {a.couponShare > 0 && (
+                              <span className="ml-1 text-[10px] text-[#3D8A5A]">-¥{a.couponShare.toFixed(2)}</span>
+                            )}
+                          </span>
+                        )}
                         {/* 实付金额：可编辑（默认=应付，向下调） */}
                         <div className="col-span-2">
                           <Input
@@ -1155,7 +1202,7 @@ export default function OrderCreatePageClient({
                               setPriceOverrides(prev => ({
                                 ...prev,
                                 [item.sku.skuId]: {
-                                  saleAmount: null,
+                                  saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
                                   received: e.target.value,
                                   receivedTouched: true,
                                 }
@@ -1164,7 +1211,7 @@ export default function OrderCreatePageClient({
                           />
                         </div>
                         <div className="col-span-2 flex justify-center">
-                          {hasReceivedOverride && (
+                          {hasAnyOverride && (
                             <button
                               className="text-xs text-[#5E8BB3] hover:underline"
                               onClick={() => {

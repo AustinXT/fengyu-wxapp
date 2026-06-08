@@ -287,6 +287,7 @@ export const getOrders = withPermission(
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
     documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
+    legacySource: r.order.legacySource ?? null,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
@@ -447,6 +448,7 @@ export const getOrdersPaginated = withPermission(
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
     documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
+    legacySource: r.order.legacySource ?? null,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
@@ -674,6 +676,7 @@ export const getOrderById = withAnyPermission(
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
     documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
+    legacySource: r.order.legacySource ?? null,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
@@ -2954,6 +2957,14 @@ export const recordPayment = withPermission(
       // scope 保护：admin 跨门店免检；manager / finance 等 scoped 角色按 storeId 校验
       if (!isInScope(session, locked.store_id)) {
         throw new ApiError('PERMISSION_DENIED', 'OUT_OF_SCOPE: 该订单不在你的可见门店范围内')
+      }
+
+      // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持回款
+      if (locked.sale_order_type === '寄存单') {
+        throw new ApiError('INVALID_STATE', '寄存单不支持回款')
+      }
+      if (locked.legacy_source === 'workfine') {
+        throw new ApiError('INVALID_STATE', '历史订单不支持回款')
       }
 
       if (!['部分支付', '待支付'].includes(locked.status)) {
