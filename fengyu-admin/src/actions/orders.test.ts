@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// 退款前置检查（orders.ts recordPayment 等调 hasPendingRefund）：
+// 默认 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
+vi.mock('@/lib/refund-cascade', () => ({
+  hasPendingRefund: vi.fn().mockResolvedValue(false),
+  hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
@@ -1724,23 +1731,22 @@ describe('getOrderById — prepaidCardAmount + received', () => {
    *   call#1 = select(order)：.from.leftJoin.leftJoin.where.limit
    *   call#2 = select(items)：.from.leftJoin.where
    */
+  // 自引用 thenable 链：.from().leftJoin()*N.where()[.limit()] —— leftJoin 返回自身适配任意层数，
+  // where 既可直接 await（items 查询）又可 .limit()（订单查询）。源码 getOrderById 后续再加 JOIN 也不脆断。
+  function makeChain(result: any[]) {
+    const chain: any = Object.assign(Promise.resolve(result), {
+      limit: vi.fn().mockResolvedValue(result),
+    })
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    return chain
+  }
   function mockDetailChain(orderRow: any, itemRows: any[]) {
     let i = 0
     ;(db.select as any).mockImplementation(() => {
       i++
-      if (i === 1) {
-        const limit = vi.fn().mockResolvedValue(orderRow ? [orderRow] : [])
-        const where = vi.fn().mockReturnValue({ limit })
-        const leftJoin2 = vi.fn().mockReturnValue({ where })
-        const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-        const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
-        return { from }
-      }
-      // items
-      const where = vi.fn().mockResolvedValue(itemRows)
-      const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
-      return { from }
+      return i === 1 ? makeChain(orderRow ? [orderRow] : []) : makeChain(itemRows)
     })
   }
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// 退款前置检查（allocations.ts 调 hasPendingRefund）：默认 false 走正常分支（预防 flaky）。
+vi.mock('@/lib/refund-cascade', () => ({
+  hasPendingRefund: vi.fn().mockResolvedValue(false),
+  hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),

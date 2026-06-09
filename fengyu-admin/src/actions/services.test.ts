@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// 退款前置检查（services.ts confirmServiceOrder 等调 hasPendingRefundByServiceOrder）：
+// 默认返回 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
+vi.mock('@/lib/refund-cascade', () => ({
+  hasPendingRefund: vi.fn().mockResolvedValue(false),
+  hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
