@@ -58,7 +58,7 @@ export function psql(sql: string): string {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       return execSync(
-        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
         { encoding: 'utf8', timeout: 15000 },
       ).trim()
     } catch (e) {

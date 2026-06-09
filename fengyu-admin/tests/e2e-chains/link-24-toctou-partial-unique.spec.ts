@@ -2,7 +2,7 @@
  * 链路 24：TOCTOU partial UNIQUE 索引并发回归（ticket 2026-05-17 v2）
  *
  * 主题：migration 0029 加了 7 项 partial unique + 2 项 external_ref 幂等键列。
- *      本 spec 用纯 psql 在生产 5434/fengyu 直接验证 9 个索引的"第二次 INSERT 被拦截"行为，
+ *      本 spec 用纯 psql 在生产 5434/fengyu_e2e 直接验证 9 个索引的"第二次 INSERT 被拦截"行为，
  *      不走 UI、不走云函数，专注于 DB 层守卫不变量。
  *
  * 9 个被测索引：
@@ -22,7 +22,7 @@
  *   3) ON CONFLICT (key) ... DO NOTHING（应静默：rowCount=0）
  *   4) 清理测试数据
  *
- * 数据库：5434/fengyu（生产业务库；migration 0029 已 apply）
+ * 数据库：5434/fengyu_e2e（生产业务库；migration 0029 已 apply）
  *
  * 跑法：
  *   bunx playwright test --config=fengyu-admin/tests/e2e-chains/playwright.manual.config.ts \

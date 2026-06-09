@@ -22,9 +22,10 @@ export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 process.env.ALLOW_TEST_OPENID = 'true'
 process.env.POINTS_ACCRUAL_ENABLED = process.env.POINTS_ACCRUAL_ENABLED || 'true'
 process.env.PG_CONNECTION_STRING =
+  process.env.E2E_DATABASE_URL ||
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
 process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
 
 // 命名空间常量 — 所有 fixture 数据必须以此为前缀，方便清理

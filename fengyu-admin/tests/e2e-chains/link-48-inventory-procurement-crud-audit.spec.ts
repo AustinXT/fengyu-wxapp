@@ -18,7 +18,7 @@
  *
  * 复用：scope-helpers.login/psql + _helpers/inventory.{readLatestAudit,cleanupInventoryByPrefix,cleanupAuditByPrefix,getInventoryHeader}
  *
- * 预条件：admin dev server @ localhost:3000；5434/fengyu 可达；FY-TEST-ADM 账号就绪（fengyu2026）。
+ * 预条件：admin dev server @ localhost:3000；5434/fengyu_e2e 可达；FY-TEST-ADM 账号就绪（fengyu2026）。
  */
 
 import { test, expect } from '@playwright/test'

@@ -7,7 +7,7 @@
  *   - 返回 stdout，方便 spec 解析 STEP summary
  *
  * 关键事实：
- *   - PG 连接：5434/fengyu（与 admin web 同库，真实业务库）
+ *   - PG 连接：5434/fengyu_e2e（与 admin web 同库，真实业务库）
  *   - cron:once 用 process.exit(0)/process.exit(1) 表征 STEP 错误聚合状态
  *   - 单 STEP 失败不影响下一 STEP（STEP 级隔离）
  */
@@ -79,7 +79,7 @@ export function parseStepSummary<T = unknown>(output: string, stepName: string):
 export function psql(sqlStr: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sqlStr.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sqlStr.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

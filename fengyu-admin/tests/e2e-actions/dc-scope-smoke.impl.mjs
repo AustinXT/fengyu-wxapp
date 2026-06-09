@@ -22,7 +22,7 @@ const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 const CONN =
   process.env.DATABASE_URL ||
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
 process.env.DATABASE_URL = CONN
 process.env.PG_CONNECTION_STRING = CONN
 

@@ -31,7 +31,7 @@ const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 // PG 连接（与其它 smoke 一致）
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 process.env.LAKALA_ORG_CODE = process.env.LAKALA_ORG_CODE || '1'
 process.env.LAKALA_INCOMING_NOTIFY_URL = process.env.LAKALA_INCOMING_NOTIFY_URL ||

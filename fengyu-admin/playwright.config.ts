@@ -31,8 +31,10 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // dev server 子进程继承本进程环境变量（含 E2E_DATABASE_URL），经 src/db/index.ts 连独立测试库。
     command: 'bun run dev',
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    // 用独立测试库时不复用现有(可能连开发库的) dev server，强制起继承 E2E_DATABASE_URL 的专用实例。
+    reuseExistingServer: !process.env.CI && !process.env.E2E_DATABASE_URL,
   },
 })

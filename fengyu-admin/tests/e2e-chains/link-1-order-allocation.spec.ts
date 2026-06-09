@@ -19,7 +19,7 @@ const BASE = 'http://localhost:3000'
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -261,34 +261,19 @@ test('链路1：开单 → 收款确认 → 营业额分配', async ({ page }) =
 
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-1-05-step3-checkout.png` })
 
-  // 支付方式：选择"线下"支付
-  // 找支付方式选择器
-  const paymentMethodSelect = page.locator('select').filter({ hasText: /线下|微信|支付宝/ }).first()
-  const paymentOptionLocators = [
-    page.locator('select[name="paymentMethod"]'),
-    page.locator('select').nth(0),
-  ]
+  // 支付方式：选择"线下"支付（admin <Select> 渲染原生 <select>，option 文案"线下支付" value="线下"）
+  const paymentMethodSelect = page.locator('select').filter({ hasText: /线下支付/ }).first()
+  await expect(paymentMethodSelect).toBeVisible({ timeout: 10000 })
+  await paymentMethodSelect.selectOption({ label: '线下支付' })
 
-  // 找到支付方式下拉
-  let paymentSet = false
-  for (const sel of paymentOptionLocators) {
-    if (await sel.count() > 0) {
-      const opts = await sel.locator('option').allTextContents()
-      if (opts.some((o) => o.includes('线下'))) {
-        await sel.selectOption({ label: '线下支付' })
-        paymentSet = true
-        break
-      }
-    }
-  }
-
-  if (!paymentSet) {
-    // 尝试点击线下支付按钮（如果有按钮形式的支付方式选择）
-    const offlineBtn = page.getByRole('button', { name: /线下/ }).first()
-    if (await offlineBtn.count() > 0) {
-      await offlineBtn.click()
-      paymentSet = true
-    }
+  // 取消「充值卡抵扣」：根因（2026-06-09 实测）——顾客 FY-FIX-CLIENT-01 有储值卡余额，admin 开单页
+  // 加载余额后自动勾选充值卡抵扣（order-create-page.tsx:298 setUseCard(bal>0)），导致开单全额卡抵扣
+  // → payment_method='无'、status='已支付'，绕过线下「确认收款」链路（完成页无"确认收款"按钮）。
+  // 本 link 验证线下现金收款，故取消该勾选（Step 3 唯一 checkbox）。
+  const useCardCheckbox = page.getByRole('checkbox').first()
+  if ((await useCardCheckbox.count()) > 0 && (await useCardCheckbox.isChecked().catch(() => false))) {
+    await useCardCheckbox.uncheck()
+    console.log('[链路1] 已取消充值卡抵扣（走线下现金收款链路）')
   }
 
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-1-06-payment-method.png` })

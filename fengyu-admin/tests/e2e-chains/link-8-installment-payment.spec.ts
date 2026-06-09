@@ -29,7 +29,7 @@ const FIXTURE_PHONE = '13800138000'
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
 
 const PG_CMD = (sql: string) =>
-  `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`
+  `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`
 
 function dbQuery(sql: string): string {
   try {
