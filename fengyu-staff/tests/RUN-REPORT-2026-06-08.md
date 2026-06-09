@@ -6,9 +6,9 @@
 
 - **L2 云函数**：60/64 PASS。4 个失败**全部非新回归**（1 flaky + 2 测试漂移 + 1 已知数据问题）。
 - **L3 小程序 Smoke**：10/10 PASS（1 处软警告）。
-- **L3 小程序 Scenarios**：10/12 PASS。2 个失败均为**测试侧问题**（1 测试基建 bug + 1 潜伏 fixture 问题首次暴露），无产品回归；且 300s 硬挂已消失、bs06 较基线由 FAIL 转 PASS。
+- **L3 小程序 Scenarios**：首跑 10/12 PASS（2 失败均测试侧）；**修复后干净全套 = 11 pass / 1 skip（bs04 已知 300s flaky 跳过），0 fail**。bs06 较基线 FAIL→PASS、bs01 首次端到端跑绿。
 
-无任何确证的**产品功能回归**。下方「待决策清单」列出 5 项建议修复。
+无任何确证的**产品功能回归**。本轮修复 ⑥④③⑤ 全部 PASS；② 经生产库核查非 bug。详见下方「本轮决策与修复」+「bs01 专项稳定化」。
 
 ---
 
@@ -108,20 +108,26 @@
 | ⑥ | bs02 reLaunch 对象参数 | `reLaunch({url})` → `reLaunch('...')`（automator 入参是字符串） | `scenarios/bs02-refund-approve.spec.mjs:126` | ✅ **PASS**（全链路含 workbench 徽章联动） |
 | ④ | order-deposit 退款消息断言 | lock 断言 `/寄存单/` → `/仅销售单支持退款/`（对齐 Bug-L 白名单；errorType 仍 INVALID_STATE） | `smoke-order-deposit.mjs` 6a | ✅ PASS |
 | ③ | order-create-internal unit_price 断言 | 改断言 `unit_real_price===400` + `unit_price===800`（标价快照模型） | `smoke-order-create-internal.mjs` | ✅ PASS |
-| ⑤ | bs01 普通商品类目空（+ 连带 step2/step6 字段漂移） | ①fixture 补一级父类目行（`product_kind=NULL`，命名空间 kind `L3护理项目`）+ 二级行 product_kind 对齐；②step2 断言由 `d.categories`（普通商品 Tab 恒为 `[]`）改查 `d.groupedCategories` 含 L3 + 加 `waitForData` 等异步加载；③step6 选顾客匹配键 `customerInfo.id`（=customer_id，测试顾客为 null）→ `customerInfo.clientUserId`（=user_id） | `scenarios/bs01-order-flow.spec.mjs` | ⚠️ **部分**（见下） |
+| ⑤ | bs01 普通商品类目空（牵出整条从未验证的链路，7 处连环 bug） | 见下「bs01 专项稳定化」 | `scenarios/bs01-order-flow.spec.mjs` | ✅ **PASS**（端到端 9 步 + 全套回归） |
 
-> ⑤ 多根因（之前 05-28 因 bs01 step1 300s 硬挂被 SKIP，step2 起从未真正跑过，逐步暴露）：
-> (a) fixture 用了**生产已不存在的 product_kind「护理项目」**，shopInit 的 `withParentJoin` INNER JOIN（`parent.category_name=child.product_kind`）找不到一级父行 → 类目被丢弃。生产实际 kind 是 `招牌/王牌/明星/加项/家居/其他/拓客引流卡`（DB 驱动）。
-> (b) order-create.ts 的「普通商品」Tab 用 `groupedCategories` 渲染，`categories` 恒为 `[]`，旧断言查错了字段。
-> (c) step6 选顾客匹配键用错（`.id` vs `.clientUserId`）。
->
-> **修复已验证正确**：DB 层跑 shopInit 等价查询（withParentJoin+EXISTS）返回 **6 组含 L3护理项目**；某次热 IDE 运行 bs01 step2 PASS（`groupedCategories=6 已含 L3`）且 step3/4/5 通过（`cartTotal=2100`）。
->
-> **但 bs01 端到端仍未跑绿**，卡在**远程 dev staffApi 的 `product.shopInit` 间歇返回空 groupedCategories**（`groups=0, catalogLoading=false`，被页面 `loadShopInit` try/catch 吞成空数据）：
-> - 同一份 fixture + 同一份 DB，本地 require 的 L2 `smoke-product-shopinit` **PASS**、DB 等价查询返回 6 组 → 数据与代码逻辑正确；
-> - 多次重启后远程 shopInit 持续 0 组（连生产 6 组都没有）→ 属**云函数侧 PG 连接池冷启/抖动 flaky**（与 ① mgmt-dashboard 同类，今日 5434 多次抖动）；
-> - 另：bs01 重跑若不重启 IDE 会有**购物车 data 跨次泄漏**（step3 badge=3），是 harness 重跑假象（全套跑时 IDE 全新启动无此问题）。
-> - **结论**：⑤ 的数据/字段修复均正确且为净改进（把 bs01 从「step2 必挂」推进到「step5 通过」），但 bs01 完整跑绿被远程 shopInit flaky 阻塞，且 step7-9 仍未验证 → **建议另起 bs01 专项稳定化**（含 shopInit 空结果重试兜底），超出本轮「补一级类目」范畴。
+### ⑤ bs01 专项稳定化 — 完整修复，端到端 PASS
+
+bs01-order-flow（完整开单链路 P0）自创建起**从未端到端跑绿**（05-28 起因 step1 子包硬挂被 SKIP，step2 后的代码从没真正执行），积累了 7 处连环 bug。本轮逐个定位修复（**均在 spec 测试侧，零产品代码改动**），现 **bs01 端到端 9 步 PASS**：
+
+| # | bug | 修法 |
+|---|-----|------|
+| 1 | **login 漏传 store scope（根因）** | `loginStaffWithTestOpenid(mp, OPENID)` 没传 currentStoreId → globalData.currentStoreId 残留真实 IDE 账号旧门店 → 页面 `utils/cloud.ts` 把它当 `_currentStoreId` 注入 → 越权门店 → 后端 `resolveRuntimeAuth` 抛「无权访问该门店」→ 页面 `loadShopInit` 等**所有页面发起的 staffApi 调用**被 try/catch 吞成空（groupedCategories=0）。修：传 `TEST_STORE_A1_ID` |
+| 2 | fixture 用生产已不存在的 `product_kind='护理项目'`（实际是 DB 驱动的 招牌/王牌/…）→ shopInit `withParentJoin` 找不到一级父行 | fixture 自带命名空间一级父行 `L3护理项目`(product_kind=NULL) + 二级行对齐 |
+| 3 | step2 断言查错字段：普通商品 Tab 用 `groupedCategories`，`categories` 恒 `[]` | 断言 `groupedCategories` 含 L3 |
+| 4 | onShow 的 loadShopInit 受 `_allCategories` 守卫 + 实例复用不可靠 | step1 显式 `callMethod('loadShopInit')` + 3 次重试 + `updateCart([])` 重置购物车（防跨次重跑 badge 泄漏） |
+| 5 | step6 选顾客匹配键 `customerInfo.id`(=customer_id，测试顾客 null) | 改 `customerInfo.clientUserId`(=user_id) |
+| 6 | cleanup 顺序错：开单订单 ID 是生成的 `FY-XSD-WX-`（非 L3 命名空间），先删 SKU 撞 sale_items FK + 残留「待支付」单触发「一顾客一待支付单」守卫挡 order.create | 先 `cleanupL3TestData`（按 client_user_id 删订单）再 `cleanupProductsAndCoupon` |
+| 7 | step9 子包 `order-qrcode` 的 currentPage().route 在 automator 偶发为空 | step9 改 **PG 权威**（按 client_user_id 查唯一待支付单断言字段），route 降级 best-effort；`total_amount` 对齐为已摊券值 2070（= payable，非卡前 2100） |
+
+**关键诊断手段**：直调 `callShopInitRaw`（payload 带 `_testOpenid`）连续 6 次全返 6 组含 L3，而页面 loadShopInit 返 0 组 → 锁定是**页面侧 _currentStoreId 越权注入**（非云函数 flaky；先前误判为 shopInit flaky 在此推翻）。
+
+**回归验证（干净 IDE 全套）**：`✅ 11 pass / 1 skip / 12 ran`（bs01 PASS；bs02–bs12 全 PASS；bs04 = 已知 300s 超时 flaky，`SKIP_FLAKY=bs04` 跳过）。
+> ⚠️ 注：连续多次重跑会让微信开发者工具 automator 退化（大面积 TIMEOUT/连接断），**与代码无关**；跑全套前需 quit + cli auto 全新启动 IDE。bs04 的 300s 超时是其本身的 teardown 未干净退出（逻辑步骤全过），仍属已知 flaky。
 
 ### ② service-commission 提成率未按 org 过滤 — 生产库核查结论
 
