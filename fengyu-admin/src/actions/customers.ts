@@ -594,7 +594,7 @@ export const updateCustomer = withPermission(
   try {
     result = await db.update(clientWechatUsers).set(data as any).where(whereConditions)
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
     }
     throw err
@@ -746,7 +746,7 @@ export const createCustomer = withPermission(
       boundEmployeeName,
     })
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
     }
     throw err

@@ -1869,16 +1869,16 @@ export const createOrder = withPermission(
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     // PG 外键违反（storeId / skuId / clientUserId 不存在）
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
     }
     // PG NOT NULL 违反（字段缺失）
-    if (err?.code === '23502') {
+    if (pgErrorCode(err) === '23502') {
       console.error('[createOrder] not_null_violation:', err)
       return { success: false, message: '订单字段缺失，请联系管理员' }
     }
     // PG 唯一约束冲突（advisory lock 下极罕见）
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '订单号冲突，请稍后重试' }
     }
     console.error('[createOrder] unexpected error:', err)
@@ -2356,15 +2356,15 @@ export const createConversionOrder = withPermission(
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       console.error('[createConversionOrder] fk_violation:', err)
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
     }
-    if (err?.code === '23502') {
+    if (pgErrorCode(err) === '23502') {
       console.error('[createConversionOrder] not_null_violation:', err)
       return { success: false, message: '订单字段缺失，请联系管理员' }
     }
-    if (err?.code === '23505') return { success: false, message: '订单号冲突，请稍后重试' }
+    if (pgErrorCode(err) === '23505') return { success: false, message: '订单号冲突，请稍后重试' }
     console.error('[createConversionOrder] unexpected error:', err)
     return { success: false, message: '转换单创建失败，请稍后重试' }
   }
@@ -3162,7 +3162,7 @@ export const recordPayment = withPermission(
     if (msg?.includes('ORDER_ID_GEN_FAILED')) {
       return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '回款单号生成失败，请稍后重试' } }
     }
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, error: { code: 'ORDER_ID_CONFLICT', message: '订单号冲突，请稍后重试' } }
     }
     console.error('[recordPayment] unexpected error:', err)

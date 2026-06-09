@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { saleAllocations, saleOrders, saleItems } from '@db/order'
 import { eq, sql, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -441,7 +442,7 @@ export const batchSaveAllocations = withPermission(
     })
   } catch (err: any) {
     // PG 外键违反（employeeId 不存在）
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       return { success: false, message: '员工信息不存在，请检查后重试' }
     }
     throw err

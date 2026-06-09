@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { pickupRecords } from '@db/pickup'
 import { saleItems } from '@db/order'
 import { stores } from '@db/org'
@@ -373,9 +374,7 @@ export const createPickupRecord = withPermission(
 
         return inserted[0]?.id ?? 0
       } catch (err: unknown) {
-        const code = (err as { code?: string })?.code
-        const constraint = (err as { constraint?: string })?.constraint
-        if (code === '23505' && constraint === 'uq_pickup_idempotency') {
+        if (pgErrorCode(err) === '23505' && pgErrorConstraint(err) === 'uq_pickup_idempotency') {
           throw new ApiError('CONFLICT', '提货请求重复，请勿重复提交')
         }
         throw err

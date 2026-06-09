@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
 import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc, inArray } from 'drizzle-orm'
@@ -103,7 +104,7 @@ export const createRate = withPermission(
       commissionRate: data.commissionRate,
     })
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '相同条件的提成规则已存在' }
     }
     throw err

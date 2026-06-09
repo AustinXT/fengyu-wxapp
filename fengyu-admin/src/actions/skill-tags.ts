@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { skillTags } from '@db/lookup'
 import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -65,7 +66,7 @@ export const createSkillTag = withPermission(
         isValid: data.isValid ?? true,
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该标签名称已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该标签名称已存在' }
       throw err
     }
 
@@ -98,7 +99,7 @@ export const updateSkillTag = withPermission(
     try {
       result = await db.update(skillTags).set(data).where(whereConditions)
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该标签名称已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该标签名称已存在' }
       throw err
     }
 

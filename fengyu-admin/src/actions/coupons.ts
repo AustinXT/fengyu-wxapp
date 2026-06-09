@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { couponTemplates, userCoupons } from '@db/coupon'
 import { clientWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
@@ -340,7 +341,7 @@ export const createTemplate = withPermission(
         isActive: data.isActive ?? true,
       })
     } catch (err: any) {
-      if (err?.code === '23505') {
+      if (pgErrorCode(err) === '23505') {
         return { success: false, message: '优惠券模板编号已存在' }
       }
       throw err

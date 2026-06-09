@@ -14,7 +14,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
-import { pgErrorCode } from '@/lib/pg-error'
+import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters } from '@/lib/list-filters'
@@ -469,8 +469,8 @@ export const createEmployee = withPermission(
     })
   } catch (err: any) {
     // PG 唯一约束冲突（手机号或员工编号并发重复）
-    if (err?.code === '23505') {
-      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+    if (pgErrorCode(err) === '23505') {
+      if (pgErrorDetail(err)?.includes('phone') || pgErrorConstraint(err)?.includes('phone')) {
         return { success: false, message: '该手机号已被其他员工使用' }
       }
       return { success: false, message: '数据冲突，请稍后重试' }
@@ -585,8 +585,8 @@ export const updateEmployee = withPermission(
   try {
     result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
   } catch (err: any) {
-    if (err?.code === '23505') {
-      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+    if (pgErrorCode(err) === '23505') {
+      if (pgErrorDetail(err)?.includes('phone') || pgErrorConstraint(err)?.includes('phone')) {
         return { success: false, message: '该手机号已被其他员工使用' }
       }
       return { success: false, message: '数据冲突，请稍后重试' }

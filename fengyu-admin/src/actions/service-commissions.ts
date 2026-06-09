@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { serviceCommissions } from '@db/service-commission'
 import { serviceOrders, serviceItems } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
@@ -266,7 +267,7 @@ export const batchSaveServiceCommissions = withPermission(
         .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     })
   } catch (err: any) {
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       return { success: false, message: '员工信息不存在，请检查后重试' }
     }
     throw err

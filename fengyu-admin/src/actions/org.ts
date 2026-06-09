@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { orgNodes, stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
@@ -87,8 +88,8 @@ export const createOrgNode = withPermission(
       isActive: data.isActive,
     })
   } catch (err: any) {
-    if (err?.code === '23505') return { success: false, message: '节点编号已存在' }
-    if (err?.code === '23503') return { success: false, message: '父节点不存在，请刷新后重试' }
+    if (pgErrorCode(err) === '23505') return { success: false, message: '节点编号已存在' }
+    if (pgErrorCode(err) === '23503') return { success: false, message: '父节点不存在，请刷新后重试' }
     throw err
   }
 
@@ -208,7 +209,7 @@ export const deleteOrgNode = withPermission(
       return { success: false, message: '节点不存在' }
     }
   } catch (err: any) {
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       return { success: false, message: '该节点仍有关联数据，无法删除' }
     }
     throw err

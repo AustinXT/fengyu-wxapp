@@ -153,6 +153,31 @@ const config = [
           message:
             'Exported Server Action initializer must be withPermission or withAnyPermission (got a different callee).',
         },
+        /**
+         * 禁止裸 `.code === '23xxx'` / `err?.code === '23xxx'` 判断 pg 错误码。
+         *
+         * drizzle 0.45 把失败查询包进 DrizzleQueryError，真实 pg 错误码落在
+         * `err.cause.code`，裸 `.code` 永不命中 → 「已存在/外键/冲突」友好提示退化成
+         * 未捕获 500。一律用 `pgErrorCode(err)`（@/lib/pg-error，沿 cause 链查找，
+         * 兼容扁平错误）；约束名/详情用 `pgErrorConstraint` / `pgErrorDetail`。
+         *
+         * 两条 selector 分别覆盖 `err.code`（MemberExpression）与 `err?.code`
+         * （ChainExpression > MemberExpression）。5 位数字字面量限定：避开拉卡拉
+         * `resp.code === '000000'`（6 位）/ `'GW0004'`（含字母）等非 pg 错误码误伤。
+         * test 文件由本 block 的 ignores 豁免（mock 构造 `{code:'23xxx'}` 不是比较）。
+         */
+        {
+          selector:
+            "BinaryExpression[operator=/^===?$/][left.property.name='code'][right.value=/^[0-9]{5}$/]",
+          message:
+            "禁止裸 `.code === '23xxx'` 判断 pg 错误码 —— drizzle 0.45 把码包进 err.cause，永不命中。改用 pgErrorCode(err)（@/lib/pg-error）。",
+        },
+        {
+          selector:
+            "BinaryExpression[operator=/^===?$/][left.expression.property.name='code'][right.value=/^[0-9]{5}$/]",
+          message:
+            "禁止裸 `err?.code === '23xxx'` 判断 pg 错误码 —— drizzle 0.45 把码包进 err.cause，永不命中。改用 pgErrorCode(err)（@/lib/pg-error）。",
+        },
       ],
     },
   },

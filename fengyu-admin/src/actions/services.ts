@@ -952,7 +952,7 @@ export const createServiceOrder = withPermission(
     })
   } catch (err: any) {
     // PG 外键违反（storeId / clientUserId / assignedEmployeeId 不存在）
-    if (err?.code === '23503') {
+    if (pgErrorCode(err) === '23503') {
       return { success: false, message: '关联数据不存在，请检查员工或顾客信息' }
     }
     throw err

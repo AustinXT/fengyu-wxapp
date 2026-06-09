@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { projectSeriesLookup } from '@db/lookup'
 import { orgNodes } from '@db/org'
@@ -335,7 +336,7 @@ export const createCategory = withPermission(
         isValid: data.isValid,
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '分类编号已存在' }
       throw err
     }
 
@@ -658,8 +659,8 @@ export const createSku = withPermission(
         productType: data.productType as typeof productSkus.$inferInsert['productType'],
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
-      if (err?.code === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '商品编号已存在' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
       throw err
     }
 
@@ -797,8 +798,8 @@ export const addSkuToProduct = withPermission(
         bundleGroupId: bundleGroupId ?? null,
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该规格已关联到此商品' }
-      if (err?.code === '23503') return { success: false, message: '商品或规格不存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该规格已关联到此商品' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '商品或规格不存在' }
       console.error('[addSkuToProduct] insert failed:', err)
       return { success: false, message: `添加失败: ${err?.message ?? '未知错误'}` }
     }
@@ -909,8 +910,8 @@ export const createBundleGroup = withPermission(
       revalidatePath('/mall')
       return { success: true, message: '分组已创建', id: row.id }
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
-      if (err?.code === '23503') return { success: false, message: '商品不存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该商品下已存在同名分组' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '商品不存在' }
       throw err
     }
   },
@@ -944,7 +945,7 @@ export const updateBundleGroup = withPermission(
         return { success: false, message: '分组不存在' }
       }
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该商品下已存在同名分组' }
       throw err
     }
 
@@ -1297,7 +1298,7 @@ export const createProduct = withPermission(
     try {
       await db.insert(products).values(data)
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '商品编号已存在' }
       throw err
     }
 
@@ -1414,7 +1415,7 @@ export const createMallCategory = withPermission(
     try {
       await db.insert(mallCategories).values(data)
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '分类编号已存在' }
       throw err
     }
 
