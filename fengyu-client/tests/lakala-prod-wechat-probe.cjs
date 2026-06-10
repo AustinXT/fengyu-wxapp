@@ -52,29 +52,31 @@ async function main() {
   const outTradeNo = `WXPROBE${Date.now()}`
 
   console.log('============================================')
-  console.log(`  拉卡拉【生产】微信支付探测 trans_type=${transType}（${transType === '71' ? '小程序' : 'NATIVE扫码'}）`)
+  console.log(`  拉卡拉【生产】微信支付探测 trans_type=${transType}（${transType === '41' ? 'NATIVE扫码' : transType === '51' ? 'JSAPI公众号' : '小程序'}）`)
   console.log('============================================')
   console.log(`  API_BASE     = ${cfg.apiBase}`)
-  console.log(`  merchant_no  = ${merchantNo}（凤仪韵）`)
+  console.log(`  merchant_no  = ${merchantNo}`)
   console.log(`  term_no      = ${termNo}`)
   console.log(`  金额         = ${amountFen} 分 = ${(amountFen / 100).toFixed(2)} 元`)
   console.log(`  out_trade_no = ${outTradeNo}`)
-  if (transType === '71') {
+  const needsSubAppid = transType === '71' || transType === '51'
+  if (needsSubAppid) {
     console.log(`  sub_appid    = ${subAppid}`)
-    console.log(`  openid       = ${openid ? openid.slice(0, 8) + '...' + openid.slice(-4) : '(缺! 71必填)'}`)
+    console.log(`  openid       = ${openid ? openid.slice(0, 8) + '...' + openid.slice(-4) : '(缺! 71/51必填)'}`)
   }
   console.log('')
 
-  if (transType === '71' && !openid) {
-    console.error('✗ trans_type=71 必须传 LAKALA_SMOKE_OPENID')
+  if (needsSubAppid && !openid) {
+    console.error(`✗ trans_type=${transType} 必须传 LAKALA_SMOKE_OPENID`)
     process.exit(2)
   }
 
   const accBusi = { timeout_express: '10' }
-  if (transType === '71') {
+  if (needsSubAppid) {
     accBusi.sub_appid = subAppid
     accBusi.user_id = openid
   }
+  if (transType === '51') accBusi.device_info = 'WEB'  // JSAPI 文档建议设备号传 WEB
   const reqData = {
     merchant_no: merchantNo,
     term_no: termNo,
@@ -100,8 +102,8 @@ async function main() {
     const accResp = (resp.resp_data && resp.resp_data.acc_resp_fields) || {}
     console.log(`\n<<< trade_no = ${resp.resp_data.trade_no}`)
     console.log(`<<< log_no   = ${resp.resp_data.log_no}`)
-    if (transType === '71') {
-      console.log('<<< wx.requestPayment 参数：')
+    if (needsSubAppid) {
+      console.log('<<< 支付参数（wx.requestPayment / JSAPI）：')
       console.log(`      app_id    = ${accResp.app_id}`)
       console.log(`      timeStamp = ${accResp.time_stamp}`)
       console.log(`      nonceStr  = ${accResp.nonce_str}`)
