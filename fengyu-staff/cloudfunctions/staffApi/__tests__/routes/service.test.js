@@ -80,6 +80,8 @@ describe('service.create', () => {
       .mockResolvedValueOnce([{ client_user_id: 'cu-001' }])
       // 3. 无进行中服务单
       .mockResolvedValueOnce([])
+      // 4. became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
@@ -271,7 +273,7 @@ describe('service.create', () => {
         client_phone: '138',
       }])
       .mockResolvedValueOnce([])                                  // 无进行中服务单
-      .mockResolvedValueOnce([{ became_member_at: null }])        // 售前
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])        // 售前
 
     let capturedSiSelectSql = ''
     let capturedInsertSql = ''
@@ -340,7 +342,7 @@ describe('service.create', () => {
         client_phone: '138',
       }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ became_member_at: null }])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     let capturedInsertParams = null
     // 单一 transaction：generateServiceOrderId + INSERT service_orders + SELECT sale_items + INSERT service_items
@@ -400,7 +402,7 @@ describe('service.create', () => {
         client_phone: '138',
       }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ became_member_at: null }])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     let capturedSiSelectSql = ''
     let capturedInsertParams = null
@@ -749,7 +751,9 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
       .rejects.toThrow(/次数不足/)
   })
 
-  test('跨店核销拒绝 — sale_items.store_id 与服务单门店不一致', async () => {
+  test('跨店核销允许 — 卡跟顾客走：sale_items.store_id 与服务单门店不一致也可扣减', async () => {
+    // 可核销门店由 service.create 的「顾客绑定门店」校验把关；finalize 扣次 UPDATE 已去掉
+    // AND store_id=$3，他店售出的卡也能命中（rowCount=1）。
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
@@ -760,23 +764,23 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])  // assertNoPendingRefundByServiceOrder：无在途退款
       .mockResolvedValueOnce([
         { service_item_id: 'si-1', sale_item_id: 'item-other-store', session_used: 1 },
       ])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
-          // 原子 UPDATE 因 store_id 不匹配 rowCount=0
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-          // probe: sale_item 存在但属于他店
-          .mockResolvedValueOnce({ rows: [{ store_id: 'store-999', remaining_sessions: 5 }] }),
+        // 扣次 UPDATE 不再比卡售出门店 → 他店卡命中 rowCount=1
+        query: vi.fn().mockResolvedValue({ rows: [{ remaining_sessions: 5 }], rowCount: 1 }),
       }
       return await cb(client)
     })
 
-    await expect(serviceRoutes.confirm(ctx))
-      .rejects.toThrow(/仅在 store-999 可核销/)
+    await serviceRoutes.confirm(ctx)
+
+    expect(ctx.result.status).toBe('已完成')
+    expect(ctx.result.message).toContain('次数已扣减')
   })
 
   test('剩余次数归零时关闭关联预约', async () => {
@@ -1725,6 +1729,8 @@ describe('service.create clientUserId 解析', () => {
       .mockResolvedValueOnce([{ user_id: 'resolved-user' }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
+      // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -1773,6 +1779,8 @@ describe('service.create clientUserId 解析', () => {
       .mockResolvedValueOnce([{ client_user_id: 'fallback-user' }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
+      // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {

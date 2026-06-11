@@ -126,9 +126,7 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 家居产品不走到店服务流程`)
     }
 
-    if (si.store_id !== ctx.auth.effectiveStoreId) {
-      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 仅在 ${si.store_id} 可核销，当前门店 ${ctx.auth.effectiveStoreId} 无法创建服务单`)
-    }
+    // 注：可核销门店不再看卡售出门店（si.store_id），改由下方「顾客绑定门店」统一把关（卡跟顾客走）
 
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 剩余次数不足`)
@@ -189,9 +187,13 @@ async function create(ctx) {
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
-      'SELECT became_member_at FROM client_wechat_users WHERE user_id = $1',
+      'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
+    // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
+    if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
+      throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')
+    }
     if (cuRows.length > 0 && cuRows[0].became_member_at && new Date(cuRows[0].became_member_at) <= new Date()) {
       serviceOrderType = '售后'
     }
@@ -217,7 +219,7 @@ async function create(ctx) {
           service_order_id, status, service_order_type, market_name, store_id,
           service_date, assigned_employee_id,
           remark, client_user_id, appointment_id, created_at, updated_at
-        ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+        ) VALUES ($1, '待服务', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, $5, $6, $7, $8, $9, $10, $10)`,
         [
           serviceOrderId,
           serviceOrderType,
@@ -392,8 +394,8 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, ctx, now) {
   const serviceOrderId = so.service_order_id
 
-  // 原子扣减每条订单行的剩余次数（强制 sale_items.store_id 与服务单门店一致，
-  // 防止本店服务单核销他店购买的卡）
+  // 原子扣减每条订单行的剩余次数。
+  // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
     //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
@@ -402,11 +404,10 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       `UPDATE sale_items
        SET remaining_sessions = remaining_sessions - $1
        WHERE sale_item_id = $2
-         AND store_id = $3
          AND remaining_sessions >= $1
          AND remaining_sessions IS NOT NULL
          AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, session_count)`,
-      [item.session_used, item.sale_item_id, so.store_id]
+      [item.session_used, item.sale_item_id]
     )
 
     if (updateResult.rowCount === 0) {
@@ -418,9 +419,6 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 不存在`)
       }
       const probe = checkRows.rows[0]
-      if (probe.store_id !== so.store_id) {
-        throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
-      }
       if (probe.remaining_sessions !== null && probe.remaining_sessions < item.session_used) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
       }

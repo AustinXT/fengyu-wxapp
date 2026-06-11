@@ -36,8 +36,8 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, now) {
   const serviceOrderId = so.service_order_id
 
-  // 原子扣减每条订单行的剩余次数（强制 sale_items.store_id 与服务单门店一致，
-  // 防止本店服务单核销他店购买的卡）
+  // 原子扣减每条订单行的剩余次数。
+  // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
     //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
@@ -46,11 +46,10 @@ async function finalizeServiceOrder(client, so, items, now) {
       `UPDATE sale_items
        SET remaining_sessions = remaining_sessions - $1
        WHERE sale_item_id = $2
-         AND store_id = $3
          AND remaining_sessions >= $1
          AND remaining_sessions IS NOT NULL
          AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, session_count)`,
-      [item.session_used, item.sale_item_id, so.store_id]
+      [item.session_used, item.sale_item_id]
     )
 
     if (updateResult.rowCount === 0) {
@@ -62,9 +61,6 @@ async function finalizeServiceOrder(client, so, items, now) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 不存在`)
       }
       const probe = checkRows.rows[0]
-      if (probe.store_id !== so.store_id) {
-        throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
-      }
       if (probe.remaining_sessions !== null && probe.remaining_sessions < item.session_used) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
       }

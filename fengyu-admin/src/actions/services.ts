@@ -821,10 +821,14 @@ export const createServiceOrder = withPermission(
   // 根据顾客成为会员客的时间戳判定服务单类型：
   // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
   const [customerRow] = await db
-    .select({ becameMemberAt: clientWechatUsers.becameMemberAt })
+    .select({ becameMemberAt: clientWechatUsers.becameMemberAt, boundStoreId: clientWechatUsers.boundStoreId })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
     .limit(1)
+  // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
+  if (customerRow?.boundStoreId !== data.storeId) {
+    return { success: false, message: '顾客当前绑定门店非该门店，疗程卡只能在其绑定门店核销/开单' }
+  }
   const serviceOrderType: '售前' | '售后' =
     customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date() ? '售后' : '售前'
 

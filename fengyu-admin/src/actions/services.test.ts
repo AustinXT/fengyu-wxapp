@@ -136,6 +136,25 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue(chain)
 }
 
+/** 多次 db.select() 按顺序返回不同结果（最后一个结果用于后续所有调用）。
+ *  createServiceOrder 顺序：1) customerRow(becameMemberAt+boundStoreId) 2) pendingAppt 3) saleItem 循环 */
+function makeSelectSequence(...results: any[][]) {
+  let i = 0
+  return vi.fn().mockImplementation(() => {
+    const result = results[Math.min(i, results.length - 1)]
+    i++
+    const chain: any = Object.assign(Promise.resolve(result), {
+      limit: vi.fn().mockResolvedValue(result),
+    })
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.innerJoin = vi.fn().mockReturnValue(chain)
+    return chain
+  })
+}
+
 /** mock db.select() 链用于 logTransition 上下文获取：.from().leftJoin().where().limit() */
 function mockSelectBefore(rows: any[] = [{}]) {
   const chain: any = {}
@@ -421,8 +440,23 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  it('顾客绑定门店 ≠ data.storeId → 拒绝（疗程卡只能在绑定门店核销）', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectSequence([{ boundStoreId: 'store-OTHER' }])
+    )
+
+    const result = await createServiceOrder(baseData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('绑定门店')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('saleItem 不存在 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    // customerRow 命中绑定门店（过绑定门店校验），但 saleItem 查不到
+    ;(db.select as any).mockImplementation(
+      makeSelectSequence([{ boundStoreId: 'store-1' }], [], [])
+    )
 
     const result = await createServiceOrder(baseData)
 
@@ -433,7 +467,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('剩余次数不足 → 拒绝', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 0, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 0, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
 
     const result = await createServiceOrder({
@@ -448,7 +482,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('原订单退款审批中 → 拒绝（在途退款冻结）', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', hasPendingRefund: true }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', hasPendingRefund: true, boundStoreId: 'store-1' }])
     )
 
     const result = await createServiceOrder({
@@ -465,7 +499,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     ;(db.select as any).mockImplementation(
       makeSelectChain([{
         sessionCount: 10, remainingSessions: 10, paidSessions: 0,
-        unitRealPrice: '200.00', hasApprovedRefund: true,
+        unitRealPrice: '200.00', hasApprovedRefund: true, boundStoreId: 'store-1',
       }])
     )
 
@@ -481,7 +515,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('事务内 FK 违反（23503）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     ;(db.transaction as any).mockRejectedValue(
       Object.assign(new Error('FK violation'), { code: '23503' })
@@ -495,7 +529,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('事务内其他异常 → 重新抛出', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
@@ -504,7 +538,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('remainingSessions=null（无次数限制）→ 跳过次数校验，成功', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: null, unitRealPrice: '0' }])
+      makeSelectChain([{ remainingSessions: null, unitRealPrice: '0', boundStoreId: 'store-1' }])
     )
     mockTx('FY-FW-260315001')
 
@@ -516,7 +550,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('正常创建 → 成功，返回 serviceOrderId', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     mockTx('FY-FW-260315001')
 
