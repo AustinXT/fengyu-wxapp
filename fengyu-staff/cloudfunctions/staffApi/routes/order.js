@@ -297,6 +297,7 @@ async function create(ctx) {
   } = payload
 
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
@@ -838,7 +839,7 @@ async function create(ctx) {
         preferred_employee_id, coupon_id, coupon_discount, remark, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -2576,6 +2577,7 @@ async function createConversion(ctx) {
     prepaidCardAmount: inputPrepaidCardAmount,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 转换单必须指定顾客 clientUserId')
@@ -2784,7 +2786,7 @@ async function createConversion(ctx) {
         payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3559,6 +3561,7 @@ async function createDeposit(ctx) {
     useCard,
   } = payload
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 寄存单必须指定顾客 clientUserId')
@@ -3678,7 +3681,7 @@ async function createDeposit(ctx) {
         preferred_employee_id, coupon_id, coupon_discount, remark,
         prepaid_card_amount, received, payable_amount, paid_at,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '寄存单', $2, $3, $4, $5, 0, $6, $7, $8, '无', $9,
+      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, $5, 0, $6, $7, $8, '无', $9,
                 NULL, NULL, 0, $10, 0, 0, 0, $5,
                 '待分配', $5, $5)`,
       [

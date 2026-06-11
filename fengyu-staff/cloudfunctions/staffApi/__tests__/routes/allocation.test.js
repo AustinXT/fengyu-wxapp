@@ -742,6 +742,7 @@ describe('allocation.suggest', () => {
         preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
       }])
+      .mockResolvedValueOnce([{ market_name: '华东市场' }]) // resolveMarketNameByStore 反查
       // resolveStaffRoles 返回 skills 数组
       .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', skills: ['美容师'] }])
       .mockResolvedValueOnce([{ cnt: 0 }])
@@ -780,6 +781,7 @@ describe('allocation.suggest', () => {
         preferred_employee_id: 'emp-multi',
         client_phone: '13800001111', customer_name: '张三',
       }])
+      .mockResolvedValueOnce([{ market_name: '华东市场' }]) // resolveMarketNameByStore 反查
       // 员工同时有美容师 + 推广师两个技能
       .mockResolvedValueOnce([{ employee_id: 'emp-multi', name: '全能', skills: ['美容师', '推广师'] }])
       .mockResolvedValueOnce([{ cnt: 1 }])
@@ -812,6 +814,7 @@ describe('allocation.suggest', () => {
  preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
+      .mockResolvedValueOnce([{ market_name: '华东市场' }]) // resolveMarketNameByStore 反查
       .mockResolvedValueOnce([{ cnt: 3 }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '500', sales_category: '自销自耗', product_name: 'P1', product_type: '疗程卡' },
@@ -835,6 +838,7 @@ describe('allocation.suggest', () => {
  preferred_employee_id: 'emp-b2',
         client_phone: '13800001111', customer_name: '张三',
       }])
+      .mockResolvedValueOnce([{ market_name: '华东市场' }]) // resolveMarketNameByStore 反查
       .mockResolvedValueOnce([{ employee_id: 'emp-b2', name: '王五', department: '咨询部' }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([

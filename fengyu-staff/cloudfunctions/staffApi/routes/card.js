@@ -74,6 +74,7 @@ async function recharge(ctx) {
   const faceVal = Number(faceValue)
 
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -134,7 +135,7 @@ async function recharge(ctx) {
         client_user_id, client_phone, customer_name,
         payment_method, opened_by, remark,
         created_at, updated_at
-      ) VALUES ($1, $2, '充值单', $3, $4, $5, $6, $7, $8, 0,
+      ) VALUES ($1, $2, '充值单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, 0,
                 $9, $10, $11, $12, $13, $14, $6, $6)`,
       [
         saleOrderId, initialStatus, documentType, marketName, storeId, now,

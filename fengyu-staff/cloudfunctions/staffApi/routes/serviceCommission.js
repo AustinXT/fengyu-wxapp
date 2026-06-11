@@ -17,6 +17,7 @@ const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
+const { resolveMarketNameByStore } = require('../utils/market')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
@@ -95,6 +96,9 @@ async function detail(ctx) {
     throw new Error('NOT_FOUND: 服务单不存在或不属于本门店')
   }
   const order = orders[0]
+  // market_name 快照口径修正：以门店反查 org 树市场名为权威（弃用开单人登录态快照），
+  // 反查失败时保留原快照降级。修复服务提成「按市场算提成 / 选员工」因快照空/错而失效。
+  order.market_name = (await resolveMarketNameByStore(order.store_id)) || order.market_name
   // 完成超 FREEZE_DAYS 天则冻结，前端据此禁用保存
   order.frozen = isFrozen(order.completed_at)
 

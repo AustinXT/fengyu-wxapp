@@ -13,6 +13,7 @@ const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefund } = require('../utils/refund')
+const { resolveMarketNameByStore } = require('../utils/market')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
@@ -128,6 +129,9 @@ async function save(ctx) {
   }
 
   const order = orders[0]
+  // market_name 快照口径修正：以门店反查 org 树市场名为权威（弃用开单人登录态快照），
+  // 反查失败时保留原快照降级。保证 buildSalesRateLookup 用权威市场名，避免提成额恒为 0。
+  order.market_name = (await resolveMarketNameByStore(order.store_id)) || order.market_name
 
   if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
     throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
@@ -511,6 +515,9 @@ async function suggest(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
   }
   const order = orders[0]
+  // market_name 快照口径修正：以门店反查 org 树市场名为权威（弃用开单人登录态快照），
+  // 反查失败时保留原快照降级。修复「按市场算提成 / 选员工」因快照空/错而失效（候选员工空、提成 0%）。
+  order.market_name = (await resolveMarketNameByStore(order.store_id)) || order.market_name
 
   if (!ALLOCATABLE_ORDER_TYPES.includes(order.sale_order_type)) {
     throw new Error('INVALID_STATE: ORDER_TYPE_NOT_ALLOCATABLE: 该订单类型不参与营业额分配')
