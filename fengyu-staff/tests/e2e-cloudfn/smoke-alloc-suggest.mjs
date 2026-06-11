@@ -191,7 +191,7 @@ async function main() {
     }
   }
 
-  // ─── 用例 C：跨市场隔离（market_name 不命中矩阵）───
+  // ─── 用例 C：market_name 快照脏值修正（store_id 反查为权威，修复脏快照致提成/选员工查空 bug）───
   const orderC = `${NS}_SUG_C`
   await createTestSaleOrder({
     saleOrderId: orderC, clientUserId: TEST_CLIENT_USER_ID,
@@ -200,7 +200,9 @@ async function main() {
     status: '已支付', salesCategory: '他销自耗',
     preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
-  // 把订单 market_name 改成不存在的市场，让 commission_rate_matrix JOIN 拿不到行
+  // 把订单 market_name 改成不存在的市场（模拟开单人登录态快照脏/空）。
+  // suggest 已弃用 market_name 快照、改以 store_id 反查 org 树定位真实市场（TE2LS_市场），
+  // 故仍命中提成矩阵——验证脏 market_name 不再导致候选员工/提成查空（本次修复的核心）。
   await pgQuery(
     `UPDATE sale_orders SET market_name='${NS}_不存在市场', allocation_status='待分配', received=total_amount
        WHERE sale_order_id=$1`,
@@ -216,12 +218,12 @@ async function main() {
   } else {
     const lines = sugC.data.allocLines || []
     const ratesCount = (sugC.data.rates || []).length
-    rec(`  C: rates=${ratesCount} allocLines=${lines.length} (跨市场隔离)`)
-    if (ratesCount !== 0) errors.push(`C.rates 应=0（市场不存在），实际=${ratesCount}`)
+    rec(`  C: rates=${ratesCount} allocLines=${lines.length} (store_id 反查修正脏 market_name)`)
+    if (ratesCount === 0) errors.push(`C.rates 应>0（store_id 反查真实市场、命中矩阵；脏 market_name 不再致空），实际=${ratesCount}`)
     if (lines.length !== 1) errors.push(`C.allocLines 应=1（单 skill），实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
-      if (rate !== 0) errors.push(`C.commRate 应=0（无矩阵规则），实际=${rate}`)
+      if (rate <= 0) errors.push(`C.commRate 应>0（反查市场命中矩阵规则），实际=${rate}`)
       if (Math.abs(Number(lines[0].allocationRatio) - 1.00) > 0.0001) errors.push(`C.allocationRatio 应=1.00，实际=${lines[0].allocationRatio}`)
     }
   }
