@@ -268,7 +268,7 @@ export interface ExportEmployeeRow {
   gender: string | null
   phone: string | null
   idCard: string | null
-  marketName: string | null
+  orgNodeId: string | null
   storeName: string | null
   positionName: string | null
   birthday: string | null
@@ -292,10 +292,9 @@ export const exportEmployees = withPermission(
     const dataRows = await db
       .select()
       .from(staffWechatUsers)
+      // 「所属组织」导出列改用员工 orgNodeId（前端 buildOrgPath 构建完整路径），与列表页一致。
+      // 无门店员工（养生部/财智部/总部职能岗）storeId 为 null，旧的门店→父市场链取不到组织值。
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
-      .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(whereClause)
       .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
       .limit(LIMIT + 1)
@@ -311,7 +310,7 @@ export const exportEmployees = withPermission(
         gender: e.gender,
         phone: e.phone,
         idCard: e.idCard,
-        marketName: (row as { market_node?: { name?: string | null } }).market_node?.name ?? null,
+        orgNodeId: e.orgNodeId,
         storeName: row.stores?.storeName ?? null,
         positionName: e.positionName,
         birthday: e.birthday,
