@@ -133,17 +133,15 @@ async function resolveScopeName(scopeType, scopeId) {
  */
 async function getVisitInfoScoped(clientUserId, scopeType, scopeId) {
   if (!clientUserId) return { lastServiceDate: null, visitFrequency: null }
-  // service_orders alias = so，scope 参数从 $2 开始（$1 是 clientUserId）
-  const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
+  // 交易数据跟顾客走：到店统计不按门店过滤（detail 已 assertCustomerInScope 守卫顾客可见性）
   const rows = await pg.query(
     `SELECT
        MAX(so.service_date) AS last_date,
        COUNT(DISTINCT so.service_date) FILTER (WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days') AS visit_count_90d
      FROM service_orders so
      WHERE so.client_user_id = $1
-       AND so.status = '已完成'
-       AND ${sc.sql}`,
-    [clientUserId, ...sc.params],
+       AND so.status = '已完成'`,
+    [clientUserId],
   )
 
   const lastDate = rows[0]?.last_date || null
@@ -163,7 +161,7 @@ async function getVisitInfoScoped(clientUserId, scopeType, scopeId) {
  */
 async function getTopProductScoped(clientUserId, scopeType, scopeId) {
   if (!clientUserId) return null
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 2)
+  // 交易数据跟顾客走：常购商品不按门店过滤
   const rows = await pg.query(
     `SELECT si.product_name, COUNT(*) AS cnt
        FROM sale_orders o
@@ -171,11 +169,10 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
       WHERE o.client_user_id = $1
         AND o.status IN ('已支付', '已完成')
         AND si.item_direction = '购买'
-        AND ${sc.sql}
       GROUP BY si.product_name
       ORDER BY cnt DESC
       LIMIT 1`,
-    [clientUserId, ...sc.params],
+    [clientUserId],
   )
   return rows.length > 0 ? rows[0].product_name : null
 }
@@ -186,8 +183,7 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
 async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
   if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 }
   const yearStart = new Date(new Date().getFullYear(), 0, 1)
-  // $1=clientUserId, $2=yearStart, scope 从 $3 起
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 3)
+  // $1=clientUserId, $2=yearStart。交易数据跟顾客走：消费统计不按门店过滤
   const rows = await pg.query(
     `SELECT
        COALESCE(SUM(si.received::numeric), 0) AS total,
@@ -195,9 +191,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
      FROM sale_orders o
      JOIN sale_items si ON o.sale_order_id = si.sale_order_id
      WHERE o.status = '已支付'
-       AND o.client_user_id = $1
-       AND ${sc.sql}`,
-    [clientUserId, yearStart, ...sc.params],
+       AND o.client_user_id = $1`,
+    [clientUserId, yearStart],
   )
   return {
     totalConsumption: Number(rows[0]?.total || 0),
@@ -233,6 +228,25 @@ async function assertCustomerInScope(boundStoreId, scopeType, scopeId) {
   if (rows.length === 0) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前 scope 范围内')
   }
+}
+
+/**
+ * 解析顾客（clientUserId 优先，否则 clientPhone）并做越权守卫：
+ * bound_store_id ∈ scope（复用 assertCustomerInScope）。返回 user_id。
+ * 交易数据「跟顾客走」：子 Tab 放开数据门店过滤后，由本守卫保留顾客可见性。
+ */
+async function resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId) {
+  const rows = await pg.query(
+    clientUserId
+      ? 'SELECT user_id, bound_store_id FROM client_wechat_users WHERE user_id = $1 LIMIT 1'
+      : 'SELECT user_id, bound_store_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    [clientUserId || clientPhone],
+  )
+  if (rows.length === 0) {
+    throw new Error('INVALID_PARAMS: 顾客不存在')
+  }
+  await assertCustomerInScope(rows[0].bound_store_id, scopeType, scopeId)
+  return rows[0].user_id
 }
 
 // ====================================================================
@@ -528,19 +542,10 @@ async function calendar(ctx) {
   const startDate = new Date(year, month - 1, 1)
   const endDate = new Date(year, month, 1)
 
-  const params = [startDate, endDate]
-  let whereCore
-  if (clientUserId) {
-    params.push(clientUserId)
-    whereCore = `o.status = '已支付' AND o.paid_at >= $1 AND o.paid_at < $2 AND o.client_user_id = $3`
-  } else {
-    params.push(clientPhone)
-    whereCore = `o.status = '已支付' AND o.paid_at >= $1 AND o.paid_at < $2 AND o.client_phone = $3`
-  }
-
-  const sc = buildSaleScope(scopeType, scopeId, 'o', params.length + 1)
-  params.push(...sc.params)
-  const whereClause = `${whereCore} AND ${sc.sql}`
+  // 交易数据跟顾客走：解析顾客 + 越权守卫，放开门店过滤、按顾客查全量
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+  const params = [startDate, endDate, resolvedUserId]
+  const whereClause = `o.status = '已支付' AND o.paid_at >= $1 AND o.paid_at < $2 AND o.client_user_id = $3`
 
   // 2026-05-20 P0-5/P1-8 修复：
   //   1. dailySummary 原 INNER JOIN sale_items 会漏掉 sale_orders.received>0 但无 sale_items 行的订单
@@ -610,19 +615,10 @@ async function paidOrders(ctx) {
   validateScopeParams(scopeType, scopeId)
   validateScope(ctx.auth, scopeType, scopeId)
 
-  const params = []
-  let whereCore
-  if (clientUserId) {
-    params.push(clientUserId)
-    whereCore = `o.status = '已支付' AND o.client_user_id = $1`
-  } else {
-    params.push(clientPhone)
-    whereCore = `o.status = '已支付' AND o.client_phone = $1`
-  }
-
-  const sc = buildSaleScope(scopeType, scopeId, 'o', params.length + 1)
-  params.push(...sc.params)
-  const whereClause = `${whereCore} AND ${sc.sql}`
+  // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+  const params = [resolvedUserId]
+  const whereClause = `o.status = '已支付' AND o.client_user_id = $1`
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
@@ -699,19 +695,10 @@ async function giftHistory(ctx) {
   validateScopeParams(scopeType, scopeId)
   validateScope(ctx.auth, scopeType, scopeId)
 
-  const params = []
-  let whereCore
-  if (clientUserId) {
-    params.push(clientUserId)
-    whereCore = `o.client_user_id = $1`
-  } else {
-    params.push(clientPhone)
-    whereCore = `o.client_phone = $1`
-  }
-
-  const sc = buildSaleScope(scopeType, scopeId, 'o', params.length + 1)
-  params.push(...sc.params)
-  const whereClause = `${whereCore} AND ${sc.sql}`
+  // 交易数据跟顾客走：解析顾客 + 越权守卫，放开门店过滤、按顾客查全量
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+  const params = [resolvedUserId]
+  const whereClause = `o.client_user_id = $1`
 
   // 组合套餐订单（保留 customer.js 的 TODO 占位逻辑）
   const promoOrders = await pg.query(
@@ -807,19 +794,10 @@ async function refundHistory(ctx) {
   validateScopeParams(scopeType, scopeId)
   validateScope(ctx.auth, scopeType, scopeId)
 
-  const params = []
-  let whereCore
-  if (clientUserId) {
-    params.push(clientUserId)
-    whereCore = `o.client_user_id = $1`
-  } else {
-    params.push(clientPhone)
-    whereCore = `o.client_phone = $1`
-  }
-
-  const sc = buildSaleScope(scopeType, scopeId, 'o', params.length + 1)
-  params.push(...sc.params)
-  const whereClause = `${whereCore} AND ${sc.sql}`
+  // 交易数据跟顾客走：解析顾客 + 越权守卫，放开门店过滤、按顾客查全量
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+  const params = [resolvedUserId]
+  const whereClause = `o.client_user_id = $1`
 
   // 退款数据源：sale_order_payments[change_type='退款']（refund_reason / audit_* / note 已在主表）
   const refundRows = await pg.query(

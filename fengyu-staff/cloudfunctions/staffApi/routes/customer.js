@@ -280,10 +280,7 @@ async function calendar(ctx) {
     `;
   }
 
-  // Store scope filter
-  const calScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
-  whereClause += ` AND ${calScope.sql}`
-  params.push(...calScope.params)
+  // 交易数据跟顾客走：消费日历不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
 
   const rows = await pg.query(
     `
@@ -539,28 +536,38 @@ async function getConsumptionStats(clientUserId) {
 async function paidOrders(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { clientUserId, clientPhone } = ctx.event.payload || {};
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
   if (!clientUserId && !clientPhone) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // scope 守卫：传 clientUserId 时校验该顾客 bound_store_id ∈ 当前 scope
+  // 手机号 → clientUserId：统一走 clientUserId 守卫分支
+  //（复用现有 assertCustomerInScope 可见性逻辑，不引入新逻辑）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑保持原样）
   if (clientUserId) {
     await assertCustomerInScope(pg, ctx.auth, clientUserId)
   }
 
-  // 强制按 scope 过滤：员工只能看到顾客在 scope 内购买的订单/卡，跨 scope 卡不可见
+  // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
   let whereClause, params;
   if (clientUserId) {
     whereClause = "o.status = '已支付' AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
+    // 极端：手机号无对应顾客，回退按手机号查
     whereClause = "o.status = '已支付' AND o.client_phone = $1";
     params = [clientPhone];
   }
-  const paidScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
-  whereClause += ` AND ${paidScope.sql}`
-  params.push(...paidScope.params)
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
@@ -859,11 +866,8 @@ async function refundHistory(ctx) {
     refundClientWhere = 'so.client_phone = $1'
     refundParams = [clientPhone]
   }
-  let refundWhere = refundClientWhere
-  // Store scope filter
-  const refundScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', refundParams.length + 1)
-  refundWhere += ` AND ${refundScope.sql}`
-  refundParams.push(...refundScope.params)
+  // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
+  const refundWhere = refundClientWhere
   refundParams.push(pageSize, (page - 1) * pageSize)
   const refundRows = await pg.query(`
     SELECT
@@ -897,11 +901,8 @@ async function refundHistory(ctx) {
     convClientWhere = 'o.client_phone = $1'
     convParams = [clientPhone]
   }
-  let convWhere = convClientWhere
-  // Store scope filter
-  const convScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', convParams.length + 1)
-  convWhere += ` AND ${convScope.sql}`
-  convParams.push(...convScope.params)
+  // 交易数据跟顾客走：转换单不再按门店过滤
+  const convWhere = convClientWhere
   const convRows = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
            o.created_at, o.paid_at

@@ -63,6 +63,7 @@ function setupCommonMocks(opts = {}) {
     svcDateRows = [],
     lastPurchaseRows = [],
     customerInScope = true,
+    resolveCustomerRow = [{ user_id: 'u1', bound_store_id: 'store-001' }], // 子 Tab resolveCustomerInScope 解析
     nameRows = [],
     staffRows = [],
     calendarDailyRows = [],
@@ -97,6 +98,11 @@ function setupCommonMocks(opts = {}) {
       /o\.parent_id\s*=\s*\$2/.test(sql)
     ) {
       return customerInScope ? [{ '?column?': 1 }] : []
+    }
+
+    // resolveCustomerInScope（子 Tab）：SELECT user_id, bound_store_id FROM client_wechat_users WHERE user_id|phone = $1
+    if (/SELECT\s+user_id,\s+bound_store_id\s+FROM\s+client_wechat_users/.test(sql)) {
+      return resolveCustomerRow
     }
 
     // search 最近购买（仅 search 在用）
@@ -646,10 +652,11 @@ describe('mgmtCustomer.detail 出数', () => {
         /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
         /year_total/.test(s),
     )
-    expect(consumptionSql).toMatch(/o\.store_id\s*=\s*\$3/)
+    // 交易数据跟顾客走：detail 消费统计不再按门店过滤（顾客可见性由 assertCustomerInScope 守护）
+    expect(consumptionSql).not.toMatch(/o\.store_id/)
   })
 
-  test('visitFrequency 与 topProductName 透传（市场 scope 用 IN 子查询）', async () => {
+  test('visitFrequency 与 topProductName 透传（消费统计不再按 scope 过滤，跟顾客走）', async () => {
     setupCommonMocks({
       detailRows: [
         {
@@ -686,17 +693,18 @@ describe('mgmtCustomer.detail 出数', () => {
         /MAX\(so\.service_date\)\s+AS\s+last_date/.test(s) &&
         /visit_count_90d/.test(s),
     )
-    expect(visitSql).toMatch(/so\.store_id\s+IN\s*\(/)
+    // 跟顾客走：到店统计不再按门店过滤
+    expect(visitSql).not.toMatch(/so\.store_id/)
 
     const topSql = sqls.find(
       (s) =>
         /si\.product_name,\s+COUNT\(\*\)\s+AS\s+cnt/.test(s) &&
         /LIMIT\s+1/.test(s),
     )
-    expect(topSql).toMatch(/o\.store_id\s+IN\s*\(/)
+    expect(topSql).not.toMatch(/o\.store_id/)
   })
 
-  test('scope=all：消费 / 频率 / 常购 SQL 全部用 WHERE ... AND TRUE', async () => {
+  test('scope=all：消费 / 频率 / 常购 SQL 均不含门店过滤（跟顾客走）', async () => {
     setupCommonMocks({
       detailRows: [
         {
@@ -736,9 +744,10 @@ describe('mgmtCustomer.detail 出数', () => {
         /year_total/.test(s),
     )
 
-    expect(visitSql).toMatch(/AND\s+TRUE/)
-    expect(topSql).toMatch(/AND\s+TRUE/)
-    expect(consumptionSql).toMatch(/AND\s+TRUE/)
+    // 跟顾客走：3 条统计 SQL 均不含门店过滤（不再拼 buildSaleScope 的 AND TRUE / store_id）
+    expect(visitSql).not.toMatch(/store_id/)
+    expect(topSql).not.toMatch(/store_id/)
+    expect(consumptionSql).not.toMatch(/store_id/)
   })
 })
 
@@ -746,8 +755,8 @@ describe('mgmtCustomer.detail 出数', () => {
 // calendar / paidOrders / giftHistory / refundHistory SQL 形态
 // ===================================================================
 
-describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
-  test('calendar scope=market：dailySummary SQL 与 orders SQL 都含 o.store_id IN', async () => {
+describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店过滤）', () => {
+  test('calendar scope=market：dailySummary / orders SQL 均不含 o.store_id 过滤、按 client_user_id 查', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({
       clientUserId: 'u1',
@@ -768,11 +777,12 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
         /o\.sale_order_id,\s+o\.sale_order_type,\s+o\.store_id/.test(s) &&
         /ORDER BY\s+o\.paid_at\s+DESC/.test(s),
     )
-    expect(dailySql).toMatch(/o\.store_id\s+IN\s*\(/)
-    expect(ordersSql).toMatch(/o\.store_id\s+IN\s*\(/)
+    expect(dailySql).not.toMatch(/o\.store_id\s+IN/)
+    expect(dailySql).toMatch(/o\.client_user_id\s*=\s*\$3/)
+    expect(ordersSql).not.toMatch(/o\.store_id\s+IN/)
   })
 
-  test('paidOrders scope=store：订单 SQL 含 o.store_id = $X', async () => {
+  test('paidOrders scope=store：订单 SQL 不含 o.store_id 过滤、按 client_user_id 查', async () => {
     setupCommonMocks({
       paidOrderRows: [
         { sale_order_id: 'so-1', status: '已支付', paid_at: '2026-04-20', store_id: 'store-001', store_name: 'A 店' },
@@ -803,11 +813,12 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
         /SELECT\s+o\.sale_order_id,\s+o\.status,\s+o\.paid_at,\s+o\.store_id/.test(s) &&
         /FROM\s+sale_orders\s+o/.test(s),
     )
-    expect(ordersSql).toMatch(/o\.store_id\s*=\s*\$/)
+    expect(ordersSql).not.toMatch(/o\.store_id\s*=\s*\$/)
+    expect(ordersSql).toMatch(/o\.client_user_id\s*=\s*\$1/)
     expect(ctx.result.orders[0].items[0].itemName).toBe('深层补水')
   })
 
-  test('giftHistory scope=market：赠品 SQL 含 o.store_id IN', async () => {
+  test('giftHistory scope=market：赠品 SQL 不含 o.store_id 过滤', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({
       clientUserId: 'u1',
@@ -818,13 +829,13 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
 
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const giftSql = sqls.find((s) => /si\.received::numeric\s*=\s*0/.test(s))
-    expect(giftSql).toMatch(/o\.store_id\s+IN\s*\(/)
+    expect(giftSql).not.toMatch(/o\.store_id\s+IN/)
   })
 
   // 2026-04-26 sale-order-domain-refactor: refundHistory 拆分为
   //   Q1: sale_order_payments[change_type='退款'] JOIN spd JOIN sale_orders（按 store_id ∈ scope 过滤）
   //   Q2: sale_orders[type='转换单']（同样 scope 过滤）
-  test('refundHistory scope=market：退款流水 SQL 与转换单 SQL 都含 o.store_id IN', async () => {
+  test('refundHistory scope=market：退款流水 SQL 与转换单 SQL 均不含 o.store_id 过滤', async () => {
     setupCommonMocks({
       refundPaymentRows: [
         {
@@ -857,15 +868,15 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
       /sop\.change_type\s*=\s*'退款'/.test(s),
     )
     expect(refundSql).toBeDefined()
-    expect(refundSql).toMatch(/o\.store_id\s+IN\s*\(/)
-    expect(refundSql).toMatch(/SELECT\s+s\.store_id\s+FROM\s+stores/)
+    expect(refundSql).not.toMatch(/o\.store_id\s+IN/)
+    expect(refundSql).toMatch(/o\.client_user_id\s*=\s*\$1/)
 
-    // Q2: 转换单 SQL — 同样含 store_id IN
+    // Q2: 转换单 SQL — 同样不含 store_id 过滤
     const convSql = sqls.find((s) =>
       /o\.sale_order_type\s*=\s*'转换单'/.test(s),
     )
     expect(convSql).toBeDefined()
-    expect(convSql).toMatch(/o\.store_id\s+IN\s*\(/)
+    expect(convSql).not.toMatch(/o\.store_id\s+IN/)
 
     // 出数：退款流水正常映射
     expect(ctx.result.orders).toHaveLength(1)

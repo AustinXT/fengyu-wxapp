@@ -445,10 +445,10 @@ export const getCustomerRefundHistory = withPermission(
     .from(saleOrderPayments)
     .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .where(
+      // 交易数据跟顾客走：退款流水不按门店过滤（顾客可见性由 getCustomerById 守护）
       and(
         eq(saleOrderPayments.changeType, '退款'),
         eq(saleOrders.clientUserId, userId),
-        scopeCondition(session, saleOrders.storeId),
       ),
     )
     .orderBy(desc(saleOrderPayments.createdAt))
@@ -464,10 +464,10 @@ export const getCustomerRefundHistory = withPermission(
     })
     .from(saleOrders)
     .where(
+      // 交易数据跟顾客走：转换单不按门店过滤
       and(
         eq(saleOrders.clientUserId, userId),
         eq(saleOrders.saleOrderType, '转换单'),
-        scopeCondition(session, saleOrders.storeId),
       ),
     )
     .orderBy(desc(saleOrders.createdAt))

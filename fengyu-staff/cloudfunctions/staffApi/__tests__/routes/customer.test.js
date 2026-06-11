@@ -303,23 +303,23 @@ describe('customer.calendar', () => {
     expect(sql).toContain('client_phone')
   })
 
-  // ── scope isolation ──
-  test('SQL 包含 store_id scope 条件（门店模式 = 单值）', async () => {
+  // ── 交易数据跟顾客走：日历不再按门店过滤（顾客可见性由 assertProfileVisibleByIdentifier 守护）──
+  test('门店模式：日历 SQL 不含 store_id 过滤、按 client_user_id 查（跟顾客走）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', year: 2024, month: 6 })
     pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
     await customerRoutes.calendar(ctx)
     const [sql, params] = pg.query.mock.calls[0]
-    expect(sql).toMatch(/o\.store_id\s*=\s*\$/)
-    expect(params).toContain('store-001')
+    expect(sql).not.toMatch(/o\.store_id/)
+    expect(sql).toMatch(/o\.client_user_id\s*=\s*\$3/)
+    expect(params).not.toContain('store-001')
   })
 
-  test('管理模式 SQL 使用 ANY(scopeStoreIds)', async () => {
+  test('管理模式：日历 SQL 同样不含 store_id 过滤', async () => {
     const ctx = createManagementCtx({ clientUserId: 'u1', year: 2024, month: 6 })
     pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
     await customerRoutes.calendar(ctx)
-    const [sql, params] = pg.query.mock.calls[0]
-    expect(sql).toMatch(/o\.store_id\s*=\s*ANY\(\$/)
-    expect(params).toContainEqual(['store-001', 'store-002'])
+    const [sql] = pg.query.mock.calls[0]
+    expect(sql).not.toMatch(/o\.store_id/)
   })
 })
 
@@ -666,20 +666,24 @@ describe('customer.paidOrders', () => {
     await expect(customerRoutes.paidOrders(ctx)).rejects.toThrow(/INVALID_PARAMS/)
   })
 
-  test('按 clientPhone 查询已支付订单', async () => {
+  test('按 clientPhone 查询（解析为 clientUserId 后走 assertCustomerInScope 守卫分支）', async () => {
     const ctx = createManagerCtx({ clientPhone: '13800001111' })
-    pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-003', status: '已支付', paid_at: '2024-07-01T10:00:00Z' },
-    ])
-    pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', product_name: '头疗' },
-    ])
+    // 1) 手机号→user_id  2) assertCustomerInScope bound_store_id  3) orders  4) items
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u-phone' }])
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([
+        { sale_order_id: 'SO-003', status: '已支付', paid_at: '2024-07-01T10:00:00Z' },
+      ])
+      .mockResolvedValueOnce([
+        { sale_order_id: 'SO-003', sale_item_id: 'item-003', session_count: 3, remaining_sessions: 3, sku_id: 'sku-3', product_type: '疗程卡', product_name: '头疗' },
+      ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-003')
   })
 
-  test('跨店过滤 — SQL WHERE 含 store_id 且用当前员工门店；返回含 storeId/storeName', async () => {
+  test('交易数据跟顾客走 — SQL 不含 store_id 过滤、按 client_user_id 查全量（含跨店订单）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-multi-store' })
     let ordersSql = ''
     let ordersParams = []
@@ -694,24 +698,23 @@ describe('customer.paidOrders', () => {
         ordersSql = s
         ordersParams = params || []
         return [
-          { sale_order_id: 'SO-HOME', status: '已支付', paid_at: '2024-06-01T10:00:00Z', store_id: 'store-001', store_name: '测试店' },
+          { sale_order_id: 'SO-AWAY', status: '已支付', paid_at: '2024-06-01T10:00:00Z', store_id: 'store-999', store_name: '外店' },
         ]
       }
       // items 查询：FROM sale_items si
       return [
-        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
+        { sale_order_id: 'SO-AWAY', sale_item_id: 'item-away', store_id: 'store-999', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
       ]
     })
     await customerRoutes.paidOrders(ctx)
-    // SQL 含 store_id 过滤
-    expect(ordersSql).toMatch(/o\.store_id\s*=\s*\$2/)
-    // 参数带上当前员工门店
-    expect(ordersParams).toContain('store-001')
-    // 返回字段含 storeId/storeName
+    // 不再按门店过滤：SQL 无 o.store_id 条件、仅按 client_user_id ($1)
+    expect(ordersSql).not.toMatch(/o\.store_id\s*=/)
+    expect(ordersParams).toEqual(['u-multi-store'])
+    // 跨店订单（store-999，非当前门店 store-001）也返回
     expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].storeId).toBe('store-001')
-    expect(ctx.result[0].storeName).toBe('测试店')
-    expect(ctx.result[0].items[0].storeId).toBe('store-001')
+    expect(ctx.result[0].storeId).toBe('store-999')
+    expect(ctx.result[0].storeName).toBe('外店')
+    expect(ctx.result[0].items[0].storeId).toBe('store-999')
   })
 })
 
@@ -1069,21 +1072,22 @@ describe('customer.refundHistory', () => {
     expect(paid.rejectedReason).toBeNull()
   })
 
-  test('store_id scope 过滤生效 — SQL WHERE 含 so.store_id', async () => {
+  test('交易数据跟顾客走 — 退款流水 SQL 不含 so.store_id 过滤、按 client_user_id 查', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
     pg.query.mockResolvedValueOnce([])  // 退款
     pg.query.mockResolvedValueOnce([])  // 转换单
 
     await customerRoutes.refundHistory(ctx)
 
-    // 第 1 个 query 应该是退款 SQL，包含 store_id 过滤（effectiveStoreId='store-001'）
+    // 第 1 个 query 是退款流水 SQL，不再按门店过滤
     const [refundSql, refundParams] = pg.query.mock.calls[0]
     expect(refundSql).toMatch(/sop\.change_type\s*=\s*'退款'/)
     expect(refundSql).toMatch(/FROM\s+sale_order_payments\s+sop/i)
     expect(refundSql).toMatch(/sop\.refund_reason/i)
-    expect(refundSql).toMatch(/so\.store_id\s*=/)
-    // params: [clientUserId, storeId, pageSize, offset]
-    expect(refundParams).toContain('store-001')
+    expect(refundSql).not.toMatch(/so\.store_id\s*=/)
+    // params: [clientUserId, pageSize, offset]，不含门店
+    expect(refundParams).not.toContain('store-001')
+    expect(refundParams[0]).toBe('u1')
   })
 
   test('detail_note 解析失败时 items=[]，不抛错', async () => {

@@ -735,10 +735,11 @@ describe('getCustomerRefundHistory — scope + 空结果', () => {
     expect(result).toEqual([])
   })
 
-  it('按 sale_orders.store_id 应用 scopeCondition 过滤', async () => {
+  it('退换记录跟顾客走 — 不再按 sale_orders.store_id 应用 scopeCondition', async () => {
     mockRefundChain()
     await getCustomerRefundHistory('user-1')
-    expect(scopeCondition).toHaveBeenCalled()
+    // 交易数据跟顾客走：退换记录跨门店全量，不施加门店 scope（顾客可见性由 getCustomerById 守护）
+    expect(scopeCondition).not.toHaveBeenCalled()
   })
 })
 
