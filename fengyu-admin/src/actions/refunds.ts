@@ -385,7 +385,7 @@ export const estimateRefundOverdraft = withAnyPermission(
   const tplRows = allTemplateIds.length
     ? ((await db.execute<{ template_id: string; discount_value: string }>(sql`
         SELECT template_id, discount_value FROM coupon_templates
-        WHERE template_id = ANY(${allTemplateIds}::text[])
+        WHERE template_id IN (${sql.join(allTemplateIds.map((id) => sql`${id}`), sql`, `)})
       `)) as unknown as Array<{ template_id: string; discount_value: string }>)
     : []
   const tplValueById: Record<string, number> = {}

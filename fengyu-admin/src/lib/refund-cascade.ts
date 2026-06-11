@@ -148,7 +148,7 @@ export async function cascadeRefund(
          SET is_void = true,
              voided_at = NOW(),
              updated_at = NOW()
-       WHERE sale_item_id = ANY(${fullItemIds})
+       WHERE sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
          AND is_void = false
     `)
     voidedAllocations = rowsAffected(res)
@@ -166,7 +166,7 @@ export async function cascadeRefund(
        WHERE service_item_id IN (
                SELECT si.service_item_id
                FROM service_items si
-               WHERE si.sale_item_id = ANY(${fullItemIds})
+               WHERE si.sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
              )
          AND voided_at IS NULL
     `)
