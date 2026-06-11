@@ -40,23 +40,30 @@ INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VA
   ('FY-FIX-CARD-01', 'FY-FIX-CLIENT-01', 1000.00, NOW(), NOW())
 ON CONFLICT (card_id) DO UPDATE SET balance = 1000.00, updated_at = NOW();
 
--- 2b. 初始充值流水 +1000（NOT EXISTS 守卫，card_transactions 无唯一键）
+-- 2b. 重置流水到干净 baseline：删历史流水（含测试残留的扣款）+ 重建单条充值 +1000
+--     link-10 对账不变量 balance==SUM(amount)：残留扣款会致 Step0 baseline FAIL → 全 5 step 雪崩。
+--     且 link-10 afterAll 把"测试开始时的污染态"误当 baseline 回滚，故障会自我维持，
+--     故 seed 时必须强制 reset（不能用 NOT EXISTS 守卫，否则残留扣款流水永不被清）。
+DELETE FROM card_transactions WHERE card_id = 'FY-FIX-CARD-01';
 INSERT INTO card_transactions (card_id, type, amount, created_at)
-SELECT 'FY-FIX-CARD-01', '充值', 1000.00, NOW()
-WHERE NOT EXISTS (SELECT 1 FROM card_transactions WHERE card_id = 'FY-FIX-CARD-01');
+  VALUES ('FY-FIX-CARD-01', '充值', 1000.00, NOW());
 
 -- 3. 优惠券模板（link-11/20/28/29/30）
 --    品项券 applicable_category_ids 指向「洗-无创纹身」所属 category（当前库存在）
 INSERT INTO coupon_templates (
   template_id, name, coupon_type, discount_value, min_spend, max_discount,
-  validity_mode, valid_days, applicable_category_ids, is_active, created_at, updated_at
+  validity_mode, valid_days, valid_to, applicable_category_ids, is_active, created_at, updated_at
 ) VALUES
-  ('FY-FIX-CT-01',       'Fixture现金券满200减30', '现金券', 30.00, 200.00, NULL,  'days', 30, NULL, true, NOW(), NOW()),
-  ('FY-FIX-CT-DISCOUNT', 'Fixture折扣券8折',        '折扣券', 0.80,  200.00, 50.00, 'days', 30, NULL, true, NOW(), NOW()),
-  ('FY-FIX-CT-ITEM',     'Fixture品项券',           '品项券', 30.00, 200.00, NULL,  'days', 30, '{8db7dd26-0ff8-46ce-abee-eb41e0218443}', true, NOW(), NOW()),
-  ('FY-FIX-CT-MINSPEND', 'Fixture现金券满500减50',  '现金券', 50.00, 500.00, NULL,  'days', 30, NULL, true, NOW(), NOW()),
-  ('FY-FIX-CT-EXPIRED',  'Fixture过期券',           '现金券', 20.00, NULL,   NULL,  'days', 30, NULL, true, NOW(), NOW())
-ON CONFLICT (template_id) DO NOTHING;
+  ('FY-FIX-CT-01',       'Fixture现金券满200减30', '现金券', 30.00, 200.00, NULL,  'days',  30,   NULL,         NULL, true, NOW(), NOW()),
+  ('FY-FIX-CT-DISCOUNT', 'Fixture折扣券8折',        '折扣券', 0.80,  200.00, 50.00, 'days',  90,   NULL,         NULL, true, NOW(), NOW()),  -- valid_days=90：cron-04/05 生日券 + cron-11 分享礼 expire(+90d) 断言依赖
+  ('FY-FIX-CT-ITEM',     'Fixture品项券',           '品项券', 30.00, 200.00, NULL,  'days',  30,   NULL,         '{d303ac8871eafd97}', true, NOW(), NOW()),  -- 限定缦之羽（link-29 期望，含洗-无创纹身）
+  ('FY-FIX-CT-MINSPEND', 'Fixture现金券满500减50',  '现金券', 50.00, 500.00, NULL,  'days',  30,   NULL,         NULL, true, NOW(), NOW()),
+  ('FY-FIX-CT-EXPIRED',  'Fixture过期券',           '现金券', 20.00, NULL,   NULL,  'fixed', NULL, '2026-01-01', NULL, true, NOW(), NOW())  -- fixed+valid_to：cron-11 11.11 期望发券 expire=2026-01-01（与已发实例 FY-FIX-CPN-EXPIRED 独立）
+ON CONFLICT (template_id) DO UPDATE SET
+  name = EXCLUDED.name, coupon_type = EXCLUDED.coupon_type, discount_value = EXCLUDED.discount_value,
+  min_spend = EXCLUDED.min_spend, max_discount = EXCLUDED.max_discount, validity_mode = EXCLUDED.validity_mode,
+  valid_days = EXCLUDED.valid_days, valid_to = EXCLUDED.valid_to, applicable_category_ids = EXCLUDED.applicable_category_ids,
+  is_active = EXCLUDED.is_active, updated_at = NOW();
 
 -- 4. 用户券（user_coupons）— 4 张未使用 + 1 张已过期
 INSERT INTO user_coupons (

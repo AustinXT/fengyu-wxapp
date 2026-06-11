@@ -228,6 +228,14 @@ test('链路7：订单金额三方对账', async ({ page }) => {
     console.log('[链路7] 选择了线下支付')
   }
 
+  // 取消充值卡抵扣（顾客 FY-FIX-CLIENT-01 有储值卡余额时开单页自动勾选 → 全额卡抵扣致
+  // payment_method='无'、绕过线下确认收款链路；2026-06-09 同 link-1 修复）
+  const useCardCheckbox = page.getByRole('checkbox').first()
+  if ((await useCardCheckbox.count()) > 0 && (await useCardCheckbox.isChecked().catch(() => false))) {
+    await useCardCheckbox.uncheck()
+    console.log('[链路7] 已取消充值卡抵扣')
+  }
+
   await page.waitForTimeout(1000)
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-7-05-step3-before-coupon.png` })
 

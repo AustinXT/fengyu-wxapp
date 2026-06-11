@@ -182,10 +182,15 @@ const FIXTURE_CARD_BASELINE_BALANCE = 1000
 // 不破坏 Step 链路；afterAll 仍保留严格回滚（双重保险）。
 test.afterEach(() => {
   try {
-    psql(
-      `DELETE FROM card_transactions WHERE card_id='${CARD_ID}' ` +
-        `AND created_at > '${SPEC_START_TS}'`,
-    )
+    // baseline 流水按 id 保留（不能用 created_at > SPEC_START_TS：SPEC_START_TS 是 UTC ISO 串，
+    // 而 card_transactions.created_at 是本地时区 timestamp(无tz)，库 tz=Asia/Shanghai 下 UTC 串比本地早 8h，
+    // 会把 baseline 流水一并误删 → Step0 对账后 SUM 掉值致 Step1 reconcile FAIL）。对齐 afterAll 的 id 制。
+    if (baselineCardTxnIds.size > 0) {
+      psql(
+        `DELETE FROM card_transactions WHERE card_id='${CARD_ID}' ` +
+          `AND id NOT IN (${Array.from(baselineCardTxnIds).join(',')})`,
+      )
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error(`[link-10 afterEach] DELETE card_transactions 失败（非致命）: ${msg}`)
@@ -405,6 +410,13 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
     if (opts.some((o) => o.includes('线下'))) {
       await paySelect2.selectOption({ label: '线下支付' })
     }
+  }
+
+  // 取消储值卡抵扣（顾客有卡余额时开单页 setUseCard(bal>0) 自动勾选 → 全额抵扣致"已支付"，
+  // 与本 Step「挂账→待支付→SQL 扣款」意图冲突；显式取消勾选保持待支付）
+  const useCardCb = page.getByRole('checkbox').first()
+  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) {
+    await useCardCb.uncheck()
   }
 
   // 本次收款填 0（不付）

@@ -239,6 +239,12 @@ test('链路 31：内部单订单类型特殊约束（禁改价/禁优惠券/禁
   if ((await paySelect.count()) > 0) {
     await paySelect.selectOption({ label: '线下支付' })
   }
+  // 取消充值卡抵扣（顾客有卡余额时开单页自动勾选 → payment_method='无' 绕过确认收款；
+  // 内部单约束 prepaid_card_amount=0，取消卡抵扣后才符合；2026-06-09 同 link-1）
+  const useCardCb = page.getByRole('checkbox').first()
+  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) {
+    await useCardCb.uncheck()
+  }
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-31-06-step3-internal.png` })
 
   // 提交订单

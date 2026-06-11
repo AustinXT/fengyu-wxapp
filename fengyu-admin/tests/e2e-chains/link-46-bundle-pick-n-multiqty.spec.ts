@@ -42,7 +42,7 @@ const SPEC_HOME = 'B2家居B'
 const BUNDLE_TOTAL = 270
 // 复用已存在的分类（缦之羽 = 疗程卡分类；歆笙泰妍 = 家居产品分类）
 const CAT_CARD = 'd303ac8871eafd97'
-const CAT_HOME = 'cat-home-supplies'
+const CAT_HOME = 'cat-fyfix-xinsheng'   // 歆笙泰妍（product_kind=家居产品，e2e fixture 真实存在）
 // 套餐（mall 域）复用 FY-FIX-BUNDLE-01 同款 mall 分类（products.category_id NOT NULL）
 const CAT_BUNDLE = 'mall-2aca5df619b4cfc6'
 

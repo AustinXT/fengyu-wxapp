@@ -25,7 +25,8 @@ BEGIN;
 INSERT INTO product_categories (category_id, category_name, product_kind, is_valid, sort_order, display_color, created_at, updated_at) VALUES
   ('cat-fyfix-l1-care',     '护理项目', NULL, true, 1, '#5E8BB3', NOW(), NOW()),
   ('cat-fyfix-l1-trial',    '体验卡',   NULL, true, 2, '#D4820A', NOW(), NOW()),
-  ('cat-fyfix-l1-recharge', '充值卡',   NULL, true, 3, '#3D8A5A', NOW(), NOW())
+  ('cat-fyfix-l1-recharge', '充值卡',   NULL, true, 3, '#3D8A5A', NOW(), NOW()),
+  ('cat-fyfix-l1-home',     '家居产品', NULL, true, 4, '#8A6D3B', NOW(), NOW())   -- link-21 取货流程（实物 SKU 一级 Tab）
 ON CONFLICT (category_id) DO NOTHING;
 
 -- 2. 二级分类（product_kind = 对应一级的 category_name）
@@ -34,7 +35,8 @@ INSERT INTO product_categories (category_id, category_name, product_kind, is_val
   ('cat-fyfix-other',                      '其他',     '护理项目', true, 20, NOW(), NOW()),  -- link-1 第二件
   ('cat-fyfix-meiqing',                    '美卿',     '护理项目', true, 30, NOW(), NOW()),  -- 套餐子B
   ('b8299c9a-42d9-4933-a2ab-629902fff514', '68体验卡', '体验卡',   true, 10, NOW(), NOW()),  -- link-25
-  ('cat-fyfix-recharge2',                  '储值卡',   '充值卡',   true, 10, NOW(), NOW())   -- 充值卡虚拟 SKU 容器
+  ('cat-fyfix-recharge2',                  '储值卡',   '充值卡',   true, 10, NOW(), NOW()),  -- 充值卡虚拟 SKU 容器
+  ('cat-fyfix-xinsheng',                   '歆笙泰妍', '家居产品', true, 40, NOW(), NOW())   -- link-21 家居 SKU 二级容器
 ON CONFLICT (category_id) DO NOTHING;
 
 -- 3. SKU（product_type 枚举仅 家居产品/疗程卡；is_experience 仅体验卡为 true）
@@ -45,7 +47,9 @@ INSERT INTO product_skus (sku_id, category_id, spec_name, price, special_price, 
   ('FY-FIX-SKU-BUNDLE-A',  'd303ac8871eafd97',                     'Fixture 套餐子 SKU A ¥100',    100.00,  NULL, 1, '疗程卡', false, true, false, 0, 2, NOW(), NOW()),
   ('FY-FIX-SKU-BUNDLE-B',  'cat-fyfix-meiqing',                    'Fixture 套餐子 SKU B ¥100',    100.00,  NULL, 1, '疗程卡', false, true, false, 0, 1, NOW(), NOW()),
   ('sku-recharge-virtual', 'cat-fyfix-recharge2',                  '预付充值卡（虚拟）',            0.00,    NULL, 1, '疗程卡', false, true, false, 0, 1, NOW(), NOW()),
-  ('sku-007-01',           'cat-fyfix-recharge2',                  '金卡充值卡 金卡5000',          5000.00, NULL, 1, '疗程卡', false, true, false, 0, 2, NOW(), NOW())
+  ('sku-007-01',           'cat-fyfix-recharge2',                  '金卡充值卡 金卡5000',          5000.00, NULL, 1, '疗程卡',   false, true, false, 0, 2, NOW(), NOW()),
+  ('cc578d4554aadae9',     'cat-fyfix-xinsheng',                   '法米索深层清洁啫喱',           280.00,  NULL, 1, '家居产品', false, true, false, 0, 1, NOW(), NOW()),  -- link-21 实物取货 SKU
+  ('sku-001-02',           'd303ac8871eafd97',                     '蜜语水润嫩肤护理 10次卡',      200.00,  NULL, 10, '疗程卡',  false, true, false, 0, 5, NOW(), NOW())   -- link-12/45 共用此 sku_id（均注入自身 sale_item；可选列表显示 sale_item.product_name 非此 spec_name，故仅需 SKU 存在）
 ON CONFLICT (sku_id) DO NOTHING;
 
 -- 4. 商城分类（套餐 products.category_id 指向这里）

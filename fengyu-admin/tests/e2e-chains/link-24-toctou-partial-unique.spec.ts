@@ -34,15 +34,15 @@ import { execSync } from 'child_process'
 
 const PG_HOST = '47.113.202.7'
 const PG_PORT = '5434'
-const PG_DB = 'fengyu'
+const PG_DB = 'fengyu_e2e'
 const PG_USER = 'fengyu'
 const PG_PASS = 'fengyu123'
 
 // 测试 fixture：从生产 5434 取真实 FK 引用（避免 FK 违反）
 // 这些是只读引用：测试只创建 sale_orders 等子表行（用 LINK24- 前缀，便于清理）
-const FIXTURE_USER_ID = 'FYGK-20260314-00001'  // client_wechat_users
-const FIXTURE_STORE_ID = '010be224f0c14acf'    // stores
-const FIXTURE_STAFF_ID = 'FY-260317001'        // staff_wechat_users
+const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'     // client_wechat_users（e2e fixture）
+const FIXTURE_STORE_ID = 'store-nc01'          // stores（e2e fixture）
+const FIXTURE_STAFF_ID = 'FY-TEST-EMP-MR1'     // staff_wechat_users（e2e fixture）
 
 /** 执行 psql，返回 stdout（去尾空白）；失败抛 Error（含 stderr 第一行） */
 function psql(sql: string): string {

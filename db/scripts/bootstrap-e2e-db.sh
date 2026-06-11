@@ -23,15 +23,15 @@ DB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ADMIN_DIR="$(cd "$DB_DIR/../fengyu-admin" && pwd)"
 PSQL() { env -u http_proxy -u https_proxy -u all_proxy psql "$@"; }
 
-echo "[1/4] 建库 $E2E_DB_NAME（若不存在；fengyu 用户有 createdb 权限）"
+echo "[1/4] 建库 ${E2E_DB_NAME}（若不存在；fengyu 用户有 createdb 权限）"
 PSQL "$PG_BASE/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='$E2E_DB_NAME'" | grep -q 1 \
   || PSQL "$PG_BASE/postgres" -c "CREATE DATABASE $E2E_DB_NAME OWNER fengyu;"
 
-echo "[2/4] push schema 到 $E2E_DB_NAME（drizzle-kit push --force）"
+echo "[2/4] push schema 到 ${E2E_DB_NAME}（drizzle-kit push --force）"
 ( cd "$DB_DIR" && env -u http_proxy -u https_proxy -u all_proxy DATABASE_URL="$E2E_URL" bunx drizzle-kit push --force >/dev/null )
 
 echo "[3/4] seed 测试账号 + FY-FIX/scope/cron 夹具 + 商品域 fixture"
-for f in seed-e2e-fixtures seed-fyfix-fixtures seed-fyfix-products seed-fyfix-staff seed-scope-fixtures; do
+for f in seed-e2e-fixtures seed-fyfix-fixtures seed-fyfix-products seed-fyfix-staff seed-fyfix-config seed-fyfix-service seed-scope-fixtures; do
   PSQL "$E2E_URL" -v ON_ERROR_STOP=1 -f "$ADMIN_DIR/tests/e2e-chains/_helpers/$f.sql" >/dev/null
   echo "    ✓ $f"
 done

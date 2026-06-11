@@ -126,6 +126,11 @@ test('链路 29：品项券限定 category 过滤', async ({ page }) => {
   if (await paySelect.count() > 0) {
     await paySelect.selectOption({ label: '线下支付' })
   }
+  // 取消充值卡抵扣（顾客有卡余额时自动勾选 → payment_method='无' 绕过确认收款；2026-06-09 同 link-1）
+  const useCardCb = page.getByRole('checkbox').first()
+  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) {
+    await useCardCb.uncheck()
+  }
   await page.waitForTimeout(1000)
 
   // 等优惠券加载

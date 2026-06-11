@@ -40,6 +40,29 @@ ON CONFLICT (employee_id) DO UPDATE SET
   skills = EXCLUDED.skills, store_id = EXCLUDED.store_id, org_node_id = EXCLUDED.org_node_id,
   position_name = EXCLUDED.position_name, is_resigned = false, updated_at = NOW();
 
+-- promoter 员工（link-16 顾客 promoter 重分配；FK client_wechat_users.promoter_employee_id → staff_wechat_users）
+INSERT INTO staff_wechat_users
+  (employee_id, name, phone, store_id, org_node_id, gender, position_name, skills, is_resigned, created_at, updated_at)
+VALUES
+  ('FY-260101-0001', '张明', '13900139013', 'store-nc01', 'org-store-nc01', '男', '推广师', ARRAY['推广师']::text[], false, NOW(), NOW()),
+  ('FY-260101-0002', '刘芳', '13900139014', 'store-nc01', 'org-store-nc01', '女', '推广师', ARRAY['推广师']::text[], false, NOW(), NOW())
+ON CONFLICT (employee_id) DO UPDATE SET
+  name = EXCLUDED.name, store_id = EXCLUDED.store_id, org_node_id = EXCLUDED.org_node_id,
+  position_name = EXCLUDED.position_name, is_resigned = false, updated_at = NOW();
+
+-- 提成矩阵行（link-15 矩阵编辑即时生效 + 历史快照保护；spec TARGET_MATRIX_ID=1）
+-- 南昌市场(6707cc8b88579108) / 销售单 / 美容师 / 自销自耗 / [0,5000) = 0.08
+INSERT INTO commission_rate_matrix
+  (id, org_id, order_type, role_type, sales_category, amount_tier_min, amount_tier_max, commission_rate, created_at, updated_at)
+VALUES
+  (1, '6707cc8b88579108', '销售单', '美容师', '自销自耗', 0, 5000, 0.0800, NOW(), NOW())
+ON CONFLICT (id) DO UPDATE SET
+  org_id = EXCLUDED.org_id, order_type = EXCLUDED.order_type, role_type = EXCLUDED.role_type,
+  sales_category = EXCLUDED.sales_category, amount_tier_min = EXCLUDED.amount_tier_min,
+  amount_tier_max = EXCLUDED.amount_tier_max, commission_rate = 0.0800, updated_at = NOW();
+-- 重置序列，避免后续 nextval 与显式 id=1 冲突
+SELECT setval('commission_rate_matrix_id_seq', GREATEST(1, (SELECT MAX(id) FROM commission_rate_matrix)));
+
 COMMIT;
 
 SELECT employee_id, store_id, position_name, skills::text FROM staff_wechat_users

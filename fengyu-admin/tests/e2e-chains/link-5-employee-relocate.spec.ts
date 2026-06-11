@@ -93,8 +93,8 @@ test.describe.serial('链路 5：员工调店 scope 同步', () => {
 
     // 直接插入 FY-TEST-MOVE（相当于入职建档 + 写日志模拟 HR 创建）
     runSQL(`
-      INSERT INTO staff_wechat_users (employee_id, name, phone, store_id, org_node_id, is_resigned, hired_at)
-      VALUES ('${EMPLOYEE_ID}', '调店测试员', '13900139017', '${STORE_A_ID}', '${ORG_A_ID}', false, '2026-04-26')
+      INSERT INTO staff_wechat_users (employee_id, name, phone, id_card, store_id, org_node_id, is_resigned, hired_at)
+      VALUES ('${EMPLOYEE_ID}', '调店测试员', '13900139017', '360102199001011234', '${STORE_A_ID}', '${ORG_A_ID}', false, '2026-04-26')
     `)
     // 手动写 operation_log（模拟 createEmployee logOperation）
     runSQL(`
