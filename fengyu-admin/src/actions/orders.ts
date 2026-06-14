@@ -18,7 +18,7 @@ import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
-import { pgErrorCode } from '@/lib/pg-error'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
@@ -2965,72 +2965,84 @@ export const recordPayment = withPermission(
       //   repaymentOrderId 仍生成（FY-HKD 编号格式保留用作业务流水编号 / 操作日志主键）。
       const now = new Date()
 
-      // 7) 向原销售单写 payments 流水
-      //    items[] → 逐子项写带 ref_sale_item_id 的 '回款'(现金)/'储值卡抵扣' 行（定向回款，
-      //              paid-sessions STEP 1 据此独立解锁该行）；否则订单级单行（ref=null，按比例分摊）。
-      //    储值卡余额已在上方一次性扣减；此处仅写 payments 归属流水。
+      // 7) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
+      //    现金合并 1 行 '回款'（ref=null）+ 储值卡合并 1 行 '储值卡抵扣'（ref=null）。
+      //    repayAmount / prepaidCardAmount 已是各子项合计（见上方 2799-2804）。
+      //    子项定向（钱精确落选中卡）改由下方 7b 更新 sale_items.pending_received 承载，
+      //    不再靠 payment.ref_sale_item_id —— 这样多子项回款共用一个交易号也不会撞 uq_sop_txn。
+      if (repayAmount > 0) {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '回款',
+          amount: repayAmount.toFixed(2),
+          paymentMethod,
+          externalTxnId,
+          status: '已支付',
+          sourceEnd: 'admin',
+          paidAt: now,
+          operatorEmployeeId: session.employeeId,
+          note: input.note?.trim() || '管理后台录入回款',
+        })
+      }
+      if (prepaidCardAmount > 0) {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '储值卡抵扣',
+          amount: prepaidCardAmount.toFixed(2),
+          paymentMethod: '储值卡',
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          paidAt: now,
+          operatorEmployeeId: session.employeeId,
+          note: '管理后台录入回款-储值卡抵扣',
+        })
+      }
+
+      // 7b) 子项定向：把「本次每张卡补多少」落到 sale_items.pending_received，使下方
+      //     recalcPaidSessionsForOrder STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
+      //     公式：pending_received_i = received_i + 已退款额_i + 本次补款_i（现金+储值卡）
+      //       - received_i = 当前 sale_items.received（上次 recalc 的净额，本次回款尚未摊入）；
+      //       - 已退款额_i 复用 STEP1.5 的退款 note JSON 聚合，把净额还原成毛额（无退款时为 0）；
+      //     数学保证 Σpend_cap = untargeted（含历史定向行 targeted≠0 与退款两种边界恒精确），
+      //     STEP1 填满后 received_净_i = received_净_old_i + 补款_i。
+      //     无 items[] 的订单级回款（hasItems=false）不动 pending，退回 untargeted 比例分摊（向后兼容）。
       if (hasItems) {
-        for (const it of repayItems!) {
-          if (it.repayAmount > 0) {
-            await tx.insert(saleOrderPayments).values({
-              saleOrderId,
-              changeType: '回款',
-              amount: it.repayAmount.toFixed(2),
-              paymentMethod,
-              externalTxnId,
-              status: '已支付',
-              sourceEnd: 'admin',
-              paidAt: now,
-              operatorEmployeeId: session.employeeId,
-              refSaleItemId: it.saleItemId,
-              note: input.note?.trim() || '管理后台录入回款',
-            })
-          }
-          if (it.prepaidCardAmount > 0) {
-            await tx.insert(saleOrderPayments).values({
-              saleOrderId,
-              changeType: '储值卡抵扣',
-              amount: it.prepaidCardAmount.toFixed(2),
-              paymentMethod: '储值卡',
-              externalTxnId: null,
-              status: '已支付',
-              sourceEnd: 'admin',
-              paidAt: now,
-              operatorEmployeeId: session.employeeId,
-              refSaleItemId: it.saleItemId,
-              note: '管理后台录入回款-储值卡抵扣',
-            })
-          }
-        }
-      } else {
-        if (repayAmount > 0) {
-          await tx.insert(saleOrderPayments).values({
-            saleOrderId,
-            changeType: '回款',
-            amount: repayAmount.toFixed(2),
-            paymentMethod,
-            externalTxnId,
-            status: '已支付',
-            sourceEnd: 'admin',
-            paidAt: now,
-            operatorEmployeeId: session.employeeId,
-            note: input.note?.trim() || '管理后台录入回款',
-          })
-        }
-        if (prepaidCardAmount > 0) {
-          await tx.insert(saleOrderPayments).values({
-            saleOrderId,
-            changeType: '储值卡抵扣',
-            amount: prepaidCardAmount.toFixed(2),
-            paymentMethod: '储值卡',
-            externalTxnId: null,
-            status: '已支付',
-            sourceEnd: 'admin',
-            paidAt: now,
-            operatorEmployeeId: session.employeeId,
-            note: '管理后台录入回款-储值卡抵扣',
-          })
-        }
+        const repayValues = sql.join(
+          repayItems!.map(
+            (it) =>
+              sql`(${it.saleItemId}::varchar, ${(Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100).toFixed(2)}::numeric)`,
+          ),
+          sql`, `,
+        )
+        await tx.execute(sql`
+          WITH refund_items AS (
+            SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                   COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+            FROM sale_order_payments sop
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN sop.note LIKE '{%'
+                   THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                             THEN (sop.note)::jsonb -> 'items'
+                             ELSE '[]'::jsonb END
+                   ELSE '[]'::jsonb END
+            ) AS elem
+            WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
+          ),
+          refund_agg AS (
+            SELECT sale_item_id, SUM(refund_amount) AS refunded
+            FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
+          ),
+          repay (sale_item_id, delta) AS (VALUES ${repayValues})
+          UPDATE sale_items si
+          SET pending_received = ROUND(
+                si.received::numeric + COALESCE(ra.refunded, 0) + COALESCE(rp.delta, 0), 2),
+              updated_at = NOW()
+          FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
+          LEFT JOIN refund_agg ra ON ra.sale_item_id = ai.sale_item_id
+          LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
+          WHERE si.sale_item_id = ai.sale_item_id
+        `)
       }
 
       // 8) 重算原单 received / refunded_amount / prepaid_card_amount + status
@@ -3163,9 +3175,24 @@ export const recordPayment = withPermission(
       return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '回款单号生成失败，请稍后重试' } }
     }
     if (pgErrorCode(err) === '23505') {
-      return { success: false, error: { code: 'ORDER_ID_CONFLICT', message: '订单号冲突，请稍后重试' } }
+      // 款项合并后该路径已不再 INSERT sale_orders（单号段只 SELECT），唯一现实的 23505 = uq_sop_txn
+      //（同订单同通道二次填相同交易号）。废弃旧「订单号冲突」措辞。
+      return {
+        success: false,
+        error: {
+          code: 'CONFLICT',
+          message: pgErrorConstraint(err) === 'uq_sop_txn'
+            ? '该交易号已在本订单录入过，请勿对同一笔款重复使用同一流水号'
+            : '数据冲突，请刷新后重试',
+        },
+      }
     }
     console.error('[recordPayment] unexpected error:', err)
+    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）；
+    // 非 DB 错误才保留 err.message 便于排查。
+    if (pgErrorCode(err)) {
+      return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
+    }
     return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
   }
 

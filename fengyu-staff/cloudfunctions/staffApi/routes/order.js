@@ -2415,51 +2415,72 @@ async function createRepayment(ctx) {
       )
     }
 
-    // 5) 向原销售单写 payments 流水：'回款'(现金) + 可选 '储值卡抵扣'(储值卡)
-    //    items[] → 逐子项写带 ref_sale_item_id 的行（定向回款，paid-sessions STEP 1 据此独立解锁该行）；
-    //    否则订单级单行（ref=null，按比例分摊）。储值卡余额已在上方一次性扣减。
+    // 5) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
+    //    现金合并 1 行 '回款'(ref=null) + 储值卡合并 1 行 '储值卡抵扣'(ref=null)。
+    //    子项定向（钱精确落选中卡）改由下方 5b 更新 sale_items.pending_received 承载（与 admin recordPayment 一致）。
     const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
     const repayPaidAt = isOnlinePaymentMethod(paymentMethod) ? null : now
+    if (repayAmount > 0) {
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
+        [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
+      )
+    }
+    if (prepaidCardAmount > 0) {
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+        [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
+      )
+    }
+
+    // 5b) 子项定向：把本次每张卡补款落到 sale_items.pending_received，使下方 recalcPaidSessionsForOrder
+    //     STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
+    //     公式：pending_received_i = received_i + 已退款额_i + 本次补款_i（现金+储值卡），与 admin recordPayment 一致。
+    //     退款额复用 STEP1.5 的退款 note JSON 聚合还原毛额（无退款时为 0）。
+    //     无 items[] 的订单级回款不动 pending（退回 untargeted 比例分摊，向后兼容）。
     if (repayItems) {
-      for (const it of repayItems) {
-        if (it.repayAmount > 0) {
-          await client.query(
-            `INSERT INTO sale_order_payments (
-              sale_order_id, change_type, amount, payment_method, external_txn_id,
-              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-            ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8, $9)`,
-            [refSaleOrderId, it.repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, it.saleItemId, note || '店长发起回款', now, repayPaidAt]
-          )
-        }
-        if (it.prepaidCardAmount > 0) {
-          await client.query(
-            `INSERT INTO sale_order_payments (
-              sale_order_id, change_type, amount, payment_method, external_txn_id,
-              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-            ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
-            [refSaleOrderId, it.prepaidCardAmount, ctx.auth.staffWfId, it.saleItemId, '店长发起回款-储值卡抵扣', now]
-          )
-        }
-      }
-    } else {
-      if (repayAmount > 0) {
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
-          [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
-        )
-      }
-      if (prepaidCardAmount > 0) {
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
-          [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
-        )
-      }
+      const repayValuesSql = repayItems
+        .map((_, i) => `($${i * 2 + 2}::varchar, $${i * 2 + 3}::numeric)`)
+        .join(', ')
+      const repayParams = repayItems.flatMap((it) => [
+        it.saleItemId,
+        (Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100).toFixed(2),
+      ])
+      await client.query(
+        `WITH refund_items AS (
+           SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                  COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+           FROM sale_order_payments sop
+           CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN sop.note LIKE '{%'
+                  THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                            THEN (sop.note)::jsonb -> 'items'
+                            ELSE '[]'::jsonb END
+                  ELSE '[]'::jsonb END
+           ) AS elem
+           WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+         ),
+         refund_agg AS (
+           SELECT sale_item_id, SUM(refund_amount) AS refunded
+           FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
+         ),
+         repay (sale_item_id, delta) AS (VALUES ${repayValuesSql})
+         UPDATE sale_items si
+         SET pending_received = ROUND(
+               si.received::numeric + COALESCE(ra.refunded, 0) + COALESCE(rp.delta, 0), 2),
+             updated_at = NOW()
+         FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买') ai
+         LEFT JOIN refund_agg ra ON ra.sale_item_id = ai.sale_item_id
+         LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
+         WHERE si.sale_item_id = ai.sale_item_id`,
+        [refSaleOrderId, ...repayParams]
+      )
     }
 
     // 6) 重算原单 received / prepaid_card_amount（SUM payments 已支付行）+ status
