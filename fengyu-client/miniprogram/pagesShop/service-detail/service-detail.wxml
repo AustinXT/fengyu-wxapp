@@ -33,7 +33,6 @@ module.exports.fmt = function(val) {
       <van-tag wx:if="{{spu.is_bundle}}" type="danger" plain>组合套餐</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
-    <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
 
     <!-- 套餐：展示套餐价；非套餐：选中 SKU 价格 -->
     <view class="price-row" wx:if="{{spu.is_bundle}}">
