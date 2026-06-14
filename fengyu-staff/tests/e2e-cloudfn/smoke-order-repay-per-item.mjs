@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * order.createRepayment 按子项定向回款冒烟（ticket 2026-05-21 REQ2）
+ * order.createRepayment 按子项定向回款冒烟（ticket 2026-05-21 REQ2；2026-06-11 改款项合并）
  *
- * 验证「真·按子项定向」：付清 A 疗程卡 → 只解锁 A 的 paid_sessions，B 单品不动。
+ * 验证「款项合并为一笔现金 + 子项定向由 pending_received 承载」：付清 A 疗程卡 → 只解锁 A 的 paid_sessions，B 不动。
  *   订单：A 疗程卡(sale_amount=1000, 10次) + B 单品(sale_amount=500, 1次)，total=1500，待回款。
  *   1. 定向回款 A ¥1000（items[{A,1000}]）→ A.received=1000/paid_sessions=10；B.received=0/paid_sessions=0；
- *      order.received=1000、status=部分支付；回款 payment 行带 ref_sale_item_id=A；Σ(item.received)=order.received。
+ *      order.received=1000、status=部分支付；回款 payment 行 ref_sale_item_id=null（款项合并）；Σ(item.received)=order.received。
  *   2. 定向回款 B ¥500 → B.received=500/paid_sessions=1；order.received=1500、status=已支付。
  */
 import './setup.mjs'
@@ -87,9 +87,10 @@ async function main() {
        WHERE sale_order_id = $1 AND change_type = '回款' AND status = '已支付'`,
       [orderNo]
     )
-    if (payRow.length !== 1) errors.push(`应有 1 行 回款 payment，实际 ${payRow.length}`)
-    else if (payRow[0].ref_sale_item_id !== itemA) errors.push(`回款行 ref_sale_item_id 应=${itemA}，实际 ${payRow[0].ref_sale_item_id}`)
-    if (errors.length === 0) rec(`  ✅ 定向回款 A：A.paid_sessions=10、B=0、Σ守恒、payment.ref=A`)
+    // 款项记录合并为一笔现金（ref=null）；子项定向（A 精确解锁、B 不动）改由 pending_received 承载
+    if (payRow.length !== 1) errors.push(`应有 1 行 回款 payment（款项合并），实际 ${payRow.length}`)
+    else if (payRow[0].ref_sale_item_id !== null) errors.push(`回款行 ref_sale_item_id 应=null（款项合并），实际 ${payRow[0].ref_sale_item_id}`)
+    if (errors.length === 0) rec(`  ✅ 回款 A：A.paid_sessions=10、B=0、Σ守恒、款项合并 ref=null（pending 定向）`)
   }
 
   // ── 2. 定向回款 B ¥500（付清）──
