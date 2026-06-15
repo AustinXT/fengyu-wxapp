@@ -154,114 +154,35 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
-/* ===== 月度业绩日历 ===== */
-.cal-header {
-  margin-bottom: 16rpx;
-}
-
-/* 第一行（标题 + 月份切换）与第二行更紧凑成组 */
-.cal-header .section-header {
-  margin-bottom: 8rpx;
-}
-
-.cal-stats-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.cal-total-amount {
-  font-size: 32rpx;
-  font-weight: 700;
-  color: var(--color-primary);
-}
-
-.cal-total-detail {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-}
-
-.month-nav {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-}
-
-.month-label {
-  font-size: 26rpx;
-  color: var(--color-text-secondary);
-  min-width: 120rpx;
-  text-align: center;
-}
-
-.cal-weekdays {
-  display: flex;
-  margin-bottom: 8rpx;
-}
-
-.cal-wd {
-  flex: 1;
-  text-align: center;
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  padding: 8rpx 0;
-}
-
-.cal-days {
+/* ===== 常用功能：大图标宫格 ===== */
+.func-grid {
   display: flex;
   flex-wrap: wrap;
-  padding-bottom: 8rpx;
+  padding-bottom: 12rpx;
 }
 
-.cal-day {
-  width: 14.2857%;
-  height: 92rpx;
+.func-item {
+  width: 25%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  padding: 20rpx 0 28rpx;
 }
 
-.cal-day-num {
-  font-size: 26rpx;
-  color: var(--color-text-primary);
-  line-height: 1;
-}
-
-.cal-day-today .cal-day-num {
-  color: #FFFFFF;
-  background: var(--color-primary);
+.func-icon-wrap {
+  width: 104rpx;
+  height: 104rpx;
   border-radius: 50%;
-  width: 48rpx;
-  height: 48rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 600;
 }
 
-.cal-day-amount {
-  font-size: 20rpx;
-  color: var(--color-primary);
-  margin-top: 4rpx;
+.func-label {
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
   line-height: 1;
-}
-
-
-/* ===== 门店营收（补充动画） ===== */
-.store-revenue-amount {
-  font-size: 32rpx;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.9);
-}
-
-/* ===== 日历空日 ===== */
-.cal-day--empty {
-  visibility: hidden;
-}
-
-.cal-day--future .cal-day-num {
-  color: #CCCCCC;
 }
 
 /* ===== 待处理事项：图标宫格 ===== */
