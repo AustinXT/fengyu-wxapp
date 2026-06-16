@@ -671,6 +671,7 @@ export const createRechargeOrder = withPermission(
           documentType,
           marketName,
           storeId: data.storeId,
+          storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
           saleOrderDatetime: new Date(),
           clientUserId: data.clientUserId,
           clientPhone: client.phone || '',

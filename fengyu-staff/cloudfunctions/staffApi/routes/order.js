@@ -834,13 +834,13 @@ async function create(ctx) {
     const paidAtValue = (paidAmount > 0 || zeroPayable) ? now : null
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark, is_activity, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -2827,13 +2827,13 @@ async function createConversion(ctx) {
     await tx.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type,
-        market_name, store_id, sale_order_datetime,
+        market_name, store_id, store_name, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3722,13 +3722,13 @@ async function createDeposit(ctx) {
     // INSERT sale_orders —— 寄存单核心：金额全 0、status 直接已支付、payment_method='无'
     await tx.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
         prepaid_card_amount, received, payable_amount, paid_at,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, $5, 0, $6, $7, $8, '无', $9,
+      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
                 NULL, NULL, 0, $10, 0, 0, 0, $5,
                 '待分配', $5, $5)`,
       [

@@ -52,6 +52,8 @@ export const saleOrders = pgTable(
     storeId: text("store_id")
       .notNull()
       .references(() => stores.storeId),
+    /** 所属门店名称（快照，与 market_name 一致；门店改名后历史订单仍显示下单时名称） */
+    storeName: varchar("store_name", { length: 100 }),
     saleOrderDatetime: timestamp("sale_order_datetime").notNull(),
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),

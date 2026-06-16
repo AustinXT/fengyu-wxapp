@@ -130,12 +130,12 @@ async function recharge(ctx) {
     // 充值单：total_amount=面值，payable_amount=实付，prepaid_card_amount=0（充值单本身不允许储值卡支付）
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
         client_user_id, client_phone, customer_name,
         payment_method, opened_by, remark,
         created_at, updated_at
-      ) VALUES ($1, $2, '充值单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, 0,
+      ) VALUES ($1, $2, '充值单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, 0,
                 $9, $10, $11, $12, $13, $14, $6, $6)`,
       [
         saleOrderId, initialStatus, documentType, marketName, storeId, now,

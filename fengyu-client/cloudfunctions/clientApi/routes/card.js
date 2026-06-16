@@ -303,11 +303,11 @@ async function recharge(ctx) {
     // payment_method='微信' 只是占位，前端后续调 order.pay/alipayPay/offlinePay 会按所选方式覆盖
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
         total_amount, received, payable_amount, prepaid_card_amount, payment_method,
         created_at, updated_at
-      ) VALUES ($1, '待支付', '充值单', $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, 0, '微信', $5, $5)`,
+      ) VALUES ($1, '待支付', '充值单', $2, $3, $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, $6, $7, $8, $9, 0, $10, 0, '微信', $5, $5)`,
       [saleOrderId, documentType, marketName, boundStoreId, now,
        userId, phone || null, customerName, faceVal, payAmount]
     )

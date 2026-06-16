@@ -790,12 +790,12 @@ async function create(ctx) {
     const initialReceived = zeroPayable ? prepaidCardAmount : 0
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
         total_amount, prepaid_card_amount, received, payable_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
