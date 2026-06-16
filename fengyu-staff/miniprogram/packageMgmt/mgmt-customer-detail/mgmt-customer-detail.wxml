@@ -116,7 +116,11 @@
               <view class="purchase-card" wx:for="{{purchaseOrders}}" wx:key="saleOrderId">
                 <view class="purchase-header">
                   <text class="purchase-order-no">{{item.saleOrderId}}</text>
-                  <text class="status-tag status-tag--success">已支付</text>
+                  <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
+                </view>
+                <view class="purchase-meta">
+                  <text class="purchase-store" wx:if="{{item.storeName}}">{{item.storeName}}</text>
+                  <text class="purchase-amount">{{item.amountText}}</text>
                 </view>
                 <view class="purchase-items">
                   <view wx:for="{{item.items}}" wx:for-item="si" wx:key="saleItemId" class="purchase-item-row">
@@ -125,7 +129,7 @@
                   </view>
                 </view>
                 <view class="purchase-footer" bindtap="onPurchaseOrderTap" data-id="{{item.saleOrderId}}">
-                  <text class="purchase-time">{{item.paidAt}}</text>
+                  <text class="purchase-time">{{item.timeText}}</text>
                   <text class="purchase-link">查看详情 ›</text>
                 </view>
               </view>

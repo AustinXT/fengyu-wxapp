@@ -645,6 +645,100 @@ async function paidOrders(ctx) {
 }
 
 /**
+ * 顾客消费记录（全状态 + 跨门店，仅展示用）
+ *
+ * 与 paidOrders 的区别 / 为何独立成 action：
+ *   paidOrders 仅返回「已支付」订单且对 items 做退款冻结过滤，前端复用它提取
+ *   疗程卡 Tab 的可核销卡（→ service.create 核销次数）。若放开它的状态过滤，
+ *   待支付/未付款订单的卡会混进可核销列表，破坏「先付款后核销」。
+ *   故消费记录列表独立成此 action：查全部状态、跨门店，items 仅作展示，不参与核销。
+ */
+async function orderHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {});
+
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
+  if (!clientUserId && !clientPhone) {
+    throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
+  }
+
+  // 手机号 → clientUserId：统一走 clientUserId 守卫分支（与 paidOrders 一致）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑与 paidOrders 一致）
+  if (clientUserId) {
+    await assertCustomerInScope(pg, ctx.auth, clientUserId);
+  }
+
+  // 交易数据跟顾客走：放开门店过滤 + 不限状态，按顾客查全量（含跨门店、各状态）
+  let whereClause, params;
+  if (clientUserId) {
+    whereClause = "o.client_user_id = $1";
+    params = [clientUserId];
+  } else {
+    whereClause = "o.client_phone = $1";
+    params = [clientPhone];
+  }
+
+  // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序
+  const orders = await pg.query(
+    `SELECT o.sale_order_id, o.status, o.paid_at, o.created_at,
+            o.payable_amount, o.received, o.store_id, s.store_name
+     FROM sale_orders o
+     LEFT JOIN stores s ON s.store_id = o.store_id
+     WHERE ${whereClause}
+     ORDER BY COALESCE(o.paid_at, o.created_at) DESC`,
+    params,
+  );
+
+  if (orders.length === 0) {
+    ctx.result = [];
+    return;
+  }
+
+  // 消费记录仅展示商品名，不做 paidOrders 的退款冻结/可核销过滤
+  const orderIds = orders.map((o) => o.sale_order_id);
+  const items = await pg.query(
+    `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.product_type
+     FROM sale_items si
+     WHERE si.sale_order_id = ANY($1)
+     ORDER BY si.sale_item_id`,
+    [orderIds],
+  );
+
+  const itemsByOrder = {};
+  for (const item of items) {
+    if (!itemsByOrder[item.sale_order_id]) itemsByOrder[item.sale_order_id] = [];
+    itemsByOrder[item.sale_order_id].push({
+      saleItemId: item.sale_item_id,
+      itemName: item.product_name || "",
+      spec: item.product_name || "",
+      productType: item.product_type || "",
+    });
+  }
+
+  ctx.result = orders.map((o) => ({
+    orderId: o.sale_order_id,
+    saleOrderId: o.sale_order_id,
+    status: o.status,
+    payableAmount: o.payable_amount,
+    received: o.received,
+    paidAt: o.paid_at,
+    createdAt: o.created_at,
+    storeId: o.store_id,
+    storeName: o.store_name || "",
+    items: itemsByOrder[o.sale_order_id] || [],
+  }));
+}
+
+/**
  * 顾客分类统计（基于最近服务日期 + 生日）
  * 返回各状态的顾客数量
  */
@@ -1213,4 +1307,4 @@ async function phoneChangeLogs(ctx) {
   })
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };
+module.exports = { search, calendar, detail, paidOrders, orderHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };

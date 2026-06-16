@@ -43,6 +43,7 @@ const routes = {
   'customer.calendar':    () => require('./routes/customer').calendar,
   'customer.detail':      () => require('./routes/customer').detail,
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
+  'customer.orderHistory': () => require('./routes/customer').orderHistory,
   'customer.stats':       () => require('./routes/customer').stats,
   'customer.listByTag':   () => require('./routes/customer').listByTag,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
@@ -143,6 +144,7 @@ const routes = {
   'mgmtCustomer.detail':        () => require('./routes/mgmt-customer').detail,
   'mgmtCustomer.calendar':      () => require('./routes/mgmt-customer').calendar,
   'mgmtCustomer.paidOrders':    () => require('./routes/mgmt-customer').paidOrders,
+  'mgmtCustomer.orderHistory':  () => require('./routes/mgmt-customer').orderHistory,
   'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
   'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
 }

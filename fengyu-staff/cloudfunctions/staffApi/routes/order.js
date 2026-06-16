@@ -1595,19 +1595,43 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
+  // 交易数据跟顾客走：先不限门店查订单，再分层判定可见性
+  // （顾客档案的消费记录可跨门店查看任意订单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const orders = await pg.query(
-    'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId]
   )
 
   if (orders.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
   const order = orders[0]
 
-  // 美容师只能看指定自己的订单
-  if (!ctx.auth.roles.includes('manager') && order.preferred_employee_id !== ctx.auth.staffWfId) {
+  // 分层可见性：
+  //  1) 订单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（订单 Tab / 开单后查看，行为不变）
+  //  2) 管理层模式 + 订单门店在本 scope 内 → 监管只读放行
+  //  3) 订单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店订单）
+  //  4) 都不满足 → 无权查看
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人订单），仅经分支 1/3。
+  const inStoreScope = isStoreInScope(ctx.auth, order.store_id)
+  const isManager = ctx.auth.roles.includes('manager')
+  const isMgmt = ctx.auth.loginLevel === 'management'
+  let visible = inStoreScope && (isManager || order.preferred_employee_id === ctx.auth.staffWfId)
+  if (!visible && isMgmt && inStoreScope) {
+    visible = true // 管理层监管本 scope 内订单（只读）
+  }
+  if (!visible && order.client_user_id) {
+    // 顾客在本 scope 内 → 可只读查看其任意订单（含跨门店）：顾客档案消费记录场景
+    const custRows = await pg.query(
+      'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      [order.client_user_id]
+    )
+    if (custRows.length > 0 && isStoreInScope(ctx.auth, custRows[0].bound_store_id)) {
+      visible = true
+    }
+  }
+  if (!visible) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 

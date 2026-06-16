@@ -97,7 +97,25 @@ interface PaidOrder {
   storeId?: string;
   storeName?: string;
   items: PaidOrderItem[];
+  // 消费记录列表（customer.orderHistory）扩展字段
+  createdAt?: string;
+  payableAmount?: string;
+  received?: string;
+  // 前端预算的展示字段
+  statusClass?: string;
+  amountText?: string;
+  timeText?: string;
 }
+
+// 订单状态 → status-tag 修饰类（app.wxss 定义：pending/success/progress/done/error）
+const ORDER_STATUS_CLASS: Record<string, string> = {
+  待支付: 'pending',
+  已支付: 'success',
+  已完成: 'success',
+  已关闭: 'done',
+  已退款: 'error',
+  部分支付: 'progress',
+};
 
 // Tab 3: 持卡汇总
 interface TreatmentCard {
@@ -374,8 +392,14 @@ Page({
     const id = this._clientId();
     if (!id) return;
     try {
-      const orders = (await callStaffApi<PaidOrder[]>('customer.paidOrders', id) || [])
-        .map(o => ({ ...o, paidAt: formatDateTime(o.paidAt) }));
+      // 消费记录走 orderHistory（全状态 + 跨门店）；疗程卡 Tab 仍走 paidOrders（仅已支付可核销卡）
+      const orders = (await callStaffApi<PaidOrder[]>('customer.orderHistory', id) || [])
+        .map(o => ({
+          ...o,
+          statusClass: ORDER_STATUS_CLASS[o.status] || 'done',
+          amountText: `¥${Number(o.payableAmount || 0).toFixed(2)}`,
+          timeText: formatDateTime(o.paidAt || o.createdAt),
+        }));
       this.setData({ purchaseOrders: orders, purchaseLoaded: true });
     } catch (_) {}
   },

@@ -682,6 +682,79 @@ async function paidOrders(ctx) {
 }
 
 // ====================================================================
+// orderHistory — 顾客消费记录（全状态 + 跨门店，仅展示用）
+// 与 paidOrders 解耦：paidOrders 供疗程卡 Tab 可核销卡（仅已支付），
+// 本 action 查全部状态供消费记录列表展示，items 不参与核销。
+// ====================================================================
+
+async function orderHistory(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+
+  const { clientUserId, clientPhone, scopeType, scopeId } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+  validateScopeParams(scopeType, scopeId)
+  validateScope(ctx.auth, scopeType, scopeId)
+
+  // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店 + 不限状态
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+  const params = [resolvedUserId]
+  const whereClause = `o.client_user_id = $1`
+
+  // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序
+  const orders = await pg.query(
+    `SELECT o.sale_order_id, o.status, o.paid_at, o.created_at,
+            o.payable_amount, o.received, o.store_id, s.store_name
+       FROM sale_orders o
+       LEFT JOIN stores s ON s.store_id = o.store_id
+      WHERE ${whereClause}
+      ORDER BY COALESCE(o.paid_at, o.created_at) DESC`,
+    params,
+  )
+
+  // 注：返回纯数组（与 customer.orderHistory 一致），前端 (...||[]).map 直接消费
+  if (orders.length === 0) {
+    ctx.result = []
+    return
+  }
+
+  // 消费记录仅展示商品名，不做 paidOrders 的退款冻结/可核销过滤
+  const orderIds = orders.map((o) => o.sale_order_id)
+  const items = await pg.query(
+    `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.product_type
+     FROM sale_items si
+     WHERE si.sale_order_id = ANY($1)
+     ORDER BY si.sale_item_id`,
+    [orderIds],
+  )
+
+  const itemsByOrder = {}
+  for (const item of items) {
+    if (!itemsByOrder[item.sale_order_id]) itemsByOrder[item.sale_order_id] = []
+    itemsByOrder[item.sale_order_id].push({
+      saleItemId: item.sale_item_id,
+      itemName: item.product_name || '',
+      spec: item.product_name || '',
+      productType: item.product_type || '',
+    })
+  }
+
+  ctx.result = orders.map((o) => ({
+    orderId: o.sale_order_id,
+    saleOrderId: o.sale_order_id,
+    status: o.status,
+    payableAmount: o.payable_amount,
+    received: o.received,
+    paidAt: o.paid_at,
+    createdAt: o.created_at,
+    storeId: o.store_id,
+    storeName: o.store_name || '',
+    items: itemsByOrder[o.sale_order_id] || [],
+  }))
+}
+
+// ====================================================================
 // giftHistory — 赠送记录（按 sale_orders.store_id ∈ scope）
 // ====================================================================
 
@@ -914,6 +987,7 @@ module.exports = {
   detail,
   calendar,
   paidOrders,
+  orderHistory,
   giftHistory,
   refundHistory,
 }
