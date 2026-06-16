@@ -44,6 +44,9 @@ function rowToEmployee(row: any): Employee {
     socialInsurance: e.socialInsurance,
     isResigned: e.isResigned,
     hiredAt: e.hiredAt,
+    // leave_start / leave_end 列为 mode:'string'，直接是墙钟字符串，无需 toISOString
+    leaveStart: e.leaveStart ?? null,
+    leaveEnd: e.leaveEnd ?? null,
     resignedAt: e.resignedAt,
     resignationReason: e.resignationReason,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
@@ -505,6 +508,10 @@ export const updateEmployee = withPermission(
       isResigned: boolean
       /** 入职日期（YYYY-MM-DD） */
       hiredAt: string | null
+      /** 请假开始时间（datetime-local YYYY-MM-DDTHH:mm）；与 leaveEnd 成对，空串归一为 null */
+      leaveStart: string | null
+      /** 请假结束时间（datetime-local YYYY-MM-DDTHH:mm） */
+      leaveEnd: string | null
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null
       /** 离职原因（自由文本）；与 isResigned 联动：复职时由 action 自动清空 */
@@ -528,6 +535,19 @@ export const updateEmployee = withPermission(
     }
     if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
       return { success: false, message: '身份证号格式不正确' }
+    }
+  }
+
+  // 请假区间成对 + 顺序校验（仅当本次涉及请假字段时；空串视为 null）
+  if (data.leaveStart !== undefined || data.leaveEnd !== undefined) {
+    const ls = data.leaveStart || null
+    const le = data.leaveEnd || null
+    if ((ls && !le) || (!ls && le)) {
+      return { success: false, message: '请假开始和结束时间需同时填写' }
+    }
+    // datetime-local 同格式（YYYY-MM-DDTHH:mm）字典序即时间序，可直接比较；DB chk_swu_leave_range 兜底
+    if (ls && le && le <= ls) {
+      return { success: false, message: '请假结束时间须晚于开始时间' }
     }
   }
 
@@ -561,6 +581,9 @@ export const updateEmployee = withPermission(
   // - isResigned=true 且未显式给 resignedAt：写 today
   // - isResigned=false：清空 resignedAt
   const updateData = { ...data }
+  // 请假字段空串归一为 null（清空请假区间）
+  if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
+  if (data.leaveEnd !== undefined) updateData.leaveEnd = data.leaveEnd || null
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }

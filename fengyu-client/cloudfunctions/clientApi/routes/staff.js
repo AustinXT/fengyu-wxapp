@@ -28,6 +28,8 @@ async function list(ctx) {
       sw.phone,
       sw.avatar_url,
       sw.skills,
+      to_char(sw.leave_start, 'YYYY-MM-DD"T"HH24:MI:SS') AS leave_start,
+      to_char(sw.leave_end,   'YYYY-MM-DD"T"HH24:MI:SS') AS leave_end,
       r.avg_rating,
       r.review_count
     FROM staff_wechat_users sw
@@ -51,6 +53,9 @@ async function list(ctx) {
     skills: r.skills || [],
     phone: r.phone,
     avatarUrl: r.avatar_url || null,
+    // 请假区间墙钟串（YYYY-MM-DDTHH:mm:ss）；前端按所选预约时段判定是否冲突
+    leaveStart: r.leave_start || null,
+    leaveEnd: r.leave_end || null,
     avgRating: r.avg_rating !== null ? Number(r.avg_rating) : null,
     reviewCount: r.review_count || 0,
   }))
@@ -131,7 +136,9 @@ async function detail(ctx) {
   // Basic info
   const staffRows = await pg.query(`
     SELECT s.employee_id, s.name, s.position_name, s.skills, s.gender, s.avatar_url,
-           s.store_id, st.store_name
+           s.store_id, st.store_name,
+           to_char(s.leave_start, 'YYYY-MM-DD"T"HH24:MI:SS') AS leave_start,
+           to_char(s.leave_end,   'YYYY-MM-DD"T"HH24:MI:SS') AS leave_end
     FROM staff_wechat_users s
     LEFT JOIN stores st ON s.store_id = st.store_id
     WHERE s.employee_id = $1 AND s.is_resigned = false
@@ -164,6 +171,9 @@ async function detail(ctx) {
     skills: staff.skills || [],
     gender: staff.gender,
     avatarUrl: staff.avatar_url || null,
+    // 请假区间墙钟串；前端按设备本地时间判定「休假中」
+    leaveStart: staff.leave_start || null,
+    leaveEnd: staff.leave_end || null,
     storeId: staff.store_id,
     storeName: staff.store_name,
     serviceCount: countRows[0]?.count || 0,

@@ -132,11 +132,51 @@ Page({
         avatarUrl: s.avatarUrl || '',
         avgRating: s.avgRating ?? null,
         reviewCount: s.reviewCount || 0,
+        leaveStart: s.leaveStart || null,
+        leaveEnd: s.leaveEnd || null,
+        onLeave: false,
       }));
       this.setData({ staffList });
+      this._recomputeStaffLeave();
     } catch {
       // 静默失败，美容师列表不影响预约
     }
+  },
+
+  /**
+   * 依据当前所选预约日期 + 时段，重算每个美容师在该时段是否休假（onLeave）。
+   * 判定与后端 appointment.create 同口径：所选时段起点 ∈ [leaveStart, leaveEnd] 即冲突。
+   * 未选时段时无法判定，全部置 false（交由提交时后端兜底）。
+   */
+  _recomputeStaffLeave() {
+    const { appointmentDate, appointmentTimeSlot, staffList, selectedStaffWfId } = this.data;
+    let slotStartMs: number | null = null;
+    if (appointmentDate && appointmentTimeSlot) {
+      const startHM = appointmentTimeSlot.split('-')[0]; // "10:00"
+      slotStartMs = new Date(`${appointmentDate}T${startHM}:00`).getTime();
+    }
+    const list = (staffList as any[]).map((s) => {
+      let onLeave = false;
+      if (slotStartMs !== null && s.leaveStart && s.leaveEnd) {
+        // leaveStart/leaveEnd 为墙钟串（YYYY-MM-DDTHH:mm:ss），按设备本地解析，与 slotStartMs 同基准
+        const ls = new Date(s.leaveStart).getTime();
+        const le = new Date(s.leaveEnd).getTime();
+        onLeave = !isNaN(ls) && !isNaN(le) && slotStartMs >= ls && slotStartMs <= le;
+      }
+      return { ...s, onLeave };
+    });
+    const patch: Record<string, any> = { staffList: list };
+    // 切换时段后，若已选美容师在新时段休假，清空选择并提示
+    if (selectedStaffWfId) {
+      const sel = list.find((s) => s.employee_id === selectedStaffWfId);
+      if (sel && sel.onLeave) {
+        patch.selectedStaffWfId = '';
+        patch.selectedStaffName = '';
+        patch.selectedStaffAvatarUrl = '';
+        Toast('该美容师该时段休假中，已取消选择');
+      }
+    }
+    this.setData(patch);
   },
 
   async loadDefaultStaff() {
@@ -187,6 +227,7 @@ Page({
     const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
     this._updateDisabledSlots(fmt);
+    this._recomputeStaffLeave();
   },
 
   /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
@@ -223,6 +264,7 @@ Page({
       appointmentTimeSlot: value,
       _timeSlotDisplay: text,
     });
+    this._recomputeStaffLeave();
   },
 
   onShowStaffPopup() {

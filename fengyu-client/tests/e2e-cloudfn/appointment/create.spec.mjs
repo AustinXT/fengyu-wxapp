@@ -54,11 +54,16 @@ async function ensureNoPhoneClient() {
  * 生成 "明天 10:00-11:00" 格式
  */
 function tomorrowSlot() {
+  return `${tomorrowDate()} 上午 10:00-11:00`
+}
+
+/** 明天日期 YYYY-MM-DD（与 tomorrowSlot 同口径，供请假区间构造） */
+function tomorrowDate() {
   const d = new Date(Date.now() + 86400_000)
   const yyyy = d.getFullYear()
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd} 上午 10:00-11:00`
+  return `${yyyy}-${mm}-${dd}`
 }
 
 /**
@@ -201,6 +206,52 @@ async function caseMissingAppointmentTime() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '缺少预约时间' })
 }
 
+// 美容师请假：所选时段起点落入请假区间 → INVALID_STATE 拒绝
+async function caseStaffOnLeaveRejected() {
+  await createTestClient()
+  const { employeeId } = await createTestBeautician({
+    employeeId: `${NS}_APTL_BEAUT`,
+    openid: `${NS}_APTL_BEAUT_OPENID`,
+    phone: '19999099108',
+  })
+  const date = tomorrowDate()
+  // 请假覆盖明天 09:00–12:00，预约 10:00-11:00 起点(10:00)落入区间
+  await pgQuery(
+    `UPDATE staff_wechat_users SET leave_start = $2, leave_end = $3 WHERE employee_id = $1`,
+    [employeeId, `${date} 09:00:00`, `${date} 12:00:00`]
+  )
+  const orderNo = `${NS}_APT_LV1`.slice(0, 30)
+  const { saleItemId } = await newPaidCourseOrder({ orderNo, remainingSessions: 5 })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId, appointmentTime: `${date} 上午 10:00-11:00`,
+    staffWfId: employeeId, staffName: `${NS}_美容师L`,
+  })
+  expectError(res, 'INVALID_STATE', { messageIncludes: '休假' })
+}
+
+// 美容师请假：所选时段起点在请假区间之外 → 放行
+async function caseStaffLeaveNonOverlapAllowed() {
+  await createTestClient()
+  const { employeeId } = await createTestBeautician({
+    employeeId: `${NS}_APTN_BEAUT`,
+    openid: `${NS}_APTN_BEAUT_OPENID`,
+    phone: '19999099109',
+  })
+  const date = tomorrowDate()
+  // 请假覆盖明天 13:00–18:00，预约 10:00-11:00 起点(10:00)不在区间 → 放行
+  await pgQuery(
+    `UPDATE staff_wechat_users SET leave_start = $2, leave_end = $3 WHERE employee_id = $1`,
+    [employeeId, `${date} 13:00:00`, `${date} 18:00:00`]
+  )
+  const orderNo = `${NS}_APT_LV2`.slice(0, 30)
+  const { saleItemId } = await newPaidCourseOrder({ orderNo, remainingSessions: 5 })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId, appointmentTime: `${date} 上午 10:00-11:00`,
+    staffWfId: employeeId, staffName: `${NS}_美容师N`,
+  })
+  expectSuccess(res)
+}
+
 const CASES = [
   ['happy → appointments row inserted with status=待确认', caseHappy],
   ['no staff + no saleItemId (walk-in) → appointment inserted, employee_id NULL', caseNoStaffWalkin],
@@ -208,6 +259,8 @@ const CASES = [
   ['duplicate pending for same saleItemId → INVALID_PARAMS', caseDuplicatePendingRejected],
   ['no phone → PHONE_REQUIRED', casePhoneRequired],
   ['missing appointmentTime → INVALID_PARAMS 缺少预约时间', caseMissingAppointmentTime],
+  ['staff on leave (slot start in range) → INVALID_STATE 休假中', caseStaffOnLeaveRejected],
+  ['staff leave non-overlap (slot start outside range) → success', caseStaffLeaveNonOverlapAllowed],
 ]
 
 let pass = 0, fail = 0

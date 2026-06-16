@@ -37,6 +37,25 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 预约时间不能为过去')
   }
 
+  // 请假拦截（权威校验）：指定了美容师且所选时段起点落入其请假区间则拒绝。
+  // 用墙钟串 ::timestamp 比较，与 admin 录入、parseAppointmentTime 的 +08:00 口径一致，不经 now()/时区转换。
+  if (staffWfId) {
+    const m = String(appointmentTime).match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
+    const slotStart = m ? `${m[1]} ${m[2]}:00` : null
+    if (slotStart) {
+      const leaveRows = await pg.query(
+        `SELECT 1 FROM staff_wechat_users
+         WHERE employee_id = $1
+           AND leave_start IS NOT NULL AND leave_end IS NOT NULL
+           AND $2::timestamp >= leave_start AND $2::timestamp <= leave_end`,
+        [staffWfId, slotStart]
+      )
+      if (leaveRows.length > 0) {
+        throw new Error('INVALID_STATE: 该美容师所选时段休假中，请另选时段或美容师')
+      }
+    }
+  }
+
   // 查询顾客信息
   const users = await pg.query(
     `SELECT u.phone, u.name, u.bound_store_id,

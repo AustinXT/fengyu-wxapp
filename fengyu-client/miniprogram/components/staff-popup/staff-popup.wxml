@@ -27,10 +27,11 @@
       <view
         wx:for="{{staffList}}"
         wx:key="employee_id"
-        class="staff-item {{selectedId === item.employee_id ? 'staff-item--active' : ''}}"
+        class="staff-item {{selectedId === item.employee_id ? 'staff-item--active' : ''}} {{item.onLeave ? 'staff-item--leave' : ''}}"
         bindtap="onSelect"
         data-wf-id="{{item.employee_id}}"
         data-name="{{item.name}}"
+        data-on-leave="{{item.onLeave}}"
       >
         <view class="staff-avatar">
           <image wx:if="{{item.avatarUrl}}" src="{{item.avatarUrl}}" class="staff-avatar-img" mode="aspectFill" />
@@ -38,7 +39,8 @@
         </view>
         <text class="staff-name">{{item.name}}</text>
         <text class="staff-title">{{item.position}}</text>
-        <view wx:if="{{item.reviewCount > 0}}" class="staff-rating">
+        <view wx:if="{{item.onLeave}}" class="staff-leave-tag">请假</view>
+        <view wx:elif="{{item.reviewCount > 0}}" class="staff-rating">
           <van-icon name="star" size="22rpx" color="#C0322A" />
           <text class="staff-rating-text">{{item.avgRating}}（{{item.reviewCount}}）</text>
         </view>

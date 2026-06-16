@@ -118,6 +118,10 @@ export const staffWechatUsers = pgTable(
     avatarUrl: text('avatar_url'),
     // Layer 4 — 个人档案
     birthday: date('birthday'),
+    /** 请假开始时间（墙钟，无时区）；与 leaveEnd 成对，二者皆非空才视为有请假区间。请假期间顾客端不可预约 */
+    leaveStart: timestamp('leave_start', { mode: 'string' }),
+    /** 请假结束时间（墙钟，无时区）；与 appointment_time 同款墙钟语义，比较走 ::timestamp */
+    leaveEnd: timestamp('leave_end', { mode: 'string' }),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
     /** 是否缴纳社保；默认否 */
@@ -138,6 +142,7 @@ export const staffWechatUsers = pgTable(
     uniqueIndex('uq_staff_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     index('idx_staff_users_store_resigned').on(table.storeId, table.isResigned),
     check('chk_swu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
+    check('chk_swu_leave_range', sql`${table.leaveStart} IS NULL OR ${table.leaveEnd} IS NULL OR ${table.leaveEnd} > ${table.leaveStart}`),
   ],
 )
 

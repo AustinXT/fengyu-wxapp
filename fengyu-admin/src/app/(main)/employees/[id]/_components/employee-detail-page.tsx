@@ -30,6 +30,12 @@ import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } fro
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
 
+/** 库内墙钟字符串（"YYYY-MM-DD HH:mm:ss" 或带 T）→ datetime-local 输入值 "YYYY-MM-DDTHH:mm" */
+function toDatetimeLocal(v: string | null): string {
+  if (!v) return ""
+  return v.replace("T", " ").slice(0, 16).replace(" ", "T")
+}
+
 interface Props {
   employee: Employee
   roles: PermissionRole[]
@@ -58,6 +64,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     avatarUrl: employee.avatarUrl ?? "",
     birthday: employee.birthday ?? "",
     hiredAt: employee.hiredAt ?? "",
+    leaveStart: toDatetimeLocal(employee.leaveStart),
+    leaveEnd: toDatetimeLocal(employee.leaveEnd),
     skills: employee.skills ?? ([] as string[]),
     socialInsurance: employee.socialInsurance,
   })
@@ -109,6 +117,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       avatarUrl: employee.avatarUrl ?? "",
       birthday: employee.birthday ?? "",
       hiredAt: employee.hiredAt ?? "",
+      leaveStart: toDatetimeLocal(employee.leaveStart),
+      leaveEnd: toDatetimeLocal(employee.leaveEnd),
       skills: employee.skills ?? ([] as string[]),
       socialInsurance: employee.socialInsurance,
     })
@@ -129,6 +139,15 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       toast.error("身份证号格式不正确")
       return
     }
+    // 请假区间成对 + 顺序校验（前端提前提示，Server Action + DB chk_swu_leave_range 兜底）
+    if ((form.leaveStart && !form.leaveEnd) || (!form.leaveStart && form.leaveEnd)) {
+      toast.error("请假开始和结束时间需同时填写")
+      return
+    }
+    if (form.leaveStart && form.leaveEnd && form.leaveEnd <= form.leaveStart) {
+      toast.error("请假结束时间须晚于开始时间")
+      return
+    }
     setSaving(true)
     try {
       const result = await updateEmployee(employee.employeeId, {
@@ -142,6 +161,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         avatarUrl: form.avatarUrl || null,
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
+        leaveStart: form.leaveStart || null,
+        leaveEnd: form.leaveEnd || null,
         skills: form.skills.length > 0 ? form.skills : null,
         socialInsurance: form.socialInsurance,
       }, employee.updatedAt)
@@ -403,6 +424,30 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                     />
                   ) : (
                     <Input value={employee.hiredAt ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">请假开始</label>
+                  {isEditing ? (
+                    <Input
+                      type="datetime-local"
+                      value={form.leaveStart}
+                      onChange={(e) => handleFormChange("leaveStart", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={employee.leaveStart ? employee.leaveStart.slice(0, 16) : "—"} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">请假结束</label>
+                  {isEditing ? (
+                    <Input
+                      type="datetime-local"
+                      value={form.leaveEnd}
+                      onChange={(e) => handleFormChange("leaveEnd", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={employee.leaveEnd ? employee.leaveEnd.slice(0, 16) : "—"} disabled />
                   )}
                 </div>
                 <div className="space-y-2">

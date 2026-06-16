@@ -63,6 +63,10 @@ export interface Employee {
   isResigned: boolean
   /** 入职日期（YYYY-MM-DD） */
   hiredAt: string | null
+  /** 请假开始时间（墙钟 YYYY-MM-DD HH:mm:ss）；与 leaveEnd 成对，请假期间顾客端不可预约 */
+  leaveStart: string | null
+  /** 请假结束时间（墙钟 YYYY-MM-DD HH:mm:ss） */
+  leaveEnd: string | null
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
   /** 离职原因（自由文本）；NULL 表示在职或未填 */
