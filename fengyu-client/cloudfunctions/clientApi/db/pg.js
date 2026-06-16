@@ -11,6 +11,10 @@ const { Pool } = pg
 // 一旦业务量级逼近 2^53 需切回 bigint mode + BigInt 处理（届时撤销 OID=20 的设置）。
 pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
 pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
+// timestamp without time zone (1114)：库存北京墙钟字面，显式按 +08:00 构造 Date，与进程 TZ 解耦。
+// CloudBase 运行时 process.env.TZ 不可靠（V8/ICU 时区 spawn 期已锁 UTC），默认 parser 会把
+// 北京墙钟当 UTC 解析 → 序列化给前端再 +8 → 晚 8 小时。返回 Date（类型不变，内部运算兼容）。
+pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
 
 // 延迟初始化连接池(冷启动优化)
 let pool = null

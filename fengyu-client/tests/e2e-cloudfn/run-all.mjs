@@ -25,8 +25,9 @@ const moduleFilter = (() => {
 })()
 const bail = args.includes('--bail')
 
-// 模块跑序：依赖关系从轻到重（config/staff 无依赖；order/appointment 依赖商品+顾客+卡）
+// 模块跑序：依赖关系从轻到重（timezone 纯 parser 守护，无库依赖；config/staff 无依赖；order/appointment 依赖商品+顾客+卡）
 const MODULE_ORDER = [
+  'timezone',
   'config', 'staff', 'store', 'product',
   'auth', 'card', 'coupon', 'points', 'message', 'service',
   'order', 'appointment',

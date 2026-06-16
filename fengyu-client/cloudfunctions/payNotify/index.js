@@ -31,6 +31,10 @@ function getPg() {
     // 全局 OID 解析：numeric/bigint → JS Number（详见 db/pg.js 注释）
     pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))
     pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))
+    // timestamp without time zone (1114)：库存北京墙钟字面，显式按 +08:00 构造 Date，与进程 TZ 解耦。
+    // CloudBase 运行时 process.env.TZ 不可靠（V8/ICU 时区 spawn 期已锁 UTC），默认 parser 会把
+    // 北京墙钟当 UTC 解析 → 序列化给前端再 +8 → 晚 8 小时。返回 Date（类型不变，内部运算兼容）。
+    pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
     pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
       max: 3,
