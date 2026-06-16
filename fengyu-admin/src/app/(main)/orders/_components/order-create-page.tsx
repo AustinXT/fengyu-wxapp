@@ -212,6 +212,8 @@ export default function OrderCreatePageClient({
   const [customerCardBalance, setCustomerCardBalance] = useState<number>(0)
   const [useCard, setUseCard] = useState<boolean>(false)
   const [cardAmountInput, setCardAmountInput] = useState<string>("")
+  // 活动单标记（纯标识，不影响金额/提成口径）
+  const [isActivity, setIsActivity] = useState<boolean>(false)
   // 创建订单返回的 status，用于 Step 4 文案分支（部分支付 / 待支付 / 已支付）
   const [createdStatus, setCreatedStatus] = useState<'待支付' | '部分支付' | '已支付' | null>(null)
   // 本次应付合计快照（= totalSaleAmount），用于 Step 4 计算剩余
@@ -1070,6 +1072,21 @@ export default function OrderCreatePageClient({
                 />
               </div>
 
+              {/* 活动单标记（纯标识；转换单走独立提交，不带此标记） */}
+              {!isConversion && (
+                <div className="col-span-2 md:col-span-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isActivity}
+                      onChange={(e) => setIsActivity(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    <span className="text-sm text-[#666666]">活动（标记为活动订单）</span>
+                  </label>
+                </div>
+              )}
+
               {/* 优惠券（仅已注册顾客可选 + 非内部单 + 非转换单） */}
               {selectedCustomer?.userId && !isInternal && !isConversion && (
                 <div className="col-span-2 md:col-span-3">
@@ -1408,6 +1425,7 @@ export default function OrderCreatePageClient({
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
+                    isActivity,
                     couponId: !isInternal ? (selectedCouponId || null) : null,
                     receivedAmount: receivedAmountArg,
                     prepaidCardAmount: saleCardAmount > 0 ? saleCardAmount : undefined,

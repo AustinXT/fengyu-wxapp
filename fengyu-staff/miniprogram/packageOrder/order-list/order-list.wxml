@@ -22,6 +22,7 @@
       <view class="order-header">
         <text class="order-no">{{item.saleOrderId}}</text>
         <view class="status-wrap">
+          <view wx:if="{{item.isActivity}}" class="activity-tag">活动</view>
           <view wx:if="{{item.hasPendingRefund}}" class="refund-tag refund-tag--pending">退款审批中</view>
           <view wx:elif="{{item.hasRefund}}" class="refund-tag refund-tag--done">含退款</view>
           <view class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</view>

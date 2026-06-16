@@ -42,6 +42,7 @@ interface RawOrder {
   legacy_source?: string;
   offline_confirmed_by_name?: string;
   allocatable?: boolean;
+  is_activity?: boolean;
 }
 
 interface RawOrderItem {
@@ -175,6 +176,7 @@ interface DisplayOrder {
   couponDiscount: string;
   allocationStatus: string;
   isLegacy: boolean;
+  isActivity: boolean;
   items: DisplayOrderItem[];
   allocation: DisplayAllocation[];
   payments: DisplayPayment[];
@@ -335,6 +337,7 @@ Page({
           couponDiscount: Number(o.coupon_discount || 0) > 0 ? Number(o.coupon_discount).toFixed(2) : '',
           allocationStatus: o.allocation_status || '',
           isLegacy: o.legacy_source === 'workfine',
+          isActivity: !!o.is_activity,
           items,
           allocation,
           payments,

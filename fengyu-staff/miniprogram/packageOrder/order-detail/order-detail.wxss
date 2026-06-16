@@ -8,6 +8,14 @@
   padding: 20rpx 32rpx;
 }
 .status-text { font-size: 28rpx; font-weight: 600; }
+.activity-badge {
+  font-size: 22rpx;
+  font-weight: 600;
+  padding: 2rpx 14rpx;
+  border-radius: 20rpx;
+  color: #C0322A;
+  background: #FFFFFF;
+}
 .order-no-top { font-size: 22rpx; opacity: 0.75; font-family: monospace; }
 
 

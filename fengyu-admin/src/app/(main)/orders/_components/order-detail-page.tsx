@@ -212,6 +212,12 @@ export default function OrderDetailPageClient({
                     历史订单
                   </Badge>
                 )}
+                {/* 活动单角标 */}
+                {order.isActivity && (
+                  <Badge variant="secondary" className="bg-[#FCE8E6] text-[#C0322A]">
+                    活动
+                  </Badge>
+                )}
               </p>
             </div>
             {order.documentType && (

@@ -483,6 +483,19 @@
             </view>
           </view>
 
+          <!-- 活动单标记（纯标识，不影响金额/提成口径） -->
+          <view class="activity-section">
+            <view class="activity-row">
+              <text class="activity-label">活动</text>
+              <van-switch
+                checked="{{isActivity}}"
+                size="40rpx"
+                active-color="#C0322A"
+                bind:change="onToggleActivity"
+              />
+            </view>
+          </view>
+
           <!-- Wave 3G — 抵扣区（预选）：充值卡。与支付方式区明确分离 -->
           <view class="prepaid-card-section">
             <text class="prepaid-card-section-title">抵扣（预选）</text>

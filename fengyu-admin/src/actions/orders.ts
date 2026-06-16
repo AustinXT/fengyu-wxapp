@@ -309,6 +309,7 @@ export const getOrders = withPermission(
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
     remark: r.order.remark,
+    isActivity: r.order.isActivity ?? false,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -470,6 +471,7 @@ export const getOrdersPaginated = withPermission(
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
     remark: r.order.remark,
+    isActivity: r.order.isActivity ?? false,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -703,6 +705,7 @@ export const getOrderById = withAnyPermission(
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
     remark: r.order.remark,
+    isActivity: r.order.isActivity ?? false,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -1265,6 +1268,8 @@ export const createOrder = withPermission(
   openedBy?: string
   preferredEmployeeId?: string
   remark?: string | null
+  /** 活动单标记（纯标识，不影响金额/提成口径） */
+  isActivity?: boolean
   /** 可选：顾客选择使用的优惠券实例ID */
   couponId?: string | null
   /**
@@ -1739,6 +1744,7 @@ export const createOrder = withPermission(
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
+        isActivity: data.isActivity ?? false,
         paidAt: isFullCardCoverage ? new Date() : null,
       })
 

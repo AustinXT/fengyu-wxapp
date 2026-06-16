@@ -294,6 +294,7 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
+    isActivity,
   } = payload
 
   const storeId = ctx.auth.effectiveStoreId
@@ -836,10 +837,10 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount, remark, allocation_status,
+        preferred_employee_id, coupon_id, coupon_discount, remark, is_activity, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -850,6 +851,7 @@ async function create(ctx) {
         initialStatus,
         prepaidCardAmount, receivedColumn, payableAmount,
         paidAtValue,
+        isActivity === true,
       ]
     )
 
@@ -1556,7 +1558,7 @@ async function list(ctx) {
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
-      o.paid_at, o.created_at, o.opened_by, o.total_amount,
+      o.paid_at, o.created_at, o.opened_by, o.total_amount, o.is_activity,
       -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
       (o.sale_order_type IN ('销售单','转换单') AND o.legacy_source IS DISTINCT FROM 'workfine') AS allocatable,
       EXISTS(

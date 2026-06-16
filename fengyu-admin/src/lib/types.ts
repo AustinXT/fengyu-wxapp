@@ -363,6 +363,8 @@ export interface SaleOrder {
   couponId: string | null
   couponDiscount: string | null
   remark: string | null
+  /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
+  isActivity?: boolean
   createdAt: string
   updatedAt: string
   // joined

@@ -320,6 +320,8 @@ Page({
     showPayMethodGroup: true as boolean,
     prepaidCardLoaded: false as boolean,
     customerBalanceLoading: false as boolean,
+    /** 活动单标记（纯标识，店长开单时勾选；透传 order.create 写 sale_orders.is_activity） */
+    isActivity: false as boolean,
     // 转换单（ConversionPanel 反馈 → 主页记录用于提交）
     conversionSelectedSaleItemIds: [] as string[],
     conversionDeductibleSum: 0,
@@ -431,7 +433,8 @@ Page({
       }
       if (pending.directCheckout) {
         // PR-C §C6：旧 orderType='promotion' 分支删除；saleOrderType 默认 '销售单'
-        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单' });
+        // 此路径绕过 onOpenCheckout 直接重开结算面板，须显式重置 isActivity，避免上一单的活动标记串入新单
+        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单', isActivity: false });
       }
     }
   },
@@ -1058,11 +1061,13 @@ Page({
       paidAmount: '0.00',
       showPayMethodGroup: true,
       prepaidCardLoaded: false,
+      isActivity: false,
     });
   },
 
   onCloseCheckout() {
-    this.setData({ showCheckout: false });
+    // 放弃结算时一并重置 isActivity，从源头清除活动标记的 staleness（防御性，避免后续重开结算串单）
+    this.setData({ showCheckout: false, isActivity: false });
   },
 
   // Step 0: 选顾客
@@ -1210,6 +1215,11 @@ Page({
     }
     this.setData({ useCard: next });
     this.recomputePrepaidAmounts();
+  },
+
+  /** 活动单开关（纯标识，不影响金额/提成口径） */
+  onToggleActivity(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ isActivity: !!e.detail });
   },
 
   /**
@@ -1501,6 +1511,8 @@ Page({
         // Wave 3G — 储值卡预选（决策 #6：店长不扣卡，云函数仅写订单字段）
         useCard,
         prepaidCardAmount,
+        // 活动单标记（纯标识）
+        isActivity: this.data.isActivity,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
@@ -1511,6 +1523,7 @@ Page({
         selectedCoupon: null,
         couponDiscount: 0,
         paymentMethod: '微信',
+        isActivity: false,
       });
       // 应付实金=0（券/卡全额抵扣，payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
       if (res.status === '已支付') {

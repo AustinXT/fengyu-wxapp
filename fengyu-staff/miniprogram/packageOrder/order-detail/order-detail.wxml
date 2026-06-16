@@ -13,6 +13,7 @@
     <!-- 状态条 -->
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
+      <text wx:if="{{order.isActivity}}" class="activity-badge">活动</text>
       <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>

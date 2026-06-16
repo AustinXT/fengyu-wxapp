@@ -441,6 +441,11 @@ export default function OrdersPageClient({
                       <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                         {order.saleOrderType}
                       </Badge>
+                      {order.isActivity && (
+                        <Badge variant="secondary" className="ml-1 bg-[#FCE8E6] text-[#C0322A]">
+                          活动
+                        </Badge>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={order.status} />

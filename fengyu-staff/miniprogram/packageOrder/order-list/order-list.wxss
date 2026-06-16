@@ -34,6 +34,14 @@
 }
 .refund-tag--pending { color: #D4820A; background: #FFF4E0; }
 .refund-tag--done    { color: #C62828; background: #FBECEC; }
+.activity-tag {
+  font-size: 22rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  line-height: 1.3;
+  color: #C0322A;
+  background: #FCE8E6;
+}
 
 
 .order-customer {

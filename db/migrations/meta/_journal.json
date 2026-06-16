@@ -449,6 +449,13 @@
       "when": 1780897195960,
       "tag": "0063_drop_sale_items_sku_spec_name",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1781602708168,
+      "tag": "0064_silky_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }
