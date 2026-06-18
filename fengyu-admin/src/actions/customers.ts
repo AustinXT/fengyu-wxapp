@@ -534,6 +534,75 @@ export const getCustomerRefundHistory = withPermission(
   },
 )
 
+export interface CustomerServiceItem {
+  productName: string | null
+}
+
+export interface CustomerServiceRecord {
+  serviceOrderId: string
+  status: string
+  serviceDate: string
+  storeName: string | null
+  employeeName: string | null
+  items: CustomerServiceItem[]
+}
+
+/**
+ * 顾客服务记录（顾客档案「服务记录」Tab）
+ * 交易数据跟顾客走：按 clientUserId 查全量服务单（含跨门店、各状态），无 store scope。
+ * 与 getCustomerRefundHistory 同 scope 口径（顾客可见性由 getCustomerById 守护）。
+ */
+export const getCustomerServiceOrders = withPermission(
+  'customer:list',
+  async (session, userId: string): Promise<CustomerServiceRecord[]> => {
+  const { serviceOrders, serviceItems } = await import('@db/service')
+  const { saleItems } = await import('@db/order')
+  const { staffWechatUsers } = await import('@db/user')
+
+  const rows = await db
+    .select({
+      serviceOrderId: serviceOrders.serviceOrderId,
+      status: serviceOrders.status,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      storeName: stores.storeName,
+      employeeName: staffWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .where(eq(serviceOrders.clientUserId, userId))
+    .orderBy(desc(serviceOrders.serviceDate), desc(serviceOrders.createdAt))
+
+  if (rows.length === 0) return []
+
+  const soIds = rows.map((r) => r.serviceOrderId)
+  const itemRows = await db
+    .select({
+      serviceOrderId: serviceItems.serviceOrderId,
+      productName: saleItems.productName,
+    })
+    .from(serviceItems)
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .where(inArray(serviceItems.serviceOrderId, soIds))
+
+  const itemsByOrder = new Map<string, CustomerServiceItem[]>()
+  for (const i of itemRows) {
+    if (!itemsByOrder.has(i.serviceOrderId)) itemsByOrder.set(i.serviceOrderId, [])
+    itemsByOrder.get(i.serviceOrderId)!.push({ productName: i.productName })
+  }
+
+  return rows.map((r) => ({
+    serviceOrderId: r.serviceOrderId,
+    status: r.status,
+    serviceDate: r.serviceDate,
+    storeName: r.storeName,
+    employeeName: r.employeeName,
+    items: itemsByOrder.get(r.serviceOrderId) ?? [],
+  }))
+  },
+)
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (

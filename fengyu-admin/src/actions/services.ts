@@ -315,6 +315,8 @@ export const exportAllocationServiceOrders = withPermission(
 export const getServiceOrderById = withPermission(
   'service:list',
   async (session, serviceOrderId: string): Promise<ServiceOrder | null> => {
+  // 交易数据跟顾客走：详情读取不限门店 scope（顾客档案「服务记录」可跨门店点进只读查看）。
+  // 越权写入安全边界由各 mutation action 自带的 scopeCondition 守护；本读取仅标记 readOnly。
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -326,11 +328,14 @@ export const getServiceOrderById = withPermission(
     .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-    .where(and(eq(serviceOrders.serviceOrderId, serviceOrderId), scopeCondition(session, serviceOrders.storeId)))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     .limit(1)
 
   if (rows.length === 0) return null
-  return serializeServiceOrder(rows[0])
+  return {
+    ...serializeServiceOrder(rows[0]),
+    readOnly: !isInScope(session, rows[0].service_order.storeId),
+  }
   },
 )
 

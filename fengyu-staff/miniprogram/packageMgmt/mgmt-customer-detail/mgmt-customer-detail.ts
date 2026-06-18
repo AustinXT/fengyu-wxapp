@@ -6,7 +6,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatCount } from '../../utils/number';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatDate } from '../../utils/formatters';
 
 // ===== 数据接口 =====
 
@@ -155,21 +155,16 @@ interface GiftData {
   giftItems: GiftItem[];
 }
 
-// Tab 5: 退换记录
-interface RefundRecord {
-  saleOrderId: string;
-  type: string;
+// Tab 5: 服务记录
+interface ServiceRecord {
+  serviceOrderId: string;
   status: string;
-  totalAmount: string;
-  handlingFee: number | null;
-  refundReason: string | null;
-  createdAt: string;
-  items: Array<{
-    productName: string;
-    quantity: number;
-    received: string;
-    direction?: string;
-  }>;
+  statusClass?: string;
+  serviceTime: string;
+  staffName: string;
+  storeName: string;
+  metaText?: string;
+  items: Array<{ itemName: string; spec: string }>;
 }
 
 // ===== 页面逻辑 =====
@@ -201,9 +196,9 @@ Page({
     // Tab 4: 赠送记录
     giftData: null as GiftData | null,
     giftLoaded: false,
-    // Tab 5: 退换记录
-    refundRecords: [] as RefundRecord[],
-    refundLoaded: false,
+    // Tab 5: 服务记录
+    serviceRecords: [] as ServiceRecord[],
+    serviceLoaded: false,
   },
 
   _clientUserId: '' as string,
@@ -305,8 +300,8 @@ Page({
       this.setData({ giftLoaded: false });
       task = Promise.all([task, this.loadGiftHistory()]);
     } else if (tab === 5) {
-      this.setData({ refundLoaded: false });
-      task = Promise.all([task, this.loadRefundHistory()]);
+      this.setData({ serviceLoaded: false });
+      task = Promise.all([task, this.loadServiceHistory()]);
     }
     task.finally(finish);
   },
@@ -322,8 +317,8 @@ Page({
       this.loadTreatmentCards();
     } else if (index === 4 && !this.data.giftLoaded) {
       this.loadGiftHistory();
-    } else if (index === 5 && !this.data.refundLoaded) {
-      this.loadRefundHistory();
+    } else if (index === 5 && !this.data.serviceLoaded) {
+      this.loadServiceHistory();
     }
   },
 
@@ -482,22 +477,35 @@ Page({
     }
   },
 
-  // ===== Tab 5: 退换记录 =====
-  async loadRefundHistory() {
+  // ===== Tab 5: 服务记录 =====
+  async loadServiceHistory() {
     if (!this._clientUserId) return;
+    const statusClassMap: Record<string, string> = {
+      '待服务': 'pending',
+      '服务中': 'progress',
+      '待客户确认': 'awaiting',
+      '已完成': 'success',
+      '已取消': 'done',
+    };
     try {
-      const records = (await callStaffApi<RefundRecord[]>('mgmtCustomer.refundHistory', {
+      const records = (await callStaffApi<ServiceRecord[]>('mgmtCustomer.serviceHistory', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
-      }) || []).map(r => ({ ...r, createdAt: formatDateTime(r.createdAt) }));
-      this.setData({ refundRecords: records, refundLoaded: true });
+      }) || []).map(r => ({
+        ...r,
+        serviceTime: r.serviceTime ? formatDate(r.serviceTime) : '',
+        statusClass: statusClassMap[r.status] || 'done',
+        metaText: [r.storeName, r.staffName ? `美容师：${r.staffName}` : '']
+          .filter(Boolean).join(' · '),
+      }));
+      this.setData({ serviceRecords: records, serviceLoaded: true });
     } catch (_) {
-      this.setData({ refundRecords: [], refundLoaded: true });
+      this.setData({ serviceRecords: [], serviceLoaded: true });
     }
   },
 
-  onRefundOrderTap(e: WechatMiniprogram.TouchEvent) {
+  onServiceOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
+    wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${id}` });
   },
 });

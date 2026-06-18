@@ -755,6 +755,85 @@ async function orderHistory(ctx) {
 }
 
 // ====================================================================
+// serviceHistory — 服务记录（交易数据跟顾客走：跨门店 + 不限状态）
+// ====================================================================
+
+async function serviceHistory(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+
+  const { clientUserId, clientPhone, scopeType, scopeId } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+  validateScopeParams(scopeType, scopeId)
+  validateScope(ctx.auth, scopeType, scopeId)
+
+  // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店 + 不限状态
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+
+  const serviceOrders = await pg.query(
+    `SELECT so.service_order_id, so.status, so.service_date,
+            so.assigned_employee_id, so.client_user_id, so.appointment_id,
+            so.started_at, so.completed_at, so.created_at,
+            so.store_id, s.store_name
+       FROM service_orders so
+       LEFT JOIN stores s ON s.store_id = so.store_id
+      WHERE so.client_user_id = $1
+      ORDER BY so.service_date DESC, so.created_at DESC`,
+    [resolvedUserId],
+  )
+
+  if (serviceOrders.length === 0) {
+    ctx.result = []
+    return
+  }
+
+  // 批量查询服务明细摘要（项目名）
+  const soIds = serviceOrders.map((s) => s.service_order_id)
+  const itemsSummary = await pg.query(
+    `SELECT si.service_order_id, COALESCE(sli.product_name, '') AS product_name
+       FROM service_items si
+       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
+      WHERE si.service_order_id = ANY($1)
+      ORDER BY si.sale_item_id`,
+    [soIds],
+  )
+  const itemsMap = {}
+  for (const i of itemsSummary) {
+    if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
+    itemsMap[i.service_order_id].push({
+      itemName: i.product_name,
+      spec: i.product_name || '',
+    })
+  }
+
+  // 批量查询员工姓名
+  const staffWfIds = [...new Set(serviceOrders.map((s) => s.assigned_employee_id).filter(Boolean))]
+  const staffNameMap = {}
+  if (staffWfIds.length > 0) {
+    const staffRows = await pg.query(
+      'SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = ANY($1)',
+      [staffWfIds],
+    )
+    for (const r of staffRows) staffNameMap[r.employee_id] = r.name || ''
+  }
+
+  ctx.result = serviceOrders.map((so) => ({
+    id: so.service_order_id,
+    serviceOrderId: so.service_order_id,
+    status: so.status,
+    serviceTime: so.service_date,
+    startTime: so.started_at,
+    completedTime: so.completed_at,
+    staffName: staffNameMap[so.assigned_employee_id] || '',
+    appointmentId: so.appointment_id,
+    storeId: so.store_id,
+    storeName: so.store_name || '',
+    items: itemsMap[so.service_order_id] || [],
+  }))
+}
+
+// ====================================================================
 // giftHistory — 赠送记录（按 sale_orders.store_id ∈ scope）
 // ====================================================================
 
@@ -988,6 +1067,7 @@ module.exports = {
   calendar,
   paidOrders,
   orderHistory,
+  serviceHistory,
   giftHistory,
   refundHistory,
 }

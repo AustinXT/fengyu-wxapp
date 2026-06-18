@@ -14,6 +14,7 @@ const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
+const { isStoreInScope } = require('../utils/scope')
 
 /**
  * 创建服务单
@@ -805,6 +806,8 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 id 参数')
   }
 
+  // 交易数据跟顾客走：先不限门店查服务单，再分层判定可见性
+  // （顾客档案的服务记录可跨门店查看任意服务单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const serviceOrders = await pg.query(`
     SELECT
       so.service_order_id,
@@ -818,19 +821,43 @@ async function detail(ctx) {
       so.completed_at,
       so.created_at,
       so.updated_at,
+      so.store_id,
       wu.phone AS client_phone
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
-    WHERE so.service_order_id = $1 AND so.store_id = $2
-  `, [id, ctx.auth.effectiveStoreId])
+    WHERE so.service_order_id = $1
+  `, [id])
 
   if (serviceOrders.length === 0) {
-    throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 服务单不存在')
   }
 
   const so = serviceOrders[0]
 
-  if (!ctx.auth.roles.includes('manager') && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  // 分层可见性（与 order.detail 一致）：
+  //  1) 服务单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
+  //  2) 管理层模式 + 服务单门店在本 scope 内 → 监管只读放行
+  //  3) 服务单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店服务单）
+  //  4) 都不满足 → 无权查看
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 1/3。
+  const inStoreScope = isStoreInScope(ctx.auth, so.store_id)
+  const isManager = ctx.auth.roles.includes('manager')
+  const isMgmt = ctx.auth.loginLevel === 'management'
+  let visible = inStoreScope && (isManager || so.assigned_employee_id === ctx.auth.staffWfId)
+  if (!visible && isMgmt && inStoreScope) {
+    visible = true // 管理层监管本 scope 内服务单（只读）
+  }
+  if (!visible && so.client_user_id) {
+    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景
+    const custRows = await pg.query(
+      'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      [so.client_user_id]
+    )
+    if (custRows.length > 0 && isStoreInScope(ctx.auth, custRows[0].bound_store_id)) {
+      visible = true
+    }
+  }
+  if (!visible) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 

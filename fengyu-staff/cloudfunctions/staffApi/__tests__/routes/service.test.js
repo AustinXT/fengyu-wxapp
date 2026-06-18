@@ -1411,6 +1411,7 @@ describe('service.detail', () => {
         completed_at: null,
         created_at: '2024-01-15T09:00:00Z',
         updated_at: '2024-01-15T10:00:00Z',
+        store_id: 'store-001',
         client_phone: '13800001111',
       }])
       .mockResolvedValueOnce([{
@@ -1443,7 +1444,8 @@ describe('service.detail', () => {
         assigned_employee_id: 'emp-beautician-001',  // 匹配自己
         client_user_id: 'cu-001', appointment_id: null, remark: '',
         started_at: '2024-06-01T10:00:00Z', completed_at: null,
-        created_at: '2024-06-01', updated_at: '2024-06-01', client_phone: '138',
+        created_at: '2024-06-01', updated_at: '2024-06-01',
+        store_id: 'store-001', client_phone: '138',
       }])
       .mockResolvedValueOnce([])  // items
       .mockResolvedValueOnce([{ name: '当前美容师' }])  // staffName
@@ -1498,6 +1500,7 @@ describe('service.detail', () => {
         completed_at: null,
         created_at: '2024-01-15T09:00:00Z',
         updated_at: '2024-01-15T09:00:00Z',
+        store_id: 'store-001',
         client_phone: '13800001111',
       }])
       .mockResolvedValueOnce([]) // 服务明细
@@ -1507,6 +1510,41 @@ describe('service.detail', () => {
 
     await serviceRoutes.detail(ctx)
     expect(ctx.result.customerName).toBe('订单顾客名')
+  })
+
+  test('跨门店只读：服务单在其他门店，但顾客绑定本 scope → 放行', async () => {
+    const ctx = createManagerCtx({ id: 'HLD-XSTORE' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-XSTORE', status: '已完成', service_date: '2024-06-01',
+        assigned_employee_id: 'emp-other', client_user_id: 'cu-xstore',
+        appointment_id: null, remark: '', started_at: null, completed_at: null,
+        created_at: '2024-06-01', updated_at: '2024-06-01',
+        store_id: 'store-OTHER', client_phone: '138',
+      }])
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }]) // 顾客绑定本 scope → branch 3 只读放行
+      .mockResolvedValueOnce([]) // items
+      .mockResolvedValueOnce([{ name: '员工' }]) // staffName
+      .mockResolvedValueOnce([{ name: '顾客A' }]) // customerName
+
+    await serviceRoutes.detail(ctx)
+    expect(ctx.result.serviceOrderId).toBe('HLD-XSTORE')
+  })
+
+  test('跨门店拒绝：服务单与顾客均不在本 scope → PERMISSION_DENIED', async () => {
+    const ctx = createManagerCtx({ id: 'HLD-DENY' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-DENY', status: '已完成',
+        assigned_employee_id: 'emp-other', client_user_id: 'cu-other',
+        store_id: 'store-OTHER', client_phone: '138',
+      }])
+      .mockResolvedValueOnce([{ bound_store_id: 'store-OTHER' }]) // 顾客也不在本 scope
+
+    await expect(serviceRoutes.detail(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
 

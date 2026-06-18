@@ -447,6 +447,8 @@ export interface ServiceOrder {
   storeName?: string
   employeeName?: string
   customerName?: string
+  /** 跨门店只读访问（顾客档案场景）：门店不在当前账号 scope 内 → 仅可查看不可操作 */
+  readOnly?: boolean
 }
 
 export interface ServiceCommission {

@@ -105,10 +105,11 @@ import {
   createServiceOrder,
   getServiceOrdersPaginated,
   deleteServiceOrder,
+  getServiceOrderById,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope, isAdminScope } from '@/lib/permissions'
+import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
 import { eq, ilike, gte, lte } from 'drizzle-orm'
 
 const mockSession = {
@@ -776,5 +777,61 @@ describe('deleteServiceOrder — 守卫 + 级联删除', () => {
     const result = await deleteServiceOrder('SVC-3')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已变更')
+  })
+})
+
+// ── getServiceOrderById — 跨门店只读放行 ──────────────────────────────────────
+describe('getServiceOrderById — 读取不限 scope + readOnly 标记', () => {
+  const soRow = {
+    service_order: {
+      serviceOrderId: 'SVC-1',
+      status: '已完成',
+      serviceOrderType: '售前',
+      marketName: 'M',
+      storeId: 'store-9',
+      serviceDate: '2026-06-01',
+      assignedEmployeeId: 'EMP-1',
+      remark: null,
+      appointmentId: null,
+      clientUserId: 'user-1',
+      commissionStatus: null,
+      createdAt: new Date('2026-06-01T00:00:00Z'),
+      updatedAt: new Date('2026-06-01T00:00:00Z'),
+    },
+    storeName: '门店9',
+    employeeName: '张三',
+    customerName: '李四',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('不存在 → null', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    expect(await getServiceOrderById('SVC-404')).toBeNull()
+  })
+
+  it('读取不施加 scopeCondition（跨门店可点进只读）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(true)
+    await getServiceOrderById('SVC-1')
+    expect(scopeCondition).not.toHaveBeenCalled()
+  })
+
+  it('门店在 scope → readOnly=false', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(true)
+    const result = await getServiceOrderById('SVC-1')
+    expect(result?.readOnly).toBe(false)
+  })
+
+  it('门店不在 scope → readOnly=true（跨门店只读）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(false)
+    const result = await getServiceOrderById('SVC-1')
+    expect(result?.readOnly).toBe(true)
+    expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-9')
   })
 })

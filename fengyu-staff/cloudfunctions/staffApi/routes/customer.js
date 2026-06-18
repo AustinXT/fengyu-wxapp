@@ -739,6 +739,101 @@ async function orderHistory(ctx) {
 }
 
 /**
+ * 服务记录（顾客档案「服务记录」Tab）
+ *
+ * 交易数据跟顾客走：放开门店过滤 + 不限状态，按 client_user_id 查全量服务单（含跨门店、各状态）。
+ * 可见性由 assertCustomerInScope（bound_store_id ∈ scope）守护，与 orderHistory 同口径。
+ * 点进详情走 service.detail（已支持顾客档案场景的跨门店只读放行）。
+ */
+async function serviceHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {});
+
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
+  if (!clientUserId && !clientPhone) {
+    throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
+  }
+
+  // 手机号 → clientUserId（service_orders 仅有 client_user_id，无 client_phone 列）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+  if (!clientUserId) {
+    ctx.result = [];
+    return;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（与 orderHistory 一致）
+  await assertCustomerInScope(pg, ctx.auth, clientUserId);
+
+  const serviceOrders = await pg.query(
+    `SELECT so.service_order_id, so.status, so.service_date,
+            so.assigned_employee_id, so.client_user_id, so.appointment_id,
+            so.started_at, so.completed_at, so.created_at,
+            so.store_id, s.store_name
+     FROM service_orders so
+     LEFT JOIN stores s ON s.store_id = so.store_id
+     WHERE so.client_user_id = $1
+     ORDER BY so.service_date DESC, so.created_at DESC`,
+    [clientUserId],
+  );
+
+  if (serviceOrders.length === 0) {
+    ctx.result = [];
+    return;
+  }
+
+  // 批量查询服务明细摘要（项目名）
+  const soIds = serviceOrders.map((s) => s.service_order_id);
+  const itemsSummary = await pg.query(
+    `SELECT si.service_order_id, COALESCE(sli.product_name, '') AS product_name
+     FROM service_items si
+     LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
+     WHERE si.service_order_id = ANY($1)
+     ORDER BY si.sale_item_id`,
+    [soIds],
+  );
+  const itemsMap = {};
+  for (const i of itemsSummary) {
+    if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = [];
+    itemsMap[i.service_order_id].push({
+      itemName: i.product_name,
+      spec: i.product_name || "",
+    });
+  }
+
+  // 批量查询员工姓名
+  const staffWfIds = [...new Set(serviceOrders.map((s) => s.assigned_employee_id).filter(Boolean))];
+  const staffNameMap = {};
+  if (staffWfIds.length > 0) {
+    const staffRows = await pg.query(
+      "SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = ANY($1)",
+      [staffWfIds],
+    );
+    for (const r of staffRows) staffNameMap[r.employee_id] = r.name || "";
+  }
+
+  ctx.result = serviceOrders.map((so) => ({
+    id: so.service_order_id,
+    serviceOrderId: so.service_order_id,
+    status: so.status,
+    serviceTime: so.service_date,
+    startTime: so.started_at,
+    completedTime: so.completed_at,
+    staffName: staffNameMap[so.assigned_employee_id] || "",
+    appointmentId: so.appointment_id,
+    storeId: so.store_id,
+    storeName: so.store_name || "",
+    items: itemsMap[so.service_order_id] || [],
+  }));
+}
+
+/**
  * 顾客分类统计（基于最近服务日期 + 生日）
  * 返回各状态的顾客数量
  */
@@ -1307,4 +1402,4 @@ async function phoneChangeLogs(ctx) {
   })
 }
 
-module.exports = { search, calendar, detail, paidOrders, orderHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };
+module.exports = { search, calendar, detail, paidOrders, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };

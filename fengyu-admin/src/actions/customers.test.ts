@@ -73,7 +73,7 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, assignCustomer, getCustomerPrepaidBalance } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, getCustomerServiceOrders, assignCustomer, getCustomerPrepaidBalance } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, requirePermission, scopeCondition } from '@/lib/permissions'
@@ -739,6 +739,36 @@ describe('getCustomerRefundHistory — scope + 空结果', () => {
     mockRefundChain()
     await getCustomerRefundHistory('user-1')
     // 交易数据跟顾客走：退换记录跨门店全量，不施加门店 scope（顾客可见性由 getCustomerById 守护）
+    expect(scopeCondition).not.toHaveBeenCalled()
+  })
+})
+
+// ── getCustomerServiceOrders（服务记录 Tab）───────────────────────────────────
+function mockServiceOrderChain() {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockResolvedValue([])
+  ;(db.select as any).mockReturnValue(chain)
+}
+
+describe('getCustomerServiceOrders — scope + 空结果', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('无服务单 → 返回空数组', async () => {
+    mockServiceOrderChain()
+    const result = await getCustomerServiceOrders('user-1')
+    expect(result).toEqual([])
+  })
+
+  it('服务记录跟顾客走 — 不施加门店 scopeCondition', async () => {
+    mockServiceOrderChain()
+    await getCustomerServiceOrders('user-1')
+    // 交易数据跟顾客走：服务记录跨门店全量，不施加门店 scope（顾客可见性由 getCustomerById 守护）
     expect(scopeCondition).not.toHaveBeenCalled()
   })
 })
