@@ -746,9 +746,24 @@ Page({
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
+      const errMsg = (err?.errMsg || '').toLowerCase();
       // 用户主动取消支付，跳订单详情（订单仍 '待支付'，可重新支付）
-      if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
+      if (errMsg.includes('cancel')) {
         wx.redirectTo({ url: detailUrl });
+        return;
+      }
+      // 微信封禁/限制小程序支付能力（requestPayment:fail banned / 违反平台规则 /
+      // no permission / access denied）：订单已创建并保留为待支付，明确引导改用支付宝
+      // 或到店付款，而非笼统「下单失败」（订单其实已生成）。
+      if (['banned', 'platform rules', 'violated', '违规', '违反', 'no permission', 'access denied']
+        .some((kw) => errMsg.includes(kw))) {
+        wx.showModal({
+          title: '微信支付暂不可用',
+          content: '当前微信支付能力受限，订单已为你保留。可在订单详情取消后改用支付宝，或选择到店付款。',
+          showCancel: false,
+          confirmText: '查看订单',
+          success: () => wx.redirectTo({ url: detailUrl }),
+        });
         return;
       }
       throw err;

@@ -120,7 +120,10 @@ Page({
 
     const { saleOrderId, orderNo, repay } = options as { saleOrderId?: string; orderNo?: string; repay?: string };
     this._autoRepay = repay === '1';
-    const id = saleOrderId || orderNo;
+    // 微信「订单中心」跳转会把 ${商品订单号} 替换成支付 out_trade_no = `${saleOrderId}_${时间戳}`，
+    // 带后缀；订单号本身（FY-XSD-WX-...）无下划线，故剥 `_\d+$` 还原真实 saleOrderId（与 payNotify 同源）。
+    const rawId = saleOrderId || orderNo;
+    const id = rawId ? rawId.replace(/_\d+$/, '') : rawId;
     if (id) this.loadDetail(id);
   },
 

@@ -231,6 +231,22 @@ Page({
     } catch (err: any) {
       const errorType = err?.errorType || '';
       const msg = err?.message || err?.errMsg || '';
+      const lower = msg.toLowerCase();
+      // 用户主动取消微信支付：订单仍 '待支付'，静默返回不报错
+      if (lower.includes('requestpayment:fail') && lower.includes('cancel')) {
+        return;
+      }
+      // 微信封禁/限制小程序支付能力（banned / 违反平台规则 / no permission / access denied）：
+      // 引导改用「到店付款」，或让顾客在其本人小程序内用支付宝支付。
+      if (['banned', 'platform rules', 'violated', '违规', '违反', 'no permission', 'access denied']
+        .some((kw) => lower.includes(kw))) {
+        wx.showModal({
+          title: '微信支付暂不可用',
+          content: '当前微信支付能力受限，请改用「到店付款」，或让顾客在其本人小程序内用支付宝支付。',
+          showCancel: false,
+        });
+        return;
+      }
       // 2026-05-19 dirty-read 修复：CONFLICT 优先于 INSUFFICIENT_BALANCE
       // CONFLICT 表示余额在 scanAdjust → confirmPrepaidFull 期间被改动，需要用户重选抵扣方案
       if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
