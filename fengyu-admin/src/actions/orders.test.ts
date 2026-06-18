@@ -98,7 +98,7 @@ vi.mock('@db/system-config', () => ({
 }))
 
 vi.mock('@db/product', () => ({
-  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type' },
+  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
   products: { productId: 'product_id', name: 'name' },
   productCategories: { categoryId: 'category_id', productKind: 'product_kind', salesCategory: 'sales_category' },
   // 2026-04-27 dfa4847: orders.ts createOrder 优惠券范围校验需查 mall_product_skus → product 的映射
@@ -276,17 +276,23 @@ function makeThenableWhere(rows: any[]) {
   }))
 }
 
+// 自引用 chain：from/innerJoin/leftJoin 均返回同一含 where 的对象，抗 JOIN 增减
+// （记忆 admin-test-mock-source-drift：加 JOIN 漏更新 mock 致批量假失败）
 function mockSelectEmpty() {
   const where = makeThenableWhere([])
-  const innerJoin = vi.fn().mockReturnValue({ where })
-  const from = vi.fn().mockReturnValue({ where, innerJoin })
+  const chain: any = { where }
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue({ from })
 }
 
 function mockSelectFound(row: any) {
   const where = makeThenableWhere([row])
-  const innerJoin = vi.fn().mockReturnValue({ where })
-  const from = vi.fn().mockReturnValue({ where, innerJoin })
+  const chain: any = { where }
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue({ from })
 }
 
@@ -897,6 +903,74 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
+  })
+})
+
+describe('createOrder — sales_category / is_shengmei 后端反查（不信前端 payload）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    // skuRows 返回带 is_shengmei + sales_category 的商品定义；前端硬编码 null 也应被反查值覆盖
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      customerType: '散客',
+      serviceFee: '0',
+      sessionCount: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      isShengmei: true,
+      salesCategory: '自销自耗',
+    }))
+  })
+
+  it('前端 item.salesCategory=null 时，sale_items 仍写入反查的 sales_category + is_shengmei', async () => {
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260617001')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-001',
+        productName: '招牌一卡通',
+        productType: '疗程卡' as const,
+        sessionCount: null,
+        unitPrice: '200.00',
+        unitRealPrice: '200.00',
+        quantity: 1,
+        salesCategory: null, // 前端开单向导硬编码 null（order-create-page.tsx:1447）
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(1)
+    // 关键：后端从 product_categories / product_skus 反查写入，不取前端 null
+    expect(saleItemInserts[0].values.salesCategory).toBe('自销自耗')
+    expect(saleItemInserts[0].values.isShengmei).toBe(true)
+  })
+
+  it('product_skus.is_shengmei=false 时如实写入 false（不被 ?? null 吞成 null）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001', customerType: '散客', serviceFee: '0', sessionCount: null,
+      isExperience: false, isManagerSpecial: false, isShengmei: false, salesCategory: '他销自耗',
+    }))
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260617002')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-001', productName: 'X', productType: '疗程卡' as const,
+        sessionCount: null, unitPrice: '100.00', unitRealPrice: '100.00', quantity: 1,
+        salesCategory: null,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts[0].values.isShengmei).toBe(false)
+    expect(saleItemInserts[0].values.salesCategory).toBe('他销自耗')
   })
 })
 

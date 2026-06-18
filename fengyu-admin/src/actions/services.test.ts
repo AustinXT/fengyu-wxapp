@@ -50,6 +50,9 @@ vi.mock('@db/order', () => ({
     saleOrderId: 'sale_order_id',
     remainingSessions: 'remaining_sessions',
     unitRealPrice: 'unit_real_price',
+    skuId: 'sku_id',
+    isShengmei: 'is_shengmei',
+    salesCategory: 'sales_category',
   },
 }))
 
@@ -561,6 +564,38 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(result.message).toContain('服务单创建成功')
     expect(result.serviceOrderId).toBe('FY-FW-260315001')
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('service_items 写入 sale_items 快照的 is_shengmei + sales_category', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([{
+        remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1',
+        isShengmei: true, salesCategory: '自销自耗',
+      }])
+    )
+    const inserts: Array<{ table: any; values: any }> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-FW-260617001' }]),
+        insert: vi.fn().mockImplementation((table: any) => ({
+          values: vi.fn().mockImplementation((values: any) => {
+            inserts.push({ table, values })
+            return Promise.resolve({})
+          }),
+        })),
+      }
+      return fn(tx)
+    })
+
+    const result = await createServiceOrder(baseData)
+
+    expect(result.success).toBe(true)
+    const serviceItemInsert = inserts.find((c) =>
+      c.values && typeof c.values === 'object' && 'serviceItemId' in c.values
+    )
+    expect(serviceItemInsert).toBeDefined()
+    expect(serviceItemInsert!.values.isShengmei).toBe(true)
+    expect(serviceItemInsert!.values.salesCategory).toBe('自销自耗')
   })
 })
 

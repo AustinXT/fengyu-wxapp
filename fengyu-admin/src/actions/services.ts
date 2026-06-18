@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { serviceOrders, serviceItems, serviceReviews } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
-import { productSkus } from '@db/product'
+import { productSkus, productCategories } from '@db/product'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { appointments } from '@db/appointment'
@@ -862,7 +862,12 @@ export const createServiceOrder = withPermission(
   // 2026-05-20 ticket：放宽消费条件——只要"已支付/部分支付" + remainingSessions > 0 即可消费
   // 不再校验 paid_sessions 限额（之前的 D6=A 锁死规则已废止）
   // 注：退款冻结是独立守卫（与 D6 无关）——审批中拒绝整单，审批后按 paid_sessions 有效余量拒绝已退完的卡
-  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
+  const saleItemSnapshots: Array<{
+    saleItemId: string
+    unitRealPrice: string
+    isShengmei: boolean | null
+    salesCategory: (typeof saleItems.$inferInsert)['salesCategory']
+  }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
@@ -872,11 +877,17 @@ export const createServiceOrder = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
         orderStatus: saleOrders.status,
+        // service_items 快照源：优先 sale_items 行级值，NULL 时回查 product_skus / product_categories
+        // （对齐 staff service.js 的 COALESCE 兜底，避免 admin 自建服务单两列为 NULL）
+        isShengmei: sql<boolean | null>`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
+        salesCategory: sql<(typeof saleItems.$inferInsert)['salesCategory']>`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
         hasPendingRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         hasApprovedRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .where(eq(saleItems.saleItemId, item.saleItemId))
       .limit(1)
 
@@ -904,6 +915,8 @@ export const createServiceOrder = withPermission(
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,
       unitRealPrice: saleItem.unitRealPrice,
+      isShengmei: saleItem.isShengmei ?? null,
+      salesCategory: saleItem.salesCategory ?? null,
     })
   }
 
@@ -954,6 +967,9 @@ export const createServiceOrder = withPermission(
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
           employeeId: data.assignedEmployeeId,
+          // 生美 / 销售分类快照（COALESCE sale_items → product_skus/product_categories）
+          isShengmei: snapshot.isShengmei,
+          salesCategory: snapshot.salesCategory,
         })
       }
 

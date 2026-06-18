@@ -1660,6 +1660,13 @@ export const createOrder = withPermission(
   const skuExperienceMap = new Map<string, boolean>()
   // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
   const skuManagerSpecialMap = new Map<string, boolean>()
+  // 生美 / 销售分类行级快照源（权威 = DB，不信前端）：
+  //   is_shengmei  ← product_skus.is_shengmei（护理项目 true/false，其他品类 null）
+  //   sales_category ← product_categories.sales_category（按 sku 的 category）
+  // 服务核销后 admin/staff「服务提成分配」页读 sale_items.sales_category 匹配提成矩阵 + 渲染徽章，
+  // 早期 admin 开单只取前端 payload（硬编码 null）→ 卡核销后徽章缺失 + 提成 0%，故此处后端反查兜实。
+  const skuShengmeiMap = new Map<string, boolean | null>()
+  const skuSalesCategoryMap = new Map<string, (typeof saleItems.$inferInsert)['salesCategory']>()
   if (skuIdList.length > 0) {
     const skuRows = await db
       .select({
@@ -1668,14 +1675,19 @@ export const createOrder = withPermission(
         sessionCount: productSkus.sessionCount,
         isExperience: productSkus.isExperience,
         isManagerSpecial: productSkus.isManagerSpecial,
+        isShengmei: productSkus.isShengmei,
+        salesCategory: productCategories.salesCategory,
       })
       .from(productSkus)
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .where(and(inArray(productSkus.skuId, skuIdList), isNull(productSkus.deletedAt)))
     for (const r of skuRows) {
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
       skuManagerSpecialMap.set(r.skuId, r.isManagerSpecial === true)
+      skuShengmeiMap.set(r.skuId, r.isShengmei)
+      skuSalesCategoryMap.set(r.skuId, r.salesCategory)
     }
   }
 
@@ -1820,7 +1832,10 @@ export const createOrder = withPermission(
           saleAmount,
           received,
           pendingReceived,
-          salesCategory: item.salesCategory || null,
+          // 后端反查为权威：sales_category ← product_categories（前端硬编码 null，仅兜底）；
+          // is_shengmei ← product_skus.is_shengmei（含 true/false/null 原值）
+          salesCategory: skuSalesCategoryMap.get(item.skuId) ?? item.salesCategory ?? null,
+          isShengmei: skuShengmeiMap.get(item.skuId) ?? null,
           serviceFee,
           isExperience,
           isManagerSpecial,
@@ -2018,6 +2033,7 @@ export const createConversionOrder = withPermission(
           si.unit_price,
           si.unit_real_price,
           si.sales_category,
+          COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
           si.is_experience,
           so.client_user_id,
@@ -2053,6 +2069,7 @@ export const createConversionOrder = withPermission(
         salesCategory: string | null
         serviceFee: number
         isExperience: boolean
+        isShengmei: boolean | null
       }
       const outItems: OutItem[] = []
 
@@ -2102,6 +2119,7 @@ export const createConversionOrder = withPermission(
           salesCategory: (row.sales_category as string) ?? null,
           serviceFee: outServiceFee,
           isExperience: row.is_experience === true,
+          isShengmei: (row.is_shengmei as boolean | null) ?? null,
         })
       }
 
@@ -2115,6 +2133,7 @@ export const createConversionOrder = withPermission(
           sessionCount: productSkus.sessionCount,
           productType: productSkus.productType,
           isExperience: productSkus.isExperience,
+          isShengmei: productSkus.isShengmei,
           salesCategory: productCategories.salesCategory,
         })
         .from(productSkus)
@@ -2234,6 +2253,8 @@ export const createConversionOrder = withPermission(
           // 转出行镜像原 sale_items.is_experience：负 received × is_experience=true 会冲销
           // 原订单的 trial_amount 累计，与跃迁 SQL 的"只升不降"语义一致。
           isExperience: out.isExperience,
+          // 转出行镜像原 sale_items.is_shengmei（COALESCE product_skus 兜底）
+          isShengmei: out.isShengmei,
         })
 
         // 原子标记耗尽：疗程卡 remaining_sessions=0（单品合并后转出行恒为疗程卡）
@@ -2285,8 +2306,9 @@ export const createConversionOrder = withPermission(
             (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
             null,
           serviceFee: inRow.serviceFee.toFixed(2),
-          // 转入行从 product_skus.is_experience 快照写入
+          // 转入行从 product_skus 快照写入 is_experience / is_shengmei
           isExperience: inRow.sku.isExperience === true,
+          isShengmei: inRow.sku.isShengmei ?? null,
         })
       }
 
