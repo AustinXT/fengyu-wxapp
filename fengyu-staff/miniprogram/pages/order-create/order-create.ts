@@ -368,6 +368,12 @@ Page({
       return
     }
     this.setData({ isManager: isManager() });
+    // Tab 页常驻不销毁：重新进入开单页时完全重置上一单残留的表单态 + 购物车（用户决策）。
+    // 例外：携带 pendingCartItem 时为「商品详情页返回追加购物车」的同一流程，跳过重置。
+    const pending = app.globalData.pendingCartItem;
+    if (!pending) {
+      this.resetOrderState();
+    }
     if (this._allCategories.length === 0) {
       this.loadShopInit();
     }
@@ -380,8 +386,7 @@ Page({
       this.setData({ recentCustomers: valid });
     } catch (_) {}
 
-    // 从商品详情页返回：检查 pendingCartItem
-    const pending = app.globalData.pendingCartItem;
+    // 从商品详情页返回：处理 pendingCartItem（pending 已在 onShow 顶部读取）
     if (pending) {
       app.globalData.pendingCartItem = null;
 
@@ -1066,8 +1071,86 @@ Page({
   },
 
   onCloseCheckout() {
-    // 放弃结算时一并重置 isActivity，从源头清除活动标记的 staleness（防御性，避免后续重开结算串单）
-    this.setData({ showCheckout: false, isActivity: false });
+    // 放弃结算：完全重置结算面板表单态（保留购物车），避免下次重开结算串入上次的支付方式/活动/顾客/券等
+    this.resetCheckoutForm();
+  },
+
+  /**
+   * 重置结算面板的全部临时表单态（恢复 data 初始默认值），保留购物车与商品浏览态。
+   * 供「放弃结算」（onCloseCheckout）与「完全重置」（resetOrderState）复用。
+   */
+  resetCheckoutForm() {
+    this.setData({
+      showCheckout: false,
+      checkoutStep: 0,
+      // Step 0 顾客
+      customerKeyword: '',
+      customerSearching: false,
+      customerInfo: null,
+      customerResults: [],
+      // Step 2 订单类型
+      saleOrderType: '销售单',
+      depositReceivedMap: {},
+      // Step 2 备注 / 提交态
+      remark: '',
+      submitting: false,
+      // 支付方式
+      paymentMethod: '微信',
+      // 储值卡预选
+      customerCardBalance: 0,
+      useCard: false,
+      prepaidCardAmount: 0,
+      paidAmount: '0.00',
+      showPayMethodGroup: true,
+      prepaidCardLoaded: false,
+      customerBalanceLoading: false,
+      // 活动单
+      isActivity: false,
+      // 转换单
+      conversionSelectedSaleItemIds: [],
+      conversionDeductibleSum: 0,
+      conversionPriceDiff: 0,
+      conversionPaymentMethod: null,
+      conversionPrepaidCardAmount: 0,
+      conversionRemaining: 0,
+      // 优惠券
+      selectedCoupon: null,
+      couponDiscount: 0,
+      couponTotal: '',
+      showCouponPopup: false,
+      availableCoupons: [],
+      couponsLoading: false,
+      // 指定美容师
+      preferredStaffWfId: '',
+      preferredStaffName: '',
+      showStaffPicker: false,
+      // 购物车弹层
+      cartPopupVisible: false,
+    });
+  },
+
+  /**
+   * 完全重置开单页（含购物车 + 商品类型 Tab），使每次重新进入都是全新开单状态。
+   * 由 Tab 页 onShow 重新进入（非 pendingCartItem 追加流程）时调用。
+   * 保留：isManager / recentCustomers / staffListForPicker / staffPickerColumns
+   *      及全部 `_` 前缀缓存（_allCategories/_allSkus/...）+ skuMap + bundleSpus。
+   */
+  resetOrderState() {
+    this.resetCheckoutForm();
+    this.updateCart([]); // 清空购物车并归零所有金额合计
+    if (this._kwTimer) {
+      clearTimeout(this._kwTimer);
+      this._kwTimer = null;
+    }
+    this.setData({
+      productKindChoiceIndex: 1,
+      productKindChoice: '普通商品',
+      productKeyword: '',
+      searching: false,
+    });
+    // 商品类型回到「普通商品」后刷新侧边栏 + spuList；
+    // _allCategories 为空时 applyKindChoice 安全设空，随后 loadShopInit 回来会再次填充。
+    this.applyKindChoice('普通商品');
   },
 
   // Step 0: 选顾客
