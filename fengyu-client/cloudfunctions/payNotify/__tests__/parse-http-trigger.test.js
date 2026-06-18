@@ -6,7 +6,8 @@
  *   - trade_no → transactionId（作 external_txn_id 幂等键）
  *   - trade_state SUCCESS → 进业务；INIT/FAIL/REFUND/CLOSE → ack 跳过
  *   - account_type WECHAT/ALIPAY → paymentMethod 中文
- *   - payer_amount → payAmount（实付优先，缺失兜底 total_amount）
+ *   - total_amount → payAmount（订单应付为入账基准，缺失兜底 payer_amount）
+ *     注：payer_amount 是用户实付（扣银行立减金/平台立减等渠道出资营销），不作入账，否则误判少收
  */
 
 // ====== Mock: pg ======
@@ -218,21 +219,29 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
     expect(body.message).toMatch(/BODY_NOT_JSON/)
   })
 
-  test('payer_amount 缺失 → 兜底 total_amount 并告警（仍进业务层）', async () => {
-    const { main } = loadFreshIndex()
-    mockPoolQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 })
-    const event = makeHttpEvent({
+  test('渠道立减（银行立减金等）：total_amount=15800 payer_amount=15790 → payAmount=158 按订单应付入账（不被立减抵减）', () => {
+    // 回归 2026-06-18 bug：用户用「中国银行立减金 -0.10」实付 157.9，但立减由银行出资、
+    // 商户全额到账 158；入账须用 total_amount，否则订单被误判「部分支付」(received=157.9)。
+    const { parseHttpTriggerEvent } = loadFreshIndex()
+    const ev = parseHttpTriggerEvent(makeHttpEvent({
+      out_trade_no: 'FY-XSD-WX-2606180025_1700000003',
+      trade_no: 'LAK-T-025', trade_state: 'SUCCESS', account_type: 'ALIPAY',
+      total_amount: 15800, payer_amount: 15790,
+    }))
+    expect(ev.payAmount).toBe(158)
+    expect(ev.paymentMethod).toBe('支付宝')
+    expect(ev.orderNo).toBe('FY-XSD-WX-2606180025_1700000003')
+  })
+
+  test('total_amount 缺失 → 兜底 payer_amount 并告警（payAmount=payer_amount）', () => {
+    const { parseHttpTriggerEvent } = loadFreshIndex()
+    const ev = parseHttpTriggerEvent(makeHttpEvent({
       out_trade_no: 'FY-XSD-WX-001_1700000002',
-      trade_no: 'LAK-T-001',
-      trade_state: 'SUCCESS',
-      account_type: 'WECHAT',
-      total_amount: 30000,
-      // payer_amount 缺失
-    })
-    const res = await main(event)
-    // 仍能进入业务层（payer_amount 缺失但 total_amount 兜底 30000 → payAmount=300）
-    expect(res.statusCode).not.toBe(403)
-    expect(res.statusCode).not.toBe(400)
+      trade_no: 'LAK-T-001', trade_state: 'SUCCESS', account_type: 'WECHAT',
+      payer_amount: 30000,
+      // total_amount 缺失
+    }))
+    expect(ev.payAmount).toBe(300)
   })
 
   test('out_trade_no 带 _<unixSec> 后缀 → 主流程会按 saleOrderId 查（剥离后缀逻辑沿用旧版）', async () => {
