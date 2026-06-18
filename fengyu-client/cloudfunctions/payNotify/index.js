@@ -74,8 +74,10 @@ function isPayNotifyEnabled() {
  *       trade_state   INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
  *       account_type  WECHAT / ALIPAY / UQRCODEPAY ...
  *       acc_trade_no  微信 transaction_id 或支付宝交易号（落 external_trade_info 供 admin 退款取 origin）
- *       total_amount  订单金额（分）
- *       payer_amount  实际付款金额（分，含微信营销减扣；入账金额必须用此字段，防少收）
+ *       total_amount  订单/本次应付金额（分，= 我方 preorder 传入额；**入账基准用此字段**）
+ *       payer_amount  用户实付金额（分，扣除了银行立减金/平台立减/红包等"渠道·银行出资"营销立减；
+ *                     这类立减由银行/平台补贴、商户全额到账，**不作入账**，否则会被误判少收/部分支付。
+ *                     仅随整 body 落 external_trade_info 作快照）
  *
  * 返回：
  *   - null              非 HTTP 入口（走原 callFunction 路径）
@@ -143,12 +145,16 @@ function parseHttpTriggerEvent(event) {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${tradeState} ack` } }
   }
 
-  // 入账金额优先用 payer_amount（实付，含微信营销减扣）；缺失/0 兜底 total_amount 并告警
-  let effectiveFen = payerAmountFen
+  // 入账基准用 total_amount（本次/订单应付额 = 我方 preorder 传入额）。
+  // payer_amount 是"用户实付"，扣了银行立减金/平台立减/红包等"渠道·银行出资"营销立减；
+  // 这些立减由银行/平台补贴、商户全额到账，订单不应记为少收/部分支付。
+  // 订单优惠(优惠券/储值卡)已在下单时编入 total_amount，支付侧立减不再二次扣减 received。
+  // （payer_amount 仍随整 body 落 external_trade_info 作快照）
+  let effectiveFen = totalAmountFen
   if (!effectiveFen || effectiveFen <= 0) {
-    if (totalAmountFen > 0) {
-      console.warn('[payNotify] payer_amount 缺失，兜底 total_amount=', totalAmountFen, 'outTradeNo=', outTradeNo)
-      effectiveFen = totalAmountFen
+    if (payerAmountFen > 0) {
+      console.warn('[payNotify] total_amount 缺失，兜底 payer_amount=', payerAmountFen, 'outTradeNo=', outTradeNo)
+      effectiveFen = payerAmountFen
     }
   }
 
@@ -166,6 +172,9 @@ function parseHttpTriggerEvent(event) {
     _httpEntry: true,
   }
 }
+
+// 测试可见：聚合主扫 HTTP 回调字段映射（含 total_amount 入账基准）单测直接调用
+exports.parseHttpTriggerEvent = parseHttpTriggerEvent
 
 /**
  * 云函数入口
