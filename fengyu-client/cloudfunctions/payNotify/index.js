@@ -19,6 +19,7 @@ const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const lakalaSign = require('./utils/lakala-sign')
 const lakalaConfig = require('./utils/lakala-config')
+const wxShipping = require('./utils/wx-shipping')
 
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU 或 product_name 正则解析面值。
@@ -175,6 +176,66 @@ function parseHttpTriggerEvent(event) {
 
 // 测试可见：聚合主扫 HTTP 回调字段映射（含 total_amount 入账基准）单测直接调用
 exports.parseHttpTriggerEvent = parseHttpTriggerEvent
+
+/**
+ * 微信「发货信息管理」自动上报（用户自提）——付款回调成功后调用，绝不抛错。
+ *
+ * 触发条件：WX_SHIPPING_ENABLED=true + 有 CLIENT_APPSECRET + 微信渠道 + 拿到 acc_trade_no（微信
+ * transaction_id）。支付宝订单 / callFunction 入口（无 tradeInfo 快照）/ 缺付款人 openid 一律跳过。
+ * 上报与支付到账解耦：失败仅记日志，不影响给拉卡拉的 SUCCESS 应答（避免重试风暴 / 误判未到账）。
+ *
+ * 每笔微信支付交易（含分次回款）各对应发货管理里一条订单，故首次支付与回款都会调用本函数。
+ *
+ * @param {import('pg').Pool} pg
+ * @param {{ saleOrderId:string, paymentMethod:string, tradeInfo:any }} p
+ */
+async function reportWxShippingSafe(pg, { saleOrderId, paymentMethod, tradeInfo }) {
+  try {
+    if (!wxShipping.isEnabled()) return
+    if (paymentMethod !== '微信') return
+    if (!tradeInfo) return  // callFunction 入口无回调快照，取不到微信交易单号
+    const wxTxnId = tradeInfo.acc_trade_no
+    if (!wxTxnId) {
+      console.warn('[payNotify/wx-shipping] 缺微信交易单号(acc_trade_no)，跳过上报:', saleOrderId)
+      return
+    }
+
+    // 付款人 openid（客户端 appid 下）；WorkFine 同步顾客可能无 openid → 跳过
+    const openidRes = await pg.query(
+      `SELECT u.openid
+         FROM sale_orders o
+         JOIN client_wechat_users u ON u.user_id = o.client_user_id
+        WHERE o.sale_order_id = $1`,
+      [saleOrderId]
+    )
+    const openid = openidRes.rows[0]?.openid
+    if (!openid) {
+      console.warn('[payNotify/wx-shipping] 订单无付款人 openid，跳过上报:', saleOrderId)
+      return
+    }
+
+    // 商品描述：取明细商品名去重拼接，截断到 120 字（微信 item_desc 上限 128）；缺名兜底
+    const itemRes = await pg.query(
+      `SELECT product_name FROM sale_items WHERE sale_order_id = $1 AND product_name IS NOT NULL`,
+      [saleOrderId]
+    )
+    const names = [...new Set(itemRes.rows.map((r) => r.product_name).filter(Boolean))]
+    let itemDesc = names.join('、') || '美容服务'
+    if (itemDesc.length > 120) itemDesc = itemDesc.slice(0, 117) + '...'
+
+    const res = await wxShipping.uploadSelfPickupShipping({ transactionId: wxTxnId, openid, itemDesc })
+    if (res && res.errcode === 0) {
+      console.log('[payNotify/wx-shipping] 自动发货上报成功:', saleOrderId)
+    } else {
+      console.error('[payNotify/wx-shipping] 上报失败:', saleOrderId, res && res.errcode, res && res.errmsg)
+    }
+  } catch (e) {
+    console.error('[payNotify/wx-shipping] 上报异常(非致命):', saleOrderId, e && e.message)
+  }
+}
+
+// 测试可见
+exports.reportWxShippingSafe = reportWxShippingSafe
 
 /**
  * 云函数入口
@@ -438,6 +499,8 @@ exports.main = async (event) => {
       if (!fullyPaid) {
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
+        // 微信发货上报：本次微信交易已到账即上报（每笔交易各对应发货管理一条订单）
+        await reportWxShippingSafe(pg, { saleOrderId: targetOrderNo, paymentMethod, tradeInfo })
         return { code: 'SUCCESS', message: '部分支付已到账' }
       }
 
@@ -770,6 +833,10 @@ exports.main = async (event) => {
     } finally {
       client.release()
     }
+
+    // 微信「发货信息管理」自动上报（用户自提）——事务已提交、连接已释放后执行；
+    // 与支付到账解耦，失败不影响给拉卡拉的 SUCCESS 应答
+    await reportWxShippingSafe(pg, { saleOrderId: targetOrderNo, paymentMethod, tradeInfo })
 
     // 成功响应：HTTP 入口必须返回 {statusCode, body} 才能让 CloudBase HTTP 触发器透传给拉卡拉
     if (isHttpEntry) {
