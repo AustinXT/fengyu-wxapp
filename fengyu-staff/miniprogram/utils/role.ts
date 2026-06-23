@@ -94,3 +94,8 @@ export function getCurrentStoreId(): string {
   if (g.loginLevel === 'management') return '';
   return g.currentStoreId || g.boundStoreId || '';
 }
+
+/** 是否同时拥有两种视图权限。口径与登录页 radio 一致：单一事实来源 = availableLoginLevels。 */
+export function canSwitchLoginLevel(): boolean {
+  return (app().globalData.availableLoginLevels?.length || 0) > 1;
+}

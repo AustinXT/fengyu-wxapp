@@ -77,6 +77,7 @@ interface IAppOption {
   setLoginLevel(level: LoginLevel): void;
   setCurrentStoreId(storeId: string): void;
   resetStaffInfo(): void;
+  switchLoginLevel(target: LoginLevel): void;
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;
   switchTestUser(phone: string | null): Promise<void>;
