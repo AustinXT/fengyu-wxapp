@@ -207,8 +207,10 @@ export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失�
  *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
  * 2026-05-18 B5：+'寄存单'（WorkFine 剩余次数初始化，金额维度不入统计，
  *       次数维度可生成 service_orders 核销）
+ * 2026-06-24：+'充值单'（充值卡开单 / 旧系统充值金转入，金额不计营业额；
+ *       前端列表/详情徽标展示用，转入单靠 remark 标记区分旧系统迁移）
  */
-export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单'
+export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单' | '充值单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'

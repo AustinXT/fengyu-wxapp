@@ -1,0 +1,127 @@
+<!-- packageOrder/card-inflow/card-inflow.wxml — 旧系统充值金转入（店长） -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 顶部 Hero -->
+  <view class="hero">
+    <view class="hero-title">旧系统充值金转入</view>
+    <view class="hero-sub">将顾客在旧系统的充值金余额等额转入</view>
+    <view wx:if="{{boundStoreName}}" class="hero-store">
+      <van-icon name="shop-o" size="24rpx" color="rgba(255,255,255,0.85)" />
+      <text class="hero-store-text">入账门店：{{boundStoreName}}</text>
+    </view>
+  </view>
+
+  <!-- 顾客选择块 -->
+  <view class="customer-block">
+    <view class="block-title">顾客</view>
+
+    <view wx:if="{{customerInfo}}" class="customer-card customer-card--selected">
+      <view class="customer-info">
+        <view class="customer-name">
+          {{customerInfo.name || '未命名'}}
+          <text wx:if="{{customerInfo.crossStore}}" class="customer-cross-store">非本店·{{customerInfo.storeName}}</text>
+        </view>
+        <view class="customer-phone">{{customerInfo.phoneMasked || customerInfo.phone}}</view>
+      </view>
+      <view class="customer-action" bindtap="onClearCustomer">
+        <van-icon name="close" size="28rpx" color="#999" />
+      </view>
+    </view>
+
+    <view wx:else class="customer-search">
+      <view class="customer-input-row">
+        <input
+          class="customer-input"
+          type="text"
+          placeholder="搜索姓名或手机号"
+          placeholder-style="color:#BBBBBB"
+          value="{{customerKeyword}}"
+          bindinput="onCustomerKeywordInput"
+          bindconfirm="onSearchCustomer"
+        />
+        <view
+          class="customer-search-btn {{customerKeyword && !customerSearching ? '' : 'customer-search-btn--disabled'}}"
+          bindtap="onSearchCustomer"
+        >
+          <van-loading wx:if="{{customerSearching}}" size="16px" color="#FFFFFF" />
+          <text wx:else>查找</text>
+        </view>
+      </view>
+      <view wx:if="{{customerResults.length > 0}}" class="customer-results">
+        <view
+          wx:for="{{customerResults}}"
+          wx:key="clientUserId"
+          class="customer-result-item"
+          data-customer="{{item}}"
+          bindtap="onSelectCustomer"
+        >
+          <view class="customer-result-name">
+            {{item.name || '未命名'}}
+            <text wx:if="{{item.crossStore}}" class="customer-cross-store">非本店·{{item.storeName}}</text>
+          </view>
+          <view class="customer-result-phone">{{item.phoneMasked || item.phone}}</view>
+        </view>
+      </view>
+      <view class="customer-hint">储值卡账户跨店统一，绑定任意门店的顾客均可转入</view>
+    </view>
+  </view>
+
+  <view class="body">
+
+    <!-- 转入金额（自由输入，不打折、不限额）-->
+    <view class="section-title">转入金额</view>
+    <view class="custom-card {{amountInput ? 'custom-card--active' : ''}}">
+      <view class="custom-input-row">
+        <text class="custom-currency">¥</text>
+        <input
+          class="custom-input"
+          type="digit"
+          placeholder="输入旧系统充值金余额"
+          placeholder-style="color:#BBBBBB"
+          value="{{amountInput}}"
+          bindinput="onAmountInput"
+        />
+      </view>
+      <view wx:if="{{amountError}}" class="custom-hint custom-hint--error">{{amountError}}</view>
+      <view wx:else class="custom-hint custom-hint--placeholder">等额转入·不打折·不限额（如旧系统余额 3680.5 即转入 ¥3680.5）</view>
+    </view>
+
+    <!-- 备注（可选）-->
+    <view class="section-title">备注（可选）</view>
+    <view class="custom-card">
+      <input
+        class="remark-input"
+        type="text"
+        placeholder="如：旧系统账号 / 迁移说明"
+        placeholder-style="color:#BBBBBB"
+        value="{{remark}}"
+        bindinput="onRemarkInput"
+        maxlength="100"
+      />
+    </view>
+
+    <!-- 底部说明 -->
+    <view class="footer-note">
+      <view class="footer-note-line">· 转入到顾客的储值卡账户（一户一账户，跨店通用）</view>
+      <view class="footer-note-line">· 按旧系统余额 1:1 等额录入，不计营业额</view>
+      <view class="footer-note-line">· 转入后可像普通储值卡余额一样消费、退款</view>
+    </view>
+
+  </view>
+
+  <!-- 底部 sticky CTA -->
+  <view class="cta-bar safe-bottom">
+    <button
+      class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"
+      disabled="{{ctaDisabled || submitting}}"
+      loading="{{submitting}}"
+      bindtap="onSubmit"
+    >
+      {{ctaText}}
+    </button>
+  </view>
+
+</view>

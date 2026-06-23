@@ -1,4 +1,4 @@
-/* packageOrder/card-recharge/card-recharge.wxss */
+/* packageOrder/card-inflow/card-inflow.wxss — 旧系统充值金转入 */
 
 .container {
   min-height: 100vh;
@@ -28,19 +28,6 @@
   align-self: flex-start;
 }
 .hero-store-text { font-size: 24rpx; color: rgba(255, 255, 255, 0.95); }
-.hero-inflow-link {
-  margin-top: 14rpx;
-  display: inline-flex;
-  align-items: center;
-  gap: 4rpx;
-  align-self: flex-start;
-  padding: 8rpx 0;
-}
-.hero-inflow-text {
-  font-size: 24rpx;
-  color: rgba(255, 255, 255, 0.92);
-  text-decoration: underline;
-}
 
 /* ===== 顾客选择 ===== */
 .customer-block {
@@ -77,9 +64,7 @@
   color: var(--color-text-secondary, #666);
   margin-top: 4rpx;
 }
-.customer-action {
-  padding: 8rpx;
-}
+.customer-action { padding: 8rpx; }
 
 .customer-search {
   display: flex;
@@ -137,9 +122,6 @@
 .customer-result-phone { font-size: 24rpx; color: #999999; }
 .customer-cross-store { margin-left: 12rpx; font-size: 22rpx; color: #C0322A; }
 
-/* ===== 加载 ===== */
-.loading-block { padding: 80rpx 0; text-align: center; }
-
 /* ===== 主体 ===== */
 .body { padding: 8rpx 24rpx 0; }
 .section-title {
@@ -149,70 +131,7 @@
   padding: 24rpx 8rpx 16rpx;
 }
 
-/* ===== 预设档卡片 ===== */
-.tier-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16rpx;
-  margin-bottom: 8rpx;
-}
-.tier-card {
-  background: #FFFFFF;
-  border-radius: 16rpx;
-  padding: 24rpx 16rpx;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8rpx;
-  border: 2rpx solid transparent;
-  transition: all 0.15s;
-  position: relative;
-}
-.tier-card--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-light);
-}
-.tier-face {
-  font-size: 40rpx;
-  font-weight: 700;
-  color: var(--color-text-primary, #1A1A1A);
-}
-.tier-card--active .tier-face { color: var(--color-primary); }
-.tier-discount {
-  font-size: 22rpx;
-  color: var(--color-primary);
-  font-weight: 500;
-  padding: 2rpx 12rpx;
-  background: #FFF0EE;
-  border-radius: 16rpx;
-}
-.tier-discount--plain {
-  color: var(--color-text-hint, #999);
-  background: #F5F5F5;
-}
-.tier-card--active .tier-discount { background: rgba(255, 255, 255, 0.6); }
-.tier-pay {
-  font-size: 22rpx;
-  color: var(--color-text-secondary, #666);
-  margin-top: 2rpx;
-}
-.tier-bonus {
-  font-size: 20rpx;
-  color: var(--color-primary);
-  font-weight: 500;
-}
-.tier-spec {
-  font-size: 20rpx;
-  color: var(--color-text-hint, #999);
-  margin-top: 4rpx;
-  text-align: center;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ===== 自定义金额 ===== */
+/* ===== 金额 / 备注卡片 ===== */
 .custom-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -246,35 +165,10 @@
 }
 .custom-hint--placeholder { color: var(--color-text-hint, #999); }
 .custom-hint--error { color: #D94040; }
-.custom-hint-strong { color: var(--color-primary); font-weight: 600; }
-.custom-hint-bonus { color: var(--color-primary); }
-
-/* ===== 支付方式 ===== */
-.payment-card {
-  background: #FFFFFF;
-  border-radius: 16rpx;
-  overflow: hidden;
-}
-.payment-option {
-  display: flex;
-  align-items: center;
-  padding: 24rpx 20rpx;
-}
-.payment-option-main { flex: 1; }
-.payment-option-title {
+.remark-input {
   font-size: 28rpx;
+  height: 56rpx;
   color: var(--color-text-primary, #1A1A1A);
-  font-weight: 500;
-}
-.payment-option-desc {
-  font-size: 22rpx;
-  color: var(--color-text-hint, #999);
-  margin-top: 4rpx;
-}
-.payment-divider {
-  height: 1rpx;
-  background: #E8E8E8;
-  margin-left: 20rpx;
 }
 
 /* ===== 底部说明 ===== */

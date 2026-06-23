@@ -46,6 +46,7 @@ const orderTypeColorMap: Record<string, string> = {
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
   转换单: "bg-[#E3F2FD] text-[#1565C0]",
   寄存单: "bg-[#F3F4F6] text-[#6B7280]",
+  充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
 
 function formatTime(dt: string) {
@@ -326,6 +327,9 @@ export default function OrdersPageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">订单管理</h1>
         {canCreateOrder && (
           <div className="flex items-center gap-2">
+            <Link href="/orders/create-inflow">
+              <Button variant="outline">充值金转入</Button>
+            </Link>
             <Link href="/orders/create-deposit">
               <Button variant="outline">开寄存单</Button>
             </Link>
@@ -352,7 +356,7 @@ export default function OrdersPageClient({
               <option value="">全部单据</option>
               {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
               {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
-              {(["销售单", "内部单", "转换单", "寄存单"] as SaleOrderType[]).map((t) => (
+              {(["销售单", "内部单", "转换单", "寄存单", "充值单"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>

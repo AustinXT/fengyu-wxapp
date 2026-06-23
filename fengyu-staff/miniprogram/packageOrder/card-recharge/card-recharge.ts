@@ -452,4 +452,21 @@ Page({
       this.setData({ submitting: false });
     }
   },
+
+  // 跳转到「旧系统充值金转入」（带当前已选顾客上下文，便于老客户余额迁移）
+  goInflow() {
+    const c = this.data.customerInfo;
+    let url = '/packageOrder/card-inflow/card-inflow';
+    if (c?.clientUserId) {
+      const parts = [
+        `clientUserId=${encodeURIComponent(c.clientUserId)}`,
+        `customerName=${encodeURIComponent(c.name || '')}`,
+      ];
+      if (c.phone) parts.push(`customerPhone=${encodeURIComponent(c.phone)}`);
+      if (c.boundStoreId) parts.push(`boundStoreId=${encodeURIComponent(c.boundStoreId)}`);
+      if (c.storeName) parts.push(`storeName=${encodeURIComponent(c.storeName)}`);
+      url += `?${parts.join('&')}`;
+    }
+    wx.navigateTo({ url });
+  },
 });
