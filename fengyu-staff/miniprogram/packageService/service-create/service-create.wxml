@@ -130,12 +130,20 @@
         is-link="{{isManager}}"
         bindtap="{{isManager ? 'onShowStaffPicker' : ''}}"
       />
+      <van-cell
+        title="备注"
+        value="{{remarkMode === 'preset' ? remark : '自定义输入'}}"
+        is-link
+        bindtap="onShowRemarkPicker"
+      />
       <van-field
-        label="备注"
+        wx:if="{{remarkMode === 'custom'}}"
+        label="备注内容"
         placeholder="选填，最多100字"
         type="textarea"
         maxlength="100"
         autosize
+        value="{{remark}}"
         bind:change="onRemarkChange"
       />
     </van-cell-group>
@@ -168,6 +176,22 @@
       columns="{{staffColumns}}"
       bind:confirm="onStaffConfirm"
       bind:cancel="onStaffPickerClose"
+    />
+  </van-popup>
+
+  <!-- 备注预设选择 -->
+  <van-popup
+    show="{{showRemarkPicker}}"
+    round
+    position="bottom"
+    bind:close="onRemarkPickerClose"
+  >
+    <van-picker
+      title="选择备注"
+      show-toolbar
+      columns="{{remarkColumns}}"
+      bind:confirm="onRemarkConfirm"
+      bind:cancel="onRemarkPickerClose"
     />
   </van-popup>
 </view>

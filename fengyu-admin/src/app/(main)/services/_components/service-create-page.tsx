@@ -14,6 +14,7 @@ import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
 import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
+import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -71,6 +72,8 @@ export default function ServiceCreatePageClient({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
   const [remark, setRemark] = useState("")
+  // 备注模式：custom=自由输入；deposit-refund=寄存单退款专用标准化备注（提交时落 DEPOSIT_REFUND_REMARK）
+  const [remarkMode, setRemarkMode] = useState<"custom" | "deposit-refund">("custom")
 
   // Step 3: Submit
   const [submitting, setSubmitting] = useState(false)
@@ -170,7 +173,7 @@ export default function ServiceCreatePageClient({
         clientUserId: selectedCustomer.userId,
         assignedEmployeeId: selectedEmployeeId,
         serviceDate,
-        remark: remark.trim() || null,
+        remark: remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : (remark.trim() || null),
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
           sessionUsed: i.sessionUsed,
@@ -382,7 +385,13 @@ export default function ServiceCreatePageClient({
                 </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>
-                  <Input className="mt-1" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
+                  <Select className="mt-1" value={remarkMode} onChange={(e) => setRemarkMode(e.target.value as "custom" | "deposit-refund")}>
+                    <option value="custom">自定义输入</option>
+                    <option value="deposit-refund">{DEPOSIT_REFUND_REMARK}</option>
+                  </Select>
+                  {remarkMode === "custom" && (
+                    <Input className="mt-2" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
+                  )}
                 </div>
               </div>
             </CardContent>
@@ -422,10 +431,10 @@ export default function ServiceCreatePageClient({
                 <span className="text-[#999999]">服务日期</span>
                 <p className="font-medium">{serviceDate}</p>
               </div>
-              {remark.trim() && (
+              {(remarkMode === "deposit-refund" || remark.trim()) && (
                 <div className="col-span-2">
                   <span className="text-[#999999]">备注</span>
-                  <p className="font-medium">{remark}</p>
+                  <p className="font-medium">{remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : remark}</p>
                 </div>
               )}
             </div>
