@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { getStatusClass, formatOrderDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
+import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const PAGE_SIZE = 20;
 
@@ -18,6 +19,13 @@ Page({
   _page: 1,
 
   onLoad(options) {
+    // 临时关闭：订单列表入口兜底拦截（业务平稳后恢复）。见 utils/feature-flags.ts
+    // 显式入口已隐藏，此处防遗漏/直达；订单列表纯主动查看，无支付闭环依赖
+    if (!ORDERS_ENTRY_ENABLED) {
+      wx.showToast({ title: '订单功能即将开放', icon: 'none' });
+      wx.switchTab({ url: '/pages/home/home' });
+      return;
+    }
     const { status } = options as { status?: string };
     if (status) {
       this.setData({ activeTab: status });
@@ -26,6 +34,8 @@ Page({
   },
 
   onShow() {
+    // 临时关闭期间不发起列表请求（见 utils/feature-flags.ts）
+    if (!ORDERS_ENTRY_ENABLED) return;
     this.loadOrders();
   },
 

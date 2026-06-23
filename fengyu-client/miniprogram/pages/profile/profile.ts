@@ -2,6 +2,7 @@
 import { maskPhone } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
 import { APP_VERSION } from '../../utils/version';
+import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const app = getApp<IAppOption>();
 
@@ -14,6 +15,8 @@ Page({
     avatarUrl: '',
     unreadCount: 0,
     appVersion: APP_VERSION,
+    // 临时开关：订单主动查看入口（业务平稳后恢复）。见 utils/feature-flags.ts
+    ordersEntryEnabled: ORDERS_ENTRY_ENABLED,
   },
 
   onLoad() {
