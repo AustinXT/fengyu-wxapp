@@ -1,22 +1,22 @@
 /**
- * 链路 54：门店拉卡拉 store-level 字段 `updateStore` 持久化 + 审计 + 权限边界
+ * 链路 54：门店拉卡拉收款配置 `updateStore` 持久化 + 建档 + 审计 + 权限边界
  *
- * 主题：
- *   1) admin 进 /stores/[id]/edit 改 store-level lakala 字段（lakala_term_no / lakala_enabled）
- *      → stores 行持久化
- *   2) audit `store.update` / target_id=storeId
- *      detail = { _v:3, _t:'update', changes:{ lakalaTermNo:{from,to}, lakalaEnabled:{from,to} } }
- *   3) finance（无 store:update 权限）action 层会拒
+ * 主题（2026-06-24 改造后：进件模块下线，收款配置改为门店编辑页手填）：
+ *   1) admin 进 /stores/[id]/edit 填收款配置（商户名 + 商户号 + 终端号 + 启用）
+ *      → stores 快照持久化（lakala_merchant_no / lakala_term_no / lakala_enabled / lakala_merchant_id）
+ *      → lakala_merchants 档案 upsert（merchant_name + merchant_no，onboarding_status='completed'）
+ *   2) audit `store.update` / target_id=storeId，changes 含 lakalaMerchantNo / lakalaTermNo
+ *   3) finance（无 store:update 权限）action 层会拒；收款配置另需 store:lakala_config（仅 admin）
  *
- * 字段范围说明（2026-05-30 修订）：
- *   - lakala_merchant_no 是 link 商户后从 lakala_merchants 派生的快照，admin UI 不再手填（disabled），不在本 spec 覆盖
- *   - lakala_sub_appid 列已删（fix/001）；sub_appid 由云函数 env 全局供给
- *   - lakala_merchant_id 由 link/unlink 专用 action 维护，覆盖在 smoke-lakala-onboarding STEP9/10
- *   - 本 spec 仅守护 admin UI 真正可编辑的两个 store-level 字段：term_no + enabled
+ * 字段范围说明：
+ *   - 收款配置是一组（商户名+号+终端号+启用），统一由 stores.ts applyLakalaPaymentConfig 处理
+ *   - 商户号为空时清空 stores 快照（term_no/enabled 一并清），故本 spec 必须填完整商户号
+ *   - 商户名落 lakala_merchants.merchant_name（该店 1:1 档案）
  *
  * 不测：resolveLakalaMerchant 路由（属 clientApi L2 e2e 范畴）
  *
- * 预条件：admin dev server + FY-TEST-ADM/FIN；store-nc01 行可编辑（updatedAt 取自数据库）
+ * 预条件：admin dev server + FY-TEST-ADM/FIN；store-nc01 行可编辑，且初态【无】拉卡拉档案
+ *   （若 backup 日志显示 merchant_id 非空，说明夹具被污染，restore 的删档案逻辑会误删，需先清夹具）
  */
 
 import { test, expect } from '@playwright/test'
@@ -25,21 +25,23 @@ import { readLatestAudit } from './_helpers/inventory'
 
 test.setTimeout(180_000)
 
-test('链路54：admin 改 store-nc01 lakala term_no/enabled → stores 持久化 + audit changes + finance 拒', async ({ browser }) => {
+test('链路54：admin 填 store-nc01 收款配置 → stores 快照 + lakala_merchants 档案 + audit + finance 拒', async ({ browser }) => {
   const verdicts: Verdict[] = []
 
-  // backup 原值：store-nc01 当前两个可编辑字段（psql 直读）
+  // backup：store-nc01 当前 lakala 快照 4 字段（psql 直读）
   const before = psql(
-    `SELECT COALESCE(lakala_term_no, '∅') || '|' || lakala_enabled::text ` +
+    `SELECT COALESCE(lakala_merchant_no,'∅')||'|'||COALESCE(lakala_term_no,'∅')||'|'||lakala_enabled::text||'|'||COALESCE(lakala_merchant_id,'∅') ` +
       `FROM stores WHERE store_id = '${TOPOLOGY.STORE_NC01}'`,
   )
-  const [origTerm, origEnabledStr] = before.split('|')
-  const origEnabled = origEnabledStr === 't'
-  console.log(`[链路54] backup nc01 lakala: term=${origTerm} enabled=${origEnabled}`)
+  const [origMerchantNo, origTerm, origEnabledStr, origMerchantId] = before.split('|')
+  const origEnabled = origEnabledStr === 'true' || origEnabledStr === 't'
+  console.log(`[链路54] backup nc01: merchant_no=${origMerchantNo} term=${origTerm} enabled=${origEnabled} merchant_id=${origMerchantId}`)
 
-  // 测试目标值（与 backup 必有差异）
-  const newTerm = 'TE2L54-TERM-' + Date.now().toString().slice(-6)
-  const newEnabled = !origEnabled
+  // 测试目标值（带 TE2L54 前缀便于清理）
+  const stamp = Date.now().toString().slice(-6)
+  const newMerchantName = 'TE2L54-商户-' + stamp
+  const newMerchantNo = 'TE2L54MNO' + stamp
+  const newTerm = 'TE2L54TERM' + stamp
 
   try {
     // ── Step 1: admin 进 /stores/nc01/edit ─────────────────────
@@ -50,79 +52,81 @@ test('链路54：admin 改 store-nc01 lakala term_no/enabled → stores 持久�
     await login(adminPage, TEST_PHONES.ADM)
     await adminPage.goto(`${BASE}/stores/${TOPOLOGY.STORE_NC01}/edit`)
     await expect(adminPage.getByRole('heading', { name: /编辑门店/ })).toBeVisible({ timeout: 15_000 })
-    await expect(adminPage.getByText(/拉卡拉聚合支付配置/)).toBeVisible({ timeout: 5_000 })
+    await expect(adminPage.getByText(/拉卡拉收款配置/)).toBeVisible({ timeout: 5_000 })
 
-    // ── Step 2: 改 term_no + enabled ────────────────────────
-    console.log('[链路54] Step 2: 改 lakala term_no + enabled')
+    // ── Step 2: 填商户名 + 商户号 + 终端号 + 启用 ────────────────
+    console.log('[链路54] Step 2: 填收款配置（商户名/号/终端号/启用）')
+    await adminPage.locator('input[name="lakalaMerchantName"]').fill(newMerchantName)
+    await adminPage.locator('input[name="lakalaMerchantNo"]').fill(newMerchantNo)
     await adminPage.locator('input[name="lakalaTermNo"]').fill(newTerm)
-    // checkbox 切换：若当前与 newEnabled 不同，click 一次
     const checkbox = adminPage.locator('input[type="checkbox"]').first()
-    const currentChecked = await checkbox.isChecked()
-    if (currentChecked !== newEnabled) await checkbox.click()
+    if (!(await checkbox.isChecked())) await checkbox.click()
 
     // ── Step 3: 提交（form action="handleSave"） ──────────
     await adminPage.getByRole('button', { name: /^保\s*存$/ }).click()
     await expect(adminPage.getByText(/保存成功/)).toBeVisible({ timeout: 15_000 })
 
-    // ── Step 4: SQL 验 stores 行 ────────────────────────
+    // ── Step 4: SQL 验 stores 快照 ────────────────────────
     const after = psql(
-      `SELECT COALESCE(lakala_term_no, '∅') || '|' || lakala_enabled::text ` +
+      `SELECT COALESCE(lakala_merchant_no,'∅')||'|'||COALESCE(lakala_term_no,'∅')||'|'||lakala_enabled::text||'|'||(lakala_merchant_id IS NOT NULL)::text ` +
         `FROM stores WHERE store_id = '${TOPOLOGY.STORE_NC01}'`,
     )
-    const [t2, e2] = after.split('|')
-    recordVerdict(verdicts, 'persist: lakala_term_no = newTerm', t2 === newTerm, t2)
-    // psql 返回 bool::text 是 'true'/'false'，不是 't'/'f'
-    recordVerdict(
-      verdicts,
-      `persist: lakala_enabled = ${newEnabled}`,
-      e2 === String(newEnabled),
-      e2,
-    )
+    const [mNo, t2, e2, hasMid] = after.split('|')
+    recordVerdict(verdicts, 'persist: stores.lakala_merchant_no = newMerchantNo', mNo === newMerchantNo, mNo)
+    recordVerdict(verdicts, 'persist: stores.lakala_term_no = newTerm', t2 === newTerm, t2)
+    recordVerdict(verdicts, 'persist: stores.lakala_enabled = true', e2 === 'true', e2)
+    recordVerdict(verdicts, 'persist: stores.lakala_merchant_id 非空', hasMid === 'true', hasMid)
 
-    // ── Step 5: audit store.update changes 含两字段 ────
+    // ── Step 5: SQL 验 lakala_merchants 档案（upsert，status=completed）───
+    const merch = psql(
+      `SELECT merchant_name||'|'||COALESCE(merchant_no,'∅')||'|'||onboarding_status ` +
+        `FROM lakala_merchants WHERE merchant_no = '${newMerchantNo}'`,
+    )
+    const [mName, mMerchNo, mStatus] = merch.split('|')
+    recordVerdict(verdicts, '档案: merchant_name = newMerchantName', mName === newMerchantName, mName)
+    recordVerdict(verdicts, '档案: merchant_no = newMerchantNo', mMerchNo === newMerchantNo, mMerchNo)
+    recordVerdict(verdicts, '档案: onboarding_status = completed', mStatus === 'completed', mStatus)
+
+    // ── Step 6: audit store.update changes 含收款字段 ────
     const audit = readLatestAudit('store.update', TOPOLOGY.STORE_NC01)
     recordVerdict(verdicts, 'audit: 落库存在', Boolean(audit), audit ? 'present' : 'missing')
-    recordVerdict(verdicts, 'audit: detail._v=3', audit?.detail?._v === 3, String(audit?.detail?._v))
     recordVerdict(verdicts, 'audit: detail._t=update', audit?.detail?._t === 'update', String(audit?.detail?._t))
     const changes = audit?.detail?.changes as Record<string, { from: unknown; to: unknown }> | undefined
-    recordVerdict(verdicts, 'audit: changes.lakalaTermNo 含', Boolean(changes?.lakalaTermNo), changes?.lakalaTermNo ? 'yes' : 'no')
-    recordVerdict(verdicts, 'audit: changes.lakalaEnabled 含', Boolean(changes?.lakalaEnabled), changes?.lakalaEnabled ? 'yes' : 'no')
-    recordVerdict(
-      verdicts,
-      'audit: changes.lakalaTermNo.to = newTerm',
-      changes?.lakalaTermNo?.to === newTerm,
-      String(changes?.lakalaTermNo?.to),
-    )
+    recordVerdict(verdicts, 'audit: changes.lakalaMerchantNo.to = newMerchantNo', changes?.lakalaMerchantNo?.to === newMerchantNo, String(changes?.lakalaMerchantNo?.to))
+    recordVerdict(verdicts, 'audit: changes.lakalaTermNo.to = newTerm', changes?.lakalaTermNo?.to === newTerm, String(changes?.lakalaTermNo?.to))
     recordVerdict(verdicts, 'audit: operator = FY-TEST-ADM', audit?.operatorEmployeeId === 'FY-TEST-ADM', audit?.operatorEmployeeId ?? '?')
 
     await adminCtx.close()
 
-    // ── Step 6: finance 权限边界改由 SQL 直查模拟 ───────────────
-    // 注：updateStore action 内 withPermission('store:update') 守护，finance 无此权限会抛 PERMISSION_DENIED
-    // 但 admin page.tsx 只调 getStore（store:list 权限），finance 仍能渲染编辑页 —— UI 层拒不了
-    // 真正的"action 层 finance 拒"属 unit/integration 测，本 spec 不在此重复
-    // 改为 SQL 验证 permission_roles 中 finance 不持 store:update（间接证明 action 层会拒）
-    const finStoreUpdate = psql(
+    // ── Step 7: finance 权限边界（SQL 间接验证）────────────────
+    // updateStore action 内 withPermission('store:update')；收款配置另需 store:lakala_config（仅 admin）。
+    // finance 既无 store:update 也无 store:lakala_config → action 层抛 PERMISSION_DENIED。
+    const finBlocked = psql(
       `SELECT EXISTS(SELECT 1 FROM permission_roles pr WHERE pr.employee_id = 'FY-TEST-FIN' ` +
         `AND pr.role IN ('admin','manager','hr'))::text`,
     )
     recordVerdict(
       verdicts,
       'finance: 角色不在 [admin,manager,hr]（updateStore action 层会抛 PERMISSION_DENIED）',
-      finStoreUpdate === 'false',
-      finStoreUpdate,
+      finBlocked === 'false',
+      finBlocked,
     )
   } finally {
-    // 还原 stores 两字段到 backup 值
+    // 还原 stores 4 字段到 backup 值
+    const restoreMNo = origMerchantNo === '∅' ? 'NULL' : `'${origMerchantNo.replace(/'/g, "''")}'`
     const restoreTerm = origTerm === '∅' ? 'NULL' : `'${origTerm.replace(/'/g, "''")}'`
+    const restoreMid = origMerchantId === '∅' ? 'NULL' : `'${origMerchantId.replace(/'/g, "''")}'`
     psql(
-      `UPDATE stores SET lakala_term_no = ${restoreTerm}, lakala_enabled = ${origEnabled} ` +
+      `UPDATE stores SET lakala_merchant_no = ${restoreMNo}, lakala_term_no = ${restoreTerm}, ` +
+        `lakala_enabled = ${origEnabled}, lakala_merchant_id = ${restoreMid} ` +
         `WHERE store_id = '${TOPOLOGY.STORE_NC01}'`,
     )
-    // 清掉本 spec 产生的 store.update audit（避免堆积污染）
+    // 删测试新建的 lakala_merchants 档案（merchant_no 唯一带时间戳，只命中本测试新建的行）
+    psql(`DELETE FROM lakala_merchants WHERE merchant_no = '${newMerchantNo}'`)
+    // 清本 spec 产生的 store.update audit
     psql(
       `DELETE FROM operation_logs WHERE action = 'store.update' AND target_id = '${TOPOLOGY.STORE_NC01}' ` +
-        `AND detail::text LIKE '%TE2L54-%'`,
+        `AND detail::text LIKE '%TE2L54%'`,
     )
     summarize(54, verdicts)
   }
