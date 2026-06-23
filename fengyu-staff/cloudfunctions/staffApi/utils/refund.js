@@ -53,7 +53,10 @@ function buildRefundDetails(origItems, requestItems) {
     if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
 
     const maxUnused = calculateUnusedQuantity(orig)
-    const requested = Number(req.refundQuantity) || maxUnused
+    // 疗程卡必须整卡全退（不支持部分退次数）：强制 requested = maxUnused，忽略前端传入的部分数量；
+    // 家居产品仍可按未提货数量部分退。两端镜像 admin lib/refund.ts。
+    const requested =
+      orig.product_type === '疗程卡' ? maxUnused : (Number(req.refundQuantity) || maxUnused)
 
     if (requested <= 0) {
       throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`)
