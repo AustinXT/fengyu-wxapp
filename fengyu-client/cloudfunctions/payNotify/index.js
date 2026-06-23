@@ -178,13 +178,73 @@ function parseHttpTriggerEvent(event) {
 exports.parseHttpTriggerEvent = parseHttpTriggerEvent
 
 /**
- * 微信「发货信息管理」自动上报（用户自提）——付款回调成功后调用，绝不抛错。
+ * 对单笔微信交易上报「用户自提」发货（查 openid + 商品描述 → 调微信 upload_shipping_info）。
+ * 回调即时上报与定时补偿共用此核心。调用方负责 try/catch（本函数会向上抛 PG/网络异常）。
  *
- * 触发条件：WX_SHIPPING_ENABLED=true + 有 CLIENT_APPSECRET + 微信渠道 + 拿到 acc_trade_no（微信
- * transaction_id）。支付宝订单 / callFunction 入口（无 tradeInfo 快照）/ 缺付款人 openid 一律跳过。
- * 上报与支付到账解耦：失败仅记日志，不影响给拉卡拉的 SUCCESS 应答（避免重试风暴 / 误判未到账）。
+ * 微信 errcode 语义：
+ *   - 0          上报成功
+ *   - 10060002   该交易已上报过发货（幂等命中，视为成功）
+ *   - 10060001   支付单不存在 —— 拉卡拉服务商交易刚支付、微信支付单尚未同步到「发货信息管理」
+ *                系统（付款后通常 ~10 秒内同步），而回调在 ~2 秒内即触发，故首次多半命中此码。
+ *                属预期内、待定时补偿 runShippingBackfill 稍后重试，不计为错误。
+ *   - 其它        真实失败（记 error 日志）
  *
- * 每笔微信支付交易（含分次回款）各对应发货管理里一条订单，故首次支付与回款都会调用本函数。
+ * @param {import('pg').Pool} pg
+ * @param {string} saleOrderId
+ * @param {string} wxTxnId  微信交易单号（拉卡拉回调的 acc_trade_no）
+ * @returns {Promise<{status:'ok'|'pending'|'skip'|'fail', errcode?:number}>}
+ */
+async function reportShippingForOrder(pg, saleOrderId, wxTxnId) {
+  if (!wxTxnId) {
+    console.warn('[payNotify/wx-shipping] 缺微信交易单号(acc_trade_no)，跳过上报:', saleOrderId)
+    return { status: 'skip' }
+  }
+  // 付款人 openid（客户端 appid 下）；WorkFine 同步顾客可能无 openid → 跳过
+  const openidRes = await pg.query(
+    `SELECT u.openid
+       FROM sale_orders o
+       JOIN client_wechat_users u ON u.user_id = o.client_user_id
+      WHERE o.sale_order_id = $1`,
+    [saleOrderId]
+  )
+  const openid = openidRes.rows[0]?.openid
+  if (!openid) {
+    console.warn('[payNotify/wx-shipping] 订单无付款人 openid，跳过上报:', saleOrderId)
+    return { status: 'skip' }
+  }
+
+  // 商品描述：取明细商品名去重拼接，截断到 120 字（微信 item_desc 上限 128）；缺名兜底
+  const itemRes = await pg.query(
+    `SELECT product_name FROM sale_items WHERE sale_order_id = $1 AND product_name IS NOT NULL`,
+    [saleOrderId]
+  )
+  const names = [...new Set(itemRes.rows.map((r) => r.product_name).filter(Boolean))]
+  let itemDesc = names.join('、') || '美容服务'
+  if (itemDesc.length > 120) itemDesc = itemDesc.slice(0, 117) + '...'
+
+  const res = await wxShipping.uploadSelfPickupShipping({ transactionId: wxTxnId, openid, itemDesc })
+  const errcode = res && res.errcode
+  if (errcode === 0 || errcode === 10060002) {
+    console.log('[payNotify/wx-shipping] 上报成功:', saleOrderId, errcode === 10060002 ? '(已上报,幂等)' : '')
+    return { status: 'ok', errcode }
+  }
+  if (errcode === 10060001) {
+    // 支付单尚未同步到发货系统，待定时补偿重试（非错误，不刷 error 日志）
+    console.log('[payNotify/wx-shipping] 支付单未同步，待定时补偿重试:', saleOrderId)
+    return { status: 'pending', errcode }
+  }
+  console.error('[payNotify/wx-shipping] 上报失败:', saleOrderId, errcode, res && res.errmsg)
+  return { status: 'fail', errcode }
+}
+
+/**
+ * 回调即时上报（best-effort）——付款回调成功后尝试一次，绝不抛错。
+ *
+ * 触发条件：WX_SHIPPING_ENABLED=true + 有 CLIENT_APPSECRET + 微信渠道 + 拿到 acc_trade_no。
+ * 支付宝订单 / callFunction 入口（无 tradeInfo 快照）一律跳过。
+ *
+ * 注：拉卡拉服务商交易刚支付时微信支付单常未同步（首次多半返回 10060001 pending），由定时补偿
+ * runShippingBackfill 兜底重试；故此处失败 / 未同步绝不影响给拉卡拉的 SUCCESS 应答。
  *
  * @param {import('pg').Pool} pg
  * @param {{ saleOrderId:string, paymentMethod:string, tradeInfo:any }} p
@@ -194,48 +254,62 @@ async function reportWxShippingSafe(pg, { saleOrderId, paymentMethod, tradeInfo 
     if (!wxShipping.isEnabled()) return
     if (paymentMethod !== '微信') return
     if (!tradeInfo) return  // callFunction 入口无回调快照，取不到微信交易单号
-    const wxTxnId = tradeInfo.acc_trade_no
-    if (!wxTxnId) {
-      console.warn('[payNotify/wx-shipping] 缺微信交易单号(acc_trade_no)，跳过上报:', saleOrderId)
-      return
-    }
-
-    // 付款人 openid（客户端 appid 下）；WorkFine 同步顾客可能无 openid → 跳过
-    const openidRes = await pg.query(
-      `SELECT u.openid
-         FROM sale_orders o
-         JOIN client_wechat_users u ON u.user_id = o.client_user_id
-        WHERE o.sale_order_id = $1`,
-      [saleOrderId]
-    )
-    const openid = openidRes.rows[0]?.openid
-    if (!openid) {
-      console.warn('[payNotify/wx-shipping] 订单无付款人 openid，跳过上报:', saleOrderId)
-      return
-    }
-
-    // 商品描述：取明细商品名去重拼接，截断到 120 字（微信 item_desc 上限 128）；缺名兜底
-    const itemRes = await pg.query(
-      `SELECT product_name FROM sale_items WHERE sale_order_id = $1 AND product_name IS NOT NULL`,
-      [saleOrderId]
-    )
-    const names = [...new Set(itemRes.rows.map((r) => r.product_name).filter(Boolean))]
-    let itemDesc = names.join('、') || '美容服务'
-    if (itemDesc.length > 120) itemDesc = itemDesc.slice(0, 117) + '...'
-
-    const res = await wxShipping.uploadSelfPickupShipping({ transactionId: wxTxnId, openid, itemDesc })
-    if (res && res.errcode === 0) {
-      console.log('[payNotify/wx-shipping] 自动发货上报成功:', saleOrderId)
-    } else {
-      console.error('[payNotify/wx-shipping] 上报失败:', saleOrderId, res && res.errcode, res && res.errmsg)
-    }
+    await reportShippingForOrder(pg, saleOrderId, tradeInfo.acc_trade_no)
   } catch (e) {
     console.error('[payNotify/wx-shipping] 上报异常(非致命):', saleOrderId, e && e.message)
   }
 }
 
+/**
+ * 微信发货补偿上报（CloudBase 定时触发器入口）。
+ *
+ * 背景：付款回调内即时上报常因「支付单尚未同步」(10060001) 失败——拉卡拉服务商交易支付后，
+ * 微信支付单同步到「发货信息管理」系统通常需 ~10 秒，而回调在 ~2 秒内就完成。故由定时器每分钟
+ * 扫描近期已支付的微信单补偿上报，直到成功（微信幂等：已上报返回 10060002 视为成功）。
+ *
+ * 窗口下界 now()-30s：给微信同步留时间（早于此回调刚试过，多半还没同步）。
+ * 窗口上界 now()-30min：覆盖同步延迟 + 充足重试次数；超窗仍失败者已非时序问题，停止避免无限重试。
+ * 美容院单量小，窗口内通常 0~2 单，无状态重复扫描开销可忽略（已上报单走 10060002 幂等跳过）。
+ *
+ * @returns {Promise<{code:string, message:string}>}
+ */
+async function runShippingBackfill() {
+  if (!wxShipping.isEnabled()) {
+    console.log('[payNotify/wx-shipping] backfill skip: 未启用(WX_SHIPPING_ENABLED/CLIENT_APPSECRET)')
+    return { code: 'SUCCESS', message: 'wx-shipping disabled' }
+  }
+  const pg = getPg()
+  const { rows } = await pg.query(
+    `SELECT sale_order_id, external_trade_info->>'acc_trade_no' AS wx_txn
+       FROM sale_order_payments
+      WHERE payment_method = '微信'
+        AND external_trade_info->>'acc_trade_no' IS NOT NULL
+        AND created_at <  now() - interval '30 seconds'
+        AND created_at >  now() - interval '30 minutes'
+      ORDER BY created_at ASC`
+  )
+  let ok = 0, pending = 0, failed = 0, skipped = 0
+  for (const r of rows) {
+    try {
+      const res = await reportShippingForOrder(pg, r.sale_order_id, r.wx_txn)
+      if (res.status === 'ok') ok++
+      else if (res.status === 'pending') pending++
+      else if (res.status === 'skip') skipped++
+      else failed++
+    } catch (e) {
+      failed++
+      console.error('[payNotify/wx-shipping] backfill 单笔异常(非致命):', r.sale_order_id, e && e.message)
+    }
+  }
+  console.log('[payNotify/wx-shipping] backfill done',
+    JSON.stringify({ scanned: rows.length, ok, pending, failed, skipped }))
+  return { code: 'SUCCESS', message: `backfill scanned=${rows.length} ok=${ok} pending=${pending} failed=${failed}` }
+}
+
 // 测试可见
 exports.reportWxShippingSafe = reportWxShippingSafe
+exports.reportShippingForOrder = reportShippingForOrder
+exports.runShippingBackfill = runShippingBackfill
 
 /**
  * 云函数入口
@@ -243,6 +317,13 @@ exports.reportWxShippingSafe = reportWxShippingSafe
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
+  // ========== CloudBase 定时触发器：微信发货补偿上报 ==========
+  // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
+  // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。
+  if (event && event.Type === 'Timer') {
+    return await runShippingBackfill()
+  }
+
   // ========== 启用开关：env PAYNOTIFY_ENABLED=true + lakalaConfig.isReady() ==========
   if (!isPayNotifyEnabled()) {
     const safeEvent = event && typeof event === 'object' ? event : {}

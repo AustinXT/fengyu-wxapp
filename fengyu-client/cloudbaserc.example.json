@@ -59,6 +59,13 @@
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
         "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
       },
+      "triggers": [
+        {
+          "name": "wxShippingBackfill",
+          "type": "timer",
+          "config": "0 */1 * * * * *"
+        }
+      ],
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false
