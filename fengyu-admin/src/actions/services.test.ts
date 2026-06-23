@@ -37,6 +37,13 @@ vi.mock('@db/service', () => ({
     sessionUsed: 'session_used',
     unitRealPrice: 'unit_real_price',
     employeeId: 'employee_id',
+    salesCategory: 'sales_category',
+  },
+  serviceReviews: {
+    serviceOrderId: 'service_order_id',
+    rating: 'rating',
+    comment: 'comment',
+    createdAt: 'created_at',
   },
 }))
 
@@ -109,6 +116,7 @@ import {
   getServiceOrdersPaginated,
   deleteServiceOrder,
   getServiceOrderById,
+  exportAllocationServiceOrders,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -868,5 +876,87 @@ describe('getServiceOrderById — 读取不限 scope + readOnly 标记', () => {
     const result = await getServiceOrderById('SVC-1')
     expect(result?.readOnly).toBe(true)
     expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-9')
+  })
+})
+
+// ── exportAllocationServiceOrders — 服务提成明细导出（30 列） ──────────────────
+describe('exportAllocationServiceOrders — 明细导出 + 派生列 + 截断', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('maps a service_commissions detail row to export fields + derived columns', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([
+        {
+          market: '九江',
+          storeName: '世纪店',
+          serviceOrderId: 'SO1',
+          saleOrderType: '销售单',
+          serviceOrderType: '售后',
+          customerName: '王女士',
+          customerPhone: null,
+          fallbackPhone: '13151094335',
+          productType: '疗程卡',
+          categoryL1: '圣源养心',
+          categoryL2: '护理项目',
+          productName: '【王牌】疼痛管理',
+          sessionUsed: 1,
+          unitRealPrice: '300.00',
+          status: '已完成',
+          employeeName: '王雯馨',
+          positionName: '美容师',
+          allocationRatio: '0.30',
+          commissionRate: '0.1500',
+          commissionAmount: '162.00',
+          rating: 5,
+          reviewComment: '好评',
+          salesCategory: '自销自耗',
+          customerType: '会员客',
+          openedByName: '张凯',
+          sourceSaleOrderId: 'FY-XSD-WX-2606080003',
+          serviceDate: '2026-06-08',
+          createdAt: new Date('2026-06-08T15:26:32.000Z'),
+          remark: null,
+          scId: 1,
+        },
+      ])
+    )
+    const { rows } = await exportAllocationServiceOrders({})
+    expect(rows).toHaveLength(1)
+    const r = rows[0]
+    expect(r.serviceOrderId).toBe('SO1')
+    expect(r.market).toBe('九江')
+    expect(r.saleOrderType).toBe('销售单')
+    expect(r.serviceOrderType).toBe('售后')
+    // 顾客手机回退到来源销售单 client_phone
+    expect(r.customerPhone).toBe('13151094335')
+    // 派生：消耗金额 = 单次价 × 消耗次数；分配额 = 消耗金额 × 分配占比
+    expect(r.consumeMoney).toBe(300)
+    expect(r.unitRealPrice).toBe(300)
+    expect(r.allocationAmount).toBe(90)
+    // 金额转 number；占比/比例保留原始小数串交前端格式化
+    expect(r.commissionAmount).toBe(162)
+    expect(r.allocationRatio).toBe('0.30')
+    expect(r.commissionRate).toBe('0.1500')
+    expect(r.rating).toBe(5)
+    // createdAt 序列化为 ISO 串
+    expect(r.createdAt).toBe('2026-06-08T15:26:32.000Z')
+  })
+
+  it('truncates at 10000 rows', async () => {
+    const many = Array.from({ length: 10001 }, (_, i) => ({
+      serviceOrderId: `SO${i}`,
+      sessionUsed: 1,
+      unitRealPrice: '100.00',
+      allocationRatio: '1.00',
+      commissionAmount: '10.00',
+      createdAt: new Date('2026-06-08T00:00:00.000Z'),
+    }))
+    ;(db.select as any).mockImplementation(makeSelectChain(many))
+    const { rows, truncated } = await exportAllocationServiceOrders({})
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
   })
 })

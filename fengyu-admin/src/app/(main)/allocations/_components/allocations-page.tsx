@@ -15,7 +15,7 @@ import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { exportAllocationOrders } from "@/actions/orders"
 import { exportAllocationServiceOrders } from "@/actions/services"
-import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate } from "@/lib/export-xlsx"
+import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate, fmtPercent } from "@/lib/export-xlsx"
 import type { SaleOrder, ServiceOrder, Store } from "@/lib/types"
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
 
@@ -123,12 +123,36 @@ export default function AllocationsPageClient({
       filename: "营业额分配-服务提成",
       sheetName: "服务提成",
       columns: [
-        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "市场", width: 12, accessor: (r) => r.market },
         { header: "门店", width: 18, accessor: (r) => r.storeName },
+        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
+        { header: "销售单类型", width: 12, accessor: (r) => r.saleOrderType },
+        { header: "服务单类型", width: 12, accessor: (r) => r.serviceOrderType },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
+        { header: "商品类型", width: 12, accessor: (r) => r.productType },
+        { header: "一级分类", width: 14, accessor: (r) => r.categoryL1 },
+        { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
+        { header: "商品名称", width: 24, accessor: (r) => r.productName },
+        { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
+        { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
+        { header: "单次价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "状态", width: 12, accessor: (r) => r.status },
         { header: "美容师", accessor: (r) => r.employeeName },
+        { header: "职位", width: 12, accessor: (r) => r.positionName },
+        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
+        { header: "分配金额", width: 12, accessor: (r) => r.allocationAmount },
+        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
+        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
+        { header: "评分", width: 8, accessor: (r) => r.rating },
+        { header: "评价内容", width: 24, accessor: (r) => r.reviewComment },
+        { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
+        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
+        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "来源销售单", width: 22, accessor: (r) => r.sourceSaleOrderId },
         { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
-        { header: "提成状态", accessor: (r) => r.commissionStatus },
+        { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
+        { header: "备注", width: 20, accessor: (r) => r.remark },
       ],
       rows,
     })

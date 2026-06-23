@@ -73,6 +73,18 @@ export function maskIdCard(v: string | null | undefined): string {
   return `****${s.slice(-4)}`
 }
 
+/**
+ * 小数比率转百分比字符串：`0.30 → "30%"`、`0.155 → "15.5%"`。
+ * 入参通常是 DB numeric 列（postgres.js 返回 string），null/空/非数字 → ""。
+ */
+export function fmtPercent(v: string | number | null | undefined): string {
+  if (v == null || v === '') return ''
+  const n = typeof v === 'number' ? v : Number(v)
+  if (Number.isNaN(n)) return ''
+  // toFixed(2) 后再 Number 去尾零：30 → "30"，15.5 → "15.5"
+  return `${Number((n * 100).toFixed(2))}%`
+}
+
 export async function exportToXlsx<T>(opts: ExportOptions<T>): Promise<void> {
   const { filename, sheetName, columns, rows } = opts
   const ExcelJS = (await import('exceljs')).default

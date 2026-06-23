@@ -2,12 +2,14 @@
 
 import { db } from '@/db'
 import { serviceOrders, serviceItems, serviceReviews } from '@db/service'
+import { serviceCommissions } from '@db/service-commission'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus, productCategories } from '@db/product'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { appointments } from '@db/appointment'
 import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists, inArray } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
@@ -257,19 +259,49 @@ export const exportServiceOrders = withPermission(
   },
 )
 
-/** 营业额分配「服务提成」导出行（对齐分配列表展示列） */
+/**
+ * 营业额分配「服务提成」导出行（明细级，一行 = 一条 service_commissions 提成）。
+ * 金额列为 number（便于 Excel 求和）；占比/比例保留 string 原值，交前端 fmtPercent 格式化；
+ * 日期/时间为 string（serviceDate 为 date 串，createdAt 为 ISO 串，前端再按时区格式化）。
+ */
 export interface ExportAllocationServiceRow {
-  serviceOrderId: string
-  customerName: string | null
+  market: string | null
   storeName: string | null
+  serviceOrderId: string
+  saleOrderType: string | null
+  serviceOrderType: string | null
+  customerName: string | null
+  customerPhone: string | null
+  productType: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  productName: string | null
+  sessionUsed: number | null
+  consumeMoney: number | null
+  unitRealPrice: number | null
+  status: string | null
   employeeName: string | null
+  positionName: string | null
+  allocationRatio: string | null
+  allocationAmount: number | null
+  commissionRate: string | null
+  commissionAmount: number | null
+  rating: number | null
+  reviewComment: string | null
+  salesCategory: string | null
+  customerType: string | null
+  openedByName: string | null
+  sourceSaleOrderId: string | null
   serviceDate: string | null
-  commissionStatus: string | null
+  createdAt: string | null
+  remark: string | null
 }
 
 /**
- * 导出营业额分配「服务提成」（已完成服务单，全部筛选命中）。LIMIT 10000 防 OOM。
- * 筛选口径与 allocations 页 getServiceOrdersPaginated 一致（状态锁定已完成，allocStatus 走提成状态）。
+ * 导出营业额分配「服务提成」明细（一行一条有效 service_commissions，每被分配员工一行）。
+ * 数据源主链 service_commissions → service_items → service_orders，筛选复用列表口径
+ * （状态锁定已完成 + allocStatus 走提成状态 + 门店/日期/搜索）。LIMIT 10000 防 OOM。
+ * 仅含已分配（service_commissions 有行）的服务消耗；筛选「待分配」时为空属预期。
  */
 export const exportAllocationServiceOrders = withPermission(
   'service:list',
@@ -279,34 +311,109 @@ export const exportAllocationServiceOrders = withPermission(
   ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
     const LIMIT = 10000
     const filters = parseAllocationServiceFilters(params)
-    const whereClause = and(...buildServiceOrderConditions(session, filters))
+    // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
+    const whereClause = and(
+      eq(serviceCommissions.isVoid, false),
+      ...buildServiceOrderConditions(session, filters),
+    )
 
-    const orderRows = await db
+    // staff_wechat_users 需两次 JOIN：负责美容师(=sc.employee_id) 与 开单人(=slo.opened_by)
+    // drizzle 0.45 alias() 返回类型与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+    const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
+
+    const raw = await db
       .select({
-        service_order: serviceOrders,
+        market: serviceOrders.marketName,
         storeName: stores.storeName,
-        employeeName: staffWechatUsers.name,
+        serviceOrderId: serviceOrders.serviceOrderId,
+        saleOrderType: saleOrders.saleOrderType,
+        serviceOrderType: serviceOrders.serviceOrderType,
         customerName: clientWechatUsers.name,
+        customerPhone: clientWechatUsers.phone,
+        fallbackPhone: saleOrders.clientPhone,
+        productType: saleItems.productType,
+        categoryL1: productCategories.categoryName,
+        categoryL2: productCategories.productKind,
+        productName: saleItems.productName,
+        sessionUsed: serviceItems.sessionUsed,
+        unitRealPrice: serviceItems.unitRealPrice,
+        status: serviceOrders.status,
+        employeeName: staffWechatUsers.name,
+        positionName: staffWechatUsers.positionName,
+        allocationRatio: serviceCommissions.allocationRatio,
+        commissionRate: serviceCommissions.commissionRate,
+        commissionAmount: serviceCommissions.commissionAmount,
+        rating: serviceReviews.rating,
+        reviewComment: serviceReviews.comment,
+        salesCategory: serviceItems.salesCategory,
+        customerType: clientWechatUsers.customerType,
+        openedByName: openedByStaff.name,
+        sourceSaleOrderId: saleItems.saleOrderId,
+        serviceDate: serviceOrders.serviceDate,
+        createdAt: serviceOrders.createdAt,
+        remark: serviceOrders.remark,
+        scId: serviceCommissions.id,
       })
-      .from(serviceOrders)
+      .from(serviceCommissions)
+      .innerJoin(serviceItems, eq(serviceCommissions.serviceItemId, serviceItems.serviceItemId))
+      .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+      .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+      .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
       .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
-      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
       .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(staffWechatUsers, eq(serviceCommissions.employeeId, staffWechatUsers.employeeId))
+      .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
+      .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .where(whereClause)
-      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
       .limit(LIMIT + 1)
 
-    const truncated = orderRows.length > LIMIT
-    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+    const truncated = raw.length > LIMIT
+    const page = truncated ? raw.slice(0, LIMIT) : raw
 
-    const rows: ExportAllocationServiceRow[] = page.map((r) => ({
-      serviceOrderId: r.service_order.serviceOrderId,
-      customerName: r.customerName,
-      storeName: r.storeName,
-      employeeName: r.employeeName,
-      serviceDate: r.service_order.serviceDate,
-      commissionStatus: r.service_order.commissionStatus,
-    }))
+    const round2 = (n: number) => Math.round(n * 100) / 100
+    const rows: ExportAllocationServiceRow[] = page.map((r) => {
+      const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
+      const sessions = r.sessionUsed ?? null
+      const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
+      const ratioNum = r.allocationRatio == null ? null : Number(r.allocationRatio)
+      const allocationAmount =
+        consumeMoney == null || ratioNum == null ? null : round2(consumeMoney * ratioNum)
+      return {
+        market: r.market,
+        storeName: r.storeName,
+        serviceOrderId: r.serviceOrderId,
+        saleOrderType: r.saleOrderType,
+        serviceOrderType: r.serviceOrderType,
+        customerName: r.customerName,
+        customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+        productType: r.productType,
+        categoryL1: r.categoryL1,
+        categoryL2: r.categoryL2,
+        productName: r.productName,
+        sessionUsed: sessions,
+        consumeMoney,
+        unitRealPrice: unit,
+        status: r.status,
+        employeeName: r.employeeName,
+        positionName: r.positionName,
+        allocationRatio: r.allocationRatio,
+        allocationAmount,
+        commissionRate: r.commissionRate,
+        commissionAmount: r.commissionAmount == null ? null : Number(r.commissionAmount),
+        rating: r.rating ?? null,
+        reviewComment: r.reviewComment,
+        salesCategory: r.salesCategory,
+        customerType: r.customerType,
+        openedByName: r.openedByName,
+        sourceSaleOrderId: r.sourceSaleOrderId,
+        serviceDate: r.serviceDate,
+        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+        remark: r.remark,
+      }
+    })
 
     return { rows, truncated }
   },
