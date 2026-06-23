@@ -109,9 +109,10 @@ const routes = {
   // 优惠券
   'coupon.available':     () => require('./routes/coupon').available,
 
-  // 充值卡（店长替顾客充值 + 退款审批流）
+  // 充值卡（店长替顾客充值 + 旧系统充值金转入 + 退款审批流）
   'card.rechargeConfig':  () => require('./routes/card').rechargeConfig,
   'card.recharge':        () => require('./routes/card').recharge,
+  'card.inflow':          () => require('./routes/card').inflow,
   'card.createRefund':    () => require('./routes/card').createRefund,
   'card.approveRefund':   () => require('./routes/card').approveRefund,
   'card.rejectRefund':    () => require('./routes/card').rejectRefund,

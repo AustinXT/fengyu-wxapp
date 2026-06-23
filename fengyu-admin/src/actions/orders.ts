@@ -37,6 +37,9 @@ const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown 
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
+// 旧系统(WorkFine)充值金转入专用备注标记（与 staff routes/card.js LEGACY_INFLOW_NOTE 字面一致）
+const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
+
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
 type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -2701,6 +2704,157 @@ export const createDepositOrder = withPermission(
       saleOrderId,
       itemCount: data.items.length,
     }
+  },
+)
+
+// ========== 旧系统充值金转入（WorkFine 充值金迁移） ==========
+
+/**
+ * 旧系统(WorkFine)充值金转入：把顾客在旧系统的充值金余额等额导入新系统储值卡
+ *
+ * 与 createRechargeOrder（cards.ts）的区别：旧系统已收过钱 → 1:1 等额、不打折、不限额、
+ * 不走 matchTier 档位；直接建 status='已支付' 的充值单（不经待支付 → confirmOfflinePayment），
+ * 即时入账 balance += amount。remark / 流水 note 打专用标记「旧系统充值金转入」便于查账识别
+ * （充值单本就不计营收，无需改统计 SQL）。
+ *
+ * 转入单本质是普通充值单：将来退款天然走员工端 card.createRefund/approveRefund（与任何充值单一致）。
+ * received=amount（非 0）+ 配一条「首次支付」流水，维护 received=Σ流水（资金不变量 I1），
+ * 保证将来退款 refunded_amount ≤ received，不触发 cron 资金巡检告警。
+ */
+export const createPrepaidInflow = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
+      clientUserId: string
+      storeId: string
+      amount: number
+      remark?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
+    if (!data.clientUserId) return { success: false, message: '请选择顾客' }
+    if (!data.storeId) return { success: false, message: '请选择入账门店' }
+    const amt = Number(data.amount)
+    if (!Number.isFinite(amt) || amt <= 0) return { success: false, message: '转入金额无效' }
+    // 浮点容差：与 matchTier 同口径，最多保留 2 位小数
+    if (Math.abs(Math.round(amt * 100) - amt * 100) > 1e-6) {
+      return { success: false, message: '转入金额最多保留 2 位小数' }
+    }
+    if (amt > 99999999.99) return { success: false, message: '转入金额超出上限' } // NUMERIC(10,2) 上界保护
+    if (!isInScope(session, data.storeId)) return { success: false, message: '无权在该门店转入' }
+
+    // 顾客 + documentType 快照
+    const [client] = await db
+      .select({
+        userId: clientWechatUsers.userId,
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+        customerType: clientWechatUsers.customerType,
+      })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (!client) return { success: false, message: '顾客不存在' }
+    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+
+    // 门店 + marketName 快照（跨两级 org_nodes 取上级 market，同 createRechargeOrder）
+    const storeRows = (await db.execute(sql`
+      SELECT s.store_id, pm.name AS market_name
+      FROM stores s
+      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+      WHERE s.store_id = ${data.storeId}
+      LIMIT 1
+    `)) as unknown as Array<{ store_id: string; market_name: string | null }>
+    if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
+    const marketName = storeRows[0].market_name || ''
+    const note = data.remark ? `${LEGACY_INFLOW_NOTE}｜${data.remark}` : LEGACY_INFLOW_NOTE
+
+    let saleOrderId: string
+    try {
+      saleOrderId = await db.transaction(async (tx) => {
+        const idRows = await tx.execute(sql`
+          WITH lock AS (
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          )
+          SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+            LPAD(
+              (SELECT COALESCE(MAX(
+                CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+              ), 0) + 1
+              FROM sale_orders
+              WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+              )::TEXT, 4, '0'
+            ) AS id
+          FROM lock
+        `)
+        const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
+        if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+
+        // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
+        // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）
+        await tx.insert(saleOrders).values({
+          saleOrderId: id,
+          status: '已支付',
+          saleOrderType: '充值单',
+          documentType,
+          marketName,
+          storeId: data.storeId,
+          storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
+          saleOrderDatetime: new Date(),
+          clientUserId: data.clientUserId,
+          clientPhone: client.phone || '',
+          customerName: client.name || '',
+          totalAmount: amt.toFixed(2),
+          prepaidCardAmount: '0',
+          payableAmount: amt.toFixed(2),
+          received: amt.toFixed(2),
+          firstPaymentAmount: null,
+          couponId: null,
+          couponDiscount: '0',
+          paymentMethod: '线下',
+          openedBy: session.employeeId,
+          preferredEmployeeId: null,
+          allocationStatus: '待分配',
+          remark: note,
+          paidAt: new Date(),
+        })
+
+        // 首次支付流水（线下 / external_txn_id=NULL / 已支付）：维护 received=Σ流水（资金不变量 I1）
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId: id,
+          changeType: '首次支付',
+          amount: amt.toFixed(2),
+          paymentMethod: '线下',
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note,
+          paidAt: new Date(),
+        })
+
+        // 充值入账（复用 applyRechargeOnOrderPaid：balance += total + card_transactions 充值，幂等键 card-topup-{id}）
+        await applyRechargeOnOrderPaid(tx, id)
+
+        return id
+      })
+    } catch (err: any) {
+      const msg = err?.message || '转入失败'
+      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+    }
+
+    await logOperation(session, 'sale_order.prepaid_inflow', 'sale_order', saleOrderId, {
+      clientUserId: data.clientUserId,
+      storeId: data.storeId,
+      amount: amt,
+      legacy: true,
+    })
+
+    revalidatePath('/orders')
+    revalidatePath(`/customers/${data.clientUserId}`)
+
+    return { success: true, message: '转入成功', saleOrderId }
   },
 )
 

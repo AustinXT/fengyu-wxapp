@@ -21,6 +21,9 @@ const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
 
+// 旧系统(WorkFine)充值金转入专用备注标记（与 admin orders.ts LEGACY_INFLOW_NOTE 字面一致）
+const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
+
 // ================= 路由 =================
 
 /**
@@ -162,6 +165,136 @@ async function recharge(ctx) {
     paymentMethod,
     status: '待支付',
     message: '开单成功',
+  }
+}
+
+/**
+ * 旧系统(WorkFine)充值金转入：把顾客在旧系统的充值金余额等额导入新系统储值卡
+ *
+ * 与 card.recharge 的区别：
+ *   - 旧系统已收过钱 → 1:1 等额、不打折、不限额、不走 matchTier 档位；
+ *   - 直接建 status='已支付' 的充值单（不经待支付 → confirmOffline），即时入账 balance += amount；
+ *   - remark / 流水 note 打专用标记「旧系统充值金转入」，便于查账识别（充值单本就不计营收）。
+ *
+ * 转入单本质是普通充值单：将来退款天然走 card.createRefund/approveRefund（与任何充值单一致）。
+ * received=amount（非 0）+ 配一条「首次支付」流水，维护资金不变量 received=Σ流水，
+ * 保证将来退款 refunded_amount ≤ received，不触发 cron 资金巡检告警。
+ *
+ * payload: { clientUserId, amount, remark? }
+ * 返回: { saleOrderId, amount, status }
+ */
+async function inflow(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const payload = ctx.event.payload || {}
+  const { clientUserId, amount, remark } = payload
+
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  const amt = Number(amount)
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error('INVALID_PARAMS: 转入金额必须为正数')
+  // 浮点容差：与 matchTier 同口径，最多保留 2 位小数
+  if (Math.abs(Math.round(amt * 100) - amt * 100) > 1e-6) {
+    throw new Error('INVALID_PARAMS: 转入金额最多保留 2 位小数')
+  }
+  if (amt > 99999999.99) throw new Error('INVALID_PARAMS: 转入金额超出上限') // NUMERIC(10,2) 上界保护，非业务限额
+
+  const storeId = ctx.auth.effectiveStoreId
+  // market_name 以门店反查 org 树市场名为权威（INSERT 子查询），此处仅备 COALESCE 兜底
+  const marketName = ctx.auth.marketName || ''
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
+
+  const userRows = await pg.query(
+    `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
+    [clientUserId]
+  )
+  if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
+  const user = userRows[0]
+  // 非本店顾客禁止转入（同 card.recharge 口径：账户余额跨店可见，但转入按门店结算）
+  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法转入')
+  }
+  const clientPhone = user.phone || null
+  const customerName = user.name || null
+  const documentType = user.customer_type === '会员客' ? '售后' : '售前'
+  const note = remark ? `${LEGACY_INFLOW_NOTE}｜${remark}` : LEGACY_INFLOW_NOTE
+
+  let saleOrderId
+  await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+
+    const now = new Date()
+    const dateStrOrder = shanghaiYYMMDD(now)
+    const orderSeqResult = await client.query(
+      `SELECT sale_order_id FROM sale_orders
+       WHERE sale_order_id LIKE $1
+       ORDER BY sale_order_id DESC LIMIT 1`,
+      [`FY-XSD-WX-${dateStrOrder}%`]
+    )
+    let orderSeq = 1
+    if (orderSeqResult.rows.length > 0) {
+      orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
+    }
+    saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+
+    // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid_card_amount=0，线下，paid_at=now
+    // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）
+    await client.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
+        sale_order_datetime, total_amount, payable_amount, prepaid_card_amount, received,
+        client_user_id, client_phone, customer_name,
+        payment_method, opened_by, remark, paid_at, allocation_status,
+        created_at, updated_at
+      ) VALUES ($1, '已支付', '充值单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, $6, $6, 0, $6,
+                $7, $8, $9, '线下', $10, $11, $5, '待分配', $5, $5)`,
+      [
+        saleOrderId, documentType, marketName, storeId, now,
+        amt,
+        clientUserId, clientPhone, customerName,
+        ctx.auth.staffWfId, note,
+      ]
+    )
+
+    // 首次支付流水（线下 / external_txn_id=NULL / 已支付）：维护 received=Σ流水（资金不变量 I1）
+    await client.query(
+      `INSERT INTO sale_order_payments (
+         sale_order_id, change_type, amount, payment_method, external_txn_id,
+         status, source_end, operator_employee_id, note, created_at, paid_at
+       ) VALUES ($1, '首次支付', $2, '线下', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+      [saleOrderId, amt, ctx.auth.staffWfId || null, note, now]
+    )
+
+    // 充值入账（字面镜像 order.confirmOffline 充值单入账块；幂等键 card-topup-{saleOrderId} 三端统一）
+    const cardId = `FY-CARD-${clientUserId}`
+    await client.query(
+      `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
+       VALUES ($1, $2, $3, NOW(), NOW())
+       ON CONFLICT (user_id) DO UPDATE
+         SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()`,
+      [cardId, clientUserId, amt]
+    )
+    await client.query(
+      `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+       VALUES ($1, '充值', $2, $3, $4, NOW())
+       ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+      [cardId, amt, saleOrderId, `card-topup-${saleOrderId}`]
+    )
+
+    // 审计日志
+    await logOperation(client, ctx, 'card.inflow', 'sale_order', saleOrderId, {
+      _v: 1,
+      clientUserId,
+      amount: amt,
+      storeId,
+      legacy: true,
+    })
+  })
+
+  ctx.result = {
+    saleOrderId,
+    amount: amt,
+    status: '已支付',
+    message: '转入成功',
   }
 }
 
@@ -411,4 +544,4 @@ async function rejectRefund(ctx) {
   ctx.result = { paymentId, status: '已作废' }
 }
 
-module.exports = { rechargeConfig, recharge, createRefund, approveRefund, rejectRefund }
+module.exports = { rechargeConfig, recharge, inflow, createRefund, approveRefund, rejectRefund }
