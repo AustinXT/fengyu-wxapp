@@ -84,17 +84,19 @@ async function seedBundle() {
   const grp1 = grp1Rows[0].id
   const grp2 = grp2Rows[0].id
 
-  // 4. mall_product_skus 关联：组1 SKU bundlePrice=40，组2 SKU bundlePrice=300/0
+  // 4. mall_product_skus 关联：成交价 bundle_price（会员/对外售价）/ 标价单价 bundle_list_price（划线）
+  //    组1 SKU 成交40/标价50；组2 C 成交300/标价350，D 成交0/标价0
   await pgQuery(
-    `INSERT INTO mall_product_skus (product_id, sku_id, bundle_group_id, bundle_price, sort_order)
+    `INSERT INTO mall_product_skus (product_id, sku_id, bundle_group_id, bundle_price, bundle_list_price, sort_order)
      VALUES
-       ($1, $2, $3, 40.00, 0),
-       ($1, $4, $3, 40.00, 1),
-       ($1, $5, $6, 300.00, 2),
-       ($1, $7, $6, 0.00, 3)
+       ($1, $2, $3, 40.00, 50.00, 0),
+       ($1, $4, $3, 40.00, 50.00, 1),
+       ($1, $5, $6, 300.00, 350.00, 2),
+       ($1, $7, $6, 0.00, 0.00, 3)
      ON CONFLICT (product_id, sku_id) DO UPDATE
        SET bundle_group_id = EXCLUDED.bundle_group_id,
-           bundle_price = EXCLUDED.bundle_price`,
+           bundle_price = EXCLUDED.bundle_price,
+           bundle_list_price = EXCLUDED.bundle_list_price`,
     [BUNDLE_PRODUCT_ID,
      SKU_A_ID, grp1,
      SKU_B_ID,
@@ -193,9 +195,14 @@ async function caseHappy() {
   if (Number(byKey[SKU_D_ID].unit_real_price) !== 0) {
     throw new Error(`SKU_D unit_real_price expect 0, got ${byKey[SKU_D_ID].unit_real_price}`)
   }
-  // unit_price 仍是 product_skus.price 快照
-  if (Number(byKey[SKU_A_ID].unit_price) !== 49.8) {
-    throw new Error(`SKU_A unit_price snapshot expect 49.8, got ${byKey[SKU_A_ID].unit_price}`)
+  // unit_price = 套餐标价单价（bundle_list_price 下沉副本，非 SKU 原价 49.8）
+  // SKU_A：session_count=null，per-unit = bundle_list_price = 50
+  if (Number(byKey[SKU_A_ID].unit_price) !== 50) {
+    throw new Error(`SKU_A unit_price expect 50 (bundle_list_price, not sku.price 49.8), got ${byKey[SKU_A_ID].unit_price}`)
+  }
+  // SKU_C：10次卡，bundle_list_price=350 → unit_price per-session = 350/10 = 35
+  if (Number(byKey[SKU_C_ID].unit_price) !== 35) {
+    throw new Error(`SKU_C unit_price expect 35 (per-session 350/10), got ${byKey[SKU_C_ID].unit_price}`)
   }
   // total_amount = sum(bundle_price) = 40 + 300 + 0 = 340
   const orderRows = await pgQuery(

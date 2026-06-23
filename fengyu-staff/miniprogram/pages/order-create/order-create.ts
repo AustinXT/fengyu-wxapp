@@ -1600,6 +1600,8 @@ Page({
         prepaidCardAmount,
         // 活动单标记（纯标识）
         isActivity: this.data.isActivity,
+        // 组合套餐：透传 bundleProductId（套餐 SPU id），云函数据此校验子项归属/配额并取下沉单价
+        bundleProductId: cart.find(c => c.refBundleId)?.refBundleId || undefined,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);

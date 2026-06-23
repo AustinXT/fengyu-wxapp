@@ -263,6 +263,84 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
 }
 
 /**
+ * 组合套餐校验（staff 独立副本，与 client `_loadAndValidateBundle` / admin 口径对齐）：
+ * - 校验商品是套餐、子项归属、分组配额（全选=种类数 / 选N=数量合计）
+ * - 返回 Map<skuId, {listPrice, salePrice}>（mall_product_skus 下沉副本：标价单价/成交价）；
+ *   bundleProductId 为空返回 null（普通商品路径）
+ */
+async function _loadAndValidateBundle(bundleProductId, items) {
+  if (!bundleProductId) return null
+
+  const productRows = await pg.query(
+    `SELECT product_id, is_bundle FROM products
+     WHERE product_id = $1 AND deleted_at IS NULL AND is_visible = true`,
+    [bundleProductId]
+  )
+  if (productRows.length === 0 || !productRows[0].is_bundle) {
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已下架')
+  }
+
+  const groupRows = await pg.query(
+    `SELECT id, group_name, pick_count FROM mall_bundle_groups WHERE product_id = $1`,
+    [bundleProductId]
+  )
+  const mpsRows = await pg.query(
+    `SELECT sku_id, bundle_group_id, bundle_price, bundle_list_price
+     FROM mall_product_skus WHERE product_id = $1`,
+    [bundleProductId]
+  )
+
+  const skuToPrice = new Map()
+  const skuToGroupId = new Map()
+  for (const r of mpsRows) {
+    skuToPrice.set(r.sku_id, { listPrice: r.bundle_list_price, salePrice: r.bundle_price })
+    skuToGroupId.set(r.sku_id, r.bundle_group_id != null ? Number(r.bundle_group_id) : null)
+  }
+
+  for (const item of items) {
+    if (!skuToPrice.has(item.skuId)) {
+      throw new Error(`INVALID_PARAMS: BUNDLE_SKU_NOT_BELONG: SKU ${item.skuId} 不属于该套餐`)
+    }
+  }
+
+  const pickedQtyByGroup = new Map()
+  const pickedSkusByGroup = new Map()
+  for (const item of items) {
+    const gid = skuToGroupId.get(item.skuId)
+    if (gid == null) continue
+    const qty = Number(item.quantity) || 0
+    pickedQtyByGroup.set(gid, (pickedQtyByGroup.get(gid) || 0) + qty)
+    if (!pickedSkusByGroup.has(gid)) pickedSkusByGroup.set(gid, new Set())
+    pickedSkusByGroup.get(gid).add(item.skuId)
+  }
+
+  const totalSkusByGroup = new Map()
+  for (const r of mpsRows) {
+    if (r.bundle_group_id == null) continue
+    const gid = Number(r.bundle_group_id)
+    totalSkusByGroup.set(gid, (totalSkusByGroup.get(gid) || 0) + 1)
+  }
+
+  for (const g of groupRows) {
+    const gid = Number(g.id)
+    if (g.pick_count == null) {
+      const total = totalSkusByGroup.get(gid) || 0
+      const distinct = pickedSkusByGroup.has(gid) ? pickedSkusByGroup.get(gid).size : 0
+      if (distinct !== total) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${distinct} 项`)
+      }
+    } else {
+      const pickedQty = pickedQtyByGroup.get(gid) || 0
+      if (pickedQty !== Number(g.pick_count)) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 件，实际 ${pickedQty} 件`)
+      }
+    }
+  }
+
+  return skuToPrice
+}
+
+/**
  * 员工开单（店长专用）
  * payload: {
  *   clientPhone: string,
@@ -295,6 +373,7 @@ async function create(ctx) {
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
     isActivity,
+    bundleProductId,
   } = payload
 
   const storeId = ctx.auth.effectiveStoreId
@@ -370,6 +449,9 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
   }
 
+  // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
+  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
+
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const rawItemDataList = await Promise.all(
     items.map(async (item) => {
@@ -405,12 +487,19 @@ async function create(ctx) {
         inputRealUnit = Math.round(skuListPrice * 50) / 100
         useFrontendPrice = false
       } else {
-        inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : skuListPrice
-        inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : inputListUnit
-        // 防御性上界：unitRealPrice ≤ unitPrice ≤ sku 原始标价（防前端涨价）；
-        // 缺省 fallback 仍用 skuListPrice（会员价优先，不传价时行为不变），仅上界放宽到原价 skuPriceCeil。
+        // 套餐子项：上界与缺省回退改用套餐下沉单价（标价/成交），允许高于 SKU 原价（套餐价独立于 SKU 挂牌价）；
+        // 非套餐仍以 sku 原价 skuPriceCeil 为上界（防前端涨价）。
+        const bp = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
+        const bundleListUnit = bp && bp.listPrice != null ? Number(bp.listPrice) : null
+        const bundleSaleUnit = bp && bp.salePrice != null ? Number(bp.salePrice) : null
+        const ceil = bundleListUnit != null ? bundleListUnit : skuPriceCeil
+        const fallbackList = bundleListUnit != null ? bundleListUnit : skuListPrice
+        const fallbackReal = bundleSaleUnit != null ? bundleSaleUnit : fallbackList
+        inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : fallbackList
+        inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : fallbackReal
+        // 防御性上界：unitRealPrice ≤ unitPrice ≤ 上界（套餐=标价单价 / 普通=SKU 原价）
         if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
-            || inputListUnit > skuPriceCeil + 0.005
+            || inputListUnit > ceil + 0.005
             || inputRealUnit > inputListUnit + 0.005
             || inputRealUnit < 0) {
           throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')

@@ -13,6 +13,7 @@ import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory,
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { computeBundleTotals } from '@/lib/bundle-price'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -785,8 +786,6 @@ export const deleteSku = withPermission(
 
 type ProductTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
-
 /**
  * 把分组级单价下沉到组内所有子项副本（子项价格的唯一写入点）：
  * - bundle_list_price = 组 unit_list_price（标价单价 → sale_items.unit_price 划线）
@@ -830,25 +829,16 @@ async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<v
   const countMap = new Map<number, number>()
   for (const c of counts) if (c.groupId != null) countMap.set(c.groupId, Number(c.cnt))
 
-  let listSum = 0
-  let memberSum = 0
-  for (const g of groups) {
-    const count = g.pickCount != null ? g.pickCount : (countMap.get(g.id) ?? 0)
-    const listUnit = g.listPrice != null ? Number(g.listPrice) : 0
-    const memberUnit = g.memberPrice != null ? Number(g.memberPrice) : listUnit
-    listSum += round2(listUnit * count)
-    memberSum += round2(memberUnit * count)
-  }
-  listSum = round2(listSum)
-  memberSum = round2(memberSum)
+  const { price, specialPrice } = computeBundleTotals(
+    groups.map((g) => ({
+      pickCount: g.pickCount,
+      listPrice: g.listPrice,
+      memberPrice: g.memberPrice,
+      skuCount: countMap.get(g.id) ?? 0,
+    })),
+  )
 
-  await tx
-    .update(products)
-    .set({
-      price: listSum.toFixed(2),
-      specialPrice: memberSum < listSum - 0.005 ? memberSum.toFixed(2) : null,
-    })
-    .where(eq(products.productId, productId))
+  await tx.update(products).set({ price, specialPrice }).where(eq(products.productId, productId))
 }
 
 // ===== 商城商品-SKU 关联 =====
