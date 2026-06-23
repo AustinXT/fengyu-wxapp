@@ -162,6 +162,24 @@ async function assertNoPendingRefund(client, saleOrderId) {
 }
 
 /**
+ * 退款已结算守卫（2026-06-24）：订单存在「已支付」退款时禁止重分配/清除分配。
+ * 退款已记负数冲销行（挂退款流水 id），重保存/清除会与负数行脱节产生悬空净额。
+ * client 可为顶层 pg（query 返回数组）或事务内 client（返回 {rows}）。SQL 谓词镜像 admin allocations.ts。
+ */
+async function assertNoSettledRefund(client, saleOrderId) {
+  if (!saleOrderId) return
+  const r = await client.query(
+    `SELECT 1 FROM sale_order_payments
+      WHERE sale_order_id = $1 AND change_type = '退款' AND status = '已支付' LIMIT 1`,
+    [saleOrderId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_SETTLED: 该订单已退款，营业额分配已锁定，不可再修改')
+  }
+}
+
+/**
  * 按服务单反查其涉及的所有订单是否有待审批退款（service.confirm 用，一服务单可跨多订单核销）。
  */
 async function assertNoPendingRefundByServiceOrder(client, serviceOrderId) {
@@ -228,6 +246,7 @@ module.exports = {
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
+  assertNoSettledRefund,
   assertNoPendingRefundByServiceOrder,
   notifyRefundCreated,
   notifyRefundResult,

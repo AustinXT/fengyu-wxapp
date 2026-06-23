@@ -9,7 +9,7 @@ import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
-import { hasPendingRefund } from '@/lib/refund-cascade'
+import { hasPendingRefund, hasSettledRefund } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 
@@ -695,6 +695,11 @@ export const savePaymentAllocations = withPermission(
     // 冻结闭环（Bug I）：退款审批中禁止改分配
     if (await hasPendingRefund(db, pay.sale_order_id as string)) {
       return { success: false, message: '该订单退款审批中，暂不可修改分配' }
+    }
+    // 退款后重分配守卫（2026-06-24）：订单已有「已支付」退款时禁止重分配——退款已记负数冲销行（挂退款流水 id），
+    // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。两端镜像 staff allocation.savePayment。
+    if (await hasSettledRefund(db, pay.sale_order_id as string)) {
+      return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
     }
 
     // 可分配额快照（基数 amount + 销售类别）

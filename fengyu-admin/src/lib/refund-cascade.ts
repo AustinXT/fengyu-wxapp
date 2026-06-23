@@ -43,6 +43,16 @@ export async function hasPendingRefund(executor: SqlExecutor, saleOrderId: strin
   return (r as unknown as unknown[]).length > 0
 }
 
+/** 已结算退款守卫（2026-06-24）：订单存在「已支付」退款时返回 true，调用方禁止重分配/清除分配（防悬空负数）。SQL 谓词镜像 staff utils/refund.js assertNoSettledRefund。 */
+export async function hasSettledRefund(executor: SqlExecutor, saleOrderId: string): Promise<boolean> {
+  if (!saleOrderId) return false
+  const r = await executor.execute(sql`
+    SELECT 1 FROM sale_order_payments
+    WHERE sale_order_id = ${saleOrderId} AND change_type = '退款' AND status = '已支付' LIMIT 1
+  `)
+  return (r as unknown as unknown[]).length > 0
+}
+
 /** 按服务单反查其涉及的所有订单是否有待审批退款（confirmServiceOrder 用）。 */
 export async function hasPendingRefundByServiceOrder(
   executor: SqlExecutor,
