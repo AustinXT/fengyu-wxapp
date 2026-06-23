@@ -66,6 +66,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     hiredAt: employee.hiredAt ?? "",
     leaveStart: toDatetimeLocal(employee.leaveStart),
     leaveEnd: toDatetimeLocal(employee.leaveEnd),
+    isOnBusinessTrip: employee.isOnBusinessTrip,
     skills: employee.skills ?? ([] as string[]),
     socialInsurance: employee.socialInsurance,
   })
@@ -119,6 +120,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       hiredAt: employee.hiredAt ?? "",
       leaveStart: toDatetimeLocal(employee.leaveStart),
       leaveEnd: toDatetimeLocal(employee.leaveEnd),
+      isOnBusinessTrip: employee.isOnBusinessTrip,
       skills: employee.skills ?? ([] as string[]),
       socialInsurance: employee.socialInsurance,
     })
@@ -163,6 +165,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         hiredAt: form.hiredAt || null,
         leaveStart: form.leaveStart || null,
         leaveEnd: form.leaveEnd || null,
+        isOnBusinessTrip: form.isOnBusinessTrip,
         skills: form.skills.length > 0 ? form.skills : null,
         socialInsurance: form.socialInsurance,
       }, employee.updatedAt)
@@ -448,6 +451,20 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                     />
                   ) : (
                     <Input value={employee.leaveEnd ? employee.leaveEnd.slice(0, 16) : "—"} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">出差支援（跨门店开单可选）</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.isOnBusinessTrip ? "true" : "false"}
+                      onChange={(e) => setForm((prev) => ({ ...prev, isOnBusinessTrip: e.target.value === "true" }))}
+                    >
+                      <option value="false">否</option>
+                      <option value="true">是</option>
+                    </Select>
+                  ) : (
+                    <Input value={employee.isOnBusinessTrip ? "是" : "否"} disabled />
                   )}
                 </div>
                 <div className="space-y-2">

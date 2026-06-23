@@ -45,6 +45,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     gender: row.gender,
     boundStoreId: row.boundStoreId,
     boundEmployeeId: row.boundEmployeeId,
+    isCrossStoreTemp: row.isCrossStoreTemp,
     memberLevel: row.memberLevel,
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
@@ -101,8 +102,14 @@ export const searchCustomers = withPermission(
     .from(clientWechatUsers)
     .where(
       and(
-        scopeCondition(session, clientWechatUsers.boundStoreId),
-        isNotNull(clientWechatUsers.boundStoreId),
+        // 本门店已绑定顾客 ∪ 标记临时跨店的外门店顾客（需求21：跨门店临时绑定）
+        or(
+          and(
+            scopeCondition(session, clientWechatUsers.boundStoreId),
+            isNotNull(clientWechatUsers.boundStoreId),
+          ),
+          eq(clientWechatUsers.isCrossStoreTemp, true),
+        ),
         or(
           ilike(clientWechatUsers.name, pattern),
           ilike(clientWechatUsers.phone, pattern),
@@ -626,6 +633,8 @@ export const updateCustomer = withPermission(
     promoterEmployeeId: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
+    /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
+    isCrossStoreTemp: boolean
     }>,
     /** 乐观锁：提交时携带的 updated_at */
     expectedUpdatedAt?: string,

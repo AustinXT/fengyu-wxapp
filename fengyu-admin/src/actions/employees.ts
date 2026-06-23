@@ -47,6 +47,7 @@ function rowToEmployee(row: any): Employee {
     // leave_start / leave_end 列为 mode:'string'，直接是墙钟字符串，无需 toISOString
     leaveStart: e.leaveStart ?? null,
     leaveEnd: e.leaveEnd ?? null,
+    isOnBusinessTrip: e.isOnBusinessTrip,
     resignedAt: e.resignedAt,
     resignationReason: e.resignationReason,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
@@ -100,6 +101,32 @@ export const getItemTeachers = withPermission(
     .where(and(
       eq(staffWechatUsers.isResigned, false),
       sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
+    ))
+    // 例外：picker 字母序（与 getEmployees 一致）
+    .orderBy(asc(staffWechatUsers.name))
+
+  return rows.map(rowToEmployee)
+  },
+)
+
+/**
+ * 全公司在职「出差支援」员工 — 跨门店开单 / 分配的候选补充池（2026-06-24）。
+ *
+ * is_on_business_trip=true 的员工可被任意门店的开单 / 营业额分配 / 服务提成分配选中，
+ * 故**不加 scopeCondition**，返回全部在职出差员工。调用方需与 getEmployees 结果按
+ * employeeId 去重合并，再交前端按「本门店 ∪ 出差」+ 技能筛选。每日 03:00 cron 重置标记。
+ */
+export const getEmployeesOnBusinessTrip = withPermission(
+  'employee:list',
+  async (): Promise<Employee[]> => {
+  const rows = await db
+    .select()
+    .from(staffWechatUsers)
+    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .where(and(
+      eq(staffWechatUsers.isResigned, false),
+      eq(staffWechatUsers.isOnBusinessTrip, true),
     ))
     // 例外：picker 字母序（与 getEmployees 一致）
     .orderBy(asc(staffWechatUsers.name))
@@ -512,6 +539,8 @@ export const updateEmployee = withPermission(
       leaveStart: string | null
       /** 请假结束时间（datetime-local YYYY-MM-DDTHH:mm） */
       leaveEnd: string | null
+      /** 是否出差支援（跨门店共享标记）；每日 03:00 cron 重置为 false */
+      isOnBusinessTrip: boolean
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null
       /** 离职原因（自由文本）；与 isResigned 联动：复职时由 action 自动清空 */

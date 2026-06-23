@@ -144,6 +144,7 @@ export default function CustomerDetailPage({
   const [form, setForm] = useState({
     name: customer.name ?? "",
     gender: customer.gender ?? "",
+    isCrossStoreTemp: customer.isCrossStoreTemp,
     boundEmployeeId: customer.boundEmployeeId ?? "",
     promoterEmployeeId: customer.promoterEmployeeId ?? "",
     customerSource: customer.customerSource ?? "",
@@ -196,6 +197,7 @@ export default function CustomerDetailPage({
     setForm({
       name: customer.name ?? "",
       gender: customer.gender ?? "",
+      isCrossStoreTemp: customer.isCrossStoreTemp,
       boundEmployeeId: customer.boundEmployeeId ?? "",
       promoterEmployeeId: customer.promoterEmployeeId ?? "",
       customerSource: customer.customerSource ?? "",
@@ -219,6 +221,7 @@ export default function CustomerDetailPage({
       const result = await updateCustomer(customer.userId, {
         name: form.name || null,
         gender: form.gender || null,
+        isCrossStoreTemp: form.isCrossStoreTemp,
         boundEmployeeId: form.boundEmployeeId || null,
         promoterEmployeeId: form.promoterEmployeeId || null,
         customerSource: form.customerSource || null,
@@ -524,6 +527,20 @@ export default function CustomerDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">归属门店</label>
                   <Input value={customer.storeName ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">临时跨门店（可被其他门店开单）</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.isCrossStoreTemp ? "true" : "false"}
+                      onChange={(e) => setForm((prev) => ({ ...prev, isCrossStoreTemp: e.target.value === "true" }))}
+                    >
+                      <option value="false">否</option>
+                      <option value="true">是</option>
+                    </Select>
+                  ) : (
+                    <Input value={customer.isCrossStoreTemp ? "是" : "否"} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">储值卡余额</label>

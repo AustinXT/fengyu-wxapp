@@ -67,6 +67,8 @@ export interface Employee {
   leaveStart: string | null
   /** 请假结束时间（墙钟 YYYY-MM-DD HH:mm:ss） */
   leaveEnd: string | null
+  /** 是否出差支援；true 时可被本门店外的开单 / 营业额分配选中（跨门店共享），每日 03:00 cron 重置 */
+  isOnBusinessTrip: boolean
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
   /** 离职原因（自由文本）；NULL 表示在职或未填 */
@@ -89,6 +91,8 @@ export interface Customer {
   gender: string | null
   boundStoreId: string | null
   boundEmployeeId: string | null
+  /** 临时跨门店标记（需求21）；true 时可被非绑定门店的店长开单（跨店临时消费），每日 03:00 cron 重置 */
+  isCrossStoreTemp: boolean
   memberLevel: string | null
   /** 最近一次升级时间（ISO 字符串） */
   memberLevelUpgradedAt: string | null

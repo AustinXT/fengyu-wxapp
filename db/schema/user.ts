@@ -32,6 +32,8 @@ export const clientWechatUsers = pgTable(
     boundEmployeeId: varchar('bound_employee_id', { length: 50 }),
     /** 绑定美容师姓名（冗余，随 boundEmployeeId 同步写入） */
     boundEmployeeName: varchar('bound_employee_name', { length: 50 }),
+    /** 临时跨门店标记：true 时该顾客可被非绑定门店的店长开单（跨店临时消费场景）；每日 03:00 cron 重置为 false */
+    isCrossStoreTemp: boolean('is_cross_store_temp').notNull().default(false),
     // Layer 4 — 会员与分类
     memberLevel: memberLevelEnum('member_level'),
     /** 会员等级保级截止时间；升级时设为 NOW()+150 天；保级期内跳过降级 */
@@ -122,6 +124,8 @@ export const staffWechatUsers = pgTable(
     leaveStart: timestamp('leave_start', { mode: 'string' }),
     /** 请假结束时间（墙钟，无时区）；与 appointment_time 同款墙钟语义，比较走 ::timestamp */
     leaveEnd: timestamp('leave_end', { mode: 'string' }),
+    /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；每日 03:00 cron 重置为 false */
+    isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
     /** 是否缴纳社保；默认否 */
