@@ -60,7 +60,20 @@ vi.mock('@db/order', () => ({
     note: 'note',
     createdAt: 'created_at',
     paidAt: 'paid_at',
+    allocationStatus: 'allocation_status',
     $inferInsert: {} as any,
+  },
+  saleAllocations: {
+    id: 'id',
+    saleItemId: 'sale_item_id',
+    employeeId: 'employee_id',
+    allocationRatio: 'allocation_ratio',
+    roleType: 'role_type',
+    totalAmount: 'total_amount',
+    commissionRate: 'commission_rate',
+    commissionAmount: 'commission_amount',
+    salePaymentId: 'sale_payment_id',
+    isVoid: 'is_void',
   },
 }))
 
@@ -188,7 +201,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportAllocationOrders } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -3370,5 +3383,106 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     const result = await deleteOrder('FY-RACE')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已变更')
+  })
+})
+
+describe('exportAllocationOrders — 销售提成分配明细导出', () => {
+  // 自引用 chain：from/innerJoin/leftJoin/where/orderBy 均返回同一对象，limit 收口 resolve rows，抗 JOIN 增减
+  function makeChain(rows: any[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn().mockResolvedValue(rows),
+    }
+    return chain
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('按「待分配」筛选直接返回空，不查库（分配明细本质已分配）', async () => {
+    const result = await exportAllocationOrders({ allocStatus: '待分配' })
+    expect(result).toEqual({ rows: [], truncated: false })
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('已分配明细：字段映射 + 商品行金额口径 + 金额转 number + 回款级状态优先', async () => {
+    const rawRow = {
+      market: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-XSD-WX-2606080027',
+      saleOrderType: '销售单', documentType: '售后',
+      customerName: '张凯顾客', customerPhone: '13617216903', fallbackName: null, fallbackPhone: null,
+      productType: '疗程卡', categoryL1: '圣源养心', categoryL2: '护理项目',
+      productName: '【王牌】疼痛管理', sessionCount: 10, remainingSessions: 10,
+      saleAmount: '5200.00', prepaidCardAmount: '0.00', received: '3600.00', refundedAmount: '300.00',
+      unitRealPrice: '300.00', status: '部分支付',
+      payAllocStatus: '已分配', orderAllocStatus: '待分配',
+      employeeName: '熊岚欢', positionName: '美容师',
+      allocationRatio: '0.30', allocationAmount: '1080.00', commissionRate: '0.1500', commissionAmount: '162.00',
+      isActivity: false, salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
+      payPaidAt: new Date('2026-06-08T16:59:49.000Z'), orderPaidAt: null, remark: null,
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows, truncated } = await exportAllocationOrders({})
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(1)
+    const r = rows[0]
+    expect(r.market).toBe('九江')
+    expect(r.saleAmount).toBe(5200) // 商品行 sale_amount + number 化
+    expect(r.received).toBe(3600) // 商品行净实收
+    expect(r.refundedAmount).toBe(300) // 整单已退
+    expect(r.allocationAmount).toBe(1080)
+    expect(r.commissionAmount).toBe(162)
+    expect(r.allocationRatio).toBe('0.30') // 占比保留 string 交前端 fmtPercent
+    expect(r.commissionRate).toBe('0.1500')
+    expect(r.allocationStatus).toBe('已分配') // 回款级优先
+    expect(r.documentType).toBe('售后')
+    expect(r.customerType).toBe('会员客')
+    expect(r.isActivity).toBe(false)
+    expect(r.paidAt).toBe(new Date('2026-06-08T16:59:49.000Z').toISOString())
+  })
+
+  it('回款级缺失→支付时间/分配状态回退订单级；顾客回退订单快照；null 提成透传', async () => {
+    const rawRow = {
+      market: '九江', storeName: '店', saleOrderId: 'FY-1', saleOrderType: '转换单', documentType: null,
+      customerName: null, customerPhone: null, fallbackName: '快照顾客', fallbackPhone: '13800000000',
+      productType: '家居产品', categoryL1: null, categoryL2: null, productName: '产品',
+      sessionCount: null, remainingSessions: null,
+      saleAmount: '68.00', prepaidCardAmount: '10.00', received: '58.00', refundedAmount: '0.00',
+      unitRealPrice: '68.00', status: '已支付',
+      payAllocStatus: null, orderAllocStatus: '已分配',
+      employeeName: '涂怀平', positionName: '养生师',
+      allocationRatio: '1.00', allocationAmount: '58.00', commissionRate: null, commissionAmount: null,
+      isActivity: true, salesCategory: '他销自耗', customerType: '流量客', openedByName: '李广硕',
+      payPaidAt: null, orderPaidAt: new Date('2026-06-08T16:14:58.000Z'), remark: '备注',
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportAllocationOrders({})
+
+    const r = rows[0]
+    expect(r.customerName).toBe('快照顾客') // 回退订单快照
+    expect(r.customerPhone).toBe('13800000000')
+    expect(r.allocationStatus).toBe('已分配') // payAllocStatus null → orderAllocStatus
+    expect(r.commissionRate).toBeNull()
+    expect(r.commissionAmount).toBeNull()
+    expect(r.isActivity).toBe(true)
+    expect(r.paidAt).toBe(new Date('2026-06-08T16:14:58.000Z').toISOString()) // 回退订单级 paidAt
+  })
+
+  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+    const many = Array.from({ length: 10001 }, (_, i) => ({ saleOrderId: `FY-${i}`, isActivity: false }))
+    ;(db.select as any).mockReturnValue(makeChain(many))
+
+    const { rows, truncated } = await exportAllocationOrders({})
+
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
   })
 })

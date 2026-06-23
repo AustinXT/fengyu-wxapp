@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
-import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments, saleAllocations } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -578,19 +578,56 @@ export const exportOrders = withPermission(
   },
 )
 
-/** 营业额分配「销售提成」导出行（对齐分配列表展示列） */
+/**
+ * 营业额分配「销售提成」导出行（明细级，一行 = 一条有效 sale_allocations，每被分配员工一行）。
+ * 与服务提成导出（ExportAllocationServiceRow）对称。金额列为 number 便于 Excel 求和；
+ * 占比/比例保留 string 原值交前端 fmtPercent；isActivity 为 boolean 交前端转「是/否」。
+ */
 export interface ExportAllocationOrderRow {
-  saleOrderId: string
-  customerName: string | null
+  market: string | null
   storeName: string | null
-  totalAmount: string
+  saleOrderId: string
+  saleOrderType: string | null
+  documentType: string | null
+  customerName: string | null
+  customerPhone: string | null
+  productType: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  productName: string | null
+  sessionCount: number | null
+  remainingSessions: number | null
+  saleAmount: number | null
+  prepaidCardAmount: number | null
+  received: number | null
+  refundedAmount: number | null
+  unitRealPrice: number | null
+  status: string | null
   allocationStatus: string | null
+  employeeName: string | null
+  positionName: string | null
+  allocationRatio: string | null
+  allocationAmount: number | null
+  commissionRate: string | null
+  commissionAmount: number | null
+  isActivity: boolean
+  salesCategory: string | null
+  customerType: string | null
+  openedByName: string | null
   paidAt: string | null
+  remark: string | null
 }
 
 /**
- * 导出营业额分配「销售提成」（已支付订单，全部筛选命中）。LIMIT 10000 防 OOM。
- * 筛选口径与 allocations 页 getOrdersPaginated 一致（状态锁定已支付，allocStatus 走分配状态）。
+ * 导出营业额分配「销售提成」明细（一行 = 一条有效 sale_allocations，每被分配员工一行）。
+ * 主链 sale_allocations → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
+ * 仅含已分配（sale_allocations 有行）；按「待分配」筛选时为空属预期。LIMIT 10000 防 OOM。
+ *
+ * 口径：
+ * - 金额走「商品行口径」：订单金额=sale_items.sale_amount、实付=sale_items.received（行级净实收）；
+ *   储值卡抵扣/已退库内无行级字段，取整单 sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。
+ * - 不锁订单 status='已支付'：部分支付订单的回款同样可被分配，需纳入导出（与回款维度列表一致）。
+ * - 支付时间/分配状态优先取回款级（sale_payment_id），旧订单维度分配（payment_id 为 NULL）回退订单级。
  */
 export const exportAllocationOrders = withPermission(
   'sale_order:list',
@@ -599,27 +636,111 @@ export const exportAllocationOrders = withPermission(
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
     const LIMIT = 10000
-    const filters = parseAllocationOrderFilters(params)
-    const whereClause = and(...buildOrderConditions(session, filters))
 
-    const orderRows = await db
-      .select({ order: saleOrders, storeName: stores.storeName })
-      .from(saleOrders)
+    // 分配明细本质只含已分配；按「待分配」筛选直接为空（与服务提成导出一致）
+    if (params.allocStatus === '待分配') return { rows: [], truncated: false }
+
+    // 复用 list-filters 的 URL→filters 映射，但覆盖两处：
+    // status：不锁「已支付」（部分支付订单的已分配回款也要导出）；
+    // allocationStatus：分配明细本质已分配，订单级状态不再二次过滤（仅上面短路用 allocStatus）。
+    const filters = parseAllocationOrderFilters(params)
+    filters.status = undefined
+    filters.allocationStatus = undefined
+    const whereClause = and(
+      eq(saleAllocations.isVoid, false),
+      ...buildOrderConditions(session, filters),
+    )
+
+    const raw = await db
+      .select({
+        market: saleOrders.marketName,
+        storeName: stores.storeName,
+        saleOrderId: saleOrders.saleOrderId,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        customerName: clientWechatUsers.name,
+        customerPhone: clientWechatUsers.phone,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        productType: saleItems.productType,
+        categoryL1: productCategories.categoryName,
+        categoryL2: productCategories.productKind,
+        productName: saleItems.productName,
+        sessionCount: saleItems.sessionCount,
+        remainingSessions: saleItems.remainingSessions,
+        saleAmount: saleItems.saleAmount,
+        prepaidCardAmount: saleOrders.prepaidCardAmount,
+        received: saleItems.received,
+        refundedAmount: saleOrders.refundedAmount,
+        unitRealPrice: saleItems.unitRealPrice,
+        status: saleOrders.status,
+        payAllocStatus: saleOrderPayments.allocationStatus,
+        orderAllocStatus: saleOrders.allocationStatus,
+        employeeName: staffWechatUsers.name,
+        positionName: staffWechatUsers.positionName,
+        allocationRatio: saleAllocations.allocationRatio,
+        allocationAmount: saleAllocations.totalAmount,
+        commissionRate: saleAllocations.commissionRate,
+        commissionAmount: saleAllocations.commissionAmount,
+        isActivity: saleOrders.isActivity,
+        salesCategory: saleItems.salesCategory,
+        customerType: clientWechatUsers.customerType,
+        openedByName: opener.name,
+        payPaidAt: saleOrderPayments.paidAt,
+        orderPaidAt: saleOrders.paidAt,
+        remark: saleOrders.remark,
+      })
+      .from(saleAllocations)
+      .innerJoin(saleItems, eq(saleAllocations.saleItemId, saleItems.saleItemId))
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(staffWechatUsers, eq(saleAllocations.employeeId, staffWechatUsers.employeeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .leftJoin(saleOrderPayments, eq(saleAllocations.salePaymentId, saleOrderPayments.id))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .where(whereClause)
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleAllocations.id)
       .limit(LIMIT + 1)
 
-    const truncated = orderRows.length > LIMIT
-    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
+    const truncated = raw.length > LIMIT
+    const page = truncated ? raw.slice(0, LIMIT) : raw
 
+    const num = (v: string | null) => (v == null ? null : Number(v))
     const rows: ExportAllocationOrderRow[] = page.map((r) => ({
-      saleOrderId: r.order.saleOrderId,
-      customerName: r.order.customerName,
+      market: r.market,
       storeName: r.storeName,
-      totalAmount: r.order.totalAmount,
-      allocationStatus: r.order.allocationStatus,
-      paidAt: r.order.paidAt?.toISOString() ?? null,
+      saleOrderId: r.saleOrderId,
+      saleOrderType: r.saleOrderType,
+      documentType: r.documentType,
+      customerName: r.customerName ?? r.fallbackName ?? null,
+      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionCount: r.sessionCount ?? null,
+      remainingSessions: r.remainingSessions ?? null,
+      saleAmount: num(r.saleAmount),
+      prepaidCardAmount: num(r.prepaidCardAmount),
+      received: num(r.received),
+      refundedAmount: num(r.refundedAmount),
+      unitRealPrice: num(r.unitRealPrice),
+      status: r.status,
+      allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
+      employeeName: r.employeeName,
+      positionName: r.positionName,
+      allocationRatio: r.allocationRatio,
+      allocationAmount: num(r.allocationAmount),
+      commissionRate: r.commissionRate,
+      commissionAmount: num(r.commissionAmount),
+      isActivity: r.isActivity ?? false,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
+      openedByName: r.openedByName,
+      paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+      remark: r.remark,
     }))
 
     return { rows, truncated }
