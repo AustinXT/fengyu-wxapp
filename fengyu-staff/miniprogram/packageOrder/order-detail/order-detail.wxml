@@ -226,15 +226,23 @@
     confirm-button-text="提交"
   >
     <view style="padding: 16rpx 24rpx;">
-      <van-field
-        label="退款原因"
-        placeholder="请填写退款原因"
-        type="textarea"
-        maxlength="200"
-        autosize
-        value="{{refundReason}}"
-        bind:change="onRefundReasonChange"
-      />
+      <view style="font-size: 26rpx; color: #969799; margin-bottom: 12rpx;">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
+      <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
+        <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" style="padding: 12rpx 0;">
+          <van-checkbox name="{{item.saleItemId}}" checked-color="#C0322A">{{item.label}}</van-checkbox>
+        </view>
+      </van-checkbox-group>
+      <view style="margin-top: 16rpx;">
+        <van-field
+          label="退款原因"
+          placeholder="请填写退款原因"
+          type="textarea"
+          maxlength="200"
+          autosize
+          value="{{refundReason}}"
+          bind:change="onRefundReasonChange"
+        />
+      </view>
     </view>
   </van-dialog>
 

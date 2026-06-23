@@ -201,6 +201,9 @@ Page({
     // P2: 退款
     showRefundDialog: false,
     refundReason: '',
+    // 退款明细多选（可选订单内若干项；疗程卡整卡退、不支持部分退次数）
+    refundItemOptions: [] as Array<{ saleItemId: string; label: string }>,
+    refundSelectedIds: [] as string[],
     submitting: false,
     // Ticket 2026-05-21: 按子项回款弹层
     showRepayPopup: false,
@@ -497,23 +500,48 @@ Page({
   onCreateRefund() {
     const o = this.data.order;
     if (!o) return;
-    this.setData({ showRefundDialog: true, refundReason: '' });
+    // 可退项：疗程卡按「已付未用次数」(paidUnusedSessions>0) 可退；家居（无 session_count）默认列出，后端校验可退量。
+    // 疗程卡整卡全退（不支持部分退次数），label 标注可退次数。
+    const options = o.items
+      .filter((it) => (it.sessionCount == null ? true : it.paidUnusedSessions > 0))
+      .map((it) => ({
+        saleItemId: it.saleItemId,
+        label:
+          it.sessionCount == null
+            ? it.itemName
+            : `${it.itemName}（整卡退 ${it.paidUnusedSessions} 次）`,
+      }));
+    this.setData({
+      showRefundDialog: true,
+      refundReason: '',
+      refundItemOptions: options,
+      refundSelectedIds: options.map((x) => x.saleItemId), // 默认全选
+    });
   },
 
   onRefundReasonChange(e: WechatMiniprogram.CustomEvent) {
     this.setData({ refundReason: (e.detail as unknown as string) || '' });
   },
 
+  onRefundItemsChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ refundSelectedIds: (e.detail as unknown as string[]) || [] });
+  },
+
   async onConfirmRefund() {
-    const { order, refundReason, submitting } = this.data;
+    const { order, refundReason, refundSelectedIds, submitting } = this.data;
     if (submitting || !order) return;
     if (!refundReason?.trim()) {
       wx.showToast({ title: '请填写退款原因', icon: 'none' });
       return;
     }
+    if (!refundSelectedIds.length) {
+      wx.showToast({ title: '请至少选择一个退款项', icon: 'none' });
+      return;
+    }
     this.setData({ submitting: true });
     try {
-      const items = order.items.map((it) => ({ saleItemId: it.saleItemId }));
+      // 仅退选中项；不带 refundQuantity → 后端疗程卡强制整卡全退、家居退全部未提货
+      const items = refundSelectedIds.map((saleItemId) => ({ saleItemId }));
       await callStaffApi('order.createRefund', {
         refSaleOrderId: order.saleOrderId,
         items,

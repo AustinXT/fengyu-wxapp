@@ -222,21 +222,28 @@ export function RefundForm({
                       <td className="px-3 py-2 text-right">¥{it.unitRealPrice.toFixed(2)}</td>
                       <td className="px-3 py-2 text-right">{it.unusedQuantity}</td>
                       <td className="px-3 py-2">
-                        <Input
-                          type="number"
-                          min="0"
-                          max={it.unusedQuantity}
-                          step="1"
-                          value={ls.refundQuantity}
-                          disabled={disabled || !ls.checked}
-                          onChange={(e) =>
-                            setLineStates((prev) => ({
-                              ...prev,
-                              [it.saleItemId]: { ...ls, refundQuantity: e.target.value },
-                            }))
-                          }
-                          className="h-8 text-right"
-                        />
+                        {it.productType === '疗程卡' ? (
+                          // 疗程卡必须整卡全退（不支持部分退次数）：锁定退款数量 = 全部可退次数
+                          <div className="h-8 leading-8 text-right text-xs text-[#999]">
+                            整卡退 {it.unusedQuantity} 次
+                          </div>
+                        ) : (
+                          <Input
+                            type="number"
+                            min="0"
+                            max={it.unusedQuantity}
+                            step="1"
+                            value={ls.refundQuantity}
+                            disabled={disabled || !ls.checked}
+                            onChange={(e) =>
+                              setLineStates((prev) => ({
+                                ...prev,
+                                [it.saleItemId]: { ...ls, refundQuantity: e.target.value },
+                              }))
+                            }
+                            className="h-8 text-right"
+                          />
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right font-medium">
                         ¥{rowSubtotal.toFixed(2)}
