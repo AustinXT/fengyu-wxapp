@@ -347,14 +347,16 @@ async function create(ctx) {
 
   // 查询顾客是否已注册客户端小程序并绑定门店
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
-  // 非本店顾客禁止开单：账户级资产（余额/积分）可跨店查看，但出单按门店结算
-  if (!isStoreInScope(ctx.auth, clientUsers[0].bound_store_id)) {
+  // 非本店顾客禁止开单：账户级资产（余额/积分）可跨店查看，但出单按门店结算。
+  // 例外（需求21，2026-06-24）：标记临时跨门店（is_cross_store_temp）的顾客允许被外店开单；
+  // 订单仍按开单门店（effectiveStoreId）结算，标记每日 03:00 cron 重置。
+  if (!isStoreInScope(ctx.auth, clientUsers[0].bound_store_id) && !clientUsers[0].is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
   const clientUserId = clientUsers[0].user_id

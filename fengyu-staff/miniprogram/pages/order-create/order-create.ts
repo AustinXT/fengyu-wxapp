@@ -147,6 +147,8 @@ interface CustomerInfo {
   boundStoreId?: string | null;
   /** 顾客绑定门店名（搜索结果展示「非本店」标签用） */
   storeName?: string;
+  /** 临时跨门店标记（需求21，后端 customer.search 返回）；true 时允许被外店开单/充值 */
+  isCrossStoreTemp?: boolean;
   /** 是否非本店顾客（前端按 boundStoreId vs 当前门店实时计算；缺 boundStoreId 时为 false，放行后端兜底） */
   crossStore?: boolean;
 }
@@ -595,7 +597,8 @@ Page({
     // 所有员工均可浏览充值卡面板；真正提交时在 card-recharge.onSubmit 处统一校验店长权限
     if (nextChoice === '充值卡') {
       const customer = this.data.customerInfo;
-      if (customer?.crossStore) {
+      // 临时跨门店顾客（需求21）允许被外店充值/开单；仅非本店且无临时标记才拦截
+      if (customer?.crossStore && !customer?.isCrossStoreTemp) {
         wx.showModal({
           title: '无法充值',
           content: `该顾客属于「${customer.storeName || '其他'}」门店，非本店顾客无法充值。`,
@@ -1205,7 +1208,8 @@ Page({
       });
       return;
     }
-    if (this.data.customerInfo.crossStore) {
+    // 临时跨门店顾客（需求21）允许被外店开单；仅非本店且无临时标记才拦截
+    if (this.data.customerInfo.crossStore && !this.data.customerInfo.isCrossStoreTemp) {
       wx.showModal({
         title: '无法开单',
         content: `该顾客属于「${this.data.customerInfo.storeName || '其他'}」门店，非本店顾客无法开单。`,

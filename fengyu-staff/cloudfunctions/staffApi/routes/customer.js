@@ -118,11 +118,12 @@ async function search(ctx) {
     if (crossStore) {
       // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
       // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
+      // is_cross_store_temp（需求21）随行返回，供前端判断「临时跨店顾客是否允许跨门店开单」
       const fSql = renderProfileFilters(filters, 2);
       const limitIdx = 2 + filters.values.length;
       rows = await pg.query(
         `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
-                c.bound_store_id, s.store_name
+                c.bound_store_id, c.is_cross_store_temp, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
@@ -189,6 +190,8 @@ async function search(ctx) {
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : "",
     boundStoreId: r.bound_store_id || null,
+    // 临时跨门店标记（需求21）：仅 crossStore 分支 SELECT 带出，其它分支为 undefined → false
+    isCrossStoreTemp: r.is_cross_store_temp === true,
     lastServiceDate: null,
     lastPurchaseName: null,
     source: r.customer_id ? "both" : "miniprogram",
