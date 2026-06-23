@@ -1,21 +1,42 @@
 #!/usr/bin/env bash
 # 部署云函数到当前 active env
 # 处理：
-#   - 部署前【强制按 .active 重新渲染 cloudbaserc】→ 保证上传的 env 一定是目标环境的
+#   - 部署前【强制按 .active 重新渲染 cloudbaserc】→ 保证 cloudbaserc.json 的 envId 指向目标环境
 #   - 渲染后【校验 envId + PG 端口与 .active 一致】→ 不一致直接中止（防 dev 配置误推 prod）
 #   - 渲染后【扫描占位符】→ 仍含 <待用户提供…>/PLACEHOLDER 的 env 给出告警
 #   - tcb 双账号切换（staff/client 各自登录）
 #   - prod 强制 confirm prompt
 #   - tcb env list 校验目标 env 可见
 #
-# ⚠️ 重要：`tcb fn code update` 会把 cloudbaserc.json 的 envVariables 一并推送覆盖（不只代码）。
-#    因此【禁止手动 `tcb fn code update <fn> --env-id <X>` 跨环境部署】——务必只走本脚本，
-#    它会先按 .active 重渲染，确保 env 与目标环境匹配。手动跨环境调用会把 dev/SIT 配置刷进 prod。
+# ⚠️ envId 的来源：tcb 3.x 的 `fn code update` 【不接受 --envId 参数】，它从【当前工作目录的
+#    cloudbaserc.json 读取 envId】来决定部署到哪个环境。因此本脚本对每个函数都先 `cd` 进对应
+#    子项目目录（fengyu-staff / fengyu-client），再执行 `tcb fn code update <fn>`。
+#    → 重渲染 + envId 校验是关键安全闸：若 cloudbaserc.json 是 dev 渲染态（envId=dev），
+#      `fn code update` 会把代码部署到 dev 环境而非 prod。envId 错 = 代码进错环境。
+#    （注：`fn code update` 仅推送代码，不推送 envVariables；改 env 须用 `fn deploy --force`。）
 #
-# Usage: scripts/deploy-cloudfunctions.sh [--yes]
+# Usage: scripts/deploy-cloudfunctions.sh [client|staff|all] [--yes]
+#   client → 只部 clientApi + payNotify（client 账号 / CLIENT_ENV_ID）
+#   staff  → 只部 staffApi（staff 账号 / STAFF_ENV_ID）
+#   all    → 三个函数都部（默认）
+#   --yes  → 跳过 prod confirm（位置任意）
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── 参数解析（target + --yes，顺序无关）──
+TARGET=all
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    client|staff|all) TARGET="$arg" ;;
+    --yes|-y)         ASSUME_YES=1 ;;
+    *) echo "ERROR: unknown arg '$arg'. Usage: $0 [client|staff|all] [--yes]" >&2; exit 1 ;;
+  esac
+done
+DO_STAFF=0; DO_CLIENT=0
+[[ "$TARGET" == "staff"  || "$TARGET" == "all" ]] && DO_STAFF=1
+[[ "$TARGET" == "client" || "$TARGET" == "all" ]] && DO_CLIENT=1
 
 if [[ ! -f "$ROOT/envs/.active" ]]; then
   echo "ERROR: envs/.active not found. Run scripts/use-env.sh <env> first." >&2
@@ -37,11 +58,11 @@ if [[ -z "$STAFF_ENV_ID" || -z "$CLIENT_ENV_ID" ]]; then
   exit 1
 fi
 
-# 防呆：prod 强制 confirm
-if [[ "$ACTIVE" == "prod" && "${1:-}" != "--yes" ]]; then
-  echo "⚠️  About to deploy to PROD:"
-  echo "    staff env: $STAFF_ENV_ID"
-  echo "    client env: $CLIENT_ENV_ID"
+# 防呆：prod 强制 confirm（仅列出本次实际部署的目标）
+if [[ "$ACTIVE" == "prod" && "$ASSUME_YES" != "1" ]]; then
+  echo "⚠️  About to deploy to PROD (target=$TARGET):"
+  [[ "$DO_STAFF"  == "1" ]] && echo "    staffApi              → $STAFF_ENV_ID"
+  [[ "$DO_CLIENT" == "1" ]] && echo "    clientApi + payNotify → $CLIENT_ENV_ID"
   read -p "Type 'yes' to confirm: " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "Aborted."
@@ -49,8 +70,9 @@ if [[ "$ACTIVE" == "prod" && "${1:-}" != "--yes" ]]; then
   fi
 fi
 
-# ── 强制按 .active 重新渲染，保证 cloudbaserc 与目标环境一致（防 dev 配置误推 prod）──
-echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证上传正确环境变量）"
+# ── 强制按 .active 重新渲染，保证 cloudbaserc 的 envId 指向目标环境（防代码误推 dev）──
+# render 脚本总是同时渲染 client + staff 两侧；只部一侧时另一侧的渲染产物不会被部署，无害。
+echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证 envId 指向正确环境）"
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
 # ── 一致性校验：envId 必须匹配 .active 的 env-id；PG 端口必须匹配环境（prod=5433 / dev=5434）──
@@ -68,60 +90,77 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
     echo "ERROR: $1 的 PG 端口=$got_pg ≠ ${ACTIVE} 期望 ${EXPECT_PG_PORT}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
   fi
 }
-assert_rc fengyu-staff  "$STAFF_ENV_ID"
-assert_rc fengyu-client "$CLIENT_ENV_ID"
+[[ "$DO_STAFF"  == "1" ]] && assert_rc fengyu-staff  "$STAFF_ENV_ID"
+[[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"
 echo "  ✓ envId + PG 端口校验通过（${ACTIVE}）"
 
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
-PLACEHOLDERS=$(grep -ohE '<待用户提供[^>]*>|[A-Za-z0-9_.-]*PLACEHOLDER[A-Za-z0-9_.-]*' "$ROOT/fengyu-client/cloudbaserc.json" "$ROOT/fengyu-staff/cloudbaserc.json" 2>/dev/null | sort -u || true)
+SCAN_FILES=()
+[[ "$DO_STAFF"  == "1" ]] && SCAN_FILES+=("$ROOT/fengyu-staff/cloudbaserc.json")
+[[ "$DO_CLIENT" == "1" ]] && SCAN_FILES+=("$ROOT/fengyu-client/cloudbaserc.json")
+PLACEHOLDERS=$(grep -ohE '<待用户提供[^>]*>|[A-Za-z0-9_.-]*PLACEHOLDER[A-Za-z0-9_.-]*' "${SCAN_FILES[@]}" 2>/dev/null | sort -u || true)
 if [[ -n "$PLACEHOLDERS" ]]; then
   echo "⚠️  注意：cloudbaserc 仍含以下占位符，将原样上传到 [$ACTIVE]，请确认是否预期："
   echo "$PLACEHOLDERS" | sed 's/^/      /'
 fi
 
+# ── 步骤计数（staff=1 步 / client=2 步）──
+TOTAL=0
+[[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 1))
+[[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 2))
+STEP=0
+
 # --- staff side ---
-echo "==> [1/3] Deploy staffApi → $STAFF_ENV_ID"
-cd "$ROOT/fengyu-staff"
-set -a; source .env 2>/dev/null || true; set +a
-if [[ -z "${TENCENTCLOUD_SECRETID:-}" || -z "${TENCENTCLOUD_SECRETKEY:-}" ]]; then
-  echo "ERROR: fengyu-staff/.env missing TENCENTCLOUD_SECRETID/SECRETKEY" >&2
-  exit 1
+if [[ "$DO_STAFF" == "1" ]]; then
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy staffApi → $STAFF_ENV_ID"
+  cd "$ROOT/fengyu-staff"
+  set -a; source .env 2>/dev/null || true; set +a
+  if [[ -z "${TENCENTCLOUD_SECRETID:-}" || -z "${TENCENTCLOUD_SECRETKEY:-}" ]]; then
+    echo "ERROR: fengyu-staff/.env missing TENCENTCLOUD_SECRETID/SECRETKEY" >&2
+    exit 1
+  fi
+  tcb logout >/dev/null 2>&1 || true
+  tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
+  if ! tcb env list 2>/dev/null | grep -q "$STAFF_ENV_ID"; then
+    echo "ERROR: staff 账号看不到 ${STAFF_ENV_ID}（tcb env list 未列出）。" >&2
+    echo "  检查：fengyu-staff/.env 的 TENCENTCLOUD_SECRETID 是 staff 账号子号" >&2
+    exit 1
+  fi
+  # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
+  tcb fn code update staffApi
+  echo "  ✓ staffApi deployed"
 fi
-tcb logout >/dev/null 2>&1 || true
-tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
-if ! tcb env list 2>/dev/null | grep -q "$STAFF_ENV_ID"; then
-  echo "ERROR: staff 账号看不到 ${STAFF_ENV_ID}（tcb env list 未列出）。" >&2
-  echo "  检查：fengyu-staff/.env 的 TENCENTCLOUD_SECRETID 是 staff 账号子号" >&2
-  exit 1
-fi
-tcb fn code update staffApi --envId "$STAFF_ENV_ID"
-echo "  ✓ staffApi deployed"
 
-# --- client side ---
-echo "==> [2/3] Deploy clientApi → $CLIENT_ENV_ID"
-cd "$ROOT/fengyu-client"
-unset TENCENTCLOUD_SECRETID TENCENTCLOUD_SECRETKEY  # 清空 staff 账号 secrets
-set -a; source .env 2>/dev/null || true; set +a
-if [[ -z "${TENCENTCLOUD_SECRETID:-}" || -z "${TENCENTCLOUD_SECRETKEY:-}" ]]; then
-  echo "ERROR: fengyu-client/.env missing TENCENTCLOUD_SECRETID/SECRETKEY" >&2
-  exit 1
-fi
-tcb logout >/dev/null 2>&1 || true
-tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
-if ! tcb env list 2>/dev/null | grep -q "$CLIENT_ENV_ID"; then
-  echo "ERROR: client 账号看不到 ${CLIENT_ENV_ID}。" >&2
-  echo "  检查：fengyu-client/.env 的 TENCENTCLOUD_SECRETID 是 client 账号子号" >&2
-  exit 1
-fi
-tcb fn code update clientApi --envId "$CLIENT_ENV_ID"
-echo "  ✓ clientApi deployed"
+# --- client side（clientApi + payNotify 同属 CLIENT_ENV_ID）---
+if [[ "$DO_CLIENT" == "1" ]]; then
+  cd "$ROOT/fengyu-client"
+  unset TENCENTCLOUD_SECRETID TENCENTCLOUD_SECRETKEY  # 清空可能残留的 staff 账号 secrets
+  set -a; source .env 2>/dev/null || true; set +a
+  if [[ -z "${TENCENTCLOUD_SECRETID:-}" || -z "${TENCENTCLOUD_SECRETKEY:-}" ]]; then
+    echo "ERROR: fengyu-client/.env missing TENCENTCLOUD_SECRETID/SECRETKEY" >&2
+    exit 1
+  fi
+  tcb logout >/dev/null 2>&1 || true
+  tcb login -k --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY" >/dev/null
+  if ! tcb env list 2>/dev/null | grep -q "$CLIENT_ENV_ID"; then
+    echo "ERROR: client 账号看不到 ${CLIENT_ENV_ID}。" >&2
+    echo "  检查：fengyu-client/.env 的 TENCENTCLOUD_SECRETID 是 client 账号子号" >&2
+    exit 1
+  fi
+  # envId 取自 cwd（fengyu-client）的 cloudbaserc.json；clientApi 与 payNotify 共用同一 env
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
+  tcb fn code update clientApi
+  echo "  ✓ clientApi deployed"
 
-# --- payNotify (same env as client) ---
-echo "==> [3/3] Deploy payNotify → $CLIENT_ENV_ID"
-tcb fn code update payNotify --envId "$CLIENT_ENV_ID"
-echo "  ✓ payNotify deployed"
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
+  tcb fn code update payNotify
+  echo "  ✓ payNotify deployed"
+fi
 
 echo ""
-echo "==> Done. 请在 CloudBase 控制台验证环境变量正确。"
-echo "    staff: https://console.cloud.tencent.com/tcb/scf?envId=$STAFF_ENV_ID"
-echo "    client: https://console.cloud.tencent.com/tcb/scf?envId=$CLIENT_ENV_ID"
+echo "==> Done (target=$TARGET)。请在 CloudBase 控制台验证环境变量正确。"
+[[ "$DO_STAFF"  == "1" ]] && echo "    staff:  https://console.cloud.tencent.com/tcb/scf?envId=$STAFF_ENV_ID"
+[[ "$DO_CLIENT" == "1" ]] && echo "    client: https://console.cloud.tencent.com/tcb/scf?envId=$CLIENT_ENV_ID"
