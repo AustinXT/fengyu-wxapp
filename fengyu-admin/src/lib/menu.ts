@@ -27,7 +27,6 @@ import {
   History,
   Boxes,
   LineChart,
-  Building2,
   type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -141,17 +140,6 @@ export const MENU_CONFIG: MenuGroup[] = [
       },
     ],
   },
-  // {
-  // 	label: "商户入网",
-  // 	items: [
-  // 		{
-  // 			label: "商户入网",
-  // 			icon: Building2,
-  // 			href: "/lakala-onboarding",
-  // 			requiredRoles: ["admin"],
-  // 		},
-  // 	],
-  // },
   {
     label: "系统管理",
     items: [

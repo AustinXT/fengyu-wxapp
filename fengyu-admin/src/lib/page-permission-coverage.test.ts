@@ -64,8 +64,6 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
-  // —— 商户入网（arch-007；admin-only）——
-  '/lakala-onboarding': ['lakala:onboarding:read'],
 }
 
 /**
@@ -113,13 +111,6 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/inventory/sale/[id]', parent: '/inventory', clauses: ['inventory:list'] },
   { href: '/inventory/transfer/[id]', parent: '/inventory', clauses: ['inventory:list'] },
   { href: '/inventory/scrap/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  // 商户入网子页（lakala-onboarding；admin-only）
-  { href: '/lakala-onboarding/new', parent: '/lakala-onboarding', entryGate: 'lakala:onboarding:create', clauses: ['lakala:onboarding:create'] },
-  { href: '/lakala-onboarding/[id]', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/edit', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/attachments', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/realname', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/logs', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
 ]
 
 const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']
