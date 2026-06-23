@@ -221,6 +221,11 @@ export const createStore = withPermission(
       description?: string | null
       announcement?: string | null
       parkingInfo?: string | null
+      // 拉卡拉收款配置（可选，仅 admin；填了商户号则建档 + 同步快照）
+      lakalaMerchantName?: string | null
+      lakalaMerchantNo?: string | null
+      lakalaTermNo?: string | null
+      lakalaEnabled?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
   // 1. 校验目标节点存在且为门店类型，门店名以节点名为准
@@ -237,26 +242,51 @@ export const createStore = withPermission(
     return { success: false, message: '无权在该门店节点下创建门店信息' }
   }
 
-  // 3. 仅插入 stores 详情行，org_node_id 指向权威门店节点（不再自造节点）
+  // 2.5 拉卡拉收款配置（可选）：仅 admin（store:lakala_config）可填；填了商户号则商户名必填
+  const lakalaConfigProvided = (data.lakalaMerchantNo ?? '').trim() !== ''
+  if (lakalaConfigProvided) {
+    if (!hasPermission(session, 'store:lakala_config')) {
+      return { success: false, message: '无权配置门店收款（拉卡拉）' }
+    }
+    if (!(data.lakalaMerchantName ?? '').trim()) {
+      return { success: false, message: '填写拉卡拉商户号时，商户名称必填' }
+    }
+  }
+  const applicantUserId = typeof session.employeeId === 'string' && /^\d+$/.test(session.employeeId)
+    ? Number(session.employeeId)
+    : null
+
+  // 3. 插入 stores 详情行（不自造节点）+ 可选建档收款配置，事务保证原子
   try {
-    await db.insert(stores).values({
-      storeId: data.storeId,
-      storeName: node.name,
-      orgNodeId: data.orgNodeId,
-      openingDate: data.openingDate ?? null,
-      bedCount: data.bedCount ?? null,
-      isClosed: data.isClosed ?? false,
-      coverImage: data.coverImage ?? null,
-      images: data.images ?? null,
-      district: data.district ?? null,
-      streetAddress: data.streetAddress ?? null,
-      latitude: data.latitude ?? null,
-      longitude: data.longitude ?? null,
-      phone: data.phone ?? null,
-      businessHours: data.businessHours ?? null,
-      description: data.description ?? null,
-      announcement: data.announcement ?? null,
-      parkingInfo: data.parkingInfo ?? null,
+    await db.transaction(async (tx) => {
+      await tx.insert(stores).values({
+        storeId: data.storeId,
+        storeName: node.name,
+        orgNodeId: data.orgNodeId,
+        openingDate: data.openingDate ?? null,
+        bedCount: data.bedCount ?? null,
+        isClosed: data.isClosed ?? false,
+        coverImage: data.coverImage ?? null,
+        images: data.images ?? null,
+        district: data.district ?? null,
+        streetAddress: data.streetAddress ?? null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        phone: data.phone ?? null,
+        businessHours: data.businessHours ?? null,
+        description: data.description ?? null,
+        announcement: data.announcement ?? null,
+        parkingInfo: data.parkingInfo ?? null,
+      })
+      // 收款配置：先建店后建档（applyLakalaPaymentConfig 会 UPDATE stores 快照 + INSERT lakala_merchants）
+      if (lakalaConfigProvided) {
+        await applyLakalaPaymentConfig(tx, data.storeId, applicantUserId, null, {
+          merchantName: data.lakalaMerchantName ?? null,
+          merchantNo: data.lakalaMerchantNo ?? null,
+          termNo: data.lakalaTermNo ?? null,
+          enabled: data.lakalaEnabled ?? false,
+        })
+      }
     })
   } catch (err: unknown) {
     const code = pgErrorCode(err)
