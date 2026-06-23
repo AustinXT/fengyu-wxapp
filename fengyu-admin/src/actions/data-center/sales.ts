@@ -35,6 +35,7 @@ import type { AuthSession } from '@/lib/types'
 import type { BoardParams, BreakdownRow, KpiCell, SalesBoardResult } from '@/lib/data-center/types'
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
+import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { withComparison } from '@/lib/data-center/comparison'
 import type { ResolvedRange } from '@/lib/data-center/types'
 
@@ -101,6 +102,7 @@ export const getSalesBoard = withPermission(
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND so.status = '已完成'
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
+            AND ${excludeDepositRefundSql('so')}
         `),
       )
 
@@ -116,6 +118,7 @@ export const getSalesBoard = withPermission(
             AND so.status = '已完成'
             AND sit.is_shengmei = TRUE
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
+            AND ${excludeDepositRefundSql('so')}
         `),
       )
 
@@ -346,6 +349,7 @@ export const getSalesBoard = withPermission(
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND so.status = '已完成'
           AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so')}
         GROUP BY so.store_id
       `),
       // 生美实耗
@@ -358,6 +362,7 @@ export const getSalesBoard = withPermission(
           AND so.status = '已完成'
           AND sit.is_shengmei = TRUE
           AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so')}
         GROUP BY so.store_id
       `),
     ])
