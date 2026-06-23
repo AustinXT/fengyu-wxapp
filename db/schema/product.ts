@@ -192,12 +192,28 @@ export const mallBundleGroups = pgTable(
       .notNull()
       .references(() => products.productId),
     groupName: text("group_name").notNull(),
-    /** N选M 的 M（null=全选） */
+    /** N选M 的 M（null=全选，计入数量=组内 SKU 数） */
     pickCount: integer("pick_count"),
+    /**
+     * 组「标价单价」（划线价）。组内所有子项共享，下沉到 mall_product_skus.bundle_list_price。
+     * DB 可空（migration 只加列不回填），应用层 createBundleGroup/updateBundleGroup 强制必填 > 0。
+     */
+    unitListPrice: numeric("unit_list_price", { precision: 10, scale: 2 }),
+    /** 组「会员价单价」（成交价）。null = 该组不打折，按标价单价成交。须 ≤ unit_list_price。 */
+    unitMemberPrice: numeric("unit_member_price", { precision: 10, scale: 2 }),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("uq_bundle_group").on(table.productId, table.groupName)],
+  (table) => [
+    uniqueIndex("uq_bundle_group").on(table.productId, table.groupName),
+    // 成交价 ≤ 标价（任一为 null 放行）：sale_items.unit_real_price ≤ unit_price 不变量的源头守护
+    check(
+      "chk_bundle_group_member_le_list",
+      sql`${table.unitMemberPrice} IS NULL OR ${table.unitListPrice} IS NULL OR ${table.unitMemberPrice} <= ${table.unitListPrice}`,
+    ),
+    check("chk_bundle_group_list_nonneg", sql`${table.unitListPrice} IS NULL OR ${table.unitListPrice} >= 0`),
+    check("chk_bundle_group_member_nonneg", sql`${table.unitMemberPrice} IS NULL OR ${table.unitMemberPrice} >= 0`),
+  ],
 );
 
 /**
@@ -216,10 +232,15 @@ export const mallProductSkus = pgTable(
     skuId: text("sku_id")
       .notNull()
       .references(() => productSkus.skuId),
-    /** 套餐分组（非套餐或未分组为 null） */
+    /** 套餐分组（非套餐为 null；套餐子项强制非空，所有子项必须归入分组） */
     bundleGroupId: bigint("bundle_group_id", { mode: "number" }).references(() => mallBundleGroups.id),
-    /** 套餐内优惠价（非套餐为 null） */
+    /**
+     * 成交价副本 = coalesce(所属组 unit_member_price, unit_list_price)，落 sale_items.unit_real_price。
+     * 由 syncBundleGroupSkuPrices 从组级单价下沉；派生缓存，权威源为 mall_bundle_groups。
+     */
     bundlePrice: numeric("bundle_price", { precision: 10, scale: 2 }),
+    /** 标价单价副本 = 所属组 unit_list_price，落 sale_items.unit_price（划线）。同为下沉派生缓存。 */
+    bundleListPrice: numeric("bundle_list_price", { precision: 10, scale: 2 }),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
