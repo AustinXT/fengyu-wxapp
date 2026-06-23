@@ -74,6 +74,7 @@ const FILES = {
   staffRefundCascadeJs: path.resolve(__dirname, '../../helpers/refund-cascade.js'),
   adminRefundCascadeTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/refund-cascade.ts'),
   adminRefundsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts'),
+  adminAllocationsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/allocations.ts'),
 
   // SUMMARY v3 §2 #13 — scope assert helper 双端副本
   staffScopeJs: path.resolve(__dirname, '../../utils/scope.js'),
@@ -1423,54 +1424,33 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
 })
 
 /**
- * 回款营业额分配缺口修复：收款路径 allocation_status 初始化四端守护
+ * 营业额分配状态守护：回款级 allocation_status 置「已分配」
  *
- * 根因：sale_orders.allocation_status 列 DB 默认 NULL（db/schema/order.ts），
- * 普通销售单 order.create 不写该列 → NULL；唯一初始化点曾只有 staff confirmOffline。
- * 回款（createRepayment / recordPayment）、admin 线下确认收款（confirmOfflinePayment）、
- * 线上支付（payNotify）把订单翻「已支付」时漏初始化 allocation_status，导致 staff 店长端
- * 「营业额分配」对这些单失效：pendingList 要 allocation_status='待分配'（NULL 不匹配），
- * allocation.save 拒 NULL（抛"订单分配状态异常"）。
- *
- * 修复：所有"把销售单推进到已支付"的收款 UPDATE 一律对齐 confirmOffline 的字面：
- *   allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
- * 任一端漂移/缺失即触发本守护失败，提醒同步另外几端（独立副本规范）。
+ * 历史（已退役）：allocation_status 曾是 sale_orders 列（订单级），收款路径用
+ *   allocation_status = COALESCE(allocation_status, '待分配'::allocation_status) 初始化，
+ *   四端字面一致由本块守护。
+ * 2026-06-24 91a19ef9「销售分账按支付维度隔离（sale_payment_allocatable）」+ f2002074
+ *   「营业额分配改按回款逐笔」把分配状态下沉到 sale_order_payments.allocation_status（回款级），
+ *   订单级 COALESCE 初始化整体移除，'待分配' 改由 sale_order_payments 列默认值承担，
+ *   故原「四端收款路径 COALESCE 初始化」守护随之退役删除。
+ * 现守护：自动分配/入账路径把回款翻「已分配」的 UPDATE 字面跨端一致，
+ *   避免漂移导致回款落入店长「待分配」列表诱导重分。
  */
-describe('回款营业额分配：四端收款路径 allocation_status 初始化守护', () => {
-  const ALLOC_INIT = "allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)"
+describe('营业额分配：回款级 allocation_status 置「已分配」守护', () => {
+  const PAYMENT_ALLOCATED = "allocation_status = '已分配'"
 
-  function countOccurrences(src, needle) {
-    return src.split(needle).length - 1
-  }
-
-  let staffOrderSrc
-  let adminOrdersSrc
   let payNotifySrc
+  let adminAllocationsSrc
   beforeAll(() => {
-    staffOrderSrc = readFile(FILES.staffOrderJs)
-    adminOrdersSrc = readFile(FILES.adminOrdersTs)
     payNotifySrc = readFile(FILES.payNotifyIndexJs)
+    adminAllocationsSrc = readFile(FILES.adminAllocationsTs)
   })
 
-  test('staff order.js：confirmOffline + createRepayment 两处收款 UPDATE 均含 COALESCE 初始化', () => {
-    expect(countOccurrences(staffOrderSrc, ALLOC_INIT)).toBeGreaterThanOrEqual(2)
+  test('payNotify index.js：入账后把回款翻「已分配」（避免落入店长待分配列表诱导重分）', () => {
+    expect(payNotifySrc).toContain(PAYMENT_ALLOCATED)
   })
 
-  test('admin orders.ts：confirmOfflinePayment + recordPayment 两处收款 UPDATE 均含 COALESCE 初始化', () => {
-    expect(countOccurrences(adminOrdersSrc, ALLOC_INIT)).toBeGreaterThanOrEqual(2)
-  })
-
-  test('payNotify index.js：CAS 入账 UPDATE 含 COALESCE 初始化', () => {
-    expect(payNotifySrc).toContain(ALLOC_INIT)
-  })
-
-  test('payNotify index.js：preferred 自动分配后翻「已分配」（避免落入店长待分配列表诱导重分）', () => {
-    expect(payNotifySrc).toContain("SET allocation_status = '已分配'")
-  })
-
-  test('四端 COALESCE 初始化片段字面完全一致（pg 与 Drizzle sql 模板此片段无占位符，可直接字面比对）', () => {
-    expect(staffOrderSrc).toContain(ALLOC_INIT)
-    expect(adminOrdersSrc).toContain(ALLOC_INIT)
-    expect(payNotifySrc).toContain(ALLOC_INIT)
+  test('admin allocations.ts：保存分配后把回款翻「已分配」', () => {
+    expect(adminAllocationsSrc).toContain(PAYMENT_ALLOCATED)
   })
 })
