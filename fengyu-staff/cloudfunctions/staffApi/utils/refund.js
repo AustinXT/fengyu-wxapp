@@ -130,21 +130,15 @@ function splitRefundByOriginalPayment(refundAmount, origPrepaidCardAmount, origT
 /**
  * 决定退款 payments 行的 payment_method
  *
- * 过渡期：微信/支付宝退款 API 未集成前，原单微信/支付宝通道的退款
- * 暂用 '线下' 承接（需店员现场退现或走其他渠道），下一 ticket 集成三方 refund
- * API 后改为 '微信'/'支付宝' + external_txn_id。
+ * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
+ * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
+ * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 admin lib/refund.ts。
  *
- * @param {string} origPaymentMethod 原单 payment_method 枚举值
- * @returns {string} 退款行的 payment_method
+ * @param {string} _origPaymentMethod 原单 payment_method（已不参与决策，保留入参兼容调用方）
+ * @returns {string} 退款行的 payment_method（恒 '线下'）
  */
-function resolveRefundPaymentMethod(origPaymentMethod) {
-  if (origPaymentMethod === '微信' || origPaymentMethod === '支付宝') {
-    return '线下'
-  }
-  if (!origPaymentMethod || origPaymentMethod === '无') {
-    return '线下'
-  }
-  return origPaymentMethod
+function resolveRefundPaymentMethod(_origPaymentMethod) {
+  return '线下'
 }
 
 /**

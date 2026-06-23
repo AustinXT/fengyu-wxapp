@@ -166,21 +166,12 @@ export function splitRefundByOriginalPayment(
 /**
  * 决定退款 payments 行的 payment_method
  *
- * 2026-05-20 拉卡拉接入后：原 '微信'/'支付宝' 通道支持真实退款 API（详见 sources/documents/拉卡拉接口规范-补充.md 「退货（统一退货，推荐用）」一节）。
- * 退款 payments 行保留原始 method，approveRefund 时按 method 决定是否调拉卡拉 /rfd/refund_front/refund。
- *
- * 异步退款（PROCESSING/DEAL/TIMEOUT）由独立 cron poll-lakala-refunds 推进；本函数只决定记录方式。
+ * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
+ * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
+ * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 staff utils/refund.js。
  */
 export function resolveRefundPaymentMethod(
-  origPaymentMethod: PaymentMethod | '储值卡' | null | undefined,
+  _origPaymentMethod?: PaymentMethod | '储值卡' | null | undefined,
 ): PaymentMethod {
-  if (origPaymentMethod === '微信' || origPaymentMethod === '支付宝') {
-    return origPaymentMethod
-  }
-  if (!origPaymentMethod || origPaymentMethod === '无') {
-    return '线下'
-  }
-  if (origPaymentMethod === '线下') return '线下'
-  // '储值卡' 不应作为原单 payment_method，fallback 到 '线下'
   return '线下'
 }
