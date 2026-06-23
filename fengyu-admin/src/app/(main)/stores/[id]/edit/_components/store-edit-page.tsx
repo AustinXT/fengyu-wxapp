@@ -8,7 +8,6 @@ import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
@@ -16,21 +15,14 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { RegionSelect } from "@/components/ui/region-select"
 
-interface LakalaMerchantOption {
-  id: string
-  merchantName: string
-  merchantNo: string | null
-  onboardingStatus: string
-}
-
 export default function StoreEditPage({
   store,
-  merchantOptions = [],
-  canEditMerchant = false,
+  canEditPayment = false,
+  lakalaMerchantName = null,
 }: {
   store: Store
-  merchantOptions?: LakalaMerchantOption[]
-  canEditMerchant?: boolean
+  canEditPayment?: boolean
+  lakalaMerchantName?: string | null
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
@@ -40,13 +32,17 @@ export default function StoreEditPage({
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
   const [lakalaEnabled, setLakalaEnabled] = useState(store.lakalaEnabled)
-  const [linkedMerchantId, setLinkedMerchantId] = useState<string>(store.lakalaMerchantId ?? "")
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
     try {
-      // 「关联商户」走 linkStoreToMerchant / unlinkStoreFromMerchant 的事务（Phase 2D 在 updateStore 内编排）
-      // 这里把 lakalaMerchantId 作为单选下拉值传给 updateStore；服务端按 link/unlink 处理快照 2 列
+      const merchantNoVal = ((formData.get("lakalaMerchantNo") as string) || "").trim()
+      const merchantNameVal = ((formData.get("lakalaMerchantName") as string) || "").trim()
+      // 填了商户号则商户名必填（前端拦截；后端 updateStore 亦校验）
+      if (canEditPayment && merchantNoVal && !merchantNameVal) {
+        toast.error("填写拉卡拉商户号时，商户名称必填")
+        return
+      }
       const result = await updateStore(store.storeId, {
         storeName: formData.get("storeName") as string,
         phone: (formData.get("phone") as string) || null,
@@ -62,10 +58,13 @@ export default function StoreEditPage({
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        // 关联商户 / 解绑（admin 才编辑；其它角色 disabled，发起请求时也只发原值）
-        lakalaMerchantId: linkedMerchantId || null,
-        lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
-        lakalaEnabled,
+        // 拉卡拉收款配置：仅 admin（canEditPayment）提交，避免 hr 改门店其他信息时被收款权限拦截
+        ...(canEditPayment ? {
+          lakalaMerchantName: merchantNameVal || null,
+          lakalaMerchantNo: merchantNoVal || null,
+          lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
+          lakalaEnabled,
+        } : {}),
       }, store.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -223,36 +222,34 @@ export default function StoreEditPage({
 
       <Card>
         <CardHeader>
-          <CardTitle>拉卡拉聚合支付配置</CardTitle>
+          <CardTitle>拉卡拉收款配置</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="text-xs text-muted-foreground mb-3">
-            「关联商户」从已审核通过的拉卡拉商户列表中选择（在
-            <a href="/lakala-onboarding" className="mx-1 text-[var(--primary)] hover:underline">商户入网</a>
-            页发起入网申请）。商户号 / 子 AppId 由关联商户派生（保存时自动刷新本店快照），无需手填。
-            终端号 / 启用开关仍按门店单独维护；开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
+            填入拉卡拉分配给本店的商户号 / 终端号（线下开通后获取）。商户名称用于区分各店商户。
+            启用开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
+            {!canEditPayment && "（仅 admin 角色可修改收款配置）"}
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">关联商户</label>
-              <Select
-                value={linkedMerchantId}
-                onChange={(e) => {
-                  setLinkedMerchantId(e.target.value)
-                  setFormDirty(true)
-                }}
-                disabled={!canEditMerchant}
-              >
-                <option value="">未关联（解绑）</option>
-                {merchantOptions.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.merchantName} {m.merchantNo ? `· ${m.merchantNo}` : ""}（{m.onboardingStatus}）
-                  </option>
-                ))}
-              </Select>
-              {!canEditMerchant && (
-                <p className="text-xs text-[var(--muted-foreground)]">仅 admin 角色可修改关联商户（收款配置）</p>
-              )}
+              <label className="text-sm font-medium">商户名称</label>
+              <Input
+                name="lakalaMerchantName"
+                defaultValue={lakalaMerchantName ?? ""}
+                placeholder="便于区分各店商户，如：凤仪韵·南昌莲塘店"
+                maxLength={80}
+                disabled={!canEditPayment}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">拉卡拉商户号</label>
+              <Input
+                name="lakalaMerchantNo"
+                defaultValue={store.lakalaMerchantNo ?? ""}
+                placeholder="拉卡拉分配的商户号"
+                maxLength={32}
+                disabled={!canEditPayment}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">终端号(term_no)</label>
@@ -261,11 +258,8 @@ export default function StoreEditPage({
                 defaultValue={store.lakalaTermNo ?? ""}
                 placeholder="如：D9261078"
                 maxLength={32}
+                disabled={!canEditPayment}
               />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">商户号（派生快照）</label>
-              <Input value={store.lakalaMerchantNo ?? ""} placeholder="保存后自动同步" disabled />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">启用真实支付通道</label>
@@ -277,6 +271,7 @@ export default function StoreEditPage({
                     setLakalaEnabled(e.target.checked)
                     setFormDirty(true)
                   }}
+                  disabled={!canEditPayment}
                   className="h-4 w-4"
                 />
                 <span className="text-sm">

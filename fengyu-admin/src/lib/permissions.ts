@@ -62,9 +62,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // 拉卡拉商户入网（arch-007；admin 专属，其他角色不开）
-    'lakala:onboarding:read', 'lakala:onboarding:create', 'lakala:onboarding:update',
-    'lakala:onboarding:submit', 'lakala:onboarding:realname', 'lakala:onboarding:delete',
+    // 门店拉卡拉收款配置（商户名/商户号/终端号/启用；admin 专属，涉及收款，hr 不开）
+    'store:lakala_config',
   ],
   manager: [
     'dashboard:view',
