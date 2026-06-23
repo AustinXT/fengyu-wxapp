@@ -2894,7 +2894,7 @@ describe.skip('order.approveRefund', () => {
    *   - SELECT 1 FROM card_transactions ... type='充值' → 储值卡幂等检查
    *   - INSERT INTO prepaid_cards ... RETURNING card_id → 储值卡回冲
    *   - INSERT INTO card_transactions ... → 流水
-   *   - cascadeRefund 通道 1-5（已 mock 为 0 row）
+   *   - cascadeRefund 通道 1（SELECT 聚合分配 + INSERT 负数冲销行）/ 通道 2-5
    *   - SELECT customer_type FROM client_wechat_users → recalcCustomerType
    *   - INSERT INTO operation_logs → 审计
    */
@@ -2903,6 +2903,7 @@ describe.skip('order.approveRefund', () => {
     cardDupExists = false,  // 储值卡幂等检查是否命中已有记录
     customerType = '会员客',
     cascadeItems = [],      // cascadeRefund 内部 SELECT sale_items 时返回
+    cascadeAllocs = [],     // cascadeRefund 通道1 SELECT 聚合活跃正数分配（记负数冲销基数；空=无可冲销）
     cascadeGifts = [],      // cascadeRefund 通道4 原赠送流水（用于算 G=Σamount + user_id）
     orderReceived = 500,    // cascadeRefund 通道4 SELECT sale_orders.received（比例分母）
     orderRefunded = 500,    // cascadeRefund 通道4 累计 refunded_amount（默认=received=整单退）
@@ -2937,10 +2938,14 @@ describe.skip('order.approveRefund', () => {
       if (sql.includes('SELECT sale_item_id FROM sale_items')) {
         return { rows: cascadeItems, rowCount: cascadeItems.length }
       }
-      // 通道 1-2: UPDATE sale_allocations / service_commissions
-      if (sql.includes('UPDATE sale_allocations')) {
-        return { rows: [], rowCount: 0 }
+      // 通道 1（记负数冲销）: SELECT 聚合活跃正数分配 → INSERT 负数冲销行
+      if (sql.includes('FROM sale_allocations') && sql.includes('GROUP BY')) {
+        return { rows: cascadeAllocs, rowCount: cascadeAllocs.length }
       }
+      if (sql.includes('INSERT INTO sale_allocations')) {
+        return { rows: [], rowCount: 1 }
+      }
+      // 通道 2: UPDATE service_commissions（保持软删）
       if (sql.includes('UPDATE service_commissions')) {
         return { rows: [], rowCount: 0 }
       }
@@ -3123,24 +3128,36 @@ describe.skip('order.approveRefund', () => {
     expect(calls.find(c => c.sql.includes('INSERT INTO card_transactions'))).toBeUndefined()
   })
 
-  test('5 通道 cascade — 通道 1（sale_allocations 软删）SQL 出现', async () => {
+  test('5 通道 cascade — 通道 1（sale_allocations 记负数冲销）INSERT 负数行', async () => {
     const ctx = createManagerCtx({ paymentId: 1004 })
     pg.query.mockResolvedValueOnce([makeSopRow({ id: 1004 })])
 
+    // 该 item（orig-item-1）有一条活跃正数分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
     const { calls } = makeApproveTxnSpy({
-      cascadeItems: [{ sale_item_id: 'item-A' }, { sale_item_id: 'item-B' }],
+      cascadeAllocs: [{
+        employee_id: 'emp-1', role_type: '美容师', ratio: '1.00',
+        dept: null, sum_total: '500.00', rate: '0.1000', sum_comm: '50.00',
+      }],
     })
 
     await orderRoutes.approveRefund(ctx)
 
-    // 通道 1: UPDATE sale_allocations
-    const allocUpdate = calls.find(c =>
-      c.sql.includes('UPDATE sale_allocations') && c.sql.includes('is_void = true')
+    // 通道 1: 先 SELECT 聚合活跃正数分配（按实退额冲销基数）
+    const allocSelect = calls.find(c =>
+      c.sql.includes('FROM sale_allocations') && c.sql.includes('GROUP BY')
     )
-    // 注意：源码当传入 saleItemId 时 itemIds=[saleItemId]，否则按订单全行查询
-    // 这里 sopRow.ref_sale_item_id='orig-item-1' 走单行分支
-    expect(allocUpdate).toBeDefined()
-    expect(allocUpdate.params[1]).toEqual(['orig-item-1'])
+    expect(allocSelect).toBeDefined()
+    expect(allocSelect.params).toEqual(['orig-item-1'])
+    // 再 INSERT 负数冲销行（total_amount/commission_amount 取负，挂退款流水 id=paymentId）
+    const allocInsert = calls.find(c => c.sql.includes('INSERT INTO sale_allocations'))
+    expect(allocInsert).toBeDefined()
+    expect(allocInsert.params).toEqual(
+      expect.arrayContaining(['orig-item-1', 'emp-1', '美容师', '-500.00', '-50.00', 1004])
+    )
+    // 不再软删原分配行（保留正数行，报表 SUM 自动净额化）
+    expect(calls.find(c =>
+      c.sql.includes('UPDATE sale_allocations') && c.sql.includes('is_void = true')
+    )).toBeUndefined()
   })
 
   test('5 通道 cascade — 通道 2（service_commissions 软删 with voided_reason）', async () => {
@@ -3427,7 +3444,7 @@ describe.skip('order.rejectRefund', () => {
     await orderRoutes.rejectRefund(ctx)
 
     // 不应触发 cascade 任意通道
-    expect(calls.find(c => c.sql.includes('UPDATE sale_allocations'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('INSERT INTO sale_allocations'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('UPDATE service_commissions'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('UPDATE user_coupons'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('INSERT INTO point_transactions'))).toBeUndefined()

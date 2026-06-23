@@ -545,15 +545,31 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
     adminSrc = readFile(FILES.adminRefundCascadeTs)
   })
 
-  // 通道 1：sale_allocations 软删（UPDATE ... SET is_void = true + voided_at）
-  describe('通道 1：sale_allocations 软删', () => {
-    test('staff 必须 UPDATE sale_allocations SET is_void = true + voided_at', () => {
-      expect(staffSrc).toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
-      expect(staffSrc).toMatch(/sale_allocations[\s\S]*?voided_at\s*=/i)
+  // 通道 1：sale_allocations 记负数冲销（2026-06-24：由「软删 is_void」改为「INSERT 负数镜像行」）
+  describe('通道 1：sale_allocations 记负数冲销', () => {
+    test('staff 必须 INSERT INTO sale_allocations（负数冲销 total/commission）', () => {
+      expect(staffSrc).toMatch(/INSERT\s+INTO\s+sale_allocations/i)
+      expect(staffSrc).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
+      expect(staffSrc).toMatch(/\(-voidComm\)\.toFixed\(2\)/)
     })
-    test('admin 必须 UPDATE sale_allocations SET is_void = true + voided_at', () => {
-      expect(adminSrc).toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
-      expect(adminSrc).toMatch(/sale_allocations[\s\S]*?voided_at\s*=\s*NOW\(\)/i)
+    test('admin 必须 INSERT INTO sale_allocations（负数冲销 total/commission）', () => {
+      expect(adminSrc).toMatch(/INSERT\s+INTO\s+sale_allocations/i)
+      expect(adminSrc).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
+      expect(adminSrc).toMatch(/\(-voidComm\)\.toFixed\(2\)/)
+    })
+    test('两端负数行挂退款流水 id（refundPaymentId）+ 按实退额（refundAmount）冲销', () => {
+      expect(staffSrc).toMatch(/refundPaymentId/)
+      expect(staffSrc).toMatch(/refundAmount/)
+      expect(adminSrc).toMatch(/refundPaymentId/)
+      expect(adminSrc).toMatch(/refundAmount/)
+    })
+    test('两端 ON CONFLICT (...sale_payment_id) WHERE is_void = false DO NOTHING（幂等兜底）', () => {
+      expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
+      expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
+    })
+    test('两端通道 1 不再软删原分配行（保留正数行，报表 SUM 自动净额化）', () => {
+      expect(staffSrc).not.toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
+      expect(adminSrc).not.toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
     })
   })
 

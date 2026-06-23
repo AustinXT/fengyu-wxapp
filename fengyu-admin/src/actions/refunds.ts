@@ -1016,15 +1016,16 @@ export const approveRefund = withPermission(
       }
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
-      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; isFullItemRefund: boolean }> = []
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean }> = []
       let cascadeWholeOrder = false
       try {
         const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
         if (noteObj && Array.isArray(noteObj.items)) {
           cascadeItems = noteObj.items.map(
-            (it: { refSaleItemId: string; quantity: number; isFullItemRefund?: boolean }) => ({
+            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean }) => ({
               saleItemId: it.refSaleItemId,
               sessionCount: it.quantity,
+              refundAmount: it.refundAmount ?? null,
               isFullItemRefund: !!it.isFullItemRefund,
             }),
           )
@@ -1035,10 +1036,11 @@ export const approveRefund = withPermission(
       }
       // 兜底（老退款行无 note.items）：用 refSaleItemId 单 item；为空则 cascade 内部兜底整单
       if (cascadeItems.length === 0 && refSaleItemId) {
-        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, isFullItemRefund: true }]
+        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
+        refundPaymentId: idNum,
         items: cascadeItems,
         isWholeOrderRefund: cascadeWholeOrder,
         refundReason: pre.payment.refundReason ?? '',

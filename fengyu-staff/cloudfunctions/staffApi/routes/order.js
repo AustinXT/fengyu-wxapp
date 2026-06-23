@@ -2236,6 +2236,7 @@ async function approveRefund(ctx) {
         cascadeItems = noteObj.items.map((it) => ({
           saleItemId: it.refSaleItemId,
           sessionCount: it.quantity,
+          refundAmount: it.refundAmount ?? null,
           isFullItemRefund: !!it.isFullItemRefund,
         }))
         cascadeWholeOrder = !!noteObj.isWholeOrderRefund
@@ -2243,10 +2244,11 @@ async function approveRefund(ctx) {
     } catch (_) { cascadeItems = [] }
     // 兜底（老退款行无 note.items）：用 ref_sale_item_id 单 item；为空则 cascade 内部兜底整单
     if (cascadeItems.length === 0 && sopRow.ref_sale_item_id) {
-      cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, isFullItemRefund: true }]
+      cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, refundAmount: refundAbs, isFullItemRefund: true }]
     }
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
+      refundPaymentId: paymentId,
       items: cascadeItems,
       isWholeOrderRefund: cascadeWholeOrder,
       refundReason: sopRow.refund_reason || '退款审批通过',
