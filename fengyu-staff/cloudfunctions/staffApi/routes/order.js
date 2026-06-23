@@ -1842,14 +1842,15 @@ async function detail(ctx) {
 
   // 款项流水（Ticket 2 PR-A：订单详情页展示 / 回款弹层读取欠款）
   const paymentRows = await pg.query(
-    `SELECT change_type, amount, payment_method, status,
-            paid_at, created_at, note
+    `SELECT id, change_type, amount, payment_method, status,
+            paid_at, created_at, note, allocation_status
      FROM sale_order_payments
      WHERE sale_order_id = $1
      ORDER BY created_at ASC, id ASC`,
     [saleOrderId]
   )
   const payments = paymentRows.map(p => ({
+    id: p.id,
     change_type: p.change_type,
     amount: Number(p.amount),
     payment_method: p.payment_method,
@@ -1857,6 +1858,7 @@ async function detail(ctx) {
     paid_at: p.paid_at,
     created_at: p.created_at,
     note: p.note,
+    allocation_status: p.allocation_status,
   }))
 
   ctx.result = {

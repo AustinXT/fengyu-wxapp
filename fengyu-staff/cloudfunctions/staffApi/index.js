@@ -94,11 +94,6 @@ const routes = {
   'allocation.savePayment':             () => require('./routes/allocation').savePayment,
   'allocation.deletePaymentAllocation': () => require('./routes/allocation').deletePaymentAllocation,
   'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
-  // 订单级（旧口径，前端切换后移除）
-  'allocation.save':         () => require('./routes/allocation').save,
-  'allocation.delete':       () => require('./routes/allocation').deleteAllocation,
-  'allocation.pendingList':  () => require('./routes/allocation').pendingList,
-  'allocation.suggest':      () => require('./routes/allocation').suggest,
 
   // 服务提成（营业额分配 - 服务提成 Tab）
   'serviceCommission.pendingList': () => require('./routes/serviceCommission').pendingList,

@@ -4,6 +4,7 @@ import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
+import { lakalaMerchants } from '@db/lakala'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { and, desc, asc, eq, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
@@ -814,17 +815,20 @@ async function refundViaLakalaIfEnabled(opts: {
   if (opts.paymentMethod !== '微信' && opts.paymentMethod !== '支付宝') return { attempted: false }
   if (!lakalaClient.isReady()) return { attempted: false, error: 'LAKALA_NOT_READY' }
 
-  // 取原支付的受单信息 + 收银台 out_order_no + 门店拉卡拉商户号
+  // 取原支付的受单信息 + 收银台 out_order_no + 门店拉卡拉商户号。
+  // 收款配置已归位 lakala_merchants（一店一商户，N:1）；merchant_no / term_no 经
+  // stores.lakala_merchant_id 关联读取（与 stores.ts getStoreLakalaConfig 同源）。
   const [row] = await db
     .select({
       tradeInfo: saleOrderPayments.externalTradeInfo,
       outOrderNo: saleOrders.lakalaOutOrderNo,
-      merchantNo: stores.lakalaMerchantNo,
-      termNo: stores.lakalaTermNo,
+      merchantNo: lakalaMerchants.merchantNo,
+      termNo: lakalaMerchants.termNo,
     })
     .from(saleOrderPayments)
     .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .leftJoin(stores, eq(stores.storeId, saleOrders.storeId))
+    .leftJoin(lakalaMerchants, eq(lakalaMerchants.id, stores.lakalaMerchantId))
     .where(
       and(
         eq(saleOrderPayments.saleOrderId, opts.saleOrderId),

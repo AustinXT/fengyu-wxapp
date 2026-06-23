@@ -74,6 +74,7 @@ interface RawAllocation {
 }
 
 interface RawPayment {
+  id: number;
   change_type: string;
   amount: number;
   payment_method: string;
@@ -81,6 +82,7 @@ interface RawPayment {
   paid_at: string | null;
   created_at: string;
   note: string | null;
+  allocation_status?: string | null;
 }
 
 interface DisplayPayment {
@@ -92,6 +94,10 @@ interface DisplayPayment {
   status: string;
   timeFmt: string;
   note: string;
+  // 按回款逐笔分配入口（仅店长 + 已支付的首次支付/回款/储值卡抵扣行）
+  needsAllocation: boolean;
+  allocationStatus: string;
+  allocationUrl: string;
 }
 
 interface OrderDetailResponse {
@@ -275,6 +281,9 @@ Page({
         const amt = Number(p.amount) || 0;
         const isRefund = amt < 0 || p.change_type === '退款';
         const timeSrc = p.paid_at || p.created_at;
+        // 按回款逐笔分配：已支付的首次支付/回款/储值卡抵扣行可分配（WXML 再叠加 isManager + order.allocatable 显隐）
+        const needsAllocation =
+          ['首次支付', '回款', '储值卡抵扣'].includes(p.change_type) && p.status === '已支付' && !!p.id;
         return {
           changeType: p.change_type,
           amount: amt.toFixed(2),
@@ -284,6 +293,11 @@ Page({
           status: p.status,
           timeFmt: timeSrc ? formatDateTime(timeSrc) : '',
           note: p.note || '',
+          needsAllocation,
+          allocationStatus: p.allocation_status || '待分配',
+          allocationUrl: needsAllocation
+            ? `/packageOrder/revenue-allocation/revenue-allocation?salePaymentId=${p.id}`
+            : '',
         };
       });
 

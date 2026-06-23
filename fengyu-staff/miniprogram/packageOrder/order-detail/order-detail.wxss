@@ -159,3 +159,24 @@
   margin-top: 32rpx;
 }
 .repay-actions > van-button { flex: 1; }
+
+/* 按回款逐笔分配入口（款项流水行内） */
+.pay-alloc-btn {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #C0322A;
+  border: 1rpx solid #C0322A;
+  border-radius: 24rpx;
+  padding: 2rpx 18rpx;
+  line-height: 1.9;
+}
+.pay-alloc-btn--done {
+  color: #3D8A5A;
+  border-color: #3D8A5A;
+}
+.alloc-hint {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #999;
+}

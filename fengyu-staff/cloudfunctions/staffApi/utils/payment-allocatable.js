@@ -71,18 +71,20 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     if (totalW <= 0) {
       perItem = [{ saleItemId: items[0].sale_item_id, amount: evt }]
     } else {
+      // 最大余数法（largest-remainder）：先按权重 floor 到分，余数逐分补给小数部分最大者，
+      // 严格保证 Σ amount = evt 且每项非负（避免末项舍入被 filter 丢弃致 Σ≠evt）
       const positive = base.filter((b) => b.w > 0)
-      let acc = 0
-      perItem = positive
-        .map((b, idx) => {
-          let amt
-          if (idx === positive.length - 1) amt = Math.round((evt - acc) * 100) / 100
-          else {
-            amt = Math.round((evt * b.w / totalW) * 100) / 100
-            acc += amt
-          }
-          return { saleItemId: b.saleItemId, amount: amt }
-        })
+      const evtCents = Math.round(evt * 100)
+      const parts = positive.map((b) => {
+        const exact = (evtCents * b.w) / totalW
+        const c = Math.floor(exact)
+        return { saleItemId: b.saleItemId, cents: c, frac: exact - c }
+      })
+      let rem = evtCents - parts.reduce((s, p) => s + p.cents, 0)
+      parts.sort((a, b) => b.frac - a.frac)
+      for (let i = 0; i < rem; i++) parts[i].cents += 1
+      perItem = parts
+        .map((p) => ({ saleItemId: p.saleItemId, amount: p.cents / 100 }))
         .filter((d) => d.amount > 0)
     }
   }

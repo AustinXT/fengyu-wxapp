@@ -124,7 +124,7 @@ describe('staffApi 入口', () => {
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
-    // 使用 allocation.pendingList（仅店长）测试权限拒绝映射
+    // 使用 allocation.pendingPayments（仅店长）测试权限拒绝映射
     // 先用美容师身份 mock auth
     pg.query
       .mockReset()
@@ -145,7 +145,7 @@ describe('staffApi 入口', () => {
     clearStaffApiCache()
     const mainFresh = require('../index').main
     const result = await mainFresh({
-      action: 'allocation.pendingList',
+      action: 'allocation.pendingPayments',
       payload: { page: 1 },
     }, {})
     expect(result.code).toBe(-403)

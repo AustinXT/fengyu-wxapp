@@ -110,14 +110,20 @@
               {{p.isRefund ? '-¥' : '¥'}}{{p.amountAbs}}
             </text>
             <text class="pay-status" wx:if="{{p.status !== '已支付'}}">{{p.status}}</text>
+            <!-- 按回款逐笔分配入口（仅店长 + 可分配单据；点击进入该笔回款分配） -->
+            <navigator
+              wx:if="{{isManager && order.allocatable && p.needsAllocation}}"
+              url="{{p.allocationUrl}}"
+              class="pay-alloc-btn {{p.allocationStatus === '已分配' ? 'pay-alloc-btn--done' : ''}}"
+            >{{p.allocationStatus === '已分配' ? '查看分配' : '分配提成'}}</navigator>
           </view>
         </view>
       </view>
     </view>
 
-    <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
-    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
-      <text class="items-title">营业额分配</text>
+    <!-- 营业额分配汇总（只读；按回款逐笔分配，入口在上方款项流水每笔回款行） -->
+    <view wx:if="{{isManager && order.allocatable && order.allocation.length > 0}}" class="card-group items-card">
+      <text class="items-title">营业额分配（按回款逐笔）</text>
       <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="id">
         <view class="alloc-row-left">
           <text class="alloc-staff">{{item.staffName}}<text wx:if="{{item.roleType}}">（{{item.roleType}}）</text></text>
@@ -127,18 +133,7 @@
           <text class="alloc-amount">¥{{item.commissionAmount}}</text>
         </view>
       </view>
-      <view class="re-alloc-btn">
-        <van-button size="small" plain type="primary" bind:click="onReAllocation"
-          custom-class="btn-outline-brand">重新分配</van-button>
-      </view>
-    </view>
-
-    <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
-    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
-      <van-button block plain type="primary"
-        custom-class="btn-outline-brand"
-        bind:click="onReAllocation"
-      >营业额分配</van-button>
+      <text class="alloc-hint">如需分配 / 改派，点击上方「款项流水」中对应回款的「分配提成」</text>
     </view>
 
     <!-- 操作按钮 -->
