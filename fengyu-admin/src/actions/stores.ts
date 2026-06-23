@@ -43,10 +43,7 @@ function rowToStore(row: any): Store {
     description: s.description,
     announcement: s.announcement,
     parkingInfo: s.parkingInfo,
-    lakalaMerchantNo: s.lakalaMerchantNo,
-    lakalaTermNo: s.lakalaTermNo,
     lakalaMerchantId: s.lakalaMerchantId,
-    lakalaEnabled: s.lakalaEnabled,
     createdAt: s.createdAt.toISOString(),
     updatedAt: s.updatedAt.toISOString(),
     marketName: row.market_node?.name ?? undefined,
@@ -153,17 +150,29 @@ export const getStoreById = withPermission(
   },
 )
 
-/** 取门店关联的拉卡拉商户名称（编辑页回显收款配置用；无关联返回 null） */
-export const getStoreLakalaMerchantName = withPermission(
+export interface StoreLakalaConfig {
+  merchantName: string
+  merchantNo: string | null
+  termNo: string | null
+  enabled: boolean
+}
+
+/** 取门店关联的拉卡拉收款配置（编辑页回显用；无关联返回 null） */
+export const getStoreLakalaConfig = withPermission(
   'store:list',
-  async (session, storeId: string): Promise<string | null> => {
+  async (session, storeId: string): Promise<StoreLakalaConfig | null> => {
     const [row] = await db
-      .select({ merchantName: lakalaMerchants.merchantName })
+      .select({
+        merchantName: lakalaMerchants.merchantName,
+        merchantNo: lakalaMerchants.merchantNo,
+        termNo: lakalaMerchants.termNo,
+        enabled: lakalaMerchants.enabled,
+      })
       .from(stores)
       .innerJoin(lakalaMerchants, eq(stores.lakalaMerchantId, lakalaMerchants.id))
       .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
       .limit(1)
-    return row?.merchantName ?? null
+    return row ?? null
   },
 )
 
