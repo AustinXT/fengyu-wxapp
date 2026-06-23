@@ -121,14 +121,12 @@ export default function AllocationDetailPageClient({
   allocations,
   employees,
   commissionRates = [],
-  marketStoreIds = [],
   skillTags = [],
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   employees: Employee[]
   commissionRates?: CommissionRate[]
-  marketStoreIds?: string[]
   skillTags?: SkillTag[]
 }) {
   // 技能标签下拉选项：严格来自数据库 skill_tags（is_valid + sort_order 已在 action 内处理）
@@ -139,20 +137,13 @@ export default function AllocationDetailPageClient({
     [employees],
   )
 
-  // 按 skillTag 筛选员工：
-  // 美容师 → 订单所属门店
-  // 养生师/推广师 → 订单所属市场的所有门店
-  // 品项老师 → 全公司所有门店（不收窄，候选池已含跨门店品项老师）
+  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
+  // 「订单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
+  // 全公司补充池并入候选，故能跨门店命中；每日 03:00 cron 重置出差标记。
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
-    if (skillTag === '品项老师') {
-      return allActiveEmployees.filter((e) => e.skills?.includes('品项老师'))
-    }
-    const storeScope = skillTag === '美容师'
-      ? [order.storeId]
-      : marketStoreIds.length > 0 ? marketStoreIds : [order.storeId]
     return allActiveEmployees.filter(
-      (e) => e.storeId && storeScope.includes(e.storeId) && e.skills?.includes(skillTag)
+      (e) => (e.storeId === order.storeId || e.isOnBusinessTrip) && e.skills?.includes(skillTag)
     )
   }
 

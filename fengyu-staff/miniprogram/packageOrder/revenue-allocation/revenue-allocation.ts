@@ -31,7 +31,7 @@ interface BeauticianInfo {
   resolvedDept: string | null;
 }
 
-/** 候选员工（市场内全部在职员工，供 admin 式按技能筛选） */
+/** 候选员工（订单门店 ∪ 出差员工，供 admin 式按技能筛选） */
 interface CandidateEmployee {
   staffWfId: string;
   name: string;
@@ -39,6 +39,8 @@ interface CandidateEmployee {
   storeName: string;
   skills: string[];
   department: string;
+  /** 是否出差支援（跨门店共享）；true 时可跨门店被选中 */
+  isOnBusinessTrip?: boolean;
 }
 
 /** 每个 item × person 的分配行 */
@@ -407,13 +409,12 @@ Page({
     });
   },
 
-  /** 按技能筛选候选员工：美容师→订单门店；养生师/推广师→市场内任意门店 */
+  /** 按技能筛选候选员工（跨门店共享 2026-06-24）：统一「订单门店 ∪ 出差员工」+ 技能匹配（取消市场级与品项老师特例） */
   getFilteredEmployees(skillTag: string): CandidateEmployee[] {
     const { candidateEmployees, orderStoreId } = this.data;
     return candidateEmployees.filter(e => {
       if (!e.skills || !e.skills.includes(skillTag)) return false;
-      if (skillTag === '美容师') return e.storeId === orderStoreId;
-      return true;
+      return e.storeId === orderStoreId || !!e.isOnBusinessTrip;
     });
   },
 

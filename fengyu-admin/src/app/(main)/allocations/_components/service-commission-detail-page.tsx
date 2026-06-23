@@ -165,32 +165,25 @@ export default function ServiceCommissionDetailPageClient({
   commissions,
   employees,
   commissionRates = [],
-  marketStoreIds = [],
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
   commissions: ServiceCommission[]
   employees: Employee[]
   commissionRates?: CommissionRate[]
-  marketStoreIds?: string[]
 }) {
   const allActiveEmployees = useMemo(
     () => sortByPosition(employees.filter((e) => !e.isResigned)),
     [employees],
   )
 
-  // 美容师 → 服务单门店；养生师/推广师 → 市场内门店；
-  // 品项老师 → 全公司所有门店（不收窄，候选池已含跨门店品项老师）
+  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
+  // 「服务单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
+  // 全公司补充池并入候选，故能跨门店命中；每日 03:00 cron 重置出差标记。
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
-    if (skillTag === '品项老师') {
-      return allActiveEmployees.filter((e) => e.skills?.includes('品项老师'))
-    }
-    const storeScope = skillTag === '美容师'
-      ? [serviceOrder.storeId]
-      : marketStoreIds.length > 0 ? marketStoreIds : [serviceOrder.storeId]
     return allActiveEmployees.filter(
-      (e) => e.storeId && storeScope.includes(e.storeId) && e.skills?.includes(skillTag)
+      (e) => (e.storeId === serviceOrder.storeId || e.isOnBusinessTrip) && e.skills?.includes(skillTag)
     )
   }
 

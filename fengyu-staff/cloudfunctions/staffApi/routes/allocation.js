@@ -634,25 +634,22 @@ async function suggest(ctx) {
     }
   }
 
-  // 9. 候选员工（admin 式按技能筛选用）：订单所属市场内全部在职员工，含 store_id / skills。
-  //    前端按规则筛选：美容师 → 订单所属门店；养生师/推广师 → 市场内任意门店。
-  //    品项老师特例：可跨门店/跨市场选全公司任意品项老师，故 WHERE 额外 OR 拥有该技能者（不限市场）。
-  //    本 action 已 requireManager() 门控，与 admin 让分配人看到市场级员工口径一致。
+  // 9. 候选员工（admin 式按技能筛选用）：跨门店共享（2026-06-24，取消市场级与品项老师特例）。
+  //    候选池 = 订单门店在职员工 ∪ 标记出差的在职员工；前端按「订单门店 ∪ 出差」+ 技能筛选。
+  //    出差标记 staff_wechat_users.is_on_business_trip 每日 03:00 cron 重置；本 action 已 requireManager() 门控。
   let candidateEmployees = []
-  if (order.market_name) {
+  if (order.store_id) {
     const empRows = await pg.query(`
-      SELECT u.employee_id, u.name, u.store_id, u.skills,
+      SELECT u.employee_id, u.name, u.store_id, u.skills, u.is_on_business_trip,
              d.name AS department, s.store_name
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
-      LEFT JOIN org_nodes so ON s.org_node_id = so.id
-      LEFT JOIN org_nodes m  ON so.parent_id = m.id
-      LEFT JOIN org_nodes d  ON u.org_node_id = d.id
+      LEFT JOIN org_nodes d ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND (m.name = $1 OR '品项老师' = ANY(u.skills))
+        AND (u.store_id = $1 OR u.is_on_business_trip = true)
         AND u.employee_id IS NOT NULL
       ORDER BY u.name
-    `, [order.market_name])
+    `, [order.store_id])
     candidateEmployees = empRows.map(r => ({
       staffWfId: r.employee_id,
       name: r.name || '',
@@ -660,6 +657,7 @@ async function suggest(ctx) {
       storeName: r.store_name || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
       department: r.department || '',
+      isOnBusinessTrip: r.is_on_business_trip === true,
     }))
   }
 

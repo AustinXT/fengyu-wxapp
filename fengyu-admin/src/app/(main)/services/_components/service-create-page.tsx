@@ -83,7 +83,8 @@ export default function ServiceCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (emp && emp.storeId !== selectedStoreId) {
+      // 出差员工跨门店可选，切换门店不清空（跨门店共享，2026-06-24）
+      if (emp && emp.storeId !== selectedStoreId && !emp.isOnBusinessTrip) {
         setSelectedEmployeeId("")
       }
     }
@@ -157,7 +158,7 @@ export default function ServiceCreatePageClient({
     selectedItems.find(i => i.saleItemId === saleItemId)?.sessionUsed ?? 1
 
   const filteredEmployees = employees.filter(
-    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')
+    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')
   )
 
   const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
@@ -375,7 +376,7 @@ export default function ServiceCreatePageClient({
                   <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                     <option value="">请选择</option>
                     {filteredEmployees.map((e) => (
-                      <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                      <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
                     ))}
                   </Select>
                 </div>

@@ -1057,8 +1057,8 @@ export default function OrderCreatePageClient({
                 <label className="text-sm text-[#999999]">指定美容师（可选）</label>
                 <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                   <option value="">不指定</option>
-                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')).map((e) => (
-                    <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')).map((e) => (
+                    <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
                   ))}
                 </Select>
               </div>

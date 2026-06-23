@@ -1,6 +1,7 @@
 import { getStores } from '@/actions/stores'
-import { getEmployees } from '@/actions/employees'
+import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRechargeConfig } from '@/actions/cards'
+import { mergeEmployeesById } from '@/lib/merge-employees'
 import OrderCreatePageClient from '../_components/order-create-page'
 
 export const dynamic = 'force-dynamic'
@@ -16,10 +17,13 @@ export const dynamic = 'force-dynamic'
  * 抛错）时兜成 null，前端提示前往 系统配置 → 充值卡配置。
  */
 export default async function Page() {
-  const [stores, employees, rechargeConfig] = await Promise.all([
+  const [stores, scopedEmployees, tripEmployees, rechargeConfig] = await Promise.all([
     getStores(),
     getEmployees(),
+    getEmployeesOnBusinessTrip(),
     getRechargeConfig().catch(() => null),
   ])
+  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工；前端开单选美容师按「门店 ∪ 出差」筛选
+  const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
   return <OrderCreatePageClient stores={stores} employees={employees} rechargeConfig={rechargeConfig} />
 }

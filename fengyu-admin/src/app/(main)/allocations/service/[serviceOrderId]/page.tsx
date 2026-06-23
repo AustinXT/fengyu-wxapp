@@ -1,9 +1,8 @@
 import { notFound } from 'next/navigation'
 import { getServiceOrderById, getServiceItems } from '@/actions/services'
 import { getServiceOrderCommissions } from '@/actions/service-commissions'
-import { getEmployees, getItemTeachers } from '@/actions/employees'
+import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
-import { getMarketStoreIds } from '@/actions/stores'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import ServiceCommissionDetailPageClient from '../../_components/service-commission-detail-page'
 
@@ -11,21 +10,20 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ serviceOrderId: string }> }) {
   const { serviceOrderId } = await params
-  const [serviceOrder, items, commissions, scopedEmployees, itemTeachers, commissionRates] = await Promise.all([
+  const [serviceOrder, items, commissions, scopedEmployees, tripEmployees, commissionRates] = await Promise.all([
     getServiceOrderById(serviceOrderId),
     getServiceItems(serviceOrderId),
     getServiceOrderCommissions(serviceOrderId),
     getEmployees(),
-    getItemTeachers(),
+    getEmployeesOnBusinessTrip(),
     getRates().catch(() => []),
   ])
 
   if (!serviceOrder) notFound()
 
-  // 品项老师可跨门店分配，合并进 scope 内员工（按 employeeId 去重）
-  const employees = mergeEmployeesById(scopedEmployees, itemTeachers)
-
-  const marketStoreIds = await getMarketStoreIds(serviceOrder.storeId)
+  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工（按 employeeId 去重），
+  // 前端按「服务单门店 ∪ 出差」+ 技能筛选；取消原市场级 marketStoreIds 与品项老师补充池。
+  const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
 
   return (
     <ServiceCommissionDetailPageClient
@@ -34,7 +32,6 @@ export default async function Page({ params }: { params: Promise<{ serviceOrderI
       commissions={commissions}
       employees={employees}
       commissionRates={commissionRates}
-      marketStoreIds={marketStoreIds}
     />
   )
 }

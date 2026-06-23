@@ -21,6 +21,7 @@ function makeEmployee(overrides: Partial<Employee> & Pick<Employee, 'employeeId'
     hiredAt: null,
     leaveStart: null,
     leaveEnd: null,
+    isOnBusinessTrip: false,
     resignedAt: null,
     resignationReason: null,
     lastLoginAt: null,
