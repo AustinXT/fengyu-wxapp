@@ -181,8 +181,8 @@ async function closeExpiredOrdersByUser(userId) {
  *     全选（pick_count IS NULL）按"SKU 种类数 = 组内 SKU 总数"
  *   - 校验所有 items.skuId 都属于该 bundle（mall_product_skus.product_id 等值）
  *
- * 返回 Map<skuId, bundlePrice|null>；调用方据此把 unit_real_price 切换到 bundle_price。
- * bundleProductId 为空返回 null（普通商品路径），上层兼容。
+ * 返回 Map<skuId, {listPrice, salePrice}>；调用方据此把 unit_price 切到 bundle_list_price（标价划线）、
+ * unit_real_price 切到 bundle_price（成交价=组会员价 ?? 标价）。bundleProductId 为空返回 null（普通商品路径）。
  */
 async function _loadAndValidateBundle(bundleProductId, items) {
   if (!bundleProductId) return null
@@ -205,16 +205,16 @@ async function _loadAndValidateBundle(bundleProductId, items) {
   )
   // 3. 取套餐 SKU 关联（含 bundle_price + group_id）
   const mpsRows = await pg.query(
-    `SELECT sku_id, bundle_group_id, bundle_price
+    `SELECT sku_id, bundle_group_id, bundle_price, bundle_list_price
      FROM mall_product_skus WHERE product_id = $1`,
     [bundleProductId]
   )
 
-  // 构建 sku→bundlePrice / group_id 索引
+  // 构建 sku→{标价单价, 成交价} / group_id 索引（下沉副本）
   const skuToBundlePrice = new Map()
   const skuToGroupId = new Map()
   for (const r of mpsRows) {
-    skuToBundlePrice.set(r.sku_id, r.bundle_price)
+    skuToBundlePrice.set(r.sku_id, { listPrice: r.bundle_list_price, salePrice: r.bundle_price })
     skuToGroupId.set(r.sku_id, r.bundle_group_id != null ? Number(r.bundle_group_id) : null)
   }
 
@@ -484,11 +484,13 @@ async function create(ctx) {
   let totalAmount = 0
   const itemsData = items.map(item => {
     const sku = skuMap[item.skuId]
-    const listUnit = Number(sku.price)                 // per-card 标价
-    // 套餐场景：用 mall_product_skus.bundle_price 作为成交价；fallback special_price → price
-    const bundlePrice = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
-    const basePrice = bundlePrice != null              // per-card 优惠后价
-      ? Number(bundlePrice)
+    // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
+    const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
+    const listUnit = bundleEntry && bundleEntry.listPrice != null   // per-card 标价（划线）
+      ? Number(bundleEntry.listPrice)
+      : Number(sku.price)
+    const basePrice = bundleEntry && bundleEntry.salePrice != null  // per-card 成交价
+      ? Number(bundleEntry.salePrice)
       : Number(sku.special_price || sku.price)
     const quantity = item.quantity || 1
     // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity

@@ -97,8 +97,9 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
 }
 
 /**
- * 套餐内 SKU → ProductSku；套餐价（bundlePrice）写入 specialPrice 字段，
- * 让购物车走原有"specialPrice 优先"分支。
+ * 套餐内 SKU → ProductSku：
+ * - price        = 套餐标价单价（OrderPickerBundleSkuRef.price = bundle_list_price，划线基线）
+ * - specialPrice = 套餐成交价（bundlePrice = 组会员价 ?? 标价），让购物车走"specialPrice 优先"成交分支
  */
 export function bundleSkuToProductSku(args: {
   skuId: string

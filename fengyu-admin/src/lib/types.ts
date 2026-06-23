@@ -306,7 +306,10 @@ export interface ProductSku {
   salesCategory?: SalesCategory | null
   /** 项目系列名称（JOIN project_series_lookup.name） */
   projectSeriesName?: string | null
+  /** 套餐内成交价副本（= 所属组 unit_member_price ?? unit_list_price），落 unit_real_price */
   bundlePrice?: string | null
+  /** 套餐内标价单价副本（= 所属组 unit_list_price），落 unit_price 划线 */
+  bundleListPrice?: string | null
   bundleGroupId?: number | null
   groupName?: string | null
 }
@@ -324,6 +327,10 @@ export interface MallBundleGroup {
   productId: string
   groupName: string
   pickCount: number | null
+  /** 组「标价单价」（划线）。应用层必填；组内所有子项共享 */
+  unitListPrice: string | null
+  /** 组「会员价单价」（成交）。null = 该组按标价单价成交 */
+  unitMemberPrice: string | null
   sortOrder: number
   createdAt: string
 }

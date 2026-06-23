@@ -396,7 +396,7 @@ async function spuDetail(ctx) {
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
       sk.service_fee, sk.sort_order, sk.is_shengmei,
-      mps.bundle_price, mps.sort_order AS display_order,
+      mps.bundle_price, mps.bundle_list_price, mps.sort_order AS display_order,
       mps.bundle_group_id,
       bg.group_name, bg.pick_count AS group_pick_count,
       pc.product_kind,

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
 import type { Product, ProductSku, ProductCategory, MallCategory, MallBundleGroup } from "@/lib/types";
 import {
-  updateProduct, deleteProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice,
+  updateProduct, deleteProduct, addSkuToProduct, removeSkuFromProduct,
   createBundleGroup, updateBundleGroup, deleteBundleGroup,
 } from "@/actions/products";
 import { Button } from "@/components/ui/button";
@@ -171,7 +171,7 @@ export default function MallProductDetailPageClient({
       toast.error("请选择商城分类");
       return;
     }
-    if (!price) {
+    if (!isBundle && !price) {
       toast.error("请输入标价");
       return;
     }
@@ -192,8 +192,7 @@ export default function MallProductDetailPageClient({
           detailImages: detailImages.length > 0 ? detailImages : null,
           description,
           isBundle,
-          price,
-          specialPrice,
+          ...(isBundle ? {} : { price, specialPrice }),
           manageScope: manageScope.scopeId,
           marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
           sortOrder,
@@ -242,22 +241,6 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // --- bundlePrice inline edit ---
-  const handleBundlePriceSave = async (skuId: string, value: string) => {
-    const bundlePrice = value.trim() === "" ? null : value.trim();
-    try {
-      const result = await updateSkuBundlePrice(product.productId, skuId, bundlePrice);
-      if (!result.success) {
-        toast.error(result.message);
-        router.refresh();
-        return;
-      }
-      toast.success("套餐价已更新");
-    } catch {
-      toast.error("更新失败，请稍后重试");
-    }
-  };
-
   // --- SKU Remove ---
   const openRemoveDialog = (skuId: string) => {
     setRemovingSkuId(skuId);
@@ -296,23 +279,33 @@ export default function MallProductDetailPageClient({
     const groupName = (fd.get("groupName") as string).trim();
     const pickCountRaw = (fd.get("pickCount") as string).trim();
     const pickCount = pickCountRaw ? parseInt(pickCountRaw) || null : null;
+    const unitListPrice = (fd.get("unitListPrice") as string).trim();
+    const unitMemberPrice = (fd.get("unitMemberPrice") as string).trim() || null;
 
     if (!groupName) {
       toast.error("请输入分组名称");
+      return;
+    }
+    if (!unitListPrice) {
+      toast.error("请输入标价单价");
+      return;
+    }
+    if (unitMemberPrice && Number(unitMemberPrice) > Number(unitListPrice)) {
+      toast.error("会员价单价不能高于标价单价");
       return;
     }
 
     setGroupSaving(true);
     try {
       if (editingGroup) {
-        const result = await updateBundleGroup(editingGroup.id, { groupName, pickCount });
+        const result = await updateBundleGroup(editingGroup.id, { groupName, pickCount, unitListPrice, unitMemberPrice });
         if (!result.success) {
           toast.error(result.message);
           return;
         }
         toast.success("分组已更新");
       } else {
-        const result = await createBundleGroup({ productId: product.productId, groupName, pickCount });
+        const result = await createBundleGroup({ productId: product.productId, groupName, pickCount, unitListPrice, unitMemberPrice });
         if (!result.success) {
           toast.error(result.message);
           return;
@@ -379,13 +372,22 @@ export default function MallProductDetailPageClient({
       },
     ];
     if (isBundle) {
-      cols.push({
-        key: "bundlePrice" as keyof ProductSku,
-        header: "套餐内价格",
-        cell: (row) => (
-          <BundlePriceCell skuId={row.skuId} defaultValue={row.bundlePrice ?? ""} onSave={handleBundlePriceSave} />
-        ),
-      });
+      cols.push(
+        {
+          key: "bundleListPrice" as keyof ProductSku,
+          header: "套餐标价单价",
+          cell: (row) => <span>{row.bundleListPrice ? formatCurrency(row.bundleListPrice) : "—"}</span>,
+        },
+        {
+          key: "bundlePrice" as keyof ProductSku,
+          header: "套餐会员价单价",
+          cell: (row) => (
+            <span className={row.bundlePrice ? "text-[#C0322A]" : ""}>
+              {row.bundlePrice ? formatCurrency(row.bundlePrice) : "—"}
+            </span>
+          ),
+        },
+      );
     }
     cols.push(
       {
@@ -486,10 +488,14 @@ export default function MallProductDetailPageClient({
                 return (
                   <div key={group.id} className="border border-[var(--border)] rounded-[var(--radius)]">
                     <div className="flex items-center justify-between px-4 py-3 bg-[var(--muted)]/30">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-sm">{group.groupName}</span>
                         <span className="text-xs px-2 py-0.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">
                           {group.pickCount ? `${groupSkus.length}选${group.pickCount}` : "全选"}
+                        </span>
+                        <span className="text-xs text-[var(--muted-foreground)]">
+                          标价单价 {group.unitListPrice ? formatCurrency(group.unitListPrice) : "—"}
+                          {group.unitMemberPrice ? ` · 会员价 ${formatCurrency(group.unitMemberPrice)}` : ""}
                         </span>
                       </div>
                       <div className="flex items-center gap-1">
@@ -514,13 +520,13 @@ export default function MallProductDetailPageClient({
               })
             )}
 
-            {/* 未分组的 SKU */}
+            {/* 未分组规格：正常态应为空（所有子商品必须归入分组）；非空=配置异常告警 */}
             {ungroupedSkus.length > 0 && (
-              <div className="border border-dashed border-[var(--border)] rounded-[var(--radius)]">
-                <div className="flex items-center justify-between px-4 py-3 bg-[var(--muted)]/20">
+              <div className="border border-[var(--destructive)] rounded-[var(--radius)]">
+                <div className="flex items-center justify-between px-4 py-3 bg-[var(--destructive)]/10">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm text-[var(--muted-foreground)]">未分组规格</span>
-                    <span className="text-xs text-[var(--muted-foreground)]">（请将这些规格分配到分组中）</span>
+                    <span className="font-medium text-sm text-[var(--destructive)]">⚠ 未分组规格（配置异常）</span>
+                    <span className="text-xs text-[var(--destructive)]">这些规格不计入套餐价，请移入分组或移除</span>
                   </div>
                 </div>
                 <div className="p-2">
@@ -596,21 +602,37 @@ export default function MallProductDetailPageClient({
             <CardTitle className="text-base">价格</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">标价</label>
-                <Input name="price" type="number" defaultValue={product.price} />
+            {isBundle ? (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">标价</label>
+                  <Input value={formatCurrency(product.price)} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">会员价</label>
+                  <Input value={product.specialPrice ? formatCurrency(product.specialPrice) : "无"} disabled />
+                </div>
+                <p className="col-span-2 text-xs text-[var(--muted-foreground)]">
+                  套餐价由各分组「单价 × 可选数量」自动计算，不可手动修改。
+                </p>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">会员价</label>
-                <Input
-                  name="specialPrice"
-                  type="number"
-                  defaultValue={product.specialPrice ?? ""}
-                  placeholder="不填则无会员价"
-                />
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">标价</label>
+                  <Input name="price" type="number" defaultValue={product.price} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">会员价</label>
+                  <Input
+                    name="specialPrice"
+                    type="number"
+                    defaultValue={product.specialPrice ?? ""}
+                    placeholder="不填则无会员价"
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </CardContent>
         </Card>
 
@@ -831,6 +853,30 @@ export default function MallProductDetailPageClient({
               placeholder="如：护理服务、家居产品"
             />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">标价单价</label>
+              <Input
+                name="unitListPrice"
+                type="number"
+                step="0.01"
+                min={0}
+                defaultValue={editingGroup?.unitListPrice ?? ""}
+                placeholder="0.00"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">会员价单价</label>
+              <Input
+                name="unitMemberPrice"
+                type="number"
+                step="0.01"
+                min={0}
+                defaultValue={editingGroup?.unitMemberPrice ?? ""}
+                placeholder="不填=按标价成交"
+              />
+            </div>
+          </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">可选数量</label>
             <Input
@@ -841,7 +887,7 @@ export default function MallProductDetailPageClient({
               placeholder="不填则全选"
             />
             <p className="text-xs text-[var(--muted-foreground)]">
-              N选M 的 M 值，留空表示该组内全部必选
+              N选M 的 M 值，留空表示该组内全部必选。套餐价 = 标价单价 × 计入数量。
             </p>
           </div>
           <div className="flex justify-end gap-2">
@@ -859,7 +905,7 @@ export default function MallProductDetailPageClient({
       <AlertDialog open={deleteGroupDialogOpen} onOpenChange={setDeleteGroupDialogOpen}>
         <AlertDialogTitle>确认删除分组</AlertDialogTitle>
         <AlertDialogDescription>
-          删除后，该分组下的规格将变为未分组状态（不会删除规格关联）。
+          确认删除该分组？仅可删除已清空规格的分组；若组内仍有规格，请先移除规格。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel
@@ -899,43 +945,3 @@ export default function MallProductDetailPageClient({
   );
 }
 
-function BundlePriceCell({
-  skuId,
-  defaultValue,
-  onSave,
-}: {
-  skuId: string;
-  defaultValue: string;
-  onSave: (skuId: string, value: string) => Promise<void>;
-}) {
-  const [value, setValue] = useState(defaultValue);
-  const [saving, setSaving] = useState(false);
-  const committed = useRef(defaultValue);
-
-  const submit = async () => {
-    if (value === committed.current) return;
-    setSaving(true);
-    await onSave(skuId, value);
-    committed.current = value;
-    setSaving(false);
-  };
-
-  return (
-    <Input
-      type="number"
-      step="0.01"
-      className="h-8 w-24"
-      placeholder="—"
-      value={value}
-      disabled={saving}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={submit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-    />
-  );
-}

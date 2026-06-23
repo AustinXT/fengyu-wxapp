@@ -65,7 +65,7 @@ export default function MallProductCreatePageClient({
       toast.error("请选择商城分类");
       return;
     }
-    if (!price) {
+    if (!isBundle && !price) {
       toast.error("请输入标价");
       return;
     }
@@ -87,8 +87,8 @@ export default function MallProductCreatePageClient({
         detailImages: detailImages.length > 0 ? detailImages : null,
         description,
         isBundle,
-        price,
-        specialPrice,
+        price: isBundle ? '0' : price,
+        specialPrice: isBundle ? null : specialPrice,
         manageScope: manageScope.scopeId,
         marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
         sortOrder,
@@ -179,24 +179,26 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 价格 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">价格</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">标价</label>
-              <Input name="price" type="number" placeholder="0.00" />
+      {/* 价格（套餐价由详情页分组单价自动计算，此处仅非套餐填写） */}
+      {!isBundle && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">价格</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">标价</label>
+                <Input name="price" type="number" placeholder="0.00" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">会员价</label>
+                <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">会员价</label>
-              <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 展示 */}
       <Card>

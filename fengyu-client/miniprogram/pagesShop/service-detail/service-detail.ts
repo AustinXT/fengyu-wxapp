@@ -183,7 +183,10 @@ Page({
         sku_id: s.sku_id,
         spec_name: s.spec_name,
         bundle_price: bundlePrice,
-        list_price: Number(s.special_price || s.price || 0),
+        // 划线价用套餐标价单价（bundle_list_price 下沉副本）；缺失回退 SKU 原价
+        list_price: s.bundle_list_price != null
+          ? Number(s.bundle_list_price)
+          : Number(s.special_price || s.price || 0),
         session_count: s.session_count,
         product_type: s.product_type,
         group_id: s.bundle_group_id != null ? Number(s.bundle_group_id) : null,
