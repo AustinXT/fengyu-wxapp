@@ -250,10 +250,6 @@ export const createStore = withPermission(
       return { success: false, message: '填写拉卡拉商户号时，商户名称必填' }
     }
   }
-  const applicantUserId = typeof session.employeeId === 'string' && /^\d+$/.test(session.employeeId)
-    ? Number(session.employeeId)
-    : null
-
   // 3. 插入 stores 详情行（不自造节点）+ 可选建档收款配置，事务保证原子
   try {
     await db.transaction(async (tx) => {
@@ -276,9 +272,9 @@ export const createStore = withPermission(
         announcement: data.announcement ?? null,
         parkingInfo: data.parkingInfo ?? null,
       })
-      // 收款配置：先建店后建档（applyLakalaPaymentConfig 会 UPDATE stores 快照 + INSERT lakala_merchants）
+      // 收款配置：先建店后建档（applyLakalaPaymentConfig 建 lakala_merchants 档案 + 回填 stores.lakala_merchant_id）
       if (lakalaConfigProvided) {
-        await applyLakalaPaymentConfig(tx, data.storeId, applicantUserId, null, {
+        await applyLakalaPaymentConfig(tx, data.storeId, null, {
           merchantName: data.lakalaMerchantName ?? null,
           merchantNo: data.lakalaMerchantNo ?? null,
           termNo: data.lakalaTermNo ?? null,
@@ -376,11 +372,6 @@ export const updateStore = withPermission(
   if (storeFields.isClosed !== undefined && storeFields.closedAt === undefined) {
     storeFields.closedAt = storeFields.isClosed ? shanghaiToday() : null
   }
-  // 建档归属：当前操作人（数字串 employeeId 才转 Number，否则 null → 仍可建档）
-  const applicantUserId = typeof session.employeeId === 'string' && /^\d+$/.test(session.employeeId)
-    ? Number(session.employeeId)
-    : null
-
   let result: any
   try {
     result = await db.transaction(async (tx) => {
@@ -394,9 +385,9 @@ export const updateStore = withPermission(
       ) {
         await tx.update(orgNodes).set({ name: data.storeName }).where(eq(orgNodes.id, before.orgNodeId))
       }
-      // 拉卡拉收款配置：upsert 该店专属 lakala_merchants 档案 + 同步 stores 快照
+      // 拉卡拉收款配置：upsert 该店关联 lakala_merchants 档案（新建则回填 stores.lakala_merchant_id）
       if (r.count > 0 && lakalaConfigTouched) {
-        await applyLakalaPaymentConfig(tx, storeId, applicantUserId, before?.lakalaMerchantId ?? null, {
+        await applyLakalaPaymentConfig(tx, storeId, before?.lakalaMerchantId ?? null, {
           merchantName: lakalaMerchantName ?? null,
           merchantNo: lakalaMerchantNo ?? null,
           termNo: lakalaTermNo ?? null,

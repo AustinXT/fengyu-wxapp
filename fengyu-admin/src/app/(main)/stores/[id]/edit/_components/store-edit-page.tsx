@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
+import type { StoreLakalaConfig } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -18,11 +19,11 @@ import { RegionSelect } from "@/components/ui/region-select"
 export default function StoreEditPage({
   store,
   canEditPayment = false,
-  lakalaMerchantName = null,
+  lakalaConfig = null,
 }: {
   store: Store
   canEditPayment?: boolean
-  lakalaMerchantName?: string | null
+  lakalaConfig?: StoreLakalaConfig | null
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
@@ -31,7 +32,7 @@ export default function StoreEditPage({
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
-  const [lakalaEnabled, setLakalaEnabled] = useState(store.lakalaEnabled)
+  const [lakalaEnabled, setLakalaEnabled] = useState(lakalaConfig?.enabled ?? false)
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
@@ -235,7 +236,7 @@ export default function StoreEditPage({
               <label className="text-sm font-medium">商户名称</label>
               <Input
                 name="lakalaMerchantName"
-                defaultValue={lakalaMerchantName ?? ""}
+                defaultValue={lakalaConfig?.merchantName ?? ""}
                 placeholder="便于区分各店商户，如：凤仪韵·南昌莲塘店"
                 maxLength={80}
                 disabled={!canEditPayment}
@@ -245,7 +246,7 @@ export default function StoreEditPage({
               <label className="text-sm font-medium">拉卡拉商户号</label>
               <Input
                 name="lakalaMerchantNo"
-                defaultValue={store.lakalaMerchantNo ?? ""}
+                defaultValue={lakalaConfig?.merchantNo ?? ""}
                 placeholder="拉卡拉分配的商户号"
                 maxLength={32}
                 disabled={!canEditPayment}
@@ -255,7 +256,7 @@ export default function StoreEditPage({
               <label className="text-sm font-medium">终端号(term_no)</label>
               <Input
                 name="lakalaTermNo"
-                defaultValue={store.lakalaTermNo ?? ""}
+                defaultValue={lakalaConfig?.termNo ?? ""}
                 placeholder="如：D9261078"
                 maxLength={32}
                 disabled={!canEditPayment}

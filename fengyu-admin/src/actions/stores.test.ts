@@ -371,7 +371,7 @@ describe('updateStore — 拉卡拉收款配置', () => {
     expect(txInsert).toHaveBeenCalled()
   })
 
-  it('填商户号且本店已有档案 → 更新档案（tx.insert 不调，tx.update 含档案+快照）', async () => {
+  it('填商户号且本店已有档案 → 更新档案（tx.insert 不调，tx.update 含主表+档案）', async () => {
     mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_existing' })
     const { txInsert, txUpdate } = setupTx(1)
     const result = await updateStore('STORE-001', { storeName: '蓝茉店', ...cfg })
@@ -380,7 +380,7 @@ describe('updateStore — 拉卡拉收款配置', () => {
     expect(txUpdate.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('清空商户号 → 解绑快照（tx.insert 不调）', async () => {
+  it('清空商户号 → 停用关联档案（tx.insert 不调）', async () => {
     mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_existing' })
     const { txInsert } = setupTx(1)
     const result = await updateStore('STORE-001', {

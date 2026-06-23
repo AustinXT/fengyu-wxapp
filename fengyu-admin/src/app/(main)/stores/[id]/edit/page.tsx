@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getStoreById, getStoreLakalaMerchantName } from '@/actions/stores'
+import { getStoreById, getStoreLakalaConfig } from '@/actions/stores'
 import { getSessionFromCookie } from '@/actions/auth'
 import { hasPermission } from '@/lib/permissions'
 import StoreEditPage from './_components/store-edit-page'
@@ -15,14 +15,14 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const session = await getSessionFromCookie()
   const canEditPayment = !!(session && hasPermission(session, 'store:lakala_config'))
 
-  // 回显已填商户名（落在 lakala_merchants.merchant_name，便于区分各店商户）
-  const lakalaMerchantName = store.lakalaMerchantId ? await getStoreLakalaMerchantName(id) : null
+  // 回显门店收款配置（商户名/号/终端号/启用，落 lakala_merchants，经 stores.lakala_merchant_id 关联）
+  const lakalaConfig = store.lakalaMerchantId ? await getStoreLakalaConfig(id) : null
 
   return (
     <StoreEditPage
       store={store}
       canEditPayment={canEditPayment}
-      lakalaMerchantName={lakalaMerchantName}
+      lakalaConfig={lakalaConfig}
     />
   )
 }
