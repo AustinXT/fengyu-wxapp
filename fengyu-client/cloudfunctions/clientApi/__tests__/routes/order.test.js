@@ -661,14 +661,14 @@ describe('order.pay', () => {
   })
 
   // 门店拉卡拉商户行（resolveLakalaMerchant 的 SELECT 结果）
-  const STORE_LAKALA_ROW = [{ lakala_merchant_no: 'M-TEST', lakala_term_no: 'T-TEST', lakala_enabled: true }]
+  const STORE_LAKALA_ROW = [{ merchant_no: 'M-TEST', term_no: 'T-TEST', enabled: true }]
 
   // 按 SQL 派发的 pg.query mock（对查询条数/顺序鲁棒，避免脆弱的 once 序列）
   function mockPayQueries({ order, paidSum = 0 }) {
     pg.query.mockImplementation(async (sql) => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [order]
       if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: paidSum }]
-      if (/lakala_merchant_no/.test(sql)) return STORE_LAKALA_ROW
+      if (/lakala_merchants/.test(sql)) return STORE_LAKALA_ROW
       return [] // UPDATE / hasPaymentRows / 其它
     })
   }
@@ -717,7 +717,7 @@ describe('order.pay', () => {
       }]
       if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
       // 门店启用了拉卡拉，但 merchant_no/term_no 为空（未进件）
-      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: null, lakala_term_no: null, lakala_enabled: true }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: null, term_no: null, enabled: true }]
       return []
     })
 
@@ -737,7 +737,7 @@ describe('order.pay', () => {
       }]
       if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
       // 门店启用拉卡拉、有商户号，但终端号为空 → 应抛 LAKALA_TERM_NO_MISSING（聚合主扫 term_no M 必填，env 不兜底）
-      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: '82242107230052S', lakala_term_no: null, lakala_enabled: true }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: '82242107230052S', term_no: null, enabled: true }]
       return []
     })
 
@@ -1106,7 +1106,7 @@ describe('order.cancel', () => {
         sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
         store_id: 'store-1', lakala_out_order_no: 'FY-001_1700000000',
       }]
-      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
       return []
     })
     pg.transaction.mockImplementation(async (cb) => cb({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }))
@@ -1135,7 +1135,7 @@ describe('order.queryLakalaStatus', () => {
         sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
         lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001',
       }]
-      if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
       return []
     })
     __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({

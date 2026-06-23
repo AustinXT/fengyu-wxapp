@@ -19,22 +19,26 @@ const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
  * 解析门店的拉卡拉商户号 + 终端号
  *
  * 一店一商户、一店一终端，env 不留默认；支付失败就让失败，不兜底。
- * - stores.lakala_enabled=false 或 lakala_merchant_no 为空 → 返回 null（上层报 LAKALA_NOT_CONFIGURED）
- * - lakala_term_no 为空（聚合主扫 term_no 必填 M）→ 抛 LAKALA_TERM_NO_MISSING 引导运维补配置
+ * 收款配置已收敛到 lakala_merchants（一店一商户，N:1），门店经 stores.lakala_merchant_id 关联：
+ * - 门店未关联商户 / lakala_merchants.enabled=false / merchant_no 为空 → 返回 null（上层报 LAKALA_NOT_CONFIGURED）
+ * - term_no 为空（聚合主扫 term_no 必填 M）→ 抛 LAKALA_TERM_NO_MISSING 引导运维补配置
  */
 async function resolveLakalaMerchant(storeId) {
   if (!lakalaConfig.isReady()) return null
   if (!storeId) return null
   const rows = await pg.query(
-    'SELECT lakala_merchant_no, lakala_term_no, lakala_enabled FROM stores WHERE store_id = $1',
+    `SELECT lm.merchant_no, lm.term_no, lm.enabled
+       FROM stores s
+       JOIN lakala_merchants lm ON lm.id = s.lakala_merchant_id
+      WHERE s.store_id = $1`,
     [storeId]
   )
   if (rows.length === 0) return null
   const row = rows[0]
-  if (!row.lakala_enabled) return null
-  const merchantNo = row.lakala_merchant_no
+  if (!row.enabled) return null
+  const merchantNo = row.merchant_no
   if (!merchantNo) return null
-  const termNo = row.lakala_term_no
+  const termNo = row.term_no
   if (!termNo) {
     throw new Error('INVALID_STATE: LAKALA_TERM_NO_MISSING: 该门店未配置拉卡拉终端号，请联系管理员')
   }

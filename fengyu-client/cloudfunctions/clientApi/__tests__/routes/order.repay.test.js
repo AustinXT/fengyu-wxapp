@@ -144,9 +144,9 @@ describe('order.repay', () => {
         { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
       ])
       pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
-      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores + createLakalaPreorder 持久化 out_trade_no
+      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores JOIN lakala_merchants + createLakalaPreorder 持久化 out_trade_no
       pg.query.mockImplementation(async (sql) => {
-        if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+        if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
         return []
       })
 
