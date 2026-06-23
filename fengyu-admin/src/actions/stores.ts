@@ -52,7 +52,7 @@ function rowToStore(row: any): Store {
 
 /**
  * 生成 KSUID 风格 ID：`{prefix}{8 位时间戳}{12 位随机}`。
- * 手填收款配置新建 lakala_merchants 时用：id (lm_) / outOrgCode (lm-)。
+ * 手填收款配置新建 lakala_merchants 时用作主键（lm_ 前缀）。
  */
 function ksuid(prefix: string): string {
   const ts = Math.floor(Date.now() / 1000).toString(36).padStart(8, '0')
@@ -61,18 +61,19 @@ function ksuid(prefix: string): string {
 }
 
 /**
- * 门店拉卡拉收款配置：upsert 该店专属 lakala_merchants 档案（1:1）+ 同步 stores 快照。
- * - 收款（resolveLakalaMerchant）与退款（refundViaLakalaIfEnabled）都只读 stores 的 3 个快照字段，
- *   故本函数职责是保证 stores.lakala_merchant_no / lakala_term_no / lakala_enabled 正确填充。
- * - 商户号为空 → 停用并清空本店收款快照（保留 lakala_merchants 档案，不删，下次填入复用）。
- * - 调用方（updateStore）已 require store:lakala_config + 校验「填商户号则商户名必填」。
+ * 门店拉卡拉收款配置：upsert 该店关联的 lakala_merchants 档案（N:1）。
+ * - 收款字段（merchant_no / term_no / enabled）以 lakala_merchants 为单一权威；收款
+ *   （clientApi resolveLakalaMerchant）与退款（refunds.ts refundViaLakalaIfEnabled）都经
+ *   stores.lakala_merchant_id 关联读取本表，stores 不再留收款快照列。
+ * - 门店仅持 lakala_merchant_id 外键；新建档案时回填该外键，后续编辑复用同一档案。
+ * - 商户号为空 → 停用关联档案（enabled=false，保留档案与外键，下次填入复用）。
+ * - 调用方（createStore/updateStore）已 require store:lakala_config + 校验「填商户号则商户名必填」。
  * 不通过 withPermission 包装（内部 helper，权限由调用方保证）。
  */
 async function applyLakalaPaymentConfig(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle 事务句柄类型宽松，与本文件既有 tx:any 一致
   tx: any,
   storeId: string,
-  applicantUserId: number | null,
   existingMerchantId: string | null,
   cfg: { merchantName: string | null; merchantNo: string | null; termNo: string | null; enabled: boolean },
 ): Promise<void> {
@@ -80,45 +81,33 @@ async function applyLakalaPaymentConfig(
   const merchantName = cfg.merchantName?.trim() || null
   const termNo = cfg.termNo?.trim() || null
 
-  // 商户号为空 = 本店暂无收款配置：清空快照 + 关停（档案保留，下次填入复用）
+  // 商户号为空 = 本店暂无收款配置：停用关联档案（保留档案与外键，下次填入复用）
   if (!merchantNo) {
-    await tx.update(stores).set({
-      lakalaMerchantNo: null,
-      lakalaTermNo: null,
-      lakalaEnabled: false,
-    }).where(eq(stores.storeId, storeId))
+    if (existingMerchantId) {
+      await tx.update(lakalaMerchants).set({ enabled: false }).where(eq(lakalaMerchants.id, existingMerchantId))
+    }
     return
   }
 
-  // upsert 档案：已有则更新，没有则新建（merchant_name 为区分标识，已由调用方校验非空）
-  let merchantId = existingMerchantId
-  if (merchantId) {
+  // upsert 档案：已有则更新；没有则新建并回填门店外键（merchant_name 为区分标识，已由调用方校验非空）
+  if (existingMerchantId) {
     await tx.update(lakalaMerchants).set({
       merchantName,
       merchantNo,
       termNo,
-      onboardingStatus: 'completed',
-    }).where(eq(lakalaMerchants.id, merchantId))
+      enabled: cfg.enabled,
+    }).where(eq(lakalaMerchants.id, existingMerchantId))
   } else {
-    merchantId = ksuid('lm_')
+    const merchantId = ksuid('lm_')
     await tx.insert(lakalaMerchants).values({
       id: merchantId,
-      outOrgCode: ksuid('lm-'),
       merchantName,
       merchantNo,
       termNo,
-      onboardingStatus: 'completed',
-      applicantUserId,
+      enabled: cfg.enabled,
     })
+    await tx.update(stores).set({ lakalaMerchantId: merchantId }).where(eq(stores.storeId, storeId))
   }
-
-  // 同步 stores 快照（收款/退款运行时权威来源）
-  await tx.update(stores).set({
-    lakalaMerchantId: merchantId,
-    lakalaMerchantNo: merchantNo,
-    lakalaTermNo: termNo,
-    lakalaEnabled: cfg.enabled,
-  }).where(eq(stores.storeId, storeId))
 }
 
 export const getStores = withPermission('store:list', async (session): Promise<Store[]> => {
