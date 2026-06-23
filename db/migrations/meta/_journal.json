@@ -484,6 +484,13 @@
       "when": 1782233964728,
       "tag": "0068_panoramic_mockingbird",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1782238624829,
+      "tag": "0069_pale_kat_farrell",
+      "breakpoints": true
     }
   ]
 }

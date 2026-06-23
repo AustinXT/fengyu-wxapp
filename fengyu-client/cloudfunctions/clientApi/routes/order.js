@@ -10,6 +10,7 @@ const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
+const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
@@ -875,13 +876,26 @@ async function create(ctx) {
         )
         // 同事务写 payments 流水：change_type='储值卡抵扣' / status='已支付'
         // 维护不变量 received = SUM(payments WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
-        await client.query(
+        const fullCardPayRes = await client.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method,
             external_txn_id, status, source_end, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'client', $3, $3)`,
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'client', $3, $3)
+          RETURNING id`,
           [orderNo, prepaidCardAmount, now]
         )
+        // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置回款待分配 + 汇总刷新
+        // （client 路径一律「待分配」手动分配，无子项定向，不做自动分配——自动分配仅在 payNotify）
+        const fullCardPaymentId = fullCardPayRes.rows[0] && fullCardPayRes.rows[0].id
+        if (fullCardPaymentId && prepaidCardAmount > 0) {
+          await capturePaymentAllocatables(client, {
+            salePaymentId: fullCardPaymentId,
+            saleOrderId: orderNo,
+            eventAmount: prepaidCardAmount,
+            directedItems: null,
+          })
+          await refreshOrderAllocationRollup(client, orderNo)
+        }
       }
     }
 
@@ -1960,6 +1974,7 @@ async function confirmPrepaidFull(ctx) {
        WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
       [saleOrderId]
     )
+    let cardPaymentId = null
     if (existDed.rows.length === 0) {
       await client.query(
         `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW()
@@ -1974,13 +1989,15 @@ async function confirmPrepaidFull(ctx) {
       )
       // 维护 received 不变量：写 sale_order_payments[储值卡抵扣,已支付]
       // 注意此处用 INSERT ... ON CONFLICT 兜底（万一 create 已写过，避免双写违 chk_sop_amount_sign）
-      await client.query(
+      const cardPayRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method,
           external_txn_id, status, source_end, created_at, paid_at
-        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'client', NOW(), NOW())`,
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'client', NOW(), NOW())
+        RETURNING id`,
         [saleOrderId, prepaidCardAmount]
       )
+      cardPaymentId = cardPayRes.rows[0] && cardPayRes.rows[0].id
     }
 
     // 同事务把 received 双写到位（若 create 已写则会再加一次——故仅在本次新增 payment 时累加）
@@ -2010,6 +2027,18 @@ async function confirmPrepaidFull(ctx) {
     // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
     // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 按回款逐笔分配：捕获本次全额储值卡抵扣逐项可分配额 + 置回款待分配 + 汇总刷新
+    // （client 路径一律「待分配」手动分配，无子项定向，不做自动分配——自动分配仅在 payNotify）
+    if (cardPaymentId && prepaidCardAmount > 0) {
+      await capturePaymentAllocatables(client, {
+        salePaymentId: cardPaymentId,
+        saleOrderId,
+        eventAmount: prepaidCardAmount,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(client, saleOrderId)
+    }
 
     // 积分结算（订单链净额差值法，幂等）
     // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
@@ -2143,6 +2172,7 @@ async function repay(ctx) {
     }
 
     // 3. 储值卡扣款（若有）：校验 + 扣减 + INSERT payments(回款/储值卡)
+    let cardPaymentId = null
     if (prepaidCardAmountInput > 0) {
       const cardRes = await client.query(
         `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
@@ -2166,13 +2196,15 @@ async function repay(ctx) {
         [cardIdUsed, -prepaidCardAmountInput, saleOrderId, `card-repay-${saleOrderId}-${now.getTime()}`]
       )
       // payments 行：sale_order_id=原单；change_type='回款' + payment_method='储值卡' / status='已支付'
-      await client.query(
+      const cardPayRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method,
           external_txn_id, status, source_end, note, created_at, paid_at
-        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', $3, $4, $4)`,
+        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', $3, $4, $4)
+        RETURNING id`,
         [saleOrderId, prepaidCardAmountInput, '储值卡继续支付（client.repay）', now]
       )
+      cardPaymentId = cardPayRes.rows[0] && cardPayRes.rows[0].id
     }
 
     // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
@@ -2217,6 +2249,17 @@ async function repay(ctx) {
       // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
       // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
       await recalcPaidSessionsForOrder(client, saleOrderId)
+      // 按回款逐笔分配：捕获本次储值卡回款逐项可分配额 + 置回款待分配 + 汇总刷新
+      // （client 一律全额、无子项定向、待分配；线上回款由 payNotify 捕获）
+      if (cardPaymentId && prepaidCardAmountInput > 0) {
+        await capturePaymentAllocatables(client, {
+          salePaymentId: cardPaymentId,
+          saleOrderId,
+          eventAmount: prepaidCardAmountInput,
+          directedItems: null,
+        })
+        await refreshOrderAllocationRollup(client, saleOrderId)
+      }
       // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
       await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
       // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）

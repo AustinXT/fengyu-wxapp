@@ -17,6 +17,92 @@ const { settlePointsSafe } = require('./points')
 const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
+const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
+
+/**
+ * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
+ * 提成率按【本次回款额 eventAmount】查档（按回款逐笔分配口径，非订单累计）。
+ * 无 preferred / 无 perItem 直接跳过（留待分配走手动）。
+ * 跨端约定（no-shared-cloudfunctions）：buildSalesRateLookup 与 staffApi allocation.js /
+ * admin allocations.ts 同语义独立副本。
+ */
+async function autoAllocateOnlinePayment(
+  client,
+  { salePaymentId, saleOrderId, perItem, eventAmount, preferredEmployeeId, marketName, now },
+) {
+  if (!preferredEmployeeId || !Array.isArray(perItem) || perItem.length === 0) return
+
+  // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
+  const empRow = await client.query(
+    'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
+    [preferredEmployeeId],
+  )
+  const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
+  const roleType = skills[0] || '美容师'
+
+  // 销售提成固化快照：加载该市场「销售单」费率矩阵，tier 基准 = 本次回款额 eventAmount
+  let salesRateGrouped = []
+  if (marketName) {
+    const rateRows = await client.query(
+      `SELECT crm.role_type, crm.sales_category,
+              crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+       FROM commission_rate_matrix crm
+       JOIN org_nodes n ON n.id = crm.org_id
+       WHERE n.name = $1 AND crm.order_type = '销售单'
+       ORDER BY crm.role_type, crm.amount_tier_min`,
+      [marketName],
+    )
+    const byKey = new Map()
+    for (const r of rateRows.rows) {
+      const dept = (r.role_type || '').trim()
+      const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+      let entry = byKey.get(key)
+      if (!entry) {
+        entry = {
+          department: dept,
+          amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+          amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+          orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        }
+        byKey.set(key, entry)
+        salesRateGrouped.push(entry)
+      }
+      entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+    }
+  }
+  const lookupSalesRate = (role, salesCat, amount) => {
+    let hit = null
+    for (const r of salesRateGrouped) {
+      if (r.department !== role) continue
+      if (amount < r.amountMin || amount > r.amountMax) continue
+      const rate = r.orderRates[salesCat]
+      if (!rate || rate <= 0) continue
+      if (!hit || r.amountMin > hit.amountMin) hit = r
+    }
+    return (hit && hit.orderRates[salesCat]) || 0
+  }
+
+  // 为本次回款每个可分配项建分配记录（100% 给指定销售员）+ 销售提成固化快照
+  for (const it of perItem) {
+    const salesCategory = it.salesCategory || '自销自耗'
+    const commissionRate = lookupSalesRate(roleType, salesCategory, eventAmount)
+    const commissionAmount = Math.round(Number(it.amount) * commissionRate * 100) / 100
+    await client.query(
+      `INSERT INTO sale_allocations
+         (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
+          commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
+       VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7, FALSE, $8, $8)
+       ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role_payment DO NOTHING`,
+      [it.saleItemId, preferredEmployeeId, roleType, Number(it.amount).toFixed(2),
+       commissionRate, commissionAmount, salePaymentId, now],
+    )
+  }
+  // 本回款主流水行 → 已分配（线上自动分配完成；店长仍可从已分配复核改派）
+  await client.query(
+    `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`,
+    [salePaymentId],
+  )
+}
 const lakalaSign = require('./utils/lakala-sign')
 const lakalaConfig = require('./utils/lakala-config')
 const wxShipping = require('./utils/wx-shipping')
@@ -541,8 +627,7 @@ exports.main = async (event) => {
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
-             updated_at = $3,
-             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+             updated_at = $3
          WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付')`,
         [newStatus, newPaidSum, now, targetOrderNo]
@@ -553,6 +638,9 @@ exports.main = async (event) => {
         console.warn('[payNotify] state-transition-blocked:', targetOrderNo, '→', newStatus)
         return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
       }
+
+      // 本次线上回款主流水行 id（按回款逐笔分配的归属键）
+      const onlinePaymentId = insertRes.rows[0].id
 
       // 1b. 回款凭证单：已在 2026-04-26 sale-order-domain-refactor 重构（回款下沉到 sale_order_payments.change_type='回款'），下方分支永远 false 走不到
       if (isRepaymentCredential) {
@@ -578,6 +666,24 @@ exports.main = async (event) => {
       // 后续业务动作（充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
       // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
       if (!fullyPaid) {
+        // 按回款逐笔分配：线上部分支付也逐笔捕获可分配额 + 自动分给开单销售员（本次=thisPayAmount，无定向）
+        const perItemPartial = await capturePaymentAllocatables(client, {
+          salePaymentId: onlinePaymentId,
+          saleOrderId: targetOrderNo,
+          eventAmount: thisPayAmount,
+          directedItems: null,
+        })
+        await autoAllocateOnlinePayment(client, {
+          salePaymentId: onlinePaymentId,
+          saleOrderId: targetOrderNo,
+          perItem: perItemPartial,
+          eventAmount: thisPayAmount,
+          preferredEmployeeId: targetOrder.preferred_employee_id,
+          marketName: targetOrder.market_name,
+          now,
+        })
+        await refreshOrderAllocationRollup(client, targetOrderNo)
+
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
         // 微信发货上报：本次微信交易已到账即上报（每笔交易各对应发货管理一条订单）
@@ -627,6 +733,8 @@ exports.main = async (event) => {
       // 3b. 消费扣款入账（订单的 prepaid_card_amount > 0 时扣余额）
       // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
       // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
+      // 本次回调实际消费的储值卡额（计入按回款逐笔分配的 eventAmount）
+      let prepaidConsumedThisCallback = 0
       if (targetOrder.client_user_id && Number(targetOrder.prepaid_card_amount) > 0) {
         const dupCheck = await client.query(
           `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
@@ -672,97 +780,32 @@ exports.main = async (event) => {
             [prepaidAmount, targetOrderNo]
           )
           await recalcPaidSessionsForOrder(client, targetOrderNo)
+          prepaidConsumedThisCallback = prepaidAmount
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
           console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
         }
       }
 
-      // 3. 自动创建业绩分配（如有指定美容师）——以原销售单为准
-      if (targetOrder.preferred_employee_id) {
-        // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
-        const empRow = await client.query(
-          'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
-          [targetOrder.preferred_employee_id]
-        )
-        const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
-        const roleType = skills[0] || '美容师'
-
-        // 查询该订单的所有明细（含 sales_category 供销售提成固化快照用）
-        const itemsResult = await client.query(
-          'SELECT sale_item_id, received, sales_category FROM sale_items WHERE sale_order_id = $1',
-          [targetOrderNo]
-        )
-
-        // 销售提成固化快照：加载该市场「销售单」费率矩阵，tier 基准 = 订单级 received 合计
-        // 跨端约定（no-shared-cloudfunctions）：与 staffApi allocation.js buildSalesRateLookup /
-        // admin allocations.ts 同语义独立副本。
-        const orderTotalReceived = itemsResult.rows.reduce((s, i) => s + (Number(i.received) || 0), 0)
-        let salesRateGrouped = []
-        if (targetOrder.market_name) {
-          const rateRows = await client.query(
-            `SELECT crm.role_type, crm.sales_category,
-                    crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
-             FROM commission_rate_matrix crm
-             JOIN org_nodes n ON n.id = crm.org_id
-             WHERE n.name = $1 AND crm.order_type = '销售单'
-             ORDER BY crm.role_type, crm.amount_tier_min`,
-            [targetOrder.market_name]
-          )
-          const byKey = new Map()
-          for (const r of rateRows.rows) {
-            const dept = (r.role_type || '').trim()
-            const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
-            let entry = byKey.get(key)
-            if (!entry) {
-              entry = {
-                department: dept,
-                amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
-                amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-                orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
-              }
-              byKey.set(key, entry)
-              salesRateGrouped.push(entry)
-            }
-            entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
-          }
-        }
-        const lookupSalesRate = (role, salesCat, amount) => {
-          let hit = null
-          for (const r of salesRateGrouped) {
-            if (r.department !== role) continue
-            if (amount < r.amountMin || amount > r.amountMax) continue
-            const rate = r.orderRates[salesCat]
-            if (!rate || rate <= 0) continue
-            if (!hit || r.amountMin > hit.amountMin) hit = r
-          }
-          return (hit && hit.orderRates[salesCat]) || 0
-        }
-
-        // 为每个明细行创建分配记录（100% 给指定美容师）+ 销售提成固化快照
-        for (const item of itemsResult.rows) {
-          const salesCategory = item.sales_category || '自销自耗'
-          const commissionRate = lookupSalesRate(roleType, salesCategory, orderTotalReceived)
-          const commissionAmount = Math.round(Number(item.received) * commissionRate * 100) / 100
-          await client.query(
-            `INSERT INTO sale_allocations
-               (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
-                commission_rate, commission_amount, is_void, created_at, updated_at)
-             VALUES ($1, $2, $3, 1.00, $4, $5, $6, FALSE, $7, $7)
-             ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role DO NOTHING`,
-            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received,
-             commissionRate, commissionAmount, now]
-          )
-        }
-
-        // 自动分配已建（preferred 美容师 100% 全行）→ 翻「已分配」，
-        // 避免落入店长「待分配」列表诱导重复分配（店长仍可从「已分配」Tab 复核改派）。
-        // 无 preferred 的线上单不进此块，保持 CAS 落定的 '待分配' 让店长手动分。
-        await client.query(
-          `UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2`,
-          [now, targetOrderNo]
-        )
-      }
+      // 3. 按回款逐笔分配：捕获本次回款（线上付款 + 本次储值卡消费）逐项可分配额，
+      //    线上单自动 100% 分给开单销售员（提成率按本次回款额定档）；无 preferred 留待分配走手动。
+      const fullEventAmount = Math.round((thisPayAmount + prepaidConsumedThisCallback) * 100) / 100
+      const perItemFull = await capturePaymentAllocatables(client, {
+        salePaymentId: onlinePaymentId,
+        saleOrderId: targetOrderNo,
+        eventAmount: fullEventAmount,
+        directedItems: null,
+      })
+      await autoAllocateOnlinePayment(client, {
+        salePaymentId: onlinePaymentId,
+        saleOrderId: targetOrderNo,
+        perItem: perItemFull,
+        eventAmount: fullEventAmount,
+        preferredEmployeeId: targetOrder.preferred_employee_id,
+        marketName: targetOrder.market_name,
+        now,
+      })
+      await refreshOrderAllocationRollup(client, targetOrderNo)
 
       // 4. 重算顾客历史消费档位
       // spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随

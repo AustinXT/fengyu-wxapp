@@ -87,10 +87,10 @@ interface OrderSummary {
   paid_at?: string;
 }
 
-/** allocation.suggest API 响应 */
+/** allocation.suggestPayment API 响应（按回款逐笔分配；items[].received 为该笔回款逐项可分配额） */
 interface SuggestResponse {
   items: OrderItem[];
-  totalAmount: number;
+  totalAmount: number;       // = 本次回款额（eventAmount）
   rates: RateRow[];
   ratesByRole?: Record<string, Record<string, number>>;
   beautyRates?: Record<string, Record<string, number>>;
@@ -99,8 +99,13 @@ interface SuggestResponse {
   deptAnomalous: boolean;
   allocLines: SuggestLine[];
   candidateEmployees?: CandidateEmployee[];
+  existingAllocations?: AllocationRecord[];
   orderStoreId?: string;
-  frozen?: boolean; // 支付超 3 天冻结
+  saleOrderId?: string;
+  allocationStatus?: string;
+  customerName?: string;
+  paidAt?: string;
+  frozen?: boolean; // 到账超 3 天冻结
 }
 
 /** order.detail API 响应 */
@@ -127,6 +132,8 @@ Page({
   data: {
     loading: false,
     submitting: false,
+    // 按回款逐笔分配：本页以一笔回款（sale_payment_id）为单元
+    salePaymentId: 0,
     saleOrderId: '',
     order: null as OrderSummary | null,
     items: [] as OrderItem[],
@@ -172,41 +179,49 @@ Page({
       wx.navigateBack();
       return;
     }
-    const saleOrderId = options.saleOrderId;
-    if (saleOrderId) {
-      this.setData({ saleOrderId });
-      this.init(saleOrderId);
+    const salePaymentId = Number(options.salePaymentId);
+    if (salePaymentId) {
+      this.setData({ salePaymentId });
+      this.init(salePaymentId);
     }
   },
 
-  async init(saleOrderId: string) {
+  async init(salePaymentId: number) {
     this.setData({ loading: true });
     try {
-      const [suggestData, orderData, skillTagData] = await Promise.all([
-        callStaffApi<SuggestResponse>('allocation.suggest', { saleOrderId }),
-        callStaffApi<OrderDetailResponse>('order.detail', { saleOrderId }),
+      const [suggestData, skillTagData] = await Promise.all([
+        callStaffApi<SuggestResponse>('allocation.suggestPayment', { salePaymentId }),
         callStaffApi<{ skillTags: string[] }>('staff.skillTags', {}).catch(() => ({ skillTags: [] })),
       ]);
 
       const skillSheetActions = (skillTagData.skillTags || []).map(name => ({ name }));
 
-      const order = orderData.order;
-      const items: OrderItem[] = suggestData.items || orderData.items || [];
-      const totalAmount = suggestData.totalAmount || Number(order.totalAmount) || 0;
-      const isAllocated = order.allocation_status === '已分配';
+      // suggestPayment 自带订单/回款上下文，合成 order 摘要（不再单独拉 order.detail）
+      const items: OrderItem[] = suggestData.items || [];
+      const totalAmount = suggestData.totalAmount || 0;
+      const allocationStatus = suggestData.allocationStatus || '待分配';
+      const isAllocated = allocationStatus === '已分配';
+      const order: OrderSummary = {
+        saleOrderId: suggestData.saleOrderId || '',
+        status: '已支付',
+        totalAmount: String(totalAmount),
+        allocation_status: allocationStatus,
+        customer_name: suggestData.customerName,
+        paid_at: suggestData.paidAt,
+      };
       const rates: RateRow[] = suggestData.rates || [];
       const beautyRates: Record<string, Record<string, number>> =
         suggestData.ratesByRole || suggestData.beautyRates || {};
       const candidateEmployees = suggestData.candidateEmployees || [];
       const orderStoreId = suggestData.orderStoreId || '';
 
-      // suggest 上下文
       const isNewCustomer = suggestData.isNewCustomer || false;
       const beauticianInfo = suggestData.beauticianInfo || null;
       const deptAnomalous = suggestData.deptAnomalous || false;
 
       this.setData({
         order,
+        saleOrderId: order.saleOrderId,
         items,
         totalAmount,
         candidateEmployees,
@@ -222,8 +237,9 @@ Page({
         loading: false,
       });
 
-      if (isAllocated && orderData.allocations && orderData.allocations.length > 0) {
-        this.restoreAllocations(orderData.allocations, items);
+      const existing = suggestData.existingAllocations || [];
+      if (isAllocated && existing.length > 0) {
+        this.restoreAllocations(existing, items);
       } else {
         this.buildSuggestedItems(suggestData.allocLines || [], items);
       }
@@ -483,7 +499,7 @@ Page({
     const res = await new Promise<WechatMiniprogram.ShowModalSuccessCallbackResult>(resolve => {
       wx.showModal({
         title: '确认',
-        content: '确定标记该订单为无需分配吗？',
+        content: '确定标记该笔回款为无需分配吗？',
         success: resolve,
       });
     });
@@ -491,8 +507,8 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      await callStaffApi('allocation.save', {
-        saleOrderId: this.data.saleOrderId,
+      await callStaffApi('allocation.savePayment', {
+        salePaymentId: this.data.salePaymentId,
         allocations: [],
       });
       wx.showToast({ title: '已标记为无需分配', icon: 'success' });
@@ -511,7 +527,7 @@ Page({
       wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
       return;
     }
-    const { displayItems, saleOrderId } = this.data;
+    const { displayItems, salePaymentId } = this.data;
 
     // 收集完整行（技能标签 + 员工 + 分配比例 三者齐全）
     const effectiveLines: AllocLine[] = [];
@@ -566,7 +582,7 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      await callStaffApi('allocation.save', { saleOrderId, allocations });
+      await callStaffApi('allocation.savePayment', { salePaymentId, allocations });
       wx.showToast({ title: '分配已保存', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
     } catch (err: unknown) {

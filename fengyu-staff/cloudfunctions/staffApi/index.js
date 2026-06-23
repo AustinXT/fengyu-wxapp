@@ -88,10 +88,15 @@ const routes = {
   'inventory.list':       () => require('./routes/inventory').list,
   'inventory.detail':     () => require('./routes/inventory').detail,
 
-  // 营业额分配
+  // 营业额分配（按回款逐笔分配，当前口径）
+  'allocation.pendingPayments':         () => require('./routes/allocation').pendingPayments,
+  'allocation.suggestPayment':          () => require('./routes/allocation').suggestPayment,
+  'allocation.savePayment':             () => require('./routes/allocation').savePayment,
+  'allocation.deletePaymentAllocation': () => require('./routes/allocation').deletePaymentAllocation,
+  'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
+  // 订单级（旧口径，前端切换后移除）
   'allocation.save':         () => require('./routes/allocation').save,
   'allocation.delete':       () => require('./routes/allocation').deleteAllocation,
-  'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
   'allocation.pendingList':  () => require('./routes/allocation').pendingList,
   'allocation.suggest':      () => require('./routes/allocation').suggest,
 

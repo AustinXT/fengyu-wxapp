@@ -21,6 +21,7 @@ const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
+const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
@@ -225,13 +226,14 @@ async function deductPrepaidCardAtCreation(client, { saleOrderId, clientUserId, 
      ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
     [cardId, -amount, saleOrderId, `card-deduct-${saleOrderId}`]
   )
-  await client.query(
+  const ins = await client.query(
     `INSERT INTO sale_order_payments (
       sale_order_id, change_type, amount, payment_method, external_txn_id,
       status, source_end, operator_employee_id, note, created_at, paid_at
-    ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+    ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
     [saleOrderId, amount, staffWfId, note, now]
   )
+  return ins.rows[0].id
 }
 
 /**
@@ -1014,8 +1016,9 @@ async function create(ctx) {
     // 故 D4 混单守卫废除（migration 0043 同步拆触发器）。
 
     // 全额储值卡抵扣：事务内即时扣卡 + 写 '储值卡抵扣' 流水（与 confirmOffline 已支付分支对齐）。
+    let fullCardPaymentId = null
     if (isFullCardCoverage) {
-      await deductPrepaidCardAtCreation(client, {
+      fullCardPaymentId = await deductPrepaidCardAtCreation(client, {
         saleOrderId,
         clientUserId,
         amount: prepaidCardAmount,
@@ -1031,6 +1034,17 @@ async function create(ctx) {
     // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
     // 行级实付草稿现落 sale_items.pending_received，由 confirmOffline/payNotify 入账后才驱动 received→paid_sessions）。
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
+    if (fullCardPaymentId && prepaidCardAmount > 0) {
+      await capturePaymentAllocatables(client, {
+        salePaymentId: fullCardPaymentId,
+        saleOrderId,
+        eventAmount: prepaidCardAmount,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(client, saleOrderId)
+    }
 
     // 零应付即结清：触发与 confirmOffline 已支付分支一致的结算副作用（档位/客户分类/会员/积分/分享礼）。
     // 券全额单 receivedAmount=prepaidCardAmount=0 → 积分链净额=0 无写入、grantShareGift 自带 paid>0 门控跳过。
@@ -1295,6 +1309,9 @@ async function confirmOffline(ctx) {
     // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
     // （create 时 sale_orders.prepaid_card_amount 仅作为"预选"金额，此处才真正入账）
     const prepaidAmount = Number(order.prepaid_card_amount || 0)
+    // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
+    let cashPaymentId = null
+    let cardPaymentId = null
     if (prepaidAmount > 0 && order.client_user_id) {
       // 幂等：已扣过则跳过扣卡 + payments（用 card_transactions.ref_order_id 判定）
       const dupCheck = await client.query(
@@ -1328,13 +1345,14 @@ async function confirmOffline(ctx) {
           [cardId, -prepaidAmount, saleOrderId, `card-deduct-${saleOrderId}`]
         )
         // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
-        await client.query(
+        const cardIns = await client.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method, external_txn_id,
             status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
           [saleOrderId, prepaidAmount, ctx.auth.staffWfId, '店长确认线下收款-储值卡抵扣', now]
         )
+        cardPaymentId = cardIns.rows[0].id
       }
     }
 
@@ -1356,6 +1374,7 @@ async function confirmOffline(ctx) {
       if (insRes.rows.length === 0) {
         throw new Error('CONFLICT: 订单已收款，请勿重复提交')
       }
+      cashPaymentId = insRes.rows[0].id
     }
 
     // ========== 从流水重聚合 received / prepaid_card_amount（跨端字面对齐 admin confirmOfflinePayment + staff createRepayment）==========
@@ -1385,8 +1404,7 @@ async function confirmOffline(ctx) {
     const updateResult = await client.query(
       `UPDATE sale_orders
        SET status = $1, received = $2, prepaid_card_amount = $3, paid_at = $4, updated_at = $5,
-           offline_confirmed_by = $6, offline_confirmed_at = $5,
-           allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+           offline_confirmed_by = $6, offline_confirmed_at = $5
        WHERE sale_order_id = $7 AND status = $8`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
@@ -1431,6 +1449,21 @@ async function confirmOffline(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
+    const cashThis = cashPaymentId ? confirmAmount : 0
+    const cardThis = cardPaymentId ? prepaidAmount : 0
+    const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
+    const allocPrimaryId = cashPaymentId || cardPaymentId
+    if (allocPrimaryId && allocEventAmount > 0) {
+      await capturePaymentAllocatables(client, {
+        salePaymentId: allocPrimaryId,
+        saleOrderId,
+        eventAmount: allocEventAmount,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(client, saleOrderId)
+    }
 
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)
@@ -2537,24 +2570,31 @@ async function createRepayment(ctx) {
     //    子项定向（钱精确落选中卡）改由下方 5b 更新 sale_items.pending_received 承载（与 admin recordPayment 一致）。
     const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
     const repayPaidAt = isOnlinePaymentMethod(paymentMethod) ? null : now
+    // 回款事件主流水行 id（现金行优先；纯储值卡回款则取储值卡抵扣行）—— 按回款逐笔分配的归属键
+    let cashPaymentId = null
+    let cardPaymentId = null
     if (repayAmount > 0) {
-      await client.query(
+      const ins = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
           status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
+        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8) RETURNING id`,
         [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
       )
+      cashPaymentId = ins.rows[0].id
     }
     if (prepaidCardAmount > 0) {
-      await client.query(
+      const ins = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
           status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
         [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
       )
+      cardPaymentId = ins.rows[0].id
     }
+    // 线下/储值卡回款（微信已 reject）：现金行已支付，取其为主流水行；纯储值卡取抵扣行
+    const primaryPaymentId = repayStatusRow === '已支付' ? (cashPaymentId || cardPaymentId) : cardPaymentId
 
     // 5b) 子项定向：把本次每张卡补款落到 sale_items.pending_received，使下方 recalcPaidSessionsForOrder
     //     STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
@@ -2631,8 +2671,7 @@ async function createRepayment(ctx) {
     const updateRes = await client.query(
       `UPDATE sale_orders
          SET status = $1, received = $2, prepaid_card_amount = $3,
-             paid_at = $4, updated_at = $5,
-             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+             paid_at = $4, updated_at = $5
        WHERE sale_order_id = $6 AND status = $7`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, refSaleOrderId, locked.status]
     )
@@ -2642,6 +2681,21 @@ async function createRepayment(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
+
+    // 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态
+    const directedForCapture = repayItems
+      ? repayItems.map((it) => ({
+          saleItemId: it.saleItemId,
+          amount: Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100,
+        }))
+      : null
+    await capturePaymentAllocatables(client, {
+      salePaymentId: primaryPaymentId,
+      saleOrderId: refSaleOrderId,
+      eventAmount: totalThisTime,
+      directedItems: directedForCapture,
+    })
+    await refreshOrderAllocationRollup(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
@@ -3043,8 +3097,9 @@ async function createConversion(ctx) {
 
     // 8b. 补差额全额抵扣（priceDiff > 0 且 payable==0）：事务内即时扣卡 + 写 '储值卡抵扣' 流水。
     //     与 8（负差额充值）互斥（全额抵扣要求 priceDiff > 0）。
+    let convFullCardPaymentId = null
     if (isFullCardCoverage) {
-      await deductPrepaidCardAtCreation(tx, {
+      convFullCardPaymentId = await deductPrepaidCardAtCreation(tx, {
         saleOrderId: convOrderId,
         clientUserId,
         amount: card,
@@ -3057,6 +3112,17 @@ async function createConversion(ctx) {
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
     await recalcPaidSessionsForOrder(tx, convOrderId)
+
+    // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额（非定向）
+    if (convFullCardPaymentId && card > 0) {
+      await capturePaymentAllocatables(tx, {
+        salePaymentId: convFullCardPaymentId,
+        saleOrderId: convOrderId,
+        eventAmount: card,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(tx, convOrderId)
+    }
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
     if (isFullCardCoverage) {
