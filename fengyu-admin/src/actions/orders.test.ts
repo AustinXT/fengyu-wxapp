@@ -3023,18 +3023,28 @@ describe('recordPayment — 管理后台录入回款', () => {
     }
   })
 
-  it('入参校验：线下回款 + repayAmount>0 但未填 externalTxnId → INVALID_PARAMS', async () => {
+  it('线下回款不再强制 externalTxnId：未填流水号 → 成功，现金行 external_txn_id=null（2026-06-24 去校验）', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      sumRow: { new_received: '200', new_prepaid: '0' },
+    })
+
     const result = await recordPayment({
       saleOrderId: 'FY-XSD-WX-260420-0001',
       repayAmount: 100,
       paymentMethod: '线下',
-      // externalTxnId 缺失
+      // externalTxnId 缺失：不再被拦截
     })
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.code).toBe('INVALID_PARAMS')
-      expect(result.error.message).toContain('外部交易号')
-    }
+
+    expect(result.success).toBe(true)
+    const paymentInsert = captured.insertValues[0].v
+    expect(paymentInsert).toMatchObject({
+      changeType: '回款',
+      amount: '100.00',
+      paymentMethod: '线下',
+      externalTxnId: null,
+    })
   })
 
   it('入参校验：储值卡 + repayAmount>0 → INVALID_PARAMS（语义冲突）', async () => {

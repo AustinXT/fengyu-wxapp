@@ -3194,17 +3194,10 @@ export const recordPayment = withPermission(
     }
   }
 
-  // 线下回款必须填 externalTxnId（作为审计凭证；银行回执号/扫码流水号）
+  // externalTxnId 可选（保留作审计凭证：银行回执号/扫码流水号）。
+  // 线下不再强制：线下现金行写 external_txn_id=NULL，不受 uq_sop_txn（partial WHERE NOT NULL）
+  // 与 chk_sop_method_txn（仅约束微信/支付宝）约束。
   const externalTxnId = input.externalTxnId?.trim() || null
-  if (paymentMethod === '线下' && repayAmount > 0 && !externalTxnId) {
-    return {
-      success: false,
-      error: {
-        code: 'INVALID_PARAMS',
-        message: '线下回款必须填写外部交易号（银行回执号/流水号）',
-      },
-    }
-  }
 
   // 事务：锁原单 + 校验 + 扣卡 + 插凭证单 + 插 payments + 重算原单
   let result: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string }
