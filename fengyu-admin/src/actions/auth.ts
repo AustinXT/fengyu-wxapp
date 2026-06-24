@@ -10,7 +10,7 @@ import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, sql } from 'drizzle-orm'
-import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { computeActions, expandScopeStoreIds, canAccessAdmin } from '@/lib/permissions'
 import { decryptPassword } from '@/lib/password-transit'
 import { JWT_SECRET } from '@/lib/jwt-secret'
 import { withPermission } from '@/lib/with-permission'
@@ -152,6 +152,16 @@ export async function login(
 
   await clearFailure(phone)
 
+  // 禁止普通员工登录：staff（无任何管理角色）专供小程序端，不得进入 admin 后台。
+  // 密码已验证通过，不计入失败锁定（不 recordFailure），仅拒发 token。
+  const adminRoleRows = await db
+    .select({ role: permissionRoles.role })
+    .from(permissionRoles)
+    .where(eq(permissionRoles.employeeId, staff.employeeId))
+  if (!canAccessAdmin(adminRoleRows)) {
+    return { success: false, message: '账号权限不足，无法登录管理后台' }
+  }
+
   // 签发 JWT（含 mustChange 标记，供 middleware 零 DB 查询判断）
   const token = await new SignJWT({ employeeId: staff.employeeId, mustChange: pwRow.mustChange })
     .setProtectedHeader({ alg: 'HS256' })
@@ -256,6 +266,10 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
       scopeId: r.scopeId,
       scopeType: (r.scopeType ?? '门店') as '总部' | '市场' | '门店',
     }))
+
+    // 二次闸：禁止普通员工（仅 staff 角色）持 token 访问后台——挡住登录闸上线前已发的 token，
+    // 或 token 有效期内被降级为纯 staff 的用户。返回 null 触发 middleware 跳登录页。
+    if (!canAccessAdmin(roles)) return null
 
     // 计算权限（computeActions 自 2026-05-18 起异步：从 DB 取权限矩阵 + 30s 缓存）
     const actions = await computeActions(roles)

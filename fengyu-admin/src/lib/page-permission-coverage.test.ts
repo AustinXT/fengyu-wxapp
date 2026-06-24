@@ -107,11 +107,11 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/employees/create', parent: '/employees', entryGate: 'employee:create', clauses: ['employee:list', 'org:list', 'store:list'] },
   { href: '/stores/[id]/edit', parent: '/stores', clauses: ['store:list'] },
   { href: '/stores/create', parent: '/stores', entryGate: 'store:create', clauses: ['org:list'] },
-  // 商户管理（merchant:list 列表/详情/编辑；manager 只读可见列表，新建/编辑/删除入口按权限隐藏）
+  // 商户管理：menu /merchants 门槛改 merchant:list 后，manager 等只读角色也可见列表/详情；
+  // 新建/编辑入口按 merchant:create / merchant:update 隐藏（只读角色触达不了）；
+  // create 页 SSR 取市场下拉(merchant:list) + merchant:create 闸门。
   { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
-  // 编辑页入口（详情页「编辑」按钮）受 merchant:update 保护；页面 SSR 仅查询（merchant:list）
   { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
-  // 新建按钮按 merchant:create 隐藏（manager 点不到）；create 页 SSR 取市场下拉（merchant:list）+ merchant:create 闸门
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
   // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
   { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
@@ -139,11 +139,13 @@ function missingClauses(role: RoleType, clauses: Clause[]): Clause[] {
   return clauses.filter((c) => (Array.isArray(c) ? !c.some((a) => holds(role, a)) : !holds(role, c)))
 }
 
-/** menu 中某 href 的可见角色（requiredRoles ∪ readonlyRoles）。 */
+/** menu 中某 href 的可见角色（持有该项 requiredActions 任一的角色；门槛 action 反推）。 */
 function seenBy(href: string): RoleType[] {
   for (const group of MENU_CONFIG) {
     for (const item of group.items) {
-      if (item.href === href) return [...item.requiredRoles, ...(item.readonlyRoles ?? [])]
+      if (item.href === href) {
+        return ALL_ROLES.filter((role) => item.requiredActions.some((a) => holds(role, a)))
+      }
     }
   }
   return []
