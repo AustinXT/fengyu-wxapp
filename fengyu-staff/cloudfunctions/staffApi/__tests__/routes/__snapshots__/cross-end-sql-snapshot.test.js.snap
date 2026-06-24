@@ -36,6 +36,6 @@ exports[`服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceOr
 {
   "commInsert": "INSERT INTO service_commissions (service_item_id, employee_id, role_type, allocation_ratio, commission_rate, commission_amount, fixed_fee, consume_amount, is_void) VALUES (?, ?, ?, 1.00, ?, ?, ?, ?, FALSE) ON CONFLICT (service_item_id, employee_id, role_type) WHERE is_void = false DO NOTHING",
   "deduct": "UPDATE sale_items SET remaining_sessions = remaining_sessions - ? WHERE sale_item_id = ? AND remaining_sessions >= ? AND remaining_sessions IS NOT NULL AND (session_count - remaining_sessions + ?) <= COALESCE(paid_sessions, session_count)",
-  "rate": "SELECT commission_rate FROM commission_rate_matrix WHERE order_type = '服务单' AND role_type = ? AND sales_category = ? AND amount_tier_min <= ? AND (amount_tier_max IS NULL OR amount_tier_max >= ?) ORDER BY amount_tier_min DESC LIMIT 1",
+  "rate": "SELECT commission_rate FROM commission_rate_matrix WHERE order_type = '服务单' AND role_type = ? AND sales_category = ? AND amount_tier_min <= ? AND (amount_tier_max IS NULL OR amount_tier_max >= ?) AND org_id = (SELECT m.id FROM service_orders so JOIN stores s ON so.store_id = s.store_id JOIN org_nodes son ON s.org_node_id = son.id JOIN org_nodes m ON son.parent_id = m.id WHERE so.service_order_id = ?) ORDER BY amount_tier_min DESC LIMIT 1",
 }
 `;
