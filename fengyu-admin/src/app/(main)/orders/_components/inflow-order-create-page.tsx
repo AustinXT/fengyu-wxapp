@@ -98,6 +98,8 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         storeId,
         amount: amountNum,
         remark: remark.trim() || null,
+        // 幂等 token：本次提交唯一，重复提交 / 重试携带同值，后端据此去重防重复入账
+        requestId: `inflow-${selectedCustomer.userId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
       })
       if (res.success && res.saleOrderId) {
         toast.success(res.message)

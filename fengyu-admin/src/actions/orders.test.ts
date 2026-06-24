@@ -1393,7 +1393,12 @@ describe('P0-15-01 修复：admin 两触发点必须调用 settlePointsSafe', ()
           }
           return Promise.resolve({ rowCount: 1 })
         }),
-        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+        // 合并回款现金/储值卡行用 .returning({id}) 取回 id；直接 await 仍解析为 {}
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve({}), { returning: vi.fn().mockResolvedValue([{ id: 1 }]) }),
+          ),
+        }),
       }
       return fn(tx)
     })
@@ -2784,7 +2789,8 @@ describe('recordPayment — 管理后台录入回款', () => {
         insert: vi.fn().mockImplementation((table: any) => ({
           values: vi.fn().mockImplementation((v: any) => {
             captured.insertValues.push({ table: String(table?.constructor?.name || 'unknown'), v })
-            return Promise.resolve({})
+            // 合并回款现金/储值卡行用 .returning({id}) 取回 id；直接 await 仍解析为 {}
+            return Object.assign(Promise.resolve({}), { returning: vi.fn().mockResolvedValue([{ id: 1 }]) })
           }),
         })),
       }

@@ -218,8 +218,30 @@ async function inflow(ctx) {
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'
   const note = remark ? `${LEGACY_INFLOW_NOTE}｜${remark}` : LEGACY_INFLOW_NOTE
 
+  // 幂等 token：前端每次提交生成、CloudBase SDK 自动重试携带同一值，后端据此去重，杜绝网络重试重复入账
+  const requestId = typeof payload.requestId === 'string' && payload.requestId ? payload.requestId : null
+
   let saleOrderId
+  let idempotentHit = false
   await pg.transaction(async (client) => {
+    // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / SDK 重试）。键与 'sale_order_id_gen' 互异、
+    // 且本路径恒「先顾客锁后订单号锁」，其它路径不持顾客锁，不构成跨锁死锁。
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card_inflow:${clientUserId}`])
+
+    // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
+    // 注：事务内 client.query() 返回原生 node-pg Result（取 .rows），与模块级 pg.query（已解包成数组）不同
+    if (requestId) {
+      const dup = await client.query(
+        `SELECT ref_order_id FROM card_transactions WHERE external_ref = $1 LIMIT 1`,
+        [`card-inflow-${requestId}`]
+      )
+      if (dup.rows.length > 0) {
+        saleOrderId = dup.rows[0].ref_order_id
+        idempotentHit = true
+        return
+      }
+    }
+
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const now = new Date()
@@ -277,7 +299,8 @@ async function inflow(ctx) {
       `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
        VALUES ($1, '充值', $2, $3, $4, NOW())
        ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-      [cardId, amt, saleOrderId, `card-topup-${saleOrderId}`]
+      // 优先用 requestId 幂等键（防重复入账）；无 token 时回退订单号键（与 confirmOffline 一致）
+      [cardId, amt, saleOrderId, requestId ? `card-inflow-${requestId}` : `card-topup-${saleOrderId}`]
     )
 
     // 审计日志
@@ -294,7 +317,7 @@ async function inflow(ctx) {
     saleOrderId,
     amount: amt,
     status: '已支付',
-    message: '转入成功',
+    message: idempotentHit ? '转入已完成（请勿重复提交）' : '转入成功',
   }
 }
 

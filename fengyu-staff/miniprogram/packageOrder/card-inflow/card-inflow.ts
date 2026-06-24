@@ -59,12 +59,23 @@ Page({
     ctaText: '请输入转入金额',
     ctaDisabled: true,
     submitting: false,
+
+    // 幂等 token：本次进入页面唯一，跨「提交失败后重试」稳定复用。
+    // 后端据此去重：超时丢响应后用户再次点击不会重复入账（命中既有转入单则复用）。
+    // 成功即 redirectTo 离开本页 → 下次进入重新生成，天然「一次进入一次转入」。
+    inflowReqId: '',
   },
 
   onLoad(query: Record<string, string>) {
     const storeId = app.globalData.boundStoreId || '';
     const storeName = app.globalData.boundStoreName || '';
-    this.setData({ boundStoreId: storeId, boundStoreName: storeName, isManager: isManager() });
+    this.setData({
+      boundStoreId: storeId,
+      boundStoreName: storeName,
+      isManager: isManager(),
+      // 本次进入页面生成稳定幂等 token（跨重试复用，成功离开页后下次重新生成）
+      inflowReqId: `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+    });
 
     // 可选：从 URL 参数预填顾客（如从顾客详情带入）
     if (query?.clientUserId && query?.customerName) {
@@ -218,6 +229,8 @@ Page({
       const payload: Record<string, unknown> = {
         clientUserId: customerInfo.clientUserId,
         amount,
+        // 幂等 token：本次提交唯一，SDK 自动重试携带同值，后端据此去重防重复入账
+        requestId: `inflow-${customerInfo.clientUserId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
       };
       const trimmedRemark = (remark || '').trim();
       if (trimmedRemark) payload.remark = trimmedRemark;

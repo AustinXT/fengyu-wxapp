@@ -73,6 +73,9 @@ async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Pr
 async function applyRechargeOnOrderPaid(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   saleOrderId: string,
+  // 可选幂等键覆盖：充值金转入(inflow)传 card-inflow-{requestId} 以跨「不同订单号的重试」去重；
+  // 不传则沿用 card-topup-{saleOrderId}（confirmOfflinePayment / createRechargeOrder 原行为不变）。
+  externalRef?: string,
 ): Promise<void> {
   const [order] = await tx
     .select({
@@ -112,7 +115,7 @@ async function applyRechargeOnOrderPaid(
 
   await tx.execute(sql`
     INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
-    VALUES (${cardId}, '充值', ${faceValue.toFixed(2)}, ${saleOrderId}, ${'card-topup-' + saleOrderId})
+    VALUES (${cardId}, '充值', ${faceValue.toFixed(2)}, ${saleOrderId}, ${externalRef || 'card-topup-' + saleOrderId})
     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
   `)
 }
@@ -2899,6 +2902,7 @@ export const createPrepaidInflow = withPermission(
       storeId: string
       amount: number
       remark?: string | null
+      requestId?: string // 幂等 token：重复提交 / 重试携带同值，后端据此去重防重复入账
     },
   ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
     if (!data.clientUserId) return { success: false, message: '请选择顾客' }
@@ -2938,10 +2942,21 @@ export const createPrepaidInflow = withPermission(
     if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
     const marketName = storeRows[0].market_name || ''
     const note = data.remark ? `${LEGACY_INFLOW_NOTE}｜${data.remark}` : LEGACY_INFLOW_NOTE
+    // 幂等键：前端每次提交生成 requestId，重复提交 / 重试携带同值 → 据此去重防重复入账
+    const inflowRef = data.requestId ? `card-inflow-${data.requestId}` : null
 
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
+        // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / 重试），先于订单号锁获取
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'card_inflow:' + data.clientUserId}))`)
+        // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
+        if (inflowRef) {
+          const dupRows = (await tx.execute(sql`
+            SELECT ref_order_id FROM card_transactions WHERE external_ref = ${inflowRef} LIMIT 1
+          `)) as unknown as Array<{ ref_order_id: string }>
+          if (dupRows.length > 0) return dupRows[0].ref_order_id as string
+        }
         const idRows = await tx.execute(sql`
           WITH lock AS (
             SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
@@ -3003,8 +3018,9 @@ export const createPrepaidInflow = withPermission(
           paidAt: new Date(),
         })
 
-        // 充值入账（复用 applyRechargeOnOrderPaid：balance += total + card_transactions 充值，幂等键 card-topup-{id}）
-        await applyRechargeOnOrderPaid(tx, id)
+        // 充值入账（复用 applyRechargeOnOrderPaid：balance += total + card_transactions 充值）。
+        // 转入传 card-inflow-{requestId} 幂等键，使「不同订单号的重试」也能去重防重复入账。
+        await applyRechargeOnOrderPaid(tx, id, inflowRef ?? undefined)
 
         return id
       })
