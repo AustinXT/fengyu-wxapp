@@ -100,9 +100,15 @@ export async function callStaffApi<T = any>(
   if (res.result?.code !== 0) {
     // 与 callClientApi 对称：把 code/errorType/data 挂到 Error 实例，
     // 调用方按 err.errorType 路由不同 UI 分支（如 PERMISSION_DENIED 走"返回上一页"）
-    const err: StaffApiError = new Error(sanitizeErrorMessage(res.result?.message, '请求失败'))
+    const errorType = res.result?.errorType
+    // errorType 非空 = 命中 9 项白名单 = 后端已剥前缀的友好业务文案，原样透传；
+    // errorType 为空 = 未知/系统错误，仍过 sanitize 兜底，避免泄露技术细节
+    const message = errorType
+      ? (res.result?.message || '请求失败')
+      : sanitizeErrorMessage(res.result?.message, '请求失败')
+    const err: StaffApiError = new Error(message)
     err.code = res.result?.code
-    err.errorType = res.result?.errorType
+    err.errorType = errorType
     err.data = res.result?.data
     throw err
   }

@@ -1,6 +1,29 @@
 import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission } from '@/lib/permissions'
+import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
+
+/**
+ * 给白名单前缀的业务错误补 `digest`，穿透 Next.js 生产构建对 Server Action `error.message`
+ * 的脱敏（生产下 message 被替换为通用文案，但自定义 digest 原样转发）。客户端
+ * `actionErrorMessage()` 优先读 digest 并剥前缀，故后端的精确业务文案得以到达前端。
+ *
+ * 与云函数 `buildErrorResponse` / 小程序 `errorType` 判断同构：
+ * - 已带 digest（如 `PermissionError` 的 `'PERMISSION_DENIED'`）→ 不覆盖；
+ * - 命中 9 项白名单前缀（`CONFLICT:` / `INVALID_STATE:` …）→ 把可读 message 写入 digest；
+ * - 非白名单（`TypeError` / 未预期 DB 错误等系统错误）→ 不补 digest，保持脱敏 →
+ *   客户端回退兜底文案，避免泄露 SQL / 堆栈等技术细节。
+ */
+function rethrowWithDigest(err: unknown): never {
+  if (
+    err instanceof Error &&
+    !(err as { digest?: unknown }).digest &&
+    parseErrorPrefix(err.message)
+  ) {
+    ;(err as { digest?: string }).digest = err.message
+  }
+  throw err
+}
 
 /**
  * 包装 Server Action 的统一鉴权 HOF：先 getSession + requirePermission，再调业务函数。
@@ -27,7 +50,11 @@ export function withPermission<Args extends unknown[], R>(
   return async (...args: Args) => {
     const session = await getSession()
     requirePermission(session, action)
-    return fn(session, ...args)
+    try {
+      return await fn(session, ...args)
+    } catch (err) {
+      rethrowWithDigest(err)
+    }
   }
 }
 
@@ -43,6 +70,10 @@ export function withAnyPermission<Args extends unknown[], R>(
   return async (...args: Args) => {
     const session = await getSession()
     requireAnyPermission(session, actions)
-    return fn(session, ...args)
+    try {
+      return await fn(session, ...args)
+    } catch (err) {
+      rethrowWithDigest(err)
+    }
   }
 }

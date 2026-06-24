@@ -174,4 +174,50 @@ describe('callClientApi 网络错误防护', () => {
     const data = await callClientApi<{ orders: any[] }>('order.list', {})
     expect(data.orders).toHaveLength(1)
   })
+
+  // ===== errorType 透传：白名单业务错误信任后端文案，跳过 sanitize =====
+
+  test('白名单业务错误（errorType 非空）长文案原样透传，不被 sanitize 截断', async () => {
+    const longMsg = '储值卡余额不足：本次开单实付 ¥88.00，当前账户可用余额仅 ¥12.00，尚差 ¥76.00，请先为顾客充值或调整本单的储值卡抵扣方案后再重新提交订单'
+    expect(longMsg.length).toBeGreaterThan(60)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -400, message: longMsg, errorType: 'INSUFFICIENT_BALANCE', data: null },
+    })
+
+    try {
+      await callClientApi('order.create', {})
+      expect.unreachable('should throw')
+    } catch (err: any) {
+      expect(err.message).toBe(longMsg)
+      expect(err.errorType).toBe('INSUFFICIENT_BALANCE')
+      expect(err.code).toBe(-400)
+    }
+  })
+
+  test('系统错误（errorType 为空）长文案仍被 sanitize 兜底为 fallback', async () => {
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -1, message: 'A'.repeat(80), errorType: null, data: null },
+    })
+
+    try {
+      await callClientApi('order.create', {})
+      expect.unreachable('should throw')
+    } catch (err: any) {
+      expect(err.message).toBe('请求失败')
+      expect(err.code).toBe(-1)
+    }
+  })
+
+  test('系统错误（errorType 为空）含技术关键词仍被 sanitize 兜底', async () => {
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -1, message: 'duplicate key violates unique constraint', errorType: null },
+    })
+
+    try {
+      await callClientApi('order.create', {})
+      expect.unreachable('should throw')
+    } catch (err: any) {
+      expect(err.message).toBe('请求失败')
+    }
+  })
 })
