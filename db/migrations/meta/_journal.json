@@ -512,6 +512,13 @@
       "when": 1782259513925,
       "tag": "0072_known_owl",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1782274443346,
+      "tag": "0073_nostalgic_talisman",
+      "breakpoints": true
     }
   ]
 }

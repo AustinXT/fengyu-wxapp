@@ -1,5 +1,6 @@
-import { pgTable, text, boolean, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, boolean, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+import { orgNodes } from './org'
 
 /**
  * 拉卡拉收款商户档案（一店一商户的收款配置权威来源）。
@@ -20,6 +21,16 @@ export const lakalaMerchants = pgTable(
     termNo: text('term_no'),
     /** 启用真实支付通道；false 时走兜底不调拉卡拉 */
     enabled: boolean('enabled').notNull().default(false),
+    /**
+     * 所属市场（指向 org_nodes type='市场' 节点）。admin 商户管理按此做市场 scope 过滤与筛选。
+     * 可空：未分配市场的商户对非 admin 隐藏，admin 仍可见并补填。区别于 stores.org_node_id（门店节点）。
+     * ON DELETE SET NULL：市场节点删除时清空关联，商户不跟随删除。
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    marketOrgNodeId: text('market_org_node_id').references((): any => orgNodes.id, {
+      onDelete: 'set null',
+      onUpdate: 'cascade',
+    }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -29,6 +40,8 @@ export const lakalaMerchants = pgTable(
     uniqueIndex('uq_lakala_merchants_merchant_no')
       .on(table.merchantNo)
       .where(sql`${table.merchantNo} IS NOT NULL`),
+    // 市场 scope 过滤 / 市场筛选用
+    index('idx_lakala_merchants_market_org_node_id').on(table.marketOrgNodeId),
   ],
 )
 
