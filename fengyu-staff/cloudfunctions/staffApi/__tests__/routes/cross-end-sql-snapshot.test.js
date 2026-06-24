@@ -1301,6 +1301,11 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
     test("order_type = '服务单' 限定（防误取销售单费率）", () => {
       expect(rate.staff).toContain("order_type = '服务单'")
     })
+    test('按服务单所属市场过滤（org_id = store→org 树解析市场节点，防跨市场费率行碰撞）', () => {
+      expect(rate.staff).toContain('org_id =')
+      expect(rate.staff).toContain('JOIN org_nodes m ON son.parent_id = m.id')
+      expect(rate.client).toContain('org_id =')
+    })
   })
 
   describe('service_commissions 写入 INSERT 镜像比对', () => {

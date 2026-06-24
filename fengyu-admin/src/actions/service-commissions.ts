@@ -231,6 +231,14 @@ export const batchSaveServiceCommissions = withPermission(
               sql`${commissionRateMatrix.salesCategory} = ${salesCategory}`,
               sql`${commissionRateMatrix.amountTierMin} <= ${consumeBase}`,
               sql`(${commissionRateMatrix.amountTierMax} IS NULL OR ${commissionRateMatrix.amountTierMax} >= ${consumeBase})`,
+              // 按服务单所属市场过滤（service_order→store→org 树解析市场节点），避免跨市场费率行碰撞；与三端云函数镜像
+              sql`${commissionRateMatrix.orgId} = (
+                SELECT m.id FROM service_orders so
+                  JOIN stores s ON so.store_id = s.store_id
+                  JOIN org_nodes son ON s.org_node_id = son.id
+                  JOIN org_nodes m ON son.parent_id = m.id
+                 WHERE so.service_order_id = ${serviceOrderId}
+              )`,
             ))
             .orderBy(desc(commissionRateMatrix.amountTierMin))
             .limit(1)

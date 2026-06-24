@@ -112,9 +112,16 @@ async function finalizeServiceOrder(client, so, items, now) {
          AND sales_category = $2
          AND amount_tier_min <= $3
          AND (amount_tier_max IS NULL OR amount_tier_max >= $3)
+         AND org_id = (
+           SELECT m.id FROM service_orders so
+             JOIN stores s ON so.store_id = s.store_id
+             JOIN org_nodes son ON s.org_node_id = son.id
+             JOIN org_nodes m ON son.parent_id = m.id
+            WHERE so.service_order_id = $4
+         )
        ORDER BY amount_tier_min DESC
        LIMIT 1`,
-      [roleType, row.sales_category, consumeBase]
+      [roleType, row.sales_category, consumeBase, serviceOrderId]
     )
     const rate = Number(rateRows.rows[0]?.commission_rate || 0)
     const consumeAmount = Math.round(consumeBase * rate * 100) / 100
