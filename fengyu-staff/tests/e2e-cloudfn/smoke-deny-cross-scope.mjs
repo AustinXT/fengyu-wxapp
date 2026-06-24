@@ -89,12 +89,12 @@ async function run() {
     'PERMISSION_DENIED',
     'cross-store.customer.detail'))
 
-  // 2) A1 店长读 A2 订单详情 → INVALID_PARAMS（设计选择：order.detail 用 store_id WHERE 过滤，
-  //    跨店订单返回"不存在或不属于本门店"，不暴露具体 scope 信息）
+  // 2) A1 店长读 A2 订单详情 → PERMISSION_DENIED（IDOR 守卫 b8726848 后：order.detail 命中订单但
+  //    顾客/门店不在本 scope 内时抛"无权查看该订单"，与其它跨店拒绝口径统一；不再用 INVALID_PARAMS 兜底）
   results.push(await expectFail('order.detail',
     { _testOpenid: MGR_A1.oid, saleOrderId: ORDER_A2 },
-    'INVALID_PARAMS',
-    'cross-store.order.detail (impl uses INVALID_PARAMS to hide scope leakage)'))
+    'PERMISSION_DENIED',
+    'cross-store.order.detail'))
 
   // 3) A1 店长读 A2 员工绩效 → PERMISSION_DENIED（assertEmployeeInScope）
   const todayMonth = new Date().toISOString().slice(0, 7)

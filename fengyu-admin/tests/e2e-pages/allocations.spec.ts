@@ -8,10 +8,13 @@ test.describe('营业额分配列表', () => {
 
   test('表格列头完整', async ({ page }) => {
     await page.goto('/allocations')
+    // 销售提成默认 Tab 已下沉到「回款维度」(SaleAllocationTable)：
+    // 列为 回款(类型+金额) / 顾客 / 门店 / 订单号 / 分配状态 / 到账时间 / 操作，
+    // 不再有单独的「订单金额」列（仅保留在 xlsx 导出列）。
     await expect(page.getByRole('columnheader', { name: '订单号' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '分配状态' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '顾客' })).toBeVisible()
-    await expect(page.getByRole('columnheader', { name: '订单金额' })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '回款' })).toBeVisible()
   })
 
   test('分配状态筛选改写 URL 且跨 Tab 保留', async ({ page }) => {

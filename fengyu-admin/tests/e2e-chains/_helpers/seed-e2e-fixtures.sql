@@ -38,10 +38,11 @@ ON CONFLICT (id) DO NOTHING;
 -- 2. stores：3 个测试门店
 --    org_node_id 一对一 FK；存在 stores_org_node_id_unique 唯一索引
 -- ----------------------------------------------------------------------------
-INSERT INTO stores (store_id, store_name, org_node_id, is_closed, lakala_enabled) VALUES
-  ('store-nc01', '南昌旗舰店（E2E）', 'org-store-nc01', false, false),
-  ('store-nc02', '青山湖店（E2E）', 'org-store-nc02', false, false),
-  ('b79a82e33d6cf4f3', '南昌龙珠店（E2E）', 'org-store-other', false, false)
+-- 商户模块化后 stores 收款字段迁出，仅留 lakala_merchant_id 外键（默认 NULL）；不再有 lakala_enabled 快照列。
+INSERT INTO stores (store_id, store_name, org_node_id, is_closed) VALUES
+  ('store-nc01', '南昌旗舰店（E2E）', 'org-store-nc01', false),
+  ('store-nc02', '青山湖店（E2E）', 'org-store-nc02', false),
+  ('b79a82e33d6cf4f3', '南昌龙珠店（E2E）', 'org-store-other', false)
 ON CONFLICT (store_id) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
