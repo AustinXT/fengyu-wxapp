@@ -1130,6 +1130,12 @@ Page({
       // 购物车弹层
       cartPopupVisible: false,
     });
+    // 券/特价等表单态已重置（couponDiscount=0、selectedCoupon=null）后，按保留的购物车重算应付/实付合计
+    // 及各行 saleAmount/received；否则重开结算面板会沿用上次折后 payableTotal，且提交时行 received
+    // 仍为折后值（券已清）→ 应付 / 实付 / 券记录不一致。setData 已同步更新 this.data，updateCart 即按无券重算。
+    if (this.data.cart.length > 0) {
+      this.updateCart(this.data.cart);
+    }
   },
 
   /**
