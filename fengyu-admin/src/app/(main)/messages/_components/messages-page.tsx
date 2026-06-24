@@ -53,6 +53,7 @@ const MESSAGE_TYPE_LABELS: Record<string, string> = {
   promotion: '促销',
   service: '服务',
   system: '系统',
+  appointment: '预约',
 }
 
 /** 关联实体类型英文枚举 → 中文展示（未知值回退原值） */
@@ -609,13 +610,18 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium">分类</label>
-              <Input
-                maxLength={50}
-                placeholder="例如 system / promotion（可选，≤50 字）"
+              <Select
+                className="max-w-xs"
                 value={batchType}
                 onChange={(e) => setBatchType(e.target.value)}
-                className="max-w-xs"
-              />
+              >
+                <option value="">不分类</option>
+                {Object.entries(MESSAGE_TYPE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
             </div>
           </div>
 
