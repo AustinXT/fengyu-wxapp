@@ -1883,6 +1883,16 @@ async function detail(ctx) {
     allocation_status: p.allocation_status,
   }))
 
+  // 顾客储值卡余额（供回款弹层「使用储值卡抵扣」自动抵满；无账户=0，无顾客=null）
+  let cardBalance = null
+  if (order.client_user_id) {
+    const balRows = await pg.query(
+      'SELECT balance FROM prepaid_cards WHERE user_id = $1 LIMIT 1',
+      [order.client_user_id]
+    )
+    cardBalance = balRows.length > 0 ? Number(balRows[0].balance) : 0
+  }
+
   ctx.result = {
     order: {
       ...order,
@@ -1893,6 +1903,7 @@ async function detail(ctx) {
     items,
     allocations,
     payments,
+    cardBalance,
   }
 }
 
