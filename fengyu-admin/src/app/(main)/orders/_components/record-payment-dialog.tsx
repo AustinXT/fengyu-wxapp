@@ -11,11 +11,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { recordPayment, getRepayable, generateOrderWxacode } from "@/actions/orders"
 
 /**
- * 录入回款弹层（ticket 2026-05-21 按子项定向回款；2026-06-24 加微信/支付宝在线回款）
+ * 录入回款弹层（ticket 2026-05-21 按子项定向回款；2026-06-24 重构：储值卡改独立抵扣勾选）
  *
- * 线下 / 储值卡：admin 后台即时记账（recordPayment），可按子项定向回款。
- * 微信 / 支付宝：店员先（可选）扣储值卡即时入账，剩余生成 client 小程序码让顾客扫码进收银台在线付，
- *   payNotify 回调写 change_type='回款'（与首付同一管道，admin 不直接收线上钱）。
+ * 交互：支付方式三选一（线下 / 微信 / 支付宝）；各子项填「实付金额」；
+ *   储值卡作为独立勾选项，勾选后自动抵满 min(余额, 实付合计)，按子项实付比例摊分入账。
+ * 线下：即时记账（recordPayment paymentMethod='线下'，含储值卡抵扣）。
+ * 微信 / 支付宝：储值卡部分先即时扣（paymentMethod='储值卡'），剩余生成 client 小程序码让顾客扫码在线付，
+ *   payNotify 回调写 change_type='回款'（admin 不直接收线上钱）。
  */
 type RepayableItem = {
   saleItemId: string
@@ -25,7 +27,7 @@ type RepayableItem = {
   remaining: string
 }
 
-type PayMethod = "线下" | "储值卡" | "微信" | "支付宝"
+type PayMethod = "线下" | "微信" | "支付宝"
 
 export function RecordPaymentDialog({
   open,
@@ -49,17 +51,17 @@ export function RecordPaymentDialog({
   const [items, setItems] = useState<RepayableItem[]>([])
   const [remainingPayable, setRemainingPayable] = useState<number>(remainingPayableProp)
   const [cardBalance, setCardBalance] = useState<number | null>(cardBalanceProp)
-  // 各子项现金 / 储值卡输入（saleItemId → 金额字符串）
-  const [lineCash, setLineCash] = useState<Record<string, string>>({})
-  const [lineCard, setLineCard] = useState<Record<string, string>>({})
+  // 各子项实付金额（saleItemId → 金额字符串）
+  const [lineReal, setLineReal] = useState<Record<string, string>>({})
+  // 是否用储值卡抵扣（勾选后自动抵满 min(余额, 实付合计)）
+  const [useCard, setUseCard] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState<PayMethod>("线下")
-  const [externalTxnId, setExternalTxnId] = useState<string>("")
   const [note, setNote] = useState<string>("")
-  // 在线收款码（微信/支付宝）：店员先扣储值卡后，生成 client 小程序码让顾客扫码付剩余
+  // 在线收款码（微信/支付宝）：储值卡先扣后，生成 client 小程序码让顾客扫码付剩余
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [qrAmount, setQrAmount] = useState<number>(0)
 
-  // 打开时拉取可回款子项；默认线下、每行现金 = 该行可回款额（操作员可改小或清零）
+  // 打开时拉取可回款子项；默认每行实付 = 该行可回款额（操作员可改小或清零）
   useEffect(() => {
     if (!open) return
     let cancelled = false
@@ -71,16 +73,11 @@ export function RecordPaymentDialog({
         setItems(res.items)
         setRemainingPayable(res.remainingPayable)
         setCardBalance(res.cardBalance)
-        const cash: Record<string, string> = {}
-        const card: Record<string, string> = {}
-        for (const it of res.items) {
-          cash[it.saleItemId] = it.remaining
-          card[it.saleItemId] = "0.00"
-        }
-        setLineCash(cash)
-        setLineCard(card)
+        const real: Record<string, string> = {}
+        for (const it of res.items) real[it.saleItemId] = it.remaining
+        setLineReal(real)
+        setUseCard(false)
         setPaymentMethod("线下")
-        setExternalTxnId("")
         setNote("")
       })
       .catch((e) => toast.error(e?.message || "加载可回款明细失败"))
@@ -91,66 +88,69 @@ export function RecordPaymentDialog({
   }, [open, saleOrderId])
 
   const round2 = (n: number) => Math.round(n * 100) / 100
-  const isCard = paymentMethod === "储值卡"
   const isOnline = paymentMethod === "微信" || paymentMethod === "支付宝"
-  // 仅线下展示现金列；储值卡 / 微信 / 支付宝只用储值卡列
-  const showCash = paymentMethod === "线下"
-  const sumCash = round2(items.reduce((s, it) => s + (Number(lineCash[it.saleItemId] || 0) || 0), 0))
-  const sumCard = round2(items.reduce((s, it) => s + (Number(lineCard[it.saleItemId] || 0) || 0), 0))
-  // 在线方式：储值卡先扣后顾客扫码支付剩余欠款
-  const onlineRemain = round2(Math.max(0, remainingPayable - sumCard))
-  const grandTotal = isOnline ? round2(sumCard + onlineRemain) : round2(sumCash + sumCard)
+  const sumReal = round2(items.reduce((s, it) => s + (Number(lineReal[it.saleItemId] || 0) || 0), 0))
+  // 储值卡抵扣额：勾选后自动抵满 min(余额, 实付合计)，随实付响应式重算
+  const cardDeduct = useCard && cardBalance != null ? round2(Math.min(cardBalance, sumReal)) : 0
+  // 剩余需用所选方式支付的金额（线下=现金 / 微信支付宝=顾客扫码）
+  const needPay = round2(Math.max(0, sumReal - cardDeduct))
 
-  // 切换支付方式：按新方式重置两列默认值（避免线下默认现金残留误判到储值卡/在线）
-  const switchMethod = (v: PayMethod) => {
-    setPaymentMethod(v)
-    if (v !== "线下") setExternalTxnId("")
-    const cash: Record<string, string> = {}
-    const card: Record<string, string> = {}
-    for (const it of items) {
-      if (v === "线下") {
-        cash[it.saleItemId] = it.remaining
-        card[it.saleItemId] = "0.00"
-      } else if (v === "储值卡") {
-        cash[it.saleItemId] = "0.00"
-        card[it.saleItemId] = it.remaining
-      } else {
-        // 微信 / 支付宝：储值卡先扣默认 0，剩余由顾客扫码在线付
-        cash[it.saleItemId] = "0.00"
-        card[it.saleItemId] = "0.00"
-      }
-    }
-    setLineCash(cash)
-    setLineCard(card)
+  // 储值卡按各子项实付比例摊分（末项补差，保证 Σ = cardDeduct，且每项 ≤ 该行实付）
+  const allocateCard = (totalCard: number): Record<string, number> => {
+    const map: Record<string, number> = {}
+    for (const it of items) map[it.saleItemId] = 0
+    if (totalCard <= 0 || sumReal <= 0) return map
+    const filled = items.filter((it) => round2(Number(lineReal[it.saleItemId] || 0) || 0) > 0)
+    let acc = 0
+    filled.forEach((it, idx) => {
+      const real = round2(Number(lineReal[it.saleItemId] || 0) || 0)
+      let card = idx === filled.length - 1 ? round2(totalCard - acc) : round2((totalCard * real) / sumReal)
+      card = Math.max(0, Math.min(card, real)) // 兜底：不超过该行实付，不为负
+      map[it.saleItemId] = card
+      acc = round2(acc + card)
+    })
+    return map
   }
 
-  // 微信 / 支付宝：店员先扣储值卡（若填），剩余生成收款码顾客扫码在线付
-  const handleOnlineSubmit = () => {
+  // 构造 recordPayment 的 items：实付拆为 repayAmount（非储值卡部分）+ prepaidCardAmount
+  const buildItems = (cardMap: Record<string, number>) =>
+    items
+      .map((it) => {
+        const real = round2(Number(lineReal[it.saleItemId] || 0) || 0)
+        const card = round2(cardMap[it.saleItemId] || 0)
+        return { saleItemId: it.saleItemId, repayAmount: round2(real - card), prepaidCardAmount: card }
+      })
+      .filter((it) => it.repayAmount > 0 || it.prepaidCardAmount > 0)
+
+  // 通用校验：实付合计 > 0、≤ 剩余欠款、逐项 ≤ 该行可回款额
+  const validateReal = (): boolean => {
+    if (sumReal <= 0) {
+      toast.error("请至少为一个子项填写实付金额")
+      return false
+    }
+    if (sumReal > remainingPayable + 0.001) {
+      toast.error(`本次回款不能超过剩余欠款 ¥${remainingPayable.toFixed(2)}`)
+      return false
+    }
     for (const it of items) {
-      const card = Number(lineCard[it.saleItemId] || 0) || 0
-      if (card < 0) {
+      const real = Number(lineReal[it.saleItemId] || 0) || 0
+      if (real < 0) {
         toast.error("金额不能为负")
-        return
+        return false
       }
-      if (round2(card) > Number(it.remaining) + 0.001) {
-        toast.error(`「${it.productName}」储值卡抵扣超过该行可回款额 ¥${it.remaining}`)
-        return
+      if (round2(real) > Number(it.remaining) + 0.001) {
+        toast.error(`「${it.productName}」实付超过该行可回款额 ¥${it.remaining}`)
+        return false
       }
     }
-    if (sumCard > remainingPayable + 0.001) {
-      toast.error(`储值卡抵扣不能超过剩余欠款 ¥${remainingPayable.toFixed(2)}`)
-      return
-    }
-    if (sumCard > 0 && cardBalance != null && sumCard > cardBalance + 0.001) {
-      toast.error(`储值卡余额不足（当前 ¥${cardBalance.toFixed(2)}）`)
-      return
-    }
-    const cardItems = items
-      .map((it) => ({
-        saleItemId: it.saleItemId,
-        repayAmount: 0,
-        prepaidCardAmount: round2(Number(lineCard[it.saleItemId] || 0) || 0),
-      }))
+    return true
+  }
+
+  // 微信 / 支付宝：储值卡部分先即时扣（若勾选），剩余生成收款码顾客扫码在线付
+  const handleOnlineSubmit = () => {
+    if (!validateReal()) return
+    const cardItems = buildItems(allocateCard(cardDeduct))
+      .map((it) => ({ saleItemId: it.saleItemId, repayAmount: 0, prepaidCardAmount: it.prepaidCardAmount }))
       .filter((it) => it.prepaidCardAmount > 0)
 
     startTransition(async () => {
@@ -168,7 +168,7 @@ export function RecordPaymentDialog({
         }
       }
       // 2) 储值卡已全额抵扣 → 结清，无需出码
-      if (onlineRemain <= 0.001) {
+      if (needPay <= 0.001) {
         toast.success("储值卡已抵扣结清")
         onOpenChange(false)
         router.refresh()
@@ -181,7 +181,7 @@ export function RecordPaymentDialog({
         router.refresh()
         return
       }
-      setQrAmount(onlineRemain)
+      setQrAmount(needPay)
       setQrDataUrl(qrRes.dataUrl)
       router.refresh()
     })
@@ -192,54 +192,14 @@ export function RecordPaymentDialog({
       handleOnlineSubmit()
       return
     }
-    // ===== 线下 / 储值卡：即时记账 =====
-    if (grandTotal <= 0) {
-      toast.error("请至少为一个子项填写回款金额")
-      return
-    }
-    if (grandTotal > remainingPayable + 0.001) {
-      toast.error(`本次回款不能超过剩余欠款 ¥${remainingPayable.toFixed(2)}`)
-      return
-    }
-    // 逐项校验：现金+储值卡 ≤ 该行可回款额
-    for (const it of items) {
-      const cash = Number(lineCash[it.saleItemId] || 0) || 0
-      const card = Number(lineCard[it.saleItemId] || 0) || 0
-      if (cash < 0 || card < 0) {
-        toast.error("金额不能为负")
-        return
-      }
-      if (round2(cash + card) > Number(it.remaining) + 0.001) {
-        toast.error(`「${it.productName}」回款额超过该行可回款额 ¥${it.remaining}`)
-        return
-      }
-    }
-    if (isCard && sumCash > 0) {
-      toast.error("储值卡方式下不应填现金回款金额")
-      return
-    }
-    if (showCash && sumCash > 0 && !externalTxnId.trim()) {
-      toast.error("线下回款必须填写外部交易号（银行回执号/流水号）")
-      return
-    }
-    if (sumCard > 0 && cardBalance != null && sumCard > cardBalance + 0.001) {
-      toast.error(`储值卡余额不足（当前 ¥${cardBalance.toFixed(2)}）`)
-      return
-    }
-
-    const payloadItems = items
-      .map((it) => ({
-        saleItemId: it.saleItemId,
-        repayAmount: round2(Number(lineCash[it.saleItemId] || 0) || 0),
-        prepaidCardAmount: round2(Number(lineCard[it.saleItemId] || 0) || 0),
-      }))
-      .filter((it) => it.repayAmount > 0 || it.prepaidCardAmount > 0)
+    // ===== 线下：即时记账（实付 = 现金 + 储值卡抵扣） =====
+    if (!validateReal()) return
+    const payloadItems = buildItems(allocateCard(cardDeduct))
 
     startTransition(async () => {
       const res = await recordPayment({
         saleOrderId,
-        paymentMethod: paymentMethod as "线下" | "储值卡",
-        externalTxnId: externalTxnId.trim() || undefined,
+        paymentMethod: "线下",
         items: payloadItems,
         note: note.trim() || undefined,
       })
@@ -253,13 +213,15 @@ export function RecordPaymentDialog({
     })
   }
 
+  const submitLabel = isOnline ? (needPay > 0.001 ? "生成收款码" : "确认抵扣") : "确认录入"
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogClose onOpenChange={onOpenChange} />
       <DialogHeader>
         <DialogTitle>录入回款（按子项）</DialogTitle>
         <DialogDescription>
-          向订单 {saleOrderId} 追加款项。线下 / 储值卡即时记账；微信 / 支付宝由顾客扫码在线支付。可只对部分子项回款，不要求一次性付清。
+          向订单 {saleOrderId} 追加款项。各子项填本次实付金额，可勾选储值卡抵扣；线下即时记账，微信 / 支付宝由顾客扫码在线支付。可只对部分子项回款，不要求一次性付清。
         </DialogDescription>
       </DialogHeader>
 
@@ -305,26 +267,18 @@ export function RecordPaymentDialog({
 
             <div>
               <label className="block text-sm font-medium mb-1">支付方式</label>
-              <Select value={paymentMethod} onChange={(e) => switchMethod(e.target.value as PayMethod)}>
+              <Select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as PayMethod)}>
                 <SelectOption value="线下">线下</SelectOption>
-                <SelectOption value="储值卡">储值卡</SelectOption>
                 <SelectOption value="微信">微信（顾客扫码）</SelectOption>
                 <SelectOption value="支付宝">支付宝（顾客扫码）</SelectOption>
               </Select>
             </div>
 
-            {isOnline && (
-              <div className="rounded-[var(--radius)] bg-[#F0F7FF] border border-[#BBD6F5] px-4 py-2.5 text-xs text-[#456]">
-                储值卡先扣（可选），剩余 <span className="font-bold">¥{onlineRemain.toFixed(2)}</span> 生成小程序码，顾客扫码用{paymentMethod}支付；到账由支付回调自动入账。
-              </div>
-            )}
-
-            {/* 按子项金额表 */}
+            {/* 按子项实付金额表 */}
             <div className="border border-[#E8E8E8] rounded-[var(--radius)] overflow-hidden">
-              <div className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 bg-[#F5F5F5] text-xs text-[#666] font-medium">
+              <div className="grid grid-cols-[1fr_auto] gap-2 px-3 py-2 bg-[#F5F5F5] text-xs text-[#666] font-medium">
                 <span>子项 / 应付·已收·可回款</span>
-                <span className="w-24 text-right">{showCash ? "现金(¥)" : "储值卡(¥)"}</span>
-                <span className="w-24 text-right">{showCash ? "储值卡(¥)" : ""}</span>
+                <span className="w-28 text-right">实付金额(¥)</span>
               </div>
               {loading ? (
                 <div className="px-3 py-4 text-sm text-[#999]">加载中…</div>
@@ -332,7 +286,7 @@ export function RecordPaymentDialog({
                 <div className="px-3 py-4 text-sm text-[#999]">无可回款子项</div>
               ) : (
                 items.map((it) => (
-                  <div key={it.saleItemId} className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 border-t border-[#F0F0F0] items-center">
+                  <div key={it.saleItemId} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-2 border-t border-[#F0F0F0] items-center">
                     <div className="min-w-0">
                       <div className="text-sm truncate">{it.productName}</div>
                       <div className="text-xs text-[#999]">
@@ -340,57 +294,47 @@ export function RecordPaymentDialog({
                       </div>
                     </div>
                     <Input
-                      className="w-24 text-right"
+                      className="w-28 text-right"
                       type="number"
                       step="0.01"
                       min="0"
                       max={it.remaining}
-                      value={showCash ? (lineCash[it.saleItemId] ?? "0.00") : (lineCard[it.saleItemId] ?? "0.00")}
-                      onChange={(e) =>
-                        showCash
-                          ? setLineCash((m) => ({ ...m, [it.saleItemId]: e.target.value }))
-                          : setLineCard((m) => ({ ...m, [it.saleItemId]: e.target.value }))
-                      }
+                      value={lineReal[it.saleItemId] ?? "0.00"}
+                      onChange={(e) => setLineReal((m) => ({ ...m, [it.saleItemId]: e.target.value }))}
                     />
-                    {showCash ? (
-                      <Input
-                        className="w-24 text-right"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max={it.remaining}
-                        value={lineCard[it.saleItemId] ?? "0.00"}
-                        onChange={(e) => setLineCard((m) => ({ ...m, [it.saleItemId]: e.target.value }))}
-                      />
-                    ) : (
-                      <span className="w-24" />
-                    )}
                   </div>
                 ))
               )}
-              <div className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 border-t border-[#E8E8E8] bg-[#FAFAFA] text-sm font-medium items-center">
+              <div className="grid grid-cols-[1fr_auto] gap-2 px-3 py-2 border-t border-[#E8E8E8] bg-[#FAFAFA] text-sm font-medium items-center">
                 <span className="text-[#666]">
                   {isOnline
-                    ? `储值卡先扣 ¥${sumCard.toFixed(2)} · 顾客扫码 ¥${onlineRemain.toFixed(2)}`
-                    : `本次合计 ¥${grandTotal.toFixed(2)}`}
+                    ? `储值卡抵 ¥${cardDeduct.toFixed(2)} · 顾客扫码 ¥${needPay.toFixed(2)}`
+                    : `储值卡抵 ¥${cardDeduct.toFixed(2)} · 现金需付 ¥${needPay.toFixed(2)}`}
                 </span>
-                <span className="w-24 text-right text-[#C0322A]">¥{(showCash ? sumCash : sumCard).toFixed(2)}</span>
-                <span className="w-24 text-right text-[#3D8A5A]">{showCash ? `¥${sumCard.toFixed(2)}` : ""}</span>
+                <span className="w-28 text-right text-[#C0322A]">¥{sumReal.toFixed(2)}</span>
               </div>
             </div>
 
-            {showCash && sumCash > 0 && (
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  银行回执号 / 交易流水号 <span className="text-[#C0322A]">*</span>
-                </label>
-                <Input
-                  value={externalTxnId}
-                  onChange={(e) => setExternalTxnId(e.target.value)}
-                  placeholder="例如：BANK-20260425-001"
-                  maxLength={64}
+            {/* 储值卡抵扣勾选（仅顾客有余额时可用） */}
+            {cardBalance != null && cardBalance > 0 && (
+              <label className="flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius)] bg-[#F0FAF4] border border-[#BEE3CD] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 accent-[#C0322A]"
+                  checked={useCard}
+                  onChange={(e) => setUseCard(e.target.checked)}
                 />
-                <p className="text-xs text-[#999] mt-1">审计凭证，建议填写银行流水 / 扫码平台流水号</p>
+                <span className="text-sm">使用储值卡抵扣</span>
+                <span className="ml-auto text-xs text-[#3D8A5A]">
+                  余额 ¥{cardBalance.toFixed(2)}
+                  {useCard ? ` · 本次抵扣 ¥${cardDeduct.toFixed(2)}` : ""}
+                </span>
+              </label>
+            )}
+
+            {isOnline && (
+              <div className="rounded-[var(--radius)] bg-[#F0F7FF] border border-[#BBD6F5] px-4 py-2.5 text-xs text-[#456]">
+                储值卡抵扣即时入账，剩余 <span className="font-bold">¥{needPay.toFixed(2)}</span> 生成小程序码，顾客扫码用{paymentMethod}支付；到账由支付回调自动入账。
               </div>
             )}
 
@@ -411,7 +355,7 @@ export function RecordPaymentDialog({
               取消
             </Button>
             <Button onClick={handleSubmit} disabled={pending || loading}>
-              {pending ? "提交中…" : isOnline ? "生成收款码" : "确认录入"}
+              {pending ? "提交中…" : submitLabel}
             </Button>
           </DialogFooter>
         </>
