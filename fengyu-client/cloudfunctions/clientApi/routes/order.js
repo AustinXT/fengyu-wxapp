@@ -316,8 +316,10 @@ async function scanDetail(ctx) {
     }
   }
 
-  // 非待支付状态返回提示
-  if (order.status !== '待支付') {
+  // 可支付状态：待支付（首付）/ 部分支付（回款——已有首付到账，扫码付剩余应付）
+  // 非可支付状态返回提示
+  const PAYABLE_STATUSES = ['待支付', '部分支付']
+  if (!PAYABLE_STATUSES.includes(order.status)) {
     const statusMsgMap = {
       '已支付': '该订单已完成支付',
       '已完成': '该订单已完成',
