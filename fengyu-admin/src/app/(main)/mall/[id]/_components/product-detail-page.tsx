@@ -161,7 +161,8 @@ export default function MallProductDetailPageClient({
     const fd = new FormData(form);
 
     const name = (fd.get("name") as string).trim();
-    const price = (fd.get("price") as string).trim();
+    // 套餐(isBundle)时价格输入框为禁用展示态无 name，fd.get("price") 为 null，须空值兜底
+    const price = ((fd.get("price") as string | null) ?? "").trim();
 
     if (!name) {
       toast.error("请输入商品名称");
@@ -176,8 +177,8 @@ export default function MallProductDetailPageClient({
       return;
     }
 
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null;
-    const description = (fd.get("description") as string).trim() || null;
+    const specialPrice = ((fd.get("specialPrice") as string | null) ?? "").trim() || null;
+    const description = ((fd.get("description") as string | null) ?? "").trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
     const isVisible = fd.get("isVisible") === "on";
 
@@ -276,11 +277,11 @@ export default function MallProductDetailPageClient({
   const handleGroupSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const groupName = (fd.get("groupName") as string).trim();
-    const pickCountRaw = (fd.get("pickCount") as string).trim();
+    const groupName = ((fd.get("groupName") as string | null) ?? "").trim();
+    const pickCountRaw = ((fd.get("pickCount") as string | null) ?? "").trim();
     const pickCount = pickCountRaw ? parseInt(pickCountRaw) || null : null;
-    const unitListPrice = (fd.get("unitListPrice") as string).trim();
-    const unitMemberPrice = (fd.get("unitMemberPrice") as string).trim() || null;
+    const unitListPrice = ((fd.get("unitListPrice") as string | null) ?? "").trim();
+    const unitMemberPrice = ((fd.get("unitMemberPrice") as string | null) ?? "").trim() || null;
 
     if (!groupName) {
       toast.error("请输入分组名称");

@@ -55,7 +55,8 @@ export default function MallProductCreatePageClient({
     const fd = new FormData(form);
 
     const name = (fd.get("name") as string).trim();
-    const price = (fd.get("price") as string).trim();
+    // 套餐(isBundle)时价格 Card 不渲染，fd.get("price") 为 null，须空值兜底
+    const price = ((fd.get("price") as string | null) ?? "").trim();
 
     if (!name) {
       toast.error("请输入商城展示名称");
@@ -70,8 +71,8 @@ export default function MallProductCreatePageClient({
       return;
     }
 
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null;
-    const description = (fd.get("description") as string).trim() || null;
+    const specialPrice = ((fd.get("specialPrice") as string | null) ?? "").trim() || null;
+    const description = ((fd.get("description") as string | null) ?? "").trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
     const isVisible = fd.get("isVisible") === "on";
 
