@@ -12,6 +12,7 @@ import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFoote
 import { toast } from "sonner"
 import { assignRole, revokeRole, getRolesByScope } from "@/actions/permissions"
 import { ROLE_LABELS } from "@/lib/types"
+import { ROLE_SCOPE_TYPES } from "@/lib/role-scope-rules"
 import { cn, formatDate } from "@/lib/utils"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
@@ -39,6 +40,8 @@ interface PermissionsPageProps {
   roleCounts: Record<string, number>
   allEmployees: Employee[]
   orgNodes: OrgNode[]
+  /** 操作者可操作的 scope 节点 id；null = admin 全开，左侧树不置灰 */
+  accessibleScopeIds: string[] | null
 }
 
 /* ─── Org Tree Node ─── */
@@ -50,11 +53,13 @@ interface TreeNodeProps {
   selectedId: string | null
   expandedIds: Set<string>
   roleCounts: Record<string, number>
+  /** 操作者可操作的 scope 节点 id；null = admin 全开；非 null 时集合外节点置灰禁选 */
+  accessibleIds: Set<string> | null
   onSelect: (id: string) => void
   onToggle: (id: string) => void
 }
 
-function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, onSelect, onToggle }: TreeNodeProps) {
+function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, accessibleIds, onSelect, onToggle }: TreeNodeProps) {
   const children = allNodes
     .filter(n => n.parentId === node.id)
     .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -62,16 +67,20 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
   const isExpanded = expandedIds.has(node.id)
   const isSelected = selectedId === node.id
   const count = roleCounts[node.id] || 0
+  // 超出操作者 scope 的节点置灰禁选（展开三角仍可用，以露出下层可操作节点）
+  const isDisabled = accessibleIds != null && !accessibleIds.has(node.id)
 
   return (
     <div>
       <div
         className={cn(
-          "flex items-center gap-1 rounded-[var(--radius)] px-2 py-1.5 text-sm cursor-pointer transition-colors",
-          isSelected ? "bg-[#FFF0EE] text-[#C0322A] font-medium" : "hover:bg-[var(--muted)]",
+          "flex items-center gap-1 rounded-[var(--radius)] px-2 py-1.5 text-sm transition-colors",
+          isDisabled
+            ? "cursor-not-allowed text-[var(--muted-foreground)] opacity-50"
+            : cn("cursor-pointer", isSelected ? "bg-[#FFF0EE] text-[#C0322A] font-medium" : "hover:bg-[var(--muted)]"),
         )}
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
-        onClick={() => onSelect(node.id)}
+        onClick={isDisabled ? undefined : () => onSelect(node.id)}
       >
         {hasChildren ? (
           <span
@@ -87,7 +96,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
         {count > 0 && (
           <span className={cn(
             "text-xs px-1.5 py-0.5 rounded-full shrink-0",
-            isSelected ? "bg-white/20" : "bg-gray-100 text-gray-500",
+            isSelected && !isDisabled ? "bg-white/20" : "bg-gray-100 text-gray-500",
           )}>
             {count}
           </span>
@@ -102,6 +111,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
           selectedId={selectedId}
           expandedIds={expandedIds}
           roleCounts={roleCounts}
+          accessibleIds={accessibleIds}
           onSelect={onSelect}
           onToggle={onToggle}
         />
@@ -112,7 +122,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
 
 /* ─── Main Component ─── */
 
-export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes }: PermissionsPageProps) {
+export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes, accessibleScopeIds }: PermissionsPageProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
@@ -120,6 +130,12 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
   const permissionNodes = useMemo(
     () => orgNodes.filter(n => n.isActive && n.type !== "部门"),
     [orgNodes],
+  )
+
+  // 操作者可操作节点集合（null = admin 全开）；集合外节点在左侧树置灰禁选
+  const accessibleIdSet = useMemo(
+    () => (accessibleScopeIds ? new Set(accessibleScopeIds) : null),
+    [accessibleScopeIds],
   )
 
   // 当前选中 scope 及其角色数据
@@ -133,6 +149,17 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
     for (const root of roots) {
       for (const child of permissionNodes.filter(n => n.parentId === root.id)) {
         initial.add(child.id)
+      }
+    }
+    // 额外展开可操作节点的祖先链，保证非 admin 操作者的 scope 节点默认可见
+    if (accessibleScopeIds) {
+      const byId = new Map(permissionNodes.map(n => [n.id, n]))
+      for (const id of accessibleScopeIds) {
+        let cur = byId.get(id)
+        for (let i = 0; i < 5 && cur?.parentId; i++) {
+          initial.add(cur.parentId)
+          cur = byId.get(cur.parentId)
+        }
       }
     }
     return initial
@@ -194,7 +221,9 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
   // ─── 分配角色 Dialog ───
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignEmployeeId, setAssignEmployeeId] = useState("")
-  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("staff")
+  // 默认 manager：弹层下拉不含 staff，且 manager scope 类型全开（总部/市场/门店），
+  // 对左侧预填的任意 scope 都合法，避免初始角色与范围置灰矛盾
+  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("manager")
   const [assignScopeId, setAssignScopeId] = useState("")
   const [assigning, setAssigning] = useState(false)
   const [revokeTarget, setRevokeTarget] = useState<PermissionRole | null>(null)
@@ -202,7 +231,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
 
   function openAssignDialog(prefilledScopeId?: string) {
     setAssignEmployeeId("")
-    setAssignRoleValue("staff")
+    setAssignRoleValue("manager")
     setAssignScopeId(prefilledScopeId ?? "")
     setDialogOpen(true)
   }
@@ -273,6 +302,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                 selectedId={selectedNodeId}
                 expandedIds={expandedIds}
                 roleCounts={roleCounts}
+                accessibleIds={accessibleIdSet}
                 onSelect={handleSelectNode}
                 onToggle={toggleExpand}
               />
@@ -402,7 +432,15 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                 setAssignRoleValue(role)
                 if (role === "admin") {
                   const hq = orgNodes.find(n => n.type === "总部")
-                  if (hq) setAssignScopeId(hq.id)
+                  setAssignScopeId(hq ? hq.id : "")
+                  return
+                }
+                // 切换角色后，清空已变非法（超出新角色 scope 类型）的已选范围
+                if (assignScopeId) {
+                  const node = orgNodes.find(n => n.id === assignScopeId)
+                  if (!node || !ROLE_SCOPE_TYPES[role].includes(node.type)) {
+                    setAssignScopeId("")
+                  }
                 }
               }}
             >
@@ -420,6 +458,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
               className="mt-1"
               orgNodes={orgNodes}
               excludeTypes={["部门"]}
+              allowedTypes={ROLE_SCOPE_TYPES[assignRoleValue]}
               value={assignScopeId}
               onChange={(id) => setAssignScopeId(id)}
               placeholder="选择组织节点"

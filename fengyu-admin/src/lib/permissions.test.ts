@@ -26,7 +26,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
@@ -433,6 +433,48 @@ describe('isAdminScope', () => {
   it('空角色返回 false', () => {
     const session = mockSession({ roles: [] })
     expect(isAdminScope(session)).toBe(false)
+  })
+})
+
+describe('accessiblePermissionScopeIds', () => {
+  it('admin 返回 null（全开，左侧树不置灰）', () => {
+    const session = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+    })
+    expect(accessiblePermissionScopeIds(session)).toBeNull()
+  })
+
+  it('混合角色含 admin 返回 null', () => {
+    const session = mockSession({
+      roles: [
+        { role: 'hr', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
+      ],
+    })
+    expect(accessiblePermissionScopeIds(session)).toBeNull()
+  })
+
+  it('非 admin 返回其精确 scopeId（不展开子树）', () => {
+    const session = mockSession({
+      roles: [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
+    })
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1'])
+  })
+
+  it('非 admin 多角色去重 scopeId', () => {
+    const session = mockSession({
+      roles: [
+        { role: 'hr', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'finance', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'manager', scopeId: 'market-2', scopeType: '市场' },
+      ],
+    })
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1', 'market-2'])
+  })
+
+  it('空角色返回空数组', () => {
+    const session = mockSession({ roles: [] })
+    expect(accessiblePermissionScopeIds(session)).toEqual([])
   })
 })
 

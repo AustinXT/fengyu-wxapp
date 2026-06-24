@@ -352,6 +352,21 @@ export function isAdminScope(session: AuthSession): boolean {
 }
 
 /**
+ * 权限管理页操作者可操作的 scope 节点 id 集合
+ *
+ * - admin → null（全开，不置灰任何节点）
+ * - 非 admin → 去重后的 session.roles[].scopeId
+ *
+ * 口径必须与 actions/permissions.ts 各 action 的 `userScopeIds`
+ * （getRoles / getRolesByScope / getRoleCountsByScope / assignRole / revokeRole）
+ * 完全一致：**精确 scopeId，不展开子树**。前端左侧组织树据此置灰其管辖外节点。
+ */
+export function accessiblePermissionScopeIds(session: AuthSession): string[] | null {
+  if (isAdminScope(session)) return null
+  return Array.from(new Set(session.roles.map(r => r.scopeId)))
+}
+
+/**
  * 构建 Drizzle ORM 的 scope 条件
  *
  * - admin → 返回 undefined（不过滤，等效于 buildScopeWhere 返回空条件）
