@@ -396,8 +396,13 @@ async function create(ctx) {
   // 必须绑定手机号
   await requirePhone()(ctx, async () => {})
 
-  const { userId } = ctx.auth
+  const { userId, boundStoreId } = ctx.auth
   const payload = ctx.event.payload
+
+  // 自助下单必须已绑定门店（与 card.recharge 口径一致；前端已拦，此处兜底防 globalData 过期/绕过）
+  if (!boundStoreId) {
+    throw new Error('INVALID_PARAMS: 请先绑定门店后再下单')
+  }
 
   const {
     storeId,
@@ -1764,6 +1769,8 @@ async function alipayPay(ctx) {
     bizLink: preorderRespAli.alipayQrUrl,
   })
   // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
+  // CAS-EXEMPT: 仅清空 first_payment_amount 资金列，不翻 status（lint 正则误匹配后续 ctx.result.status）；
+  //            WHERE first_payment_amount IS NOT NULL 已提供幂等防并发。
   await pg.query(
     'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
     [now, orderNo]
