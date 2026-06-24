@@ -58,6 +58,8 @@ Page({
     firstPaymentAmount: 0,
     // 当前扫码是否是首次扫（received === 0 && firstPaymentAmount > 0）
     isFirstPartialScan: false,
+    // 回款（部分支付订单）：储值卡由店员先扣，顾客只付现金尾款 → 隐藏抵扣区+线下，方式限微信/支付宝
+    isRepayment: false,
     showPayMethodGroup: true,
     // 2026-05-19 dirty-read 修复：余额版本号（来自 scanAdjust.balanceSnapshot.updatedAt）
     // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
@@ -122,6 +124,9 @@ Page({
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
         ? (orderData.paymentMethod as PayMethod)
         : '微信';
+      // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）。储值卡由店员先扣，顾客侧不再自选储值卡；方式限微信/支付宝
+      const isRepayment = orderData.status === '部分支付';
+      const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
 
       this.setData({
         order: {
@@ -137,14 +142,15 @@ Page({
         },
         items: data.items || [],
         cardBalance: Number(balanceData?.balance || 0),
-        useCard: prepaid > 0,
-        prepaidCardAmount: prepaid,
+        useCard: isRepayment ? false : prepaid > 0,
+        prepaidCardAmount: isRepayment ? 0 : prepaid,
         paidAmount: paid,
-        paymentMethod: restoredMethod,
+        paymentMethod: effectiveMethod,
         couponDiscount,
         totalAmount,
         firstPaymentAmount,
         isFirstPartialScan,
+        isRepayment,
         showPayMethodGroup: paid > 0,
       });
     } catch (err: any) {
@@ -204,7 +210,8 @@ Page({
   async onPayMethodChange(e: WxEvent<string>) {
     const method = e.detail as PayMethod;
     this.setData({ paymentMethod: method });
-    if (this.data.paidAmount > 0) {
+    // 回款不预同步抵扣方案（不动部分支付订单的储值卡快照）；方式由 pay/alipayPay 自行落库
+    if (!this.data.isRepayment && this.data.paidAmount > 0) {
       await this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
     }
   },
@@ -212,7 +219,7 @@ Page({
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
     const { method } = e.currentTarget.dataset as { method: PayMethod };
     this.setData({ paymentMethod: method });
-    if (this.data.paidAmount > 0) {
+    if (!this.data.isRepayment && this.data.paidAmount > 0) {
       this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
     }
   },
@@ -285,6 +292,32 @@ Page({
       setTimeout(() => {
         wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
       }, 1500);
+      return;
+    }
+
+    if (route === 'alipayPay') {
+      // 聚合主扫支付宝：后端串调 preorder(41) + share_code 返回吱口令；订单状态由 payNotify 异步推进
+      const aliData = await callClientApi<{ status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number }>(
+        'order.alipayPay', { saleOrderId: orderNo },
+      );
+      // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页
+      if (aliData?.status === '已支付' || aliData?.reason === 'prepaid_card_full') {
+        Toast.success('已使用储值卡支付');
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
+        }, 1200);
+        return;
+      }
+      const shareToken = aliData?.alipayShareToken;
+      if (!shareToken) {
+        Toast.fail('支付宝吱口令获取失败');
+        return;
+      }
+      this.setData({
+        showAlipayShare: true,
+        alipayShareToken: shareToken,
+        alipayAmount: Number(aliData?.paidAmount || paidAmount).toFixed(2),
+      });
       return;
     }
 

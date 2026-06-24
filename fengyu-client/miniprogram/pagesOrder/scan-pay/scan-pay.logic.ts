@@ -45,16 +45,18 @@ export function recomputeAmounts(input: ScanPayAmounts): RecomputeResult {
   return { payable, prepaidCardAmount: prepaid, paidAmount: paid };
 }
 
-export type ConfirmRoute = 'confirmPrepaidFull' | 'wechatPay' | 'offlinePay';
+export type ConfirmRoute = 'confirmPrepaidFull' | 'wechatPay' | 'alipayPay' | 'offlinePay';
 
 /**
  * 决策"确认支付"按钮的下游路径
  * paid=0  → confirmPrepaidFull（同事务扣卡 + 置已支付）
- * paid>0 + 微信 → wechatPay
- * paid>0 + 线下 → offlinePay
+ * paid>0 + 微信   → wechatPay
+ * paid>0 + 支付宝 → alipayPay（聚合主扫吱口令）
+ * paid>0 + 线下   → offlinePay
  */
 export function decideConfirmRoute(paidAmount: number, method: PayMethod): ConfirmRoute {
   if (paidAmount <= 0) return 'confirmPrepaidFull';
   if (method === '线下') return 'offlinePay';
+  if (method === '支付宝') return 'alipayPay';
   return 'wechatPay';
 }
