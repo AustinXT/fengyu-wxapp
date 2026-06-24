@@ -1,4 +1,5 @@
-import { pgTable, text, boolean, timestamp, index } from 'drizzle-orm/pg-core'
+import { pgTable, text, boolean, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * 拉卡拉收款商户档案（一店一商户的收款配置权威来源）。
@@ -22,7 +23,13 @@ export const lakalaMerchants = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
-  (table) => [index('idx_lakala_merchants_merchant_no').on(table.merchantNo)],
+  (table) => [
+    // 部分唯一索引：merchant_no 非空时唯一，防止「商户管理」(/merchants) 重复建档；
+    // 应用层 createMerchant/updateMerchant 亦做唯一校验，DB 约束作并发兜底。
+    uniqueIndex('uq_lakala_merchants_merchant_no')
+      .on(table.merchantNo)
+      .where(sql`${table.merchantNo} IS NOT NULL`),
+  ],
 )
 
 export type LakalaMerchant = typeof lakalaMerchants.$inferSelect
