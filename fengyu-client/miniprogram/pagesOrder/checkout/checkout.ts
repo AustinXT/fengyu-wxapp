@@ -3,6 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { formatDate } from '../../utils/format';
 import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
@@ -412,7 +413,14 @@ Page({
         storeId: app.globalData.boundStoreId,
         items,
       });
-      this.setData({ availableCoupons: data?.coupons || [] });
+      // expireAt 是 timestamp 列(UTC ISO)，用 formatDate 按设备本地(北京)取日期预格式化，
+      // 避免 WXML 里 price.date() slice(0,10) 截 UTC 日期段跨午夜偏一天
+      this.setData({
+        availableCoupons: (data?.coupons || []).map((c: any) => ({
+          ...c,
+          expireAtFmt: formatDate(c.expireAt),
+        })),
+      });
     } catch {
       this.setData({ availableCoupons: [] });
     } finally {

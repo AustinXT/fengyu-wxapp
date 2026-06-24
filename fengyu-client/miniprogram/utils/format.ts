@@ -104,13 +104,13 @@ export function getStatusClass(status: string): string {
   return STATUS_CLASS[status] || 'status-class-done';
 }
 
-/** 订单时间格式化："2025-3-14" */
+/** 订单时间格式化："2025-03-14"（YYYY-MM-DD，补前导零） */
 export function formatOrderDate(dateStr: string): string {
   if (!dateStr) return '';
   const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
   const d = new Date(safe);
   if (isNaN(d.getTime())) return '';
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** iOS 安全日期解析："-" → "/"（修复 iOS Safari 无法解析 "YYYY-MM-DD" 问题），无效日期返回 null */

@@ -162,8 +162,8 @@ describe('getStatusClass', () => {
 })
 
 describe('formatOrderDate', () => {
-  test('标准格式', () => {
-    expect(formatOrderDate('2025-03-14T10:00:00Z')).toMatch(/2025-3-14/)
+  test('标准格式（YYYY-MM-DD，补前导零）', () => {
+    expect(formatOrderDate('2025-03-14T10:00:00Z')).toBe('2025-03-14')
   })
   test('空字符串', () => {
     expect(formatOrderDate('')).toBe('')

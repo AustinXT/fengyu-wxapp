@@ -50,6 +50,9 @@ Page({
         return {
           ...c,
           expireAtFmt: formatDate(c.expireAt),
+          // usedAt 是 timestamp 列，序列化为 UTC ISO；用 formatDate 按设备本地(北京)取日期，
+          // 避免 WXML 里 slice(0,10) 截 UTC 日期段跨午夜偏一天
+          usedAtFmt: c.usedAt ? formatDate(c.usedAt) : '',
           discountLabel: formatDiscount(c),
           minSpendNum,
           minSpendHint,
