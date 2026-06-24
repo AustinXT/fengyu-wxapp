@@ -42,15 +42,29 @@ function validateValidityFields(merged: {
     if (!merged.validFrom || !merged.validTo) {
       return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
     }
-    const from = merged.validFrom instanceof Date ? merged.validFrom : new Date(merged.validFrom)
-    const to = merged.validTo instanceof Date ? merged.validTo : new Date(merged.validTo)
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    // 规整为北京日期 YYYY-MM-DD：string（type=date 提交值，new Date 当 UTC 午夜会偏）取前 10 位；
+    // Date（DB 现值，admin 进程 TZ=Asia/Shanghai）按北京时区取日期。结束日期以当天 23:59:59 为界，
+    // 避免北京凌晨把"今天到期"误判为已过期（与前端 coupon-validity-helper 字符级一致）。
+    const toBeijingDate = (v: string | Date): string =>
+      v instanceof Date
+        ? new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(v)
+        : v.slice(0, 10)
+    const fromDate = toBeijingDate(merged.validFrom)
+    const toDate = toBeijingDate(merged.validTo)
+    const fromStart = new Date(`${fromDate}T00:00:00+08:00`)
+    const toEnd = new Date(`${toDate}T23:59:59+08:00`)
+    if (Number.isNaN(fromStart.getTime()) || Number.isNaN(toEnd.getTime())) {
       return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
     }
-    if (from >= to) {
+    if (fromDate >= toDate) {
       return { ok: false, message: '有效期开始日期必须早于结束日期' }
     }
-    if (to <= new Date()) {
+    if (toEnd <= new Date()) {
       return { ok: false, message: '有效期结束日期必须晚于当前时间' }
     }
   }
