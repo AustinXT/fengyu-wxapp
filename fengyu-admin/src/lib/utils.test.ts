@@ -110,7 +110,8 @@ describe('formatDate', () => {
   })
 
   it('Date 对象格式化', () => {
-    const result = formatDate(new Date(2026, 2, 13)) // 月份从 0 开始
+    // 固定时区收口后按 Asia/Shanghai 取日期，用带 +08:00 的确定性实例避免依赖进程 TZ
+    const result = formatDate(new Date('2026-03-13T12:00:00+08:00'))
     expect(result).toMatch(/2026/)
     expect(result).toMatch(/03/)
     expect(result).toMatch(/13/)
@@ -126,7 +127,8 @@ describe('formatDateTime', () => {
   })
 
   it('Date 对象格式化', () => {
-    const d = new Date(2026, 2, 13, 14, 30)
+    // 固定时区收口后按 Asia/Shanghai 渲染，用带 +08:00 的确定性实例避免依赖进程 TZ
+    const d = new Date('2026-03-13T14:30:00+08:00')
     const result = formatDateTime(d)
     expect(result).toMatch(/2026/)
     expect(result).toMatch(/14:30/)

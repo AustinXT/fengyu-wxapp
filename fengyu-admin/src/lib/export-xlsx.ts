@@ -20,50 +20,9 @@ export interface ExportOptions<T> {
   rows: T[]
 }
 
-/** Asia/Shanghai 固定时区格式化（避免依赖运行环境时区） */
-const partsOf = (() => {
-  const fmt = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-  return (d: Date) => {
-    const p: Record<string, string> = {}
-    for (const { type, value } of fmt.formatToParts(d)) p[type] = value
-    return p
-  }
-})()
-
-/**
- * 格式化为本地时区 `YYYY-MM-DD HH:mm:ss`。
- * 入参通常是 action `toISOString()` 出来的 UTC 串，必须经此转换，
- * 否则裸写 ISO 会差 8 小时（见 orders.ts 把 timestamp toISOString）。
- */
-export function fmtDateTime(v: string | Date | null | undefined): string {
-  if (!v) return ''
-  const d = v instanceof Date ? v : new Date(v)
-  if (Number.isNaN(d.getTime())) return typeof v === 'string' ? v : ''
-  const p = partsOf(d)
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`
-}
-
-/**
- * 格式化为 `YYYY-MM-DD`。
- * 若入参已是纯日期串（Drizzle date 列即 string），直接截断返回，不做时区转换（避免偏移）。
- */
-export function fmtDate(v: string | Date | null | undefined): string {
-  if (!v) return ''
-  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10)
-  const d = v instanceof Date ? v : new Date(v)
-  if (Number.isNaN(d.getTime())) return typeof v === 'string' ? v : ''
-  const p = partsOf(d)
-  return `${p.year}-${p.month}-${p.day}`
-}
+// 时间格式化收口到 lib/datetime.ts（Asia/Shanghai 固定时区单一来源）；import 供本文件内部用（文件名时间戳），同时 re-export 保持既有 `@/lib/export-xlsx` import 兼容。
+import { fmtDate, fmtDateTime } from './datetime'
+export { fmtDate, fmtDateTime }
 
 /** 身份证脱敏：仅保留后 4 位（前缀 ****） */
 export function maskIdCard(v: string | null | undefined): string {

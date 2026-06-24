@@ -12,18 +12,13 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
-import { formatPhone } from "@/lib/utils";
+import { formatPhone, formatDate } from "@/lib/utils";
 import { computeCardStatus, STATUS_LABEL_MAP, TYPE_BADGE_MAP } from "../_lib/card-status";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 type CardTypeValue = "" | "all" | "疗程卡" | "单次卡";
 type CardStatusValue = "" | "active" | "exhausted" | "expired";
-
-function formatDate(s: string | null): string {
-	if (!s) return "—";
-	return new Date(s).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
 
 interface Props {
 	cards: AdminCard[];
@@ -162,7 +157,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 		{
 			key: "paidAt",
 			header: "购买时间",
-			cell: (row) => <span className="text-xs text-[#666666]">{formatDate(row.paidAt)}</span>,
+			cell: (row) => <span className="text-xs text-[#666666]">{formatDate(row.paidAt) || "—"}</span>,
 		},
 		{
 			key: "expireDate",

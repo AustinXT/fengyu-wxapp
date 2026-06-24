@@ -49,10 +49,6 @@ const orderTypeColorMap: Record<string, string> = {
   充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
 
-function formatTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
 function OrderActions({ order }: { order: SaleOrder }) {
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -468,7 +464,7 @@ export default function OrdersPageClient({
                     </td>
                     <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
-                    <td className="px-4 py-3 text-[#999999]">{formatTime(order.saleOrderDatetime)}</td>
+                    <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>
                     <td className="px-4 py-3">
                       <OrderActions order={order} />
                     </td>
