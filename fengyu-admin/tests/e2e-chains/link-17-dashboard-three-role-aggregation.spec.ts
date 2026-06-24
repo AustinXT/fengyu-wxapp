@@ -231,14 +231,14 @@ test('链路17：数据看板三角色聚合一致性', async ({ browser }) => {
 
     // SQL 直查 store-nc01 今日 received - refunded_amount（管理员视角下的应见数字）
     // 与 getDashboardStats (src/actions/dashboard.ts:83-143) 完全对齐：
-    //   - paid_at AT TIME ZONE 'Asia/Shanghai'（非 created_at::date）
+    //   - paid_at::date（库存北京墙钟字面，直接取日期；与 NOW() 的北京今天比较）
     //   - status IN ('已支付','已完成')（不含'部分支付'）
     //   - sale_order_type IN ('销售单','转换单')
     const dbStoreRevenue = parseFloat(psql(
       `SELECT COALESCE(SUM(received::numeric - refunded_amount::numeric), 0)::text ` +
         `FROM sale_orders ` +
         `WHERE store_id='store-nc01' ` +
-        `AND (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (NOW() AT TIME ZONE 'Asia/Shanghai')::date ` +
+        `AND paid_at::date = (NOW() AT TIME ZONE 'Asia/Shanghai')::date ` +
         `AND sale_order_type IN ('销售单','转换单') AND status IN ('已支付','已完成')`,
     )) || 0
     console.log(`[链路17] SQL: store-nc01 当日 SUM(received-refunded)=${dbStoreRevenue}`)
