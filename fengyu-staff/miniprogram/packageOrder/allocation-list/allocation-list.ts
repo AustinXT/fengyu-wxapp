@@ -135,11 +135,12 @@ Page({
   formatTime(dateStr: string): string {
     const d = safeParseDate(dateStr);
     if (!d) return '';
-    const m = d.getMonth() + 1;
-    const day = d.getDate();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
     const h = String(d.getHours()).padStart(2, '0');
     const min = String(d.getMinutes()).padStart(2, '0');
-    return `${m}/${day} ${h}:${min}`;
+    return `${y}-${m}-${day} ${h}:${min}`;
   },
 
   formatDate(dateStr: string): string {

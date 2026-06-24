@@ -3,6 +3,7 @@
 // 自动派生 提成%（只读）/ 分配额(=实收×分配比例) / 提成额(=分配额×提成%)。
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
+import { formatDateTime } from '../../utils/formatters';
 import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../utils/allocation-calc';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -207,7 +208,8 @@ Page({
         totalAmount: String(totalAmount),
         allocation_status: allocationStatus,
         customer_name: suggestData.customerName,
-        paid_at: suggestData.paidAt,
+        // paidAt 是 timestamp 列(UTC ISO)，格式化为 YYYY-MM-DD HH:mm:ss 再展示（WXML 原裸绑定会显示 ISO）
+        paid_at: suggestData.paidAt ? formatDateTime(suggestData.paidAt) : '',
       };
       const rates: RateRow[] = suggestData.rates || [];
       const beautyRates: Record<string, Record<string, number>> =
