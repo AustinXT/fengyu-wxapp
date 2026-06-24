@@ -20,6 +20,7 @@ import { getPointsToYuanRate } from '@/lib/system-config'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,
+  capRefundAmounts,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
   type RefundSourceItem,
@@ -628,14 +629,16 @@ export const createRefund = withPermission(
   if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
-  const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+  let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
   // 退款上限 = max(sale_order_payments 流水净额, origOrder.received)（与 staffApi createRefund 对齐）。
   // 部分支付订单按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶；流水净额含储值卡抵扣，
-  // received 兜底（流水缺失单），取 max 避免误拒。超限直接拒绝（不截断金额），保持退款数量与金额自洽。
+  // received 兜底（流水缺失单），取 max 避免误拒。
+  // 超限处理（2026-06-24 调整）：疗程卡强制整卡全退、数量不可调 → 截断退款额到 cap（仅退已付、整卡仍作废）；
+  // 家居数量可调 → 仍拒绝让店长减少退款数量。详见下方 if 分支。
   const paymentsNetRows = await db.execute<{ net: string }>(sql`
     SELECT COALESCE(SUM(amount), 0)::numeric AS net
     FROM sale_order_payments
@@ -648,9 +651,22 @@ export const createRefund = withPermission(
   // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数。两端镜像 staff order.js。
   const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refundedAmount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
-    return {
-      success: false,
-      error: { code: 'INVALID_STATE', message: '退款金额超过订单可退余额，请减少退款数量' },
+    // 疗程卡强制整卡全退、退款数量不可调（buildRefundDetails）：部分支付订单整卡值 > 净已收时，
+    // 直接拒绝会导致永远无法退款。改为截断到 cap（只退已付部分）、仍作废整卡（数量不变），
+    // 逐项 refundAmount 等比缩到 targetGross，保 note/级联冲销/STEP1.5 净额扣减一致。两端镜像 staff order.js。
+    // 家居产品数量可调，无疗程卡项时仍拒绝，让店长减少退款数量（保持数量↔金额自洽）。
+    const hasCourseCard = refundDetails.some((d) => d.productType === '疗程卡')
+    if (!hasCourseCard) {
+      return {
+        success: false,
+        error: { code: 'INVALID_STATE', message: '退款金额超过订单可退余额，请减少退款数量' },
+      }
+    }
+    const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
+    totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
+    finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+    if (finalRefundAmount <= 0) {
+      return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
     }
   }
 

@@ -24,6 +24,7 @@ const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../u
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const {
   buildRefundDetails,
+  capRefundAmounts,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
@@ -1971,7 +1972,8 @@ async function createRefund(ctx) {
     [refSaleOrderId]
   )
 
-  const { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
+  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
+  let { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
 
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
@@ -1981,7 +1983,7 @@ async function createRefund(ctx) {
   if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
-  const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+  let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     throw new Error('INVALID_STATE: 无可退项')
   }
@@ -1990,8 +1992,8 @@ async function createRefund(ctx) {
   //   - 部分支付订单（如疗程卡只付定金、次数全在）按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶。
   //   - 流水净额（首次支付/回款/储值卡抵扣为正、已审批退款为负）是生产权威已收（含储值卡抵扣）；
   //     received 列兜底（流水缺失的历史/异常单），取 max 避免误拒。
-  //   - 超限直接拒绝（而非截断金额）：退款明细 quantity/session_count 按请求记录、cascade 据此回滚次数，
-  //     只截金额不截数量会导致「退 N 次核销权却只退 M 次钱」，故让店长减少退款数量以保持数量与金额自洽。
+  //   - 超限处理（2026-06-24 调整）：疗程卡强制整卡全退、数量不可调 → 截断退款额到 cap（仅退已付、整卡仍作废）；
+  //     家居数量可调 → 仍拒绝让店长减少退款数量。详见下方 if 分支。
   const paymentsNetRows = await pg.query(
     `SELECT COALESCE(SUM(amount), 0)::numeric AS net
        FROM sale_order_payments
@@ -2004,7 +2006,20 @@ async function createRefund(ctx) {
   // received - refunded_amount 为 legacy/流水缺失单兜底。两端镜像 admin refunds.ts。
   const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refunded_amount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
-    throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
+    // 疗程卡强制整卡全退、退款数量不可调（buildRefundDetails）：部分支付订单整卡值 > 净已收时，
+    // 直接拒绝会导致永远无法退款。改为截断到 cap（只退已付部分）、仍作废整卡（数量不变），
+    // 逐项 refundAmount 等比缩到 targetGross，保 note/级联冲销/STEP1.5 净额扣减一致。两端镜像 admin refunds.ts。
+    // 家居产品数量可调，无疗程卡项时仍拒绝，让店长减少退款数量（保持数量↔金额自洽）。
+    const hasCourseCard = refundDetails.some((d) => d.productType === '疗程卡')
+    if (!hasCourseCard) {
+      throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
+    }
+    const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
+    totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
+    finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+    if (finalRefundAmount <= 0) {
+      throw new Error('INVALID_STATE: 无可退项')
+    }
   }
 
   // 储值卡 vs 原路径拆分（按原单储值卡占比）
