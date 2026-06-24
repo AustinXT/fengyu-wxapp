@@ -723,6 +723,22 @@ export const updateSku = withPermission(
       }
     }
 
+    // isEnabled 切换会改变套餐「计入数量」（启用 SKU 计价），但本函数不经 recomputeBundlePrice
+    // —— 唯一缺口，故在此显式重算所有含该 SKU 的套餐展示价，避免禁用后划线/会员价与可选项脱节。
+    if (data.isEnabled !== undefined && before && before.isEnabled !== data.isEnabled) {
+      const affected = await db
+        .select({ productId: mallProductSkus.productId })
+        .from(mallProductSkus)
+        .innerJoin(products, eq(products.productId, mallProductSkus.productId))
+        .where(and(eq(mallProductSkus.skuId, skuId), eq(products.isBundle, true)))
+      const bundleIds = [...new Set(affected.map((a) => a.productId))]
+      if (bundleIds.length > 0) {
+        await db.transaction(async (tx) => {
+          for (const pid of bundleIds) await recomputeBundlePrice(pid, tx)
+        })
+      }
+    }
+
     await logUpdate(session, 'sku.update', 'product_sku', skuId, before as Record<string, unknown>, data)
     revalidatePath('/products')
     return { success: true, message: '规格已更新' }
@@ -821,10 +837,13 @@ async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<v
     .from(mallBundleGroups)
     .where(eq(mallBundleGroups.productId, productId))
 
+  // 计入数量只数「启用」SKU——与开单选择器 getProductsByKind（innerJoin productSkus + isEnabled=true）口径一致，
+  // 否则禁用 SKU 仍被计价 → 套餐划线/会员价虚高于实际可选项。
   const counts = await tx
     .select({ groupId: mallProductSkus.bundleGroupId, cnt: sql<number>`count(*)::int` })
     .from(mallProductSkus)
-    .where(eq(mallProductSkus.productId, productId))
+    .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
+    .where(and(eq(mallProductSkus.productId, productId), eq(productSkus.isEnabled, true)))
     .groupBy(mallProductSkus.bundleGroupId)
   const countMap = new Map<number, number>()
   for (const c of counts) if (c.groupId != null) countMap.set(c.groupId, Number(c.cnt))

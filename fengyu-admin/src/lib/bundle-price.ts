@@ -20,7 +20,9 @@ export interface BundleGroupTotalsInput {
  * 算套餐展示价：
  * - price        = Σ 各组 listPrice × 计入数量
  * - specialPrice = Σ 各组 coalesce(memberPrice, listPrice) × 计入数量；仅当 < price 时落值，否则 null
- * 计入数量 = pickCount（N选M）或 skuCount（全选组）。组内同价 → 套餐价与具体如何选无关。
+ * 计入数量 = min(pickCount, skuCount)（N选M）或 skuCount（全选组）。组内同价 → 套餐价与具体如何选无关。
+ * 夹取到 skuCount：空组 / 欠填组（可选 SKU 数 < pickCount，如建组未加 SKU、删 SKU 至低于 pickCount）
+ * 不再按 pickCount 虚高，最多按实际可选数计价。
  */
 export function computeBundleTotals(
   groups: BundleGroupTotalsInput[],
@@ -28,7 +30,7 @@ export function computeBundleTotals(
   let listSum = 0
   let memberSum = 0
   for (const g of groups) {
-    const count = g.pickCount != null ? g.pickCount : g.skuCount
+    const count = g.pickCount != null ? Math.min(g.pickCount, g.skuCount) : g.skuCount
     const listUnit = g.listPrice != null ? Number(g.listPrice) : 0
     const memberUnit = g.memberPrice != null ? Number(g.memberPrice) : listUnit
     listSum += round2(listUnit * count)
