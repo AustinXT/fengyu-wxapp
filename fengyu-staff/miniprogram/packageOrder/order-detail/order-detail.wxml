@@ -264,7 +264,7 @@
 
       <view class="repay-section-label">支付方式</view>
       <view class="repay-method-cards">
-        <view class="repay-method-card {{repayMethod === '线下' ? 'repay-method-card--active' : ''}}" data-method="线下" bind:tap="onRepayMethodTap">现金/扫码回执</view>
+        <view class="repay-method-card {{repayMethod === '线下' ? 'repay-method-card--active' : ''}}" data-method="线下" bind:tap="onRepayMethodTap">线下付款</view>
         <view class="repay-method-card {{repayMethod === '储值卡' ? 'repay-method-card--active' : ''}}" data-method="储值卡" bind:tap="onRepayMethodTap">储值卡</view>
         <view class="repay-method-card {{repayMethod === '微信' ? 'repay-method-card--active' : ''}}" data-method="微信" bind:tap="onRepayMethodTap">微信</view>
         <view class="repay-method-card {{repayMethod === '支付宝' ? 'repay-method-card--active' : ''}}" data-method="支付宝" bind:tap="onRepayMethodTap">支付宝</view>
