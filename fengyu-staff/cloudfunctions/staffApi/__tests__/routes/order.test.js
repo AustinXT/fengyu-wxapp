@@ -3701,11 +3701,11 @@ describe.skip('order.createRepayment', () => {
     await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INSUFFICIENT_BALANCE/)
   })
 
-  test('微信支付方式暂未实现', async () => {
+  test('微信/支付宝不经 createRepayment（在线回款走扫码链路，被白名单拒绝）', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-001', repayAmount: 100, paymentMethod: '微信',
     })
-    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/微信扫码回款暂未开放/)
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INVALID_PARAMS.*支付方式/)
   })
 
   test('缺少原单号拒绝', async () => {

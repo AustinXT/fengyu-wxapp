@@ -262,19 +262,16 @@
         <text class="repay-debt-tip">（可只对部分子项回款，不要求一次性付清）</text>
       </view>
 
-      <van-field
-        label="支付方式"
-        readonly
-        clickable="{{false}}"
-      >
-        <view slot="input" class="repay-method-row">
-          <van-radio-group value="{{repayMethod}}" bind:change="onRepayMethodChange" direction="horizontal">
-            <van-radio name="线下" checked-color="#C0322A">现金/扫码回执</van-radio>
-            <van-radio name="储值卡" checked-color="#C0322A">储值卡</van-radio>
-            <van-radio name="微信" checked-color="#C0322A" disabled>微信（开发中）</van-radio>
-          </van-radio-group>
-        </view>
-      </van-field>
+      <view class="repay-section-label">支付方式</view>
+      <view class="repay-method-cards">
+        <view class="repay-method-card {{repayMethod === '线下' ? 'repay-method-card--active' : ''}}" data-method="线下" bind:tap="onRepayMethodTap">现金/扫码回执</view>
+        <view class="repay-method-card {{repayMethod === '储值卡' ? 'repay-method-card--active' : ''}}" data-method="储值卡" bind:tap="onRepayMethodTap">储值卡</view>
+        <view class="repay-method-card {{repayMethod === '微信' ? 'repay-method-card--active' : ''}}" data-method="微信" bind:tap="onRepayMethodTap">微信</view>
+        <view class="repay-method-card {{repayMethod === '支付宝' ? 'repay-method-card--active' : ''}}" data-method="支付宝" bind:tap="onRepayMethodTap">支付宝</view>
+      </view>
+      <view wx:if="{{repayMethod === '微信' || repayMethod === '支付宝'}}" class="repay-online-hint">
+        储值卡先扣（可选），剩余 ¥{{repayOnlineTotal}} 生成收款码，顾客扫码进收银台用{{repayMethod}}支付
+      </view>
 
       <!-- 按子项金额表 -->
       <view class="repay-lines">
@@ -284,7 +281,7 @@
             <text class="repay-line-sub">可回款 ¥{{item.repayable}}</text>
           </view>
           <van-field
-            wx:if="{{repayMethod !== '储值卡'}}"
+            wx:if="{{repayMethod === '线下'}}"
             type="digit"
             placeholder="现金"
             value="{{item.cash}}"
@@ -306,8 +303,14 @@
       </view>
 
       <view class="repay-debt">
-        本次合计：<text class="repay-debt-hot">¥{{repayGrandTotal}}</text>
-        <text class="repay-line-sub">现金 ¥{{repayCashTotal}} · 储值卡 ¥{{repayCardTotal}}</text>
+        <block wx:if="{{repayMethod === '微信' || repayMethod === '支付宝'}}">
+          本次合计：<text class="repay-debt-hot">¥{{repayGrandTotal}}</text>
+          <text class="repay-line-sub">储值卡先扣 ¥{{repayCardTotal}} · 顾客扫码 ¥{{repayOnlineTotal}}</text>
+        </block>
+        <block wx:else>
+          本次合计：<text class="repay-debt-hot">¥{{repayGrandTotal}}</text>
+          <text class="repay-line-sub">现金 ¥{{repayCashTotal}} · 储值卡 ¥{{repayCardTotal}}</text>
+        </block>
       </view>
 
       <van-field
@@ -328,7 +331,7 @@
           loading="{{submitting}}"
           disabled="{{submitting}}"
           bind:click="onConfirmRepay"
-        >确认回款</van-button>
+        >{{repayMethod === '微信' || repayMethod === '支付宝' ? '生成收款码' : '确认回款'}}</van-button>
       </view>
     </view>
   </van-popup>

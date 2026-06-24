@@ -1104,7 +1104,8 @@ async function qrcode(ctx) {
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
             o.payment_method, o.paid_at, o.store_id, o.opened_by,
-            o.total_amount, o.prepaid_card_amount, o.payable_amount
+            o.total_amount, o.prepaid_card_amount, o.payable_amount,
+            o.received, o.refunded_amount
      FROM sale_orders o
      WHERE o.sale_order_id = $1`,
     [saleOrderId]
@@ -1136,15 +1137,26 @@ async function qrcode(ctx) {
   // 不能用 sum(received) 否则金额显示为空（前端 totalAmount || '' 会把 0 吞成空串）
   const totalAmount = Number(order.total_amount || 0)
 
-  // 实际需支付金额（付款码顶部展示给顾客扫码）= Σ各商品明细实付 − 储值卡抵扣
-  // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
-  // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
-  const sumItemReal = items.reduce(
-    (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
-    0
-  )
+  // 实际需支付金额（付款码顶部展示给顾客扫码）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
-  const actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
+  let actualPayable
+  if (order.status === '部分支付') {
+    // 回款场景：剩余欠款 = 应付实金 − 净到账（received − refunded）
+    const payable = Number(order.payable_amount || 0) > 0
+      ? Number(order.payable_amount)
+      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+    const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
+    actualPayable = Math.max(0, Math.round((payable - netReceived) * 100) / 100)
+  } else {
+    // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
+    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
+    // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
+    const sumItemReal = items.reduce(
+      (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
+      0
+    )
+    actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
+  }
 
   // 推导二维码显示状态（UI-only 标签，不写库）
   //   待支付 + payment_method='线下' → 顾客已选线下，待店长确认收款（UI 标签 '待确认收款'）
@@ -1156,14 +1168,17 @@ async function qrcode(ctx) {
     qrCodeStatus = '待确认收款'
   } else if (order.status === '待支付') {
     qrCodeStatus = '待扫码'
+  } else if (order.status === '部分支付') {
+    // 回款：等顾客扫码付剩余应付（仍走扫码态，便于轮询到账；不显示线下确认按钮）
+    qrCodeStatus = '待扫码'
   } else {
     qrCodeStatus = order.status
   }
 
-  // 仅待支付订单生成小程序码（带缓存）
+  // 待支付（首付）/ 部分支付（回款）订单生成小程序码（带缓存；scene=saleOrderId 与状态无关，可复用）
   let qrcodeUrl = ''
   let qrcodeError = ''
-  if (order.status === '待支付') {
+  if (order.status === '待支付' || order.status === '部分支付') {
     if (qrcodeCache.has(saleOrderId)) {
       qrcodeUrl = qrcodeCache.get(saleOrderId)
     } else {
@@ -2393,13 +2408,6 @@ async function rejectRefund(ctx) {
 // ========== P2: 回款单（Ticket 2：多次回款 PR-A） ==========
 
 /**
- * 判断支付方式是否走线上通道（生成 prepay_id + 回调到账）
- */
-function isOnlinePaymentMethod(method) {
-  return method === '微信' || method === '支付宝'
-}
-
-/**
  * 创建回款单（店长专用）— Ticket 2 改写
  *
  * 核心变化（vs. 旧实现）：
@@ -2440,13 +2448,10 @@ async function createRepayment(ctx) {
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
   if (!paymentMethod) throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
-  if (!['微信', '线下', '储值卡'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: 非法的支付方式（仅支持 微信/线下/储值卡）')
-  }
-
-  // 微信扫码回款暂未实现（待业务接入微信扫码付款码链路）
-  if (paymentMethod === '微信') {
-    throw new Error('INVALID_PARAMS: 微信扫码回款暂未开放')
+  // createRepayment 只处理「即时记账」回款（线下/储值卡）。
+  // 微信/支付宝在线回款由 client 扫码链路走：order.qrcode → scan-pay → order.pay/alipayPay → payNotify 写 change_type='回款'，不经此函数。
+  if (!['线下', '储值卡'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 非法的支付方式（仅支持 线下/储值卡）')
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止回款（一笔订单不应同时退款审批中又补款）
@@ -2593,8 +2598,9 @@ async function createRepayment(ctx) {
     // 5) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
     //    现金合并 1 行 '回款'(ref=null) + 储值卡合并 1 行 '储值卡抵扣'(ref=null)。
     //    子项定向（钱精确落选中卡）改由下方 5b 更新 sale_items.pending_received 承载（与 admin recordPayment 一致）。
-    const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
-    const repayPaidAt = isOnlinePaymentMethod(paymentMethod) ? null : now
+    // 线下/储值卡回款均即时入账（已支付）
+    const repayStatusRow = '已支付'
+    const repayPaidAt = now
     // 回款事件主流水行 id（现金行优先；纯储值卡回款则取储值卡抵扣行）—— 按回款逐笔分配的归属键
     let cashPaymentId = null
     let cardPaymentId = null
@@ -2618,8 +2624,8 @@ async function createRepayment(ctx) {
       )
       cardPaymentId = ins.rows[0].id
     }
-    // 线下/储值卡回款（微信已 reject）：现金行已支付，取其为主流水行；纯储值卡取抵扣行
-    const primaryPaymentId = repayStatusRow === '已支付' ? (cashPaymentId || cardPaymentId) : cardPaymentId
+    // 线下/储值卡回款均即时已支付：现金行为主流水行；纯储值卡取抵扣行
+    const primaryPaymentId = cashPaymentId || cardPaymentId
 
     // 5b) 子项定向：把本次每张卡补款落到 sale_items.pending_received，使下方 recalcPaidSessionsForOrder
     //     STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
