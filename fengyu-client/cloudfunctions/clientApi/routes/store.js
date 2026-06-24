@@ -5,6 +5,7 @@
 
 const pg = require('../db/pg')
 const crypto = require('crypto')
+const { checkText } = require('../utils/wx-sec-check')
 
 /**
  * 门店列表
@@ -163,6 +164,9 @@ async function requestUnbind(ctx) {
   if (existing.length > 0) {
     throw new Error('INVALID_PARAMS: 已有待审批的转店申请，请等待审批结果')
   }
+
+  // 内容安全校验（转店备注 = 资料类）：违规抛 INVALID_PARAMS，不创建申请
+  await checkText(note, { scene: 1 })
 
   // partial unique uq_store_unbind_pending 兜底 TOCTOU：同顾客双击提交
   const requestId = crypto.randomUUID()

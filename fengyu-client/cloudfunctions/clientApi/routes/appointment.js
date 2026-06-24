@@ -5,6 +5,7 @@
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
+const { checkText } = require('../utils/wx-sec-check')
 
 /**
  * 发起预约
@@ -119,6 +120,9 @@ async function create(ctx) {
   // 顾客姓名从 client_wechat_users
   let clientName = users[0]?.name || ''
   if (!clientName) clientName = users[0]?.phone || ''
+
+  // 内容安全校验（备注 = 资料类）：违规抛 INVALID_PARAMS，不创建预约
+  await checkText(notes, { scene: 1 })
 
   // 创建预约
   // partial unique uq_appt_sale_item_active 兜底 TOCTOU：同 sale_item 双发 create

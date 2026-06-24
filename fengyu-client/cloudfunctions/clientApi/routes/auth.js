@@ -8,6 +8,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
 const { testBypassAllowed } = require('../utils/runtime-guard')
+const { checkText, checkImage } = require('../utils/wx-sec-check')
 
 /**
  * 微信登录
@@ -354,6 +355,8 @@ async function updateProfile(ctx) {
 
   if (name && typeof name === 'string' && name.trim().length > 0) {
     const trimmedName = name.trim().substring(0, 50)
+    // 内容安全校验（昵称 = 资料类）：违规抛 INVALID_PARAMS，不落库
+    await checkText(trimmedName, { scene: 1 })
     params.push(trimmedName)
     setClauses.push(`name = $${params.length}`)
     result.name = trimmedName
@@ -412,6 +415,9 @@ async function uploadAvatar(ctx) {
   if (users.length === 0) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
+
+  // 内容安全校验：违规图直接抛错，不进 COS、不写 avatar_url
+  await checkImage(buffer, { openid: OPENID })
 
   const rand = Math.random().toString(36).slice(2, 8)
   const cloudPath = `avatars/${OPENID}/${Date.now()}_${rand}.${normalizedExt}`
