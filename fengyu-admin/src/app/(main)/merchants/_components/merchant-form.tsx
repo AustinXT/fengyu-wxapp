@@ -4,9 +4,15 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import { createMerchant, updateMerchant, type MerchantDetail } from "@/actions/merchants"
+import {
+  createMerchant,
+  updateMerchant,
+  type MerchantDetail,
+  type MerchantMarketOption,
+} from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 /**
@@ -14,7 +20,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
  * - 不传 merchant → 新建模式（createMerchant）
  * - 传 merchant → 编辑模式（updateMerchant，携带 updatedAt 乐观锁）
  */
-export default function MerchantForm({ merchant }: { merchant?: MerchantDetail }) {
+export default function MerchantForm({
+  merchant,
+  markets,
+}: {
+  merchant?: MerchantDetail
+  markets: MerchantMarketOption[]
+}) {
   const router = useRouter()
   const isEdit = !!merchant
   const [saving, setSaving] = useState(false)
@@ -25,6 +37,7 @@ export default function MerchantForm({ merchant }: { merchant?: MerchantDetail }
   const [merchantNo, setMerchantNo] = useState(merchant?.merchantNo ?? "")
   const [termNo, setTermNo] = useState(merchant?.termNo ?? "")
   const [enabled, setEnabled] = useState(merchant?.enabled ?? false)
+  const [marketOrgNodeId, setMarketOrgNodeId] = useState(merchant?.marketOrgNodeId ?? "")
 
   const markDirty = () => setFormDirty(true)
 
@@ -50,6 +63,7 @@ export default function MerchantForm({ merchant }: { merchant?: MerchantDetail }
         merchantNo: merchantNo.trim() || null,
         termNo: termNo.trim() || null,
         enabled,
+        marketOrgNodeId: marketOrgNodeId || null,
       }
       const result = isEdit
         ? await updateMerchant(merchant!.id, payload, merchant!.updatedAt)
@@ -104,6 +118,23 @@ export default function MerchantForm({ merchant }: { merchant?: MerchantDetail }
                 placeholder="便于区分各店商户，如：凤仪韵·南昌莲塘店"
                 maxLength={80}
               />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">所属市场</label>
+              <Select
+                value={marketOrgNodeId}
+                onChange={(e) => {
+                  setMarketOrgNodeId(e.target.value)
+                  markDirty()
+                }}
+              >
+                <SelectOption value="">未分配</SelectOption>
+                {markets.map((m) => (
+                  <SelectOption key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectOption>
+                ))}
+              </Select>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">拉卡拉商户号</label>

@@ -95,6 +95,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（manager 是主要录入者，删除需 admin）
     'inventory:list', 'inventory:create', 'inventory:update',
+    // 商户管理（店长只读：收款配置出问题时自查本店关联的收款商户；按市场 scope 仅见同市场商户）
+    'merchant:list',
   ],
   finance: [
     'dashboard:view',

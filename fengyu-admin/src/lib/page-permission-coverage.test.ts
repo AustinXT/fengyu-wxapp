@@ -107,10 +107,12 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/employees/create', parent: '/employees', entryGate: 'employee:create', clauses: ['employee:list', 'org:list', 'store:list'] },
   { href: '/stores/[id]/edit', parent: '/stores', clauses: ['store:list'] },
   { href: '/stores/create', parent: '/stores', entryGate: 'store:create', clauses: ['org:list'] },
-  // 商户管理（merchant:list 列表/详情；create 页仅表单，无 SSR 数据查询）
+  // 商户管理（merchant:list 列表/详情/编辑；manager 只读可见列表，新建/编辑/删除入口按权限隐藏）
   { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
-  { href: '/merchants/[id]/edit', parent: '/merchants', clauses: ['merchant:list'] },
-  { href: '/merchants/create', parent: '/merchants', clauses: ['merchant:create'] },
+  // 编辑页入口（详情页「编辑」按钮）受 merchant:update 保护；页面 SSR 仅查询（merchant:list）
+  { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
+  // 新建按钮按 merchant:create 隐藏（manager 点不到）；create 页 SSR 取市场下拉（merchant:list）+ merchant:create 闸门
+  { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
   // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
   { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
   { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },

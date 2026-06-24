@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import type { AdminMerchant } from "@/actions/merchants"
+import type { AdminMerchant, MerchantMarketOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectOption } from "@/components/ui/select"
@@ -18,9 +18,13 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 export default function MerchantsPage({
   merchants,
   total,
+  markets,
+  canCreate,
 }: {
   merchants: AdminMerchant[]
   total: number
+  markets: MerchantMarketOption[]
+  canCreate: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -28,6 +32,7 @@ export default function MerchantsPage({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const enabledFilter = get("enabled")
+  const marketFilter = get("market")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
@@ -79,6 +84,11 @@ export default function MerchantsPage({
         ),
     },
     {
+      key: "marketName",
+      header: "所属市场",
+      cell: (row) => row.marketName ?? "—",
+    },
+    {
       key: "storeCount",
       header: "关联门店",
       cell: (row) => `${row.storeCount} 个`,
@@ -99,7 +109,9 @@ export default function MerchantsPage({
             拉卡拉收款商户档案；门店在「门店编辑」页选择关联本表的商户。
           </p>
         </div>
-        <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
+        {canCreate && (
+          <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -109,6 +121,18 @@ export default function MerchantsPage({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="w-56"
         />
+        <Select
+          value={marketFilter}
+          onChange={(e) => setMany({ market: e.target.value, page: "" })}
+          className="w-40"
+        >
+          <SelectOption value="">全部市场</SelectOption>
+          {markets.map((m) => (
+            <SelectOption key={m.id} value={m.id}>
+              {m.name}
+            </SelectOption>
+          ))}
+        </Select>
         <Select
           value={enabledFilter}
           onChange={(e) => setMany({ enabled: e.target.value, page: "" })}

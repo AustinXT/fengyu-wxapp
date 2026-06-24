@@ -2,12 +2,13 @@
 
 import { db } from '@/db'
 import { lakalaMerchants } from '@db/lakala'
-import { stores } from '@db/org'
-import { and, asc, desc, eq, ilike, ne, or, sql } from 'drizzle-orm'
+import { stores, orgNodes } from '@db/org'
+import { and, asc, desc, eq, ilike, inArray, ne, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { randomBytes } from 'crypto'
 import { withPermission } from '@/lib/with-permission'
+import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 
@@ -41,6 +42,8 @@ export type MerchantEnabledFilter = 'all' | 'enabled' | 'disabled'
 export interface MerchantFilters {
   search?: string
   enabled?: MerchantEnabledFilter
+  /** 市场筛选：org_nodes type='市场' 节点 id */
+  marketId?: string
   page?: number
   pageSize?: number
 }
@@ -51,6 +54,8 @@ export interface AdminMerchant {
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
+  /** 所属市场名（market_org_node_id → org_nodes.name），未分配为 null */
+  marketName: string | null
   /** 关联门店数（stores.lakala_merchant_id 反查） */
   storeCount: number
   createdAt: string
@@ -68,7 +73,7 @@ export interface PaginatedMerchants {
  */
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
-  async (_session, filters: MerchantFilters = {}): Promise<PaginatedMerchants> => {
+  async (session, filters: MerchantFilters = {}): Promise<PaginatedMerchants> => {
     const page = Math.max(1, filters.page || 1)
     const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
@@ -88,6 +93,21 @@ export const getMerchantsPaginated = withPermission(
     if (filters.enabled === 'enabled') conditions.push(eq(lakalaMerchants.enabled, true))
     else if (filters.enabled === 'disabled') conditions.push(eq(lakalaMerchants.enabled, false))
 
+    // 严格市场 scope 过滤：非 admin 仅见 scope 内市场的商户；market 为空 / scope 外的
+    // 商户对非 admin 隐藏（NULL 不匹配 inArray 自动排除）。admin 走 isAdminScope 短路全开。
+    if (!isAdminScope(session)) {
+      const visibleMarketIds = await expandVisibleMarketIds(session)
+      if (visibleMarketIds === null) {
+        // 总部级非 admin 角色：可见全部市场，不加过滤
+      } else if (visibleMarketIds.length === 0) {
+        conditions.push(sql`FALSE`)
+      } else {
+        conditions.push(inArray(lakalaMerchants.marketOrgNodeId, visibleMarketIds))
+      }
+    }
+    // 市场筛选（所有角色含 admin）
+    if (filters.marketId) conditions.push(eq(lakalaMerchants.marketOrgNodeId, filters.marketId))
+
     const whereClause = conditions.length ? and(...conditions) : undefined
 
     // COUNT 仅过滤 lakala_merchants 自身列，无需 JOIN
@@ -104,6 +124,8 @@ export const getMerchantsPaginated = withPermission(
         merchantNo: lakalaMerchants.merchantNo,
         termNo: lakalaMerchants.termNo,
         enabled: lakalaMerchants.enabled,
+        // 所属市场名（标量子查询，避开 groupBy 复杂度；id 为 PK，functional dependency 允许）
+        marketName: sql<string | null>`(SELECT n.name FROM org_nodes n WHERE n.id = ${lakalaMerchants.marketOrgNodeId})`,
         createdAt: lakalaMerchants.createdAt,
         updatedAt: lakalaMerchants.updatedAt,
         storeCount: sql<number>`cast(count(${stores.storeId}) as int)`,
@@ -126,6 +148,7 @@ export const getMerchantsPaginated = withPermission(
         merchantNo: r.merchantNo ?? null,
         termNo: r.termNo ?? null,
         enabled: r.enabled,
+        marketName: r.marketName ?? null,
         storeCount: r.storeCount ?? 0,
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
@@ -151,6 +174,10 @@ export interface MerchantDetail {
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
+  /** 所属市场（org_nodes type='市场' id），未分配为 null；编辑表单回显用 */
+  marketOrgNodeId: string | null
+  /** 所属市场名 */
+  marketName: string | null
   createdAt: string
   updatedAt: string
   linkedStores: MerchantLinkedStore[]
@@ -167,6 +194,8 @@ export const getMerchantById = withPermission(
         merchantNo: lakalaMerchants.merchantNo,
         termNo: lakalaMerchants.termNo,
         enabled: lakalaMerchants.enabled,
+        marketOrgNodeId: lakalaMerchants.marketOrgNodeId,
+        marketName: sql<string | null>`(SELECT n.name FROM org_nodes n WHERE n.id = ${lakalaMerchants.marketOrgNodeId})`,
         createdAt: lakalaMerchants.createdAt,
         updatedAt: lakalaMerchants.updatedAt,
       })
@@ -198,6 +227,8 @@ export const getMerchantById = withPermission(
       merchantNo: m.merchantNo ?? null,
       termNo: m.termNo ?? null,
       enabled: m.enabled,
+      marketOrgNodeId: m.marketOrgNodeId ?? null,
+      marketName: m.marketName ?? null,
       createdAt: m.createdAt.toISOString(),
       updatedAt: m.updatedAt.toISOString(),
       linkedStores: linked.map((s) => ({
@@ -245,6 +276,34 @@ export const getMerchantOptions = withPermission(
 )
 
 // ============================================================================
+// 市场下拉数据源（商户管理列表筛选 + 新建/编辑表单「所属市场」）
+//
+// 权限用 merchant:list（admin + finance + manager 持有）。finance/manager 无 commission:list，
+// 不能复用 commission.getMarkets，故本函数对齐其 scope 过滤范式（expandVisibleMarketIds）。
+// ============================================================================
+
+export interface MerchantMarketOption {
+  id: string
+  name: string
+}
+
+export const getMerchantMarketOptions = withPermission(
+  'merchant:list',
+  async (session): Promise<MerchantMarketOption[]> => {
+    const visibleIds = await expandVisibleMarketIds(session)
+    // 非总部且无可见市场 → 无市场可选
+    if (visibleIds !== null && visibleIds.length === 0) return []
+    const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
+    const rows = await db
+      .select({ id: orgNodes.id, name: orgNodes.name })
+      .from(orgNodes)
+      .where(and(eq(orgNodes.type, '市场'), scopeCond))
+      .orderBy(asc(orgNodes.sortOrder))
+    return rows.map((r) => ({ id: r.id, name: r.name }))
+  },
+)
+
+// ============================================================================
 // 写入：新建 / 编辑 / 删除
 // ============================================================================
 
@@ -253,6 +312,8 @@ export interface MerchantInput {
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
+  /** 所属市场（org_nodes type='市场' id）；可选，未分配/未传为 null */
+  marketOrgNodeId?: string | null
 }
 
 /**
@@ -278,6 +339,7 @@ export const createMerchant = withPermission(
     const merchantName = data.merchantName.trim()
     const merchantNo = data.merchantNo?.trim() || null
     const termNo = data.termNo?.trim() || null
+    const marketOrgNodeId = data.marketOrgNodeId || null
 
     // 商户号唯一校验（应用层；DB partial unique index 兜底）
     if (merchantNo) {
@@ -291,7 +353,7 @@ export const createMerchant = withPermission(
 
     const id = ksuid('lm_')
     try {
-      await db.insert(lakalaMerchants).values({ id, merchantName, merchantNo, termNo, enabled: data.enabled })
+      await db.insert(lakalaMerchants).values({ id, merchantName, merchantNo, termNo, enabled: data.enabled, marketOrgNodeId })
     } catch (e) {
       if (pgErrorCode(e) === '23505') return { success: false, message: `商户号 ${merchantNo} 已被其他商户占用` }
       throw e
@@ -302,6 +364,7 @@ export const createMerchant = withPermission(
       merchantNo,
       termNo,
       enabled: data.enabled,
+      marketOrgNodeId,
     })
     revalidatePath('/merchants')
     return { success: true, message: '商户已创建', id }
@@ -324,6 +387,7 @@ export const updateMerchant = withPermission(
     const merchantName = data.merchantName.trim()
     const merchantNo = data.merchantNo?.trim() || null
     const termNo = data.termNo?.trim() || null
+    const marketOrgNodeId = data.marketOrgNodeId || null
 
     const [before] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, id)).limit(1)
     if (!before) return { success: false, message: '商户不存在' }
@@ -351,7 +415,7 @@ export const updateMerchant = withPermission(
     try {
       result = await db
         .update(lakalaMerchants)
-        .set({ merchantName, merchantNo, termNo, enabled: data.enabled })
+        .set({ merchantName, merchantNo, termNo, enabled: data.enabled, marketOrgNodeId })
         .where(whereConditions)
     } catch (e) {
       if (pgErrorCode(e) === '23505') return { success: false, message: `商户号 ${merchantNo} 已被其他商户占用` }
@@ -367,7 +431,7 @@ export const updateMerchant = withPermission(
       'lakala_merchant',
       id,
       before as Record<string, unknown>,
-      { merchantName, merchantNo, termNo, enabled: data.enabled },
+      { merchantName, merchantNo, termNo, enabled: data.enabled, marketOrgNodeId },
     )
     revalidatePath('/merchants')
     revalidatePath(`/merchants/${id}`)

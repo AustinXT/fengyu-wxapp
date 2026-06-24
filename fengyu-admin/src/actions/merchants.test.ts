@@ -11,6 +11,7 @@ vi.mock('@db/lakala', () => ({
     merchantNo: 'merchant_no',
     termNo: 'term_no',
     enabled: 'enabled',
+    marketOrgNodeId: 'market_org_node_id',
     createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
@@ -23,6 +24,13 @@ vi.mock('@db/org', () => ({
     orgNodeId: 'org_node_id',
     lakalaMerchantId: 'lakala_merchant_id',
   },
+  orgNodes: {
+    id: 'id',
+    name: 'name',
+    type: 'type',
+    parentId: 'parent_id',
+    sortOrder: 'sort_order',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -31,13 +39,18 @@ vi.mock('drizzle-orm', () => ({
   or: vi.fn((...args) => ({ type: 'or', args })),
   ne: vi.fn((a, b) => ({ type: 'ne', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn(() => ({})) })), { raw: vi.fn() }),
 }))
 
 vi.mock('@/lib/auth', () => ({ getSession: vi.fn() }))
-vi.mock('@/lib/permissions', () => ({ requirePermission: vi.fn() }))
+vi.mock('@/lib/permissions', () => ({
+  requirePermission: vi.fn(),
+  isAdminScope: vi.fn(() => true),
+  expandVisibleMarketIds: vi.fn(async () => null),
+}))
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn(), logUpdate: vi.fn() }))
 vi.mock('@/lib/pg-error', () => ({ pgErrorCode: vi.fn(() => null) }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
@@ -46,12 +59,15 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 import {
   getMerchantsPaginated,
   getMerchantById,
+  getMerchantMarketOptions,
   createMerchant,
   updateMerchant,
   deleteMerchant,
 } from './merchants'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
+import { eq, inArray } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'E1',
@@ -102,6 +118,9 @@ function mockDelete() {
 beforeEach(() => {
   vi.clearAllMocks()
   ;(getSession as any).mockResolvedValue(mockSession)
+  // 默认 admin 全开：isAdminScope→true（短路 scope 过滤），expandVisibleMarketIds→null（全部市场）
+  ;(isAdminScope as any).mockReturnValue(true)
+  ;(expandVisibleMarketIds as any).mockResolvedValue(null)
 })
 
 describe('createMerchant', () => {
@@ -209,14 +228,80 @@ describe('getMerchantById', () => {
 })
 
 describe('getMerchantsPaginated', () => {
-  it('返回分页数据 + total', async () => {
+  it('返回分页数据 + total + marketName', async () => {
     mockSelectSequence(
       [{ count: 1 }], // countQuery
-      [{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', termNo: 'T', enabled: true, createdAt: new Date(), updatedAt: new Date(), storeCount: 2 }], // dataQuery
+      [{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', termNo: 'T', enabled: true, marketName: '南昌', createdAt: new Date(), updatedAt: new Date(), storeCount: 2 }], // dataQuery
     )
     const r = await getMerchantsPaginated({})
     expect(r.total).toBe(1)
     expect(r.data).toHaveLength(1)
     expect(r.data[0].storeCount).toBe(2)
+    expect(r.data[0].marketName).toBe('南昌')
+  })
+
+  it('admin（isAdminScope=true）短路，不查可见市场', async () => {
+    mockSelectSequence([{ count: 0 }], [])
+    await getMerchantsPaginated({})
+    expect(expandVisibleMarketIds).not.toHaveBeenCalled()
+  })
+
+  it('marketId 筛选 → 按 market_org_node_id 精确过滤', async () => {
+    mockSelectSequence([{ count: 0 }], [])
+    await getMerchantsPaginated({ marketId: 'mkt_1' })
+    expect(eq).toHaveBeenCalledWith('market_org_node_id', 'mkt_1')
+  })
+
+  it('非 admin 有可见市场 → inArray(market_org_node_id, 可见市场)', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_1', 'mkt_2'])
+    mockSelectSequence([{ count: 0 }], [])
+    await getMerchantsPaginated({})
+    expect(expandVisibleMarketIds).toHaveBeenCalled()
+    expect(inArray).toHaveBeenCalledWith('market_org_node_id', ['mkt_1', 'mkt_2'])
+  })
+
+  it('非 admin 无可见市场 → 全部隐藏（FALSE 条件，不报错）', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue([])
+    mockSelectSequence([{ count: 0 }], [])
+    const r = await getMerchantsPaginated({})
+    expect(r.total).toBe(0)
+    expect(r.data).toHaveLength(0)
+  })
+
+  it('总部级非 admin（expandVisibleMarketIds=null）→ 不加市场过滤', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(null)
+    mockSelectSequence([{ count: 3 }], [])
+    const r = await getMerchantsPaginated({})
+    expect(expandVisibleMarketIds).toHaveBeenCalled()
+    expect(inArray).not.toHaveBeenCalled()
+    expect(r.total).toBe(3)
+  })
+})
+
+describe('getMerchantMarketOptions', () => {
+  it('admin（expandVisibleMarketIds=null）→ 返回全部市场，不加 scope 条件', async () => {
+    ;(expandVisibleMarketIds as any).mockResolvedValue(null)
+    mockSelectSequence([{ id: 'mkt_1', name: '南昌' }, { id: 'mkt_2', name: '上海' }])
+    const r = await getMerchantMarketOptions()
+    expect(r).toHaveLength(2)
+    expect(r[0]).toEqual({ id: 'mkt_1', name: '南昌' })
+    expect(inArray).not.toHaveBeenCalled()
+  })
+
+  it('非 admin 无可见市场 → 直接返回空（不查库）', async () => {
+    ;(expandVisibleMarketIds as any).mockResolvedValue([])
+    const r = await getMerchantMarketOptions()
+    expect(r).toHaveLength(0)
+  })
+
+  it('非 admin 有可见市场 → inArray(orgNodes.id, 可见市场) 过滤', async () => {
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_1'])
+    mockSelectSequence([{ id: 'mkt_1', name: '南昌' }])
+    const r = await getMerchantMarketOptions()
+    expect(inArray).toHaveBeenCalledWith('id', ['mkt_1'])
+    expect(r).toHaveLength(1)
   })
 })
