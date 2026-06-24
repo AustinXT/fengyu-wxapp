@@ -9,7 +9,7 @@ import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
-import { hasPendingRefund, hasSettledRefund } from '@/lib/refund-cascade'
+import { hasPendingRefund, hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 
@@ -320,6 +320,16 @@ export const batchSaveAllocations = withPermission(
   // 历史订单（WorkFine 核对补登）不参与营业额分配（无 sale_items 天然不可分，补显式拦截防绕过）
   if (typeRow.legacySource === 'workfine') {
     return { success: false, message: '历史订单不参与营业额分配' }
+  }
+  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配。两端镜像 savePaymentAllocations
+  if (await hasPendingRefund(db, saleOrderId)) {
+    return { success: false, message: '该订单退款审批中，暂不可修改分配' }
+  }
+  // 退款后重分配守卫（2026-06-24）：订单已有「已支付」退款时禁止整单重保存——本路径会作废该单全部未作废分配行
+  // （含挂退款流水 id 的负数冲销行）再按满额重插正数行 → 退款冲销被抹除、营业额膨胀回退款前。
+  // 整单全作废重插必然触及被退 item，故用订单级守卫；回款级 savePaymentAllocations 用 hasSettledRefundForPayment。
+  if (await hasSettledRefund(db, saleOrderId)) {
+    return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
   }
 
   // 校验所有 saleItemId 属于该订单（防跨订单分配篡改）
@@ -692,13 +702,18 @@ export const savePaymentAllocations = withPermission(
     if (pay.legacy_source === 'workfine') {
       return { success: false, message: '历史订单不参与营业额分配' }
     }
+    // allocation_status 状态守卫（两端镜像 staff allocation.savePayment）：仅「待分配/已分配」可改；
+    // NULL（capture 未跑的非营业额事件行）等异常状态不应被无条件翻成「已分配」。
+    if (!['待分配', '已分配'].includes(pay.allocation_status as string)) {
+      return { success: false, message: '该回款不可分配（状态异常）' }
+    }
     // 冻结闭环（Bug I）：退款审批中禁止改分配
     if (await hasPendingRefund(db, pay.sale_order_id as string)) {
       return { success: false, message: '该订单退款审批中，暂不可修改分配' }
     }
-    // 退款后重分配守卫（2026-06-24）：订单已有「已支付」退款时禁止重分配——退款已记负数冲销行（挂退款流水 id），
-    // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。两端镜像 staff allocation.savePayment。
-    if (await hasSettledRefund(db, pay.sale_order_id as string)) {
+    // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
+    // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 staff allocation.savePayment。
+    if (await hasSettledRefundForPayment(db, salePaymentId)) {
       return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
     }
 

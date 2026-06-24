@@ -12,7 +12,7 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
-const { assertNoPendingRefund, assertNoSettledRefund } = require('../utils/refund')
+const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 
@@ -406,9 +406,9 @@ async function savePayment(ctx) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
   }
   await assertNoPendingRefund(pg, pay.sale_order_id)
-  // 退款后重分配守卫（2026-06-24）：订单已有「已支付」退款时禁止重分配——退款已记负数冲销行（挂退款流水 id），
-  // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。两端镜像 admin savePaymentAllocations。
-  await assertNoSettledRefund(pg, pay.sale_order_id)
+  // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
+  // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin savePaymentAllocations。
+  await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   const allocItems = await pg.query(
     'SELECT sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_allocatable_items WHERE sale_payment_id = $1',
@@ -543,8 +543,8 @@ async function deletePaymentAllocation(ctx) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
   }
   await assertNoPendingRefund(pg, pay.sale_order_id)
-  // 退款后守卫（2026-06-24）：订单已有「已支付」退款时禁止清除分配（防作废正数行后留悬空负数）。两端镜像 admin。
-  await assertNoSettledRefund(pg, pay.sale_order_id)
+  // 退款后守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止清除分配（防作废正数行后留悬空负数）。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin。
+  await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   await pg.transaction(async (client) => {
     await client.query(

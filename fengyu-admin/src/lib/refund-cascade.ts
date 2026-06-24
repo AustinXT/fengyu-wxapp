@@ -43,12 +43,37 @@ export async function hasPendingRefund(executor: SqlExecutor, saleOrderId: strin
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 已结算退款守卫（2026-06-24）：订单存在「已支付」退款时返回 true，调用方禁止重分配/清除分配（防悬空负数）。SQL 谓词镜像 staff utils/refund.js assertNoSettledRefund。 */
+/** 已结算退款守卫（2026-06-24）：订单存在「已支付」退款时返回 true，调用方禁止重分配/清除分配（防悬空负数）。SQL 谓词镜像 staff utils/refund.js assertNoSettledRefund。
+ *  订单级粒度——仅用于整单全作废重插的 batchSaveAllocations；回款级路径请用 hasSettledRefundForPayment。 */
 export async function hasSettledRefund(executor: SqlExecutor, saleOrderId: string): Promise<boolean> {
   if (!saleOrderId) return false
   const r = await executor.execute(sql`
     SELECT 1 FROM sale_order_payments
     WHERE sale_order_id = ${saleOrderId} AND change_type = '退款' AND status = '已支付' LIMIT 1
+  `)
+  return (r as unknown as unknown[]).length > 0
+}
+
+/** 已结算退款守卫·回款级（2026-06-24）：仅当本回款 salePaymentId 的可分配 item 中存在「已被结算退款冲销」的 item 时返回 true。
+ *  收窄订单级守卫——使同单其它无关 item 的后续回款仍可正常分配，不被同单一笔无关退款误锁。
+ *  判定：本回款的 sale_payment_allocatable_items ∩ 挂在「已支付退款流水」上的负数 sale_allocations 冲销行（sale_item 维度）≠ ∅。
+ *  SQL 谓词镜像 staff utils/refund.js assertNoSettledRefundForPayment。 */
+export async function hasSettledRefundForPayment(
+  executor: SqlExecutor,
+  salePaymentId: number | string,
+): Promise<boolean> {
+  if (!salePaymentId) return false
+  const r = await executor.execute(sql`
+    SELECT 1
+    FROM sale_allocations sa
+    JOIN sale_order_payments rsop ON rsop.id = sa.sale_payment_id
+    WHERE sa.is_void = false
+      AND sa.total_amount < 0
+      AND rsop.change_type = '退款' AND rsop.status = '已支付'
+      AND sa.sale_item_id IN (
+        SELECT sale_item_id FROM sale_payment_allocatable_items WHERE sale_payment_id = ${salePaymentId}
+      )
+    LIMIT 1
   `)
   return (r as unknown as unknown[]).length > 0
 }

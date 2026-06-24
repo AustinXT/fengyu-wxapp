@@ -180,6 +180,33 @@ async function assertNoSettledRefund(client, saleOrderId) {
 }
 
 /**
+ * 退款已结算守卫·回款级（2026-06-24）：仅当本回款 salePaymentId 的可分配 item 中存在「已被结算退款冲销」的 item 时抛错。
+ * 收窄订单级守卫——使同单其它无关 item 的后续回款仍可正常分配，不被同单一笔无关退款误锁。
+ * 判定：本回款 sale_payment_allocatable_items ∩ 挂在「已支付退款流水」上的负数 sale_allocations 冲销行（sale_item 维度）≠ ∅。
+ * SQL 谓词镜像 admin lib/refund-cascade.ts hasSettledRefundForPayment。
+ */
+async function assertNoSettledRefundForPayment(client, salePaymentId) {
+  if (!salePaymentId) return
+  const r = await client.query(
+    `SELECT 1
+       FROM sale_allocations sa
+       JOIN sale_order_payments rsop ON rsop.id = sa.sale_payment_id
+      WHERE sa.is_void = false
+        AND sa.total_amount < 0
+        AND rsop.change_type = '退款' AND rsop.status = '已支付'
+        AND sa.sale_item_id IN (
+          SELECT sale_item_id FROM sale_payment_allocatable_items WHERE sale_payment_id = $1
+        )
+      LIMIT 1`,
+    [salePaymentId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_SETTLED: 该订单已退款，营业额分配已锁定，不可再修改')
+  }
+}
+
+/**
  * 按服务单反查其涉及的所有订单是否有待审批退款（service.confirm 用，一服务单可跨多订单核销）。
  */
 async function assertNoPendingRefundByServiceOrder(client, serviceOrderId) {
@@ -247,6 +274,7 @@ module.exports = {
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
   assertNoSettledRefund,
+  assertNoSettledRefundForPayment,
   assertNoPendingRefundByServiceOrder,
   notifyRefundCreated,
   notifyRefundResult,

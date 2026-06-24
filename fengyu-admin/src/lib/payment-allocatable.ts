@@ -118,7 +118,7 @@ export async function capturePaymentAllocatables(
 
   const out: CapturedAllocatable[] = []
   for (const d of perItem) {
-    const cat = catMap.get(d.saleItemId) ?? null
+    const cat = catMap.get(d.saleItemId) || null // 与三个 JS 副本字面对齐（空串 sales_category 归一化为 null）
     await tx.execute(sql`
       INSERT INTO sale_payment_allocatable_items
         (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
