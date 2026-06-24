@@ -28,6 +28,7 @@ import {
   History,
   Boxes,
   LineChart,
+  Undo2,
   type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -73,6 +74,13 @@ export const MENU_CONFIG: MenuGroup[] = [
         icon: PieChart,
         href: "/allocations",
         requiredRoles: ["manager"],
+        readonlyRoles: ["finance"],
+      },
+      {
+        label: "退款管理",
+        icon: Undo2,
+        href: "/refunds",
+        requiredRoles: ["admin", "manager"],
         readonlyRoles: ["finance"],
       },
       { label: "服务单管理", icon: Stethoscope, href: "/services", requiredRoles: ["manager"] },

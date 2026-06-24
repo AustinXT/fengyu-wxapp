@@ -40,6 +40,8 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/services': ['service:list', 'store:list'],
   '/appointments': ['appointment:list', 'store:list'],
   '/allocations': ['sale_order:list', 'service:list', 'store:list'],
+  // 退款管理：listRefunds 为 withAnyPermission([refund_create, refund_approve]) 单一 OR 闸门
+  '/refunds': [['sale_order:refund_create', 'sale_order:refund_approve']],
   '/pickup-records': ['pickup_record:list', 'store:list'],
   '/store-unbind': ['store_unbind:list'],
   '/inventory': [], // hub 页：仅 Link 跳转，无 SSR 数据查询
@@ -81,6 +83,8 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   // 服务单
   { href: '/services/create', parent: '/services', entryGate: 'service:create', clauses: ['employee:list', 'store:list'] },
   { href: '/services/[id]', parent: '/services', clauses: ['service:list'] },
+  // 退款详情（行点击直达；getRefundById 同 listRefunds 的 OR 闸门）
+  { href: '/refunds/[id]', parent: '/refunds', clauses: [['sale_order:refund_create', 'sale_order:refund_approve']] },
   // 营业额分配（getRates 已 .catch 吞错，不计入）
   { href: '/allocations/[orderId]', parent: '/allocations', clauses: [['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'], 'allocation:list', 'employee:list', 'store:list'] },
   { href: '/allocations/service/[serviceOrderId]', parent: '/allocations', clauses: ['service:list', 'allocation:list', 'employee:list', 'store:list'] },

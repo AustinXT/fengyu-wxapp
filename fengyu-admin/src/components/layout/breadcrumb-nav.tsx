@@ -10,6 +10,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/orders": "订单管理",
   "/orders/create": "开单",
   "/allocations": "营业额分配",
+  "/refunds": "退款管理",
   "/services": "服务单管理",
   "/appointments": "预约管理",
   "/org": "组织架构",

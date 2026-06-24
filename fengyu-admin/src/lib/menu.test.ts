@@ -36,6 +36,8 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("操作日志");
 		expect(labels).toContain("系统配置");
 		expect(labels).toContain("充值卡流水");
+		// 退款管理：admin 参与审批，可见（与历史订单核对/数据中心同类）
+		expect(labels).toContain("退款管理");
 	});
 
 	it("admin 看不到业务操作菜单", () => {
@@ -58,6 +60,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
 		expect(labels).toContain("充值卡流水");
+		expect(labels).toContain("退款管理");
 	});
 
 	it("manager 看不到系统管理", () => {
@@ -75,6 +78,8 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
 		expect(labels).toContain("充值卡流水");
+		// 退款管理：finance 只读可见（持 refund_create，无 refund_approve）
+		expect(labels).toContain("退款管理");
 	});
 
 	it("finance 看不到开单/服务单/预约", () => {
@@ -100,6 +105,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("开单");
 		expect(labels).not.toContain("订单管理");
 		expect(labels).not.toContain("充值卡流水");
+		expect(labels).not.toContain("退款管理");
 	});
 
 	it("product 看到商品和优惠券", () => {
@@ -115,6 +121,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("订单管理");
 		expect(labels).not.toContain("权限管理");
 		expect(labels).not.toContain("充值卡流水");
+		expect(labels).not.toContain("退款管理");
 	});
 
 	it("customer_mgr 看到工作台/顾客/卡包", () => {
