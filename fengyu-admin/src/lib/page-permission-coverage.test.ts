@@ -48,6 +48,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/data-center': ['data_center:dashboard'], // SSR 仅 getDataCenterScopeOptions 闸门；板块数据客户端取数
   '/org': ['org:list'],
   '/stores': ['store:list'],
+  '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
   '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
   '/products': ['product:list'],
   '/mall': ['product:list'],
@@ -102,6 +103,10 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/employees/create', parent: '/employees', entryGate: 'employee:create', clauses: ['employee:list', 'org:list', 'store:list'] },
   { href: '/stores/[id]/edit', parent: '/stores', clauses: ['store:list'] },
   { href: '/stores/create', parent: '/stores', entryGate: 'store:create', clauses: ['org:list'] },
+  // 商户管理（merchant:list 列表/详情；create 页仅表单，无 SSR 数据查询）
+  { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
+  { href: '/merchants/[id]/edit', parent: '/merchants', clauses: ['merchant:list'] },
+  { href: '/merchants/create', parent: '/merchants', clauses: ['merchant:create'] },
   // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
   { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
   { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },

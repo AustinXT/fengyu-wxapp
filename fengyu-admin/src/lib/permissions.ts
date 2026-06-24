@@ -62,8 +62,10 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // 门店拉卡拉收款配置（商户名/商户号/终端号/启用；admin 专属，涉及收款，hr 不开）
+    // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
     'store:lakala_config',
+    // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
+    'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
   ],
   manager: [
     'dashboard:view',
@@ -117,6 +119,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:list', 'legacy_order:pull',
     // 门店库存（finance 只读）
     'inventory:list',
+    // 商户管理（总部财务维护拉卡拉收款商户档案，独立模块 /merchants 完整 CRUD）
+    'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
   ],
   hr: [
     'dashboard:view',

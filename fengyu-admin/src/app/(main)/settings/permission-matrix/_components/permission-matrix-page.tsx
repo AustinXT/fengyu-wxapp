@@ -22,6 +22,7 @@ const PREFIX_GROUP_LABELS: Record<string, string> = {
   dashboard: '工作台',
   org: '组织架构',
   store: '门店',
+  merchant: '商户管理',
   employee: '员工',
   product: '商品',
   commission: '提成',
