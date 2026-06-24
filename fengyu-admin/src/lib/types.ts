@@ -32,8 +32,8 @@ export interface Store {
   parkingInfo: string | null
   /**
    * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007）。
-   * 收款字段（商户号/终端号/启用）已收敛到 lakala_merchants 表，门店仅持外键；
-   * 编辑页回显走 getStoreLakalaConfig（JOIN lakala_merchants），不再随 Store 携带快照。
+   * 收款字段（商户号/终端号/启用）收敛在 lakala_merchants 表，门店仅持外键；
+   * 商户档案在「商户管理」(/merchants) 维护，门店编辑页只选择关联哪个商户。
    */
   lakalaMerchantId: string | null
   createdAt: string

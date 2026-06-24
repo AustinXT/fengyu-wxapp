@@ -335,23 +335,27 @@ describe('updateStore — count 检测 + 节点名同步', () => {
   })
 })
 
-// ── updateStore — 拉卡拉收款配置 ─────────────────────────────────────────────
+// ── updateStore — 关联收款商户 ─────────────────────────────────────────────
+// 收款字段（商户名/号/终端号/启用）已迁出门店页，归「商户管理」(/merchants) 维护；
+// 门店仅选择关联哪个商户（写 stores.lakala_merchant_id 外键）。
 
-describe('updateStore — 拉卡拉收款配置', () => {
+describe('updateStore — 关联收款商户', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function mockBefore(row: any) {
-    const chain: any = {}
-    chain.from = vi.fn().mockReturnValue(chain)
-    chain.where = vi.fn().mockReturnValue(chain)
-    chain.limit = vi.fn().mockResolvedValue([row])
-    ;(db.select as any).mockReturnValue(chain)
+  /** 按调用顺序 mock db.select：每个 rowSet 对应一次 select().from().where().limit() */
+  function mockSelectSequence(...rowSets: any[][]) {
+    for (const rows of rowSets) {
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      ;(db.select as any).mockReturnValueOnce(chain)
+    }
   }
 
-  /** mock db.transaction：tx 同时支持 insert（建档）+ update（stores/档案/快照） */
   function setupTx(count = 1) {
     const txInsert = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const txUpdate = vi.fn().mockReturnValue({
@@ -361,54 +365,46 @@ describe('updateStore — 拉卡拉收款配置', () => {
     return { txInsert, txUpdate }
   }
 
-  const cfg = { lakalaMerchantName: '凤仪韵·莲塘', lakalaMerchantNo: '8222900', lakalaTermNo: 'D9261078', lakalaEnabled: true }
-
-  it('填商户号且本店无档案 → 新建 lakala_merchants（tx.insert 被调）', async () => {
-    mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: null })
-    const { txInsert } = setupTx(1)
-    const result = await updateStore('STORE-001', { storeName: '蓝茉店', ...cfg })
+  it('选择已有商户 → 校验商户存在后写外键（tx.update 被调）', async () => {
+    // db.select 顺序：① 商户存在校验 ② before store
+    mockSelectSequence(
+      [{ id: 'lm_x' }],
+      [{ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: null }],
+    )
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_x' })
     expect(result.success).toBe(true)
-    expect(txInsert).toHaveBeenCalled()
+    expect(txUpdate).toHaveBeenCalled()
   })
 
-  it('填商户号且本店已有档案 → 更新档案（tx.insert 不调，tx.update 含主表+档案）', async () => {
-    mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_existing' })
-    const { txInsert, txUpdate } = setupTx(1)
-    const result = await updateStore('STORE-001', { storeName: '蓝茉店', ...cfg })
+  it('不关联（lakalaMerchantId=null）→ 跳过商户校验直接清空外键', async () => {
+    // 不查商户存在，db.select 仅 before store 一次
+    mockSelectSequence([{ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_old' }])
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: null })
     expect(result.success).toBe(true)
-    expect(txInsert).not.toHaveBeenCalled()
-    expect(txUpdate.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(txUpdate).toHaveBeenCalled()
   })
 
-  it('清空商户号 → 停用关联档案（tx.insert 不调）', async () => {
-    mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_existing' })
-    const { txInsert } = setupTx(1)
-    const result = await updateStore('STORE-001', {
-      storeName: '蓝茉店', lakalaMerchantName: null, lakalaMerchantNo: null, lakalaTermNo: null, lakalaEnabled: false,
-    })
-    expect(result.success).toBe(true)
-    expect(txInsert).not.toHaveBeenCalled()
-  })
-
-  it('填商户号但商户名为空 → 拒绝（商户名必填）', async () => {
-    mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: null })
-    setupTx(1)
-    const result = await updateStore('STORE-001', {
-      storeName: '蓝茉店', lakalaMerchantName: null, lakalaMerchantNo: '8222900', lakalaTermNo: null, lakalaEnabled: true,
-    })
+  it('所选商户不存在 → 在写库前拦截（不进事务）', async () => {
+    // 商户存在校验返回空 → 早退
+    mockSelectSequence([])
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_missing' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('商户名称必填')
+    expect(result.message).toContain('收款商户不存在')
+    expect(txUpdate).not.toHaveBeenCalled()
   })
 
-  it('无 store:lakala_config 权限 → 拒绝改收款配置', async () => {
+  it('无 store:lakala_config 权限 → 拒绝改收款商户绑定', async () => {
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
       permissions: { actions: ['store:list', 'store:update'], scopeStoreIds: [] },
     })
-    mockBefore({ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: null })
-    setupTx(1)
-    const result = await updateStore('STORE-001', { storeName: '蓝茉店', ...cfg })
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_x' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('无权')
+    expect(txUpdate).not.toHaveBeenCalled()
   })
 })

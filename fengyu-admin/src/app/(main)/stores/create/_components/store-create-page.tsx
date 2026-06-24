@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { createStore } from "@/actions/stores"
+import type { MerchantOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -16,7 +17,7 @@ import { RegionSelect } from "@/components/ui/region-select"
 
 type StoreNode = { id: string; name: string; marketName: string }
 
-export default function StoreCreatePage({ storeNodes, canEditPayment = false }: { storeNodes: StoreNode[]; canEditPayment?: boolean }) {
+export default function StoreCreatePage({ storeNodes, canEditPayment = false, merchantOptions = [] }: { storeNodes: StoreNode[]; canEditPayment?: boolean; merchantOptions?: MerchantOption[] }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -24,20 +25,13 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false }: 
   const [orgNodeId, setOrgNodeId] = useState("")
   const [coverImage, setCoverImage] = useState("")
   const [storeImages, setStoreImages] = useState<string[]>([])
-  const [lakalaEnabled, setLakalaEnabled] = useState(false)
+  const [merchantId, setMerchantId] = useState("")
 
   const selectedNode = storeNodes.find((n) => n.id === orgNodeId)
 
   const handleSave = async (formData: FormData) => {
     if (!orgNodeId) {
       toast.error("请选择门店节点")
-      return
-    }
-
-    const merchantNoVal = ((formData.get("lakalaMerchantNo") as string) || "").trim()
-    const merchantNameVal = ((formData.get("lakalaMerchantName") as string) || "").trim()
-    if (canEditPayment && merchantNoVal && !merchantNameVal) {
-      toast.error("填写拉卡拉商户号时，商户名称必填")
       return
     }
 
@@ -62,13 +56,8 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false }: 
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        // 拉卡拉收款配置：仅 admin（canEditPayment）提交（选填）
-        ...(canEditPayment ? {
-          lakalaMerchantName: merchantNameVal || null,
-          lakalaMerchantNo: merchantNoVal || null,
-          lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
-          lakalaEnabled,
-        } : {}),
+        // 关联收款商户：仅 admin（canEditPayment）提交（选填）
+        ...(canEditPayment ? { lakalaMerchantId: merchantId || null } : {}),
       })
 
       if (!result.success) {
@@ -226,41 +215,32 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false }: 
       {canEditPayment && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">拉卡拉收款配置（选填）</CardTitle>
+            <CardTitle className="text-base">收款商户（选填）</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-xs text-muted-foreground mb-3">
-              如已从拉卡拉开通本店商户，可在此填入商户号 / 终端号；也可建店后到门店编辑页再配置。商户名称用于区分各店商户。
+              选择本店关联的拉卡拉收款商户（商户档案在「商户管理」维护）；也可建店后到门店编辑页再关联。未关联或商户未启用时支付走兜底。
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">商户名称</label>
-                <Input name="lakalaMerchantName" placeholder="便于区分各店商户" maxLength={80} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">拉卡拉商户号</label>
-                <Input name="lakalaMerchantNo" placeholder="拉卡拉分配的商户号" maxLength={32} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">终端号(term_no)</label>
-                <Input name="lakalaTermNo" placeholder="如：D9261078" maxLength={32} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">启用真实支付通道</label>
-                <div className="flex items-center gap-2 pt-2">
-                  <input
-                    type="checkbox"
-                    checked={lakalaEnabled}
-                    onChange={(e) => {
-                      setLakalaEnabled(e.target.checked)
-                      setFormDirty(true)
-                    }}
-                    className="h-4 w-4"
-                  />
-                  <span className="text-sm">
-                    {lakalaEnabled ? "已启用（调真实拉卡拉接口）" : "未启用（走 mock / 兜底）"}
-                  </span>
-                </div>
+              <div className="col-span-2 space-y-2">
+                <label className="text-sm font-medium">关联收款商户</label>
+                <Select
+                  name="lakalaMerchantId"
+                  value={merchantId}
+                  onChange={(e) => {
+                    setMerchantId(e.target.value)
+                    setFormDirty(true)
+                  }}
+                >
+                  <SelectOption value="">不关联（支付走兜底）</SelectOption>
+                  {merchantOptions.map((m) => (
+                    <SelectOption key={m.id} value={m.id}>
+                      {m.merchantName}
+                      {m.merchantNo ? `（${m.merchantNo}）` : ""}
+                      {m.enabled ? "" : " · 未启用"}
+                    </SelectOption>
+                  ))}
+                </Select>
               </div>
             </div>
           </CardContent>

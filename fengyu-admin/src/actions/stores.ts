@@ -13,7 +13,6 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { lakalaMerchants } from '@db/lakala'
-import { randomBytes } from 'crypto'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -50,66 +49,6 @@ function rowToStore(row: any): Store {
   }
 }
 
-/**
- * 生成 KSUID 风格 ID：`{prefix}{8 位时间戳}{12 位随机}`。
- * 手填收款配置新建 lakala_merchants 时用作主键（lm_ 前缀）。
- */
-function ksuid(prefix: string): string {
-  const ts = Math.floor(Date.now() / 1000).toString(36).padStart(8, '0')
-  const rand = randomBytes(6).toString('hex')
-  return `${prefix}${ts}${rand}`
-}
-
-/**
- * 门店拉卡拉收款配置：upsert 该店关联的 lakala_merchants 档案（N:1）。
- * - 收款字段（merchant_no / term_no / enabled）以 lakala_merchants 为单一权威；收款
- *   （clientApi resolveLakalaMerchant）与退款（refunds.ts refundViaLakalaIfEnabled）都经
- *   stores.lakala_merchant_id 关联读取本表，stores 不再留收款快照列。
- * - 门店仅持 lakala_merchant_id 外键；新建档案时回填该外键，后续编辑复用同一档案。
- * - 商户号为空 → 停用关联档案（enabled=false，保留档案与外键，下次填入复用）。
- * - 调用方（createStore/updateStore）已 require store:lakala_config + 校验「填商户号则商户名必填」。
- * 不通过 withPermission 包装（内部 helper，权限由调用方保证）。
- */
-async function applyLakalaPaymentConfig(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle 事务句柄类型宽松，与本文件既有 tx:any 一致
-  tx: any,
-  storeId: string,
-  existingMerchantId: string | null,
-  cfg: { merchantName: string | null; merchantNo: string | null; termNo: string | null; enabled: boolean },
-): Promise<void> {
-  const merchantNo = cfg.merchantNo?.trim() || null
-  const merchantName = cfg.merchantName?.trim() || null
-  const termNo = cfg.termNo?.trim() || null
-
-  // 商户号为空 = 本店暂无收款配置：停用关联档案（保留档案与外键，下次填入复用）
-  if (!merchantNo) {
-    if (existingMerchantId) {
-      await tx.update(lakalaMerchants).set({ enabled: false }).where(eq(lakalaMerchants.id, existingMerchantId))
-    }
-    return
-  }
-
-  // upsert 档案：已有则更新；没有则新建并回填门店外键（merchant_name 为区分标识，已由调用方校验非空）
-  if (existingMerchantId) {
-    await tx.update(lakalaMerchants).set({
-      merchantName,
-      merchantNo,
-      termNo,
-      enabled: cfg.enabled,
-    }).where(eq(lakalaMerchants.id, existingMerchantId))
-  } else {
-    const merchantId = ksuid('lm_')
-    await tx.insert(lakalaMerchants).values({
-      id: merchantId,
-      merchantName,
-      merchantNo,
-      termNo,
-      enabled: cfg.enabled,
-    })
-    await tx.update(stores).set({ lakalaMerchantId: merchantId }).where(eq(stores.storeId, storeId))
-  }
-}
-
 export const getStores = withPermission('store:list', async (session): Promise<Store[]> => {
   const rows = await db
     .select()
@@ -136,32 +75,6 @@ export const getStoreById = withPermission(
 
     if (rows.length === 0) return null
     return rowToStore(rows[0])
-  },
-)
-
-export interface StoreLakalaConfig {
-  merchantName: string
-  merchantNo: string | null
-  termNo: string | null
-  enabled: boolean
-}
-
-/** 取门店关联的拉卡拉收款配置（编辑页回显用；无关联返回 null） */
-export const getStoreLakalaConfig = withPermission(
-  'store:list',
-  async (session, storeId: string): Promise<StoreLakalaConfig | null> => {
-    const [row] = await db
-      .select({
-        merchantName: lakalaMerchants.merchantName,
-        merchantNo: lakalaMerchants.merchantNo,
-        termNo: lakalaMerchants.termNo,
-        enabled: lakalaMerchants.enabled,
-      })
-      .from(stores)
-      .innerJoin(lakalaMerchants, eq(stores.lakalaMerchantId, lakalaMerchants.id))
-      .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
-      .limit(1)
-    return row ?? null
   },
 )
 
@@ -219,11 +132,8 @@ export const createStore = withPermission(
       description?: string | null
       announcement?: string | null
       parkingInfo?: string | null
-      // 拉卡拉收款配置（可选，仅 admin；填了商户号则建档 + 同步快照）
-      lakalaMerchantName?: string | null
-      lakalaMerchantNo?: string | null
-      lakalaTermNo?: string | null
-      lakalaEnabled?: boolean
+      // 关联收款商户（可选，仅 admin store:lakala_config）：lakala_merchants.id 或 null=不关联
+      lakalaMerchantId?: string | null
     },
   ): Promise<{ success: boolean; message: string }> => {
   // 1. 校验目标节点存在且为门店类型，门店名以节点名为准
@@ -240,14 +150,20 @@ export const createStore = withPermission(
     return { success: false, message: '无权在该门店节点下创建门店信息' }
   }
 
-  // 2.5 拉卡拉收款配置（可选）：仅 admin（store:lakala_config）可填；填了商户号则商户名必填
-  const lakalaConfigProvided = (data.lakalaMerchantNo ?? '').trim() !== ''
-  if (lakalaConfigProvided) {
+  // 2.5 关联收款商户（可选）：仅 admin（store:lakala_config）可设置门店↔商户绑定。
+  //     商户档案本身在「商户管理」(/merchants) 维护；此处仅选择关联哪个已有商户。
+  const lakalaMerchantTouched = data.lakalaMerchantId !== undefined
+  if (lakalaMerchantTouched) {
     if (!hasPermission(session, 'store:lakala_config')) {
-      return { success: false, message: '无权配置门店收款（拉卡拉）' }
+      return { success: false, message: '无权配置门店收款商户' }
     }
-    if (!(data.lakalaMerchantName ?? '').trim()) {
-      return { success: false, message: '填写拉卡拉商户号时，商户名称必填' }
+    if (data.lakalaMerchantId) {
+      const [m] = await db
+        .select({ id: lakalaMerchants.id })
+        .from(lakalaMerchants)
+        .where(eq(lakalaMerchants.id, data.lakalaMerchantId))
+        .limit(1)
+      if (!m) return { success: false, message: '所选收款商户不存在，请刷新后重试' }
     }
   }
   // 3. 插入 stores 详情行（不自造节点）+ 可选建档收款配置，事务保证原子
@@ -271,16 +187,9 @@ export const createStore = withPermission(
         description: data.description ?? null,
         announcement: data.announcement ?? null,
         parkingInfo: data.parkingInfo ?? null,
+        // 关联收款商户（N:1）：直接写外键，商户档案在 /merchants 维护
+        lakalaMerchantId: data.lakalaMerchantId ?? null,
       })
-      // 收款配置：先建店后建档（applyLakalaPaymentConfig 建 lakala_merchants 档案 + 回填 stores.lakala_merchant_id）
-      if (lakalaConfigProvided) {
-        await applyLakalaPaymentConfig(tx, data.storeId, null, {
-          merchantName: data.lakalaMerchantName ?? null,
-          merchantNo: data.lakalaMerchantNo ?? null,
-          termNo: data.lakalaTermNo ?? null,
-          enabled: data.lakalaEnabled ?? false,
-        })
-      }
     })
   } catch (err: unknown) {
     const code = pgErrorCode(err)
@@ -324,29 +233,25 @@ export const updateStore = withPermission(
       description: string | null
       announcement: string | null
       parkingInfo: string | null
-      // 拉卡拉收款配置（手填）：统一交 applyLakalaPaymentConfig 处理，不进 generic SET。
-      // lakalaMerchantName 非 stores 列，落 lakala_merchants.merchant_name。
-      lakalaMerchantName: string | null
-      lakalaMerchantNo: string | null
-      lakalaTermNo: string | null
-      lakalaEnabled: boolean
+      // 关联收款商户（stores 列，直接 SET）：lakala_merchants.id 或 null=不关联
+      lakalaMerchantId: string | null
     }>,
     /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-  // 拉卡拉收款配置编辑权限：仅 admin（store:lakala_config）。hr 可改门店其他信息但不能碰收款。
-  const lakalaConfigTouched =
-    data.lakalaMerchantName !== undefined ||
-    data.lakalaMerchantNo !== undefined ||
-    data.lakalaTermNo !== undefined ||
-    data.lakalaEnabled !== undefined
+  // 门店↔收款商户绑定编辑权限：仅 admin（store:lakala_config）。hr 可改门店其他信息但不能碰收款绑定。
+  const lakalaConfigTouched = data.lakalaMerchantId !== undefined
   if (lakalaConfigTouched) {
     if (!hasPermission(session, 'store:lakala_config')) {
-      return { success: false, message: '无权修改门店的拉卡拉收款配置' }
+      return { success: false, message: '无权修改门店的收款商户绑定' }
     }
-    // 填了商户号 → 商户名必填（merchant_name NOT NULL + 区分商户标识）
-    if ((data.lakalaMerchantNo ?? '').trim() && !(data.lakalaMerchantName ?? '').trim()) {
-      return { success: false, message: '填写拉卡拉商户号时，商户名称必填' }
+    if (data.lakalaMerchantId) {
+      const [m] = await db
+        .select({ id: lakalaMerchants.id })
+        .from(lakalaMerchants)
+        .where(eq(lakalaMerchants.id, data.lakalaMerchantId))
+        .limit(1)
+      if (!m) return { success: false, message: '所选收款商户不存在，请刷新后重试' }
     }
   }
 
@@ -363,9 +268,8 @@ export const updateStore = withPermission(
   // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
   // - isClosed=true 且未显式给 closedAt：写 today
   // - isClosed=false：清空 closedAt（重新开业）
-  // 拉卡拉收款字段（含 lakalaMerchantName 非 stores 列）统一交 applyLakalaPaymentConfig，
-  // 从 generic SET 剥离；其余字段走普通 UPDATE。
-  const { lakalaMerchantName, lakalaMerchantNo, lakalaTermNo, lakalaEnabled, ...storeFields } = data
+  // lakalaMerchantId 是 stores 列，直接进 generic SET（无需剥离）。
+  const storeFields = { ...data }
   // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
   // - isClosed=true 且未显式给 closedAt：写 today
   // - isClosed=false：清空 closedAt（重新开业）
@@ -384,15 +288,6 @@ export const updateStore = withPermission(
         data.storeName !== before.storeName
       ) {
         await tx.update(orgNodes).set({ name: data.storeName }).where(eq(orgNodes.id, before.orgNodeId))
-      }
-      // 拉卡拉收款配置：upsert 该店关联 lakala_merchants 档案（新建则回填 stores.lakala_merchant_id）
-      if (r.count > 0 && lakalaConfigTouched) {
-        await applyLakalaPaymentConfig(tx, storeId, before?.lakalaMerchantId ?? null, {
-          merchantName: lakalaMerchantName ?? null,
-          merchantNo: lakalaMerchantNo ?? null,
-          termNo: lakalaTermNo ?? null,
-          enabled: lakalaEnabled ?? false,
-        })
       }
       return r
     })
