@@ -98,6 +98,8 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('@/lib/permissions', () => ({
   computeActions: vi.fn(() => ['dashboard:view']),
   expandScopeStoreIds: vi.fn(async () => ['store-1']),
+  // 登录闸 / 会话二次闸用：真实判定（持任一非 staff 角色即可入后台）
+  canAccessAdmin: vi.fn((roles: Array<{ role: string }>) => roles.some((r) => r.role !== 'staff')),
   // 2026-05-17 PR-Z2 后：resetEmployeePassword/resetToDefaultPassword 走 withPermission HOF，
   // HOF 内部会调 requirePermission；mock 模拟真实语义 — null session 抛 UNAUTHORIZED，
   // 缺权限抛 PERMISSION_DENIED（让"未登录 / 非 admin"测试用例短路到 catch 块）
@@ -167,10 +169,15 @@ function mockUpdateChain() {
   return { set, where }
 }
 
-/** 一个返回固定结果的 select 链段（.from().where().limit()） */
+/** 一个返回固定结果的 select 链段。
+ *  where 返回值同时支持 .limit()（checkLock / staff / admin_passwords 查询）
+ *  与直接 await（登录闸的 adminRoleRows 查询无 .limit()，靠 thenable 解析）。 */
 function selectChainResult(results: any[]) {
   const limit = vi.fn().mockResolvedValue(results)
-  const where = vi.fn().mockReturnValue({ limit })
+  const where = vi.fn().mockReturnValue({
+    limit,
+    then: (resolve: (v: any[]) => unknown) => resolve(results),
+  })
   const from = vi.fn().mockReturnValue({ where, limit })
   return { from }
 }
@@ -243,8 +250,8 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
 
   it('密码正确 → 成功 + 清除失败 + 设置 cookie + 返回 mustChange', async () => {
     const { deleteWhere } = mockLockWrites()
-    // ① 未锁定 ② staff ③ 密码记录（mustChange）
-    mockSelectSequence([[], [staffRow], [pwRowMustChange]])
+    // ① 未锁定 ② staff ③ 密码记录（mustChange）④ 角色（含 admin → 准入）
+    mockSelectSequence([[], [staffRow], [pwRowMustChange], [{ role: 'admin' }]])
     ;(compare as any).mockResolvedValue(true)
 
     const result = await login('13900000004', enc('correct'))
@@ -275,13 +282,26 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
 
   it('锁定已过期（locked_until 过去）→ 放行继续认证', async () => {
     const past = new Date(Date.now() - 60 * 1000)
-    // ① checkLock 返回已过期锁定 ② staff ③ 密码记录
-    mockSelectSequence([[{ lockedUntil: past }], [staffRow], [pwRow]])
+    // ① checkLock 返回已过期锁定 ② staff ③ 密码记录 ④ 角色（含 manager → 准入）
+    mockSelectSequence([[{ lockedUntil: past }], [staffRow], [pwRow], [{ role: 'manager' }]])
     ;(compare as any).mockResolvedValue(true)
 
     const result = await login('13900000006', enc('correct'))
 
     expect(result.success).toBe(true)
+  })
+
+  it('密码正确但仅 staff 角色 → 拒绝登录（账号权限不足，不签 token）', async () => {
+    // ① 未锁定 ② staff ③ 密码记录 ④ 角色仅 staff → canAccessAdmin=false
+    mockSelectSequence([[], [staffRow], [pwRow], [{ role: 'staff' }]])
+    ;(compare as any).mockResolvedValue(true)
+
+    const result = await login('13900000007', enc('correct'))
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('账号权限不足')
+    // 拒发 token：未设置 cookie
+    expect(mockCookieStore.set).not.toHaveBeenCalled()
   })
 })
 
@@ -440,6 +460,30 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     const result = await getSessionFromCookie()
 
     expect(result!.roles[0].scopeType).toBe('门店')
+  })
+
+  it('仅 staff 角色 → null（普通员工禁入后台，二次闸拦截）', async () => {
+    mockCookieStore.get.mockReturnValue({ value: 'valid-token' })
+    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
+
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      i++
+      if (i === 1) {
+        const limit = vi.fn().mockResolvedValue([staffRow])
+        const where = vi.fn().mockReturnValue({ limit })
+        return { from: vi.fn().mockReturnValue({ where }) }
+      }
+      const where = vi.fn().mockResolvedValue([
+        { role: 'staff', scopeId: 'node-1', scopeType: '门店' },
+      ])
+      const leftJoin = vi.fn().mockReturnValue({ where })
+      return { from: vi.fn().mockReturnValue({ leftJoin }) }
+    })
+
+    const result = await getSessionFromCookie()
+
+    expect(result).toBeNull()
   })
 })
 
