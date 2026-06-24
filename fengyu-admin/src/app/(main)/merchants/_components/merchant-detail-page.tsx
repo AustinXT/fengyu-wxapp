@@ -18,6 +18,7 @@ import {
   AlertDialogFooter,
 } from "@/components/ui/alert-dialog"
 import { formatDateTime } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -54,8 +55,8 @@ export default function MerchantDetailPage({
       toast.success(result.message)
       router.push("/merchants")
       router.refresh()
-    } catch {
-      toast.error("删除失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败"))
     } finally {
       setDeleting(false)
     }
@@ -92,7 +93,7 @@ export default function MerchantDetailPage({
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm md:grid-cols-3">
             <Field label="商户名称" value={merchant.merchantName} />
             <Field label="商户号" value={merchant.merchantNo ?? "—"} mono />
-            <Field label="终端号(term_no)" value={merchant.termNo ?? "—"} mono />
+            <Field label="终端号" value={merchant.termNo ?? "—"} mono />
             <Field label="商户 ID" value={merchant.id} mono />
             <Field label="创建时间" value={formatDateTime(merchant.createdAt)} />
             <Field label="更新时间" value={formatDateTime(merchant.updatedAt)} />

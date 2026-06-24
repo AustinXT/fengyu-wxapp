@@ -50,6 +50,41 @@ function groupOf(action: string): string {
   return PREFIX_GROUP_LABELS[prefix] ?? prefix
 }
 
+/** action 动词后缀 → 中文操作名 */
+const VERB_LABELS: Record<string, string> = {
+  list: '查看',
+  view: '查看',
+  create: '新增',
+  update: '编辑',
+  delete: '删除',
+  save: '保存',
+  send: '发送',
+  approve: '通过',
+  reject: '驳回',
+  assign: '分配',
+  revoke: '撤销',
+  confirm: '确认',
+  checkin: '到店核销',
+  pull: '拉取',
+  config: '配置',
+  dashboard: '看板',
+  record_payment: '记录收款',
+  refund_create: '发起退款',
+  refund_approve: '审批退款',
+  assign_admin: '分配管理员',
+  reset_password: '重置密码',
+  update_phone: '改手机号',
+  update_amount: '改金额',
+  lakala_config: '收款配置',
+}
+
+/** 权限键 → 中文译名（资源组·操作），如 sale_order:refund_create → 销售订单·发起退款。底层英文键不变。 */
+function actionLabel(action: string): string {
+  const [prefix, verb] = action.split(':')
+  const group = PREFIX_GROUP_LABELS[prefix] ?? prefix
+  return `${group}·${VERB_LABELS[verb] ?? verb}`
+}
+
 function actionKey(a: string, role: RoleType): string {
   return `${role}::${a}`
 }
@@ -143,7 +178,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">权限矩阵</h1>
           <p className="text-xs text-[#999999] mt-1">
-            勾选某个角色拥有的 action。保存后 30 秒内全员生效（新登录立即生效）。
+            勾选某个角色拥有的权限项。保存后 30 秒内全员生效（新登录立即生效）。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -159,9 +194,9 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span>角色 × Action 真值表</span>
+            <span>角色 × 权限项 真值表</span>
             <span className="text-xs font-normal text-[#999999]">
-              共 {allActions.length} 个 action × {ROLES.length} 个角色
+              共 {allActions.length} 个权限项 × {ROLES.length} 个角色
             </span>
           </CardTitle>
         </CardHeader>
@@ -171,7 +206,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
               <thead className="sticky top-0 z-10 bg-[var(--background)]">
                 <tr className="border-b border-[var(--border)]">
                   <th className="sticky left-0 z-20 bg-[var(--background)] px-3 py-2 text-left text-xs font-medium text-[#999999] min-w-[260px]">
-                    Action
+                    权限项
                   </th>
                   {ROLES.map((role) => {
                     const total = matrix[role]?.length ?? 0
@@ -211,9 +246,12 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
                       const allOn = rowCount === ROLES.length
                       return (
                         <tr key={action} className="border-b border-[var(--border)] hover:bg-[var(--accent)]/20">
-                          <td className="sticky left-0 z-10 bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)]">
+                          <td className="sticky left-0 z-10 bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
                             <div className="flex items-center justify-between gap-2">
-                              <span>{action}</span>
+                              <span className="flex flex-col leading-tight">
+                                <span>{actionLabel(action)}</span>
+                                <span className="font-mono text-[10px] text-[#999999]">{action}</span>
+                              </span>
                               <button
                                 type="button"
                                 className="text-[10px] text-[var(--primary)] hover:underline shrink-0"
@@ -232,7 +270,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
                                   className="h-4 w-4 cursor-pointer accent-[var(--primary)]"
                                   checked={checked}
                                   onChange={() => toggle(role, action)}
-                                  aria-label={`${ROLE_LABELS[role]} - ${action}`}
+                                  aria-label={`${ROLE_LABELS[role]} - ${actionLabel(action)}`}
                                 />
                               </td>
                             )

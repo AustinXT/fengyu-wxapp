@@ -78,7 +78,7 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
             <li>重算疗程卡已支付次数：退款后该卡可消费次数相应减少</li>
             <li>按储值卡比例回冲顾客账户余额</li>
             <li>5 通道级联：营业额分配/ 服务提成软删；优惠券恢复未使用；积分反向流水；家居产品已提货数量反向恢复</li>
-            <li>顾客累计消费档位（spending_tier）重算</li>
+            <li>顾客累计消费档位重算</li>
           </ul>
           此操作不可撤销。
         </AlertDialogDescription>

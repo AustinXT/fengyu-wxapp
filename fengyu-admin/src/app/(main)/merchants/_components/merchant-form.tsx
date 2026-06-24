@@ -52,7 +52,7 @@ export default function MerchantForm({
       return
     }
     if (enabled && !termNo.trim()) {
-      toast.error("启用真实支付通道时，终端号(term_no)必填")
+      toast.error("启用真实支付通道时，终端号必填")
       return
     }
 
@@ -149,7 +149,7 @@ export default function MerchantForm({
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">终端号(term_no)</label>
+              <label className="text-sm font-medium">终端号</label>
               <Input
                 value={termNo}
                 onChange={(e) => {
