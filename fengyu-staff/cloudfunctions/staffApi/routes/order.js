@@ -13,7 +13,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
-const { assertOrderInScope, isStoreInScope } = require('../utils/scope')
+const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
@@ -1746,12 +1746,18 @@ async function detail(ctx) {
     visible = true // 管理层监管本 scope 内订单（只读）
   }
   if (!visible && order.client_user_id) {
-    // 顾客在本 scope 内 → 可只读查看其任意订单（含跨门店）：顾客档案消费记录场景
+    // 顾客在本 scope 内 → 可只读查看其任意订单（含跨门店）：顾客档案消费记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 saleOrderId 越权查看本店他人负责顾客的订单金额 / 款项流水。
     const custRows = await pg.query(
-      'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
       [order.client_user_id]
     )
-    if (custRows.length > 0 && isStoreInScope(ctx.auth, custRows[0].bound_store_id)) {
+    if (
+      custRows.length > 0 &&
+      isStoreInScope(ctx.auth, custRows[0].bound_store_id) &&
+      (!restrictToBoundEmployee(ctx.auth) || custRows[0].bound_employee_id === ctx.auth.staffWfId)
+    ) {
       visible = true
     }
   }

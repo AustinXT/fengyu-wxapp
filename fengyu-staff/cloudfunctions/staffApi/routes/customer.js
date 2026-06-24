@@ -567,9 +567,11 @@ async function paidOrders(ctx) {
     whereClause = "o.status = '已支付' AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
-    // 极端：手机号无对应顾客，回退按手机号查
-    whereClause = "o.status = '已支付' AND o.client_phone = $1";
-    params = [clientPhone];
+    // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
+    // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
+    const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
+    whereClause = `o.status = '已支付' AND o.client_phone = $1 AND ${scope.sql}`;
+    params = [clientPhone, ...scope.params];
   }
 
   const orders = await pg.query(
@@ -686,8 +688,10 @@ async function orderHistory(ctx) {
     whereClause = "o.client_user_id = $1";
     params = [clientUserId];
   } else {
-    whereClause = "o.client_phone = $1";
-    params = [clientPhone];
+    // 极端：手机号无对应顾客——无顾客可绑则退回门店 scope 过滤，杜绝凭手机号越权枚举全门店订单（与 paidOrders 一致）。
+    const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
+    whereClause = `o.client_phone = $1 AND ${scope.sql}`;
+    params = [clientPhone, ...scope.params];
   }
 
   // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序

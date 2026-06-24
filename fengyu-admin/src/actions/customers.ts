@@ -259,6 +259,11 @@ export const getCustomerById = withPermission(
 export const getCustomerOrders = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<SaleOrder[]> => {
+  // scope 守卫：与退款 / 服务记录同口径，顾客不在当前 scope 内返回空，
+  // 杜绝受限角色凭 userId 越权枚举他店顾客订单 / 转换单（getCustomerById 内含 scopeCondition）。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers } = await import('@db/user')
@@ -369,6 +374,10 @@ export const getCustomerOrders = withPermission(
 export const getCustomerAppointments = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<Appointment[]> => {
+  // scope 守卫：顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客预约记录（getCustomerById 内含 scopeCondition）。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { appointments } = await import('@db/appointment')
   const { stores } = await import('@db/org')
   const { desc } = await import('drizzle-orm')
@@ -436,6 +445,12 @@ export interface CustomerRefundRecord {
 export const getCustomerRefundHistory = withPermission(
   'customer:list',
   async (session, userId: string): Promise<CustomerRefundRecord[]> => {
+  // scope 守卫：交易数据虽「跟顾客走」不按门店过滤，但「能否查这位顾客」仍受 scope 限制。
+  // 复用 getCustomerById 的 scopeCondition（与 getCustomerPhoneChangeLogs 同口径）：
+  // 顾客不在当前 scope 内则返回空，杜绝受限角色凭 userId 越权枚举他店顾客退款 / 转换单历史。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { saleOrders, saleItems, saleOrderPayments } = await import('@db/order')
 
   // 退款流水（来自 sale_order_payments）
@@ -562,6 +577,11 @@ export interface CustomerServiceRecord {
 export const getCustomerServiceOrders = withPermission(
   'customer:list',
   async (session, userId: string): Promise<CustomerServiceRecord[]> => {
+  // scope 守卫：与 getCustomerRefundHistory 同口径，复用 getCustomerById 的 scopeCondition；
+  // 顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客跨门店服务记录。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { serviceOrders, serviceItems } = await import('@db/service')
   const { saleItems } = await import('@db/order')
   const { staffWechatUsers } = await import('@db/user')

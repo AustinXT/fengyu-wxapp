@@ -714,62 +714,98 @@ describe('searchCustomers — 模糊搜索（收紧：bound_store_id 必须非�
 })
 
 // ── getCustomerRefundHistory（退换记录 Tab）────────────────────────────────────
-function mockRefundChain() {
-  const chain: any = {}
-  chain.from = vi.fn().mockReturnValue(chain)
-  chain.innerJoin = vi.fn().mockReturnValue(chain)
-  chain.where = vi.fn().mockReturnValue(chain)
-  chain.orderBy = vi.fn().mockResolvedValue([])
-  ;(db.select as any).mockReturnValue(chain)
+// getCustomerRefundHistory 先调 getCustomerById（scope 守卫）再查退款 / 转换单：
+//   call 1 = getCustomerById(.from→.where→.limit)；call 2 = 退款流水(.from→.innerJoin→.where→.orderBy)；
+//   call 3 = 转换单(.from→.where→.orderBy)
+function mockRefundFlow(customerRows: any[], refundRows: any[] = [], convRows: any[] = []) {
+  let call = 0
+  ;(db.select as any).mockImplementation(() => {
+    call += 1
+    if (call === 1) {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(customerRows) }) }) }
+    }
+    if (call === 2) {
+      const c: any = {}
+      c.from = vi.fn().mockReturnValue(c)
+      c.innerJoin = vi.fn().mockReturnValue(c)
+      c.where = vi.fn().mockReturnValue(c)
+      c.orderBy = vi.fn().mockResolvedValue(refundRows)
+      return c
+    }
+    const c: any = {}
+    c.from = vi.fn().mockReturnValue(c)
+    c.where = vi.fn().mockReturnValue(c)
+    c.orderBy = vi.fn().mockResolvedValue(convRows)
+    return c
+  })
 }
 
-describe('getCustomerRefundHistory — scope + 空结果', () => {
+describe('getCustomerRefundHistory — scope 守卫 + 空结果', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(hasRole as any).mockReturnValue(false)
   })
 
-  it('无退款/转换单 → 返回空数组', async () => {
-    mockRefundChain()
+  it('顾客在 scope → 放行，按顾客跨门店查退款 / 转换单 → 空结果返回 []', async () => {
+    mockRefundFlow([mockFullRow])
     const result = await getCustomerRefundHistory('user-1')
     expect(result).toEqual([])
+    // getCustomerById + 退款 + 转换单 共 3 次 select
+    expect((db.select as any).mock.calls.length).toBe(3)
   })
 
-  it('退换记录跟顾客走 — 不再按 sale_orders.store_id 应用 scopeCondition', async () => {
-    mockRefundChain()
-    await getCustomerRefundHistory('user-1')
-    // 交易数据跟顾客走：退换记录跨门店全量，不施加门店 scope（顾客可见性由 getCustomerById 守护）
-    expect(scopeCondition).not.toHaveBeenCalled()
+  it('顾客不在 scope（getCustomerById 返回 null）→ 返回 []，不再查退款流水（防越权 IDOR）', async () => {
+    mockRefundFlow([]) // getCustomerById → null
+    const result = await getCustomerRefundHistory('user-1')
+    expect(result).toEqual([])
+    // 仅 getCustomerById 一次 select，提前 return，未进入退款查询
+    expect((db.select as any).mock.calls.length).toBe(1)
+    // scope 守卫生效：getCustomerById 内部应用了 scopeCondition
+    expect(scopeCondition).toHaveBeenCalled()
   })
 })
 
 // ── getCustomerServiceOrders（服务记录 Tab）───────────────────────────────────
-function mockServiceOrderChain() {
-  const chain: any = {}
-  chain.from = vi.fn().mockReturnValue(chain)
-  chain.leftJoin = vi.fn().mockReturnValue(chain)
-  chain.where = vi.fn().mockReturnValue(chain)
-  chain.orderBy = vi.fn().mockResolvedValue([])
-  ;(db.select as any).mockReturnValue(chain)
+// call 1 = getCustomerById；call 2 = 服务单(.from→.leftJoin→.where→.orderBy)
+function mockServiceFlow(customerRows: any[], serviceRows: any[] = []) {
+  let call = 0
+  ;(db.select as any).mockImplementation(() => {
+    call += 1
+    if (call === 1) {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(customerRows) }) }) }
+    }
+    const c: any = {}
+    c.from = vi.fn().mockReturnValue(c)
+    c.leftJoin = vi.fn().mockReturnValue(c)
+    c.where = vi.fn().mockReturnValue(c)
+    c.orderBy = vi.fn().mockResolvedValue(serviceRows)
+    return c
+  })
 }
 
-describe('getCustomerServiceOrders — scope + 空结果', () => {
+describe('getCustomerServiceOrders — scope 守卫 + 空结果', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(hasRole as any).mockReturnValue(false)
   })
 
-  it('无服务单 → 返回空数组', async () => {
-    mockServiceOrderChain()
+  it('顾客在 scope → 放行，按顾客跨门店查服务单 → 空结果返回 []', async () => {
+    mockServiceFlow([mockFullRow])
     const result = await getCustomerServiceOrders('user-1')
     expect(result).toEqual([])
+    expect((db.select as any).mock.calls.length).toBe(2)
   })
 
-  it('服务记录跟顾客走 — 不施加门店 scopeCondition', async () => {
-    mockServiceOrderChain()
-    await getCustomerServiceOrders('user-1')
-    // 交易数据跟顾客走：服务记录跨门店全量，不施加门店 scope（顾客可见性由 getCustomerById 守护）
-    expect(scopeCondition).not.toHaveBeenCalled()
+  it('顾客不在 scope（getCustomerById 返回 null）→ 返回 []，不再查服务单（防越权 IDOR）', async () => {
+    mockServiceFlow([]) // getCustomerById → null
+    const result = await getCustomerServiceOrders('user-1')
+    expect(result).toEqual([])
+    expect((db.select as any).mock.calls.length).toBe(1)
+    expect(scopeCondition).toHaveBeenCalled()
   })
 })
 

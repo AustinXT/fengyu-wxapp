@@ -14,7 +14,7 @@ const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
-const { isStoreInScope } = require('../utils/scope')
+const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 
 /**
  * 创建服务单
@@ -197,6 +197,18 @@ async function create(ctx) {
     }
     if (cuRows.length > 0 && cuRows[0].became_member_at && new Date(cuRows[0].became_member_at) <= new Date()) {
       serviceOrderType = '售后'
+    }
+  } else {
+    // 无法解析顾客（legacy client_user_id IS NULL 且未传 clientPhone）：无顾客可绑，退回「sale_item 售出门店 ∈ scope」
+    // 兜底把关，杜绝 A 店凭他店订单行越权核销其剩余次数（卡跟顾客走的前提是有顾客；无顾客时按售出门店校验）。
+    const itemStores = await pg.query(
+      'SELECT store_id FROM sale_items WHERE sale_item_id = ANY($1)',
+      [normalizedItems.map((it) => it.saleItemId)]
+    )
+    for (const row of itemStores) {
+      if (!isStoreInScope(ctx.auth, row.store_id)) {
+        throw new Error('PERMISSION_DENIED: 订单行不在当前门店范围内，无法核销')
+      }
     }
   }
 
@@ -848,12 +860,18 @@ async function detail(ctx) {
     visible = true // 管理层监管本 scope 内服务单（只读）
   }
   if (!visible && so.client_user_id) {
-    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景
+    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 service_order_id 越权查看本店他人负责顾客的服务单详情。
     const custRows = await pg.query(
-      'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
       [so.client_user_id]
     )
-    if (custRows.length > 0 && isStoreInScope(ctx.auth, custRows[0].bound_store_id)) {
+    if (
+      custRows.length > 0 &&
+      isStoreInScope(ctx.auth, custRows[0].bound_store_id) &&
+      (!restrictToBoundEmployee(ctx.auth) || custRows[0].bound_employee_id === ctx.auth.staffWfId)
+    ) {
       visible = true
     }
   }
