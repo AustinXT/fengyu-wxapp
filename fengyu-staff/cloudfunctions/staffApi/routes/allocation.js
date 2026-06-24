@@ -429,7 +429,9 @@ async function savePayment(ctx) {
           WHERE sale_payment_id = $1 AND is_void = false`,
         [salePaymentId]
       )
-      await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1", [salePaymentId])
+      // CAS 守卫：allocation_status 仅 2 值轻量级状态机；IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
+      const emptyUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')", [salePaymentId])
+      if (emptyUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
       await refreshOrderAllocationRollup(client, pay.sale_order_id)
       await logOperation(client, ctx, 'allocation.savePayment', 'sale_payment', String(salePaymentId), {
         _v: 1, allocationCount: 0, note: '标记为无需分配',
@@ -510,7 +512,9 @@ async function savePayment(ctx) {
          a.totalAmount, a.commissionRate, a.commissionAmount, salePaymentId, now]
       )
     }
-    await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1", [salePaymentId])
+    // CAS 守卫：同上，IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
+    const savedUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')", [salePaymentId])
+    if (savedUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
     await refreshOrderAllocationRollup(client, pay.sale_order_id)
     await logOperation(client, ctx, 'allocation.savePayment', 'sale_payment', String(salePaymentId), {
       _v: 1,
@@ -552,7 +556,9 @@ async function deletePaymentAllocation(ctx) {
         WHERE sale_payment_id = $1 AND is_void = false`,
       [salePaymentId]
     )
-    await client.query("UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1", [salePaymentId])
+    // CAS 守卫：删除分配只允许 '已分配'→'待分配'，挡并发双删（脏 voided_at 时间戳）
+    const resetUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND allocation_status = '已分配'", [salePaymentId])
+    if (resetUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
     await refreshOrderAllocationRollup(client, pay.sale_order_id)
     await logOperation(client, ctx, 'allocation.deletePaymentAllocation', 'sale_payment', String(salePaymentId), { _v: 1 })
   })

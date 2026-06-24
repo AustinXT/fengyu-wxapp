@@ -98,10 +98,15 @@ async function autoAllocateOnlinePayment(
     )
   }
   // 本回款主流水行 → 已分配（线上自动分配完成；店长仍可从已分配复核改派）
-  await client.query(
-    `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`,
+  // CAS 守卫：IN ('待分配','已分配') 挡 NULL/脏态；支付回调事务中分配标记为次要副作用，
+  // rowCount=0 仅告警不 throw（INSERT 已 ON CONFLICT DO NOTHING 幂等，不回滚支付）。
+  const allocUpd = await client.query(
+    `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')`,
     [salePaymentId],
   )
+  if (allocUpd.rowCount === 0) {
+    console.warn('[payNotify] allocation-status-transition-blocked:', salePaymentId)
+  }
 }
 const lakalaSign = require('./utils/lakala-sign')
 const lakalaConfig = require('./utils/lakala-config')

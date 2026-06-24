@@ -817,9 +817,11 @@ export const savePaymentAllocations = withPermission(
             })),
           )
         }
+        // CAS 守卫：allocation_status 仅 2 值轻量级状态机；IN ('待分配','已分配') 幂等收敛
+        // 允许重分配，同时挡住 NULL/脏态历史行与并发覆盖。rowCount=0 → 回款不存在或状态非法。
         const upd = await tx.execute(sql`
           UPDATE sale_order_payments SET allocation_status = '已分配'
-          WHERE id = ${salePaymentId}
+          WHERE id = ${salePaymentId} AND allocation_status IN ('待分配', '已分配')
         `)
         if (rowsAffected(upd) === 0) {
           throw new Error('PAYMENT_NOT_FOUND')
