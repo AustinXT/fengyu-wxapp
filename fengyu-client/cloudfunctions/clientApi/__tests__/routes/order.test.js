@@ -156,6 +156,15 @@ describe('order.create', () => {
     await expect(routes.create(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
   })
 
+  test('未绑定门店 → INVALID_PARAMS 请先绑定门店', async () => {
+    // 手机号已绑、门店未绑：requirePhone 通过后被门店守卫拦截（与 card.recharge 口径一致）
+    const ctx = createBoundCtx(
+      { storeId: 's1', items: [{ skuId: 'sku-1', quantity: 1 }], paymentMethod: '微信' },
+      { boundStoreId: null },
+    )
+    await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*请先绑定门店后再下单/)
+  })
+
   test('已有待支付订单 → INVALID_PARAMS + pendingOrderNo', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])

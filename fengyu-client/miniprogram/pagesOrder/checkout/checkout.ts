@@ -509,6 +509,21 @@ Page({
       return;
     }
     if (this.data.submitting) return;
+
+    // 自助下单须先绑定门店（扫码收款已有门店，跳过）；云函数也会兜底，前端先拦免一次往返
+    if (!this.data.existingOrderNo && !app.globalData.boundStoreId) {
+      Toast('请先绑定门店');
+      Dialog.confirm({
+        title: '请先绑定门店',
+        message: '下单需绑定门店，便于后续到店核销',
+        confirmButtonText: '去绑定',
+        cancelButtonText: '取消',
+      }).then(() => {
+        wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+      }).catch(() => {});
+      return;
+    }
+
     this.setData({ submitting: true });
 
     try {
