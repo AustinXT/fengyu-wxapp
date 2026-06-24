@@ -4,7 +4,7 @@
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/order.js
  *   - scanDetail        (line 56)   仅限 opened_by IS NOT NULL 的员工开单
- *                                    待支付 → 返回 {order, items}；其他 → {orderNo,status,statusMsg}
+ *                                    待支付/部分支付（回款）→ 返回 {order, items}；其他 → {orderNo,status,statusMsg}
  *                                    requirePhone 强制
  *   - scanAdjust        (line 1391) 仅 opened_by IS NOT NULL 且 status='待支付'
  *                                    重算 prepaid_card_amount/payable_amount/payment_method
@@ -113,6 +113,31 @@ async function caseScanDetailHappy() {
   }
   if (Number(res.data.order.payableAmount) !== 300) {
     throw new Error(`expect payableAmount=300, got: ${res.data.order.payableAmount}`)
+  }
+  if (!Array.isArray(res.data.items) || res.data.items.length !== 1) {
+    throw new Error(`expect items.length=1, got ${res.data.items?.length}`)
+  }
+}
+
+// 回款场景：部分支付订单（已有首付到账）扫码进收银台付剩余 → scanDetail 须返回 order+items（非 statusMsg）
+async function caseScanDetailPartialPaid() {
+  await createTestClient()
+  await createTestStaff()
+  const orderNo = `${NS}_SCN_DT_PART`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 300 })
+  // 模拟已有首付到账：received=100，订单转 '部分支付'
+  await pgQuery(
+    `UPDATE sale_orders SET received = 100, status = '部分支付'::order_status WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.scanDetail', { saleOrderId: orderNo })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data?.statusMsg) throw new Error(`部分支付不应返回 statusMsg: ${res.data.statusMsg}`)
+  if (res.data?.order?.orderNo !== orderNo) {
+    throw new Error(`expect order.orderNo=${orderNo}, got: ${res.data?.order?.orderNo}`)
+  }
+  if (Number(res.data.order.received) !== 100) {
+    throw new Error(`expect order.received=100, got: ${res.data.order.received}`)
   }
   if (!Array.isArray(res.data.items) || res.data.items.length !== 1) {
     throw new Error(`expect items.length=1, got ${res.data.items?.length}`)
@@ -498,6 +523,7 @@ async function caseStaleBalanceVersionInScanAdjust() {
 
 const CASES = [
   ['scanDetail happy (staff-opened, status=待支付) → returns order + items', caseScanDetailHappy],
+  ['scanDetail 部分支付（回款）→ returns order + items（不返回 statusMsg）', caseScanDetailPartialPaid],
   ['scanAdjust full prepaid (300 from 1000 balance, payable→0)', caseScanAdjustFullPrepaid],
   ['scanAdjust partial prepaid (100 card + 200 wechat)', caseScanAdjustPartialPrepaid],
   ['confirmPrepaidFull happy → 扣款 written + balance -300 + status=已支付', caseConfirmPrepaidFullHappy],
