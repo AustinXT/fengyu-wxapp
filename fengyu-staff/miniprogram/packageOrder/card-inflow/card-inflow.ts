@@ -226,11 +226,13 @@ Page({
 
     this.setData({ submitting: true });
     try {
+      // 幂等 token：用本次进入页面生成的稳定值（跨重试复用），后端据此去重防重复入账。
+      // 兜底：万一 onLoad 未设置则即时生成。
+      const requestId = this.data.inflowReqId || `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
       const payload: Record<string, unknown> = {
         clientUserId: customerInfo.clientUserId,
         amount,
-        // 幂等 token：本次提交唯一，SDK 自动重试携带同值，后端据此去重防重复入账
-        requestId: `inflow-${customerInfo.clientUserId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        requestId,
       };
       const trimmedRemark = (remark || '').trim();
       if (trimmedRemark) payload.remark = trimmedRemark;

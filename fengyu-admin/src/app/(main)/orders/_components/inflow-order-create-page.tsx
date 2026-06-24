@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -33,6 +33,12 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
   const [amount, setAmount] = useState("")
   const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  // 幂等 token：本次进入页面唯一，跨「提交失败后重试」稳定复用。后端据此去重：
+  // 超时丢响应后再次提交不会重复入账（命中既有转入单则复用）。成功即 router.push 离开本页。
+  const requestIdRef = useRef<string>("")
+  if (!requestIdRef.current) {
+    requestIdRef.current = `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
+  }
 
   const handleSearch = async () => {
     const kw = searchKeyword.trim()
@@ -98,8 +104,8 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         storeId,
         amount: amountNum,
         remark: remark.trim() || null,
-        // 幂等 token：本次提交唯一，重复提交 / 重试携带同值，后端据此去重防重复入账
-        requestId: `inflow-${selectedCustomer.userId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        // 幂等 token：本次进入页面稳定值（跨重试复用），后端据此去重防重复入账
+        requestId: requestIdRef.current,
       })
       if (res.success && res.saleOrderId) {
         toast.success(res.message)
