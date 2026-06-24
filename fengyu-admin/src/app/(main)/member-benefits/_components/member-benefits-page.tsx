@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -111,8 +112,8 @@ export default function MemberBenefitsPageClient({
         setShareDirty(false)
       }
       toast.success('保存成功')
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }

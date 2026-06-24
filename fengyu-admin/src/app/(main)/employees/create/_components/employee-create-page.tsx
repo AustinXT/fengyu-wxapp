@@ -12,6 +12,7 @@ import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
+import { actionErrorMessage } from "@/lib/action-error"
 import { findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import type { Store, OrgNode, SkillTag } from "@/lib/types"
@@ -103,8 +104,8 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
       toast.success(result.message)
       router.push("/employees")
       router.refresh()
-    } catch {
-      toast.error("创建失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建失败，请稍后重试"))
     } finally {
       setSaving(false)
     }

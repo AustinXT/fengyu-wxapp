@@ -20,6 +20,7 @@ import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, ty
 import { getCustomerHeldCards, getCustomerCardBalance, createRechargeOrder, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
@@ -240,8 +241,8 @@ export default function OrderCreatePageClient({
       if (results.length === 0) {
         toast.info("未找到已注册顾客，请引导顾客登录小程序并绑定门店")
       }
-    } catch {
-      toast.error("搜索失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
     } finally {
       setSearching(false)
     }
@@ -274,8 +275,8 @@ export default function OrderCreatePageClient({
         data.flatCategories = result.categories
       }
       setKindDataCache((prev) => ({ ...prev, [choice]: data }))
-    } catch {
-      toast.error("加载商品数据失败，进入下一步后可重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载商品数据失败，进入下一步后可重试"))
     } finally {
       setPrefetching(false)
     }
@@ -344,9 +345,9 @@ export default function OrderCreatePageClient({
         if (cancelled) return
         setHeldCards(rows)
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return
-        toast.error("加载折抵卡失败，请重试")
+        toast.error(actionErrorMessage(err, "加载折抵卡失败，请重试"))
         setHeldCards([])
       })
       .finally(() => {
@@ -971,8 +972,8 @@ export default function OrderCreatePageClient({
                   } else {
                     toast.error(res.message)
                   }
-                } catch {
-                  toast.error("创建充值订单失败，请稍后重试")
+                } catch (err) {
+                  toast.error(actionErrorMessage(err, "创建充值订单失败，请稍后重试"))
                 } finally {
                   setSubmitting(false)
                 }
@@ -1383,8 +1384,8 @@ export default function OrderCreatePageClient({
                     } else {
                       toast.error(res.message)
                     }
-                  } catch {
-                    toast.error("创建转换单失败，请稍后重试")
+                  } catch (err) {
+                    toast.error(actionErrorMessage(err, "创建转换单失败，请稍后重试"))
                   } finally {
                     setSubmitting(false)
                   }
@@ -1461,8 +1462,8 @@ export default function OrderCreatePageClient({
                   } else {
                     toast.error(res.message)
                   }
-                } catch {
-                  toast.error("创建订单失败，请稍后重试")
+                } catch (err) {
+                  toast.error(actionErrorMessage(err, "创建订单失败，请稍后重试"))
                 } finally {
                   setSubmitting(false)
                 }
@@ -1612,8 +1613,8 @@ export default function OrderCreatePageClient({
                       } else {
                         toast.error(res.message)
                       }
-                    } catch {
-                      toast.error('确认收款失败，请稍后重试')
+                    } catch (err) {
+                      toast.error(actionErrorMessage(err, '确认收款失败，请稍后重试'))
                     } finally {
                       setConfirming(false)
                     }
@@ -1676,7 +1677,7 @@ function OrderQRCode({ orderId }: { orderId: string }) {
           setError(res.message || "生成小程序码失败")
         }
       })
-      .catch(() => setError("生成小程序码失败"))
+      .catch((err) => setError(actionErrorMessage(err, "生成小程序码失败")))
       .finally(() => setLoading(false))
   }, [orderId])
 

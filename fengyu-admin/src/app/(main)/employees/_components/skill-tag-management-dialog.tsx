@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { SkillTag } from "@/lib/types"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -98,8 +99,8 @@ export default function SkillTagManagementDialog({
       }
       setFormOpen(false)
       router.refresh()
-    } catch {
-      toast.error(editing ? "更新失败" : "创建失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, editing ? "更新失败" : "创建失败"))
     } finally {
       setSaving(false)
     }
@@ -117,8 +118,8 @@ export default function SkillTagManagementDialog({
       toast.success("标签已删除")
       setDeleteTarget(null)
       router.refresh()
-    } catch {
-      toast.error("删除失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败"))
     } finally {
       setDeleting(false)
     }

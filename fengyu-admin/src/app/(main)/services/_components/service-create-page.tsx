@@ -15,6 +15,7 @@ import type { Store, Employee, Customer } from "@/lib/types"
 import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
+import { actionErrorMessage } from "@/lib/action-error"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -112,8 +113,8 @@ export default function ServiceCreatePageClient({
           setSelectedEmployeeId(result.boundEmployeeId)
         }
       }
-    } catch {
-      toast.error("搜索失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
     } finally {
       setSearching(false)
     }
@@ -127,8 +128,8 @@ export default function ServiceCreatePageClient({
       setAvailableItems(items)
       setSelectedItems([])
       setStep(1)
-    } catch {
-      toast.error("加载可用项目失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载可用项目失败"))
     } finally {
       setLoadingItems(false)
     }
@@ -187,8 +188,8 @@ export default function ServiceCreatePageClient({
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("创建服务单失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建服务单失败，请稍后重试"))
     } finally {
       setSubmitting(false)
     }

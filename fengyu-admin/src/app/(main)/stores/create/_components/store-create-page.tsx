@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import { createStore } from "@/actions/stores"
 import type { MerchantOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
@@ -69,7 +70,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
       router.push("/stores")
     } catch (e) {
       console.error("createStore failed", e)
-      toast.error("创建失败")
+      toast.error(actionErrorMessage(e, "创建失败"))
     } finally {
       setSaving(false)
     }

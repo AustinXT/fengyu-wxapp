@@ -21,6 +21,7 @@ import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import { updateEmployee, deleteEmployee } from "@/actions/employees"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
@@ -177,8 +178,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }
@@ -213,8 +214,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       }
       setIsEditingRoles(false)
       router.refresh()
-    } catch {
-      toast.error('保存失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '保存失败，请稍后重试'))
     } finally {
       setSavingRoles(false)
     }
@@ -236,7 +237,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       if (msg.startsWith('PERMISSION_DENIED:')) {
         toast.error('仅系统管理员可重置密码')
       } else {
-        toast.error('密码重置失败，请稍后重试')
+        toast.error(actionErrorMessage(err, '密码重置失败，请稍后重试'))
       }
     } finally {
       setResettingPwd(false)
@@ -728,8 +729,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
               toast.success('已标记离职')
               setResignDialogOpen(false)
               router.refresh()
-            } catch {
-              toast.error('操作失败')
+            } catch (err) {
+              toast.error(actionErrorMessage(err, '操作失败'))
             } finally {
               setSaving(false)
             }

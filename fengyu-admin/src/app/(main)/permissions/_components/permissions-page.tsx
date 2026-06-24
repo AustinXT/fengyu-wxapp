@@ -13,6 +13,7 @@ import { toast } from "sonner"
 import { assignRole, revokeRole, getRolesByScope } from "@/actions/permissions"
 import { ROLE_LABELS } from "@/lib/types"
 import { ROLE_SCOPE_TYPES } from "@/lib/role-scope-rules"
+import { actionErrorMessage } from "@/lib/action-error"
 import { cn, formatDate } from "@/lib/utils"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
@@ -181,8 +182,8 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       try {
         const roles = await getRolesByScope(nodeId)
         setScopeRoles(roles)
-      } catch {
-        toast.error("加载角色数据失败")
+      } catch (err) {
+        toast.error(actionErrorMessage(err, "加载角色数据失败"))
       }
     })
   }, [])
@@ -251,8 +252,8 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("分配失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "分配失败，请稍后重试"))
     } finally {
       setAssigning(false)
     }
@@ -268,8 +269,8 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("撤销失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "撤销失败，请稍后重试"))
     } finally {
       setRevokeTarget(null)
     }

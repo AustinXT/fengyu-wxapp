@@ -16,6 +16,7 @@ import {
 } from '@/actions/pickup-records'
 import type { Customer, Store } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
+import { actionErrorMessage } from '@/lib/action-error'
 
 interface Props {
   stores: Store[]
@@ -73,8 +74,8 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       } finally {
         setLoadingItems(false)
       }
-    } catch {
-      toast.error('搜索顾客失败')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '搜索顾客失败'))
     } finally {
       setSearching(false)
     }
@@ -123,7 +124,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
         toast.error(res.message)
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '提交失败')
+      toast.error(actionErrorMessage(err, '提交失败'))
     } finally {
       setSubmitting(false)
     }

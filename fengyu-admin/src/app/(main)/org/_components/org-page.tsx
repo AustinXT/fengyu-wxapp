@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatDateTime } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { createOrgNode, updateOrgNode, deleteOrgNode } from "@/actions/org"
 
@@ -248,8 +249,8 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
         setDialogOpen(false)
         router.refresh()
       }
-    } catch {
-      toast.error(dialogMode === "create" ? "创建失败，请稍后重试" : "更新失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, dialogMode === "create" ? "创建失败，请稍后重试" : "更新失败，请稍后重试"))
     } finally {
       setSubmitting(false)
     }
@@ -515,7 +516,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
               } else if (msg.includes('UNAUTHORIZED')) {
                 toast.error('登录已过期，请重新登录')
               } else {
-                toast.error('操作失败，请稍后重试')
+                toast.error(actionErrorMessage(err, '操作失败，请稍后重试'))
               }
             }
           }}>确认删除</AlertDialogAction>

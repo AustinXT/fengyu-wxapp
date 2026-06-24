@@ -27,6 +27,7 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog";
 import { formatCurrency } from "@/lib/utils";
+import { actionErrorMessage } from "@/lib/action-error";
 
 interface Market {
   id: string;
@@ -122,8 +123,8 @@ export default function MallProductDetailPageClient({
       setDeleteProductDialogOpen(false);
       setFormDirty(false);
       router.push("/mall");
-    } catch {
-      toast.error("删除失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败，请稍后重试"));
     } finally {
       setDeletingProduct(false);
     }
@@ -209,8 +210,8 @@ export default function MallProductDetailPageClient({
       setFormDirty(false);
       toast.success("保存成功");
       router.refresh();
-    } catch {
-      toast.error("保存失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"));
     } finally {
       setSaving(false);
     }
@@ -235,8 +236,8 @@ export default function MallProductDetailPageClient({
       }
       toast.success("规格已添加");
       router.refresh();
-    } catch {
-      toast.error("添加失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "添加失败，请稍后重试"));
     } finally {
       setAddingSku(null);
     }
@@ -261,8 +262,8 @@ export default function MallProductDetailPageClient({
       setRemoveDialogOpen(false);
       setRemovingSkuId(null);
       router.refresh();
-    } catch {
-      toast.error("移除失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "移除失败，请稍后重试"));
     } finally {
       setRemoving(false);
     }
@@ -316,8 +317,8 @@ export default function MallProductDetailPageClient({
       setGroupDialogOpen(false);
       setEditingGroup(null);
       router.refresh();
-    } catch {
-      toast.error("操作失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "操作失败，请稍后重试"));
     } finally {
       setGroupSaving(false);
     }
@@ -341,8 +342,8 @@ export default function MallProductDetailPageClient({
       setDeleteGroupDialogOpen(false);
       setDeletingGroupId(null);
       router.refresh();
-    } catch {
-      toast.error("删除失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败，请稍后重试"));
     } finally {
       setDeletingGroup(false);
     }

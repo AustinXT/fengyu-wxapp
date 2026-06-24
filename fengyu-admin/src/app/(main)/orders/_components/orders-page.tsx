@@ -22,6 +22,7 @@ import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/
 import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode, exportOrders } from "@/actions/orders";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
+import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
 
@@ -68,8 +69,8 @@ function OrderActions({ order }: { order: SaleOrder }) {
         } else {
           toast.error(res.message);
         }
-      } catch {
-        toast.error("操作失败，请稍后重试");
+      } catch (err) {
+        toast.error(actionErrorMessage(err, "操作失败，请稍后重试"));
       }
     });
   };
@@ -87,7 +88,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
           setQrError(res.message || "生成小程序码失败");
         }
       })
-      .catch(() => setQrError("生成小程序码失败"))
+      .catch((err) => setQrError(actionErrorMessage(err, "生成小程序码失败")))
       .finally(() => setQrLoading(false));
   };
 

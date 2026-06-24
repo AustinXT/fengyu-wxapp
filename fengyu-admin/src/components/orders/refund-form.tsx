@@ -23,6 +23,7 @@ import {
   type RefundableItem,
 } from "@/actions/refunds"
 import { formatDate } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 
 interface LineState {
   checked: boolean
@@ -69,9 +70,7 @@ export function RefundForm({
         setLineStates(defaults)
       })
       .catch((err: Error) => {
-        const msg = err?.message || "加载失败"
-        const cleaned = msg.replace(/^(INVALID_PARAMS|INVALID_STATE|PERMISSION_DENIED):\s*/, "")
-        setLoadError(cleaned)
+        setLoadError(actionErrorMessage(err, "加载失败"))
       })
       .finally(() => setLoading(false))
   }, [open, saleOrderId])

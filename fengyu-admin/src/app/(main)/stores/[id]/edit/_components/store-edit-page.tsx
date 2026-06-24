@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
 import type { MerchantOption } from "@/actions/merchants"
@@ -64,8 +65,8 @@ export default function StoreEditPage({
       setFormDirty(false)
       toast.success("保存成功")
       router.push("/stores")
-    } catch {
-      toast.error("保存失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败"))
     } finally {
       setSaving(false)
     }
@@ -281,8 +282,8 @@ export default function StoreEditPage({
               toast.success('门店已关闭')
               setCloseDialogOpen(false)
               router.refresh()
-            } catch {
-              toast.error('操作失败')
+            } catch (err) {
+              toast.error(actionErrorMessage(err, '操作失败'))
             }
           }}>确认关闭</AlertDialogAction>
         </AlertDialogFooter>

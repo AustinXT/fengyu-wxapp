@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -152,7 +153,7 @@ export default function CategoriesPageClient({
       setDialogOpen(false)
       router.refresh()
     } catch (err) {
-      toast.error(editingCategory ? "更新失败" : "创建失败")
+      toast.error(actionErrorMessage(err, editingCategory ? "更新失败" : "创建失败"))
       console.error(err)
     } finally {
       setSaving(false)
@@ -173,7 +174,7 @@ export default function CategoriesPageClient({
       setDisableTarget(null)
       router.refresh()
     } catch (err) {
-      toast.error("停用失败")
+      toast.error(actionErrorMessage(err, "停用失败"))
       console.error(err)
     } finally {
       setDisabling(false)
@@ -194,7 +195,7 @@ export default function CategoriesPageClient({
       setDeleteTarget(null)
       router.refresh()
     } catch (err) {
-      toast.error("删除失败")
+      toast.error(actionErrorMessage(err, "删除失败"))
       console.error(err)
     } finally {
       setDeleting(false)

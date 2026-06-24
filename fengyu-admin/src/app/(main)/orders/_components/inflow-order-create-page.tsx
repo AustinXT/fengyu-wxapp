@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { searchCustomers } from "@/actions/customers"
 import { createPrepaidInflow } from "@/actions/orders"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { Store, Customer } from "@/lib/types"
 
 /**
@@ -57,8 +58,8 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
       if (results.length === 0) {
         toast.info("未找到已注册顾客，请引导顾客登录小程序并绑定门店")
       }
-    } catch {
-      toast.error("搜索失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
     } finally {
       setSearching(false)
     }
@@ -114,8 +115,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         toast.error(res.message || "转入失败")
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "转入失败"
-      toast.error(msg)
+      toast.error(actionErrorMessage(err, "转入失败"))
     } finally {
       setSubmitting(false)
     }

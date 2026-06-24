@@ -16,6 +16,7 @@ import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
@@ -145,8 +146,8 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       })
       setBatchCustomers(result.data)
       setBatchTotal(result.total)
-    } catch {
-      toast.error("加载顾客列表失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载顾客列表失败"))
     }
   }, [batchOrgFilter, batchLevelFilter, batchSearch])
 
@@ -205,8 +206,8 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       toast.success(result.message)
       handleCloseBatch()
       router.refresh()
-    } catch {
-      toast.error("批量发放失败，请重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "批量发放失败，请重试"))
     } finally {
       setBatchLoading(false)
     }
@@ -308,7 +309,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       setEditing(false)
       router.refresh()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "保存失败，请重试")
+      toast.error(actionErrorMessage(err, "保存失败，请重试"))
     } finally {
       setSaving(false)
     }
@@ -329,8 +330,8 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
         toast.info("未找到该手机号对应的顾客")
       }
       setIssueSearched(true)
-    } catch {
-      toast.error("搜索失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败"))
     }
   }
 
@@ -352,8 +353,8 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       setIssueCustomerName("")
       setIssueSearched(false)
       router.refresh()
-    } catch {
-      toast.error("发放失败，请重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "发放失败，请重试"))
     } finally {
       setIssueLoading(false)
     }

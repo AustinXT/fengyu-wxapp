@@ -13,6 +13,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { confirmAppointment, checkinAppointment, cancelAppointment, deleteAppointment } from "@/actions/appointments"
 import { RowDeleteMenu } from "@/components/delete-action"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { Appointment, Store } from "@/lib/types"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
@@ -96,8 +97,8 @@ export default function AppointmentsPageClient({
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error('操作失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '操作失败，请稍后重试'))
     } finally {
       setPendingId(null)
     }

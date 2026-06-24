@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { MallCategory } from "@/lib/types";
 import { createProduct } from "@/actions/products";
+import { actionErrorMessage } from "@/lib/action-error";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,8 +103,8 @@ export default function MallProductCreatePageClient({
       setFormDirty(false);
       toast.success("商品创建成功，请在详情页管理套餐分组");
       router.push(`/mall/${productId}`);
-    } catch {
-      toast.error("创建失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建失败，请稍后重试"));
     } finally {
       setSaving(false);
     }

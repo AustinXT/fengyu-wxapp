@@ -14,6 +14,7 @@ import {
 import type { BatchMessageCustomer, OrgNode } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
 import { formatDateTime as fmtDateTime } from '@/lib/utils'
+import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -130,8 +131,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       toast.success(result.message)
       setPendingDelete(null)
       router.refresh()
-    } catch {
-      toast.error('删除失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '删除失败，请稍后重试'))
     } finally {
       setDeleting(false)
     }
@@ -162,7 +163,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
           setBatchOrgNodes(nodes)
           setBatchOrgLoaded(true)
         })
-        .catch(() => toast.error('加载组织列表失败'))
+        .catch((err) => toast.error(actionErrorMessage(err, '加载组织列表失败')))
     }
   }, [batchOpen, batchOrgLoaded])
 
@@ -178,8 +179,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         })
         setBatchCustomers(result.data)
         setBatchTotal(result.total)
-      } catch {
-        toast.error('加载顾客列表失败')
+      } catch (err) {
+        toast.error(actionErrorMessage(err, '加载顾客列表失败'))
       }
     },
     [batchOrgFilter, batchLevelFilter, batchSearch],
@@ -275,8 +276,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       toast.success(result.message)
       resetBatchState()
       router.refresh()
-    } catch {
-      toast.error('发送失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '发送失败，请稍后重试'))
     } finally {
       setBatchSending(false)
     }

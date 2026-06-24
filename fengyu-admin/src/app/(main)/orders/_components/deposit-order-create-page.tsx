@@ -15,6 +15,7 @@ import {
   type OrderPickerNormalGroup,
 } from "@/actions/products"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { Store, Customer, ProductSku, Product } from "@/lib/types"
 import { NormalSkuPicker } from "./order-create/normal-sku-picker"
 import type { CartItem } from "./order-create/types"
@@ -68,8 +69,8 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
       if (results.length === 0) {
         toast.info("未找到已注册顾客，请引导顾客登录小程序并绑定门店")
       }
-    } catch {
-      toast.error("搜索失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
     } finally {
       setSearching(false)
     }
@@ -106,8 +107,8 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
       if ("groups" in result) {
         setKindData({ normalGroups: result.groups })
       }
-    } catch {
-      toast.error("加载商品数据失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载商品数据失败"))
     } finally {
       setPrefetching(false)
     }
@@ -184,8 +185,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
         toast.error(res.message || "寄存单创建失败")
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "寄存单创建失败"
-      toast.error(msg)
+      toast.error(actionErrorMessage(err, "寄存单创建失败"))
     } finally {
       setSubmitting(false)
     }

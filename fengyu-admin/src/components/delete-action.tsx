@@ -12,6 +12,7 @@ import {
   AlertDialogAction,
 } from '@/components/ui/alert-dialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { actionErrorMessage } from '@/lib/action-error'
 
 /** 删除结果约定，与各 server action 返回值一致 */
 export type DeleteResult = { success: boolean; message: string }
@@ -51,8 +52,8 @@ function useDeleteConfirm(
       } else {
         router.refresh()
       }
-    } catch {
-      toast.error('删除失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '删除失败，请稍后重试'))
     } finally {
       setDeleting(false)
     }

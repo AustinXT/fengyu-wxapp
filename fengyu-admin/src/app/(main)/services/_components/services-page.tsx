@@ -14,6 +14,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
 import { ExportButton } from "@/components/ui/export-button"
 import { exportToXlsx, fmtDate as xlsxFmtDate, fmtDateTime } from "@/lib/export-xlsx"
+import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 import { formatDate as fmtDate } from "@/lib/utils"
@@ -41,8 +42,8 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
         } else {
           toast.error(res.message)
         }
-      } catch {
-        toast.error('操作失败，请稍后重试')
+      } catch (err) {
+        toast.error(actionErrorMessage(err, '操作失败，请稍后重试'))
       }
     })
   }

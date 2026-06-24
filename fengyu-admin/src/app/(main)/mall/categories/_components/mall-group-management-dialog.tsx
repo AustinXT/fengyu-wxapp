@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { MallCategory } from "@/lib/types"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataTable, type Column } from "@/components/ui/data-table"
@@ -102,8 +103,8 @@ export default function MallGroupManagementDialog({
       }
       setFormOpen(false)
       router.refresh()
-    } catch {
-      toast.error(editing ? "更新失败" : "创建失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, editing ? "更新失败" : "创建失败"))
     } finally {
       setSaving(false)
     }
@@ -121,8 +122,8 @@ export default function MallGroupManagementDialog({
       toast.success("分组已删除")
       setDeleteTarget(null)
       router.refresh()
-    } catch {
-      toast.error("删除失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败"))
     } finally {
       setDeleting(false)
     }

@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile, type CustomerServiceRecord } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
@@ -112,8 +113,8 @@ export default function CustomerDetailPage({
       toast.success("手机号已更新")
       setPhoneEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setPhoneSaving(false)
     }
@@ -131,7 +132,7 @@ export default function CustomerDetailPage({
         router.refresh()
       }
     } catch (e: any) {
-      toast.error(e?.message ?? '合并失败')
+      toast.error(actionErrorMessage(e, '合并失败'))
     } finally {
       setMerging(null)
     }
@@ -242,8 +243,8 @@ export default function CustomerDetailPage({
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }

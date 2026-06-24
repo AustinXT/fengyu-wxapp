@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -119,8 +120,8 @@ export default function ProductKindManagementDialog({
       }
       setFormOpen(false)
       router.refresh()
-    } catch {
-      toast.error(editing ? "更新失败" : "创建失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, editing ? "更新失败" : "创建失败"))
     } finally {
       setSaving(false)
     }
@@ -143,8 +144,8 @@ export default function ProductKindManagementDialog({
       toast.success("品项一级分类已停用")
       setDisableTarget(null)
       router.refresh()
-    } catch {
-      toast.error("停用失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "停用失败"))
     } finally {
       setDisabling(false)
     }
