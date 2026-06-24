@@ -58,13 +58,15 @@ async function getAccessToken(forceRefresh = false) {
 }
 
 /**
- * RFC3339 时间戳（+08:00）。进程 TZ 已在 index.js 设为 Asia/Shanghai，
- * 故 getHours/getMonth 等本地时间方法对应东八区墙钟。
+ * RFC3339 时间戳（+08:00）。不依赖进程 TZ：按 epoch + 8h 偏移取 UTC 墙钟，与 index.js 的 pg 1114
+ * 解析器（显式 +08:00 构造 Date）同源解耦——CloudBase 运行时 TZ 若未生效，本地时间 getter 会返回
+ * UTC 墙钟却标 +08:00 → upload_time 偏 8 小时；改用 getUTC* + 偏移则恒为东八区墙钟。
  */
 function rfc3339(date) {
   const p = (n) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}` +
-    `T${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}+08:00`
+  const bj = new Date(date.getTime() + 8 * 3600 * 1000)
+  return `${bj.getUTCFullYear()}-${p(bj.getUTCMonth() + 1)}-${p(bj.getUTCDate())}` +
+    `T${p(bj.getUTCHours())}:${p(bj.getUTCMinutes())}:${p(bj.getUTCSeconds())}+08:00`
 }
 
 /**
