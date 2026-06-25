@@ -37,13 +37,36 @@ Page({
     pendingServiceCount: 0,
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
+    pendingOrderCount: 0, // 订单管理磁贴红点：线下收款 + 确认订单 之和
     pendingUnbindCount: 0,
     pendingAllocationCount: 0,
     pendingRefundCount: 0,
+    statusBarHeight: 0,
+    navBarHeight: 0,
+    contentHeight: 0,
   },
 
   onLoad() {
+    this.initNavBar();
     this.setTodayDate();
+  },
+
+  // 计算自定义导航栏高度（状态栏 + 胶囊按钮区），供顶部 logo 导航栏使用
+  initNavBar() {
+    try {
+      const sys = wx.getSystemInfoSync();
+      const menu = wx.getMenuButtonBoundingClientRect();
+      const statusBarHeight = sys.statusBarHeight || 44;
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2;
+      this.setData({
+        statusBarHeight,
+        contentHeight,
+        navBarHeight: statusBarHeight + contentHeight,
+      });
+    } catch (e) {
+      console.warn('[workbench] initNavBar 失败，使用兜底高度', e);
+      this.setData({ statusBarHeight: 44, contentHeight: 44, navBarHeight: 88 });
+    }
   },
 
   onShow() {
@@ -188,6 +211,7 @@ Page({
         pendingServiceCount: data.pendingServiceCount || 0,
         pendingOfflineOrderCount: data.pendingOfflineOrderCount || 0,
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
+        pendingOrderCount: (data.pendingOfflineOrderCount || 0) + (data.pendingCreateOrderCount || 0),
         pendingUnbindCount: data.pendingUnbindCount || 0,
         pendingAllocationCount: data.pendingAllocationCount || 0,
         pendingRefundCount: data.pendingRefundCount || 0,
