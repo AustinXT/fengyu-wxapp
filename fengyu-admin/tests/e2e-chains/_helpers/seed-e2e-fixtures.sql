@@ -63,6 +63,31 @@ ON CONFLICT (employee_id) DO UPDATE SET
   is_resigned = EXCLUDED.is_resigned, updated_at = NOW();
 
 -- ----------------------------------------------------------------------------
+-- 3b. 员工列表填充行（2026-06-24）
+--   /employees「筛选器完整」「在职状态筛选有 3 项」断言依赖 ≥2 个原生 <select>：1 个是顶部「在职状态」筛选，
+--   另 1 个是 Pagination 的「页大小」<select>——但 Pagination 仅当 total > 默认页大小 20 时才渲染该 <select>
+--   （组织筛选是自定义按钮下拉、非原生 select）。fengyu_e2e 员工过少（< 20）时只剩 1 个 select → 断言挂。
+--   这里补 14 行（13 在职 + 1 离职，phone 走 1370000000x 专属段不与既有账号撞 uq_staff_users_phone），
+--   单本 seed 即保证 8 个 FY-TEST + 14 行 ≥ 21 > 20，跨页 → 页大小 select 必现。仅档案行，无需 role/password。
+--   FK：org_node_id → org_nodes（HQ/门店节点，前面已建）；store_id → stores。
+INSERT INTO staff_wechat_users (employee_id, name, phone, store_id, org_node_id, gender, is_resigned) VALUES
+  ('FY-TEST-LIST-01', 'E2E 列表员工01', '13700000001', 'store-nc01', 'org-store-nc01',   '女', false),
+  ('FY-TEST-LIST-02', 'E2E 列表员工02', '13700000002', 'store-nc01', 'org-store-nc01',   '男', false),
+  ('FY-TEST-LIST-03', 'E2E 列表员工03', '13700000003', 'store-nc02', 'org-store-nc02',   '女', false),
+  ('FY-TEST-LIST-04', 'E2E 列表员工04', '13700000004', 'store-nc02', 'org-store-nc02',   '男', false),
+  ('FY-TEST-LIST-05', 'E2E 列表员工05', '13700000005', NULL,         '16d1184b46db099a', '女', false),
+  ('FY-TEST-LIST-06', 'E2E 列表员工06', '13700000006', NULL,         '16d1184b46db099a', '男', false),
+  ('FY-TEST-LIST-07', 'E2E 列表员工07', '13700000007', 'store-nc01', 'org-store-nc01',   '女', false),
+  ('FY-TEST-LIST-08', 'E2E 列表员工08', '13700000008', 'store-nc01', 'org-store-nc01',   '男', false),
+  ('FY-TEST-LIST-09', 'E2E 列表员工09', '13700000009', 'store-nc02', 'org-store-nc02',   '女', false),
+  ('FY-TEST-LIST-10', 'E2E 列表员工10', '13700000010', 'store-nc02', 'org-store-nc02',   '男', false),
+  ('FY-TEST-LIST-11', 'E2E 列表员工11', '13700000011', NULL,         '16d1184b46db099a', '女', false),
+  ('FY-TEST-LIST-12', 'E2E 列表员工12', '13700000012', NULL,         '16d1184b46db099a', '男', false),
+  ('FY-TEST-LIST-13', 'E2E 列表员工13', '13700000013', 'store-nc01', 'org-store-nc01',   '女', false),
+  ('FY-TEST-LIST-14', 'E2E 列表员工14', '13700000014', 'store-nc02', 'org-store-nc02',   '男', true)
+ON CONFLICT (employee_id) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
 -- 4. admin_passwords：密码 fengyu2026 的 bcrypt $2b$12 hash，must_change=false
 -- ----------------------------------------------------------------------------
 INSERT INTO admin_passwords (employee_id, password_hash, must_change, last_changed_at) VALUES

@@ -149,7 +149,25 @@ test('链路48：采购单 UI 创建 → 头尾一致性 → UI 删除 → 级�
     //     不依赖 UI 列表"消失"断言，直接走 SQL 验已删除
     const row = adminPage.locator('tr', { hasText: createdId }).first()
     await row.getByRole('button').last().click()
-    await adminPage.waitForTimeout(2000) // 给 dialog accept + action 完成时间
+
+    // dev 下 delete action 偶尔未及时提交：轮询删除结果（主表行=null + items=0 + 审计 delete 出现），
+    // 替代固定 waitForTimeout(2000)，最长 15s。轮询超时不阻断，交由下方 recordVerdict 记录 FAIL 以保留诊断。
+    try {
+      await expect
+        .poll(
+          () => {
+            const headerGone = getInventoryHeader('procurement', createdId) === null
+            const itemsGone =
+              psql(`SELECT COUNT(*) FROM inventory_procurement_order_items WHERE order_id = '${createdId}'`) === '0'
+            const auditPresent = Boolean(readLatestAudit('inventory.procurement.delete', createdId))
+            return headerGone && itemsGone && auditPresent
+          },
+          { timeout: 15_000, intervals: [500, 1000, 1500] },
+        )
+        .toBe(true)
+    } catch {
+      /* 轮询超时（delete 未提交）：不抛，下方 recordVerdict 会记录具体失败项 */
+    }
 
     // ── Step 7: SQL 验级联 + 审计 delete ─────────────────────────
     const headerAfter = getInventoryHeader('procurement', createdId)

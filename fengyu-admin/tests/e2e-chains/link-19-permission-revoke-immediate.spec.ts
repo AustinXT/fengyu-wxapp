@@ -24,7 +24,7 @@ import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MGR_PHONE = '13900139001'
 const ADM_PHONE = '13900139000'
 const PASS = 'fengyu2026'

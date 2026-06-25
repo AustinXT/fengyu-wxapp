@@ -203,9 +203,11 @@ const MOCK_ORDERS: WorkfineOrder[] = [
     legacyOrderNo: 'WF-ORD-001',
     saleDate: '2023-06-15T10:00:00.000Z',
     marketName: '南昌市场',
-    // 与 fengyu-admin/tests/e2e-chains/_helpers/seed-scope-fixtures.sql 一致，
-    // 选 e2e 测试 PG 中真实存在的 store_name，否则 import 时会被 skippedNoStore=1 跳过。
-    storeName: '南昌旗舰店',
+    // 与 fengyu_e2e 测试 PG 的 seed 命名口径一致：门店名带「（E2E）」后缀
+    // （store-nc01 = '南昌旗舰店（E2E）'）。storeMatched / 默认勾选 / storeMapping
+    // 均按 store_name 精确反查 stores 表，故 mock storeName 必须与库内字面完全一致，
+    // 否则 storeMatched=false、行不默认勾选、import 时被 skippedNoStore=1 跳过。
+    storeName: '南昌旗舰店（E2E）',
     customerName: '测试顾客 A',
     amount: 998,
     legacyCustomerId: 'WF-MOCK-001',

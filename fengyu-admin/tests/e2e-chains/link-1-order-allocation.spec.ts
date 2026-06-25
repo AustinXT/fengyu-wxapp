@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 
 // DB helper（与其他 spec 一致）
 function psql(sql: string): string {
@@ -106,8 +106,11 @@ test('链路1：开单 → 收款确认 → 营业额分配', async ({ page }) =
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-1-01-login.png` })
 
   // ---- Step 1: 进入开单向导 ----
-  await page.goto(`${BASE}/orders/create`)
-  await expect(page.getByRole('heading', { name: '新建订单' })).toBeVisible({ timeout: 15000 })
+  // 批跑首个命中重路由 /orders/create 时 dev/Turbopack 冷编译可能 >45s。
+  // 先预热一个轻路由（/dashboard，登录后已编译过）消除首次跳转惩罚，再放宽 goto 超时到 90s。
+  await page.goto(`${BASE}/dashboard`, { timeout: 90_000 }).catch(() => null)
+  await page.goto(`${BASE}/orders/create`, { timeout: 90_000 })
+  await expect(page.getByRole('heading', { name: '新建订单' })).toBeVisible({ timeout: 30_000 })
 
   // Step 1 — 选顾客（按手机号搜索）
   await page.getByPlaceholder(/手机号/).fill(FIXTURE_PHONE)

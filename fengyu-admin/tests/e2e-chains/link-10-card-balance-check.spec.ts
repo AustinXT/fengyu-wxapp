@@ -27,7 +27,7 @@ import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
 // Admin has sale_order:record_payment permission (manager role does NOT)
@@ -414,9 +414,24 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
 
   // 取消储值卡抵扣（顾客有卡余额时开单页 setUseCard(bal>0) 自动勾选 → 全额抵扣致"已支付"，
   // 与本 Step「挂账→待支付→SQL 扣款」意图冲突；显式取消勾选保持待支付）
-  const useCardCb = page.getByRole('checkbox').first()
-  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) {
-    await useCardCb.uncheck()
+  //
+  // ⚠ 不能用 getByRole('checkbox').first()：新增的「活动单标记」(is_activity) 复选框在 DOM 中
+  // 排在「充值卡抵扣」之前，会被 .first() 命中 → 取消的是活动标记而非储值卡抵扣 → 储值卡仍勾选
+  // → 卡余额全额抵扣 → 订单变「已支付」，破坏本 Step「待支付/部分支付」前置。
+  // 精确锚定「充值卡抵扣」卡片：同时含「充值卡抵扣」文案与 checkbox 的最内层容器（即卡片内的
+  // flex 行：左侧文案 + 右侧 <label> 内 type=checkbox），.last() 取最深匹配，唯一命中该复选框。
+  const useCardCb = page
+    .locator('div')
+    .filter({ hasText: '充值卡抵扣' })
+    .filter({ has: page.getByRole('checkbox') })
+    .last()
+    .getByRole('checkbox')
+  // 无条件确保最终未勾选：存在即检查，已勾选则取消（去掉旧的 count && isChecked 合并短路，
+  // 该短路在定位到错误 checkbox 时 isChecked=false 直接跳过 uncheck，是本次漂移的根因）。
+  if ((await useCardCb.count()) > 0) {
+    if (await useCardCb.isChecked().catch(() => false)) {
+      await useCardCb.uncheck()
+    }
   }
 
   // 本次收款填 0（不付）
