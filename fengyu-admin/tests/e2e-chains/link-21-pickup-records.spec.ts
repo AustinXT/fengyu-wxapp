@@ -29,7 +29,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MGR_PHONE = '13900139001'
 const PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'

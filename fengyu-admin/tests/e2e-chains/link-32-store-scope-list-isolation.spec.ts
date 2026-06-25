@@ -36,6 +36,7 @@ import {
   login,
   pageContainsKeyword,
   detailPageDenied,
+  detailPageReadOnly,
   recordVerdict,
   summarize,
   writeContext,
@@ -166,11 +167,17 @@ test('链路32：店长 scope 列表隔离', async ({ browser }) => {
     }
 
     // ── Step 4: 详情页越权访问 ──
+    // 销售单详情仍 scope 受限：越权店长访问他店订单详情应被拦截。
     const orderDetailDenied = await detailPageDenied(page, `/orders/${SOID}`)
     recordVerdict(verdicts, 'detail_order_denied', orderDetailDenied, `denied=${orderDetailDenied}`)
 
-    const serviceDetailDenied = await detailPageDenied(page, `/services/${SVC_ID}`)
-    recordVerdict(verdicts, 'detail_service_denied', serviceDetailDenied, `denied=${serviceDetailDenied}`)
+    // 服务单详情已改为「跨门店只读放行」（commit c0edeac3：getServiceOrderById 去 store
+    // scope + readOnly 标记，数据跟顾客走）。越权店长访问他店服务单详情不再被拒，而是看到
+    // 完整页面 + 「跨门店只读」Badge，且隐藏物理删除入口。故断言「只读视图」而非「被拒」。
+    const serviceDetailReadOnly = await detailPageReadOnly(
+      page, `/services/${SVC_ID}`, '跨门店只读', '删除此服务单',
+    )
+    recordVerdict(verdicts, 'detail_service_readonly', serviceDetailReadOnly, `readOnly=${serviceDetailReadOnly}`)
 
     // ── Step 5: DB invariant — admin 视角直查能见 ──
     const admCanSee = parseInt(psql(

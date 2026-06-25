@@ -28,7 +28,7 @@ import { execSync } from 'child_process'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'
@@ -89,9 +89,27 @@ function seedBundle(): void {
 }
 
 function cleanupBundle(): void {
+  // 先清掉任何引用本套餐子 SKU 的销售单（连同其 sale_items 等全部 FK 子表），再删 product_skus——
+  // 否则上一轮失败 / saleOrderId 未捕获留下的孤儿 sale_items 会让
+  // sale_items_sku_id_product_skus_sku_id_fk 挡住下面的 product_skus 删除（FK 残留 / 跨污染）。
+  // SKU_CARD / SKU_HOME 专属本 spec，引用它们的订单必为本 spec 残留，整单清理安全。
+  try {
+    const orphanOrders = psql(
+      `SELECT DISTINCT sale_order_id FROM sale_items WHERE sku_id IN ('${SKU_CARD}', '${SKU_HOME}')`,
+    ).trim()
+    for (const oid of orphanOrders.split('\n').map((s) => s.trim()).filter(Boolean)) {
+      cleanupSaleOrder(oid, psql, { logPrefix: '[链路46-bundle-clean]' })
+    }
+  } catch {
+    /* SELECT 失败（如表缺失）不阻塞后续清理 */
+  }
   psql(`DELETE FROM mall_product_skus WHERE product_id='${BUNDLE_ID}'`)
   psql(`DELETE FROM mall_bundle_groups WHERE product_id='${BUNDLE_ID}'`)
   psql(`DELETE FROM products WHERE product_id='${BUNDLE_ID}'`)
+  // 安全网：orphan-order 清理可能漏网（如 sale_order 已删但 sale_items 因故残留），
+  // 直接删任何仍引用本 spec 子 SKU 的 sale_items（先删其回款级分配子表），否则 FK 挡住 product_skus 删除。
+  psql(`DELETE FROM sale_payment_allocatable_items WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sku_id IN ('${SKU_CARD}', '${SKU_HOME}'))`)
+  psql(`DELETE FROM sale_items WHERE sku_id IN ('${SKU_CARD}', '${SKU_HOME}')`)
   psql(`DELETE FROM product_skus WHERE sku_id IN ('${SKU_CARD}', '${SKU_HOME}')`)
 }
 

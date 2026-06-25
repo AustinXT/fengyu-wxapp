@@ -36,7 +36,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const ADMIN_DIR = path.resolve(__dirname, '../..')
 
 // ── 账号 / Fixture ───────────────────────────────────────────────────────────
