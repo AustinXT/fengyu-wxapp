@@ -87,7 +87,8 @@ App<IAppOption>({
     try {
       const data = await callClientApi<{
         userId: string; phone: string; name: string; avatarUrl: string;
-        memberLevel: string; boundStoreId: string; boundStoreName: string; boundMarketName: string;
+        memberLevel: string; customerType?: string; isMember?: boolean;
+        boundStoreId: string; boundStoreName: string; boundMarketName: string;
       }>('auth.login', {});
       if (data.userId) {
         this.globalData.userId = data.userId;
@@ -105,6 +106,9 @@ App<IAppOption>({
       if (data.memberLevel) {
         wx.setStorageSync('memberLevel', data.memberLevel);
       }
+      // 会员价分流展示用：会员客 或 有钻石等级即会员（后端权威 isMember），页面据此决定是否展示会员价划线
+      wx.setStorageSync('isMember', !!data.isMember);
+      wx.setStorageSync('customerType', data.customerType || '');
       // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
       this.globalData.boundStoreId = data.boundStoreId || '';
       wx.setStorageSync('boundStoreId', data.boundStoreId || '');

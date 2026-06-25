@@ -67,6 +67,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
               <view class="cart-item-price-wrap">
                 <text class="cart-item-price-symbol">¥</text>
                 <text class="cart-item-price-value">{{fmt.price(item.price)}}</text>
+                <text wx:if="{{item.listPrice && item.listPrice > item.price}}" class="cart-item-price-origin">¥{{fmt.price(item.listPrice)}}</text>
               </view>
               <view catchtap="">
                 <van-stepper

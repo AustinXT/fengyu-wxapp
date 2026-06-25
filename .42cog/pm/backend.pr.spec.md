@@ -133,7 +133,7 @@
 | `is_shengmei` | boolean \| null | 是否生美（护理项目使用） |
 | `is_bundle` | boolean | 是否套餐，NOT NULL DEFAULT false |
 | `price` | numeric(10,2) | 标价/原价（套餐 = Σ(SKU.price)；否则 = min(SKU.price)。交易以 SKU 价格为准） |
-| `special_price` | numeric(10,2) \| null | 特价/促销价 |
+| `special_price` | numeric(10,2) \| null | 会员价（仅会员享受；体验卡场景为体验价对所有人） |
 | `sales_category` | sales_category enum \| null | 销售分类（自销自耗 / 他销自耗 / 他销他耗 / 生态合作） |
 | `manage_scope` | text \| null | 管理范围（null=总部管理） |
 | `market_scope` | text \| null | 可见范围（null=全部可见） |

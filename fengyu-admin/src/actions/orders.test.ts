@@ -1982,7 +1982,13 @@ describe('createOrder — 内部单半价 + 禁用优惠券', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('内部单 → 进入事务时 items 金额已 ×0.5（unitPrice 原价保留）', async () => {
+  it('内部单 → 进入事务时 items 金额已 ×0.5（基于标价 price，unitPrice 原价保留）', async () => {
+    // 会员价分流后后端权威定价：内部单按 DB 标价 price × 50% 重算（不信前端单价），
+    // 故需 mock 出 sku-001 的 price=200（同一行兼供会员判定查询读 customerType/memberLevel）。
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001', price: '200.00', specialPrice: null, isExperience: false, isManagerSpecial: false,
+      customerType: '流量客', memberLevel: null,
+    }))
     let capturedItem: any
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
@@ -2024,6 +2030,115 @@ describe('createOrder — 内部单半价 + 禁用优惠券', () => {
 })
 
 // 充值卡剥离 SKU 化（2026-05-20）: createOrder 充值卡分支 + applyRechargeOnOrderPaid 旧 SKU 路径 测试组删除
+
+// ─── createOrder — 会员价分流（后端权威定价） ───────────────────────────────
+
+describe('createOrder — 会员价分流（后端权威定价）', () => {
+  // 捕获事务内 INSERT 的 sale_item（含 per-session 派生后的 unit_price / unit_real_price）
+  function mockCaptureTx() {
+    const cap: { item?: any } = {}
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260410-MP01' }]),
+        insert: vi.fn().mockImplementation((table: any) => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if (table && 'saleItemId' in v) cap.item = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) }),
+      }
+      return fn(tx)
+    })
+    return cap
+  }
+
+  // 单一行（同时供：会员判定查询读 customerType/memberLevel + SKU 定价/反查读其余列）。
+  // sessionCount=null → per-session 派生退化为按 quantity（quantity=1 时恒等，便于断言）。
+  function skuRow(over: Record<string, unknown>) {
+    return {
+      skuId: 'sku-001', price: '200.00', specialPrice: '150.00',
+      isExperience: false, isManagerSpecial: false, isShengmei: null,
+      sessionCount: null, serviceFee: '0', salesCategory: '自销自耗',
+      customerType: '流量客', memberLevel: null,
+      ...over,
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('普通商品 + 会员 → 取会员价 special_price，忽略前端单价', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ customerType: '会员客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '999', unitRealPrice: '999', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('150.00') // 会员价（非前端透传的 999）
+    expect(cap.item.unitPrice).toBe('200.00')     // 标价快照
+  })
+
+  it('普通商品 + 非会员 → 取标价（堵非会员套用会员价）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ customerType: '流量客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '200', unitRealPrice: '150', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('200.00') // 标价（前端传 150 被忽略）
+  })
+
+  it('体验卡 → 非会员也享 special_price（豁免）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ isExperience: true, price: '500.00', specialPrice: '100.00', customerType: '流量客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '500', unitRealPrice: '500', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('100.00')
+  })
+
+  it('店长特价 + 会员 → 允许向下改价（钳制 ≤ 会员价）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ isManagerSpecial: true, customerType: '会员客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '200', unitRealPrice: '120', saleAmount: '120', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('120.00') // 店长改到 120（< 会员价 150）
+  })
+
+  it('店长特价 → 前端报高于适用价时钳制到适用价', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ isManagerSpecial: true, customerType: '会员客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '200', unitRealPrice: '180', saleAmount: '180', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('150.00') // 钳制到会员价 150
+  })
+
+  it('套餐子项 isBundle → 维持现状，沿用前端套餐价不分流', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ customerType: '会员客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '200', unitRealPrice: '99', saleAmount: '99', quantity: 1, isBundle: true }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('99.00') // 套餐价 99，未被改写为会员价 150
+  })
+})
 
 // ─── createConversionOrder (A3) ───────────────────────────────────────
 

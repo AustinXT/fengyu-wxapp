@@ -91,6 +91,19 @@ describe('scan-pay.logic — recomputeAmounts', () => {
     const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 0, useCard: true });
     expect(r).toEqual({ payable: 300, prepaidCardAmount: 0, paidAmount: 300 });
   });
+  // payableBase 覆盖（回款场景：储值卡只抵扣尾款 remaining，而非全额 total-coupon）
+  test('payableBase（回款）useCard=false → paid=remaining', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 500, useCard: false, payableBase: 200 });
+    expect(r).toEqual({ payable: 200, prepaidCardAmount: 0, paidAmount: 200 });
+  });
+  test('payableBase（回款）useCard=true 余额充足 → 全额抵扣尾款', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 500, useCard: true, payableBase: 200 });
+    expect(r).toEqual({ payable: 200, prepaidCardAmount: 200, paidAmount: 0 });
+  });
+  test('payableBase（回款）useCard=true 余额不足 → 部分抵扣尾款', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 80, useCard: true, payableBase: 200 });
+    expect(r).toEqual({ payable: 200, prepaidCardAmount: 80, paidAmount: 120 });
+  });
 });
 
 describe('scan-pay.logic — decideConfirmRoute', () => {
@@ -157,7 +170,7 @@ describe('scan-pay 页面行为', () => {
       }
       if (action === 'card.balance') return Promise.resolve({ balance: 500, cardId: 'c1' });
       if (action === 'order.scanAdjust') return Promise.resolve({ saleOrderId: payload.saleOrderId });
-      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1' } });
+      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1', paySign: 'sig' } });
       return Promise.resolve({});
     });
 
@@ -196,7 +209,7 @@ describe('scan-pay 页面行为', () => {
         });
       }
       if (action === 'card.balance') return Promise.resolve({ balance: 100, cardId: 'c1' });
-      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1' } });
+      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1', paySign: 'sig' } });
       return Promise.resolve({});
     });
 
@@ -416,5 +429,101 @@ describe('scan-pay 页面行为', () => {
     // 不应触发 scanAdjust
     const adjustCalls = callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.scanAdjust');
     expect(adjustCalls).toHaveLength(0);
+  });
+});
+
+// ============ 回款（部分支付）场景：走 order.repay ============
+describe('scan-pay 回款（部分支付）场景', () => {
+  // 部分支付：total=300、已到账 100 → remaining=200
+  function mockRepay(orderNo: string, balance: number, repayResp: any) {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo, status: '部分支付', storeId: 's1', storeName: '门店A',
+            openerName: '店长', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 0, payableAmount: 300,
+            received: 100, refundedAmount: 0,
+            paymentMethod: '微信', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance, cardId: balance > 0 ? 'c1' : null });
+      if (action === 'order.repay') return Promise.resolve(repayResp);
+      return Promise.resolve({});
+    });
+  }
+
+  test('默认（未勾卡）：remaining=200、isRepayment=true；确认走 order.repay(微信全额)，不走 pay/scanAdjust', async () => {
+    mockRepay('FY-R1', 500, { paymentParams: { paySign: 'x' } });
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-R1');
+    inst.data.orderNo = 'FY-R1';
+    expect(inst.data.isRepayment).toBe(true);
+    expect(inst.data.useCard).toBe(false);
+    expect(inst.data.remaining).toBe(200);
+    expect(inst.data.paidAmount).toBe(200);
+    expect(inst.data.paymentMethod).toBe('微信');
+
+    await inst.onSubmit();
+    const repayCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.repay');
+    expect(repayCall).toBeDefined();
+    expect(repayCall![1]).toMatchObject({ saleOrderId: 'FY-R1', paymentMethod: '微信', repayAmount: 200, prepaidCardAmount: 0 });
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
+    const calls = callClientApiMock.mock.calls.map((c: any[]) => c[0]);
+    expect(calls).not.toContain('order.scanAdjust');
+    expect(calls).not.toContain('order.pay');
+  });
+
+  test('勾卡(余额不足尾款)：抵扣 80、付 120；order.repay(微信+卡混合)，回款不调 scanAdjust', async () => {
+    mockRepay('FY-R2', 80, { paymentParams: { paySign: 'x' } });
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-R2');
+    inst.data.orderNo = 'FY-R2';
+
+    await inst.onUseCardChange({ detail: true });
+    expect(inst.data.prepaidCardAmount).toBe(80);
+    expect(inst.data.paidAmount).toBe(120);
+    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.scanAdjust')).toHaveLength(0);
+
+    await inst.onSubmit();
+    const repayCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.repay');
+    expect(repayCall![1]).toMatchObject({ paymentMethod: '微信', repayAmount: 120, prepaidCardAmount: 80 });
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
+  });
+
+  test('勾卡(余额覆盖全部尾款)：paid=0；order.repay(纯储值卡)，不调起微信支付', async () => {
+    mockRepay('FY-R3', 500, { status: '已支付', paymentMethod: '储值卡' });
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-R3');
+    inst.data.orderNo = 'FY-R3';
+
+    await inst.onUseCardChange({ detail: true });
+    expect(inst.data.prepaidCardAmount).toBe(200);
+    expect(inst.data.paidAmount).toBe(0);
+    expect(inst.data.showPayMethodGroup).toBe(false);
+
+    await inst.onSubmit();
+    const repayCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.repay');
+    expect(repayCall![1]).toMatchObject({ paymentMethod: '储值卡', repayAmount: 0, prepaidCardAmount: 200 });
+    expect(wxMock.requestPayment).not.toHaveBeenCalled();
+  });
+
+  test('切支付宝：order.repay(支付宝) + 吱口令弹窗', async () => {
+    mockRepay('FY-R4', 0, { alipayShareToken: 'ZHI-XXX' });
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-R4');
+    inst.data.orderNo = 'FY-R4';
+
+    await inst.onPayMethodChange({ detail: '支付宝' });
+    expect(inst.data.paymentMethod).toBe('支付宝');
+
+    await inst.onSubmit();
+    const repayCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.repay');
+    expect(repayCall![1]).toMatchObject({ paymentMethod: '支付宝', repayAmount: 200, prepaidCardAmount: 0 });
+    expect(inst.data.showAlipayShare).toBe(true);
+    expect(inst.data.alipayShareToken).toBe('ZHI-XXX');
+    expect(wxMock.requestPayment).not.toHaveBeenCalled();
   });
 });

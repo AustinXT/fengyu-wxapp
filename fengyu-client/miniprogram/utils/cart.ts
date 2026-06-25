@@ -8,7 +8,10 @@ export interface CartItem {
   spuName: string;
   skuDisplayName: string;
   coverImage: string;
+  /** 成交价（会员价分流后：会员=会员价、非会员=标价；加购时按当时会员身份定） */
   price: number;
+  /** 标价（划线展示用）；listPrice > price 才划线。会员价分流前的老数据可能缺失。 */
+  listPrice?: number;
   quantity: number;
   bigCategory: string;
   productType: string;

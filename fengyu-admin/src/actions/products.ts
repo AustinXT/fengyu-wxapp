@@ -1722,6 +1722,8 @@ export interface OrderPickerSku {
   sortOrder: number
   /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
   isManagerSpecial: boolean
+  /** 体验卡 capability：true 时会员价（special_price）对所有顾客生效（豁免会员价分流） */
+  isExperience: boolean
 }
 
 export interface OrderPickerCategory {
@@ -1978,6 +1980,7 @@ export const getProductsByKind = withPermission(
         serviceFee: r.sku.serviceFee,
         sortOrder: r.sku.sortOrder,
         isManagerSpecial: r.sku.isManagerSpecial,
+        isExperience: r.sku.isExperience === true,
       })
     }
 
@@ -2037,6 +2040,7 @@ export const getProductsByKind = withPermission(
       serviceFee: r.sku.serviceFee,
       sortOrder: r.sku.sortOrder,
       isManagerSpecial: r.sku.isManagerSpecial,
+      isExperience: r.sku.isExperience === true,
     })
   }
   const categories = Array.from(catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder)

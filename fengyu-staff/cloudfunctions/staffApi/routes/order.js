@@ -20,6 +20,7 @@ const { getMemberThreshold } = require('../utils/config')
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
+const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const {
@@ -429,7 +430,7 @@ async function create(ctx) {
 
   // 查询顾客是否已注册客户端小程序并绑定门店
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id, is_cross_store_temp FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
@@ -442,6 +443,8 @@ async function create(ctx) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
   const clientUserId = clientUsers[0].user_id
+  // 会员价分流：会员客 或 有钻石等级即会员，决定普通单品成交价用会员价还是标价
+  const buyerIsMember = isMember(clientUsers[0].customer_type, clientUsers[0].member_level)
 
   // 检查是否已有待支付订单
   const existing = await pg.query(
@@ -474,40 +477,52 @@ async function create(ctx) {
 
       let sessionCount = null
       let salesCategory = sku.sales_category || null
-      // sku 会员价（special_price 优先）：仅供内部单 ½ 折基线
-      const skuListPrice = Number(sku.special_price || sku.price)
-      // sku 原始挂牌价（划线价）：防御性上界 + sale_items.unit_price 标价快照基线。
-      // 套餐内单价（bundle_price）允许高于会员特价但不超原价；上界须用原价而非 special_price，
-      // 否则含会员特价（special<price）的套餐/普通商品会被误杀（client/admin 均按原价，无此校验）。
+      // sku 原始挂牌价（标价/划线价）：sale_items.unit_price 快照基线，恒为原价
       const skuPriceCeil = Number(sku.price)
+      // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡豁免对所有人）
+      const applicableUnit = resolveUnitPrice(sku, buyerIsMember).realUnit
 
-      // 入参价格三件套（与 admin createOrder 对齐）；缺省 fallback 到 sku 标价（向后兼容旧前端）
+      // 入参价格三件套
       let inputListUnit, inputRealUnit, useFrontendPrice
       if (saleOrderType === '内部单') {
-        // ⚠️ 内部单 ½ 必须服务端权威；忽略前端透传的所有价格字段
-        // 即使前端误传 bundle_price，也以 sku.price × 50% 落库（兼防员工套餐价）
-        inputListUnit = skuListPrice
-        inputRealUnit = Math.round(skuListPrice * 50) / 100
+        // ⚠️ 内部单 ½ 必须服务端权威：基于标价 price × 50%（不受会员价影响），忽略前端透传
+        inputListUnit = skuPriceCeil
+        inputRealUnit = Math.round(skuPriceCeil * 50) / 100
         useFrontendPrice = false
       } else {
-        // 套餐子项：上界与缺省回退改用套餐下沉单价（标价/成交），允许高于 SKU 原价（套餐价独立于 SKU 挂牌价）；
-        // 非套餐仍以 sku 原价 skuPriceCeil 为上界（防前端涨价）。
         const bp = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
-        const bundleListUnit = bp && bp.listPrice != null ? Number(bp.listPrice) : null
-        const bundleSaleUnit = bp && bp.salePrice != null ? Number(bp.salePrice) : null
-        const ceil = bundleListUnit != null ? bundleListUnit : skuPriceCeil
-        const fallbackList = bundleListUnit != null ? bundleListUnit : skuListPrice
-        const fallbackReal = bundleSaleUnit != null ? bundleSaleUnit : fallbackList
-        inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : fallbackList
-        inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : fallbackReal
-        // 防御性上界：unitRealPrice ≤ unitPrice ≤ 上界（套餐=标价单价 / 普通=SKU 原价）
-        if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
-            || inputListUnit > ceil + 0.005
-            || inputRealUnit > inputListUnit + 0.005
-            || inputRealUnit < 0) {
-          throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
+        if (bp) {
+          // 套餐子项：套餐价独立机制（本次不做会员分流）；上界/缺省用套餐下沉单价（标价/成交）
+          const bundleListUnit = bp.listPrice != null ? Number(bp.listPrice) : skuPriceCeil
+          const bundleSaleUnit = bp.salePrice != null ? Number(bp.salePrice) : bundleListUnit
+          inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : bundleListUnit
+          inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : bundleSaleUnit
+          if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
+              || inputListUnit > bundleListUnit + 0.005
+              || inputRealUnit > inputListUnit + 0.005
+              || inputRealUnit < 0) {
+            throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
+          }
+          useFrontendPrice = true
+        } else if (sku.is_manager_special === true) {
+          // 店长特别优惠（仅普通商品）：标价快照=原价；店长可在「适用价（会员价/标价）」之下手动改成交价。
+          // 兼容前端传 unitRealPrice（单价）或 saleAmount（行总额），统一归一为成交单价后钳制 ≤ 适用价。
+          const qtyForUnit = item.quantity || 1
+          inputListUnit = skuPriceCeil
+          inputRealUnit = item.unitRealPrice != null
+            ? Number(item.unitRealPrice)
+            : (item.saleAmount != null ? Number(item.saleAmount) / qtyForUnit : applicableUnit)
+          if (!Number.isFinite(inputRealUnit) || inputRealUnit < 0
+              || inputRealUnit > applicableUnit + 0.005) {
+            throw new Error('INVALID_PARAMS: 应付单价不能高于该顾客适用价或为非法值')
+          }
+          useFrontendPrice = false  // priceLine 由后端按成交单价×数量算（含店长改价），不另信前端 saleAmount
+        } else {
+          // 普通商品：会员价分流后端权威定价，忽略前端透传单价（堵非会员套用会员价）
+          inputListUnit = skuPriceCeil
+          inputRealUnit = applicableUnit
+          useFrontendPrice = false
         }
-        useFrontendPrice = true
       }
       const unitPrice = inputRealUnit  // 进入后续 priceLine / 摊券逻辑（成交单价）
 

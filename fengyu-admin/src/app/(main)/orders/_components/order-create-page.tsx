@@ -21,6 +21,7 @@ import { getCustomerHeldCards, getCustomerCardBalance, createRechargeOrder, type
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
+import { isMember, resolveUnitPrice } from "@/lib/member-pricing"
 import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
@@ -74,11 +75,25 @@ interface PrefetchedKindData {
   flatCategories: OrderPickerCategory[]
 }
 
-function getItemAmounts(item: CartItem, override?: ItemPriceOverride) {
-  // 价格 = SKU 会员价优先（specialPrice），否则 price（两端统一命名）
-  const defaultUnitPrice = item.sku.specialPrice
-    ? Number(item.sku.specialPrice)
-    : Number(item.sku.price)
+function getItemAmounts(
+  item: CartItem,
+  override?: ItemPriceOverride,
+  opts?: { buyerIsMember?: boolean; isInternal?: boolean },
+) {
+  // 默认成交单价分流（与后端 createOrder 同口径，后端为权威）：
+  // - 内部单：一律按标价 price（后端再 ×50%，不取会员/体验价）
+  // - 套餐子项（bundlePrice/bundleGroupId）：套餐价独立机制，沿用 specialPrice，不分流
+  // - 普通商品/体验卡：会员价分流 —— 会员→会员价、非会员→标价（#6=B：体验卡不再豁免，同口径）
+  const listUnit = Number(item.sku.price)
+  const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
+  const defaultUnitPrice = opts?.isInternal
+    ? listUnit
+    : isBundleItem
+      ? (item.sku.specialPrice ? Number(item.sku.specialPrice) : listUnit)
+      : resolveUnitPrice(
+          { price: item.sku.price, specialPrice: item.sku.specialPrice, isExperience: item.sku.isExperience },
+          opts?.buyerIsMember ?? false,
+        ).realUnit
   const defaultSaleAmount = defaultUnitPrice * item.quantity
 
   // 应付金额：店长特别优惠可手填覆盖，统一钳制到 [0, 标价小计]（向下调，不许涨价）。
@@ -453,10 +468,20 @@ export default function OrderCreatePageClient({
     }
   }, [selectedStoreId, selectedEmployeeId, employees])
 
-  // 原价合计（用于购物车显示，不含手动覆盖）
+  // 会员判定（与后端 createOrder 同口径）：会员客 或 有钻石等级即会员；
+  // 未选顾客默认非会员（普通商品只显示标价）。
+  const buyerIsMember = isMember(selectedCustomer?.customerType, selectedCustomer?.memberLevel)
+
+  // 订单类型派生（内部单走标价 ×50%）。catalogTotal 需与 cartPriceLines / Step2 单行同口径，故提前求值。
+  const isInternal = orderType === '内部单'
+  const isConversion = orderType === '转换单'
+  const internalRatio = isInternal ? 0.5 : 1
+
+  // 应付合计（购物车显示，不含手动覆盖）：按会员价分流取各行成交单价（套餐沿用套餐价，不分流）；
+  // 内部单按标价 ×50%（与 cartPriceLines 同口径，否则 Step2「合计」对内部单显示 ~翻倍）
   const catalogTotal = cart.reduce((sum, item) => {
-    const price = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
-    return sum + price * item.quantity
+    const a = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
+    return sum + a.defaultSaleAmount * internalRatio
   }, 0)
 
   // 充值卡子流程（无购物车/优惠券/转换单，独立 Step 1/2/3 分支）
@@ -464,10 +489,6 @@ export default function OrderCreatePageClient({
   const rechargeResolved = resolveRecharge(rechargeConfig, rechargeSelectedFace, rechargeCustomInput)
   const rechargeValid = rechargeResolved.faceValue > 0 && rechargeResolved.payAmount > 0 && !rechargeResolved.error
 
-  // 应付合计 & 实付合计（含手动覆盖）— 内部单走半价显示分支
-  const isInternal = orderType === '内部单'
-  const isConversion = orderType === '转换单'
-  const internalRatio = isInternal ? 0.5 : 1
   // 内部单禁用手工改价（5 折规则后端再计算）；组合套餐允许向下调实付金额
   const suppressOverride = isInternal
 
@@ -487,15 +508,16 @@ export default function OrderCreatePageClient({
   // 各行「价格」（含内部单半价处理；店长特价行用手填应付作为 pre-coupon 基线）
   const cartPriceLines = useMemo(() => {
     return cart.map((item) => {
-      // 店长特价行：pre-coupon 基线 = 手填应付（getItemAmounts 内已钳制 [0, 标价小计]）
+      // 店长特价行：pre-coupon 基线 = 手填应付（getItemAmounts 内已钳制 [0, 适用价小计]）
       if (canEditSaleAmount(item)) {
-        return Math.round(getItemAmounts(item, priceOverrides[item.sku.skuId]).saleAmount * 100) / 100
+        return Math.round(getItemAmounts(item, priceOverrides[item.sku.skuId], { buyerIsMember }).saleAmount * 100) / 100
       }
-      const a = getItemAmounts(item)
+      // 内部单：基线 = 标价 price × 数量（后端 ×50%，不分流）；销售单 = 会员价分流应付小计
+      const a = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
       return Math.round(a.defaultSaleAmount * internalRatio * 100) / 100
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, internalRatio, priceOverrides, isInternal, isConversion])
+  }, [cart, internalRatio, priceOverrides, isInternal, isConversion, buyerIsMember])
 
   // 各行摊到的券折扣（按 priceLines 比例，末行吸收尾差）
   const couponShares = useMemo(
@@ -520,18 +542,21 @@ export default function OrderCreatePageClient({
       const received = receivedOverride != null
         ? Math.min(Math.max(0, receivedOverride), saleAmount)
         : saleAmount
-      const defaultUnitPrice = item.sku.specialPrice
-        ? Number(item.sku.specialPrice)
-        : Number(item.sku.price)
+      // 适用成交单价（会员价分流；内部单不分流=标价；套餐沿用套餐价）+ 标价（划线基线）
+      const defaultUnitPrice = getItemAmounts(item, undefined, { buyerIsMember, isInternal }).defaultUnitPrice
+      const listUnitPrice = Number(item.sku.price)
+      const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
       return {
         priceLine,
         couponShare,
         saleAmount,
         received,
         defaultUnitPrice,
+        listUnitPrice,
+        isBundleItem,
       }
     })
-  }, [cart, cartPriceLines, couponShares, priceOverrides, suppressOverride])
+  }, [cart, cartPriceLines, couponShares, priceOverrides, suppressOverride, buyerIsMember, isInternal])
 
   const { totalSaleAmount, totalReceived } = useMemo(() => {
     let sa = 0, rc = 0
@@ -787,6 +812,7 @@ export default function OrderCreatePageClient({
                     kindLabel="普通商品"
                     cart={cart}
                     onAdd={addToCart}
+                    buyerIsMember={buyerIsMember}
                   />
                 )
               case '体验卡':
@@ -811,7 +837,15 @@ export default function OrderCreatePageClient({
               {cart.length > 0 ? (
                 <div className="space-y-2">
                   {cart.map((item) => {
-                    const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
+                    // 会员价分流：成交单价 = 会员价分流后的适用单价（套餐沿用套餐价，不分流）；
+                    // 内部单按标价计价（行金额再 ×50%，与 catalogTotal 同口径，避免「合计半价/单行全价」不一致）
+                    const amt = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
+                    const unitPrice = amt.defaultUnitPrice
+                    const listUnit = Number(item.sku.price)
+                    const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
+                    // 行金额：内部单按标价 ×50%；划线仅会员价低于标价时（内部单 unitPrice=标价 → 不划线）
+                    const rowAmount = Math.round(amt.defaultSaleAmount * internalRatio * 100) / 100
+                    const showStrike = !isBundleItem && unitPrice < listUnit
                     return (
                       <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
                         <div className="flex-1 min-w-0">
@@ -834,8 +868,11 @@ export default function OrderCreatePageClient({
                               +
                             </button>
                           </div>
-                          <span className="font-medium w-20 text-right">
-                            ¥{(unitPrice * item.quantity).toLocaleString()}
+                          <span className="font-medium text-right">
+                            ¥{rowAmount.toLocaleString()}
+                            {showStrike && (
+                              <span className="line-through text-[#999999] text-xs ml-1">¥{(listUnit * item.quantity).toLocaleString()}</span>
+                            )}
                           </span>
                           <button onClick={() => removeFromCart(item.sku.skuId)} className="text-[#D94040] text-xs hover:underline">
                             删除
@@ -1167,8 +1204,14 @@ export default function OrderCreatePageClient({
                         <span className="col-span-2 text-right text-[#999999]">
                           {isInternal ? (
                             <>
-                              <span className="line-through mr-1">¥{(a.defaultUnitPrice * item.quantity).toFixed(2)}</span>
+                              <span className="line-through mr-1">¥{(a.listUnitPrice * item.quantity).toFixed(2)}</span>
                               <span className="text-[var(--primary)]">¥{a.priceLine.toFixed(2)}</span>
+                            </>
+                          ) : (!a.isBundleItem && a.defaultUnitPrice < a.listUnitPrice) ? (
+                            // 会员价 < 标价：会员价为主 + 划线标价（套餐不分流，不划线）
+                            <>
+                              <span className="text-[var(--primary)]">¥{a.priceLine.toFixed(2)}</span>
+                              <span className="line-through text-[#999999] text-xs ml-1">¥{(a.listUnitPrice * item.quantity).toFixed(2)}</span>
                             </>
                           ) : (
                             <>¥{a.priceLine.toFixed(2)}</>
@@ -1396,7 +1439,7 @@ export default function OrderCreatePageClient({
                 // 校验手动金额（内部单跳过 priceOverrides，因为禁用了改价）
                 if (!suppressOverride) {
                   for (const item of cart) {
-                    const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+                    const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId], { buyerIsMember, isInternal })
                     if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
                       toast.error(`${item.product.name} 的应付金额无效`); return
                     }
@@ -1431,10 +1474,11 @@ export default function OrderCreatePageClient({
                     receivedAmount: receivedAmountArg,
                     prepaidCardAmount: saleCardAmount > 0 ? saleCardAmount : undefined,
                     items: cart.map((item) => {
-                      // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
-                      // 组合套餐：sku.specialPrice 已是 bundlePrice，priceLine 即套餐打包价；用户可向下调实付金额
+                      // 后端为定价权威：普通商品按会员价分流重定价（忽略此处单价），店长特价钳制，
+                      // 套餐(isBundle)维持现状；内部单后端按标价 ×0.5（前端传原价 saleAmount，不预先半价）。
+                      const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
                       const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
-                      const amounts = getItemAmounts(item, override)
+                      const amounts = getItemAmounts(item, override, { buyerIsMember, isInternal })
                       return {
                         skuId: item.sku.skuId,
                         productName: item.product.name,
@@ -1446,6 +1490,7 @@ export default function OrderCreatePageClient({
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
                         salesCategory: null,
+                        isBundle: isBundleItem,
                       }
                     }),
                   })

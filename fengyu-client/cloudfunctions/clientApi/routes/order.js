@@ -9,6 +9,7 @@ const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
+const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const lakalaClient = require('../utils/lakala-client')
@@ -335,9 +336,12 @@ async function scanDetail(ctx) {
   }
 
   // 查询商品明细（使用 sale_items 快照字段 + 商品封面）
+  // 金额展示用 sale_amount（行应付总额，权威；= unit_real_price × quantity，会员价/多次卡都已折算），
+  // 不能用 unit_price（非会员原价/单次价）：多次卡 quantity=1 但 session_count>1，unit_price×quantity 算不出行总额。
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
+      si.sale_amount, si.session_count,
       si.product_name,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
@@ -382,6 +386,9 @@ async function scanDetail(ctx) {
       productName: i.product_name,
       unitPrice: i.unit_price,
       quantity: i.quantity,
+      // sale_amount = 行应付总额（权威），前端按此展示；unitPrice/sessionCount 仅供"×N次/单价"辅助提示
+      saleAmount: i.sale_amount,
+      sessionCount: i.session_count,
       received: i.received,
       coverImage: i.cover_image || ''
     }))
@@ -482,6 +489,23 @@ async function create(ctx) {
     }
   }
 
+  // 查询顾客姓名 + 会员身份（customer_type + member_level）
+  // —— 会员价分流（会员价 vs 标价）与 document_type 判断共用，须在定价前完成。
+  let customerName = null
+  let documentType = '售前'
+  let buyerIsMember = false
+  {
+    const userRows = await pg.query(
+      'SELECT name, customer_type, member_level FROM client_wechat_users WHERE user_id = $1',
+      [userId]
+    )
+    if (userRows.length > 0) {
+      if (userRows[0].name) customerName = userRows[0].name
+      if (userRows[0].customer_type === '会员客') documentType = '售后'
+      buyerIsMember = isMember(userRows[0].customer_type, userRows[0].member_level)
+    }
+  }
+
   // ========== 组合套餐校验 + 定价 ==========
   // bundleProductId 出现时：
   // - 校验该商品 is_bundle=true
@@ -498,12 +522,14 @@ async function create(ctx) {
     const sku = skuMap[item.skuId]
     // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
     const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
+    // 非套餐单品：按会员身份分流（会员→会员价 special_price、非会员→标价 price；体验卡豁免对所有人）
+    const resolved = resolveUnitPrice(sku, buyerIsMember)
     const listUnit = bundleEntry && bundleEntry.listPrice != null   // per-card 标价（划线）
       ? Number(bundleEntry.listPrice)
-      : Number(sku.price)
+      : resolved.listUnit
     const basePrice = bundleEntry && bundleEntry.salePrice != null  // per-card 成交价
       ? Number(bundleEntry.salePrice)
-      : Number(sku.special_price || sku.price)
+      : resolved.realUnit
     const quantity = item.quantity || 1
     // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
     const sessionCount = sku.session_count != null ? Number(sku.session_count) * quantity : null
@@ -674,19 +700,7 @@ async function create(ctx) {
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
-  // 从 PG 查询顾客姓名 + customer_type（用于 document_type 判断）
-  let customerName = null
-  let documentType = '售前'
-  {
-    const userRows = await pg.query(
-      'SELECT name, customer_type FROM client_wechat_users WHERE user_id = $1',
-      [userId]
-    )
-    if (userRows.length > 0) {
-      if (userRows[0].name) customerName = userRows[0].name
-      if (userRows[0].customer_type === '会员客') documentType = '售后'
-    }
-  }
+  // document_type：customer_type 已在定价前判定为初值；此处按订单金额阈值兜底升级为售后
   if (documentType === '售前') {
     const threshold = await getMemberThreshold()
     if (totalAmount >= threshold) documentType = '售后'
@@ -2105,8 +2119,8 @@ async function repay(ctx) {
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
-  if (!['微信', '支付宝', '储值卡'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/储值卡')
+  if (!['微信', '支付宝', '储值卡', '线下'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/储值卡/线下')
   }
   if (!Number.isFinite(repayAmountInput) || repayAmountInput < 0) {
     throw new Error('INVALID_PARAMS: 还款金额无效')
@@ -2132,15 +2146,21 @@ async function repay(ctx) {
       throw new Error('INVALID_PARAMS: 储值卡通道必须指定 prepaidCardAmount')
     }
   } else {
-    // 微信/支付宝通道：repayAmount 必须 > 0（可叠加 prepaidCardAmount）
+    // 微信/支付宝/线下通道：repayAmount 必须 > 0（线上可叠加 prepaidCardAmount；线下不可）
     if (repayAmountInput <= 0) {
-      throw new Error('INVALID_PARAMS: 线上通道 repayAmount 必须大于 0')
+      throw new Error('INVALID_PARAMS: 线上/线下通道 repayAmount 必须大于 0')
     }
+  }
+  // 线下通道：仅标记顾客「到店付款」意向，不写流水、不推进状态（由 staff 确认收款落账），且不支持储值卡抵扣混合
+  if (paymentMethod === '线下' && prepaidCardAmountInput > 0) {
+    throw new Error('INVALID_PARAMS: 线下通道不支持储值卡抵扣')
   }
 
   const isPureCard = paymentMethod === '储值卡'
+  const isOffline = paymentMethod === '线下'
   const now = new Date()
-  let finalStatus // 原单最新 status（pure-card 路径会推到 '已支付'/'部分支付'；线上路径不动）
+  let finalStatus // 原单最新 status（pure-card 路径会推到 '已支付'/'部分支付'；线上/线下路径不动）
+  let currentStatus // 原单当前 status（线下路径返回用，状态不变）
   let storeId    // 原单门店 id，回到事务外用于解析拉卡拉商户配置
 
   await pg.transaction(async (client) => {
@@ -2163,6 +2183,7 @@ async function repay(ctx) {
     if (origOrder.sale_order_type !== '销售单') {
       throw new Error('INVALID_PARAMS: 仅销售单支持回款')
     }
+    currentStatus = origOrder.status
 
     // 2. 计算欠款 = payable_amount - 净到账（received - refunded_amount）
     const payableAmount = Number(origOrder.payable_amount || 0) > 0
@@ -2288,6 +2309,20 @@ async function repay(ctx) {
       paymentMethod: '储值卡',
       repayAmount: 0,
       prepaidCardAmount: prepaidCardAmountInput,
+      paymentParams: null,
+    }
+    return
+  }
+
+  // 线下通道：事务内 STEP 4 已把 payment_method 标记为 '线下'；不写流水、不推进状态，
+  // 实际到账由 staff 端「确认收款 / 回款」落账。直接返回（不进拉卡拉聚合主扫预下单）。
+  if (isOffline) {
+    ctx.result = {
+      saleOrderId,
+      status: currentStatus,
+      paymentMethod: '线下',
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: 0,
       paymentParams: null,
     }
     return

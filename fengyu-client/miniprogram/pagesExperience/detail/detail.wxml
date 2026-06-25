@@ -49,9 +49,9 @@ module.exports.fmt = function(n) {
       <view class="price-row">
         <view class="price-group">
           <text class="price-symbol">¥</text>
-          <text class="price-integer">{{price.fmt(sku.special_price || sku.price)}}</text>
+          <text class="price-integer">{{price.fmt(sku.displayPrice)}}</text>
         </view>
-        <text wx:if="{{sku.special_price && sku.price && sku.special_price < sku.price}}" class="price-origin">原价 ¥{{price.fmt(sku.price)}}</text>
+        <text wx:if="{{sku.strikePrice}}" class="price-origin">原价 ¥{{price.fmt(sku.strikePrice)}}</text>
       </view>
     </view>
 
@@ -84,7 +84,7 @@ module.exports.fmt = function(n) {
   <!-- 底部 sticky CTA -->
   <view wx:if="{{!isLoading && !loadError}}" class="cta-bar safe-bottom">
     <button class="cta-btn" bindtap="onBuyNow">
-      立即购买 ¥{{price.fmt(sku.special_price || sku.price)}}
+      立即购买 ¥{{price.fmt(sku.displayPrice)}}
     </button>
   </view>
 

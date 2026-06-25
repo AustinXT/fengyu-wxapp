@@ -106,7 +106,7 @@ async function search(ctx) {
     // 故含已解绑（bound_store_id IS NULL）顾客也应可被定位查看。
     const fSql = renderProfileFilters(filters, 2);
     rows = await pg.query(
-      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -122,7 +122,7 @@ async function search(ctx) {
       const fSql = renderProfileFilters(filters, 2);
       const limitIdx = 2 + filters.values.length;
       rows = await pg.query(
-        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
                 c.bound_store_id, c.is_cross_store_temp, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -146,7 +146,7 @@ async function search(ctx) {
       const fSql = renderProfileFilters(filters, fStart);
       const limitIdx = fStart + filters.values.length;
       rows = await pg.query(
-        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -170,7 +170,7 @@ async function search(ctx) {
     const fSql = renderProfileFilters(filters, fStart);
     const limitIdx = fStart + filters.values.length;
     rows = await pg.query(
-      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -188,6 +188,7 @@ async function search(ctx) {
     phone: maskPhoneForAuth(r.phone, ctx.auth),
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
+    customerType: r.customer_type || null,
     storeName: r.store_name ? r.store_name.trim() : "",
     boundStoreId: r.bound_store_id || null,
     // 临时跨门店标记（需求21）：仅 crossStore 分支 SELECT 带出，其它分支为 undefined → false

@@ -3,6 +3,7 @@ import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { getCosBase } from "../../utils/cloud-env";
+import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
 
@@ -37,6 +38,8 @@ interface SpuItem {
   category_name: string;
   cover_image: string;
   min_price: string;
+  /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
+  strike_min_price?: string;
   is_recommend: boolean;
   skuList?: any[];
 }
@@ -187,9 +190,12 @@ Page({
       // 全量搜索：调云函数按商品名跨全部分类搜索，不依赖前端 _spuCache/侧边栏分类结构
       //（旧版 loadAllSpus 仅加载已挂进 _allCategoryKeys 的分类，会漏掉未挂侧边栏的分类商品）
       const data = await callClientApi<{ spuList: SpuItem[] }>("product.search", { keyword: value });
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
       const results = (data?.spuList || []).map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || "0",
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
       }));
       // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
       if (this.data.searchValue.trim() === value) {
@@ -356,9 +362,12 @@ Page({
       const categories: Category[] = initData?.categories || [];
       const spuList: SpuItem[] = initData?.spuList || [];
 
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || "0",
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
       }));
 
       this._allGroups = groups;
@@ -434,9 +443,12 @@ Page({
       const data = await callClientApi<{ spuList: SpuItem[] }>("product.spuList", { categoryId });
 
       const spuList: SpuItem[] = data?.spuList || [];
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || "0",
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
       }));
 
       // 写入缓存

@@ -21,6 +21,7 @@ import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
+import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
@@ -1452,6 +1453,12 @@ export const createOrder = withPermission(
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    /**
+     * 套餐子项标记（前端 BundlePicker 加购时置 true）：套餐价是独立机制，
+     * 后端「会员价分流权威定价」对其豁免（维持现状，沿用前端套餐价）。
+     * 普通商品/体验卡为 undefined/false，后端按会员价分流权威重定价。
+     */
+    isBundle?: boolean
   }>
     },
   ): Promise<{
@@ -1493,24 +1500,126 @@ export const createOrder = withPermission(
   // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
   // 不再走 createSaleOrder。这里删除原"isRechargeOrder 识别 + 字段强制覆盖"块。
 
-  // 内部单自动半价：入口统一在事务前对 items 金额 ×0.5；unit_price（原价快照）保持不变。
-  // 服务费 (service_fee) 不受半价影响，仍按 SKU 配置快照。
-  if (data.saleOrderType === '内部单') {
-    if (data.couponId) {
-      return { success: false, message: '内部单不允许叠加优惠券' }
+  // ── 会员价分流 + 后端权威定价（2026-06-24）─────────────────────────────
+  // 后端为定价权威（与 staff cloudfunctions/staffApi/routes/order.js 同口径）：
+  //   - 普通商品（非套餐、非店长特价）：忽略前端单价，按会员价分流取适用单价
+  //     （会员→会员价 special_price、非会员→标价 price；体验卡 is_experience 豁免对所有人）。
+  //   - 店长特价（is_manager_special，仅普通商品）：允许前端向下改价，钳制到 [0, 适用单价]。
+  //   - 套餐子项（item.isBundle，前端 BundlePicker 注入）：套餐价独立机制，维持现状不分流。
+  //   - 内部单：标价 price × 50% 重算（后端权威，不受会员价/前端影响）；unit_price 原价快照不变。
+  // service_fee（手工费）不受影响，仍按 SKU 快照。
+  if (data.saleOrderType === '内部单' && data.couponId) {
+    return { success: false, message: '内部单不允许叠加优惠券' }
+  }
+
+  // 取每个下单 SKU 的标价/会员价/体验卡/店长特价（权威 = DB，不信前端单价）
+  const repriceSkuIds = data.items.map((i) => i.skuId).filter((s): s is string => !!s)
+  const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean }>()
+  if (repriceSkuIds.length > 0) {
+    const pricingRows = await db
+      .select({
+        skuId: productSkus.skuId,
+        price: productSkus.price,
+        specialPrice: productSkus.specialPrice,
+        isExperience: productSkus.isExperience,
+        isManagerSpecial: productSkus.isManagerSpecial,
+      })
+      .from(productSkus)
+      .where(and(inArray(productSkus.skuId, repriceSkuIds), isNull(productSkus.deletedAt)))
+    for (const r of pricingRows) {
+      skuPricingMap.set(r.skuId, {
+        price: r.price,
+        specialPrice: r.specialPrice,
+        isExperience: r.isExperience === true,
+        isManagerSpecial: r.isManagerSpecial === true,
+      })
     }
-    data = {
-      ...data,
-      items: data.items.map((item) => {
-        const halve = (v: string) => (Number(v) / 2).toFixed(2)
+  }
+
+  // 引用了已下架/不存在的 SKU：拒绝建单（fail-closed，与 staff order.js / client order.js 「商品 X 不存在」同口径）。
+  // ⚠️ 软删 SKU 行仍在 product_skus（deleted_at 置位，PK 行保留 → sale_items.sku_id FK 仍满足），
+  //    故下游 INSERT 不会 23503 报错。若在此放行：
+  //      · 内部单漏 ×50%（落库为 ≈2× 应付金额）；
+  //      · 普通单漏会员价分流 / 店长特价钳制（前端透传单价被直接采信）。
+  //    故须在重定价前先拦截（仅针对有 skuId 的项；无 skuId 项不在 repriceSkuIds 中）。
+  const missingPricingSkuId = repriceSkuIds.find((id) => !skuPricingMap.has(id))
+  if (missingPricingSkuId) {
+    return { success: false, message: `商品 ${missingPricingSkuId} 不存在或已下架，请刷新后重试` }
+  }
+
+  // 会员判定：会员客 或 有钻石等级（member_level 非空），任一满足。
+  // 顺带缓存 customerType 供下方 document_type 快照复用（省一次查询）。
+  let buyerCustomerType: string | null = null
+  let buyerIsMember = false
+  if (data.clientUserId) {
+    const [buyerRow] = await db
+      .select({ customerType: clientWechatUsers.customerType, memberLevel: clientWechatUsers.memberLevel })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    buyerCustomerType = buyerRow?.customerType ?? null
+    buyerIsMember = isMember(buyerRow?.customerType, buyerRow?.memberLevel)
+  }
+
+  // 逐项后端权威重定价：覆盖 data.items 的 unitPrice/unitRealPrice/saleAmount/received
+  // （saleAmount = 成交单价 × 数量；received 钳制到 ≤ saleAmount）。
+  data = {
+    ...data,
+    items: data.items.map((item) => {
+      const pricing = skuPricingMap.get(item.skuId)
+      // 有 skuId 的缺价项已被上方 missingPricingSkuId 守卫拦截（含软删 SKU）；此处仅兜底无 skuId 的项，原样放行。
+      if (!pricing) return item
+      const listUnit = Number(pricing.price) || 0
+      const qty = item.quantity || 1
+      const applicableUnit = resolveUnitPrice(
+        { price: pricing.price, specialPrice: pricing.specialPrice, isExperience: pricing.isExperience },
+        buyerIsMember,
+      ).realUnit
+      const clampReceived = (sale: number) =>
+        item.received !== undefined ? Math.max(0, Math.min(Number(item.received), sale)).toFixed(2) : undefined
+
+      // 内部单：标价 × 50%（后端权威，不分流；unit_price 原价快照保留标价）
+      if (data.saleOrderType === '内部单') {
+        const realUnit = Math.round(listUnit * 50) / 100
+        const sale = Math.round(realUnit * qty * 100) / 100
         return {
           ...item,
-          unitRealPrice: halve(item.unitRealPrice),
-          saleAmount: item.saleAmount !== undefined ? halve(item.saleAmount) : undefined,
-          received: item.received !== undefined ? halve(item.received) : undefined,
+          unitPrice: listUnit.toFixed(2),
+          unitRealPrice: realUnit.toFixed(2),
+          saleAmount: sale.toFixed(2),
+          received: clampReceived(sale),
         }
-      }),
-    }
+      }
+
+      // 套餐子项：套餐价独立机制，维持现状（沿用前端套餐价，不分流）
+      if (item.isBundle === true) return item
+
+      // 店长特价（仅普通商品）：允许前端向下改价，钳制 [0, 适用单价]
+      if (pricing.isManagerSpecial) {
+        const rawUnit = item.unitRealPrice != null && item.unitRealPrice !== ''
+          ? Number(item.unitRealPrice)
+          : (item.saleAmount != null && item.saleAmount !== '' ? Number(item.saleAmount) / qty : applicableUnit)
+        const realUnit = Math.max(0, Math.min(Number.isFinite(rawUnit) ? rawUnit : applicableUnit, applicableUnit))
+        const sale = Math.round(realUnit * qty * 100) / 100
+        return {
+          ...item,
+          unitPrice: listUnit.toFixed(2),
+          unitRealPrice: realUnit.toFixed(2),
+          saleAmount: sale.toFixed(2),
+          received: clampReceived(sale),
+        }
+      }
+
+      // 普通商品：会员价分流后端权威，忽略前端单价（堵非会员套用会员价）
+      const sale = Math.round(applicableUnit * qty * 100) / 100
+      return {
+        ...item,
+        unitPrice: listUnit.toFixed(2),
+        unitRealPrice: applicableUnit.toFixed(2),
+        saleAmount: sale.toFixed(2),
+        received: clampReceived(sale),
+      }
+    }),
   }
 
   // 校验手动金额
@@ -1781,16 +1890,10 @@ export const createOrder = withPermission(
   const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
 
   // 计算 document_type（售前/售后快照）
+  // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
   let documentType: '售前' | '售后' = '售前'
-  if (data.clientUserId) {
-    const [client] = await db
-      .select({ customerType: clientWechatUsers.customerType })
-      .from(clientWechatUsers)
-      .where(eq(clientWechatUsers.userId, data.clientUserId))
-      .limit(1)
-    if (client?.customerType === '会员客') {
-      documentType = '售后'
-    }
+  if (buyerCustomerType === '会员客') {
+    documentType = '售后'
   }
   if (documentType === '售前') {
     const threshold = await getMemberThreshold()

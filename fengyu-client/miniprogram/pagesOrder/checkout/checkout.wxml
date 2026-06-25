@@ -37,7 +37,10 @@ module.exports.date = function(s) {
           <text class="checkout-item__name">{{bundleProductId ? item.skuDisplayName : item.spuName}}</text>
           <text class="checkout-item__spec" wx:if="{{!bundleProductId && item.skuDisplayName}}">{{item.skuDisplayName}}</text>
           <view class="checkout-item__meta">
-            <text class="checkout-item__price">{{bundleProductId ? '套餐价 ¥' + price.fmt(item.price) : '¥' + price.fmt(item.price)}}</text>
+            <view class="checkout-item__price-wrap">
+              <text class="checkout-item__price">{{bundleProductId ? '套餐价 ¥' + price.fmt(item.price) : '¥' + price.fmt(item.price)}}</text>
+              <text wx:if="{{item.listPrice && item.listPrice > item.price}}" class="price-origin">¥{{price.fmt(item.listPrice)}}</text>
+            </view>
             <text class="checkout-item__qty">×{{item.quantity}}</text>
           </view>
         </view>

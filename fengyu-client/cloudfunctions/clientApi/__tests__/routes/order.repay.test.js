@@ -277,4 +277,49 @@ describe('order.repay', () => {
     })
     await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*储值卡通道 repayAmount 必须为 0/)
   })
+
+  test('线下回款 → 仅标记 payment_method=线下，不写流水、不发起拉卡拉，返回原状态', async () => {
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: { rows: [makeOrigOrderRow()], rowCount: 1 },
+      },
+      // STEP 4：仅 UPDATE payment_method='线下'
+      { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+    // 线下应提前 return，不进线上分支（不解析商户/不发起 preorder）
+    pg.query.mockImplementation(async () => [])
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '线下',
+      repayAmount: 200,
+      prepaidCardAmount: 0,
+    })
+    await routes.repay(ctx)
+
+    expect(ctx.result.paymentMethod).toBe('线下')
+    expect(ctx.result.status).toBe('部分支付') // 原状态不变（不推进）
+    expect(ctx.result.paymentParams).toBeNull()
+    expect(ctx.result.repaymentOrderId).toBeUndefined()
+
+    const calls = router.mock.calls.map((c) => c[0])
+    expect(calls.some((s) => /UPDATE sale_orders SET payment_method/.test(s))).toBe(true)
+    // 不写 payments / card_transactions（由 staff 确认收款落账）
+    expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(false)
+    expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
+    // 未发起拉卡拉聚合主扫
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('线下通道携储值卡抵扣 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-xx',
+      paymentMethod: '线下',
+      repayAmount: 200,
+      prepaidCardAmount: 50,
+    })
+    await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*线下通道不支持储值卡抵扣/)
+  })
 })

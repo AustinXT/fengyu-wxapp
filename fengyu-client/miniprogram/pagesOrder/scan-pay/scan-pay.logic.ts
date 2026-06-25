@@ -8,6 +8,11 @@ export interface ScanPayAmounts {
   couponDiscount: number;
   cardBalance: number;
   useCard: boolean;
+  /**
+   * 抵扣基数覆盖。回款（部分支付）场景传"剩余应付"（remaining），
+   * 让储值卡只抵扣尾款；首付场景省略，按 totalAmount - couponDiscount 计算。
+   */
+  payableBase?: number;
 }
 
 export interface RecomputeResult {
@@ -35,7 +40,10 @@ export function recomputeAmounts(input: ScanPayAmounts): RecomputeResult {
   const coupon = Number(input.couponDiscount) || 0;
   const balance = Number(input.cardBalance) || 0;
 
-  const payable = round2(Math.max(0, total - coupon));
+  // 回款场景传 payableBase=remaining（尾款）；首付场景按 total - coupon
+  const payable = input.payableBase != null
+    ? round2(Math.max(0, Number(input.payableBase) || 0))
+    : round2(Math.max(0, total - coupon));
 
   let prepaid = 0;
   if (input.useCard && balance > 0) {

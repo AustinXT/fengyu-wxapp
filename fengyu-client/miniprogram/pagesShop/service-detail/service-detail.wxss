@@ -10,6 +10,14 @@
   padding: 32rpx;
 }
 
+/* 会员价分流：划线标价 */
+.price-origin {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
+}
+
 .error-wrap {
   min-height: 100vh;
   display: flex;

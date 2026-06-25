@@ -71,8 +71,8 @@ module.exports.fmt = function(n) {
         <view class="card-footer">
           <view class="price-group">
             <text class="price-symbol">¥</text>
-            <text class="price-integer">{{price.fmt(item.special_price || item.price)}}</text>
-            <text wx:if="{{item.special_price && item.price && item.special_price < item.price}}" class="price-origin">¥{{price.fmt(item.price)}}</text>
+            <text class="price-integer">{{price.fmt(item.displayPrice)}}</text>
+            <text wx:if="{{item.strikePrice}}" class="price-origin">¥{{price.fmt(item.strikePrice)}}</text>
           </view>
           <view class="card-buy-btn">
             <text class="card-buy-text">立即抢购</text>

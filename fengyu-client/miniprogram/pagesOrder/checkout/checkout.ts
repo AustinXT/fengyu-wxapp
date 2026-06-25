@@ -4,6 +4,7 @@ import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatDate } from '../../utils/format';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
@@ -13,7 +14,10 @@ interface CheckoutItem {
   spuName: string;
   skuDisplayName: string;
   coverImage: string;
+  /** 成交价（会员价分流后：会员=会员价、非会员=标价） */
   price: number;
+  /** 标价（划线展示用）；listPrice > price 才划线。可选——套餐/已存在订单项不带。 */
+  listPrice?: number;
   quantity: number;
 }
 
@@ -166,7 +170,9 @@ Page({
     try {
       const data = await callClientApi('product.skuDetail', { skuId, productId });
       const sku = data?.sku;
-      const unitPrice = Number(sku?.special_price || sku?.price || 0);
+      // 会员价分流：会员→会员价、非会员→标价；与后端 order.create 权威定价同口径
+      const pv = priceView(getIsMember(), sku?.special_price, sku?.price);
+      const unitPrice = pv.display;
       this.setData({
         skuDisplayName: sku?.spec_name || '',
         unitPrice,
@@ -177,6 +183,7 @@ Page({
           skuDisplayName: sku?.spec_name || '',
           coverImage: sku?.cover_image || '',
           price: unitPrice,
+          listPrice: pv.strike ?? unitPrice,
           quantity,
         }],
       });

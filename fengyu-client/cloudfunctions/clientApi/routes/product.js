@@ -184,11 +184,14 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
 
   return productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
+    // priceFrom=会员/特价起价（含 special_price，会员视图）；listPriceFrom=标价起价（非会员视图）
     const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
     return {
       ...product,
       skuList: skus,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   })
 }
@@ -343,9 +346,11 @@ async function hotList(ctx) {
   const result = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
     const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
     return {
       ...product,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   })
 
@@ -414,6 +419,7 @@ async function spuDetail(ctx) {
   `, [productId])
 
   const prices = skuList.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+  const listPrices = skuList.map(s => Number(s.bundle_price || s.price || 0))
 
   // 构建分组信息（套餐商品）
   let bundleGroups = null
@@ -438,7 +444,8 @@ async function spuDetail(ctx) {
       ...product,
       skuList,
       bundleGroups,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   }
 }

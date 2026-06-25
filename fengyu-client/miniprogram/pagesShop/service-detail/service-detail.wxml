@@ -3,6 +3,20 @@
 module.exports.fmt = function(val) {
   return (Math.round(val * 100) / 100).toFixed(2)
 }
+// 会员视图成交价：会员且会员价<标价 → 会员价；否则标价
+module.exports.eff = function(isMember, special, list) {
+  var l = Number(list) || 0
+  var s = (special === null || special === undefined || special === '') ? null : Number(special)
+  if (isMember && s !== null && s < l) return s
+  return l
+}
+// 划线价：仅会员且会员价<标价时返回标价，否则 0（不划线）
+module.exports.strike = function(isMember, special, list) {
+  var l = Number(list) || 0
+  var s = (special === null || special === undefined || special === '') ? null : Number(special)
+  if (isMember && s !== null && s < l) return l
+  return 0
+}
 </wxs>
 <van-toast id="van-toast" />
 
@@ -45,7 +59,8 @@ module.exports.fmt = function(val) {
     <view class="price-row" wx:elif="{{selectedSku}}">
       <view class="price-group">
         <text class="price-symbol">¥</text>
-        <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
+        <text class="price-integer">{{price.fmt(price.eff(isMember, selectedSku.special_price, selectedSku.price))}}</text>
+        <text wx:if="{{price.strike(isMember, selectedSku.special_price, selectedSku.price)}}" class="price-origin">¥{{price.fmt(price.strike(isMember, selectedSku.special_price, selectedSku.price))}}</text>
       </view>
       <text class="price-unit" wx:if="{{selectedSku.session_count}}">/ {{selectedSku.session_count}} 次</text>
     </view>
@@ -110,7 +125,7 @@ module.exports.fmt = function(val) {
     </view>
     <view class="action-bar__price" wx:elif="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
-      <text class="action-bar__price-value">{{price.fmt(selectedSku.price * quantity)}}</text>
+      <text class="action-bar__price-value">{{price.fmt(price.eff(isMember, selectedSku.special_price, selectedSku.price) * quantity)}}</text>
       <text class="action-bar__price-qty" wx:if="{{quantity > 1}}"> x{{quantity}}</text>
     </view>
     <view class="action-bar__price" wx:else>
@@ -168,7 +183,8 @@ module.exports.fmt = function(val) {
           </view>
           <view wx:elif="{{selectedSku}}" class="price-group">
             <text class="price-symbol">¥</text>
-            <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
+            <text class="price-integer">{{price.fmt(price.eff(isMember, selectedSku.special_price, selectedSku.price))}}</text>
+            <text wx:if="{{price.strike(isMember, selectedSku.special_price, selectedSku.price)}}" class="price-origin">¥{{price.fmt(price.strike(isMember, selectedSku.special_price, selectedSku.price))}}</text>
           </view>
           <text wx:else class="sku-popup__price-hint">请选择规格</text>
           <text class="sku-popup__selected-name" wx:if="{{spu.is_bundle}}">{{spu.name}}</text>

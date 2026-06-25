@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { pickerSkuToProductSku, type NormalGroupPickerProps } from "./types"
 
-export function NormalSkuPicker({ groups, kindLabel, onAdd }: NormalGroupPickerProps) {
+export function NormalSkuPicker({ groups, kindLabel, onAdd, buyerIsMember }: NormalGroupPickerProps) {
   // 防御：过滤掉空 category 组（理论上后端 EXISTS 已保证不会出现）
   const renderGroups = useMemo(
     () => groups.filter((g) => g.categories.length > 0),
@@ -120,13 +120,22 @@ export function NormalSkuPicker({ groups, kindLabel, onAdd }: NormalGroupPickerP
                 createdAt: '',
                 updatedAt: '',
               }
-              const displayPrice = sku.specialPrice || sku.price
+              // 会员价分流（普通商品仅会员享会员价）：会员且会员价 < 标价 → 会员价为主 + 划线标价；否则只显示标价
+              const hasMemberPrice =
+                sku.specialPrice != null && sku.specialPrice !== '' && Number(sku.specialPrice) < Number(sku.price)
+              const showMemberPrice = buyerIsMember === true && hasMemberPrice
+              const displayPrice = showMemberPrice ? sku.specialPrice : sku.price
               return (
                 <Card key={sku.skuId} className="bg-[#FAFAFA]">
                   <CardContent className="p-4 space-y-2">
                     <div className="flex justify-between items-start">
                       <h4 className="font-medium text-sm">{sku.specName}</h4>
-                      <span className="text-xs text-[#999999]">¥{displayPrice}</span>
+                      <span className="text-xs text-[#999999]">
+                        ¥{displayPrice}
+                        {showMemberPrice && (
+                          <span className="line-through text-[#999999] ml-1">¥{sku.price}</span>
+                        )}
+                      </span>
                     </div>
                     <Separator />
                     <div className="flex items-center justify-between">

@@ -383,6 +383,14 @@
   margin-left: 2rpx;
 }
 
+/* 会员价分流：划线标价起价 */
+.price-origin {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
+}
+
 .spu-buy-btn {
   display: flex;
   align-items: center;

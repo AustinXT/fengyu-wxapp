@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 import { callClientApi } from '../../utils/cloud';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 
 const app = getApp<IAppOption>();
 
@@ -13,6 +14,8 @@ interface SpuItem {
   category_name: string;
   cover_image: string;
   min_price: string;
+  /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
+  strike_min_price?: string;
   is_recommend: boolean;
   skuList?: any[];
 }
@@ -76,13 +79,21 @@ Page({
 
     const sku = skuList[0];
 
+    // 会员价分流：套餐组件价（bundle_price）固定不分流；普通 SKU 会员→会员价、非会员→标价。
+    // 与后端 order.create 权威定价同口径，避免购物车/结算预览与实收不一致。
+    const hasBundlePrice = Number(sku.bundle_price) > 0;
+    const pv = priceView(getIsMember(), sku.special_price, sku.price);
+    const dealPrice = hasBundlePrice ? Number(sku.bundle_price) : pv.display;
+    const listPrice = hasBundlePrice ? Number(sku.bundle_price) : (pv.strike ?? pv.display);
+
     addToCart({
       skuId: sku.sku_id,
       spuId: spu.product_id,
       spuName: spu.name,
       skuDisplayName: sku.spec_name,
       coverImage: spu.cover_image,
-      price: Number(sku.bundle_price || sku.special_price || sku.price || 0),
+      price: dealPrice,
+      listPrice,
       bigCategory: spu.category_name,
       productType: sku.product_type,
       // PR-D：DB 驱动 tag 渲染（来自 product.shopInit / spuList JOIN product_categories）
@@ -107,9 +118,12 @@ Page({
       const categories: Category[] = initData?.categories || [];
       const spuList: SpuItem[] = initData?.spuList || [];
 
+      // 会员价分流：会员看会员起价（priceFrom）+ 划线标价起价；非会员只看标价起价（listPriceFrom）
+      const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || '0',
+        min_price: isMember ? (spu.priceFrom || '0') : (spu.listPriceFrom || spu.priceFrom || '0'),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : '',
       }));
 
       this._allCategories = categories;
@@ -157,9 +171,12 @@ Page({
       const data = await callClientApi<{ spuList: SpuItem[] }>('product.spuList', { categoryId });
 
       const spuList: SpuItem[] = data?.spuList || [];
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || '0',
+        min_price: isMember ? (spu.priceFrom || '0') : (spu.listPriceFrom || spu.priceFrom || '0'),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : '',
       }));
 
       this._spuCache[categoryId] = listWithPrice;

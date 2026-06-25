@@ -28,8 +28,9 @@ describe('order.scanDetail', () => {
         payment_method: '微信', coupon_discount: 0,
       }])
       .mockResolvedValueOnce([{
-        sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,
-        product_name: '美白护理',
+        sale_item_id: 'SI-001', unit_price: 200, quantity: 1, received: 100,
+        sale_amount: 3000, session_count: 15,
+        product_name: '温暖SPA·臀腿',
         cover_image: 'https://img.example.com/a.jpg',
       }])
 
@@ -45,12 +46,18 @@ describe('order.scanDetail', () => {
     expect(ctx.result.order.paymentMethod).toBe('微信')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
+    // 行金额展示口径：saleAmount（行应付总额，权威）取自 sale_amount 列，
+    // 多次卡（session_count=15、unit_price=200）行总额 3000 ≠ 单次价 200
+    expect(ctx.result.items[0].saleAmount).toBe(3000)
+    expect(ctx.result.items[0].unitPrice).toBe(200)
+    expect(ctx.result.items[0].sessionCount).toBe(15)
 
-    // 验证 SQL 包含 opener JOIN 和 cover_image JOIN
+    // 验证 SQL 包含 opener JOIN 和 cover_image JOIN，且 items 查询含 sale_amount（权威行总额）
     const orderQuery = pg.query.mock.calls[0][0]
     expect(orderQuery).toContain('opener_name')
     const itemsQuery = pg.query.mock.calls[1][0]
     expect(itemsQuery).toContain('cover_image')
+    expect(itemsQuery).toContain('sale_amount')
   })
 
   test('非待支付订单返回状态提示', async () => {

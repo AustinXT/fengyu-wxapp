@@ -1,6 +1,7 @@
 // pagesExperience/detail/detail.ts — 体验卡详情
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 
 const app = getApp<IAppOption>();
 
@@ -13,6 +14,10 @@ interface ExperienceSku {
   description?: string;
   price: number;
   special_price: number | null;
+  /** 会员价分流后的展示主价（#6=B：会员=会员价，非会员=标价） */
+  displayPrice: number;
+  /** 划线原价（标价）；null=不划线 */
+  strikePrice: number | null;
   session_count: number | null;
 }
 
@@ -61,6 +66,11 @@ Page({
       if (!raw) {
         throw new Error('体验卡不存在');
       }
+      const price = Number(raw.price || 0);
+      const special_price = raw.special_price !== null && raw.special_price !== undefined
+        ? Number(raw.special_price) : null;
+      // 体验卡按会员价分流（#6=B）：会员展示会员价 + 划线标价，非会员只看标价
+      const pv = priceView(getIsMember(), special_price, price);
       const sku: ExperienceSku = {
         sku_id: raw.sku_id,
         product_id: raw.product_id,
@@ -68,9 +78,10 @@ Page({
         spec_name: raw.spec_name || '',
         cover_image: raw.cover_image || '',
         description: raw.description || '',
-        price: Number(raw.price || 0),
-        special_price: raw.special_price !== null && raw.special_price !== undefined
-          ? Number(raw.special_price) : null,
+        price,
+        special_price,
+        displayPrice: pv.display,
+        strikePrice: pv.strike,
         session_count: raw.session_count !== null && raw.session_count !== undefined
           ? Number(raw.session_count) : null,
       };
