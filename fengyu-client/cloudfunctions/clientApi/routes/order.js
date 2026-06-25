@@ -522,7 +522,7 @@ async function create(ctx) {
     const sku = skuMap[item.skuId]
     // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
     const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
-    // 非套餐单品：按会员身份分流（会员→会员价 special_price、非会员→标价 price；体验卡豁免对所有人）
+    // 非套餐单品：按会员身份分流（会员→会员价 special_price、非会员→标价 price；体验卡同口径，#6=B 不再豁免）
     const resolved = resolveUnitPrice(sku, buyerIsMember)
     const listUnit = bundleEntry && bundleEntry.listPrice != null   // per-card 标价（划线）
       ? Number(bundleEntry.listPrice)

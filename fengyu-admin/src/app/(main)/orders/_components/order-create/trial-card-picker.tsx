@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { pickerSkuToProductSku, type NormalKindPickerProps } from "./types"
 
-export function TrialCardPicker({ categories, onAdd }: NormalKindPickerProps) {
+export function TrialCardPicker({ categories, onAdd, buyerIsMember }: NormalKindPickerProps) {
   const allSkus = categories.flatMap((c) => c.skus)
 
   return (
@@ -39,13 +39,22 @@ export function TrialCardPicker({ categories, onAdd }: NormalKindPickerProps) {
               createdAt: '',
               updatedAt: '',
             }
-            const displayPrice = sku.specialPrice || sku.price
+            // 会员价分流（#6=B：体验卡同口径，会员→会员价、非会员→标价）：会员且会员价 < 标价 → 会员价为主 + 划线标价
+            const hasMemberPrice =
+              sku.specialPrice != null && sku.specialPrice !== '' && Number(sku.specialPrice) < Number(sku.price)
+            const showMemberPrice = buyerIsMember === true && hasMemberPrice
+            const displayPrice = showMemberPrice ? sku.specialPrice : sku.price
             return (
               <Card key={sku.skuId} className="bg-[#FAFAFA]">
                 <CardContent className="p-3 space-y-2">
                   <div className="flex justify-between items-start gap-2">
                     <h4 className="font-medium text-sm flex-1">{sku.specName}</h4>
-                    <span className="text-sm text-[var(--primary)] font-semibold">¥{displayPrice}</span>
+                    <span className="text-sm text-[var(--primary)] font-semibold">
+                      ¥{displayPrice}
+                      {showMemberPrice && (
+                        <span className="line-through text-[#999999] font-normal ml-1">¥{sku.price}</span>
+                      )}
+                    </span>
                   </div>
                   <Separator />
                   <div className="flex items-center justify-between text-xs text-[#999999]">

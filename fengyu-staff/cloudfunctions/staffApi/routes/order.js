@@ -479,7 +479,7 @@ async function create(ctx) {
       let salesCategory = sku.sales_category || null
       // sku 原始挂牌价（标价/划线价）：sale_items.unit_price 快照基线，恒为原价
       const skuPriceCeil = Number(sku.price)
-      // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡豁免对所有人）
+      // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡同口径，#6=B 不再豁免）
       const applicableUnit = resolveUnitPrice(sku, buyerIsMember).realUnit
 
       // 入参价格三件套
