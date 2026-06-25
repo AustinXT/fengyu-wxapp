@@ -2205,9 +2205,19 @@ async function repay(ctx) {
       throw new Error('INVALID_PARAMS: 继续支付必须支付全部未付金额')
     }
 
-    // 3. 储值卡扣款（若有）：校验 + 扣减 + INSERT payments(回款/储值卡)
+    // 3. 储值卡扣款（按通道分流）。先无条件作废本单此前遗留的「待支付储值卡抵扣」意向：
+    //    同一订单可被重复扫码（取消线上支付后重选抵扣额、或从混合改纯线上/线下/纯卡），旧意向若残留
+    //    会被 payNotify 误消费、扣走顾客并不想用的储值卡。在订单 FOR UPDATE 锁下清理，避免并发竞态。
     let cardPaymentId = null
-    if (prepaidCardAmountInput > 0) {
+    await client.query(
+      `UPDATE sale_order_payments SET status = '已作废'
+       WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+      [saleOrderId]
+    )
+    //    - 纯储值卡通道（isPureCard）：当场扣卡 + INSERT payments(回款/储值卡/已支付)，无线上款本就原子。
+    //    - 线上+储值卡混合：不当场扣卡，仅写一行待支付储值卡抵扣意向；扣减 + 入账 + 状态推进推迟到
+    //      payNotify 线上到账同事务执行（支付取消/失败 → 意向行保持待支付、储值卡分文不动，一起回滚）。
+    if (prepaidCardAmountInput > 0 && isPureCard) {
       const cardRes = await client.query(
         `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
         [userId]
@@ -2239,6 +2249,25 @@ async function repay(ctx) {
         [saleOrderId, prepaidCardAmountInput, '储值卡继续支付（client.repay）', now]
       )
       cardPaymentId = cardPayRes.rows[0] && cardPayRes.rows[0].id
+    } else if (prepaidCardAmountInput > 0) {
+      // 线上+储值卡混合：仅校验余额（FOR UPDATE 锁防 dirty read）后写一行「待支付」储值卡抵扣意向，
+      // **不扣减余额、不写 card_transactions、不推进状态**。实际扣卡 + 翻已支付由 payNotify 在线上
+      // 到账同事务执行；线上支付被取消/失败 → 意向行保持待支付、储值卡不动（与线上款一起回滚）。
+      const cardRes = await client.query(
+        `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+        [userId]
+      )
+      if (cardRes.rows.length === 0
+          || Number(cardRes.rows[0].balance) + 0.001 < prepaidCardAmountInput) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+      }
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method,
+          external_txn_id, status, source_end, note, created_at, paid_at
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '待支付', 'client', $3, $4, NULL)`,
+        [saleOrderId, prepaidCardAmountInput, '储值卡抵扣待线上到账（client.repay 混合支付）', now]
+      )
     }
 
     // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
@@ -2251,8 +2280,9 @@ async function repay(ctx) {
       )
     }
 
-    // 5. 重算原单 received/refunded_amount + 推进 status（仅当本次写入了 payments 时；线上通道等 payNotify）
-    if (prepaidCardAmountInput > 0) {
+    // 5. 重算原单 received/refunded_amount + 推进 status：仅纯储值卡通道（当场扣卡 + 写了已支付储值卡回款行）。
+    //    线上+储值卡混合通道此处 **不推进** —— received/状态推进随储值卡扣减一并推迟到 payNotify STEP 3c。
+    if (isPureCard && prepaidCardAmountInput > 0) {
       const aggRes = await client.query(
         `SELECT
            COALESCE(SUM(CASE WHEN status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣') THEN amount END), 0) AS received_sum,

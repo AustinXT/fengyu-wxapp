@@ -361,7 +361,8 @@ Page({
   /** 回款（部分支付订单）确认：统一走 order.repay
    *  - paid=0（储值卡覆盖全部尾款）→ 纯卡回款（同事务扣卡 + 推进状态）
    *  - paid>0 + 微信/支付宝 → 线上回款，可叠加 prepaidCardAmount 抵扣部分尾款
-   *    （order.repay 同事务先扣卡，再发起线上收差额；线上到账由 payNotify 推进）
+   *    （混合：order.repay 仅写「待支付储值卡抵扣」意向、不当场扣卡；扣卡与线上到账由 payNotify 同事务执行，
+   *     线上支付取消/失败 → 储值卡分文不动、订单不推进，无需前端回滚）
    *  线下在回款场景隐藏（产品决策），故此处不含线下分支。
    */
   async executeRepayConfirm(): Promise<void> {

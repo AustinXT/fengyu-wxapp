@@ -619,9 +619,20 @@ exports.main = async (event) => {
         return { code: 'SUCCESS', message: '已处理（幂等）' }
       }
 
-      // 判定目标订单最终状态
+      // 混合回款：本单可能有 client.repay 写下的「待支付储值卡抵扣」意向（线上款 + 储值卡共同覆盖尾款）。
+      // 储值卡扣减推迟到此处与线上到账同事务执行，故判定整单结清时必须把待支付意向额一并计入，
+      // 否则线上款单独 < 应付会被判为「部分支付」而储值卡永不入账、订单卡死。
+      const pendingCardRes = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) AS pending_card
+         FROM sale_order_payments
+         WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+        [targetOrderNo]
+      )
+      const pendingCardAmount = Math.round(Number(pendingCardRes.rows[0]?.pending_card || 0) * 100) / 100
+
+      // 判定目标订单最终状态（线上累计 + 待支付储值卡抵扣意向）
       const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
-      const fullyPaid = newPaidSum + 0.001 >= payableAmount
+      const fullyPaid = (newPaidSum + pendingCardAmount) + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
@@ -789,6 +800,61 @@ exports.main = async (event) => {
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
           console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
+        }
+      }
+
+      // 3c. 混合回款「待支付储值卡抵扣」意向消费（client.repay 线上+储值卡混合支付）。
+      // client.repay 混合通道只写了 status='待支付' 的储值卡抵扣意向、未动余额；此处线上款已确认到账，
+      // 在**同一事务**内扣减储值卡余额 + 写 card_transactions + 把意向行翻 '已支付' + 补记 received/prepaid_card_amount/payable_amount。
+      // 余额不足 → throw → 整事务回滚（含本次线上 payments 行），订单保持原状态、储值卡分文不动（与 STEP 3b 失败语义一致）。
+      // 幂等：①意向行 status='待支付' 过滤（重试时已翻已支付 → 取不到行 → 跳过）；②card_transactions external_ref 唯一。
+      if (targetOrder.client_user_id && pendingCardAmount > 0) {
+        const pendingRows = await client.query(
+          `SELECT id, amount FROM sale_order_payments
+           WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'
+           ORDER BY id
+           FOR UPDATE`,
+          [targetOrderNo]
+        )
+        if (pendingRows.rows.length > 0) {
+          const cardRow = await client.query(
+            `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+            [targetOrder.client_user_id]
+          )
+          if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) + 0.001 < pendingCardAmount) {
+            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足以完成混合回款抵扣')
+          }
+          const cardId = cardRow.rows[0].card_id
+          await client.query(
+            `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+            [pendingCardAmount, cardId]
+          )
+          for (const pr of pendingRows.rows) {
+            const amt = Math.round(Number(pr.amount) * 100) / 100
+            await client.query(
+              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+               VALUES ($1, '扣款', $2, $3, $4, NOW())
+               ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+              [cardId, -amt, targetOrderNo, `card-repay-intent-${pr.id}`]
+            )
+            await client.query(
+              `UPDATE sale_order_payments SET status = '已支付', paid_at = $1 WHERE id = $2 AND status = '待支付'`,
+              [now, pr.id]
+            )
+          }
+          // received 含储值卡抵扣（I1）；prepaid_card_amount/payable_amount 同步维护 I5（payable = total - prepaid）。
+          await client.query(
+            `UPDATE sale_orders
+             SET received = received + $1,
+                 prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $1,
+                 payable_amount = COALESCE(payable_amount, total_amount) - $1,
+                 updated_at = $2
+             WHERE sale_order_id = $3`,
+            [pendingCardAmount, now, targetOrderNo]
+          )
+          await recalcPaidSessionsForOrder(client, targetOrderNo)
+          prepaidConsumedThisCallback = Math.round((prepaidConsumedThisCallback + pendingCardAmount) * 100) / 100
+          console.log(`[payNotify] 混合回款储值卡抵扣消费: order=${targetOrderNo}, card=${cardId}, amount=${pendingCardAmount}`)
         }
       }
 
