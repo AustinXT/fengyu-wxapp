@@ -62,6 +62,7 @@ delivery/
 .claude/skills/transcript-to-article
 .claude/skills/vant-weapp
 .claude/skills/wx-debug-production
+.claude/skills/wx-dev-guard
 .claude/skills/wx-quality-assurance
 .claude/skills/wx-release-check
 
