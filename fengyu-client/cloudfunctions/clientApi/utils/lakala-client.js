@@ -56,7 +56,7 @@ function formatReqTime(date = new Date()) {
 /**
  * 调拉卡拉接口（底层通用 POST）。
  */
-async function request({ path, reqData, outOrgCode, skipVerify = false, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+async function request({ path, reqData, skipVerify = false, timeoutMs = DEFAULT_TIMEOUT_MS }) {
   assertReady()
   const cfg = readConfig()
 
@@ -66,7 +66,6 @@ async function request({ path, reqData, outOrgCode, skipVerify = false, timeoutM
     version: '3.0',
     req_data: reqData || {},
   }
-  if (outOrgCode) envelope.out_org_code = outOrgCode
 
   const bodyStr = JSON.stringify(envelope)
   const { authorization } = sign.buildRequestAuthorization({

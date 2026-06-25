@@ -352,6 +352,8 @@
           </block>
         </view>
 
+        <!-- 切换到门店视图（可切换才显示） -->
+        <button wx:if="{{canSwitchView}}" class="mgmt-profile-action mgmt-profile-action--ghost" bindtap="onSwitchView">切换到门店视图</button>
         <!-- 退出登录（保留） -->
         <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
       </view>

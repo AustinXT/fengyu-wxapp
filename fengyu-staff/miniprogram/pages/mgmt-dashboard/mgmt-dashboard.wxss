@@ -248,6 +248,13 @@
   border: none;
 }
 
+.mgmt-profile-action--ghost {
+  margin-top: 48rpx;
+  background: transparent;
+  color: var(--color-primary);
+  border: 1rpx solid var(--color-primary);
+}
+
 /* 排行榜 tab（store / staff 复用） */
 .mgmt-ranking {
   padding: var(--spacing-card);

@@ -26,7 +26,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
@@ -94,7 +94,7 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     }
   })
 
-  it('manager 拥有业务操作权限', () => {
+  it('manager 拥有业务操作权限 + 生产扩权（删单/员工CRUD/收款配置）', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.manager
     expect(actions).toContain('sale_order:create')
     expect(actions).toContain('allocation:save')
@@ -103,9 +103,14 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('customer:list')
     expect(actions).toContain('sale_item:list')
     expect(actions).toContain('card_transaction:list')
+    // 2026-06-24 对齐生产的敏感扩权（守护：勿误删）
+    expect(actions).toContain('sale_order:delete')
+    expect(actions).toContain('employee:create')
+    expect(actions).toContain('store:lakala_config')
+    expect(actions).toContain('merchant:list')
   })
 
-  it('finance 仅有只读权限', () => {
+  it('finance 对账只读 + 商户/提成矩阵维护（2026-06-24 对齐生产）', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.finance
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
@@ -113,6 +118,12 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('card_transaction:list')
     // service:list：营业额分配页只读对账需看服务提成（2026-05-21 修 menu/page 不一致）
     expect(actions).toContain('service:list')
+    // 生产扩权：提成矩阵 CRUD + 历史订单核对 + 商户档案 CRUD
+    expect(actions).toContain('commission:list')
+    expect(actions).toContain('commission:create')
+    expect(actions).toContain('legacy_order:approve')
+    expect(actions).toContain('merchant:create')
+    // 仍不可开单 / 改分配 / 改服务单（无写权）
     expect(actions).not.toContain('sale_order:create')
     expect(actions).not.toContain('allocation:save')
     expect(actions).not.toContain('service:create')
@@ -433,6 +444,68 @@ describe('isAdminScope', () => {
   it('空角色返回 false', () => {
     const session = mockSession({ roles: [] })
     expect(isAdminScope(session)).toBe(false)
+  })
+})
+
+describe('canAccessAdmin（禁止普通员工登录）', () => {
+  it('持任一管理角色 → true', () => {
+    expect(canAccessAdmin([{ role: 'admin' }])).toBe(true)
+    expect(canAccessAdmin([{ role: 'manager' }])).toBe(true)
+    expect(canAccessAdmin([{ role: 'finance' }])).toBe(true)
+  })
+
+  it('仅 staff → false（禁入后台）', () => {
+    expect(canAccessAdmin([{ role: 'staff' }])).toBe(false)
+  })
+
+  it('staff + 管理角色混合 → true', () => {
+    expect(canAccessAdmin([{ role: 'staff' }, { role: 'manager' }])).toBe(true)
+  })
+
+  it('空角色 → false', () => {
+    expect(canAccessAdmin([])).toBe(false)
+  })
+})
+
+describe('accessiblePermissionScopeIds', () => {
+  it('admin 返回 null（全开，左侧树不置灰）', () => {
+    const session = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+    })
+    expect(accessiblePermissionScopeIds(session)).toBeNull()
+  })
+
+  it('混合角色含 admin 返回 null', () => {
+    const session = mockSession({
+      roles: [
+        { role: 'hr', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
+      ],
+    })
+    expect(accessiblePermissionScopeIds(session)).toBeNull()
+  })
+
+  it('非 admin 返回其精确 scopeId（不展开子树）', () => {
+    const session = mockSession({
+      roles: [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
+    })
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1'])
+  })
+
+  it('非 admin 多角色去重 scopeId', () => {
+    const session = mockSession({
+      roles: [
+        { role: 'hr', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'finance', scopeId: 'market-1', scopeType: '市场' },
+        { role: 'manager', scopeId: 'market-2', scopeType: '市场' },
+      ],
+    })
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1', 'market-2'])
+  })
+
+  it('空角色返回空数组', () => {
+    const session = mockSession({ roles: [] })
+    expect(accessiblePermissionScopeIds(session)).toEqual([])
   })
 })
 

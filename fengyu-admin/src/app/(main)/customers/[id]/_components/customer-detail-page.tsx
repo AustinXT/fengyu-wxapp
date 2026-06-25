@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useRef, useEffect, useCallback } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -23,7 +24,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
-import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile, type CustomerRefundRecord } from "@/actions/customers"
+import { actionErrorMessage } from "@/lib/action-error"
+import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile, type CustomerServiceRecord } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 import { DangerZoneDelete } from "@/components/delete-action"
@@ -36,7 +38,7 @@ interface CustomerDetailPageProps {
   stores: Store[]
   employees: Employee[]
   phoneChangeLogs: PhoneChangeLog[]
-  refundHistory: CustomerRefundRecord[]
+  serviceOrders: CustomerServiceRecord[]
   orphanProfiles: OrphanProfile[]
   prepaidBalance?: string
   canEditPhone?: boolean
@@ -52,7 +54,7 @@ export default function CustomerDetailPage({
   stores,
   employees,
   phoneChangeLogs,
-  refundHistory,
+  serviceOrders,
   orphanProfiles,
   prepaidBalance,
   canEditPhone = false,
@@ -111,8 +113,8 @@ export default function CustomerDetailPage({
       toast.success("手机号已更新")
       setPhoneEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setPhoneSaving(false)
     }
@@ -130,7 +132,7 @@ export default function CustomerDetailPage({
         router.refresh()
       }
     } catch (e: any) {
-      toast.error(e?.message ?? '合并失败')
+      toast.error(actionErrorMessage(e, '合并失败'))
     } finally {
       setMerging(null)
     }
@@ -143,6 +145,7 @@ export default function CustomerDetailPage({
   const [form, setForm] = useState({
     name: customer.name ?? "",
     gender: customer.gender ?? "",
+    isCrossStoreTemp: customer.isCrossStoreTemp,
     boundEmployeeId: customer.boundEmployeeId ?? "",
     promoterEmployeeId: customer.promoterEmployeeId ?? "",
     customerSource: customer.customerSource ?? "",
@@ -195,6 +198,7 @@ export default function CustomerDetailPage({
     setForm({
       name: customer.name ?? "",
       gender: customer.gender ?? "",
+      isCrossStoreTemp: customer.isCrossStoreTemp,
       boundEmployeeId: customer.boundEmployeeId ?? "",
       promoterEmployeeId: customer.promoterEmployeeId ?? "",
       customerSource: customer.customerSource ?? "",
@@ -218,6 +222,7 @@ export default function CustomerDetailPage({
       const result = await updateCustomer(customer.userId, {
         name: form.name || null,
         gender: form.gender || null,
+        isCrossStoreTemp: form.isCrossStoreTemp,
         boundEmployeeId: form.boundEmployeeId || null,
         promoterEmployeeId: form.promoterEmployeeId || null,
         customerSource: form.customerSource || null,
@@ -238,8 +243,8 @@ export default function CustomerDetailPage({
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }
@@ -424,7 +429,7 @@ export default function CustomerDetailPage({
           <TabsTrigger value="orders">消费记录（{orders.length}）</TabsTrigger>
           <TabsTrigger value="sessions">疗程卡（{activeSaleItems.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
-          <TabsTrigger value="refunds">退换记录（{refundHistory.length}）</TabsTrigger>
+          <TabsTrigger value="services">服务记录（{serviceOrders.length}）</TabsTrigger>
           <TabsTrigger value="phone-history">手机号变更（{phoneChangeLogs.length}）</TabsTrigger>
         </TabsList>
 
@@ -523,6 +528,20 @@ export default function CustomerDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">归属门店</label>
                   <Input value={customer.storeName ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">临时跨门店（可被其他门店开单）</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.isCrossStoreTemp ? "true" : "false"}
+                      onChange={(e) => setForm((prev) => ({ ...prev, isCrossStoreTemp: e.target.value === "true" }))}
+                    >
+                      <option value="false">否</option>
+                      <option value="true">是</option>
+                    </Select>
+                  ) : (
+                    <Input value={customer.isCrossStoreTemp ? "是" : "否"} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">储值卡余额</label>
@@ -829,40 +848,38 @@ export default function CustomerDetailPage({
           </Card>
         </TabsContent>
 
-        <TabsContent value="refunds">
+        <TabsContent value="services">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">退换记录</CardTitle>
+              <CardTitle className="text-base">服务记录</CardTitle>
             </CardHeader>
             <CardContent>
-              {refundHistory.length === 0 ? (
-                <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">暂无退换记录</div>
+              {serviceOrders.length === 0 ? (
+                <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">暂无服务记录</div>
               ) : (
                 <div className="space-y-3">
-                  {refundHistory.map((r) => (
-                    <div key={`${r.type}-${r.saleOrderId}-${r.createdAt}`} className="rounded-lg border border-[var(--border)] p-3">
+                  {serviceOrders.map((s) => (
+                    <Link
+                      key={s.serviceOrderId}
+                      href={`/services/${s.serviceOrderId}`}
+                      className="block rounded-lg border border-[var(--border)] p-3 transition-colors hover:bg-[#FFF0EE]"
+                    >
                       <div className="flex items-center gap-2">
-                        <Badge variant={r.type === '退款' ? 'destructive' : 'outline'}>{r.type}</Badge>
-                        <StatusBadge status={r.status} />
-                        <span className="font-mono text-xs text-[var(--muted-foreground)]">{r.saleOrderId}</span>
-                        <span className="ml-auto text-sm font-semibold">{formatCurrency(r.totalAmount)}</span>
+                        <StatusBadge status={s.status} />
+                        <span className="font-mono text-xs text-[var(--primary)]">{s.serviceOrderId}</span>
+                        <span className="ml-auto text-xs text-[var(--muted-foreground)]">{formatDate(s.serviceDate) || "—"}</span>
                       </div>
-                      {r.refundReason && (
-                        <div className="mt-1 text-sm text-[var(--muted-foreground)]">原因：{r.refundReason}</div>
-                      )}
-                      {r.items.length > 0 && (
+                      {s.items.length > 0 && (
                         <div className="mt-2 space-y-1">
-                          {r.items.map((it) => (
-                            <div key={it.saleItemId} className="flex items-center gap-2 text-sm">
-                              {it.direction && <Badge variant="outline">{it.direction}</Badge>}
-                              <span className="flex-1">{it.productName ?? '—'}{it.specName && ` / ${it.specName}`}</span>
-                              <span className="text-[var(--muted-foreground)]">{formatCurrency(it.received)}</span>
-                            </div>
+                          {s.items.map((it, idx) => (
+                            <div key={idx} className="text-sm">{it.productName ?? '—'}</div>
                           ))}
                         </div>
                       )}
-                      <div className="mt-2 text-xs text-[var(--muted-foreground)]">{formatDateTime(r.createdAt) || "—"}</div>
-                    </div>
+                      <div className="mt-2 text-xs text-[var(--muted-foreground)]">
+                        {[s.storeName, s.employeeName && `美容师：${s.employeeName}`].filter(Boolean).join(' · ') || "—"}
+                      </div>
+                    </Link>
                   ))}
                 </div>
               )}

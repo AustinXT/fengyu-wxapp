@@ -25,7 +25,7 @@ import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const CSM_PHONE = '13900139005'
 const CSM_PASS = 'fengyu2026'
 const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
@@ -40,7 +40,7 @@ function ensureDir(dir: string) {
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

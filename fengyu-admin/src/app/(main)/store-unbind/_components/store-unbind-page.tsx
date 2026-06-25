@@ -25,6 +25,7 @@ import { approveUnbind, rejectUnbind, deleteUnbindRequest, type UnbindRequest } 
 import { RowDeleteMenu } from "@/components/delete-action"
 import { formatPhoneSafe } from "@/lib/format"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 
 function formatDate(dt: string | null | undefined) {
   if (!dt) return "—"
@@ -55,8 +56,8 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("操作失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "操作失败"))
     } finally {
       setPendingId(null)
       setApproveTarget(null)
@@ -78,8 +79,8 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("操作失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "操作失败"))
     } finally {
       setPendingId(null)
       setRejectTarget(null)

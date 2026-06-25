@@ -29,7 +29,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MGR_PHONE = '13900139001'
 const PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'
@@ -48,7 +48,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -146,12 +146,11 @@ async function createOrderWithSku(page: import('@playwright/test').Page, skuName
   await page.getByRole('button', { name: '下一步' }).click()
   await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({ timeout: 10000 })
 
-  for (const sel of [page.locator('select[name="paymentMethod"]'), page.locator('select').nth(0)]) {
-    if (await sel.count() > 0) {
-      const opts = await sel.locator('option').allTextContents()
-      if (opts.some((o) => o.includes('线下'))) { await sel.selectOption({ label: '线下支付' }); break }
-    }
-  }
+  // 支付选择器（修复 2026-06-10，同 link-1）：select[name="paymentMethod"] 失效，按"线下支付"选项精确定位
+  await page.locator('select').filter({ hasText: /线下支付/ }).first().selectOption({ label: '线下支付' })
+  // 取消充值卡抵扣（顾客有卡余额时自动勾选 → payment_method='无' 绕过确认收款链路）
+  const useCardCb = page.getByRole('checkbox').first()
+  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) { await useCardCb.uncheck() }
   await page.getByRole('button', { name: /提交订单|确认提交/ }).last().click()
   await expect(page.getByText(/订单已创建|开单成功|FY-XSD-WX/)).toBeVisible({ timeout: 20000 })
 

@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount } from '../../utils/cart';
 import { callClientApi } from '../../utils/cloud';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 
 const app = getApp<IAppOption>();
 
@@ -20,7 +21,10 @@ interface Spu {
 interface Sku {
   sku_id: string;
   spec_name: string;
+  /** 标价（price），会员价分流：price=标价、special_price=会员价 */
   price: number;
+  /** 会员价（special_price，可空） */
+  special_price: number | null;
   session_count: number | null;
   product_type: string;
   /** PR-D：来自 product_categories（DB 驱动 tag 渲染） */
@@ -86,6 +90,7 @@ Page({
     skuList: [] as Sku[],
     selectedSku: null as Sku | null,
     quantity: 1,
+    isMember: false,
     staffList: [] as Staff[],
     staffListLoading: false,
     selectedStaffWfId: '',
@@ -116,6 +121,7 @@ Page({
       return;
     }
     this._productId = id;
+    this.setData({ isMember: getIsMember() });
     this.loadDetail(id);
     this.loadStaffList();
     this.loadDefaultStaff();
@@ -153,7 +159,8 @@ Page({
         skuList: rawSkuList.map((sku: any) => ({
           sku_id: sku.sku_id,
           spec_name: sku.spec_name,
-          price: Number(sku.special_price || sku.price || 0),
+          price: Number(sku.price || 0),
+          special_price: sku.special_price != null ? Number(sku.special_price) : null,
           session_count: sku.session_count,
           product_type: sku.product_type
         }))
@@ -183,7 +190,10 @@ Page({
         sku_id: s.sku_id,
         spec_name: s.spec_name,
         bundle_price: bundlePrice,
-        list_price: Number(s.special_price || s.price || 0),
+        // 划线价用套餐标价单价（bundle_list_price 下沉副本）；缺失回退 SKU 原价
+        list_price: s.bundle_list_price != null
+          ? Number(s.bundle_list_price)
+          : Number(s.special_price || s.price || 0),
         session_count: s.session_count,
         product_type: s.product_type,
         group_id: s.bundle_group_id != null ? Number(s.bundle_group_id) : null,
@@ -386,13 +396,15 @@ Page({
       return;
     }
 
+    const pv = priceView(this.data.isMember, selectedSku.special_price, selectedSku.price);
     addToCart({
       skuId: selectedSku.sku_id,
       spuId: spu.product_id,
       spuName: spu.name,
       skuDisplayName: selectedSku.spec_name,
       coverImage: spu.cover_image,
-      price: selectedSku.price,
+      price: pv.display,
+      listPrice: pv.strike ?? pv.display,
       bigCategory: spu.category_name,
       productType: selectedSku.product_type,
       // PR-D：DB 驱动 tag 渲染（spuDetail SQL JOIN product_categories 后注入）

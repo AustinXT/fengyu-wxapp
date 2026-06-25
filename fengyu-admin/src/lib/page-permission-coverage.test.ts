@@ -40,6 +40,8 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/services': ['service:list', 'store:list'],
   '/appointments': ['appointment:list', 'store:list'],
   '/allocations': ['sale_order:list', 'service:list', 'store:list'],
+  // 退款管理：listRefunds 为 withAnyPermission([refund_create, refund_approve]) 单一 OR 闸门
+  '/refunds': [['sale_order:refund_create', 'sale_order:refund_approve']],
   '/pickup-records': ['pickup_record:list', 'store:list'],
   '/store-unbind': ['store_unbind:list'],
   '/inventory': [], // hub 页：仅 Link 跳转，无 SSR 数据查询
@@ -48,6 +50,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/data-center': ['data_center:dashboard'], // SSR 仅 getDataCenterScopeOptions 闸门；板块数据客户端取数
   '/org': ['org:list'],
   '/stores': ['store:list'],
+  '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
   '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
   '/products': ['product:list'],
   '/mall': ['product:list'],
@@ -64,8 +67,6 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
-  // —— 商户入网（arch-007；admin-only）——
-  '/lakala-onboarding': ['lakala:onboarding:read'],
 }
 
 /**
@@ -82,6 +83,8 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   // 服务单
   { href: '/services/create', parent: '/services', entryGate: 'service:create', clauses: ['employee:list', 'store:list'] },
   { href: '/services/[id]', parent: '/services', clauses: ['service:list'] },
+  // 退款详情（行点击直达；getRefundById 同 listRefunds 的 OR 闸门）
+  { href: '/refunds/[id]', parent: '/refunds', clauses: [['sale_order:refund_create', 'sale_order:refund_approve']] },
   // 营业额分配（getRates 已 .catch 吞错，不计入）
   { href: '/allocations/[orderId]', parent: '/allocations', clauses: [['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'], 'allocation:list', 'employee:list', 'store:list'] },
   { href: '/allocations/service/[serviceOrderId]', parent: '/allocations', clauses: ['service:list', 'allocation:list', 'employee:list', 'store:list'] },
@@ -104,6 +107,12 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/employees/create', parent: '/employees', entryGate: 'employee:create', clauses: ['employee:list', 'org:list', 'store:list'] },
   { href: '/stores/[id]/edit', parent: '/stores', clauses: ['store:list'] },
   { href: '/stores/create', parent: '/stores', entryGate: 'store:create', clauses: ['org:list'] },
+  // 商户管理：menu /merchants 门槛改 merchant:list 后，manager 等只读角色也可见列表/详情；
+  // 新建/编辑入口按 merchant:create / merchant:update 隐藏（只读角色触达不了）；
+  // create 页 SSR 取市场下拉(merchant:list) + merchant:create 闸门。
+  { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
+  { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
+  { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
   // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
   { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
   { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
@@ -113,13 +122,6 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/inventory/sale/[id]', parent: '/inventory', clauses: ['inventory:list'] },
   { href: '/inventory/transfer/[id]', parent: '/inventory', clauses: ['inventory:list'] },
   { href: '/inventory/scrap/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  // 商户入网子页（lakala-onboarding；admin-only）
-  { href: '/lakala-onboarding/new', parent: '/lakala-onboarding', entryGate: 'lakala:onboarding:create', clauses: ['lakala:onboarding:create'] },
-  { href: '/lakala-onboarding/[id]', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/edit', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/attachments', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/realname', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
-  { href: '/lakala-onboarding/[id]/logs', parent: '/lakala-onboarding', clauses: ['lakala:onboarding:read'] },
 ]
 
 const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']
@@ -137,11 +139,13 @@ function missingClauses(role: RoleType, clauses: Clause[]): Clause[] {
   return clauses.filter((c) => (Array.isArray(c) ? !c.some((a) => holds(role, a)) : !holds(role, c)))
 }
 
-/** menu 中某 href 的可见角色（requiredRoles ∪ readonlyRoles）。 */
+/** menu 中某 href 的可见角色（持有该项 requiredActions 任一的角色；门槛 action 反推）。 */
 function seenBy(href: string): RoleType[] {
   for (const group of MENU_CONFIG) {
     for (const item of group.items) {
-      if (item.href === href) return [...item.requiredRoles, ...(item.readonlyRoles ?? [])]
+      if (item.href === href) {
+        return ALL_ROLES.filter((role) => item.requiredActions.some((a) => holds(role, a)))
+      }
     }
   }
   return []

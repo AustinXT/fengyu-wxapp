@@ -14,7 +14,7 @@ import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
@@ -46,7 +46,7 @@ function writeContext(data: Record<string, unknown>) {
 function runPsql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 }
     ).trim()
   } catch (e: any) {

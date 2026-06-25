@@ -4,7 +4,9 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import { createStore } from "@/actions/stores"
+import type { MerchantOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -16,7 +18,7 @@ import { RegionSelect } from "@/components/ui/region-select"
 
 type StoreNode = { id: string; name: string; marketName: string }
 
-export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[] }) {
+export default function StoreCreatePage({ storeNodes, canEditPayment = false, merchantOptions = [] }: { storeNodes: StoreNode[]; canEditPayment?: boolean; merchantOptions?: MerchantOption[] }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -24,6 +26,7 @@ export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[
   const [orgNodeId, setOrgNodeId] = useState("")
   const [coverImage, setCoverImage] = useState("")
   const [storeImages, setStoreImages] = useState<string[]>([])
+  const [merchantId, setMerchantId] = useState("")
 
   const selectedNode = storeNodes.find((n) => n.id === orgNodeId)
 
@@ -54,6 +57,8 @@ export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
+        // 关联收款商户：仅 admin（canEditPayment）提交（选填）
+        ...(canEditPayment ? { lakalaMerchantId: merchantId || null } : {}),
       })
 
       if (!result.success) {
@@ -65,7 +70,7 @@ export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[
       router.push("/stores")
     } catch (e) {
       console.error("createStore failed", e)
-      toast.error("创建失败")
+      toast.error(actionErrorMessage(e, "创建失败"))
     } finally {
       setSaving(false)
     }
@@ -207,6 +212,41 @@ export default function StoreCreatePage({ storeNodes }: { storeNodes: StoreNode[
           </div>
         </CardContent>
       </Card>
+
+      {canEditPayment && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">收款商户（选填）</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-xs text-muted-foreground mb-3">
+              选择本店关联的拉卡拉收款商户（商户档案在「商户管理」维护）；也可建店后到门店编辑页再关联。未关联或商户未启用时支付走兜底。
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2 space-y-2">
+                <label className="text-sm font-medium">关联收款商户</label>
+                <Select
+                  name="lakalaMerchantId"
+                  value={merchantId}
+                  onChange={(e) => {
+                    setMerchantId(e.target.value)
+                    setFormDirty(true)
+                  }}
+                >
+                  <SelectOption value="">不关联（支付走兜底）</SelectOption>
+                  {merchantOptions.map((m) => (
+                    <SelectOption key={m.id} value={m.id}>
+                      {m.merchantName}
+                      {m.merchantNo ? `（${m.merchantNo}）` : ""}
+                      {m.enabled ? "" : " · 未启用"}
+                    </SelectOption>
+                  ))}
+                </Select>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Separator />
 

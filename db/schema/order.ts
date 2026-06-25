@@ -1,4 +1,5 @@
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -52,6 +53,8 @@ export const saleOrders = pgTable(
     storeId: text("store_id")
       .notNull()
       .references(() => stores.storeId),
+    /** 所属门店名称（快照，与 market_name 一致；门店改名后历史订单仍显示下单时名称） */
+    storeName: varchar("store_name", { length: 100 }),
     saleOrderDatetime: timestamp("sale_order_datetime").notNull(),
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
@@ -109,6 +112,8 @@ export const saleOrders = pgTable(
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
+    /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
+    isActivity: boolean("is_activity").notNull().default(false),
     /**
      * 历史订单来源标记。NULL=系统原生订单；'workfine'=WorkFine 历史导入（默认 status='未审核'）。
      * 由 db/scripts/import-workfine-legacy.js 写入；admin /legacy-orders 页按此筛选。
@@ -313,6 +318,14 @@ export const saleAllocations = pgTable(
      * 绩效页「销售提成」/ 数据看板「员工收入」销售部分读此列（落地 staff.pr.spec §3.15 双维度模型）。
      */
     commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
+    /**
+     * 关联的回款事件主流水行（首次支付/回款现金行；纯储值卡回款则为储值卡抵扣行）。
+     * 按回款逐笔分配的归属键：同一 sale_item 的同一员工同一角色，可在不同回款各有一条分配。
+     * 与 sale_payment_allocatable_items 同源（同一 sale_payment_id 聚合一笔回款的逐项可分配额）。
+     */
+    salePaymentId: bigint("sale_payment_id", { mode: "number" }).references(
+      () => saleOrderPayments.id,
+    ),
     isVoid: boolean("is_void").notNull().default(false),
     voidedAt: timestamp("voided_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -322,10 +335,12 @@ export const saleAllocations = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("uq_sale_alloc_item_emp_role")
-      .on(table.saleItemId, table.employeeId, table.roleType)
+    // 唯一性下沉到回款维度：一项一员工一角色一回款仅一条活跃分配（按回款逐笔分配）
+    uniqueIndex("uq_sale_alloc_item_emp_role_payment")
+      .on(table.saleItemId, table.employeeId, table.roleType, table.salePaymentId)
       .where(sql`is_void = false`),
     index("idx_sale_alloc_employee_id").on(table.employeeId),
+    index("idx_sale_alloc_payment").on(table.salePaymentId),
     check("chk_sale_alloc_ratio", sql`${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
   ],
 );
@@ -388,9 +403,17 @@ export const saleOrderPayments = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at"),
+    /**
+     * 营业额分配状态（仅"回款事件主流水行"有值；储值卡抵扣从行 / 退款 / 待支付行为 NULL）。
+     * 待分配＝该笔回款待店长/后台逐笔分配；已分配＝已分配或线上自动分配完成。
+     * 按回款逐笔分配的状态下沉位；sale_orders.allocation_status 为其汇总位。
+     */
+    allocationStatus: allocationStatusEnum("allocation_status"),
   },
   (table) => [
     index("idx_sop_order").on(table.saleOrderId),
+    /** 待分配回款列表查询：仅命中带 allocation_status 的主流水行 */
+    index("idx_sop_alloc_status").on(table.allocationStatus).where(sql`allocation_status IS NOT NULL`),
     index("idx_sop_status_created").on(table.status, table.createdAt),
     /** 同订单同通道同三方流水号唯一：支付回调幂等键 */
     uniqueIndex("uq_sop_txn")
@@ -427,6 +450,40 @@ export const saleOrderPayments = pgTable(
   ],
 );
 
+/**
+ * 回款逐项可分配额（营业额分配基数）
+ *
+ * 每笔回款事件落账时（confirmOffline / createRepayment / recordPayment / payNotify）捕获：
+ * 本次回款金额落到各 sale_item 的份额，作为按回款逐笔分配的可分配基数。
+ *   - 定向回款（items[]）：按定向金额（现金+储值卡）逐项记；
+ *   - 非定向回款：按各 item 剩余应付（sale_amount − Σ 已记可分配额）比例摊，Σ amount = 本次回款额。
+ * sale_payment_id 指向回款事件主流水行（与 sale_allocations.sale_payment_id 同源）。
+ */
+export const salePaymentAllocatableItems = pgTable(
+  "sale_payment_allocatable_items",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    salePaymentId: bigint("sale_payment_id", { mode: "number" })
+      .notNull()
+      .references(() => saleOrderPayments.id),
+    saleOrderId: varchar("sale_order_id", { length: 30 })
+      .notNull()
+      .references(() => saleOrders.saleOrderId),
+    saleItemId: varchar("sale_item_id", { length: 30 })
+      .notNull()
+      .references(() => saleItems.saleItemId),
+    /** 本次回款落到该 item 的可分配金额（营业额分配基数；正数） */
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    /** 销售类别快照（提成率查找用；与 sale_items.sales_category 同源） */
+    salesCategory: salesCategoryEnum("sales_category"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_spai_payment_item").on(table.salePaymentId, table.saleItemId),
+    index("idx_spai_order").on(table.saleOrderId),
+  ],
+);
+
 export type SaleOrder = typeof saleOrders.$inferSelect;
 export type NewSaleOrder = typeof saleOrders.$inferInsert;
 export type SaleItem = typeof saleItems.$inferSelect;
@@ -435,3 +492,5 @@ export type SaleAllocation = typeof saleAllocations.$inferSelect;
 export type NewSaleAllocation = typeof saleAllocations.$inferInsert;
 export type SaleOrderPayment = typeof saleOrderPayments.$inferSelect;
 export type NewSaleOrderPayment = typeof saleOrderPayments.$inferInsert;
+export type SalePaymentAllocatableItem = typeof salePaymentAllocatableItems.$inferSelect;
+export type NewSalePaymentAllocatableItem = typeof salePaymentAllocatableItems.$inferInsert;

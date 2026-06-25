@@ -78,7 +78,10 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
      *     即"净实收"，已天然冲销退款
      *   - todayPaidAmount = SUM(received) 保留作"毛实收"（含尚未退款的部分）
      *   - todayRefundedAmount = SUM(refunded_amount) 单独暴露，前端可独立展示
-     *   - 时区统一 Asia/Shanghai
+     *   - 时区统一 Asia/Shanghai：paid_at/sale_order_datetime 是 timestamp without time zone，
+     *     库存"北京墙钟字面"（DB timezone=Asia/Shanghai，写入对进程 TZ 免疫，见 fix/003），
+     *     故直接 ::date 取北京日期即可；切勿再套 `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`
+     *     ——那会把北京墙钟当 UTC 再 +8h，使晚间/跨午夜营收错算到次日。
      */
     const orderStats = await db.execute(sql`
       WITH tz_today AS (
@@ -89,25 +92,25 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
       )
       SELECT
         COALESCE(SUM(CASE
-          WHEN (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+          WHEN paid_at::date = (SELECT today FROM bounds)
             AND status IN ('已支付', '已完成')
             AND sale_order_type IN ('销售单', '转换单')
           THEN (received::numeric - refunded_amount::numeric)
         END), 0) AS today_revenue,
         COALESCE(SUM(CASE
-          WHEN (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+          WHEN paid_at::date = (SELECT today FROM bounds)
             AND status IN ('已支付', '已完成')
             AND sale_order_type IN ('销售单', '转换单')
           THEN received::numeric
         END), 0) AS today_paid_amount,
         COALESCE(SUM(CASE
-          WHEN (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+          WHEN paid_at::date = (SELECT today FROM bounds)
             AND status IN ('已支付', '已完成')
             AND sale_order_type IN ('销售单', '转换单')
           THEN refunded_amount::numeric
         END), 0) AS today_refunded_amount,
         COUNT(DISTINCT CASE
-          WHEN (sale_order_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+          WHEN sale_order_datetime::date = (SELECT today FROM bounds)
             AND status NOT IN ('已关闭', '支付失败', '未审核', '已作废')
             AND sale_order_type IN ('销售单', '转换单')
           THEN client_user_id
@@ -122,13 +125,13 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
           THEN 1
         END) AS pending_allocations,
         COALESCE(SUM(CASE
-          WHEN (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT yesterday FROM bounds)
+          WHEN paid_at::date = (SELECT yesterday FROM bounds)
             AND status IN ('已支付', '已完成')
             AND sale_order_type IN ('销售单', '转换单')
           THEN (received::numeric - refunded_amount::numeric)
         END), 0) AS yesterday_revenue,
         COALESCE(SUM(CASE
-          WHEN (paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = (SELECT yesterday FROM bounds)
+          WHEN paid_at::date = (SELECT yesterday FROM bounds)
             AND status IN ('已支付', '已完成')
             AND sale_order_type IN ('销售单', '转换单')
           THEN received::numeric

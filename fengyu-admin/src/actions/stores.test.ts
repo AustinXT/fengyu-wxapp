@@ -48,6 +48,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined), // admin 返回 undefined（不过滤）
+  hasPermission: vi.fn((session: any, action: string) => session.permissions.actions.includes(action)),
 }))
 
 vi.mock('@/lib/node-scope', () => ({
@@ -73,7 +74,7 @@ import { isNodeInScope } from '@/lib/node-scope'
 const mockSession = {
   employeeId: 'ADMIN-001',
   roles: [{ role: 'admin', scopeId: 'hq' }],
-  permissions: { actions: ['store:list', 'store:create', 'store:update'], scopeStoreIds: [] },
+  permissions: { actions: ['store:list', 'store:create', 'store:update', 'store:lakala_config'], scopeStoreIds: [] },
 }
 
 // createStore 现在接收 { storeId, orgNodeId, ...details }
@@ -192,9 +193,11 @@ describe('createStore — 挂载到门店节点', () => {
     ;(db.select as any).mockReturnValue({ from })
   }
 
-  /** mock db.insert(stores).values(...) */
-  function mockInsert(valuesImpl: any) {
-    ;(db.insert as any).mockReturnValue({ values: valuesImpl })
+  /** mock db.transaction：tx.insert(stores).values(...)；valuesImpl 控制 insert 行为（resolve/reject） */
+  function mockInsertTx(valuesImpl: any) {
+    const txInsert = vi.fn().mockReturnValue({ values: valuesImpl })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ insert: txInsert }))
+    return { txInsert }
   }
 
   const storeNode = { id: 'node-门店-1', name: '南昌蓝茉店', type: '门店' }
@@ -204,7 +207,7 @@ describe('createStore — 挂载到门店节点', () => {
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店节点不存在')
-    expect(db.insert).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('节点非门店类型 → 拒绝', async () => {
@@ -212,7 +215,7 @@ describe('createStore — 挂载到门店节点', () => {
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店')
-    expect(db.insert).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('scope 外 → 拒绝，不插入', async () => {
@@ -221,13 +224,13 @@ describe('createStore — 挂载到门店节点', () => {
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('无权')
-    expect(db.insert).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('正常创建 → 成功，门店名取节点名', async () => {
     mockNodeLookup(storeNode)
     const values = vi.fn().mockResolvedValue({})
-    mockInsert(values)
+    mockInsertTx(values)
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(true)
     expect(result.message).toContain('门店创建成功')
@@ -236,7 +239,7 @@ describe('createStore — 挂载到门店节点', () => {
 
   it('节点已挂门店（23505 + org_node_id 唯一，包装错误）→ 友好提示', async () => {
     mockNodeLookup(storeNode)
-    mockInsert(vi.fn().mockRejectedValue(wrappedPgError('23505', 'stores_org_node_id_unique')))
+    mockInsertTx(vi.fn().mockRejectedValue(wrappedPgError('23505', 'stores_org_node_id_unique')))
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('该门店节点已创建过门店信息')
@@ -244,7 +247,7 @@ describe('createStore — 挂载到门店节点', () => {
 
   it('门店名占用（23505 但非 org_node 唯一约束）→ 友好提示', async () => {
     mockNodeLookup(storeNode)
-    mockInsert(vi.fn().mockRejectedValue(wrappedPgError('23505', 'stores_store_name_unique')))
+    mockInsertTx(vi.fn().mockRejectedValue(wrappedPgError('23505', 'stores_store_name_unique')))
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店名称已被占用')
@@ -252,7 +255,7 @@ describe('createStore — 挂载到门店节点', () => {
 
   it('其他 DB 异常 → 重新抛出', async () => {
     mockNodeLookup(storeNode)
-    mockInsert(vi.fn().mockRejectedValue(new Error('connection lost')))
+    mockInsertTx(vi.fn().mockRejectedValue(new Error('connection lost')))
     await expect(createStore(baseStoreData)).rejects.toThrow('connection lost')
   })
 })
@@ -329,5 +332,79 @@ describe('updateStore — count 检测 + 节点名同步', () => {
     const result = await updateStore('STORE-001', { storeName: '撞名' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('同市场下已有同名门店')
+  })
+})
+
+// ── updateStore — 关联收款商户 ─────────────────────────────────────────────
+// 收款字段（商户名/号/终端号/启用）已迁出门店页，归「商户管理」(/merchants) 维护；
+// 门店仅选择关联哪个商户（写 stores.lakala_merchant_id 外键）。
+
+describe('updateStore — 关联收款商户', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  /** 按调用顺序 mock db.select：每个 rowSet 对应一次 select().from().where().limit() */
+  function mockSelectSequence(...rowSets: any[][]) {
+    for (const rows of rowSets) {
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      ;(db.select as any).mockReturnValueOnce(chain)
+    }
+  }
+
+  function setupTx(count = 1) {
+    const txInsert = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+    const txUpdate = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count }) }),
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ insert: txInsert, update: txUpdate }))
+    return { txInsert, txUpdate }
+  }
+
+  it('选择已有商户 → 校验商户存在后写外键（tx.update 被调）', async () => {
+    // db.select 顺序：① 商户存在校验 ② before store
+    mockSelectSequence(
+      [{ id: 'lm_x' }],
+      [{ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: null }],
+    )
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_x' })
+    expect(result.success).toBe(true)
+    expect(txUpdate).toHaveBeenCalled()
+  })
+
+  it('不关联（lakalaMerchantId=null）→ 跳过商户校验直接清空外键', async () => {
+    // 不查商户存在，db.select 仅 before store 一次
+    mockSelectSequence([{ orgNodeId: 'node-1', storeName: '蓝茉店', lakalaMerchantId: 'lm_old' }])
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: null })
+    expect(result.success).toBe(true)
+    expect(txUpdate).toHaveBeenCalled()
+  })
+
+  it('所选商户不存在 → 在写库前拦截（不进事务）', async () => {
+    // 商户存在校验返回空 → 早退
+    mockSelectSequence([])
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_missing' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('收款商户不存在')
+    expect(txUpdate).not.toHaveBeenCalled()
+  })
+
+  it('无 store:lakala_config 权限 → 拒绝改收款商户绑定', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: ['store:list', 'store:update'], scopeStoreIds: [] },
+    })
+    const { txUpdate } = setupTx(1)
+    const result = await updateStore('STORE-001', { lakalaMerchantId: 'lm_x' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+    expect(txUpdate).not.toHaveBeenCalled()
   })
 })

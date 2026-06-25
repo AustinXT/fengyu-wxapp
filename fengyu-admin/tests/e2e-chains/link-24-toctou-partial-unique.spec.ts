@@ -2,7 +2,7 @@
  * 链路 24：TOCTOU partial UNIQUE 索引并发回归（ticket 2026-05-17 v2）
  *
  * 主题：migration 0029 加了 7 项 partial unique + 2 项 external_ref 幂等键列。
- *      本 spec 用纯 psql 在生产 5434/fengyu 直接验证 9 个索引的"第二次 INSERT 被拦截"行为，
+ *      本 spec 用纯 psql 在生产 5434/fengyu_e2e 直接验证 9 个索引的"第二次 INSERT 被拦截"行为，
  *      不走 UI、不走云函数，专注于 DB 层守卫不变量。
  *
  * 9 个被测索引：
@@ -22,7 +22,7 @@
  *   3) ON CONFLICT (key) ... DO NOTHING（应静默：rowCount=0）
  *   4) 清理测试数据
  *
- * 数据库：5434/fengyu（生产业务库；migration 0029 已 apply）
+ * 数据库：5434/fengyu_e2e（生产业务库；migration 0029 已 apply）
  *
  * 跑法：
  *   bunx playwright test --config=fengyu-admin/tests/e2e-chains/playwright.manual.config.ts \
@@ -34,15 +34,15 @@ import { execSync } from 'child_process'
 
 const PG_HOST = '47.113.202.7'
 const PG_PORT = '5434'
-const PG_DB = 'fengyu'
+const PG_DB = 'fengyu_e2e'
 const PG_USER = 'fengyu'
 const PG_PASS = 'fengyu123'
 
 // 测试 fixture：从生产 5434 取真实 FK 引用（避免 FK 违反）
 // 这些是只读引用：测试只创建 sale_orders 等子表行（用 LINK24- 前缀，便于清理）
-const FIXTURE_USER_ID = 'FYGK-20260314-00001'  // client_wechat_users
-const FIXTURE_STORE_ID = '010be224f0c14acf'    // stores
-const FIXTURE_STAFF_ID = 'FY-260317001'        // staff_wechat_users
+const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'     // client_wechat_users（e2e fixture）
+const FIXTURE_STORE_ID = 'store-nc01'          // stores（e2e fixture）
+const FIXTURE_STAFF_ID = 'FY-TEST-EMP-MR1'     // staff_wechat_users（e2e fixture）
 
 /** 执行 psql，返回 stdout（去尾空白）；失败抛 Error（含 stderr 第一行） */
 function psql(sql: string): string {

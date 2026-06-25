@@ -15,11 +15,26 @@ import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { exportAllocationOrders } from "@/actions/orders"
 import { exportAllocationServiceOrders } from "@/actions/services"
-import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate } from "@/lib/export-xlsx"
-import type { SaleOrder, ServiceOrder, Store } from "@/lib/types"
+import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate, fmtPercent } from "@/lib/export-xlsx"
+import type { ServiceOrder, Store } from "@/lib/types"
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
+
+/** 销售提成「回款维度」列表行（getPendingPayments 返回项；销售 Tab 用） */
+export interface PaymentAllocationRow {
+  salePaymentId: number
+  saleOrderId: string
+  changeType: string
+  amount: string
+  paymentMethod: string
+  paidAt: string | null
+  allocationStatus: string | null
+  customerName: string | null
+  clientPhone: string | null
+  storeName: string | null
+  preferredEmployeeId: string | null
+}
 
 const allocationStatusMap: Record<string, { label: string; className: string }> = {
   待分配: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -41,14 +56,14 @@ function formatDate(dt: string | null | undefined) {
 export default function AllocationsPageClient({
   tab,
   stores = [],
-  orders = [],
+  payments = [],
   saleTotal = 0,
   serviceOrders = [],
   serviceTotal = 0,
 }: {
   tab: 'sale' | 'service'
   stores?: Store[]
-  orders?: SaleOrder[]
+  payments?: PaymentAllocationRow[]
   saleTotal?: number
   serviceOrders?: ServiceOrder[]
   serviceTotal?: number
@@ -100,12 +115,38 @@ export default function AllocationsPageClient({
       filename: "营业额分配-销售提成",
       sheetName: "销售提成",
       columns: [
-        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "市场", width: 12, accessor: (r) => r.market },
         { header: "门店", width: 18, accessor: (r) => r.storeName },
-        { header: "订单金额", accessor: (r) => r.totalAmount },
-        { header: "分配状态", accessor: (r) => r.allocationStatus },
+        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
+        { header: "销售单类型", width: 12, accessor: (r) => r.saleOrderType },
+        { header: "单据类型", width: 10, accessor: (r) => r.documentType },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
+        { header: "商品类型", width: 12, accessor: (r) => r.productType },
+        { header: "一级分类", width: 14, accessor: (r) => r.categoryL1 },
+        { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
+        { header: "商品名称", width: 24, accessor: (r) => r.productName },
+        { header: "总次数", width: 8, accessor: (r) => r.sessionCount },
+        { header: "可用次数", width: 8, accessor: (r) => r.remainingSessions },
+        { header: "订单金额", width: 12, accessor: (r) => r.saleAmount },
+        { header: "储值卡抵扣", width: 12, accessor: (r) => r.prepaidCardAmount },
+        { header: "实收", width: 12, accessor: (r) => r.received },
+        { header: "已退款", width: 10, accessor: (r) => r.refundedAmount },
+        { header: "单次价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "状态", width: 12, accessor: (r) => r.status },
+        { header: "分配状态", width: 10, accessor: (r) => r.allocationStatus },
+        { header: "员工姓名", accessor: (r) => r.employeeName },
+        { header: "职位", width: 12, accessor: (r) => r.positionName },
+        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
+        { header: "分配金额", width: 12, accessor: (r) => r.allocationAmount },
+        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
+        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
+        { header: "是否活动", width: 10, accessor: (r) => (r.isActivity ? "是" : "否") },
+        { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
+        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
+        { header: "开单人", accessor: (r) => r.openedByName },
         { header: "支付时间", width: 20, accessor: (r) => xlsxDateTime(r.paidAt) },
+        { header: "备注", width: 20, accessor: (r) => r.remark },
       ],
       rows,
     })
@@ -123,12 +164,36 @@ export default function AllocationsPageClient({
       filename: "营业额分配-服务提成",
       sheetName: "服务提成",
       columns: [
-        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "市场", width: 12, accessor: (r) => r.market },
         { header: "门店", width: 18, accessor: (r) => r.storeName },
+        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
+        { header: "销售单类型", width: 12, accessor: (r) => r.saleOrderType },
+        { header: "服务单类型", width: 12, accessor: (r) => r.serviceOrderType },
+        { header: "顾客", accessor: (r) => r.customerName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
+        { header: "商品类型", width: 12, accessor: (r) => r.productType },
+        { header: "一级分类", width: 14, accessor: (r) => r.categoryL1 },
+        { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
+        { header: "商品名称", width: 24, accessor: (r) => r.productName },
+        { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
+        { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
+        { header: "单次价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "状态", width: 12, accessor: (r) => r.status },
         { header: "美容师", accessor: (r) => r.employeeName },
+        { header: "职位", width: 12, accessor: (r) => r.positionName },
+        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
+        { header: "分配金额", width: 12, accessor: (r) => r.allocationAmount },
+        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
+        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
+        { header: "评分", width: 8, accessor: (r) => r.rating },
+        { header: "评价内容", width: 24, accessor: (r) => r.reviewComment },
+        { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
+        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
+        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "来源销售单", width: 22, accessor: (r) => r.sourceSaleOrderId },
         { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
-        { header: "提成状态", accessor: (r) => r.commissionStatus },
+        { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
+        { header: "备注", width: 20, accessor: (r) => r.remark },
       ],
       rows,
     })
@@ -217,7 +282,7 @@ export default function AllocationsPageClient({
           aria-busy={isPending}
         >
           <TabsContent value="sale">
-            <SaleAllocationTable orders={orders} />
+            <SaleAllocationTable payments={payments} />
             <div className="mt-4">
               <Pagination
                 total={saleTotal}
@@ -249,7 +314,9 @@ export default function AllocationsPageClient({
   )
 }
 
-function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
+// 销售提成「回款维度」：分配单元从订单下沉到每笔回款（sale_payment_id）。
+// 列：回款(类型+金额) / 顾客 / 门店 / 订单号 / 分配状态 / 到账时间 / 操作。
+function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] }) {
   return (
     <Card>
       <CardContent className="p-0">
@@ -257,48 +324,55 @@ function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">订单号</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-500">回款</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
-                <th className="px-4 py-3 text-right font-medium text-gray-500">订单金额</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-500">订单号</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-500">分配状态</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">支付时间</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-500">到账时间</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {orders.map((order) => {
-                const statusInfo = allocationStatusMap[order.allocationStatus || "待分配"] || allocationStatusMap.待分配
+              {payments.map((p) => {
+                const statusInfo = allocationStatusMap[p.allocationStatus || "待分配"] || allocationStatusMap.待分配
                 return (
-                  <tr key={order.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
+                  <tr key={p.salePaymentId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
-                      <Link href={`/orders/${order.saleOrderId}`} className="text-[var(--primary)] hover:underline">
-                        {order.saleOrderId}
+                      <span className="inline-flex items-center gap-2">
+                        <Badge variant="outline" className="border-gray-300 text-gray-600 bg-gray-50">
+                          {p.changeType}
+                        </Badge>
+                        <span className="font-medium">¥{Number(p.amount).toLocaleString()}</span>
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">{p.customerName || "—"}</td>
+                    <td className="px-4 py-3">{p.storeName || "—"}</td>
+                    <td className="px-4 py-3">
+                      <Link href={`/orders/${p.saleOrderId}`} className="text-[var(--primary)] hover:underline">
+                        {p.saleOrderId}
                       </Link>
                     </td>
-                    <td className="px-4 py-3">{order.customerName || "—"}</td>
-                    <td className="px-4 py-3">{order.storeName || "—"}</td>
-                    <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
                     <td className="px-4 py-3">
                       <Badge variant="outline" className={statusInfo.className}>
                         {statusInfo.label}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-[#999999]">{order.paidAt ? formatTime(order.paidAt) : "-"}</td>
+                    <td className="px-4 py-3 text-[#999999]">{p.paidAt ? formatTime(p.paidAt) : "-"}</td>
                     <td className="px-4 py-3">
-                      <Link href={`/allocations/${order.saleOrderId}`}>
+                      <Link href={`/allocations/payments/${p.salePaymentId}`}>
                         <Button size="sm" variant="outline">
-                          {order.allocationStatus === "已分配" ? "查看分配" : "分配"}
+                          {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
                         </Button>
                       </Link>
                     </td>
                   </tr>
                 )
               })}
-              {orders.length === 0 && (
+              {payments.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">
-                    暂无匹配的订单，可调整筛选条件
+                    暂无匹配的回款，可调整筛选条件
                   </td>
                 </tr>
               )}

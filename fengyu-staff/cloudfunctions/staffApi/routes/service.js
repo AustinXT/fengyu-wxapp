@@ -14,6 +14,7 @@ const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
+const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 
 /**
  * 创建服务单
@@ -126,9 +127,7 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 家居产品不走到店服务流程`)
     }
 
-    if (si.store_id !== ctx.auth.effectiveStoreId) {
-      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 仅在 ${si.store_id} 可核销，当前门店 ${ctx.auth.effectiveStoreId} 无法创建服务单`)
-    }
+    // 注：可核销门店不再看卡售出门店（si.store_id），改由下方「顾客绑定门店」统一把关（卡跟顾客走）
 
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 剩余次数不足`)
@@ -189,11 +188,27 @@ async function create(ctx) {
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
-      'SELECT became_member_at FROM client_wechat_users WHERE user_id = $1',
+      'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
+    // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
+    if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
+      throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')
+    }
     if (cuRows.length > 0 && cuRows[0].became_member_at && new Date(cuRows[0].became_member_at) <= new Date()) {
       serviceOrderType = '售后'
+    }
+  } else {
+    // 无法解析顾客（legacy client_user_id IS NULL 且未传 clientPhone）：无顾客可绑，退回「sale_item 售出门店 ∈ scope」
+    // 兜底把关，杜绝 A 店凭他店订单行越权核销其剩余次数（卡跟顾客走的前提是有顾客；无顾客时按售出门店校验）。
+    const itemStores = await pg.query(
+      'SELECT store_id FROM sale_items WHERE sale_item_id = ANY($1)',
+      [normalizedItems.map((it) => it.saleItemId)]
+    )
+    for (const row of itemStores) {
+      if (!isStoreInScope(ctx.auth, row.store_id)) {
+        throw new Error('PERMISSION_DENIED: 订单行不在当前门店范围内，无法核销')
+      }
     }
   }
 
@@ -217,7 +232,7 @@ async function create(ctx) {
           service_order_id, status, service_order_type, market_name, store_id,
           service_date, assigned_employee_id,
           remark, client_user_id, appointment_id, created_at, updated_at
-        ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+        ) VALUES ($1, '待服务', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, $5, $6, $7, $8, $9, $10, $10)`,
         [
           serviceOrderId,
           serviceOrderType,
@@ -392,8 +407,8 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, ctx, now) {
   const serviceOrderId = so.service_order_id
 
-  // 原子扣减每条订单行的剩余次数（强制 sale_items.store_id 与服务单门店一致，
-  // 防止本店服务单核销他店购买的卡）
+  // 原子扣减每条订单行的剩余次数。
+  // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
     //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
@@ -402,11 +417,10 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       `UPDATE sale_items
        SET remaining_sessions = remaining_sessions - $1
        WHERE sale_item_id = $2
-         AND store_id = $3
          AND remaining_sessions >= $1
          AND remaining_sessions IS NOT NULL
          AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, session_count)`,
-      [item.session_used, item.sale_item_id, so.store_id]
+      [item.session_used, item.sale_item_id]
     )
 
     if (updateResult.rowCount === 0) {
@@ -418,9 +432,6 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 不存在`)
       }
       const probe = checkRows.rows[0]
-      if (probe.store_id !== so.store_id) {
-        throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
-      }
       if (probe.remaining_sessions !== null && probe.remaining_sessions < item.session_used) {
         throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
       }
@@ -472,9 +483,16 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
          AND sales_category = $2
          AND amount_tier_min <= $3
          AND (amount_tier_max IS NULL OR amount_tier_max >= $3)
+         AND org_id = (
+           SELECT m.id FROM service_orders so
+             JOIN stores s ON so.store_id = s.store_id
+             JOIN org_nodes son ON s.org_node_id = son.id
+             JOIN org_nodes m ON son.parent_id = m.id
+            WHERE so.service_order_id = $4
+         )
        ORDER BY amount_tier_min DESC
        LIMIT 1`,
-      [roleType, row.sales_category, consumeBase]
+      [roleType, row.sales_category, consumeBase, serviceOrderId]
     )
     const rate = Number(rateRows.rows[0]?.commission_rate || 0)
     const consumeAmount = Math.round(consumeBase * rate * 100) / 100
@@ -807,6 +825,8 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 id 参数')
   }
 
+  // 交易数据跟顾客走：先不限门店查服务单，再分层判定可见性
+  // （顾客档案的服务记录可跨门店查看任意服务单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const serviceOrders = await pg.query(`
     SELECT
       so.service_order_id,
@@ -820,19 +840,49 @@ async function detail(ctx) {
       so.completed_at,
       so.created_at,
       so.updated_at,
+      so.store_id,
       wu.phone AS client_phone
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
-    WHERE so.service_order_id = $1 AND so.store_id = $2
-  `, [id, ctx.auth.effectiveStoreId])
+    WHERE so.service_order_id = $1
+  `, [id])
 
   if (serviceOrders.length === 0) {
-    throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 服务单不存在')
   }
 
   const so = serviceOrders[0]
 
-  if (!ctx.auth.roles.includes('manager') && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  // 分层可见性（与 order.detail 一致）：
+  //  1) 服务单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
+  //  2) 管理层模式 + 服务单门店在本 scope 内 → 监管只读放行
+  //  3) 服务单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店服务单）
+  //  4) 都不满足 → 无权查看
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 1/3。
+  const inStoreScope = isStoreInScope(ctx.auth, so.store_id)
+  const isManager = ctx.auth.roles.includes('manager')
+  const isMgmt = ctx.auth.loginLevel === 'management'
+  let visible = inStoreScope && (isManager || so.assigned_employee_id === ctx.auth.staffWfId)
+  if (!visible && isMgmt && inStoreScope) {
+    visible = true // 管理层监管本 scope 内服务单（只读）
+  }
+  if (!visible && so.client_user_id) {
+    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 service_order_id 越权查看本店他人负责顾客的服务单详情。
+    const custRows = await pg.query(
+      'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
+      [so.client_user_id]
+    )
+    if (
+      custRows.length > 0 &&
+      isStoreInScope(ctx.auth, custRows[0].bound_store_id) &&
+      (!restrictToBoundEmployee(ctx.auth) || custRows[0].bound_employee_id === ctx.auth.staffWfId)
+    ) {
+      visible = true
+    }
+  }
+  if (!visible) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 

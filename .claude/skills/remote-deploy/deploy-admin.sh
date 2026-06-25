@@ -21,6 +21,9 @@ ENV="$1"
 SSH_HOST="${2:-ali-demo}"
 REMOTE_DIR="${3:-/root/proj.xt.com/fengyu-wxapp/docker}"
 
+# 切到项目根：后续 envs/、db/、docker/ 等相对路径均基于此
+cd "$(dirname "$0")/../../.."
+
 # prod 强制确认
 if [[ "$ENV" == "prod" ]]; then
   echo "⚠️  About to deploy admin to PROD ($SSH_HOST)"
@@ -32,8 +35,64 @@ if [[ "$ENV" == "prod" ]]; then
   fi
 fi
 
+# [预检] prod 部署前：5433 生产库迁移必须先于代码上线。
+# 复盘（2026-06-24）：admin 先部署了依赖 migration 0069 的 /allocations 页面，
+# 但 5433 当时未迁 0069 → 生产 Server Components 报 "column ... does not exist"。
+# 本预检比对「本地 journal 总数」vs「5433 已应用数」，落后则列出 pending 并确认后迁移，杜绝该窗口期。
+if [[ "$ENV" == "prod" ]]; then
+  echo "=== [预检] 5433 生产库迁移状态 ==="
+  PROD_DB_URL=$(grep '^ADMIN_DATABASE_URL=' "envs/$ENV.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+  if [[ -z "$PROD_DB_URL" ]]; then
+    echo "✗ envs/$ENV.env 缺少 ADMIN_DATABASE_URL，无法预检迁移。" >&2
+    exit 1
+  fi
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "✗ 本机未装 psql，无法预检 5433 迁移状态（brew install libpq）。" >&2
+    exit 1
+  fi
+
+  LOCAL_N=$(node -e 'process.stdout.write(String(require("./db/migrations/meta/_journal.json").entries.length))' 2>/dev/null)
+  APPLIED_N=$(psql "$PROD_DB_URL" -tAc "SELECT count(*) FROM drizzle.__drizzle_migrations" 2>/dev/null | tr -d '[:space:]')
+
+  if [[ -z "$LOCAL_N" || -z "$APPLIED_N" ]]; then
+    echo "⚠️  无法读取迁移计数（5433 连不上 / node 或 journal 异常）。"
+    read -p "跳过迁移预检、继续部署? (yes=跳过 / 其它=中止): " skip_pc
+    [[ "$skip_pc" == "yes" ]] || { echo "Aborted."; exit 1; }
+  elif (( APPLIED_N < LOCAL_N )); then
+    echo "⚠️  5433 落后：本地 journal $LOCAL_N 个，5433 已应用 $APPLIED_N 个，缺 $((LOCAL_N - APPLIED_N)) 个待迁移："
+    node -e '
+      const j = require("./db/migrations/meta/_journal.json");
+      const fs = require("fs"), a = +process.argv[1];
+      for (const e of j.entries.slice(a)) {
+        let d = 0;
+        try { d = (fs.readFileSync("db/migrations/" + e.tag + ".sql", "utf8").match(/DROP TABLE|DROP COLUMN|DROP TYPE|DROP CONSTRAINT|DROP INDEX|TRUNCATE/gi) || []).length; } catch {}
+        console.log("    - " + e.tag + (d ? "   ⚠️ 含 " + d + " 处破坏性语句(DROP/TRUNCATE)" : ""));
+      }
+    ' "$APPLIED_N"
+    # 锁检查：避开 pg_dump 的 AccessExclusive 冻结整表（参考 memory project_migrate_vs_backup_lock）
+    LOCKERS=$(psql "$PROD_DB_URL" -tAc "SELECT count(*) FROM pg_stat_activity WHERE datname='fengyu_wxapp' AND pid<>pg_backend_pid() AND (application_name ILIKE '%pg_dump%' OR query ILIKE '%pg_dump%' OR (state='active' AND xact_start IS NOT NULL AND now()-xact_start > interval '30 seconds'))" 2>/dev/null | tr -d '[:space:]')
+    if (( ${LOCKERS:-0} > 0 )); then
+      echo "    ⚠️  检测到 ${LOCKERS} 个长事务/疑似 pg_dump，迁移可能撞 AccessExclusive 锁，建议稍后再迁。"
+    fi
+    echo ""
+    read -p "对 5433 执行以上迁移、再继续部署? (yes=迁移并继续 / 其它=中止): " mig_confirm
+    if [[ "$mig_confirm" == "yes" ]]; then
+      ( cd db && DATABASE_URL="$PROD_DB_URL" npm run db:migrate )
+      echo "✓ 5433 迁移完成，继续部署。"
+    else
+      echo "已中止。请手动迁移 5433 后重试。" >&2
+      exit 1
+    fi
+  elif (( APPLIED_N > LOCAL_N )); then
+    echo "⚠️  5433 已应用 $APPLIED_N 个 > 本地 journal $LOCAL_N 个：本地代码可能落后（未 pull 最新 migration）。"
+    read -p "仍用当前代码继续部署? (yes=继续 / 其它=中止): " ahead_confirm
+    [[ "$ahead_confirm" == "yes" ]] || { echo "Aborted."; exit 1; }
+  else
+    echo "✓ 5433 已是最新（$APPLIED_N 个 migration），无 pending。"
+  fi
+fi
+
 echo "=== 1/5 本地构建 Docker 镜像（linux/amd64）==="
-cd "$(dirname "$0")/../../.."
 APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
 APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"

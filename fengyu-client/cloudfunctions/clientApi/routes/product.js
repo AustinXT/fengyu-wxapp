@@ -104,7 +104,7 @@ async function categories(ctx) {
 /**
  * 内部函数：按分类获取商城商品列表（含 SKU）
  */
-async function getProductListByCategory({ categoryId, marketName }) {
+async function getProductListByCategory({ categoryId, marketName, keyword }) {
   const params = []
 
   let marketFilter
@@ -120,6 +120,12 @@ async function getProductListByCategory({ categoryId, marketName }) {
   if (categoryId) {
     params.push(categoryId)
     whereClause += ` AND p.category_id = $${params.length}`
+  }
+
+  // 全量搜索：按商品名模糊匹配（首页搜索框，跨全部分类）
+  if (keyword) {
+    params.push(`%${keyword}%`)
+    whereClause += ` AND p.name ILIKE $${params.length}`
   }
 
   // 仅返回有有效 SKU 的商品
@@ -178,11 +184,14 @@ async function getProductListByCategory({ categoryId, marketName }) {
 
   return productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
+    // priceFrom=会员/特价起价（含 special_price，会员视图）；listPriceFrom=标价起价（非会员视图）
     const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
     return {
       ...product,
       skuList: skus,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   })
 }
@@ -194,6 +203,22 @@ async function spuList(ctx) {
   const { categoryId } = ctx.event.payload || {}
   const marketName = ctx.auth?.boundMarketName || null
   const result = await getProductListByCategory({ categoryId, marketName })
+  ctx.result = { spuList: result }
+}
+
+/**
+ * 全量商品搜索（首页搜索框）
+ * 按商品名模糊匹配、跨全部分类——替代纯前端本地缓存搜索，
+ * 让顾客能搜到任何可见商品（含未浏览过分类的商品）。
+ */
+async function search(ctx) {
+  const kw = (ctx.event.payload?.keyword || '').trim()
+  if (!kw) {
+    ctx.result = { spuList: [] }
+    return
+  }
+  const marketName = ctx.auth?.boundMarketName || null
+  const result = await getProductListByCategory({ marketName, keyword: kw })
   ctx.result = { spuList: result }
 }
 
@@ -321,9 +346,11 @@ async function hotList(ctx) {
   const result = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
     const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
     return {
       ...product,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   })
 
@@ -374,7 +401,7 @@ async function spuDetail(ctx) {
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
       sk.service_fee, sk.sort_order, sk.is_shengmei,
-      mps.bundle_price, mps.sort_order AS display_order,
+      mps.bundle_price, mps.bundle_list_price, mps.sort_order AS display_order,
       mps.bundle_group_id,
       bg.group_name, bg.pick_count AS group_pick_count,
       pc.product_kind,
@@ -392,6 +419,7 @@ async function spuDetail(ctx) {
   `, [productId])
 
   const prices = skuList.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+  const listPrices = skuList.map(s => Number(s.bundle_price || s.price || 0))
 
   // 构建分组信息（套餐商品）
   let bundleGroups = null
@@ -416,7 +444,8 @@ async function spuDetail(ctx) {
       ...product,
       skuList,
       bundleGroups,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null
+      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
     }
   }
 }
@@ -456,6 +485,7 @@ async function experienceCardList(ctx) {
 module.exports = {
   categories,
   spuList,
+  search,
   skuDetail,
   spuDetail,
   hotList,

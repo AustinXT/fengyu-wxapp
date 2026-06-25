@@ -2,6 +2,8 @@
 
 interface CartItem {
   price: number
+  /** 标价（划线原价）；内部单半价以此为准，缺省降级为 price */
+  listPrice?: number
   quantity: number
 }
 
@@ -16,11 +18,12 @@ export function calcCartTotal(cart: CartItem[]): { count: number; total: string 
 }
 
 /**
- * 内部单半价合计：每行按 price × 0.5 × quantity（与云函数 order.create 内部单分支对齐）。
+ * 内部单半价合计：每行按 标价(listPrice) × 0.5 × quantity（与云函数 order.create 内部单分支对齐，
+ * 不取会员价；listPrice 缺省时降级为 price）。
  */
 export function calcHalfPriceTotal(cart: CartItem[]): string {
   const total = cart.reduce((s, c) => {
-    const halfUnit = Math.round(c.price * 50) / 100
+    const halfUnit = Math.round((c.listPrice ?? c.price) * 50) / 100
     return s + halfUnit * c.quantity
   }, 0)
   return total.toFixed(2)

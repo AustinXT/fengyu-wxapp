@@ -33,6 +33,7 @@ import { sql, type SQL } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
+import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { withComparison } from '@/lib/data-center/comparison'
 import type { AuthSession } from '@/lib/types'
 import type {
@@ -126,6 +127,7 @@ async function queryProjectCount(
       AND so.status = '已完成'
       AND so.service_date BETWEEN ${range.start} AND ${range.end}
       AND sit.sales_category IN ('自销自耗', '他销自耗')
+      AND ${excludeDepositRefundSql('so')}
   `)
   return num(first(rows).v)
 }
@@ -162,6 +164,7 @@ async function queryShengmeiConsume(
       AND so.status = '已完成'
       AND so.service_date BETWEEN ${range.start} AND ${range.end}
       AND sit.is_shengmei = TRUE
+      AND ${excludeDepositRefundSql('so')}
   `)
   return num(first(rows).v)
 }
@@ -716,6 +719,7 @@ async function queryOpsBreakdown(
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
         AND sit.sales_category IN ('自销自耗', '他销自耗')
+        AND ${excludeDepositRefundSql('so')}
       GROUP BY so.store_id
     ),
     -- 生美实耗（单次客耗分子，按 so.store_id 归组）
@@ -727,6 +731,7 @@ async function queryOpsBreakdown(
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
         AND sit.is_shengmei = TRUE
+        AND ${excludeDepositRefundSql('so')}
       GROUP BY so.store_id
     ),
     -- 服务人次（单次客耗分母 = 已完成 service_orders 行数，按 so.store_id 归组）

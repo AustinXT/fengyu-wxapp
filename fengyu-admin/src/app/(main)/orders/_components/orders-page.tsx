@@ -22,6 +22,7 @@ import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/
 import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode, exportOrders } from "@/actions/orders";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
+import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
 
@@ -46,11 +47,8 @@ const orderTypeColorMap: Record<string, string> = {
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
   转换单: "bg-[#E3F2FD] text-[#1565C0]",
   寄存单: "bg-[#F3F4F6] text-[#6B7280]",
+  充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
-
-function formatTime(dt: string) {
-  return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
 
 function OrderActions({ order }: { order: SaleOrder }) {
   const [pending, startTransition] = useTransition();
@@ -71,8 +69,8 @@ function OrderActions({ order }: { order: SaleOrder }) {
         } else {
           toast.error(res.message);
         }
-      } catch {
-        toast.error("操作失败，请稍后重试");
+      } catch (err) {
+        toast.error(actionErrorMessage(err, "操作失败，请稍后重试"));
       }
     });
   };
@@ -90,7 +88,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
           setQrError(res.message || "生成小程序码失败");
         }
       })
-      .catch(() => setQrError("生成小程序码失败"))
+      .catch((err) => setQrError(actionErrorMessage(err, "生成小程序码失败")))
       .finally(() => setQrLoading(false));
   };
 
@@ -326,6 +324,9 @@ export default function OrdersPageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">订单管理</h1>
         {canCreateOrder && (
           <div className="flex items-center gap-2">
+            <Link href="/orders/create-inflow">
+              <Button variant="outline">充值金转入</Button>
+            </Link>
             <Link href="/orders/create-deposit">
               <Button variant="outline">开寄存单</Button>
             </Link>
@@ -352,7 +353,7 @@ export default function OrdersPageClient({
               <option value="">全部单据</option>
               {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
               {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
-              {(["销售单", "内部单", "转换单", "寄存单"] as SaleOrderType[]).map((t) => (
+              {(["销售单", "内部单", "转换单", "寄存单", "充值单"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>
@@ -441,6 +442,11 @@ export default function OrdersPageClient({
                       <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                         {order.saleOrderType}
                       </Badge>
+                      {order.isActivity && (
+                        <Badge variant="secondary" className="ml-1 bg-[#FCE8E6] text-[#C0322A]">
+                          活动
+                        </Badge>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={order.status} />
@@ -459,7 +465,7 @@ export default function OrdersPageClient({
                     </td>
                     <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
-                    <td className="px-4 py-3 text-[#999999]">{formatTime(order.saleOrderDatetime)}</td>
+                    <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>
                     <td className="px-4 py-3">
                       <OrderActions order={order} />
                     </td>

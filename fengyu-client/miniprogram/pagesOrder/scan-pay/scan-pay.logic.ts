@@ -8,6 +8,11 @@ export interface ScanPayAmounts {
   couponDiscount: number;
   cardBalance: number;
   useCard: boolean;
+  /**
+   * 抵扣基数覆盖。回款（部分支付）场景传"剩余应付"（remaining），
+   * 让储值卡只抵扣尾款；首付场景省略，按 totalAmount - couponDiscount 计算。
+   */
+  payableBase?: number;
 }
 
 export interface RecomputeResult {
@@ -35,7 +40,10 @@ export function recomputeAmounts(input: ScanPayAmounts): RecomputeResult {
   const coupon = Number(input.couponDiscount) || 0;
   const balance = Number(input.cardBalance) || 0;
 
-  const payable = round2(Math.max(0, total - coupon));
+  // 回款场景传 payableBase=remaining（尾款）；首付场景按 total - coupon
+  const payable = input.payableBase != null
+    ? round2(Math.max(0, Number(input.payableBase) || 0))
+    : round2(Math.max(0, total - coupon));
 
   let prepaid = 0;
   if (input.useCard && balance > 0) {
@@ -45,16 +53,18 @@ export function recomputeAmounts(input: ScanPayAmounts): RecomputeResult {
   return { payable, prepaidCardAmount: prepaid, paidAmount: paid };
 }
 
-export type ConfirmRoute = 'confirmPrepaidFull' | 'wechatPay' | 'offlinePay';
+export type ConfirmRoute = 'confirmPrepaidFull' | 'wechatPay' | 'alipayPay' | 'offlinePay';
 
 /**
  * 决策"确认支付"按钮的下游路径
  * paid=0  → confirmPrepaidFull（同事务扣卡 + 置已支付）
- * paid>0 + 微信 → wechatPay
- * paid>0 + 线下 → offlinePay
+ * paid>0 + 微信   → wechatPay
+ * paid>0 + 支付宝 → alipayPay（聚合主扫吱口令）
+ * paid>0 + 线下   → offlinePay
  */
 export function decideConfirmRoute(paidAmount: number, method: PayMethod): ConfirmRoute {
   if (paidAmount <= 0) return 'confirmPrepaidFull';
   if (method === '线下') return 'offlinePay';
+  if (method === '支付宝') return 'alipayPay';
   return 'wechatPay';
 }

@@ -58,6 +58,12 @@ ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
 
 RUN bun run build
 
+# 代码保护(L1)：兜底删除构建产物里的任何 source map。next build 生产模式默认不发
+# .map（next.config.ts 也已显式 productionBrowserSourceMaps:false），此处再做一道
+# belt-and-suspenders——即便未来某次配置误开，可还原成 TS 源码的 .map 也绝不进入
+# 交付给客户服务器的镜像。只 runner stage 会被 COPY 的两个目录即可。
+RUN find .next/standalone .next/static -name '*.map' -type f -delete 2>/dev/null || true
+
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
 # postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过
 # 用 .mjs 后缀让 node 18 按 ESM 解析（drizzle / postgres-js 都是 ESM-only）

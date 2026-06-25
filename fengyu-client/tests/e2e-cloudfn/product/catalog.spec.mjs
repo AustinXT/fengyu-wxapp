@@ -99,6 +99,36 @@ async function caseHotListEmptySkuMarketScope() {
   }
 }
 
+// product.search：全量按商品名搜索（不依赖 categoryId，跨全部分类）
+async function caseSearchByName() {
+  await ensureTestCategories()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
+  const res = await invokePublic('product.search', { keyword: '测试商品' })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const list = res.data?.spuList || []
+  const hit = list.find(p => p.product_id === TEST_PRODUCT_ID)
+  if (!hit) throw new Error(`search('测试商品') 未命中 ${TEST_PRODUCT_ID}，got ${list.map(p => p.product_id).join(',')}`)
+  if (!Array.isArray(hit.skuList) || hit.skuList.length === 0) {
+    throw new Error('search 命中商品应含 skuList')
+  }
+}
+
+async function caseSearchNoMatch() {
+  await ensureTestCategories()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
+  const res = await invokePublic('product.search', { keyword: 'ZZZ绝不存在ZZZ' })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const list = res.data?.spuList || []
+  if (list.length !== 0) throw new Error(`expect empty, got ${list.length}`)
+}
+
+async function caseSearchEmptyKeyword() {
+  const res = await invokePublic('product.search', { keyword: '   ' })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const list = res.data?.spuList || []
+  if (list.length !== 0) throw new Error(`expect empty for blank keyword, got ${list.length}`)
+}
+
 const CASES = [
   ['categories returns array containing test mall category', caseCategoriesHasTest],
   ['spuList without categoryId returns test product', caseSpuListAll],
@@ -106,6 +136,9 @@ const CASES = [
   ['spuList for unknown categoryId returns empty', caseSpuListEmptyCategory],
   ['shopInit returns { groups, categories, spuList }', caseShopInit],
   ['hotList 排除 disabled SKU 的 product', caseHotListEmptySkuMarketScope],
+  ['search by name 命中商品（跨分类·不传 categoryId）', caseSearchByName],
+  ['search 无匹配返回空', caseSearchNoMatch],
+  ['search 空 keyword 返回空', caseSearchEmptyKeyword],
 ]
 
 let pass = 0, fail = 0

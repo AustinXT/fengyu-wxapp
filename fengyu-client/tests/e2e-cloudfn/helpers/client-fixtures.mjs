@@ -535,6 +535,33 @@ export async function cleanupClientExtras(prefix = NS) {
        )`,
       [like],
     ],
+    // payments + 分配子表（FK：必须先于 sale_order_payments/sale_items/sale_orders 删，否则 FK 卡住被 skip → 残留「待支付」单撞 uq_sale_orders_client_pending）
+    [
+      `DELETE FROM sale_payment_allocatable_items WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_allocations WHERE sale_payment_id IN (
+         SELECT id FROM sale_order_payments WHERE sale_order_id IN (
+           SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+             SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+           )
+         )
+       )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_order_payments WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`,
+      [like],
+    ],
     [
       `DELETE FROM sale_items WHERE sale_order_id IN (
          SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (

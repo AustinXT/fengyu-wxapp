@@ -28,7 +28,14 @@
           <text class="staff-position" wx:if="{{staff.position}}">{{staff.position}}</text>
         </view>
         <van-tag
-          wx:if="{{staff.isBusy}}"
+          wx:if="{{staff.onLeave}}"
+          color="#C0322A"
+          plain
+          round
+          size="medium"
+        >休假中</van-tag>
+        <van-tag
+          wx:elif="{{staff.isBusy}}"
           color="#FAAD14"
           plain
           round

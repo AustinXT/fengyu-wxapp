@@ -60,3 +60,46 @@ describe('card.recharge', () => {
     expect(ctx.result.payAmount).toBe(900)
   })
 })
+
+describe('card.inflow — 幂等防重复入账', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // inflow 第 1 次模块级 pg.query 即查顾客（绑定本店 store-001，过 isStoreInScope）
+  function mockCustomerInScope() {
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '本店顾客',
+      customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+  }
+
+  test('相同 requestId 已转入 → 幂等短路复用既有订单，不重复建单 / 不重复入账', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'cu-001', amount: 500, requestId: 'req-xyz' })
+    mockCustomerInScope()
+    // 事务内 client.query 返回原生 node-pg Result（取 .rows）：① 顾客级锁 → 空；② dup 查 → 命中既有转入单
+    const clientQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ ref_order_id: 'FY-XSD-WX-2606240001' }] })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await cardRoutes.inflow(ctx)
+
+    expect(ctx.result.saleOrderId).toBe('FY-XSD-WX-2606240001')
+    expect(ctx.result.message).toMatch(/转入已完成/)
+    // 早返回：仅 2 次 client.query（锁 + dup 查），未进入建单 / 入账（守护 .rows 取值不退化为死代码）
+    expect(clientQuery).toHaveBeenCalledTimes(2)
+  })
+
+  test('新 requestId 无重复 → 正常建单 + 入账（message=转入成功）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'cu-001', amount: 500, requestId: 'req-new' })
+    mockCustomerInScope()
+    // 默认 client.query 返回空 rows（dup 未命中）+ rowCount=1，覆盖锁 / orderSeq / INSERT / logOperation
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await cardRoutes.inflow(ctx)
+
+    expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-/)
+    expect(ctx.result.message).toBe('转入成功')
+    expect(clientQuery.mock.calls.length).toBeGreaterThan(2)
+  })
+})

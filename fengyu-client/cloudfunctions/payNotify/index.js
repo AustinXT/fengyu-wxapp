@@ -17,8 +17,100 @@ const { settlePointsSafe } = require('./points')
 const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
+const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
+
+/**
+ * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
+ * 提成率按【本次回款额 eventAmount】查档（按回款逐笔分配口径，非订单累计）。
+ * 无 preferred / 无 perItem 直接跳过（留待分配走手动）。
+ * 跨端约定（no-shared-cloudfunctions）：buildSalesRateLookup 与 staffApi allocation.js /
+ * admin allocations.ts 同语义独立副本。
+ */
+async function autoAllocateOnlinePayment(
+  client,
+  { salePaymentId, saleOrderId, perItem, eventAmount, preferredEmployeeId, marketName, now },
+) {
+  if (!preferredEmployeeId || !Array.isArray(perItem) || perItem.length === 0) return
+
+  // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
+  const empRow = await client.query(
+    'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
+    [preferredEmployeeId],
+  )
+  const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
+  const roleType = skills[0] || '美容师'
+
+  // 销售提成固化快照：加载该市场「销售单」费率矩阵，tier 基准 = 本次回款额 eventAmount
+  let salesRateGrouped = []
+  if (marketName) {
+    const rateRows = await client.query(
+      `SELECT crm.role_type, crm.sales_category,
+              crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+       FROM commission_rate_matrix crm
+       JOIN org_nodes n ON n.id = crm.org_id
+       WHERE n.name = $1 AND crm.order_type = '销售单'
+       ORDER BY crm.role_type, crm.amount_tier_min`,
+      [marketName],
+    )
+    const byKey = new Map()
+    for (const r of rateRows.rows) {
+      const dept = (r.role_type || '').trim()
+      const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+      let entry = byKey.get(key)
+      if (!entry) {
+        entry = {
+          department: dept,
+          amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+          amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+          orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        }
+        byKey.set(key, entry)
+        salesRateGrouped.push(entry)
+      }
+      entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+    }
+  }
+  const lookupSalesRate = (role, salesCat, amount) => {
+    let hit = null
+    for (const r of salesRateGrouped) {
+      if (r.department !== role) continue
+      if (amount < r.amountMin || amount > r.amountMax) continue
+      const rate = r.orderRates[salesCat]
+      if (!rate || rate <= 0) continue
+      if (!hit || r.amountMin > hit.amountMin) hit = r
+    }
+    return (hit && hit.orderRates[salesCat]) || 0
+  }
+
+  // 为本次回款每个可分配项建分配记录（100% 给指定销售员）+ 销售提成固化快照
+  for (const it of perItem) {
+    const salesCategory = it.salesCategory || '自销自耗'
+    const commissionRate = lookupSalesRate(roleType, salesCategory, eventAmount)
+    const commissionAmount = Math.round(Number(it.amount) * commissionRate * 100) / 100
+    await client.query(
+      `INSERT INTO sale_allocations
+         (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
+          commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
+       VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7, FALSE, $8, $8)
+       ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role_payment DO NOTHING`,
+      [it.saleItemId, preferredEmployeeId, roleType, Number(it.amount).toFixed(2),
+       commissionRate, commissionAmount, salePaymentId, now],
+    )
+  }
+  // 本回款主流水行 → 已分配（线上自动分配完成；店长仍可从已分配复核改派）
+  // CAS 守卫：IN ('待分配','已分配') 挡 NULL/脏态；支付回调事务中分配标记为次要副作用，
+  // rowCount=0 仅告警不 throw（INSERT 已 ON CONFLICT DO NOTHING 幂等，不回滚支付）。
+  const allocUpd = await client.query(
+    `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')`,
+    [salePaymentId],
+  )
+  if (allocUpd.rowCount === 0) {
+    console.warn('[payNotify] allocation-status-transition-blocked:', salePaymentId)
+  }
+}
 const lakalaSign = require('./utils/lakala-sign')
 const lakalaConfig = require('./utils/lakala-config')
+const wxShipping = require('./utils/wx-shipping')
 
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU 或 product_name 正则解析面值。
@@ -31,6 +123,10 @@ function getPg() {
     // 全局 OID 解析：numeric/bigint → JS Number（详见 db/pg.js 注释）
     pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))
     pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))
+    // timestamp without time zone (1114)：库存北京墙钟字面，显式按 +08:00 构造 Date，与进程 TZ 解耦。
+    // CloudBase 运行时 process.env.TZ 不可靠（V8/ICU 时区 spawn 期已锁 UTC），默认 parser 会把
+    // 北京墙钟当 UTC 解析 → 序列化给前端再 +8 → 晚 8 小时。返回 Date（类型不变，内部运算兼容）。
+    pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
     pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
       max: 3,
@@ -70,8 +166,10 @@ function isPayNotifyEnabled() {
  *       trade_state   INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
  *       account_type  WECHAT / ALIPAY / UQRCODEPAY ...
  *       acc_trade_no  微信 transaction_id 或支付宝交易号（落 external_trade_info 供 admin 退款取 origin）
- *       total_amount  订单金额（分）
- *       payer_amount  实际付款金额（分，含微信营销减扣；入账金额必须用此字段，防少收）
+ *       total_amount  订单/本次应付金额（分，= 我方 preorder 传入额；**入账基准用此字段**）
+ *       payer_amount  用户实付金额（分，扣除了银行立减金/平台立减/红包等"渠道·银行出资"营销立减；
+ *                     这类立减由银行/平台补贴、商户全额到账，**不作入账**，否则会被误判少收/部分支付。
+ *                     仅随整 body 落 external_trade_info 作快照）
  *
  * 返回：
  *   - null              非 HTTP 入口（走原 callFunction 路径）
@@ -139,12 +237,16 @@ function parseHttpTriggerEvent(event) {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${tradeState} ack` } }
   }
 
-  // 入账金额优先用 payer_amount（实付，含微信营销减扣）；缺失/0 兜底 total_amount 并告警
-  let effectiveFen = payerAmountFen
+  // 入账基准用 total_amount（本次/订单应付额 = 我方 preorder 传入额）。
+  // payer_amount 是"用户实付"，扣了银行立减金/平台立减/红包等"渠道·银行出资"营销立减；
+  // 这些立减由银行/平台补贴、商户全额到账，订单不应记为少收/部分支付。
+  // 订单优惠(优惠券/储值卡)已在下单时编入 total_amount，支付侧立减不再二次扣减 received。
+  // （payer_amount 仍随整 body 落 external_trade_info 作快照）
+  let effectiveFen = totalAmountFen
   if (!effectiveFen || effectiveFen <= 0) {
-    if (totalAmountFen > 0) {
-      console.warn('[payNotify] payer_amount 缺失，兜底 total_amount=', totalAmountFen, 'outTradeNo=', outTradeNo)
-      effectiveFen = totalAmountFen
+    if (payerAmountFen > 0) {
+      console.warn('[payNotify] total_amount 缺失，兜底 payer_amount=', payerAmountFen, 'outTradeNo=', outTradeNo)
+      effectiveFen = payerAmountFen
     }
   }
 
@@ -163,12 +265,156 @@ function parseHttpTriggerEvent(event) {
   }
 }
 
+// 测试可见：聚合主扫 HTTP 回调字段映射（含 total_amount 入账基准）单测直接调用
+exports.parseHttpTriggerEvent = parseHttpTriggerEvent
+
+/**
+ * 对单笔微信交易上报「用户自提」发货（查 openid + 商品描述 → 调微信 upload_shipping_info）。
+ * 回调即时上报与定时补偿共用此核心。调用方负责 try/catch（本函数会向上抛 PG/网络异常）。
+ *
+ * 微信 errcode 语义：
+ *   - 0          上报成功
+ *   - 10060002   该交易已上报过发货（幂等命中，视为成功）
+ *   - 10060001   支付单不存在 —— 拉卡拉服务商交易刚支付、微信支付单尚未同步到「发货信息管理」
+ *                系统（付款后通常 ~10 秒内同步），而回调在 ~2 秒内即触发，故首次多半命中此码。
+ *                属预期内、待定时补偿 runShippingBackfill 稍后重试，不计为错误。
+ *   - 其它        真实失败（记 error 日志）
+ *
+ * @param {import('pg').Pool} pg
+ * @param {string} saleOrderId
+ * @param {string} wxTxnId  微信交易单号（拉卡拉回调的 acc_trade_no）
+ * @returns {Promise<{status:'ok'|'pending'|'skip'|'fail', errcode?:number}>}
+ */
+async function reportShippingForOrder(pg, saleOrderId, wxTxnId) {
+  if (!wxTxnId) {
+    console.warn('[payNotify/wx-shipping] 缺微信交易单号(acc_trade_no)，跳过上报:', saleOrderId)
+    return { status: 'skip' }
+  }
+  // 付款人 openid（客户端 appid 下）；WorkFine 同步顾客可能无 openid → 跳过
+  const openidRes = await pg.query(
+    `SELECT u.openid
+       FROM sale_orders o
+       JOIN client_wechat_users u ON u.user_id = o.client_user_id
+      WHERE o.sale_order_id = $1`,
+    [saleOrderId]
+  )
+  const openid = openidRes.rows[0]?.openid
+  if (!openid) {
+    console.warn('[payNotify/wx-shipping] 订单无付款人 openid，跳过上报:', saleOrderId)
+    return { status: 'skip' }
+  }
+
+  // 商品描述：取明细商品名去重拼接，截断到 120 字（微信 item_desc 上限 128）；缺名兜底
+  const itemRes = await pg.query(
+    `SELECT product_name FROM sale_items WHERE sale_order_id = $1 AND product_name IS NOT NULL`,
+    [saleOrderId]
+  )
+  const names = [...new Set(itemRes.rows.map((r) => r.product_name).filter(Boolean))]
+  let itemDesc = names.join('、') || '美容服务'
+  if (itemDesc.length > 120) itemDesc = itemDesc.slice(0, 117) + '...'
+
+  const res = await wxShipping.uploadSelfPickupShipping({ transactionId: wxTxnId, openid, itemDesc })
+  const errcode = res && res.errcode
+  if (errcode === 0 || errcode === 10060002) {
+    console.log('[payNotify/wx-shipping] 上报成功:', saleOrderId, errcode === 10060002 ? '(已上报,幂等)' : '')
+    return { status: 'ok', errcode }
+  }
+  if (errcode === 10060001) {
+    // 支付单尚未同步到发货系统，待定时补偿重试（非错误，不刷 error 日志）
+    console.log('[payNotify/wx-shipping] 支付单未同步，待定时补偿重试:', saleOrderId)
+    return { status: 'pending', errcode }
+  }
+  console.error('[payNotify/wx-shipping] 上报失败:', saleOrderId, errcode, res && res.errmsg)
+  return { status: 'fail', errcode }
+}
+
+/**
+ * 回调即时上报（best-effort）——付款回调成功后尝试一次，绝不抛错。
+ *
+ * 触发条件：WX_SHIPPING_ENABLED=true + 有 CLIENT_APPSECRET + 微信渠道 + 拿到 acc_trade_no。
+ * 支付宝订单 / callFunction 入口（无 tradeInfo 快照）一律跳过。
+ *
+ * 注：拉卡拉服务商交易刚支付时微信支付单常未同步（首次多半返回 10060001 pending），由定时补偿
+ * runShippingBackfill 兜底重试；故此处失败 / 未同步绝不影响给拉卡拉的 SUCCESS 应答。
+ *
+ * @param {import('pg').Pool} pg
+ * @param {{ saleOrderId:string, paymentMethod:string, tradeInfo:any }} p
+ */
+async function reportWxShippingSafe(pg, { saleOrderId, paymentMethod, tradeInfo }) {
+  try {
+    if (!wxShipping.isEnabled()) return
+    if (paymentMethod !== '微信') return
+    if (!tradeInfo) return  // callFunction 入口无回调快照，取不到微信交易单号
+    await reportShippingForOrder(pg, saleOrderId, tradeInfo.acc_trade_no)
+  } catch (e) {
+    console.error('[payNotify/wx-shipping] 上报异常(非致命):', saleOrderId, e && e.message)
+  }
+}
+
+/**
+ * 微信发货补偿上报（CloudBase 定时触发器入口）。
+ *
+ * 背景：付款回调内即时上报常因「支付单尚未同步」(10060001) 失败——拉卡拉服务商交易支付后，
+ * 微信支付单同步到「发货信息管理」系统通常需 ~10 秒，而回调在 ~2 秒内就完成。故由定时器每分钟
+ * 扫描近期已支付的微信单补偿上报，直到成功（微信幂等：已上报返回 10060002 视为成功）。
+ *
+ * 窗口下界 now()-30s：给微信同步留时间（早于此回调刚试过，多半还没同步）。
+ * 窗口上界 now()-30min：覆盖同步延迟 + 充足重试次数；超窗仍失败者已非时序问题，停止避免无限重试。
+ * 美容院单量小，窗口内通常 0~2 单，无状态重复扫描开销可忽略（已上报单走 10060002 幂等跳过）。
+ *
+ * @returns {Promise<{code:string, message:string}>}
+ */
+async function runShippingBackfill() {
+  if (!wxShipping.isEnabled()) {
+    console.log('[payNotify/wx-shipping] backfill skip: 未启用(WX_SHIPPING_ENABLED/CLIENT_APPSECRET)')
+    return { code: 'SUCCESS', message: 'wx-shipping disabled' }
+  }
+  const pg = getPg()
+  const { rows } = await pg.query(
+    `SELECT sale_order_id, external_trade_info->>'acc_trade_no' AS wx_txn
+       FROM sale_order_payments
+      WHERE payment_method = '微信'
+        AND external_trade_info->>'acc_trade_no' IS NOT NULL
+        AND created_at <  now() - interval '30 seconds'
+        AND created_at >  now() - interval '30 minutes'
+      ORDER BY created_at ASC`
+  )
+  let ok = 0, pending = 0, failed = 0, skipped = 0
+  for (const r of rows) {
+    try {
+      const res = await reportShippingForOrder(pg, r.sale_order_id, r.wx_txn)
+      if (res.status === 'ok') ok++
+      else if (res.status === 'pending') pending++
+      else if (res.status === 'skip') skipped++
+      else failed++
+    } catch (e) {
+      failed++
+      console.error('[payNotify/wx-shipping] backfill 单笔异常(非致命):', r.sale_order_id, e && e.message)
+    }
+  }
+  console.log('[payNotify/wx-shipping] backfill done',
+    JSON.stringify({ scanned: rows.length, ok, pending, failed, skipped }))
+  return { code: 'SUCCESS', message: `backfill scanned=${rows.length} ok=${ok} pending=${pending} failed=${failed}` }
+}
+
+// 测试可见
+exports.reportWxShippingSafe = reportWxShippingSafe
+exports.reportShippingForOrder = reportShippingForOrder
+exports.runShippingBackfill = runShippingBackfill
+
 /**
  * 云函数入口
  *
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
+  // ========== CloudBase 定时触发器：微信发货补偿上报 ==========
+  // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
+  // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。
+  if (event && event.Type === 'Timer') {
+    return await runShippingBackfill()
+  }
+
   // ========== 启用开关：env PAYNOTIFY_ENABLED=true + lakalaConfig.isReady() ==========
   if (!isPayNotifyEnabled()) {
     const safeEvent = event && typeof event === 'object' ? event : {}
@@ -373,9 +619,20 @@ exports.main = async (event) => {
         return { code: 'SUCCESS', message: '已处理（幂等）' }
       }
 
-      // 判定目标订单最终状态
+      // 混合回款：本单可能有 client.repay 写下的「待支付储值卡抵扣」意向（线上款 + 储值卡共同覆盖尾款）。
+      // 储值卡扣减推迟到此处与线上到账同事务执行，故判定整单结清时必须把待支付意向额一并计入，
+      // 否则线上款单独 < 应付会被判为「部分支付」而储值卡永不入账、订单卡死。
+      const pendingCardRes = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) AS pending_card
+         FROM sale_order_payments
+         WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+        [targetOrderNo]
+      )
+      const pendingCardAmount = Math.round(Number(pendingCardRes.rows[0]?.pending_card || 0) * 100) / 100
+
+      // 判定目标订单最终状态（线上累计 + 待支付储值卡抵扣意向）
       const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
-      const fullyPaid = newPaidSum + 0.001 >= payableAmount
+      const fullyPaid = (newPaidSum + pendingCardAmount) + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
@@ -386,8 +643,7 @@ exports.main = async (event) => {
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
-             updated_at = $3,
-             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+             updated_at = $3
          WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付')`,
         [newStatus, newPaidSum, now, targetOrderNo]
@@ -398,6 +654,9 @@ exports.main = async (event) => {
         console.warn('[payNotify] state-transition-blocked:', targetOrderNo, '→', newStatus)
         return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
       }
+
+      // 本次线上回款主流水行 id（按回款逐笔分配的归属键）
+      const onlinePaymentId = insertRes.rows[0].id
 
       // 1b. 回款凭证单：已在 2026-04-26 sale-order-domain-refactor 重构（回款下沉到 sale_order_payments.change_type='回款'），下方分支永远 false 走不到
       if (isRepaymentCredential) {
@@ -423,8 +682,28 @@ exports.main = async (event) => {
       // 后续业务动作（充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
       // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
       if (!fullyPaid) {
+        // 按回款逐笔分配：线上部分支付也逐笔捕获可分配额 + 自动分给开单销售员（本次=thisPayAmount，无定向）
+        const perItemPartial = await capturePaymentAllocatables(client, {
+          salePaymentId: onlinePaymentId,
+          saleOrderId: targetOrderNo,
+          eventAmount: thisPayAmount,
+          directedItems: null,
+        })
+        await autoAllocateOnlinePayment(client, {
+          salePaymentId: onlinePaymentId,
+          saleOrderId: targetOrderNo,
+          perItem: perItemPartial,
+          eventAmount: thisPayAmount,
+          preferredEmployeeId: targetOrder.preferred_employee_id,
+          marketName: targetOrder.market_name,
+          now,
+        })
+        await refreshOrderAllocationRollup(client, targetOrderNo)
+
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
+        // 微信发货上报：本次微信交易已到账即上报（每笔交易各对应发货管理一条订单）
+        await reportWxShippingSafe(pg, { saleOrderId: targetOrderNo, paymentMethod, tradeInfo })
         return { code: 'SUCCESS', message: '部分支付已到账' }
       }
 
@@ -470,6 +749,8 @@ exports.main = async (event) => {
       // 3b. 消费扣款入账（订单的 prepaid_card_amount > 0 时扣余额）
       // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
       // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
+      // 本次回调实际消费的储值卡额（计入按回款逐笔分配的 eventAmount）
+      let prepaidConsumedThisCallback = 0
       if (targetOrder.client_user_id && Number(targetOrder.prepaid_card_amount) > 0) {
         const dupCheck = await client.query(
           `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
@@ -515,97 +796,87 @@ exports.main = async (event) => {
             [prepaidAmount, targetOrderNo]
           )
           await recalcPaidSessionsForOrder(client, targetOrderNo)
+          prepaidConsumedThisCallback = prepaidAmount
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
           console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
         }
       }
 
-      // 3. 自动创建业绩分配（如有指定美容师）——以原销售单为准
-      if (targetOrder.preferred_employee_id) {
-        // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
-        const empRow = await client.query(
-          'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
-          [targetOrder.preferred_employee_id]
-        )
-        const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
-        const roleType = skills[0] || '美容师'
-
-        // 查询该订单的所有明细（含 sales_category 供销售提成固化快照用）
-        const itemsResult = await client.query(
-          'SELECT sale_item_id, received, sales_category FROM sale_items WHERE sale_order_id = $1',
+      // 3c. 混合回款「待支付储值卡抵扣」意向消费（client.repay 线上+储值卡混合支付）。
+      // client.repay 混合通道只写了 status='待支付' 的储值卡抵扣意向、未动余额；此处线上款已确认到账，
+      // 在**同一事务**内扣减储值卡余额 + 写 card_transactions + 把意向行翻 '已支付' + 补记 received/prepaid_card_amount/payable_amount。
+      // 余额不足 → throw → 整事务回滚（含本次线上 payments 行），订单保持原状态、储值卡分文不动（与 STEP 3b 失败语义一致）。
+      // 幂等：①意向行 status='待支付' 过滤（重试时已翻已支付 → 取不到行 → 跳过）；②card_transactions external_ref 唯一。
+      if (targetOrder.client_user_id && pendingCardAmount > 0) {
+        const pendingRows = await client.query(
+          `SELECT id, amount FROM sale_order_payments
+           WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'
+           ORDER BY id
+           FOR UPDATE`,
           [targetOrderNo]
         )
-
-        // 销售提成固化快照：加载该市场「销售单」费率矩阵，tier 基准 = 订单级 received 合计
-        // 跨端约定（no-shared-cloudfunctions）：与 staffApi allocation.js buildSalesRateLookup /
-        // admin allocations.ts 同语义独立副本。
-        const orderTotalReceived = itemsResult.rows.reduce((s, i) => s + (Number(i.received) || 0), 0)
-        let salesRateGrouped = []
-        if (targetOrder.market_name) {
-          const rateRows = await client.query(
-            `SELECT crm.role_type, crm.sales_category,
-                    crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
-             FROM commission_rate_matrix crm
-             JOIN org_nodes n ON n.id = crm.org_id
-             WHERE n.name = $1 AND crm.order_type = '销售单'
-             ORDER BY crm.role_type, crm.amount_tier_min`,
-            [targetOrder.market_name]
+        if (pendingRows.rows.length > 0) {
+          const cardRow = await client.query(
+            `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+            [targetOrder.client_user_id]
           )
-          const byKey = new Map()
-          for (const r of rateRows.rows) {
-            const dept = (r.role_type || '').trim()
-            const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
-            let entry = byKey.get(key)
-            if (!entry) {
-              entry = {
-                department: dept,
-                amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
-                amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-                orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
-              }
-              byKey.set(key, entry)
-              salesRateGrouped.push(entry)
-            }
-            entry.orderRates[r.sales_category] = Number(r.commission_rate) || 0
+          if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) + 0.001 < pendingCardAmount) {
+            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足以完成混合回款抵扣')
           }
-        }
-        const lookupSalesRate = (role, salesCat, amount) => {
-          let hit = null
-          for (const r of salesRateGrouped) {
-            if (r.department !== role) continue
-            if (amount < r.amountMin || amount > r.amountMax) continue
-            const rate = r.orderRates[salesCat]
-            if (!rate || rate <= 0) continue
-            if (!hit || r.amountMin > hit.amountMin) hit = r
-          }
-          return (hit && hit.orderRates[salesCat]) || 0
-        }
-
-        // 为每个明细行创建分配记录（100% 给指定美容师）+ 销售提成固化快照
-        for (const item of itemsResult.rows) {
-          const salesCategory = item.sales_category || '自销自耗'
-          const commissionRate = lookupSalesRate(roleType, salesCategory, orderTotalReceived)
-          const commissionAmount = Math.round(Number(item.received) * commissionRate * 100) / 100
+          const cardId = cardRow.rows[0].card_id
           await client.query(
-            `INSERT INTO sale_allocations
-               (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
-                commission_rate, commission_amount, is_void, created_at, updated_at)
-             VALUES ($1, $2, $3, 1.00, $4, $5, $6, FALSE, $7, $7)
-             ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role DO NOTHING`,
-            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received,
-             commissionRate, commissionAmount, now]
+            `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+            [pendingCardAmount, cardId]
           )
+          for (const pr of pendingRows.rows) {
+            const amt = Math.round(Number(pr.amount) * 100) / 100
+            await client.query(
+              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+               VALUES ($1, '扣款', $2, $3, $4, NOW())
+               ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+              [cardId, -amt, targetOrderNo, `card-repay-intent-${pr.id}`]
+            )
+            await client.query(
+              `UPDATE sale_order_payments SET status = '已支付', paid_at = $1 WHERE id = $2 AND status = '待支付'`,
+              [now, pr.id]
+            )
+          }
+          // received 含储值卡抵扣（I1）；prepaid_card_amount/payable_amount 同步维护 I5（payable = total - prepaid）。
+          await client.query(
+            `UPDATE sale_orders
+             SET received = received + $1,
+                 prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $1,
+                 payable_amount = COALESCE(payable_amount, total_amount) - $1,
+                 updated_at = $2
+             WHERE sale_order_id = $3`,
+            [pendingCardAmount, now, targetOrderNo]
+          )
+          await recalcPaidSessionsForOrder(client, targetOrderNo)
+          prepaidConsumedThisCallback = Math.round((prepaidConsumedThisCallback + pendingCardAmount) * 100) / 100
+          console.log(`[payNotify] 混合回款储值卡抵扣消费: order=${targetOrderNo}, card=${cardId}, amount=${pendingCardAmount}`)
         }
-
-        // 自动分配已建（preferred 美容师 100% 全行）→ 翻「已分配」，
-        // 避免落入店长「待分配」列表诱导重复分配（店长仍可从「已分配」Tab 复核改派）。
-        // 无 preferred 的线上单不进此块，保持 CAS 落定的 '待分配' 让店长手动分。
-        await client.query(
-          `UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2`,
-          [now, targetOrderNo]
-        )
       }
+
+      // 3. 按回款逐笔分配：捕获本次回款（线上付款 + 本次储值卡消费）逐项可分配额，
+      //    线上单自动 100% 分给开单销售员（提成率按本次回款额定档）；无 preferred 留待分配走手动。
+      const fullEventAmount = Math.round((thisPayAmount + prepaidConsumedThisCallback) * 100) / 100
+      const perItemFull = await capturePaymentAllocatables(client, {
+        salePaymentId: onlinePaymentId,
+        saleOrderId: targetOrderNo,
+        eventAmount: fullEventAmount,
+        directedItems: null,
+      })
+      await autoAllocateOnlinePayment(client, {
+        salePaymentId: onlinePaymentId,
+        saleOrderId: targetOrderNo,
+        perItem: perItemFull,
+        eventAmount: fullEventAmount,
+        preferredEmployeeId: targetOrder.preferred_employee_id,
+        marketName: targetOrder.market_name,
+        now,
+      })
+      await refreshOrderAllocationRollup(client, targetOrderNo)
 
       // 4. 重算顾客历史消费档位
       // spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随
@@ -757,6 +1028,10 @@ exports.main = async (event) => {
     } finally {
       client.release()
     }
+
+    // 微信「发货信息管理」自动上报（用户自提）——事务已提交、连接已释放后执行；
+    // 与支付到账解耦，失败不影响给拉卡拉的 SUCCESS 应答
+    await reportWxShippingSafe(pg, { saleOrderId: targetOrderNo, paymentMethod, tradeInfo })
 
     // 成功响应：HTTP 入口必须返回 {statusCode, body} 才能让 CloudBase HTTP 触发器透传给拉卡拉
     if (isHttpEntry) {

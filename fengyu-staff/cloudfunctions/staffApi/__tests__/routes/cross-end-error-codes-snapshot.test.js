@@ -169,6 +169,7 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       'SERVICE_STATE_CHANGED', // services.ts: 同上 → CONFLICT
       'EMPLOYEE_ROW_GONE', // employees.ts: 行已被删 → NOT_FOUND
       'PICKUP_ROW_GONE', // pickup-records.ts: 行已被删 → NOT_FOUND
+      'PAYMENT_NOT_FOUND', // allocations.ts: savePayment 回款状态被并发改 → 外层 catch 转 {success:false}（f2002074 按回款逐笔分配引入）
     ]
     const violationCount = stdout
       .split('\n')

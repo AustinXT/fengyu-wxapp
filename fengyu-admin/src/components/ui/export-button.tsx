@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Download } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { actionErrorMessage } from "@/lib/action-error"
 
 interface ExportButtonProps {
   /** 执行导出，内部应自行拉取数据并生成 xlsx */
@@ -27,7 +28,7 @@ export function ExportButton({ onExport, disabled, label = "导出" }: ExportBut
       await onExport()
     } catch (err) {
       console.error("[export]", err)
-      toast.error("导出失败，请稍后重试")
+      toast.error(actionErrorMessage(err, "导出失败，请稍后重试"))
     } finally {
       setBusy(false)
     }

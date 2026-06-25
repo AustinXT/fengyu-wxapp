@@ -1,5 +1,48 @@
 import { describe, it, expect } from 'vitest'
-import { formatCurrency, formatPhone, formatDate, formatDateTime, cn, calcCouponDiscount } from './utils'
+import { formatCurrency, formatPhone, formatDate, formatDateTime, cn, calcCouponDiscount, buildOrgPath } from './utils'
+import type { OrgNode } from './types'
+
+describe('buildOrgPath（导出/列表「所属组织」列共用）', () => {
+  const node = (
+    id: string, name: string, type: OrgNode['type'], parentId: string | null,
+  ): OrgNode => ({ id, name, type, parentId, sortOrder: 0, isActive: true, createdAt: '', updatedAt: '' })
+
+  // 真实结构：总部 → 南昌凤御(市场) → { 南昌江信店(门店), 养生部(部门) }
+  const tree: OrgNode[] = [
+    node('hq', '总部', '总部', null),
+    node('mk', '南昌凤御', '市场', 'hq'),
+    node('store', '南昌江信店', '门店', 'mk'),
+    node('dept', '养生部', '部门', 'mk'),
+  ]
+
+  it('部门节点构建完整路径并跳过总部根（无门店员工：养生师）', () => {
+    expect(buildOrgPath('dept', tree)).toBe('南昌凤御/养生部')
+  })
+
+  it('门店节点构建完整路径（门店员工）', () => {
+    expect(buildOrgPath('store', tree)).toBe('南昌凤御/南昌江信店')
+  })
+
+  it('市场节点返回市场名', () => {
+    expect(buildOrgPath('mk', tree)).toBe('南昌凤御')
+  })
+
+  it('叶子即总部节点时仍显示自身（i===0 例外）', () => {
+    expect(buildOrgPath('hq', tree)).toBe('总部')
+  })
+
+  it('nodeId 为 null 返回空串', () => {
+    expect(buildOrgPath(null, tree)).toBe('')
+  })
+
+  it('orgNodes 为空返回空串', () => {
+    expect(buildOrgPath('dept', [])).toBe('')
+  })
+
+  it('nodeId 不在树中返回空串', () => {
+    expect(buildOrgPath('ghost', tree)).toBe('')
+  })
+})
 
 describe('cn', () => {
   it('合并类名', () => {
@@ -67,7 +110,8 @@ describe('formatDate', () => {
   })
 
   it('Date 对象格式化', () => {
-    const result = formatDate(new Date(2026, 2, 13)) // 月份从 0 开始
+    // 固定时区收口后按 Asia/Shanghai 取日期，用带 +08:00 的确定性实例避免依赖进程 TZ
+    const result = formatDate(new Date('2026-03-13T12:00:00+08:00'))
     expect(result).toMatch(/2026/)
     expect(result).toMatch(/03/)
     expect(result).toMatch(/13/)
@@ -83,7 +127,8 @@ describe('formatDateTime', () => {
   })
 
   it('Date 对象格式化', () => {
-    const d = new Date(2026, 2, 13, 14, 30)
+    // 固定时区收口后按 Asia/Shanghai 渲染，用带 +08:00 的确定性实例避免依赖进程 TZ
+    const d = new Date('2026-03-13T14:30:00+08:00')
     const result = formatDateTime(d)
     expect(result).toMatch(/2026/)
     expect(result).toMatch(/14:30/)

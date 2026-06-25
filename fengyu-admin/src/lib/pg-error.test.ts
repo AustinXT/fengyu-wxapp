@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { pgErrorCode, pgErrorConstraint } from './pg-error'
+import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from './pg-error'
 
 /** 模拟 drizzle 0.44+ 的包装错误：外层 Failed query，真实 pg 错误在 cause。 */
-function wrappedPgError(code: string, constraint?: string) {
+function wrappedPgError(code: string, constraint?: string, detail?: string) {
   const inner = Object.assign(new Error('duplicate key value violates unique constraint'), {
     code,
     ...(constraint ? { constraint_name: constraint } : {}),
+    ...(detail ? { detail } : {}),
   })
   return Object.assign(new Error('Failed query: insert into ...'), { cause: inner })
 }
@@ -48,5 +49,25 @@ describe('pgErrorConstraint', () => {
 
   it('无约束名 → undefined', () => {
     expect(pgErrorConstraint(wrappedPgError('23505'))).toBeUndefined()
+  })
+})
+
+describe('pgErrorDetail', () => {
+  it('扁平 detail 字段（旧 drizzle / 直接 pg 错误）', () => {
+    expect(
+      pgErrorDetail(Object.assign(new Error('x'), { detail: 'Key (phone)=(13800000000) already exists.' })),
+    ).toBe('Key (phone)=(13800000000) already exists.')
+  })
+
+  it('从 cause 链取 detail（drizzle 0.44+ 包装）', () => {
+    expect(pgErrorDetail(wrappedPgError('23505', 'uq_phone', 'Key (phone)=(13800000000) already exists.'))).toBe(
+      'Key (phone)=(13800000000) already exists.',
+    )
+  })
+
+  it('无 detail → undefined', () => {
+    expect(pgErrorDetail(wrappedPgError('23505'))).toBeUndefined()
+    expect(pgErrorDetail(new Error('connection lost'))).toBeUndefined()
+    expect(pgErrorDetail(null)).toBeUndefined()
   })
 })

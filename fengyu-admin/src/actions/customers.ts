@@ -45,6 +45,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     gender: row.gender,
     boundStoreId: row.boundStoreId,
     boundEmployeeId: row.boundEmployeeId,
+    isCrossStoreTemp: row.isCrossStoreTemp,
     memberLevel: row.memberLevel,
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
@@ -101,8 +102,14 @@ export const searchCustomers = withPermission(
     .from(clientWechatUsers)
     .where(
       and(
-        scopeCondition(session, clientWechatUsers.boundStoreId),
-        isNotNull(clientWechatUsers.boundStoreId),
+        // 本门店已绑定顾客 ∪ 标记临时跨店的外门店顾客（需求21：跨门店临时绑定）
+        or(
+          and(
+            scopeCondition(session, clientWechatUsers.boundStoreId),
+            isNotNull(clientWechatUsers.boundStoreId),
+          ),
+          eq(clientWechatUsers.isCrossStoreTemp, true),
+        ),
         or(
           ilike(clientWechatUsers.name, pattern),
           ilike(clientWechatUsers.phone, pattern),
@@ -252,6 +259,11 @@ export const getCustomerById = withPermission(
 export const getCustomerOrders = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<SaleOrder[]> => {
+  // scope 守卫：与退款 / 服务记录同口径，顾客不在当前 scope 内返回空，
+  // 杜绝受限角色凭 userId 越权枚举他店顾客订单 / 转换单（getCustomerById 内含 scopeCondition）。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers } = await import('@db/user')
@@ -362,6 +374,10 @@ export const getCustomerOrders = withPermission(
 export const getCustomerAppointments = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<Appointment[]> => {
+  // scope 守卫：顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客预约记录（getCustomerById 内含 scopeCondition）。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { appointments } = await import('@db/appointment')
   const { stores } = await import('@db/org')
   const { desc } = await import('drizzle-orm')
@@ -429,6 +445,12 @@ export interface CustomerRefundRecord {
 export const getCustomerRefundHistory = withPermission(
   'customer:list',
   async (session, userId: string): Promise<CustomerRefundRecord[]> => {
+  // scope 守卫：交易数据虽「跟顾客走」不按门店过滤，但「能否查这位顾客」仍受 scope 限制。
+  // 复用 getCustomerById 的 scopeCondition（与 getCustomerPhoneChangeLogs 同口径）：
+  // 顾客不在当前 scope 内则返回空，杜绝受限角色凭 userId 越权枚举他店顾客退款 / 转换单历史。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
   const { saleOrders, saleItems, saleOrderPayments } = await import('@db/order')
 
   // 退款流水（来自 sale_order_payments）
@@ -445,10 +467,10 @@ export const getCustomerRefundHistory = withPermission(
     .from(saleOrderPayments)
     .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .where(
+      // 交易数据跟顾客走：退款流水不按门店过滤（顾客可见性由 getCustomerById 守护）
       and(
         eq(saleOrderPayments.changeType, '退款'),
         eq(saleOrders.clientUserId, userId),
-        scopeCondition(session, saleOrders.storeId),
       ),
     )
     .orderBy(desc(saleOrderPayments.createdAt))
@@ -464,10 +486,10 @@ export const getCustomerRefundHistory = withPermission(
     })
     .from(saleOrders)
     .where(
+      // 交易数据跟顾客走：转换单不按门店过滤
       and(
         eq(saleOrders.clientUserId, userId),
         eq(saleOrders.saleOrderType, '转换单'),
-        scopeCondition(session, saleOrders.storeId),
       ),
     )
     .orderBy(desc(saleOrders.createdAt))
@@ -534,6 +556,80 @@ export const getCustomerRefundHistory = withPermission(
   },
 )
 
+export interface CustomerServiceItem {
+  productName: string | null
+}
+
+export interface CustomerServiceRecord {
+  serviceOrderId: string
+  status: string
+  serviceDate: string
+  storeName: string | null
+  employeeName: string | null
+  items: CustomerServiceItem[]
+}
+
+/**
+ * 顾客服务记录（顾客档案「服务记录」Tab）
+ * 交易数据跟顾客走：按 clientUserId 查全量服务单（含跨门店、各状态），无 store scope。
+ * 与 getCustomerRefundHistory 同 scope 口径（顾客可见性由 getCustomerById 守护）。
+ */
+export const getCustomerServiceOrders = withPermission(
+  'customer:list',
+  async (session, userId: string): Promise<CustomerServiceRecord[]> => {
+  // scope 守卫：与 getCustomerRefundHistory 同口径，复用 getCustomerById 的 scopeCondition；
+  // 顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客跨门店服务记录。
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
+  const { serviceOrders, serviceItems } = await import('@db/service')
+  const { saleItems } = await import('@db/order')
+  const { staffWechatUsers } = await import('@db/user')
+
+  const rows = await db
+    .select({
+      serviceOrderId: serviceOrders.serviceOrderId,
+      status: serviceOrders.status,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      storeName: stores.storeName,
+      employeeName: staffWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .where(eq(serviceOrders.clientUserId, userId))
+    .orderBy(desc(serviceOrders.serviceDate), desc(serviceOrders.createdAt))
+
+  if (rows.length === 0) return []
+
+  const soIds = rows.map((r) => r.serviceOrderId)
+  const itemRows = await db
+    .select({
+      serviceOrderId: serviceItems.serviceOrderId,
+      productName: saleItems.productName,
+    })
+    .from(serviceItems)
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .where(inArray(serviceItems.serviceOrderId, soIds))
+
+  const itemsByOrder = new Map<string, CustomerServiceItem[]>()
+  for (const i of itemRows) {
+    if (!itemsByOrder.has(i.serviceOrderId)) itemsByOrder.set(i.serviceOrderId, [])
+    itemsByOrder.get(i.serviceOrderId)!.push({ productName: i.productName })
+  }
+
+  return rows.map((r) => ({
+    serviceOrderId: r.serviceOrderId,
+    status: r.status,
+    serviceDate: r.serviceDate,
+    storeName: r.storeName,
+    employeeName: r.employeeName,
+    items: itemsByOrder.get(r.serviceOrderId) ?? [],
+  }))
+  },
+)
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (
@@ -557,6 +653,8 @@ export const updateCustomer = withPermission(
     promoterEmployeeId: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
+    /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
+    isCrossStoreTemp: boolean
     }>,
     /** 乐观锁：提交时携带的 updated_at */
     expectedUpdatedAt?: string,
@@ -594,7 +692,7 @@ export const updateCustomer = withPermission(
   try {
     result = await db.update(clientWechatUsers).set(data as any).where(whereConditions)
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
     }
     throw err
@@ -746,7 +844,7 @@ export const createCustomer = withPermission(
       boundEmployeeName,
     })
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
     }
     throw err

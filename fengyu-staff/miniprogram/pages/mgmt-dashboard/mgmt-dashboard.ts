@@ -1,6 +1,6 @@
 // pages/mgmt-dashboard — 管理层 Hub 页
 // 4 个 tab（首页/门店排行榜/员工排行榜/我的）在同一页面内切换，避免 wx.reLaunch 开销
-import { canAccessManagement } from '../../utils/role'
+import { canAccessManagement, canSwitchLoginLevel } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
@@ -172,6 +172,7 @@ Page({
       expanded: boolean
       needToggle: boolean
     },
+    canSwitchView: false,
 
     // 数据中心
     selectedDate: '',
@@ -603,6 +604,7 @@ Page({
       },
       roleBindingRows: this.buildRoleBindingRows(g.roleBindings || []),
       storeScope: this.buildStoreScope(g.staffLevel, g.roleBindings || [], g.scopedStores || []),
+      canSwitchView: canSwitchLoginLevel(),
     })
   },
 
@@ -640,6 +642,15 @@ Page({
 
   onToggleStoreScope() {
     this.setData({ 'storeScope.expanded': !this.data.storeScope?.expanded })
+  },
+
+  onSwitchView() {
+    wx.showModal({
+      title: '切换视图',
+      content: '切换到门店视图后页面将重新加载，确认切换？',
+      confirmText: '切换',
+      success: (res) => { if (res.confirm) app.switchLoginLevel('store') },
+    })
   },
 
   onLogout() {

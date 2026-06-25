@@ -14,6 +14,8 @@ import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
 import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
+import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
+import { actionErrorMessage } from "@/lib/action-error"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -71,6 +73,8 @@ export default function ServiceCreatePageClient({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
   const [remark, setRemark] = useState("")
+  // 备注模式：custom=自由输入；deposit-refund=寄存单退款专用标准化备注（提交时落 DEPOSIT_REFUND_REMARK）
+  const [remarkMode, setRemarkMode] = useState<"custom" | "deposit-refund">("custom")
 
   // Step 3: Submit
   const [submitting, setSubmitting] = useState(false)
@@ -80,7 +84,8 @@ export default function ServiceCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (emp && emp.storeId !== selectedStoreId) {
+      // 出差员工跨门店可选，切换门店不清空（跨门店共享，2026-06-24）
+      if (emp && emp.storeId !== selectedStoreId && !emp.isOnBusinessTrip) {
         setSelectedEmployeeId("")
       }
     }
@@ -108,8 +113,8 @@ export default function ServiceCreatePageClient({
           setSelectedEmployeeId(result.boundEmployeeId)
         }
       }
-    } catch {
-      toast.error("搜索失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
     } finally {
       setSearching(false)
     }
@@ -123,8 +128,8 @@ export default function ServiceCreatePageClient({
       setAvailableItems(items)
       setSelectedItems([])
       setStep(1)
-    } catch {
-      toast.error("加载可用项目失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载可用项目失败"))
     } finally {
       setLoadingItems(false)
     }
@@ -154,7 +159,7 @@ export default function ServiceCreatePageClient({
     selectedItems.find(i => i.saleItemId === saleItemId)?.sessionUsed ?? 1
 
   const filteredEmployees = employees.filter(
-    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')
+    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')
   )
 
   const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
@@ -170,7 +175,7 @@ export default function ServiceCreatePageClient({
         clientUserId: selectedCustomer.userId,
         assignedEmployeeId: selectedEmployeeId,
         serviceDate,
-        remark: remark.trim() || null,
+        remark: remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : (remark.trim() || null),
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
           sessionUsed: i.sessionUsed,
@@ -183,8 +188,8 @@ export default function ServiceCreatePageClient({
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("创建服务单失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建服务单失败，请稍后重试"))
     } finally {
       setSubmitting(false)
     }
@@ -372,7 +377,7 @@ export default function ServiceCreatePageClient({
                   <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                     <option value="">请选择</option>
                     {filteredEmployees.map((e) => (
-                      <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                      <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
                     ))}
                   </Select>
                 </div>
@@ -382,7 +387,13 @@ export default function ServiceCreatePageClient({
                 </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>
-                  <Input className="mt-1" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
+                  <Select className="mt-1" value={remarkMode} onChange={(e) => setRemarkMode(e.target.value as "custom" | "deposit-refund")}>
+                    <option value="custom">自定义输入</option>
+                    <option value="deposit-refund">{DEPOSIT_REFUND_REMARK}</option>
+                  </Select>
+                  {remarkMode === "custom" && (
+                    <Input className="mt-2" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
+                  )}
                 </div>
               </div>
             </CardContent>
@@ -422,10 +433,10 @@ export default function ServiceCreatePageClient({
                 <span className="text-[#999999]">服务日期</span>
                 <p className="font-medium">{serviceDate}</p>
               </div>
-              {remark.trim() && (
+              {(remarkMode === "deposit-refund" || remark.trim()) && (
                 <div className="col-span-2">
                   <span className="text-[#999999]">备注</span>
-                  <p className="font-medium">{remark}</p>
+                  <p className="font-medium">{remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : remark}</p>
                 </div>
               )}
             </div>

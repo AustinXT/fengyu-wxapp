@@ -87,7 +87,8 @@ App<IAppOption>({
     try {
       const data = await callClientApi<{
         userId: string; phone: string; name: string; avatarUrl: string;
-        memberLevel: string; boundStoreId: string; boundStoreName: string; boundMarketName: string;
+        memberLevel: string; customerType?: string; isMember?: boolean;
+        boundStoreId: string; boundStoreName: string; boundMarketName: string;
       }>('auth.login', {});
       if (data.userId) {
         this.globalData.userId = data.userId;
@@ -102,9 +103,9 @@ App<IAppOption>({
       if (data.avatarUrl) {
         wx.setStorageSync('avatarUrl', data.avatarUrl);
       }
-      if (data.memberLevel) {
-        wx.setStorageSync('memberLevel', data.memberLevel);
-      }
+      // 会员价分流缓存：统一经 setMemberFlag 写入（与后端 member-pricing isMember 同口径），
+      // memberLevel/customerType 一并刷新（降级/退会时写空，清掉旧值）。任何拿到最新会员资料处复用本 helper。
+      this.setMemberFlag(data);
       // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
       this.globalData.boundStoreId = data.boundStoreId || '';
       wx.setStorageSync('boundStoreId', data.boundStoreId || '');
@@ -115,6 +116,32 @@ App<IAppOption>({
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
     }
+  },
+
+  /**
+   * 写入会员价分流标记 storage('isMember') + 顾客类型/等级缓存。
+   * 会员判定口径须与后端 clientApi/utils/member-pricing.js isMember() 一致：
+   * customerType === '会员客' 或 memberLevel 非空，任一满足即会员
+   * （后端 auth.login 已返回权威 isMember，优先用之，缺省时按同口径回退计算）。
+   * memberLevel/customerType 一并刷新（降级/退会时写空，清掉旧值）。
+   * 任何拿到最新会员资料处都应调用本 helper：onLaunch.syncLoginState / 绑定门店后 / 个人中心 onShow。
+   */
+  setMemberFlag(profile: { isMember?: boolean; customerType?: string | null; memberLevel?: string | null }) {
+    const customerType = profile.customerType || '';
+    const memberLevel = profile.memberLevel || '';
+    const isMember = typeof profile.isMember === 'boolean'
+      ? profile.isMember
+      : customerType === '会员客' || memberLevel !== '';
+    wx.setStorageSync('isMember', isMember);
+    wx.setStorageSync('customerType', customerType);
+    wx.setStorageSync('memberLevel', memberLevel);
+  },
+
+  /** 退出登录 / 账号失效时清除会员价分流标记，防止下一个账号沿用上一个账号的会员价划线。 */
+  clearMemberFlag() {
+    wx.removeStorageSync('isMember');
+    wx.removeStorageSync('customerType');
+    wx.removeStorageSync('memberLevel');
   },
 
   setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }) {

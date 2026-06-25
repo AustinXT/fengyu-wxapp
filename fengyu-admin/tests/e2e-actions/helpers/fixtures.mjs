@@ -230,6 +230,14 @@ export async function cleanupTestData(prefix = NS) {
        )`,
       [like],
     ],
+    // 回款级分配子表（FK→sale_order_payments + sale_items）须先于父表删除，否则 FK 阻断父表删除 → 夹具污染级联。
+    // 两端镜像 staff e2e fixtures（commit e1e8e3b3）。
+    [`DELETE FROM sale_payment_allocatable_items WHERE sale_order_id LIKE $1 OR sale_item_id LIKE $1`, [like]],
+    [
+      `DELETE FROM sale_payment_allocatable_items
+         WHERE sale_payment_id IN (SELECT sale_payment_id FROM sale_order_payments WHERE sale_order_id LIKE $1)`,
+      [like],
+    ],
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],
     [`DELETE FROM sale_allocations WHERE sale_item_id LIKE $1`, [like]],
     [`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [like]],

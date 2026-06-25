@@ -1,0 +1,2 @@
+ALTER TABLE "client_wechat_users" ADD COLUMN "is_cross_store_temp" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "staff_wechat_users" ADD COLUMN "is_on_business_trip" boolean DEFAULT false NOT NULL;

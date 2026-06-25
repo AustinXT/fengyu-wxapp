@@ -13,6 +13,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
@@ -234,6 +235,7 @@ async function queryTrafficSessions(scopeType, scopeId, period) {
        AND so.status = '已完成'
        AND so.service_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
        AND sit.sales_category IN ('自销自耗', '他销自耗')
+       AND ${excludeDepositRefundSql('so')}
      GROUP BY ROLLUP(c.customer_type)`,
     sc.params,
   )

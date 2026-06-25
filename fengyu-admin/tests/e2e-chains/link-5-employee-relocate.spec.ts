@@ -18,7 +18,7 @@ import { execSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const EMPLOYEE_ID = 'FY-TEST-MOVE'
 const STORE_A_ID = 'store-nc01'
 const ORG_A_ID = 'org-store-nc01'
@@ -27,7 +27,7 @@ const ORG_B_ID = 'org-store-nc02'
 const STORE_A_NAME = '南昌旗舰店'
 const STORE_B_NAME = '青山湖店'
 
-const PSQL = `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A`
+const PSQL = `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A`
 
 function runSQL(sql: string): string {
   return execSync(`${PSQL} -c "${sql.replace(/"/g, '\\"')}"`, { encoding: 'utf8' }).trim()
@@ -93,8 +93,8 @@ test.describe.serial('链路 5：员工调店 scope 同步', () => {
 
     // 直接插入 FY-TEST-MOVE（相当于入职建档 + 写日志模拟 HR 创建）
     runSQL(`
-      INSERT INTO staff_wechat_users (employee_id, name, phone, store_id, org_node_id, is_resigned, hired_at)
-      VALUES ('${EMPLOYEE_ID}', '调店测试员', '13900139017', '${STORE_A_ID}', '${ORG_A_ID}', false, '2026-04-26')
+      INSERT INTO staff_wechat_users (employee_id, name, phone, id_card, store_id, org_node_id, is_resigned, hired_at)
+      VALUES ('${EMPLOYEE_ID}', '调店测试员', '13900139017', '360102199001011234', '${STORE_A_ID}', '${ORG_A_ID}', false, '2026-04-26')
     `)
     // 手动写 operation_log（模拟 createEmployee logOperation）
     runSQL(`
@@ -191,18 +191,19 @@ test.describe.serial('链路 5：员工调店 scope 同步', () => {
         break
       }
 
-      // 找所有还没展开的南昌市场（含▸，不含南昌市场2，不含J前缀变体）
+      // 找南昌市场（非市场2）节点。注意：展开三角 ▸/▾ 是按钮的兄弟 <span>（org-tree-select.tsx:127-132），
+      // 不在按钮文本内，故不能按 startsWith('▸') 过滤——改为按名字匹配市场节点。
       const ncMarketIndices = btnData
-        .filter(b => b.text.startsWith('▸') && b.text.includes('南昌市场') && !b.text.includes('南昌市场2'))
+        .filter(b => b.text.includes('南昌市场') && !b.text.includes('南昌市场2'))
         .map(b => b.i)
-      console.log(`南昌市场 (▸) indices: ${ncMarketIndices}`)
+      console.log(`南昌市场 indices: ${ncMarketIndices}`)
 
       if (ncMarketIndices.length === 0) break
 
-      // 展开第一个未展开的南昌市场
-      const targetBtn = allTreeBtns.nth(ncMarketIndices[0])
-      await targetBtn.scrollIntoViewIfNeeded()
-      await targetBtn.locator('span').first().click({ force: true })
+      // 展开南昌市场：点击按钮前面的展开三角 <span>（preceding-sibling），而非按钮本身（按钮 onClick 是选中节点）。
+      const marketBtn = allTreeBtns.nth(ncMarketIndices[0])
+      await marketBtn.scrollIntoViewIfNeeded()
+      await marketBtn.locator('xpath=preceding-sibling::span[1]').click({ force: true })
       await page.waitForTimeout(400)
     }
 

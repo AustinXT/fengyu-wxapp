@@ -5,6 +5,7 @@ import type {
 } from '@/actions/inventory/types'
 import { Card, CardContent } from '@/components/ui/card'
 import { ArrowLeft } from 'lucide-react'
+import { fmtDateTime } from '@/lib/datetime'
 
 interface DetailField {
   label: string
@@ -36,17 +37,6 @@ function fmt(v: string | number | null | undefined) {
   return String(v)
 }
 
-function formatDateTime(s: string | null | undefined): string {
-  if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 export default function InventoryDetailView({ category, title, order }: Props) {
   const fields: DetailField[] = [
     { label: '单据号', value: order.id },
@@ -56,12 +46,12 @@ export default function InventoryDetailView({ category, title, order }: Props) {
     { label: '状态', value: order.status },
     { label: '总数量', value: order.totalQuantity ?? '—' },
     { label: '录入人', value: order.createdByName ?? order.createdBy },
-    { label: '录入时间', value: formatDateTime(order.createdAt) },
-    { label: '更新时间', value: formatDateTime(order.updatedAt) },
+    { label: '录入时间', value: fmtDateTime(order.createdAt) || '—' },
+    { label: '更新时间', value: fmtDateTime(order.updatedAt) || '—' },
     ...(order.confirmedAt
       ? [
           { label: '确认人', value: order.confirmedByName ?? order.confirmedBy },
-          { label: '确认时间', value: formatDateTime(order.confirmedAt) },
+          { label: '确认时间', value: fmtDateTime(order.confirmedAt) || '—' },
         ]
       : []),
     { label: '备注', value: order.remark ?? '—' },

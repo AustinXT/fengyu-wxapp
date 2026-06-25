@@ -30,14 +30,12 @@ export interface Store {
   description: string | null
   announcement: string | null
   parkingInfo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的商户号（来自关联商户 lakala_merchants 的快照） */
-  lakalaMerchantNo: string | null
-  /** 拉卡拉聚合支付：门店在拉卡拉侧的终端号（store-level 独立配置） */
-  lakalaTermNo: string | null
-  /** 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007） */
+  /**
+   * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007）。
+   * 收款字段（商户号/终端号/启用）收敛在 lakala_merchants 表，门店仅持外键；
+   * 商户档案在「商户管理」(/merchants) 维护，门店编辑页只选择关联哪个商户。
+   */
   lakalaMerchantId: string | null
-  /** 是否开启拉卡拉真实支付通道；false=回 mock 兜底，true=走 special_create */
-  lakalaEnabled: boolean
   createdAt: string
   updatedAt: string
   // joined
@@ -63,6 +61,12 @@ export interface Employee {
   isResigned: boolean
   /** 入职日期（YYYY-MM-DD） */
   hiredAt: string | null
+  /** 请假开始时间（墙钟 YYYY-MM-DD HH:mm:ss）；与 leaveEnd 成对，请假期间顾客端不可预约 */
+  leaveStart: string | null
+  /** 请假结束时间（墙钟 YYYY-MM-DD HH:mm:ss） */
+  leaveEnd: string | null
+  /** 是否出差支援；true 时可被本门店外的开单 / 营业额分配选中（跨门店共享），每日 03:00 cron 重置 */
+  isOnBusinessTrip: boolean
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
   /** 离职原因（自由文本）；NULL 表示在职或未填 */
@@ -85,6 +89,8 @@ export interface Customer {
   gender: string | null
   boundStoreId: string | null
   boundEmployeeId: string | null
+  /** 临时跨门店标记（需求21）；true 时可被非绑定门店的店长开单（跨店临时消费），每日 03:00 cron 重置 */
+  isCrossStoreTemp: boolean
   memberLevel: string | null
   /** 最近一次升级时间（ISO 字符串） */
   memberLevelUpgradedAt: string | null
@@ -199,8 +205,10 @@ export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失�
  *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
  * 2026-05-18 B5：+'寄存单'（WorkFine 剩余次数初始化，金额维度不入统计，
  *       次数维度可生成 service_orders 核销）
+ * 2026-06-24：+'充值单'（充值卡开单 / 旧系统充值金转入，金额不计营业额；
+ *       前端列表/详情徽标展示用，转入单靠 remark 标记区分旧系统迁移）
  */
-export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单'
+export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单' | '充值单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
@@ -296,7 +304,10 @@ export interface ProductSku {
   salesCategory?: SalesCategory | null
   /** 项目系列名称（JOIN project_series_lookup.name） */
   projectSeriesName?: string | null
+  /** 套餐内成交价副本（= 所属组 unit_member_price ?? unit_list_price），落 unit_real_price */
   bundlePrice?: string | null
+  /** 套餐内标价单价副本（= 所属组 unit_list_price），落 unit_price 划线 */
+  bundleListPrice?: string | null
   bundleGroupId?: number | null
   groupName?: string | null
 }
@@ -314,6 +325,10 @@ export interface MallBundleGroup {
   productId: string
   groupName: string
   pickCount: number | null
+  /** 组「标价单价」（划线）。应用层必填；组内所有子项共享 */
+  unitListPrice: string | null
+  /** 组「会员价单价」（成交）。null = 该组按标价单价成交 */
+  unitMemberPrice: string | null
   sortOrder: number
   createdAt: string
 }
@@ -363,6 +378,8 @@ export interface SaleOrder {
   couponId: string | null
   couponDiscount: string | null
   remark: string | null
+  /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
+  isActivity?: boolean
   createdAt: string
   updatedAt: string
   // joined
@@ -441,6 +458,8 @@ export interface ServiceOrder {
   storeName?: string
   employeeName?: string
   customerName?: string
+  /** 跨门店只读访问（顾客档案场景）：门店不在当前账号 scope 内 → 仅可查看不可操作 */
+  readOnly?: boolean
 }
 
 export interface ServiceCommission {

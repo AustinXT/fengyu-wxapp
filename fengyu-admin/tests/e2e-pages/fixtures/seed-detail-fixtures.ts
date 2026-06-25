@@ -36,9 +36,10 @@ const REFUND_ORDER_ID = `${NS}_PGRFD` // 待审批退款单的原单
 
 function connString(): string {
   return (
+    process.env.E2E_DATABASE_URL ||
     process.env.PG_CONNECTION_STRING ||
     process.env.DATABASE_URL ||
-    'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+    'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
   )
 }
 

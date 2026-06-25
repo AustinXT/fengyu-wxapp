@@ -13,6 +13,7 @@
     <!-- 状态条 -->
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
+      <text wx:if="{{order.isActivity}}" class="activity-badge">活动</text>
       <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
@@ -109,14 +110,20 @@
               {{p.isRefund ? '-¥' : '¥'}}{{p.amountAbs}}
             </text>
             <text class="pay-status" wx:if="{{p.status !== '已支付'}}">{{p.status}}</text>
+            <!-- 按回款逐笔分配入口（仅店长 + 可分配单据；点击进入该笔回款分配） -->
+            <navigator
+              wx:if="{{isManager && order.allocatable && p.needsAllocation}}"
+              url="{{p.allocationUrl}}"
+              class="pay-alloc-btn {{p.allocationStatus === '已分配' ? 'pay-alloc-btn--done' : ''}}"
+            >{{p.allocationStatus === '已分配' ? '查看分配' : '分配提成'}}</navigator>
           </view>
         </view>
       </view>
     </view>
 
-    <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
-    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
-      <text class="items-title">营业额分配</text>
+    <!-- 营业额分配汇总（只读；按回款逐笔分配，入口在上方款项流水每笔回款行） -->
+    <view wx:if="{{isManager && order.allocatable && order.allocation.length > 0}}" class="card-group items-card">
+      <text class="items-title">营业额分配（按回款逐笔）</text>
       <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="id">
         <view class="alloc-row-left">
           <text class="alloc-staff">{{item.staffName}}<text wx:if="{{item.roleType}}">（{{item.roleType}}）</text></text>
@@ -126,18 +133,7 @@
           <text class="alloc-amount">¥{{item.commissionAmount}}</text>
         </view>
       </view>
-      <view class="re-alloc-btn">
-        <van-button size="small" plain type="primary" bind:click="onReAllocation"
-          custom-class="btn-outline-brand">重新分配</van-button>
-      </view>
-    </view>
-
-    <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
-    <view wx:if="{{isManager && order.allocatable && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
-      <van-button block plain type="primary"
-        custom-class="btn-outline-brand"
-        bind:click="onReAllocation"
-      >营业额分配</van-button>
+      <text class="alloc-hint">如需分配 / 改派，点击上方「款项流水」中对应回款的「分配提成」</text>
     </view>
 
     <!-- 操作按钮 -->
@@ -230,15 +226,23 @@
     confirm-button-text="提交"
   >
     <view style="padding: 16rpx 24rpx;">
-      <van-field
-        label="退款原因"
-        placeholder="请填写退款原因"
-        type="textarea"
-        maxlength="200"
-        autosize
-        value="{{refundReason}}"
-        bind:change="onRefundReasonChange"
-      />
+      <view style="font-size: 26rpx; color: #969799; margin-bottom: 12rpx;">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
+      <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
+        <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" style="padding: 12rpx 0;">
+          <van-checkbox name="{{item.saleItemId}}" checked-color="#C0322A">{{item.label}}</van-checkbox>
+        </view>
+      </van-checkbox-group>
+      <view style="margin-top: 16rpx;">
+        <van-field
+          label="退款原因"
+          placeholder="请填写退款原因"
+          type="textarea"
+          maxlength="200"
+          autosize
+          value="{{refundReason}}"
+          bind:change="onRefundReasonChange"
+        />
+      </view>
     </view>
   </van-dialog>
 
@@ -258,21 +262,14 @@
         <text class="repay-debt-tip">（可只对部分子项回款，不要求一次性付清）</text>
       </view>
 
-      <van-field
-        label="支付方式"
-        readonly
-        clickable="{{false}}"
-      >
-        <view slot="input" class="repay-method-row">
-          <van-radio-group value="{{repayMethod}}" bind:change="onRepayMethodChange" direction="horizontal">
-            <van-radio name="线下" checked-color="#C0322A">现金/扫码回执</van-radio>
-            <van-radio name="储值卡" checked-color="#C0322A">储值卡</van-radio>
-            <van-radio name="微信" checked-color="#C0322A" disabled>微信（开发中）</van-radio>
-          </van-radio-group>
-        </view>
-      </van-field>
+      <view class="repay-section-label">支付方式</view>
+      <view class="repay-method-cards">
+        <view class="repay-method-card {{repayMethod === '线下' ? 'repay-method-card--active' : ''}}" data-method="线下" bind:tap="onRepayMethodTap">线下付款</view>
+        <view class="repay-method-card {{repayMethod === '微信' ? 'repay-method-card--active' : ''}}" data-method="微信" bind:tap="onRepayMethodTap">微信</view>
+        <view class="repay-method-card {{repayMethod === '支付宝' ? 'repay-method-card--active' : ''}}" data-method="支付宝" bind:tap="onRepayMethodTap">支付宝</view>
+      </view>
 
-      <!-- 按子项金额表 -->
+      <!-- 按子项实付金额表 -->
       <view class="repay-lines">
         <view wx:for="{{repayLines}}" wx:key="saleItemId" class="repay-line">
           <view class="repay-line-info">
@@ -280,30 +277,30 @@
             <text class="repay-line-sub">可回款 ¥{{item.repayable}}</text>
           </view>
           <van-field
-            wx:if="{{repayMethod !== '储值卡'}}"
             type="digit"
-            placeholder="现金"
-            value="{{item.cash}}"
+            placeholder="实付金额"
+            value="{{item.real}}"
             data-index="{{index}}"
-            data-col="cash"
-            bind:change="onRepayLineChange"
-            custom-class="repay-line-input"
-          />
-          <van-field
-            type="digit"
-            placeholder="储值卡"
-            value="{{item.card}}"
-            data-index="{{index}}"
-            data-col="card"
             bind:change="onRepayLineChange"
             custom-class="repay-line-input"
           />
         </view>
       </view>
 
+      <!-- 储值卡抵扣勾选（仅顾客有余额时可用，勾选后自动抵满） -->
+      <view wx:if="{{repayCardBalance > 0}}" class="repay-card-toggle {{repayUseCard ? 'repay-card-toggle--on' : ''}}" bind:tap="onToggleUseCard">
+        <text class="repay-card-mark">{{repayUseCard ? '☑' : '☐'}}</text>
+        <text class="repay-card-label">使用储值卡抵扣</text>
+        <text class="repay-card-balance">余额 ¥{{repayCardBalance}}{{repayUseCard ? ' · 抵扣 ¥' + repayCardDeduct : ''}}</text>
+      </view>
+
+      <view wx:if="{{repayMethod === '微信' || repayMethod === '支付宝'}}" class="repay-online-hint">
+        储值卡抵扣即时入账，剩余 ¥{{repayNeedPay}} 生成收款码，顾客扫码进收银台用{{repayMethod}}支付
+      </view>
+
       <view class="repay-debt">
-        本次合计：<text class="repay-debt-hot">¥{{repayGrandTotal}}</text>
-        <text class="repay-line-sub">现金 ¥{{repayCashTotal}} · 储值卡 ¥{{repayCardTotal}}</text>
+        本次实付：<text class="repay-debt-hot">¥{{repayRealTotal}}</text>
+        <text class="repay-line-sub">储值卡抵 ¥{{repayCardDeduct}} · {{repayMethod === '微信' || repayMethod === '支付宝' ? '顾客扫码' : '现金需付'}} ¥{{repayNeedPay}}</text>
       </view>
 
       <van-field
@@ -324,7 +321,7 @@
           loading="{{submitting}}"
           disabled="{{submitting}}"
           bind:click="onConfirmRepay"
-        >确认回款</van-button>
+        >{{repayMethod === '微信' || repayMethod === '支付宝' ? (repayNeedPay > 0 ? '生成收款码' : '确认抵扣') : '确认回款'}}</van-button>
       </view>
     </view>
   </van-popup>

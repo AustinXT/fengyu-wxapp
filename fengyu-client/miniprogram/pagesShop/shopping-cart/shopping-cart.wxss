@@ -153,6 +153,14 @@
   font-weight: 700;
 }
 
+/* 会员价分流：划线标价 */
+.cart-item-price-origin {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
+}
+
 .cart-item-delete {
   flex-shrink: 0;
   padding-left: 16rpx;

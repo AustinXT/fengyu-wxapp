@@ -29,7 +29,7 @@ import path from 'path'
 import { execSync } from 'child_process'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
@@ -57,7 +57,7 @@ function ensureDir(dir: string) {
 function runPsql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 }
     ).trim()
   } catch (e: any) {
@@ -131,7 +131,7 @@ test('链路45：部分支付订单消费 + paid_sessions 限额', async ({ page
     `('${PRE_SALE_ITEM_ID}', '${PRE_SALE_ORDER_ID}', '购买', '${MULTI_SESSION_SKU_ID}', ` +
     `${MULTI_SESSION_COUNT}, ${MULTI_SESSION_COUNT}, ${INITIAL_PAID_SESSIONS}, ` +
     `${TOTAL_AMOUNT}.00, 1, ${TOTAL_AMOUNT}.00, ${TOTAL_AMOUNT}.00, ${INITIAL_RECEIVED}.00, ` +
-    `'蜜语水润嫩肤护理', '疗程卡', '${storeId}', NOW(), NOW()) ` +
+    `'蜜语水润嫩肤护理 10次卡', '疗程卡', '${storeId}', NOW(), NOW()) ` +
     `ON CONFLICT (sale_item_id) DO NOTHING`
   )
   console.log(`[链路45] Step0 INSERT sale_item: ${insertItem}`)

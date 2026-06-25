@@ -4,8 +4,10 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import Image from "next/image"
 import { login } from "@/actions/auth"
 import { encryptPassword } from "@/lib/password-encrypt"
+import logoFull from "../../../../public/logo.png"
 
 export default function LoginPage() {
   const [phone, setPhone] = useState("")
@@ -59,6 +61,7 @@ export default function LoginPage() {
     <div className="w-full max-w-md">
       {/* Header */}
       <div className="mb-8 text-center">
+        <Image src={logoFull} alt="凤御美业" width={150} height={58} className="mx-auto mb-4" priority />
         <h1 className="text-2xl font-bold text-[var(--foreground)]">凤御美业管理后台</h1>
         <div className="mx-auto mt-3 h-0.5 w-16 bg-[var(--primary)]" />
       </div>

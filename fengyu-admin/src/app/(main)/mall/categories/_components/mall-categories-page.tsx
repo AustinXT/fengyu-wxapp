@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { MallCategory } from "@/lib/types"
+import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
@@ -125,8 +126,8 @@ export default function MallCategoriesPageClient({
       }
       setDialogOpen(false)
       router.refresh()
-    } catch {
-      toast.error(editingCategory ? "更新失败" : "创建失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, editingCategory ? "更新失败" : "创建失败"))
     } finally {
       setSaving(false)
     }
@@ -144,8 +145,8 @@ export default function MallCategoriesPageClient({
       toast.success("分类已删除")
       setDeleteTarget(null)
       router.refresh()
-    } catch {
-      toast.error("删除失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败"))
     } finally {
       setDeleting(false)
     }

@@ -24,9 +24,9 @@
  *      不再无限 hang/拖垮 admin —— 但本 spec 仍需 MOCK_WORKFINE=1 才能跑通 happy path。
  *      （是否在 .env.local 常开 MOCK_WORKFINE 是配置决策，留给运维/开发者。）
  *
- *   2) PG（5434 fengyu）已 seed scope fixtures（含 store-nc01 = "南昌旗舰店"），
+ *   2) PG（5434 fengyu_e2e）已 seed scope fixtures（含 store-nc01 = "南昌旗舰店（E2E）"），
  *      亦即 _helpers/seed-scope-fixtures.sql 已跑过；FY-TEST-ADM/MGR/HR 三账号可登录。
- *      mock fixture 的 storeName 已对齐为"南昌旗舰店"以保证 storeMatched=true。
+ *      mock fixture 的 storeName 已对齐为"南昌旗舰店（E2E）"（含后缀）以保证 storeMatched=true。
  *
  *   3) 测试自清理：beforeAll/afterAll 会 DELETE FROM sale_orders WHERE sale_order_id='WF-ORD-001'
  *      AND legacy_source='workfine'（且会清掉对应的 operation_logs）。
@@ -59,14 +59,16 @@ test.describe('链路36：admin 手动拉取 WorkFine 历史订单', () => {
   test.setTimeout(180_000)
 
   test.beforeAll(() => {
-    // 跳过条件：测试 PG 中没有 "南昌旗舰店"（mock fixture 依赖此 store_name）
+    // 跳过条件：测试 PG 中没有「南昌旗舰店」门店（mock fixture 依赖此 store）。
+    // fengyu_e2e seed 的门店名带「（E2E）」后缀（store-nc01 = '南昌旗舰店（E2E）'），
+    // 故用前缀匹配（LIKE '南昌旗舰店%'）而非精确等值，避免后缀导致 COUNT=0 误抛。
     const storeCount = parseInt(
-      psql(`SELECT COUNT(*)::text FROM stores WHERE store_name = '南昌旗舰店'`),
+      psql(`SELECT COUNT(*)::text FROM stores WHERE store_name LIKE '南昌旗舰店%'`),
       10,
     )
     if (storeCount === 0) {
       throw new Error(
-        '前置缺失：测试 PG (5434 fengyu) 中没有 store_name="南昌旗舰店"，请先跑 seed-scope-fixtures.sql',
+        '前置缺失：测试 PG (5434 fengyu_e2e) 中没有 store_name LIKE "南昌旗舰店%"，请先跑 seed-scope-fixtures.sql',
       )
     }
     cleanupMockOrder()

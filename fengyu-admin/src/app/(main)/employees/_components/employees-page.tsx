@@ -59,7 +59,7 @@ export default function EmployeesPage({
         { header: "性别", width: 8, accessor: (r) => r.gender },
         { header: "手机号", width: 14, accessor: (r) => r.phone },
         { header: "身份证(后4位)", width: 14, accessor: (r) => maskIdCard(r.idCard) },
-        { header: "所属组织", width: 18, accessor: (r) => r.marketName },
+        { header: "所属组织", width: 18, accessor: (r) => buildOrgPath(r.orgNodeId, orgNodes) },
         { header: "所属门店", width: 18, accessor: (r) => r.storeName },
         { header: "职位", accessor: (r) => r.positionName },
         { header: "生日", width: 14, accessor: (r) => fmtDate(r.birthday) },
@@ -71,7 +71,7 @@ export default function EmployeesPage({
       rows,
     });
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
-  }, [searchParams]);
+  }, [searchParams, orgNodes]);
 
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(

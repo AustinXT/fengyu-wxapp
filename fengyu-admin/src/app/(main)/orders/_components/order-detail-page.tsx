@@ -48,6 +48,7 @@ const orderTypeColorMap: Record<string, string> = {
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
   转换单: "bg-[#E3F2FD] text-[#1565C0]",
   寄存单: "bg-[#F3F4F6] text-[#6B7280]",
+  充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
 
 function formatDateTime(dt: string | null) {
@@ -210,6 +211,12 @@ export default function OrderDetailPageClient({
                 {isLegacy && (
                   <Badge variant="secondary" className="bg-[#F3F4F6] text-[#6B7280]">
                     历史订单
+                  </Badge>
+                )}
+                {/* 活动单角标 */}
+                {order.isActivity && (
+                  <Badge variant="secondary" className="bg-[#FCE8E6] text-[#C0322A]">
+                    活动
                   </Badge>
                 )}
               </p>

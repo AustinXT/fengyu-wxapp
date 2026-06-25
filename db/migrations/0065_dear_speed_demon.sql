@@ -1,0 +1,3 @@
+ALTER TABLE "staff_wechat_users" ADD COLUMN "leave_start" timestamp;--> statement-breakpoint
+ALTER TABLE "staff_wechat_users" ADD COLUMN "leave_end" timestamp;--> statement-breakpoint
+ALTER TABLE "staff_wechat_users" ADD CONSTRAINT "chk_swu_leave_range" CHECK ("staff_wechat_users"."leave_start" IS NULL OR "staff_wechat_users"."leave_end" IS NULL OR "staff_wechat_users"."leave_end" > "staff_wechat_users"."leave_start");

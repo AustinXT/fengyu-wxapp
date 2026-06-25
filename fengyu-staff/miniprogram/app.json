@@ -21,6 +21,7 @@
         "service-commission/service-commission",
         "staff-performance/staff-performance",
         "card-recharge/card-recharge",
+        "card-inflow/card-inflow",
         "refund-list/refund-list",
         "refund-detail/refund-detail"
       ]

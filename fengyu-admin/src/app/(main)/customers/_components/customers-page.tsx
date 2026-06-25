@@ -14,6 +14,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatPhone } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 import { createCustomer } from "@/actions/customers"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -138,8 +139,8 @@ export default function CustomersPage({
       setNewPhone("")
       setNewName("")
       router.refresh()
-    } catch {
-      toast.error("创建失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建失败，请稍后重试"))
     } finally {
       setCreating(false)
     }

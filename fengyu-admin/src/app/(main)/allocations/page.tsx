@@ -1,4 +1,4 @@
-import { getOrdersPaginated } from '@/actions/orders'
+import { getPendingPayments } from '@/actions/allocations'
 import { getServiceOrdersPaginated } from '@/actions/services'
 import { getStores } from '@/actions/stores'
 import AllocationsPageClient from './_components/allocations-page'
@@ -44,14 +44,12 @@ export default async function Page({
     )
   }
 
-  const { data: orders, total } = await getOrdersPaginated({
-    status: '已支付',
-    allocationStatus: allocStatus,
-    // 只保留参与营业额分配的订单类型（排除寄存单/充值单/内部单）
-    allocationEligibleOnly: true,
+  // 销售提成改「回款维度」：按每笔回款（sale_payment_id）逐笔分配。
+  // getPendingPayments 仅认 待分配/已分配 两态（缺省=待分配），且不支持日期区间过滤。
+  const { data: payments, total } = await getPendingPayments({
+    allocationStatus:
+      allocStatus === '已分配' ? '已分配' : allocStatus === '待分配' ? '待分配' : undefined,
     storeId,
-    dateFrom,
-    dateTo,
     search,
     page,
     pageSize,
@@ -60,7 +58,7 @@ export default async function Page({
     <AllocationsPageClient
       tab="sale"
       stores={stores}
-      orders={orders}
+      payments={payments}
       saleTotal={total}
     />
   )

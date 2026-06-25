@@ -252,8 +252,11 @@ export async function cleanupTestData(prefix = NS) {
        )`,
       [like],
     ],
+    // sale_payment_allocatable_items / sale_allocations 引用 payments(+items)，必须先于 payments/items/orders 删，
+    // 否则 payments/orders 删除撞 FK 被 skip → 残留「待支付」单撞 uq_sale_orders_client_pending，污染后续 spec。
+    [`DELETE FROM sale_payment_allocatable_items WHERE sale_order_id LIKE $1`, [like]],
+    [`DELETE FROM sale_allocations WHERE sale_item_id LIKE $1 OR sale_payment_id IN (SELECT id FROM sale_order_payments WHERE sale_order_id LIKE $1)`, [like]],
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],
-    [`DELETE FROM sale_allocations WHERE sale_item_id LIKE $1`, [like]],
     [`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [like]],
     [`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [like]],
 

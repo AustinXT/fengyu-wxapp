@@ -58,7 +58,7 @@ export function psql(sql: string): string {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       return execSync(
-        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
         { encoding: 'utf8', timeout: 15000 },
       ).trim()
     } catch (e) {
@@ -169,6 +169,42 @@ export async function detailPageDenied(page: Page, detailUrl: string): Promise<b
   const finalUrl = new URL(page.url())
   if (!finalUrl.pathname.includes(detailUrl.split('?')[0])) return true
   return false
+}
+
+/**
+ * 试图访问详情页，断言它以「跨门店只读」视图呈现（**非被拒**）。
+ *
+ * 背景：部分交易类详情（如服务单，commit c0edeac3）按「数据跟顾客走」设计改为
+ * 跨门店只读放行 —— getServiceOrderById 去掉 store scope，仅在越权时打 readOnly 标记，
+ * 前端展示完整详情页 + 「跨门店只读」Badge，并隐藏物理删除等写入入口。
+ * 因此越权访问应「只读可见」而非「被拒」。
+ *
+ * 三者同时满足才返回 true：
+ *   1) 页面未被拦截（HTTP 非 404 + 无「未找到/无权限/404」文案 + URL 仍含 detail 路径）
+ *   2) 出现 readOnlyBadge 文案（如「跨门店只读」）
+ *   3) 不出现物理删除入口（forbiddenLabel，如「删除此服务单」）
+ */
+export async function detailPageReadOnly(
+  page: Page,
+  detailUrl: string,
+  readOnlyBadge: string,
+  forbiddenLabel: string,
+): Promise<boolean> {
+  const resp = await page.goto(`${BASE}${detailUrl}`).catch(() => null)
+  await page.waitForLoadState('networkidle').catch(() => null)
+  await page.waitForTimeout(800)
+  // innerText 排 <script>，避免 RSC flight payload 里 URL/文案干扰
+  const visible = (await page.locator('body').innerText().catch(() => '')) || ''
+  // 1) 未被拦截
+  if (resp && resp.status() === 404) return false
+  if (/未找到|不存在|无权|无权限|没有权限|找不到|权限不足|404/.test(visible)) return false
+  const finalUrl = new URL(page.url())
+  if (!finalUrl.pathname.includes(detailUrl.split('?')[0])) return false
+  // 2) 出现只读 Badge
+  if (!visible.includes(readOnlyBadge)) return false
+  // 3) 不出现物理删除入口
+  if (visible.includes(forbiddenLabel)) return false
+  return true
 }
 
 /** 读取 <select> 的 option label 列表，去除前后空白 */

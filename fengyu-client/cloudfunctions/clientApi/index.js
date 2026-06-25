@@ -45,6 +45,7 @@ const routes = {
   'store.geocode': () => require('./routes/store').geocode,
   'product.categories': () => require('./routes/product').categories,
   'product.spuList': () => require('./routes/product').spuList,
+  'product.search': () => require('./routes/product').search,
   'product.skuDetail': () => require('./routes/product').skuDetail,
   'product.spuDetail': () => require('./routes/product').spuDetail,
   'product.hotList': () => require('./routes/product').hotList,

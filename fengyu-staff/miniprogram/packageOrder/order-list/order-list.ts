@@ -23,6 +23,7 @@ interface OrderItem {
   openedBy: string | null;
   hasRefund: boolean;
   hasPendingRefund: boolean;
+  isActivity: boolean;
 }
 
 interface RawOrderRow {
@@ -39,6 +40,7 @@ interface RawOrderRow {
   opened_by: string | null;
   has_refund?: boolean;
   has_pending_refund?: boolean;
+  is_activity?: boolean;
 }
 
 interface OrderListResponse {
@@ -132,6 +134,7 @@ Page({
         openedBy: r.opened_by || null,
         hasRefund: !!r.has_refund,
         hasPendingRefund: !!r.has_pending_refund,
+        isActivity: !!r.is_activity,
       }));
       this.setData({
         list: [...this.data.list, ...mapped],

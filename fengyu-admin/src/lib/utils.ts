@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 import type { OrgNode } from "@/lib/types"
+import { fmtDate, fmtDateTime } from "@/lib/datetime"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -23,20 +24,20 @@ export function formatPhone(phone: string): string {
   return `${phone.slice(0, 3)}****${phone.slice(7)}`
 }
 
-const pad2 = (n: number) => String(n).padStart(2, '0')
-
-/** 本地时区日期：YYYY-MM-DD（无效日期返回空串） */
-export function formatDate(date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date
-  if (!d || Number.isNaN(d.getTime())) return ''
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+/**
+ * 日期：YYYY-MM-DD（Asia/Shanghai 固定时区）。
+ * 转调 lib/datetime 收口实现，避免本地时区方法在非北京浏览器下偏移。
+ */
+export function formatDate(date: string | Date | null | undefined): string {
+  return fmtDate(date)
 }
 
-/** 本地时区日期时间：YYYY-MM-DD HH:mm:ss（无效日期返回空串） */
-export function formatDateTime(date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date
-  if (!d || Number.isNaN(d.getTime())) return ''
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+/**
+ * 日期时间：YYYY-MM-DD HH:mm:ss（Asia/Shanghai 固定时区）。
+ * 转调 lib/datetime 收口实现。
+ */
+export function formatDateTime(date: string | Date | null | undefined): string {
+  return fmtDateTime(date)
 }
 
 /**

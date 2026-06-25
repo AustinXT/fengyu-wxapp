@@ -1,0 +1,2 @@
+DROP INDEX "idx_lakala_merchants_merchant_no";--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_lakala_merchants_merchant_no" ON "lakala_merchants" USING btree ("merchant_no") WHERE "lakala_merchants"."merchant_no" IS NOT NULL;

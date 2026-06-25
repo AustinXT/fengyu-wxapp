@@ -106,7 +106,7 @@ async function search(ctx) {
     // 故含已解绑（bound_store_id IS NULL）顾客也应可被定位查看。
     const fSql = renderProfileFilters(filters, 2);
     rows = await pg.query(
-      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -118,11 +118,12 @@ async function search(ctx) {
     if (crossStore) {
       // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
       // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
+      // is_cross_store_temp（需求21）随行返回，供前端判断「临时跨店顾客是否允许跨门店开单」
       const fSql = renderProfileFilters(filters, 2);
       const limitIdx = 2 + filters.values.length;
       rows = await pg.query(
-        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
-                c.bound_store_id, s.store_name
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
+                c.bound_store_id, c.is_cross_store_temp, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
@@ -145,7 +146,7 @@ async function search(ctx) {
       const fSql = renderProfileFilters(filters, fStart);
       const limitIdx = fStart + filters.values.length;
       rows = await pg.query(
-        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+        `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
                 c.bound_store_id, s.store_name
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -169,7 +170,7 @@ async function search(ctx) {
     const fSql = renderProfileFilters(filters, fStart);
     const limitIdx = fStart + filters.values.length;
     rows = await pg.query(
-      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
@@ -187,8 +188,11 @@ async function search(ctx) {
     phone: maskPhoneForAuth(r.phone, ctx.auth),
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
+    customerType: r.customer_type || null,
     storeName: r.store_name ? r.store_name.trim() : "",
     boundStoreId: r.bound_store_id || null,
+    // 临时跨门店标记（需求21）：仅 crossStore 分支 SELECT 带出，其它分支为 undefined → false
+    isCrossStoreTemp: r.is_cross_store_temp === true,
     lastServiceDate: null,
     lastPurchaseName: null,
     source: r.customer_id ? "both" : "miniprogram",
@@ -280,10 +284,7 @@ async function calendar(ctx) {
     `;
   }
 
-  // Store scope filter
-  const calScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
-  whereClause += ` AND ${calScope.sql}`
-  params.push(...calScope.params)
+  // 交易数据跟顾客走：消费日历不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
 
   const rows = await pg.query(
     `
@@ -539,28 +540,40 @@ async function getConsumptionStats(clientUserId) {
 async function paidOrders(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { clientUserId, clientPhone } = ctx.event.payload || {};
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
   if (!clientUserId && !clientPhone) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // scope 守卫：传 clientUserId 时校验该顾客 bound_store_id ∈ 当前 scope
+  // 手机号 → clientUserId：统一走 clientUserId 守卫分支
+  //（复用现有 assertCustomerInScope 可见性逻辑，不引入新逻辑）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑保持原样）
   if (clientUserId) {
     await assertCustomerInScope(pg, ctx.auth, clientUserId)
   }
 
-  // 强制按 scope 过滤：员工只能看到顾客在 scope 内购买的订单/卡，跨 scope 卡不可见
+  // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
   let whereClause, params;
   if (clientUserId) {
     whereClause = "o.status = '已支付' AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
-    whereClause = "o.status = '已支付' AND o.client_phone = $1";
-    params = [clientPhone];
+    // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
+    // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
+    const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
+    whereClause = `o.status = '已支付' AND o.client_phone = $1 AND ${scope.sql}`;
+    params = [clientPhone, ...scope.params];
   }
-  const paidScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
-  whereClause += ` AND ${paidScope.sql}`
-  params.push(...paidScope.params)
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
@@ -634,6 +647,197 @@ async function paidOrders(ctx) {
     storeId: o.store_id,
     storeName: o.store_name || "",
     items: itemsByOrder[o.sale_order_id] || [],
+  }));
+}
+
+/**
+ * 顾客消费记录（全状态 + 跨门店，仅展示用）
+ *
+ * 与 paidOrders 的区别 / 为何独立成 action：
+ *   paidOrders 仅返回「已支付」订单且对 items 做退款冻结过滤，前端复用它提取
+ *   疗程卡 Tab 的可核销卡（→ service.create 核销次数）。若放开它的状态过滤，
+ *   待支付/未付款订单的卡会混进可核销列表，破坏「先付款后核销」。
+ *   故消费记录列表独立成此 action：查全部状态、跨门店，items 仅作展示，不参与核销。
+ */
+async function orderHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {});
+
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
+  if (!clientUserId && !clientPhone) {
+    throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
+  }
+
+  // 手机号 → clientUserId：统一走 clientUserId 守卫分支（与 paidOrders 一致）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑与 paidOrders 一致）
+  if (clientUserId) {
+    await assertCustomerInScope(pg, ctx.auth, clientUserId);
+  }
+
+  // 交易数据跟顾客走：放开门店过滤 + 不限状态，按顾客查全量（含跨门店、各状态）
+  let whereClause, params;
+  if (clientUserId) {
+    whereClause = "o.client_user_id = $1";
+    params = [clientUserId];
+  } else {
+    // 极端：手机号无对应顾客——无顾客可绑则退回门店 scope 过滤，杜绝凭手机号越权枚举全门店订单（与 paidOrders 一致）。
+    const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
+    whereClause = `o.client_phone = $1 AND ${scope.sql}`;
+    params = [clientPhone, ...scope.params];
+  }
+
+  // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序
+  const orders = await pg.query(
+    `SELECT o.sale_order_id, o.status, o.paid_at, o.created_at,
+            o.payable_amount, o.received, o.store_id, s.store_name
+     FROM sale_orders o
+     LEFT JOIN stores s ON s.store_id = o.store_id
+     WHERE ${whereClause}
+     ORDER BY COALESCE(o.paid_at, o.created_at) DESC`,
+    params,
+  );
+
+  if (orders.length === 0) {
+    ctx.result = [];
+    return;
+  }
+
+  // 消费记录仅展示商品名，不做 paidOrders 的退款冻结/可核销过滤
+  const orderIds = orders.map((o) => o.sale_order_id);
+  const items = await pg.query(
+    `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.product_type
+     FROM sale_items si
+     WHERE si.sale_order_id = ANY($1)
+     ORDER BY si.sale_item_id`,
+    [orderIds],
+  );
+
+  const itemsByOrder = {};
+  for (const item of items) {
+    if (!itemsByOrder[item.sale_order_id]) itemsByOrder[item.sale_order_id] = [];
+    itemsByOrder[item.sale_order_id].push({
+      saleItemId: item.sale_item_id,
+      itemName: item.product_name || "",
+      spec: item.product_name || "",
+      productType: item.product_type || "",
+    });
+  }
+
+  ctx.result = orders.map((o) => ({
+    orderId: o.sale_order_id,
+    saleOrderId: o.sale_order_id,
+    status: o.status,
+    payableAmount: o.payable_amount,
+    received: o.received,
+    paidAt: o.paid_at,
+    createdAt: o.created_at,
+    storeId: o.store_id,
+    storeName: o.store_name || "",
+    items: itemsByOrder[o.sale_order_id] || [],
+  }));
+}
+
+/**
+ * 服务记录（顾客档案「服务记录」Tab）
+ *
+ * 交易数据跟顾客走：放开门店过滤 + 不限状态，按 client_user_id 查全量服务单（含跨门店、各状态）。
+ * 可见性由 assertCustomerInScope（bound_store_id ∈ scope）守护，与 orderHistory 同口径。
+ * 点进详情走 service.detail（已支持顾客档案场景的跨门店只读放行）。
+ */
+async function serviceHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {});
+
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
+  if (!clientUserId && !clientPhone) {
+    throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
+  }
+
+  // 手机号 → clientUserId（service_orders 仅有 client_user_id，无 client_phone 列）
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+  if (!clientUserId) {
+    ctx.result = [];
+    return;
+  }
+
+  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（与 orderHistory 一致）
+  await assertCustomerInScope(pg, ctx.auth, clientUserId);
+
+  const serviceOrders = await pg.query(
+    `SELECT so.service_order_id, so.status, so.service_date,
+            so.assigned_employee_id, so.client_user_id, so.appointment_id,
+            so.started_at, so.completed_at, so.created_at,
+            so.store_id, s.store_name
+     FROM service_orders so
+     LEFT JOIN stores s ON s.store_id = so.store_id
+     WHERE so.client_user_id = $1
+     ORDER BY so.service_date DESC, so.created_at DESC`,
+    [clientUserId],
+  );
+
+  if (serviceOrders.length === 0) {
+    ctx.result = [];
+    return;
+  }
+
+  // 批量查询服务明细摘要（项目名）
+  const soIds = serviceOrders.map((s) => s.service_order_id);
+  const itemsSummary = await pg.query(
+    `SELECT si.service_order_id, COALESCE(sli.product_name, '') AS product_name
+     FROM service_items si
+     LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
+     WHERE si.service_order_id = ANY($1)
+     ORDER BY si.sale_item_id`,
+    [soIds],
+  );
+  const itemsMap = {};
+  for (const i of itemsSummary) {
+    if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = [];
+    itemsMap[i.service_order_id].push({
+      itemName: i.product_name,
+      spec: i.product_name || "",
+    });
+  }
+
+  // 批量查询员工姓名
+  const staffWfIds = [...new Set(serviceOrders.map((s) => s.assigned_employee_id).filter(Boolean))];
+  const staffNameMap = {};
+  if (staffWfIds.length > 0) {
+    const staffRows = await pg.query(
+      "SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = ANY($1)",
+      [staffWfIds],
+    );
+    for (const r of staffRows) staffNameMap[r.employee_id] = r.name || "";
+  }
+
+  ctx.result = serviceOrders.map((so) => ({
+    id: so.service_order_id,
+    serviceOrderId: so.service_order_id,
+    status: so.status,
+    serviceTime: so.service_date,
+    startTime: so.started_at,
+    completedTime: so.completed_at,
+    staffName: staffNameMap[so.assigned_employee_id] || "",
+    appointmentId: so.appointment_id,
+    storeId: so.store_id,
+    storeName: so.store_name || "",
+    items: itemsMap[so.service_order_id] || [],
   }));
 }
 
@@ -859,11 +1063,8 @@ async function refundHistory(ctx) {
     refundClientWhere = 'so.client_phone = $1'
     refundParams = [clientPhone]
   }
-  let refundWhere = refundClientWhere
-  // Store scope filter
-  const refundScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', refundParams.length + 1)
-  refundWhere += ` AND ${refundScope.sql}`
-  refundParams.push(...refundScope.params)
+  // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
+  const refundWhere = refundClientWhere
   refundParams.push(pageSize, (page - 1) * pageSize)
   const refundRows = await pg.query(`
     SELECT
@@ -897,11 +1098,8 @@ async function refundHistory(ctx) {
     convClientWhere = 'o.client_phone = $1'
     convParams = [clientPhone]
   }
-  let convWhere = convClientWhere
-  // Store scope filter
-  const convScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', convParams.length + 1)
-  convWhere += ` AND ${convScope.sql}`
-  convParams.push(...convScope.params)
+  // 交易数据跟顾客走：转换单不再按门店过滤
+  const convWhere = convClientWhere
   const convRows = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
            o.created_at, o.paid_at
@@ -1212,4 +1410,4 @@ async function phoneChangeLogs(ctx) {
   })
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };
+module.exports = { search, calendar, detail, paidOrders, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };

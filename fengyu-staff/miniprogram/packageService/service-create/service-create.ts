@@ -3,6 +3,12 @@ import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
+// 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
+// 无法开正常退款单；退寄存疗程卡次数时走正常服务单扣减次数并在备注选此预设打标，供后续从消耗业绩统计过滤。
+// ⚠️ 须与 fengyu-admin/src/lib/service-remark.ts 的 DEPOSIT_REFUND_REMARK 字面量完全一致
+//    （项目禁止跨端共享代码目录，各端保留独立副本）。
+const DEPOSIT_REFUND_REMARK = '寄存单退款专用 — 老系统寄存疗程卡退款核销，不计消耗业绩';
+
 const app = getApp<IAppOption>();
 
 interface PaidOrderItem {
@@ -78,6 +84,10 @@ Page({
     assignedStaffWfId: '' as string,
     // 备注
     remark: '',
+    // 备注模式：custom=自由输入(默认，显示文本框)；preset=寄存单退款专用标准化备注
+    remarkMode: 'custom' as 'custom' | 'preset',
+    showRemarkPicker: false,
+    remarkColumns: ['自定义输入（手动填写）', DEPOSIT_REFUND_REMARK] as string[],
   },
 
   onLoad(options) {
@@ -280,6 +290,26 @@ Page({
 
   onRemarkChange(e: WechatMiniprogram.CustomEvent) {
     this.setData({ remark: e.detail.value });
+  },
+
+  // ===== 备注预设下拉（van-picker） =====
+  onShowRemarkPicker() {
+    this.setData({ showRemarkPicker: true });
+  },
+
+  onRemarkPickerClose() {
+    this.setData({ showRemarkPicker: false });
+  },
+
+  onRemarkConfirm(e: WechatMiniprogram.CustomEvent) {
+    const picked = e.detail.value as string;
+    if (picked === DEPOSIT_REFUND_REMARK) {
+      // 选预设：备注即标准化常量，隐藏自由文本框
+      this.setData({ remarkMode: 'preset', remark: DEPOSIT_REFUND_REMARK, showRemarkPicker: false });
+    } else {
+      // 选自定义：清空备注、显示文本框照旧手填
+      this.setData({ remarkMode: 'custom', remark: '', showRemarkPicker: false });
+    }
   },
 
   async onSubmit() {

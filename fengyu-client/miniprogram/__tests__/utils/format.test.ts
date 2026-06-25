@@ -162,8 +162,8 @@ describe('getStatusClass', () => {
 })
 
 describe('formatOrderDate', () => {
-  test('标准格式', () => {
-    expect(formatOrderDate('2025-03-14T10:00:00Z')).toMatch(/2025-3-14/)
+  test('标准格式（YYYY-MM-DD，补前导零）', () => {
+    expect(formatOrderDate('2025-03-14T10:00:00Z')).toBe('2025-03-14')
   })
   test('空字符串', () => {
     expect(formatOrderDate('')).toBe('')
@@ -297,16 +297,34 @@ describe('safeParseDate', () => {
 })
 
 describe('formatAppointmentTime', () => {
-  test('标准格式 "YYYY-MM-DD HH:MM-HH:MM" → "M月D日 HH:MM-HH:MM"', () => {
+  // 主路径：真实入参是 PG timestamp 经 pg 序列化的 UTC ISO 串（无空格、仅时段起点）。
+  // 用本地 Date 构造 toISOString()，使断言不依赖运行时时区（与 formatDateTime 测试同法）：
+  // 本地 09:00 起点 → 函数读回本地墙钟 09:00 → 派生 1 小时区间 09:00-10:00。
+  test('真实 UTC ISO timestamp（无空格，仅起点）→ 派生 1 小时区间', () => {
+    const start = new Date(2026, 5, 16, 9, 0, 0) // 本地 2026-06-16 09:00:00
+    expect(formatAppointmentTime(start.toISOString())).toBe('6月16日 09:00-10:00')
+  })
+  test('UTC ISO：跨午夜不影响日期/补零（18:00 起点 → 18:00-19:00）', () => {
+    const start = new Date(2026, 0, 5, 18, 0, 0) // 本地 2026-01-05 18:00:00
+    expect(formatAppointmentTime(start.toISOString())).toBe('1月5日 18:00-19:00')
+  })
+  test('文档换算样例（字面 UTC ISO）：01:00:00.000Z → 北京 09:00-10:00', () => {
+    // 字面 Z 断言依赖运行时为北京时区（UTC+8）：UTC 01:00 = 北京 09:00。
+    // CI 若在 UTC 跑则跳过避免误挂；ISO→区间的健壮断言已由上面两条 toISOString() 用例覆盖。
+    if (new Date().getTimezoneOffset() !== -480) return
+    expect(formatAppointmentTime('2026-06-16T01:00:00.000Z')).toBe('6月16日 09:00-10:00')
+  })
+  test('兜底兼容：旧带空格 "YYYY-MM-DD HH:MM-HH:MM" → 日期 + 原时段（不派生）', () => {
     expect(formatAppointmentTime('2026-03-15 09:00-11:00')).toBe('3月15日 09:00-11:00')
   })
-  test('个位月日不补零', () => {
+  test('兜底兼容：个位月日不补零', () => {
     expect(formatAppointmentTime('2026-01-05 13:00-15:00')).toBe('1月5日 13:00-15:00')
   })
   test('空字符串返回空', () => {
     expect(formatAppointmentTime('')).toBe('')
   })
-  test('无效日期部分原样返回', () => {
+  test('无效日期原样返回', () => {
     expect(formatAppointmentTime('not-a-date 09:00-11:00')).toBe('not-a-date 09:00-11:00')
+    expect(formatAppointmentTime('garbage')).toBe('garbage')
   })
 })

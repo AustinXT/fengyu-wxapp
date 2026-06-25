@@ -27,7 +27,7 @@ import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
 // Admin has sale_order:record_payment permission (manager role does NOT)
@@ -49,7 +49,7 @@ const RECHARGE_PAY_AMOUNT = 495 // 500 * 0.99
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e: any) {
@@ -182,10 +182,15 @@ const FIXTURE_CARD_BASELINE_BALANCE = 1000
 // 不破坏 Step 链路；afterAll 仍保留严格回滚（双重保险）。
 test.afterEach(() => {
   try {
-    psql(
-      `DELETE FROM card_transactions WHERE card_id='${CARD_ID}' ` +
-        `AND created_at > '${SPEC_START_TS}'`,
-    )
+    // baseline 流水按 id 保留（不能用 created_at > SPEC_START_TS：SPEC_START_TS 是 UTC ISO 串，
+    // 而 card_transactions.created_at 是本地时区 timestamp(无tz)，库 tz=Asia/Shanghai 下 UTC 串比本地早 8h，
+    // 会把 baseline 流水一并误删 → Step0 对账后 SUM 掉值致 Step1 reconcile FAIL）。对齐 afterAll 的 id 制。
+    if (baselineCardTxnIds.size > 0) {
+      psql(
+        `DELETE FROM card_transactions WHERE card_id='${CARD_ID}' ` +
+          `AND id NOT IN (${Array.from(baselineCardTxnIds).join(',')})`,
+      )
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error(`[link-10 afterEach] DELETE card_transactions 失败（非致命）: ${msg}`)
@@ -404,6 +409,28 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
     const opts = await paySelect2.locator('option').allTextContents()
     if (opts.some((o) => o.includes('线下'))) {
       await paySelect2.selectOption({ label: '线下支付' })
+    }
+  }
+
+  // 取消储值卡抵扣（顾客有卡余额时开单页 setUseCard(bal>0) 自动勾选 → 全额抵扣致"已支付"，
+  // 与本 Step「挂账→待支付→SQL 扣款」意图冲突；显式取消勾选保持待支付）
+  //
+  // ⚠ 不能用 getByRole('checkbox').first()：新增的「活动单标记」(is_activity) 复选框在 DOM 中
+  // 排在「充值卡抵扣」之前，会被 .first() 命中 → 取消的是活动标记而非储值卡抵扣 → 储值卡仍勾选
+  // → 卡余额全额抵扣 → 订单变「已支付」，破坏本 Step「待支付/部分支付」前置。
+  // 精确锚定「充值卡抵扣」卡片：同时含「充值卡抵扣」文案与 checkbox 的最内层容器（即卡片内的
+  // flex 行：左侧文案 + 右侧 <label> 内 type=checkbox），.last() 取最深匹配，唯一命中该复选框。
+  const useCardCb = page
+    .locator('div')
+    .filter({ hasText: '充值卡抵扣' })
+    .filter({ has: page.getByRole('checkbox') })
+    .last()
+    .getByRole('checkbox')
+  // 无条件确保最终未勾选：存在即检查，已勾选则取消（去掉旧的 count && isChecked 合并短路，
+  // 该短路在定位到错误 checkbox 时 isChecked=false 直接跳过 uncheck，是本次漂移的根因）。
+  if ((await useCardCb.count()) > 0) {
+    if (await useCardCb.isChecked().catch(() => false)) {
+      await useCardCb.uncheck()
     }
   }
 

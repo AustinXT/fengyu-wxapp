@@ -25,7 +25,9 @@
         "LAKALA_PRIVATE_KEY_PEM": "${LAKALA_PRIVATE_KEY_PEM}",
         "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
-        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
+        "SEC_CHECK_ENABLED": "${SEC_CHECK_ENABLED}"
       },
       "triggers": [
         {
@@ -51,12 +53,21 @@
         "LAKALA_CALLBACK_IP_WHITELIST": "${LAKALA_CALLBACK_IP_WHITELIST}",
         "LAKALA_ENV": "${LAKALA_ENV}",
         "PAYNOTIFY_ENABLED": "${PAYNOTIFY_ENABLED}",
+        "WX_SHIPPING_ENABLED": "${WX_SHIPPING_ENABLED}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
         "LAKALA_NOTIFY_URL": "${LAKALA_NOTIFY_URL}",
         "LAKALA_PRIVATE_KEY_PEM": "${LAKALA_PRIVATE_KEY_PEM}",
         "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
         "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
       },
+      "triggers": [
+        {
+          "name": "wxShippingBackfill",
+          "type": "timer",
+          "config": "0 */1 * * * * *"
+        }
+      ],
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false

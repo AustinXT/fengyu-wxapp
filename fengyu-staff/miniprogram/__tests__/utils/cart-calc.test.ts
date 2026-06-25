@@ -46,6 +46,13 @@ describe('calcHalfPriceTotal — 内部单半价合计', () => {
   test('空购物车', () => {
     expect(calcHalfPriceTotal([])).toBe('0.00')
   })
+
+  test('会员价场景按标价 listPrice 取半（不取会员 price）', () => {
+    // 标价 200、会员价 180：内部单半价应为 200×0.5=100，而非 180×0.5=90
+    expect(
+      calcHalfPriceTotal([{ price: 180, listPrice: 200, quantity: 1 }])
+    ).toBe('100.00')
+  })
 })
 
 describe('allocateCouponPerLine — 订单级优惠券按行应付比例摊算', () => {

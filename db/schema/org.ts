@@ -68,15 +68,10 @@ export const stores = pgTable(
     description: text("description"),
     announcement: text("announcement"),
     parkingInfo: text("parking_info"),
-    // 拉卡拉聚合支付配置
-    //   merchant_no 由 lakala_merchant_id 派生的快照（admin UI 不再手填）
-    //   term_no / enabled 仍是 store-level 独立编辑
-    lakalaMerchantNo: text("lakala_merchant_no"),
-    lakalaTermNo: text("lakala_term_no"),
-    lakalaEnabled: boolean("lakala_enabled").notNull().default(false),
+    // 拉卡拉收款配置已归位 lakala_merchants（merchant_no/term_no/enabled），本表仅留关联外键
     /**
-     * 关联的拉卡拉商户主表（N:1 多对一，一店一商户，plan §1.4）；
-     * ON UPDATE CASCADE / ON DELETE SET NULL：防孤悬，商户被硬删时门店快照自动清空。
+     * 关联的拉卡拉收款商户（N:1，一个商户可对应多门店）；
+     * ON UPDATE CASCADE / ON DELETE SET NULL：防孤悬，商户被硬删时关联自动清空。
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     lakalaMerchantId: text("lakala_merchant_id").references((): any => lakalaMerchants.id, {

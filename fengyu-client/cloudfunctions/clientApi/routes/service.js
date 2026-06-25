@@ -6,6 +6,7 @@
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { loadServiceItems, finalizeServiceOrder } = require('../utils/service-finalize')
+const { checkText } = require('../utils/wx-sec-check')
 
 const MAX_COMMENT_LENGTH = 500
 
@@ -189,6 +190,9 @@ async function createReview(ctx) {
   if (order.status !== '已完成') {
     throw new Error('INVALID_STATE: 服务未完成不可评价')
   }
+
+  // 内容安全校验（评价 = 评论类）：违规抛 INVALID_PARAMS，不落库
+  await checkText(normalizedComment, { scene: 2 })
 
   try {
     await pg.query(

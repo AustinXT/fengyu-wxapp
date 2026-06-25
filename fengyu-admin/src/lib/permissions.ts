@@ -62,95 +62,108 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // 拉卡拉商户入网（arch-007；admin 专属，其他角色不开）
-    'lakala:onboarding:read', 'lakala:onboarding:create', 'lakala:onboarding:update',
-    'lakala:onboarding:submit', 'lakala:onboarding:realname', 'lakala:onboarding:delete',
+    // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
+    'store:lakala_config',
+    // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
+    'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
   ],
+  // 2026-06-24 对齐生产实配（运营在权限矩阵 UI 给店长扩权后固化为代码默认）。按模块字母序排列。
+  // 相对历史默认的敏感扩权：sale_order:delete（删单）、employee:* 全 CRUD（维护本店员工）、
+  // service:delete、pickup_record:delete、store_unbind:delete、store:lakala_config（门店收款配置）、
+  // merchant:list（收款商户只读）、message:*、operation_log:list。退款 approve 仍仅 manager/admin 持有。
   manager: [
-    'dashboard:view',
-    // 引用读：列表页筛选器需要市场/门店列表（scopeCondition 已在 SQL 层兜底，不越权）
-    'org:list',
-    'store:list',
-    'employee:list',
-    'customer:list', 'customer:update', 'customer:create',
-    'product:list',
-    'coupon:list',
-    'sale_order:list', 'sale_order:create', 'sale_order:update',
-    // 部分支付回款：店长在前台收尾款（与 manager 创建订单的现金流入口对齐）
-    'sale_order:record_payment',
-    // 退款：店长可发起申请 + 审批（含 reject）— 唯一持 approve 的角色
-    'sale_order:refund_create', 'sale_order:refund_approve',
-    'sale_item:list',
     'allocation:list', 'allocation:save',
-    'service:list', 'service:create', 'service:update',
-    'appointment:list', 'appointment:confirm', 'appointment:checkin',
-    'point_transaction:list',
+    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
     'card_transaction:list',
-    'pickup_record:list', 'pickup_record:create',
-    'data_center:dashboard',
-    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
-    // 历史订单核对（manager 是顾客到店时的主要操作角色）
-    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
-    'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
-    // 门店库存（manager 是主要录入者，删除需 admin）
-    'inventory:list', 'inventory:create', 'inventory:update',
-  ],
-  finance: [
+    'coupon:list',
+    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
     'dashboard:view',
-    // 引用读：列表页筛选器需要市场/门店/员工列表（scopeCondition 兜底）
-    'org:list',
-    'store:list',
-    'employee:list',
-    'sale_order:list',
-    'sale_order:refund_create',
-    'sale_order:record_payment',
-    'sale_item:list',
-    'allocation:list',
-    // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全
-    // （2026-05-21：修 menu(readonlyRoles:finance) 与 /allocations 页 service:list 需求不一致）
-    'service:list',
-    'customer:list',
-    'point_transaction:list',
-    'card_transaction:list',
-    'pickup_record:list',
     'data_center:dashboard',
-    // 历史订单：可查看 + 按顾客拉取（核对动作仍归 admin/manager）
-    'legacy_order:list', 'legacy_order:pull',
-    // 门店库存（finance 只读）
-    'inventory:list',
+    'employee:create', 'employee:delete', 'employee:list', 'employee:update',
+    'inventory:create', 'inventory:list', 'inventory:update',
+    'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
+    'merchant:list',
+    'message:list', 'message:send',
+    'operation_log:list',
+    'org:list',
+    'pickup_record:create', 'pickup_record:delete', 'pickup_record:list',
+    'point_transaction:list',
+    'product:list',
+    'sale_item:list',
+    'sale_order:create', 'sale_order:delete', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
+    'service:create', 'service:delete', 'service:list', 'service:update',
+    'store:lakala_config', 'store:list',
+    'store_unbind:approve', 'store_unbind:delete', 'store_unbind:list', 'store_unbind:reject',
   ],
+  // 2026-06-24 对齐生产实配。相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
+  // legacy_order 核对四项（approve/reject/update_amount/update_phone）、product:list、operation_log:list。
+  // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全。商户档案 /merchants 完整 CRUD。
+  finance: [
+    'allocation:list',
+    'card_transaction:list',
+    'commission:create', 'commission:delete', 'commission:list', 'commission:update',
+    'coupon:list',
+    'customer:list',
+    'dashboard:view',
+    'data_center:dashboard',
+    'employee:list',
+    'inventory:list',
+    'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
+    'merchant:create', 'merchant:delete', 'merchant:list', 'merchant:update',
+    'operation_log:list',
+    'org:list',
+    'pickup_record:list',
+    'point_transaction:list',
+    'product:list',
+    'sale_item:list',
+    'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_create',
+    'service:list',
+    'store:list',
+  ],
+  // 2026-06-24 对齐生产实配。相对历史默认的扩权：message:*、product:list、sale_order:list、
+  // service:list、operation_log:list。permission:assign 不含 assign_admin（hr 不能授 admin）。
   hr: [
     'dashboard:view',
-    'org:list', 'org:create', 'org:update',
-    'store:list', 'store:create', 'store:update',
-    'employee:list', 'employee:create', 'employee:update',
-    'permission:list', 'permission:assign', 'permission:revoke',
-    // 退款发起：2026-05-17 PR-Z — 所有 admin 角色都能提退款申请
-    'sale_order:refund_create',
+    'employee:create', 'employee:list', 'employee:update',
+    'message:list', 'message:send',
+    'operation_log:list',
+    'org:create', 'org:list', 'org:update',
+    'permission:assign', 'permission:list', 'permission:revoke',
+    'product:list',
+    'sale_order:list', 'sale_order:refund_create',
+    'service:list',
+    'store:create', 'store:list', 'store:update',
   ],
+  // 2026-06-24 对齐生产实配。相对历史默认的扩权：inventory 写权限（create/update/delete）、
+  // sale_order:list、operation_log:list。
   product: [
+    'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    // 引用读：列表页筛选器需要市场/门店列表（scopeCondition 兜底）
+    'inventory:create', 'inventory:delete', 'inventory:list', 'inventory:update',
+    'operation_log:list',
     'org:list',
+    'product:create', 'product:list', 'product:update',
+    'sale_order:list', 'sale_order:refund_create',
     'store:list',
-    'product:list', 'product:create', 'product:update',
-    'coupon:list', 'coupon:create', 'coupon:update',
-    'sale_order:refund_create',
-    // 门店库存（商品负责人只读，关注 SKU 流转）
-    'inventory:list',
   ],
+  // 2026-06-24 对齐生产实配。相对历史默认的扩权：appointment 全套（含 delete）、customer:delete、
+  // inventory:list、legacy_order 核对四项、pickup_record:list、product:list、operation_log:list。
   customer_mgr: [
+    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
+    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
     'dashboard:view',
-    // 引用读：顾客管理页/顾客详情页需要市场/门店/员工列表（scopeCondition 兜底，仅见 scope 内）
-    'org:list',
-    'store:list',
     'employee:list',
-    'customer:list', 'customer:update', 'customer:create',
+    'inventory:list',
+    'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
+    'operation_log:list',
+    'org:list',
+    'pickup_record:list',
+    'product:list',
     'sale_item:list',
     'sale_order:refund_create',
-    // 历史订单：可查看 + 按顾客拉取（核对动作仍归 admin/manager）
-    'legacy_order:list', 'legacy_order:pull',
+    'store:list',
   ],
+  // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
 }
 
@@ -346,6 +359,32 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
  */
 export function isAdminScope(session: AuthSession): boolean {
   return session.roles.some(r => r.role === 'admin')
+}
+
+/**
+ * 是否允许登录管理后台：持有任一非 staff 角色即可。
+ *
+ * staff（普通员工）专供小程序端，禁止进入 admin 后台。
+ * 用于 actions/auth.ts 的登录闸（login 验密后）与会话二次闸（getSessionFromCookie）。
+ * 仅看角色、不看权限点——即便某管理角色被配空矩阵，仍允许登录（避免误锁管理岗）。
+ */
+export function canAccessAdmin(roles: Array<{ role: string }>): boolean {
+  return roles.some(r => r.role !== 'staff')
+}
+
+/**
+ * 权限管理页操作者可操作的 scope 节点 id 集合
+ *
+ * - admin → null（全开，不置灰任何节点）
+ * - 非 admin → 去重后的 session.roles[].scopeId
+ *
+ * 口径必须与 actions/permissions.ts 各 action 的 `userScopeIds`
+ * （getRoles / getRolesByScope / getRoleCountsByScope / assignRole / revokeRole）
+ * 完全一致：**精确 scopeId，不展开子树**。前端左侧组织树据此置灰其管辖外节点。
+ */
+export function accessiblePermissionScopeIds(session: AuthSession): string[] | null {
+  if (isAdminScope(session)) return null
+  return Array.from(new Set(session.roles.map(r => r.scopeId)))
 }
 
 /**

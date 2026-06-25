@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { MallCategory } from "@/lib/types";
 import { createProduct } from "@/actions/products";
+import { actionErrorMessage } from "@/lib/action-error";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,7 +56,8 @@ export default function MallProductCreatePageClient({
     const fd = new FormData(form);
 
     const name = (fd.get("name") as string).trim();
-    const price = (fd.get("price") as string).trim();
+    // 套餐(isBundle)时价格 Card 不渲染，fd.get("price") 为 null，须空值兜底
+    const price = ((fd.get("price") as string | null) ?? "").trim();
 
     if (!name) {
       toast.error("请输入商城展示名称");
@@ -65,13 +67,13 @@ export default function MallProductCreatePageClient({
       toast.error("请选择商城分类");
       return;
     }
-    if (!price) {
+    if (!isBundle && !price) {
       toast.error("请输入标价");
       return;
     }
 
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null;
-    const description = (fd.get("description") as string).trim() || null;
+    const specialPrice = ((fd.get("specialPrice") as string | null) ?? "").trim() || null;
+    const description = ((fd.get("description") as string | null) ?? "").trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
     const isVisible = fd.get("isVisible") === "on";
 
@@ -87,8 +89,8 @@ export default function MallProductCreatePageClient({
         detailImages: detailImages.length > 0 ? detailImages : null,
         description,
         isBundle,
-        price,
-        specialPrice,
+        price: isBundle ? '0' : price,
+        specialPrice: isBundle ? null : specialPrice,
         manageScope: manageScope.scopeId,
         marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
         sortOrder,
@@ -101,8 +103,8 @@ export default function MallProductCreatePageClient({
       setFormDirty(false);
       toast.success("商品创建成功，请在详情页管理套餐分组");
       router.push(`/mall/${productId}`);
-    } catch {
-      toast.error("创建失败，请稍后重试");
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建失败，请稍后重试"));
     } finally {
       setSaving(false);
     }
@@ -179,24 +181,26 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 价格 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">价格</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">标价</label>
-              <Input name="price" type="number" placeholder="0.00" />
+      {/* 价格（套餐价由详情页分组单价自动计算，此处仅非套餐填写） */}
+      {!isBundle && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">价格</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">标价</label>
+                <Input name="price" type="number" placeholder="0.00" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">会员价</label>
+                <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">会员价</label>
-              <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 展示 */}
       <Card>

@@ -26,17 +26,17 @@
   <van-empty wx:elif="{{!loading && orders.length === 0}}" description="暂无数据" />
 
   <block wx:else>
-    <!-- 销售提成卡片 -->
+    <!-- 销售提成卡片（按回款逐笔分配：每张卡 = 一笔回款事件） -->
     <block wx:if="{{activeTab === 'sale'}}">
       <view
         class="order-card"
         wx:for="{{orders}}"
-        wx:key="sale_order_id"
-        data-id="{{item.sale_order_id}}"
+        wx:key="sale_payment_id"
+        data-id="{{item.sale_payment_id}}"
         bindtap="onTapOrder"
       >
         <view class="card-header">
-          <text class="order-no">{{item.sale_order_id}}</text>
+          <text class="order-no">{{item.change_type}} · ¥{{item.amount}}</text>
           <view class="tag-group">
             <van-tag wx:if="{{item.preferred_employee_id}}" color="#7B1FA2" plain>已指定美容师</van-tag>
             <van-tag color="{{item.allocation_status === '已分配' ? '#3D8A5A' : '#D4820A'}}" plain>{{item.allocation_status}}</van-tag>
@@ -48,12 +48,12 @@
             <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
           </view>
           <view class="info-row">
-            <text class="info-label">金额</text>
-            <text class="info-value amount">¥{{item.total_amount}}</text>
+            <text class="info-label">订单</text>
+            <text class="info-value">{{item.sale_order_id}}</text>
           </view>
           <view class="info-row">
-            <text class="info-label">支付时间</text>
-            <text class="info-value">{{item.time_display || item.paid_at}}</text>
+            <text class="info-label">到账</text>
+            <text class="info-value">{{item.time_display || item.paid_at}} · {{item.payment_method}}</text>
           </view>
         </view>
         <view class="card-footer">

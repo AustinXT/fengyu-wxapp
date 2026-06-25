@@ -1,5 +1,5 @@
 /**
- * runDailyJobs — 串行执行 10 个 STEP，每个 STEP 独立 try/catch
+ * runDailyJobs — 串行执行 13 个 STEP，每个 STEP 独立 try/catch
  *
  * 与原 cronTask 入口的关键差异：
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
@@ -16,11 +16,12 @@
  *   5. spendingTier             — 重算 spending_tier 终身消费档位（依赖 sale_orders）
  *   6. birthday                 — 当日生日权益（依赖 member_level）
  *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
- *   8. pointsAudit              — 积分余额一致性校验（只读告警）
- *   9. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *  10. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
- *  11. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
- *  12. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
+ *   8. resetCrossStoreFlags     — 重置员工出差/顾客临时跨店标记（写入清扫；新增 2026-06-24）
+ *   9. pointsAudit              — 积分余额一致性校验（只读告警）
+ *  10. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
+ *  11. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *  12. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
+ *  13. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
  *
  *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
  */
@@ -39,6 +40,7 @@ import { auditPaymentInvariants } from './steps/audit-payment-invariants'
 import { auditRefundCascadeCoverage } from './steps/audit-refund-cascade-coverage'
 import { auditStoreUnbindOrphans } from './steps/audit-store-unbind-orphans'
 import { closeExpiredAppointments } from './steps/close-expired-appointments'
+import { resetCrossStoreFlags } from './steps/reset-cross-store-flags'
 
 export type Db = typeof db
 
@@ -68,6 +70,8 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   // —— 权益发放 ——
   ['birthday', grantBirthdayBenefits],
   ['thanksgiving', grantThanksgivingBenefits],
+  // —— 跨门店临时标记重置（写入清扫，每日重置出差/临时跨店，不感知 ctx）——
+  ['resetCrossStoreFlags', resetCrossStoreFlags as StepFn],
   // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
   ['pointsAudit', auditPointsBalance as StepFn],
   ['roleTypeNullsAudit', auditRoleTypeNulls as StepFn],

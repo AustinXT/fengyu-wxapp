@@ -40,6 +40,9 @@ postgres_data/
 
 # CloudBase
 cloudbaserc.json
+# 渲染态多环境配置（含拉卡拉 PEM / CLIENT_SECRET / TMAP 等机密，绝不入 git）
+cloudbaserc.*.json
+!cloudbaserc.example.json
 
 # 双环境配置（envs/ 含 PEM/SM4/拉卡拉密钥）
 envs/dev.env

@@ -18,6 +18,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -265,6 +266,7 @@ async function queryStoreConsume(scopeType, scopeId, date, mode) {
        JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
       WHERE ${sc.sql}
         AND so.status = '已完成'
+        AND ${excludeDepositRefundSql('so')}
         AND ${timeWindow('so.service_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
@@ -281,6 +283,7 @@ async function queryShengmeiConsume(scopeType, scopeId, date, mode) {
       WHERE ${sc.sql}
         AND so.status = '已完成'
         AND sit.is_shengmei = TRUE
+        AND ${excludeDepositRefundSql('so')}
         AND ${timeWindow('so.service_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
@@ -323,6 +326,7 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
       WHERE ${sc.sql}
         AND so.status = '已完成'
         AND sit.sales_category IN ('自销自耗', '他销自耗')
+        AND ${excludeDepositRefundSql('so')}
         AND ${timeWindow('so.service_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
@@ -783,6 +787,7 @@ async function rankingConsume(period, storeFilter) {
        ON so2.store_id = s.store_id
        AND so2.status = '已完成'
        AND ${timeWindowPeriod('so2.service_date', period, true)}
+       AND ${excludeDepositRefundSql('so2')}
      LEFT JOIN service_items sit ON sit.service_order_id = so2.service_order_id
      LEFT JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
      WHERE ${storeFilter.sql}
@@ -861,6 +866,7 @@ async function rankingProjectCount(period, storeFilter) {
        ON so2.store_id = s.store_id
        AND so2.status = '已完成'
        AND ${timeWindowPeriod('so2.service_date', period, true)}
+       AND ${excludeDepositRefundSql('so2')}
      LEFT JOIN service_items sit
        ON sit.service_order_id = so2.service_order_id
        AND sit.sales_category IN ('自销自耗', '他销自耗')
@@ -1041,6 +1047,7 @@ consume_by_emp AS (
   JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
   WHERE so2.status = '已完成'
     AND ${timeWindowPeriod('so2.service_date', period, true)}
+    AND ${excludeDepositRefundSql('so2')}
   GROUP BY sit.employee_id
 )
 SELECT
@@ -1131,6 +1138,7 @@ project_by_emp AS (
   WHERE so2.status = '已完成'
     AND sit.sales_category IN ('自销自耗','他销自耗')
     AND ${timeWindowPeriod('so2.service_date', period, true)}
+    AND ${excludeDepositRefundSql('so2')}
   GROUP BY sit.employee_id
 )
 SELECT
@@ -1349,7 +1357,8 @@ async function salesData(ctx) {
            JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
           WHERE ${scSvc.sql}
             AND so.status = '已完成'
-            AND so.service_date BETWEEN $1 AND $2`,
+            AND so.service_date BETWEEN $1 AND $2
+            AND ${excludeDepositRefundSql('so')}`,
         svcP,
       ),
       // SQL 4: 分客型项目实耗（2026-05-20 P0-3 修复：became_member_at NULL 兜底归老会员）
@@ -1372,7 +1381,8 @@ async function salesData(ctx) {
            JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scSvc.sql}
             AND so.status = '已完成'
-            AND so.service_date BETWEEN $1 AND $2`,
+            AND so.service_date BETWEEN $1 AND $2
+            AND ${excludeDepositRefundSql('so')}`,
         svcP,
       ),
       // SQL 5: 分客型产品出库（product_type='家居产品' 行级；2026-05-20 P0-3 修复 NULL 兜底）

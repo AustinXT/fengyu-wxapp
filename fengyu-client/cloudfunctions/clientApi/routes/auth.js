@@ -8,6 +8,8 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
 const { testBypassAllowed } = require('../utils/runtime-guard')
+const { checkText, checkImage } = require('../utils/wx-sec-check')
+const { isMember } = require('../utils/member-pricing')
 
 /**
  * 微信登录
@@ -18,7 +20,7 @@ async function login(ctx) {
 
   // 检查用户是否存在（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    `SELECT u.user_id, u.phone, u.name, u.avatar_url, u.member_level, u.bound_store_id,
+    `SELECT u.user_id, u.phone, u.name, u.avatar_url, u.member_level, u.customer_type, u.bound_store_id,
             s.store_name AS bound_store_name,
             pm.name AS bound_market_name
      FROM client_wechat_users u
@@ -58,6 +60,8 @@ async function login(ctx) {
       name: users[0].name,
       avatarUrl: users[0].avatar_url,
       memberLevel: users[0].member_level,
+      customerType: users[0].customer_type,
+      isMember: isMember(users[0].customer_type, users[0].member_level),
       boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
@@ -354,6 +358,8 @@ async function updateProfile(ctx) {
 
   if (name && typeof name === 'string' && name.trim().length > 0) {
     const trimmedName = name.trim().substring(0, 50)
+    // 内容安全校验（昵称 = 资料类）：违规抛 INVALID_PARAMS，不落库
+    await checkText(trimmedName, { scene: 1 })
     params.push(trimmedName)
     setClauses.push(`name = $${params.length}`)
     result.name = trimmedName
@@ -412,6 +418,9 @@ async function uploadAvatar(ctx) {
   if (users.length === 0) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
+
+  // 内容安全校验：违规图直接抛错，不进 COS、不写 avatar_url
+  await checkImage(buffer, { openid: OPENID })
 
   const rand = Math.random().toString(36).slice(2, 8)
   const cloudPath = `avatars/${OPENID}/${Date.now()}_${rand}.${normalizedExt}`

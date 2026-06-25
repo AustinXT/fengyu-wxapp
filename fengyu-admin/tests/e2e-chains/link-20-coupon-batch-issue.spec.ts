@@ -21,7 +21,7 @@ import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const PRD_PHONE = '13900139004'
 const PASS = 'fengyu2026'
 const TEMPLATE_ID = 'FY-FIX-CT-01'
@@ -30,8 +30,8 @@ const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
 
 // 真实存在的额外测试顾客（已确认 5434 上有）
 const OTHER_PHONES = [
-  '13900139002', // FYGK-20250205-0002（FY-TEST-FIN 也共用此号？— 实际只用作 coupon 收件人）
-  '13900139006', // FYGK-20260101-0006
+  '13800138002', // FY-TEST-CLIENT-NC02（fengyu_e2e seed-scope 真实顾客）
+  '13800138003', // FY-TEST-CLIENT-OM
 ]
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
@@ -42,7 +42,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

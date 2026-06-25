@@ -3,6 +3,8 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { formatDate } from '../../utils/format';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
@@ -12,7 +14,10 @@ interface CheckoutItem {
   spuName: string;
   skuDisplayName: string;
   coverImage: string;
+  /** 成交价（会员价分流后：会员=会员价、非会员=标价） */
   price: number;
+  /** 标价（划线展示用）；listPrice > price 才划线。可选——套餐/已存在订单项不带。 */
+  listPrice?: number;
   quantity: number;
 }
 
@@ -133,6 +138,8 @@ Page({
         setTimeout(() => wx.navigateBack(), 1000);
         return;
       }
+      // 购物车缓存价（item.price）仅作占位先渲染；下方 repriceCartItems 会按当前会员身份
+      // 向后端 product.skuDetail 重算每行单价，确保结算预览 = order.create 实际计费
       const total = Math.round(checkoutItems.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
       this.setData({
         fromCart: true,
@@ -145,6 +152,8 @@ Page({
         storeName,
       });
       this.recomputeAmounts();
+      // 按当前会员身份向后端权威重算每行单价（覆盖购物车缓存里可能过期的会员价/标价）
+      this.repriceCartItems(checkoutItems);
     } else {
       // 场景 A：自助下单
       const qty = parseInt(quantity, 10) || 1;
@@ -165,7 +174,9 @@ Page({
     try {
       const data = await callClientApi('product.skuDetail', { skuId, productId });
       const sku = data?.sku;
-      const unitPrice = Number(sku?.special_price || sku?.price || 0);
+      // 会员价分流：会员→会员价、非会员→标价；与后端 order.create 权威定价同口径
+      const pv = priceView(getIsMember(), sku?.special_price, sku?.price);
+      const unitPrice = pv.display;
       this.setData({
         skuDisplayName: sku?.spec_name || '',
         unitPrice,
@@ -176,12 +187,46 @@ Page({
           skuDisplayName: sku?.spec_name || '',
           coverImage: sku?.cover_image || '',
           price: unitPrice,
+          listPrice: pv.strike ?? unitPrice,
           quantity,
         }],
       });
       this.recomputeAmounts();
     } catch {
       Toast.fail('加载价格失败');
+    }
+  },
+
+  /**
+   * 购物车批量下单：按当前会员身份向后端 product.skuDetail 重算每行单价，
+   * 覆盖购物车缓存里可能过期的 price/listPrice（加购时旧会员身份或后台改过的会员价）。
+   * 与 order.create 的 resolveUnitPrice 同口径（priceView，#6=B 体验卡亦按会员分流），确保预览 = 实扣。
+   * 单行查询失败保留该行缓存价，不阻断结算。
+   */
+  async repriceCartItems(items: CheckoutItem[]) {
+    try {
+      const member = getIsMember();
+      const repriced = await Promise.all(items.map(async (item) => {
+        try {
+          const data = await callClientApi('product.skuDetail', { skuId: item.skuId });
+          const sku = (data as { sku?: { special_price?: number | null; price?: number | null } })?.sku;
+          if (!sku) return item;
+          const pv = priceView(member, sku.special_price, sku.price);
+          return { ...item, price: pv.display, listPrice: pv.strike ?? pv.display };
+        } catch {
+          return item;
+        }
+      }));
+      const total = Math.round(repriced.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
+      this.setData({
+        cartItems: repriced,
+        displayItems: repriced,
+        unitPrice: total,
+        totalPrice: total,
+      });
+      this.recomputeAmounts();
+    } catch {
+      // 整体重算失败不阻断结算：保持购物车缓存价
     }
   },
 
@@ -412,7 +457,14 @@ Page({
         storeId: app.globalData.boundStoreId,
         items,
       });
-      this.setData({ availableCoupons: data?.coupons || [] });
+      // expireAt 是 timestamp 列(UTC ISO)，用 formatDate 按设备本地(北京)取日期预格式化，
+      // 避免 WXML 里 price.date() slice(0,10) 截 UTC 日期段跨午夜偏一天
+      this.setData({
+        availableCoupons: (data?.coupons || []).map((c: any) => ({
+          ...c,
+          expireAtFmt: formatDate(c.expireAt),
+        })),
+      });
     } catch {
       this.setData({ availableCoupons: [] });
     } finally {
@@ -501,6 +553,21 @@ Page({
       return;
     }
     if (this.data.submitting) return;
+
+    // 自助下单须先绑定门店（扫码收款已有门店，跳过）；云函数也会兜底，前端先拦免一次往返
+    if (!this.data.existingOrderNo && !app.globalData.boundStoreId) {
+      Toast('请先绑定门店');
+      Dialog.confirm({
+        title: '请先绑定门店',
+        message: '下单需绑定门店，便于后续到店核销',
+        confirmButtonText: '去绑定',
+        cancelButtonText: '取消',
+      }).then(() => {
+        wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+      }).catch(() => {});
+      return;
+    }
+
     this.setData({ submitting: true });
 
     try {
@@ -746,9 +813,24 @@ Page({
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
+      const errMsg = (err?.errMsg || '').toLowerCase();
       // 用户主动取消支付，跳订单详情（订单仍 '待支付'，可重新支付）
-      if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
+      if (errMsg.includes('cancel')) {
         wx.redirectTo({ url: detailUrl });
+        return;
+      }
+      // 微信封禁/限制小程序支付能力（requestPayment:fail banned / 违反平台规则 /
+      // no permission / access denied）：订单已创建并保留为待支付，明确引导改用支付宝
+      // 或到店付款，而非笼统「下单失败」（订单其实已生成）。
+      if (['banned', 'platform rules', 'violated', '违规', '违反', 'no permission', 'access denied']
+        .some((kw) => errMsg.includes(kw))) {
+        wx.showModal({
+          title: '微信支付暂不可用',
+          content: '当前微信支付能力受限，订单已为你保留。可在订单详情取消后改用支付宝，或选择到店付款。',
+          showCancel: false,
+          confirmText: '查看订单',
+          success: () => wx.redirectTo({ url: detailUrl }),
+        });
         return;
       }
       throw err;

@@ -23,7 +23,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'
@@ -36,7 +36,7 @@ const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -147,6 +147,11 @@ test('链路 25：体验卡下单', async ({ page }) => {
   const paySelect = page.locator('select').filter({ hasText: /微信|支付宝|线下/ }).first()
   if (await paySelect.count() > 0) {
     await paySelect.selectOption({ label: '线下支付' })
+  }
+  // 取消充值卡抵扣（顾客有卡余额时自动勾选 → payment_method='无' 绕过确认收款；2026-06-09 同 link-1）
+  const useCardCb = page.getByRole('checkbox').first()
+  if ((await useCardCb.count()) > 0 && (await useCardCb.isChecked().catch(() => false))) {
+    await useCardCb.uncheck()
   }
 
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-25-04-checkout.png` })

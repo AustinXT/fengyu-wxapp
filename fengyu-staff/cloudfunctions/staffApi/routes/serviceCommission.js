@@ -9,14 +9,15 @@
  *   consumeAmount = round(consumeBase × allocation_ratio × rate, 2)
  *   fixedFee      = round(service_fee × session_used × allocation_ratio, 2)
  *   commissionAmount = round(fixedFee + consumeAmount, 2)
- * rate 命中 tier 用整池 consumeBase（不乘 ratio），且 commission_rate_matrix 不按 market 过滤
- * （与 service.complete 一致，依赖 (order_type, role_type, sales_category, tier) 唯一性）。
+ * rate 命中 tier 用整池 consumeBase（不乘 ratio）；commission_rate_matrix 按服务单所属市场过滤
+ * （service_order→store→org 树解析市场节点，与 service.complete 一致，避免跨市场费率行碰撞）。
  */
 
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
+const { resolveMarketNameByStore } = require('../utils/market')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
@@ -95,6 +96,9 @@ async function detail(ctx) {
     throw new Error('NOT_FOUND: 服务单不存在或不属于本门店')
   }
   const order = orders[0]
+  // market_name 快照口径修正：以门店反查 org 树市场名为权威（弃用开单人登录态快照），
+  // 反查失败时保留原快照降级。修复服务提成「按市场算提成 / 选员工」因快照空/错而失效。
+  order.market_name = (await resolveMarketNameByStore(order.store_id)) || order.market_name
   // 完成超 FREEZE_DAYS 天则冻结，前端据此禁用保存
   order.frozen = isFrozen(order.completed_at)
 
@@ -151,25 +155,22 @@ async function detail(ctx) {
     rates = [...grouped.values()]
   }
 
-  // 5. 候选员工（admin 式按技能筛选用）：订单所属市场内全部在职员工，含 store_id / skills。
-  //    前端按规则筛选：美容师 → 服务单所属门店；养生师/推广师 → 市场内任意门店。
-  //    品项老师特例：可跨门店/跨市场选全公司任意品项老师，故 WHERE 额外 OR 拥有该技能者（不限市场）。
-  //    本 action 已 requireManager() 门控，与 admin 让分配人看到市场级员工口径一致。
+  // 5. 候选员工（admin 式按技能筛选用）：跨门店共享（2026-06-24，取消市场级与品项老师特例）。
+  //    候选池 = 服务单门店在职员工 ∪ 标记出差的在职员工；前端按「服务单门店 ∪ 出差」+ 技能筛选。
+  //    出差标记 staff_wechat_users.is_on_business_trip 每日 03:00 cron 重置；本 action 已 requireManager() 门控。
   let candidateEmployees = []
-  if (order.market_name) {
+  if (order.store_id) {
     const empRows = await pg.query(`
-      SELECT u.employee_id, u.name, u.store_id, u.skills,
+      SELECT u.employee_id, u.name, u.store_id, u.skills, u.is_on_business_trip,
              d.name AS department, s.store_name
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
-      LEFT JOIN org_nodes so ON s.org_node_id = so.id
-      LEFT JOIN org_nodes m  ON so.parent_id = m.id
-      LEFT JOIN org_nodes d  ON u.org_node_id = d.id
+      LEFT JOIN org_nodes d ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND (m.name = $1 OR '品项老师' = ANY(u.skills))
+        AND (u.store_id = $1 OR u.is_on_business_trip = true)
         AND u.employee_id IS NOT NULL
       ORDER BY u.name
-    `, [order.market_name])
+    `, [order.store_id])
     candidateEmployees = empRows.map(r => ({
       staffWfId: r.employee_id,
       name: r.name || '',
@@ -177,6 +178,7 @@ async function detail(ctx) {
       storeName: r.store_name || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
       department: r.department || '',
+      isOnBusinessTrip: r.is_on_business_trip === true,
     }))
   }
 
@@ -331,7 +333,7 @@ async function save(ctx) {
       // consumeBase = unit_real_price × session_used（unit_real_price 已是 per-session）
       const consumeBase = round2(Number(p.unit_real_price || 0) * sessionUsed)
 
-      // rate 命中 tier 用整池 consumeBase（不乘 ratio），不按 market 过滤（与 service.complete 一致）
+      // rate 命中 tier 用整池 consumeBase（不乘 ratio），按服务单所属市场过滤（与 service.complete 一致）
       const rateRows = await client.query(
         `SELECT commission_rate FROM commission_rate_matrix
          WHERE order_type = '服务单'
@@ -339,9 +341,16 @@ async function save(ctx) {
            AND sales_category = $2
            AND amount_tier_min <= $3
            AND (amount_tier_max IS NULL OR amount_tier_max >= $3)
+           AND org_id = (
+             SELECT m.id FROM service_orders so
+               JOIN stores s ON so.store_id = s.store_id
+               JOIN org_nodes son ON s.org_node_id = son.id
+               JOIN org_nodes m ON son.parent_id = m.id
+              WHERE so.service_order_id = $4
+           )
          ORDER BY amount_tier_min DESC
          LIMIT 1`,
-        [c.roleType, p.sales_category, consumeBase]
+        [c.roleType, p.sales_category, consumeBase, serviceOrderId]
       )
       const rate = Number(rateRows.rows[0]?.commission_rate || 0)
       if (rate === 0 && consumeBase > 0) {

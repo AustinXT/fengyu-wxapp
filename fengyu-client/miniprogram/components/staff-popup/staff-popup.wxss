@@ -10,3 +10,18 @@
   font-size: 20rpx;
   color: var(--color-primary);
 }
+
+/* 请假员工：灰显 + 红框「请假」标签（仅预约流程置 onLeave） */
+.staff-item--leave {
+  opacity: 0.55;
+}
+
+.staff-leave-tag {
+  margin-top: 4rpx;
+  padding: 0 10rpx;
+  font-size: 20rpx;
+  line-height: 1.6;
+  color: var(--color-primary);
+  border: 1rpx solid var(--color-primary);
+  border-radius: 16rpx;
+}

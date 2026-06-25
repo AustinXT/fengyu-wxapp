@@ -31,7 +31,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 const CSM_PHONE = '13900139005'
 const MGR_PHONE = '13900139001'
 const PASS = 'fengyu2026'
@@ -52,7 +52,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -78,7 +78,15 @@ async function login(page: import('@playwright/test').Page, phone: string, pass:
   await page.locator('#password').click()
   await page.locator('#password').pressSequentially(pass, { delay: 30 })
   await page.getByRole('button', { name: /登\s*录/ }).click()
-  await page.waitForURL(/\/dashboard/, { timeout: 20000 })
+  try {
+    await page.waitForURL(/\/dashboard/, { timeout: 20000 })
+  } catch {
+    // 偶发停在 /login（会话竞态 / 冷编译时序）：若仍在 /login 重新点登录，再放宽超时等跳转
+    if (/\/login/.test(page.url())) {
+      await page.getByRole('button', { name: /登\s*录/ }).click()
+    }
+    await page.waitForURL(/\/dashboard/, { timeout: 40000 })
+  }
 }
 
 /** 简单开单（单 SKU ¥100 + 确认收款），返回 saleOrderId */

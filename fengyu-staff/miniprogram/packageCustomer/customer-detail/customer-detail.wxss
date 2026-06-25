@@ -175,6 +175,21 @@
   color: var(--color-text-hint);
   font-family: monospace;
 }
+.purchase-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+.purchase-store {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+.purchase-amount {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
 .purchase-items {
   margin-bottom: 12rpx;
 }

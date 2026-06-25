@@ -102,7 +102,7 @@ Page({
     // 回款弹层
     repayModalVisible: false,
     repayAmountInput: '' as string,
-    repayMethod: '微信' as '微信' | '支付宝' | '储值卡',
+    repayMethod: '微信' as '微信' | '支付宝' | '储值卡' | '线下',
     repayUseCard: false,
     cardBalance: 0,
     repaySubmitting: false,
@@ -120,7 +120,10 @@ Page({
 
     const { saleOrderId, orderNo, repay } = options as { saleOrderId?: string; orderNo?: string; repay?: string };
     this._autoRepay = repay === '1';
-    const id = saleOrderId || orderNo;
+    // 微信「订单中心」跳转会把 ${商品订单号} 替换成支付 out_trade_no = `${saleOrderId}_${时间戳}`，
+    // 带后缀；订单号本身（FY-XSD-WX-...）无下划线，故剥 `_\d+$` 还原真实 saleOrderId（与 payNotify 同源）。
+    const rawId = saleOrderId || orderNo;
+    const id = rawId ? rawId.replace(/_\d+$/, '') : rawId;
     if (id) this.loadDetail(id);
   },
 
@@ -393,8 +396,8 @@ Page({
     //   2) van-cell bindtap（data-name） → e.currentTarget.dataset.name
     const fromDetail = typeof e?.detail === 'string' ? e.detail : (e?.detail?.value || '');
     const fromDataset = e?.currentTarget?.dataset?.name || '';
-    const v = (fromDetail || fromDataset) as '微信' | '支付宝' | '储值卡';
-    if (v === '微信' || v === '支付宝' || v === '储值卡') {
+    const v = (fromDetail || fromDataset) as '微信' | '支付宝' | '储值卡' | '线下';
+    if (v === '微信' || v === '支付宝' || v === '储值卡' || v === '线下') {
       // 顾客端继续支付强制全额：储值卡通道需余额 ≥ 全部欠款才可选
       if (v === '储值卡' && this.data.cardBalance + 0.001 < this.data.outstandingAmount) {
         Toast.fail('储值卡余额不足以付清全部欠款');
@@ -443,10 +446,17 @@ Page({
         alipayShareToken?: string;
       }>('order.repay', payload);
 
-      // 三路径分发
+      // 四路径分发
       if (method === '储值卡') {
         this.setData({ repayModalVisible: false });
         Toast.success('回款成功');
+        this.loadDetail(order.sale_order_id);
+        return;
+      }
+      if (method === '线下') {
+        // 线下仅标记意向，由店长确认收款落账；订单状态不变
+        this.setData({ repayModalVisible: false });
+        Toast.success('已提交，等待店长确认收款');
         this.loadDetail(order.sale_order_id);
         return;
       }

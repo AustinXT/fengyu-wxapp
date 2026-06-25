@@ -20,6 +20,7 @@ import { getPointsToYuanRate } from '@/lib/system-config'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,
+  capRefundAmounts,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
   type RefundSourceItem,
@@ -27,7 +28,6 @@ import {
 import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
-import * as lakalaClient from '@/lib/lakala-client'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -385,7 +385,7 @@ export const estimateRefundOverdraft = withAnyPermission(
   const tplRows = allTemplateIds.length
     ? ((await db.execute<{ template_id: string; discount_value: string }>(sql`
         SELECT template_id, discount_value FROM coupon_templates
-        WHERE template_id = ANY(${allTemplateIds}::text[])
+        WHERE template_id IN (${sql.join(allTemplateIds.map((id) => sql`${id}`), sql`, `)})
       `)) as unknown as Array<{ template_id: string; discount_value: string }>)
     : []
   const tplValueById: Record<string, number> = {}
@@ -629,14 +629,16 @@ export const createRefund = withPermission(
   if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
-  const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+  let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
   // 退款上限 = max(sale_order_payments 流水净额, origOrder.received)（与 staffApi createRefund 对齐）。
   // 部分支付订单按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶；流水净额含储值卡抵扣，
-  // received 兜底（流水缺失单），取 max 避免误拒。超限直接拒绝（不截断金额），保持退款数量与金额自洽。
+  // received 兜底（流水缺失单），取 max 避免误拒。
+  // 超限处理（2026-06-24 调整）：疗程卡强制整卡全退、数量不可调 → 截断退款额到 cap（仅退已付、整卡仍作废）；
+  // 家居数量可调 → 仍拒绝让店长减少退款数量。详见下方 if 分支。
   const paymentsNetRows = await db.execute<{ net: string }>(sql`
     SELECT COALESCE(SUM(amount), 0)::numeric AS net
     FROM sale_order_payments
@@ -649,9 +651,22 @@ export const createRefund = withPermission(
   // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数。两端镜像 staff order.js。
   const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refundedAmount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
-    return {
-      success: false,
-      error: { code: 'INVALID_STATE', message: '退款金额超过订单可退余额，请减少退款数量' },
+    // 疗程卡强制整卡全退、退款数量不可调（buildRefundDetails）：部分支付订单整卡值 > 净已收时，
+    // 直接拒绝会导致永远无法退款。改为截断到 cap（只退已付部分）、仍作废整卡（数量不变），
+    // 逐项 refundAmount 等比缩到 targetGross，保 note/级联冲销/STEP1.5 净额扣减一致。两端镜像 staff order.js。
+    // 家居产品数量可调，无疗程卡项时仍拒绝，让店长减少退款数量（保持数量↔金额自洽）。
+    const hasCourseCard = refundDetails.some((d) => d.productType === '疗程卡')
+    if (!hasCourseCard) {
+      return {
+        success: false,
+        error: { code: 'INVALID_STATE', message: '退款金额超过订单可退余额，请减少退款数量' },
+      }
+    }
+    const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
+    totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
+    finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+    if (finalRefundAmount <= 0) {
+      return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
     }
   }
 
@@ -786,74 +801,8 @@ export const createRefund = withPermission(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 写：审批通过（仅 manager 持有 refund_approve）
-/**
- * [联调待启用] admin 退款审批通过后，把"原通道部分"经拉卡拉退回。
- *
- * **默认关闭**（`LAKALA_REFUND_ENABLED !== 'true'`）→ 直接 no-op，不影响现有退款流（DB cascade 照常）。
- * 之所以默认关：退款无法在 SIT 实证（需一笔真实已支付单），且 origin 引用映射需联调确认。
- *
- * 联调开启 checklist：
- *  1. admin 运行时 env 设 `LAKALA_REFUND_ENABLED=true` + 完整 `LAKALA_*`（私钥/平台证书/商户号）。
- *  2. 字段路径在聚合主扫迁移（2026-05-29）后已澄清：payNotify 把扁平回调 body 完整存进
- *     `external_trade_info` JSONB，顶层字段 `acc_trade_no`（微信 transaction_id / 支付宝交易号）
- *     用作 `origin_trade_no`；`trade_no`（拉卡拉交易流水）为兜底；`log_no`（对账单流水）→ `origin_log_no`。
- *  3. origin_out_trade_no 用 `sale_orders.lakala_out_order_no`（聚合主扫商户流水号，含 _unixSec 后缀）兜底。
- *  4. requestIp 必须改用 admin 操作人真实 IP（风控必送），现用 env 占位。
- *  5. 处理 requestRefund 返回 trade_state：SUCCESS=同步成功；PROCESSING/INIT/TIMEOUT=异步，
- *     需 cron poll-lakala-refunds（queryRefund 推进，仍为 follow-up）。
- */
-async function refundViaLakalaIfEnabled(opts: {
-  refundPaymentId: number
-  saleOrderId: string
-  refundByOriginFen: number
-  paymentMethod: string
-  requestIp: string
-}): Promise<{ attempted: boolean; tradeState?: string; error?: string }> {
-  if (process.env.LAKALA_REFUND_ENABLED !== 'true') return { attempted: false }
-  if (opts.refundByOriginFen <= 0) return { attempted: false }
-  if (opts.paymentMethod !== '微信' && opts.paymentMethod !== '支付宝') return { attempted: false }
-  if (!lakalaClient.isReady()) return { attempted: false, error: 'LAKALA_NOT_READY' }
-
-  // 取原支付的受单信息 + 收银台 out_order_no + 门店拉卡拉商户号
-  const [row] = await db
-    .select({
-      tradeInfo: saleOrderPayments.externalTradeInfo,
-      outOrderNo: saleOrders.lakalaOutOrderNo,
-      merchantNo: stores.lakalaMerchantNo,
-      termNo: stores.lakalaTermNo,
-    })
-    .from(saleOrderPayments)
-    .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
-    .leftJoin(stores, eq(stores.storeId, saleOrders.storeId))
-    .where(
-      and(
-        eq(saleOrderPayments.saleOrderId, opts.saleOrderId),
-        sql`${saleOrderPayments.changeType} IN ('首次支付','回款')`,
-        sql`${saleOrderPayments.externalTxnId} IS NOT NULL`,
-      ),
-    )
-    .orderBy(asc(saleOrderPayments.id))
-    .limit(1)
-
-  if (!row || !row.merchantNo || !row.termNo) return { attempted: false, error: 'NO_LAKALA_MERCHANT' }
-  const tradeInfo = (row.tradeInfo || {}) as Record<string, string>
-  try {
-    const res = await lakalaClient.requestRefund({
-      merchantNo: row.merchantNo,
-      termNo: row.termNo,
-      outTradeNo: `refund-${opts.refundPaymentId}`,
-      refundAmountFen: opts.refundByOriginFen,
-      // 聚合主扫迁移后字段路径已澄清（2026-05-29）：扁平 body 顶层直接取
-      originTradeNo: tradeInfo.acc_trade_no || tradeInfo.trade_no,
-      originLogNo: tradeInfo.log_no,
-      originOutTradeNo: row.outOrderNo || undefined,
-      requestIp: opts.requestIp,
-    })
-    return { attempted: true, tradeState: res.tradeState }
-  } catch (e) {
-    return { attempted: true, error: e instanceof Error ? e.message : String(e) }
-  }
-}
+// 2026-06-24 退款联级重构：移除「原路退款经拉卡拉退回」逻辑——全部走线下退款，
+// 不调拉卡拉/微信原路退款接口；非储值卡部分（refundByOrigin）由门店线下退现金。
 
 export const approveRefund = withPermission(
   'sale_order:refund_approve',
@@ -1012,15 +961,16 @@ export const approveRefund = withPermission(
       }
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
-      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; isFullItemRefund: boolean }> = []
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean }> = []
       let cascadeWholeOrder = false
       try {
         const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
         if (noteObj && Array.isArray(noteObj.items)) {
           cascadeItems = noteObj.items.map(
-            (it: { refSaleItemId: string; quantity: number; isFullItemRefund?: boolean }) => ({
+            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean }) => ({
               saleItemId: it.refSaleItemId,
               sessionCount: it.quantity,
+              refundAmount: it.refundAmount ?? null,
               isFullItemRefund: !!it.isFullItemRefund,
             }),
           )
@@ -1031,10 +981,11 @@ export const approveRefund = withPermission(
       }
       // 兜底（老退款行无 note.items）：用 refSaleItemId 单 item；为空则 cascade 内部兜底整单
       if (cascadeItems.length === 0 && refSaleItemId) {
-        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, isFullItemRefund: true }]
+        cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
+        refundPaymentId: idNum,
         items: cascadeItems,
         isWholeOrderRefund: cascadeWholeOrder,
         refundReason: pre.payment.refundReason ?? '',
@@ -1080,18 +1031,8 @@ export const approveRefund = withPermission(
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }
   }
 
-  // [联调待启用] DB 退款已提交，经拉卡拉把原通道金额退回（flag 默认关 → no-op）。
-  // best-effort：拉卡拉调用失败不回滚已提交的 DB 退款，记录待人工跟进。
-  const lakalaRefund = await refundViaLakalaIfEnabled({
-    refundPaymentId: idNum,
-    saleOrderId: refSaleOrderId,
-    refundByOriginFen: Math.round(refundByOrigin * 100),
-    paymentMethod: pre.payment.paymentMethod,
-    requestIp: process.env.LAKALA_REFUND_REQUEST_IP || '', // TODO[联调]：改用 admin 操作人真实 IP
-  })
-  if (lakalaRefund.attempted && lakalaRefund.error) {
-    console.error('[approveRefund] 拉卡拉退款调用失败（DB 退款已提交，需人工跟进）:', refSaleOrderId, lakalaRefund.error)
-  }
+  // 2026-06-24 全部走线下退款：不再调拉卡拉原路退款。refundByOrigin（非储值卡部分）由门店线下退现金；
+  // refundByCard 部分已在事务内回冲储值卡余额。
 
   await logOperation(session, 'refund.approve', 'sale_order_payment', String(idNum), {
     refSaleOrderId,

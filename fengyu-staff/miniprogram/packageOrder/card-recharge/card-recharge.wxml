@@ -12,6 +12,10 @@
       <van-icon name="shop-o" size="24rpx" color="rgba(255,255,255,0.85)" />
       <text class="hero-store-text">入账门店：{{boundStoreName}}</text>
     </view>
+    <view class="hero-inflow-link" bindtap="goInflow">
+      <text class="hero-inflow-text">老客户？旧系统充值金转入</text>
+      <van-icon name="arrow" size="22rpx" color="rgba(255,255,255,0.9)" />
+    </view>
   </view>
 
   <!-- 顾客选择块 -->

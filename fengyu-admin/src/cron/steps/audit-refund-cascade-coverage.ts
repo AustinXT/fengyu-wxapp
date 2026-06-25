@@ -12,7 +12,7 @@
  *   的镜像守护，反向检查 "已支付的退款行" 是否产生了对应的 5 通道效果。
  *
  * 5 通道（与 lib/refund-cascade.ts 1:1 对齐）：
- *   C1 sa_not_voided          — sale_allocations.is_void=true 应已写入
+ *   C1 sa_not_reversed        — 退款负数冲销行（sale_allocations.total_amount<0 挂退款 sop_id）应已写入
  *   C2 sc_not_voided          — service_commissions.voided_at IS NOT NULL 应已写入
  *   C3 coupon_not_returned    — user_coupons 退款生效时仍未过期的 → 应已恢复 '未使用'
  *                                 （用 sop.paid_at 对齐 cascade 的 NOW() 快照）
@@ -38,7 +38,7 @@ import { notifyOps } from '../lib/notify'
 const SAMPLE_LIMIT = 10
 
 type CascadeChannel =
-  | 'sa_not_voided'
+  | 'sa_not_reversed'
   | 'sc_not_voided'
   | 'coupon_not_returned'
   | 'point_not_reversed'
@@ -58,33 +58,34 @@ export interface RefundCascadeCoverageResult {
 export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeCoverageResult> {
   const details: CascadeViolation[] = []
 
-  // ── C1: sale_allocations 应已软删 ──
-  // 对每条已支付的退款 sop：定位 scope（part: ref_sale_item_id；whole: 同 sale_order_id 的所有 sale_items），
-  // 期望 sa 中至少 1 条 is_void=true。若该 scope 有 sa 行但全部 is_void=false → mismatch。
+  // ── C1: sale_allocations 记负数冲销（2026-06-24 改）──
+  // 退款审批后通道 1 不再软删原行，而是 INSERT 负数镜像行（total_amount<0，挂退款 sop_id）。
+  // 反向检查：退款 scope 内有活跃正数分配（有可冲销目标）但不存在挂该退款 sop_id 的负数冲销行 → mismatch。
   const c1 = (await db.execute(sql`
     WITH refunds AS (
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
       FROM sale_order_payments sop
       WHERE sop.change_type = '退款' AND sop.status = '已支付'
-    ),
-    sa_status AS (
-      SELECT r.sop_id, r.sale_order_id, r.ref_sale_item_id,
-             COUNT(*) FILTER (WHERE sa.is_void = true) AS voided,
-             COUNT(sa.id)                              AS total
-      FROM refunds r
-      LEFT JOIN sale_items si
-        ON (r.ref_sale_item_id IS NOT NULL AND si.sale_item_id = r.ref_sale_item_id)
-        OR (r.ref_sale_item_id IS NULL     AND si.sale_order_id = r.sale_order_id)
-      LEFT JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id
-      GROUP BY r.sop_id, r.sale_order_id, r.ref_sale_item_id
     )
-    SELECT sop_id, sale_order_id, ref_sale_item_id
-    FROM sa_status
-    WHERE total > 0 AND voided = 0
+    SELECT r.sop_id, r.sale_order_id, r.ref_sale_item_id
+    FROM refunds r
+    WHERE EXISTS (
+            SELECT 1 FROM sale_items si
+            JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id
+            WHERE (
+                    (r.ref_sale_item_id IS NOT NULL AND si.sale_item_id = r.ref_sale_item_id)
+                 OR (r.ref_sale_item_id IS NULL     AND si.sale_order_id = r.sale_order_id)
+                  )
+              AND sa.is_void = false AND sa.total_amount > 0
+          )
+      AND NOT EXISTS (
+            SELECT 1 FROM sale_allocations sa
+            WHERE sa.sale_payment_id = r.sop_id AND sa.total_amount < 0
+          )
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c1.length > 0) {
-    details.push({ channel: 'sa_not_voided', count: c1.length, samples: c1 })
+    details.push({ channel: 'sa_not_reversed', count: c1.length, samples: c1 })
   }
 
   // ── C2: service_commissions 应已 voided_at IS NOT NULL ──

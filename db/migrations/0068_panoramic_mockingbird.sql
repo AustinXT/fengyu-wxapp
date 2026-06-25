@@ -1,0 +1,6 @@
+ALTER TABLE "mall_bundle_groups" ADD COLUMN "unit_list_price" numeric(10, 2);--> statement-breakpoint
+ALTER TABLE "mall_bundle_groups" ADD COLUMN "unit_member_price" numeric(10, 2);--> statement-breakpoint
+ALTER TABLE "mall_product_skus" ADD COLUMN "bundle_list_price" numeric(10, 2);--> statement-breakpoint
+ALTER TABLE "mall_bundle_groups" ADD CONSTRAINT "chk_bundle_group_member_le_list" CHECK ("mall_bundle_groups"."unit_member_price" IS NULL OR "mall_bundle_groups"."unit_list_price" IS NULL OR "mall_bundle_groups"."unit_member_price" <= "mall_bundle_groups"."unit_list_price");--> statement-breakpoint
+ALTER TABLE "mall_bundle_groups" ADD CONSTRAINT "chk_bundle_group_list_nonneg" CHECK ("mall_bundle_groups"."unit_list_price" IS NULL OR "mall_bundle_groups"."unit_list_price" >= 0);--> statement-breakpoint
+ALTER TABLE "mall_bundle_groups" ADD CONSTRAINT "chk_bundle_group_member_nonneg" CHECK ("mall_bundle_groups"."unit_member_price" IS NULL OR "mall_bundle_groups"."unit_member_price" >= 0);

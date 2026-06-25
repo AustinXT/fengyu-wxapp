@@ -1,8 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
-import { buildCalendarDays, formatMonthLabel } from '../../utils/calendar';
-import type { CalendarDay } from '../../utils/calendar';
+import { isManager, hasRole } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
@@ -14,6 +12,7 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
+    canSeeInventory: false,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],
     hasMultiStore: false,
@@ -29,36 +28,45 @@ Page({
     monthlyCommission: '0.00',
     monthlyOrderCount: 0,
     monthlyServiceCount: 0,
-    // 日历合计（整店汇总业绩口径，随日历翻月变化）
-    storeMonthAmount: '0.00',
-    storeMonthOrderCount: 0,
-    storeMonthServiceCount: 0,
     // 上月累计
     lastMonthCommission: '0.00',
     lastMonthOrderCount: 0,
     lastMonthServiceCount: 0,
-    // 月度业绩日历
-    currentMonth: '',
-    monthLabel: '',
-    calendarDays: [] as CalendarDay[],
     // 代办事项计数
     pendingAppointmentCount: 0,
     pendingServiceCount: 0,
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
+    pendingOrderCount: 0, // 订单管理磁贴红点：线下收款 + 确认订单 之和
     pendingUnbindCount: 0,
     pendingAllocationCount: 0,
     pendingRefundCount: 0,
+    statusBarHeight: 0,
+    navBarHeight: 0,
+    contentHeight: 0,
   },
 
   onLoad() {
+    this.initNavBar();
     this.setTodayDate();
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    this.setData({
-      currentMonth: ym,
-      monthLabel: formatMonthLabel(ym),
-    });
+  },
+
+  // 计算自定义导航栏高度（状态栏 + 胶囊按钮区），供顶部 logo 导航栏使用
+  initNavBar() {
+    try {
+      const sys = wx.getSystemInfoSync();
+      const menu = wx.getMenuButtonBoundingClientRect();
+      const statusBarHeight = sys.statusBarHeight || 44;
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2 + 12; // +12px 留白，避免 logo 紧贴导航栏底
+      this.setData({
+        statusBarHeight,
+        contentHeight,
+        navBarHeight: statusBarHeight + contentHeight,
+      });
+    } catch (e) {
+      console.warn('[workbench] initNavBar 失败，使用兜底高度', e);
+      this.setData({ statusBarHeight: 44, contentHeight: 44, navBarHeight: 88 });
+    }
   },
 
   onShow() {
@@ -93,6 +101,7 @@ Page({
       staffName: staffName || '',
       position: position || '',
       isManager: isManager(),
+      canSeeInventory: hasRole('manager', 'admin', 'finance'),
       currentStoreId: currentStoreId || '',
       scopedStores: scopedStores || [],
       hasMultiStore: (scopedStores || []).length > 1,
@@ -146,7 +155,6 @@ Page({
     try {
       await Promise.all([
         this.loadTodayCommission(),
-        this.loadMonthlyCalendar(),
         this.loadTodoSummary(),
       ]);
     } catch (err) {
@@ -187,51 +195,6 @@ Page({
     } catch (_) {}
   },
 
-  async loadMonthlyCalendar() {
-    try {
-      const data = await callStaffApi<{
-        dailyData: Array<{ date: string; amount: number }>;
-        totalAmount: number;
-        totalOrderCount?: number;
-        totalServiceCount?: number;
-      }>('staff.monthlyCalendar', { yearMonth: this.data.currentMonth });
-      const days = buildCalendarDays(this.data.currentMonth, data.dailyData || []);
-      const storeMonthAmount = data.totalAmount > 0
-        ? data.totalAmount.toFixed(2)
-        : '0.00';
-      this.setData({
-        calendarDays: days,
-        storeMonthAmount,
-        storeMonthOrderCount: data.totalOrderCount || 0,
-        storeMonthServiceCount: data.totalServiceCount || 0,
-      });
-    } catch (_) {
-      const days = buildCalendarDays(this.data.currentMonth, []);
-      this.setData({ calendarDays: days });
-    }
-  },
-
-  onPrevMonth() {
-    const [y, m] = this.data.currentMonth.split('-').map(Number);
-    let ny = y, nm = m - 1;
-    if (nm < 1) { ny -= 1; nm = 12; }
-    const ym = `${ny}-${String(nm).padStart(2, '0')}`;
-    this.setData({ currentMonth: ym, monthLabel: formatMonthLabel(ym) });
-    this.loadMonthlyCalendar();
-  },
-
-  onNextMonth() {
-    const [y, m] = this.data.currentMonth.split('-').map(Number);
-    const now = new Date();
-    const curY = now.getFullYear(), curM = now.getMonth() + 1;
-    if (y > curY || (y === curY && m >= curM)) return;
-    let ny = y, nm = m + 1;
-    if (nm > 12) { ny += 1; nm = 1; }
-    const ym = `${ny}-${String(nm).padStart(2, '0')}`;
-    this.setData({ currentMonth: ym, monthLabel: formatMonthLabel(ym) });
-    this.loadMonthlyCalendar();
-  },
-
   async loadTodoSummary() {
     try {
       const data = await callStaffApi<{
@@ -248,6 +211,7 @@ Page({
         pendingServiceCount: data.pendingServiceCount || 0,
         pendingOfflineOrderCount: data.pendingOfflineOrderCount || 0,
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
+        pendingOrderCount: (data.pendingOfflineOrderCount || 0) + (data.pendingCreateOrderCount || 0),
         pendingUnbindCount: data.pendingUnbindCount || 0,
         pendingAllocationCount: data.pendingAllocationCount || 0,
         pendingRefundCount: data.pendingRefundCount || 0,
@@ -265,6 +229,23 @@ Page({
 
   goServiceList() {
     wx.switchTab({ url: '/pages/service/service' });
+  },
+
+  // ===== 常用功能入口 =====
+  goOrders() {
+    wx.navigateTo({ url: '/packageOrder/order-list/order-list' });
+  },
+
+  goAppointmentList() {
+    wx.navigateTo({ url: '/packageService/appointment/appointment' });
+  },
+
+  goInventory() {
+    wx.navigateTo({ url: '/packageMy/inventory/inventory' });
+  },
+
+  goPickup() {
+    wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
   },
 
   goOrderListOffline() {

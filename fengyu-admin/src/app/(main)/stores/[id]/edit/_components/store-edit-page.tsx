@@ -4,33 +4,28 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
+import type { MerchantOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { RegionSelect } from "@/components/ui/region-select"
 
-interface LakalaMerchantOption {
-  id: string
-  merchantName: string
-  merchantNo: string | null
-  onboardingStatus: string
-}
-
 export default function StoreEditPage({
   store,
+  canEditPayment = false,
   merchantOptions = [],
-  canEditMerchant = false,
 }: {
   store: Store
-  merchantOptions?: LakalaMerchantOption[]
-  canEditMerchant?: boolean
+  canEditPayment?: boolean
+  merchantOptions?: MerchantOption[]
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
@@ -39,14 +34,11 @@ export default function StoreEditPage({
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
-  const [lakalaEnabled, setLakalaEnabled] = useState(store.lakalaEnabled)
-  const [linkedMerchantId, setLinkedMerchantId] = useState<string>(store.lakalaMerchantId ?? "")
+  const [merchantId, setMerchantId] = useState(store.lakalaMerchantId ?? "")
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
     try {
-      // 「关联商户」走 linkStoreToMerchant / unlinkStoreFromMerchant 的事务（Phase 2D 在 updateStore 内编排）
-      // 这里把 lakalaMerchantId 作为单选下拉值传给 updateStore；服务端按 link/unlink 处理快照 2 列
       const result = await updateStore(store.storeId, {
         storeName: formData.get("storeName") as string,
         phone: (formData.get("phone") as string) || null,
@@ -62,10 +54,8 @@ export default function StoreEditPage({
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        // 关联商户 / 解绑（admin 才编辑；其它角色 disabled，发起请求时也只发原值）
-        lakalaMerchantId: linkedMerchantId || null,
-        lakalaTermNo: ((formData.get("lakalaTermNo") as string) || "").trim() || null,
-        lakalaEnabled,
+        // 关联收款商户：仅 admin（canEditPayment）提交，避免 hr 改门店其他信息时被收款绑定权限拦截
+        ...(canEditPayment ? { lakalaMerchantId: merchantId || null } : {}),
       }, store.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -75,8 +65,8 @@ export default function StoreEditPage({
       setFormDirty(false)
       toast.success("保存成功")
       router.push("/stores")
-    } catch {
-      toast.error("保存失败")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败"))
     } finally {
       setSaving(false)
     }
@@ -221,72 +211,46 @@ export default function StoreEditPage({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>拉卡拉聚合支付配置</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-xs text-muted-foreground mb-3">
-            「关联商户」从已审核通过的拉卡拉商户列表中选择（在
-            <a href="/lakala-onboarding" className="mx-1 text-[var(--primary)] hover:underline">商户入网</a>
-            页发起入网申请）。商户号 / 子 AppId 由关联商户派生（保存时自动刷新本店快照），无需手填。
-            终端号 / 启用开关仍按门店单独维护；开关关闭时所有支付走兜底，不会真实调拉卡拉接口。
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">关联商户</label>
-              <Select
-                value={linkedMerchantId}
-                onChange={(e) => {
-                  setLinkedMerchantId(e.target.value)
-                  setFormDirty(true)
-                }}
-                disabled={!canEditMerchant}
-              >
-                <option value="">未关联（解绑）</option>
-                {merchantOptions.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.merchantName} {m.merchantNo ? `· ${m.merchantNo}` : ""}（{m.onboardingStatus}）
-                  </option>
-                ))}
-              </Select>
-              {!canEditMerchant && (
-                <p className="text-xs text-[var(--muted-foreground)]">仅 admin 角色可修改关联商户（收款配置）</p>
-              )}
+      {canEditPayment && (
+        <Card>
+          <CardHeader>
+            <CardTitle>收款商户</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-xs text-muted-foreground mb-3">
+              选择本店关联的拉卡拉收款商户（商户档案在「商户管理」维护）。未关联、或所选商户未启用时，支付走兜底不调拉卡拉接口。
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">终端号(term_no)</label>
-              <Input
-                name="lakalaTermNo"
-                defaultValue={store.lakalaTermNo ?? ""}
-                placeholder="如：D9261078"
-                maxLength={32}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">商户号（派生快照）</label>
-              <Input value={store.lakalaMerchantNo ?? ""} placeholder="保存后自动同步" disabled />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">启用真实支付通道</label>
-              <div className="flex items-center gap-2 pt-2">
-                <input
-                  type="checkbox"
-                  checked={lakalaEnabled}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2 space-y-2">
+                <label className="text-sm font-medium">关联收款商户</label>
+                <Select
+                  name="lakalaMerchantId"
+                  value={merchantId}
                   onChange={(e) => {
-                    setLakalaEnabled(e.target.checked)
+                    setMerchantId(e.target.value)
                     setFormDirty(true)
                   }}
-                  className="h-4 w-4"
-                />
-                <span className="text-sm">
-                  {lakalaEnabled ? "已启用（调真实拉卡拉接口）" : "未启用（走 mock / 兜底）"}
-                </span>
+                >
+                  <SelectOption value="">不关联（支付走兜底）</SelectOption>
+                  {merchantOptions.map((m) => (
+                    <SelectOption key={m.id} value={m.id}>
+                      {m.merchantName}
+                      {m.merchantNo ? `（${m.merchantNo}）` : ""}
+                      {m.enabled ? "" : " · 未启用"}
+                    </SelectOption>
+                  ))}
+                </Select>
+                {merchantId &&
+                  merchantOptions.some((m) => m.id === merchantId && !m.enabled) && (
+                    <p className="text-xs text-[#D4820A]">
+                      该商户未启用收款，本店支付将走兜底。请到「商户管理」启用后生效。
+                    </p>
+                  )}
               </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       <Separator />
 
@@ -318,8 +282,8 @@ export default function StoreEditPage({
               toast.success('门店已关闭')
               setCloseDialogOpen(false)
               router.refresh()
-            } catch {
-              toast.error('操作失败')
+            } catch (err) {
+              toast.error(actionErrorMessage(err, '操作失败'))
             }
           }}>确认关闭</AlertDialogAction>
         </AlertDialogFooter>

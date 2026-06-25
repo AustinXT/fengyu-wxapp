@@ -291,6 +291,15 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         >
           <van-radio slot="right-icon" name="储值卡" checked-color="#C0322A" disabled="{{cardBalance <= 0}}" />
         </van-cell>
+        <van-cell
+          title="线下付款"
+          label="到店后由店长确认收款"
+          clickable
+          data-name="线下"
+          bind:click="onRepayMethodChange"
+        >
+          <van-radio slot="right-icon" name="线下" checked-color="#C0322A" />
+        </van-cell>
       </van-cell-group>
     </van-radio-group>
 

@@ -147,8 +147,14 @@ interface CustomerInfo {
   boundStoreId?: string | null;
   /** 顾客绑定门店名（搜索结果展示「非本店」标签用） */
   storeName?: string;
+  /** 临时跨门店标记（需求21，后端 customer.search 返回）；true 时允许被外店开单/充值 */
+  isCrossStoreTemp?: boolean;
   /** 是否非本店顾客（前端按 boundStoreId vs 当前门店实时计算；缺 boundStoreId 时为 false，放行后端兜底） */
   crossStore?: boolean;
+  /** 顾客分类（后端 customer.search 返回）；'会员客' 即会员 */
+  customerType?: string | null;
+  /** 会员等级（后端 customer.search 返回）；非空即会员 */
+  memberLevel?: string | null;
 }
 
 /** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
@@ -200,14 +206,27 @@ interface CustomerBalanceResponse {
   cardId: string | null;
 }
 
-/** 将后端 SKU 项映射为兼容 WXML 的展示格式 */
-function skuToDisplay(sku: SkuItem): DisplayItem {
+/** 顾客是否会员：会员客 或 有钻石等级（与后端 member-pricing 同口径） */
+function deriveIsMember(c: { customerType?: string | null; memberLevel?: string | null } | null): boolean {
+  return !!c && (c.customerType === '会员客' || (c.memberLevel != null && c.memberLevel !== ''));
+}
+
+/**
+ * 将后端 SKU 项映射为兼容 WXML 的展示格式。
+ * 会员价分流：仅会员且会员价<标价时，price=会员价、specialPrice 非空（驱动划线）；
+ * 否则 price=标价、specialPrice=null（不划线）。体验卡同口径（#6=B，不再豁免，会员才享会员价）。
+ * 最终结算以云函数 order.create 权威定价为准。
+ */
+function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
+  const list = Number(sku.price) || 0;
+  const special = sku.specialPrice != null ? Number(sku.specialPrice) : null;
+  const useSpecial = isMember && special != null && special < list;
   return {
     spuId: sku.skuId,
     spuName: sku.specName,
-    price: Number(sku.specialPrice || sku.price) || 0,
-    listPrice: Number(sku.price) || 0,
-    specialPrice: sku.specialPrice ? Number(sku.specialPrice) : null,
+    price: useSpecial ? special : list,
+    listPrice: list,
+    specialPrice: useSpecial ? special : null,
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,
@@ -284,6 +303,7 @@ Page({
     customerKeyword: '',
     customerSearching: false,
     customerInfo: null as null | CustomerInfo,
+    buyerIsMember: false,   // 选中顾客是否会员（会员价分流展示用；非会员只看标价、会员看会员价划线）
     customerResults: [] as CustomerInfo[],
     recentCustomers: [] as CustomerInfo[],
     // Step 2 顶部：订单类型 4 选 1（PR-C §C1）
@@ -320,6 +340,8 @@ Page({
     showPayMethodGroup: true as boolean,
     prepaidCardLoaded: false as boolean,
     customerBalanceLoading: false as boolean,
+    /** 活动单标记（纯标识，店长开单时勾选；透传 order.create 写 sale_orders.is_activity） */
+    isActivity: false as boolean,
     // 转换单（ConversionPanel 反馈 → 主页记录用于提交）
     conversionSelectedSaleItemIds: [] as string[],
     conversionDeductibleSum: 0,
@@ -366,6 +388,12 @@ Page({
       return
     }
     this.setData({ isManager: isManager() });
+    // Tab 页常驻不销毁：重新进入开单页时完全重置上一单残留的表单态 + 购物车（用户决策）。
+    // 例外：携带 pendingCartItem 时为「商品详情页返回追加购物车」的同一流程，跳过重置。
+    const pending = app.globalData.pendingCartItem;
+    if (!pending) {
+      this.resetOrderState();
+    }
     if (this._allCategories.length === 0) {
       this.loadShopInit();
     }
@@ -378,8 +406,7 @@ Page({
       this.setData({ recentCustomers: valid });
     } catch (_) {}
 
-    // 从商品详情页返回：检查 pendingCartItem
-    const pending = app.globalData.pendingCartItem;
+    // 从商品详情页返回：处理 pendingCartItem（pending 已在 onShow 顶部读取）
     if (pending) {
       app.globalData.pendingCartItem = null;
 
@@ -431,7 +458,8 @@ Page({
       }
       if (pending.directCheckout) {
         // PR-C §C6：旧 orderType='promotion' 分支删除；saleOrderType 默认 '销售单'
-        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单' });
+        // 此路径绕过 onOpenCheckout 直接重开结算面板，须显式重置 isActivity，避免上一单的活动标记串入新单
+        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单', isActivity: false });
       }
     }
   },
@@ -514,7 +542,7 @@ Page({
       let list = this._spuCache[cacheKey];
       if (!list) {
         const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
-        list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
+        list = filterSkusByKindChoice(skusInCat, choice).map((s) => skuToDisplay(s, this.data.buyerIsMember));
         this._spuCache[cacheKey] = list;
       }
       this.setData({
@@ -529,7 +557,7 @@ Page({
 
     // 体验卡：扁平 SKU 列表（无分类侧边栏，参照 admin TrialCardPicker）
     if (choice === '体验卡') {
-      const list = this._experienceSkus.map(skuToDisplay);
+      const list = this._experienceSkus.map((s) => skuToDisplay(s, this.data.buyerIsMember));   // 体验卡按会员价分流（#6=B：会员=会员价，非会员=标价）
       this.setData({
         categories: [],
         groupedCategories: [],
@@ -560,7 +588,7 @@ Page({
     if (!list) {
       // 首次进入该 choice 的首分类：从 _allSkus 本地过滤
       const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
-      list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
+      list = filterSkusByKindChoice(skusInCat, choice).map((s) => skuToDisplay(s, this.data.buyerIsMember));
       this._spuCache[cacheKey] = list;
     }
 
@@ -587,7 +615,8 @@ Page({
     // 所有员工均可浏览充值卡面板；真正提交时在 card-recharge.onSubmit 处统一校验店长权限
     if (nextChoice === '充值卡') {
       const customer = this.data.customerInfo;
-      if (customer?.crossStore) {
+      // 临时跨门店顾客（需求21）允许被外店充值/开单；仅非本店且无临时标记才拦截
+      if (customer?.crossStore && !customer?.isCrossStoreTemp) {
         wx.showModal({
           title: '无法充值',
           content: `该顾客属于「${customer.storeName || '其他'}」门店，非本店顾客无法充值。`,
@@ -709,7 +738,7 @@ Page({
     // 优先用本地 _allSkus 过滤（shopInit 已返全量）
     const localSkus = this._allSkus.filter(s => s.categoryId === categoryId);
     if (localSkus.length > 0) {
-      const list = filterSkusByKindChoice(localSkus, productKindChoice).map(skuToDisplay);
+      const list = filterSkusByKindChoice(localSkus, productKindChoice).map((s) => skuToDisplay(s, this.data.buyerIsMember));
       this._spuCache[cacheKey] = list;
       this.setData({ spuList: list });
       return;
@@ -724,7 +753,7 @@ Page({
       });
       // 追加到 _allSkus（便于后续缓存命中）
       this._allSkus = this._allSkus.concat(skus || []);
-      const list = filterSkusByKindChoice(skus || [], productKindChoice).map(skuToDisplay);
+      const list = filterSkusByKindChoice(skus || [], productKindChoice).map((s) => skuToDisplay(s, this.data.buyerIsMember));
       this._spuCache[cacheKey] = list;
       this.setData({ spuList: list, catalogLoading: false });
     } catch (_) {
@@ -761,7 +790,7 @@ Page({
     }
     const matched = filterSkusByKindChoice(this._allSkus, '普通商品')
       .filter(s => (s.specName || '').toLowerCase().includes(kw))
-      .map(skuToDisplay);
+      .map((s) => skuToDisplay(s, this.data.buyerIsMember));
     this.setData({ searching: true, spuList: matched });
   },
 
@@ -976,10 +1005,10 @@ Page({
     for (const c of cart) {
       c.priceLine = (c.price * c.quantity).toFixed(2);
     }
-    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = price × 0.5 × qty
+    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = 标价 listPrice × 0.5 × qty（不取会员价，与后端 order.js / admin orders.ts 一致）
     const baseLines = cart.map((c, i) => {
       if (isInternal) {
-        const halfUnit = Math.round(c.price * 50) / 100;
+        const halfUnit = Math.round((c.listPrice ?? c.price) * 50) / 100;
         return halfUnit * c.quantity;
       }
       return effBase[i];
@@ -993,8 +1022,8 @@ Page({
       // 销售单/寄存单的应付金额（不走半价；店长特价行用 effBase 基线）
       const saleAmountNum = Math.max(0, Math.round((effBase[i] - share) * 100) / 100);
       c.saleAmount = saleAmountNum.toFixed(2);
-      // 内部单专用的应付金额（先半价、再扣摊到的券）
-      const halfUnit = Math.round(c.price * 50) / 100;
+      // 内部单专用的应付金额（标价 listPrice ×0.5，与后端一致；不取会员价；先半价、再扣摊到的券）
+      const halfUnit = Math.round((c.listPrice ?? c.price) * 50) / 100;
       const halfSaleNum = Math.max(0, Math.round((halfUnit * c.quantity - (isInternal ? share : 0)) * 100) / 100);
       c.halfPriceSaleAmount = halfSaleNum.toFixed(2);
       // 实付默认 = 当前订单类型下的应付
@@ -1058,11 +1087,100 @@ Page({
       paidAmount: '0.00',
       showPayMethodGroup: true,
       prepaidCardLoaded: false,
+      isActivity: false,
     });
   },
 
   onCloseCheckout() {
-    this.setData({ showCheckout: false });
+    // 放弃结算：完全重置结算面板表单态（保留购物车），避免下次重开结算串入上次的支付方式/活动/顾客/券等
+    this.resetCheckoutForm();
+  },
+
+  /**
+   * 重置结算面板的全部临时表单态（恢复 data 初始默认值），保留购物车与商品浏览态。
+   * 供「放弃结算」（onCloseCheckout）与「完全重置」（resetOrderState）复用。
+   */
+  resetCheckoutForm() {
+    this.setData({
+      showCheckout: false,
+      checkoutStep: 0,
+      // Step 0 顾客
+      customerKeyword: '',
+      customerSearching: false,
+      customerInfo: null,
+      customerResults: [],
+      buyerIsMember: false,   // 顾客清空→会员身份归位非会员，配合下方清 _spuCache 让商品列表按标价重算
+      // Step 2 订单类型
+      saleOrderType: '销售单',
+      depositReceivedMap: {},
+      // Step 2 备注 / 提交态
+      remark: '',
+      submitting: false,
+      // 支付方式
+      paymentMethod: '微信',
+      // 储值卡预选
+      customerCardBalance: 0,
+      useCard: false,
+      prepaidCardAmount: 0,
+      paidAmount: '0.00',
+      showPayMethodGroup: true,
+      prepaidCardLoaded: false,
+      customerBalanceLoading: false,
+      // 活动单
+      isActivity: false,
+      // 转换单
+      conversionSelectedSaleItemIds: [],
+      conversionDeductibleSum: 0,
+      conversionPriceDiff: 0,
+      conversionPaymentMethod: null,
+      conversionPrepaidCardAmount: 0,
+      conversionRemaining: 0,
+      // 优惠券
+      selectedCoupon: null,
+      couponDiscount: 0,
+      couponTotal: '',
+      showCouponPopup: false,
+      availableCoupons: [],
+      couponsLoading: false,
+      // 指定美容师
+      preferredStaffWfId: '',
+      preferredStaffName: '',
+      showStaffPicker: false,
+      // 购物车弹层
+      cartPopupVisible: false,
+    });
+    // 顾客已清空（buyerIsMember=false）→ 清商品展示缓存，避免上一顾客的会员价缓存串入；下次切分类/选顾客按非会员重算
+    this._spuCache = {};
+    // 券/特价等表单态已重置（couponDiscount=0、selectedCoupon=null）后，按保留的购物车重算应付/实付合计
+    // 及各行 saleAmount/received；否则重开结算面板会沿用上次折后 payableTotal，且提交时行 received
+    // 仍为折后值（券已清）→ 应付 / 实付 / 券记录不一致。setData 已同步更新 this.data，updateCart 即按无券重算。
+    if (this.data.cart.length > 0) {
+      this.updateCart(this.data.cart);
+    }
+  },
+
+  /**
+   * 完全重置开单页（含购物车 + 商品类型 Tab），使每次重新进入都是全新开单状态。
+   * 由 Tab 页 onShow 重新进入（非 pendingCartItem 追加流程）时调用。
+   * 保留：isManager / recentCustomers / staffListForPicker / staffPickerColumns
+   *      及全部 `_` 前缀缓存（_allCategories/_allSkus/...）+ skuMap + bundleSpus。
+   */
+  resetOrderState() {
+    this.resetCheckoutForm();
+    this.updateCart([]); // 清空购物车并归零所有金额合计
+    if (this._kwTimer) {
+      clearTimeout(this._kwTimer);
+      this._kwTimer = null;
+    }
+    this.setData({
+      productKindChoiceIndex: 1,
+      productKindChoice: '普通商品',
+      productKeyword: '',
+      searching: false,
+    });
+    // 商品类型回到「普通商品」后刷新侧边栏 + spuList；
+    // _allCategories 为空时 applyKindChoice 安全设空，随后 loadShopInit 回来会再次填充。
+    this.applyKindChoice('普通商品');
   },
 
   // Step 0: 选顾客
@@ -1085,7 +1203,9 @@ Page({
         this.setData({ customerInfo: null, customerResults: [] });
         wx.showToast({ title: '未找到该顾客（需已绑定门店）', icon: 'none' });
       } else if (results.length === 1) {
+        // 单结果自动选中：与 onSelectCustomer / onSelectRecentCustomer 一致经 refreshForCustomer 同步会员身份 + 重算价
         this.setData({ customerInfo: results[0], customerResults: [] });
+        this.refreshForCustomer(results[0]);
       } else {
         this.setData({ customerInfo: null, customerResults: results });
       }
@@ -1100,11 +1220,43 @@ Page({
   onSelectCustomer(e: WechatMiniprogram.TouchEvent) {
     const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerResults: [], customerKeyword: customer.phone || customer.name });
+    this.refreshForCustomer(customer);
   },
 
   onSelectRecentCustomer(e: WechatMiniprogram.TouchEvent) {
     const customer = markCrossStore(e.currentTarget.dataset.customer as CustomerInfo);
     this.setData({ customerInfo: customer, customerKeyword: customer.phone, customerResults: [] });
+    this.refreshForCustomer(customer);
+  },
+
+  /**
+   * 顾客（及其会员身份）变更后的统一刷新（FINDING #9）：
+   * 清商品展示缓存 + 按新会员身份重算「当前已渲染 spuList」与「购物车各行价格快照」，
+   * 避免沿用上一顾客的会员价分流（旧实现仅清 _spuCache，须再次切分类才生效）。
+   * onSelectCustomer / onSelectRecentCustomer / onSearchCustomer 单结果自动选中三处共用，防止分叉。
+   * - 体验卡同口径按会员分流（#6=B，不再豁免；会员=会员价，非会员=标价）。
+   * - 组合套餐行价格固定（refBundleId / 组合套餐），跳过不重算。
+   * - skuMap 未命中（套餐/未加载/直购单品）时保留原值。最终结算仍以云函数 order.create 权威定价为准。
+   */
+  refreshForCustomer(customer: CustomerInfo) {
+    const buyerIsMember = deriveIsMember(customer);
+    this._spuCache = {};   // 会员身份变化→清商品展示缓存，重选商品时按新身份重算会员价分流
+    const skuMap = this.data.skuMap;
+    // 1) 重算当前已渲染的 spuList（按新会员身份分流）
+    const spuList = this.data.spuList.map((row) => {
+      const sku = skuMap[row.spuId];
+      return sku ? skuToDisplay(sku, buyerIsMember) : row;
+    });
+    this.setData({ buyerIsMember, spuList });
+    // 2) 刷新购物车各行价格快照（组合套餐行价格固定跳过），再 updateCart 按新行价重算 priceLine/saleAmount/received 及合计
+    const cart = this.data.cart.map((c) => {
+      if (c.refBundleId || c.productType === '组合套餐') return c;
+      const sku = skuMap[c.skuId];
+      if (!sku) return c;
+      const disp = skuToDisplay(sku, buyerIsMember);
+      return { ...c, price: disp.price, listPrice: disp.listPrice, specialPrice: disp.specialPrice };
+    });
+    this.updateCart(cart);
   },
 
   onStep0Next() {
@@ -1117,7 +1269,8 @@ Page({
       });
       return;
     }
-    if (this.data.customerInfo.crossStore) {
+    // 临时跨门店顾客（需求21）允许被外店开单；仅非本店且无临时标记才拦截
+    if (this.data.customerInfo.crossStore && !this.data.customerInfo.isCrossStoreTemp) {
       wx.showModal({
         title: '无法开单',
         content: `该顾客属于「${this.data.customerInfo.storeName || '其他'}」门店，非本店顾客无法开单。`,
@@ -1210,6 +1363,11 @@ Page({
     }
     this.setData({ useCard: next });
     this.recomputePrepaidAmounts();
+  },
+
+  /** 活动单开关（纯标识，不影响金额/提成口径） */
+  onToggleActivity(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ isActivity: !!e.detail });
   },
 
   /**
@@ -1501,6 +1659,10 @@ Page({
         // Wave 3G — 储值卡预选（决策 #6：店长不扣卡，云函数仅写订单字段）
         useCard,
         prepaidCardAmount,
+        // 活动单标记（纯标识）
+        isActivity: this.data.isActivity,
+        // 组合套餐：透传 bundleProductId（套餐 SPU id），云函数据此校验子项归属/配额并取下沉单价
+        bundleProductId: cart.find(c => c.refBundleId)?.refBundleId || undefined,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
@@ -1511,6 +1673,7 @@ Page({
         selectedCoupon: null,
         couponDiscount: 0,
         paymentMethod: '微信',
+        isActivity: false,
       });
       // 应付实金=0（券/卡全额抵扣，payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
       if (res.status === '已支付') {

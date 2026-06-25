@@ -1,6 +1,7 @@
 // pagesExperience/list/list.ts — 体验卡列表
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { getIsMember, priceView } from '../../utils/member-pricing';
 
 interface ExperienceCardSku {
   sku_id: string;
@@ -10,6 +11,10 @@ interface ExperienceCardSku {
   cover_image?: string;
   price: number;
   special_price: number | null;
+  /** 会员价分流后的展示主价（#6=B：会员=会员价，非会员=标价） */
+  displayPrice: number;
+  /** 划线原价（标价）；null=不划线 */
+  strikePrice: number | null;
   session_count: number | null;
   sort_order?: number;
 }
@@ -36,19 +41,28 @@ Page({
         'product.experienceCardList',
         {}
       );
-      const list = (data?.skuList || []).map((s: any) => ({
-        sku_id: s.sku_id,
-        product_id: s.product_id,
-        product_name: s.product_name || '',
-        spec_name: s.spec_name || '',
-        cover_image: s.cover_image || '',
-        price: Number(s.price || 0),
-        special_price: s.special_price !== null && s.special_price !== undefined
-          ? Number(s.special_price) : null,
-        session_count: s.session_count !== null && s.session_count !== undefined
-          ? Number(s.session_count) : null,
-        sort_order: s.sort_order,
-      }));
+      // 体验卡按会员价分流（#6=B）：会员展示会员价 + 划线标价，非会员只看标价
+      const member = getIsMember();
+      const list = (data?.skuList || []).map((s: any) => {
+        const price = Number(s.price || 0);
+        const special_price = s.special_price !== null && s.special_price !== undefined
+          ? Number(s.special_price) : null;
+        const pv = priceView(member, special_price, price);
+        return {
+          sku_id: s.sku_id,
+          product_id: s.product_id,
+          product_name: s.product_name || '',
+          spec_name: s.spec_name || '',
+          cover_image: s.cover_image || '',
+          price,
+          special_price,
+          displayPrice: pv.display,
+          strikePrice: pv.strike,
+          session_count: s.session_count !== null && s.session_count !== undefined
+            ? Number(s.session_count) : null,
+          sort_order: s.sort_order,
+        };
+      });
       this.setData({ skuList: list });
     } catch (err: any) {
       console.error('loadList error:', err);

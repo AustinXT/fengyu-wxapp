@@ -41,6 +41,8 @@ export interface NormalGroupPickerProps extends PickerCommonProps {
   groups: OrderPickerNormalGroup[]
   /** UI 文案：当前 kind 名称（用于"暂无商品"占位） */
   kindLabel: string
+  /** 会员价分流：true 时网格显示会员价 + 划线标价；false（未选顾客/非会员）只显示标价 */
+  buyerIsMember?: boolean
 }
 
 /** 体验卡 / 单 kind 平铺 picker 复用同一组数据形状（OrderPickerCategory[]） */
@@ -88,6 +90,8 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
     isShengmei: null,
     // 店长特别优惠 capability 透传到购物车，Step3 据此放开应付编辑（仅普通商品）
     isManagerSpecial: sku.isManagerSpecial,
+    // 体验卡 capability 透传：会员价分流时体验卡 special_price 对所有顾客生效（豁免）
+    isExperience: sku.isExperience,
     marketScope: null,
     isEnabled: true,
     createdAt: '',
@@ -97,8 +101,9 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
 }
 
 /**
- * 套餐内 SKU → ProductSku；套餐价（bundlePrice）写入 specialPrice 字段，
- * 让购物车走原有"specialPrice 优先"分支。
+ * 套餐内 SKU → ProductSku：
+ * - price        = 套餐标价单价（OrderPickerBundleSkuRef.price = bundle_list_price，划线基线）
+ * - specialPrice = 套餐成交价（bundlePrice = 组会员价 ?? 标价），让购物车走"specialPrice 优先"成交分支
  */
 export function bundleSkuToProductSku(args: {
   skuId: string

@@ -1,21 +1,22 @@
 /**
- * createRefund 退款额封顶（防部分支付超退）端到端冒烟（impl）。
+ * createRefund 退款额封顶（疗程卡整卡全退截断到净已收）端到端冒烟（impl）。
  *
  * 必须由 `bun --preload _admin-preload.mjs` 在 cwd=fengyu-admin/ 下运行。
  *
- * 覆盖 commit「退款额封顶到净已收防部分支付超退」(0da8122f) 的真实口径：
- *   退款上限 refundCap = max(sale_order_payments 已支付流水净额, sale_orders.received)
- *   退款额 finalRefundAmount = 退款明细 Σ(unit_real_price × refundQuantity) − handlingFee
- *   若 finalRefundAmount > refundCap + 0.001 → **拒绝**（INVALID_STATE，不截断金额）
- *   错误消息：'退款金额超过订单可退余额，请减少退款数量'
+ * 退款上限 refundCap = max(sale_order_payments 已支付流水净额, sale_orders.received − refunded_amount)。
+ * 整卡退款额 = 退款明细 Σ(unit_real_price × 整卡未用次数) − handlingFee。
+ *
+ * 2026-06-24 调整（part-paid 疗程卡可退）：疗程卡强制整卡全退、数量不可调，部分支付订单整卡值 > 净已收时，
+ * 旧逻辑直接拒绝 → 该订单永远无法退款。改为：截断退款额到 refundCap（仅退已付部分）、仍作废整卡
+ * （note.items[].quantity 保持整卡次数），逐项 refundAmount 等比缩到 refundCap。
+ * 家居产品数量可调，无疗程卡项时超 cap 仍拒绝（让店长减少退款数量）。
  *
  * 构造：部分支付订单（疗程卡只付定金、次数全在）
  *   sale_item：疗程卡 session_count=10 / remaining=10 / unit_real_price=100 / sale_amount=1000
  *   订单 received=200（仅付 200），payments 净额=200 → refundCap=200
  *
- * 断言：
- *   [超退被封顶] refundQuantity=10 → 退款额 100×10=1000 > 200 → 拒绝（INVALID_STATE）
- *   [净已收内放行] refundQuantity=2  → 退款额 100×2 =200 ≤ 200 → 成功（写待审批退款流水）
+ * 断言：整卡全退（refundQuantity=10，整卡值 1000 > 净已收 200）→ 成功，
+ *   finalRefundAmount 截断到 200、流水 amount=-200 待审批、note 作废整卡(quantity=10)、note item refundAmount 缩到 200。
  */
 import path from 'node:path'
 
@@ -27,7 +28,7 @@ const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 process.env.ALLOW_TEST_OPENID = 'true'
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 
 const setup = await import('file://' + path.join(TESTS_DIR, 'setup.mjs'))
@@ -130,55 +131,50 @@ async function main() {
   const refundsMod = await import(path.join(ADMIN_DIR, 'src', 'actions', 'refunds.ts'))
   const errors = []
 
-  // ===== [超退被封顶] 全退 10 次 → 退款额 1000 > 净已收 200 → 拒绝 =====
-  const over = await refundsMod.createRefund({
+  // ===== 疗程卡部分支付订单：整卡全退截断到净已收（2026-06-24 调整）=====
+  // 疗程卡强制整卡全退（数量不可调），整卡值 1000 > 净已收 200。旧逻辑直接拒绝 → 该订单永远无法退款；
+  // 新逻辑：截断退款额到净已收 200（仅退已付部分）、仍作废整卡（note.items[].quantity 保持整卡次数），
+  // 逐项 refundAmount 等比缩到 200。
+  const res = await refundsMod.createRefund({
     refSaleOrderId: ORDER_ID,
     items: [{ saleItemId: ITEM_ID, refundQuantity: SESSION_COUNT }],
-    refundReason: 'e2e 超退封顶用例',
-  })
-  console.log(`  超退(退10次=¥1000): ${JSON.stringify(over)}`)
-  if (over.success) {
-    errors.push(`[超退] 退款额 1000 > 净已收 200 应被拒，实际 success`)
-  } else if (over.error?.code !== 'INVALID_STATE') {
-    errors.push(`[超退] 错误码应=INVALID_STATE, 实际=${over.error?.code}`)
-  } else if (!/超过订单可退余额/.test(over.error.message)) {
-    errors.push(`[超退] 错误消息应含「超过订单可退余额」, 实际="${over.error.message}"`)
-  } else {
-    console.log(`  ✓ 超退被封顶拒绝（INVALID_STATE: "${over.error.message}"）`)
-  }
-
-  // 超退被拒后不应写任何退款流水
-  const afterOver = await q(
-    `SELECT COUNT(*)::int AS c FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '退款'`,
-    [ORDER_ID],
-  )
-  if (afterOver.rows[0].c !== 0) errors.push(`[超退] 被拒后不应写退款流水, 实际=${afterOver.rows[0].c} 条`)
-
-  // ===== [净已收内放行] 退 2 次 → 退款额 200 ≤ 净已收 200 → 成功 =====
-  const within = await refundsMod.createRefund({
-    refSaleOrderId: ORDER_ID,
-    items: [{ saleItemId: ITEM_ID, refundQuantity: 2 }],
-    refundReason: 'e2e 净已收内放行',
-    // 关掉超额权益扣减，避免本测试受会员降级估算干扰，专注 cap 口径
+    refundReason: 'e2e 整卡全退截断到净已收',
+    // 关掉超额权益扣减，避免本测试受会员降级估算干扰，专注 cap 截断口径
     applyOverdraftDeduction: false,
   })
-  console.log(`  净已收内(退2次=¥200): ${JSON.stringify(within)}`)
-  if (!within.success) {
-    errors.push(`[放行] 退款额 200 ≤ 净已收 200 应成功，实际 ${JSON.stringify(within.error)}`)
+  console.log(`  整卡全退截断(整卡值1000 > 净已收200): ${JSON.stringify(res)}`)
+  if (!res.success) {
+    errors.push(`[截断] 部分支付疗程卡整卡退应成功（截断到净已收 200），实际 ${JSON.stringify(res.error)}`)
   } else {
-    if (Number(within.data.finalRefundAmount) !== 200) {
-      errors.push(`[放行] finalRefundAmount 应=200, 实际=${within.data.finalRefundAmount}`)
+    if (Number(res.data.finalRefundAmount) !== 200) {
+      errors.push(`[截断] finalRefundAmount 应=200（截断到净已收）, 实际=${res.data.finalRefundAmount}`)
     }
-    const afterWithin = await q(
-      `SELECT amount::numeric AS amt, status FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '退款' ORDER BY id DESC LIMIT 1`,
+    const after = await q(
+      `SELECT amount::numeric AS amt, status, note FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '退款' ORDER BY id DESC LIMIT 1`,
       [ORDER_ID],
     )
-    const row = afterWithin.rows[0]
-    if (!row) errors.push(`[放行] 应写 1 条退款流水`)
-    else {
-      if (row.status !== '待审批') errors.push(`[放行] 退款流水 status 应=待审批, 实际=${row.status}`)
-      if (Number(row.amt) !== -200) errors.push(`[放行] 退款流水 amount 应=-200（负号）, 实际=${row.amt}`)
-      else console.log(`  ✓ 净已收内放行：写待审批退款流水 amount=${row.amt}`)
+    const row = after.rows[0]
+    if (!row) {
+      errors.push(`[截断] 应写 1 条退款流水`)
+    } else {
+      if (row.status !== '待审批') errors.push(`[截断] 退款流水 status 应=待审批, 实际=${row.status}`)
+      if (Number(row.amt) !== -200) errors.push(`[截断] 退款流水 amount 应=-200（截断到净已收）, 实际=${row.amt}`)
+      // 验证「作废整卡」：note.items[0].quantity = 整卡次数（数量不截），refundAmount 缩到 200（金额截断）
+      try {
+        const note = JSON.parse(row.note || '{}')
+        const it = (note.items || [])[0]
+        if (!it || Number(it.quantity) !== SESSION_COUNT) {
+          errors.push(`[截断] note 应作废整卡 quantity=${SESSION_COUNT}, 实际=${it?.quantity}`)
+        }
+        if (it && Number(it.refundAmount) !== 200) {
+          errors.push(`[截断] note item refundAmount 应缩到 200, 实际=${it.refundAmount}`)
+        }
+      } catch (e) {
+        errors.push(`[截断] note 解析失败: ${e.message}`)
+      }
+      if (!errors.length) {
+        console.log(`  ✓ 整卡全退截断到净已收 200、作废整卡(${SESSION_COUNT}次)、流水 -200 待审批`)
+      }
     }
   }
 
@@ -189,7 +185,7 @@ async function main() {
   }
   pass = true
   exitCode = 0
-  console.log(`  ✅ PASS — createRefund 退款额封顶到净已收：超退拒绝、净已收内放行`)
+  console.log(`  ✅ PASS — 部分支付疗程卡整卡全退：退款额截断到净已收、作废整卡`)
 }
 
 try {

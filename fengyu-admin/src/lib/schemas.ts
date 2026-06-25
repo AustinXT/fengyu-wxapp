@@ -26,6 +26,9 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
 // 日期字符串校验：YYYY-MM-DD（admin 表单 `<Input type="date">` 格式）
 const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
 
+// 日期时间字符串校验：YYYY-MM-DDTHH:mm（admin 表单 `<Input type="datetime-local">` 格式）
+const dateTimeStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, '时间格式应为 YYYY-MM-DDTHH:mm')
+
 // ─── 员工表单 ───
 export const employeeSchema = z.object({
   employeeId: z.string().min(1, '员工编号不能为空'),
@@ -48,6 +51,10 @@ export const employeeSchema = z.object({
   socialInsurance: z.boolean().optional(),
   /** 入职日期；mgmt-dashboard 员工数历史化所需（ticket 2026-04-25 T3） */
   hiredAt: dateStringSchema.optional().nullable().or(z.literal('')),
+  /** 请假开始时间；与 leaveEnd 成对，请假期间顾客端不可预约 */
+  leaveStart: dateTimeStringSchema.optional().nullable().or(z.literal('')),
+  /** 请假结束时间 */
+  leaveEnd: dateTimeStringSchema.optional().nullable().or(z.literal('')),
   /** 离职日期；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: dateStringSchema.optional().nullable().or(z.literal('')),
   /** 离职原因（自由文本） */
@@ -96,6 +103,8 @@ export const createOrderSchema = z.object({
   receivedAmount: z.number().min(0, '本次收款金额不能为负').optional(),
   // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券，schema 层用 z.string() 拒绝 array
   couponId: z.string().optional().nullable(),
+  // 活动单标记（纯标识，不影响金额/提成口径）
+  isActivity: z.boolean().optional(),
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
     productName: z.string(),

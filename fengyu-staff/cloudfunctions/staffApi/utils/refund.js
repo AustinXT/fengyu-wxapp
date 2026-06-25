@@ -53,7 +53,10 @@ function buildRefundDetails(origItems, requestItems) {
     if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
 
     const maxUnused = calculateUnusedQuantity(orig)
-    const requested = Number(req.refundQuantity) || maxUnused
+    // 疗程卡必须整卡全退（不支持部分退次数）：强制 requested = maxUnused，忽略前端传入的部分数量；
+    // 家居产品仍可按未提货数量部分退。两端镜像 admin lib/refund.ts。
+    const requested =
+      orig.product_type === '疗程卡' ? maxUnused : (Number(req.refundQuantity) || maxUnused)
 
     if (requested <= 0) {
       throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`)
@@ -104,6 +107,39 @@ function buildRefundDetails(origItems, requestItems) {
 }
 
 /**
+ * 退款封顶截断（疗程卡整卡全退专用）。
+ *
+ * 疗程卡强制整卡全退、退款数量不可调（见 buildRefundDetails）。部分支付订单（如疗程卡只付定金、
+ * 次数全在）整卡值可能 > 净已收 refundCap，旧逻辑直接拒绝 → 该订单永远无法退款。
+ * 改为：把逐项 refundAmount 等比缩到 targetGross（= refundCap + 手续费），数量不变（整卡仍作废）。
+ * 退款额截断到「只退已付部分」，打破「数量↔金额自洽」（数量=整卡次数、金额=已付），符合"只能退已付"。
+ *
+ * 最大余数法对齐总额：逐项 floor 后把尾差补到 refundAmount 最大的一项，避免逐项 round 累积偏移。
+ * 返回缩放后的 totalRefund（= targetGross）。两端镜像 admin src/lib/refund.ts。
+ */
+function capRefundAmounts(refundDetails, originalTotal, targetGross) {
+  if (originalTotal <= 0 || targetGross >= originalTotal || refundDetails.length === 0) {
+    return originalTotal
+  }
+  const ratio = targetGross / originalTotal
+  let allocated = 0
+  for (const d of refundDetails) {
+    const v = Math.floor(d.refundAmount * ratio * 100) / 100
+    d.refundAmount = v
+    allocated += v
+  }
+  const remainder = Math.round((targetGross - allocated) * 100) / 100
+  if (remainder !== 0) {
+    let maxIdx = 0
+    for (let i = 1; i < refundDetails.length; i += 1) {
+      if (refundDetails[i].refundAmount > refundDetails[maxIdx].refundAmount) maxIdx = i
+    }
+    refundDetails[maxIdx].refundAmount = Math.round((refundDetails[maxIdx].refundAmount + remainder) * 100) / 100
+  }
+  return Math.round(targetGross * 100) / 100
+}
+
+/**
  * 按原单储值卡抵扣比例，将退款金额拆为储值卡回冲 + 原路径退款
  *
  *   refundByCard   = floor(origPrepaidCardAmount / origTotalAmount × refundAmount, 2)
@@ -130,21 +166,15 @@ function splitRefundByOriginalPayment(refundAmount, origPrepaidCardAmount, origT
 /**
  * 决定退款 payments 行的 payment_method
  *
- * 过渡期：微信/支付宝退款 API 未集成前，原单微信/支付宝通道的退款
- * 暂用 '线下' 承接（需店员现场退现或走其他渠道），下一 ticket 集成三方 refund
- * API 后改为 '微信'/'支付宝' + external_txn_id。
+ * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
+ * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
+ * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 admin lib/refund.ts。
  *
- * @param {string} origPaymentMethod 原单 payment_method 枚举值
- * @returns {string} 退款行的 payment_method
+ * @param {string} _origPaymentMethod 原单 payment_method（已不参与决策，保留入参兼容调用方）
+ * @returns {string} 退款行的 payment_method（恒 '线下'）
  */
-function resolveRefundPaymentMethod(origPaymentMethod) {
-  if (origPaymentMethod === '微信' || origPaymentMethod === '支付宝') {
-    return '线下'
-  }
-  if (!origPaymentMethod || origPaymentMethod === '无') {
-    return '线下'
-  }
-  return origPaymentMethod
+function resolveRefundPaymentMethod(_origPaymentMethod) {
+  return '线下'
 }
 
 /**
@@ -161,6 +191,51 @@ async function assertNoPendingRefund(client, saleOrderId) {
   const rows = r && r.rows ? r.rows : r
   if (rows && rows.length > 0) {
     throw new Error('INVALID_STATE: REFUND_IN_PROGRESS: 该订单退款审批中，暂不可操作')
+  }
+}
+
+/**
+ * 退款已结算守卫（2026-06-24）：订单存在「已支付」退款时禁止重分配/清除分配。
+ * 退款已记负数冲销行（挂退款流水 id），重保存/清除会与负数行脱节产生悬空净额。
+ * client 可为顶层 pg（query 返回数组）或事务内 client（返回 {rows}）。SQL 谓词镜像 admin allocations.ts。
+ */
+async function assertNoSettledRefund(client, saleOrderId) {
+  if (!saleOrderId) return
+  const r = await client.query(
+    `SELECT 1 FROM sale_order_payments
+      WHERE sale_order_id = $1 AND change_type = '退款' AND status = '已支付' LIMIT 1`,
+    [saleOrderId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_SETTLED: 该订单已退款，营业额分配已锁定，不可再修改')
+  }
+}
+
+/**
+ * 退款已结算守卫·回款级（2026-06-24）：仅当本回款 salePaymentId 的可分配 item 中存在「已被结算退款冲销」的 item 时抛错。
+ * 收窄订单级守卫——使同单其它无关 item 的后续回款仍可正常分配，不被同单一笔无关退款误锁。
+ * 判定：本回款 sale_payment_allocatable_items ∩ 挂在「已支付退款流水」上的负数 sale_allocations 冲销行（sale_item 维度）≠ ∅。
+ * SQL 谓词镜像 admin lib/refund-cascade.ts hasSettledRefundForPayment。
+ */
+async function assertNoSettledRefundForPayment(client, salePaymentId) {
+  if (!salePaymentId) return
+  const r = await client.query(
+    `SELECT 1
+       FROM sale_allocations sa
+       JOIN sale_order_payments rsop ON rsop.id = sa.sale_payment_id
+      WHERE sa.is_void = false
+        AND sa.total_amount < 0
+        AND rsop.change_type = '退款' AND rsop.status = '已支付'
+        AND sa.sale_item_id IN (
+          SELECT sale_item_id FROM sale_payment_allocatable_items WHERE sale_payment_id = $1
+        )
+      LIMIT 1`,
+    [salePaymentId],
+  )
+  const rows = r && r.rows ? r.rows : r
+  if (rows && rows.length > 0) {
+    throw new Error('INVALID_STATE: REFUND_SETTLED: 该订单已退款，营业额分配已锁定，不可再修改')
   }
 }
 
@@ -228,9 +303,12 @@ async function notifyRefundResult(client, { paymentId, saleOrderId, recipientEmp
 module.exports = {
   calculateUnusedQuantity,
   buildRefundDetails,
+  capRefundAmounts,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
+  assertNoSettledRefund,
+  assertNoSettledRefundForPayment,
   assertNoPendingRefundByServiceOrder,
   notifyRefundCreated,
   notifyRefundResult,

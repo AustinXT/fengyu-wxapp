@@ -92,7 +92,10 @@ export function buildRefundDetails(
     if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
 
     const maxUnused = calculateUnusedQuantity(orig)
-    const requested = Number(req.refundQuantity) || maxUnused
+    // 疗程卡必须整卡全退（不支持部分退次数）：强制 requested = maxUnused，忽略前端传入的部分数量；
+    // 家居产品仍可按未提货数量部分退。两端镜像 staff utils/refund.js。
+    const requested =
+      orig.product_type === '疗程卡' ? maxUnused : (Number(req.refundQuantity) || maxUnused)
 
     if (requested <= 0) {
       throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`)
@@ -141,6 +144,43 @@ export function buildRefundDetails(
 }
 
 /**
+ * 退款封顶截断（疗程卡整卡全退专用）。
+ *
+ * 疗程卡强制整卡全退、退款数量不可调（见 buildRefundDetails）。部分支付订单（如疗程卡只付定金、
+ * 次数全在）整卡值可能 > 净已收 refundCap，旧逻辑直接拒绝 → 该订单永远无法退款。
+ * 改为：把逐项 refundAmount 等比缩到 targetGross（= refundCap + 手续费），数量不变（整卡仍作废）。
+ * 退款额截断到「只退已付部分」，打破「数量↔金额自洽」（数量=整卡次数、金额=已付），符合"只能退已付"。
+ *
+ * 最大余数法对齐总额：逐项 floor 后把尾差补到 refundAmount 最大的一项，避免逐项 round 累积偏移。
+ * 返回缩放后的 totalRefund（= targetGross）。两端镜像 staff utils/refund.js。
+ */
+export function capRefundAmounts(
+  refundDetails: Array<{ refundAmount: number }>,
+  originalTotal: number,
+  targetGross: number,
+): number {
+  if (originalTotal <= 0 || targetGross >= originalTotal || refundDetails.length === 0) {
+    return originalTotal
+  }
+  const ratio = targetGross / originalTotal
+  let allocated = 0
+  for (const d of refundDetails) {
+    const v = Math.floor(d.refundAmount * ratio * 100) / 100
+    d.refundAmount = v
+    allocated += v
+  }
+  const remainder = Math.round((targetGross - allocated) * 100) / 100
+  if (remainder !== 0) {
+    let maxIdx = 0
+    for (let i = 1; i < refundDetails.length; i += 1) {
+      if (refundDetails[i].refundAmount > refundDetails[maxIdx].refundAmount) maxIdx = i
+    }
+    refundDetails[maxIdx].refundAmount = Math.round((refundDetails[maxIdx].refundAmount + remainder) * 100) / 100
+  }
+  return Math.round(targetGross * 100) / 100
+}
+
+/**
  * 按原单储值卡抵扣比例，将退款金额拆为储值卡回冲 + 原路径退款
  *
  *   refundByCard   = floor(origPrepaidCardAmount / origTotalAmount × refundAmount, 2)
@@ -166,21 +206,12 @@ export function splitRefundByOriginalPayment(
 /**
  * 决定退款 payments 行的 payment_method
  *
- * 2026-05-20 拉卡拉接入后：原 '微信'/'支付宝' 通道支持真实退款 API（详见 sources/documents/拉卡拉接口规范-补充.md 「退货（统一退货，推荐用）」一节）。
- * 退款 payments 行保留原始 method，approveRefund 时按 method 决定是否调拉卡拉 /rfd/refund_front/refund。
- *
- * 异步退款（PROCESSING/DEAL/TIMEOUT）由独立 cron poll-lakala-refunds 推进；本函数只决定记录方式。
+ * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
+ * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
+ * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 staff utils/refund.js。
  */
 export function resolveRefundPaymentMethod(
-  origPaymentMethod: PaymentMethod | '储值卡' | null | undefined,
+  _origPaymentMethod?: PaymentMethod | '储值卡' | null | undefined,
 ): PaymentMethod {
-  if (origPaymentMethod === '微信' || origPaymentMethod === '支付宝') {
-    return origPaymentMethod
-  }
-  if (!origPaymentMethod || origPaymentMethod === '无') {
-    return '线下'
-  }
-  if (origPaymentMethod === '线下') return '线下'
-  // '储值卡' 不应作为原单 payment_method，fallback 到 '线下'
   return '线下'
 }

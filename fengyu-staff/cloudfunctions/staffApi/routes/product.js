@@ -246,7 +246,7 @@ async function _queryMallBundleGroups() {
 
   const skuLinkRows = await pg.query(`
     SELECT mps.product_id, mps.sku_id, mps.bundle_group_id,
-           mps.bundle_price, mps.sort_order,
+           mps.bundle_price, mps.bundle_list_price, mps.sort_order,
            sk.spec_name, sk.session_count,
            sk.product_type, sk.is_shengmei,
            sk.price AS list_price, sk.special_price AS list_special_price
@@ -273,8 +273,10 @@ async function _queryMallBundleGroups() {
             sessionCount: s.session_count,
             productType: s.product_type,
             isShengmei: !!s.is_shengmei,
-            bundlePrice: s.bundle_price != null ? Number(s.bundle_price) : 0,
-            listPrice: Number(s.list_price) || 0,
+            // 成交价（组会员价 ?? 标价）/ 标价单价（划线）：套餐下沉副本优先，缺失回退 SKU 原价
+            bundlePrice: s.bundle_price != null ? Number(s.bundle_price)
+              : (s.bundle_list_price != null ? Number(s.bundle_list_price) : (Number(s.list_price) || 0)),
+            listPrice: s.bundle_list_price != null ? Number(s.bundle_list_price) : (Number(s.list_price) || 0),
             listSpecialPrice: s.list_special_price != null ? Number(s.list_special_price) : null,
             sortOrder: s.sort_order,
           })),

@@ -32,6 +32,8 @@ export const clientWechatUsers = pgTable(
     boundEmployeeId: varchar('bound_employee_id', { length: 50 }),
     /** 绑定美容师姓名（冗余，随 boundEmployeeId 同步写入） */
     boundEmployeeName: varchar('bound_employee_name', { length: 50 }),
+    /** 临时跨门店标记：true 时该顾客可被非绑定门店的店长开单（跨店临时消费场景）；每日 03:00 cron 重置为 false */
+    isCrossStoreTemp: boolean('is_cross_store_temp').notNull().default(false),
     // Layer 4 — 会员与分类
     memberLevel: memberLevelEnum('member_level'),
     /** 会员等级保级截止时间；升级时设为 NOW()+150 天；保级期内跳过降级 */
@@ -118,6 +120,12 @@ export const staffWechatUsers = pgTable(
     avatarUrl: text('avatar_url'),
     // Layer 4 — 个人档案
     birthday: date('birthday'),
+    /** 请假开始时间（墙钟，无时区）；与 leaveEnd 成对，二者皆非空才视为有请假区间。请假期间顾客端不可预约 */
+    leaveStart: timestamp('leave_start', { mode: 'string' }),
+    /** 请假结束时间（墙钟，无时区）；与 appointment_time 同款墙钟语义，比较走 ::timestamp */
+    leaveEnd: timestamp('leave_end', { mode: 'string' }),
+    /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；每日 03:00 cron 重置为 false */
+    isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
     /** 是否缴纳社保；默认否 */
@@ -138,6 +146,7 @@ export const staffWechatUsers = pgTable(
     uniqueIndex('uq_staff_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     index('idx_staff_users_store_resigned').on(table.storeId, table.isResigned),
     check('chk_swu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
+    check('chk_swu_leave_range', sql`${table.leaveStart} IS NULL OR ${table.leaveEnd} IS NULL OR ${table.leaveEnd} > ${table.leaveStart}`),
   ],
 )
 

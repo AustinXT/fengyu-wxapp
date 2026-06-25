@@ -1,7 +1,7 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
-import { isManager, hasRole } from '../../utils/role';
+import { isManager, hasRole, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 import { APP_VERSION } from '../../utils/version';
 
@@ -27,6 +27,7 @@ Page({
     storePickerVisible: false,
     storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
     appVersion: APP_VERSION,
+    canSwitchView: false,
   },
 
   _unsubscribeStoreChange: null as (() => void) | null,
@@ -54,6 +55,7 @@ Page({
       avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
       isManager: isManager(),
       canSeeInventory,
+      canSwitchView: canSwitchLoginLevel() && canAccessManagement(),
     });
     this.syncStoreContext();
   },
@@ -185,6 +187,15 @@ Page({
 
   onNavPickup() {
     wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
+  },
+
+  onSwitchView() {
+    wx.showModal({
+      title: '切换视图',
+      content: '切换到管理层视图后页面将重新加载，未完成的开单等操作会丢失，确认切换？',
+      confirmText: '切换',
+      success: (res) => { if (res.confirm) app.switchLoginLevel('management'); },
+    });
   },
 
   onLogout() {

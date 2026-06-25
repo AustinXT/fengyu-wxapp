@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// 退款前置检查（allocations.ts 调 hasPendingRefund / hasSettledRefund / hasSettledRefundForPayment）：
+// 默认 false 走正常分支（预防 flaky）。订单级 hasSettledRefund 给 batchSaveAllocations，回款级 ForPayment 给 savePaymentAllocations。
+vi.mock('@/lib/refund-cascade', () => ({
+  hasPendingRefund: vi.fn().mockResolvedValue(false),
+  hasSettledRefund: vi.fn().mockResolvedValue(false),
+  hasSettledRefundForPayment: vi.fn().mockResolvedValue(false),
+  hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
@@ -60,10 +69,11 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { deleteAllocation, batchSaveAllocations } from './allocations'
+import { deleteAllocation, batchSaveAllocations, savePaymentAllocations } from './allocations'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isAdminScope } from '@/lib/permissions'
+import { isAdminScope, isInScope } from '@/lib/permissions'
+import { hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -256,6 +266,21 @@ describe('batchSaveAllocations — 归属校验 + 事务错误处理', () => {
     // scope + 订单类型白名单 + item 归属
     expect(db.select).toHaveBeenCalledTimes(3)
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  // 审查发现 #1：整单全作废重插会连退款负数冲销行一并作废 → 营业额膨胀回退款前。订单存在已结算退款时必须拒绝。
+  it('订单已有「已支付」退款 → 拒绝整单重保存，不进事务（防抹除退款冲销）', async () => {
+    // scope(call1) + 订单类型(call2) 通过；守卫在 item 校验前触发
+    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1', saleOrderType: '销售单' }]))
+    ;(hasSettledRefund as any).mockResolvedValueOnce(true)
+    mockTx()
+
+    const result = await batchSaveAllocations('order-1', validAllocations)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已锁定')
+    expect(hasSettledRefund).toHaveBeenCalledWith(db, 'order-1')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('事务内 FK 违反（23503，employeeId 不存在）→ 友好消息', async () => {
@@ -551,5 +576,52 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('该订单类型不参与营业额分配')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+// ── savePaymentAllocations — 退款后重分配守卫（回款级，审查发现 #2）──────────────────
+describe('savePaymentAllocations — 退款守卫粒度（回款级，非订单级）', () => {
+  const validPay = {
+    id: 7,
+    sale_order_id: 'order-1',
+    allocation_status: '待分配',
+    store_id: 'store-1',
+    market_name: 'M',
+    sale_order_type: '销售单',
+    legacy_source: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('本回款涉及已结算退款 item → 锁定，且用回款级守卫(salePaymentId)，不调订单级 hasSettledRefund', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([validPay]) // pay 查询命中
+    ;(hasSettledRefundForPayment as any).mockResolvedValueOnce(true)
+
+    const result = await savePaymentAllocations(7, [])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已锁定')
+    // #2 核心：回款级守卫，按 salePaymentId 判定（而非整单）
+    expect(hasSettledRefundForPayment).toHaveBeenCalledWith(db, 7)
+    // 订单级守卫不得参与回款级路径（否则同单无关回款会被误锁）
+    expect(hasSettledRefund).not.toHaveBeenCalled()
+  })
+
+  it('本回款不涉及退款 item → 守卫放行：即便订单级退款为 true 也不调用订单级守卫', async () => {
+    ;(db.execute as any).mockResolvedValue([]) // pay 之后查询均空
+    ;(db.execute as any).mockResolvedValueOnce([validPay]) // 首个 execute 为 pay 查询
+    ;(hasSettledRefundForPayment as any).mockResolvedValue(false) // 本回款 item 无退款冲销 → 守卫放行
+    ;(hasSettledRefund as any).mockResolvedValue(true) // 同单存在其它退款（订单级为 true）
+
+    // 守卫之后的保存路径非本测关注点，允许其下游抛错；仅断言守卫粒度行为
+    await savePaymentAllocations(7, []).catch(() => {})
+
+    // #2 核心回归：回款级守卫被咨询，订单级守卫绝不参与回款级路径 → 无关回款不被同单退款误锁
+    expect(hasSettledRefundForPayment).toHaveBeenCalledWith(db, 7)
+    expect(hasSettledRefund).not.toHaveBeenCalled()
   })
 })

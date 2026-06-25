@@ -23,6 +23,7 @@
 
 import { test, expect } from '@playwright/test'
 import {
+  BASE,
   TEST_PHONES, TOPOLOGY,
   psql, login, recordVerdict, summarize, writeContext, type Verdict,
 } from './_helpers/scope-helpers'
@@ -32,7 +33,7 @@ import {
  * 若过程中卡住或没有 Step 3，返回 null。
  */
 async function readStoreSelectAtStep3(page: import('@playwright/test').Page, customerPhone: string): Promise<string[] | null> {
-  await page.goto(`http://localhost:3000/orders/create`)
+  await page.goto(`${BASE}/orders/create`)
   await page.waitForLoadState('networkidle').catch(() => null)
   await page.waitForTimeout(1500)
 
@@ -146,7 +147,7 @@ test('链路35：级联下拉选择器约束', async ({ browser }) => {
   const pAdm = await ctxAdm.newPage()
   try {
     await login(pAdm, TEST_PHONES.ADM)
-    await pAdm.goto(`http://localhost:3000/employees/create`)
+    await pAdm.goto(`${BASE}/employees/create`)
     await pAdm.waitForLoadState('networkidle').catch(() => null)
     await pAdm.waitForTimeout(1500)
     // 找含"店"字 option 的 select（"所属门店"选择器）

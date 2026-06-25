@@ -23,15 +23,15 @@
     <view
       wx:for="{{cards}}"
       wx:key="saleItemId"
-      class="conv-card-item {{selectedIds.indexOf(item.saleItemId) >= 0 ? 'conv-card-item--active' : ''}}"
+      class="conv-card-item {{item.selected ? 'conv-card-item--active' : ''}}"
       data-id="{{item.saleItemId}}"
       bindtap="onToggleCard"
     >
       <view class="conv-card-checkbox">
         <van-icon
-          name="{{selectedIds.indexOf(item.saleItemId) >= 0 ? 'checked' : 'circle'}}"
+          name="{{item.selected ? 'checked' : 'circle'}}"
           size="40rpx"
-          color="{{selectedIds.indexOf(item.saleItemId) >= 0 ? '#C0322A' : '#BBB'}}"
+          color="{{item.selected ? '#C0322A' : '#BBB'}}"
         />
       </view>
       <view class="conv-card-info">

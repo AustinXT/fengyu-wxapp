@@ -144,9 +144,9 @@ describe('order.repay', () => {
         { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
       ])
       pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
-      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores + createLakalaPreorder 持久化 out_trade_no
+      // 事务后（顶层 pg.query）：resolveLakalaMerchant 查 stores JOIN lakala_merchants + createLakalaPreorder 持久化 out_trade_no
       pg.query.mockImplementation(async (sql) => {
-        if (/lakala_merchant_no/.test(sql)) return [{ lakala_merchant_no: 'M1', lakala_term_no: 'T1', lakala_enabled: true }]
+        if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
         return []
       })
 
@@ -177,6 +177,63 @@ describe('order.repay', () => {
       expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(false)
       expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
       expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
+    } finally {
+      for (const k of Object.keys(lakalaEnv)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] }
+    }
+  })
+
+  test('微信+储值卡混合回款 → 仅写「待支付储值卡抵扣」意向，不当场扣卡（扣卡推迟到 payNotify 同事务）', async () => {
+    // 原单 payable=300, received=100 → 欠款 200；线上 120 + 储值卡 80 = 200 全额
+    const lakalaEnv = {
+      LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+      LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+    }
+    const snap = {}
+    for (const [k, v] of Object.entries(lakalaEnv)) { snap[k] = process.env[k]; process.env[k] = v }
+    try {
+      const router = makeClientQueryRouter([
+        {
+          match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+          result: { rows: [makeOrigOrderRow()], rowCount: 1 },
+        },
+        // 作废本单遗留的待支付储值卡抵扣意向
+        { match: /UPDATE sale_order_payments SET status = '已作废'/, result: { rows: [], rowCount: 0 } },
+        // 余额校验（FOR UPDATE，仅读不扣）
+        { match: 'FROM prepaid_cards WHERE user_id', result: { rows: [{ card_id: 'FY-CARD-X', balance: '500.00' }], rowCount: 1 } },
+        // 写待支付储值卡抵扣意向
+        { match: /INSERT INTO sale_order_payments/, result: { rows: [], rowCount: 1 } },
+        // STEP 4 更新 payment_method
+        { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
+      ])
+      pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+      pg.query.mockImplementation(async (sql) => {
+        if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+        return []
+      })
+
+      const ctx = createBoundCtx({
+        saleOrderId: 'FY-XSD-WX-2604240001',
+        paymentMethod: '微信',
+        repayAmount: 120,
+        prepaidCardAmount: 80,
+      })
+      await routes.repay(ctx)
+
+      expect(ctx.result.status).toBe('待支付')
+      expect(ctx.result.paymentMethod).toBe('微信')
+      expect(ctx.result.paymentParams.paySign).toBe('mock-pay-sign-001')
+      expect(ctx.result.prepaidCardAmount).toBe(80)
+
+      const calls = router.mock.calls.map((c) => c[0])
+      // 写了「待支付储值卡抵扣」意向（INSERT payments，含 '储值卡抵扣' + '待支付' 字面）
+      expect(calls.some((s) => /INSERT INTO sale_order_payments[\s\S]*'储值卡抵扣'[\s\S]*'待支付'/.test(s))).toBe(true)
+      // 作废旧意向
+      expect(calls.some((s) => /UPDATE sale_order_payments SET status = '已作废'/.test(s))).toBe(true)
+      // 关键：未当场扣卡 —— 无余额扣减、无 card_transactions（扣卡推迟到 payNotify 同事务）
+      expect(calls.some((s) => /UPDATE prepaid_cards SET balance/.test(s))).toBe(false)
+      expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
+      // 混合通道不在 repay 内推进状态（received_sum 聚合 / UPDATE status 不应发生）
+      expect(calls.some((s) => /received_sum/.test(s))).toBe(false)
     } finally {
       for (const k of Object.keys(lakalaEnv)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] }
     }
@@ -276,5 +333,50 @@ describe('order.repay', () => {
       prepaidCardAmount: 100,
     })
     await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*储值卡通道 repayAmount 必须为 0/)
+  })
+
+  test('线下回款 → 仅标记 payment_method=线下，不写流水、不发起拉卡拉，返回原状态', async () => {
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: { rows: [makeOrigOrderRow()], rowCount: 1 },
+      },
+      // STEP 4：仅 UPDATE payment_method='线下'
+      { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+    // 线下应提前 return，不进线上分支（不解析商户/不发起 preorder）
+    pg.query.mockImplementation(async () => [])
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '线下',
+      repayAmount: 200,
+      prepaidCardAmount: 0,
+    })
+    await routes.repay(ctx)
+
+    expect(ctx.result.paymentMethod).toBe('线下')
+    expect(ctx.result.status).toBe('部分支付') // 原状态不变（不推进）
+    expect(ctx.result.paymentParams).toBeNull()
+    expect(ctx.result.repaymentOrderId).toBeUndefined()
+
+    const calls = router.mock.calls.map((c) => c[0])
+    expect(calls.some((s) => /UPDATE sale_orders SET payment_method/.test(s))).toBe(true)
+    // 不写 payments / card_transactions（由 staff 确认收款落账）
+    expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(false)
+    expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(false)
+    // 未发起拉卡拉聚合主扫
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('线下通道携储值卡抵扣 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-xx',
+      paymentMethod: '线下',
+      repayAmount: 200,
+      prepaidCardAmount: 50,
+    })
+    await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*线下通道不支持储值卡抵扣/)
   })
 })

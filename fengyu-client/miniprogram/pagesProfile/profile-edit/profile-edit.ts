@@ -43,10 +43,23 @@ Page({
         sourceType: ['album', 'camera'],
         sizeType: ['compressed'],
       });
-      const tempFilePath = res.tempFiles[0].tempFilePath;
+      const chosen = res.tempFiles[0];
+      let tempFilePath = chosen.tempFilePath;
       if (!tempFilePath) return;
 
       wx.showLoading({ title: '上传中...', mask: true });
+
+      // 服务端 img_sec_check 限图片 ≤1MB / 分辨率 ≤750x1334，超限会被 fail-closed 拦截；
+      // 大图先压一道（限宽 720 + 质量 80）再上传，避免正常头像被误拦。
+      if ((chosen.size || 0) > 1024 * 1024) {
+        try {
+          const compressed = await wx.compressImage({ src: tempFilePath, quality: 80, compressedWidth: 720 });
+          tempFilePath = compressed.tempFilePath;
+        } catch (e) {
+          // 压缩失败不阻断，继续用原图（若仍超限由服务端拦截）
+        }
+      }
+
       const ext = (tempFilePath.split('.').pop() || 'jpg').toLowerCase();
 
       // 读取临时文件为 base64（小程序端直传 COS 被存储安全规则拦截，改走云函数代理）

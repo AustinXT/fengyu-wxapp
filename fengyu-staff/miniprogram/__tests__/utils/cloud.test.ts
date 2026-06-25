@@ -2,7 +2,7 @@
  * cloud.ts 工具函数测试
  * 覆盖 sanitizeErrorMessage — 前端错误过滤防线
  */
-import { sanitizeErrorMessage } from '../../utils/cloud'
+import { sanitizeErrorMessage, callStaffApi } from '../../utils/cloud'
 
 describe('sanitizeErrorMessage', () => {
   // ===== 正常业务错误（应原样透传） =====
@@ -116,5 +116,66 @@ describe('sanitizeErrorMessage', () => {
 
   test('PERMISSION_DENIED 前缀原样返回', () => {
     expect(sanitizeErrorMessage('PERMISSION_DENIED: 无权操作')).toBe('PERMISSION_DENIED: 无权操作')
+  })
+})
+
+describe('callStaffApi errorType 透传', () => {
+  const origWx = (globalThis as any).wx
+
+  beforeEach(() => {
+    // 在 setup.ts 的 wx mock 基础上补 cloud.callFunction
+    ;(globalThis as any).wx = {
+      ...(globalThis as any).wx,
+      cloud: { callFunction: vi.fn() },
+    }
+  })
+
+  afterEach(() => {
+    ;(globalThis as any).wx = origWx
+  })
+
+  test('白名单业务错误（errorType 非空）长文案原样透传，不被 sanitize 截断', async () => {
+    const longMsg = '储值卡余额不足：本次开单实付 ¥88.00，当前账户可用余额仅 ¥12.00，尚差 ¥76.00，请先为顾客充值或调整本单的储值卡抵扣方案后再重新提交订单'
+    expect(longMsg.length).toBeGreaterThan(60)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -400, message: longMsg, errorType: 'INSUFFICIENT_BALANCE', data: null },
+    })
+
+    await expect(callStaffApi('order.create', {})).rejects.toMatchObject({
+      message: longMsg,
+      errorType: 'INSUFFICIENT_BALANCE',
+      code: -400,
+    })
+  })
+
+  test('PERMISSION_DENIED 业务文案原样透传 + errorType 保留', async () => {
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -403, message: '顾客不在当前数据范围', errorType: 'PERMISSION_DENIED' },
+    })
+
+    await expect(callStaffApi('customer.detail', {})).rejects.toMatchObject({
+      message: '顾客不在当前数据范围',
+      errorType: 'PERMISSION_DENIED',
+    })
+  })
+
+  test('系统错误（errorType 为空）长文案仍被 sanitize 兜底为 fallback', async () => {
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: -1, message: 'A'.repeat(80), errorType: null },
+    })
+
+    await expect(callStaffApi('order.create', {})).rejects.toMatchObject({
+      message: '请求失败',
+      code: -1,
+    })
+  })
+
+  test('正常响应返回 data', async () => {
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: 0, message: 'success', data: { list: [{ id: 1 }] } },
+    })
+
+    const data = await callStaffApi<{ list: any[] }>('order.list', {})
+    expect(data.list).toHaveLength(1)
   })
 })

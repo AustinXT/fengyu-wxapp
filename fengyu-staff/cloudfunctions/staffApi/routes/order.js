@@ -13,16 +13,19 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
-const { assertOrderInScope, isStoreInScope } = require('../utils/scope')
+const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
+const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
+const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const {
   buildRefundDetails,
+  capRefundAmounts,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
@@ -225,13 +228,14 @@ async function deductPrepaidCardAtCreation(client, { saleOrderId, clientUserId, 
      ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
     [cardId, -amount, saleOrderId, `card-deduct-${saleOrderId}`]
   )
-  await client.query(
+  const ins = await client.query(
     `INSERT INTO sale_order_payments (
       sale_order_id, change_type, amount, payment_method, external_txn_id,
       status, source_end, operator_employee_id, note, created_at, paid_at
-    ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+    ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
     [saleOrderId, amount, staffWfId, note, now]
   )
+  return ins.rows[0].id
 }
 
 /**
@@ -260,6 +264,84 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
       console.error('[staffApi/share-gift] error (non-fatal):', sgErr)
     }
   }
+}
+
+/**
+ * 组合套餐校验（staff 独立副本，与 client `_loadAndValidateBundle` / admin 口径对齐）：
+ * - 校验商品是套餐、子项归属、分组配额（全选=种类数 / 选N=数量合计）
+ * - 返回 Map<skuId, {listPrice, salePrice}>（mall_product_skus 下沉副本：标价单价/成交价）；
+ *   bundleProductId 为空返回 null（普通商品路径）
+ */
+async function _loadAndValidateBundle(bundleProductId, items) {
+  if (!bundleProductId) return null
+
+  const productRows = await pg.query(
+    `SELECT product_id, is_bundle FROM products
+     WHERE product_id = $1 AND deleted_at IS NULL AND is_visible = true`,
+    [bundleProductId]
+  )
+  if (productRows.length === 0 || !productRows[0].is_bundle) {
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已下架')
+  }
+
+  const groupRows = await pg.query(
+    `SELECT id, group_name, pick_count FROM mall_bundle_groups WHERE product_id = $1`,
+    [bundleProductId]
+  )
+  const mpsRows = await pg.query(
+    `SELECT sku_id, bundle_group_id, bundle_price, bundle_list_price
+     FROM mall_product_skus WHERE product_id = $1`,
+    [bundleProductId]
+  )
+
+  const skuToPrice = new Map()
+  const skuToGroupId = new Map()
+  for (const r of mpsRows) {
+    skuToPrice.set(r.sku_id, { listPrice: r.bundle_list_price, salePrice: r.bundle_price })
+    skuToGroupId.set(r.sku_id, r.bundle_group_id != null ? Number(r.bundle_group_id) : null)
+  }
+
+  for (const item of items) {
+    if (!skuToPrice.has(item.skuId)) {
+      throw new Error(`INVALID_PARAMS: BUNDLE_SKU_NOT_BELONG: SKU ${item.skuId} 不属于该套餐`)
+    }
+  }
+
+  const pickedQtyByGroup = new Map()
+  const pickedSkusByGroup = new Map()
+  for (const item of items) {
+    const gid = skuToGroupId.get(item.skuId)
+    if (gid == null) continue
+    const qty = Number(item.quantity) || 0
+    pickedQtyByGroup.set(gid, (pickedQtyByGroup.get(gid) || 0) + qty)
+    if (!pickedSkusByGroup.has(gid)) pickedSkusByGroup.set(gid, new Set())
+    pickedSkusByGroup.get(gid).add(item.skuId)
+  }
+
+  const totalSkusByGroup = new Map()
+  for (const r of mpsRows) {
+    if (r.bundle_group_id == null) continue
+    const gid = Number(r.bundle_group_id)
+    totalSkusByGroup.set(gid, (totalSkusByGroup.get(gid) || 0) + 1)
+  }
+
+  for (const g of groupRows) {
+    const gid = Number(g.id)
+    if (g.pick_count == null) {
+      const total = totalSkusByGroup.get(gid) || 0
+      const distinct = pickedSkusByGroup.has(gid) ? pickedSkusByGroup.get(gid).size : 0
+      if (distinct !== total) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需全选 ${total} 项，实际 ${distinct} 项`)
+      }
+    } else {
+      const pickedQty = pickedQtyByGroup.get(gid) || 0
+      if (pickedQty !== Number(g.pick_count)) {
+        throw new Error(`INVALID_PARAMS: BUNDLE_GROUP_PICK_MISMATCH: 组「${g.group_name}」需选 ${g.pick_count} 件，实际 ${pickedQty} 件`)
+      }
+    }
+  }
+
+  return skuToPrice
 }
 
 /**
@@ -294,9 +376,12 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
+    isActivity,
+    bundleProductId,
   } = payload
 
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
@@ -345,17 +430,21 @@ async function create(ctx) {
 
   // 查询顾客是否已注册客户端小程序并绑定门店
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
-  // 非本店顾客禁止开单：账户级资产（余额/积分）可跨店查看，但出单按门店结算
-  if (!isStoreInScope(ctx.auth, clientUsers[0].bound_store_id)) {
+  // 非本店顾客禁止开单：账户级资产（余额/积分）可跨店查看，但出单按门店结算。
+  // 例外（需求21，2026-06-24）：标记临时跨门店（is_cross_store_temp）的顾客允许被外店开单；
+  // 订单仍按开单门店（effectiveStoreId）结算，标记每日 03:00 cron 重置。
+  if (!isStoreInScope(ctx.auth, clientUsers[0].bound_store_id) && !clientUsers[0].is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
   const clientUserId = clientUsers[0].user_id
+  // 会员价分流：会员客 或 有钻石等级即会员，决定普通单品成交价用会员价还是标价
+  const buyerIsMember = isMember(clientUsers[0].customer_type, clientUsers[0].member_level)
 
   // 检查是否已有待支付订单
   const existing = await pg.query(
@@ -365,6 +454,9 @@ async function create(ctx) {
   if (existing.length > 0) {
     throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
   }
+
+  // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
+  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
 
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const rawItemDataList = await Promise.all(
@@ -385,33 +477,52 @@ async function create(ctx) {
 
       let sessionCount = null
       let salesCategory = sku.sales_category || null
-      // sku 会员价（special_price 优先）：仅供内部单 ½ 折基线
-      const skuListPrice = Number(sku.special_price || sku.price)
-      // sku 原始挂牌价（划线价）：防御性上界 + sale_items.unit_price 标价快照基线。
-      // 套餐内单价（bundle_price）允许高于会员特价但不超原价；上界须用原价而非 special_price，
-      // 否则含会员特价（special<price）的套餐/普通商品会被误杀（client/admin 均按原价，无此校验）。
+      // sku 原始挂牌价（标价/划线价）：sale_items.unit_price 快照基线，恒为原价
       const skuPriceCeil = Number(sku.price)
+      // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡豁免对所有人）
+      const applicableUnit = resolveUnitPrice(sku, buyerIsMember).realUnit
 
-      // 入参价格三件套（与 admin createOrder 对齐）；缺省 fallback 到 sku 标价（向后兼容旧前端）
+      // 入参价格三件套
       let inputListUnit, inputRealUnit, useFrontendPrice
       if (saleOrderType === '内部单') {
-        // ⚠️ 内部单 ½ 必须服务端权威；忽略前端透传的所有价格字段
-        // 即使前端误传 bundle_price，也以 sku.price × 50% 落库（兼防员工套餐价）
-        inputListUnit = skuListPrice
-        inputRealUnit = Math.round(skuListPrice * 50) / 100
+        // ⚠️ 内部单 ½ 必须服务端权威：基于标价 price × 50%（不受会员价影响），忽略前端透传
+        inputListUnit = skuPriceCeil
+        inputRealUnit = Math.round(skuPriceCeil * 50) / 100
         useFrontendPrice = false
       } else {
-        inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : skuListPrice
-        inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : inputListUnit
-        // 防御性上界：unitRealPrice ≤ unitPrice ≤ sku 原始标价（防前端涨价）；
-        // 缺省 fallback 仍用 skuListPrice（会员价优先，不传价时行为不变），仅上界放宽到原价 skuPriceCeil。
-        if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
-            || inputListUnit > skuPriceCeil + 0.005
-            || inputRealUnit > inputListUnit + 0.005
-            || inputRealUnit < 0) {
-          throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
+        const bp = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
+        if (bp) {
+          // 套餐子项：套餐价独立机制（本次不做会员分流）；上界/缺省用套餐下沉单价（标价/成交）
+          const bundleListUnit = bp.listPrice != null ? Number(bp.listPrice) : skuPriceCeil
+          const bundleSaleUnit = bp.salePrice != null ? Number(bp.salePrice) : bundleListUnit
+          inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : bundleListUnit
+          inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : bundleSaleUnit
+          if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
+              || inputListUnit > bundleListUnit + 0.005
+              || inputRealUnit > inputListUnit + 0.005
+              || inputRealUnit < 0) {
+            throw new Error('INVALID_PARAMS: 单价不能高于商品标价或为非法值')
+          }
+          useFrontendPrice = true
+        } else if (sku.is_manager_special === true) {
+          // 店长特别优惠（仅普通商品）：标价快照=原价；店长可在「适用价（会员价/标价）」之下手动改成交价。
+          // 兼容前端传 unitRealPrice（单价）或 saleAmount（行总额），统一归一为成交单价后钳制 ≤ 适用价。
+          const qtyForUnit = item.quantity || 1
+          inputListUnit = skuPriceCeil
+          inputRealUnit = item.unitRealPrice != null
+            ? Number(item.unitRealPrice)
+            : (item.saleAmount != null ? Number(item.saleAmount) / qtyForUnit : applicableUnit)
+          if (!Number.isFinite(inputRealUnit) || inputRealUnit < 0
+              || inputRealUnit > applicableUnit + 0.005) {
+            throw new Error('INVALID_PARAMS: 应付单价不能高于该顾客适用价或为非法值')
+          }
+          useFrontendPrice = false  // priceLine 由后端按成交单价×数量算（含店长改价），不另信前端 saleAmount
+        } else {
+          // 普通商品：会员价分流后端权威定价，忽略前端透传单价（堵非会员套用会员价）
+          inputListUnit = skuPriceCeil
+          inputRealUnit = applicableUnit
+          useFrontendPrice = false
         }
-        useFrontendPrice = true
       }
       const unitPrice = inputRealUnit  // 进入后续 priceLine / 摊券逻辑（成交单价）
 
@@ -832,13 +943,13 @@ async function create(ctx) {
     const paidAtValue = (paidAmount > 0 || zeroPayable) ? now : null
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount, remark, allocation_status,
+        preferred_employee_id, coupon_id, coupon_discount, remark, is_activity, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -849,6 +960,7 @@ async function create(ctx) {
         initialStatus,
         prepaidCardAmount, receivedColumn, payableAmount,
         paidAtValue,
+        isActivity === true,
       ]
     )
 
@@ -920,8 +1032,9 @@ async function create(ctx) {
     // 故 D4 混单守卫废除（migration 0043 同步拆触发器）。
 
     // 全额储值卡抵扣：事务内即时扣卡 + 写 '储值卡抵扣' 流水（与 confirmOffline 已支付分支对齐）。
+    let fullCardPaymentId = null
     if (isFullCardCoverage) {
-      await deductPrepaidCardAtCreation(client, {
+      fullCardPaymentId = await deductPrepaidCardAtCreation(client, {
         saleOrderId,
         clientUserId,
         amount: prepaidCardAmount,
@@ -937,6 +1050,17 @@ async function create(ctx) {
     // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
     // 行级实付草稿现落 sale_items.pending_received，由 confirmOffline/payNotify 入账后才驱动 received→paid_sessions）。
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
+    if (fullCardPaymentId && prepaidCardAmount > 0) {
+      await capturePaymentAllocatables(client, {
+        salePaymentId: fullCardPaymentId,
+        saleOrderId,
+        eventAmount: prepaidCardAmount,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(client, saleOrderId)
+    }
 
     // 零应付即结清：触发与 confirmOffline 已支付分支一致的结算副作用（档位/客户分类/会员/积分/分享礼）。
     // 券全额单 receivedAmount=prepaidCardAmount=0 → 积分链净额=0 无写入、grantShareGift 自带 paid>0 门控跳过。
@@ -995,7 +1119,8 @@ async function qrcode(ctx) {
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
             o.payment_method, o.paid_at, o.store_id, o.opened_by,
-            o.total_amount, o.prepaid_card_amount, o.payable_amount
+            o.total_amount, o.prepaid_card_amount, o.payable_amount,
+            o.received, o.refunded_amount
      FROM sale_orders o
      WHERE o.sale_order_id = $1`,
     [saleOrderId]
@@ -1027,15 +1152,26 @@ async function qrcode(ctx) {
   // 不能用 sum(received) 否则金额显示为空（前端 totalAmount || '' 会把 0 吞成空串）
   const totalAmount = Number(order.total_amount || 0)
 
-  // 实际需支付金额（付款码顶部展示给顾客扫码）= Σ各商品明细实付 − 储值卡抵扣
-  // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
-  // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
-  const sumItemReal = items.reduce(
-    (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
-    0
-  )
+  // 实际需支付金额（付款码顶部展示给顾客扫码）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
-  const actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
+  let actualPayable
+  if (order.status === '部分支付') {
+    // 回款场景：剩余欠款 = 应付实金 − 净到账（received − refunded）
+    const payable = Number(order.payable_amount || 0) > 0
+      ? Number(order.payable_amount)
+      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+    const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
+    actualPayable = Math.max(0, Math.round((payable - netReceived) * 100) / 100)
+  } else {
+    // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
+    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
+    // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
+    const sumItemReal = items.reduce(
+      (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
+      0
+    )
+    actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
+  }
 
   // 推导二维码显示状态（UI-only 标签，不写库）
   //   待支付 + payment_method='线下' → 顾客已选线下，待店长确认收款（UI 标签 '待确认收款'）
@@ -1047,14 +1183,17 @@ async function qrcode(ctx) {
     qrCodeStatus = '待确认收款'
   } else if (order.status === '待支付') {
     qrCodeStatus = '待扫码'
+  } else if (order.status === '部分支付') {
+    // 回款：等顾客扫码付剩余应付（仍走扫码态，便于轮询到账；不显示线下确认按钮）
+    qrCodeStatus = '待扫码'
   } else {
     qrCodeStatus = order.status
   }
 
-  // 仅待支付订单生成小程序码（带缓存）
+  // 待支付（首付）/ 部分支付（回款）订单生成小程序码（带缓存；scene=saleOrderId 与状态无关，可复用）
   let qrcodeUrl = ''
   let qrcodeError = ''
-  if (order.status === '待支付') {
+  if (order.status === '待支付' || order.status === '部分支付') {
     if (qrcodeCache.has(saleOrderId)) {
       qrcodeUrl = qrcodeCache.get(saleOrderId)
     } else {
@@ -1201,6 +1340,9 @@ async function confirmOffline(ctx) {
     // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
     // （create 时 sale_orders.prepaid_card_amount 仅作为"预选"金额，此处才真正入账）
     const prepaidAmount = Number(order.prepaid_card_amount || 0)
+    // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
+    let cashPaymentId = null
+    let cardPaymentId = null
     if (prepaidAmount > 0 && order.client_user_id) {
       // 幂等：已扣过则跳过扣卡 + payments（用 card_transactions.ref_order_id 判定）
       const dupCheck = await client.query(
@@ -1234,13 +1376,14 @@ async function confirmOffline(ctx) {
           [cardId, -prepaidAmount, saleOrderId, `card-deduct-${saleOrderId}`]
         )
         // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
-        await client.query(
+        const cardIns = await client.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method, external_txn_id,
             status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
           [saleOrderId, prepaidAmount, ctx.auth.staffWfId, '店长确认线下收款-储值卡抵扣', now]
         )
+        cardPaymentId = cardIns.rows[0].id
       }
     }
 
@@ -1262,6 +1405,7 @@ async function confirmOffline(ctx) {
       if (insRes.rows.length === 0) {
         throw new Error('CONFLICT: 订单已收款，请勿重复提交')
       }
+      cashPaymentId = insRes.rows[0].id
     }
 
     // ========== 从流水重聚合 received / prepaid_card_amount（跨端字面对齐 admin confirmOfflinePayment + staff createRepayment）==========
@@ -1291,8 +1435,7 @@ async function confirmOffline(ctx) {
     const updateResult = await client.query(
       `UPDATE sale_orders
        SET status = $1, received = $2, prepaid_card_amount = $3, paid_at = $4, updated_at = $5,
-           offline_confirmed_by = $6, offline_confirmed_at = $5,
-           allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+           offline_confirmed_by = $6, offline_confirmed_at = $5
        WHERE sale_order_id = $7 AND status = $8`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
@@ -1337,6 +1480,21 @@ async function confirmOffline(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
     await recalcPaidSessionsForOrder(client, saleOrderId)
+
+    // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
+    const cashThis = cashPaymentId ? confirmAmount : 0
+    const cardThis = cardPaymentId ? prepaidAmount : 0
+    const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
+    const allocPrimaryId = cashPaymentId || cardPaymentId
+    if (allocPrimaryId && allocEventAmount > 0) {
+      await capturePaymentAllocatables(client, {
+        salePaymentId: allocPrimaryId,
+        saleOrderId,
+        eventAmount: allocEventAmount,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(client, saleOrderId)
+    }
 
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)
@@ -1555,7 +1713,7 @@ async function list(ctx) {
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
-      o.paid_at, o.created_at, o.opened_by, o.total_amount,
+      o.paid_at, o.created_at, o.opened_by, o.total_amount, o.is_activity,
       -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
       (o.sale_order_type IN ('销售单','转换单') AND o.legacy_source IS DISTINCT FROM 'workfine') AS allocatable,
       EXISTS(
@@ -1592,19 +1750,49 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
+  // 交易数据跟顾客走：先不限门店查订单，再分层判定可见性
+  // （顾客档案的消费记录可跨门店查看任意订单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const orders = await pg.query(
-    'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId]
   )
 
   if (orders.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
   const order = orders[0]
 
-  // 美容师只能看指定自己的订单
-  if (!ctx.auth.roles.includes('manager') && order.preferred_employee_id !== ctx.auth.staffWfId) {
+  // 分层可见性：
+  //  1) 订单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（订单 Tab / 开单后查看，行为不变）
+  //  2) 管理层模式 + 订单门店在本 scope 内 → 监管只读放行
+  //  3) 订单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店订单）
+  //  4) 都不满足 → 无权查看
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人订单），仅经分支 1/3。
+  const inStoreScope = isStoreInScope(ctx.auth, order.store_id)
+  const isManager = ctx.auth.roles.includes('manager')
+  const isMgmt = ctx.auth.loginLevel === 'management'
+  let visible = inStoreScope && (isManager || order.preferred_employee_id === ctx.auth.staffWfId)
+  if (!visible && isMgmt && inStoreScope) {
+    visible = true // 管理层监管本 scope 内订单（只读）
+  }
+  if (!visible && order.client_user_id) {
+    // 顾客在本 scope 内 → 可只读查看其任意订单（含跨门店）：顾客档案消费记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 saleOrderId 越权查看本店他人负责顾客的订单金额 / 款项流水。
+    const custRows = await pg.query(
+      'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
+      [order.client_user_id]
+    )
+    if (
+      custRows.length > 0 &&
+      isStoreInScope(ctx.auth, custRows[0].bound_store_id) &&
+      (!restrictToBoundEmployee(ctx.auth) || custRows[0].bound_employee_id === ctx.auth.staffWfId)
+    ) {
+      visible = true
+    }
+  }
+  if (!visible) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -1691,14 +1879,15 @@ async function detail(ctx) {
 
   // 款项流水（Ticket 2 PR-A：订单详情页展示 / 回款弹层读取欠款）
   const paymentRows = await pg.query(
-    `SELECT change_type, amount, payment_method, status,
-            paid_at, created_at, note
+    `SELECT id, change_type, amount, payment_method, status,
+            paid_at, created_at, note, allocation_status
      FROM sale_order_payments
      WHERE sale_order_id = $1
      ORDER BY created_at ASC, id ASC`,
     [saleOrderId]
   )
   const payments = paymentRows.map(p => ({
+    id: p.id,
     change_type: p.change_type,
     amount: Number(p.amount),
     payment_method: p.payment_method,
@@ -1706,7 +1895,18 @@ async function detail(ctx) {
     paid_at: p.paid_at,
     created_at: p.created_at,
     note: p.note,
+    allocation_status: p.allocation_status,
   }))
+
+  // 顾客储值卡余额（供回款弹层「使用储值卡抵扣」自动抵满；无账户=0，无顾客=null）
+  let cardBalance = null
+  if (order.client_user_id) {
+    const balRows = await pg.query(
+      'SELECT balance FROM prepaid_cards WHERE user_id = $1 LIMIT 1',
+      [order.client_user_id]
+    )
+    cardBalance = balRows.length > 0 ? Number(balRows[0].balance) : 0
+  }
 
   ctx.result = {
     order: {
@@ -1718,6 +1918,7 @@ async function detail(ctx) {
     items,
     allocations,
     payments,
+    cardBalance,
   }
 }
 
@@ -1812,7 +2013,8 @@ async function createRefund(ctx) {
     [refSaleOrderId]
   )
 
-  const { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
+  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
+  let { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
 
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
@@ -1822,7 +2024,7 @@ async function createRefund(ctx) {
   if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
-  const finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+  let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0) {
     throw new Error('INVALID_STATE: 无可退项')
   }
@@ -1831,8 +2033,8 @@ async function createRefund(ctx) {
   //   - 部分支付订单（如疗程卡只付定金、次数全在）按未使用次数×unit_real_price 算出的退款额可能远超实付，需封顶。
   //   - 流水净额（首次支付/回款/储值卡抵扣为正、已审批退款为负）是生产权威已收（含储值卡抵扣）；
   //     received 列兜底（流水缺失的历史/异常单），取 max 避免误拒。
-  //   - 超限直接拒绝（而非截断金额）：退款明细 quantity/session_count 按请求记录、cascade 据此回滚次数，
-  //     只截金额不截数量会导致「退 N 次核销权却只退 M 次钱」，故让店长减少退款数量以保持数量与金额自洽。
+  //   - 超限处理（2026-06-24 调整）：疗程卡强制整卡全退、数量不可调 → 截断退款额到 cap（仅退已付、整卡仍作废）；
+  //     家居数量可调 → 仍拒绝让店长减少退款数量。详见下方 if 分支。
   const paymentsNetRows = await pg.query(
     `SELECT COALESCE(SUM(amount), 0)::numeric AS net
        FROM sale_order_payments
@@ -1845,7 +2047,20 @@ async function createRefund(ctx) {
   // received - refunded_amount 为 legacy/流水缺失单兜底。两端镜像 admin refunds.ts。
   const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refunded_amount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
-    throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
+    // 疗程卡强制整卡全退、退款数量不可调（buildRefundDetails）：部分支付订单整卡值 > 净已收时，
+    // 直接拒绝会导致永远无法退款。改为截断到 cap（只退已付部分）、仍作废整卡（数量不变），
+    // 逐项 refundAmount 等比缩到 targetGross，保 note/级联冲销/STEP1.5 净额扣减一致。两端镜像 admin refunds.ts。
+    // 家居产品数量可调，无疗程卡项时仍拒绝，让店长减少退款数量（保持数量↔金额自洽）。
+    const hasCourseCard = refundDetails.some((d) => d.productType === '疗程卡')
+    if (!hasCourseCard) {
+      throw new Error('INVALID_STATE: 退款金额超过订单可退余额，请减少退款数量')
+    }
+    const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
+    totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
+    finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
+    if (finalRefundAmount <= 0) {
+      throw new Error('INVALID_STATE: 无可退项')
+    }
   }
 
   // 储值卡 vs 原路径拆分（按原单储值卡占比）
@@ -2083,6 +2298,7 @@ async function approveRefund(ctx) {
         cascadeItems = noteObj.items.map((it) => ({
           saleItemId: it.refSaleItemId,
           sessionCount: it.quantity,
+          refundAmount: it.refundAmount ?? null,
           isFullItemRefund: !!it.isFullItemRefund,
         }))
         cascadeWholeOrder = !!noteObj.isWholeOrderRefund
@@ -2090,10 +2306,11 @@ async function approveRefund(ctx) {
     } catch (_) { cascadeItems = [] }
     // 兜底（老退款行无 note.items）：用 ref_sale_item_id 单 item；为空则 cascade 内部兜底整单
     if (cascadeItems.length === 0 && sopRow.ref_sale_item_id) {
-      cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, isFullItemRefund: true }]
+      cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, refundAmount: refundAbs, isFullItemRefund: true }]
     }
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
+      refundPaymentId: paymentId,
       items: cascadeItems,
       isWholeOrderRefund: cascadeWholeOrder,
       refundReason: sopRow.refund_reason || '退款审批通过',
@@ -2217,13 +2434,6 @@ async function rejectRefund(ctx) {
 // ========== P2: 回款单（Ticket 2：多次回款 PR-A） ==========
 
 /**
- * 判断支付方式是否走线上通道（生成 prepay_id + 回调到账）
- */
-function isOnlinePaymentMethod(method) {
-  return method === '微信' || method === '支付宝'
-}
-
-/**
  * 创建回款单（店长专用）— Ticket 2 改写
  *
  * 核心变化（vs. 旧实现）：
@@ -2264,13 +2474,10 @@ async function createRepayment(ctx) {
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
   if (!paymentMethod) throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
-  if (!['微信', '线下', '储值卡'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: 非法的支付方式（仅支持 微信/线下/储值卡）')
-  }
-
-  // 微信扫码回款暂未实现（待业务接入微信扫码付款码链路）
-  if (paymentMethod === '微信') {
-    throw new Error('INVALID_PARAMS: 微信扫码回款暂未开放')
+  // createRepayment 只处理「即时记账」回款（线下/储值卡）。
+  // 微信/支付宝在线回款由 client 扫码链路走：order.qrcode → scan-pay → order.pay/alipayPay → payNotify 写 change_type='回款'，不经此函数。
+  if (!['线下', '储值卡'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 非法的支付方式（仅支持 线下/储值卡）')
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止回款（一笔订单不应同时退款审批中又补款）
@@ -2414,51 +2621,80 @@ async function createRepayment(ctx) {
       )
     }
 
-    // 5) 向原销售单写 payments 流水：'回款'(现金) + 可选 '储值卡抵扣'(储值卡)
-    //    items[] → 逐子项写带 ref_sale_item_id 的行（定向回款，paid-sessions STEP 1 据此独立解锁该行）；
-    //    否则订单级单行（ref=null，按比例分摊）。储值卡余额已在上方一次性扣减。
-    const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
-    const repayPaidAt = isOnlinePaymentMethod(paymentMethod) ? null : now
+    // 5) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
+    //    现金合并 1 行 '回款'(ref=null) + 储值卡合并 1 行 '储值卡抵扣'(ref=null)。
+    //    子项定向（钱精确落选中卡）改由下方 5b 更新 sale_items.pending_received 承载（与 admin recordPayment 一致）。
+    // 线下/储值卡回款均即时入账（已支付）
+    const repayStatusRow = '已支付'
+    const repayPaidAt = now
+    // 回款事件主流水行 id（现金行优先；纯储值卡回款则取储值卡抵扣行）—— 按回款逐笔分配的归属键
+    let cashPaymentId = null
+    let cardPaymentId = null
+    if (repayAmount > 0) {
+      const ins = await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8) RETURNING id`,
+        [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
+      )
+      cashPaymentId = ins.rows[0].id
+    }
+    if (prepaidCardAmount > 0) {
+      const ins = await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5) RETURNING id`,
+        [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
+      )
+      cardPaymentId = ins.rows[0].id
+    }
+    // 线下/储值卡回款均即时已支付：现金行为主流水行；纯储值卡取抵扣行
+    const primaryPaymentId = cashPaymentId || cardPaymentId
+
+    // 5b) 子项定向：把本次每张卡补款落到 sale_items.pending_received，使下方 recalcPaidSessionsForOrder
+    //     STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
+    //     公式：pending_received_i = received_i + 已退款额_i + 本次补款_i（现金+储值卡），与 admin recordPayment 一致。
+    //     退款额复用 STEP1.5 的退款 note JSON 聚合还原毛额（无退款时为 0）。
+    //     无 items[] 的订单级回款不动 pending（退回 untargeted 比例分摊，向后兼容）。
     if (repayItems) {
-      for (const it of repayItems) {
-        if (it.repayAmount > 0) {
-          await client.query(
-            `INSERT INTO sale_order_payments (
-              sale_order_id, change_type, amount, payment_method, external_txn_id,
-              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-            ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8, $9)`,
-            [refSaleOrderId, it.repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, it.saleItemId, note || '店长发起回款', now, repayPaidAt]
-          )
-        }
-        if (it.prepaidCardAmount > 0) {
-          await client.query(
-            `INSERT INTO sale_order_payments (
-              sale_order_id, change_type, amount, payment_method, external_txn_id,
-              status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-            ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
-            [refSaleOrderId, it.prepaidCardAmount, ctx.auth.staffWfId, it.saleItemId, '店长发起回款-储值卡抵扣', now]
-          )
-        }
-      }
-    } else {
-      if (repayAmount > 0) {
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
-          [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, repayPaidAt]
-        )
-      }
-      if (prepaidCardAmount > 0) {
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
-          [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
-        )
-      }
+      const repayValuesSql = repayItems
+        .map((_, i) => `($${i * 2 + 2}::varchar, $${i * 2 + 3}::numeric)`)
+        .join(', ')
+      const repayParams = repayItems.flatMap((it) => [
+        it.saleItemId,
+        (Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100).toFixed(2),
+      ])
+      await client.query(
+        `WITH refund_items AS (
+           SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                  COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+           FROM sale_order_payments sop
+           CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN sop.note LIKE '{%'
+                  THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                            THEN (sop.note)::jsonb -> 'items'
+                            ELSE '[]'::jsonb END
+                  ELSE '[]'::jsonb END
+           ) AS elem
+           WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+         ),
+         refund_agg AS (
+           SELECT sale_item_id, SUM(refund_amount) AS refunded
+           FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
+         ),
+         repay (sale_item_id, delta) AS (VALUES ${repayValuesSql})
+         UPDATE sale_items si
+         SET pending_received = ROUND(
+               si.received::numeric + COALESCE(ra.refunded, 0) + COALESCE(rp.delta, 0), 2),
+             updated_at = NOW()
+         FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买') ai
+         LEFT JOIN refund_agg ra ON ra.sale_item_id = ai.sale_item_id
+         LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
+         WHERE si.sale_item_id = ai.sale_item_id`,
+        [refSaleOrderId, ...repayParams]
+      )
     }
 
     // 6) 重算原单 received / prepaid_card_amount（SUM payments 已支付行）+ status
@@ -2492,8 +2728,7 @@ async function createRepayment(ctx) {
     const updateRes = await client.query(
       `UPDATE sale_orders
          SET status = $1, received = $2, prepaid_card_amount = $3,
-             paid_at = $4, updated_at = $5,
-             allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
+             paid_at = $4, updated_at = $5
        WHERE sale_order_id = $6 AND status = $7`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, refSaleOrderId, locked.status]
     )
@@ -2503,6 +2738,21 @@ async function createRepayment(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
+
+    // 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态
+    const directedForCapture = repayItems
+      ? repayItems.map((it) => ({
+          saleItemId: it.saleItemId,
+          amount: Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100,
+        }))
+      : null
+    await capturePaymentAllocatables(client, {
+      salePaymentId: primaryPaymentId,
+      saleOrderId: refSaleOrderId,
+      eventAmount: totalThisTime,
+      directedItems: directedForCapture,
+    })
+    await refreshOrderAllocationRollup(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
@@ -2576,6 +2826,7 @@ async function createConversion(ctx) {
     prepaidCardAmount: inputPrepaidCardAmount,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 转换单必须指定顾客 clientUserId')
@@ -2778,13 +3029,13 @@ async function createConversion(ctx) {
     await tx.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type,
-        market_name, store_id, sale_order_datetime,
+        market_name, store_id, store_name, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -2903,8 +3154,9 @@ async function createConversion(ctx) {
 
     // 8b. 补差额全额抵扣（priceDiff > 0 且 payable==0）：事务内即时扣卡 + 写 '储值卡抵扣' 流水。
     //     与 8（负差额充值）互斥（全额抵扣要求 priceDiff > 0）。
+    let convFullCardPaymentId = null
     if (isFullCardCoverage) {
-      await deductPrepaidCardAtCreation(tx, {
+      convFullCardPaymentId = await deductPrepaidCardAtCreation(tx, {
         saleOrderId: convOrderId,
         clientUserId,
         amount: card,
@@ -2917,6 +3169,17 @@ async function createConversion(ctx) {
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
     await recalcPaidSessionsForOrder(tx, convOrderId)
+
+    // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额（非定向）
+    if (convFullCardPaymentId && card > 0) {
+      await capturePaymentAllocatables(tx, {
+        salePaymentId: convFullCardPaymentId,
+        saleOrderId: convOrderId,
+        eventAmount: card,
+        directedItems: null,
+      })
+      await refreshOrderAllocationRollup(tx, convOrderId)
+    }
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
     if (isFullCardCoverage) {
@@ -3559,6 +3822,7 @@ async function createDeposit(ctx) {
     useCard,
   } = payload
   const storeId = ctx.auth.effectiveStoreId
+  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 寄存单必须指定顾客 clientUserId')
@@ -3672,13 +3936,13 @@ async function createDeposit(ctx) {
     // INSERT sale_orders —— 寄存单核心：金额全 0、status 直接已支付、payment_method='无'
     await tx.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
         prepaid_card_amount, received, payable_amount, paid_at,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '寄存单', $2, $3, $4, $5, 0, $6, $7, $8, '无', $9,
+      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
                 NULL, NULL, 0, $10, 0, 0, 0, $5,
                 '待分配', $5, $5)`,
       [

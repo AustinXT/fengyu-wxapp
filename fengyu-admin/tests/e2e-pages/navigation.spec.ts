@@ -63,7 +63,9 @@ test.describe('侧边栏导航链接', () => {
   test('点击系统配置菜单项导航', async ({ page }) => {
     await page.goto('/dashboard')
     await page.locator('aside').getByText('系统配置').click()
-    await expect(page).toHaveURL(/\/settings/)
+    // dev 模式下 /settings 首次访问需冷编译，客户端导航期间 URL 短暂停留 /dashboard，
+    // 默认 5s 超时偶发不足 → 放宽到 15s 吸收冷编译，消除时序 flaky。
+    await expect(page).toHaveURL(/\/settings/, { timeout: 15_000 })
   })
 })
 

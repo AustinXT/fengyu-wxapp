@@ -37,3 +37,4 @@
 |------|------|------|
 | [001](fix/001_drop-stores-lakala-sub-appid.md) | 2026-05-30 | stores 删除冗余 lakala_sub_appid 列（双源风险预防性清理） |
 | [002](fix/002_zero-payable-order-stuck-pending.md) | 2026-06-06 | 优惠券全额抵扣（应付实金为 0）订单卡在「待支付」死循环 |
+| [003](fix/003_cloudfn-pg-timestamp-timezone.md) | 2026-06-16 | 云函数 pg timestamp 读取时区根治（北京时间间歇晚 8 小时显示 16 点） |

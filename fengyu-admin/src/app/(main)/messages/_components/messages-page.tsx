@@ -14,6 +14,7 @@ import {
 import type { BatchMessageCustomer, OrgNode } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
 import { formatDateTime as fmtDateTime } from '@/lib/utils'
+import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -53,6 +54,7 @@ const MESSAGE_TYPE_LABELS: Record<string, string> = {
   promotion: '促销',
   service: '服务',
   system: '系统',
+  appointment: '预约',
 }
 
 /** 关联实体类型英文枚举 → 中文展示（未知值回退原值） */
@@ -129,8 +131,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       toast.success(result.message)
       setPendingDelete(null)
       router.refresh()
-    } catch {
-      toast.error('删除失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '删除失败，请稍后重试'))
     } finally {
       setDeleting(false)
     }
@@ -161,7 +163,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
           setBatchOrgNodes(nodes)
           setBatchOrgLoaded(true)
         })
-        .catch(() => toast.error('加载组织列表失败'))
+        .catch((err) => toast.error(actionErrorMessage(err, '加载组织列表失败')))
     }
   }, [batchOpen, batchOrgLoaded])
 
@@ -177,8 +179,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         })
         setBatchCustomers(result.data)
         setBatchTotal(result.total)
-      } catch {
-        toast.error('加载顾客列表失败')
+      } catch (err) {
+        toast.error(actionErrorMessage(err, '加载顾客列表失败'))
       }
     },
     [batchOrgFilter, batchLevelFilter, batchSearch],
@@ -274,8 +276,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
       toast.success(result.message)
       resetBatchState()
       router.refresh()
-    } catch {
-      toast.error('发送失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '发送失败，请稍后重试'))
     } finally {
       setBatchSending(false)
     }
@@ -609,13 +611,18 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium">分类</label>
-              <Input
-                maxLength={50}
-                placeholder="例如 system / promotion（可选，≤50 字）"
+              <Select
+                className="max-w-xs"
                 value={batchType}
                 onChange={(e) => setBatchType(e.target.value)}
-                className="max-w-xs"
-              />
+              >
+                <option value="">不分类</option>
+                {Object.entries(MESSAGE_TYPE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
             </div>
           </div>
 

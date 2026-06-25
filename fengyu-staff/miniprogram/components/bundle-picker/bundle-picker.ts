@@ -13,7 +13,7 @@ interface BundleGroupSku {
   sessionCount: number | null;
   productType: string;
   isShengmei: boolean;
-  /** mall_product_skus.bundle_price — 套餐内单价（落 unit_real_price） */
+  /** 套餐成交价（mall_product_skus.bundle_price = 组会员价 ?? 标价）→ 落 unit_real_price */
   bundlePrice: number;
   listPrice: number;
   listSpecialPrice: number | null;
@@ -43,7 +43,7 @@ interface CartItemOut {
   spuName: string;
   specName: string;
   price: number;
-  /** sku 标价（与 price 不同：套餐场景 price=bundle_price，listPrice=sku.listPrice） */
+  /** 套餐标价单价（mall_product_skus.bundle_list_price）→ 落 unit_price 划线；与成交价 price 区分 */
   listPrice: number;
   quantity: number;
   discount: number;

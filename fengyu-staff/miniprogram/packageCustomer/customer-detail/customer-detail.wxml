@@ -87,7 +87,11 @@
             <view class="purchase-card" wx:for="{{purchaseOrders}}" wx:key="saleOrderId">
               <view class="purchase-header">
                 <text class="purchase-order-no">{{item.saleOrderId}}</text>
-                <text class="status-tag status-tag--success">已支付</text>
+                <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
+              </view>
+              <view class="purchase-meta">
+                <text class="purchase-store" wx:if="{{item.storeName}}">{{item.storeName}}</text>
+                <text class="purchase-amount">{{item.amountText}}</text>
               </view>
               <view class="purchase-items">
                 <view wx:for="{{item.items}}" wx:for-item="si" wx:key="saleItemId" class="purchase-item-row">
@@ -96,7 +100,7 @@
                 </view>
               </view>
               <view class="purchase-footer" bindtap="onPurchaseOrderTap" data-id="{{item.saleOrderId}}">
-                <text class="purchase-time">{{item.paidAt}}</text>
+                <text class="purchase-time">{{item.timeText}}</text>
                 <text class="purchase-link">查看详情 ›</text>
               </view>
             </view>
@@ -170,41 +174,30 @@
         </view>
       </van-tab>
 
-      <van-tab title="退换记录">
+      <van-tab title="服务记录">
         <view class="tab-content">
-          <view wx:if="{{!refundLoaded}}" class="loading-wrap">
+          <view wx:if="{{!serviceLoaded}}" class="loading-wrap">
             <van-loading type="spinner" color="#C0322A" />
           </view>
-          <van-empty wx:elif="{{refundRecords.length === 0}}" description="暂无退换记录" />
+          <van-empty wx:elif="{{serviceRecords.length === 0}}" description="暂无服务记录" />
           <view wx:else>
-            <view class="refund-card" wx:for="{{refundRecords}}" wx:key="saleOrderId">
+            <view class="refund-card" wx:for="{{serviceRecords}}" wx:key="serviceOrderId"
+                  bindtap="onServiceOrderTap" data-id="{{item.serviceOrderId}}">
               <view class="refund-card-header">
-                <text class="refund-order-no">{{item.saleOrderId}}</text>
-                <text class="refund-type-tag {{item.type === '退款' ? 'refund-type--refund' : 'refund-type--convert'}}">
-                  {{item.type}}
-                </text>
-                <text class="status-tag status-tag--{{item.status === '待审批' ? 'pending' : item.status === '已支付' ? 'success' : 'done'}}">
-                  {{item.status}}
-                </text>
+                <text class="refund-order-no">{{item.serviceOrderId}}</text>
+                <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
               </view>
-              <view wx:if="{{item.refundReason}}" class="refund-reason">
-                <text class="refund-reason-label">原因：</text>
-                <text>{{item.refundReason}}</text>
-              </view>
-              <view class="refund-items">
-                <view wx:for="{{item.items}}" wx:for-item="ri" wx:key="saleItemId" class="refund-item-row">
-                  <text class="refund-item-direction {{ri.direction === '退出' || ri.direction === '转出' ? 'direction--out' : 'direction--in'}}">
-                    {{ri.direction}}
-                  </text>
-                  <text class="refund-item-name">{{ri.productName}}</text>
-                  <text class="refund-item-amount">¥{{ri.received}}</text>
+              <view wx:if="{{item.items.length}}" class="refund-items">
+                <view wx:for="{{item.items}}" wx:for-item="si" wx:for-index="sidx" wx:key="sidx" class="refund-item-row">
+                  <text class="refund-item-name">{{si.itemName}}</text>
                 </view>
               </view>
-              <view class="refund-card-footer">
-                <text class="refund-card-time">{{item.createdAt}}</text>
-                <text class="refund-total">合计 ¥{{item.totalAmount}}</text>
+              <view class="appt-meta">
+                <text wx:if="{{item.storeName}}" class="appt-time">{{item.storeName}}</text>
+                <text wx:if="{{item.staffName}}" class="appt-staff">美容师：{{item.staffName}}</text>
               </view>
-              <view class="refund-link" bindtap="onRefundOrderTap" data-id="{{item.saleOrderId}}">
+              <view class="refund-card-footer">
+                <text class="refund-card-time">{{item.serviceTime}}</text>
                 <text class="purchase-link">查看详情 ›</text>
               </view>
             </view>

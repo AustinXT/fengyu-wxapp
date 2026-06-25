@@ -38,15 +38,16 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
   })
 
   it('A. 全部不变量通过 → violations=0，零写入', async () => {
-    // 5 次 SELECT 均返回空（无违规）
-    for (let i = 0; i < 5; i++) mockExecute.mockResolvedValueOnce([])
+    // 6 次 SELECT 均返回空（无违规）：I1 received / I2 refunded_amount / I2b refunded_le_received /
+    // I3 points_balance / I4 prepaid_balance / I5 payable_eq_total_minus_prepaid
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
 
     const result = await auditPaymentInvariants(mockDb as never)
 
     expect(result.violations).toBe(0)
     expect(result.details).toEqual([])
     // 无 INSERT 调用、无 webhook
-    expect(mockExecute).toHaveBeenCalledTimes(5)
+    expect(mockExecute).toHaveBeenCalledTimes(6)
     expect(notifyOpsMock).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
@@ -102,8 +103,8 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     expect(writeCalls.length).toBe(0)
   })
 
-  it('D. 5 项不变量按预期 SQL 模板出现', async () => {
-    for (let i = 0; i < 5; i++) mockExecute.mockResolvedValueOnce([])
+  it('D. 6 项不变量按预期 SQL 模板出现', async () => {
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
 
     await auditPaymentInvariants(mockDb as never)
 
@@ -111,6 +112,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     // I1 received  / I2 refunded_amount / I3 points_balance / I4 prepaid balance / I5 payable
     expect(sqlTexts.some((s) => s.includes('so.received') && s.includes('change_type IN'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('refunded_amount') && s.includes("change_type = '退款'"))).toBe(true)
+    expect(sqlTexts.some((s) => s.includes('refunded_amount::numeric > so.received'))).toBe(true) // I2b refunded_le_received
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('prepaid_cards') && s.includes('card_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('payable_amount') && s.includes('total_amount'))).toBe(true)

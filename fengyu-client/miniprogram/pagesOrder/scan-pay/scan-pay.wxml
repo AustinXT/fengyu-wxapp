@@ -2,6 +2,13 @@
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 module.exports.cents = function(n) { return Math.round(n * 100) }
+// 单次/单价由权威行总额 saleAmount 反推（saleAmount ÷ 次数或数量），
+// 保证「单次×次数 == 总额」「单价×数量 == 总额」；divisor 非法(0/NaN/null)时回退展示整额。
+module.exports.unit = function(total, divisor) {
+  var d = Number(divisor) || 0
+  if (d <= 0) { return module.exports.price(total) }
+  return module.exports.price(Number(total) / d)
+}
 </wxs>
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
@@ -61,8 +68,10 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
         </view>
         <view class="item-info">
           <text class="item-name">{{item.productName}}</text>
+          <text wx:if="{{item.sessionCount > 1}}" class="item-spec">{{item.sessionCount}}次 · 单次 ¥{{fmt.unit(item.saleAmount, item.sessionCount)}}</text>
+          <text wx:elif="{{item.quantity > 1}}" class="item-spec">×{{item.quantity}} · 单价 ¥{{fmt.unit(item.saleAmount, item.quantity)}}</text>
         </view>
-        <text class="item-price">¥{{fmt.price(item.unitPrice)}}</text>
+        <text class="item-price">¥{{fmt.price(item.saleAmount)}}</text>
       </view>
     </view>
 
@@ -75,11 +84,12 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
       </view>
     </view>
 
-    <!-- 抵扣区：储值卡（与优惠券并列；优惠券暂只展示，不可改） -->
+    <!-- 抵扣区：储值卡（与优惠券并列；优惠券暂只展示，不可改）。
+         回款场景仍展示储值卡（抵扣尾款），但隐藏优惠券行（券已在首付时计入） -->
     <view class="deduction-section">
       <view class="deduction-section__title">抵扣</view>
 
-      <view wx:if="{{couponDiscount > 0}}" class="deduction-row">
+      <view wx:if="{{!isRepayment && couponDiscount > 0}}" class="deduction-row">
         <view class="deduction-row__left">
           <text class="deduction-row__name">优惠券</text>
           <text class="deduction-row__hint">店长已选用</text>
@@ -125,6 +135,10 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
       <view wx:if="{{isFirstPartialScan}}" class="paid-section__hint">
         本次支付 ¥{{fmt.price(firstPaymentAmount)}}（首付），剩余款项可后续扫码支付
       </view>
+      <!-- 回款提示：部分支付订单（已有首付到账，本次付剩余应付） -->
+      <view wx:if="{{isRepayment}}" class="paid-section__hint">
+        本单已部分支付，本次为回款，支付剩余应付款项
+      </view>
 
       <!-- 支付方式：仅 paid > 0 时展示 -->
       <view wx:if="{{showPayMethodGroup}}" class="pay-method-wrap">
@@ -134,7 +148,11 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
               <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
               <van-radio slot="right-icon" name="微信" />
             </van-cell>
-            <van-cell title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="线下">
+            <van-cell title="支付宝" clickable bindtap="onPayMethodTap" data-method="支付宝">
+              <van-icon slot="icon" name="alipay" size="40rpx" color="#1677FF" style="margin-right:16rpx" />
+              <van-radio slot="right-icon" name="支付宝" />
+            </van-cell>
+            <van-cell wx:if="{{!isRepayment}}" title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="线下">
               <van-icon slot="icon" name="balance-o" size="40rpx" color="#C0322A" style="margin-right:16rpx" />
               <van-radio slot="right-icon" name="线下" />
             </van-cell>

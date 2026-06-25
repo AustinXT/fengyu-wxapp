@@ -14,7 +14,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
-import { pgErrorCode } from '@/lib/pg-error'
+import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters } from '@/lib/list-filters'
@@ -44,6 +44,10 @@ function rowToEmployee(row: any): Employee {
     socialInsurance: e.socialInsurance,
     isResigned: e.isResigned,
     hiredAt: e.hiredAt,
+    // leave_start / leave_end 列为 mode:'string'，直接是墙钟字符串，无需 toISOString
+    leaveStart: e.leaveStart ?? null,
+    leaveEnd: e.leaveEnd ?? null,
+    isOnBusinessTrip: e.isOnBusinessTrip,
     resignedAt: e.resignedAt,
     resignationReason: e.resignationReason,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
@@ -97,6 +101,32 @@ export const getItemTeachers = withPermission(
     .where(and(
       eq(staffWechatUsers.isResigned, false),
       sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
+    ))
+    // 例外：picker 字母序（与 getEmployees 一致）
+    .orderBy(asc(staffWechatUsers.name))
+
+  return rows.map(rowToEmployee)
+  },
+)
+
+/**
+ * 全公司在职「出差支援」员工 — 跨门店开单 / 分配的候选补充池（2026-06-24）。
+ *
+ * is_on_business_trip=true 的员工可被任意门店的开单 / 营业额分配 / 服务提成分配选中，
+ * 故**不加 scopeCondition**，返回全部在职出差员工。调用方需与 getEmployees 结果按
+ * employeeId 去重合并，再交前端按「本门店 ∪ 出差」+ 技能筛选。每日 03:00 cron 重置标记。
+ */
+export const getEmployeesOnBusinessTrip = withPermission(
+  'employee:list',
+  async (): Promise<Employee[]> => {
+  const rows = await db
+    .select()
+    .from(staffWechatUsers)
+    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .where(and(
+      eq(staffWechatUsers.isResigned, false),
+      eq(staffWechatUsers.isOnBusinessTrip, true),
     ))
     // 例外：picker 字母序（与 getEmployees 一致）
     .orderBy(asc(staffWechatUsers.name))
@@ -268,7 +298,7 @@ export interface ExportEmployeeRow {
   gender: string | null
   phone: string | null
   idCard: string | null
-  marketName: string | null
+  orgNodeId: string | null
   storeName: string | null
   positionName: string | null
   birthday: string | null
@@ -292,10 +322,9 @@ export const exportEmployees = withPermission(
     const dataRows = await db
       .select()
       .from(staffWechatUsers)
+      // 「所属组织」导出列改用员工 orgNodeId（前端 buildOrgPath 构建完整路径），与列表页一致。
+      // 无门店员工（养生部/财智部/总部职能岗）storeId 为 null，旧的门店→父市场链取不到组织值。
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
-      .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(whereClause)
       .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
       .limit(LIMIT + 1)
@@ -311,7 +340,7 @@ export const exportEmployees = withPermission(
         gender: e.gender,
         phone: e.phone,
         idCard: e.idCard,
-        marketName: (row as { market_node?: { name?: string | null } }).market_node?.name ?? null,
+        orgNodeId: e.orgNodeId,
         storeName: row.stores?.storeName ?? null,
         positionName: e.positionName,
         birthday: e.birthday,
@@ -469,8 +498,8 @@ export const createEmployee = withPermission(
     })
   } catch (err: any) {
     // PG 唯一约束冲突（手机号或员工编号并发重复）
-    if (err?.code === '23505') {
-      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+    if (pgErrorCode(err) === '23505') {
+      if (pgErrorDetail(err)?.includes('phone') || pgErrorConstraint(err)?.includes('phone')) {
         return { success: false, message: '该手机号已被其他员工使用' }
       }
       return { success: false, message: '数据冲突，请稍后重试' }
@@ -506,6 +535,12 @@ export const updateEmployee = withPermission(
       isResigned: boolean
       /** 入职日期（YYYY-MM-DD） */
       hiredAt: string | null
+      /** 请假开始时间（datetime-local YYYY-MM-DDTHH:mm）；与 leaveEnd 成对，空串归一为 null */
+      leaveStart: string | null
+      /** 请假结束时间（datetime-local YYYY-MM-DDTHH:mm） */
+      leaveEnd: string | null
+      /** 是否出差支援（跨门店共享标记）；每日 03:00 cron 重置为 false */
+      isOnBusinessTrip: boolean
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null
       /** 离职原因（自由文本）；与 isResigned 联动：复职时由 action 自动清空 */
@@ -529,6 +564,19 @@ export const updateEmployee = withPermission(
     }
     if (!/^\d{17}[\dXx]$/.test(data.idCard)) {
       return { success: false, message: '身份证号格式不正确' }
+    }
+  }
+
+  // 请假区间成对 + 顺序校验（仅当本次涉及请假字段时；空串视为 null）
+  if (data.leaveStart !== undefined || data.leaveEnd !== undefined) {
+    const ls = data.leaveStart || null
+    const le = data.leaveEnd || null
+    if ((ls && !le) || (!ls && le)) {
+      return { success: false, message: '请假开始和结束时间需同时填写' }
+    }
+    // datetime-local 同格式（YYYY-MM-DDTHH:mm）字典序即时间序，可直接比较；DB chk_swu_leave_range 兜底
+    if (ls && le && le <= ls) {
+      return { success: false, message: '请假结束时间须晚于开始时间' }
     }
   }
 
@@ -562,6 +610,9 @@ export const updateEmployee = withPermission(
   // - isResigned=true 且未显式给 resignedAt：写 today
   // - isResigned=false：清空 resignedAt
   const updateData = { ...data }
+  // 请假字段空串归一为 null（清空请假区间）
+  if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
+  if (data.leaveEnd !== undefined) updateData.leaveEnd = data.leaveEnd || null
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }
@@ -585,8 +636,8 @@ export const updateEmployee = withPermission(
   try {
     result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
   } catch (err: any) {
-    if (err?.code === '23505') {
-      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+    if (pgErrorCode(err) === '23505') {
+      if (pgErrorDetail(err)?.includes('phone') || pgErrorConstraint(err)?.includes('phone')) {
         return { success: false, message: '该手机号已被其他员工使用' }
       }
       return { success: false, message: '数据冲突，请稍后重试' }

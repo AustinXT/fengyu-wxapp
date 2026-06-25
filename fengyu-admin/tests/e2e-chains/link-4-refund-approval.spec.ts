@@ -27,7 +27,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 
 // ── 账号 ───────────────────────────────────────────────────────────────────
 const MGR_PHONE = '13900139001'
@@ -47,7 +47,7 @@ const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 // ── DB helper ───────────────────────────────────────────────────────────────
 function psql(sql: string): string {
   return execSync(
-    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
     { encoding: 'utf8' },
   ).trim()
 }

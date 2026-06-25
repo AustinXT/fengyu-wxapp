@@ -63,7 +63,7 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     const result = await auditRefundCascadeCoverage(mockDb as never)
 
     expect(result.violations).toBe(1)
-    expect(result.details[0].channel).toBe('sa_not_voided')
+    expect(result.details[0].channel).toBe('sa_not_reversed')
     expect(result.details[0].count).toBe(1)
 
     const logCalls = mockExecute.mock.calls.filter((c) =>
@@ -74,13 +74,13 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     const jsonParam = params.find(
       (p): p is string => typeof p === 'string' && p.startsWith('{'),
     )
-    expect(jsonParam).toContain('sa_not_voided')
+    expect(jsonParam).toContain('sa_not_reversed')
     expect(jsonParam).toContain('refund_cascade_coverage')
 
     expect(notifyOpsMock).toHaveBeenCalledTimes(1)
     const msg = notifyOpsMock.mock.calls[0][0] as string
     expect(msg).toContain('cron.audit_refund_cascade')
-    expect(msg).toContain('sa_not_voided')
+    expect(msg).toContain('sa_not_reversed')
   })
 
   it('C. 永不修补：不发出任何 UPDATE / DELETE', async () => {

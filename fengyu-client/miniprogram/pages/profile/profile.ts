@@ -2,6 +2,7 @@
 import { maskPhone } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
 import { APP_VERSION } from '../../utils/version';
+import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const app = getApp<IAppOption>();
 
@@ -14,13 +15,19 @@ Page({
     avatarUrl: '',
     unreadCount: 0,
     appVersion: APP_VERSION,
+    // 临时开关：订单主动查看入口（业务平稳后恢复）。见 utils/feature-flags.ts
+    ordersEntryEnabled: ORDERS_ENTRY_ENABLED,
   },
 
   onLoad() {
     this.refreshData();
   },
 
-  onShow() {
+  async onShow() {
+    // 个人中心是顾客查看会员等级/资料的入口：每次进入都从后端同步最新会员态，
+    // 经 app.setMemberFlag 刷新 storage('isMember')/memberLevel，供商城与服务详情会员价分流
+    // （开通会员后立即生效，不必杀进程重启小程序）。
+    await app.syncLoginState();
     this.refreshData();
     this.loadUnreadCount();
   },

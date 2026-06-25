@@ -19,6 +19,7 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { formatCurrency } from "@/lib/utils"
+import { actionErrorMessage } from "@/lib/action-error"
 import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions/commission"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SkillTag } from "@/lib/types"
@@ -174,7 +175,7 @@ const salesCategories = useMemo(
       setDialogOpen(false)
       router.refresh()
     } catch (err) {
-      toast.error(editingRate ? "更新失败" : "创建失败")
+      toast.error(actionErrorMessage(err, editingRate ? "更新失败" : "创建失败"))
       console.error(err)
     } finally {
       setSaving(false)
@@ -194,7 +195,7 @@ const salesCategories = useMemo(
       setDeleteTarget(null)
       router.refresh()
     } catch (err) {
-      toast.error("删除失败")
+      toast.error(actionErrorMessage(err, "删除失败"))
       console.error(err)
     } finally {
       setDeleting(false)

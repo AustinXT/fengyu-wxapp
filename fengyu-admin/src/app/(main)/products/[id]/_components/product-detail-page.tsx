@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { ProductSku, ProductCategory, ProjectSeries } from "@/lib/types"
 import { updateSku, deleteSku } from "@/actions/products"
 import { Button } from "@/components/ui/button"
@@ -122,8 +123,8 @@ export default function SkuDetailPageClient({
       setFormDirty(false)
       toast.success("保存成功")
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }
@@ -139,8 +140,8 @@ export default function SkuDetailPageClient({
       }
       toast.success("商品已删除")
       router.push("/products")
-    } catch {
-      toast.error("删除失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "删除失败，请稍后重试"))
     } finally {
       setDeleting(false)
     }

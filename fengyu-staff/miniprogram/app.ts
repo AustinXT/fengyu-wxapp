@@ -216,6 +216,38 @@ App<IAppOption>({
     wx.clearStorageSync();
   },
 
+  switchLoginLevel(target: LoginLevel) {
+    const available = this.globalData.availableLoginLevels || [];
+    // 防御：不可切换 / 目标非法 / 已是当前 → 静默返回
+    if (available.length < 2 || !available.includes(target)) return;
+    if (this.globalData.loginLevel === target) return;
+
+    // 1) 清「视图绑定」业务缓存，防止串缓存。
+    //    ⚠️ 单一扩展点：未来若新增「按视图/门店隔离」的本地缓存，往这里加 removeStorageSync。
+    wx.removeStorageSync('recentCustomers');
+    (this.globalData as any).pendingCartItem = null;
+    (this.globalData as any)._serviceCreatePreload = null;
+
+    // 2) 切回门店视图时，确保 currentStoreId 落在 scope 内（镜像 syncLoginState 的兜底）
+    if (target === 'store') {
+      const scoped = this.globalData.scopedStores || [];
+      const cur = this.globalData.currentStoreId;
+      const inScope = !!cur && scoped.some((s) => s.storeId === cur);
+      if (!inScope && scoped.length > 0) this.setCurrentStoreId(scoped[0].storeId);
+    }
+    // 切管理层：保留 currentStoreId（management 不依赖；返回门店时仍可用）
+
+    // 3) 写入并持久化新视图
+    this.setLoginLevel(target);
+
+    // 4) reLaunch 到目标视图根页面，销毁所有旧视图页面
+    wx.reLaunch({
+      url: target === 'management'
+        ? '/pages/mgmt-dashboard/mgmt-dashboard'
+        : '/pages/workbench/workbench',
+    });
+  },
+
   async switchTestUser(phone) {
     if (phone) {
       const openid = `dev-${phone}`;

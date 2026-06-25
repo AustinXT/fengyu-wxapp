@@ -36,3 +36,11 @@ export function pgErrorConstraint(err: unknown): string | undefined {
     return typeof c === 'string' && c.length > 0 ? c : undefined
   })
 }
+
+/** 取错误详情（pg `detail` 字段，如 `Key (phone)=(...) already exists.`），沿 cause 链查找。 */
+export function pgErrorDetail(err: unknown): string | undefined {
+  return walkCause(err, (e) => {
+    const d = e.detail
+    return typeof d === 'string' && d.length > 0 ? d : undefined
+  })
+}

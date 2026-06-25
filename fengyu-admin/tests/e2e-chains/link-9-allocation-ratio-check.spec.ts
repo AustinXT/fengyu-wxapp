@@ -15,12 +15,12 @@ import fs from 'fs'
 import path from 'path'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 
 // DB helper（与其他 spec 一致）
 function psql(sql: string): string {
   return execSync(
-    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
     { encoding: 'utf8', timeout: 15000 },
   ).trim()
 }
@@ -244,29 +244,17 @@ test('链路9：营业额分配比例对账', async ({ page }) => {
   // Step 3: 确认订单
   await expect(page.getByRole('button', { name: '销售单', exact: true })).toBeVisible({ timeout: 10000 })
 
-  // 选线下支付
-  const paymentOptionLocators = [
-    page.locator('select[name="paymentMethod"]'),
-    page.locator('select').nth(0),
-  ]
+  // 选线下支付（admin <Select> 渲染原生 <select>，option "线下支付"）+ 取消充值卡抵扣
+  // 修复（2026-06-09，同 link-1）：原 select[name="paymentMethod"] 失效；且顾客 FY-FIX-CLIENT-01
+  // 有储值卡余额时开单页自动勾选充值卡抵扣（order-create-page.tsx:298）→ payment_method='无'、
+  // 绕过线下确认收款链路。
+  const paymentMethodSelect = page.locator('select').filter({ hasText: /线下支付/ }).first()
+  await expect(paymentMethodSelect).toBeVisible({ timeout: 10000 })
+  await paymentMethodSelect.selectOption({ label: '线下支付' })
 
-  let paymentSet = false
-  for (const sel of paymentOptionLocators) {
-    if (await sel.count() > 0) {
-      const opts = await sel.locator('option').allTextContents()
-      if (opts.some((o) => o.includes('线下'))) {
-        await sel.selectOption({ label: '线下支付' })
-        paymentSet = true
-        break
-      }
-    }
-  }
-
-  if (!paymentSet) {
-    const offlineBtn = page.getByRole('button', { name: /线下/ }).first()
-    if (await offlineBtn.count() > 0) {
-      await offlineBtn.click()
-    }
+  const useCardCheckbox = page.getByRole('checkbox').first()
+  if ((await useCardCheckbox.count()) > 0 && (await useCardCheckbox.isChecked().catch(() => false))) {
+    await useCardCheckbox.uncheck()
   }
 
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-9-04-checkout.png` })
@@ -672,7 +660,7 @@ test('链路9：营业额分配比例对账', async ({ page }) => {
   try {
     const sqlQuery = `WITH per_item AS (SELECT si.sale_item_id, si.sale_amount, sum(sa.allocation_ratio) FILTER (WHERE sa.is_void=false) AS ratio_sum, sum(sa.total_amount) FILTER (WHERE sa.is_void=false) AS amt_sum FROM sale_items si LEFT JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id WHERE si.sale_order_id='${saleOrderId}' GROUP BY si.sale_item_id, si.sale_amount) SELECT sale_item_id, sale_amount, ratio_sum, amt_sum, CASE WHEN ratio_sum=1.00 AND ABS(COALESCE(amt_sum,0) - sale_amount) < 0.05 THEN 'PASS' ELSE 'FAIL' END AS verdict FROM per_item`
     const output = execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -c "${sqlQuery}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -c "${sqlQuery}"`,
       { encoding: 'utf8' }
     )
     console.log('[链路9] DB 对账结果:\n', output)

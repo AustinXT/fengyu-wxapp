@@ -17,8 +17,13 @@ Page({
   async loadDetail(employeeId: string) {
     this.setData({ isLoading: true });
     try {
-      const data = await callClientApi('staff.detail', { employeeId });
-      this.setData({ staff: data });
+      const data: any = await callClientApi('staff.detail', { employeeId });
+      // 按设备本地时间判定「休假中」（leaveStart/leaveEnd 为墙钟串 YYYY-MM-DDTHH:mm:ss）
+      const now = Date.now();
+      const ls = data?.leaveStart ? new Date(data.leaveStart).getTime() : NaN;
+      const le = data?.leaveEnd ? new Date(data.leaveEnd).getTime() : NaN;
+      const onLeave = !isNaN(ls) && !isNaN(le) && now >= ls && now <= le;
+      this.setData({ staff: { ...data, onLeave } });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
     } finally {

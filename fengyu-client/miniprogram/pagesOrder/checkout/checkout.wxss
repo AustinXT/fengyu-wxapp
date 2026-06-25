@@ -371,10 +371,23 @@
   margin-top: 16rpx;
 }
 
+.checkout-item__price-wrap {
+  display: flex;
+  align-items: baseline;
+}
+
 .checkout-item__price {
   font-size: 28rpx;
   color: var(--color-primary);
   font-weight: 600;
+}
+
+/* 会员价分流：划线标价 */
+.price-origin {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
 }
 
 .checkout-item__qty {

@@ -12,6 +12,8 @@ interface OrgTreeSelectProps {
   disabled?: boolean
   className?: string
   excludeTypes?: string[]
+  /** 允许选择的节点类型；不传 = 全部可选。超出的节点置灰禁选（展开仍可用） */
+  allowedTypes?: string[]
 }
 
 function getAncestorIds(nodeId: string, nodeMap: Map<string, OrgNode>): Set<string> {
@@ -32,6 +34,7 @@ export function OrgTreeSelect({
   disabled = false,
   className,
   excludeTypes,
+  allowedTypes,
 }: OrgTreeSelectProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -111,17 +114,14 @@ export function OrgTreeSelect({
     const hasChildren = children.length > 0
     const isExpanded = expandedIds.has(node.id)
     const isSelected = node.id === value
+    // 展开三角独立于禁用按钮：置灰节点仍可展开以露出下层可选节点
+    const isNodeDisabled = !!allowedTypes && !allowedTypes.includes(node.type)
 
     return (
       <div key={node.id}>
-        <button
-          type="button"
-          className={cn(
-            "flex w-full items-center gap-1 px-3 py-1.5 text-sm hover:bg-[var(--accent)] transition-colors text-left",
-            isSelected && "bg-[#FFF0EE] text-[#C0322A] font-medium",
-          )}
+        <div
+          className="flex w-full items-center gap-1 text-sm"
           style={{ paddingLeft: depth * 20 + 12 }}
-          onClick={() => handleSelect(node.id)}
         >
           {hasChildren ? (
             <span
@@ -133,8 +133,22 @@ export function OrgTreeSelect({
           ) : (
             <span className="inline-flex w-4 shrink-0" />
           )}
-          <span className="truncate">{node.name}</span>
-        </button>
+          <button
+            type="button"
+            disabled={isNodeDisabled}
+            title={isNodeDisabled ? "该角色不可绑定此类型节点" : undefined}
+            className={cn(
+              "flex flex-1 min-w-0 items-center py-1.5 pr-3 text-left transition-colors",
+              isNodeDisabled
+                ? "cursor-not-allowed opacity-50 text-[var(--muted-foreground)]"
+                : "hover:bg-[var(--accent)]",
+              isSelected && !isNodeDisabled && "bg-[#FFF0EE] text-[#C0322A] font-medium",
+            )}
+            onClick={() => handleSelect(node.id)}
+          >
+            <span className="truncate">{node.name}</span>
+          </button>
+        </div>
         {hasChildren && isExpanded && children.map((child) => renderNode(child, depth + 1))}
       </div>
     )

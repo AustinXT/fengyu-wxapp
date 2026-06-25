@@ -21,6 +21,7 @@ import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
+import { actionErrorMessage } from "@/lib/action-error"
 import { updateEmployee, deleteEmployee } from "@/actions/employees"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
@@ -29,6 +30,12 @@ import { ROLE_LABELS } from "@/lib/types"
 import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } from "@/lib/types"
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
+
+/** 库内墙钟字符串（"YYYY-MM-DD HH:mm:ss" 或带 T）→ datetime-local 输入值 "YYYY-MM-DDTHH:mm" */
+function toDatetimeLocal(v: string | null): string {
+  if (!v) return ""
+  return v.replace("T", " ").slice(0, 16).replace(" ", "T")
+}
 
 interface Props {
   employee: Employee
@@ -58,6 +65,9 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     avatarUrl: employee.avatarUrl ?? "",
     birthday: employee.birthday ?? "",
     hiredAt: employee.hiredAt ?? "",
+    leaveStart: toDatetimeLocal(employee.leaveStart),
+    leaveEnd: toDatetimeLocal(employee.leaveEnd),
+    isOnBusinessTrip: employee.isOnBusinessTrip,
     skills: employee.skills ?? ([] as string[]),
     socialInsurance: employee.socialInsurance,
   })
@@ -109,6 +119,9 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       avatarUrl: employee.avatarUrl ?? "",
       birthday: employee.birthday ?? "",
       hiredAt: employee.hiredAt ?? "",
+      leaveStart: toDatetimeLocal(employee.leaveStart),
+      leaveEnd: toDatetimeLocal(employee.leaveEnd),
+      isOnBusinessTrip: employee.isOnBusinessTrip,
       skills: employee.skills ?? ([] as string[]),
       socialInsurance: employee.socialInsurance,
     })
@@ -129,6 +142,15 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       toast.error("身份证号格式不正确")
       return
     }
+    // 请假区间成对 + 顺序校验（前端提前提示，Server Action + DB chk_swu_leave_range 兜底）
+    if ((form.leaveStart && !form.leaveEnd) || (!form.leaveStart && form.leaveEnd)) {
+      toast.error("请假开始和结束时间需同时填写")
+      return
+    }
+    if (form.leaveStart && form.leaveEnd && form.leaveEnd <= form.leaveStart) {
+      toast.error("请假结束时间须晚于开始时间")
+      return
+    }
     setSaving(true)
     try {
       const result = await updateEmployee(employee.employeeId, {
@@ -142,6 +164,9 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         avatarUrl: form.avatarUrl || null,
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
+        leaveStart: form.leaveStart || null,
+        leaveEnd: form.leaveEnd || null,
+        isOnBusinessTrip: form.isOnBusinessTrip,
         skills: form.skills.length > 0 ? form.skills : null,
         socialInsurance: form.socialInsurance,
       }, employee.updatedAt)
@@ -153,8 +178,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()
-    } catch {
-      toast.error("保存失败，请稍后重试")
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "保存失败，请稍后重试"))
     } finally {
       setSaving(false)
     }
@@ -189,8 +214,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       }
       setIsEditingRoles(false)
       router.refresh()
-    } catch {
-      toast.error('保存失败，请稍后重试')
+    } catch (err) {
+      toast.error(actionErrorMessage(err, '保存失败，请稍后重试'))
     } finally {
       setSavingRoles(false)
     }
@@ -212,7 +237,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       if (msg.startsWith('PERMISSION_DENIED:')) {
         toast.error('仅系统管理员可重置密码')
       } else {
-        toast.error('密码重置失败，请稍后重试')
+        toast.error(actionErrorMessage(err, '密码重置失败，请稍后重试'))
       }
     } finally {
       setResettingPwd(false)
@@ -403,6 +428,44 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                     />
                   ) : (
                     <Input value={employee.hiredAt ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">请假开始</label>
+                  {isEditing ? (
+                    <Input
+                      type="datetime-local"
+                      value={form.leaveStart}
+                      onChange={(e) => handleFormChange("leaveStart", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={employee.leaveStart ? employee.leaveStart.slice(0, 16) : "—"} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">请假结束</label>
+                  {isEditing ? (
+                    <Input
+                      type="datetime-local"
+                      value={form.leaveEnd}
+                      onChange={(e) => handleFormChange("leaveEnd", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={employee.leaveEnd ? employee.leaveEnd.slice(0, 16) : "—"} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">出差支援（跨门店开单可选）</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.isOnBusinessTrip ? "true" : "false"}
+                      onChange={(e) => setForm((prev) => ({ ...prev, isOnBusinessTrip: e.target.value === "true" }))}
+                    >
+                      <option value="false">否</option>
+                      <option value="true">是</option>
+                    </Select>
+                  ) : (
+                    <Input value={employee.isOnBusinessTrip ? "是" : "否"} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
@@ -666,8 +729,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
               toast.success('已标记离职')
               setResignDialogOpen(false)
               router.refresh()
-            } catch {
-              toast.error('操作失败')
+            } catch (err) {
+              toast.error(actionErrorMessage(err, '操作失败'))
             } finally {
               setSaving(false)
             }

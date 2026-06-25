@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { calculateTriProgress } from '../../utils/format';
+import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 Page({
   data: {
@@ -63,6 +64,11 @@ Page({
   },
 
   onCardTap(e: WechatMiniprogram.TouchEvent) {
+    // 临时关闭：订单详情入口（业务平稳后恢复）。见 utils/feature-flags.ts
+    if (!ORDERS_ENTRY_ENABLED) {
+      wx.showToast({ title: '订单功能即将开放', icon: 'none' });
+      return;
+    }
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },

@@ -1049,6 +1049,17 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
 
+    // ─── 4.5) sale_payment_allocatable_items（回款级分配子表，FK→sale_order_payments + sale_items）───
+    // 必须先于 sale_order_payments（§5）和 sale_items（§7）删除，否则 FK 阻断父表删除，
+    // 残留 sop 行又经 audit_employee_id / operator_employee_id 阻断 staff_wechat_users 删除 → 夹具污染级联。
+    [`DELETE FROM sale_payment_allocatable_items WHERE sale_order_id LIKE $1 OR sale_item_id LIKE $1`, [like]],
+    [
+      `DELETE FROM sale_payment_allocatable_items
+         WHERE sale_order_id IN (SELECT sale_order_id FROM sale_orders
+           WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1 OR opened_by LIKE $1 OR store_id LIKE $1)`,
+      [like],
+    ],
+
     // ─── 5) sale_order_payments ───
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],
     [

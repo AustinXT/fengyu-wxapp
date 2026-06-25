@@ -87,7 +87,7 @@
           </view>
         </view>
       </view>
-      <view class="tf-note">* 实时反推（anchor=区间起点-1）</view>
+      <view class="tf-note">* 按区间起点前 1 日实时反推</view>
 
       <!-- Section 4：会员被经营情况 -->
       <view class="tf-section-title">会员被经营情况（区间内）</view>

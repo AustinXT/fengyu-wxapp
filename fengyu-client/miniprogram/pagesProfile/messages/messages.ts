@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatRelativeTime } from '../../utils/format';
+import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const PAGE_SIZE = 20;
 
@@ -112,6 +113,11 @@ Page({
 
     // Navigate based on type
     if (record.refEntity === 'order' && record.refId) {
+      // 临时关闭：订单详情入口（业务平稳后恢复）。见 utils/feature-flags.ts
+      if (!ORDERS_ENTRY_ENABLED) {
+        wx.showToast({ title: '订单功能即将开放', icon: 'none' });
+        return;
+      }
       wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${record.refId}` });
     } else if (record.refEntity === 'appointment' && record.refId) {
       wx.switchTab({ url: '/pages/appointment/appointment' });

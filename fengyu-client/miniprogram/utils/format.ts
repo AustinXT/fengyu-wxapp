@@ -104,13 +104,13 @@ export function getStatusClass(status: string): string {
   return STATUS_CLASS[status] || 'status-class-done';
 }
 
-/** 订单时间格式化："2025-3-14" */
+/** 订单时间格式化："2025-03-14"（YYYY-MM-DD，补前导零） */
 export function formatOrderDate(dateStr: string): string {
   if (!dateStr) return '';
   const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
   const d = new Date(safe);
   if (isNaN(d.getTime())) return '';
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** iOS 安全日期解析："-" → "/"（修复 iOS Safari 无法解析 "YYYY-MM-DD" 问题），无效日期返回 null */
@@ -178,11 +178,49 @@ export function formatAmount(amount: number | string): string {
   return n >= 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
 }
 
-/** 预约时间格式化："2026-03-15 09:00-11:00" → "3月15日 09:00-11:00" */
+/** "HH:mm" 局部格式（北京墙钟，补零） */
+function hhmm(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * 预约时段格式化 → "6月16日 09:00-10:00"（显示时段区间）
+ *
+ * 数据实情：`appointments.appointment_time` 是 PG `timestamp` 列，**只存时段起点**
+ * （北京墙钟），经 clientApi pg 序列化后回到前端是 **UTC ISO 串**（形如
+ * "2026-06-16T01:00:00.000Z"，**无空格**）。终点没有任何代码消费、也未落库。
+ *
+ * 时区：直接复用本文件 `safeParseDate`（`formatDateTime`/`formatDate` 同款解析，
+ * 见项目记忆 pg-date-serialization-utc）把 UTC ISO 转成设备本地（北京 UTC+8）墙钟，
+ * 不手搓 Date 偏移；员工端展示同一字段也走 formatDateTime，与此一致。
+ *
+ * 时段终点：当前所有时段固定 1 小时（09:00-10:00 … 18:00-19:00，见
+ * pagesAppointment/appointment-create 的 TIME_SLOTS），故终点 = 起点 + 1 小时派生
+ * （epoch 加 1 小时，时区安全）。⚠️ 若将来时段时长可变，须改这里或把终点落库。
+ *
+ * 换算样例：入参 "2026-06-16T01:00:00.000Z" → 北京起点 09:00 → "6月16日 09:00-10:00"。
+ *
+ * 兼容兜底：空串返回 ''；无法解析时原样返回；万一仍收到旧的带空格
+ * "YYYY-MM-DD HH:MM-HH:MM" 时段串，按原逻辑取日期 + 整段时段直接显示（不派生）。
+ */
 export function formatAppointmentTime(appointmentTime: string): string {
   if (!appointmentTime) return '';
-  const [datePart, slotPart] = appointmentTime.split(' ');
-  const d = safeParseDate(datePart);
-  if (!d) return appointmentTime;
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${slotPart || ''}`;
+
+  // 兼容旧格式：带空格且时段部分是 "HH:MM-HH:MM" 区间 → 日期 + 原时段串
+  const spaceIdx = appointmentTime.indexOf(' ');
+  if (spaceIdx > -1) {
+    const datePart = appointmentTime.slice(0, spaceIdx);
+    const slotPart = appointmentTime.slice(spaceIdx + 1).trim();
+    if (/^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$/.test(slotPart)) {
+      const d = safeParseDate(datePart);
+      if (!d) return appointmentTime;
+      return `${d.getMonth() + 1}月${d.getDate()}日 ${slotPart}`;
+    }
+  }
+
+  // 主路径：UTC ISO timestamp（仅时段起点）→ 北京墙钟 + 派生 1 小时区间
+  const start = safeParseDate(appointmentTime);
+  if (!start) return appointmentTime;
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  return `${start.getMonth() + 1}月${start.getDate()}日 ${hhmm(start)}-${hhmm(end)}`;
 }

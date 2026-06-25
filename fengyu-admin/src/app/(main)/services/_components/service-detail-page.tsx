@@ -44,6 +44,9 @@ export default function ServiceDetailPageClient({
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
         </Link>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单详情</h1>
+        {serviceOrder.readOnly && (
+          <Badge variant="secondary" className="bg-[#F3F3F3] text-[#888888]">跨门店只读</Badge>
+        )}
       </div>
 
       {/* 服务单信息 */}
@@ -191,8 +194,8 @@ export default function ServiceDetailPageClient({
         </Card>
       )}
 
-      {/* 危险操作：物理删除服务单（仅系统管理员） */}
-      {canDelete && (
+      {/* 危险操作：物理删除服务单（仅系统管理员；跨门店只读访问不展示） */}
+      {canDelete && !serviceOrder.readOnly && (
         <DangerZoneDelete
           entityLabel="服务单"
           redirectTo="/services"

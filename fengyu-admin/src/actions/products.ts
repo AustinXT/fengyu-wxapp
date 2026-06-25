@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { projectSeriesLookup } from '@db/lookup'
 import { orgNodes } from '@db/org'
@@ -12,6 +13,7 @@ import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory,
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { computeBundleTotals } from '@/lib/bundle-price'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -335,7 +337,7 @@ export const createCategory = withPermission(
         isValid: data.isValid,
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '分类编号已存在' }
       throw err
     }
 
@@ -565,6 +567,7 @@ export const getSkusByProductId = withPermission(
       .select({
         sku: productSkus,
         bundlePrice: mallProductSkus.bundlePrice,
+        bundleListPrice: mallProductSkus.bundleListPrice,
         bundleGroupId: mallProductSkus.bundleGroupId,
         displayOrder: mallProductSkus.sortOrder,
         groupName: mallBundleGroups.groupName,
@@ -593,6 +596,7 @@ export const getSkusByProductId = withPermission(
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
       bundlePrice: r.bundlePrice,
+      bundleListPrice: r.bundleListPrice,
       bundleGroupId: r.bundleGroupId,
       groupName: r.groupName,
       createdAt: r.sku.createdAt.toISOString(),
@@ -658,8 +662,8 @@ export const createSku = withPermission(
         productType: data.productType as typeof productSkus.$inferInsert['productType'],
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
-      if (err?.code === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '商品编号已存在' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
       throw err
     }
 
@@ -716,6 +720,22 @@ export const updateSku = withPermission(
       return {
         success: false,
         message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
+      }
+    }
+
+    // isEnabled 切换会改变套餐「计入数量」（启用 SKU 计价），但本函数不经 recomputeBundlePrice
+    // —— 唯一缺口，故在此显式重算所有含该 SKU 的套餐展示价，避免禁用后划线/会员价与可选项脱节。
+    if (data.isEnabled !== undefined && before && before.isEnabled !== data.isEnabled) {
+      const affected = await db
+        .select({ productId: mallProductSkus.productId })
+        .from(mallProductSkus)
+        .innerJoin(products, eq(products.productId, mallProductSkus.productId))
+        .where(and(eq(mallProductSkus.skuId, skuId), eq(products.isBundle, true)))
+      const bundleIds = [...new Set(affected.map((a) => a.productId))]
+      if (bundleIds.length > 0) {
+        await db.transaction(async (tx) => {
+          for (const pid of bundleIds) await recomputeBundlePrice(pid, tx)
+        })
       }
     }
 
@@ -778,6 +798,68 @@ export const deleteSku = withPermission(
   },
 )
 
+// ===== 套餐定价：组级单价下沉 + 套餐价重算（内部 helper，事务内调用） =====
+
+type ProductTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/**
+ * 把分组级单价下沉到组内所有子项副本（子项价格的唯一写入点）：
+ * - bundle_list_price = 组 unit_list_price（标价单价 → sale_items.unit_price 划线）
+ * - bundle_price      = coalesce(组 unit_member_price, unit_list_price)（成交价 → sale_items.unit_real_price）
+ */
+async function syncBundleGroupSkuPrices(groupId: number, tx: ProductTx): Promise<void> {
+  const [g] = await tx
+    .select({ listPrice: mallBundleGroups.unitListPrice, memberPrice: mallBundleGroups.unitMemberPrice })
+    .from(mallBundleGroups)
+    .where(eq(mallBundleGroups.id, groupId))
+    .limit(1)
+  if (!g) return
+  await tx
+    .update(mallProductSkus)
+    .set({ bundleListPrice: g.listPrice, bundlePrice: g.memberPrice ?? g.listPrice })
+    .where(eq(mallProductSkus.bundleGroupId, groupId))
+}
+
+/**
+ * 重算套餐展示价（权威只读组级单价，绝不读子项副本）：
+ * - price         = Σ 各组 unit_list_price × 计入数量
+ * - special_price = Σ 各组 coalesce(unit_member_price, unit_list_price) × 计入数量；仅当 < price 时落值，否则 null
+ * 计入数量 = pickCount（N选M）或 组内 SKU 数（全选组 pickCount=null）。组内同价，故套餐价与具体如何选无关。
+ */
+async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<void> {
+  const groups = await tx
+    .select({
+      id: mallBundleGroups.id,
+      pickCount: mallBundleGroups.pickCount,
+      listPrice: mallBundleGroups.unitListPrice,
+      memberPrice: mallBundleGroups.unitMemberPrice,
+    })
+    .from(mallBundleGroups)
+    .where(eq(mallBundleGroups.productId, productId))
+
+  // 计入数量只数「启用」SKU——与开单选择器 getProductsByKind（innerJoin productSkus + isEnabled=true）口径一致，
+  // 否则禁用 SKU 仍被计价 → 套餐划线/会员价虚高于实际可选项。
+  const counts = await tx
+    .select({ groupId: mallProductSkus.bundleGroupId, cnt: sql<number>`count(*)::int` })
+    .from(mallProductSkus)
+    .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
+    .where(and(eq(mallProductSkus.productId, productId), eq(productSkus.isEnabled, true)))
+    .groupBy(mallProductSkus.bundleGroupId)
+  const countMap = new Map<number, number>()
+  for (const c of counts) if (c.groupId != null) countMap.set(c.groupId, Number(c.cnt))
+
+  const { price, specialPrice } = computeBundleTotals(
+    groups.map((g) => ({
+      pickCount: g.pickCount,
+      listPrice: g.listPrice,
+      memberPrice: g.memberPrice,
+      skuCount: countMap.get(g.id) ?? 0,
+    })),
+  )
+
+  await tx.update(products).set({ price, specialPrice }).where(eq(products.productId, productId))
+}
+
 // ===== 商城商品-SKU 关联 =====
 
 export const addSkuToProduct = withPermission(
@@ -789,16 +871,39 @@ export const addSkuToProduct = withPermission(
     sortOrder?: number,
     bundleGroupId?: number | null,
   ): Promise<{ success: boolean; message: string }> => {
+    const [prod] = await db
+      .select({ isBundle: products.isBundle })
+      .from(products)
+      .where(eq(products.productId, productId))
+      .limit(1)
+    if (!prod) return { success: false, message: '商品不存在' }
+    // 套餐：所有子商品必须归入分组，且分组须属于该商品
+    if (prod.isBundle) {
+      if (bundleGroupId == null) return { success: false, message: '套餐商品的规格必须归入分组' }
+      const [grp] = await db
+        .select({ id: mallBundleGroups.id })
+        .from(mallBundleGroups)
+        .where(and(eq(mallBundleGroups.id, bundleGroupId), eq(mallBundleGroups.productId, productId)))
+        .limit(1)
+      if (!grp) return { success: false, message: '分组不存在或不属于该商品' }
+    }
     try {
-      await db.insert(mallProductSkus).values({
-        productId,
-        skuId,
-        sortOrder: sortOrder ?? 0,
-        bundleGroupId: bundleGroupId ?? null,
+      await db.transaction(async (tx) => {
+        await tx.insert(mallProductSkus).values({
+          productId,
+          skuId,
+          sortOrder: sortOrder ?? 0,
+          bundleGroupId: bundleGroupId ?? null,
+        })
+        // 套餐：新子项继承组单价（下沉副本）+ 重算套餐价（全选组计入数量 +1）
+        if (prod.isBundle && bundleGroupId != null) {
+          await syncBundleGroupSkuPrices(bundleGroupId, tx)
+          await recomputeBundlePrice(productId, tx)
+        }
       })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该规格已关联到此商品' }
-      if (err?.code === '23503') return { success: false, message: '商品或规格不存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该规格已关联到此商品' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '商品或规格不存在' }
       console.error('[addSkuToProduct] insert failed:', err)
       return { success: false, message: `添加失败: ${err?.message ?? '未知错误'}` }
     }
@@ -816,11 +921,24 @@ export const removeSkuFromProduct = withPermission(
     productId: string,
     skuId: string,
   ): Promise<{ success: boolean; message: string }> => {
-    const result = await db
-      .delete(mallProductSkus)
-      .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+    const [prod] = await db
+      .select({ isBundle: products.isBundle })
+      .from(products)
+      .where(eq(products.productId, productId))
+      .limit(1)
 
-    if ((result as any).count === 0) {
+    let removed = false
+    await db.transaction(async (tx) => {
+      const result = await tx
+        .delete(mallProductSkus)
+        .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+      if ((result as any).count === 0) return
+      removed = true
+      // 套餐：移除子项后重算套餐价（全选组计入数量 -1）
+      if (prod?.isBundle) await recomputeBundlePrice(productId, tx)
+    })
+
+    if (!removed) {
       return { success: false, message: '关联记录不存在' }
     }
 
@@ -830,31 +948,8 @@ export const removeSkuFromProduct = withPermission(
   },
 )
 
-export const updateSkuBundlePrice = withPermission(
-  'product:update',
-  async (
-    session,
-    productId: string,
-    skuId: string,
-    bundlePrice: string | null,
-  ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
-    const [before] = await db.select().from(mallProductSkus).where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId))).limit(1)
-
-    const result = await db
-      .update(mallProductSkus)
-      .set({ bundlePrice })
-      .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
-
-    if ((result as any).count === 0) {
-      return { success: false, message: '关联记录不存在' }
-    }
-
-    await logUpdate(session, 'mall_product_sku.update', 'mall_product_sku', productId, before as Record<string, unknown>, { skuId, bundlePrice })
-    revalidatePath('/mall')
-    return { success: true, message: '套餐价已更新' }
-  },
-)
+// updateSkuBundlePrice 已废弃（2026-06）：套餐子项价格不再逐个改价，统一由分组级
+// unit_list_price / unit_member_price 经 syncBundleGroupSkuPrices 下沉到组内所有子项副本。
 
 // ===== 套餐分组管理（mall_bundle_groups） =====
 
@@ -873,11 +968,29 @@ export const getBundleGroupsByProductId = withPermission(
       productId: r.productId,
       groupName: r.groupName,
       pickCount: r.pickCount,
+      unitListPrice: r.unitListPrice,
+      unitMemberPrice: r.unitMemberPrice,
       sortOrder: r.sortOrder,
       createdAt: r.createdAt.toISOString(),
     }))
   },
 )
+
+/** 校验组单价：标价必填且 ≥0；会员价可空、≥0 且 ≤ 标价。返回错误消息或 null。 */
+function validateBundleUnitPrices(
+  listPrice: string | null | undefined,
+  memberPrice: string | null | undefined,
+): string | null {
+  if (listPrice == null || listPrice === '') return '请填写标价单价'
+  const list = Number(listPrice)
+  if (!Number.isFinite(list) || list < 0) return '标价单价必须为非负数'
+  if (memberPrice != null && memberPrice !== '') {
+    const member = Number(memberPrice)
+    if (!Number.isFinite(member) || member < 0) return '会员价单价必须为非负数'
+    if (member > list + 0.005) return '会员价单价不能高于标价单价'
+  }
+  return null
+}
 
 export const createBundleGroup = withPermission(
   'product:update',
@@ -888,6 +1001,8 @@ export const createBundleGroup = withPermission(
       groupName: string
       pickCount?: number | null
       sortOrder?: number
+      unitListPrice: string
+      unitMemberPrice?: string | null
     },
   ): Promise<{ success: boolean; message: string; id?: number }> => {
     if (!data.groupName.trim()) {
@@ -896,21 +1011,32 @@ export const createBundleGroup = withPermission(
     if (data.pickCount !== undefined && data.pickCount !== null && data.pickCount < 1) {
       return { success: false, message: '可选数量必须大于 0' }
     }
+    const priceErr = validateBundleUnitPrices(data.unitListPrice, data.unitMemberPrice)
+    if (priceErr) return { success: false, message: priceErr }
+    const memberPrice = data.unitMemberPrice != null && data.unitMemberPrice !== '' ? data.unitMemberPrice : null
 
     try {
-      const [row] = await db.insert(mallBundleGroups).values({
-        productId: data.productId,
-        groupName: data.groupName.trim(),
-        pickCount: data.pickCount ?? null,
-        sortOrder: data.sortOrder ?? 0,
-      }).returning({ id: mallBundleGroups.id })
+      let newId = 0
+      await db.transaction(async (tx) => {
+        const [row] = await tx.insert(mallBundleGroups).values({
+          productId: data.productId,
+          groupName: data.groupName.trim(),
+          pickCount: data.pickCount ?? null,
+          sortOrder: data.sortOrder ?? 0,
+          unitListPrice: data.unitListPrice,
+          unitMemberPrice: memberPrice,
+        }).returning({ id: mallBundleGroups.id })
+        newId = row.id
+        // 新组建立后重算（按 pickCount 计入；空全选组贡献 0）
+        await recomputeBundlePrice(data.productId, tx)
+      })
 
-      await logOperation(session, 'bundle_group.create', 'mall_bundle_group', String(row.id), { productId: data.productId, groupName: data.groupName })
+      await logOperation(session, 'bundle_group.create', 'mall_bundle_group', String(newId), { productId: data.productId, groupName: data.groupName })
       revalidatePath('/mall')
-      return { success: true, message: '分组已创建', id: row.id }
+      return { success: true, message: '分组已创建', id: newId }
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
-      if (err?.code === '23503') return { success: false, message: '商品不存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该商品下已存在同名分组' }
+      if (pgErrorCode(err) === '23503') return { success: false, message: '商品不存在' }
       throw err
     }
   },
@@ -921,7 +1047,7 @@ export const updateBundleGroup = withPermission(
   async (
     session,
     id: number,
-    data: Partial<{ groupName: string; pickCount: number | null; sortOrder: number }>,
+    data: Partial<{ groupName: string; pickCount: number | null; sortOrder: number; unitListPrice: string; unitMemberPrice: string | null }>,
   ): Promise<{ success: boolean; message: string }> => {
     if (data.groupName !== undefined && !data.groupName.trim()) {
       return { success: false, message: '分组名称不能为空' }
@@ -930,21 +1056,39 @@ export const updateBundleGroup = withPermission(
       return { success: false, message: '可选数量必须大于 0' }
     }
 
-    // 获取旧值用于日志 diff
+    // 获取旧值（含 productId + 现有单价，用于校验与重算）
     const [before] = await db.select().from(mallBundleGroups).where(eq(mallBundleGroups.id, id)).limit(1)
+    if (!before) return { success: false, message: '分组不存在' }
+
+    // 单价校验：用「最终值」（入参优先，否则沿用旧值）
+    if (data.unitListPrice !== undefined || data.unitMemberPrice !== undefined) {
+      const finalList = data.unitListPrice !== undefined ? data.unitListPrice : before.unitListPrice
+      const finalMember = data.unitMemberPrice !== undefined ? data.unitMemberPrice : before.unitMemberPrice
+      const priceErr = validateBundleUnitPrices(finalList, finalMember)
+      if (priceErr) return { success: false, message: priceErr }
+    }
 
     const updateData: Record<string, unknown> = {}
     if (data.groupName !== undefined) updateData.groupName = data.groupName.trim()
     if (data.pickCount !== undefined) updateData.pickCount = data.pickCount
     if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
+    if (data.unitListPrice !== undefined) updateData.unitListPrice = data.unitListPrice
+    if (data.unitMemberPrice !== undefined) {
+      updateData.unitMemberPrice = data.unitMemberPrice !== null && data.unitMemberPrice !== '' ? data.unitMemberPrice : null
+    }
 
     try {
-      const result = await db.update(mallBundleGroups).set(updateData).where(eq(mallBundleGroups.id, id))
-      if ((result as any).count === 0) {
-        return { success: false, message: '分组不存在' }
-      }
+      await db.transaction(async (tx) => {
+        if (Object.keys(updateData).length > 0) {
+          await tx.update(mallBundleGroups).set(updateData).where(eq(mallBundleGroups.id, id))
+        }
+        // 改单价 → 下沉到组内所有子项副本；改 pickCount/单价 → 重算套餐价（sync 幂等，统一调）
+        await syncBundleGroupSkuPrices(id, tx)
+        await recomputeBundlePrice(before.productId, tx)
+      })
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '该商品下已存在同名分组' }
+      if (pgErrorCode(err) === '23514') return { success: false, message: '会员价单价不能高于标价单价' }
       throw err
     }
 
@@ -957,13 +1101,25 @@ export const updateBundleGroup = withPermission(
 export const deleteBundleGroup = withPermission(
   'product:update',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
-    // 先将该分组下的 SKU 关联清除（设 bundleGroupId = null）
-    await db.update(mallProductSkus).set({ bundleGroupId: null }).where(eq(mallProductSkus.bundleGroupId, id))
-
-    const result = await db.delete(mallBundleGroups).where(eq(mallBundleGroups.id, id))
-    if ((result as any).count === 0) {
-      return { success: false, message: '分组不存在' }
+    // 取分组归属商品；组非空则拒绝删除（避免子项游离、套餐价错算）
+    const [grp] = await db
+      .select({ productId: mallBundleGroups.productId })
+      .from(mallBundleGroups)
+      .where(eq(mallBundleGroups.id, id))
+      .limit(1)
+    if (!grp) return { success: false, message: '分组不存在' }
+    const [{ cnt }] = await db
+      .select({ cnt: sql<number>`count(*)::int` })
+      .from(mallProductSkus)
+      .where(eq(mallProductSkus.bundleGroupId, id))
+    if (Number(cnt) > 0) {
+      return { success: false, message: '请先移除该分组下的所有规格，再删除分组' }
     }
+
+    await db.transaction(async (tx) => {
+      await tx.delete(mallBundleGroups).where(eq(mallBundleGroups.id, id))
+      await recomputeBundlePrice(grp.productId, tx)
+    })
 
     await logOperation(session, 'bundle_group.delete', 'mall_bundle_group', String(id), {})
     revalidatePath('/mall')
@@ -982,12 +1138,38 @@ export const updateSkuBundleGroup = withPermission(
     // 获取旧值用于日志 diff
     const [before] = await db.select().from(mallProductSkus).where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId))).limit(1)
 
-    const result = await db
-      .update(mallProductSkus)
-      .set({ bundleGroupId })
-      .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+    const [prod] = await db
+      .select({ isBundle: products.isBundle })
+      .from(products)
+      .where(eq(products.productId, productId))
+      .limit(1)
+    // 套餐：子项必须归入分组，且目标分组须属于该商品
+    if (prod?.isBundle) {
+      if (bundleGroupId == null) return { success: false, message: '套餐商品的规格必须归入分组' }
+      const [grp] = await db
+        .select({ id: mallBundleGroups.id })
+        .from(mallBundleGroups)
+        .where(and(eq(mallBundleGroups.id, bundleGroupId), eq(mallBundleGroups.productId, productId)))
+        .limit(1)
+      if (!grp) return { success: false, message: '分组不存在或不属于该商品' }
+    }
 
-    if ((result as any).count === 0) {
+    let moved = false
+    await db.transaction(async (tx) => {
+      const result = await tx
+        .update(mallProductSkus)
+        .set({ bundleGroupId })
+        .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+      if ((result as any).count === 0) return
+      moved = true
+      // 套餐：移入新组继承其单价 + 重算（两个全选组的计入数量都可能变化）
+      if (prod?.isBundle && bundleGroupId != null) {
+        await syncBundleGroupSkuPrices(bundleGroupId, tx)
+        await recomputeBundlePrice(productId, tx)
+      }
+    })
+
+    if (!moved) {
       return { success: false, message: '关联记录不存在' }
     }
 
@@ -1279,9 +1461,13 @@ export const createProduct = withPermission(
       isVisible?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
-    const price = Number(data.price)
-    if (isNaN(price) || price < 0) {
-      return { success: false, message: '价格必须为非负数' }
+    // 套餐：展示价由各组单价自动算（创建时尚无分组），强制 0；非套餐校验手填价
+    const isBundle = data.isBundle === true
+    if (!isBundle) {
+      const price = Number(data.price)
+      if (isNaN(price) || price < 0) {
+        return { success: false, message: '价格必须为非负数' }
+      }
     }
 
     // 校验商品分类存在
@@ -1294,10 +1480,12 @@ export const createProduct = withPermission(
       return { success: false, message: '商品分类不存在' }
     }
 
+    const insertValues = isBundle ? { ...data, price: '0', specialPrice: null } : data
+
     try {
-      await db.insert(products).values(data)
+      await db.insert(products).values(insertValues)
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '商品编号已存在' }
       throw err
     }
 
@@ -1331,13 +1519,24 @@ export const updateProduct = withPermission(
     // 获取旧值用于日志 diff
     const [before] = await db.select().from(products).where(eq(products.productId, productId)).limit(1)
 
+    // 套餐：展示价由各组单价自动算，剔除表单手填的 price/specialPrice，避免覆盖重算结果
+    const finalIsBundle = data.isBundle ?? before?.isBundle ?? false
+    const setData: Record<string, unknown> = { ...data }
+    if (finalIsBundle) {
+      delete setData.price
+      delete setData.specialPrice
+    }
+    if (Object.keys(setData).length === 0) {
+      return { success: true, message: '商品信息已更新' }
+    }
+
     const whereConditions = expectedUpdatedAt
       ? and(eq(products.productId, productId), isNull(products.deletedAt), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
       : and(eq(products.productId, productId), isNull(products.deletedAt))
 
     const result = await db
       .update(products)
-      .set(data)
+      .set(setData)
       .where(whereConditions)
 
     if ((result as any).count === 0) {
@@ -1414,7 +1613,7 @@ export const createMallCategory = withPermission(
     try {
       await db.insert(mallCategories).values(data)
     } catch (err: any) {
-      if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+      if (pgErrorCode(err) === '23505') return { success: false, message: '分类编号已存在' }
       throw err
     }
 
@@ -1523,6 +1722,8 @@ export interface OrderPickerSku {
   sortOrder: number
   /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
   isManagerSpecial: boolean
+  /** 体验卡 capability：true 时会员价（special_price）对所有顾客生效（豁免会员价分流） */
+  isExperience: boolean
 }
 
 export interface OrderPickerCategory {
@@ -1643,6 +1844,7 @@ export const getProductsByKind = withPermission(
         skuId: mallProductSkus.skuId,
         bundleGroupId: mallProductSkus.bundleGroupId,
         bundlePrice: mallProductSkus.bundlePrice,
+        bundleListPrice: mallProductSkus.bundleListPrice,
         sortOrder: mallProductSkus.sortOrder,
         sku: productSkus,
       })
@@ -1667,8 +1869,8 @@ export const getProductsByKind = withPermission(
             specName: m.sku.specName,
             productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
             sessionCount: m.sku.sessionCount,
-            price: m.sku.price,
-            bundlePrice: m.bundlePrice,
+            price: m.bundleListPrice ?? m.sku.price,
+            bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
             bundleGroupId: m.bundleGroupId,
             sortOrder: m.sortOrder,
           })),
@@ -1680,8 +1882,8 @@ export const getProductsByKind = withPermission(
           specName: m.sku.specName,
           productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
           sessionCount: m.sku.sessionCount,
-          price: m.sku.price,
-          bundlePrice: m.bundlePrice,
+          price: m.bundleListPrice ?? m.sku.price,
+          bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
           bundleGroupId: m.bundleGroupId,
           sortOrder: m.sortOrder,
         }))
@@ -1778,6 +1980,7 @@ export const getProductsByKind = withPermission(
         serviceFee: r.sku.serviceFee,
         sortOrder: r.sku.sortOrder,
         isManagerSpecial: r.sku.isManagerSpecial,
+        isExperience: r.sku.isExperience === true,
       })
     }
 
@@ -1837,6 +2040,7 @@ export const getProductsByKind = withPermission(
       serviceFee: r.sku.serviceFee,
       sortOrder: r.sku.sortOrder,
       isManagerSpecial: r.sku.isManagerSpecial,
+      isExperience: r.sku.isExperience === true,
     })
   }
   const categories = Array.from(catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder)

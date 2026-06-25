@@ -65,6 +65,7 @@ import type {
 } from '@/lib/data-center/types'
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
+import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 
 /** db.execute 返回数组，取首行标量并 Number 化（null→0，分母聚合无行时按 0 处理） */
 function scalar(rows: unknown, key = 'v'): number {
@@ -138,6 +139,7 @@ export const getEfficiencyBoard = withPermission(
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so')}
     `)
 
     /** 销售提成（全局合计）= SUM(sale_allocations.commission_amount) */
@@ -186,6 +188,7 @@ export const getEfficiencyBoard = withPermission(
         AND so.status = '已完成'
         AND sit.sales_category IN ('自销自耗', '他销自耗')
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so')}
     `)
 
     /**
@@ -283,6 +286,7 @@ export const getEfficiencyBoard = withPermission(
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so')}
       GROUP BY so.store_id
     `)
 
@@ -295,6 +299,7 @@ export const getEfficiencyBoard = withPermission(
         AND so.status = '已完成'
         AND sit.is_shengmei = TRUE
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so')}
       GROUP BY so.store_id
     `)
 
@@ -347,6 +352,7 @@ export const getEfficiencyBoard = withPermission(
         AND so.status = '已完成'
         AND sit.sales_category IN ('自销自耗', '他销自耗')
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so')}
       GROUP BY so.store_id
     `)
 
@@ -384,6 +390,7 @@ export const getEfficiencyBoard = withPermission(
         ON so2.store_id = s.store_id
         AND so2.status = '已完成'
         AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so2')}
       LEFT JOIN service_items sit ON sit.service_order_id = so2.service_order_id
       WHERE ${scopeFilterSql(session, scope, 's.store_id')}
       GROUP BY s.store_id, s.store_name, o.name
@@ -436,6 +443,7 @@ export const getEfficiencyBoard = withPermission(
         ON so2.store_id = s.store_id
         AND so2.status = '已完成'
         AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${excludeDepositRefundSql('so2')}
       LEFT JOIN service_items sit
         ON sit.service_order_id = so2.service_order_id
         AND sit.sales_category IN ('自销自耗', '他销自耗')
@@ -502,6 +510,7 @@ export const getEfficiencyBoard = withPermission(
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
         WHERE so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so2')}
         GROUP BY sit.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
@@ -539,6 +548,7 @@ export const getEfficiencyBoard = withPermission(
         WHERE so2.status = '已完成'
           AND sit.sales_category IN ('自销自耗', '他销自耗')
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so2')}
         GROUP BY sit.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
@@ -622,6 +632,7 @@ export const getEfficiencyBoard = withPermission(
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
         WHERE so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so2')}
         GROUP BY sit.employee_id
       ),
       new_member_by_emp AS (
@@ -639,6 +650,7 @@ export const getEfficiencyBoard = withPermission(
         WHERE so2.status = '已完成'
           AND sit.sales_category IN ('自销自耗', '他销自耗')
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${excludeDepositRefundSql('so2')}
         GROUP BY sit.employee_id
       ),
       service_count_by_emp AS (

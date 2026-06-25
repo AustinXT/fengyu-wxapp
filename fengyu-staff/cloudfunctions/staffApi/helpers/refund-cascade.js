@@ -4,9 +4,13 @@
  * 2026-04-26 sale-order-domain-refactor §1.5 落地；2026-06-08 重构（Bug Q/M）：
  *   - 改为按本次退款明细逐 item 级联（params.items），不再用单 saleItemId / null 整单分支；
  *     修复「多项退真子集（退 A、B 不退 C）误走整单分支清掉 C 的分配/提成/券/提货」（Bug Q）。
- *   - 通道 1/2（分配/提成）仅作废「被全退」的 item（isFullItemRefund），部分次数退款不动二者，
- *     保护已发生服务的提成（Bug M 语义收敛）。
  *   - 通道 3（券）仅整单全退（isWholeOrderRefund）才回滚。
+ *
+ * 2026-06-24 退款联级重构（记负数冲销）：
+ *   - 通道 1（销售提成 sale_allocations）：由「软删 is_void」改为「记负数冲销」——对所有被退 item
+ *     按本次实退额（params.items[].refundAmount）记负数镜像行（保留原正数行，报表 SUM 自动净额化），
+ *     负数行挂退款流水 id（params.refundPaymentId）。消费过的卡退剩余次数 → 等比部分冲销，已消费业绩保留。
+ *   - 通道 2（服务提成 service_commissions）：保持软删（仅零消费 isFullItemRefund item，恒 no-op）。
  *
  * **修改本文件必须同步 fengyu-admin/src/lib/refund-cascade.ts**
  * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
@@ -14,7 +18,7 @@
  * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
  *
  * 通道：
- *   1. sale_allocations:    UPDATE SET is_void=true, voided_at=NOW()（仅全退 item）
+ *   1. sale_allocations:    INSERT 负数镜像行（记负数冲销销售提成，对所有被退 item 按 refundAmount，挂退款流水 id）
  *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$（仅全退 item）
  *   3. user_coupons:        UPDATE SET status='未使用'（仅整单全退）
  *   4. point_transactions:  INSERT 反向流水（type='消费冲销'）+ client_wechat_users.points_balance 重算（订单级比例）
@@ -31,7 +35,7 @@
  * @returns {Promise<object>} cascade 结果摘要
  */
 async function cascadeRefund(client, params) {
-  const { saleOrderId, items, isWholeOrderRefund, refundReason } = params || {}
+  const { saleOrderId, refundPaymentId, items, isWholeOrderRefund, refundReason } = params || {}
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: cascadeRefund 缺少 saleOrderId')
   }
@@ -49,23 +53,66 @@ async function cascadeRefund(client, params) {
       `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
       [saleOrderId],
     )
-    effItems = r.rows.map((x) => ({ saleItemId: x.sale_item_id, sessionCount: null, isFullItemRefund: true }))
+    effItems = r.rows.map((x) => ({ saleItemId: x.sale_item_id, sessionCount: null, refundAmount: null, isFullItemRefund: true }))
     wholeOrder = true
   }
 
-  // 仅「全退」的 item 才作废分配/提成（Bug M 语义收敛）
+  // 仅「零消费全退」item 才作废服务提成（通道 2）+ 参与整单券判定（通道 3）；通道 1 不再依赖（Bug M 语义收敛）
   const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
 
-  // ========== 通道 1: sale_allocations 软删（仅全退 item）==========
+  // ========== 通道 1: sale_allocations 记负数冲销（销售提成；对所有被退 item 按实退额）==========
+  // 业务口径（2026-06-24）：退款撤销营业额分配 = 记负数（保留原正数行 + 新增负数镜像行，报表 SUM 自动净额化）。
+  // item 级目标冲销额 = min(本次该 item 退款额, 该 item 活跃正数分配 Σtotal_amount)，按各 (emp,role) 行
+  // total_amount 权重最大余数法分摊到分；负数行挂退款流水 id（新维度，不撞 uq_sale_alloc_item_emp_role_payment）。
+  // 消费过的卡退剩余次数 → 退额 < 已分配额 → 等比部分冲销，已消费部分业绩保留。两端镜像 admin lib/refund-cascade.ts。
   let voidedAllocations = 0
-  if (fullItemIds.length > 0) {
-    const allocRes = await client.query(
-      `UPDATE sale_allocations
-          SET is_void = true, voided_at = $1, updated_at = $1
-        WHERE sale_item_id = ANY($2) AND is_void = false`,
-      [now, fullItemIds],
-    )
-    voidedAllocations = allocRes.rowCount || 0
+  for (const it of effItems) {
+    const refundAmt = Number(it.refundAmount || 0)
+    if (refundAmt <= 0) continue
+    const allocRows = (await client.query(
+      `SELECT employee_id, role_type,
+              MAX(allocation_ratio) AS ratio,
+              MAX(department_name) AS dept,
+              SUM(total_amount::numeric) AS sum_total,
+              MAX(commission_rate) AS rate,
+              COALESCE(SUM(commission_amount::numeric), 0) AS sum_comm
+         FROM sale_allocations
+        WHERE sale_item_id = $1 AND is_void = false AND total_amount > 0
+        GROUP BY employee_id, role_type`,
+      [it.saleItemId],
+    )).rows
+    if (allocRows.length === 0) continue
+    const baseCents = allocRows.reduce((s, r) => s + Math.round(Number(r.sum_total) * 100), 0)
+    if (baseCents <= 0) continue
+    const targetCents = Math.min(Math.round(refundAmt * 100), baseCents)
+    // 最大余数法：按各组 total_amount 权重分摊 targetCents，余数逐分补给小数部分最大者（精确到分）
+    const parts = allocRows.map((r) => {
+      const wCents = Math.round(Number(r.sum_total) * 100)
+      const exact = (targetCents * wCents) / baseCents
+      const floorC = Math.floor(exact)
+      return { r, cents: floorC, frac: exact - floorC }
+    })
+    const rem = targetCents - parts.reduce((s, p) => s + p.cents, 0)
+    parts.sort((a, b) => b.frac - a.frac)
+    for (let i = 0; i < rem; i++) parts[i].cents += 1
+    for (const p of parts) {
+      if (p.cents <= 0) continue
+      const voidTotal = p.cents / 100
+      const sumTotal = Number(p.r.sum_total)
+      const sumComm = Number(p.r.sum_comm || 0)
+      // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
+      const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
+      await client.query(
+        `INSERT INTO sale_allocations
+           (sale_item_id, employee_id, role_type, department_name, allocation_ratio,
+            total_amount, commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10, $10)
+         ON CONFLICT (sale_item_id, employee_id, role_type, sale_payment_id) WHERE is_void = false DO NOTHING`,
+        [it.saleItemId, p.r.employee_id, p.r.role_type, p.r.dept, p.r.ratio,
+         (-voidTotal).toFixed(2), p.r.rate, (-voidComm).toFixed(2), refundPaymentId, now],
+      )
+      voidedAllocations += 1
+    }
   }
 
   // ========== 通道 2: service_commissions 软删（仅全退 item）==========

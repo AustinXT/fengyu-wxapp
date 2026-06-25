@@ -37,7 +37,10 @@ module.exports.date = function(s) {
           <text class="checkout-item__name">{{bundleProductId ? item.skuDisplayName : item.spuName}}</text>
           <text class="checkout-item__spec" wx:if="{{!bundleProductId && item.skuDisplayName}}">{{item.skuDisplayName}}</text>
           <view class="checkout-item__meta">
-            <text class="checkout-item__price">{{bundleProductId ? '套餐价 ¥' + price.fmt(item.price) : '¥' + price.fmt(item.price)}}</text>
+            <view class="checkout-item__price-wrap">
+              <text class="checkout-item__price">{{bundleProductId ? '套餐价 ¥' + price.fmt(item.price) : '¥' + price.fmt(item.price)}}</text>
+              <text wx:if="{{item.listPrice && item.listPrice > item.price}}" class="price-origin">¥{{price.fmt(item.listPrice)}}</text>
+            </view>
             <text class="checkout-item__qty">×{{item.quantity}}</text>
           </view>
         </view>
@@ -231,7 +234,7 @@ module.exports.date = function(s) {
         <view class="coupon-popup__item-right">
           <text class="coupon-popup__item-name">{{item.name}}</text>
           <text class="coupon-popup__item-desc">{{item.description || ''}}</text>
-          <text class="coupon-popup__item-expire">有效期至 {{price.date(item.expireAt)}}</text>
+          <text class="coupon-popup__item-expire">有效期至 {{item.expireAtFmt || '—'}}</text>
         </view>
         <van-icon wx:if="{{selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
       </view>

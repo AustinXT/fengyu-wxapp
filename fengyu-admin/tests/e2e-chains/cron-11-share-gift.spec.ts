@@ -41,7 +41,7 @@ const shareGift: {
   ) => Promise<{ granted: boolean; reason?: string; value?: number; inviter?: string }>
 } = require('../../../fengyu-client/cloudfunctions/clientApi/share-gift.js')
 
-const PG_URL = 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+const PG_URL = 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
 
 function ensureTestStore(): string {
   const storeId = psql(`SELECT store_id FROM stores LIMIT 1`)

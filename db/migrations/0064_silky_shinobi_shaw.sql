@@ -1,0 +1,1 @@
+ALTER TABLE "sale_orders" ADD COLUMN "is_activity" boolean DEFAULT false NOT NULL;

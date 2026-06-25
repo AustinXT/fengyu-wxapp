@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// 退款前置检查（services.ts confirmServiceOrder 等调 hasPendingRefundByServiceOrder）：
+// 默认返回 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
+vi.mock('@/lib/refund-cascade', () => ({
+  hasPendingRefund: vi.fn().mockResolvedValue(false),
+  hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
@@ -30,6 +37,13 @@ vi.mock('@db/service', () => ({
     sessionUsed: 'session_used',
     unitRealPrice: 'unit_real_price',
     employeeId: 'employee_id',
+    salesCategory: 'sales_category',
+  },
+  serviceReviews: {
+    serviceOrderId: 'service_order_id',
+    rating: 'rating',
+    comment: 'comment',
+    createdAt: 'created_at',
   },
 }))
 
@@ -43,6 +57,9 @@ vi.mock('@db/order', () => ({
     saleOrderId: 'sale_order_id',
     remainingSessions: 'remaining_sessions',
     unitRealPrice: 'unit_real_price',
+    skuId: 'sku_id',
+    isShengmei: 'is_shengmei',
+    salesCategory: 'sales_category',
   },
 }))
 
@@ -98,10 +115,12 @@ import {
   createServiceOrder,
   getServiceOrdersPaginated,
   deleteServiceOrder,
+  getServiceOrderById,
+  exportAllocationServiceOrders,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope, isAdminScope } from '@/lib/permissions'
+import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
 import { eq, ilike, gte, lte } from 'drizzle-orm'
 
 const mockSession = {
@@ -127,6 +146,25 @@ function makeSelectChain(result: any[]) {
   chain.leftJoin = vi.fn().mockReturnValue(chain)
   chain.innerJoin = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue(chain)
+}
+
+/** 多次 db.select() 按顺序返回不同结果（最后一个结果用于后续所有调用）。
+ *  createServiceOrder 顺序：1) customerRow(becameMemberAt+boundStoreId) 2) pendingAppt 3) saleItem 循环 */
+function makeSelectSequence(...results: any[][]) {
+  let i = 0
+  return vi.fn().mockImplementation(() => {
+    const result = results[Math.min(i, results.length - 1)]
+    i++
+    const chain: any = Object.assign(Promise.resolve(result), {
+      limit: vi.fn().mockResolvedValue(result),
+    })
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.innerJoin = vi.fn().mockReturnValue(chain)
+    return chain
+  })
 }
 
 /** mock db.select() 链用于 logTransition 上下文获取：.from().leftJoin().where().limit() */
@@ -414,8 +452,23 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  it('顾客绑定门店 ≠ data.storeId → 拒绝（疗程卡只能在绑定门店核销）', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectSequence([{ boundStoreId: 'store-OTHER' }])
+    )
+
+    const result = await createServiceOrder(baseData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('绑定门店')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('saleItem 不存在 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    // customerRow 命中绑定门店（过绑定门店校验），但 saleItem 查不到
+    ;(db.select as any).mockImplementation(
+      makeSelectSequence([{ boundStoreId: 'store-1' }], [], [])
+    )
 
     const result = await createServiceOrder(baseData)
 
@@ -426,7 +479,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('剩余次数不足 → 拒绝', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 0, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 0, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
 
     const result = await createServiceOrder({
@@ -441,7 +494,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('原订单退款审批中 → 拒绝（在途退款冻结）', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', hasPendingRefund: true }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', hasPendingRefund: true, boundStoreId: 'store-1' }])
     )
 
     const result = await createServiceOrder({
@@ -458,7 +511,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     ;(db.select as any).mockImplementation(
       makeSelectChain([{
         sessionCount: 10, remainingSessions: 10, paidSessions: 0,
-        unitRealPrice: '200.00', hasApprovedRefund: true,
+        unitRealPrice: '200.00', hasApprovedRefund: true, boundStoreId: 'store-1',
       }])
     )
 
@@ -474,7 +527,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('事务内 FK 违反（23503）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     ;(db.transaction as any).mockRejectedValue(
       Object.assign(new Error('FK violation'), { code: '23503' })
@@ -488,7 +541,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('事务内其他异常 → 重新抛出', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
@@ -497,7 +550,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('remainingSessions=null（无次数限制）→ 跳过次数校验，成功', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: null, unitRealPrice: '0' }])
+      makeSelectChain([{ remainingSessions: null, unitRealPrice: '0', boundStoreId: 'store-1' }])
     )
     mockTx('FY-FW-260315001')
 
@@ -509,7 +562,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
 
   it('正常创建 → 成功，返回 serviceOrderId', async () => {
     ;(db.select as any).mockImplementation(
-      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00' }])
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
     mockTx('FY-FW-260315001')
 
@@ -519,6 +572,38 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(result.message).toContain('服务单创建成功')
     expect(result.serviceOrderId).toBe('FY-FW-260315001')
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('service_items 写入 sale_items 快照的 is_shengmei + sales_category', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([{
+        remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1',
+        isShengmei: true, salesCategory: '自销自耗',
+      }])
+    )
+    const inserts: Array<{ table: any; values: any }> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-FW-260617001' }]),
+        insert: vi.fn().mockImplementation((table: any) => ({
+          values: vi.fn().mockImplementation((values: any) => {
+            inserts.push({ table, values })
+            return Promise.resolve({})
+          }),
+        })),
+      }
+      return fn(tx)
+    })
+
+    const result = await createServiceOrder(baseData)
+
+    expect(result.success).toBe(true)
+    const serviceItemInsert = inserts.find((c) =>
+      c.values && typeof c.values === 'object' && 'serviceItemId' in c.values
+    )
+    expect(serviceItemInsert).toBeDefined()
+    expect(serviceItemInsert!.values.isShengmei).toBe(true)
+    expect(serviceItemInsert!.values.salesCategory).toBe('自销自耗')
   })
 })
 
@@ -735,5 +820,143 @@ describe('deleteServiceOrder — 守卫 + 级联删除', () => {
     const result = await deleteServiceOrder('SVC-3')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已变更')
+  })
+})
+
+// ── getServiceOrderById — 跨门店只读放行 ──────────────────────────────────────
+describe('getServiceOrderById — 读取不限 scope + readOnly 标记', () => {
+  const soRow = {
+    service_order: {
+      serviceOrderId: 'SVC-1',
+      status: '已完成',
+      serviceOrderType: '售前',
+      marketName: 'M',
+      storeId: 'store-9',
+      serviceDate: '2026-06-01',
+      assignedEmployeeId: 'EMP-1',
+      remark: null,
+      appointmentId: null,
+      clientUserId: 'user-1',
+      commissionStatus: null,
+      createdAt: new Date('2026-06-01T00:00:00Z'),
+      updatedAt: new Date('2026-06-01T00:00:00Z'),
+    },
+    storeName: '门店9',
+    employeeName: '张三',
+    customerName: '李四',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('不存在 → null', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    expect(await getServiceOrderById('SVC-404')).toBeNull()
+  })
+
+  it('读取不施加 scopeCondition（跨门店可点进只读）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(true)
+    await getServiceOrderById('SVC-1')
+    expect(scopeCondition).not.toHaveBeenCalled()
+  })
+
+  it('门店在 scope → readOnly=false', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(true)
+    const result = await getServiceOrderById('SVC-1')
+    expect(result?.readOnly).toBe(false)
+  })
+
+  it('门店不在 scope → readOnly=true（跨门店只读）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([soRow]))
+    ;(isInScope as any).mockReturnValue(false)
+    const result = await getServiceOrderById('SVC-1')
+    expect(result?.readOnly).toBe(true)
+    expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-9')
+  })
+})
+
+// ── exportAllocationServiceOrders — 服务提成明细导出（30 列） ──────────────────
+describe('exportAllocationServiceOrders — 明细导出 + 派生列 + 截断', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('maps a service_commissions detail row to export fields + derived columns', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([
+        {
+          market: '九江',
+          storeName: '世纪店',
+          serviceOrderId: 'SO1',
+          saleOrderType: '销售单',
+          serviceOrderType: '售后',
+          customerName: '王女士',
+          customerPhone: null,
+          fallbackPhone: '13151094335',
+          productType: '疗程卡',
+          categoryL1: '圣源养心',
+          categoryL2: '护理项目',
+          productName: '【王牌】疼痛管理',
+          sessionUsed: 1,
+          unitRealPrice: '300.00',
+          status: '已完成',
+          employeeName: '王雯馨',
+          positionName: '美容师',
+          allocationRatio: '0.30',
+          commissionRate: '0.1500',
+          commissionAmount: '162.00',
+          rating: 5,
+          reviewComment: '好评',
+          salesCategory: '自销自耗',
+          customerType: '会员客',
+          openedByName: '张凯',
+          sourceSaleOrderId: 'FY-XSD-WX-2606080003',
+          serviceDate: '2026-06-08',
+          createdAt: new Date('2026-06-08T15:26:32.000Z'),
+          remark: null,
+          scId: 1,
+        },
+      ])
+    )
+    const { rows } = await exportAllocationServiceOrders({})
+    expect(rows).toHaveLength(1)
+    const r = rows[0]
+    expect(r.serviceOrderId).toBe('SO1')
+    expect(r.market).toBe('九江')
+    expect(r.saleOrderType).toBe('销售单')
+    expect(r.serviceOrderType).toBe('售后')
+    // 顾客手机回退到来源销售单 client_phone
+    expect(r.customerPhone).toBe('13151094335')
+    // 派生：消耗金额 = 单次价 × 消耗次数；分配额 = 消耗金额 × 分配占比
+    expect(r.consumeMoney).toBe(300)
+    expect(r.unitRealPrice).toBe(300)
+    expect(r.allocationAmount).toBe(90)
+    // 金额转 number；占比/比例保留原始小数串交前端格式化
+    expect(r.commissionAmount).toBe(162)
+    expect(r.allocationRatio).toBe('0.30')
+    expect(r.commissionRate).toBe('0.1500')
+    expect(r.rating).toBe(5)
+    // createdAt 序列化为 ISO 串
+    expect(r.createdAt).toBe('2026-06-08T15:26:32.000Z')
+  })
+
+  it('truncates at 10000 rows', async () => {
+    const many = Array.from({ length: 10001 }, (_, i) => ({
+      serviceOrderId: `SO${i}`,
+      sessionUsed: 1,
+      unitRealPrice: '100.00',
+      allocationRatio: '1.00',
+      commissionAmount: '10.00',
+      createdAt: new Date('2026-06-08T00:00:00.000Z'),
+    }))
+    ;(db.select as any).mockImplementation(makeSelectChain(many))
+    const { rows, truncated } = await exportAllocationServiceOrders({})
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
   })
 })

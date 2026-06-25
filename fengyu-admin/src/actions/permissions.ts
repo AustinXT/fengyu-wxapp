@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { pgErrorCode } from '@/lib/pg-error'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
@@ -235,7 +236,7 @@ export const assignRole = withAnyPermission(
       createdBy: session.employeeId,
     })
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该员工已拥有相同的角色和权限范围' }
     }
     throw err
