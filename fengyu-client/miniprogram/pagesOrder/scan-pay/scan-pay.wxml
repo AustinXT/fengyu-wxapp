@@ -1,6 +1,4 @@
 <!-- pages/scan-pay/scan-pay.wxml — 扫码收款（员工端开单后客户扫码） -->
-<!-- fmt.unit：单次/单价由权威行总额 saleAmount 反推（saleAmount ÷ 次数或数量），
-     保证「单次×次数 == 总额」「单价×数量 == 总额」；divisor 非法(0/NaN/null) 时回退展示整额。 -->
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 module.exports.cents = function(n) { return Math.round(n * 100) }
