@@ -107,7 +107,10 @@ jobs:
           # 先重置 CI service 上的 PG 到干净状态（service 默认启动的 test 库是空的，但以防万一）
           PGPASSWORD=test psql -h localhost -U postgres -d test -c 'DROP SCHEMA IF EXISTS drizzle CASCADE;' || true
           PGPASSWORD=test psql -h localhost -U postgres -d test -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'
-          npm run db:migrate
+          # 0018/0023/0028 三个历史 migration 在 drizzle 单事务 db:migrate 下会从零失败
+          # （0018 enum-add-then-use → PG 55P04 等，详见 db/CLAUDE.md「新机器从零 apply」）。
+          # 用 bootstrap-from-zero.sh 逐条独立事务 apply + 对齐 journal hash，绕过这三处。
+          bash scripts/bootstrap-from-zero.sh
           # 基础断言：至少 30 个表被建起
           TBL_COUNT=$(PGPASSWORD=test psql -h localhost -U postgres -d test -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';" | xargs)
           if [ "$TBL_COUNT" -lt 30 ]; then
