@@ -49,10 +49,10 @@ Page({
 
     // 手机绑定
     showPhoneBind: false,
-    pendingFaceValue: 0,    // 手机绑定流程后自动重提交
   },
 
   _config: null as RechargeConfig | null,
+  _pendingFaceValue: 0,    // 手机绑定流程后自动重提交（纯逻辑层，不参与渲染）
 
   onLoad() {
     const storeId = app.globalData.boundStoreId || '';
@@ -242,7 +242,8 @@ Page({
       return;
     }
 
-    this.data.pendingFaceValue = faceValue;
+    // 纯逻辑层暂存（手机绑定后回填重提交），不参与渲染 → 挂 this._ 不进 data
+    this._pendingFaceValue = faceValue;
     await this.doRecharge(faceValue);
   },
 
@@ -298,7 +299,7 @@ Page({
       await bindPhoneWithCloudID(cloudID);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
-      const pending = this.data.pendingFaceValue;
+      const pending = this._pendingFaceValue;
       if (pending > 0) {
         setTimeout(() => this.doRecharge(pending), 800);
       }

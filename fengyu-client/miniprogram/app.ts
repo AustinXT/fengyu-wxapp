@@ -50,9 +50,9 @@ App<IAppOption>({
   },
 
   initNavBarInfo() {
-    const systemInfo = wx.getSystemInfoSync();
+    const windowInfo = wx.getWindowInfo();
     const menuButton = wx.getMenuButtonBoundingClientRect();
-    const statusBarHeight = systemInfo.statusBarHeight || 44;
+    const statusBarHeight = windowInfo.statusBarHeight || 44;
     // 标题行高度 = 胶囊上下对称留白 * 2 + 胶囊高度
     const contentHeight = menuButton.height + (menuButton.top - statusBarHeight) * 2;
     this.globalData.statusBarHeight = statusBarHeight;

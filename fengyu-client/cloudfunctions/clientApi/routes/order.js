@@ -522,7 +522,7 @@ async function create(ctx) {
     const sku = skuMap[item.skuId]
     // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
     const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
-    // 非套餐单品：按会员身份分流（会员→会员价 special_price、非会员→标价 price；体验卡豁免对所有人）
+    // 非套餐单品：按会员身份分流（会员→会员价 special_price、非会员→标价 price；体验卡同口径，#6=B 不再豁免）
     const resolved = resolveUnitPrice(sku, buyerIsMember)
     const listUnit = bundleEntry && bundleEntry.listPrice != null   // per-card 标价（划线）
       ? Number(bundleEntry.listPrice)
@@ -2088,8 +2088,10 @@ async function confirmPrepaidFull(ctx) {
  *
  * 2026-04-26 sale-order-domain-refactor 简化（saleOrderType 5→3，回款单已消除）：
  *   - 不再生成 FY-HKD 凭证 sale_orders 行（"回款单"概念已废）
- *   - 储值卡通道：直接写 sale_order_payments[change_type='回款',payment_method='储值卡',status='已支付'] 到原单
+ *   - 纯储值卡通道：直接写 sale_order_payments[change_type='储值卡抵扣',payment_method='储值卡',status='已支付']
+ *     到原单 + 增量 bump prepaid_card_amount（退款回冲卡而非退现金；与 admin/staff 同口径）
  *   - 线上通道：不写 payments 行（由 payNotify 回调写），仅返回 mock 支付参数
+ *   - 线上+储值卡混合：写 status='待支付' 储值卡抵扣意向，扣卡推迟到 payNotify 线上到账同事务（见 STEP 3c）
  *
  * 顾客对未付清订单（status='部分支付' 或 '待支付' 且已有 payments 行）发起追加付款。
  *
@@ -2239,12 +2241,15 @@ async function repay(ctx) {
          ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
         [cardIdUsed, -prepaidCardAmountInput, saleOrderId, `card-repay-${saleOrderId}-${now.getTime()}`]
       )
-      // payments 行：sale_order_id=原单；change_type='回款' + payment_method='储值卡' / status='已支付'
+      // payments 行：change_type='储值卡抵扣'（与 admin recordPayment / staff createRepayment / 混合通道一致）。
+      // 关键（修退款现金泄漏）：储值卡抵扣 计入 prepaid_card_amount（下方 STEP 5 同步 bump），退款按通道拆分
+      // splitRefundByOriginalPayment 据 prepaid_card_amount 把该部分回冲储值卡而非退现金；若记 '回款' 则 prepaid 不增 →
+      // 卡支付额被当现金退出（卡内充值赠送额=真实资损）。received 口径含 储值卡抵扣（I1），故 received 数值不变。
       const cardPayRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method,
           external_txn_id, status, source_end, note, created_at, paid_at
-        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', $3, $4, $4)
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'client', $3, $4, $4)
         RETURNING id`,
         [saleOrderId, prepaidCardAmountInput, '储值卡继续支付（client.repay）', now]
       )
@@ -2296,16 +2301,21 @@ async function repay(ctx) {
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
       const fullyPaid = newNet + 0.001 >= payableAmount
       finalStatus = fullyPaid ? '已支付' : '部分支付'
+      // 纯卡回款：把本次卡抵扣额并入 prepaid_card_amount（增量，保留原 create-time 卡额；client create-card 延迟消费、
+      // 不在 储值卡抵扣 行里，故用 += 而非 Σ重算），同步降 payable_amount 维护 I5（payable=total-prepaid）。
+      // status 仍按事务起始的 payableAmount 判定（received 含本次卡抵扣，付清即 已支付），不受本次 prepaid bump 影响。
       const repayUpd = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              refunded_amount = $3,
+             prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $6,
+             payable_amount = COALESCE(payable_amount, total_amount) - $6,
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
          WHERE sale_order_id = $5
            AND status IN ('待支付', '部分支付')`,
-        [finalStatus, newReceived, newRefunded, now, saleOrderId]
+        [finalStatus, newReceived, newRefunded, now, saleOrderId, prepaidCardAmountInput]
       )
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)

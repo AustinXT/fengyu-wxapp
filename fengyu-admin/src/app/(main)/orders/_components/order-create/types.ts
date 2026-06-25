@@ -50,6 +50,8 @@ export interface NormalKindPickerProps extends PickerCommonProps {
   categories: OrderPickerCategory[]
   /** UI 文案：当前 kind 名称（用于"暂无商品"占位） */
   kindLabel: string
+  /** 会员价分流（#6=B 体验卡同口径）：true 时显示会员价 + 划线标价；false（未选顾客/非会员）只显示标价 */
+  buyerIsMember?: boolean
 }
 
 /**
@@ -90,7 +92,7 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
     isShengmei: null,
     // 店长特别优惠 capability 透传到购物车，Step3 据此放开应付编辑（仅普通商品）
     isManagerSpecial: sku.isManagerSpecial,
-    // 体验卡 capability 透传：会员价分流时体验卡 special_price 对所有顾客生效（豁免）
+    // 体验卡 capability 透传：#6=B 体验卡同口径走会员价分流（会员→会员价、非会员→标价），不再豁免
     isExperience: sku.isExperience,
     marketScope: null,
     isEnabled: true,

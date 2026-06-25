@@ -1,15 +1,19 @@
-<!-- pages/scan-pay/scan-pay.wxml — 扫码收款（员工端开单后客户扫码） -->
+<!-- pages/scan-pay/scan-pay.wxml — 扫码收款 -->
 <wxs module="fmt">
-module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
-module.exports.cents = function(n) { return Math.round(n * 100) }
-// 单次/单价由权威行总额 saleAmount 反推（saleAmount ÷ 次数或数量），
-// 保证「单次×次数 == 总额」「单价×数量 == 总额」；divisor 非法(0/NaN/null)时回退展示整额。
+module.exports.price = function(n) {
+  return (Math.round(n * 100) / 100).toFixed(2)
+}
+module.exports.cents = function(n) {
+  return Math.round(n * 100)
+}
 module.exports.unit = function(total, divisor) {
-  var d = Number(divisor) || 0
-  if (d <= 0) { return module.exports.price(total) }
-  return module.exports.price(Number(total) / d)
+  var t = total * 1
+  var d = (divisor * 1) || 0
+  if (d <= 0) return (Math.round(t * 100) / 100).toFixed(2)
+  return (Math.round((t / d) * 100) / 100).toFixed(2)
 }
 </wxs>
+<!-- fmt.unit: 单次/单价由权威行总额 saleAmount 反推，除以次数或数量得单价，divisor 非法时回退整额 -->
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 

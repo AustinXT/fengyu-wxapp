@@ -1722,7 +1722,7 @@ export interface OrderPickerSku {
   sortOrder: number
   /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
   isManagerSpecial: boolean
-  /** 体验卡 capability：true 时会员价（special_price）对所有顾客生效（豁免会员价分流） */
+  /** 体验卡 capability：#6=B 起同口径走会员价分流（仅会员享 special_price，非会员标价），不再豁免 */
   isExperience: boolean
 }
 

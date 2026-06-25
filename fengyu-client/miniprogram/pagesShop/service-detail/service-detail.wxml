@@ -5,15 +5,15 @@ module.exports.fmt = function(val) {
 }
 // 会员视图成交价：会员且会员价<标价 → 会员价；否则标价
 module.exports.eff = function(isMember, special, list) {
-  var l = Number(list) || 0
-  var s = (special === null || special === undefined || special === '') ? null : Number(special)
+  var l = (list * 1) || 0
+  var s = (special === null || special === undefined || special === '') ? null : special * 1
   if (isMember && s !== null && s < l) return s
   return l
 }
 // 划线价：仅会员且会员价<标价时返回标价，否则 0（不划线）
 module.exports.strike = function(isMember, special, list) {
-  var l = Number(list) || 0
-  var s = (special === null || special === undefined || special === '') ? null : Number(special)
+  var l = (list * 1) || 0
+  var s = (special === null || special === undefined || special === '') ? null : special * 1
   if (isMember && s !== null && s < l) return l
   return 0
 }

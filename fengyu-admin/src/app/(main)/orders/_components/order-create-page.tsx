@@ -822,6 +822,7 @@ export default function OrderCreatePageClient({
                     kindLabel="体验卡"
                     cart={cart}
                     onAdd={addToCart}
+                    buyerIsMember={buyerIsMember}
                   />
                 )
             }

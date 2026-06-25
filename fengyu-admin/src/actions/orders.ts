@@ -1503,7 +1503,7 @@ export const createOrder = withPermission(
   // ── 会员价分流 + 后端权威定价（2026-06-24）─────────────────────────────
   // 后端为定价权威（与 staff cloudfunctions/staffApi/routes/order.js 同口径）：
   //   - 普通商品（非套餐、非店长特价）：忽略前端单价，按会员价分流取适用单价
-  //     （会员→会员价 special_price、非会员→标价 price；体验卡 is_experience 豁免对所有人）。
+  //     （会员→会员价 special_price、非会员→标价 price；体验卡 is_experience 同口径，#6=B 不再豁免）。
   //   - 店长特价（is_manager_special，仅普通商品）：允许前端向下改价，钳制到 [0, 适用单价]。
   //   - 套餐子项（item.isBundle，前端 BundlePicker 注入）：套餐价独立机制，维持现状不分流。
   //   - 内部单：标价 price × 50% 重算（后端权威，不受会员价/前端影响）；unit_price 原价快照不变。
