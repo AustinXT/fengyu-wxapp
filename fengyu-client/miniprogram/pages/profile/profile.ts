@@ -23,7 +23,11 @@ Page({
     this.refreshData();
   },
 
-  onShow() {
+  async onShow() {
+    // 个人中心是顾客查看会员等级/资料的入口：每次进入都从后端同步最新会员态，
+    // 经 app.setMemberFlag 刷新 storage('isMember')/memberLevel，供商城与服务详情会员价分流
+    // （开通会员后立即生效，不必杀进程重启小程序）。
+    await app.syncLoginState();
     this.refreshData();
     this.loadUnreadCount();
   },

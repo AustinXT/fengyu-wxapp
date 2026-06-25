@@ -138,6 +138,8 @@ Page({
         setTimeout(() => wx.navigateBack(), 1000);
         return;
       }
+      // 购物车缓存价（item.price）仅作占位先渲染；下方 repriceCartItems 会按当前会员身份
+      // 向后端 product.skuDetail 重算每行单价，确保结算预览 = order.create 实际计费
       const total = Math.round(checkoutItems.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
       this.setData({
         fromCart: true,
@@ -150,6 +152,8 @@ Page({
         storeName,
       });
       this.recomputeAmounts();
+      // 按当前会员身份向后端权威重算每行单价（覆盖购物车缓存里可能过期的会员价/标价）
+      this.repriceCartItems(checkoutItems);
     } else {
       // 场景 A：自助下单
       const qty = parseInt(quantity, 10) || 1;
@@ -190,6 +194,39 @@ Page({
       this.recomputeAmounts();
     } catch {
       Toast.fail('加载价格失败');
+    }
+  },
+
+  /**
+   * 购物车批量下单：按当前会员身份向后端 product.skuDetail 重算每行单价，
+   * 覆盖购物车缓存里可能过期的 price/listPrice（加购时旧会员身份或后台改过的会员价）。
+   * 与 order.create 的 resolveUnitPrice 同口径（priceView，#6=B 体验卡亦按会员分流），确保预览 = 实扣。
+   * 单行查询失败保留该行缓存价，不阻断结算。
+   */
+  async repriceCartItems(items: CheckoutItem[]) {
+    try {
+      const member = getIsMember();
+      const repriced = await Promise.all(items.map(async (item) => {
+        try {
+          const data = await callClientApi('product.skuDetail', { skuId: item.skuId });
+          const sku = (data as { sku?: { special_price?: number | null; price?: number | null } })?.sku;
+          if (!sku) return item;
+          const pv = priceView(member, sku.special_price, sku.price);
+          return { ...item, price: pv.display, listPrice: pv.strike ?? pv.display };
+        } catch {
+          return item;
+        }
+      }));
+      const total = Math.round(repriced.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
+      this.setData({
+        cartItems: repriced,
+        displayItems: repriced,
+        unitPrice: total,
+        totalPrice: total,
+      });
+      this.recomputeAmounts();
+    } catch {
+      // 整体重算失败不阻断结算：保持购物车缓存价
     }
   },
 
