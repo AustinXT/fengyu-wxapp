@@ -1536,15 +1536,16 @@ export const createOrder = withPermission(
     }
   }
 
-  // 引用了已下架/不存在的 SKU：拒绝建单（fail-closed，与 staff order.js / client order.js 「商品 X 不存在」同口径）。
-  // ⚠️ 软删 SKU 行仍在 product_skus（deleted_at 置位，PK 行保留 → sale_items.sku_id FK 仍满足），
-  //    故下游 INSERT 不会 23503 报错。若在此放行：
-  //      · 内部单漏 ×50%（落库为 ≈2× 应付金额）；
-  //      · 普通单漏会员价分流 / 店长特价钳制（前端透传单价被直接采信）。
-  //    故须在重定价前先拦截（仅针对有 skuId 的项；无 skuId 项不在 repriceSkuIds 中）。
-  const missingPricingSkuId = repriceSkuIds.find((id) => !skuPricingMap.has(id))
-  if (missingPricingSkuId) {
-    return { success: false, message: `商品 ${missingPricingSkuId} 不存在或已下架，请刷新后重试` }
+  // 内部单引用了已下架/不存在的 SKU：fail-closed 拒绝建单（与 staff order.js / client order.js「商品 X 不存在」同口径）。
+  // ⚠️ 软删 SKU 行仍在 product_skus（deleted_at 置位，PK 行保留 → sale_items.sku_id FK 仍满足），下游 INSERT
+  //    不会 23503 报错。内部单若放行：下方重定价 map 的 `if (!pricing) return item` 会短路在 ×50% 之前 →
+  //    漏减半 → 落库 ≈2× 应付金额（资金 bug）。故内部单缺价必须拦截在重定价前。
+  //    （销售单/转换单缺价仍走 `if (!pricing) return item` 兜底：前端透传价已按会员价分流算好，无翻倍风险。）
+  if (data.saleOrderType === '内部单') {
+    const missingInternalSkuId = repriceSkuIds.find((id) => !skuPricingMap.has(id))
+    if (missingInternalSkuId) {
+      return { success: false, message: `商品 ${missingInternalSkuId} 不存在或已下架，请刷新后重试` }
+    }
   }
 
   // 会员判定：会员客 或 有钻石等级（member_level 非空），任一满足。
@@ -1567,7 +1568,8 @@ export const createOrder = withPermission(
     ...data,
     items: data.items.map((item) => {
       const pricing = skuPricingMap.get(item.skuId)
-      // 有 skuId 的缺价项已被上方 missingPricingSkuId 守卫拦截（含软删 SKU）；此处仅兜底无 skuId 的项，原样放行。
+      // 缺价兜底：无 skuId 的项、或销售单/转换单引用了软删 SKU（前端透传价已按会员价分流算好）→ 原样放行。
+      // 内部单缺价已在上方 fail-closed 拦截，不会走到这里（否则会漏 ×50% → 翻倍）。
       if (!pricing) return item
       const listUnit = Number(pricing.price) || 0
       const qty = item.quantity || 1
