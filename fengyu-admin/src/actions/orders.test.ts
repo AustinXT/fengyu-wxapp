@@ -2095,7 +2095,7 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
     expect(cap.item.unitRealPrice).toBe('200.00') // 标价（前端传 150 被忽略）
   })
 
-  it('体验卡 → 非会员也享 special_price（豁免）', async () => {
+  it('体验卡 → 非会员按标价（#6=B：不再豁免，与普通商品同口径）', async () => {
     ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ isExperience: true, price: '500.00', specialPrice: '100.00', customerType: '流量客' })))
     const cap = mockCaptureTx()
     const result = await createOrder({
@@ -2103,7 +2103,18 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
       items: [{ ...baseOrderData.items[0], unitPrice: '500', unitRealPrice: '500', quantity: 1 }],
     })
     expect(result.success).toBe(true)
-    expect(cap.item.unitRealPrice).toBe('100.00')
+    expect(cap.item.unitRealPrice).toBe('500.00') // 非会员体验卡 → 标价（#6=B，不再豁免）
+  })
+
+  it('体验卡 → 会员享 special_price（与普通商品同口径）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ isExperience: true, price: '500.00', specialPrice: '100.00', customerType: '会员客' })))
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], unitPrice: '500', unitRealPrice: '500', quantity: 1 }],
+    })
+    expect(result.success).toBe(true)
+    expect(cap.item.unitRealPrice).toBe('100.00') // 会员体验卡 → 会员价
   })
 
   it('店长特价 + 会员 → 允许向下改价（钳制 ≤ 会员价）', async () => {
