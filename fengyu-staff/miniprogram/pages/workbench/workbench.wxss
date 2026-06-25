@@ -175,3 +175,25 @@
   color: var(--color-text-secondary);
   line-height: 1;
 }
+
+/* 自定义导航栏：白底 + 凤御 logo（替代原生「工作台」标题） */
+.wb-navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 100;
+  background: #FFFFFF;
+  box-shadow: 0 1rpx 0 rgba(0, 0, 0, 0.06);
+}
+
+.wb-navbar__content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wb-navbar__logo {
+  height: 64rpx;
+  width: 168rpx;
+}

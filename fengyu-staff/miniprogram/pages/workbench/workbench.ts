@@ -57,7 +57,7 @@ Page({
       const sys = wx.getSystemInfoSync();
       const menu = wx.getMenuButtonBoundingClientRect();
       const statusBarHeight = sys.statusBarHeight || 44;
-      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2;
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2 + 12; // +12px 留白，避免 logo 紧贴导航栏底
       this.setData({
         statusBarHeight,
         contentHeight,

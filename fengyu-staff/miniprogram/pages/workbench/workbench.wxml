@@ -1,6 +1,16 @@
 <!-- pages/workbench/workbench.wxml — 工作台 -->
 <view class="container">
 
+  <!-- 自定义导航栏：白底 + 凤御 logo（替代原生「工作台」标题） -->
+  <view class="wb-navbar">
+    <view style="height: {{statusBarHeight}}px;"></view>
+    <view class="wb-navbar__content" style="height: {{contentHeight}}px;">
+      <image class="wb-navbar__logo" src="/images/logo.png" mode="aspectFit" />
+    </view>
+  </view>
+  <!-- 占位：避免内容被 fixed 导航栏遮挡 -->
+  <view style="height: {{navBarHeight}}px;"></view>
+
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
