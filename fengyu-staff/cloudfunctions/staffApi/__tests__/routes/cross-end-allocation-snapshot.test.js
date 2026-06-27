@@ -11,7 +11,7 @@
  *      （剥离各文件头注释块后，比较 capturePaymentAllocatables 核心代码相等）。
  *   2. 四端（含 admin src/lib/payment-allocatable.ts）都含关键不变片段：
  *        - INSERT INTO sale_payment_allocatable_items ... ON CONFLICT (sale_payment_id, sale_item_id) DO UPDATE
- *        - 非定向按 sale_amount − 已记 amount 剩余应付比例摊
+ *        - 非定向按 pending_received − 已记 amount 剩余实付比例摊
  *        - UPDATE sale_order_payments SET allocation_status='待分配'
  *        - guard：仅「销售单/转换单」+ 排除 legacy（legacy_source==='workfine'）
  *   3. payNotify autoAllocateOnlinePayment 用新约束名 uq_sale_alloc_item_emp_role_payment +
@@ -128,11 +128,11 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
     }
   })
 
-  test('四端非定向均按 sale_amount − 已记 amount（剩余应付）比例摊', () => {
-    const re = /Number\(i\.sale_amount\)\s*-\s*\(priorMap\.get\(i\.sale_item_id\)\s*\|\|\s*0\)/
+  test('四端非定向均按 pending_received − 已记 amount（剩余实付）比例摊', () => {
+    const re = /Number\(i\.pending_received\)\s*-\s*\(priorMap\.get\(i\.sale_item_id\)\s*\|\|\s*0\)/
     for (const [end, src] of ENDS()) {
-      expect(src, `${end} 缺剩余应付比例摊算式`).toMatch(re)
-      // 剩余应付来源：sale_payment_allocatable_items 已记可分配额合计
+      expect(src, `${end} 缺剩余实付比例摊算式`).toMatch(re)
+      // 剩余实付来源：sale_payment_allocatable_items 已记可分配额合计
       expect(src, `${end} 缺已记可分配额合计查询`).toMatch(
         /COALESCE\(SUM\(amount::numeric\), 0\) AS allocated[\s\S]{0,80}FROM sale_payment_allocatable_items/,
       )
