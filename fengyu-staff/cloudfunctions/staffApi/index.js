@@ -59,7 +59,6 @@ const routes = {
   'product.categories':   () => require('./routes/product').categories,
   'product.skuDetail':    () => require('./routes/product').skuDetail,
   'product.skuList':      () => require('./routes/product').skuList,
-  'product.spuDetail':    () => require('./routes/product').spuDetail,
   'product.promotionList': () => require('./routes/product').promotionList,
   'product.promotionPlans': () => require('./routes/product').promotionPlans,
 
