@@ -56,12 +56,4 @@ describe('hasRole', () => {
     setGlobalRoles(['manager'])
     expect(hasRole()).toBe(false)
   })
-
-  test('B6 ticket 场景：profile.ts canSeeInventory 判定（manager/admin/finance 任一）', () => {
-    setGlobalRoles(['admin'])
-    expect(hasRole('manager', 'admin', 'finance')).toBe(true)
-
-    setGlobalRoles(['customer_mgr'])
-    expect(hasRole('manager', 'admin', 'finance')).toBe(false)
-  })
 })

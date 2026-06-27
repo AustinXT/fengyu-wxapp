@@ -1,7 +1,7 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
-import { isManager, hasRole, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
+import { isManager, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 import { APP_VERSION } from '../../utils/version';
 
@@ -18,7 +18,6 @@ Page({
     avatarUrl: '',
     avatarHttpUrl: '',
     isManager: false,
-    canSeeInventory: false,
     // scope 范围内门店切换（与 workbench 一致语义）
     currentStoreName: '',
     currentStoreId: '',
@@ -48,13 +47,11 @@ Page({
       return
     }
     const { staffName, position, staffWfId, phone, avatarUrl } = app.globalData;
-    const canSeeInventory = hasRole('manager', 'admin', 'finance');
     this.setData({
       staffName, position, staffWfId, phone,
       avatarUrl: avatarUrl || '',
       avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
       isManager: isManager(),
-      canSeeInventory,
       canSwitchView: canSwitchLoginLevel() && canAccessManagement(),
     });
     this.syncStoreContext();

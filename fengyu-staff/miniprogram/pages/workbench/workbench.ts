@@ -1,6 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, hasRole } from '../../utils/role';
+import { isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
@@ -12,7 +12,6 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
-    canSeeInventory: false,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],
     hasMultiStore: false,
@@ -101,7 +100,6 @@ Page({
       staffName: staffName || '',
       position: position || '',
       isManager: isManager(),
-      canSeeInventory: hasRole('manager', 'admin', 'finance'),
       currentStoreId: currentStoreId || '',
       scopedStores: scopedStores || [],
       hasMultiStore: (scopedStores || []).length > 1,
@@ -241,10 +239,12 @@ Page({
   },
 
   goInventory() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 
   goPickup() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
   },
 
@@ -261,6 +261,7 @@ Page({
   },
 
   goAllocationList() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 

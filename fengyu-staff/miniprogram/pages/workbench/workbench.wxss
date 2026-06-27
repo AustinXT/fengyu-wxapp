@@ -10,23 +10,25 @@
 .commission-staff-name {
   font-size: 30rpx;
   font-weight: 600;
-  color: #FFFFFF;
+  color: var(--color-text-primary);
 }
 
 .commission-store-wrap {
   display: inline-flex;
   align-items: center;
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
+  background: #FFFFFF;
+  border: 1rpx solid var(--color-border);
 }
 
-.commission-store-wrap--clickable {
-  padding: 4rpx 10rpx;
-  border-radius: 18rpx;
-  background: rgba(255, 255, 255, 0.15);
+.commission-store-wrap--clickable:active {
+  opacity: 0.7;
 }
 
 .commission-store-name {
   font-size: 24rpx;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--color-text-secondary);
 }
 
 .role-badge {
@@ -36,15 +38,15 @@
 }
 
 .role-badge--manager {
-  background: rgba(255, 255, 255, 0.2);
-  color: #FFFFFF;
-  border: 1rpx solid rgba(255, 255, 255, 0.4);
+  background: #FFFFFF;
+  color: var(--color-text-secondary);
+  border: 1rpx solid var(--color-border);
 }
 
 .role-badge--beautician {
-  background: rgba(255, 255, 255, 0.2);
-  color: #FFFFFF;
-  border: 1rpx solid rgba(255, 255, 255, 0.4);
+  background: #FFFFFF;
+  color: var(--color-text-secondary);
+  border: 1rpx solid var(--color-border);
 }
 
 /* ===== 通用 section ===== */
@@ -74,25 +76,23 @@
 
 /* ===== 分成卡片 ===== */
 .commission-card {
-  background: var(--color-primary);
+  background: #F2F3F5;
   border-radius: 20rpx;
-  padding: 32rpx;
-  box-shadow: 0 4rpx 20rpx rgba(192, 50, 42, 0.35);
-  color: #FFFFFF;
+  padding: 28rpx 32rpx;
+  box-shadow: none;
+  color: var(--color-text-primary);
 }
 
-/* ===== 常用功能：大色块磁贴 ===== */
+/* ===== 常用功能：大色块磁贴（Bento 瓷砖） ===== */
 .func-grid {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
+  gap: 20rpx;
   margin: 24rpx 32rpx 0;
 }
 
 .func-item {
   position: relative;
-  width: calc(50% - 8rpx);      /* 2 列，列间距 16rpx */
-  margin-bottom: 16rpx;
   box-sizing: border-box;
   border-radius: 16rpx;
   padding: 32rpx 0;
@@ -101,6 +101,34 @@
   align-items: center;
   justify-content: center;
   box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.08);
+}
+
+/* 整行大色块（订单管理）：横向、加高 */
+.func-item--hero {
+  width: 100%;
+  flex-direction: row;
+  gap: 16rpx;
+  padding: 56rpx 0;
+}
+
+/* 三列（预约/服务/收入）：2 个 20rpx 间隔 */
+.func-item--third {
+  width: calc((100% - 40rpx) / 3);
+  padding: 40rpx 0;
+}
+
+/* 两列（营业额/库存）：1 个 20rpx 间隔 */
+.func-item--half {
+  width: calc((100% - 20rpx) / 2);
+  padding: 40rpx 0;
+}
+
+/* 整行长条（提货核销）：横向、薄条（参考 Image #3 比例） */
+.func-item--bar {
+  width: 100%;
+  flex-direction: row;
+  gap: 16rpx;
+  padding: 20rpx 0;
 }
 
 .func-badge {
@@ -125,6 +153,15 @@
   font-size: 28rpx;
   color: #FFFFFF;
   line-height: 1;
+}
+
+/* 横向卡片（hero/bar）标签复位 + hero 文字加大 */
+.func-item--hero .func-label,
+.func-item--bar .func-label {
+  margin-top: 0;
+}
+.func-item--hero .func-label {
+  font-size: 36rpx;
 }
 
 /* ===== 待处理事项：图标宫格 ===== */
