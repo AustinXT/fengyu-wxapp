@@ -92,8 +92,13 @@ describe('card.inflow — 幂等防重复入账', () => {
   test('新 requestId 无重复 → 正常建单 + 入账（message=转入成功）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001', amount: 500, requestId: 'req-new' })
     mockCustomerInScope()
-    // 默认 client.query 返回空 rows（dup 未命中）+ rowCount=1，覆盖锁 / orderSeq / INSERT / logOperation
-    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    // 顾客已有卡，且 card_id 是历史异格式（≠ FY-CARD-cu-001）：UPSERT ON CONFLICT(user_id) 命中旧行，
+    // RETURNING 返回旧 card_id。其余 client.query 默认空 rows + rowCount=1（锁 / orderSeq / INSERT / logOperation）。
+    const EXISTING_CARD_ID = 'FY-CARD-1779383511931710'
+    const clientQuery = vi.fn(async (sql) => {
+      if (/INSERT INTO prepaid_cards/.test(sql)) return { rows: [{ card_id: EXISTING_CARD_ID }], rowCount: 1 }
+      return { rows: [], rowCount: 1 }
+    })
     pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
 
     await cardRoutes.inflow(ctx)
@@ -101,5 +106,10 @@ describe('card.inflow — 幂等防重复入账', () => {
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-/)
     expect(ctx.result.message).toBe('转入成功')
     expect(clientQuery.mock.calls.length).toBeGreaterThan(2)
+    // 回归守护（card_id FK 23503）：card_transactions 必须用 UPSERT 返回的实际异格式 card_id，
+    // 而非构造的 FY-CARD-cu-001（顾客已有异格式卡时直用构造值会违反 card_transactions→prepaid_cards 外键）
+    const ctInsert = clientQuery.mock.calls.find(([s]) => /INSERT INTO card_transactions/.test(s))
+    expect(ctInsert).toBeTruthy()
+    expect(ctInsert[1][0]).toBe(EXISTING_CARD_ID)
   })
 })
