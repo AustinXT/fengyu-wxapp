@@ -38,19 +38,6 @@ interface IAppOption {
     // 运行时
     loginLevel: LoginLevel | null;
     currentStoreId: string;
-    pendingCartItem?: {
-      spuId: string;
-      skuId: string;
-      spuName: string;
-      specName: string;
-      price: number;
-      quantity: number;
-      sessionCount: number;
-      productType: string;
-      workfineItemId?: string;
-      isManagerSpecial?: boolean;
-      directCheckout?: boolean;
-    } | null;
     _serviceCreatePreload?: {
       customer: { id: string; name: string; phone: string; clientUserId?: string };
       items: Array<{

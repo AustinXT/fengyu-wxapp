@@ -211,7 +211,6 @@ App<IAppOption>({
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
     // 清除临时页面状态
-    (this.globalData as any).pendingCartItem = null;
     (this.globalData as any)._serviceCreatePreload = null;
     wx.clearStorageSync();
   },
@@ -225,7 +224,6 @@ App<IAppOption>({
     // 1) 清「视图绑定」业务缓存，防止串缓存。
     //    ⚠️ 单一扩展点：未来若新增「按视图/门店隔离」的本地缓存，往这里加 removeStorageSync。
     wx.removeStorageSync('recentCustomers');
-    (this.globalData as any).pendingCartItem = null;
     (this.globalData as any)._serviceCreatePreload = null;
 
     // 2) 切回门店视图时，确保 currentStoreId 落在 scope 内（镜像 syncLoginState 的兜底）

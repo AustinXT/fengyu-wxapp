@@ -55,8 +55,9 @@ Page({
     try {
       const sys = wx.getSystemInfoSync();
       const menu = wx.getMenuButtonBoundingClientRect();
-      const statusBarHeight = sys.statusBarHeight || 44;
-      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2 + 12; // +12px 留白，避免 logo 紧贴导航栏底
+      // ?? 而非 ||：横屏/折叠屏下 statusBarHeight 合法为 0，|| 会误替换成 44 → (menu.top - 44)*2 变负 → header 塌陷
+      const statusBarHeight = sys.statusBarHeight ?? 44;
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2; // 对齐微信原生导航栏内容高度（胶囊垂直居中），与其他 Tab 顶栏一致
       this.setData({
         statusBarHeight,
         contentHeight,
