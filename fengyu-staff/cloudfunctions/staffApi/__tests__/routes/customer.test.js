@@ -716,6 +716,31 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].storeName).toBe('外店')
     expect(ctx.result[0].items[0].storeId).toBe('store-999')
   })
+
+  test('部分支付订单的疗程卡也返回（按 paid_sessions 限额核销，与 service.create 后端一致）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-partial' })
+    // assertCustomerInScope 先 SELECT bound_store_id；store-001 命中 scope
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    // 订单查询：返回一条部分支付订单（修复前会被 o.status='已支付' 过滤掉）
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-PARTIAL', status: '部分支付', paid_at: '2026-06-29T04:54:01Z' },
+    ])
+    // items 查询：15 次疗程卡，已付 10 次（数据本身正确，修复前因订单被排除而无法展示）
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'SO-PARTIAL', sale_item_id: 'item-partial', store_id: 'store-001',
+        session_count: 15, remaining_sessions: 15, paid_sessions: 10,
+        sku_id: 'sku-waist', product_type: '疗程卡', product_name: '温暖SPA·腰腹',
+      },
+    ])
+    await customerRoutes.paidOrders(ctx)
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].saleOrderId).toBe('SO-PARTIAL')
+    expect(ctx.result[0].status).toBe('部分支付')
+    expect(ctx.result[0].items[0].totalSessions).toBe(15)
+    expect(ctx.result[0].items[0].paidSessions).toBe(10)
+    expect(ctx.result[0].items[0].remainingSessions).toBe(15)
+  })
 })
 
 // ============================================================
