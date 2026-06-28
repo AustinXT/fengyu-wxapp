@@ -602,7 +602,7 @@ async function calendar(ctx) {
 }
 
 // ====================================================================
-// paidOrders — 已支付订单含明细（按 sale_orders.store_id ∈ scope）
+// paidOrders — 已支付/部分支付订单含明细（疗程卡 Tab 可核销卡数据源；按 sale_orders.store_id ∈ scope）
 // ====================================================================
 
 async function paidOrders(ctx) {
@@ -616,9 +616,10 @@ async function paidOrders(ctx) {
   validateScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
+  // 状态口径：已支付 + 部分支付（部分支付疗程卡按 paid_sessions 限额核销，与 service.create / customer.paidOrders 一致）
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
   const params = [resolvedUserId]
-  const whereClause = `o.status = '已支付' AND o.client_user_id = $1`
+  const whereClause = `o.status IN ('已支付', '部分支付') AND o.client_user_id = $1`
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
@@ -683,7 +684,7 @@ async function paidOrders(ctx) {
 
 // ====================================================================
 // orderHistory — 顾客消费记录（全状态 + 跨门店，仅展示用）
-// 与 paidOrders 解耦：paidOrders 供疗程卡 Tab 可核销卡（仅已支付），
+// 与 paidOrders 解耦：paidOrders 供疗程卡 Tab 可核销卡（已支付/部分支付，按 paid_sessions 限额核销），
 // 本 action 查全部状态供消费记录列表展示，items 不参与核销。
 // ====================================================================
 

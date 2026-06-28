@@ -563,15 +563,17 @@ async function paidOrders(ctx) {
   }
 
   // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
+  // 状态口径：已支付 + 部分支付。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
+  //   admin getCustomerAvailableServices 一致）；待支付单 paid_sessions=0，前端 consumable<=0 兜底自动隐藏。
   let whereClause, params;
   if (clientUserId) {
-    whereClause = "o.status = '已支付' AND o.client_user_id = $1";
+    whereClause = "o.status IN ('已支付', '部分支付') AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
     // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
     // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
     const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
-    whereClause = `o.status = '已支付' AND o.client_phone = $1 AND ${scope.sql}`;
+    whereClause = `o.status IN ('已支付', '部分支付') AND o.client_phone = $1 AND ${scope.sql}`;
     params = [clientPhone, ...scope.params];
   }
 
@@ -654,9 +656,10 @@ async function paidOrders(ctx) {
  * 顾客消费记录（全状态 + 跨门店，仅展示用）
  *
  * 与 paidOrders 的区别 / 为何独立成 action：
- *   paidOrders 仅返回「已支付」订单且对 items 做退款冻结过滤，前端复用它提取
- *   疗程卡 Tab 的可核销卡（→ service.create 核销次数）。若放开它的状态过滤，
- *   待支付/未付款订单的卡会混进可核销列表，破坏「先付款后核销」。
+ *   paidOrders 返回「已支付/部分支付」订单并对 items 做退款冻结过滤，前端复用它提取
+ *   疗程卡 Tab 的可核销卡（→ service.create 核销次数；部分支付卡按 paid_sessions 限额核销）。
+ *   本 action（orders）查全部状态供消费记录列表展示，items 不参与核销，
+ *   故待支付/已关闭等非可核销订单也展示（仅记录，不可点选核销）。
  *   故消费记录列表独立成此 action：查全部状态、跨门店，items 仅作展示，不参与核销。
  */
 async function orderHistory(ctx) {

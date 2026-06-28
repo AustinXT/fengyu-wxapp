@@ -818,6 +818,37 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     expect(ctx.result.orders[0].items[0].itemName).toBe('深层补水')
   })
 
+  test('paidOrders：部分支付订单的疗程卡也返回（按 paid_sessions 限额核销）', async () => {
+    setupCommonMocks({
+      paidOrderRows: [
+        { sale_order_id: 'so-partial', status: '部分支付', paid_at: '2026-06-29', store_id: 'store-001', store_name: 'A 店' },
+      ],
+      paidOrderItems: [
+        {
+          sale_order_id: 'so-partial',
+          sale_item_id: 'si-partial',
+          store_id: 'store-001',
+          session_count: 15,
+          remaining_sessions: 15,
+          paid_sessions: 10,
+          sku_id: 'sku-1',
+          product_type: '疗程卡',
+          product_name: '温暖SPA·腰腹',
+        },
+      ],
+    })
+    const ctx = makeHqCtx({
+      clientUserId: 'u1',
+      scopeType: 'store',
+      scopeId: 'store-001',
+    })
+    await paidOrders(ctx)
+    expect(ctx.result.orders).toHaveLength(1)
+    expect(ctx.result.orders[0].status).toBe('部分支付')
+    expect(ctx.result.orders[0].items[0].totalSessions).toBe(15)
+    expect(ctx.result.orders[0].items[0].paidSessions).toBe(10)
+  })
+
   test('giftHistory scope=market：赠品 SQL 不含 o.store_id 过滤', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({
