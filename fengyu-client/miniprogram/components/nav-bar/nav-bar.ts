@@ -46,7 +46,7 @@ Component({
 
   methods: {
     _applyNavBar() {
-      const { statusBarHeight = 44, navBarContentHeight = 44, navBarHeight = 88, logoHeight = 34 } = app.globalData;
+      const { statusBarHeight = 44, navBarContentHeight = 44, navBarHeight = 88, logoHeight = 26 } = app.globalData;
       const pages = getCurrentPages();
       this.setData({
         statusBarHeight,
