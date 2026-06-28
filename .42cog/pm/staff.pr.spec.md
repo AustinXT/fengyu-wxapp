@@ -93,12 +93,11 @@
 |------|------|----------|
 | 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"过滤 SKU `is_experience=false AND is_recharge_card=false`（capability 列驱动）。**Tab 标签仅 UI 渲染分支用**——SQL 过滤一律走 `is_experience` / `is_recharge_card` capability 列，详见 `backend.pr.spec.md` §4 #23 | 视图常量 + capability 列 |
 | 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），家居产品固定追加末尾 |
-| 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
-| 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |
+| 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存；SKU 扁平，点击直接加购） |
 
 **购物车规则**:
 - 支持**逐项优惠**（per-item discount），上限 `discount ≤ price × quantity`
-- 两种加入：**加入购物车**（继续选购）/ **直接结算**（`directCheckout` → 自动弹结算弹层）
+- 点 SKU 卡片直接**加入购物车**（继续选购）
 
 **结算 3 步弹层**: Step 0 选顾客（手机号搜索 + 最近 5 个） → Step 1 确认单据类型 → Step 2 确认+备注 → 提交后跳转二维码页
 
@@ -107,7 +106,7 @@
 - 价格快照开单时写入，后续不可变
 - 订单号/流水号格式见 `backend.pr.spec.md` §2.8/§2.9
 
-**API**: `order.create` / `product.shopInit` / `product.categories` / `product.spuList` / `product.skuDetail` / `product.spuDetail` / `product.promotionList` / `product.promotionPlans`
+**API**: `order.create` / `product.shopInit` / `product.categories` / `product.spuList` / `product.skuDetail` / `product.promotionList` / `product.promotionPlans`
 
 ---
 
@@ -442,12 +441,12 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 | 主包 | login, workbench, order-create, service, customer-list, profile | TabBar + 登录页 |
 | packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list | 订单与分配 |
 | packageCustomer | customer-detail | 顾客详情 |
-| packageService | service-list, service-detail, service-create, appointment, appointment-detail, product-detail, unbind-requests | 护理与预约 |
+| packageService | service-list, service-detail, service-create, appointment, appointment-detail, unbind-requests | 护理与预约 |
 
 ### 5.3 核心导航流
 
 - 工作台 → 待办 → 各详情页；分成卡片 → 月度日历；顾客搜索 → 详情 → 日历/疗程卡 → 创建服务单
-- 开单 → 四级导航 → 商品详情 → 购物车 → 结算弹层 → 二维码
+- 开单 → 四级导航 → 点 SKU 卡片直接加购 → 购物车 → 结算弹层 → 二维码
 - 护理 → 3 Tab + FAB → 服务单详情/创建；预约从护理/工作台进入 → 确认/签到/创建服务单
 - 顾客列表 → 详情 → 消费日历/创建服务单/转店审批
 - 我的 → 门店切换/手机号重绑/退出；快捷导航 → 订单列表 → 详情/分配

@@ -288,7 +288,6 @@ Page({
     searching: false,
     // 组合套餐（BundlePicker 数据源）
     bundleSpus: [] as BundleSpu[],
-    skuMap: {} as Record<string, SkuItem>,
     /** 卡类型（体验卡/充值卡）→ grid 简化布局 */
     isCardType: false,
     // 购物车
@@ -389,11 +388,7 @@ Page({
     }
     this.setData({ isManager: isManager() });
     // Tab 页常驻不销毁：重新进入开单页时完全重置上一单残留的表单态 + 购物车（用户决策）。
-    // 例外：携带 pendingCartItem 时为「商品详情页返回追加购物车」的同一流程，跳过重置。
-    const pending = app.globalData.pendingCartItem;
-    if (!pending) {
-      this.resetOrderState();
-    }
+    this.resetOrderState();
     if (this._allCategories.length === 0) {
       this.loadShopInit();
     }
@@ -405,63 +400,6 @@ Page({
       }
       this.setData({ recentCustomers: valid });
     } catch (_) {}
-
-    // 从商品详情页返回：处理 pendingCartItem（pending 已在 onShow 顶部读取）
-    if (pending) {
-      app.globalData.pendingCartItem = null;
-
-      // 组合套餐商品不加入购物车，只能直接下单（清空购物车后单独放入）
-      if (pending.productType === '组合套餐') {
-        const cart: CartItem[] = [{
-          spuId: pending.spuId,
-          skuId: pending.skuId,
-          spuName: pending.spuName,
-          specName: pending.specName,
-          price: pending.price,
-          listPrice: pending.price,
-          specialPrice: null,
-          quantity: pending.quantity,
-          sessionCount: pending.sessionCount || 0,
-          productType: pending.productType,
-          workfineItemId: pending.workfineItemId || '',
-          priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
-        }];
-        this.updateCart(cart);
-      } else {
-        const cart = [...this.data.cart];
-        // 购物车中有组合套餐商品时不允许混入其他商品
-        if (cart.some(c => c.productType === '组合套餐')) {
-          wx.showToast({ title: '组合套餐订单需单独下单', icon: 'none' });
-          return;
-        }
-        const existing = cart.findIndex(c => c.skuId === pending.skuId);
-        if (existing >= 0) {
-          cart[existing].quantity += pending.quantity;
-        } else {
-          cart.push({
-            spuId: pending.spuId,
-            skuId: pending.skuId,
-            spuName: pending.spuName,
-            specName: pending.specName,
-            price: pending.price,
-            listPrice: pending.price,
-            specialPrice: null,
-            quantity: pending.quantity,
-            sessionCount: pending.sessionCount || 0,
-            productType: pending.productType,
-            workfineItemId: pending.workfineItemId || '',
-            isManagerSpecial: !!pending.isManagerSpecial,
-            priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
-          });
-        }
-        this.updateCart(cart);
-      }
-      if (pending.directCheckout) {
-        // PR-C §C6：旧 orderType='promotion' 分支删除；saleOrderType 默认 '销售单'
-        // 此路径绕过 onOpenCheckout 直接重开结算面板，须显式重置 isActivity，避免上一单的活动标记串入新单
-        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单', isActivity: false });
-      }
-    }
   },
 
   // ===== 商品目录（三级导航 + 缓存） =====
@@ -482,12 +420,9 @@ Page({
       this._experienceSkus = experienceSkus;
       this._spuCache = {};
 
-      const skuMap: Record<string, SkuItem> = {};
-      for (const s of rawSkus) skuMap[s.skuId] = s;
-      // 体验卡 SKU 也写入 skuMap（购物车/详情页查 skuMap 时需要），但不并入 _allSkus 以保持其"非卡类首分类预取"语义。
-      for (const s of experienceSkus) skuMap[s.skuId] = s;
-
-      this.setData({ bundleSpus, skuMap, catalogLoading: false });
+      // 体验卡 SKU 不并入 _allSkus（保持其"非卡类首分类预取"语义）；refreshForCustomer 重算时
+      // 会同时索引 _allSkus + _experienceSkus，故此处无需再建持久化 skuMap。
+      this.setData({ bundleSpus, catalogLoading: false });
       this.applyKindChoice(this.data.productKindChoice);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -751,7 +686,9 @@ Page({
         categoryId,
         excludeCards: productKindChoice === '普通商品',
       });
-      // 追加到 _allSkus（便于后续缓存命中）
+      // 追加懒加载分类的 SKU 到 _allSkus。shopInit 只返首分类，其余分类经此远程补全；
+      // refreshForCustomer 选顾客后直接从 _allSkus + _experienceSkus 现建索引重算会员价，
+      // 故此处只需保证 _allSkus 完整、无需手动回填任何 SKU 索引（避免漏同步重现「会员按标价收」bug）。
       this._allSkus = this._allSkus.concat(skus || []);
       const list = filterSkusByKindChoice(skus || [], productKindChoice).map((s) => skuToDisplay(s, this.data.buyerIsMember));
       this._spuCache[cacheKey] = list;
@@ -1161,9 +1098,9 @@ Page({
 
   /**
    * 完全重置开单页（含购物车 + 商品类型 Tab），使每次重新进入都是全新开单状态。
-   * 由 Tab 页 onShow 重新进入（非 pendingCartItem 追加流程）时调用。
+   * 由 Tab 页 onShow 每次重新进入时调用。
    * 保留：isManager / recentCustomers / staffListForPicker / staffPickerColumns
-   *      及全部 `_` 前缀缓存（_allCategories/_allSkus/...）+ skuMap + bundleSpus。
+   *      及全部 `_` 前缀缓存（_allCategories/_allSkus/_experienceSkus/...）+ bundleSpus。
    */
   resetOrderState() {
     this.resetCheckoutForm();
@@ -1236,12 +1173,16 @@ Page({
    * onSelectCustomer / onSelectRecentCustomer / onSearchCustomer 单结果自动选中三处共用，防止分叉。
    * - 体验卡同口径按会员分流（#6=B，不再豁免；会员=会员价，非会员=标价）。
    * - 组合套餐行价格固定（refBundleId / 组合套餐），跳过不重算。
-   * - skuMap 未命中（套餐/未加载/直购单品）时保留原值。最终结算仍以云函数 order.create 权威定价为准。
+   * - SKU 索引未命中（套餐/直购单品）时保留原值。最终结算仍以云函数 order.create 权威定价为准。
    */
   refreshForCustomer(customer: CustomerInfo) {
     const buyerIsMember = deriveIsMember(customer);
     this._spuCache = {};   // 会员身份变化→清商品展示缓存，重选商品时按新身份重算会员价分流
-    const skuMap = this.data.skuMap;
+    // 从 _allSkus（含懒加载分类）+ _experienceSkus 现建索引（单一来源；购物车/列表 SKU 必已加载其中）。
+    // 不依赖持久化 skuMap，避免各 ingestion 点手动回填漏同步即重现「会员按标价收」的 bug。
+    const skuMap: Record<string, SkuItem> = {};
+    for (const s of this._allSkus) skuMap[s.skuId] = s;
+    for (const s of this._experienceSkus) skuMap[s.skuId] = s;
     // 1) 重算当前已渲染的 spuList（按新会员身份分流）
     const spuList = this.data.spuList.map((row) => {
       const sku = skuMap[row.spuId];

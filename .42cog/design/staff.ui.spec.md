@@ -123,7 +123,7 @@
 | 主包 | login, workbench, order-create, service, customer-list, profile | TabBar + 登录 |
 | packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list | 工作台待办/我的快捷入口 |
 | packageCustomer | customer-detail | 顾客列表/搜索 |
-| packageService | service-list, service-detail, service-create, appointment, appointment-detail, product-detail, unbind-requests | 护理 Tab/工作台待办 |
+| packageService | service-list, service-detail, service-create, appointment, appointment-detail, unbind-requests | 护理 Tab/工作台待办 |
 
 ---
 
@@ -452,8 +452,7 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 |------|------|------|
 | 顶部 Tab | `van-tabs` | 固定顶部，`color="#C0322A"` |
 | 左侧分类 | `van-sidebar` | 180rpx 宽，`#F5F2EE` 背景 |
-| 右侧列表 | `scroll-view` | 商品卡片流 |
-| 商品详情 | `van-popup` | 底部弹出，SKU 选择 |
+| 右侧列表 | `scroll-view` | 商品卡片流（SKU 扁平，点击直接加购） |
 
 **SPU 卡片**：
 - 白底圆角 16rpx，无封面图时显示暖米色渐变占位
@@ -1173,31 +1172,6 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 
 仅店长可见。操作均含二次确认弹窗。
 
-### 4.18 商品详情弹层 `packageService/product-detail`
-
-商品详情在开单流程中以 `van-popup` 底部弹出展示：
-
-```
-┌─ 商品详情弹层 ───────────────────────┐
-│ [封面图]                              │
-│                                       │
-│ 蜜语生玑精华护理疗程                  │
-│ [护理项目] [蜜语生玑]                 │
-│                                       │
-│ 选择规格：                            │
-│ ┌─────────────────────────────────┐  │
-│ │ ○ 10次卡  ¥1,999  (扣10次)     │  │
-│ │ ● 单次体验  ¥299  (扣1次)      │  │
-│ │ ○ 5次卡  ¥999  (扣5次)         │  │
-│ └─────────────────────────────────┘  │
-│                                       │
-│ [加入购物车]        [直接结算]        │
-└───────────────────────────────────────┘
-```
-
-- SKU 选择：`van-radio-group`
-- 双按钮：加入购物车（default）/ 直接结算（primary）
-
 ### 4.19 员工绩效 `packageOrder/staff-performance`
 
 > **需求来源**: pr.spec §3.15 提成展示增强（P1，部分实现）
@@ -1378,7 +1352,7 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
   └→ 待办: 待审批解绑 → packageService/unbind-requests
 
 开单（仅店长）
-  → 四级导航选品 → 商品详情弹层(SKU) → 加入购物车
+  → 四级导航选品 → 点 SKU 卡片直接加入购物车
   → 购物车 → 结算弹层(3步) → 提交
   → packageOrder/order-qrcode
 

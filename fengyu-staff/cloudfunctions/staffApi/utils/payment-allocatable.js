@@ -18,7 +18,7 @@ const ALLOCATABLE_ORDER_TYPES = ['销售单', '转换单']
  * @param salePaymentId 本回款事件主流水行 id（现金「首次支付/回款」行；纯储值卡回款取「储值卡抵扣」行）
  * @param saleOrderId   原销售单号
  * @param eventAmount   本次回款总额（现金 + 储值卡抵扣；提成率档位基准）
- * @param directedItems [{saleItemId, amount}] 定向回款逐项金额（现金+储值卡）；null/空 = 非定向按剩余应付比例摊
+ * @param directedItems [{saleItemId, amount}] 定向回款逐项金额（现金+储值卡）；null/空 = 非定向按剩余实付(pending_received)比例摊
  * @returns [{saleItemId, amount, salesCategory}]（供线上自动分配使用）
  */
 async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, eventAmount, directedItems }) {
@@ -36,7 +36,7 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
   }
 
   const itemsRes = await client.query(
-    `SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category
+    `SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received, sales_category
        FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
     [saleOrderId],
   )
@@ -51,7 +51,8 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
       .map((d) => ({ saleItemId: String(d.saleItemId), amount: Math.round(Number(d.amount) * 100) / 100 }))
       .filter((d) => catMap.has(d.saleItemId) && d.amount > 0)
   } else {
-    // 非定向：按各 item 剩余应付（sale_amount − Σ已记可分配额）比例摊，余数补末项；保证 Σ = evt
+    // 非定向：按各 item 剩余实付（pending_received − Σ已记可分配额）比例摊，余数补末项；保证 Σ = evt
+    // pending_received = 开单/回款时填的逐项实付（提成基数口径）；首付全额收时各项恰好 = 开单实付。
     const priorRes = await client.query(
       `SELECT sale_item_id, COALESCE(SUM(amount::numeric), 0) AS allocated
          FROM sale_payment_allocatable_items WHERE sale_order_id = $1 GROUP BY sale_item_id`,
@@ -60,7 +61,7 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     const priorMap = new Map(priorRes.rows.map((r) => [r.sale_item_id, Number(r.allocated)]))
     let base = items.map((i) => ({
       saleItemId: i.sale_item_id,
-      w: Math.max(0, Math.round((Number(i.sale_amount) - (priorMap.get(i.sale_item_id) || 0)) * 100) / 100),
+      w: Math.max(0, Math.round((Number(i.pending_received) - (priorMap.get(i.sale_item_id) || 0)) * 100) / 100),
     }))
     let totalW = base.reduce((s, b) => s + b.w, 0)
     if (totalW <= 0) {

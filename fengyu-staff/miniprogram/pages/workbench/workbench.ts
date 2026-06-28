@@ -1,6 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, hasRole } from '../../utils/role';
+import { isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
@@ -12,7 +12,6 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
-    canSeeInventory: false,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],
     hasMultiStore: false,
@@ -56,8 +55,9 @@ Page({
     try {
       const sys = wx.getSystemInfoSync();
       const menu = wx.getMenuButtonBoundingClientRect();
-      const statusBarHeight = sys.statusBarHeight || 44;
-      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2 + 12; // +12px 留白，避免 logo 紧贴导航栏底
+      // ?? 而非 ||：横屏/折叠屏下 statusBarHeight 合法为 0，|| 会误替换成 44 → (menu.top - 44)*2 变负 → header 塌陷
+      const statusBarHeight = sys.statusBarHeight ?? 44;
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2; // 对齐微信原生导航栏内容高度（胶囊垂直居中），与其他 Tab 顶栏一致
       this.setData({
         statusBarHeight,
         contentHeight,
@@ -101,7 +101,6 @@ Page({
       staffName: staffName || '',
       position: position || '',
       isManager: isManager(),
-      canSeeInventory: hasRole('manager', 'admin', 'finance'),
       currentStoreId: currentStoreId || '',
       scopedStores: scopedStores || [],
       hasMultiStore: (scopedStores || []).length > 1,
@@ -241,10 +240,12 @@ Page({
   },
 
   goInventory() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 
   goPickup() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageMy/pickup/pickup-by-customer' });
   },
 
@@ -261,6 +262,7 @@ Page({
   },
 
   goAllocationList() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 

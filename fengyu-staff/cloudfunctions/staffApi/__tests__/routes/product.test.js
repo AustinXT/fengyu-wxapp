@@ -1,6 +1,6 @@
 /**
  * 商品模块路由测试
- * 覆盖：shopInit / categories / skuList / skuDetail / spuDetail
+ * 覆盖：shopInit / categories / skuList / skuDetail
  */
 
 
@@ -191,70 +191,6 @@ describe('product.skuDetail', () => {
 
     await expect(productRoutes.skuDetail(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*商品不存在/)
-  })
-})
-
-// ============================================================
-// product.spuDetail
-// ============================================================
-describe('product.spuDetail', () => {
-  test('找到商品返回详情（含 SKU 列表）', async () => {
-    const ctx = createCtx({ payload: { spuId: 'prod-1' } })
-
-    pg.query.mockResolvedValueOnce([{
-      product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
-      category_name: '护理项目', product_kind: '护理项目',
-      cover_image: null, description: '深层清洁', sort_order: 1,
-      price: '300', special_price: '200', is_bundle: false,
-    }])
-    pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-1', product_type: '疗程卡', spec_name: '基础款', price: '300', special_price: '200', session_count: 10, sort_order: 1, product_kind: '护理项目', kind_display_color: '#C0322A' },
-      { sku_id: 'sku-2', product_type: '疗程卡', spec_name: '高级款', price: '500', special_price: '400', session_count: 20, sort_order: 2, product_kind: '护理项目', kind_display_color: '#C0322A' },
-    ])
-
-    await productRoutes.spuDetail(ctx)
-
-    expect(ctx.result.spu.product_id).toBe('prod-1')
-    expect(ctx.result.spu.skuList).toHaveLength(2)
-    expect(ctx.result.spu.priceFrom).toBe(200)
-    // PR-D：spu 级 productKind / kindDisplayColor 由 SKU 行聚合
-    expect(ctx.result.spu.productKind).toBe('护理项目')
-    expect(ctx.result.spu.kindDisplayColor).toBe('#C0322A')
-  })
-
-  test('PR-D：所有 SKU 行均无 product_kind 时 productKind/kindDisplayColor=null', async () => {
-    const ctx = createCtx({ payload: { spuId: 'prod-1' } })
-
-    pg.query.mockResolvedValueOnce([{
-      product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
-      category_name: '护理项目', product_kind: '护理项目',
-      cover_image: null, description: null, sort_order: 1,
-      price: '300', special_price: null, is_bundle: false,
-    }])
-    pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-1', product_type: '疗程卡', spec_name: '基础款', price: '300', special_price: null, session_count: 10, sort_order: 1 },
-    ])
-
-    await productRoutes.spuDetail(ctx)
-
-    expect(ctx.result.spu.productKind).toBeNull()
-    expect(ctx.result.spu.kindDisplayColor).toBeNull()
-  })
-
-  test('缺少 spuId 抛出 INVALID_PARAMS', async () => {
-    const ctx = createCtx({ payload: {} })
-
-    await expect(productRoutes.spuDetail(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*spuId/)
-  })
-
-  test('商品不存在抛出 INVALID_PARAMS', async () => {
-    const ctx = createCtx({ payload: { spuId: 'prod-nonexist' } })
-
-    pg.query.mockResolvedValueOnce([])
-
-    await expect(productRoutes.spuDetail(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*商品.*不存在/)
   })
 })
 

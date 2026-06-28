@@ -40,7 +40,6 @@
         "service-create/service-create",
         "appointment/appointment",
         "appointment-detail/appointment-detail",
-        "product-detail/product-detail",
         "unbind-requests/unbind-requests"
       ]
     },

@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|------|
 | packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list, service-commission |
 | packageCustomer | customer-detail |
-| packageService | service-list, service-detail, service-create, appointment, appointment-detail, product-detail, unbind-requests |
+| packageService | service-list, service-detail, service-create, appointment, appointment-detail, unbind-requests |
 
 ## 全局状态（app.globalData）
 

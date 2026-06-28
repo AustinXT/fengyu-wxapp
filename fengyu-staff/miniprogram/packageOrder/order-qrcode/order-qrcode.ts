@@ -130,9 +130,17 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.confirmOffline', { saleOrderId: this.data.saleOrderId });
+          const result = await callStaffApi<{ status?: string }>('order.confirmOffline', { saleOrderId: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadQrcode(this.data.saleOrderId);
+          if (result && result.status === '已支付') {
+            // 全额结清：刷新 → 命中「已支付」分支 → 自动跳回工作台
+            this.loadQrcode(this.data.saleOrderId);
+          } else {
+            // 线下仅收部分款（首付/欠款）：订单仍部分支付，尾款走订单详情「发起回款」，
+            // 此处不再 loadQrcode（避免落入「待扫码」扫码页），直接跳回工作台
+            this.stopPolling();
+            setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 1500);
+          }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });

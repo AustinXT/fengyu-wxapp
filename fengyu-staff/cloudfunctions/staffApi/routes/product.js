@@ -4,7 +4,6 @@
  * product.categories — 品项分类列表
  * product.skuList — SKU 列表（按品项分类）
  * product.skuDetail — SKU 详情
- * product.spuDetail — 商城商品详情
  *
  * SKU 直接绑定品项分类（product_skus → product_categories），无 products 中间层。
  * 商城商品查询通过 products → mall_product_skus → product_skus。
@@ -424,91 +423,6 @@ async function skuDetail(ctx) {
 }
 
 /**
- * 商城商品详情（展示用，查 products + mall_product_skus）
- */
-async function spuDetail(ctx) {
-  await requireStaffBound()(ctx, async () => {})
-
-  const { spuId } = ctx.event.payload || {}
-  if (!spuId) {
-    throw new Error('INVALID_PARAMS: 缺少 spuId 参数')
-  }
-
-  const spuRows = await pg.query(`
-    SELECT p.product_id, p.name, p.category_id, mc.category_name,
-           p.cover_image, p.description, p.sort_order, p.price, p.special_price,
-           p.is_bundle
-    FROM products p
-    JOIN mall_categories mc ON p.category_id = mc.category_id
-    WHERE p.product_id = $1
-  `, [spuId])
-
-  if (spuRows.length === 0) {
-    throw new Error('INVALID_PARAMS: 商品不存在')
-  }
-
-  const spu = spuRows[0]
-
-  // PR-D：JOIN product_categories pc → 一级行 parent_pc，带出 product_kind / kind_display_color
-  // 供前端 product-detail 顶部 tag 渲染（颜色 DB 驱动）
-  const skuList = await pg.query(`
-    SELECT sk.sku_id, sk.product_type, sk.spec_name, sk.price, sk.special_price,
-           sk.session_count, sk.sort_order, sk.service_fee, sk.is_manager_special,
-           mps.bundle_price, mps.sort_order AS display_order,
-           mps.bundle_group_id,
-           bg.group_name, bg.pick_count AS group_pick_count,
-           pc.product_kind,
-           parent_pc.display_color AS kind_display_color
-    FROM mall_product_skus mps
-    JOIN product_skus sk ON mps.sku_id = sk.sku_id
-    LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
-    LEFT JOIN product_categories parent_pc
-      ON parent_pc.product_kind IS NULL
-     AND parent_pc.category_name = pc.product_kind
-    LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
-    WHERE mps.product_id = $1
-      AND sk.is_enabled = true
-      AND sk.deleted_at IS NULL
-    ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
-  `, [spuId])
-
-  // PR-D：从 SKU 行聚合出 spu 级 productKind / kindDisplayColor
-  // 取首个非空 product_kind 作为该 SPU 的 kind 标签（一个 SPU 通常只属一个 kind）
-  const firstKindSku = skuList.find(s => s.product_kind)
-  const productKind = firstKindSku ? firstKindSku.product_kind : null
-  const kindDisplayColor = firstKindSku ? (firstKindSku.kind_display_color || null) : null
-
-  // 构建分组信息（套餐商品）
-  let bundleGroups = null
-  if (spu.is_bundle) {
-    const groupRows = await pg.query(`
-      SELECT id, group_name, pick_count, sort_order
-      FROM mall_bundle_groups
-      WHERE product_id = $1
-      ORDER BY sort_order ASC
-    `, [spuId])
-
-    bundleGroups = groupRows.map(g => ({
-      id: g.id,
-      groupName: g.group_name,
-      pickCount: g.pick_count,
-      skuIds: skuList.filter(s => s.bundle_group_id === g.id).map(s => s.sku_id),
-    }))
-  }
-
-  ctx.result = {
-    spu: {
-      ...spu,
-      productKind,
-      kindDisplayColor,
-      skuList,
-      bundleGroups,
-      priceFrom: skuList.length > 0 ? Math.min(...skuList.map(s => Number(s.special_price || s.price) || 0)) : null,
-    }
-  }
-}
-
-/**
  * 促销方案列表（已迁移至 PG 商品体系）
  * 原 WorkFine 促销查询已废弃，bundle 商品为后续实现
  */
@@ -522,7 +436,7 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, skuDetail, promotionList, promotionPlans }
 
 // 测试专用导出：用 Object.defineProperty 以非枚举挂载，避免被 index.test.js 的
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。

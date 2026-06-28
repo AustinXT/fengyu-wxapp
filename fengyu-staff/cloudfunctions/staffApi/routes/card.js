@@ -287,14 +287,19 @@ async function inflow(ctx) {
     )
 
     // 充值入账（字面镜像 order.confirmOffline 充值单入账块；幂等键 card-topup-{saleOrderId} 三端统一）
-    const cardId = `FY-CARD-${clientUserId}`
-    await client.query(
+    // card_id 必须取 UPSERT 的 RETURNING 值：一户一卡，已有卡时 ON CONFLICT(user_id) 命中旧行，
+    // 其 card_id 可能是历史异格式（FY-CARD-{时间戳} / UUID / 手工值），≠ FY-CARD-{clientUserId}；
+    // card_transactions.card_id 外键指向 prepaid_cards.card_id，必须引用真实卡号否则违反外键（23503）。
+    const newCardId = `FY-CARD-${clientUserId}`
+    const upsertRes = await client.query(
       `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
        VALUES ($1, $2, $3, NOW(), NOW())
        ON CONFLICT (user_id) DO UPDATE
-         SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()`,
-      [cardId, clientUserId, amt]
+         SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+       RETURNING card_id`,
+      [newCardId, clientUserId, amt]
     )
+    const cardId = upsertRes.rows[0].card_id
     await client.query(
       `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
        VALUES ($1, '充值', $2, $3, $4, NOW())
