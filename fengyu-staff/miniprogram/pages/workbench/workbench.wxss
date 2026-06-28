@@ -231,6 +231,6 @@
 }
 
 .wb-navbar__logo {
-  height: 64rpx;
+  height: 52rpx;
   width: 168rpx;
 }

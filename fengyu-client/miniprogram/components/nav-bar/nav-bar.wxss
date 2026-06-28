@@ -41,7 +41,7 @@
 }
 
 .nav-logo {
-  height: 60rpx;
+  height: 52rpx;
   width: 180rpx;
 }
 

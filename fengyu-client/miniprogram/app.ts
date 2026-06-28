@@ -12,6 +12,7 @@ App<IAppOption>({
     statusBarHeight: 44,
     navBarContentHeight: 44,
     navBarHeight: 88,
+    logoHeight: 26,
     // Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关（默认开启；如需灰度下发可改为从 config 读）
     continuePayEnabled: true,
     // Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId，绑定门店时一次性写入并清空
@@ -52,12 +53,13 @@ App<IAppOption>({
   initNavBarInfo() {
     const windowInfo = wx.getWindowInfo();
     const menuButton = wx.getMenuButtonBoundingClientRect();
-    const statusBarHeight = windowInfo.statusBarHeight || 44;
+    const statusBarHeight = windowInfo.statusBarHeight ?? 44; // 折叠态 statusBarHeight 合法为 0，勿用 || 44
     // 标题行高度 = 胶囊上下对称留白 * 2 + 胶囊高度
     const contentHeight = menuButton.height + (menuButton.top - statusBarHeight) * 2;
     this.globalData.statusBarHeight = statusBarHeight;
     this.globalData.navBarContentHeight = contentHeight;
     this.globalData.navBarHeight = statusBarHeight + contentHeight;
+    this.globalData.logoHeight = Math.round(menuButton.height * 0.8); // logo 跟胶囊高度，多端一致（rpx 在宽屏会放大，改 px 按胶囊比例）
   },
 
   restoreFromCache() {
