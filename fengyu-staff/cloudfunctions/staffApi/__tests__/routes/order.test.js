@@ -41,6 +41,12 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /RETURNING\s+card_id/i.test(sql)) {
     return { rows: [{ card_id: 'card-stub-1' }], rowCount: 1 }
   }
+  // confirmOffline/createRepayment「从流水重聚合 received」SUM 查询（order.js:1418 等）：
+  // 默认返回 0（无历史流水），避免 .rows[0].new_received 崩溃；需要具体结清判定的用例在自家
+  // client.query mock 里按 SQL 内容覆盖此分支返回真实 new_received（见各 confirmOffline 用例）。
+  if (typeof sql === 'string' && /new_received/.test(sql) && /new_prepaid/.test(sql)) {
+    return { rows: [{ new_received: '0', new_prepaid: '0' }], rowCount: 1 }
+  }
   // mixed-recharge / mixed-experience 守卫（D4/D5）：order.create 写完明细后 SELECT bool_and(...)
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_recharge_card/i.test(sql)) {
     return { rows: [{ all_recharge: false, all_normal: true }], rowCount: 1 }
@@ -1245,6 +1251,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— total=500，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) capturedUpdateSql = sql
           return defaultQueryResult(sql)
         }),
@@ -1279,7 +1289,14 @@ describe('order.confirmOffline', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn(async (sql) => {
+          // 仅 UPDATE sale_orders 模拟并发竞态（rowCount=0）；其余（首次支付 INSERT...RETURNING id、
+          // 从流水重聚合 SUM 等）走 defaultQueryResult，避免 blanket 空 rows 提前撞 CONFLICT 守卫
+          if (/UPDATE\s+sale_orders/.test(sql) && /status\s*=/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          return defaultQueryResult(sql)
+        }),
       }
       return await cb(client)
     })
@@ -1354,7 +1371,15 @@ describe('order.confirmOffline', () => {
       .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: makeClientQueryMock({ rows: [], rowCount: 1 }) }
+      const client = {
+        query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— total=300，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '300', new_prepaid: '0' }], rowCount: 1 }
+          }
+          return defaultQueryResult(sql)
+        }),
+      }
       return await cb(client)
     })
 
@@ -1376,7 +1401,8 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-001',
-        total_amount: '495',
+        sale_order_type: '充值单',   // 充值单识别（order.js:1453）—— 面值读 total_amount
+        total_amount: '500',         // 面值 500（实付 payable 495）
         paid_amount: '0',
         prepaid_card_amount: '0',
         payable_amount: '495',
@@ -1392,6 +1418,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=495，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '495', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
           }
@@ -1437,7 +1467,8 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-002',
-        total_amount: '2940',
+        sale_order_type: '充值单',   // 充值单识别（order.js:1453）—— 面值读 total_amount
+        total_amount: '3000',        // 面值 3000（实付 payable 2940）
         paid_amount: '0',
         prepaid_card_amount: '0',
         payable_amount: '2940',
@@ -1451,6 +1482,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=2940，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '2940', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return {
               rows: [{
@@ -1510,6 +1545,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=495，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '495', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
           }
@@ -1558,6 +1597,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=300，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '300', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [] }  // 不含充值卡行
           }
@@ -1607,6 +1650,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— 已收 80 + 本次 120 = 200 = settleTarget → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '200', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
             updateParams = params
             return { rows: [], rowCount: 1 }
@@ -1667,6 +1714,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— 已收 80 + 本次 30 = 110 < 200 → 部分支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '110', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
             updateParams = params
             return { rows: [], rowCount: 1 }
@@ -2574,7 +2625,7 @@ describe.skip('order.createRefund', () => {
     expect(sopInsert.params[6]).toBe(3)   // 退 3 件 → quantity → 写入 session_count
   })
 
-  test('储值卡全额抵扣原单退款：refundByCard=金额、refundByOrigin=0、payment_method=无→线下', async () => {
+  test('储值卡全额抵扣原单退款：2026-06-28 全部走现金 refundByCard=0、refundByOrigin=退款额', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-CARDONLY',
       items: [{ saleItemId: 'item-card', refundQuantity: 1 }],
@@ -2600,8 +2651,9 @@ describe.skip('order.createRefund', () => {
 
     await orderRoutes.createRefund(ctx)
 
-    expect(ctx.result.refundByCard).toBe(200)
-    expect(ctx.result.refundByOrigin).toBe(0)
+    // 2026-06-28 退款全部走现金，不再按储值卡占比拆分回冲储值卡
+    expect(ctx.result.refundByCard).toBe(0)
+    expect(ctx.result.refundByOrigin).toBe(200)
     // resolveRefundPaymentMethod('无') → '线下'
     expect(ctx.result.refundPaymentMethod).toBe('线下')
 
@@ -2612,8 +2664,8 @@ describe.skip('order.createRefund', () => {
     expect(sopInserts[0].params[2]).toBe('线下')
 
     const note = JSON.parse(sopInserts[0].params[7])
-    expect(note.refundByCard).toBe(200)
-    expect(note.refundByOrigin).toBe(0)
+    expect(note.refundByCard).toBe(0)
+    expect(note.refundByOrigin).toBe(200)
     expect(note.refundPaymentMethod).toBe('线下')
   })
 
@@ -3779,7 +3831,7 @@ describe('order.createConversion', () => {
     // 2) 单一主事务：generateOrderNo（advisory lock + SELECT sale_order_id LIKE）+ 主流程
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn()
+        query: vi.fn(async (sql) => defaultQueryResult(sql))
           // generateOrderNo: advisory_xact_lock(hashtext('sale_order_id_gen'))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // generateOrderNo: SELECT sale_order_id FROM sale_orders WHERE LIKE → seq=1
@@ -3906,7 +3958,7 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
     // 2) 单一主事务（totalOut=500×2=1000, totalIn=500×2=1000 → priceDiff=0）
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -3958,7 +4010,7 @@ describe('order.createConversion', () => {
     }])
 
     // 单一主事务 totalOut=1000×2=2000, totalIn=500×1=500 → priceDiff=-1500
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4034,7 +4086,7 @@ describe('order.createConversion', () => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
     })
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({
         rows: [{
@@ -4068,7 +4120,7 @@ describe('order.createConversion', () => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
     })
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({
         rows: [{
@@ -4098,7 +4150,7 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: 'C', customer_type: '流量客', bound_store_id: 'store-001',
     }])
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4146,7 +4198,7 @@ describe('order.createConversion', () => {
     // 原体验卡单品（合并后疗程卡）：remaining_sessions=3，unit_real_price=200
     // totalOut = 200 × 3 = 600
     // totalIn = 1000 × 1 = 1000 → priceDiff=400
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4665,6 +4717,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql, params) => {
           txCalls.push({ sql, params })
+          // 从流水重聚合 received（order.js:1418）—— payable200+卡300=500，现金200+卡300 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '300' }], rowCount: 1 }
+          }
           if (sql.includes('FROM card_transactions') && sql.includes("type = '扣款'")) {
             return { rows: [] }  // 幂等 — 未扣过
           }
@@ -4718,6 +4774,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql) => {
           txCalls.push({ sql })
+          // 从流水重聚合 received（order.js:1418）—— 卡已扣过(历史流水含储值卡抵扣300+现金200)=500 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '300' }], rowCount: 1 }
+          }
           if (sql.includes('FROM card_transactions') && sql.includes("type = '扣款'")) {
             return { rows: [{ '?column?': 1 }] }  // 已扣过
           }
@@ -4802,6 +4862,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql) => {
           txCalls.push({ sql })
+          // 从流水重聚合 received（order.js:1418）—— payable=500，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
             return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
           }

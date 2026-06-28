@@ -2934,6 +2934,9 @@ describe('recordPayment — 管理后台录入回款', () => {
         actions: ['sale_order:record_payment'],
       },
     })
+    // recordPayment 用 scopeCondition/isInScope 做门店校验；显式置 true 避免依赖前序 describe
+    // 的 mockReturnValue 残留（clearAllMocks 不清返回值）导致 flaky OUT_OF_SCOPE。
+    ;(isInScope as any).mockReturnValue(true)
     mockSelectBefore([]) // logOperation orgNode 查询
   })
 
@@ -3090,7 +3093,10 @@ describe('recordPayment — 管理后台录入回款', () => {
       cardId: 'FY-CARD-USER-1',
       type: '扣款',
       amount: '-100.00',
-      refOrderId: 'FY-HKD-WX-2604250001', // 指向回款凭证单
+      // 2026-04-26 sale-order-domain-refactor：FY-HKD 凭证单不再 INSERT 到 sale_orders，
+      // card_transactions.ref_order_id 改指原销售单（满足 FK）；凭证单号改由 external_ref 承载。
+      refOrderId: 'FY-XSD-WX-260420-0001',
+      externalRef: 'card-repay-FY-HKD-WX-2604250001',
     })
     const paymentInsert = captured.insertValues[1].v
     expect(paymentInsert).toMatchObject({

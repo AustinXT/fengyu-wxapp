@@ -875,10 +875,6 @@ async function create(ctx) {
 
     // 充值卡剥离 SKU 化后，D4 混单守卫已删除（migration 0043 同步拆触发器）
 
-    // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
-    // 客户端 create 通常 received=0（待支付，等微信回调），paid_sessions=0 → service.create 时受 D6 限额阻塞
-    await recalcPaidSessionsForOrder(client, orderNo)
-
     // 全额抵扣：同事务扣减 balance + INSERT card_transactions（幂等）+ 写 sale_order_payments[储值卡抵扣]
     if (prepaidFullPaid) {
       // 幂等检查：若 ref_order_id + type='扣款' 已存在则跳过
@@ -923,6 +919,11 @@ async function create(ctx) {
         }
       }
     }
+
+    // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
+    // 客户端 create 通常 received=0（待支付，等微信回调），paid_sessions=0 → service.create 时受 D6 限额阻塞
+    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    await recalcPaidSessionsForOrder(client, orderNo)
 
     // 零应付单（券/卡全额抵扣）补结算：积分链净额差值法（幂等）+ 会员等级即时重算。
     // 券全额单 received=0 → netSettled=0 → delta=0 → 无积分写入；卡全额单 received=卡额，
@@ -2051,10 +2052,6 @@ async function confirmPrepaidFull(ctx) {
       [userId, saleOrderId]
     )
 
-    // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
-    // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
-    await recalcPaidSessionsForOrder(client, saleOrderId)
-
     // 按回款逐笔分配：捕获本次全额储值卡抵扣逐项可分配额 + 置回款待分配 + 汇总刷新
     // （client 路径一律「待分配」手动分配，无子项定向，不做自动分配——自动分配仅在 payNotify）
     if (cardPaymentId && prepaidCardAmount > 0) {
@@ -2066,6 +2063,11 @@ async function confirmPrepaidFull(ctx) {
       })
       await refreshOrderAllocationRollup(client, saleOrderId)
     }
+
+    // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
+    // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
+    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 积分结算（订单链净额差值法，幂等）
     // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
@@ -2320,9 +2322,6 @@ async function repay(ctx) {
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)
       }
-      // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
-      // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
-      await recalcPaidSessionsForOrder(client, saleOrderId)
       // 按回款逐笔分配：捕获本次储值卡回款逐项可分配额 + 置回款待分配 + 汇总刷新
       // （client 一律全额、无子项定向、待分配；线上回款由 payNotify 捕获）
       if (cardPaymentId && prepaidCardAmountInput > 0) {
@@ -2334,6 +2333,10 @@ async function repay(ctx) {
         })
         await refreshOrderAllocationRollup(client, saleOrderId)
       }
+      // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
+      // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
+      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      await recalcPaidSessionsForOrder(client, saleOrderId)
       // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
       await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
       // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）

@@ -653,6 +653,12 @@ export async function createTestSaleItem({
   if (!salesCategory) throw new Error('createTestSaleItem: salesCategory required')
 
   const saleAmount = Number(unitPrice) * Number(quantity)
+  // unit_real_price 取 per-session 单次价（与 createTestSaleOrder 口径一致，[sale-items-money-fields]）：
+  // 疗程卡（session_count>0）= 行应付总额 / (件数 × 单卡次数)；家居产品 = totalAmount / quantity。
+  // 退款封顶/提成均按单次价 × 次数算，若误用总价会让退款金额翻倍。
+  const unitRealPrice = sessionCount && Number(sessionCount) > 0
+    ? saleAmount / (Number(quantity) * Number(sessionCount))
+    : saleAmount / Number(quantity)
 
   await pgQuery(
     `INSERT INTO sale_items (
@@ -665,7 +671,7 @@ export async function createTestSaleItem({
      VALUES ($1, $2, $3, '购买'::item_direction,
              $4, $5, $6::product_type,
              $7, $7,
-             $8, $9, $8, $10, $10,
+             $8, $9, $14, $10, $10,
              $11, $12, $13::sales_category)`,
     [
       saleItemId, saleOrderId, storeId,
@@ -673,6 +679,7 @@ export async function createTestSaleItem({
       sessionCount,
       unitPrice, quantity, saleAmount,
       isExperience, isShengmei, salesCategory,
+      unitRealPrice,
     ]
   )
 

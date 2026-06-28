@@ -92,6 +92,7 @@ interface DisplayPayment {
   isRefund: boolean;
   paymentMethod: string;
   status: string;
+  paidAt: string; // 原始 ISO 时间戳，用于归并匹配（与 admin 对齐）
   timeFmt: string;
   note: string;
   // 按回款逐笔分配入口（仅店长 + 已支付的首次支付/回款/储值卡抵扣行）
@@ -216,6 +217,8 @@ Page({
     // 储值卡抵扣：独立勾选，勾选后自动抵满 min(余额, 实付合计)
     repayUseCard: false,
     repayCardBalance: 0,
+    // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡；服务端据此作扣卡 external_ref）
+    repayIdempKey: '',
     repayRealTotal: '0.00',
     repayCardDeduct: '0.00',
     // 需支付金额（线下=现金 / 微信支付宝=顾客扫码）= 实付合计 − 储值卡抵扣
@@ -286,13 +289,14 @@ Page({
       }));
 
       // Ticket 2 PR-A：payments 流水 + 欠款计算
-      const payments: DisplayPayment[] = (res.payments || []).map((p) => {
+      const rawPayments: DisplayPayment[] = (res.payments || []).map((p) => {
         const amt = Number(p.amount) || 0;
         const isRefund = amt < 0 || p.change_type === '退款';
         const timeSrc = p.paid_at || p.created_at;
-        // 按回款逐笔分配：已支付的首次支付/回款/储值卡抵扣行可分配（WXML 再叠加 isManager + order.allocatable 显隐）
+        // 按回款逐笔分配：已支付且有 allocation_status 的流水行可分配（方案Y：按 allocation_status 门控，
+        // 现金主行有 allocation_status、卡从行无 → 一笔支付一个入口）
         const needsAllocation =
-          ['首次支付', '回款', '储值卡抵扣'].includes(p.change_type) && p.status === '已支付' && !!p.id;
+          !!p.allocation_status && p.status === '已支付' && !!p.id;
         return {
           changeType: p.change_type,
           amount: amt.toFixed(2),
@@ -300,15 +304,56 @@ Page({
           isRefund,
           paymentMethod: p.payment_method,
           status: p.status,
+          paidAt: timeSrc, // 原始 ISO 时间戳，用于归并匹配（与 admin 对齐）
           timeFmt: timeSrc ? formatDateTime(timeSrc) : '',
           note: p.note || '',
           needsAllocation,
-          allocationStatus: p.allocation_status || '待分配',
+          allocationStatus: p.allocation_status || '',
           allocationUrl: needsAllocation
             ? `/packageOrder/revenue-allocation/revenue-allocation?salePaymentId=${p.id}`
             : '',
         };
       });
+
+      // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
+      // 现金主行保留 allocationStatus/needsAllocation/allocationUrl；卡从行金额并入主行
+      // 支持多笔卡支付同 paid_at 归并（while 循环收集所有匹配行，非单次 findIndex）
+      const payments: DisplayPayment[] = [];
+      const mergedIndices = new Set<number>();
+      for (let i = 0; i < rawPayments.length; i++) {
+        if (mergedIndices.has(i)) continue;
+        const p = rawPayments[i];
+        if (p.isRefund || p.changeType === '退款') {
+          // 退款行不参与归并
+          payments.push(p);
+          continue;
+        }
+        // 收集同 paid_at 的所有储值卡抵扣行（支持 2+ 笔卡支付）
+        let totalCardAmount = 0;
+        let cardNote = '';
+        for (let j = 0; j < rawPayments.length; j++) {
+          if (j === i || mergedIndices.has(j)) continue;
+          const q = rawPayments[j];
+          if (!q.isRefund && q.changeType === '储值卡抵扣' && q.paidAt === p.paidAt && q.status === p.status) {
+            totalCardAmount += Number(q.amount);
+            cardNote = `其中储值卡 ¥${Math.abs(totalCardAmount).toFixed(2)}`;
+            mergedIndices.add(j);
+          }
+        }
+        if (totalCardAmount !== 0) {
+          // 合并：金额相加，现金行为主行（保留分配入口），附注储值卡金额
+          const mergedAmount = (Number(p.amount) + totalCardAmount).toFixed(2);
+          const mergedAmountAbs = Math.abs(Number(mergedAmount)).toFixed(2);
+          payments.push({
+            ...p,
+            amount: mergedAmount,
+            amountAbs: mergedAmountAbs,
+            note: cardNote || p.note,
+          });
+        } else {
+          payments.push(p);
+        }
+      }
 
       const totalAmount = Number(o.total_amount || 0);
       const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
@@ -595,7 +640,7 @@ Page({
     const lines = (o.items || [])
       .filter((it) => Number(it.repayable) > 0)
       .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
-    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false });
+    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false, repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` });
     this._recalcRepayTotals(lines);
   },
 
@@ -634,7 +679,7 @@ Page({
 
   async onConfirmRepay() {
     if (this.data.submitting) return;
-    const { order, repayLines, repayMethod, repayNote, currentRemainingPayable, repayUseCard, repayCardBalance } = this.data;
+    const { order, repayLines, repayMethod, repayNote, currentRemainingPayable, repayUseCard, repayCardBalance, repayIdempKey } = this.data;
     if (!order || !order.saleOrderId) return;
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const isOnline = repayMethod === '微信' || repayMethod === '支付宝';
@@ -691,6 +736,7 @@ Page({
             paymentMethod: '储值卡',
             items: cardItems,
             note: repayNote || undefined,
+            idempotencyKey: repayIdempKey || undefined,
           });
         }
         this.setData({ showRepayPopup: false });
@@ -727,6 +773,7 @@ Page({
         paymentMethod: '线下',
         items,
         note: repayNote || undefined,
+        idempotencyKey: repayIdempKey || undefined,
       });
       wx.showToast({ title: '回款成功', icon: 'success' });
       this.setData({ showRepayPopup: false });

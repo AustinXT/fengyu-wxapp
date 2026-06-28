@@ -1102,14 +1102,8 @@ export const confirmOfflinePayment = withPermission(
       if (targetStatus === '已支付') {
         await applyRechargeOnOrderPaid(tx, saleOrderId)
       }
-      // 积分发放 + paid_sessions 重算：始终执行（净额/幂等；部分支付也要按比例推进 paid_sessions）
-      await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
-      await recalcPaidSessionsForOrder(tx, saleOrderId)
-      if (targetStatus === '已支付' && clientUserId) {
-        await recalcCustomerType(tx, clientUserId)
-      }
-
       // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
       const cashThis = cashPaymentId ? cashAmount : 0
       const cardThis = cardPaymentId ? orderPrepaid : 0
       const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1122,6 +1116,14 @@ export const confirmOfflinePayment = withPermission(
           directedItems: null,
         })
         await refreshOrderAllocationRollup(tx, saleOrderId)
+      }
+
+      // 积分发放 + paid_sessions 重算：始终执行（净额/幂等；部分支付也要按比例推进 paid_sessions）
+      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
+      if (targetStatus === '已支付' && clientUserId) {
+        await recalcCustomerType(tx, clientUserId)
       }
 
       return {
@@ -2112,15 +2114,8 @@ export const createOrder = withPermission(
         })
       }
 
-      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从订单级 sale_orders.received
-      // 按比例摊到行级 received → STEP2 floor）：
-      // - 全额储值卡抵扣：received=prepaid_card_amount → paid_sessions=session_count（创建即结清）
-      // - 待支付（线下/线上，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
-      // 不再按行级实付草稿直算 paid_sessions（旧 else 分支是"待支付可消费疗程卡" P0 资金漏洞根因：
-      // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
-      await recalcPaidSessionsForOrder(tx, id)
-
       // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
       if (fullCardPaymentId && prepaidCardAmount > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: fullCardPaymentId,
@@ -2130,6 +2125,13 @@ export const createOrder = withPermission(
         })
         await refreshOrderAllocationRollup(tx, id)
       }
+
+      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
+      // - 全额储值卡抵扣：received=prepaid_card_amount → paid_sessions=session_count（创建即结清）
+      // - 待支付（线下/线上，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
+      // 不再按行级实付草稿直算 paid_sessions（旧 else 分支是"待支付可消费疗程卡" P0 资金漏洞根因：
+      // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
+      await recalcPaidSessionsForOrder(tx, id)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
       if (isFullCardCoverage) {
@@ -2619,10 +2621,8 @@ export const createConversionOrder = withPermission(
         })
       }
 
-      // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
-      await recalcPaidSessionsForOrder(tx, saleOrderId)
-
       // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额 + 置待分配 + 汇总刷新（非定向）
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
       if (convFullCardPaymentId && card > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: convFullCardPaymentId,
@@ -2632,6 +2632,10 @@ export const createConversionOrder = withPermission(
         })
         await refreshOrderAllocationRollup(tx, saleOrderId)
       }
+
+      // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
+      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
       if (isFullCardCoverage) {
@@ -3244,9 +3248,11 @@ export const recordPayment = withPermission(
   // 未传时退回订单级单行（ref=null，按比例分摊），向后兼容。
   items?: Array<{ saleItemId: string; repayAmount?: number; prepaidCardAmount?: number }>
   note?: string
+  // 前端为「本次回款意向」生成的幂等键（重试/误点复用同一值）；储值卡抵扣场景用作扣卡 external_ref 防重复扣卡。
+  idempotencyKey?: string
     },
   ): Promise<
-    | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string } }
+    | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string; idempotent?: boolean } }
     | { success: false; error: { code: string; message: string } }
   > => {
   // 入参归一 + 基本校验（Zod 在前端/Action 边界均可使用；此处做防御校验避免直接被调用时绕过）
@@ -3304,8 +3310,16 @@ export const recordPayment = withPermission(
   // 与 chk_sop_method_txn（仅约束微信/支付宝）约束。
   const externalTxnId = input.externalTxnId?.trim() || null
 
+  // 幂等键（2026-06-29 防重复扣卡）：前端为本次回款意向生成 idempotencyKey，重试/误点复用同一值。
+  // 仅储值卡抵扣场景（prepaidCardAmount>0）用作扣卡 external_ref —— 纯现金回款由 uq_sop_txn 守护、不需此键。
+  // 缺失时退回旧 repaymentOrderId-based external_ref（向后兼容老前端，仅放弃幂等保护）。
+  const idempotencyKey = input.idempotencyKey?.trim() || null
+  const repayIdempRef = idempotencyKey && prepaidCardAmount > 0
+    ? `card-repay-${saleOrderId}-${idempotencyKey}`
+    : null
+
   // 事务：锁原单 + 校验 + 扣卡 + 插凭证单 + 插 payments + 重算原单
-  let result: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string }
+  let result: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string; idempotent?: boolean }
   try {
     result = await db.transaction(async (tx) => {
       // 1) 锁原单 + 校验
@@ -3342,6 +3356,24 @@ export const recordPayment = withPermission(
 
       if (!locked.client_user_id && prepaidCardAmount > 0) {
         throw new ApiError('CLIENT_NOT_REGISTERED', '顾客未注册小程序，无法使用储值卡抵扣')
+      }
+
+      // 幂等预检（2026-06-29 防重复扣卡）：锁原单后查同 idempotencyKey 的 card-repay 扣款是否已落库。
+      // 命中 → 整笔回款已处理（余额已扣、流水已记），直接返回当前状态、跳过本次扣卡/payments/received 全部逻辑。
+      // 行锁（上面 SELECT ... FOR UPDATE）串行化同单请求，两次重试无竞态：第二次拿到锁时首次已 COMMIT 可见。
+      if (repayIdempRef) {
+        const dupRes = await tx.execute(sql`
+          SELECT 1 FROM card_transactions WHERE external_ref = ${repayIdempRef} LIMIT 1
+        `)
+        if ((dupRes as unknown as Array<unknown>).length > 0) {
+          return {
+            repaymentOrderId: '',
+            refStatus: locked.status as OrderStatus,
+            refPaidAmount: Number(locked.received || 0).toFixed(2),
+            refPrepaidCardAmount: Number(locked.prepaid_card_amount || 0).toFixed(2),
+            idempotent: true,
+          }
+        }
       }
 
       // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
@@ -3418,12 +3450,16 @@ export const recordPayment = withPermission(
               updated_at = NOW()
           WHERE card_id = ${cardId}
         `)
-        // ref_order_id 指向回款凭证单（避免幂等键冲突 — 原销售单上已有 create 时的扣卡引用）
+        // ref_order_id 指向原销售单（FK 约束要求 ref_order_id 必须存在于 sale_orders；
+        // 回款凭证单 FY-HKD 不再 INSERT 到 sale_orders，故用 saleOrderId 满足 FK）。
+        // 幂等 external_ref：优先用前端 idempotencyKey 派生的稳定键（重试命中同一键 → 上方预检整笔跳过 / 唯一约束兜底）；
+        // 缺失 idempotencyKey 时退回 repaymentOrderId-based（向后兼容，仅放弃幂等保护）。
         await tx.insert(cardTransactions).values({
           cardId,
           type: '扣款',
           amount: (-prepaidCardAmount).toFixed(2),
-          refOrderId: repaymentOrderId,
+          refOrderId: saleOrderId,
+          externalRef: repayIdempRef ?? `card-repay-${repaymentOrderId}`,
         })
       }
 
@@ -3474,13 +3510,9 @@ export const recordPayment = withPermission(
       // 线下/储值卡回款均即时已支付：现金行优先为主流水行，纯储值卡取抵扣行
       const primaryPaymentId = cashPaymentId || cardPaymentId
 
-      // 7b) 子项定向：把「本次每张卡补多少」落到 sale_items.pending_received，使下方
-      //     recalcPaidSessionsForOrder STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
-      //     公式：pending_received_i = received_i + 已退款额_i + 本次补款_i（现金+储值卡）
-      //       - received_i = 当前 sale_items.received（上次 recalc 的净额，本次回款尚未摊入）；
-      //       - 已退款额_i 复用 STEP1.5 的退款 note JSON 聚合，把净额还原成毛额（无退款时为 0）；
-      //     数学保证 Σpend_cap = untargeted（含历史定向行 targeted≠0 与退款两种边界恒精确），
-      //     STEP1 填满后 received_净_i = received_净_old_i + 补款_i。
+      // 7b) 子项定向：把「本次每张卡补多少」覆盖写入 sale_items.pending_received
+      //     （2026-06-27 营业额分配重构：pending_received = 本次逐项实付，不再累加 received+refunded+delta）。
+      //     非定向 capture 读 pending_received 作为权重；定向 capture 用 directedItems 不读此值。
       //     无 items[] 的订单级回款（hasItems=false）不动 pending，退回 untargeted 比例分摊（向后兼容）。
       if (hasItems) {
         const repayValues = sql.join(
@@ -3491,30 +3523,11 @@ export const recordPayment = withPermission(
           sql`, `,
         )
         await tx.execute(sql`
-          WITH refund_items AS (
-            SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-                   COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
-            FROM sale_order_payments sop
-            CROSS JOIN LATERAL jsonb_array_elements(
-              CASE WHEN sop.note LIKE '{%'
-                   THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                             THEN (sop.note)::jsonb -> 'items'
-                             ELSE '[]'::jsonb END
-                   ELSE '[]'::jsonb END
-            ) AS elem
-            WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
-          ),
-          refund_agg AS (
-            SELECT sale_item_id, SUM(refund_amount) AS refunded
-            FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
-          ),
-          repay (sale_item_id, delta) AS (VALUES ${repayValues})
+          WITH repay (sale_item_id, delta) AS (VALUES ${repayValues})
           UPDATE sale_items si
-          SET pending_received = ROUND(
-                si.received::numeric + COALESCE(ra.refunded, 0) + COALESCE(rp.delta, 0), 2),
+          SET pending_received = COALESCE(rp.delta, 0),
               updated_at = NOW()
           FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
-          LEFT JOIN refund_agg ra ON ra.sale_item_id = ai.sale_item_id
           LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
           WHERE si.sale_item_id = ai.sale_item_id
         `)
@@ -3543,11 +3556,11 @@ export const recordPayment = withPermission(
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
       const settled = newReceived
-      // 结清判定基准 = payable_amount + 原始 prepaid 快照（origPrepaidSnapshot）。
-      // 用快照而非 newPrepaid：回款可新增储值卡抵扣，settled(含新抵扣) 增长应推进结清，
-      // 故 RHS 须锚定原始 prepaid 才恒 == total。
-      // 普通单 payable + 快照 === total（不变）；充值单 payable(实付) ≠ total(面额)，修正。
-      const settleTarget = Math.round((origPayable + origPrepaidSnapshot) * 100) / 100
+      // 结清判定基准 = total_amount（固定锚）。received 含现金 + 储值卡抵扣（I1），达 total 即结清。
+      // 原用 payable + origPrepaidSnapshot 在「回款新增储值卡抵扣」时破裂（payable 不随 prepaid 减少，
+      // 多笔储值卡回款后 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
+      // 充值单不进回款路径（一次性付清），total 锚无副作用。
+      const settleTarget = Math.round(origTotal * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
       // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
       // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。
@@ -3587,11 +3600,9 @@ export const recordPayment = withPermission(
       //     可正确处理"分次回款只发增量积分"的场景
       await settlePointsSafe(tx, saleOrderId, 'admin.recordPayment')
 
-      // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-      await recalcPaidSessionsForOrder(tx, saleOrderId)
-
       // 12) 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态。
       //     items[] 定向回款 → 逐项金额（现金+储值卡）即可分配额；否则非定向按剩余应付比例摊。
+      //     必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
       const directedForCapture = repayItems
         ? repayItems.map((it) => ({
             saleItemId: it.saleItemId,
@@ -3605,6 +3616,10 @@ export const recordPayment = withPermission(
         directedItems: directedForCapture,
       })
       await refreshOrderAllocationRollup(tx, saleOrderId)
+
+      // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+      //     必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       return {
         repaymentOrderId,
@@ -3684,6 +3699,12 @@ export const recordPayment = withPermission(
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
     return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
+  }
+
+  // 幂等命中：首次回款已处理（余额已扣、操作日志已记），本次为重复提交 → 直接返回当前状态，
+  // 不重复记日志 / 不 revalidate（首次成功已 revalidate）。
+  if (result.idempotent) {
+    return { success: true, data: result }
   }
 
   await logOperation(session, 'order.record_payment', 'sale_order', saleOrderId, {
