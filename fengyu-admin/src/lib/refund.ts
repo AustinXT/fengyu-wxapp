@@ -181,26 +181,21 @@ export function capRefundAmounts(
 }
 
 /**
- * 按原单储值卡抵扣比例，将退款金额拆为储值卡回冲 + 原路径退款
+ * 拆分退款现金 vs 储值卡
  *
- *   refundByCard   = floor(origPrepaidCardAmount / origTotalAmount × refundAmount, 2)
- *   refundByOrigin = refundAmount − refundByCard   // 反向相减，无尾差
+ * 2026-06-28 改为「全部走现金」：退款不再按储值卡占比拆分，refundByCard 始终为 0。
+ * 所有退款统一走现金（refundByOrigin），避免用户退款拿到的现金和疗程卡对应金额不一致的误解，
+ * 也避免了退款时出现剩余金额无法退款的情况。
  */
 export function splitRefundByOriginalPayment(
   refundAmount: number,
-  origPrepaidCardAmount: number,
-  origTotalAmount: number,
+  _origPrepaidCardAmount: number,
+  _origTotalAmount: number,
 ): { refundByCard: number; refundByOrigin: number } {
-  let refundByCard = 0
-  let refundByOrigin = Math.round(refundAmount * 100) / 100
-
-  if (origPrepaidCardAmount > 0 && origTotalAmount > 0 && refundAmount > 0) {
-    const raw = (origPrepaidCardAmount / origTotalAmount) * refundAmount
-    refundByCard = Math.floor(raw * 100) / 100
-    refundByOrigin = Math.round((refundAmount - refundByCard) * 100) / 100
+  return {
+    refundByCard: 0,
+    refundByOrigin: Math.round(refundAmount * 100) / 100,
   }
-
-  return { refundByCard, refundByOrigin }
 }
 
 /**

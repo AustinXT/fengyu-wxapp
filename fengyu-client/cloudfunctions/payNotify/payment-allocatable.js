@@ -1,8 +1,8 @@
 /**
  * 回款逐项可分配额捕获（营业额分配基数）—— payNotify 独立副本
  *
- * 跨端约定（no-shared-cloudfunctions）：admin src/lib/payment-allocatable.ts / clientApi utils/payment-allocatable.js /
- * staffApi utils/payment-allocatable.js 各保留同语义独立副本，
+ * 跨端约定（no-shared-cloudfunctions）：admin src/lib/payment-allocatable.ts /
+ * clientApi utils/payment-allocatable.js / payNotify 内联 各保留同语义独立副本，
  * 由 cross-end-allocation-snapshot.test.js 守护字面同义。
  *
  * 在每一笔回款事件落账的同事务内调用：把本次回款金额按规则落到各 sale_item，
@@ -51,42 +51,66 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
       .map((d) => ({ saleItemId: String(d.saleItemId), amount: Math.round(Number(d.amount) * 100) / 100 }))
       .filter((d) => catMap.has(d.saleItemId) && d.amount > 0)
   } else {
-    // 非定向：按各 item 剩余实付（pending_received − Σ已记可分配额）比例摊，余数补末项；保证 Σ = evt
-    // pending_received = 开单/回款时填的逐项实付（提成基数口径）；首付全额收时各项恰好 = 开单实付。
+    // 非定向：两段式瀑布分摊（2026-06-28 与 recalcPaidSessionsForOrder STEP1 数学一致，确保 Σ spai per item = 该行应有 received）
+    //   第一段产能 pend_cap_i = max(0, pending_received_i − prior_allocated_i)（朝逐行实付草稿铺）
+    //   第二段产能 sale_cap_i = max(0, sale_amount_i − max(pending_received_i, prior_allocated_i))（实付→应付余量）
+    // eventAmount 先按 pend_cap 比例铺满（LEAST(evt, Σpend_cap)），溢出再按 sale_cap 比例铺开。
+    // 补全款时 pend_cap 已耗尽 → 自动回落到 sale_cap，实现"回升到应付不冻结"。
+    // 最大余数法保证 Σ = evt 且每项非负。
     const priorRes = await client.query(
       `SELECT sale_item_id, COALESCE(SUM(amount::numeric), 0) AS allocated
          FROM sale_payment_allocatable_items WHERE sale_order_id = $1 GROUP BY sale_item_id`,
       [saleOrderId],
     )
     const priorMap = new Map(priorRes.rows.map((r) => [r.sale_item_id, Number(r.allocated)]))
-    let base = items.map((i) => ({
-      saleItemId: i.sale_item_id,
-      w: Math.max(0, Math.round((Number(i.pending_received) - (priorMap.get(i.sale_item_id) || 0)) * 100) / 100),
-    }))
-    let totalW = base.reduce((s, b) => s + b.w, 0)
-    if (totalW <= 0) {
-      // 已全摊满兜底：按 sale_amount 摊
-      base = items.map((i) => ({ saleItemId: i.sale_item_id, w: Math.max(0, Number(i.sale_amount)) }))
-      totalW = base.reduce((s, b) => s + b.w, 0)
-    }
-    if (totalW <= 0) {
-      perItem = [{ saleItemId: items[0].sale_item_id, amount: evt }]
-    } else {
-      // 最大余数法（largest-remainder）：先按权重 floor 到分，余数逐分补给小数部分最大者，
-      // 严格保证 Σ amount = evt 且每项非负（避免末项舍入被 filter 丢弃致 Σ≠evt）
-      const positive = base.filter((b) => b.w > 0)
-      const evtCents = Math.round(evt * 100)
-      const parts = positive.map((b) => {
-        const exact = (evtCents * b.w) / totalW
-        const c = Math.floor(exact)
-        return { saleItemId: b.saleItemId, cents: c, frac: exact - c }
+    const caps = items.map((i) => {
+      const prior = priorMap.get(i.sale_item_id) || 0
+      const pending = Number(i.pending_received)
+      const saleAmt = Number(i.sale_amount)
+      return {
+        saleItemId: i.sale_item_id,
+        pendCap: Math.max(0, Math.round((pending - prior) * 100) / 100),
+        saleCap: Math.max(0, Math.round((saleAmt - Math.max(pending, prior)) * 100) / 100),
+      }
+    })
+    const pendCapTotal = Math.round(caps.reduce((s, c) => s + c.pendCap, 0) * 100) / 100
+    const saleCapTotal = Math.round(caps.reduce((s, c) => s + c.saleCap, 0) * 100) / 100
+    const evtCents = Math.round(evt * 100)
+
+    // 分配辅助：按 weights（Map saleItemId→cents 产能）把 amountCents 摊给 positive 项，最大余数法
+    const allocate = (amountCents, weightCaps) => {
+      const positive = weightCaps.filter((c) => c.cap > 0)
+      const totalW = positive.reduce((s, c) => s + c.cap, 0)
+      if (totalW <= 0 || amountCents <= 0) return new Map()
+      const parts = positive.map((c) => {
+        const exact = (amountCents * c.cap) / totalW
+        const fl = Math.floor(exact)
+        return { saleItemId: c.saleItemId, cents: fl, frac: exact - fl }
       })
-      let rem = evtCents - parts.reduce((s, p) => s + p.cents, 0)
+      let rem = amountCents - parts.reduce((s, p) => s + p.cents, 0)
       parts.sort((a, b) => b.frac - a.frac)
       for (let i = 0; i < rem; i++) parts[i].cents += 1
-      perItem = parts
-        .map((p) => ({ saleItemId: p.saleItemId, amount: p.cents / 100 }))
+      return new Map(parts.map((p) => [p.saleItemId, p.cents]))
+    }
+
+    const acc = new Map() // saleItemId → cents 累计
+    const addCents = (m) => { for (const [k, v] of m) acc.set(k, (acc.get(k) || 0) + v) }
+
+    if (pendCapTotal > 0 || saleCapTotal > 0) {
+      // 第一段：填 pend_cap（LEAST(evt, Σpend_cap)）
+      const phase1Cents = Math.min(evtCents, Math.round(pendCapTotal * 100))
+      addCents(allocate(phase1Cents, caps.map((c) => ({ saleItemId: c.saleItemId, cap: c.pendCap }))))
+      // 第二段：溢出按 sale_cap 铺
+      const phase2Cents = evtCents - phase1Cents
+      if (phase2Cents > 0) {
+        addCents(allocate(phase2Cents, caps.map((c) => ({ saleItemId: c.saleItemId, cap: c.saleCap }))))
+      }
+      perItem = items
+        .map((i) => ({ saleItemId: i.sale_item_id, amount: (acc.get(i.sale_item_id) || 0) / 100 }))
         .filter((d) => d.amount > 0)
+    } else {
+      // 全摊满兜底：无任何产能（sale_amount 全为 0 等），全部记到首项
+      perItem = [{ saleItemId: items[0].sale_item_id, amount: evt }]
     }
   }
 

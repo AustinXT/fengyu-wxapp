@@ -1113,6 +1113,62 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Block 7b': STEP 1 分支 A received = Σ spai SQL 四端字节同义（2026-06-28 营业额分配重构）
+//   recalcPaidSessionsForOrder STEP1 两路分流：订单有 spai 行 → received = Σ spai.amount per item
+//   （分支 A，主路径，精确）；无 spai → 回退分支 B 瀑布（见下一块）。spai 由 capturePaymentAllocatables
+//   同事务写入，故 Σ spai = 该行累计毛 received。admin（Drizzle ${id} 内联 sql）+ staff/client/payNotify
+//   （pg $1 导出常量 SALE_ITEMS_RECEIVED_FROM_SPAI_SQL）四端归一化后字节同义。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STEP 1 分支 A received=Σspai SQL 四端字节同义守护", () => {
+  // `spai` 别名是分支 A 独有指纹：spaiCheck 探测查询、分支 B 瀑布、STEP1.5/STEP2 均不引用 `spai` 别名，
+  // 故 extractBacktickStringContaining 首匹配必落分支 A。
+  const MARKER_SPAI_RECEIVED = "FROM sale_payment_allocatable_items spai"
+  let spaiReceivedSqls
+
+  beforeAll(() => {
+    spaiReceivedSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_SPAI_RECEIVED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_SPAI_RECEIVED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_SPAI_RECEIVED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_SPAI_RECEIVED)),
+    }
+  })
+
+  describe("特征守护", () => {
+    test("四端 received = COALESCE(GREATEST(0, Σ spai.amount), 0)（无 spai 行归零，行级 clamp）", () => {
+      const pattern = /received\s*=\s*COALESCE\(\s*GREATEST\(\s*0\s*,\s*\(\s*SELECT\s+SUM\(\s*amount::numeric\s*\)\s+FROM\s+sale_payment_allocatable_items\s+spai/i
+      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+        expect(sql).toMatch(pattern)
+      }
+    })
+    test("四端子查询按 (sale_order_id, sale_item_id) 定位行", () => {
+      const pattern = /spai\.sale_order_id\s*=\s*\?\s*AND\s*spai\.sale_item_id\s*=\s*si\.sale_item_id/i
+      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+        expect(sql).toMatch(pattern)
+      }
+    })
+    test("四端仅重算 item_direction='购买' 行（转出/转入 received 不被动，防分支 A 误清零）", () => {
+      const pattern = /si\.item_direction\s*=\s*'购买'/
+      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+        expect(sql).toMatch(pattern)
+      }
+    })
+  })
+
+  describe("四端镜像比对", () => {
+    test("staff vs client", () => { expect(spaiReceivedSqls.client).toBe(spaiReceivedSqls.staff) })
+    test("staff vs payNotify", () => { expect(spaiReceivedSqls.payNotify).toBe(spaiReceivedSqls.staff) })
+    test("staff vs admin（归一化后等价）", () => { expect(spaiReceivedSqls.adminTs).toBe(spaiReceivedSqls.staff) })
+  })
+
+  describe("Snapshot 守护", () => {
+    test("STEP 1 分支 A received=Σspai SQL 文本快照", () => {
+      expect(spaiReceivedSqls.staff).toMatchSnapshot()
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Block 7b: STEP 1 received 分摊 SQL 四端字节同义
 //   recalcPaidSessionsForOrder 在跑 paid_sessions 公式前，用「定向 + 两段式瀑布」把
 //   sale_orders.received 摊到各 sale_items.received（仅 item_direction='购买' 行）：

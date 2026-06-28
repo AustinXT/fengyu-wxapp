@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -136,6 +136,47 @@ export default function OrderDetailPageClient({
   const hasPendingRefund = (payments ?? []).some(
     (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
   );
+
+  // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
+  // 支持多笔卡支付同 paid_at 归并（for 循环收集所有匹配行，非单次 findIndex）
+  // paidAt 为 null 时 fallback 到 createdAt（与 staff 端对齐，防止 null===null 误合并）
+    const rawWithPaidAt = (payments ?? []).map((p) => ({
+      ...p,
+      paidAt: (p as { paidAt: string | null }).paidAt || (p as { createdAt: string | null }).createdAt,
+    }))
+  const mergedPayments = useMemo(() => {
+    const raw = rawWithPaidAt;
+    const result: typeof raw = [];
+    const mergedIndices = new Set<number>();
+    for (let i = 0; i < raw.length; i++) {
+      if (mergedIndices.has(i)) continue;
+      const p = raw[i];
+      if (p.changeType === "退款") {
+        result.push(p);
+        continue;
+      }
+      let totalCardAmount = 0;
+      for (let j = 0; j < raw.length; j++) {
+        if (j === i || mergedIndices.has(j)) continue;
+        const q = raw[j];
+        if (q.changeType === "储值卡抵扣" && q.paidAt === p.paidAt && q.status === p.status) {
+          totalCardAmount += Number(q.amount);
+          mergedIndices.add(j);
+        }
+      }
+      if (totalCardAmount !== 0) {
+        const mergedAmount = (Number(p.amount) + totalCardAmount).toString();
+        result.push({
+          ...p,
+          amount: mergedAmount,
+          note: `${p.note || ""}（其中储值卡 ¥${Math.abs(totalCardAmount).toLocaleString()}）`,
+        } as typeof p);
+      } else {
+        result.push(p);
+      }
+    }
+    return result;
+  }, [payments]);
 
   return (
     <div className="space-y-6">
@@ -448,7 +489,7 @@ export default function OrderDetailPageClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {(payments ?? []).map((p) => {
+                {(mergedPayments ?? []).map((p) => {
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
                   // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
@@ -513,7 +554,7 @@ export default function OrderDetailPageClient({
                     </tr>
                   );
                 })}
-                {(payments ?? []).length === 0 && (
+                {(mergedPayments ?? []).length === 0 && (
                   <tr>
                     <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
                       暂无款项流水

@@ -50,18 +50,31 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
  * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
  */
 /**
- * STEP 1 分摊 SQL（pg 风格 $1 = saleOrderId）：把 sale_orders.received 摊到各 sale_items.received，
- * 保证 Σ sale_items.received = sale_orders.received。
- * 「定向 + 两段式瀑布」混合（2026-06-08 组合套餐按逐行实付 pending_received 累加分摊）：
+ * STEP 1 received 重建（pg 风格 $1 = saleOrderId）。两路分流（2026-06-28 received = Σ spai，瀑布作回退）：
+ *   A. 有 spai → received = Σ sale_payment_allocatable_items.amount per item（spai 由 capture 写入，定向精确/非定向两段式摊）
+ *   B. 无 spai（历史/退款/修复）→ 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL，零回归
+ * recalcPaidSessionsForOrder() 先查 spai 是否存在，再选 A 或 B。
+ * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
+ * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
+ */
+/**
+ * 分支 A：received = Σ spai.amount per item
+ */
+const SALE_ITEMS_RECEIVED_FROM_SPAI_SQL = `UPDATE sale_items si
+    SET received = COALESCE(GREATEST(0, (
+      SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items spai
+       WHERE spai.sale_order_id = $1 AND spai.sale_item_id = si.sale_item_id
+    )), 0),
+    updated_at = NOW()
+    WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`
+
+/**
+ * 分支 B（回退）：旧「定向 + 两段式瀑布」（无 spai 的历史/异常单，零回归）
  *   targeted_i = Σ(已支付 payments WHERE ref_sale_item_id=i AND change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
  *   untargeted = order.received - Σtargeted；
  *   pend_cap_i = pending_received_i - targeted_i（第一段产能：朝逐行实付草稿铺）；
  *   sale_cap_i = sale_amount_i - max(pending_received_i, targeted_i)（第二段产能：实付→应付余量）；
  *   received_i = targeted_i + [untargeted 先按 pend_cap 比例铺满 Σpend_cap，溢出再按 sale_cap 比例铺开]，单次 ROUND 2 位。
- * 定向行精确拿到 targeted；无定向额（首付/无 items 回款）先填逐行实付草稿、补到全款后回升到应付（不冻结、可全核销）。
- * pending_received=0（转换/寄存/充值单）或 =sale_amount（顾客端/默认单）时两段式数学上退化为旧「按 sale_amount 比例」，零回归。
- * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
- * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
  */
 const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
       SELECT ref_sale_item_id, SUM(amount) AS targeted
@@ -157,9 +170,23 @@ WHERE sale_items.sale_order_id = $1`
  * @param {string} saleOrderId
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
-  // STEP 1：定向回款落到指定行 + 其余按剩余产能比例摊到 sale_items.received（毛额）
-  // （paid_sessions 公式以 sale_items.received 为分子；不同步会让回款后 paid_sessions 停在建单快照）
-  await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
+  // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
+  //   A. spai 覆盖全额 received → received = Σ spai.amount per item（精确，瀑布退役）
+  //   B. spai 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单，
+  //      仅新付款写了 spai 而旧付款无 spai 时 Σ(spai) < received，A 会清零旧 received）
+  const covRes = await client.query(
+    `SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = $1), 0) AS spai_total,
+            (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
+    [saleOrderId],
+  )
+  const covRow = (covRes && covRes.rows && covRes.rows[0]) || {}
+  const spaiTotal = Number(covRow.spai_total || 0)
+  const orderReceived = Number(covRow.order_received || 0)
+  if (spaiTotal > 0 && spaiTotal >= orderReceived - 0.01) {
+    await client.query(SALE_ITEMS_RECEIVED_FROM_SPAI_SQL, [saleOrderId])
+  } else {
+    await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
+  }
   // STEP 1.5：从毛额扣逐项退款（note.items[].refundAmount）→ sale_items.received 变净额（被退项单独减少）
   await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
@@ -186,6 +213,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
 module.exports = {
   computePaidSessionsForItem,
   SALE_ITEMS_RECEIVED_ALLOC_SQL,
+  SALE_ITEMS_RECEIVED_FROM_SPAI_SQL,
   RECEIVED_REFUNDED_DEDUCT_SQL,
   PAID_SESSIONS_RECALC_SQL,
   recalcPaidSessionsForOrder,

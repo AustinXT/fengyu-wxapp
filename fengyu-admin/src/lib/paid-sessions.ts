@@ -71,56 +71,78 @@ WHERE sale_items.sale_order_id = $1`
  * 抛 CONFLICT，提示调用方先取消已生成的服务单。
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
-  // STEP 1: 定向回款落到指定行 + 无定向额按两段式瀑布摊到 sale_items.received
-  // 「定向 + 两段式瀑布」混合（2026-06-08 组合套餐按逐行实付 pending_received 累加分摊）：
-  //   targeted_i = Σ(已支付 payments ref_sale_item_id=i, change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
-  //   untargeted = order.received - Σtargeted；
-  //   pend_cap_i = pending_received_i - targeted_i（第一段：朝逐行实付草稿铺）；
-  //   sale_cap_i = sale_amount_i - max(pending_received_i, targeted_i)（第二段：实付→应付余量）；
-  //   received_i = targeted_i + [untargeted 先按 pend_cap 铺满 Σpend_cap，溢出再按 sale_cap 铺开]。
-  // 无定向额（首付/无 items 回款）先填逐行实付、补全款后回升到应付（不冻结）。
-  // pending_received=0（转换/寄存/充值）或 =sale_amount（默认）时退化为旧「按 sale_amount 比例」，零回归。
-  // STEP1 后 sum(sale_items.received) = sale_orders.received（毛额）；STEP 1.5 扣退款后转净额。与三端 cloudfunction 副本字节同义。
-  await tx.execute(sql`
-    WITH tg AS (
-      SELECT ref_sale_item_id, SUM(amount) AS targeted
-      FROM sale_order_payments
-      WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
-        AND change_type IN ('首次支付','回款','储值卡抵扣') AND ref_sale_item_id IS NOT NULL
-      GROUP BY ref_sale_item_id
-    ),
-    caps AS (
-      SELECT si.sale_item_id,
-             COALESCE(tg.targeted, 0)::numeric AS targeted,
-             GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
-             GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
-      FROM sale_items si
-      LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
-      WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
-    ),
-    agg AS (
-      SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
-             COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
-             COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
-      FROM caps
-    )
-    UPDATE sale_items si
-    SET received = CASE
-          WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
-            THEN caps.targeted
-              + ROUND(
-                  (CASE WHEN agg.pend_cap_total > 0
-                        THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
-                        ELSE 0 END)
-                + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
-                        THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
-                        ELSE 0 END), 2)
-          ELSE caps.targeted
-        END,
-        updated_at = NOW()
-    FROM caps, agg
-    WHERE si.sale_item_id = caps.sale_item_id
+  // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
+  //   A. 有 spai 数据 → received = Σ sale_payment_allocatable_items.amount per item
+  //      （spai 由 capturePaymentAllocatables 在同事务内写入；定向写精确逐项，非定向写两段式瀑布摊分额；
+  //       故 Σ spai = 该行累计毛 received，天然精确，瀑布退役）
+  //   B. 无 spai（历史订单 / 退款路径 / 数据修复）→ 回退旧瀑布，避免 received 被置零
+  // STEP1 后 sum(sale_items.received) 毛额；STEP 1.5 扣退款后转净额。与三端 cloudfunction 副本字节同义。
+  const covRes = await tx.execute(sql`
+    SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = ${saleOrderId}), 0) AS spai_total,
+           (SELECT received::numeric FROM sale_orders WHERE sale_order_id = ${saleOrderId}) AS order_received
   `)
+  // tx.execute() 走 drizzle-orm/postgres-js，返回 postgres.js RowList（array-like，带 .count，无 .rows）。
+  // 须按数组解包（同 payment-allocatable.ts / points-settle.ts 惯例）。
+  const covRows = covRes as unknown as Array<{ spai_total: string; order_received: string }>
+  const spaiTotal = Number(covRows[0]?.spai_total || 0)
+  const orderReceived = Number(covRows[0]?.order_received || 0)
+  // spai_total >= order_received（容差 0.01 处理浮点）→ spai 完整覆盖，Branch A 安全；
+  // 否则 spai 不完整（历史部分支付订单仅新付款有 spai），Branch B 保护旧 received 不被清零。
+  const hasSpai = spaiTotal > 0 && spaiTotal >= orderReceived - 0.01
+  if (hasSpai) {
+    // 分支 A：received = Σ spai.amount per item
+    await tx.execute(sql`
+      UPDATE sale_items si
+      SET received = COALESCE(GREATEST(0, (
+        SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items spai
+         WHERE spai.sale_order_id = ${saleOrderId} AND spai.sale_item_id = si.sale_item_id
+      )), 0),
+      updated_at = NOW()
+      WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
+    `)
+  } else {
+    // 分支 B：回退瀑布（无 spai 的历史/异常单，零回归）
+    await tx.execute(sql`
+      WITH tg AS (
+        SELECT ref_sale_item_id, SUM(amount) AS targeted
+        FROM sale_order_payments
+        WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
+          AND change_type IN ('首次支付','回款','储值卡抵扣') AND ref_sale_item_id IS NOT NULL
+        GROUP BY ref_sale_item_id
+      ),
+      caps AS (
+        SELECT si.sale_item_id,
+               COALESCE(tg.targeted, 0)::numeric AS targeted,
+               GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
+               GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
+        FROM sale_items si
+        LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
+        WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
+      ),
+      agg AS (
+        SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
+               COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
+               COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
+        FROM caps
+      )
+      UPDATE sale_items si
+      SET received = CASE
+            WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
+              THEN caps.targeted
+                + ROUND(
+                    (CASE WHEN agg.pend_cap_total > 0
+                          THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
+                          ELSE 0 END)
+                  + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
+                          THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
+                          ELSE 0 END), 2)
+            ELSE caps.targeted
+          END,
+          updated_at = NOW()
+      FROM caps, agg
+      WHERE si.sale_item_id = caps.sale_item_id
+    `)
+  }
 
   // STEP 1.5: 从毛额扣逐项退款（note.items[].refundAmount 按 refSaleItemId 聚合）→ received 变净额（被退项单独减少）
   // note→jsonb 三重防线（WHERE 仅 退款+已支付 / note LIKE '{%' 守门 / 嵌套 CASE 保 cast）；仅购买行；GREATEST(0) clamp；幂等。

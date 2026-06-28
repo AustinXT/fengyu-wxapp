@@ -29,6 +29,15 @@ type RepayableItem = {
 
 type PayMethod = "线下" | "微信" | "支付宝"
 
+// 生成回款幂等键：弹层打开时生成一次，同次意向的重试/误点复用同一值；成功关弹层后重开换新。
+// 服务端据此派生扣卡 external_ref，命中即整笔跳过防重复扣卡（见 recordPayment 幂等预检）。
+const genRepayIdempKey = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function RecordPaymentDialog({
   open,
   onOpenChange,
@@ -60,6 +69,8 @@ export function RecordPaymentDialog({
   // 在线收款码（微信/支付宝）：储值卡先扣后，生成 client 小程序码让顾客扫码付剩余
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [qrAmount, setQrAmount] = useState<number>(0)
+  // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡）
+  const [idempotencyKey, setIdempotencyKey] = useState<string>("")
 
   // 打开时拉取可回款子项；默认每行实付 = 该行可回款额（操作员可改小或清零）
   useEffect(() => {
@@ -67,6 +78,7 @@ export function RecordPaymentDialog({
     let cancelled = false
     setLoading(true)
     setQrDataUrl(null)
+    setIdempotencyKey(genRepayIdempKey())
     getRepayable(saleOrderId)
       .then((res) => {
         if (cancelled) return
@@ -161,6 +173,7 @@ export function RecordPaymentDialog({
           paymentMethod: "储值卡",
           items: cardItems,
           note: note.trim() || undefined,
+          idempotencyKey: idempotencyKey || undefined,
         })
         if (!cardRes.success) {
           toast.error(cardRes.error.message)
@@ -202,9 +215,14 @@ export function RecordPaymentDialog({
         paymentMethod: "线下",
         items: payloadItems,
         note: note.trim() || undefined,
+        idempotencyKey: idempotencyKey || undefined,
       })
       if (res.success) {
-        toast.success(`回款成功：凭证单 ${res.data.repaymentOrderId}`)
+        toast.success(
+          res.data.idempotent
+            ? "该笔回款已处理（重复提交已忽略）"
+            : `回款成功：凭证单 ${res.data.repaymentOrderId}`,
+        )
         onOpenChange(false)
         router.refresh()
       } else {

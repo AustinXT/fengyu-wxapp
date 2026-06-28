@@ -175,6 +175,8 @@ export const recordPaymentInputSchema = z.object({
   externalTxnId: z.string().optional(),
   prepaidCardAmount: z.number().multipleOf(0.01, '金额精度最多 2 位小数').min(0, '储值卡抵扣金额不能为负').default(0),
   note: z.string().optional(),
+  // 前端为「本次回款意向」生成的幂等键（重试/误点复用同一值）；仅储值卡抵扣场景用作扣卡 external_ref 防重复扣卡。
+  idempotencyKey: z.string().optional(),
 }).refine((v) => v.repayAmount + v.prepaidCardAmount > 0, {
   message: '回款金额与储值卡抵扣不能都为 0',
   path: ['repayAmount'],

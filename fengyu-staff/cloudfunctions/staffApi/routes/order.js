@@ -1044,14 +1044,8 @@ async function create(ctx) {
       })
     }
 
-    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 sale_orders.received 摊到行 → STEP2 floor）：
-    // - zeroPayable（券/卡全额抵扣）：received=prepaid 或 sale_amount<=0 兜底 → paid_sessions=session_count（创建即结清）
-    // - 非 zeroPayable（待支付，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
-    // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
-    // 行级实付草稿现落 sale_items.pending_received，由 confirmOffline/payNotify 入账后才驱动 received→paid_sessions）。
-    await recalcPaidSessionsForOrder(client, saleOrderId)
-
     // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
     if (fullCardPaymentId && prepaidCardAmount > 0) {
       await capturePaymentAllocatables(client, {
         salePaymentId: fullCardPaymentId,
@@ -1061,6 +1055,13 @@ async function create(ctx) {
       })
       await refreshOrderAllocationRollup(client, saleOrderId)
     }
+
+    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
+    // - zeroPayable（券/卡全额抵扣）：received=prepaid 或 sale_amount<=0 兜底 → paid_sessions=session_count（创建即结清）
+    // - 非 zeroPayable（待支付，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
+    // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
+    // 行级实付草稿现落 sale_items.pending_received，由 confirmOffline/payNotify 入账后才驱动 received→paid_sessions）。
+    await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 零应付即结清：触发与 confirmOffline 已支付分支一致的结算副作用（档位/客户分类/会员/积分/分享礼）。
     // 券全额单 receivedAmount=prepaidCardAmount=0 → 积分链净额=0 无写入、grantShareGift 自带 paid>0 门控跳过。
@@ -1478,10 +1479,8 @@ async function confirmOffline(ctx) {
       }
     }
 
-    // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-    await recalcPaidSessionsForOrder(client, saleOrderId)
-
     // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
     const cashThis = cashPaymentId ? confirmAmount : 0
     const cardThis = cardPaymentId ? prepaidAmount : 0
     const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1495,6 +1494,10 @@ async function confirmOffline(ctx) {
       })
       await refreshOrderAllocationRollup(client, saleOrderId)
     }
+
+    // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)
@@ -2253,41 +2256,10 @@ async function approveRefund(ctx) {
       [now, refSaleOrderId]
     )
 
-    // 3. 储值卡通道（修复 Bug H）：读 note.refundByCard 回冲，不再依赖 payment_method==='储值卡'。
-    //    原单全额抵卡落 '无'、混合落现金通道，退款行 payment_method 几乎不是 '储值卡'，旧条件导致纯卡/混合单都漏回冲。
-    //    refundByCard 在 createRefund 已按储值卡占比拆分存入 note。两端镜像 admin refunds.ts。
-    let noteRefundByCard = 0
-    try {
-      const noteObj = sopRow.note ? (typeof sopRow.note === 'string' ? JSON.parse(sopRow.note) : sopRow.note) : null
-      noteRefundByCard = Number(noteObj?.refundByCard || 0)
-    } catch (_) { noteRefundByCard = 0 }
-    if (noteRefundByCard > 0 && sopRow.client_user_id) {
-      // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
-      // 原写 'SOP-'+paymentId 会违反 card_transactions_ref_order_id FK（H 修复后回冲分支真正执行才暴露）
-      const dupCheck = await client.query(
-        `SELECT 1 FROM card_transactions WHERE external_ref = $1 LIMIT 1`,
-        [`card-refund-${paymentId}`]
-      )
-      if (dupCheck.rows.length === 0) {
-        // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK
-        const newCardId = `FY-CARD-${sopRow.client_user_id}`
-        const upsertRes = await client.query(
-          `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
-           VALUES ($1, $2, $3, NOW(), NOW())
-           ON CONFLICT (user_id) DO UPDATE
-             SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
-           RETURNING card_id`,
-          [newCardId, sopRow.client_user_id, noteRefundByCard]
-        )
-        const cardId = upsertRes.rows[0].card_id
-        await client.query(
-          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-           VALUES ($1, '充值', $2, $3, $4, NOW())
-           ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-          [cardId, noteRefundByCard, refSaleOrderId, `card-refund-${paymentId}`]
-        )
-      }
-    }
+    // 3. 储值卡回冲通道（已退役 2026-06-28）：
+    //    退款策略改为「全部走现金」（splitRefundByOriginalPayment 恒返回 refundByCard=0），
+    //    createRefund 写入 note.refundByCard 恒为 0，故此处回冲分支永不触发。
+    //    两端镜像 admin refunds.ts。若未来恢复按储值卡占比拆分退款，在此重建回冲逻辑。
 
     // 4. 级联回滚（Bug Q/M）：按本次退款明细逐 item 级联（从 note.items 读），仅全退 item 作废分配/提成
     let cascadeItems = []
@@ -2469,6 +2441,7 @@ async function createRepayment(ctx) {
     prepaidCardAmount: inputPrepaidCard,
     paymentMethod,
     note,
+    idempotencyKey,
   } = payload
   const storeId = ctx.auth.effectiveStoreId
 
@@ -2539,6 +2512,13 @@ async function createRepayment(ctx) {
   // 因不再创建 FY-HKD 单据，card_transactions.ref_order_id 用 'REPAY-{refSaleOrderId}-{ts}' 编码
   const repayRefId = `REPAY-${refSaleOrderId}-${Date.now()}`
 
+  // 幂等键（2026-06-29 防重复扣卡）：前端为本次回款意向生成 idempotencyKey，重试/误点复用同一值。
+  // 仅储值卡抵扣场景（prepaidCardAmount>0）用作扣卡 external_ref —— 纯现金回款由前端避免重复提交守护。
+  // 缺失时退回 repayRefId-based external_ref（向后兼容老前端，仅放弃幂等保护）。
+  const repayIdempRef = idempotencyKey && prepaidCardAmount > 0
+    ? `card-repay-${refSaleOrderId}-${idempotencyKey}`
+    : null
+
   const result = await pg.transaction(async (client) => {
     // 1) 锁原单 + 校验状态
     const lockRes = await client.query(
@@ -2558,6 +2538,27 @@ async function createRepayment(ctx) {
 
     if (!['部分支付', '待支付'].includes(locked.status)) {
       throw new Error(`INVALID_STATE: 订单当前状态"${locked.status}"不允许回款`)
+    }
+
+    // 幂等预检（2026-06-29 防重复扣卡）：锁原单后查同 idempotencyKey 的 card-repay 扣款是否已落库。
+    // 命中 → 整笔回款已处理（余额已扣、流水已记），直接返回当前状态、跳过本次扣卡/payments/received 全部逻辑。
+    // 行锁（上面 SELECT ... FOR UPDATE）串行化同单请求，两次重试无竞态：第二次拿到锁时首次已 COMMIT 可见。
+    if (repayIdempRef) {
+      const dupRes = await client.query(
+        'SELECT 1 FROM card_transactions WHERE external_ref = $1 LIMIT 1',
+        [repayIdempRef]
+      )
+      if (dupRes.rows.length > 0) {
+        return {
+          refSaleOrderId,
+          repayAmount,
+          prepaidCardAmount,
+          refStatus: locked.status,
+          refReceived: Number(locked.received || 0),
+          refPrepaidCardAmount: Number(locked.prepaid_card_amount || 0),
+          idempotent: true,
+        }
+      }
     }
 
     // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
@@ -2617,7 +2618,9 @@ async function createRepayment(ctx) {
         `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
          VALUES ($1, '扣款', $2, $3, $4, NOW())
          ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-        [cardId, -prepaidCardAmount, repayRefId, `card-repay-${repayRefId}`]
+        // 幂等 external_ref：优先用前端 idempotencyKey 派生的稳定键（重试命中 → 上方预检整笔跳过）；
+        // 缺失时退回 repayRefId-based（向后兼容）。
+        [cardId, -prepaidCardAmount, refSaleOrderId, repayIdempRef || `card-repay-${repayRefId}`]
       )
     }
 
@@ -2653,10 +2656,9 @@ async function createRepayment(ctx) {
     // 线下/储值卡回款均即时已支付：现金行为主流水行；纯储值卡取抵扣行
     const primaryPaymentId = cashPaymentId || cardPaymentId
 
-    // 5b) 子项定向：把本次每张卡补款落到 sale_items.pending_received，使下方 recalcPaidSessionsForOrder
-    //     STEP1 的 pend_cap 精确把钱补到选中卡、未选/已结清卡不动。
-    //     公式：pending_received_i = received_i + 已退款额_i + 本次补款_i（现金+储值卡），与 admin recordPayment 一致。
-    //     退款额复用 STEP1.5 的退款 note JSON 聚合还原毛额（无退款时为 0）。
+    // 5b) 子项定向：把本次每张卡补款覆盖写入 sale_items.pending_received
+    //     （2026-06-27 营业额分配重构：pending_received = 本次逐项实付，不再累加 received+refunded+delta）。
+    //     非定向 capture 读 pending_received 作为权重；定向 capture 用 directedItems 不读此值。
     //     无 items[] 的订单级回款不动 pending（退回 untargeted 比例分摊，向后兼容）。
     if (repayItems) {
       const repayValuesSql = repayItems
@@ -2667,30 +2669,11 @@ async function createRepayment(ctx) {
         (Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100).toFixed(2),
       ])
       await client.query(
-        `WITH refund_items AS (
-           SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-                  COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
-           FROM sale_order_payments sop
-           CROSS JOIN LATERAL jsonb_array_elements(
-             CASE WHEN sop.note LIKE '{%'
-                  THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                            THEN (sop.note)::jsonb -> 'items'
-                            ELSE '[]'::jsonb END
-                  ELSE '[]'::jsonb END
-           ) AS elem
-           WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
-         ),
-         refund_agg AS (
-           SELECT sale_item_id, SUM(refund_amount) AS refunded
-           FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id
-         ),
-         repay (sale_item_id, delta) AS (VALUES ${repayValuesSql})
+        `WITH repay (sale_item_id, delta) AS (VALUES ${repayValuesSql})
          UPDATE sale_items si
-         SET pending_received = ROUND(
-               si.received::numeric + COALESCE(ra.refunded, 0) + COALESCE(rp.delta, 0), 2),
+         SET pending_received = COALESCE(rp.delta, 0),
              updated_at = NOW()
          FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买') ai
-         LEFT JOIN refund_agg ra ON ra.sale_item_id = ai.sale_item_id
          LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
          WHERE si.sale_item_id = ai.sale_item_id`,
         [refSaleOrderId, ...repayParams]
@@ -2715,11 +2698,11 @@ async function createRepayment(ctx) {
     const newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     const settled = newReceived
-    // 结清判定基准 = payable_amount + 原始 prepaid 快照（origPrepaidSnapshot）。
-    // 用快照而非 newPrepaid：回款可新增储值卡抵扣，settled(含新抵扣) 增长应推进结清，
-    // 故 RHS 须锚定原始 prepaid 才恒 == total。
-    // 普通单 payable + 快照 === total（行为不变）；充值单 payable(实付) ≠ total(面额)，修正。
-    const settleTarget = Math.round((origPayable + origPrepaidSnapshot) * 100) / 100
+    // 结清判定基准 = total_amount（固定锚）。received 含现金 + 储值卡抵扣（I1），达 total 即结清。
+    // 原用 payable + origPrepaidSnapshot 在「回款新增储值卡抵扣」时破裂（payable 不随 prepaid 减少，
+    // rep2 锁定的 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
+    // 充值单不进回款路径（一次性付清），total 锚无副作用。
+    const settleTarget = Math.round(Number(locked.total_amount || 0) * 100) / 100
     const targetStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
@@ -2736,10 +2719,8 @@ async function createRepayment(ctx) {
       throw new Error('INVALID_STATE: 原订单状态已变更，请刷新后重试')
     }
 
-    // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
-    await recalcPaidSessionsForOrder(client, refSaleOrderId)
-
     // 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
     const directedForCapture = repayItems
       ? repayItems.map((it) => ({
           saleItemId: it.saleItemId,
@@ -2753,6 +2734,10 @@ async function createRepayment(ctx) {
       directedItems: directedForCapture,
     })
     await refreshOrderAllocationRollup(client, refSaleOrderId)
+
+    // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
+    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    await recalcPaidSessionsForOrder(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
@@ -3166,11 +3151,8 @@ async function createConversion(ctx) {
       })
     }
 
-    // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
-    // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
-    await recalcPaidSessionsForOrder(tx, convOrderId)
-
     // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额（非定向）
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
     if (convFullCardPaymentId && card > 0) {
       await capturePaymentAllocatables(tx, {
         salePaymentId: convFullCardPaymentId,
@@ -3180,6 +3162,11 @@ async function createConversion(ctx) {
       })
       await refreshOrderAllocationRollup(tx, convOrderId)
     }
+
+    // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
+    // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
+    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    await recalcPaidSessionsForOrder(tx, convOrderId)
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
     if (isFullCardCoverage) {

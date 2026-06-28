@@ -41,6 +41,18 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /RETURNING\s+card_id/i.test(sql)) {
     return { rows: [{ card_id: 'card-stub-1' }], rowCount: 1 }
   }
+  // confirmOffline/createRepayment「从流水重聚合 received」SUM 查询（order.js:1418 等）：
+  // 默认返回 0（无历史流水），避免 .rows[0].new_received 崩溃；需要具体结清判定的用例在自家
+  // client.query mock 里按 SQL 内容覆盖此分支返回真实 new_received（见各 confirmOffline 用例）。
+  if (typeof sql === 'string' && /new_received/.test(sql) && /new_prepaid/.test(sql)) {
+    return { rows: [{ new_received: '0', new_prepaid: '0' }], rowCount: 1 }
+  }
+  // recalcPaidSessionsForOrder spai 覆盖率探测（paid-sessions.js STEP1）：
+  // 默认 spai_total=0 < order_received → 走 Branch B 瀑布回退（与旧 spaiCheck.rows.length===0 行为一致）。
+  // 需要 Branch A（Σspai）路径的用例在自家 mock 覆盖此分支返回 spai_total >= order_received。
+  if (typeof sql === 'string' && /spai_total/.test(sql) && /order_received/.test(sql)) {
+    return { rows: [{ spai_total: '0', order_received: '0' }], rowCount: 1 }
+  }
   // mixed-recharge / mixed-experience 守卫（D4/D5）：order.create 写完明细后 SELECT bool_and(...)
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_recharge_card/i.test(sql)) {
     return { rows: [{ all_recharge: false, all_normal: true }], rowCount: 1 }
@@ -250,17 +262,20 @@ describe('order.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*商品.*不存在/)
   })
 
-  test('优惠金额超过 saleAmount 时拒绝', async () => {
+  test('discount 入参被忽略（后端不再处理），按标价开单 — 2026-06 重构', async () => {
+    // 历史 discount/customPrice 入参已废弃（order.js:428 注释：前端按行不再传，后端不再处理）。
+    // 旧行为：discount > saleAmount 抛 INVALID_PARAMS。新行为：discount 静默忽略，按标价走。
     const ctx = createManagerCtx({
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1, discount: 99999 }],
       paymentMethod: '线下',
+      orderType: 'normal',
     })
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])  // 无待支付订单
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -271,12 +286,21 @@ describe('order.create', () => {
         product_name: 'P',
         sales_category: null,
       }])
+      .mockResolvedValueOnce([])  // generateOrderNo
 
-    await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*优惠金额/)
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: makeClientQueryMock({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)  // 不再 rejects
+
+    // discount=99999 被静默忽略，totalAmount 按标价 100 走
+    expect(ctx.result.totalAmount).toBe(100)
+    expect(ctx.result.status).toBe('待支付')
   })
 
-  test('体验订单使用 customPrice', async () => {
+  test('体验订单 customPrice 已废弃：后端忽略，按标价走', async () => {
     const ctx = createManagerCtx({
       clientPhone: '138',
       clientName: 'X',
@@ -309,7 +333,10 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.totalAmount).toBe(1) // customPrice 而非原价
+    // 2026-04 营业额分配重构：customPrice/discount 行级入参已废弃（order.js:428 前端不再传、后端不处理）。
+    // 体验单定价走 resolveUnitPrice（special_price=会员价/体验价；本 SKU 无 special_price → 标价 1000），
+    // customPrice=1 被忽略。此用例守护「customPrice 不再生效」。
+    expect(ctx.result.totalAmount).toBe(1000)
   })
 
   test('B2 拆行：3次卡 ×4 → 4 行 sale_items（每行 quantity=1, session_count=3）', async () => {
@@ -861,7 +888,9 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(400) // 200 × 2
   })
 
-  test('special_price 优先于 price', async () => {
+  test('special_price 优先于 price（会员客享会员价，非会员按标价 — resolveUnitPrice）', async () => {
+    // 2026-06-25 会员价口径（[[project_member_price_split_special]]）：special_price = 会员价，仅会员享。
+    // 非会员取标价 price。此处把顾客设为会员以验证 special_price 生效（800 而非标价 1000）。
     const ctx = createManagerCtx({
       clientPhone: '138',
       clientName: 'X',
@@ -870,7 +899,7 @@ describe('order.create', () => {
     })
 
     pg.query
-      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])  // 已注册绑定本店
+      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001', customer_type: '会员客', member_level: '黑钻' }])  // 会员客 → 享 special_price
       .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-sp', product_id: 'prod-003', product_type: '疗程卡',
@@ -885,7 +914,7 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.totalAmount).toBe(800)  // 使用 special_price 而非 price
+    expect(ctx.result.totalAmount).toBe(800)  // 会员客使用 special_price（会员价）而非标价 price
   })
 
   // ===== PR-2：paymentMethod 行为 =====
@@ -960,12 +989,14 @@ describe('order.create', () => {
     expect(ctx.result.status).toBe('待支付')
   })
 
-  test('非法 paymentMethod=支付宝 被拒绝', async () => {
+  test('非法 paymentMethod（如 刷卡）被拒绝（白名单：微信/支付宝/线下）', async () => {
+    // 2026-06 重构：支付宝已纳入合法白名单（['微信','支付宝','线下']）。
+    // 改用真正非法的 method「刷卡」验证白名单守卫仍生效。
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: '支付宝',
+      paymentMethod: '刷卡',
     })
 
     await expect(orderRoutes.create(ctx))
@@ -1010,7 +1041,7 @@ describe('order.create', () => {
       }])
   }
 
-  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 待支付 + 1 行 首次支付/已支付', async () => {
+  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 两步式：订单 待支付，paidAmount=0，create 不写 payments', async () => {
     const ctx = mockCreateCtxOk({ receivedAmount: 200 })
     mockPgForCreate()
 
@@ -1029,19 +1060,16 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
+    // 两步式（order.js:875）：create 一律 paidAmount=0、不写「已支付」payments；
+    // 线下全额由店长 confirmOffline「确认收款」入账（写 首次支付 + 翻态）。
     expect(ctx.result.status).toBe('待支付')
-    expect(ctx.result.paidAmount).toBe(200)
+    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.payableAmount).toBe(200)
     expect(ctx.result.prepaidCardAmount).toBe(0)
-    expect(paymentInserts.length).toBe(1)
-    // INSERT 语句含 '首次支付' 字面量
-    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
-    // amount 参数（按顺序 saleOrderId, amount, paymentMethod, operator, note, now）
-    expect(Number(paymentInserts[0].params[1])).toBe(200)
-    expect(paymentInserts[0].params[2]).toBe('线下')
+    expect(paymentInserts.length).toBe(0)
   })
 
-  test('PR-2 create 首次部分（线下, 0<received<payable）→ 订单 部分支付 + 1 行 首次支付/已支付', async () => {
+  test('PR-2 create 首次部分（线下, 0<received<payable）→ 两步式：订单 待支付，paidAmount=0，create 不写 payments', async () => {
     const ctx = mockCreateCtxOk({ receivedAmount: 80 })
     mockPgForCreate()
 
@@ -1058,12 +1086,12 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.status).toBe('部分支付')
-    expect(ctx.result.paidAmount).toBe(80)
+    // 两步式：非 zeroPayable 一律 '待支付'（不再落 '部分支付'）；paidAmount=0；无 payments 行。
+    // 部分入账由 confirmOffline 翻态为 '部分支付'/'已支付'。
+    expect(ctx.result.status).toBe('待支付')
+    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.payableAmount).toBe(200)
-    expect(paymentInserts.length).toBe(1)
-    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
-    expect(Number(paymentInserts[0].params[1])).toBe(80)
+    expect(paymentInserts.length).toBe(0)
   })
 
   test('PR-2 create 纯挂账（线下, receivedAmount=0）→ 订单 待支付，无 payments 行', async () => {
@@ -1088,7 +1116,7 @@ describe('order.create', () => {
     expect(paymentInserts.length).toBe(0)
   })
 
-  test('PR-2 create 储值卡抵扣 + 部分现场 → 订单 部分支付 + 仅 1 行首次支付 payments（储值卡抵扣留到 confirmOffline）', async () => {
+  test('PR-2 create 储值卡抵扣 + 部分现场 → 两步式：订单 待支付，paidAmount=0，create 不写 payments 不扣卡（均留 confirmOffline）', async () => {
     const ctx = mockCreateCtxOk({
       useCard: true,
       prepaidCardAmount: 50,  // 显式传入
@@ -1124,40 +1152,59 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    // total=200, prepaid=50, payable=150, received=40 → paid=40, settled=90 → 部分支付
+    // total=200, prepaid=50, payable=150（非 zeroPayable）→ 两步式：paidAmount=0、status='待支付'。
+    // 储值卡 prepaid_card_amount 仅作"预选"快照；扣卡 + 写储值卡抵扣/首次支付 payments 均归 confirmOffline。
     expect(ctx.result.totalAmount).toBe(200)
     expect(ctx.result.prepaidCardAmount).toBe(50)
     expect(ctx.result.payableAmount).toBe(150)
-    expect(ctx.result.paidAmount).toBe(40)
-    expect(ctx.result.status).toBe('部分支付')
-    // create 时仅写 1 行 payments：首次支付（现金部分）。储值卡抵扣 payments 行 + 扣卡归 confirmOffline
-    expect(paymentInserts.length).toBe(1)
-    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
-    expect(Number(paymentInserts[0].params[1])).toBe(40)
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(ctx.result.status).toBe('待支付')
+    expect(paymentInserts.length).toBe(0)
     // create 不扣卡（staff CLAUDE.md：唯一扣卡点在 confirmOffline）
     expect(cardTxnInserts.length).toBe(0)
   })
 
-  test('PR-2 create 参数错误：receivedAmount > payable_amount → INVALID_PARAMS', async () => {
+  test('PR-2 create receivedAmount 超过 payable 不再报错（order.js:867 clamp 至 payable，两步式 paidAmount=0）', async () => {
+    // 2026-06-07 重构：receivedAmount 超额改为 Math.min(sumItemReceived, payableAmount) clamp，不再抛 INVALID_PARAMS。
     const ctx = mockCreateCtxOk({ receivedAmount: 999 })
     mockPgForCreate()
 
-    await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*实收金额/)
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn(async (sql) => defaultQueryResult(sql)) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)  // 不再 throws INVALID_PARAMS: 实收金额
+
+    // 即便 receivedAmount（payload）超额，两步式 create：paidAmount=0、status='待支付'
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(ctx.result.status).toBe('待支付')
   })
 
-  test('PR-2 create 参数错误：微信 + receivedAmount > 0 → MIXED_PAYMENT_NOT_SUPPORTED', async () => {
+  test('PR-2 create 微信 + receivedAmount>0 不再报错（order.js:864 线上强制 received=0）', async () => {
+    // 2026-06-07 重构：线上（微信/支付宝）+ receivedAmount>0 不再抛 MIXED_PAYMENT_NOT_SUPPORTED，
+    // 改为强制 receivedAmount=0（staffApi 不写 payments，由 payNotify 回调入账）。
     const ctx = mockCreateCtxOk({ paymentMethod: '微信', receivedAmount: 100 })
     mockPgForCreate()
 
-    await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/微信\/支付宝不支持部分线上支付/)
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn(async (sql) => defaultQueryResult(sql)) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)  // 不再 throws 微信/支付宝不支持部分线上支付
+
+    // 线上强制 received=0；paidAmount=0；payable=200≠0 → '待支付'（等 payNotify 翻态）
+    expect(ctx.result.receivedAmount).toBe(0)
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(ctx.result.paymentMethod).toBe('微信')
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('PR-2 create 不变量：create 阶段 sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type IN (首次支付,回款,退款))', async () => {
     // 场景：线下部分支付 received=50, prepaidCard=30（预选，create 不扣卡）
-    //   sale_orders.paid_amount = 50
-    //   Σ(payments.amount where 已支付 且 change_type∈{首次支付,回款,退款}) = 50（只有 1 行首次支付）
+    //   两步式（2026-06-07）：create 一律 paidAmount=0、不写「已支付」payments；
+    //   sale_orders.paid_amount = 0 = Σ(payments where 已支付) = 0（空集）
     //   储值卡抵扣 payments 行 + 扣卡在 confirmOffline 发生
     const ctx = mockCreateCtxOk({
       useCard: true,
@@ -1196,10 +1243,12 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.paidAmount).toBe(50)
+    // 两步式：paidAmount=0（create 不入账）；prepaidCardAmount=30 仅预选快照
+    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.prepaidCardAmount).toBe(30)
 
     // 不变量（create 阶段）：sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type ∈ {首次支付,回款,退款})
+    // 两步式下两侧均为 0（create 不写已支付流水），等式仍成立
     const paidAmountFromPayments = paymentInserts
       .filter(p => ['首次支付', '回款', '退款'].includes(p.changeType))
       .reduce((s, p) => s + p.amount, 0)
@@ -1212,8 +1261,8 @@ describe('order.create', () => {
     expect(prepaidFromPayments).toBe(0)
     expect(cardTxnInserts.length).toBe(0)
 
-    // 总共 1 行首次支付
-    expect(paymentInserts.length).toBe(1)
+    // 两步式：create 阶段无任何 payments 行（首次支付 / 储值卡抵扣 均留 confirmOffline）
+    expect(paymentInserts.length).toBe(0)
   })
 })
 
@@ -1245,6 +1294,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— total=500，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) capturedUpdateSql = sql
           return defaultQueryResult(sql)
         }),
@@ -1279,7 +1332,14 @@ describe('order.confirmOffline', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn(async (sql) => {
+          // 仅 UPDATE sale_orders 模拟并发竞态（rowCount=0）；其余（首次支付 INSERT...RETURNING id、
+          // 从流水重聚合 SUM 等）走 defaultQueryResult，避免 blanket 空 rows 提前撞 CONFLICT 守卫
+          if (/UPDATE\s+sale_orders/.test(sql) && /status\s*=/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          return defaultQueryResult(sql)
+        }),
       }
       return await cb(client)
     })
@@ -1354,7 +1414,15 @@ describe('order.confirmOffline', () => {
       .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: makeClientQueryMock({ rows: [], rowCount: 1 }) }
+      const client = {
+        query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— total=300，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '300', new_prepaid: '0' }], rowCount: 1 }
+          }
+          return defaultQueryResult(sql)
+        }),
+      }
       return await cb(client)
     })
 
@@ -1376,7 +1444,8 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-001',
-        total_amount: '495',
+        sale_order_type: '充值单',   // 充值单识别（order.js:1453）—— 面值读 total_amount
+        total_amount: '500',         // 面值 500（实付 payable 495）
         paid_amount: '0',
         prepaid_card_amount: '0',
         payable_amount: '495',
@@ -1392,6 +1461,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=495，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '495', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
           }
@@ -1437,7 +1510,8 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-002',
-        total_amount: '2940',
+        sale_order_type: '充值单',   // 充值单识别（order.js:1453）—— 面值读 total_amount
+        total_amount: '3000',        // 面值 3000（实付 payable 2940）
         paid_amount: '0',
         prepaid_card_amount: '0',
         payable_amount: '2940',
@@ -1451,6 +1525,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=2940，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '2940', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return {
               rows: [{
@@ -1510,6 +1588,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=495，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '495', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
           }
@@ -1558,6 +1640,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          // 从流水重聚合 received（order.js:1418）—— payable=300，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '300', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('si.is_recharge_card = true')) {
             return { rows: [] }  // 不含充值卡行
           }
@@ -1607,6 +1693,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— 已收 80 + 本次 120 = 200 = settleTarget → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '200', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
             updateParams = params
             return { rows: [], rowCount: 1 }
@@ -1667,6 +1757,10 @@ describe('order.confirmOffline', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          // 从流水重聚合 received（order.js:1418）—— 已收 80 + 本次 30 = 110 < 200 → 部分支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '110', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
             updateParams = params
             return { rows: [], rowCount: 1 }
@@ -2574,7 +2668,7 @@ describe.skip('order.createRefund', () => {
     expect(sopInsert.params[6]).toBe(3)   // 退 3 件 → quantity → 写入 session_count
   })
 
-  test('储值卡全额抵扣原单退款：refundByCard=金额、refundByOrigin=0、payment_method=无→线下', async () => {
+  test('储值卡全额抵扣原单退款：2026-06-28 全部走现金 refundByCard=0、refundByOrigin=退款额', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-CARDONLY',
       items: [{ saleItemId: 'item-card', refundQuantity: 1 }],
@@ -2600,8 +2694,9 @@ describe.skip('order.createRefund', () => {
 
     await orderRoutes.createRefund(ctx)
 
-    expect(ctx.result.refundByCard).toBe(200)
-    expect(ctx.result.refundByOrigin).toBe(0)
+    // 2026-06-28 退款全部走现金，不再按储值卡占比拆分回冲储值卡
+    expect(ctx.result.refundByCard).toBe(0)
+    expect(ctx.result.refundByOrigin).toBe(200)
     // resolveRefundPaymentMethod('无') → '线下'
     expect(ctx.result.refundPaymentMethod).toBe('线下')
 
@@ -2612,8 +2707,8 @@ describe.skip('order.createRefund', () => {
     expect(sopInserts[0].params[2]).toBe('线下')
 
     const note = JSON.parse(sopInserts[0].params[7])
-    expect(note.refundByCard).toBe(200)
-    expect(note.refundByOrigin).toBe(0)
+    expect(note.refundByCard).toBe(0)
+    expect(note.refundByOrigin).toBe(200)
     expect(note.refundPaymentMethod).toBe('线下')
   })
 
@@ -3779,7 +3874,7 @@ describe('order.createConversion', () => {
     // 2) 单一主事务：generateOrderNo（advisory lock + SELECT sale_order_id LIKE）+ 主流程
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn()
+        query: vi.fn(async (sql) => defaultQueryResult(sql))
           // generateOrderNo: advisory_xact_lock(hashtext('sale_order_id_gen'))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // generateOrderNo: SELECT sale_order_id FROM sale_orders WHERE LIKE → seq=1
@@ -3906,7 +4001,7 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
     // 2) 单一主事务（totalOut=500×2=1000, totalIn=500×2=1000 → priceDiff=0）
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -3958,7 +4053,7 @@ describe('order.createConversion', () => {
     }])
 
     // 单一主事务 totalOut=1000×2=2000, totalIn=500×1=500 → priceDiff=-1500
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4034,7 +4129,7 @@ describe('order.createConversion', () => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
     })
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({
         rows: [{
@@ -4068,7 +4163,7 @@ describe('order.createConversion', () => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
     })
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({
         rows: [{
@@ -4098,7 +4193,7 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: 'C', customer_type: '流量客', bound_store_id: 'store-001',
     }])
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4146,7 +4241,7 @@ describe('order.createConversion', () => {
     // 原体验卡单品（合并后疗程卡）：remaining_sessions=3，unit_real_price=200
     // totalOut = 200 × 3 = 600
     // totalIn = 1000 × 1 = 1000 → priceDiff=400
-    const txQuery = vi.fn()
+    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
@@ -4516,9 +4611,10 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     await orderRoutes.create(ctx)
 
     expect(ctx.result.prepaidCardAmount).toBe(0)
-    expect(ctx.result.paidAmount).toBe(1000)
+    // PR-2 两步式：create 一律 paidAmount=0（不入账），线下全额由 confirmOffline 翻态 '已支付'
+    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.paymentMethod).toBe('线下')
-    // PR-2: 线下全额现场 + receivedAmount 默认 payable → '待支付' + 1 行 首次支付 payments（confirmOffline 再转 '已支付'）
+    // PR-2: 线下全额现场 → '待支付'（confirmOffline 再转 '已支付'，create 不写 payments）
     expect(ctx.result.status).toBe('待支付')
   })
 
@@ -4597,7 +4693,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     await orderRoutes.create(ctx)
 
     expect(ctx.result.prepaidCardAmount).toBe(0)
-    expect(ctx.result.paidAmount).toBe(1000)
+    // PR-2 两步式：create 一律 paidAmount=0（不入账），线下全额由 confirmOffline 翻态
+    expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.paymentMethod).toBe('线下')
   })
 
@@ -4665,6 +4762,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql, params) => {
           txCalls.push({ sql, params })
+          // 从流水重聚合 received（order.js:1418）—— payable200+卡300=500，现金200+卡300 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '300' }], rowCount: 1 }
+          }
           if (sql.includes('FROM card_transactions') && sql.includes("type = '扣款'")) {
             return { rows: [] }  // 幂等 — 未扣过
           }
@@ -4718,6 +4819,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql) => {
           txCalls.push({ sql })
+          // 从流水重聚合 received（order.js:1418）—— 卡已扣过(历史流水含储值卡抵扣300+现金200)=500 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '300' }], rowCount: 1 }
+          }
           if (sql.includes('FROM card_transactions') && sql.includes("type = '扣款'")) {
             return { rows: [{ '?column?': 1 }] }  // 已扣过
           }
@@ -4802,6 +4907,10 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
       const client = {
         query: vi.fn(async (sql) => {
           txCalls.push({ sql })
+          // 从流水重聚合 received（order.js:1418）—— payable=500，全额确认 → 已支付
+          if (sql.includes('new_received') && sql.includes('new_prepaid')) {
+            return { rows: [{ new_received: '500', new_prepaid: '0' }], rowCount: 1 }
+          }
           if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
             return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
           }

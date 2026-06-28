@@ -150,25 +150,31 @@ function capRefundAmounts(refundDetails, originalTotal, targetGross) {
  * @param {number} origTotalAmount 原单总金额
  * @returns {{ refundByCard: number, refundByOrigin: number }}
  */
-function splitRefundByOriginalPayment(refundAmount, origPrepaidCardAmount, origTotalAmount) {
-  let refundByCard = 0
-  let refundByOrigin = Math.round(refundAmount * 100) / 100
-
-  if (origPrepaidCardAmount > 0 && origTotalAmount > 0 && refundAmount > 0) {
-    const raw = (origPrepaidCardAmount / origTotalAmount) * refundAmount
-    refundByCard = Math.floor(raw * 100) / 100
-    refundByOrigin = Math.round((refundAmount - refundByCard) * 100) / 100
+/**
+ * 拆分退款现金 vs 储值卡
+ *
+ * 2026-06-28 改为「全部走现金」：退款不再按储值卡占比拆分，refundByCard 始终为 0。
+ * 所有退款统一走现金（refundByOrigin），避免用户退款拿到的现金和疗程卡对应金额不一致的误解，
+ * 也避免了退款时出现剩余金额无法退款的情况。
+ *
+ * @param {number} refundAmount 退款总额
+ * @param {number} _origPrepaidCardAmount 原单储值卡抵扣额（保留入参兼容调用方，不参与计算）
+ * @param {number} _origTotalAmount 原单总额（保留入参兼容调用方，不参与计算）
+ * @returns {{ refundByCard: number, refundByOrigin: number }}
+ */
+function splitRefundByOriginalPayment(refundAmount, _origPrepaidCardAmount, _origTotalAmount) {
+  return {
+    refundByCard: 0,
+    refundByOrigin: Math.round(refundAmount * 100) / 100,
   }
-
-  return { refundByCard, refundByOrigin }
 }
 
 /**
  * 决定退款 payments 行的 payment_method
  *
  * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
- * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
- * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 admin lib/refund.ts。
+ * 不调拉卡拉/微信原路退款接口。2026-06-28 退款全部走现金（refundByCard=0），
+ * 不再回冲储值卡余额。两端镜像 admin lib/refund.ts。
  *
  * @param {string} _origPaymentMethod 原单 payment_method（已不参与决策，保留入参兼容调用方）
  * @returns {string} 退款行的 payment_method（恒 '线下'）

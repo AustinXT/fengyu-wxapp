@@ -52,7 +52,13 @@
             <view class="trial-card-sub">
               <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + '次卡' : '单次'}}</text>
               <view class="trial-card-right">
-                <text class="trial-card-price">¥{{item.price}}</text>
+                <view class="price-dual">
+                  <block wx:if="{{item.specialPrice != null}}">
+                    <text class="price-original">¥{{item.listPrice}}</text>
+                    <text class="price-special">¥{{item.specialPrice}}</text>
+                  </block>
+                  <text wx:else class="price-special">¥{{item.listPrice}}</text>
+                </view>
                 <view class="trial-card-add-btn">加入</view>
               </view>
             </view>

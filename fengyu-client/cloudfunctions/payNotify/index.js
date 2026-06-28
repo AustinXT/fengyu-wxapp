@@ -675,14 +675,9 @@ exports.main = async (event) => {
         }
       }
 
-      // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-      // 部分支付也需要触发：让顾客刚回款的部分立即可消费
-      await recalcPaidSessionsForOrder(client, targetOrderNo)
-
-      // 后续业务动作（充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
-      // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
+      // 按回款逐笔分配：线上部分支付也逐笔捕获可分配额 + 自动分给开单销售员（本次=thisPayAmount，无定向）
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
       if (!fullyPaid) {
-        // 按回款逐笔分配：线上部分支付也逐笔捕获可分配额 + 自动分给开单销售员（本次=thisPayAmount，无定向）
         const perItemPartial = await capturePaymentAllocatables(client, {
           salePaymentId: onlinePaymentId,
           saleOrderId: targetOrderNo,
@@ -699,6 +694,10 @@ exports.main = async (event) => {
           now,
         })
         await refreshOrderAllocationRollup(client, targetOrderNo)
+
+        // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+        // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+        await recalcPaidSessionsForOrder(client, targetOrderNo)
 
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
@@ -795,7 +794,6 @@ exports.main = async (event) => {
             `UPDATE sale_orders SET received = received + $1, updated_at = NOW() WHERE sale_order_id = $2`,
             [prepaidAmount, targetOrderNo]
           )
-          await recalcPaidSessionsForOrder(client, targetOrderNo)
           prepaidConsumedThisCallback = prepaidAmount
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
@@ -852,7 +850,6 @@ exports.main = async (event) => {
              WHERE sale_order_id = $3`,
             [pendingCardAmount, now, targetOrderNo]
           )
-          await recalcPaidSessionsForOrder(client, targetOrderNo)
           prepaidConsumedThisCallback = Math.round((prepaidConsumedThisCallback + pendingCardAmount) * 100) / 100
           console.log(`[payNotify] 混合回款储值卡抵扣消费: order=${targetOrderNo}, card=${cardId}, amount=${pendingCardAmount}`)
         }
@@ -877,6 +874,10 @@ exports.main = async (event) => {
         now,
       })
       await refreshOrderAllocationRollup(client, targetOrderNo)
+
+      // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      await recalcPaidSessionsForOrder(client, targetOrderNo)
 
       // 4. 重算顾客历史消费档位
       // spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随
