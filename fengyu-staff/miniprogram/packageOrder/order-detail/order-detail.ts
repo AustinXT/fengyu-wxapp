@@ -60,19 +60,6 @@ interface RawOrderItem {
   picked_up_quantity?: number;
 }
 
-interface RawAllocation {
-  id?: number;
-  employee_name?: string;
-  employee_id?: string;
-  department_name?: string;
-  total_amount?: string;
-  allocation_ratio?: number;
-  role_type?: string;
-  commission_rate?: string;
-  commission_amount?: string;
-  sale_item_name?: string;
-}
-
 interface RawPayment {
   id: number;
   change_type: string;
@@ -100,7 +87,6 @@ interface DisplayPayment {
 interface OrderDetailResponse {
   order: RawOrder;
   items: RawOrderItem[];
-  allocations: RawAllocation[];
   payments?: RawPayment[];
   /** 顾客储值卡余额（供回款弹层「使用储值卡抵扣」自动抵满；无账户=0，无顾客=null） */
   cardBalance?: number | null;
@@ -138,17 +124,6 @@ interface DisplayOrderItem {
   hasDiscount: boolean;
 }
 
-interface DisplayAllocation {
-  id: number;
-  staffName: string;
-  roleType: string;
-  saleItemName: string;
-  ratio: string;
-  commissionRate: string;
-  totalAmount: string;
-  commissionAmount: string;
-}
-
 interface DisplayOrder {
   saleOrderId: string;
   status: string;
@@ -182,9 +157,7 @@ interface DisplayOrder {
   isLegacy: boolean;
   isActivity: boolean;
   items: DisplayOrderItem[];
-  allocation: DisplayAllocation[];
   payments: DisplayPayment[];
-  allocatable: boolean;
 }
 
 Page({
@@ -272,16 +245,6 @@ Page({
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
         };
       });
-      const allocation: DisplayAllocation[] = (res.allocations || []).map((a, index) => ({
-        id: a.id != null ? Number(a.id) : index,
-        staffName: a.employee_name || a.employee_id || '',
-        roleType: a.role_type || '',
-        saleItemName: a.sale_item_name || '',
-        ratio: `${Number(a.allocation_ratio) * 100}%`,
-        commissionRate: a.commission_rate != null ? `${(Number(a.commission_rate) * 100).toFixed(2)}%` : '—',
-        totalAmount: Number(a.total_amount || 0).toFixed(2),
-        commissionAmount: a.commission_amount != null ? Number(a.commission_amount).toFixed(2) : '—',
-      }));
 
       // payments 流水：按 DB sale_order_payments 原样逐条展示
       // （储值卡抵扣/首次支付/回款/退款各自真实金额，不归并；同一次收款的现金行与卡行 paid_at 相同，
@@ -352,9 +315,7 @@ Page({
           isLegacy: o.legacy_source === 'workfine',
           isActivity: !!o.is_activity,
           items,
-          allocation,
           payments,
-          allocatable: o.allocatable ?? false,
         },
         currentRemainingPayable: remainingPayable,
         repayCardBalance: res.cardBalance != null ? Number(res.cardBalance) : 0,
@@ -371,11 +332,6 @@ Page({
     } finally {
       this.setData({ loading: false });
     }
-  },
-
-  onReAllocation() {
-    const saleOrderId = this.data._saleOrderId;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${saleOrderId}` });
   },
 
   onResetFailed() {
