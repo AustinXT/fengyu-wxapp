@@ -1,5 +1,5 @@
 /**
- * 回款逐项可分配额捕获（营业额分配基数）—— 员工端独立副本
+ * 回款逐项可分配额捕获（营业额分配基数）—— 顾客端独立副本
  *
  * 跨端约定（no-shared-cloudfunctions）：admin src/lib/payment-allocatable.ts /
  * clientApi utils/payment-allocatable.js / payNotify 内联 各保留同语义独立副本，

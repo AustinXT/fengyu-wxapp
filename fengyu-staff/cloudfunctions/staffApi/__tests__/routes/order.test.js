@@ -47,6 +47,12 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /new_received/.test(sql) && /new_prepaid/.test(sql)) {
     return { rows: [{ new_received: '0', new_prepaid: '0' }], rowCount: 1 }
   }
+  // recalcPaidSessionsForOrder spai 覆盖率探测（paid-sessions.js STEP1）：
+  // 默认 spai_total=0 < order_received → 走 Branch B 瀑布回退（与旧 spaiCheck.rows.length===0 行为一致）。
+  // 需要 Branch A（Σspai）路径的用例在自家 mock 覆盖此分支返回 spai_total >= order_received。
+  if (typeof sql === 'string' && /spai_total/.test(sql) && /order_received/.test(sql)) {
+    return { rows: [{ spai_total: '0', order_received: '0' }], rowCount: 1 }
+  }
   // mixed-recharge / mixed-experience 守卫（D4/D5）：order.create 写完明细后 SELECT bool_and(...)
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_recharge_card/i.test(sql)) {
     return { rows: [{ all_recharge: false, all_normal: true }], rowCount: 1 }

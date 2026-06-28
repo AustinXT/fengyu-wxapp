@@ -171,13 +171,19 @@ WHERE sale_items.sale_order_id = $1`
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
   // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
-  //   A. 有 spai → received = Σ spai.amount per item（精确，瀑布退役）
-  //   B. 无 spai（历史/退款/修复）→ 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL，零回归
-  const spaiCheck = await client.query(
-    'SELECT 1 FROM sale_payment_allocatable_items WHERE sale_order_id = $1 LIMIT 1',
+  //   A. spai 覆盖全额 received → received = Σ spai.amount per item（精确，瀑布退役）
+  //   B. spai 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单，
+  //      仅新付款写了 spai 而旧付款无 spai 时 Σ(spai) < received，A 会清零旧 received）
+  const covRes = await client.query(
+    `SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = $1), 0) AS spai_total,
+            (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
     [saleOrderId],
   )
-  if (spaiCheck.rows.length > 0) {
+  const covRow = (covRes && covRes.rows && covRes.rows[0]) || {}
+  const spaiTotal = Number(covRow.spai_total || 0)
+  const orderReceived = Number(covRow.order_received || 0)
+  // spai_total >= order_received（容差 0.01 处理浮点）→ spai 完整覆盖，Branch A 安全
+  if (spaiTotal > 0 && spaiTotal >= orderReceived - 0.01) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_SPAI_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])

@@ -77,12 +77,18 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
   //       故 Σ spai = 该行累计毛 received，天然精确，瀑布退役）
   //   B. 无 spai（历史订单 / 退款路径 / 数据修复）→ 回退旧瀑布，避免 received 被置零
   // STEP1 后 sum(sale_items.received) 毛额；STEP 1.5 扣退款后转净额。与三端 cloudfunction 副本字节同义。
-  const ordRes = await tx.execute(sql`
-    SELECT 1 FROM sale_payment_allocatable_items WHERE sale_order_id = ${saleOrderId} LIMIT 1
+  const covRes = await tx.execute(sql`
+    SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = ${saleOrderId}), 0) AS spai_total,
+           (SELECT received::numeric FROM sale_orders WHERE sale_order_id = ${saleOrderId}) AS order_received
   `)
   // tx.execute() 走 drizzle-orm/postgres-js，返回 postgres.js RowList（array-like，带 .count，无 .rows）。
-  // 须按数组解包（同 payment-allocatable.ts / points-settle.ts 惯例），否则 .rows 恒 undefined → hasSpai 恒 false → admin 永走 Branch B 瀑布回退、从不用 Σspai 精确路径，与三端云函数漂移。
-  const hasSpai = (ordRes as unknown as Array<unknown>).length > 0
+  // 须按数组解包（同 payment-allocatable.ts / points-settle.ts 惯例）。
+  const covRows = covRes as unknown as Array<{ spai_total: string; order_received: string }>
+  const spaiTotal = Number(covRows[0]?.spai_total || 0)
+  const orderReceived = Number(covRows[0]?.order_received || 0)
+  // spai_total >= order_received（容差 0.01 处理浮点）→ spai 完整覆盖，Branch A 安全；
+  // 否则 spai 不完整（历史部分支付订单仅新付款有 spai），Branch B 保护旧 received 不被清零。
+  const hasSpai = spaiTotal > 0 && spaiTotal >= orderReceived - 0.01
   if (hasSpai) {
     // 分支 A：received = Σ spai.amount per item
     await tx.execute(sql`
