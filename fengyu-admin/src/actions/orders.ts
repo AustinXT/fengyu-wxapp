@@ -3378,13 +3378,10 @@ export const recordPayment = withPermission(
       // 2) 计算欠款：total - received（= settleTarget - received，与下方结清判定 line 3558 一致）。
       // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单
       // 算成无欠款 → 超额校验误拒。2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，改用 received。
+      // payable + prepaid 在「回款新增储值卡抵扣」时会破裂（见下方结清判定注释），故直接锚 total 单调正确。
       const origTotal = Number(locked.total_amount || 0)
-      const origPrepaidSnapshot = Number(locked.prepaid_card_amount || 0)
       const origPaid = Number(locked.received || 0)
-      const origPayable = locked.payable_amount != null
-        ? Number(locked.payable_amount)
-        : Math.round((origTotal - origPrepaidSnapshot) * 100) / 100
-      const remainingPayable = Math.round((origPayable + origPrepaidSnapshot - origPaid) * 100) / 100
+      const remainingPayable = Math.round((origTotal - origPaid) * 100) / 100
 
       // 3) 超额校验
       if (totalThisTime > remainingPayable + 0.001) {
