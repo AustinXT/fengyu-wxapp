@@ -99,9 +99,13 @@ export default function OrderDetailPageClient({
   // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
   const isLegacy = order.legacySource === "workfine";
 
-  // 剩余欠款 = payable_amount - received（payable_amount = total_amount - prepaid_card_amount）
   const totalAmount = Number(order.totalAmount ?? "0");
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100);
+  // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
+  // 用于「录入回款」按钮条件 + 剩余欠款展示。旧口径 payable(扣卡) − paidAmount(含卡) 会让含卡部分支付单
+  // 算成 ≤0 → clamp 死锁（按钮消失、显示欠款¥0），故回款改用总额减。
+  const repayRemaining = Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100);
+  // 确认收款的剩余应收现金（payable 口径，不含储值卡）：作确认收款弹层预填/上限。
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
   // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
   const pendingReceivedTotal = Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
@@ -115,7 +119,7 @@ export default function OrderDetailPageClient({
     canRecordPayment &&
     order.saleOrderType === "销售单" &&
     order.legacySource !== "workfine" &&
-    remainingPayable > 0 &&
+    repayRemaining > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
     !canShowConfirmOffline;
 
@@ -455,8 +459,8 @@ export default function OrderDetailPageClient({
         <CardHeader className="flex-row items-center justify-between">
           <div>
             <CardTitle>款项流水</CardTitle>
-            {remainingPayable > 0 && (
-              <p className="text-xs text-[#C0322A] mt-1">剩余欠款 ¥{remainingPayable.toFixed(2)}</p>
+            {repayRemaining > 0 && (
+              <p className="text-xs text-[#C0322A] mt-1">剩余欠款 ¥{repayRemaining.toFixed(2)}</p>
             )}
           </div>
           {canShowConfirmOffline && (
@@ -659,7 +663,7 @@ export default function OrderDetailPageClient({
           open={repaymentDialogOpen}
           onOpenChange={setRepaymentDialogOpen}
           saleOrderId={order.saleOrderId}
-          remainingPayable={remainingPayable}
+          remainingPayable={repayRemaining}
           cardBalance={cardBalance}
         />
       )}

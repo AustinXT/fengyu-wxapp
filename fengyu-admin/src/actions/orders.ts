@@ -3215,10 +3215,9 @@ export const getRepayable = withPermission(
       }
     })
 
-    const payable = Number(order.payableAmount) > 0
-      ? Number(order.payableAmount)
-      : Math.round((Number(order.totalAmount) - Number(order.prepaidCardAmount)) * 100) / 100
-    const remainingPayable = Math.round((payable - Number(order.received)) * 100) / 100
+    // 欠款 = total − received（= settleTarget − received，与 status 结清判定一致）。
+    // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单算成无欠款。
+    const remainingPayable = Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
 
     let cardBalance: number | null = null
     if (order.clientUserId) {
@@ -3376,15 +3375,16 @@ export const recordPayment = withPermission(
         }
       }
 
-      // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
-      // 2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，改用 received
+      // 2) 计算欠款：total - received（= settleTarget - received，与下方结清判定 line 3558 一致）。
+      // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单
+      // 算成无欠款 → 超额校验误拒。2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，改用 received。
       const origTotal = Number(locked.total_amount || 0)
       const origPrepaidSnapshot = Number(locked.prepaid_card_amount || 0)
       const origPaid = Number(locked.received || 0)
       const origPayable = locked.payable_amount != null
         ? Number(locked.payable_amount)
         : Math.round((origTotal - origPrepaidSnapshot) * 100) / 100
-      const remainingPayable = Math.round((origPayable - origPaid) * 100) / 100
+      const remainingPayable = Math.round((origPayable + origPrepaidSnapshot - origPaid) * 100) / 100
 
       // 3) 超额校验
       if (totalThisTime > remainingPayable + 0.001) {

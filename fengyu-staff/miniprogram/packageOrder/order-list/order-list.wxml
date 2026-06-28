@@ -71,12 +71,6 @@
             catchtap="onResetFailed"
             data-id="{{item.id}}"
           >重置支付</van-button>
-          <van-button
-            wx:if="{{item.allocatable && (item.status === '已支付' || item.status === '已完成') && isManager}}"
-            size="small" plain type="primary"
-            catchtap="onAllocate"
-            data-id="{{item.id}}"
-          >营业额分配</van-button>
           <van-button size="small" plain catchtap="onItemTap" data-id="{{item.id}}">详情</van-button>
         </view>
       </view>
