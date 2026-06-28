@@ -2561,14 +2561,16 @@ async function createRepayment(ctx) {
       }
     }
 
-    // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
+    // 2) 计算欠款：total - received（= settleTarget - received，与 status 结清判定口径一致）。
+    // received 按 I1 含储值卡抵扣（Σ[首次支付/回款/储值卡抵扣]），须用总额减；旧口径
+    // payable(=total−prepaid,扣卡) − received(含卡) 会让含卡部分支付单算成无欠款，导致回款被超额校验拒。
     const origTotal = Number(locked.total_amount || 0)
     const origPrepaidSnapshot = Number(locked.prepaid_card_amount || 0)
     const origReceived = Number(locked.received || 0)
     const origPayable = locked.payable_amount != null
       ? Number(locked.payable_amount)
       : Math.round((origTotal - origPrepaidSnapshot) * 100) / 100
-    const remainingPayable = Math.round((origPayable - origReceived) * 100) / 100
+    const remainingPayable = Math.round((origPayable + origPrepaidSnapshot - origReceived) * 100) / 100
 
     // 3) 超额校验
     if (totalThisTime > remainingPayable + 0.001) {

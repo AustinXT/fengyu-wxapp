@@ -86,19 +86,15 @@ interface RawPayment {
 }
 
 interface DisplayPayment {
+  id: number;
   changeType: string;
   amount: string;
   amountAbs: string;
   isRefund: boolean;
   paymentMethod: string;
   status: string;
-  paidAt: string; // 原始 ISO 时间戳，用于归并匹配（与 admin 对齐）
   timeFmt: string;
   note: string;
-  // 按回款逐笔分配入口（仅店长 + 已支付的首次支付/回款/储值卡抵扣行）
-  needsAllocation: boolean;
-  allocationStatus: string;
-  allocationUrl: string;
 }
 
 interface OrderDetailResponse {
@@ -288,73 +284,25 @@ Page({
         commissionAmount: a.commission_amount != null ? Number(a.commission_amount).toFixed(2) : '—',
       }));
 
-      // Ticket 2 PR-A：payments 流水 + 欠款计算
-      const rawPayments: DisplayPayment[] = (res.payments || []).map((p) => {
+      // payments 流水：按 DB sale_order_payments 原样逐条展示
+      // （储值卡抵扣/首次支付/回款/退款各自真实金额，不归并；同一次收款的现金行与卡行 paid_at 相同，
+      // 用流水 id 作 wx:key 避免冲突）。历史归并方案有顺序依赖 bug（卡行先独立 push 又被现金行吸收 → 重复计算），已移除。
+      const payments: DisplayPayment[] = (res.payments || []).map((p) => {
         const amt = Number(p.amount) || 0;
         const isRefund = amt < 0 || p.change_type === '退款';
         const timeSrc = p.paid_at || p.created_at;
-        // 按回款逐笔分配：已支付且有 allocation_status 的流水行可分配（方案Y：按 allocation_status 门控，
-        // 现金主行有 allocation_status、卡从行无 → 一笔支付一个入口）
-        const needsAllocation =
-          !!p.allocation_status && p.status === '已支付' && !!p.id;
         return {
+          id: p.id,
           changeType: p.change_type,
           amount: amt.toFixed(2),
           amountAbs: Math.abs(amt).toFixed(2),
           isRefund,
           paymentMethod: p.payment_method,
           status: p.status,
-          paidAt: timeSrc, // 原始 ISO 时间戳，用于归并匹配（与 admin 对齐）
           timeFmt: timeSrc ? formatDateTime(timeSrc) : '',
           note: p.note || '',
-          needsAllocation,
-          allocationStatus: p.allocation_status || '',
-          allocationUrl: needsAllocation
-            ? `/packageOrder/revenue-allocation/revenue-allocation?salePaymentId=${p.id}`
-            : '',
         };
       });
-
-      // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
-      // 现金主行保留 allocationStatus/needsAllocation/allocationUrl；卡从行金额并入主行
-      // 支持多笔卡支付同 paid_at 归并（while 循环收集所有匹配行，非单次 findIndex）
-      const payments: DisplayPayment[] = [];
-      const mergedIndices = new Set<number>();
-      for (let i = 0; i < rawPayments.length; i++) {
-        if (mergedIndices.has(i)) continue;
-        const p = rawPayments[i];
-        if (p.isRefund || p.changeType === '退款') {
-          // 退款行不参与归并
-          payments.push(p);
-          continue;
-        }
-        // 收集同 paid_at 的所有储值卡抵扣行（支持 2+ 笔卡支付）
-        let totalCardAmount = 0;
-        let cardNote = '';
-        for (let j = 0; j < rawPayments.length; j++) {
-          if (j === i || mergedIndices.has(j)) continue;
-          const q = rawPayments[j];
-          if (!q.isRefund && q.changeType === '储值卡抵扣' && q.paidAt === p.paidAt && q.status === p.status) {
-            totalCardAmount += Number(q.amount);
-            cardNote = `其中储值卡 ¥${Math.abs(totalCardAmount).toFixed(2)}`;
-            mergedIndices.add(j);
-          }
-        }
-        if (totalCardAmount !== 0) {
-          // 合并：金额相加，现金行为主行（保留分配入口），附注储值卡金额
-          const mergedAmount = (Number(p.amount) + totalCardAmount).toFixed(2);
-          const mergedAmountAbs = Math.abs(Number(mergedAmount)).toFixed(2);
-          payments.push({
-            ...p,
-            amount: mergedAmount,
-            amountAbs: mergedAmountAbs,
-            // 与 admin 对齐：保留原始 note 并追加储值卡金额（避免静默丢弃操作员备注）
-            note: cardNote ? `${p.note || ""}（其中储值卡 ¥${Math.abs(totalCardAmount).toFixed(2)}）` : p.note,
-          });
-        } else {
-          payments.push(p);
-        }
-      }
 
       const totalAmount = Number(o.total_amount || 0);
       const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
@@ -366,7 +314,9 @@ Page({
       const payableAmount = o.payable_amount != null
         ? Number(o.payable_amount)
         : Math.round((totalAmount - prepaidCardAmount) * 100) / 100;
-      const remainingPayable = Math.max(0, Math.round((payableAmount - netReceived) * 100) / 100);
+      // 欠款口径 = total − netReceived（与 status 结清判定 settleTarget = payable + prepaid 一致；
+      // received 按 I1 含储值卡抵扣，须用总额减，否则含卡部分支付单 payable(扣卡)−received(含卡) ≤ 0 → hasDebt 误判）
+      const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
       // 「发起回款」仅在已首次支付（部分支付）且仍有欠款时显示；
       // 待支付走「确认线下收款」，已结清/终态均不显示回款入口
       const orderType = o.sale_order_type || '';

@@ -225,9 +225,4 @@ Page({
       }
     });
   },
-
-  onAllocate(e: WechatMiniprogram.TouchEvent) {
-    const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${id}` });
-  },
 });

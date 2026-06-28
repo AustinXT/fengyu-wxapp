@@ -59,7 +59,7 @@ export const saleOrders = pgTable(
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
-    /** 订单总金额；退款为负数，转换=补差价，回款=本次回款金额 */
+    /** 订单总金额；商品价格之和，扣除优惠券 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     /** 储值卡抵扣金额（抵扣项，不计入实付） */
     prepaidCardAmount: numeric("prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -278,7 +278,10 @@ export const saleItems = pgTable(
     check("chk_item_unit_price", sql`${table.unitPrice} >= 0`),
     check("chk_item_unit_real_price", sql`${table.unitRealPrice} >= 0`),
     check("chk_item_remaining", sql`${table.remainingSessions} IS NULL OR ${table.remainingSessions} >= 0`),
-    check("chk_item_paid_sessions", sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`),
+    check(
+      "chk_item_paid_sessions",
+      sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`,
+    ),
     check("chk_item_quantity", sql`${table.quantity} > 0`),
     check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],
@@ -323,9 +326,7 @@ export const saleAllocations = pgTable(
      * 按回款逐笔分配的归属键：同一 sale_item 的同一员工同一角色，可在不同回款各有一条分配。
      * 与 sale_payment_allocatable_items 同源（同一 sale_payment_id 聚合一笔回款的逐项可分配额）。
      */
-    salePaymentId: bigint("sale_payment_id", { mode: "number" }).references(
-      () => saleOrderPayments.id,
-    ),
+    salePaymentId: bigint("sale_payment_id", { mode: "number" }).references(() => saleOrderPayments.id),
     isVoid: boolean("is_void").notNull().default(false),
     voidedAt: timestamp("voided_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -341,7 +342,10 @@ export const saleAllocations = pgTable(
       .where(sql`is_void = false`),
     index("idx_sale_alloc_employee_id").on(table.employeeId),
     index("idx_sale_alloc_payment").on(table.salePaymentId),
-    check("chk_sale_alloc_ratio", sql`${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
+    check(
+      "chk_sale_alloc_ratio",
+      sql`${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`,
+    ),
   ],
 );
 
@@ -381,9 +385,7 @@ export const saleOrderPayments = pgTable(
     status: paymentFlowStatusEnum("status").notNull(),
     sourceEnd: paymentSourceEndEnum("source_end").notNull(),
     /** 操作人（开单/确认线下/抵扣/发起退款的员工） */
-    operatorEmployeeId: varchar("operator_employee_id", { length: 30 }).references(
-      () => staffWechatUsers.employeeId,
-    ),
+    operatorEmployeeId: varchar("operator_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
     /** 备注 */
     note: text("note"),
     /** 退款原因（change_type='退款' 时由发起人填写） */
@@ -393,9 +395,7 @@ export const saleOrderPayments = pgTable(
     /** 退疗程卡时的次数 */
     sessionCount: integer("session_count"),
     /** 审批人（退款审批流） */
-    auditEmployeeId: varchar("audit_employee_id", { length: 30 }).references(
-      () => staffWechatUsers.employeeId,
-    ),
+    auditEmployeeId: varchar("audit_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
     /** 审批时间 */
     auditAt: timestamp("audit_at"),
     /** 审批备注 / 拒绝原因 */
@@ -413,7 +413,9 @@ export const saleOrderPayments = pgTable(
   (table) => [
     index("idx_sop_order").on(table.saleOrderId),
     /** 待分配回款列表查询：仅命中带 allocation_status 的主流水行 */
-    index("idx_sop_alloc_status").on(table.allocationStatus).where(sql`allocation_status IS NOT NULL`),
+    index("idx_sop_alloc_status")
+      .on(table.allocationStatus)
+      .where(sql`allocation_status IS NOT NULL`),
     index("idx_sop_status_created").on(table.status, table.createdAt),
     /** 同订单同通道同三方流水号唯一：支付回调幂等键 */
     uniqueIndex("uq_sop_txn")
