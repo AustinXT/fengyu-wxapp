@@ -1,0 +1,1 @@
+CREATE INDEX "idx_spai_order_item" ON "sale_payment_allocatable_items" USING btree ("sale_order_id","sale_item_id");

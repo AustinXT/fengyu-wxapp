@@ -481,6 +481,10 @@ export const salePaymentAllocatableItems = pgTable(
   (table) => [
     uniqueIndex("uq_spai_payment_item").on(table.salePaymentId, table.saleItemId),
     index("idx_spai_order").on(table.saleOrderId),
+    // 加速 recalcPaidSessionsForOrder 分支 A 的相关子查询：
+    //   SELECT SUM(amount) FROM sale_payment_allocatable_items WHERE sale_order_id = $1 AND sale_item_id = si.sale_item_id
+    // (sale_order_id, sale_item_id) 复合索引使该 per-row 子查询走 index scan。
+    index("idx_spai_order_item").on(table.saleOrderId, table.saleItemId),
   ],
 );
 

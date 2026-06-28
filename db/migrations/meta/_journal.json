@@ -519,6 +519,13 @@
       "when": 1782274443346,
       "tag": "0073_nostalgic_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1782666828575,
+      "tag": "0074_aromatic_madripoor",
+      "breakpoints": true
     }
   ]
 }
