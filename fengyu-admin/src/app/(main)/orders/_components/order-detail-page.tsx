@@ -139,8 +139,13 @@ export default function OrderDetailPageClient({
 
   // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
   // 支持多笔卡支付同 paid_at 归并（for 循环收集所有匹配行，非单次 findIndex）
+  // paidAt 为 null 时 fallback 到 createdAt（与 staff 端对齐，防止 null===null 误合并）
+    const rawWithPaidAt = (payments ?? []).map((p) => ({
+      ...p,
+      paidAt: (p as { paidAt: string | null }).paidAt || (p as { createdAt: string | null }).createdAt,
+    }))
   const mergedPayments = useMemo(() => {
-    const raw = payments ?? [];
+    const raw = rawWithPaidAt;
     const result: typeof raw = [];
     const mergedIndices = new Set<number>();
     for (let i = 0; i < raw.length; i++) {

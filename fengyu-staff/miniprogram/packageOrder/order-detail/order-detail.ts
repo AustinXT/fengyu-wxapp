@@ -348,7 +348,8 @@ Page({
             ...p,
             amount: mergedAmount,
             amountAbs: mergedAmountAbs,
-            note: cardNote || p.note,
+            // 与 admin 对齐：保留原始 note 并追加储值卡金额（避免静默丢弃操作员备注）
+            note: cardNote ? `${p.note || ""}（其中储值卡 ¥${Math.abs(totalCardAmount).toFixed(2)}）` : p.note,
           });
         } else {
           payments.push(p);
