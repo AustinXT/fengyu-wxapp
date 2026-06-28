@@ -171,7 +171,6 @@ interface DisplayOrder {
   totalAmount: string;
   paidAmount: string;
   prepaidCardAmount: string;
-  payableAmount: string;
   remainingPayable: string;
   hasDebt: boolean;
   /** 详情扩展：单据类型 / 所属市场 / 券名 / 券抵扣 / 分配状态 / 历史订单标记 */
@@ -310,10 +309,6 @@ Page({
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      // payable_amount 在旧订单可能 NULL，用 total - prepaid 兜底
-      const payableAmount = o.payable_amount != null
-        ? Number(o.payable_amount)
-        : Math.round((totalAmount - prepaidCardAmount) * 100) / 100;
       // 欠款口径 = total − netReceived（与 status 结清判定 settleTarget = payable + prepaid 一致；
       // received 按 I1 含储值卡抵扣，须用总额减，否则含卡部分支付单 payable(扣卡)−received(含卡) ≤ 0 → hasDebt 误判）
       const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
@@ -347,7 +342,6 @@ Page({
           totalAmount: totalAmount.toFixed(2),
           paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),
-          payableAmount: payableAmount.toFixed(2),
           remainingPayable: remainingPayable.toFixed(2),
           hasDebt,
           documentType: o.document_type || '',
