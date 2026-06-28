@@ -5,7 +5,7 @@
   <view class="wb-navbar">
     <view style="height: {{statusBarHeight}}px;"></view>
     <view class="wb-navbar__content" style="height: {{contentHeight}}px;">
-      <image class="wb-navbar__logo" src="/images/logo.png" mode="aspectFit" />
+      <image class="wb-navbar__logo" src="/images/logo.png" mode="aspectFit" style="height: {{logoHeight}}px;" />
     </view>
   </view>
   <!-- 占位：避免内容被 fixed 导航栏遮挡 -->

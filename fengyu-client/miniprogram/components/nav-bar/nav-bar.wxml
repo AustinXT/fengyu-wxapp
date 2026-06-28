@@ -19,6 +19,7 @@
         class="nav-logo"
         src="/images/logo.png"
         mode="aspectFit"
+        style="height: {{logoHeight}}px;"
       />
       <text wx:elif="{{title}}" class="nav-title">{{title}}</text>
     </view>

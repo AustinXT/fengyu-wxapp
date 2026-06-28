@@ -43,6 +43,7 @@ Page({
     statusBarHeight: 0,
     navBarHeight: 0,
     contentHeight: 0,
+    logoHeight: 0,
   },
 
   onLoad() {
@@ -50,22 +51,27 @@ Page({
     this.setTodayDate();
   },
 
+  // 折叠屏展开/折叠、屏幕旋转时重算自定义导航栏高度（onLoad 只算一次，尺寸变化后 logo 会错位/掉下来）
+  // nextTick：避开 getMenuButtonBoundingClientRect 同步返回 resize 前（折叠态）旧值的坑
+  onResize() {
+    wx.nextTick(() => this.initNavBar());
+  },
+
   // 计算自定义导航栏高度（状态栏 + 胶囊按钮区），供顶部 logo 导航栏使用
   initNavBar() {
     try {
-      const sys = wx.getSystemInfoSync();
       const menu = wx.getMenuButtonBoundingClientRect();
-      // ?? 而非 ||：横屏/折叠屏下 statusBarHeight 合法为 0，|| 会误替换成 44 → (menu.top - 44)*2 变负 → header 塌陷
-      const statusBarHeight = sys.statusBarHeight ?? 44;
+      const { statusBarHeight = 44 } = wx.getWindowInfo(); // 解构默认值（仅 undefined 替换）等价 ??；折叠态 statusBarHeight 合法为 0，勿用 || 44
       const contentHeight = menu.height + (menu.top - statusBarHeight) * 2; // 对齐微信原生导航栏内容高度（胶囊垂直居中），与其他 Tab 顶栏一致
       this.setData({
         statusBarHeight,
         contentHeight,
         navBarHeight: statusBarHeight + contentHeight,
+        logoHeight: Math.round(menu.height * 0.8), // logo 跟胶囊高度，多端一致（rpx 在 iPad/折叠屏宽屏会放大，改 px 按胶囊比例）
       });
     } catch (e) {
       console.warn('[workbench] initNavBar 失败，使用兜底高度', e);
-      this.setData({ statusBarHeight: 44, contentHeight: 44, navBarHeight: 88 });
+      this.setData({ statusBarHeight: 44, contentHeight: 44, navBarHeight: 88, logoHeight: 26 });
     }
   },
 

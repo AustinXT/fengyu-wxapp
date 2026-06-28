@@ -8,6 +8,7 @@ interface IAppOption {
     statusBarHeight: number;
     navBarContentHeight: number;
     navBarHeight: number;
+    logoHeight: number;
     /** Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关 */
     continuePayEnabled?: boolean;
     /** Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId；绑定门店时一次性写入并清空 */
