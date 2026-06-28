@@ -48,10 +48,10 @@ async function seedPaidPayment(orderNo, amount) {
 async function refundApprove(orderNo, itemIds, reason) {
   const items = itemIds.map(([id, qty]) => ({ saleItemId: id, refundQuantity: qty }))
   const ref = await invokeStaffApi('order.createRefund', {
-    _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: o_ref, items, refundReason: reason,
+    _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: orderNo, items, refundReason: reason,
   })
+  return ref
 }
-let o_ref = null
 function check(label, cond, detail) {
   if (!cond) errors.push(`${label}: ${detail || ''}`)
 }

@@ -2256,41 +2256,10 @@ async function approveRefund(ctx) {
       [now, refSaleOrderId]
     )
 
-    // 3. 储值卡通道（修复 Bug H）：读 note.refundByCard 回冲，不再依赖 payment_method==='储值卡'。
-    //    原单全额抵卡落 '无'、混合落现金通道，退款行 payment_method 几乎不是 '储值卡'，旧条件导致纯卡/混合单都漏回冲。
-    //    refundByCard 在 createRefund 已按储值卡占比拆分存入 note。两端镜像 admin refunds.ts。
-    let noteRefundByCard = 0
-    try {
-      const noteObj = sopRow.note ? (typeof sopRow.note === 'string' ? JSON.parse(sopRow.note) : sopRow.note) : null
-      noteRefundByCard = Number(noteObj?.refundByCard || 0)
-    } catch (_) { noteRefundByCard = 0 }
-    if (noteRefundByCard > 0 && sopRow.client_user_id) {
-      // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
-      // 原写 'SOP-'+paymentId 会违反 card_transactions_ref_order_id FK（H 修复后回冲分支真正执行才暴露）
-      const dupCheck = await client.query(
-        `SELECT 1 FROM card_transactions WHERE external_ref = $1 LIMIT 1`,
-        [`card-refund-${paymentId}`]
-      )
-      if (dupCheck.rows.length === 0) {
-        // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK
-        const newCardId = `FY-CARD-${sopRow.client_user_id}`
-        const upsertRes = await client.query(
-          `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
-           VALUES ($1, $2, $3, NOW(), NOW())
-           ON CONFLICT (user_id) DO UPDATE
-             SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
-           RETURNING card_id`,
-          [newCardId, sopRow.client_user_id, noteRefundByCard]
-        )
-        const cardId = upsertRes.rows[0].card_id
-        await client.query(
-          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-           VALUES ($1, '充值', $2, $3, $4, NOW())
-           ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-          [cardId, noteRefundByCard, refSaleOrderId, `card-refund-${paymentId}`]
-        )
-      }
-    }
+    // 3. 储值卡回冲通道（已退役 2026-06-28）：
+    //    退款策略改为「全部走现金」（splitRefundByOriginalPayment 恒返回 refundByCard=0），
+    //    createRefund 写入 note.refundByCard 恒为 0，故此处回冲分支永不触发。
+    //    两端镜像 admin refunds.ts。若未来恢复按储值卡占比拆分退款，在此重建回冲逻辑。
 
     // 4. 级联回滚（Bug Q/M）：按本次退款明细逐 item 级联（从 note.items 读），仅全退 item 作废分配/提成
     let cascadeItems = []

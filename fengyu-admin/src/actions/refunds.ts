@@ -927,38 +927,15 @@ export const approveRefund = withPermission(
          WHERE so.sale_order_id = ${refSaleOrderId}
       `)
 
-      // 4) 储值卡回冲（Model X：退款只动金额，不扣 remaining_sessions —— 退后可消费次数
-      //    由 paid_sessions 闸门约束，service.js 核销条件 (已用+本次)≤paid_sessions 自动拦截已退次数；
-      //    与 staff/clientApi 一致。退款次数上限已在 createRefund 处由 calculateUnusedQuantity≤remaining 约束。）
+      // 4) 储值卡回冲通道（已退役 2026-06-28）：
+      //    退款策略改为「全部走现金」（splitRefundByOriginalPayment 恒返回 refundByCard=0），
+      //    故 refundByCard 恒为 0、回冲分支永不触发，余额完全不动。
+      //    退款只动金额不扣 remaining_sessions —— 退后可消费次数由 paid_sessions 闸门约束，
+      //    service.js 核销条件 (已用+本次)≤paid_sessions 自动拦截已退次数；与 staff/clientApi 一致。
+      //    退款次数上限已在 createRefund 处由 calculateUnusedQuantity≤remaining 约束。
+      //    两端镜像 staff order.js。若未来恢复按储值卡占比拆分退款，在此重建回冲逻辑。
       const refSaleItemId = pre.payment.refSaleItemId ?? null
       const sessionCount = pre.payment.sessionCount ?? null
-
-      if (refundByCard > 0 && pre.orderClientUserId) {
-        // 幂等用 external_ref（唯一索引）；ref_order_id 必须是真销售单号（FK→sale_orders），
-        // 原写 'refund-payment-'+idNum 会违反 card_transactions_ref_order_id FK。两端镜像 staff order.js
-        const cardRefundExtRef = `card-refund-${idNum}`
-        const dupRes = await tx.execute(sql`
-          SELECT 1 FROM card_transactions WHERE external_ref = ${cardRefundExtRef} LIMIT 1
-        `)
-        if ((dupRes as unknown as unknown[]).length === 0) {
-          // 修复 Bug U：card_id 用确定性键（一户一卡 ON CONFLICT user_id），避免 Date.now()+random 并发撞 PK。两端镜像 staff order.js
-          const newCardId = `FY-CARD-${pre.orderClientUserId}`
-          const upsertRes = await tx.execute(sql`
-            INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
-            VALUES (${newCardId}, ${pre.orderClientUserId}, ${refundByCard.toFixed(2)}::numeric, NOW(), NOW())
-            ON CONFLICT (user_id) DO UPDATE
-              SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
-            RETURNING card_id
-          `)
-          const cardId = (upsertRes as unknown as Array<{ card_id: string }>)[0]?.card_id
-          if (!cardId) throw new ApiError('INVALID_STATE', 'CARD_UPSERT_FAILED: 储值卡回冲失败')
-
-          await tx.execute(sql`
-            INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refSaleOrderId}, ${cardRefundExtRef}, NOW())
-          `)
-        }
-      }
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
       let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean }> = []
@@ -1031,8 +1008,8 @@ export const approveRefund = withPermission(
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }
   }
 
-  // 2026-06-24 全部走线下退款：不再调拉卡拉原路退款。refundByOrigin（非储值卡部分）由门店线下退现金；
-  // refundByCard 部分已在事务内回冲储值卡余额。
+  // 2026-06-24 全部走线下退款：不再调拉卡拉原路退款。
+  // 2026-06-28 退款全走现金（refundByCard 恒为 0），全额由门店线下退现金，不再回冲储值卡余额。
 
   await logOperation(session, 'refund.approve', 'sale_order_payment', String(idNum), {
     refSaleOrderId,
