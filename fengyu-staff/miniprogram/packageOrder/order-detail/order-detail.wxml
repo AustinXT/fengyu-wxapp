@@ -164,9 +164,9 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成 + 仅销售单；员工可发起→店长审批，对齐后端 requireStaffBound + 充值卡退款按钮；充值单走下方专用按钮） -->
+      <!-- P2: 退款按钮（已支付/已完成/部分支付 + 仅销售单；排除 workfine 历史单 + 已有待审批退款；员工可发起→店长审批，对齐 admin order-detail-page.tsx；充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{(order.status === '已支付' || order.status === '已完成') && order.orderType === '销售单'}}"
+        wx:if="{{(order.status === '已支付' || order.status === '已完成' || order.status === '部分支付') && order.orderType === '销售单' && !order.isLegacy && !hasPendingRefund}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"
@@ -205,6 +205,7 @@
     confirm-button-text="提交"
   >
     <view style="padding: 16rpx 24rpx;">
+      <view wx:if="{{order.status === '部分支付'}}" style="font-size: 26rpx; color: #C0322A; margin-bottom: 12rpx;">本单为部分支付，退款按「已付未用次数 × 单价」计算（金额余数一并退还），不超过已收金额 ¥{{order.paidAmount}}，最终以店长审批为准。</view>
       <view style="font-size: 26rpx; color: #969799; margin-bottom: 12rpx;">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
       <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
         <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" style="padding: 12rpx 0;">

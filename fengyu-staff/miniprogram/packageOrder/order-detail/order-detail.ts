@@ -168,6 +168,7 @@ Page({
     isCreator: false,
     statusClass: '',
     refundBadge: '',
+    hasPendingRefund: false,
     _saleOrderId: '',
     // P2: 退款
     showRefundDialog: false,
@@ -265,6 +266,8 @@ Page({
           note: p.note || '',
         };
       });
+      // 退款入口守卫：该单已有「待审批/待支付」退款则隐藏「申请退款」按钮，防重复发起（对齐 admin order-detail-page.tsx）
+      const hasPendingRefund = payments.some((p) => p.isRefund && (p.status === '待审批' || p.status === '待支付'));
 
       const totalAmount = Number(o.total_amount || 0);
       const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
@@ -325,6 +328,7 @@ Page({
         refundBadge: refundedAmount > 0
           ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
           : '',
+        hasPendingRefund,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
