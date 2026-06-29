@@ -477,7 +477,8 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('剩余次数不足 → 拒绝', async () => {
+  // #5 收紧口径：可用次数 = 已付未用（paidSessions 未设视作 null → 退回物理剩余 remaining=0），不足则拒绝
+  it('可用次数不足（已付未用 < sessionUsed）→ 拒绝', async () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([{ remainingSessions: 0, unitRealPrice: '200.00', boundStoreId: 'store-1' }])
     )
@@ -488,7 +489,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('剩余次数不足')
+    expect(result.message).toContain('可用次数不足')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
@@ -507,7 +508,8 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('审批后已退完的卡（paid_sessions 余量不足）→ 拒绝', async () => {
+  // #5 收紧口径后：paid_sessions=0 的欠款卡可用次数=0，统一被 paidUnused 校验拒绝（不再依赖 hasApprovedRefund 分支）
+  it('欠款卡（paid_sessions=0，已付未用=0）→ 可用次数不足拒绝', async () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([{
         sessionCount: 10, remainingSessions: 10, paidSessions: 0,
@@ -521,7 +523,7 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('已退款')
+    expect(result.message).toContain('可用次数不足')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 

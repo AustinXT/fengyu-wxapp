@@ -541,6 +541,8 @@ export interface AvailableSaleItem {
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
+  /** 可用次数（已付未用）；paidSessions 为 NULL 时退回物理剩余。步进器 max 用此值 */
+  paidUnusedSessions: number
   unitRealPrice: string
   expireDate: string | null
 }
@@ -574,30 +576,34 @@ export const getAvailableSaleItems = withPermission(
         WHERE sop.sale_order_id = o.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      -- #5 收紧到「已付未用」口径：只列出还有已付未用次数的卡（paid <= used 即欠款已用满则排除）。
+      -- 推翻 2026-05-20 D6=A 放宽决策，与 staff service-create 的 consumable 门控对齐。
+      -- 历史 NULL 行（paid_sessions IS NULL）视作物理剩余可用，不排除。
       AND (
-        NOT EXISTS (
-          SELECT 1 FROM sale_order_payments sop
-          WHERE sop.sale_order_id = o.sale_order_id
-            AND sop.change_type = '退款' AND sop.status = '已支付'
-        )
-        OR si.paid_sessions IS NULL
+        si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 
-  return (rows as any[]).map((r: any) => ({
-    saleItemId: r.sale_item_id,
-    saleOrderId: r.sale_order_id,
-    productName: r.product_name,
-    productType: r.product_type,
-    sessionCount: r.session_count !== null ? Number(r.session_count) : null,
-    remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
-    paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
-    unitRealPrice: r.unit_real_price ?? '0',
-    expireDate: r.expire_date,
-  }))
+  return (rows as any[]).map((r: any) => {
+    const total = r.session_count !== null ? Number(r.session_count) : 0
+    const remain = r.remaining_sessions !== null ? Number(r.remaining_sessions) : 0
+    const paid = (r.paid_sessions !== null && r.paid_sessions !== undefined) ? Number(r.paid_sessions) : null
+    const used = Math.max(total - remain, 0)
+    return {
+      saleItemId: r.sale_item_id,
+      saleOrderId: r.sale_order_id,
+      productName: r.product_name,
+      productType: r.product_type,
+      sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+      remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
+      paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
+      paidUnusedSessions: paid === null ? remain : Math.max(0, paid - used),
+      unitRealPrice: r.unit_real_price ?? '0',
+      expireDate: r.expire_date,
+    }
+  })
   },
 )
 
@@ -1009,14 +1015,17 @@ export const createServiceOrder = withPermission(
     if (saleItem.hasPendingRefund) {
       return { success: false, message: `销售明细 ${item.saleItemId} 对应订单退款审批中，不可开单` }
     }
-    if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
-      return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
-    }
-    // 审批后已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-    if (saleItem.hasApprovedRefund && saleItem.paidSessions !== null && saleItem.sessionCount !== null) {
-      const consumed = saleItem.sessionCount - (saleItem.remainingSessions ?? saleItem.sessionCount)
-      if (consumed + item.sessionUsed > saleItem.paidSessions) {
-        return { success: false, message: `销售明细 ${item.saleItemId} 已退款，可用次数不足` }
+    // remainingSessions=null 视作无次数追踪（非疗程卡），跳过次数校验（保持旧行为）。
+    // 否则收紧到「已付未用」(paidUnused) 口径，与 staff service-create consumable 对齐（推翻 2026-05-20 D6=A 放宽）。
+    if (saleItem.remainingSessions != null) {
+      const used = saleItem.sessionCount == null
+        ? 0
+        : Math.max(saleItem.sessionCount - saleItem.remainingSessions, 0)
+      const paidUnused = saleItem.paidSessions == null
+        ? saleItem.remainingSessions
+        : Math.max(0, saleItem.paidSessions - used)
+      if (paidUnused < item.sessionUsed) {
+        return { success: false, message: `销售明细 ${item.saleItemId} 可用次数不足（已付未用 ${paidUnused}，需要 ${item.sessionUsed}）` }
       }
     }
     saleItemSnapshots.push({
