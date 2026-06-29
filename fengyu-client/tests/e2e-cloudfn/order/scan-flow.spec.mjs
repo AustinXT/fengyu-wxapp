@@ -521,6 +521,79 @@ async function caseStaleBalanceVersionInScanAdjust() {
   }
 }
 
+// ====== issue #27 回归：员工开单订单扫码超过 10 分钟不应被懒清理误关 ======
+// 场景：admin/staff 选微信/支付宝支付开单 + 生成二维码交顾客；顾客扫码时刻往往已超过
+// 开单 10 分钟。scanDetail 是员工单专用入口（WHERE opened_by IS NOT NULL），其 10 分钟
+// 懒清理本为「顾客自助下单」设计——自助单永远进不了 scanDetail，该清理只会误杀员工单。
+// 守卫：closeExpiredOrder UPDATE 加 AND opened_by IS NULL，员工单 rowCount=0 返回 false。
+
+async function caseScanDetailStaffOrderNotClosedAfter10Min() {
+  await createTestClient()
+  await createTestStaff()
+  const orderNo = `${NS}_SCN_27_NCL`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 300 })
+  // 模拟开单已超过 10 分钟（顾客隔了一会儿才扫码）
+  await pgQuery(
+    `UPDATE sale_orders SET sale_order_datetime = NOW() - INTERVAL '11 minutes' WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.scanDetail', { saleOrderId: orderNo })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data?.statusMsg) {
+    throw new Error(`员工单不应被懒清理关闭，得到 statusMsg=${res.data.statusMsg}`)
+  }
+  if (res.data?.order?.orderNo !== orderNo) {
+    throw new Error(`expect order.orderNo=${orderNo}, got: ${res.data?.order?.orderNo}`)
+  }
+  // DB 层订单仍 '待支付'，未被 closeExpiredOrder 关闭
+  const rows = await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id = $1`, [orderNo])
+  if (rows[0].status !== '待支付') {
+    throw new Error(`员工单被误关为「${rows[0].status}」，应保持「待支付」(issue #27)`)
+  }
+}
+
+// 支付入口同守卫：pay/offlinePay/alipayPay 共用 closeExpiredOrder。offlinePay 不依赖拉卡拉
+// （pay/alipayPay 在 L2 走 LAKALA_NOT_CONFIGURED），用它代表支付链路验证员工单不被超时拦截。
+async function caseOfflinePayStaffOrderNotTimeoutAfter10Min() {
+  await createTestClient()
+  await createTestStaff()
+  const orderNo = `${NS}_SCN_27_OFF`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 300 })
+  await pgQuery(
+    `UPDATE sale_orders SET sale_order_datetime = NOW() - INTERVAL '11 minutes' WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.offlinePay', { saleOrderId: orderNo })
+  if (res.code !== 0) {
+    throw new Error(`员工单 offlinePay 不应失败（不应超时）: code=${res.code} ${res.message}`)
+  }
+  if (res.data?.status !== '待支付') {
+    throw new Error(`expect offlinePay status=待支付, got: ${res.data?.status}`)
+  }
+}
+
+// 对照（防回归）：顾客自助单（opened_by=NULL）超过 10 分钟仍应被懒清理关闭。
+// 覆盖 closeExpiredOrder 的 closed=true 分支（与上面员工单 closed=false 形成对照），
+// 防止未来反转 if(closed) 或破坏 UPDATE/SELECT 的 opened_by IS NULL 守卫时无测试拦截。
+async function caseSelfOrderDetailClosedAfter10Min() {
+  await createTestClient()
+  await createTestStaff()
+  const orderNo = `${NS}_SCN_27_SELF`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 200 })
+  // 改成顾客自助单（opened_by=NULL）+ 推到 11 分钟前
+  await pgQuery(
+    `UPDATE sale_orders SET opened_by = NULL, sale_order_datetime = NOW() - INTERVAL '11 minutes' WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.detail', { saleOrderId: orderNo })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  // 自助单应被懒清理关闭（closeExpiredOrder 对 opened_by IS NULL 命中 → closed=true）
+  const rows = await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id = $1`, [orderNo])
+  if (rows[0].status !== '已关闭') {
+    throw new Error(`自助单应被懒清理关闭为「已关闭」, got「${rows[0].status}」(防回归: 守卫须保留自助单清理)`)
+  }
+}
+
 const CASES = [
   ['scanDetail happy (staff-opened, status=待支付) → returns order + items', caseScanDetailHappy],
   ['scanDetail 部分支付（回款）→ returns order + items（不返回 statusMsg）', caseScanDetailPartialPaid],
@@ -535,6 +608,9 @@ const CASES = [
   ['confirmPrepaidFull 用过期版本号 → CONFLICT，余额未变', caseConfirmPrepaidFullStaleVersionConflict],
   ['confirmPrepaidFull 用最新版本号 → 成功', caseConfirmPrepaidFullLatestVersionOK],
   ['scanAdjust 不做版本号校验 → 过期 expectedBalanceUpdatedAt 仍 code=0', caseStaleBalanceVersionInScanAdjust],
+  ['issue #27 员工单扫码超 10 分钟 → scanDetail 不关、保持待支付', caseScanDetailStaffOrderNotClosedAfter10Min],
+  ['issue #27 员工单超 10 分钟 → order.offlinePay 不抛超时（进入支付链路）', caseOfflinePayStaffOrderNotTimeoutAfter10Min],
+  ['issue #27 防回归：顾客自助单超 10 分钟 → order.detail 仍懒清理关闭（closed=true 分支）', caseSelfOrderDetailClosedAfter10Min],
 ]
 
 let pass = 0, fail = 0
