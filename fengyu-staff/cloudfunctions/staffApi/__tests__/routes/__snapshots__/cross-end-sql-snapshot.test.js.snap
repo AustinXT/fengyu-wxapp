@@ -22,6 +22,62 @@ exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守
 }
 `;
 
+exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > admin cards.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
+
+exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > 基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端） 1`] = `
+[
+  {
+    "expected": 10,
+    "name": "全付未用",
+    "paid": 10,
+    "remaining": 10,
+    "total": 10,
+  },
+  {
+    "expected": 7,
+    "name": "全付用3",
+    "paid": 10,
+    "remaining": 7,
+    "total": 10,
+  },
+  {
+    "expected": 10,
+    "name": "部分付用2",
+    "paid": 12,
+    "remaining": 13,
+    "total": 15,
+  },
+  {
+    "expected": 0,
+    "name": "欠款未付",
+    "paid": 0,
+    "remaining": 10,
+    "total": 10,
+  },
+  {
+    "expected": 0,
+    "name": "用满已付",
+    "paid": 5,
+    "remaining": 5,
+    "total": 10,
+  },
+  {
+    "expected": 5,
+    "name": "脏数据 remaining>total used clamp 到 0",
+    "paid": 5,
+    "remaining": 13,
+    "total": 8,
+  },
+  {
+    "expected": 7,
+    "name": "历史 NULL 退回物理剩余",
+    "paid": null,
+    "remaining": 7,
+    "total": 10,
+  },
+]
+`;
+
 exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snapshot 守护：admin 关键 SQL 整体文本快照 > admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
