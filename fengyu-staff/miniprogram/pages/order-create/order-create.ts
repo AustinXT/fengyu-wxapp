@@ -213,20 +213,24 @@ function deriveIsMember(c: { customerType?: string | null; memberLevel?: string 
 
 /**
  * 将后端 SKU 项映射为兼容 WXML 的展示格式。
- * 会员价分流：仅会员且会员价<标价时，price=会员价、specialPrice 非空（驱动划线）；
- * 否则 price=标价、specialPrice=null（不划线）。体验卡同口径（#6=B，不再豁免，会员才享会员价）。
- * 最终结算以云函数 order.create 权威定价为准。
+ * 会员价「展示」与「计价」分离（issue #26 子项1）：
+ *   - specialPrice（展示）：只要存在会员价且 < 标价即非空，驱动 wxml 三处「划线标价 + 会员价」双行——
+ *     不论当前顾客是否会员，列表/购物车弹层始终双行展示。
+ *   - price（计价）：仅会员享会员价（useSpecial），非会员按标价；最终以云函数 order.create 权威定价为准。
+ *     即非会员列表看到会员价、但加购/确认页/二维码按标价收（展示与计价对非会员不一致，系产品决策）。
+ * 体验卡同口径（#6=B，不再豁免）。
  */
 function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
   const list = Number(sku.price) || 0;
   const special = sku.specialPrice != null ? Number(sku.specialPrice) : null;
-  const useSpecial = isMember && special != null && special < list;
+  const hasSpecial = special != null && special < list;
+  const useSpecial = isMember && hasSpecial; // 计价：仅会员享会员价
   return {
     spuId: sku.skuId,
     spuName: sku.specName,
     price: useSpecial ? special : list,
     listPrice: list,
-    specialPrice: useSpecial ? special : null,
+    specialPrice: hasSpecial ? special : null, // 展示：有会员价即双行（与会员身份解耦）
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,

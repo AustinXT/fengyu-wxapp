@@ -40,3 +40,4 @@
 | [003](fix/003_cloudfn-pg-timestamp-timezone.md) | 2026-06-16 | 云函数 pg timestamp 读取时区根治（北京时间间歇晚 8 小时显示 16 点） |
 | [004](fix/004_staff-confirm-session-count-and-qrcode-amount.md) | 2026-06-29 | staff 开单确认页补疗程卡规定次数 + 二维码页充值卡单/转换单金额误显 0 |
 | [005](fix/005_conversion-panel-align-sales-confirm.md) | 2026-06-29 | staff 转换单确认页对齐销售单（补商品明细/活动/支付卡片+支付宝） |
+| [006](fix/006_staff-list-member-price-always-dual.md) | 2026-06-29 | staff 开单页商品列表无条件展示划线标价+会员价（修正 #26 子项1 前轮误判） |
