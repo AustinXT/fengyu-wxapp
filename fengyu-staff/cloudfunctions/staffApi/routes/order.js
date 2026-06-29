@@ -1163,10 +1163,18 @@ async function qrcode(ctx) {
       : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
     const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
     actualPayable = Math.max(0, Math.round((payable - netReceived) * 100) / 100)
+  } else if (order.sale_order_type === '充值单' || order.sale_order_type === '转换单') {
+    // 充值卡单（card.recharge，0 行 sale_items）/ 转换单（sale_items 未写 pending_received，默认 0）：
+    // 不能走逐行 pending_received（恒为 0 会让二维码显示 ¥0），待支付额直接取订单应付金额。
+    // payable_amount 已扣储值卡（充值卡单=实付/prepaid=0；转换单=max(0,priceDiff−储值卡)），不再减 prepaidCardAmount；
+    // payable_amount 缺失（历史/迁移数据）时回退 total−储值卡，与部分支付分支对称，避免静默 ¥0。
+    const payable = Number(order.payable_amount || 0) > 0
+      ? Number(order.payable_amount)
+      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+    actualPayable = Math.max(0, Math.round(payable * 100) / 100)
   } else {
     // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
-    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
-    // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
+    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径
     const sumItemReal = items.reduce(
       (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
       0
