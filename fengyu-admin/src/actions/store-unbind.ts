@@ -10,6 +10,7 @@ import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
+import { nowTs } from '@/lib/db-time'
 
 export interface UnbindRequest {
   requestId: string
@@ -97,7 +98,7 @@ export const approveUnbind = withPermission(
         .set({
           status: '已通过',
           reviewedBy: session.employeeId,
-          reviewedAt: new Date(),
+          reviewedAt: nowTs(),
         })
         .where(eq(storeUnbindRequests.requestId, requestId))
 
@@ -148,7 +149,7 @@ export const rejectUnbind = withPermission(
       .set({
         status: '已拒绝',
         reviewedBy: session.employeeId,
-        reviewedAt: new Date(),
+        reviewedAt: nowTs(),
         rejectReason: reason,
       })
       .where(eq(storeUnbindRequests.requestId, requestId))

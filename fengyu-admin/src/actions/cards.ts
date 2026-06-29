@@ -11,6 +11,7 @@ import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from '
 import type { SQL } from 'drizzle-orm'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
+import { nowTs } from '@/lib/db-time'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -696,7 +697,7 @@ export const createRechargeOrder = withPermission(
           marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-          saleOrderDatetime: new Date(),
+          saleOrderDatetime: nowTs(),
           clientUserId: data.clientUserId,
           clientPhone: client.phone || '',
           customerName: client.name || '',

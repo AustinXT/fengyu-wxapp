@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
 import { loadJsonConfig } from '../lib/benefits-loader'
 import { type CronContext, dateSqlOf, nowOf } from '../lib/cron-context'
+import { beijingTs } from '@/lib/db-time'
 
 interface BenefitItem {
   messageTitle?: string
@@ -180,7 +181,7 @@ async function grantOneThanksgiving(
       await tx.execute(sql`
         INSERT INTO user_coupons
           (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
-        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${expireAt.toISOString()}, ${externalRef}, NOW())
+        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${beijingTs(expireAt)}, ${externalRef}, NOW())
         ON CONFLICT (coupon_id) DO NOTHING
       `)
     }

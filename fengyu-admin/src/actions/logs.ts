@@ -56,10 +56,11 @@ export const getLogs = withPermission(
     conditions.push(eq(operationLogs.targetType, filter.targetType))
   }
   if (filter?.startDate) {
-    conditions.push(gte(operationLogs.createdAt, new Date(filter.startDate)))
+    // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
+    conditions.push(gte(operationLogs.createdAt, sql`${`${filter.startDate} 00:00:00`}::timestamp`))
   }
   if (filter?.endDate) {
-    conditions.push(lte(operationLogs.createdAt, new Date(filter.endDate + 'T23:59:59')))
+    conditions.push(lte(operationLogs.createdAt, sql`${`${filter.endDate} 23:59:59`}::timestamp`))
   }
 
   const rows = await db

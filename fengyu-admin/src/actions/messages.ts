@@ -10,6 +10,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
+import { nowTs } from '@/lib/db-time'
 
 export interface AdminMessage {
   id: number
@@ -82,10 +83,11 @@ export const getMessagesPaginated = withPermission(
     )
   }
   if (filters.dateFrom) {
-    conditions.push(gte(messages.createdAt, new Date(filters.dateFrom)))
+    // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
+    conditions.push(gte(messages.createdAt, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
   }
   if (filters.dateTo) {
-    conditions.push(lte(messages.createdAt, new Date(filters.dateTo + 'T23:59:59')))
+    conditions.push(lte(messages.createdAt, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
   }
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined
@@ -206,7 +208,7 @@ export const deleteMessage = withPermission(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = await db
       .update(messages)
-      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .set({ deletedAt: nowTs(), deletedBy: session.employeeId })
       .where(and(eq(messages.id, id), isNull(messages.deletedAt)))
 
     if (result.count === 0) {
@@ -488,8 +490,7 @@ export const batchSendMessages = withPermission(
     return { success: false, message: '请指定接收人（选择顾客或设置筛选条件）' }
   }
 
-  // 3. 构造消息行
-  const now = new Date()
+  // 3. 构造消息行（createdAt 走 NOW() 写北京墙钟字面，见 lib/db-time）
   const values = recipientIds.map((userId) => ({
     recipientType: '客户' as const,
     recipientId: userId,
@@ -497,7 +498,7 @@ export const batchSendMessages = withPermission(
     body,
     messageType,
     isRead: false,
-    createdAt: now,
+    createdAt: nowTs(),
   }))
 
   // 4. 分片 INSERT（防止单次 values 过大；1000 条以内其实单次也能处理，分片兜底）

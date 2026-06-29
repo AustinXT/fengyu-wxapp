@@ -56,7 +56,7 @@ vi.mock('drizzle-orm', () => ({
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
-  sql: Object.assign(vi.fn(() => ({ type: 'sql' })), { raw: vi.fn(() => ({ type: 'sql_raw' })) }),
+  sql: Object.assign(vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })), { raw: vi.fn(() => ({ type: 'sql_raw' })) }),
 }))
 
 import { getCardTransactionsPaginated } from './card-transactions'
@@ -290,7 +290,7 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     expect(ilike).toHaveBeenCalledWith('phone', '%李\\_100\\%%')
   })
 
-  it('日期区间 → gte(startDate) + lte(endDate + T23:59:59)', async () => {
+  it('日期区间 → gte(startDate 00:00:00) + lte(endDate 23:59:59) 北京字面', async () => {
     mockThreeQueries({
       count: 0,
       rows: [],
@@ -303,11 +303,9 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     const lteCall = (lte as any).mock.calls.find((c: any[]) => c[0] === 'created_at')
     expect(gteCall).toBeTruthy()
     expect(lteCall).toBeTruthy()
-    expect((gteCall[1] as Date).toISOString()).toContain('2026-04-01')
-    // 结束日期应带 T23:59:59
-    const endIso = (lteCall[1] as Date).toISOString()
-    expect(endIso).toContain('2026-04-15')
-    expect(endIso).toMatch(/15T(15|23)/) // 时区相关，至少包含 15 日晚
+    // 日期串拼北京字面 00:00:00 / 23:59:59 ::timestamp（不经 new Date——date-only UTC 午夜解析会 +8h）
+    expect((gteCall[1] as any).vals[0]).toBe('2026-04-01 00:00:00')
+    expect((lteCall[1] as any).vals[0]).toBe('2026-04-15 23:59:59')
   })
 
   it('非 admin scope 条件生效 → scopeCondition 返回的 SQL 被加入 where', async () => {

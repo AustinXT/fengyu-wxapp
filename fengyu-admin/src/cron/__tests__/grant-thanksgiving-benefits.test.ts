@@ -154,12 +154,13 @@ describe('cron-worker STEP 4 — grantThanksgivingBenefits', () => {
       )
       expect(couponInsertCall).toBeDefined()
       const couponParams = paramsOf(couponInsertCall![0])
-      // expireAt 在 SQL 模板中传 toISOString() 字符串（bun.sql 驱动不支持 Date 参数）
-      const expireAtIso = couponParams.find(
-        (p): p is string => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p),
+      // expireAt 经 beijingTs() 写成北京墙钟字面 'YYYY-MM-DD HH:mm:ss'（::timestamp，见 lib/db-time）
+      const expireAtStr = couponParams.find(
+        (p): p is string => typeof p === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(p),
       )
-      expect(expireAtIso).toBeDefined()
-      const expireMs = new Date(expireAtIso!).getTime()
+      expect(expireAtStr).toBeDefined()
+      // 按北京时区解析回绝对时刻（与进程 TZ 解耦）
+      const expireMs = new Date(expireAtStr!.replace(' ', 'T') + '+08:00').getTime()
       const expectedMin = before + 10 * 86400000
       const expectedMax = after + 10 * 86400000
       expect(expireMs).toBeGreaterThanOrEqual(expectedMin - 1000)
