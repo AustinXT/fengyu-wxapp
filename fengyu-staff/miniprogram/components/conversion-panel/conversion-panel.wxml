@@ -1,5 +1,29 @@
 <!-- components/conversion-panel/conversion-panel.wxml — 转换单折抵面板 -->
 <view class="conv-panel">
+  <!-- 转入商品明细（复用 confirm-item-* 样式，对齐销售单/内部单确认页） -->
+  <text class="conv-title">转入商品</text>
+  <view class="confirm-items">
+    <view class="confirm-item-block" wx:for="{{cartItems}}" wx:key="skuId">
+      <view class="confirm-item-header">
+        <text class="confirm-item-name">{{item.spuName}}</text>
+        <text class="confirm-item-spec">{{item.specName}}</text>
+      </view>
+      <view class="confirm-item-row">
+        <text class="confirm-item-label">价格</text>
+        <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
+      </view>
+      <!-- 疗程卡规定次数（仅次数卡展示） -->
+      <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
+        <text class="confirm-item-label">规定次数</text>
+        <text class="confirm-item-value">{{item.sessionCount}} 次</text>
+      </view>
+    </view>
+    <view class="confirm-total-row">
+      <text class="confirm-total-label">转入合计</text>
+      <text class="confirm-total-amount">¥{{convertInAmount}}</text>
+    </view>
+  </view>
+
   <text class="conv-title">折抵卡选择</text>
 
   <!-- 加载中 -->
@@ -71,12 +95,15 @@
         <text class="conv-summary-diff conv-summary-diff--negative">将充入储值卡 ¥{{priceDiffAbs}}</text>
       </block>
     </view>
+  </view>
 
-    <!-- 充值卡抵扣（仅补差额 > 0 时显示） -->
-    <view wx:if="{{priceDiff > 0}}" class="conv-summary-row conv-card-row">
-      <view class="conv-card-row-left">
-        <text class="conv-summary-label">充值卡抵扣</text>
-        <text class="conv-card-balance">余额 ¥{{cardBalance}}</text>
+  <!-- 充值卡抵扣（prepaid-card-section 样式，对齐销售单；仅补差额 > 0） -->
+  <view wx:if="{{priceDiff > 0}}" class="prepaid-card-section">
+    <text class="prepaid-card-section-title">抵扣（预选）</text>
+    <view class="prepaid-card-row">
+      <view class="prepaid-card-info">
+        <text class="prepaid-card-label">充值卡</text>
+        <text class="prepaid-card-balance">余额 ¥{{cardBalance}}</text>
       </view>
       <van-switch
         checked="{{useCard}}"
@@ -86,49 +113,62 @@
         bind:change="onToggleUseCard"
       />
     </view>
-    <view wx:if="{{priceDiff > 0 && useCard && cardAmount > 0}}" class="conv-summary-row">
-      <text class="conv-summary-label">实际抵扣</text>
-      <text class="conv-summary-value conv-summary-value--discount">-¥{{cardAmountDisplay}}</text>
+    <view wx:if="{{useCard && cardAmount > 0}}" class="prepaid-card-deduct-row">
+      <text class="prepaid-card-deduct-label">预选抵扣</text>
+      <text class="prepaid-card-deduct-amount">-¥{{cardAmountDisplay}}</text>
     </view>
-
-    <!-- 抵扣后应付提示 -->
-    <view wx:if="{{priceDiff > 0}}" class="conv-summary-row conv-summary-row--diff">
-      <text class="conv-summary-label">还需支付</text>
-      <block wx:if="{{remaining > 0}}">
-        <text class="conv-summary-diff conv-summary-diff--positive">¥{{remainingDisplay}}</text>
-      </block>
-      <block wx:else>
-        <text class="conv-summary-diff conv-summary-diff--zero">储值卡全额抵扣，无需补款</text>
-      </block>
-    </view>
-
-    <!-- 抵扣后仍需补现金时选支付方式 -->
-    <view
-      wx:if="{{priceDiff > 0 && remaining > 0}}"
-      class="conv-payment-row"
-      bindtap="onOpenPaymentPicker"
-    >
-      <text class="conv-summary-label">支付方式</text>
-      <view class="conv-payment-value">
-        <text wx:if="{{paymentMethod}}">{{paymentMethod}}</text>
-        <text wx:else class="conv-payment-placeholder">请选择</text>
-        <van-icon name="arrow" size="28rpx" color="#999" />
-      </view>
+    <view wx:elif="{{cardBalance <= 0}}" class="prepaid-card-empty-hint">
+      <text>顾客暂无充值卡余额</text>
     </view>
   </view>
 
-  <van-popup
-    show="{{showPaymentPicker}}"
-    round
-    position="bottom"
-    bind:close="onPaymentPickerClose"
-  >
-    <van-picker
-      title="支付方式"
-      show-toolbar
-      columns="{{paymentMethodOptions}}"
-      bind:confirm="onPaymentPickerConfirm"
-      bind:cancel="onPaymentPickerClose"
-    />
-  </van-popup>
+  <!-- 还需支付（仿销售单 prepaid-paid-summary；仅补差额 > 0） -->
+  <view wx:if="{{priceDiff > 0}}" class="prepaid-paid-summary">
+    <text class="prepaid-paid-label">还需支付</text>
+    <block wx:if="{{remaining > 0}}">
+      <text class="prepaid-paid-amount">¥{{remainingDisplay}}</text>
+    </block>
+    <text wx:else class="prepaid-paid-fullcover-hint">储值卡全额抵扣，无需补款</text>
+  </view>
+
+  <!-- 支付方式：3 卡片组（仅 priceDiff>0 && remaining>0），对齐销售单 order-type-cards -->
+  <view wx:if="{{priceDiff > 0 && remaining > 0}}" class="order-type-cards">
+    <view
+      class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
+      data-method="微信"
+      bindtap="onPaymentMethodTap"
+    >
+      <text class="order-type-card-name">微信支付</text>
+      <text class="order-type-card-desc">扫码付款</text>
+    </view>
+    <view
+      class="order-type-card {{paymentMethod === '支付宝' ? 'order-type-card--active' : ''}}"
+      data-method="支付宝"
+      bindtap="onPaymentMethodTap"
+    >
+      <text class="order-type-card-name">支付宝</text>
+      <text class="order-type-card-desc">扫码付款</text>
+    </view>
+    <view
+      class="order-type-card {{paymentMethod === '线下' ? 'order-type-card--active' : ''}}"
+      data-method="线下"
+      bindtap="onPaymentMethodTap"
+    >
+      <text class="order-type-card-name">线下收款</text>
+      <text class="order-type-card-desc">待店长确认</text>
+    </view>
+  </view>
+
+  <!-- 活动勾选（对齐销售单 activity-section） -->
+  <view class="activity-section">
+    <view class="activity-row">
+      <text class="activity-label">活动</text>
+      <van-switch
+        checked="{{isActivity}}"
+        size="40rpx"
+        active-color="#C0322A"
+        bind:change="onToggleActivity"
+      />
+    </view>
+  </view>
 </view>

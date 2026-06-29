@@ -45,3 +45,4 @@ docs/
 | [002](changes/fix/002_zero-payable-order-stuck-pending.md) | 2026-06-06 | 优惠券全额抵扣（应付实金为 0）订单卡在「待支付」死循环 |
 | [003](changes/fix/003_cloudfn-pg-timestamp-timezone.md) | 2026-06-16 | 云函数 pg timestamp 读取时区根治（北京时间间歇晚 8 小时显示 16 点） |
 | [004](changes/fix/004_staff-confirm-session-count-and-qrcode-amount.md) | 2026-06-29 | staff 开单确认页补疗程卡规定次数 + 二维码页充值卡单/转换单金额误显 0 |
+| [005](changes/fix/005_conversion-panel-align-sales-confirm.md) | 2026-06-29 | staff 转换单确认页对齐销售单（补商品明细/活动/支付卡片+支付宝） |
