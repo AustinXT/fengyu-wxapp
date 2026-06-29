@@ -29,7 +29,8 @@ Page({
       const cards: any[] = [];
       for (const order of orders) {
         for (const item of (order.items || [])) {
-          const paid = Number(item.paidSessions ?? 0);
+          const paidRaw = item.paidSessions;
+          const paid = Number(paidRaw ?? 0);
           const total = Number(item.sessionCount ?? 0);
           const remaining = Number(item.remainingSessions ?? 0);
           const used = Math.max(0, total - remaining);
@@ -40,6 +41,7 @@ Page({
             saleOrderId: order.saleOrderId,
             storeName: order.storeName,
             usedSessions: used,
+            paidUnusedSessions: paidRaw == null ? remaining : Math.max(0, paid - used),
             usedPct,
             paidUnusedPct,
             unpaidPct,
