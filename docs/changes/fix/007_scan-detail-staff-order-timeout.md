@@ -1,13 +1,13 @@
 ---
 type: fix
-number: "006"
+number: "007"
 date: 2026-06-29
 title: admin 开单顾客扫码即「已关闭」（admin 写 sale_order_datetime 的 UTC 时区 bug 致 closeExpiredOrder 误判，opened_by 守卫兜底）
 tags: [client, clientApi, admin, order, timezone, closeExpiredOrder, cloudfunction]
 related: ["fix/003"]
 ---
 
-# fix/006 admin 开单顾客扫码立刻「已关闭」
+# fix/007 admin 开单顾客扫码立刻「已关闭」
 
 > 关联 GitHub issue #27「admin 选择微信支付的订单，手机扫完码直接显示订单已关闭」。
 
