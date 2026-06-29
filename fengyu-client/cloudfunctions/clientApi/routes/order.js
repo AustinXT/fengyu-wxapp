@@ -453,21 +453,16 @@ async function create(ctx) {
   // 先清理过期的待支付订单（10分钟超时，同时释放优惠券）
   await closeExpiredOrdersByUser(userId)
 
-  // 检查是否已有待支付订单（uq_sale_orders_client_pending：同顾客仅 1 个待支付单，不区分 opened_by）
+  // 检查是否已有自助待支付订单（仅查 opened_by IS NULL 自助单；DB uq 同口径仅兜底自助单，
+  // 员工单并发由 staff/admin 端业务守卫 + advisory lock 串行化，不在 clientApi 此检查范围）
   const existingOrders = await pg.query(
-    `SELECT sale_order_id, opened_by FROM sale_orders
-     WHERE client_user_id = $1 AND status = '待支付'`,
+    `SELECT sale_order_id FROM sale_orders
+     WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL`,
     [userId]
   )
   if (existingOrders.length > 0) {
-    const pending = existingOrders[0]
-    // 员工/admin 开单：引导扫码付或联系店员取消（issue #27 后员工单不再被自动清理，
-    // 但 uq 仍约束同顾客仅 1 个待支付单，故顾客需先处理该员工单才能下自助单）
-    const msg = pending.opened_by
-      ? 'INVALID_PARAMS: 您有一笔店员开单的待支付订单，请扫码完成支付或联系店员取消后重试'
-      : 'INVALID_PARAMS: 您已有待支付订单，请先完成支付或取消订单'
-    const err = new Error(msg)
-    err.data = { pendingOrderNo: pending.sale_order_id }
+    const err = new Error('INVALID_PARAMS: 您已有待支付订单，请先完成支付或取消订单')
+    err.data = { pendingOrderNo: existingOrders[0].sale_order_id }
     throw err
   }
 

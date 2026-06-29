@@ -96,21 +96,24 @@ async function recharge(ctx) {
   const customerName = user.name || null
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'
 
-  // 并发守卫：同顾客不能有另一笔待支付订单（uq_sale_orders_client_pending 也会兜底）
-  const pendingRows = await pg.query(
-    `SELECT sale_order_id FROM sale_orders
-     WHERE client_user_id = $1 AND status = '待支付' LIMIT 1`,
-    [clientUserId]
-  )
-  if (pendingRows.length > 0) {
-    const err = new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
-    err.data = { pendingOrderNo: pendingRows[0].sale_order_id }
-    throw err
-  }
-
   // 事务内：advisory lock + 生成订单号 + INSERT sale_orders（不写 sale_items）
   let saleOrderId
   await pg.transaction(async (client) => {
+    // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
+    // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    const pendingRows = await client.query(
+      `SELECT sale_order_id FROM sale_orders
+       WHERE client_user_id = $1 AND status = '待支付' LIMIT 1`,
+      [clientUserId]
+    )
+    if (pendingRows.rows.length > 0) {
+      const err = new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
+      err.data = { pendingOrderNo: pendingRows.rows[0].sale_order_id }
+      throw err
+    }
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const now = new Date()

@@ -446,15 +446,6 @@ async function create(ctx) {
   // 会员价分流：会员客 或 有钻石等级即会员，决定普通单品成交价用会员价还是标价
   const buyerIsMember = isMember(clientUsers[0].customer_type, clientUsers[0].member_level)
 
-  // 检查是否已有待支付订单
-  const existing = await pg.query(
-    "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
-    [clientUserId]
-  )
-  if (existing.length > 0) {
-    throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
-  }
-
   // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
   const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
 
@@ -903,6 +894,19 @@ async function create(ctx) {
   }
 
   await pg.transaction(async (client) => {
+    // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
+    // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    const existing = await client.query(
+      "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
+      [clientUserId]
+    )
+    if (existing.rows.length > 0) {
+      throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
+    }
+
     // 生成 saleOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))，
     // 锁持有到外层 COMMIT，闭合 TOCTOU）。同一事务内再次请求同 key 是 no-op（reentrant）
     saleOrderId = await generateOrderNo(undefined, client)

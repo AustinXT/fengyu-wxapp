@@ -1974,7 +1974,8 @@ export const createOrder = withPermission(
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
-      // 检查该顾客是否已有待支付订单（partial unique index 保护）
+      // 顾客维度全量待支付单互斥：业务守卫查所有待支付单（含自助单），本事务 order-gen
+      // advisory lock 串行化开单使其原子；DB uq 仅兜底 opened_by IS NULL 自助单
       if (initialStatus === '待支付' && data.clientUserId) {
         const existing = await tx
           .select({ saleOrderId: saleOrders.saleOrderId })
@@ -3085,7 +3086,7 @@ export const createPrepaidInflow = withPermission(
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
         // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
-        // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）
+        // 不加待支付并发守卫（uq_sale_orders_client_pending 现仅约束 opened_by IS NULL 自助单，迁移不应被无关待支付单卡住）
         await tx.insert(saleOrders).values({
           saleOrderId: id,
           status: '已支付',
