@@ -2817,6 +2817,7 @@ async function createConversion(ctx) {
     preferredStaffWfId,
     remark,
     prepaidCardAmount: inputPrepaidCardAmount,
+    isActivity,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
@@ -2829,8 +2830,8 @@ async function createConversion(ctx) {
   if (!Array.isArray(convertInItems) || convertInItems.length === 0) {
     throw new Error('INVALID_PARAMS: 请选择至少一个转入项目')
   }
-  if (!paymentMethod || !['微信', '线下'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/线下')
+  if (!paymentMethod || !['微信', '支付宝', '线下'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/线下')
   }
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -3027,8 +3028,8 @@ async function createConversion(ctx) {
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
-        paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
+        paid_at, created_at, updated_at, is_activity
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6, $19)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3038,6 +3039,7 @@ async function createConversion(ctx) {
         preferredStaffWfId || null,
         remark || null,
         orderPaid ? now : null,
+        isActivity === true,
       ]
     )
 

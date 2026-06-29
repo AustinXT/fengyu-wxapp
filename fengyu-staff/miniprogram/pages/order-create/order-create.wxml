@@ -363,6 +363,7 @@
             clientUserId="{{customerInfo.clientUserId}}"
             convertInAmount="{{cartTotal}}"
             cardBalance="{{customerCardBalance}}"
+            cartItems="{{cart}}"
             bind:change="onConversionPanelChange"
           />
         </block>
