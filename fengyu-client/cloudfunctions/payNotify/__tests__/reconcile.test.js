@@ -155,3 +155,18 @@ test('无候选单 → scanned=0', async () => {
   expect(r.message).toContain('scanned=0')
   expect(mockCallFunction).not.toHaveBeenCalled()
 })
+
+test('queryTrade SUCCESS 但 external_txn_id 已入账 → 幂等 skip，不 callFunction', async () => {
+  // 候选 + merchant + queryTrade SUCCESS，但 external_txn_id 查询返回已存在（已入账）
+  mockQuery.mockImplementation(async (sql) => {
+    if (/FROM sale_order_payments/.test(sql) && /external_txn_id/.test(sql)) return { rows: [{ '?column?': 1 }] }
+    if (/FROM sale_orders/.test(sql) && /lakala_out_order_no IS NOT NULL/.test(sql)) return {
+      rows: [{ sale_order_id: 'FY-001', store_id: 's1', lakala_out_order_no: 'FY-001_1700000000', payment_method: '微信' }],
+    }
+    if (/lakala_merchants/.test(sql)) return { rows: [{ merchant_no: 'M1', term_no: 'T1', enabled: true }] }
+    return { rows: [] }
+  })
+  const r = await runPaymentReconcile()
+  expect(r.message).toContain('skip=1')
+  expect(mockCallFunction).not.toHaveBeenCalled()
+})

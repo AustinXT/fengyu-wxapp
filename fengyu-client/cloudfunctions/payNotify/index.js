@@ -401,7 +401,9 @@ async function runShippingBackfill() {
 
 /**
  * 解析门店关联的拉卡拉商户（定时补偿用，独立副本，逻辑同 clientApi order.js resolveLakalaMerchant）。
- * 一店一商户：stores.lakala_merchant_id → lakala_merchants；未启用/未配号返回 null。
+ * 一店一商户：stores.lakala_merchant_id → lakala_merchants；未启用 / 未配商户号 / 缺终端号一律返回 null
+ * （对账 best-effort 静默 skip。与 clientApi 端 term_no 缺失 throw 不同——clientApi 由 confirmPayment
+ * 的 try/catch 降级为 lakela_not_configured，本端直接 null；两端最终都不传播异常）。
  */
 async function resolveLakalaMerchantForReconcile(storeId) {
   if (!lakalaConfig.isReady()) return null
@@ -441,17 +443,18 @@ async function runPaymentReconcile() {
     return { code: 'SUCCESS', message: 'reconcile disabled' }
   }
   const pg = getPg()
-  // 不限 received=0：部分支付单（回款回调丢失，received>0 但新 outTradeNo 对应 payment 行缺失）
-  // 也需补偿。已到账单 queryTrade 仍 SUCCESS，但 callFunction payNotify 幂等返回已处理，不会重复入账。
+  // 窗口锚 updated_at（createLakalaPreorder 写 updated_at 反映最近一次拉卡拉下单）：覆盖老订单回款回调
+  // 丢失（回款覆写 lakala_out_order_no 但不动 sale_order_datetime，故 sale_order_datetime 锚不到回款）。
+  // LIMIT 20 + 串行循环（每单 PG+HTTPS+callFunction）避免超 CloudBase Timer 超时；美容院单量小窗口内通常 0~2 单。
   const { rows } = await pg.query(
     `SELECT sale_order_id, store_id, lakala_out_order_no, payment_method
        FROM sale_orders
       WHERE lakala_out_order_no IS NOT NULL
         AND status IN ('待支付', '部分支付')
-        AND sale_order_datetime > now() - interval '30 minutes'
-        AND sale_order_datetime < now() - interval '90 seconds'
-      ORDER BY sale_order_datetime ASC
-      LIMIT 50`)
+        AND updated_at > now() - interval '30 minutes'
+        AND updated_at < now() - interval '90 seconds'
+      ORDER BY updated_at ASC
+      LIMIT 20`)
   let ok = 0
   let skip = 0
   let failed = 0
@@ -465,6 +468,12 @@ async function runPaymentReconcile() {
         outTradeNo: o.lakala_out_order_no,
       })
       if (!resp || resp.tradeState !== 'SUCCESS') { skip++; continue }
+      // 已入账（external_txn_id = 拉卡拉 tradeNo 已存在）→ 幂等跳过，避免每分钟重复 callFunction
+      const paid = await pg.query(
+        'SELECT 1 FROM sale_order_payments WHERE external_txn_id = $1 LIMIT 1',
+        [resp.tradeNo]
+      )
+      if (paid.rows.length > 0) { skip++; continue }
       const payAmount = Math.round(Number(resp.totalAmountFen || 0)) / 100
       if (!(payAmount > 0)) { skip++; continue }
       const paymentMethod = o.payment_method === '支付宝' ? '支付宝' : '微信'
@@ -512,8 +521,9 @@ exports.main = async (event) => {
   // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
   // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。
   if (event && event.Type === 'Timer') {
-    // 定时器同时跑：微信发货补偿上报 + 支付回调丢失对账（issue #37）
-    await runShippingBackfill()
+    // 定时器同时跑：微信发货补偿上报 + 支付回调丢失对账（issue #37）。两任务隔离 try/catch，
+    // 避免 backfill 抛错（PG 瞬断等）跳过 reconcile —— 那正是本 PR 要防的故障模式。
+    try { await runShippingBackfill() } catch (e) { console.error('[payNotify/wx-shipping] backfill 异常(非致命):', e && e.message) }
     return await runPaymentReconcile()
   }
 

@@ -100,8 +100,10 @@ async function createLakalaPreorder({
 
   // 持久化本次商户流水号（聚合主扫的 out_trade_no），供后续 queryLakalaStatus 兜底查询。
   // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
+  // 同时刷新 updated_at，让 payNotify.runPaymentReconcile 定时补偿窗口能锚定"最近一次发起拉卡拉支付"
+  // （sale_order_datetime 是下单时间不随回款变化，回款会覆写 lakala_out_order_no；updated_at 才能反映）。
   await pg.query(
-    'UPDATE sale_orders SET lakala_out_order_no = $1 WHERE sale_order_id = $2',
+    'UPDATE sale_orders SET lakala_out_order_no = $1, updated_at = NOW() WHERE sale_order_id = $2',
     [outTradeNo, orderNo]
   )
 
@@ -2574,8 +2576,14 @@ async function confirmPayment(ctx) {
     return
   }
 
-  // 查拉卡拉真实状态
-  const merchant = await resolveLakalaMerchant(order.store_id)
+  // 查拉卡拉真实状态（resolveLakalaMerchant 在 term_no 缺失时抛 INVALID_STATE，包 try/catch 降级）
+  let merchant
+  try {
+    merchant = await resolveLakalaMerchant(order.store_id)
+  } catch (e) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message }
+    return
+  }
   if (!merchant) {
     ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured' }
     return
