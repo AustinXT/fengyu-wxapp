@@ -7,7 +7,7 @@ tags: [client, clientApi, admin, order, timezone, closeExpiredOrder, cloudfuncti
 related: ["fix/003"]
 ---
 
-# fix/007 admin 开单顾客扫码立刻「已关闭」
+# fix/006 admin 开单顾客扫码立刻「已关闭」
 
 > 关联 GitHub issue #27「admin 选择微信支付的订单，手机扫完码直接显示订单已关闭」。
 

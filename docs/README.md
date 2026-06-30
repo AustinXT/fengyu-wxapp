@@ -47,4 +47,4 @@ docs/
 | [004](changes/fix/004_staff-confirm-session-count-and-qrcode-amount.md) | 2026-06-29 | staff 开单确认页补疗程卡规定次数 + 二维码页充值卡单/转换单金额误显 0 |
 | [005](changes/fix/005_conversion-panel-align-sales-confirm.md) | 2026-06-29 | staff 转换单确认页对齐销售单（补商品明细/活动/支付卡片+支付宝） |
 | [006](changes/fix/006_staff-list-member-price-always-dual.md) | 2026-06-29 | staff 开单页商品列表无条件展示划线标价+会员价（修正 #26 子项1 前轮误判） |
-| [007](changes/fix/007_scan-detail-staff-order-timeout.md) | 2026-06-29 | client 员工开单订单扫码超 10 分钟被懒清理误关（自助下单超时套用到员工单） |
+| [007](changes/fix/007_scan-detail-staff-order-timeout.md) | 2026-06-29 | admin 开单顾客扫码即「已关闭」（admin 写 sale_order_datetime UTC 时区 bug 致 closeExpiredOrder 误判，opened_by 守卫兜底） |
