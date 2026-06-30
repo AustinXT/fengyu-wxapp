@@ -42,7 +42,7 @@ export const serviceOrders = pgTable(
     /** 提成分配状态（仅已完成的服务单有值） */
     commissionStatus: allocationStatusEnum('commission_status'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_svc_orders_store_date').on(table.storeId, table.serviceDate),
@@ -103,7 +103,7 @@ export const serviceItems = pgTable(
     /** 服务时长（分钟） */
     serviceDuration: integer('service_duration'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_svc_items_order_id').on(table.serviceOrderId),

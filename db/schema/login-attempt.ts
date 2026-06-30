@@ -1,4 +1,5 @@
 import { bigserial, integer, pgTable, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * 管理后台登录失败锁定（持久化防爆破）
@@ -19,7 +20,7 @@ export const loginAttempts = pgTable(
     lockedUntil: timestamp('locked_until'),
     /** 最近一次失败时间 */
     lastFailedAt: timestamp('last_failed_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_login_attempts_phone').on(table.phone),

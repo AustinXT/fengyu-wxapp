@@ -131,7 +131,7 @@ export const saleOrders = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex("uq_sale_orders_client_pending")
@@ -268,7 +268,7 @@ export const saleItems = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index("idx_sale_items_order_id").on(table.saleOrderId),
@@ -333,7 +333,7 @@ export const saleAllocations = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     // 唯一性下沉到回款维度：一项一员工一角色一回款仅一条活跃分配（按回款逐笔分配）

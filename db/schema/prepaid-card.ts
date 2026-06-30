@@ -19,7 +19,7 @@ export const prepaidCards = pgTable(
       .references(() => clientWechatUsers.userId),
     balance: numeric('balance', { precision: 10, scale: 2 }).notNull().default('0'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_prepaid_cards_user').on(table.userId),

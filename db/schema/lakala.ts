@@ -32,7 +32,7 @@ export const lakalaMerchants = pgTable(
       onUpdate: 'cascade',
     }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     // 部分唯一索引：merchant_no 非空时唯一，防止「商户管理」(/merchants) 重复建档；

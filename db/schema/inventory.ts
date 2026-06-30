@@ -77,7 +77,7 @@ export const inventoryProcurementOrders = pgTable(
     updatedAt: timestamp('updated_at')
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_inv_proc_store_date').on(table.storeId, table.docDate),
@@ -156,7 +156,7 @@ export const inventorySaleOrders = pgTable(
     updatedAt: timestamp('updated_at')
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_inv_sale_store_date').on(table.storeId, table.docDate),
@@ -245,7 +245,7 @@ export const inventoryTransferOrders = pgTable(
     updatedAt: timestamp('updated_at')
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_inv_transfer_store_date').on(table.storeId, table.docDate),
@@ -316,7 +316,7 @@ export const inventoryScrapOrders = pgTable(
     updatedAt: timestamp('updated_at')
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_inv_scrap_store_date').on(table.storeId, table.docDate),
