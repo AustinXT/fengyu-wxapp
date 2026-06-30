@@ -46,7 +46,7 @@ export const serviceCommissions = pgTable(
     /** 软删除原因（与 sale_allocations.voided_reason 对齐；2026-04-26 新增） */
     voidedReason: text('voided_reason'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_svc_comm_item_emp_role')

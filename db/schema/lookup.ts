@@ -1,4 +1,5 @@
 import { bigserial, boolean, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * 技能标签表
@@ -12,7 +13,7 @@ export const skillTags = pgTable('skill_tags', {
   sortOrder: integer('sort_order').notNull().default(0),
   isValid: boolean('is_valid').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
 })
 
 /**
@@ -27,7 +28,7 @@ export const projectSeriesLookup = pgTable('project_series_lookup', {
   sortOrder: integer('sort_order').notNull().default(0),
   isValid: boolean('is_valid').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
 })
 
 export type SkillTag = typeof skillTags.$inferSelect

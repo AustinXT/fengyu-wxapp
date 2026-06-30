@@ -1,4 +1,5 @@
 import { bigserial, boolean, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { staffWechatUsers } from './user'
 
 /**
@@ -21,7 +22,7 @@ export const adminPasswords = pgTable(
     mustChange: boolean('must_change').notNull().default(true),
     lastChangedAt: timestamp('last_changed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_admin_passwords_employee').on(table.employeeId),

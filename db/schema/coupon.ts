@@ -40,7 +40,7 @@ export const couponTemplates = pgTable('coupon_templates', {
   description: text('description'),
   isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
 })
 
 /**
@@ -71,7 +71,7 @@ export const userCoupons = pgTable(
       .references(() => saleOrders.saleOrderId),
     usedAt: timestamp('used_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_user_coupons_user_status').on(table.userId, table.status),

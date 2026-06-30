@@ -1,4 +1,5 @@
 import { boolean, date, index, integer, numeric, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { orgNodeTypeEnum } from "./enums";
 import { lakalaMerchants } from "./lakala";
 
@@ -28,7 +29,7 @@ export const orgNodes = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     unique("uq_org_nodes_parent_name").on(table.parentId, table.name),
@@ -82,7 +83,7 @@ export const stores = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index("idx_stores_org_node_id").on(table.orgNodeId),

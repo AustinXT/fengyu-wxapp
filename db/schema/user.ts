@@ -76,7 +76,7 @@ export const clientWechatUsers = pgTable(
     pointsUpdatedAt: timestamp('points_updated_at'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_client_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
@@ -139,7 +139,7 @@ export const staffWechatUsers = pgTable(
     resignationReason: text('resignation_reason'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_staff_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),

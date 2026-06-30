@@ -37,7 +37,7 @@ export const appointments = pgTable(
     notes: text('notes'),
     cancelledReason: text('cancelled_reason'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_appts_store_id').on(table.storeId),
