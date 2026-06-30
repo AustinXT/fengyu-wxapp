@@ -38,6 +38,8 @@ const mockCloud = {
     UNIONID: undefined,
   })),
   DYNAMIC_CURRENT_ENV: 'test-env',
+  // confirmPayment 跨函数调 payNotify 触发补偿入账（issue #37）；默认模拟 payNotify 成功 ack
+  callFunction: vi.fn(async () => ({ result: { code: 'SUCCESS', message: '已处理' } })),
 }
 require.cache[wxPath] = {
   id: wxPath,
@@ -120,6 +122,7 @@ beforeEach(() => {
     APPID: 'wx811eb4ded3dfba3f',
     UNIONID: undefined,
   })
+  mockCloud.callFunction.mockReset().mockResolvedValue({ result: { code: 'SUCCESS', message: '已处理' } })
   mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
   mockConfig.invalidateCache.mockReset()
   mockLakalaClient.request.mockReset().mockResolvedValue({

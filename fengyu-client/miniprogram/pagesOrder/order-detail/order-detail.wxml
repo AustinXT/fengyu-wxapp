@@ -16,7 +16,8 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <van-tag color="#FFF1F0" text-color="#FF4D4F">已退款 ¥{{order.refunded_fmt}}</van-tag>
       </view>
     </view>
-    <text class="status-hint" wx:if="{{order.status === '待支付' && order.payment_method === '线下'}}">请到店付款，等待店长确认收款</text>
+    <text class="status-hint status-hint--confirming" wx:if="{{confirmingPayment}}">支付结果确认中…</text>
+    <text class="status-hint" wx:elif="{{order.status === '待支付' && order.payment_method === '线下'}}">请到店付款，等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
       <text class="status-hint-countdown" wx:if="{{countdown}}">请在 {{order.expire_time_fmt}} 前完成支付（剩余 {{countdown}}）</text>
       <text class="status-hint" wx:else>请完成支付</text>

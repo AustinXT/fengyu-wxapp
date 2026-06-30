@@ -1198,6 +1198,147 @@ describe('order.queryLakalaStatus', () => {
   })
 })
 
+describe('order.decideReconcile (pure)', () => {
+  test('终态 / 非待支付·部分支付 → skip', () => {
+    expect(routes.decideReconcile('已支付', true, 'SUCCESS')).toBe('skip')
+    expect(routes.decideReconcile('已完成', true, null)).toBe('skip')
+    expect(routes.decideReconcile('已关闭', true, 'SUCCESS')).toBe('skip')
+    expect(routes.decideReconcile('支付失败', true, 'SUCCESS')).toBe('skip')
+  })
+  test('无拉卡拉单 → skip', () => {
+    expect(routes.decideReconcile('待支付', false, null)).toBe('skip')
+    expect(routes.decideReconcile('部分支付', false, 'SUCCESS')).toBe('skip')
+  })
+  test('待支付·部分支付 + 拉卡拉未 SUCCESS → wait', () => {
+    expect(routes.decideReconcile('待支付', true, 'INIT')).toBe('wait')
+    expect(routes.decideReconcile('部分支付', true, null)).toBe('wait')
+    expect(routes.decideReconcile('待支付', true, 'CLOSE')).toBe('wait')
+  })
+  test('待支付·部分支付 + 拉卡拉 SUCCESS → reconcile', () => {
+    expect(routes.decideReconcile('待支付', true, 'SUCCESS')).toBe('reconcile')
+    expect(routes.decideReconcile('部分支付', true, 'SUCCESS')).toBe('reconcile')
+  })
+})
+
+describe('order.confirmPayment', () => {
+  const env = {
+    LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+    LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+  }
+  const snap = {}
+  beforeEach(() => { for (const [k, v] of Object.entries(env)) { snap[k] = process.env[k]; process.env[k] = v } })
+  afterEach(() => { for (const k of Object.keys(env)) { if (snap[k] === undefined) delete process.env[k]; else process.env[k] = snap[k] } })
+
+  test('待支付 + 拉卡拉 SUCCESS → callFunction 调 payNotify 触发补偿入账，重查 status 已翻 → reconciled', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT status FROM sale_orders/.test(sql)) return [{ status: '已支付' }] // payNotify 后重查
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, code: 'BBS00000', msg: '操作成功',
+      tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
+      payMode: 'WECHAT', totalAmountFen: 1, payerAmountFen: 1, raw: { acc_trade_no: 'wx-txn-001' },
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await routes.confirmPayment(ctx)
+
+    expect(ctx.result.reconciled).toBe(true)
+    expect(ctx.result.status).toBe('已支付')
+    expect(__mocks__.lakalaClient.queryTrade).toHaveBeenCalledWith(
+      expect.objectContaining({ merchantNo: 'M1', termNo: 'T1', outTradeNo: 'FY-001_1700000000' })
+    )
+    expect(__mocks__.cloud.callFunction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'payNotify',
+        data: expect.objectContaining({
+          orderNo: 'FY-001_1700000000', transactionId: 'LAK-T-001', payAmount: 0.01, paymentMethod: '微信',
+        }),
+      })
+    )
+  })
+
+  test('终态（已支付）→ skip，不查拉卡拉也不调入账', async () => {
+    pg.query.mockImplementation(async (sql) => [{
+      sale_order_id: 'FY-001', status: '已支付', store_id: 'store-1',
+      lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
+    }])
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await routes.confirmPayment(ctx)
+
+    expect(ctx.result.reconciled).toBe(false)
+    expect(ctx.result.reason).toBe('terminal')
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+    expect(__mocks__.cloud.callFunction).not.toHaveBeenCalled()
+  })
+
+  test('无拉卡拉单（全额储值卡 / 线下单）→ skip，不查拉卡拉', async () => {
+    pg.query.mockImplementation(async (sql) => [{
+      sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+      lakala_out_order_no: null, client_user_id: 'user-001', payment_method: '储值卡',
+    }])
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await routes.confirmPayment(ctx)
+
+    expect(ctx.result.reconciled).toBe(false)
+    expect(ctx.result.reason).toBe('no_lakala_order')
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+  })
+
+  test('拉卡拉 trade_state 非 SUCCESS → wait，返回本地 status 不入账（前端继续轮询）', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
+      }]
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'INIT', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await routes.confirmPayment(ctx)
+
+    expect(ctx.result.reconciled).toBe(false)
+    expect(ctx.result.lakalaTradeState).toBe('INIT')
+    expect(ctx.result.reason).toBe('not_success')
+    expect(__mocks__.cloud.callFunction).not.toHaveBeenCalled()
+  })
+
+  test('callFunction payNotify 异常 → 降级返回本地 status，不 throw', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
+    __mocks__.cloud.callFunction.mockRejectedValueOnce(new Error('timeout'))
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await routes.confirmPayment(ctx)
+
+    expect(ctx.result.reconciled).toBe(false)
+    expect(ctx.result.reason).toBe('paynotify_call_failed')
+    expect(ctx.result.status).toBe('待支付')
+  })
+
+  test('非本人订单 → PERMISSION_DENIED', async () => {
+    pg.query.mockImplementation(async () => [{
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
+      lakala_out_order_no: 'FY-001_x',
+    }])
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await expect(routes.confirmPayment(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
 describe('order.appointableItems', () => {
   test('返回可预约项目列表', async () => {
     pg.query.mockResolvedValueOnce([{

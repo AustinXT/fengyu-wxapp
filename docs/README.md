@@ -48,3 +48,4 @@ docs/
 | [005](changes/fix/005_conversion-panel-align-sales-confirm.md) | 2026-06-29 | staff 转换单确认页对齐销售单（补商品明细/活动/支付卡片+支付宝） |
 | [006](changes/fix/006_staff-list-member-price-always-dual.md) | 2026-06-29 | staff 开单页商品列表无条件展示划线标价+会员价（修正 #26 子项1 前轮误判） |
 | [007](changes/fix/007_scan-detail-staff-order-timeout.md) | 2026-06-29 | admin 开单顾客扫码即「已关闭」（admin 写 sale_order_datetime UTC 时区 bug 致 closeExpiredOrder 误判，opened_by 守卫兜底） |
+| [008](changes/fix/008_payment-status-not-update-after-lakala-pay.md) | 2026-06-30 | client 支付完成订单状态不更新（拉卡拉回调偶发丢失无补偿 + 前端跳转不等回调 + 详情页频闪） |

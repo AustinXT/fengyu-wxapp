@@ -111,6 +111,8 @@ async function autoAllocateOnlinePayment(
 const lakalaSign = require('./utils/lakala-sign')
 const lakalaConfig = require('./utils/lakala-config')
 const wxShipping = require('./utils/wx-shipping')
+// issue #37 定时补偿：queryTrade 主动查拉卡拉真实状态（独立副本，与 clientApi/utils/lakala-client 同源）
+const lakalaClient = require('./utils/lakala-client')
 
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU 或 product_name 正则解析面值。
@@ -397,10 +399,108 @@ async function runShippingBackfill() {
   return { code: 'SUCCESS', message: `backfill scanned=${rows.length} ok=${ok} pending=${pending} failed=${failed}` }
 }
 
+/**
+ * 解析门店关联的拉卡拉商户（定时补偿用，独立副本，逻辑同 clientApi order.js resolveLakalaMerchant）。
+ * 一店一商户：stores.lakala_merchant_id → lakala_merchants；未启用/未配号返回 null。
+ */
+async function resolveLakalaMerchantForReconcile(storeId) {
+  if (!lakalaConfig.isReady()) return null
+  if (!storeId) return null
+  const pg = getPg()
+  const res = await pg.query(
+    `SELECT lm.merchant_no, lm.term_no, lm.enabled
+       FROM stores s
+       JOIN lakala_merchants lm ON lm.id = s.lakala_merchant_id
+      WHERE s.store_id = $1`,
+    [storeId]
+  )
+  if (res.rows.length === 0) return null
+  const row = res.rows[0]
+  if (!row.enabled) return null
+  if (!row.merchant_no) return null
+  if (!row.term_no) return null
+  return { merchantNo: row.merchant_no, termNo: row.term_no }
+}
+
+/**
+ * 支付回调丢失定时补偿（issue #37）。
+ *
+ * payNotify 异步回调偶发丢失会让"钱已扣、订单仍待支付"。本任务每分钟（CloudBase Timer 触发器）
+ * 扫描「拉卡拉下单成功 + received=0 + 待支付/部分支付 + 90s~30min」的订单，主动 queryTrade 查真实状态，
+ * SUCCESS 则 cloud.callFunction 自调 payNotify main（event 入口）触发与回调同款的幂等入账。
+ *
+ * 窗口：90s 下界给正常回调留时间（避免与前端轮询/正常回调抢）；30min 上界超窗已非时序问题，停止避免无限扫。
+ * 与前端 confirmPayment 轮询互补：前端覆盖用户在线场景，本任务覆盖用户付款后长时间不回订单页的兜底。
+ * 两者最终都走 payNotify 幂等入账，重复安全（uq_sop_txn / uq_sop_first_payment / CAS 守卫）。
+ *
+ * @returns {Promise<{code:string, message:string}>}
+ */
+async function runPaymentReconcile() {
+  if (!isPayNotifyEnabled()) {
+    console.log('[payNotify/reconcile] skip: 未启用')
+    return { code: 'SUCCESS', message: 'reconcile disabled' }
+  }
+  const pg = getPg()
+  // 不限 received=0：部分支付单（回款回调丢失，received>0 但新 outTradeNo 对应 payment 行缺失）
+  // 也需补偿。已到账单 queryTrade 仍 SUCCESS，但 callFunction payNotify 幂等返回已处理，不会重复入账。
+  const { rows } = await pg.query(
+    `SELECT sale_order_id, store_id, lakala_out_order_no, payment_method
+       FROM sale_orders
+      WHERE lakala_out_order_no IS NOT NULL
+        AND status IN ('待支付', '部分支付')
+        AND sale_order_datetime > now() - interval '30 minutes'
+        AND sale_order_datetime < now() - interval '90 seconds'
+      ORDER BY sale_order_datetime ASC
+      LIMIT 50`)
+  let ok = 0
+  let skip = 0
+  let failed = 0
+  for (const o of rows) {
+    try {
+      const merchant = await resolveLakalaMerchantForReconcile(o.store_id)
+      if (!merchant) { skip++; continue }
+      const resp = await lakalaClient.queryTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo: o.lakala_out_order_no,
+      })
+      if (!resp || resp.tradeState !== 'SUCCESS') { skip++; continue }
+      const payAmount = Math.round(Number(resp.totalAmountFen || 0)) / 100
+      if (!(payAmount > 0)) { skip++; continue }
+      const paymentMethod = o.payment_method === '支付宝' ? '支付宝' : '微信'
+      // 自调 payNotify main（event 入口）触发同款幂等入账；event.Type 非 Timer 不会再次进入本任务，无递归
+      const r = await cloud.callFunction({
+        name: 'payNotify',
+        data: {
+          orderNo: o.lakala_out_order_no,
+          transactionId: resp.tradeNo,
+          payAmount,
+          paymentMethod,
+          tradeInfo: resp.raw || null,
+        },
+      })
+      const result = r && r.result
+      if (result && result.code === 'SUCCESS') {
+        ok++
+      } else {
+        skip++
+        console.warn('[payNotify/reconcile] 入账未成功:', o.sale_order_id, JSON.stringify(result))
+      }
+    } catch (e) {
+      failed++
+      console.error('[payNotify/reconcile] 单笔异常(非致命):', o.sale_order_id, e && e.message)
+    }
+  }
+  console.log('[payNotify/reconcile] done',
+    JSON.stringify({ scanned: rows.length, ok, skip, failed }))
+  return { code: 'SUCCESS', message: `reconcile scanned=${rows.length} ok=${ok} skip=${skip} fail=${failed}` }
+}
+
 // 测试可见
 exports.reportWxShippingSafe = reportWxShippingSafe
 exports.reportShippingForOrder = reportShippingForOrder
 exports.runShippingBackfill = runShippingBackfill
+exports.runPaymentReconcile = runPaymentReconcile
 
 /**
  * 云函数入口
@@ -412,7 +512,9 @@ exports.main = async (event) => {
   // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
   // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。
   if (event && event.Type === 'Timer') {
-    return await runShippingBackfill()
+    // 定时器同时跑：微信发货补偿上报 + 支付回调丢失对账（issue #37）
+    await runShippingBackfill()
+    return await runPaymentReconcile()
   }
 
   // ========== 启用开关：env PAYNOTIFY_ENABLED=true + lakalaConfig.isReady() ==========
