@@ -526,6 +526,13 @@
       "when": 1782666828575,
       "tag": "0074_aromatic_madripoor",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1782746551634,
+      "tag": "0075_secret_beast",
+      "breakpoints": true
     }
   ]
 }

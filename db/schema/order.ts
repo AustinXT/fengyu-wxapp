@@ -136,7 +136,7 @@ export const saleOrders = pgTable(
   (table) => [
     uniqueIndex("uq_sale_orders_client_pending")
       .on(table.clientUserId)
-      .where(sql`status = '待支付' AND client_user_id IS NOT NULL`),
+      .where(sql`status = '待支付' AND client_user_id IS NOT NULL AND opened_by IS NULL`),
     uniqueIndex("uq_sale_orders_phone_pending")
       .on(table.clientPhone, table.storeId)
       .where(sql`status = '待支付' AND client_user_id IS NULL`),
