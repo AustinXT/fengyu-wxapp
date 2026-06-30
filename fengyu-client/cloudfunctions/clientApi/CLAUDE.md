@@ -20,7 +20,7 @@ clientApi/
     ├── store.js      # list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode
     ├── product.js    # categories, spuList, skuDetail, spuDetail, hotList, shopInit, experienceCardList
     ├── staff.js      # list, default, detail
-    ├── order.js      # create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull, repay, queryLakalaStatus
+    ├── order.js      # create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull, repay, queryLakalaStatus, confirmPayment
     ├── appointment.js # create, list, cancel
     ├── service.js    # detail, list, confirm, createReview
     ├── coupon.js     # list, available

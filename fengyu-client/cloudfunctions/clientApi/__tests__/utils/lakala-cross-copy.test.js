@@ -36,6 +36,12 @@ describe('lakala 跨副本一致性守护', () => {
     )
   })
 
+  test('lakala-client.js：clientApi 与 payNotify 字节一致（issue #37 定时补偿新增 payNotify 副本，queryTrade 字段映射 / 签名不漂移）', () => {
+    expect(read(path.join(CLIENT, 'lakala-client.js'))).toBe(
+      read(path.join(PAYNOTIFY, 'lakala-client.js')),
+    )
+  })
+
   test('三端配置读取都含 PEM \\n 归一化（normalizePem），防 DECODER unsupported 回归', () => {
     expect(read(path.join(CLIENT, 'lakala-config.js'))).toContain('normalizePem')
     expect(read(path.join(PAYNOTIFY, 'lakala-config.js'))).toContain('normalizePem')

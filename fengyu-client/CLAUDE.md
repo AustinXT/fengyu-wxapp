@@ -26,7 +26,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode |
 | product | categories, spuList, skuDetail, spuDetail, hotList, shopInit, experienceCardList |
 | staff | list, default, detail |
-| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull, repay, queryLakalaStatus |
+| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail, scanAdjust, confirmPrepaidFull, repay, queryLakalaStatus, confirmPayment |
 | appointment | create, list, cancel |
 | service | detail, list, confirm, createReview |
 | coupon | list, available |

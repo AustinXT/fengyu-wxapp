@@ -1,6 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { pollPaymentConfirm, PaymentPoller } from '../../utils/payment-poll';
 import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {
@@ -106,11 +107,17 @@ Page({
     repayUseCard: false,
     cardBalance: 0,
     repaySubmitting: false,
+    // 支付结果确认中（issue #37）：轮询期间隐藏待支付倒计时防频闪
+    confirmingPayment: false,
   },
 
   _countdownTimer: null as ReturnType<typeof setInterval> | null,
   // 从列表「继续支付」跳入（?repay=1）：详情加载完成后自动唤起回款弹层，触发一次后清除
   _autoRepay: false,
+  // 支付结果轮询器（issue #37）；onUnload/onHide 清理防泄漏
+  _poller: null as PaymentPoller | null,
+  // 从 scan-pay 支付完成跳入（?paid=1）：详情加载后若仍待支付，触发一次兜底轮询
+  _needConfirm: false,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -118,8 +125,9 @@ Page({
     const enabled = !!(app.globalData as any).continuePayEnabled;
     this.setData({ continuePayEnabled: enabled });
 
-    const { saleOrderId, orderNo, repay } = options as { saleOrderId?: string; orderNo?: string; repay?: string };
+    const { saleOrderId, orderNo, repay, paid } = options as { saleOrderId?: string; orderNo?: string; repay?: string; paid?: string };
     this._autoRepay = repay === '1';
+    this._needConfirm = paid === '1';
     // 微信「订单中心」跳转会把 ${商品订单号} 替换成支付 out_trade_no = `${saleOrderId}_${时间戳}`，
     // 带后缀；订单号本身（FY-XSD-WX-...）无下划线，故剥 `_\d+$` 还原真实 saleOrderId（与 payNotify 同源）。
     const rawId = saleOrderId || orderNo;
@@ -251,6 +259,13 @@ Page({
           this.onContinuePayTap();
         }
       }
+      // 从 scan-pay 支付完成跳入（?paid=1）：回调延迟/丢失仍待支付时，兜底轮询确认（issue #37）
+      if (this._needConfirm) {
+        this._needConfirm = false;
+        if (order.status === '待支付' || order.status === '部分支付') {
+          this.confirmAndRefresh(order.sale_order_id);
+        }
+      }
     } catch {
       Toast.fail('加载失败');
     } finally {
@@ -292,10 +307,53 @@ Page({
     this._countdownTimer = setInterval(tick, 1000);
   },
 
+  /**
+   * 支付结果轮询确认 + 刷新（issue #37）。
+   * 用于本页发起的回款支付成功后，或从 scan-pay 带 paid=1 跳入时的兜底确认。
+   * 轮询期间置 confirmingPayment=true 隐藏待支付倒计时（防频闪）；完成或超时后 loadDetail 刷新。
+   */
+  async confirmAndRefresh(saleOrderId: string) {
+    if (this._poller) return; // 防重入
+    // 停止待支付倒计时，避免轮询期间每秒 setData 造成频闪
+    if (this._countdownTimer) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
+    }
+    this.setData({ confirmingPayment: true, countdown: '' });
+    const poller = pollPaymentConfirm(saleOrderId);
+    this._poller = poller;
+    try {
+      await poller.promise;
+      await this.loadDetail(saleOrderId);
+      // 以刷新后的本地 status 为准（轮询结果可能因网络抖动过时），判断是否需要提示
+      const finalStatus = this.data.order?.status;
+      if (finalStatus !== '已支付' && finalStatus !== '部分支付') {
+        // 超时仍未确认到账：提示用户稍后下拉刷新（订单已扣款，回调可能仍在补偿）
+        Toast.fail('支付确认中，请稍后下拉刷新');
+      }
+    } finally {
+      if (this._poller === poller) this._poller = null;
+      this.setData({ confirmingPayment: false });
+    }
+  },
+
   onUnload() {
     if (this._countdownTimer) {
       clearInterval(this._countdownTimer!);
       this._countdownTimer = null;
+    }
+    if (this._poller) {
+      this._poller.clear();
+      this._poller = null;
+    }
+  },
+
+  onHide() {
+    // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
+    if (this._poller) {
+      this._poller.clear();
+      this._poller = null;
+      this.setData({ confirmingPayment: false });
     }
   },
 
@@ -470,9 +528,8 @@ Page({
         try {
           await wx.requestPayment(params);
           this.setData({ repayModalVisible: false });
-          Toast.success('支付已发起');
-          // 留少量时间等 payNotify 回调，再刷新
-          setTimeout(() => this.loadDetail(order.sale_order_id), 1200);
+          // 轮询确认支付到账再刷新（issue #37）；confirmingPayment 态显示"支付结果确认中"
+          await this.confirmAndRefresh(order.sale_order_id);
         } catch (err: any) {
           if (!(err?.errMsg || '').toLowerCase().includes('cancel')) {
             Toast.fail(err?.errMsg || '支付失败');
@@ -498,7 +555,7 @@ Page({
             showCancel: true,
             success: (res) => {
               if (res.confirm) {
-                this.loadDetail(order.sale_order_id);
+                this.confirmAndRefresh(order.sale_order_id);
               }
             },
           });
