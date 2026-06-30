@@ -99,7 +99,7 @@ UPDATE sale_orders
 -- 3. sale_order_payments.paid_at  +8h（admin source_end 的回款/首次支付/储值卡抵扣流水）
 -- #############################################################################
 UPDATE sale_order_payments sop
-   SET paid_at = paid_at + interval '8 hours'
+   SET paid_at = sop.paid_at + interval '8 hours'
   FROM sale_orders so
  WHERE sop.sale_order_id = so.sale_order_id
    AND sop.paid_at IS NOT NULL
