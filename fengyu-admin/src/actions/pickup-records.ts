@@ -88,10 +88,11 @@ export const getPickupRecordsPaginated = withPermission(
     )
   }
   if (filters.dateFrom) {
-    conditions.push(gte(pickupRecords.createdAt, new Date(filters.dateFrom)))
+    // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
+    conditions.push(gte(pickupRecords.createdAt, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
   }
   if (filters.dateTo) {
-    conditions.push(lte(pickupRecords.createdAt, new Date(filters.dateTo + 'T23:59:59')))
+    conditions.push(lte(pickupRecords.createdAt, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
   }
 
   const whereClause = and(...conditions)

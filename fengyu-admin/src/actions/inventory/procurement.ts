@@ -14,6 +14,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { nowTs } from '@/lib/db-time'
 import { generateInventoryDocNo } from './doc-no'
 import type {
   InventoryItemDto,
@@ -330,9 +331,8 @@ export const updateProcurementOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      const masterPatch: Partial<typeof inventoryProcurementOrders.$inferInsert> = {
-        updatedAt: new Date(),
-      }
+      // updatedAt/confirmedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      const masterPatch: Partial<typeof inventoryProcurementOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) masterPatch.docSubtype = data.docSubtype
       if (data.docDate !== undefined) masterPatch.docDate = data.docDate
       if (data.status !== undefined) masterPatch.status = data.status
@@ -345,17 +345,16 @@ export const updateProcurementOrder = withPermission(
       if (data.signatureUrl !== undefined) masterPatch.signatureUrl = data.signatureUrl
       if (data.relatedDocNo !== undefined) masterPatch.relatedDocNo = data.relatedDocNo
       if (data.remark !== undefined) masterPatch.remark = data.remark
-      if (data.confirm) {
-        masterPatch.confirmedBy = session.employeeId
-        masterPatch.confirmedAt = new Date()
-      }
+      const confirmPatch = data.confirm
+        ? { confirmedBy: session.employeeId, confirmedAt: nowTs() }
+        : {}
       if (data.items !== undefined) {
         masterPatch.totalQuantity = String(sumItemsQuantity(data.items))
       }
 
       await tx
         .update(inventoryProcurementOrders)
-        .set(masterPatch)
+        .set({ ...masterPatch, ...confirmPatch, updatedAt: nowTs() })
         .where(eq(inventoryProcurementOrders.id, data.id))
 
       // 整体替换明细（编辑场景下行内增/删/改通过前端发送完整快照）

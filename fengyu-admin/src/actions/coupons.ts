@@ -14,6 +14,18 @@ import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
+import { beijingTs, nowTs } from '@/lib/db-time'
+import { fmtDate } from '@/lib/datetime'
+
+/**
+ * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
+ * 按北京字面拼 timestamp（开始=当天 00:00:00、结束=当天 23:59:59），与前端 coupon-validity-helper
+ * 及 validateValidityFields 同口径。**不经 new Date/beijingTs**：date-only 串按 ES 规范当 UTC 午夜解析、
+ * 再 beijingTs 会偏 +8h（同 orders.ts 报表筛选 bug，见 lib/db-time）。DB 现值（Date）走 fmtDate 取北京日期。
+ */
+function validBoundTs(value: string | Date, time: '00:00:00' | '23:59:59') {
+  return sql`${`${fmtDate(value)} ${time}`}::timestamp`
+}
 
 /**
  * 有效期字段校验（基于合并后的完整状态）。
@@ -185,7 +197,7 @@ export const getAvailableCoupons = withPermission(
       .where(and(
         eq(userCoupons.userId, clientUserId),
         eq(userCoupons.status, '未使用'),
-        gt(userCoupons.expireAt, new Date()),
+        gt(userCoupons.expireAt, nowTs()),
         eq(couponTemplates.isActive, true),
         lte(sql`COALESCE(${couponTemplates.minSpend}, '0')::numeric`, total),
         storeCondition,
@@ -330,8 +342,8 @@ export const createTemplate = withPermission(
 
     // 根据模式强制另一侧为 null，避免脏数据
     const isDays = data.validityMode === 'days'
-    const insertValidFrom = isDays ? null : (data.validFrom ? new Date(data.validFrom) : null)
-    const insertValidTo = isDays ? null : (data.validTo ? new Date(data.validTo) : null)
+    const insertValidFrom = isDays ? null : (data.validFrom ? validBoundTs(data.validFrom, '00:00:00') : null)
+    const insertValidTo = isDays ? null : (data.validTo ? validBoundTs(data.validTo, '23:59:59') : null)
     const insertValidDays = isDays ? (data.validDays ?? null) : null
 
     try {
@@ -449,16 +461,20 @@ export const updateTemplate = withPermission(
         updateData.validDays = merged.validDays
       } else {
         updateData.validDays = null
-        updateData.validFrom = merged.validFrom
-        updateData.validTo = merged.validTo
+        // fixed 模式写 valid_from/valid_to：取 patch 串或 DB 现值，按北京字面拼 00:00:00/23:59:59
+        // （merged.validFrom 是 Date 仅供校验；写库须用 validBoundTs 避免 new Date/beijingTs 的 +8h）。
+        const fromSrc = data.validFrom !== undefined ? data.validFrom : (before as any).validFrom
+        const toSrc = data.validTo !== undefined ? data.validTo : (before as any).validTo
+        updateData.validFrom = fromSrc ? validBoundTs(fromSrc, '00:00:00') : null
+        updateData.validTo = toSrc ? validBoundTs(toSrc, '23:59:59') : null
       }
     } else {
       // 未触及有效期字段，仍需规范日期序列化（保持旧行为）
       if (data.validFrom !== undefined) {
-        updateData.validFrom = data.validFrom ? new Date(data.validFrom) : null
+        updateData.validFrom = data.validFrom ? validBoundTs(data.validFrom, '00:00:00') : null
       }
       if (data.validTo !== undefined) {
-        updateData.validTo = data.validTo ? new Date(data.validTo) : null
+        updateData.validTo = data.validTo ? validBoundTs(data.validTo, '23:59:59') : null
       }
     }
 
@@ -570,13 +586,14 @@ export const issueCoupon = withPermission(
 
     if (!customer) return { success: false, message: '未找到该手机号对应的顾客' }
 
-    // 4. 计算 expireAt
-    let expireAt: Date
+    // 4. 计算 expireAt（写北京墙钟字面，见 lib/db-time；原 new Date() 经 postgres.js 落 UTC 字面早 8h）
+    let expireAt: SQL
     if (tpl.validityMode === 'days' && tpl.validDays) {
-      expireAt = new Date()
-      expireAt.setDate(expireAt.getDate() + tpl.validDays)
+      const d = new Date()
+      d.setDate(d.getDate() + tpl.validDays)
+      expireAt = beijingTs(d)
     } else if (tpl.validityMode === 'fixed' && tpl.validTo) {
-      expireAt = new Date(tpl.validTo)
+      expireAt = beijingTs(new Date(tpl.validTo))
     } else {
       console.error('[issueCoupon] INVALID_TEMPLATE', {
         templateId: tpl.templateId, validityMode: tpl.validityMode,
@@ -710,13 +727,14 @@ export const batchIssueCoupons = withPermission(
       return { success: false, message: `有 ${errors.length} 个手机号未匹配到顾客`, errors }
     }
 
-    // 6. 计算 expireAt
-    let expireAt: Date
+    // 6. 计算 expireAt（写北京墙钟字面，见 lib/db-time）
+    let expireAt: SQL
     if (tpl.validityMode === 'days' && tpl.validDays) {
-      expireAt = new Date()
-      expireAt.setDate(expireAt.getDate() + tpl.validDays)
+      const d = new Date()
+      d.setDate(d.getDate() + tpl.validDays)
+      expireAt = beijingTs(d)
     } else if (tpl.validityMode === 'fixed' && tpl.validTo) {
-      expireAt = new Date(tpl.validTo)
+      expireAt = beijingTs(new Date(tpl.validTo))
     } else {
       console.error('[batchIssueCoupons] INVALID_TEMPLATE', {
         templateId: tpl.templateId, validityMode: tpl.validityMode,

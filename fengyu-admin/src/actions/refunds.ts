@@ -17,6 +17,7 @@ import { ApiError } from '@/lib/api-error'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { getPointsToYuanRate } from '@/lib/system-config'
+import { nowTs } from '@/lib/db-time'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,
@@ -898,15 +899,15 @@ export const approveRefund = withPermission(
 
   try {
     cascade = await db.transaction(async (tx) => {
-      const nowIso = new Date().toISOString()
+      // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       // 1) CAS 翻状态 + 同一条 UPDATE 写审批人：仅 '待审批' → '已支付'
       const updRes = await tx.execute(sql`
         UPDATE sale_order_payments
            SET status = '已支付',
-               paid_at = ${nowIso},
+               paid_at = ${nowTs()},
                audit_employee_id = ${session.employeeId},
-               audit_at = ${nowIso}
+               audit_at = ${nowTs()}
          WHERE id = ${idNum} AND status = '待审批'
       `)
       if (rowsAffected(updRes) === 0) {
@@ -1097,12 +1098,11 @@ export const rejectRefund = withPermission(
 
   try {
     await db.transaction(async (tx) => {
-      const nowIso = new Date().toISOString()
       const updRes = await tx.execute(sql`
         UPDATE sale_order_payments
            SET status = '已作废',
                audit_employee_id = ${session.employeeId},
-               audit_at = ${nowIso},
+               audit_at = ${nowTs()},
                audit_remark = ${reason}
          WHERE id = ${idNum} AND status = '待审批'
       `)

@@ -14,6 +14,7 @@ import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
+import { nowTs } from '@/lib/db-time'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -786,7 +787,7 @@ export const deleteSku = withPermission(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = await db
       .update(productSkus)
-      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .set({ deletedAt: nowTs(), deletedBy: session.employeeId })
       .where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt)))
 
     if (result.count === 0) {
@@ -1576,7 +1577,7 @@ export const deleteProduct = withPermission(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = await db
       .update(products)
-      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .set({ deletedAt: nowTs(), deletedBy: session.employeeId })
       .where(whereConditions)
 
     if (result.count === 0) {

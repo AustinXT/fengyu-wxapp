@@ -20,6 +20,7 @@ import { ApiError } from '@/lib/api-error'
 import { pgErrorCode } from '@/lib/pg-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
+import { nowTs } from '@/lib/db-time'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -629,7 +630,7 @@ export const startServiceOrder = withPermission(
   try {
     result = await db
       .update(serviceOrders)
-      .set({ status: '服务中', startedAt: new Date() })
+      .set({ status: '服务中', startedAt: nowTs() })
       .where(and(
         eq(serviceOrders.serviceOrderId, serviceOrderId),
         eq(serviceOrders.status, '待服务'),
@@ -685,7 +686,7 @@ export const completeServiceOrder = withPermission(
   try {
     result = await db
       .update(serviceOrders)
-      .set({ status: '待客户确认', staffCompletedAt: new Date() })
+      .set({ status: '待客户确认', staffCompletedAt: nowTs() })
       .where(and(
         eq(serviceOrders.serviceOrderId, serviceOrderId),
         eq(serviceOrders.status, '服务中'),

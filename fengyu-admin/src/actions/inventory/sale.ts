@@ -11,6 +11,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { nowTs } from '@/lib/db-time'
 import { generateInventoryDocNo } from './doc-no'
 import type {
   InventoryItemDto,
@@ -304,9 +305,8 @@ export const updateSaleOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      const patch: Partial<typeof inventorySaleOrders.$inferInsert> = {
-        updatedAt: new Date(),
-      }
+      // updatedAt/confirmedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      const patch: Partial<typeof inventorySaleOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) patch.docSubtype = data.docSubtype
       if (data.docDate !== undefined) patch.docDate = data.docDate
       if (data.status !== undefined) patch.status = data.status
@@ -316,13 +316,15 @@ export const updateSaleOrder = withPermission(
         patch.relatedSaleOrderId = data.relatedSaleOrderId
       }
       if (data.remark !== undefined) patch.remark = data.remark
-      if (data.confirm) {
-        patch.confirmedBy = session.employeeId
-        patch.confirmedAt = new Date()
-      }
+      const confirmPatch = data.confirm
+        ? { confirmedBy: session.employeeId, confirmedAt: nowTs() }
+        : {}
       if (data.items !== undefined) patch.totalQuantity = String(sumQty(data.items))
 
-      await tx.update(inventorySaleOrders).set(patch).where(eq(inventorySaleOrders.id, data.id))
+      await tx
+        .update(inventorySaleOrders)
+        .set({ ...patch, ...confirmPatch, updatedAt: nowTs() })
+        .where(eq(inventorySaleOrders.id, data.id))
 
       if (data.items !== undefined) {
         await tx.delete(inventorySaleOrderItems).where(eq(inventorySaleOrderItems.orderId, data.id))

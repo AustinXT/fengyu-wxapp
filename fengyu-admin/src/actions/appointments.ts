@@ -11,6 +11,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
+import { nowTs } from '@/lib/db-time'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -111,10 +112,11 @@ export const getAppointmentsPaginated = withPermission(
     conditions.push(eq(appointments.storeId, filters.storeId))
   }
   if (filters.dateFrom) {
-    conditions.push(gte(appointments.appointmentTime, new Date(filters.dateFrom)))
+    // 日期串拼北京字面 timestamp（appointment_time 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
+    conditions.push(gte(appointments.appointmentTime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
   }
   if (filters.dateTo) {
-    conditions.push(lt(appointments.appointmentTime, new Date(filters.dateTo + 'T23:59:59.999')))
+    conditions.push(lt(appointments.appointmentTime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
@@ -183,7 +185,7 @@ export const confirmAppointment = withPermission(
   try {
     result = await db
       .update(appointments)
-      .set({ status: '已确认', confirmedAt: new Date() })
+      .set({ status: '已确认', confirmedAt: nowTs() })
       .where(and(
         eq(appointments.appointmentId, appointmentId),
         eq(appointments.status, '待确认'),
@@ -249,7 +251,7 @@ export const checkinAppointment = withPermission(
   try {
     result = await db
       .update(appointments)
-      .set({ checkinAt: now })
+      .set({ checkinAt: nowTs() })
       .where(and(
         eq(appointments.appointmentId, appointmentId),
         inArray(appointments.status, ['待确认', '已确认']),

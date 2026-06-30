@@ -13,6 +13,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { nowTs } from '@/lib/db-time'
 import { generateInventoryDocNo } from './doc-no'
 import type {
   InventoryItemDto,
@@ -343,9 +344,8 @@ export const updateTransferOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      const patch: Partial<typeof inventoryTransferOrders.$inferInsert> = {
-        updatedAt: new Date(),
-      }
+      // updatedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      const patch: Partial<typeof inventoryTransferOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) {
         patch.docSubtype = data.docSubtype
         patch.isDispatcher = data.docSubtype === '调拨出库'
@@ -363,7 +363,7 @@ export const updateTransferOrder = withPermission(
 
       await tx
         .update(inventoryTransferOrders)
-        .set(patch)
+        .set({ ...patch, updatedAt: nowTs() })
         .where(eq(inventoryTransferOrders.id, data.id))
 
       if (data.items !== undefined) {
@@ -434,9 +434,9 @@ export const confirmTransferReceive = withPermission(
       .update(inventoryTransferOrders)
       .set({
         confirmedBy: session.employeeId,
-        confirmedAt: new Date(),
+        confirmedAt: nowTs(),
         receiveQuantity: String(data.receiveQuantity),
-        updatedAt: new Date(),
+        updatedAt: nowTs(),
       })
       .where(eq(inventoryTransferOrders.id, data.id))
 
