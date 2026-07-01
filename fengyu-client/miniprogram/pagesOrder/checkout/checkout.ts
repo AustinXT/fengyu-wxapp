@@ -809,7 +809,10 @@ Page({
     }
     const isRecharge = this.data.isRecharge;
     const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
-    const successUrl = isRecharge ? '/pagesProfile/prepaid-cards/prepaid-cards' : detailUrl;
+    // 支付成功后带 paid=1：触发 order-detail.confirmAndRefresh 主动轮询确认到账（对齐 scan-pay
+    // 的 confirmAndRedirect）。payNotify 异步回调偶发丢失时，前端主动 queryTrade + 补偿入账，
+    // 不再只靠 runPaymentReconcile 定时器（90s+）兜底。取消/封禁跳转用 detailUrl 不带 paid=1。
+    const successUrl = isRecharge ? '/pagesProfile/prepaid-cards/prepaid-cards' : `${detailUrl}&paid=1`;
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
