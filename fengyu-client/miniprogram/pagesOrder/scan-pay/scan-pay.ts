@@ -1,7 +1,7 @@
 // pages/scan-pay/scan-pay.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { pollPaymentConfirm, PaymentPoller } from '../../utils/payment-poll';
+import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import {
   recomputeAmounts,
   decideConfirmRoute,

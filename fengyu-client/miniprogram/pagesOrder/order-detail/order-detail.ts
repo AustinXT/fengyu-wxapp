@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { pollPaymentConfirm, PaymentPoller } from '../../utils/payment-poll';
+import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {

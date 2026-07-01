@@ -1,4 +1,4 @@
-// utils/payment-poll.ts
+// pagesOrder/utils/payment-poll.ts
 // 支付结果轮询确认（issue #37）。
 //
 // 背景：payNotify 异步回调天生有延迟（典型 2–5s）且偶发丢失，前端 wx.requestPayment 成功后
@@ -12,7 +12,7 @@
 //   // r.status ∈ {'已支付','部分支付'} → 确认完成；r.reason ∈ {'no_lakala_order','terminal'} → 无需轮询；
 //   //   否则超时（status 通常仍待支付）。
 
-import { callClientApi } from './cloud';
+import { callClientApi } from '../../utils/cloud';
 
 export interface PaymentConfirmResult {
   status: string;
