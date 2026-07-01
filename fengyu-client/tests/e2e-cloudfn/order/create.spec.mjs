@@ -18,9 +18,10 @@ import {
   NS, closePool, pgQuery,
   TEST_CLIENT_OPENID, TEST_CLIENT_USER_ID, TEST_STORE_ID,
   TEST_SKU_NORMAL_ID, TEST_SKU_EXPERIENCE_ID, TEST_PRODUCT_ID,
+  TEST_CLIENT_PHONE, TEST_MANAGER_EMP_ID, getPool,
 } from '../setup.mjs'
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
-import { ensureTestStore, createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
+import { ensureTestStore, createTestClient, createTestStaff, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
   ensureTestCategories, createTestSku, createTestProduct,
   cleanupClientExtras,
@@ -227,6 +228,112 @@ async function caseExperienceSkuAllowed() {
   if (items[0].is_experience !== true) throw new Error(`expect is_experience=true snapshot`)
 }
 
+/**
+ * 创建员工开单的"待支付"销售单（opened_by 非空）
+ * 用于验证 uq_sale_orders_client_pending 放开后，员工单不再阻塞顾客自助下单。
+ * datetimeExpr 可回拨 sale_order_datetime（验证 #27 守卫：员工单不被懒清理）。
+ */
+async function createStaffOpenedPending({ saleOrderId, totalAmount = 300, datetimeExpr = 'NOW()' }) {
+  const pool = getPool()
+  const conn = await pool.connect()
+  try {
+    await conn.query('BEGIN')
+    await conn.query(
+      `INSERT INTO sale_orders (
+         sale_order_id, status, sale_order_type, market_name, store_id,
+         sale_order_datetime, client_user_id, client_phone, customer_name,
+         total_amount, prepaid_card_amount, payable_amount, received,
+         payment_method, allocation_status, opened_by
+       )
+       VALUES ($1, '待支付'::order_status, '销售单'::sale_order_type, $2, $3,
+               ${datetimeExpr}, $4, $5, $6,
+               $7, 0, $7, 0,
+               '微信'::payment_method, '待分配'::allocation_status, $8)`,
+      [saleOrderId, `${NS}_市场`, TEST_STORE_ID,
+       TEST_CLIENT_USER_ID, TEST_CLIENT_PHONE, `${NS}_顾客`,
+       totalAmount, TEST_MANAGER_EMP_ID]
+    )
+    await conn.query('COMMIT')
+  } catch (e) {
+    await conn.query('ROLLBACK')
+    throw e
+  } finally {
+    conn.release()
+  }
+}
+
+async function caseStaffPendingDoesNotBlockSelfOrder() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, price: '120.00' })
+  // 先手工插入一笔员工开单（opened_by 非空）的待支付单
+  const staffOrderNo = `${NS}_SO_STAFF`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: staffOrderNo, totalAmount: 300 })
+  // uq 放开后：顾客仍可自助下单（opened_by NULL），应成功
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0 (self order allowed alongside staff pending), got ${res.code}: ${res.message}`)
+  if (res.data.status !== '待支付') throw new Error(`expect status=待支付, got ${res.data.status}`)
+  // 新建的自助单 opened_by 必须为 NULL（顾客自助下单，无 opened_by）
+  const selfRow = await pgQuery(`SELECT opened_by FROM sale_orders WHERE sale_order_id = $1`, [res.data.saleOrderId])
+  if (selfRow[0].opened_by !== null) {
+    throw new Error(`self order opened_by should be NULL, got: ${selfRow[0].opened_by}`)
+  }
+  // 员工单仍存在且仍为待支付
+  const staffRow = await pgQuery(`SELECT status, opened_by FROM sale_orders WHERE sale_order_id = $1`, [staffOrderNo])
+  if (staffRow[0].status !== '待支付') throw new Error(`staff order status mismatch: ${staffRow[0].status}`)
+  if (!staffRow[0].opened_by) throw new Error(`staff order opened_by should be non-null`)
+}
+
+async function caseExpiredStaffOrderSurvivesSelfOrder() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, price: '120.00' })
+  // 员工单 sale_order_datetime 回拨到 11 分钟前（>10min 自助下单超时阈值）
+  const staffOrderNo = `${NS}_SO_STAFF_OLD`.slice(0, 30)
+  await createStaffOpenedPending({
+    saleOrderId: staffOrderNo,
+    totalAmount: 300,
+    datetimeExpr: "NOW() - INTERVAL '11 minutes'",
+  })
+  // 顾客自助下单 → order.create 先跑 closeExpiredOrdersByUser，但员工单（opened_by 非空）
+  // 受 #27 守卫豁免懒清理，应存活；自助单正常创建。
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  // 员工单仍存活（不被 closeExpiredOrdersByUser 清理），仍为待支付
+  const staffRow = await pgQuery(`SELECT status, opened_by FROM sale_orders WHERE sale_order_id = $1`, [staffOrderNo])
+  if (staffRow[0].status !== '待支付') {
+    throw new Error(`expired staff order should survive (#27 opened_by guard), got status: ${staffRow[0].status}`)
+  }
+  if (!staffRow[0].opened_by) throw new Error(`staff order opened_by should be non-null`)
+}
+
+async function caseSelfOrderStillUnique() {
+  await createTestClient()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, price: '50.00' })
+  // 第一笔自助单（opened_by NULL）成功
+  const r1 = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  if (r1.code !== 0) throw new Error(`first self order should succeed, got ${r1.code}: ${r1.message}`)
+  // 第二笔自助单 → 仍受 uq + 业务守卫拦截（INVALID_PARAMS）
+  const r2 = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  expectError(r2, 'INVALID_PARAMS')
+}
+
 const CASES = [
   ['happy single SKU → status=待支付 + order_no format', caseHappySingleSku],
   ['multi SKU + quantity > 1 → 2 sale_items + total summed', caseMultiSkuQuantity],
@@ -236,6 +343,9 @@ const CASES = [
   ['create closes expired pending order then creates new', caseCloseExpiredThenCreate],
   ['two sequential creates → same-day seq +1', caseSequentialOrderNoIncrement],
   ['experience SKU is accepted (route does not reject)', caseExperienceSkuAllowed],
+  ['staff-opened pending order does not block self order (uq opened_by dimension)', caseStaffPendingDoesNotBlockSelfOrder],
+  ['expired staff order (>10min) survives closeExpiredOrdersByUser (#27 opened_by guard)', caseExpiredStaffOrderSurvivesSelfOrder],
+  ['self pending order still unique → second self order INVALID_PARAMS', caseSelfOrderStillUnique],
 ]
 
 let pass = 0, fail = 0

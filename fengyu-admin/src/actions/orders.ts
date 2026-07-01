@@ -27,6 +27,7 @@ import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { shanghaiYmd } from '@/lib/datetime'
+import { nowTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
@@ -370,10 +371,14 @@ function buildOrderConditions(
     conditions.push(eq(saleOrders.storeId, filters.storeId))
   }
   if (filters.dateFrom) {
-    conditions.push(gte(saleOrders.saleOrderDatetime, new Date(filters.dateFrom)))
+    // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
+    // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
+    // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
+    conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
   }
   if (filters.dateTo) {
-    conditions.push(lt(saleOrders.saleOrderDatetime, new Date(filters.dateTo + 'T23:59:59.999')))
+    // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
+    conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
@@ -1081,13 +1086,14 @@ export const confirmOfflinePayment = withPermission(
       // 须用 payable 否则全额付款仍判为「部分支付」（与 staff confirmOffline / payNotify 跨端对齐）。
       const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
       const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
-      const paidAtIso = targetStatus === '已支付' ? new Date().toISOString() : null
+      // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
+      const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus}::order_status,
             received = ${newReceived.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
-            paid_at = ${paidAtIso},
+            paid_at = ${paidAtExpr},
             offline_confirmed_by = ${session.employeeId},
             offline_confirmed_at = NOW(),
             updated_at = NOW()
@@ -1974,7 +1980,8 @@ export const createOrder = withPermission(
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
-      // 检查该顾客是否已有待支付订单（partial unique index 保护）
+      // 顾客维度全量待支付单互斥：业务守卫查所有待支付单（含自助单），本事务 order-gen
+      // advisory lock 串行化开单使其原子；DB uq 仅兜底 opened_by IS NULL 自助单
       if (initialStatus === '待支付' && data.clientUserId) {
         const existing = await tx
           .select({ saleOrderId: saleOrders.saleOrderId })
@@ -1999,7 +2006,7 @@ export const createOrder = withPermission(
         marketName: data.marketName,
         storeId: data.storeId,
         storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-        saleOrderDatetime: new Date(),
+        saleOrderDatetime: nowTs(),
         clientUserId: data.clientUserId,
         clientPhone: data.clientPhone,
         customerName: data.customerName,
@@ -2016,7 +2023,7 @@ export const createOrder = withPermission(
         allocationStatus: '待分配',
         remark: data.remark || null,
         isActivity: data.isActivity ?? false,
-        paidAt: isFullCardCoverage ? new Date() : null,
+        paidAt: isFullCardCoverage ? nowTs() : null,
       })
 
       // 开单时不写款项流水（统一"先付款、后记账"不变量）：
@@ -2029,7 +2036,7 @@ export const createOrder = withPermission(
       if (data.couponId) {
         const voidResult = await tx
           .update(userCoupons)
-          .set({ status: '已使用', usedSaleOrderId: id, usedAt: new Date() })
+          .set({ status: '已使用', usedSaleOrderId: id, usedAt: nowTs() })
           .where(and(eq(userCoupons.couponId, data.couponId), eq(userCoupons.status, '未使用')))
 
         if ((voidResult as any).count === 0) {
@@ -2482,7 +2489,7 @@ export const createConversionOrder = withPermission(
         marketName: data.marketName,
         storeId: data.storeId,
         storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-        saleOrderDatetime: new Date(),
+        saleOrderDatetime: nowTs(),
         clientUserId: data.clientUserId,
         clientPhone: client.phone ?? null,
         customerName: client.name ?? null,
@@ -2495,7 +2502,7 @@ export const createConversionOrder = withPermission(
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
-        paidAt: orderPaid ? new Date() : null,
+        paidAt: orderPaid ? nowTs() : null,
       })
 
       // 6. 转出行 + 原子扣减原卡余量
@@ -2844,7 +2851,7 @@ export const createDepositOrder = withPermission(
           marketName: data.marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-          saleOrderDatetime: now,
+          saleOrderDatetime: nowTs(),
           clientUserId: data.clientUserId,
           clientPhone: client.phone || null,
           customerName: client.name || null,
@@ -2858,7 +2865,7 @@ export const createDepositOrder = withPermission(
           couponId: null,
           couponDiscount: '0',
           remark: data.remark || null,
-          paidAt: now,
+          paidAt: nowTs(),
           allocationStatus: '待分配',
         })
 
@@ -2930,7 +2937,7 @@ export const createDepositOrder = withPermission(
               externalTxnId: null,
               status: '已支付',
               sourceEnd: 'admin',
-              paidAt: now,
+              paidAt: nowTs(),
               operatorEmployeeId: session.employeeId,
               refSaleItemId: r.saleItemId,
               note: DEPOSIT_RECEIPT_NOTE,
@@ -2939,7 +2946,7 @@ export const createDepositOrder = withPermission(
           const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
           await tx
             .update(saleOrders)
-            .set({ received: totalReceived.toFixed(2), updatedAt: new Date() })
+            .set({ received: totalReceived.toFixed(2), updatedAt: nowTs() })
             .where(eq(saleOrders.saleOrderId, id))
         }
 
@@ -3085,7 +3092,7 @@ export const createPrepaidInflow = withPermission(
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
         // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
-        // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）
+        // 不加待支付并发守卫（uq_sale_orders_client_pending 现仅约束 opened_by IS NULL 自助单，迁移不应被无关待支付单卡住）
         await tx.insert(saleOrders).values({
           saleOrderId: id,
           status: '已支付',
@@ -3094,7 +3101,7 @@ export const createPrepaidInflow = withPermission(
           marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-          saleOrderDatetime: new Date(),
+          saleOrderDatetime: nowTs(),
           clientUserId: data.clientUserId,
           clientPhone: client.phone || '',
           customerName: client.name || '',
@@ -3110,7 +3117,7 @@ export const createPrepaidInflow = withPermission(
           preferredEmployeeId: null,
           allocationStatus: '待分配',
           remark: note,
-          paidAt: new Date(),
+          paidAt: nowTs(),
         })
 
         // 首次支付流水（线下 / external_txn_id=NULL / 已支付）：维护 received=Σ流水（资金不变量 I1）
@@ -3124,7 +3131,7 @@ export const createPrepaidInflow = withPermission(
           sourceEnd: 'admin',
           operatorEmployeeId: session.employeeId,
           note,
-          paidAt: new Date(),
+          paidAt: nowTs(),
         })
 
         // 充值入账（复用 applyRechargeOnOrderPaid：balance += total + card_transactions 充值）。
@@ -3464,7 +3471,6 @@ export const recordPayment = withPermission(
       //   不再 INSERT FY-HKD 回款单（saleOrderType='回款单' 已删除），
       //   "回款"语义完全由 sale_order_payments[change_type='回款'] 表达。
       //   repaymentOrderId 仍生成（FY-HKD 编号格式保留用作业务流水编号 / 操作日志主键）。
-      const now = new Date()
 
       // 7) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
       //    现金合并 1 行 '回款'（ref=null）+ 储值卡合并 1 行 '储值卡抵扣'（ref=null）。
@@ -3483,7 +3489,7 @@ export const recordPayment = withPermission(
           externalTxnId,
           status: '已支付',
           sourceEnd: 'admin',
-          paidAt: now,
+          paidAt: nowTs(),
           operatorEmployeeId: session.employeeId,
           note: input.note?.trim() || '管理后台录入回款',
         }).returning({ id: saleOrderPayments.id })
@@ -3498,7 +3504,7 @@ export const recordPayment = withPermission(
           externalTxnId: null,
           status: '已支付',
           sourceEnd: 'admin',
-          paidAt: now,
+          paidAt: nowTs(),
           operatorEmployeeId: session.employeeId,
           note: '管理后台录入回款-储值卡抵扣',
         }).returning({ id: saleOrderPayments.id })
@@ -3559,17 +3565,9 @@ export const recordPayment = withPermission(
       // 充值单不进回款路径（一次性付清），total 锚无副作用。
       const settleTarget = Math.round(origTotal * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
-      // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
-      // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。
-      const paidAtIso: string | null =
-        targetStatus === '已支付'
-          ? now.toISOString()
-          : locked.paid_at
-            ? typeof locked.paid_at === 'string'
-              ? locked.paid_at
-              : new Date(locked.paid_at).toISOString()
-            : null
-      const paidAtValue = paidAtIso
+      // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()；未结清→保留原值（paid_at = paid_at 无害）。
+      // 原 ISO 字符串内插会让 postgres.js 走 UTC 字面落库（早 8h）；改 SQL 片段根治。
+      const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`paid_at`
 
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
@@ -3577,7 +3575,7 @@ export const recordPayment = withPermission(
             received = ${newReceived.toFixed(2)}::numeric,
             refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
-            paid_at = ${paidAtValue},
+            paid_at = ${paidAtExpr},
             updated_at = NOW()
         WHERE sale_order_id = ${saleOrderId} AND status = ${locked.status}
       `)

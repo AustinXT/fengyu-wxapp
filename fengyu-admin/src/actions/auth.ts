@@ -16,6 +16,7 @@ import { JWT_SECRET } from '@/lib/jwt-secret'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
+import { nowTs } from '@/lib/db-time'
 
 const COOKIE_NAME = 'fy-admin-token'
 const JWT_EXPIRES = '24h'
@@ -80,14 +81,14 @@ async function recordFailure(phone: string): Promise<void> {
 
   await db
     .insert(loginAttempts)
-    .values({ phone, failCount: 1, lastFailedAt: new Date() })
+    .values({ phone, failCount: 1, lastFailedAt: nowTs() })
     .onConflictDoUpdate({
       target: loginAttempts.phone,
       set: {
         failCount: sql`${loginAttempts.failCount} + 1`,
         lockedUntil: lockExpr,
-        lastFailedAt: new Date(),
-        updatedAt: new Date(),
+        lastFailedAt: nowTs(),
+        updatedAt: nowTs(),
       },
     })
 }
@@ -205,7 +206,7 @@ export async function changePassword(
     .set({
       passwordHash,
       mustChange: false,
-      lastChangedAt: new Date(),
+      lastChangedAt: nowTs(),
     })
     .where(eq(adminPasswords.employeeId, session.employeeId))
 
@@ -312,7 +313,7 @@ export const resetEmployeePassword = withPermission(
   if (existing.length > 0) {
     await db
       .update(adminPasswords)
-      .set({ passwordHash, mustChange: true, lastChangedAt: new Date() })
+      .set({ passwordHash, mustChange: true, lastChangedAt: nowTs() })
       .where(eq(adminPasswords.employeeId, employeeId))
   } else {
     await db.insert(adminPasswords).values({
@@ -366,7 +367,7 @@ export const resetToDefaultPassword = withPermission(
   if (existing.length > 0) {
     await db
       .update(adminPasswords)
-      .set({ passwordHash, mustChange: true, lastChangedAt: new Date() })
+      .set({ passwordHash, mustChange: true, lastChangedAt: nowTs() })
       .where(eq(adminPasswords.employeeId, employeeId))
   } else {
     await db.insert(adminPasswords).values({

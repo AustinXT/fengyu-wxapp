@@ -131,12 +131,12 @@ export const saleOrders = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex("uq_sale_orders_client_pending")
       .on(table.clientUserId)
-      .where(sql`status = '待支付' AND client_user_id IS NOT NULL`),
+      .where(sql`status = '待支付' AND client_user_id IS NOT NULL AND opened_by IS NULL`),
     uniqueIndex("uq_sale_orders_phone_pending")
       .on(table.clientPhone, table.storeId)
       .where(sql`status = '待支付' AND client_user_id IS NULL`),
@@ -268,7 +268,7 @@ export const saleItems = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index("idx_sale_items_order_id").on(table.saleOrderId),
@@ -333,7 +333,7 @@ export const saleAllocations = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     // 唯一性下沉到回款维度：一项一员工一角色一回款仅一条活跃分配（按回款逐笔分配）

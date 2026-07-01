@@ -115,7 +115,7 @@ interface TreatmentCard {
   paidSessions: number | null;
   usedSessions: number;
   paidUnusedSessions: number;
-  remainPct: number;
+  usedPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
   saleOrderId: string;
@@ -132,6 +132,8 @@ interface GiftItem {
   sessionCount: number;
   remainingSessions: number;
   paidSessions: number | null;
+  /** 已付未用次数（与持卡汇总同口径）；paidSessions 为 null 时退回物理剩余 */
+  paidUnusedSessions: number;
   createdAt?: string;
 }
 
@@ -147,6 +149,7 @@ interface PromoOrder {
     sessionCount?: number;
     remainingSessions?: number;
     paidSessions?: number | null;
+    paidUnusedSessions?: number;
   }>;
 }
 
@@ -441,7 +444,7 @@ Page({
               paidSessions: item.paidSessions,
               usedSessions: used,
               paidUnusedSessions: paidUnused,
-              remainPct: pct(remain),
+              usedPct: pct(used),
               paidUnusedPct: pct(paidUnused),
               unpaidPct: pct(unpaid),
               saleOrderId: order.saleOrderId,
@@ -468,8 +471,27 @@ Page({
         ...this._scopePayload(),
       });
       const formatted: GiftData = {
-        promoOrders: (data?.promoOrders || []).map(o => ({ ...o, paidAt: o.paidAt ? formatDateTime(o.paidAt) : o.paidAt, createdAt: formatDateTime(o.createdAt) })),
-        giftItems: (data?.giftItems || []).map(g => ({ ...g, createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt })),
+        promoOrders: (data?.promoOrders || []).map(o => ({
+          ...o,
+          paidAt: o.paidAt ? formatDateTime(o.paidAt) : o.paidAt,
+          createdAt: formatDateTime(o.createdAt),
+          items: (o.items || []).map(gi => {
+            const gt = Number(gi.sessionCount || 0);
+            const grm = Number(gi.remainingSessions || 0);
+            const gpr = gi.paidSessions;
+            return { ...gi, paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)) };
+          }),
+        })),
+        giftItems: (data?.giftItems || []).map(g => {
+          const ft = Number(g.sessionCount || 0);
+          const frm = Number(g.remainingSessions || 0);
+          const fpr = g.paidSessions;
+          return {
+            ...g,
+            paidUnusedSessions: fpr == null ? frm : Math.max(0, Number(fpr) - Math.max(ft - frm, 0)),
+            createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt,
+          };
+        }),
       };
       this.setData({ giftData: formatted, giftLoaded: true });
     } catch (_) {

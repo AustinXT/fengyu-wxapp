@@ -1,6 +1,7 @@
 // pages/scan-pay/scan-pay.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import {
   recomputeAmounts,
   decideConfirmRoute,
@@ -76,6 +77,9 @@ Page({
     alipayShareToken: '',
     alipayAmount: '0.00',
   },
+
+  // 支付结果轮询器（issue #37）；onUnload 清理防内存泄漏
+  _poller: null as PaymentPoller | null,
 
   onLoad(options) {
     const { scene, orderNo, saleOrderId } = options as { scene?: string; orderNo?: string; saleOrderId?: string };
@@ -239,6 +243,53 @@ Page({
     wx.switchTab({ url: '/pages/home/home' });
   },
 
+  /**
+   * 支付成功后轮询确认订单状态再跳转（issue #37）。
+   * payNotify 异步回调有延迟且偶发丢失，立即跳转会显示"待支付"。
+   * 轮询 order.confirmPayment（后端主动对账+补偿入账）直到已支付/部分支付或超时。
+   */
+  async confirmAndRedirect(orderNo: string) {
+    Toast.loading({ message: '支付结果确认中', forbidClick: true, duration: 0 });
+    const poller = pollPaymentConfirm(orderNo);
+    this._poller = poller;
+    try {
+      const r = await poller.promise;
+      Toast.clear();
+      if (r.status === '已支付' || r.status === '部分支付') {
+        Toast.success('支付成功');
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
+        }, 800);
+      } else {
+        // 超时仍未确认：跳详情页（带 paid=1 触发兜底轮询），提示稍后刷新
+        Toast.fail('支付确认中，请稍后下拉刷新');
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}&paid=1` });
+        }, 1200);
+      }
+    } catch (_e) {
+      Toast.clear();
+      wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}&paid=1` });
+    } finally {
+      if (this._poller === poller) this._poller = null;
+    }
+  },
+
+  onUnload() {
+    if (this._poller) {
+      this._poller.clear();
+      this._poller = null;
+    }
+  },
+
+  onHide() {
+    // 页面隐藏（切后台 / navigateTo 跳走）停止轮询，避免后台继续请求
+    if (this._poller) {
+      this._poller.clear();
+      this._poller = null;
+    }
+  },
+
   /** 确认支付 */
   async onSubmit() {
     if (this.data.submitting) return;
@@ -352,10 +403,7 @@ Page({
       return;
     }
     await wx.requestPayment(payParams);
-    Toast.success('支付成功');
-    setTimeout(() => {
-      wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
-    }, 1200);
+    await this.confirmAndRedirect(orderNo);
   },
 
   /** 回款（部分支付订单）确认：统一走 order.repay
@@ -417,10 +465,7 @@ Page({
       return;
     }
     await wx.requestPayment(payParams);
-    Toast.success('支付成功');
-    setTimeout(() => {
-      wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
-    }, 1200);
+    await this.confirmAndRedirect(orderNo);
   },
 
   /** 2026-05-19 dirty-read 修复：余额版本冲突
@@ -484,7 +529,7 @@ Page({
 
   onAlipayShareDone() {
     this.setData({ showAlipayShare: false });
-    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}` });
+    this.confirmAndRedirect(this.data.orderNo);
   },
 
   onAlipayShareClose() {

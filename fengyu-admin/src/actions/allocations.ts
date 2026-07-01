@@ -12,6 +12,7 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefund, hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
+import { nowTs } from '@/lib/db-time'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -267,7 +268,7 @@ export const deleteAllocation = withPermission(
 
   await db
     .update(saleAllocations)
-    .set({ isVoid: true, voidedAt: new Date() })
+    .set({ isVoid: true, voidedAt: nowTs() })
     .where(eq(saleAllocations.id, id))
 
   await logOperation(session, 'allocation.delete', 'sale_allocation', String(id))

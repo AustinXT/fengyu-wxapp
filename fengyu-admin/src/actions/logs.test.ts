@@ -28,6 +28,7 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   like: vi.fn((a, b) => ({ type: 'like', a, b })),
+  sql: vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -172,12 +173,15 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(gte).toHaveBeenCalled()
   })
 
-  it('endDate 筛选 → lte 被调用（含 T23:59:59 补偿）', async () => {
+  it('endDate 筛选 → lte 被调用（含当天 23:59:59 北京字面补偿）', async () => {
     mockLogChain([])
 
     await getLogs({ endDate: '2026-03-31' })
 
-    expect(lte).toHaveBeenCalledWith('created_at', new Date('2026-03-31T23:59:59'))
+    const lteCall = (lte as any).mock.calls.find((c: any[]) => c[0] === 'created_at')
+    expect(lteCall).toBeTruthy()
+    // 日期串拼北京字面 23:59:59::timestamp（不经 new Date——date-only UTC 午夜解析会 +8h）
+    expect((lteCall[1] as any).vals[0]).toBe('2026-03-31 23:59:59')
   })
 
   it('空结果 → 返回 []', async () => {

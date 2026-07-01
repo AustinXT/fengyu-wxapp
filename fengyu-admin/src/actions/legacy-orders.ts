@@ -102,10 +102,12 @@ export const listLegacyOrders = withPermission(
       conditions.push(eq(saleOrders.storeId, filters.storeId))
     }
     if (filters.dateFrom) {
-      conditions.push(gte(saleOrders.saleOrderDatetime, new Date(filters.dateFrom)))
+      // 日期串拼北京字面 00:00:00::timestamp（sale_order_datetime 库存北京字面）；不经 new Date——
+      // date-only 串按 ES 规范当 UTC 午夜解析、postgres.js 发 UTC ISO 会早 8h，漏当天 00:00-08:00。
+      conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
     }
     if (filters.dateTo) {
-      conditions.push(lt(saleOrders.saleOrderDatetime, new Date(filters.dateTo + 'T23:59:59.999')))
+      conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
     }
     // 小程序匹配语义：client_wechat_users.openid IS NOT NULL 才算真·小程序注册顾客
     // （WorkFine 同步的幽灵顾客 openid 为 null，不算）

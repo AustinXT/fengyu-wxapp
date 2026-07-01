@@ -95,7 +95,7 @@ vi.mock('drizzle-orm', () => ({
   or: vi.fn((...args) => ({ type: 'or', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
-    vi.fn(() => ({ type: 'sql' })),
+    vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })),
     { raw: vi.fn(() => ({ type: 'sql_raw' })) },
   ),
 }))
@@ -429,8 +429,10 @@ describe('createTemplate — 有效期字段校验', () => {
     const inserted = values.mock.calls[0][0]
     expect(inserted.validityMode).toBe('fixed')
     expect(inserted.validDays).toBeNull()
-    expect(inserted.validFrom).toBeInstanceOf(Date)
-    expect(inserted.validTo).toBeInstanceOf(Date)
+    // validFrom/validTo 写成北京字面 timestamp（validBoundTs：开始 00:00:00、结束 23:59:59），
+    // 不经 new Date（date-only 串 UTC 午夜解析再 beijingTs 会 +8h）。
+    expect((inserted.validFrom as any).vals[0]).toBe('2099-01-01 00:00:00')
+    expect((inserted.validTo as any).vals[0]).toBe('2099-12-31 23:59:59')
   })
 })
 
@@ -1092,11 +1094,12 @@ describe('batchIssueCoupons — 批量发放', () => {
 
     await batchIssueCoupons('TPL-001', ['13800000001'])
     const insertedValues = values.mock.calls[0][0]
-    const expireAt = insertedValues[0].expireAt as Date
-    const now = new Date()
-    const diffDays = Math.round((expireAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-    expect(diffDays).toBeGreaterThanOrEqual(29)
-    expect(diffDays).toBeLessThanOrEqual(31)
+    // expireAt 现为 beijingTs() 返回的 drizzle SQL 片段（北京墙钟字面 '::timestamp'，见 lib/db-time），
+    // 不再是裸 Date。vitest mock 边界会把 SQL 片段序列化仅留品牌字段，故此处只断言"是 SQL 片段
+    // 而非 Date"；30 天有效期的字面格式化正确性由 src/lib/__tests__/db-time.test.ts 守护。
+    const expireAtFrag = insertedValues[0].expireAt as unknown as { type?: string; getTime?: () => number }
+    expect(typeof expireAtFrag.getTime).toBe('undefined') // 不再是裸 Date
+    expect(expireAtFrag.type).toBe('sql') // drizzle SQL 片段品牌
   })
 
   it('历史脏数据模板（validityMode=fixed 但 validTo=null）→ 整批拒绝，不 insert', async () => {

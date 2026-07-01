@@ -446,15 +446,6 @@ async function create(ctx) {
   // 会员价分流：会员客 或 有钻石等级即会员，决定普通单品成交价用会员价还是标价
   const buyerIsMember = isMember(clientUsers[0].customer_type, clientUsers[0].member_level)
 
-  // 检查是否已有待支付订单
-  const existing = await pg.query(
-    "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
-    [clientUserId]
-  )
-  if (existing.length > 0) {
-    throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
-  }
-
   // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
   const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
 
@@ -903,6 +894,19 @@ async function create(ctx) {
   }
 
   await pg.transaction(async (client) => {
+    // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
+    // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    const existing = await client.query(
+      "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
+      [clientUserId]
+    )
+    if (existing.rows.length > 0) {
+      throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
+    }
+
     // 生成 saleOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))，
     // 锁持有到外层 COMMIT，闭合 TOCTOU）。同一事务内再次请求同 key 是 no-op（reentrant）
     saleOrderId = await generateOrderNo(undefined, client)
@@ -1163,10 +1167,18 @@ async function qrcode(ctx) {
       : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
     const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
     actualPayable = Math.max(0, Math.round((payable - netReceived) * 100) / 100)
+  } else if (order.sale_order_type === '充值单' || order.sale_order_type === '转换单') {
+    // 充值卡单（card.recharge，0 行 sale_items）/ 转换单（sale_items 未写 pending_received，默认 0）：
+    // 不能走逐行 pending_received（恒为 0 会让二维码显示 ¥0），待支付额直接取订单应付金额。
+    // payable_amount 已扣储值卡（充值卡单=实付/prepaid=0；转换单=max(0,priceDiff−储值卡)），不再减 prepaidCardAmount；
+    // payable_amount 缺失（历史/迁移数据）时回退 total−储值卡，与部分支付分支对称，避免静默 ¥0。
+    const payable = Number(order.payable_amount || 0) > 0
+      ? Number(order.payable_amount)
+      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+    actualPayable = Math.max(0, Math.round(payable * 100) / 100)
   } else {
     // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
-    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径；
-    // 非 order.create 路径（转换单/寄存单）若未写 pending_received，兜底退回 sale_amount（应付）
+    // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径
     const sumItemReal = items.reduce(
       (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
       0
@@ -2809,6 +2821,7 @@ async function createConversion(ctx) {
     preferredStaffWfId,
     remark,
     prepaidCardAmount: inputPrepaidCardAmount,
+    isActivity,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
@@ -2821,8 +2834,8 @@ async function createConversion(ctx) {
   if (!Array.isArray(convertInItems) || convertInItems.length === 0) {
     throw new Error('INVALID_PARAMS: 请选择至少一个转入项目')
   }
-  if (!paymentMethod || !['微信', '线下'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/线下')
+  if (!paymentMethod || !['微信', '支付宝', '线下'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/线下')
   }
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -3019,8 +3032,8 @@ async function createConversion(ctx) {
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
-        paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6)`,
+        paid_at, created_at, updated_at, is_activity
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6, $19)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3030,6 +3043,7 @@ async function createConversion(ctx) {
         preferredStaffWfId || null,
         remark || null,
         orderPaid ? now : null,
+        isActivity === true,
       ]
     )
 

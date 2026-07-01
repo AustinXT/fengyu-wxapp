@@ -24,6 +24,12 @@ function formatDateTimeOrDash(s: string | null | undefined): string {
 	return formatDateTime(s);
 }
 
+/** 欠款提示：已付未用 < 物理剩余时，附「（物理剩余 N）」标记 */
+function physicalRemainingHint(paidUnused: number | null, remaining: number | null) {
+	if (remaining === null || paidUnused === null || !(paidUnused < remaining)) return null;
+	return <span className="ml-1 text-xs font-normal text-[#D4820A]">（物理剩余{remaining}）</span>;
+}
+
 function cardTypeLabel(sessionCount: number | null): "疗程卡" | "单次卡" | null {
 	if (sessionCount === null) return null;
 	if (sessionCount === 1) return "单次卡";
@@ -100,8 +106,8 @@ export default function CardDetailPageClient({
 							<p className="font-medium mt-1">{used ?? "—"}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">剩余</span>
-							<p className="font-medium mt-1">{card.remainingSessions ?? "—"}</p>
+							<span className="text-[#999999]">剩余（可用）</span>
+							<p className="font-medium mt-1">{card.paidUnusedSessions ?? "—"}{physicalRemainingHint(card.paidUnusedSessions, card.remainingSessions)}</p>
 						</div>
 						<div>
 							<span className="text-[#999999]">已支付次数</span>

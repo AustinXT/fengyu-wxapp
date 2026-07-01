@@ -67,6 +67,7 @@ const routes = {
   'order.confirmPrepaidFull': () => require('./routes/order').confirmPrepaidFull,
   'order.repay': () => require('./routes/order').repay,
   'order.queryLakalaStatus': () => require('./routes/order').queryLakalaStatus,
+  'order.confirmPayment': () => require('./routes/order').confirmPayment,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,

@@ -2440,6 +2440,63 @@ describe('order.qrcode', () => {
     expect(ctx.result.actualPayable).toBe(300)
   })
 
+  test('充值卡单（0 行 sale_items）实际需支付 = 订单应付金额，不再恒为 0', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-RECHARGE' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-RECHARGE', status: '待支付', sale_order_type: '充值单',
+        client_phone: '138', customer_name: '王五', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '500', prepaid_card_amount: '0', payable_amount: '500',
+      }])
+      .mockResolvedValueOnce([]) // 充值卡单 0 行 sale_items
+
+    await orderRoutes.qrcode(ctx)
+
+    // 充值卡单无 sale_items，逐行 pending_received 口径会算成 0；特判取 payable_amount=500
+    expect(ctx.result.actualPayable).toBe(500)
+  })
+
+  test('转换单（sale_items 未写 pending_received）实际需支付 = 订单应付金额（补差现金）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-CONV', status: '待支付', sale_order_type: '转换单',
+        client_phone: '138', customer_name: '赵六', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '150', prepaid_card_amount: '0', payable_amount: '150',
+      }])
+      .mockResolvedValueOnce([
+        // 转换单 sale_items 有行但 pending_received 未写入（默认 0）
+        { sale_item_id: 'ci-1', received: '0', pending_received: '0', sale_amount: '150', product_name: '转入项目' },
+      ])
+
+    await orderRoutes.qrcode(ctx)
+
+    // pending_received=0 会让逐行口径算成 0；特判取 payable_amount=150（补差现金，已扣储值卡）
+    expect(ctx.result.actualPayable).toBe(150)
+  })
+
+  test('充值卡单 payable_amount 缺失时回退 total_amount，不静默显示 ¥0', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-RECHARGE-FALLBACK' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-RECHARGE-FALLBACK', status: '待支付', sale_order_type: '充值单',
+        client_phone: '138', customer_name: '钱七', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '800', prepaid_card_amount: '0', payable_amount: null,
+      }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.qrcode(ctx)
+
+    // payable_amount 缺失 → 回退 total_amount − 储值卡(0) = 800，与部分支付分支对称
+    expect(ctx.result.actualPayable).toBe(800)
+  })
+
   test('已支付订单不生成二维码', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-002' })
 

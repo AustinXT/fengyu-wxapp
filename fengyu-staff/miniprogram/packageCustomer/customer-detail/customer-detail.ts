@@ -129,7 +129,7 @@ interface TreatmentCard {
   consumableSessions: number;
   usedSessions: number;
   paidUnusedSessions: number;
-  remainPct: number;
+  usedPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
   saleOrderId: string;
@@ -437,7 +437,7 @@ Page({
             consumableSessions: consumable,
             usedSessions: used,
             paidUnusedSessions: paidUnused,
-            remainPct: pct(remain),
+            usedPct: pct(used),
             paidUnusedPct: pct(paidUnused),
             unpaidPct: pct(unpaid),
             saleOrderId: order.saleOrderId,

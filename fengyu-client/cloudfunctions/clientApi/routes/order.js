@@ -100,8 +100,10 @@ async function createLakalaPreorder({
 
   // 持久化本次商户流水号（聚合主扫的 out_trade_no），供后续 queryLakalaStatus 兜底查询。
   // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
+  // 同时刷新 updated_at，让 payNotify.runPaymentReconcile 定时补偿窗口能锚定"最近一次发起拉卡拉支付"
+  // （sale_order_datetime 是下单时间不随回款变化，回款会覆写 lakala_out_order_no；updated_at 才能反映）。
   await pg.query(
-    'UPDATE sale_orders SET lakala_out_order_no = $1 WHERE sale_order_id = $2',
+    'UPDATE sale_orders SET lakala_out_order_no = $1, updated_at = NOW() WHERE sale_order_id = $2',
     [outTradeNo, orderNo]
   )
 
@@ -142,13 +144,19 @@ async function createLakalaAlipayShareCode({
 }
 
 /**
- * 关闭过期订单并释放关联优惠券（原子操作）
+ * 关闭过期订单并释放关联优惠券（原子操作）。
+ *
+ * 仅关闭「顾客自助下单」(opened_by IS NULL) 的过期订单。员工开单订单
+ * (opened_by IS NOT NULL) 由 admin/staff 生成二维码交顾客扫码支付，扫码时刻
+ * 往往已超过 10 分钟，不应被自助下单的懒清理误关（issue #27）。
+ *
  * @param {string} orderNo - 订单号
+ * @returns {Promise<boolean>} true=确实关闭并释放了券；false=未命中（非待支付/员工单/不存在）
  */
 async function closeExpiredOrder(orderNo) {
-  await pg.transaction(async (client) => {
+  return await pg.transaction(async (client) => {
     const result = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付'",
+      "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL",
       [orderNo]
     )
     if (result.rowCount > 0) {
@@ -157,7 +165,9 @@ async function closeExpiredOrder(orderNo) {
          WHERE used_sale_order_id = $1`,
         [orderNo]
       )
+      return true
     }
+    return false
   })
 }
 
@@ -168,7 +178,7 @@ async function closeExpiredOrder(orderNo) {
 async function closeExpiredOrdersByUser(userId) {
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
-     WHERE client_user_id = $1 AND status = '待支付'
+     WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
@@ -308,14 +318,9 @@ async function scanDetail(ctx) {
 
   const order = orders[0]
 
-  // 懒清理过期的待支付订单
-  if (order.status === '待支付') {
-    const orderTime = new Date(order.sale_order_datetime)
-    if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      await closeExpiredOrder(targetOrderId)
-      order.status = '已关闭'
-    }
-  }
+  // scanDetail 仅服务员工开单订单（SQL 自带 WHERE opened_by IS NOT NULL），员工单不套用
+  // 自助下单的 10 分钟懒清理——closeExpiredOrder 的 opened_by IS NULL 守卫对员工单也总返回
+  // false，故此处不再做超时检查（避免死代码）。顾客自助单的懒清理在 order.detail/list 处理。
 
   // 可支付状态：待支付（首付）/ 部分支付（回款——已有首付到账，扫码付剩余应付）
   // 非可支付状态返回提示
@@ -450,9 +455,11 @@ async function create(ctx) {
   // 先清理过期的待支付订单（10分钟超时，同时释放优惠券）
   await closeExpiredOrdersByUser(userId)
 
-  // 检查是否已有待支付订单(部分唯一索引约束)
+  // 检查是否已有自助待支付订单（仅查 opened_by IS NULL 自助单；DB uq 同口径仅兜底自助单，
+  // 员工单并发由 staff/admin 端业务守卫 + advisory lock 串行化，不在 clientApi 此检查范围）
   const existingOrders = await pg.query(
-    "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付'",
+    `SELECT sale_order_id FROM sale_orders
+     WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL`,
     [userId]
   )
   if (existingOrders.length > 0) {
@@ -1045,12 +1052,13 @@ async function pay(ctx) {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
-  // 10分钟超时检查仅对 '待支付' 生效（部分支付订单已有首次到账，不自动过期）
+  // 10分钟超时检查仅对 '待支付' 且顾客自助单(opened_by 为空)生效：
+  // 部分支付订单已有首次到账不自动过期；员工单不套用自助超时（closeExpiredOrder 内部跳过，issue #27）
   if (order.status === '待支付') {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      await closeExpiredOrder(orderNo)
-      throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+      const closed = await closeExpiredOrder(orderNo)
+      if (closed) throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
     }
   }
 
@@ -1184,11 +1192,11 @@ async function offlinePay(ctx) {
     throw new Error('INVALID_PARAMS: 订单状态不允许付款')
   }
 
-  // 10分钟超时检查（关闭并释放优惠券）
+  // 10分钟超时检查（关闭并释放优惠券）；员工单 closeExpiredOrder 内部跳过，不抛超时（issue #27）
   const orderTimeOffline = new Date(order.sale_order_datetime)
   if (Date.now() - orderTimeOffline.getTime() > 10 * 60 * 1000) {
-    await closeExpiredOrder(orderNo)
-    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+    const closed = await closeExpiredOrder(orderNo)
+    if (closed) throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
   }
 
   // 全额储值卡抵扣：payable_amount = 0，直接短路返回已支付
@@ -1355,11 +1363,12 @@ async function detail(ctx) {
   let order = orders[0]
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
+  // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
   if (order.status === '待支付') {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      await closeExpiredOrder(orderNo)
-      order.status = '已关闭'
+      const closed = await closeExpiredOrder(orderNo)
+      if (closed) order.status = '已关闭'
     }
   }
 
@@ -1698,12 +1707,12 @@ async function alipayPay(ctx) {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
-  // 10分钟超时检查（仅 '待支付' 生效）
+  // 10分钟超时检查（仅 '待支付' 且顾客自助单生效）；员工单 closeExpiredOrder 内部跳过，不抛超时（issue #27）
   if (order.status === '待支付') {
     const orderTimeAlipay = new Date(order.sale_order_datetime)
     if (Date.now() - orderTimeAlipay.getTime() > 10 * 60 * 1000) {
-      await closeExpiredOrder(orderNo)
-      throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+      const closed = await closeExpiredOrder(orderNo)
+      if (closed) throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
     }
   }
 
@@ -2489,6 +2498,152 @@ async function queryLakalaStatus(ctx) {
   }
 }
 
+/**
+ * 支付对账决策（纯函数，便于单测 + verify 脚本复用）。
+ *
+ * issue #37：payNotify 异步回调偶发丢失会导致"钱已扣但订单仍待支付"。
+ * confirmPayment 据本函数决策是否主动查拉卡拉并补偿入账。
+ *
+ * @param {string} localStatus - sale_orders.status
+ * @param {boolean} hasLakalaOrder - lakala_out_order_no IS NOT NULL（经拉卡拉发起）
+ * @param {string|null} tradeState - 拉卡拉 queryTrade 返回 trade_state；'SUCCESS' 才到账
+ * @returns {'skip'|'wait'|'reconcile'}
+ *   skip      终态 / 非待支付·部分支付 / 无拉卡拉单 → 无需对账，直接返回本地 status
+ *   wait      拉卡拉侧尚未 SUCCESS → 前端继续轮询
+ *   reconcile 本地待支付·部分支付 + 拉卡拉 SUCCESS → 触发补偿入账
+ */
+function decideReconcile(localStatus, hasLakalaOrder, tradeState) {
+  const terminal = new Set(['已支付', '已完成', '已关闭', '支付失败'])
+  if (terminal.has(localStatus)) return 'skip'
+  if (localStatus !== '待支付' && localStatus !== '部分支付') return 'skip'
+  if (!hasLakalaOrder) return 'skip'
+  if (tradeState !== 'SUCCESS') return 'wait'
+  return 'reconcile'
+}
+
+/**
+ * order.confirmPayment — 支付结果主动对账 + 补偿入账（issue #37）。
+ *
+ * 背景：payNotify 异步回调天生非 100% 可靠（冷启动 / PG 瞬断 / 验签瞬态失败 / 网络抖动），
+ * 偶发丢失会让"钱已扣、订单仍待支付"。本接口不替代回调，而是在前端支付后轮询 /
+ * 后端定时补偿触发时，主动查拉卡拉真实状态，SUCCESS 则触发与回调同款的幂等入账。
+ *
+ * 流程：
+ *   1. 权限校验（client_user_id === userId）
+ *   2. decideReconcile 早期决策：终态 / 无拉卡拉单 → 直接返回本地 status（不动）
+ *   3. resolveLakalaMerchant + lakalaClient.queryTrade 查真实 trade_state
+ *   4. decideReconcile(localStatus, true, tradeState)：
+ *        wait      → 返回本地 status + lakalaTradeState（前端继续轮询）
+ *        reconcile → cloud.callFunction 调 payNotify（event 入口）触发幂等入账 → 重查 status
+ *   全程 try/catch：queryTrade / callFunction 失败降级返回本地 status，不 throw（前端继续轮询）
+ *
+ * 安全：不凭前端入参入账，必先 queryTrade 验证 SUCCESS；payNotify 幂等键
+ *       (uq_sop_txn / uq_sop_first_payment / CAS 守卫) 兜底重复入账。
+ *
+ * 返回 ctx.result：{ saleOrderId, status, reconciled, reason?, lakalaTradeState?, payNotifyResult? }
+ */
+async function confirmPayment(ctx) {
+  const { userId } = ctx.auth
+  const p = ctx.event.payload || {}
+  const orderNo = p.saleOrderId || p.orderNo
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+
+  const orders = await pg.query(
+    'SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id, payment_method FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
+  if (orders.length === 0) {
+    throw new Error('NOT_FOUND: 订单不存在')
+  }
+  const order = orders[0]
+  if (order.client_user_id && order.client_user_id !== userId) {
+    throw new Error('PERMISSION_DENIED: 无权操作该订单')
+  }
+
+  const localStatus = order.status
+  const hasLakalaOrder = !!order.lakala_out_order_no
+
+  // 早期决策：终态 / 无拉卡拉单 → 无需对账，直接返回本地 status
+  if (decideReconcile(localStatus, hasLakalaOrder, null) === 'skip') {
+    ctx.result = {
+      saleOrderId: orderNo,
+      status: localStatus,
+      reconciled: false,
+      reason: hasLakalaOrder ? 'terminal' : 'no_lakala_order',
+    }
+    return
+  }
+
+  // 查拉卡拉真实状态（resolveLakalaMerchant 在 term_no 缺失时抛 INVALID_STATE，包 try/catch 降级）
+  let merchant
+  try {
+    merchant = await resolveLakalaMerchant(order.store_id)
+  } catch (e) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message }
+    return
+  }
+  if (!merchant) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured' }
+    return
+  }
+
+  let resp
+  try {
+    resp = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo: order.lakala_out_order_no,
+    })
+  } catch (e) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'query_failed', message: e.message }
+    return
+  }
+
+  const tradeState = resp.tradeState || ''
+  // 拉卡拉侧尚未 SUCCESS：返回本地 status，前端继续轮询
+  if (decideReconcile(localStatus, hasLakalaOrder, tradeState) !== 'reconcile') {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'not_success' }
+    return
+  }
+
+  // 拉卡拉 SUCCESS + 本地待支付/部分支付 → 触发与回调同款的幂等入账
+  const payAmount = Math.round(Number(resp.totalAmountFen || 0)) / 100
+  if (!(payAmount > 0)) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'invalid_amount' }
+    return
+  }
+  const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
+  let payNotifyResult
+  try {
+    const r = await cloud.callFunction({
+      name: 'payNotify',
+      data: {
+        orderNo: order.lakala_out_order_no,
+        transactionId: resp.tradeNo,
+        payAmount,
+        paymentMethod,
+        tradeInfo: resp.raw || null,
+      },
+    })
+    payNotifyResult = r && r.result
+  } catch (e) {
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_call_failed', message: e.message }
+    return
+  }
+
+  // 重查本地 status（payNotify 已更新），返回最新态
+  const after = await pg.query('SELECT status FROM sale_orders WHERE sale_order_id = $1', [orderNo])
+  const newStatus = (after[0] && after[0].status) || localStatus
+  ctx.result = {
+    saleOrderId: orderNo,
+    status: newStatus,
+    reconciled: !!(payNotifyResult && payNotifyResult.code === 'SUCCESS' && newStatus !== localStatus),
+    payNotifyResult,
+  }
+}
+
 module.exports = {
   create,
   pay,
@@ -2503,4 +2658,6 @@ module.exports = {
   confirmPrepaidFull,
   repay,
   queryLakalaStatus,
+  confirmPayment,
+  decideReconcile,
 }

@@ -129,7 +129,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			header: "剩余 / 总次数",
 			cell: (row) => {
 				const total = row.sessionCount ?? 0;
-				const remaining = row.remainingSessions ?? 0;
+				const remaining = row.paidUnusedSessions ?? 0;
 				const ratio = total > 0 ? remaining / total : 0;
 				const barColor = ratio === 0 ? "bg-[#D94040]" : ratio < 0.3 ? "bg-[#D4820A]" : "bg-[#3D8A5A]";
 				return (

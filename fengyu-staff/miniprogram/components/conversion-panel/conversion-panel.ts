@@ -30,8 +30,8 @@ interface HeldCardsResponse {
   cards: HeldCard[];
 }
 
-type PaymentMethod = '微信' | '线下';
-const PAYMENT_METHODS: PaymentMethod[] = ['微信', '线下'];
+type PaymentMethod = '微信' | '支付宝' | '线下';
+const PAYMENT_METHODS: PaymentMethod[] = ['微信', '支付宝', '线下'];
 
 Component({
   properties: {
@@ -77,6 +77,11 @@ Component({
         this.recalcCard();
       },
     },
+    /** 转入商品清单（cart 数组，只读展示商品明细 + 疗程卡规定次数） */
+    cartItems: {
+      type: null,
+      value: [],
+    },
   },
 
   data: {
@@ -96,9 +101,9 @@ Component({
     deductibleSumDisplay: '0.00',
     /** 支付方式（抵扣后仍需补现金时必选） */
     paymentMethod: null as null | PaymentMethod,
-    paymentMethodOptions: PAYMENT_METHODS as unknown as string[],
-    showPaymentPicker: false,
     errorMsg: '',
+    /** 活动勾选（panel 内自管，change 事件上报主页） */
+    isActivity: false,
     /** 充值卡抵扣（仅补差额 > 0 时可用）：开关 + 实际抵扣额 + 抵扣后应付 */
     useCard: false,
     cardAmount: 0,
@@ -244,23 +249,20 @@ Component({
       this.recalcCard();
     },
 
-    onOpenPaymentPicker() {
+    /** 支付方式卡片组点击（替代原 picker，对齐销售单 order-type-cards 样式） */
+    onPaymentMethodTap(this: any, e: WechatMiniprogram.TouchEvent) {
+      const method = e.currentTarget.dataset.method as string;
+      if (!PAYMENT_METHODS.includes(method as PaymentMethod)) return;
       if (this.data.remaining <= 0) return;
-      this.setData({ showPaymentPicker: true });
+      this.setData({ paymentMethod: method as PaymentMethod });
+      this._emitChange();
     },
 
-    onPaymentPickerClose() {
-      this.setData({ showPaymentPicker: false });
-    },
-
-    onPaymentPickerConfirm(e: WechatMiniprogram.CustomEvent) {
-      const picked = (e.detail?.value ?? '') as string;
-      if (PAYMENT_METHODS.includes(picked as PaymentMethod)) {
-        this.setData({ paymentMethod: picked as PaymentMethod, showPaymentPicker: false });
-        this._emitChange();
-      } else {
-        this.setData({ showPaymentPicker: false });
-      }
+    /** 活动勾选开关 */
+    onToggleActivity(this: any, e: WechatMiniprogram.CustomEvent) {
+      const next = !!e.detail;
+      this.setData({ isActivity: next });
+      this._emitChange();
     },
 
     _emitChange() {
@@ -271,6 +273,7 @@ Component({
         paymentMethod: this.data.paymentMethod,
         prepaidCardAmount: this.data.cardAmount,
         remaining: this.data.remaining,
+        isActivity: this.data.isActivity,
       });
     },
   },

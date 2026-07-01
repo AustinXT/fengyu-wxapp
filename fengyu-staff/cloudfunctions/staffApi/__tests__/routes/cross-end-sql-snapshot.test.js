@@ -87,6 +87,9 @@ const FILES = {
   // 顾客确认链路首次把"扣次数 + 算提成"SQL 引入 clientApi，故纳入跨端守护。
   staffServiceJs: path.resolve(__dirname, '../../routes/service.js'),
   clientServiceFinalizeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js'),
+
+  // ticket 2026-06-29 paidUnusedSessions 派生口径守护 — admin cards.ts SQL 表达式（前端三端 JS 派生基准见同文件 case 表）
+  adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
 }
 
 function readFile(p) {
@@ -1513,5 +1516,59 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
 
   test('admin allocations.ts：保存分配后把回款翻「已分配」', () => {
     expect(adminAllocationsSrc).toContain(PAYMENT_ALLOCATED)
+  })
+})
+
+// ============================================================================
+// ticket 2026-06-29 paidUnusedSessions 派生口径守护
+//
+// 「已付未用次数」(可用次数) 是跨四端展示口径（剩余次数从物理剩余改为此口径）。
+// admin cards.ts 用 SQL 表达式派生（getCardsPaginated + getCardById 共用同一 paidUnusedSessionsExpr）；
+// client/staff 前端用 JS 派生（无法跨语言做 SQL 镜像比对）。
+// 本守护：
+//   1. snapshot admin cards.ts 的 paidUnused SQL 文本（防 cards.ts 误改 / 复用点漂移）
+//   2. 纯 JS 复现口径 + 标准 case 表（NULL→物理剩余 / 欠款→0 / 部分支付 / used clamp 负值），
+//      作为前端三端 paidUnusedSessions 派生必须遵循的基准：
+//        client treatment-cards.ts、staff customer-detail.ts、staff mgmt-customer-detail.ts
+// ============================================================================
+describe('paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表）', () => {
+  const adminSql = normalizeSql(extractBacktickStringContaining(readFile(FILES.adminCardsTs), 'GREATEST(COALESCE'))
+
+  test('admin cards.ts paidUnused SQL 含 NULL→remaining 兜底 + used clamp（防 #3 #9 回归）', () => {
+    expect(adminSql).toContain('CASE WHEN')
+    expect(adminSql).toContain('IS NULL THEN')
+    expect(adminSql).toContain('GREATEST(COALESCE')
+    // 外层 GREATEST + used 项 GREATEST(_,0) clamp 至少 2 处
+    expect((adminSql.match(/GREATEST/g) || []).length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('admin cards.ts paidUnused SQL 文本快照（任一字符漂移立即可见）', () => {
+    expect(adminSql).toMatchSnapshot()
+  })
+
+  // 纯 JS 复现口径（与前端三端派生公式一致）
+  function paidUnusedJs(total, remaining, paid) {
+    if (paid === null || paid === undefined) return remaining
+    const used = Math.max(total - remaining, 0)
+    return Math.max(0, paid - used)
+  }
+
+  // 四端 paidUnused 派生基准 case 表（total/remaining/paid → expected）
+  const PAID_UNUSED_CASES = [
+    { name: '全付未用', total: 10, remaining: 10, paid: 10, expected: 10 },
+    { name: '全付用3', total: 10, remaining: 7, paid: 10, expected: 7 },
+    { name: '部分付用2', total: 15, remaining: 13, paid: 12, expected: 10 },
+    { name: '欠款未付', total: 10, remaining: 10, paid: 0, expected: 0 },
+    { name: '用满已付', total: 10, remaining: 5, paid: 5, expected: 0 },
+    { name: '脏数据 remaining>total used clamp 到 0', total: 8, remaining: 13, paid: 5, expected: 5 },
+    { name: '历史 NULL 退回物理剩余', total: 10, remaining: 7, paid: null, expected: 7 },
+  ]
+
+  test.each(PAID_UNUSED_CASES)('口径 case「$name」: total=$total remaining=$remaining paid=$paid → $expected', (c) => {
+    expect(paidUnusedJs(c.total, c.remaining, c.paid)).toBe(c.expected)
+  })
+
+  test('基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端）', () => {
+    expect(PAID_UNUSED_CASES).toMatchSnapshot()
   })
 })

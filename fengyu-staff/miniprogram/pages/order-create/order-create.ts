@@ -213,20 +213,24 @@ function deriveIsMember(c: { customerType?: string | null; memberLevel?: string 
 
 /**
  * 将后端 SKU 项映射为兼容 WXML 的展示格式。
- * 会员价分流：仅会员且会员价<标价时，price=会员价、specialPrice 非空（驱动划线）；
- * 否则 price=标价、specialPrice=null（不划线）。体验卡同口径（#6=B，不再豁免，会员才享会员价）。
- * 最终结算以云函数 order.create 权威定价为准。
+ * 会员价「展示」与「计价」分离（issue #26 子项1）：
+ *   - specialPrice（展示）：只要存在会员价且 < 标价即非空，驱动 wxml 三处「划线标价 + 会员价」双行——
+ *     不论当前顾客是否会员，列表/购物车弹层始终双行展示。
+ *   - price（计价）：仅会员享会员价（useSpecial），非会员按标价；最终以云函数 order.create 权威定价为准。
+ *     即非会员列表看到会员价、但加购/确认页/二维码按标价收（展示与计价对非会员不一致，系产品决策）。
+ * 体验卡同口径（#6=B，不再豁免）。
  */
 function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
   const list = Number(sku.price) || 0;
   const special = sku.specialPrice != null ? Number(sku.specialPrice) : null;
-  const useSpecial = isMember && special != null && special < list;
+  const hasSpecial = special != null && special < list;
+  const useSpecial = isMember && hasSpecial; // 计价：仅会员享会员价
   return {
     spuId: sku.skuId,
     spuName: sku.specName,
     price: useSpecial ? special : list,
     listPrice: list,
-    specialPrice: useSpecial ? special : null,
+    specialPrice: hasSpecial ? special : null, // 展示：有会员价即双行（与会员身份解耦）
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,
@@ -345,11 +349,13 @@ Page({
     conversionSelectedSaleItemIds: [] as string[],
     conversionDeductibleSum: 0,
     conversionPriceDiff: 0,
-    conversionPaymentMethod: null as null | '微信' | '线下',
+    conversionPaymentMethod: null as null | '微信' | '支付宝' | '线下',
     /** 转换单补差额充值卡抵扣额（ConversionPanel 反馈） */
     conversionPrepaidCardAmount: 0,
     /** 转换单抵扣后仍需付现金（priceDiff - prepaidCardAmount） */
     conversionRemaining: 0,
+    /** 转换单活动勾选（ConversionPanel 自管，change 事件上报；与销售/内部单 isActivity 独立） */
+    conversionIsActivity: false as boolean,
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
@@ -1017,6 +1023,7 @@ Page({
       conversionPaymentMethod: null,
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
+      conversionIsActivity: false,
       // 重置储值卡预选 state（避免上次 customer 残值；进入 Step 2 时再加载）
       customerCardBalance: 0,
       useCard: false,
@@ -1072,6 +1079,7 @@ Page({
       conversionPaymentMethod: null,
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
+      conversionIsActivity: false,
       // 优惠券
       selectedCoupon: null,
       couponDiscount: 0,
@@ -1338,6 +1346,7 @@ Page({
       update.conversionPaymentMethod = null;
       update.conversionPrepaidCardAmount = 0;
       update.conversionRemaining = 0;
+      update.conversionIsActivity = false;
     } else {
       // PR-D1：切到转换单时重置销售/内部单的 paymentMethod，避免脏值（转换单走 ConversionPanel 内部 picker）
       update.paymentMethod = '微信';
@@ -1355,13 +1364,14 @@ Page({
 
   /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
   onConversionPanelChange(e: WechatMiniprogram.CustomEvent) {
-    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod, prepaidCardAmount, remaining } = (e.detail || {}) as {
+    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod, prepaidCardAmount, remaining, isActivity } = (e.detail || {}) as {
       selectedSaleItemIds?: string[];
       deductibleSum?: number;
       priceDiff?: number;
-      paymentMethod?: '微信' | '线下' | null;
+      paymentMethod?: '微信' | '支付宝' | '线下' | null;
       prepaidCardAmount?: number;
       remaining?: number;
+      isActivity?: boolean;
     };
     this.setData({
       conversionSelectedSaleItemIds: selectedSaleItemIds || [],
@@ -1370,6 +1380,7 @@ Page({
       conversionPaymentMethod: paymentMethod ?? null,
       conversionPrepaidCardAmount: Number(prepaidCardAmount) || 0,
       conversionRemaining: Number(remaining) || 0,
+      conversionIsActivity: !!isActivity,
     });
   },
 
@@ -1663,8 +1674,8 @@ Page({
     this.setData({ submitting: true });
     try {
       // remaining > 0 用所选方式；否则（全额抵扣 / 差额<=0）后端忽略但需合法值，默认 '微信'
-      const paymentMethod: '微信' | '线下' =
-        conversionRemaining > 0 ? (conversionPaymentMethod as '微信' | '线下') : '微信';
+      const paymentMethod: '微信' | '支付宝' | '线下' =
+        conversionRemaining > 0 ? (conversionPaymentMethod as '微信' | '支付宝' | '线下') : '微信';
       const res = await callStaffApi<{
         saleOrderId: string; priceDiff: number; prepaidCardCredit: number; prepaidCardAmount: number; status: string;
       }>('order.createConversion', {
@@ -1673,6 +1684,7 @@ Page({
         convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
         paymentMethod,
         prepaidCardAmount: conversionPrepaidCardAmount > 0 ? conversionPrepaidCardAmount : undefined,
+        isActivity: this.data.conversionIsActivity,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
         remark: remark || undefined,
       });
@@ -1687,6 +1699,7 @@ Page({
         conversionPaymentMethod: null,
         conversionPrepaidCardAmount: 0,
         conversionRemaining: 0,
+        conversionIsActivity: false,
       });
       // Toast 差异化
       const diff = Number(res.priceDiff) || 0;
@@ -1694,9 +1707,9 @@ Page({
       const remaining = Math.max(0, Math.round((diff - card) * 100) / 100);
       let title = '转换成功';
       if (diff > 0 && remaining > 0) {
-        title = paymentMethod === '微信'
-          ? `请微信支付差额 ¥${remaining.toFixed(2)}`
-          : `请确认补差额收款 ¥${remaining.toFixed(2)}`;
+        title = paymentMethod === '线下'
+          ? `请确认补差额收款 ¥${remaining.toFixed(2)}`
+          : `请${paymentMethod}支付差额 ¥${remaining.toFixed(2)}`;
       } else if (diff > 0 && remaining <= 0) {
         title = `储值卡全额抵扣 ¥${card.toFixed(2)}，已结清`;
       } else if (diff < 0) {

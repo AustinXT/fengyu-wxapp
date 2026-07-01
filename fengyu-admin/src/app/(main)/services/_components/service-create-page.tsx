@@ -145,7 +145,7 @@ export default function ServiceCreatePageClient({
 
   const updateSessionUsed = (saleItemId: string, value: number) => {
     const item = availableItems.find(i => i.saleItemId === saleItemId)
-    const max = item?.remainingSessions ?? 1
+    const max = item?.paidUnusedSessions ?? 1
     const clamped = Math.max(1, Math.min(value, max))
     setSelectedItems(prev =>
       prev.map(i => i.saleItemId === saleItemId ? { ...i, sessionUsed: clamped } : i)
@@ -343,7 +343,7 @@ export default function ServiceCreatePageClient({
                                 <Input
                                   type="number"
                                   min={1}
-                                  max={item.remainingSessions ?? 1}
+                                  max={item.paidUnusedSessions ?? 1}
                                   value={getSessionUsed(item.saleItemId)}
                                   onChange={(e) => updateSessionUsed(item.saleItemId, Number(e.target.value))}
                                   className="w-20 text-center mx-auto"

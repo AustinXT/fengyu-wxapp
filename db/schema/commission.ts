@@ -1,4 +1,5 @@
 import { bigserial, numeric, pgTable, text, timestamp, unique, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { orgNodes } from './org'
 
 /**
@@ -24,7 +25,7 @@ export const commissionRateMatrix = pgTable(
     /** 提成比例（如 0.08 = 8%） */
     commissionRate: numeric('commission_rate', { precision: 5, scale: 4 }).notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     unique('uq_commission_matrix').on(

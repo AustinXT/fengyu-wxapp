@@ -27,7 +27,7 @@ export const storeUnbindRequests = pgTable(
     reviewedAt:   timestamp('reviewed_at'),
     rejectReason: text('reject_reason'),
     createdAt:    timestamp('created_at').notNull().defaultNow(),
-    updatedAt:    timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    updatedAt:    timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     /** 同顾客同时只能有 1 条待处理转店申请：防双击 / 弱网重试写多行 */

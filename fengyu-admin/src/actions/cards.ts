@@ -11,6 +11,7 @@ import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from '
 import type { SQL } from 'drizzle-orm'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
+import { nowTs } from '@/lib/db-time'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -41,8 +42,12 @@ export interface AdminCard {
   productName: string | null
   /** 总次数 */
   sessionCount: number | null
-  /** 剩余次数 */
+  /** 剩余次数（物理剩余，含未付款次数） */
   remainingSessions: number | null
+  /** 已付次数（按付款比例 floor） */
+  paidSessions: number | null
+  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
+  paidUnusedSessions: number | null
   /**
    * 购买数量（B2 兜底字段）：
    * 修写入侧（疗程卡 quantity>1 拆 N 行）后，正常情况下 quantity 应恒 = 1。
@@ -81,6 +86,15 @@ export interface PaginatedCards {
  *   - exhausted: remaining_sessions = 0
  *   - expired:   expire_date IS NOT NULL AND expire_date < CURRENT_DATE
  */
+
+/**
+ * 已付未用次数（可用次数）派生表达式（admin 单源，列表 + 详情两处复用）：
+ *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
+ *   - 否则 max(paid − used, 0)，used = max(session_count − remaining, 0)（clamp 防脏数据 remaining>session_count 时负值）
+ * 口径须与 client/staff 前端 paidUnusedSessions 派生一致（cross-end-sql-snapshot.test.js 守护）。
+ */
+const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSessions} IS NULL THEN ${saleItems.remainingSessions} ELSE GREATEST(COALESCE(${saleItems.paidSessions}, 0) - GREATEST(${saleItems.sessionCount} - ${saleItems.remainingSessions}, 0), 0) END`.as('paid_unused_sessions')
+
 export const getCardsPaginated = withPermission(
   'sale_item:list',
   async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
@@ -93,6 +107,9 @@ export const getCardsPaginated = withPermission(
     eq(saleItems.itemDirection, '购买'),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
+    // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
+    // 避免欠款卡误显「剩余 0 / 已用完」红色进度条（历史 NULL 行同样视作未付款排除）
+    sql`${saleItems.paidSessions} > 0`,
     // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
     scopeCondition(session, saleItems.storeId),
   ]
@@ -167,6 +184,8 @@ export const getCardsPaginated = withPermission(
       productName: saleItems.productName,
       sessionCount: saleItems.sessionCount,
       remainingSessions: saleItems.remainingSessions,
+      paidSessions: saleItems.paidSessions,
+      paidUnusedSessions: paidUnusedSessionsExpr,
       quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
       paidAt: saleOrders.paidAt,
@@ -196,6 +215,8 @@ export const getCardsPaginated = withPermission(
       productName: r.productName ?? null,
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
+      paidSessions: r.paidSessions ?? null,
+      paidUnusedSessions: r.paidUnusedSessions ?? null,
       quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -227,6 +248,8 @@ export interface CardDetail {
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
+  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0) */
+  paidUnusedSessions: number | null
   unitPrice: string
   unitRealPrice: string
   saleAmount: string
@@ -269,6 +292,7 @@ export const getCardById = withPermission(
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
         paidSessions: saleItems.paidSessions,
+        paidUnusedSessions: paidUnusedSessionsExpr,
         unitPrice: saleItems.unitPrice,
         unitRealPrice: saleItems.unitRealPrice,
         saleAmount: saleItems.saleAmount,
@@ -310,6 +334,7 @@ export const getCardById = withPermission(
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
+      paidUnusedSessions: r.paidUnusedSessions ?? null,
       unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
       saleAmount: r.saleAmount,
@@ -672,7 +697,7 @@ export const createRechargeOrder = withPermission(
           marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
-          saleOrderDatetime: new Date(),
+          saleOrderDatetime: nowTs(),
           clientUserId: data.clientUserId,
           clientPhone: client.phone || '',
           customerName: client.name || '',

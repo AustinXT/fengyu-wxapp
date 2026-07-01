@@ -303,9 +303,9 @@
   background: #EFEFEF;
 }
 .session-bar__seg { height: 100%; }
-.session-bar__seg--remain { background: #C0322A; }
-.session-bar__seg--paid-unused { background: #F2B6B0; }
-.session-bar__seg--unpaid { background: #DDD; }
+.session-bar__seg--used { background: #DDD; }
+.session-bar__seg--paid-unused { background: #C0322A; }
+.session-bar__seg--unpaid { background: #F2B6B0; }
 
 /* ===== 赠送记录 ===== */
 .gift-section-title {

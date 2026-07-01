@@ -39,6 +39,11 @@ vi.mock('@db/org', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  // nowTs()（reviewedAt 北京墙钟字面写入）经 db-time 用到 sql；mock 提供最小 sql tag。
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...vals: unknown[]) => ({ type: 'sql', strings, vals })),
+    { raw: vi.fn() },
+  ),
 }))
 
 vi.mock('@/lib/auth', () => ({

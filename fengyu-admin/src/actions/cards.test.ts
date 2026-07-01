@@ -148,6 +148,8 @@ const mockCardRow = {
   productName: '蜜语水润嫩肤护理',
   sessionCount: 10,
   remainingSessions: 7,
+  paidSessions: 10,
+  paidUnusedSessions: 7,
   expireDate: '2026-12-31',
   paidAt: new Date('2026-04-01T10:00:00Z'),
   storeId: 'store-1',
@@ -175,6 +177,8 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(result.data[0].productName).toBe('蜜语水润嫩肤护理')
     expect(result.data[0].sessionCount).toBe(10)
     expect(result.data[0].remainingSessions).toBe(7)
+    expect(result.data[0].paidSessions).toBe(10)
+    expect(result.data[0].paidUnusedSessions).toBe(7)
     // 基础条件
     expect(eq).toHaveBeenCalledWith('item_direction', '购买')
     expect(eq).toHaveBeenCalledWith('product_type', '疗程卡')
@@ -188,6 +192,26 @@ describe('getCardsPaginated — 服务端分页', () => {
 
     expect(result.total).toBe(0)
     expect(result.data).toEqual([])
+  })
+
+  it('部分支付疗程卡 → paidUnusedSessions 透传（已付未用口径，欠款时 < 物理剩余）', async () => {
+    // 15 次卡，已用 2（remaining=13），欠款只付 80%（paid=12）→ 已付未用 = 12 - 2 = 10
+    const partialRow = {
+      ...mockCardRow,
+      saleItemId: 'SI-PARTIAL',
+      sessionCount: 15,
+      remainingSessions: 13,
+      paidSessions: 12,
+      paidUnusedSessions: 10,
+    }
+    mockPaginatedChain(1, [partialRow])
+
+    const result = await getCardsPaginated()
+
+    expect(result.data[0].paidUnusedSessions).toBe(10)
+    expect(result.data[0].remainingSessions).toBe(13)
+    // 欠款部分支付：可用(已付未用 10) < 物理剩余(13)，差 3 次为未付款次数
+    expect(result.data[0].paidUnusedSessions!).toBeLessThan(result.data[0].remainingSessions!)
   })
 
   it('type=单次卡 → eq(session_count, 1)', async () => {

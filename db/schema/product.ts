@@ -41,7 +41,7 @@ export const productCategories = pgTable("product_categories", {
   updatedAt: timestamp("updated_at")
     .notNull()
     .defaultNow()
-    .$onUpdate(() => new Date()),
+    .$onUpdate(() => sql`NOW()`),
 });
 
 /**
@@ -95,7 +95,7 @@ export const productSkus = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
     /** 软删时间戳；NULL=未删。仅"误创建/下架超出 valid_end 范围"等清理场景使用 */
     deletedAt: timestamp("deleted_at"),
     /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */
@@ -130,7 +130,7 @@ export const mallCategories = pgTable("mall_categories", {
   updatedAt: timestamp("updated_at")
     .notNull()
     .defaultNow()
-    .$onUpdate(() => new Date()),
+    .$onUpdate(() => sql`NOW()`),
 });
 
 /**
@@ -165,7 +165,7 @@ export const products = pgTable(
     updatedAt: timestamp("updated_at")
       .notNull()
       .defaultNow()
-      .$onUpdate(() => new Date()),
+      .$onUpdate(() => sql`NOW()`),
     /** 软删时间戳；NULL=未删。商城列表/前端展示一律按 deleted_at IS NULL 过滤 */
     deletedAt: timestamp("deleted_at"),
     /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */

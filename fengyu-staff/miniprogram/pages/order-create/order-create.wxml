@@ -363,6 +363,7 @@
             clientUserId="{{customerInfo.clientUserId}}"
             convertInAmount="{{cartTotal}}"
             cardBalance="{{customerCardBalance}}"
+            cartItems="{{cart}}"
             bind:change="onConversionPanelChange"
           />
         </block>
@@ -377,6 +378,11 @@
               <view class="confirm-item-header">
                 <text class="confirm-item-name">{{item.spuName}}</text>
                 <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <!-- 疗程卡规定次数（仅次数卡展示） -->
+              <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
+                <text class="confirm-item-label">规定次数</text>
+                <text class="confirm-item-value">{{item.sessionCount}} 次</text>
               </view>
               <view class="confirm-item-row">
                 <text class="confirm-item-label">数量</text>
@@ -423,6 +429,11 @@
               <view class="confirm-item-header">
                 <text class="confirm-item-name">{{item.spuName}}</text>
                 <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <!-- 疗程卡规定次数（仅次数卡展示） -->
+              <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
+                <text class="confirm-item-label">规定次数</text>
+                <text class="confirm-item-value">{{item.sessionCount}} 次</text>
               </view>
               <view class="confirm-item-row">
                 <text class="confirm-item-label">价格</text>
