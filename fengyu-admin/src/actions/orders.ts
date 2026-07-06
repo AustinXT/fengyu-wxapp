@@ -1299,18 +1299,27 @@ export const deleteOrder = withPermission(
     if (!order) {
       return { success: false, message: '订单不存在或无权操作' }
     }
-    if (Number(order.received) > 0 || (['已支付', '已完成', '部分支付'] as string[]).includes(order.status)) {
+    // 寄存单是手工填报的剩余次数初始化单，可能填错；未消耗时无视 status（含已支付）允许物理删除。
+    const isDeposit = order.saleOrderType === '寄存单'
+    // 非寄存单的资金守卫：寄存单 status='已支付' 是常态，此处跳过（由 downstream「未消耗」守卫单独把关）
+    if (
+      !isDeposit &&
+      (Number(order.received) > 0 || (['已支付', '已完成', '部分支付'] as string[]).includes(order.status))
+    ) {
       return { success: false, message: '订单已有实收或已支付，不可删除（财务数据受保护）' }
     }
 
-    // 已支付款项流水（财务，禁删）
-    const [paidPayment] = await db
-      .select({ id: saleOrderPayments.id })
-      .from(saleOrderPayments)
-      .where(and(eq(saleOrderPayments.saleOrderId, saleOrderId), eq(saleOrderPayments.status, '已支付')))
-      .limit(1)
-    if (paidPayment) {
-      return { success: false, message: '订单存在已支付款项流水，不可删除' }
+    // 非寄存单：已支付款项流水（财务，禁删）。寄存单跳过 —— 其历史实收初始化流水（note='寄存单初始化实收'）
+    // 在事务内级联清理（sale_order_payments WHERE sale_order_id 删行）
+    if (!isDeposit) {
+      const [paidPayment] = await db
+        .select({ id: saleOrderPayments.id })
+        .from(saleOrderPayments)
+        .where(and(eq(saleOrderPayments.saleOrderId, saleOrderId), eq(saleOrderPayments.status, '已支付')))
+        .limit(1)
+      if (paidPayment) {
+        return { success: false, message: '订单存在已支付款项流水，不可删除' }
+      }
     }
 
     // 积分 / 储值卡流水关联（账户级资产，禁删）
@@ -1325,6 +1334,7 @@ export const deleteOrder = withPermission(
     }
 
     // 明细被服务单 / 提货记录 / 预约引用（已产生下游业务，禁删）
+    // 对寄存单：这是「疗程卡未消耗」的唯一闸门 —— 一旦被核销/提货/预约引用即拒删
     const [downstream] = await db.execute<{ one: number }>(
       sql`SELECT 1 AS one
           FROM sale_items si
@@ -1370,7 +1380,11 @@ export const deleteOrder = withPermission(
           .delete(saleOrders)
           .where(and(
             eq(saleOrders.saleOrderId, saleOrderId),
-            inArray(saleOrders.status, ['待支付', '支付失败', '已关闭']),
+            // 寄存单 status='已支付' 是常态，复检放行：未消耗寄存单无视 status 可删
+            or(
+              inArray(saleOrders.status, ['待支付', '支付失败', '已关闭']),
+              eq(saleOrders.saleOrderType, '寄存单'),
+            ),
             scopeCondition(session, saleOrders.storeId),
           ))
         if ((result as any).count === 0) {

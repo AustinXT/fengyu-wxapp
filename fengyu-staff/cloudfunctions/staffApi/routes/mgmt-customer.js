@@ -706,7 +706,7 @@ async function orderHistory(ctx) {
   // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.created_at,
-            o.payable_amount, o.received, o.store_id, s.store_name
+            o.payable_amount, o.received, o.store_id, s.store_name, o.remark
        FROM sale_orders o
        LEFT JOIN stores s ON s.store_id = o.store_id
       WHERE ${whereClause}
@@ -751,6 +751,7 @@ async function orderHistory(ctx) {
     createdAt: o.created_at,
     storeId: o.store_id,
     storeName: o.store_name || '',
+    remark: o.remark || '',
     items: itemsByOrder[o.sale_order_id] || [],
   }))
 }

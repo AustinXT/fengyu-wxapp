@@ -43,6 +43,7 @@ interface RawOrder {
   offline_confirmed_by_name?: string;
   allocatable?: boolean;
   is_activity?: boolean;
+  remark?: string;
 }
 
 interface RawOrderItem {
@@ -156,6 +157,7 @@ interface DisplayOrder {
   allocationStatus: string;
   isLegacy: boolean;
   isActivity: boolean;
+  remark: string;
   items: DisplayOrderItem[];
   payments: DisplayPayment[];
 }
@@ -317,6 +319,7 @@ Page({
           allocationStatus: o.allocation_status || '',
           isLegacy: o.legacy_source === 'workfine',
           isActivity: !!o.is_activity,
+          remark: o.remark || '',
           items,
           payments,
         },

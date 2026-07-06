@@ -225,6 +225,27 @@
   font-size: 24rpx;
   color: var(--color-primary);
 }
+.purchase-remark {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+  margin-bottom: 12rpx;
+  padding: 8rpx 12rpx;
+  background: #F5F2EE;
+  border-radius: 8rpx;
+}
+.purchase-remark-label {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+.purchase-remark-text {
+  font-size: 24rpx;
+  color: var(--color-text-primary);
+  word-break: break-all;
+  line-height: 1.6;
+}
 
 /* ===== 持卡汇总（复用原有疗程卡样式） ===== */
 .section-header {

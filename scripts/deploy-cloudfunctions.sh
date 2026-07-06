@@ -164,3 +164,6 @@ echo ""
 echo "==> Done (target=$TARGET)。请在 CloudBase 控制台验证环境变量正确。"
 [[ "$DO_STAFF"  == "1" ]] && echo "    staff:  https://console.cloud.tencent.com/tcb/scf?envId=$STAFF_ENV_ID"
 [[ "$DO_CLIENT" == "1" ]] && echo "    client: https://console.cloud.tencent.com/tcb/scf?envId=$CLIENT_ENV_ID"
+
+# 兜底正常退出：末尾 `[[ ]] && echo` 在 target≠all 时会因条件 false 短路返回 1，否则会污染脚本退出码（部署成功却 exit 1）
+exit 0

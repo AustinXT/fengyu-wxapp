@@ -218,7 +218,7 @@ export default function OrderDetailPageClient({
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
           <span>
             此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 /
-            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。
+            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。若填错且该卡从未被核销，系统管理员可在此页底部「危险操作」物理删除。
           </span>
         </div>
       )}
@@ -692,11 +692,19 @@ export default function OrderDetailPageClient({
           redirectTo="/orders"
           onConfirm={() => deleteOrder(order.saleOrderId)}
           description={
-            <>
-              确定要删除订单 <span className="font-medium">{order.saleOrderId}</span>（{order.customerName || "—"}，¥
-              {Number(order.totalAmount).toLocaleString()}）吗？ 将一并删除其明细与分配，此操作不可恢复。有实收 / 已支付
-              / 已产生服务的订单不可删除。
-            </>
+            order.saleOrderType === "寄存单" ? (
+              <>
+                确定要删除寄存单 <span className="font-medium">{order.saleOrderId}</span>（{order.customerName || "—"}）吗？
+                寄存单是手工填报的剩余次数初始化单，仅当该疗程卡
+                <strong>从未被任何服务单 / 提货 / 预约核销</strong>时方可删除；若有历史实收流水将一并清理。此操作不可恢复。
+              </>
+            ) : (
+              <>
+                确定要删除订单 <span className="font-medium">{order.saleOrderId}</span>（{order.customerName || "—"}，¥
+                {Number(order.totalAmount).toLocaleString()}）吗？ 将一并删除其明细与分配，此操作不可恢复。有实收 / 已支付
+                / 已产生服务的订单不可删除。
+              </>
+            )
           }
         />
       )}
