@@ -6,7 +6,10 @@
  *   按 server timezone（Asia/Shanghai）当墙钟字面落库，结果比真实北京时刻**早 8h**。
  *   而 clientApi / staffApi 读取侧（setTypeParser 1114 +08:00）假设库存北京墙钟字面 → 读出来 +8h 偏移。
  *
- * postgres.js 的 `types:` 选项无法全局覆盖内置 Date handler（已实证源码），故从**写入侧**根治：
+ * postgres.js 的 `types:` option **可以**覆盖内置 Date handler（`postgres/src/types.js:193` 的
+ * mergeUserTypes 用 Object.assign 让用户 parser 覆盖内置同 OID）——admin **读取侧**根治见
+ * `src/db/index.ts` 的 `types.beijingTimestamp`（1114 按 +08:00 解析，与云函数 setTypeParser(1114) 对等）。
+ * 本文件只负责**写入侧**的"北京字面"根治：
  *   - "当前时刻"写入一律走 `nowTs()`（PG `NOW()`，server TZ=Shanghai 落北京字面，与进程 TZ 解耦）。
  *   - "计算型时刻"（如 `expireAt = now + validDays`、`new Date(locked.paid_at)`）不能直接 `NOW()`，
  *     用 `beijingTs(d)` 把 JS Date 格式化成北京墙钟字面再 `::timestamp`。
