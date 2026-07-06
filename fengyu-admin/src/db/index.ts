@@ -37,9 +37,14 @@ const client = globalForDb.pgClient ??
     max: 5,
     types: {
       beijingTimestamp: {
-        // to/serialize 仅满足 postgres.js 的 PostgresType 类型约束；运行时只命中 parse（读 1114）。
-        // serialize 与内置 date handler 等价——且 admin 写入已走 nowTs()/beijingTs()，不直接传 Date
-        // 进 timestamp 列，serialize 路径实际不被触发。
+        // serialize 经 typeHandlers (postgres/src/types.js) 注册到 serializers[1184]（来自 to）
+        // 与 serializers[1114]（来自 from 每项）；inferType 对 Date 实例返回 1184，故**每个
+        // 把 Date 传进 timestamp / timestamptz 列的查询参数都命中**——不是"不会被触发"的死路径。
+        // 当前实现与内置 date handler 字节等价（`(x instanceof Date ? x : new Date(x)).toISOString()`），
+        // 写入零回归。但**严禁**在此改写 serialize 想"统一修写入侧"：serializers[1184] 被全局
+        // 覆盖，包含 db/schema/user.ts 的 3 个 withTimezone(timestamptz) 列，把 1184 列原本的
+        // "ISO UTC → PG session TZ 解释" 正确链改成单偏移字面，静默偏 8h。修写入侧请走
+        // src/lib/db-time.ts 的 nowTs() / beijingTs()。
         to: 1184,
         from: [1114],
         serialize: (x: Date | string | number) =>

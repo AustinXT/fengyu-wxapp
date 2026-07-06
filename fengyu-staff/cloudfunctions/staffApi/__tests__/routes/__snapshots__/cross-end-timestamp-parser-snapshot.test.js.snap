@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`audit-P0：五端 1114 timestamp reader 一致性守护（staff 侧） > canonical 表达式单例 snapshot（任一端漂移 → 与本 snapshot 不一致） > canonical 表达式文本 snapshot 1`] = `"val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')"`;
