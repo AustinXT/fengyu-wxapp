@@ -99,6 +99,10 @@
                   <text class="purchase-item-spec">{{si.spec}}</text>
                 </view>
               </view>
+              <view wx:if="{{item.remark}}" class="purchase-remark">
+                <text class="purchase-remark-label">备注</text>
+                <text class="purchase-remark-text">{{item.remark}}</text>
+              </view>
               <view class="purchase-footer" bindtap="onPurchaseOrderTap" data-id="{{item.saleOrderId}}">
                 <text class="purchase-time">{{item.timeText}}</text>
                 <text class="purchase-link">查看详情 ›</text>

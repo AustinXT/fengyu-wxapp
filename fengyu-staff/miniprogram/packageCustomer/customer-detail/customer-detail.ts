@@ -101,6 +101,7 @@ interface PaidOrder {
   createdAt?: string;
   payableAmount?: string;
   received?: string;
+  remark?: string;
   // 前端预算的展示字段
   statusClass?: string;
   amountText?: string;
