@@ -3532,6 +3532,78 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('已变更')
   })
+
+  // ── 寄存单特例：未消耗（无 service_items/pickup/appointments 引用）则无视 status（含已支付）可删 ──
+  const depOrder = {
+    status: '已支付',
+    received: '0',
+    customerName: '老客',
+    totalAmount: '0.00',
+    saleOrderType: '寄存单',
+  }
+
+  it('干净寄存单（status=已支付、未消耗）→ 跳过资金守卫，级联删除成功 + 审计含 saleOrderType', async () => {
+    // 寄存单路径 select 仅 order→childOrder 两次（paidPayment 被 if(!isDeposit) 跳过）
+    enqueueSelect([[depOrder], []])
+    enqueueExecute([[], [], []]) // pt / ct / downstream 全空
+    setupTx(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteOrder('FY-DEP-1')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'order.delete',
+      'sale_order',
+      'FY-DEP-1',
+      expect.objectContaining({ snapshot: expect.objectContaining({ saleOrderType: '寄存单' }) }),
+    )
+  })
+
+  it('寄存单 + received>0 历史实收 → 仍可删（跳过 received/status/paidPayment 三道守卫）', async () => {
+    enqueueSelect([[{ ...depOrder, received: '500.00' }], []])
+    enqueueExecute([[], [], []])
+    setupTx(1)
+    const result = await deleteOrder('FY-DEP-2')
+    expect(result.success).toBe(true)
+    expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('寄存单被服务/提货/预约引用 → 拒绝（downstream「未消耗」守卫对寄存单生效）', async () => {
+    enqueueSelect([[depOrder], []])
+    enqueueExecute([[], [], [{ one: 1 }]]) // downstream hit
+    const result = await deleteOrder('FY-DEP-3')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('服务单')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('寄存单被退款/转换子单引用 → 拒绝', async () => {
+    enqueueSelect([[depOrder], [{ id: 'FY-CHILD' }]]) // childOrder hit
+    enqueueExecute([[], [], []])
+    const result = await deleteOrder('FY-DEP-4')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('单据')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('寄存单事务内 sale_items 被并发 service_items FK 引用 → 23503 友好提示', async () => {
+    enqueueSelect([[depOrder], []])
+    enqueueExecute([[], [], []])
+    // 并发：守卫读取后，事务内 DELETE sale_items 被 service_items FK（NO ACTION）拦下
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockRejectedValue({ code: '23503', constraint: 'service_items_sale_item_id_fkey' }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }
+      return fn(tx)
+    })
+    const result = await deleteOrder('FY-DEP-RACE')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('关联业务数据')
+  })
 })
 
 describe('exportAllocationOrders — 销售提成分配明细导出', () => {
