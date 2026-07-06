@@ -480,9 +480,11 @@ export const getAllSkus = withPermission(
         categoryName: productCategories.categoryName,
         productKind: productCategories.productKind,
         salesCategory: productCategories.salesCategory,
+        projectSeriesName: projectSeriesLookup.name,
       })
       .from(productSkus)
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
       .where(isNull(productSkus.deletedAt))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(productSkus.sortOrder))
@@ -509,6 +511,7 @@ export const getAllSkus = withPermission(
       categoryName: r.categoryName ?? undefined,
       productKind: r.productKind ?? undefined,
       salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
+      projectSeriesName: r.projectSeriesName ?? null,
     }))
   },
 )
