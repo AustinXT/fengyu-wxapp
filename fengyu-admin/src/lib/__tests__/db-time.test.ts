@@ -15,9 +15,9 @@
  *      （同 fix/003 client/staff pg parser 守护思路）。
  */
 import { describe, it, expect } from 'vitest'
-import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { nowTs, beijingTs } from '../db-time'
+import { runBunProbeInTz } from './tz-probe-helper'
 
 /** 从 drizzle sql 片段的 queryChunks 里拼出可读 SQL 串（参数内联），便于断言。 */
 function render(frag: any): string {
@@ -47,20 +47,14 @@ describe('beijingTs', () => {
 
   // 核心回归守护：进程 TZ 不影响输出。spawn 不同 TZ 子进程跑同一 helper。
   // 探针文件 tests/db-time-tz-probe.ts 把 beijingTs(固定 instant) 的北京字面打到 stdout。
+  // spawn + status 守卫抽到 ./tz-probe-helper（与 timestamp-reader-tz.test.ts 共用）。
   const PROBE = path.resolve(__dirname, '../../../tests/db-time-tz-probe.ts')
   const INSTANT = '2026-06-29T00:30:00.000Z' // UTC 00:30 → 北京 08:30
   const EXPECT = '2026-06-29 08:30:00'
 
   for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Shanghai']) {
     it(`TZ=${tz} 子进程下 beijingTs 仍输出北京墙钟字面`, () => {
-      const res = spawnSync('bun', [PROBE, INSTANT], {
-        env: { ...process.env, TZ: tz },
-        encoding: 'utf8',
-      })
-      if (res.status !== 0) {
-        throw new Error(`probe failed (TZ=${tz}): ${res.stderr}`)
-      }
-      expect(res.stdout.trim()).toBe(EXPECT)
+      expect(runBunProbeInTz(PROBE, INSTANT, tz)).toBe(EXPECT)
     })
   }
 })
