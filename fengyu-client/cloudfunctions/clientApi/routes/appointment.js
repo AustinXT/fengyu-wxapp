@@ -39,7 +39,7 @@ async function create(ctx) {
   }
 
   // 请假拦截（权威校验）：指定了美容师且所选时段起点落入其请假区间则拒绝。
-  // 用墙钟串 ::timestamp 比较，与 admin 录入、parseAppointmentTime 的 +08:00 口径一致，不经 now()/时区转换。
+  // 用墙钟串 ::timestamptz 比较，与 admin 录入、parseAppointmentTime 的 +08:00 口径一致，不经 now()/时区转换。
   if (staffWfId) {
     const m = String(appointmentTime).match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
     const slotStart = m ? `${m[1]} ${m[2]}:00` : null
@@ -48,7 +48,7 @@ async function create(ctx) {
         `SELECT 1 FROM staff_wechat_users
          WHERE employee_id = $1
            AND leave_start IS NOT NULL AND leave_end IS NOT NULL
-           AND $2::timestamp >= leave_start AND $2::timestamp <= leave_end`,
+           AND $2::timestamptz >= leave_start AND $2::timestamptz <= leave_end`,
         [staffWfId, slotStart]
       )
       if (leaveRows.length > 0) {

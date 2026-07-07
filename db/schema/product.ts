@@ -37,8 +37,8 @@ export const productCategories = pgTable("product_categories", {
   sortOrder: integer("sort_order").notNull().default(0),
   isValid: boolean("is_valid").notNull().default(true),
   displayColor: text("display_color"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow()
     .$onUpdate(() => sql`NOW()`),
@@ -91,13 +91,13 @@ export const productSkus = pgTable(
     /** 可见范围（null=全部可见） */
     marketScope: text("market_scope"),
     isEnabled: boolean("is_enabled").notNull().default(true),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
     /** 软删时间戳；NULL=未删。仅"误创建/下架超出 valid_end 范围"等清理场景使用 */
-    deletedAt: timestamp("deleted_at"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */
     deletedBy: text("deleted_by"),
   },
@@ -126,8 +126,8 @@ export const mallCategories = pgTable("mall_categories", {
   /** 分组名称（NULL=一级分组/Tab，非 NULL=二级分类，值为一级分组的 categoryName） */
   categoryGroup: text("category_group"),
   sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow()
     .$onUpdate(() => sql`NOW()`),
@@ -161,13 +161,13 @@ export const products = pgTable(
     marketScope: text("market_scope"),
     sortOrder: integer("sort_order").notNull().default(0),
     isVisible: boolean("is_visible").notNull().default(true),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
     /** 软删时间戳；NULL=未删。商城列表/前端展示一律按 deleted_at IS NULL 过滤 */
-    deletedAt: timestamp("deleted_at"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */
     deletedBy: text("deleted_by"),
   },
@@ -202,7 +202,7 @@ export const mallBundleGroups = pgTable(
     /** 组「会员价单价」（成交价）。null = 该组不打折，按标价单价成交。须 ≤ unit_list_price。 */
     unitMemberPrice: numeric("unit_member_price", { precision: 10, scale: 2 }),
     sortOrder: integer("sort_order").notNull().default(0),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("uq_bundle_group").on(table.productId, table.groupName),
@@ -242,7 +242,7 @@ export const mallProductSkus = pgTable(
     /** 标价单价副本 = 所属组 unit_list_price，落 sale_items.unit_price（划线）。同为下沉派生缓存。 */
     bundleListPrice: numeric("bundle_list_price", { precision: 10, scale: 2 }),
     sortOrder: integer("sort_order").notNull().default(0),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("idx_mall_product_skus_product_id").on(table.productId),

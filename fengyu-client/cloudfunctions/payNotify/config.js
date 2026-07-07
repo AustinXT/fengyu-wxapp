@@ -17,10 +17,8 @@ const { Pool } = pg
 // 安全前提：业务金额 ≤ 9999.99（numeric(10,2)）、积分单值 << 2^53，详见 db/schema/points.ts 注释。
 pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
 pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
-// timestamp without time zone (1114)：库存北京墙钟字面，显式按 +08:00 构造 Date，与进程 TZ 解耦。
-// CloudBase 运行时 process.env.TZ 不可靠（V8/ICU 时区 spawn 期已锁 UTC），默认 parser 会把
-// 北京墙钟当 UTC 解析 → 序列化给前端再 +8 → 晚 8 小时。返回 Date（类型不变，内部运算兼容）。
-pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
+// timestamp 列自 migration 0076 起统一为 timestamptz（1184）：PG 发带 +08 偏移字面，pg 内置 parser
+// 按字面偏移正确解析为 Date，无需自定义 1114 parser（库已无 1114 列）。
 
 const FALLBACK_THRESHOLD = 1980
 const CACHE_TTL_MS = 5 * 60 * 1000

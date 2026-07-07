@@ -21,7 +21,6 @@ describe('customer.search', () => {
         { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: 'VIP', bound_store_id: 'store-001', store_name: '测试店' },
         { user_id: 'u2', phone: '13900002222', name: '张四', customer_id: null, member_level: null, bound_store_id: 'store-001', store_name: '测试店' },
       ])
-      .mockResolvedValueOnce([]) // spendRows
       .mockResolvedValueOnce([]) // svcDateRows
       .mockResolvedValueOnce([]) // lastPurchaseRows
     await customerRoutes.search(ctx)
@@ -157,30 +156,28 @@ describe('customer.search', () => {
       .mockResolvedValueOnce([
         { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: null, member_level: null, bound_store_id: 'store-001', store_name: '测试店' },
       ])
-      .mockResolvedValueOnce([])   // spendRows
       .mockResolvedValueOnce([])   // svcDateRows
       .mockResolvedValueOnce([{ client_user_id: 'u1', last_product_name: '精油SPA套餐' }]) // lastPurchaseRows
     await customerRoutes.search(ctx)
     const item = ctx.result.find(r => r.clientUserId === 'u1')
     expect(item.lastPurchaseName).toBe('精油SPA套餐')
     // SQL 应包含 item_direction 过滤
-    const lastPurchaseSql = pg.query.mock.calls[3][0]
+    const lastPurchaseSql = pg.query.mock.calls[2][0]
     expect(lastPurchaseSql).toContain('item_direction')
   })
 
-  test('spendRows/svcDateRows 非空时 tier 和 lastServiceDate 被填充', async () => {
+  test('svcDateRows 非空时 lastServiceDate 被填充', async () => {
     const ctx = createManagerCtx({ phone: '13800001111' })
     pg.query
       .mockResolvedValueOnce([
         { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: 'VIP', bound_store_id: 'store-001', store_name: '测试店' },
       ])
-      .mockResolvedValueOnce([{ client_user_id: 'u1', annual_spend: '25000' }])  // spendRows 非空
       .mockResolvedValueOnce([{ client_user_id: 'u1', service_date: '2024-05-10' }]) // svcDateRows 非空
       .mockResolvedValueOnce([])  // lastPurchaseRows
 
     await customerRoutes.search(ctx)
 
-    expect(ctx.result[0].tier).toBe('diamond')          // 25000 >= 20000 → diamond
+    // tier 已下沉到 admin cron（customer_status/spending_tier DB 列），search 不再计算
     expect(ctx.result[0].lastServiceDate).toBe('2024-05-10')
   })
 
@@ -217,7 +214,6 @@ describe('customer.search', () => {
       .mockResolvedValueOnce([
         { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: '黑钻', bound_store_id: null, store_name: null },
       ])
-      .mockResolvedValueOnce([])  // spendRows
       .mockResolvedValueOnce([])  // svcDateRows
       .mockResolvedValueOnce([])  // lastPurchaseRows
     await customerRoutes.search(ctx)
@@ -849,7 +845,7 @@ describe('customer.listByTag', () => {
     expect(ctx.result.total).toBe(1)
     expect(ctx.result.customers).toHaveLength(1)
     expect(ctx.result.customers[0].name).toBe('活跃客')
-    expect(ctx.result.customers[0].tier).toBe('diamond') // 25000 >= 20000
+    // tier 已下沉到 admin cron（customer_status/spending_tier DB 列），listByTag 不再输出
   })
 
   test('按 sleeping 标签筛选（含无服务记录）', async () => {
@@ -862,7 +858,6 @@ describe('customer.listByTag', () => {
     await customerRoutes.listByTag(ctx)
 
     expect(ctx.result.total).toBe(1)
-    expect(ctx.result.customers[0].tier).toBeNull() // 0 消费无 tier
   })
 
   test('按 birthday 标签筛选当月生日', async () => {
@@ -880,7 +875,7 @@ describe('customer.listByTag', () => {
     const hasBirthday = ctx.result.customers.some(c => c.name === '生日客')
     expect(hasBirthday).toBe(true)
     const birthdayCustomer = ctx.result.customers.find(c => c.name === '生日客')
-    expect(birthdayCustomer.tier).toBe('iron')
+    expect(birthdayCustomer).toBeTruthy()
   })
 
   test('美容师看到脱敏手机号', async () => {
@@ -924,20 +919,6 @@ describe('customer.listByTag', () => {
   test('缺少 tag 参数时拒绝', async () => {
     const ctx = createManagerCtx({ page: 1 })
     await expect(customerRoutes.listByTag(ctx)).rejects.toThrow(/INVALID_PARAMS.*tag/)
-  })
-
-  test('tier 分级正确：fan', async () => {
-    const now = new Date()
-    const d = new Date(now)
-    d.setDate(d.getDate() - 5)
-
-    const ctx = createManagerCtx({ tag: 'active', page: 1 })
-    pg.query.mockResolvedValueOnce([
-      { user_id: 'u1', name: '粉丝客', phone: '138', birthday: null, member_level: null, last_service_date: d.toISOString().slice(0, 10), year_consumption: '100' },
-    ])
-
-    await customerRoutes.listByTag(ctx)
-    expect(ctx.result.customers[0].tier).toBe('fan') // 0 < 100 < 5000
   })
 
   test('listByTag 返回 lastPurchaseName 字段', async () => {

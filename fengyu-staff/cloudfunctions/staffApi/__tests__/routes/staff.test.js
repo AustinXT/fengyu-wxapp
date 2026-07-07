@@ -306,7 +306,7 @@ describe('staff.performanceDetail', () => {
     // allocRows (销售分配)
     pg.query.mockResolvedValueOnce([
       {
-        alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
+        alloc_amount: '300', commission_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
         product_name: '面部护理', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: '张三', client_phone: '138',
@@ -614,7 +614,7 @@ describe('staff.performanceDetail', () => {
     // 销售提成 800
     pg.query.mockResolvedValueOnce([
       {
-        alloc_amount: '800.00', allocation_ratio: '0.80', department_name: '美容部',
+        alloc_amount: '800.00', commission_amount: '800.00', allocation_ratio: '0.80', department_name: '美容部',
         product_name: '销售商品', sales_category: '自销自耗',
         unit_real_price: '1000.00', received: '1000.00',
         sale_order_id: 'FY-XSD-WX-260310-0001', customer_name: '张三', client_phone: null,

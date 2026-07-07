@@ -27,7 +27,7 @@ import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { shanghaiYmd } from '@/lib/datetime'
-import { nowTs } from '@/lib/db-time'
+import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
@@ -374,11 +374,11 @@ function buildOrderConditions(
     // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
     // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
     // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
-    conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
+    conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
   }
   if (filters.dateTo) {
     // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
-    conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
+    conditions.push(lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateTo, '23:59:59')))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`

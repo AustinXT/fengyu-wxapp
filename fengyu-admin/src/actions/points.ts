@@ -5,6 +5,7 @@ import { pointTransactions } from '@db/points'
 import { clientWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm'
+import { beijingBoundaryTs } from '@/lib/db-time'
 import type { SQL } from 'drizzle-orm'
 import type { PointTransaction, PointTransactionSummary, AuthSession } from '@/lib/types'
 import { scopeCondition } from '@/lib/permissions'
@@ -103,10 +104,10 @@ function buildConditions(
   // 时间范围
   if (filters.startDate) {
     // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
-    conditions.push(gte(pointTransactions.createdAt, sql`${`${filters.startDate} 00:00:00`}::timestamp`))
+    conditions.push(gte(pointTransactions.createdAt, beijingBoundaryTs(filters.startDate, '00:00:00')))
   }
   if (filters.endDate) {
-    conditions.push(lte(pointTransactions.createdAt, sql`${`${filters.endDate} 23:59:59`}::timestamp`))
+    conditions.push(lte(pointTransactions.createdAt, beijingBoundaryTs(filters.endDate, '23:59:59')))
   }
 
   return conditions

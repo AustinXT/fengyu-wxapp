@@ -34,7 +34,7 @@ export const pickupRecords = pgTable(
     remark: text('remark'),
     /** 调用方传入的幂等键（如 pickup-{saleItemId}-{timestamp}），NULL 时不参与唯一约束（向后兼容旧前端） */
     idempotencyKey: text('idempotency_key'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_pickup_records_sale_item').on(table.saleItemId),

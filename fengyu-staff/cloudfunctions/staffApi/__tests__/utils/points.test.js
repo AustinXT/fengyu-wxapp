@@ -310,11 +310,16 @@ describe('settlePointsSafe — 外层封装', () => {
     const client = {
       query: vi.fn(async (sql, params) => {
         const s = String(sql)
+        // SAVEPOINT / RELEASE / ROLLBACK 是事务控制语句，真实环境不应失败
+        // （settlePointsSafe 在 try 之前执行 SAVEPOINT，mock 对其抛错会逃出 try/catch）
+        if (/^(SAVEPOINT|RELEASE\s+SAVEPOINT|ROLLBACK\s+TO\s+SAVEPOINT)\b/i.test(s.trim())) {
+          return { rowCount: 0 }
+        }
         if (/INSERT\s+INTO\s+operation_logs/i.test(s)) {
           operationLogCalls.push({ sql, params })
           return { rowCount: 1 }
         }
-        // 第一次 SELECT 就抛错模拟 settle 失败
+        // settle 内的 SELECT/UPDATE 抛错模拟 settle 失败
         throw new Error('pg connection lost')
       }),
     }
@@ -335,7 +340,12 @@ describe('settlePointsSafe — 外层封装', () => {
   test('operation_logs 写入也失败时不再抛出，仍返回 skipped=settle-failed', async () => {
     delete process.env.POINTS_ACCRUAL_ENABLED
     const client = {
-      query: vi.fn(async () => {
+      query: vi.fn(async (sql) => {
+        const s = String(sql)
+        // SAVEPOINT / RELEASE / ROLLBACK 是事务控制语句，真实环境不应失败
+        if (/^(SAVEPOINT|RELEASE\s+SAVEPOINT|ROLLBACK\s+TO\s+SAVEPOINT)\b/i.test(s.trim())) {
+          return { rowCount: 0 }
+        }
         throw new Error('catastrophic failure')
       }),
     }

@@ -24,7 +24,7 @@ import { fmtDate } from '@/lib/datetime'
  * 再 beijingTs 会偏 +8h（同 orders.ts 报表筛选 bug，见 lib/db-time）。DB 现值（Date）走 fmtDate 取北京日期。
  */
 function validBoundTs(value: string | Date, time: '00:00:00' | '23:59:59') {
-  return sql`${`${fmtDate(value)} ${time}`}::timestamp`
+  return sql`${`${fmtDate(value)} ${time}`}::timestamp AT TIME ZONE 'Asia/Shanghai'`
 }
 
 /**

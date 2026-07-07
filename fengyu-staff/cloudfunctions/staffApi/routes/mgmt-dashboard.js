@@ -1334,11 +1334,11 @@ async function salesData(ctx) {
             ), 0) AS xiaomei,
             COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
             COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
            FROM sale_orders o
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
@@ -1369,11 +1369,11 @@ async function salesData(ctx) {
             ), 0) AS xiaomei,
             COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
             COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
            FROM service_items sit
            JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -1393,11 +1393,11 @@ async function salesData(ctx) {
             ), 0) AS xiaomei,
             COALESCE(SUM(si.received::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
             COALESCE(SUM(si.received::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id

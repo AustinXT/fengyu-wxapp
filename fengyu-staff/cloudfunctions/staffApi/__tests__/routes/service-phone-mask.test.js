@@ -63,6 +63,7 @@ describe('service.detail 手机号脱敏', () => {
         service_order_id: 'HLD-WX-2605220001',
         status: '待服务',
         service_date: '2026-05-22',
+        store_id: 'store-001', // service.detail 调 isStoreInScope(auth, so.store_id)，须与 ctx.auth.effectiveStoreId 一致
         assigned_employee_id: assignedEmployeeId,
         client_user_id: null,
         appointment_id: null,

@@ -42,11 +42,11 @@ export const serviceCommissions = pgTable(
      * 软删除时间（与 sale_allocations.voided_at 对齐；2026-04-26 sale-order-domain-refactor 新增）。
      * 退款审批通过时由应用层级联写入，业绩重算时 WHERE voided_at IS NULL。
      */
-    voidedAt: timestamp('voided_at'),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
     /** 软删除原因（与 sale_allocations.voided_reason 对齐；2026-04-26 新增） */
     voidedReason: text('voided_reason'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_svc_comm_item_emp_role')

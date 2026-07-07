@@ -142,8 +142,10 @@ describe('computePaidSessionsForItem 公式边界（行级）', () => {
 })
 
 describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
-  test('必须按 sale_amount 比例下分订单级 refund', () => {
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/GREATEST\(0,\s*sale_items\.received::numeric\s*-\s*\(op\.refunded_amount::numeric\s*\*\s*sale_items\.sale_amount::numeric\s*\/\s*NULLIF\(op\.total_amount::numeric,\s*0\)\)\)/)
+  test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {
+    // 2026-06-28 重构：received 已由 STEP1（spai/瀑布）+ STEP1.5（逐项退款净额）前置算好，
+    // 本 SQL 不再下分订单级 refund，直接用净 received × session_count / sale_amount。
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count,\s*FLOOR\(sale_items\.received::numeric\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/)
   })
 
   test('必须用 FLOOR 取整（D1=A）', () => {
@@ -164,7 +166,11 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/sale_items\.session_count\s+IS\s+NULL\s+THEN\s+NULL/i)
   })
 
-  test('必须用 NULLIF 防 total=0 时除零', () => {
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/NULLIF\(op\.total_amount::numeric,\s*0\)/i)
+  test('必须用 op.total_amount <= 0 分支防 total=0 时除零（分支式守护，替代旧 NULLIF）', () => {
+    // 2026-06-28 重构：除零保护从 NULLIF(op.total_amount, 0) 改为 CASE 分支
+    // WHEN op.total_amount <= 0 THEN sale_items.session_count（全付兜底）
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/op\.total_amount\s*<=\s*0\s+THEN\s+sale_items\.session_count/i)
+    // 旧 NULLIF 形态不应残留
+    expect(PAID_SESSIONS_RECALC_SQL).not.toMatch(/NULLIF\(op\.total_amount::numeric,\s*0\)/i)
   })
 })

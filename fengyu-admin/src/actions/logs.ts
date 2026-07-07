@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
 import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
+import { beijingBoundaryTs } from '@/lib/db-time'
 import type { OperationLog } from '@/lib/types'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
@@ -57,10 +58,10 @@ export const getLogs = withPermission(
   }
   if (filter?.startDate) {
     // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
-    conditions.push(gte(operationLogs.createdAt, sql`${`${filter.startDate} 00:00:00`}::timestamp`))
+    conditions.push(gte(operationLogs.createdAt, beijingBoundaryTs(filter.startDate, '00:00:00')))
   }
   if (filter?.endDate) {
-    conditions.push(lte(operationLogs.createdAt, sql`${`${filter.endDate} 23:59:59`}::timestamp`))
+    conditions.push(lte(operationLogs.createdAt, beijingBoundaryTs(filter.endDate, '23:59:59')))
   }
 
   const rows = await db

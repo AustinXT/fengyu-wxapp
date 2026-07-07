@@ -28,7 +28,7 @@ export const pointTransactions = pgTable(
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
     /** 外部幂等引用；系统批量发放（升级/活动）使用，业务发放可为 null */
     externalRef: text('external_ref'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_point_txns_user_id').on(table.userId),

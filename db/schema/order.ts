@@ -55,7 +55,7 @@ export const saleOrders = pgTable(
       .references(() => stores.storeId),
     /** 所属门店名称（快照，与 market_name 一致；门店改名后历史订单仍显示下单时名称） */
     storeName: varchar("store_name", { length: 100 }),
-    saleOrderDatetime: timestamp("sale_order_datetime").notNull(),
+    saleOrderDatetime: timestamp("sale_order_datetime", { withTimezone: true }).notNull(),
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
@@ -96,9 +96,9 @@ export const saleOrders = pgTable(
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     preferredEmployeeId: varchar("preferred_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
-    paidAt: timestamp("paid_at"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
     offlineConfirmedBy: varchar("offline_confirmed_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
-    offlineConfirmedAt: timestamp("offline_confirmed_at"),
+    offlineConfirmedAt: timestamp("offline_confirmed_at", { withTimezone: true }),
     /**
      * 最近一次发起拉卡拉收银台支付时用的商户订单号（out_order_no，含时间戳后缀，与 sale_order_id 不同）。
      * 收银台「查询/关单」接口按此寻单：order.cancel 关单防迟到支付、order.queryLakalaStatus 轮询兜底。
@@ -124,11 +124,11 @@ export const saleOrders = pgTable(
     /** 抓取时的原始 4 字段快照 {legacy_order_no, phone, store_name, amount, sale_date, customer_id, customer_name} */
     legacyRawSnapshot: jsonb("legacy_raw_snapshot"),
     /** 历史订单核对通过时间 */
-    auditedAt: timestamp("audited_at"),
+    auditedAt: timestamp("audited_at", { withTimezone: true }),
     /** 历史订单核对人 */
     auditedBy: varchar("audited_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -264,8 +264,8 @@ export const saleItems = pgTable(
      * 与价格快照族同属，admin 后续修改 product_skus.is_manager_special 不影响历史订单。仅供审计/详情标注。
      */
     isManagerSpecial: boolean("is_manager_special").notNull().default(false),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -328,9 +328,9 @@ export const saleAllocations = pgTable(
      */
     salePaymentId: bigint("sale_payment_id", { mode: "number" }).references(() => saleOrderPayments.id),
     isVoid: boolean("is_void").notNull().default(false),
-    voidedAt: timestamp("voided_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -397,12 +397,12 @@ export const saleOrderPayments = pgTable(
     /** 审批人（退款审批流） */
     auditEmployeeId: varchar("audit_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
     /** 审批时间 */
-    auditAt: timestamp("audit_at"),
+    auditAt: timestamp("audit_at", { withTimezone: true }),
     /** 审批备注 / 拒绝原因 */
     auditRemark: text("audit_remark"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
-    paidAt: timestamp("paid_at"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
      * 营业额分配状态（仅"回款事件主流水行"有值；储值卡抵扣从行 / 退款 / 待支付行为 NULL）。
      * 待分配＝该笔回款待店长/后台逐笔分配；已分配＝已分配或线上自动分配完成。
@@ -478,7 +478,7 @@ export const salePaymentAllocatableItems = pgTable(
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     /** 销售类别快照（提成率查找用；与 sale_items.sales_category 同源） */
     salesCategory: salesCategoryEnum("sales_category"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("uq_spai_payment_item").on(table.salePaymentId, table.saleItemId),

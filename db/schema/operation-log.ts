@@ -33,7 +33,7 @@ export const operationLogs = pgTable(
     detail: jsonb('detail'),
     /** 来源：staffApi / clientApi / adminApi */
     source: text('source'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_op_logs_operator').on(table.operatorEmployeeId),

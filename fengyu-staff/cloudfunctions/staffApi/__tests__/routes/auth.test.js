@@ -140,6 +140,12 @@ describe('auth.bindPhone', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     cloud.getWXContext.mockReturnValue({ OPENID: 'new-staff-openid' })
+    // bindPhone 直传手机号路径由 testBypassAllowed('ALLOW_DIRECT_PHONE') 守卫（routes/auth.js:183），
+    // 测试需显式开启该 env flag（testBypassAllowed 另要求非生产运行时，cloud mock 无 ENV 已满足）
+    process.env.ALLOW_DIRECT_PHONE = 'true'
+  })
+  afterEach(() => {
+    delete process.env.ALLOW_DIRECT_PHONE
   })
 
   test('直接传入手机号 — 匹配已有员工行', async () => {

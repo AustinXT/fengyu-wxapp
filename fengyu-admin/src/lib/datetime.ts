@@ -18,8 +18,9 @@ export function shanghaiYmd(now: Date = new Date()): string {
  * Asia/Shanghai 固定时区格式化（不依赖运行环境 TZ）—— admin 所有时间展示的**单一来源**。
  * `lib/utils.ts` 的 `formatDate/formatDateTime` 与 `lib/export-xlsx.ts` 的 `fmtDate/fmtDateTime` 均转调此处。
  *
- * 入参通常是 Server Action `toISOString()` 出来的 UTC 串（timestamp 列在容器 TZ=Asia/Shanghai 下被
- * Drizzle 读成正确绝对时刻，再 toISOString），故须按 Asia/Shanghai 还原；裸读 ISO 会差 8 小时，
+ * 入参通常是 Server Action `toISOString()` 出来的 UTC 串（migration 0076 起 timestamp 列为
+ * `timestamp with time zone`，PG 发 +08 偏移字面，Drizzle 读成正确绝对时刻再 toISOString），
+ * 故须按 Asia/Shanghai 还原显示；裸读 ISO 会差 8 小时，
  * 用浏览器本地时区方法（getHours 等）则在非北京浏览器下偏移——这里用 Intl 固定时区根治。
  */
 const shanghaiParts = (() => {
