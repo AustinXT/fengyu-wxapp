@@ -2153,9 +2153,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(custRevSql).toBeDefined()
     expect(custRevSql).toContain("customer_type = '小美客'")
     expect(custRevSql).toContain("customer_type = '会员客'")
-    // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamp)
-    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamp\)::date\s*>=/)
-    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamp\)::date\s*</)
+    // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamptz)
+    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*>=/)
+    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*</)
     // 守恒：使用 o.received - refunded_amount，与 SQL 1 总额同口径
     expect(custRevSql).toMatch(/SUM\(o\.received::numeric - COALESCE\(o\.refunded_amount/)
   })
