@@ -128,10 +128,30 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
     }
   })
 
-  test('四端非定向均按 pending_received − 已记 amount（剩余实付）比例摊', () => {
-    const re = /Number\(i\.pending_received\)\s*-\s*\(priorMap\.get\(i\.sale_item_id\)\s*\|\|\s*0\)/
+  test('四端非定向均按两段式瀑布（pend_cap = pending_received − 已记 amount；溢出再按 sale_cap）摊', () => {
+    // 2026-06-28 重构：非定向分摊从单段「剩余实付比例」改为两段式瀑布（与 recalcPaidSessionsForOrder STEP1 数学一致）
+    //   第一段产能 pend_cap_i = max(0, pending_received_i − prior_allocated_i)（剩余实付）
+    //   第二段产能 sale_cap_i = max(0, sale_amount_i − max(pending_received_i, prior_allocated_i))（应付余量）
     for (const [end, src] of ENDS()) {
-      expect(src, `${end} 缺剩余实付比例摊算式`).toMatch(re)
+      // prior 已记可分配额（sale_payment_allocatable_items 合计）
+      expect(src, `${end} 缺 prior = priorMap.get(...) || 0`).toMatch(
+        /const prior = priorMap\.get\(i\.sale_item_id\)\s*\|\|\s*0/,
+      )
+      // pending_received 取数
+      expect(src, `${end} 缺 pending = Number(i.pending_received)`).toMatch(
+        /const pending = Number\(i\.pending_received\)/,
+      )
+      // 第一段产能 pend_cap = pending − prior（剩余实付）
+      expect(src, `${end} 缺 pendCap 公式 (pending - prior)`).toMatch(
+        /pendCap:\s*Math\.max\(0,\s*Math\.round\(\(pending\s*-\s*prior\)\s*\*\s*100\)\s*\/\s*100\)/,
+      )
+      // 第二段产能 sale_cap = sale_amount − max(pending, prior)（应付余量）
+      expect(src, `${end} 缺 saleCap 公式 (saleAmt - Math.max(pending, prior))`).toMatch(
+        /saleCap:\s*Math\.max\(0,\s*Math\.round\(\(saleAmt\s*-\s*Math\.max\(pending,\s*prior\)\)\s*\*\s*100\)\s*\/\s*100\)/,
+      )
+      // 两段式分摊：phase1 按 pendCap、phase2 按 saleCap
+      expect(src, `${end} 缺 phase1 按 pendCap 铺`).toMatch(/cap:\s*c\.pendCap/)
+      expect(src, `${end} 缺 phase2 按 saleCap 铺`).toMatch(/cap:\s*c\.saleCap/)
       // 剩余实付来源：sale_payment_allocatable_items 已记可分配额合计
       expect(src, `${end} 缺已记可分配额合计查询`).toMatch(
         /COALESCE\(SUM\(amount::numeric\), 0\) AS allocated[\s\S]{0,80}FROM sale_payment_allocatable_items/,

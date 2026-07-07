@@ -533,7 +533,8 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
       .filter((s) => /FROM sale_allocations\b/.test(s))
     expect(salesSqls.length).toBe(2) // today + month
     for (const s of salesSqls) {
-      expect(s).toMatch(/SUM\(sa\.total_amount/)
+      // 2026-05-26 §3.15：销售提成改用真实提成 commission_amount（≠ staffRankingRevenue 的 total_amount 营业额份额）
+      expect(s).toMatch(/SUM\(sa\.commission_amount/)
       expect(s).toContain('sa.is_void = FALSE')
       expect(s).toMatch(/sa\.role_type\s+IN/)
       expect(s).toContain('美容师')
@@ -1232,9 +1233,9 @@ describe('mgmtDashboard.storeRanking', () => {
       expect(sql).toMatch(/LEFT JOIN sale_items si/)
       expect(sql).toContain("so2.status = '已完成'")
       expect(sql).toMatch(/so2\.service_date/)
-      // per-session 公式：unit_real_price 是 per-card 价（如 5次卡=3500），
-      // 折算到每次消耗 = unit_real_price × quantity / session_count，再乘 session_used
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* si\.quantity \/ NULLIF\(si\.session_count, 0\) \* sit\.session_used\)/)
+      // consume 公式（2026-06 简化）：unit_real_price（已是单次价）× session_used，
+      // 已去 quantity / session_count 中间项（unit_real_price 存储口径改为单次价）
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
     })
   })
 
@@ -1686,8 +1687,8 @@ describe('mgmtDashboard.staffRanking', () => {
       expect(sql).toMatch(/JOIN service_orders so2/)
       expect(sql).toMatch(/JOIN sale_items si/)
       expect(sql).toContain("so2.status = '已完成'")
-      // per-session 公式：unit_real_price × quantity / session_count × session_used
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* si\.quantity \/ NULLIF\(si\.session_count, 0\) \* sit\.session_used\)/)
+      // consume 公式（2026-06 简化）：unit_real_price（已是单次价）× session_used
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
       expect(sql).toMatch(/so2\.service_date/)
     })
   })

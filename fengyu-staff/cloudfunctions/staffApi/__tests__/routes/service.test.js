@@ -633,6 +633,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：refund guard 无待审批退款
       .mockResolvedValueOnce([
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
       ])
@@ -666,6 +667,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：refund guard 无待审批退款
       .mockResolvedValueOnce([
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
       ])
@@ -732,6 +734,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 5 },
       ])
@@ -794,6 +797,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: 'appt-001',
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -849,6 +853,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -920,6 +925,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -992,6 +998,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -1045,6 +1052,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -1106,6 +1114,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',
@@ -1160,6 +1169,7 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         store_id: 'store-001',
         appointment_id: null,
       }])
+      .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
       .mockResolvedValueOnce([
         {
           service_item_id: 'si-1',

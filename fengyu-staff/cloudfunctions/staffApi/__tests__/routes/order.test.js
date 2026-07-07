@@ -84,7 +84,6 @@ describe('order.create', () => {
     // 查询顾客是否已注册
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }]) // client_wechat_users: 已注册绑定本店
-      .mockResolvedValueOnce([]) // 无待支付订单（按 phone+store）
       // SKU 查询
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -194,7 +193,25 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'client-001', bound_store_id: 'store-001' }])    // 已注册绑定本店
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-exist' }]) // 已有待支付
+      .mockResolvedValueOnce([{  // SKU（守卫已移入事务内，须先过 SKU 才能触达）
+        sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
+        price: '1000.00', special_price: null, session_count: 10,
+        product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
+      }])
+
+    // 待支付订单守卫已移入事务内（advisory lock 下 SELECT-then-INSERT 原子化，order.js:902）：
+    // mock 事务内 client.query 的守卫查询返回「已有待支付订单」
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
+            return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return await cb(client)
+    })
 
     await expect(orderRoutes.create(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*已有待支付订单/)
@@ -225,7 +242,25 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }]) // 已注册绑定本店
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-exist' }]) // 同店已有待支付
+      .mockResolvedValueOnce([{  // SKU（守卫已移入事务内，须先过 SKU 才能触达）
+        sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
+        price: '1000.00', special_price: null, session_count: 10,
+        product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
+      }])
+
+    // 待支付订单守卫已移入事务内（advisory lock 下 SELECT-then-INSERT 原子化，order.js:902）：
+    // mock 事务内 client.query 的守卫查询返回「同店已有待支付订单」
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
+            return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return await cb(client)
+    })
 
     await expect(orderRoutes.create(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*已有待支付订单/)
@@ -255,7 +290,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])  // 已注册绑定本店
-      .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([])  // SKU 不存在
 
     await expect(orderRoutes.create(ctx))
@@ -275,7 +309,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])  // 无待支付订单
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -311,7 +344,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -353,7 +385,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -395,7 +426,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-single',
         product_id: 'prod-single',
@@ -440,7 +470,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-home',
         product_id: 'prod-home',
@@ -481,7 +510,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])       // 已注册顾客
-      .mockResolvedValueOnce([])                             // 无待支付订单
       .mockResolvedValueOnce([{                              // SKU 数据
         sku_id: 'sku-001', product_id: 'prod-001',
         product_type: '疗程卡', spec_name: '基础款',
@@ -539,7 +567,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-single',
         product_id: 'prod-single',
@@ -595,7 +622,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '100.00', special_price: null, session_count: 0,
@@ -616,7 +642,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '800.00', special_price: null, session_count: 0,
@@ -643,7 +668,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '800.00', special_price: null, session_count: 0,
@@ -671,7 +695,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '300.00', special_price: null, session_count: 0,  // 实收 300
@@ -698,7 +721,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])  // 已注册
-      .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '1000.00', special_price: null, session_count: null,
@@ -743,7 +765,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '疗程卡',
         spec_name: 'S', price: '500.00', special_price: null, session_count: null,
@@ -788,7 +809,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
         spec_name: '基础款', price: '1000.00', special_price: null, session_count: 10,
@@ -833,7 +853,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])    // 已注册绑定本店
-      .mockResolvedValueOnce([])    // 无待支付订单（按 phone+store）
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
         spec_name: '基础款', price: '1000.00', special_price: null, session_count: 5,
@@ -867,7 +886,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])  // 已注册 → clientUserId = 'cu-001'
-      .mockResolvedValueOnce([])                        // 无待支付订单（按 clientUserId）
       .mockResolvedValueOnce([{
         sku_id: 'sku-single', product_id: 'prod-002', product_type: '家居产品',
         spec_name: '标准', price: '200.00', special_price: null,
@@ -900,7 +918,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001', customer_type: '会员客', member_level: '黑钻' }])  // 会员客 → 享 special_price
-      .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-sp', product_id: 'prod-003', product_type: '疗程卡',
         spec_name: '特惠款', price: '1000.00', special_price: '800.00',
@@ -930,7 +947,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])  // 已注册绑定本店
-      .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -966,7 +982,6 @@ describe('order.create', () => {
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
         product_id: 'prod-001',
@@ -1033,7 +1048,6 @@ describe('order.create', () => {
   function mockPgForCreate(skuPrice = '200.00') {
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])  // client_wechat_users
-      .mockResolvedValueOnce([])  // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: skuPrice, special_price: null, session_count: 5,
@@ -1125,7 +1139,6 @@ describe('order.create', () => {
     // 顾客 + 无待支付 + SKU + 储值卡余额
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: '200.00', special_price: null, session_count: 5,
@@ -1213,7 +1226,6 @@ describe('order.create', () => {
     })
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: '200.00', special_price: null, session_count: 5,
@@ -4562,7 +4574,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([]) // 无待支付
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4619,7 +4630,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4653,7 +4663,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4687,7 +4696,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4711,7 +4719,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4734,7 +4741,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4766,7 +4772,6 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     pg.query
       .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
@@ -4782,8 +4787,9 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     await orderRoutes.create(ctx)
 
-    // pg.query 的第4个调用是 create 前的预选余额读取（SELECT balance）；不应含 FOR UPDATE
-    const balanceSqlCall = pg.query.mock.calls[3]
+    // pg.query 的第3个调用是 create 前的预选余额读取（SELECT balance）；不应含 FOR UPDATE
+    // （待支付订单守卫移入事务后，pg.query 序列少一个 slot：cwu → SKU → balance）
+    const balanceSqlCall = pg.query.mock.calls[2]
     expect(balanceSqlCall[0]).toMatch(/SELECT balance FROM prepaid_cards/)
     expect(balanceSqlCall[0]).not.toMatch(/FOR UPDATE/)
     // 部分抵扣 → 待支付，事务内不扣卡（延后到 confirmOffline/payNotify）

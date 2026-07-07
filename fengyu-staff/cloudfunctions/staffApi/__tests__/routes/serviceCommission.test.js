@@ -47,6 +47,8 @@ function mockTxnCapture(rate = '0.3000') {
 function mockOrderAndItems(order, items) {
   pg.query
     .mockResolvedValueOnce([order])
+    .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
+    .mockResolvedValueOnce([])   // 寄存单校验：非寄存单（serviceCommission.js depositChk）
     .mockResolvedValueOnce(items)
 }
 
