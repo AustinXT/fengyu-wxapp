@@ -53,6 +53,8 @@ envs/*.cer
 
 # Delivery build output
 delivery/
+delivery-staging/
+fengyu-delivery-*.zip
 .tree/
 .claude/worktrees/*
 
@@ -65,6 +67,8 @@ delivery/
 .claude/skills/wx-dev-guard
 .claude/skills/wx-quality-assurance
 .claude/skills/wx-release-check
+.claude/skills/release-prod
+.claude/skills/remote-deploy
 
 # Progress reports (PDF output)
 reports/
