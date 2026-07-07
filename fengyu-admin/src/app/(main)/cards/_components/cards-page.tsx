@@ -245,7 +245,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 						</Select>
 
 						<Input
-							placeholder="搜索姓名 / 手机号"
+							placeholder="搜索姓名 / 手机号 / 订单号"
 							value={searchInput}
 							onChange={(e) => handleSearchChange(e.target.value)}
 							className="max-w-xs"
