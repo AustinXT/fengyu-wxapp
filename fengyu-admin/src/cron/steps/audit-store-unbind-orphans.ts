@@ -1,28 +1,4 @@
-/**
- * STEP 9 — store_unbind_requests 孤儿巡检
- *
- * 决议：与 STEP 5/6/8 一致，**只告警不修复**。
- *   - 自动 UPDATE status='已关闭' 会掩盖上游业务流的 bug
- *     （admin updateCustomer 手改 / client.bindStore 重绑 / 历史 data fix）
- *   - 仅写 operation_logs + notifyOps，由运维 / PM 人工处理
- *
- * 4 类异常（每类 1 SELECT 取样 + 1 SELECT 计数）：
- *   O1: status='待处理' AND clientWechatUsers.boundStoreId IS NULL
- *       → 顾客已通过其他路径解绑，pending 应同步关闭
- *   O2: status='待处理' AND clientWechatUsers.boundStoreId <> fromStoreId
- *       → 顾客已绑别的门店，原 pending 失去意义
- *   O3: status='待处理' AND stores.is_closed = true OR stores 行不存在
- *       → 目标门店已关停，无人能审批（FK 已保证存在性，LEFT JOIN IS NULL 仅作 future-proof）
- *   O4: status='待处理' AND createdAt < NOW() - INTERVAL '30 days'
- *       → 超过 30 天无人审批的僵尸申请
- *
- * 告警机制（与 audit-payment-invariants 一致）：
- *   - operation_logs(action='cron.audit_store_unbind_orphans',
- *                     target_type='unbind_orphan',
- *                     target_id=YYYY-MM-DD,
- *                     detail=jsonb { _v, _t, date, total, by_kind: [{ kind, count, samples }, ...] })
- *   - notifyOps 单条 markdown：每类计数 + 前 10 条 requestId 样例提示
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -57,7 +33,7 @@ type SampleRow = OrphanCategory['samples'][number]
 export async function auditStoreUnbindOrphans(db: Db): Promise<StoreUnbindOrphansResult> {
   const categories: OrphanCategory[] = []
 
-  // ── O1: 顾客已解绑但 pending 仍挂着 ──
+  
   const o1Samples = (await db.execute(sql`
     SELECT sur.request_id, sur.user_id, sur.from_store_id, sur.created_at::text
       FROM store_unbind_requests sur
@@ -78,7 +54,7 @@ export async function auditStoreUnbindOrphans(db: Db): Promise<StoreUnbindOrphan
     categories.push({ kind: 'unbound_but_pending', count: Number(o1Cnt[0].cnt), samples: o1Samples })
   }
 
-  // ── O2: 顾客已绑别的店 ──
+  
   const o2Samples = (await db.execute(sql`
     SELECT sur.request_id, sur.user_id, sur.from_store_id, sur.created_at::text
       FROM store_unbind_requests sur
@@ -101,8 +77,8 @@ export async function auditStoreUnbindOrphans(db: Db): Promise<StoreUnbindOrphan
     categories.push({ kind: 'bound_to_other_store', count: Number(o2Cnt[0].cnt), samples: o2Samples })
   }
 
-  // ── O3: 目标门店已关停 / 不存在 ──
-  // stores 表有 is_closed（不是 is_active），FK 已保证 store_id 存在，LEFT JOIN IS NULL 仅 future-proof
+  
+  
   const o3Samples = (await db.execute(sql`
     SELECT sur.request_id, sur.user_id, sur.from_store_id, sur.created_at::text
       FROM store_unbind_requests sur
@@ -123,7 +99,7 @@ export async function auditStoreUnbindOrphans(db: Db): Promise<StoreUnbindOrphan
     categories.push({ kind: 'target_store_closed', count: Number(o3Cnt[0].cnt), samples: o3Samples })
   }
 
-  // ── O4: 超过 30 天 pending ──
+  
   const o4Samples = (await db.execute(sql`
     SELECT sur.request_id, sur.user_id, sur.from_store_id, sur.created_at::text
       FROM store_unbind_requests sur

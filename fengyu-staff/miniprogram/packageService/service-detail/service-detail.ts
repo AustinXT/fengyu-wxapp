@@ -1,4 +1,4 @@
-// pages/service-detail/service-detail.ts — 服务单详情
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTime } from '../../utils/formatters';
@@ -24,7 +24,7 @@ interface ServiceDetail {
     totalSessions: number;
     paidSessions: number | null;
   }>;
-  // 顾客评价（仅店长可见；后端按 manager 角色下发）
+  
   review?: { rating: number; comment: string; createdAt: string } | null;
 }
 
@@ -54,7 +54,7 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<ServiceDetail>('service.detail', { id });
-      // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
+      
       if (data.startTime) data.startTime = formatDateTime(data.startTime);
       if (data.completedTime) data.completedTime = formatDateTime(data.completedTime);
       if (data.review?.createdAt) data.review.createdAt = formatDateTime(data.review.createdAt);
@@ -108,7 +108,7 @@ Page({
     });
   },
 
-  // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
+  
   onConfirmService() {
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;

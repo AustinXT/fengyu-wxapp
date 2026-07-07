@@ -21,7 +21,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
 
   const primaryRole = session.roles[0]
 
-  // Close dropdown on outside click
+  
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -47,7 +47,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
 
   return (
     <header className="flex h-14 shrink-0 items-center border-b border-[var(--border)] bg-white px-4">
-      {/* Left: sidebar toggle */}
+      {}
       <button
         onClick={onToggle}
         className="flex size-9 items-center justify-center rounded-[var(--radius)] text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
@@ -60,12 +60,12 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
         )}
       </button>
 
-      {/* Center: spacer */}
+      {}
       <div className="flex-1" />
 
-      {/* Right: notification + avatar */}
+      {}
       <div className="flex items-center gap-2">
-        {/* Notification bell */}
+        {}
         <button
           className="relative flex size-9 items-center justify-center rounded-[var(--radius)] text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
           aria-label="通知"
@@ -73,7 +73,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
           <Bell className="size-5" />
         </button>
 
-        {/* User avatar dropdown */}
+        {}
         <div ref={dropdownRef} className="relative">
           <button
             onClick={() => setDropdownOpen(!dropdownOpen)}
@@ -85,10 +85,10 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
             <span className="hidden text-[var(--foreground)] sm:inline">{session.name}</span>
           </button>
 
-          {/* Dropdown menu */}
+          {}
           {dropdownOpen && (
             <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-[var(--radius-lg)] border border-[var(--border)] bg-white py-1 shadow-lg">
-              {/* User info header */}
+              {}
               <div className="border-b border-[var(--border)] px-4 py-3">
                 <div className="text-sm font-medium text-[var(--foreground)]">
                   {session.name}
@@ -98,7 +98,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
                 </div>
               </div>
 
-              {/* Menu items */}
+              {}
               <div className="py-1">
                 <button
                   onClick={handleChangePassword}

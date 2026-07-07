@@ -1,4 +1,4 @@
-/* packageOrder/refund-list/refund-list.wxss */
+
 
 .list-scroll {
   height: calc(100vh - 88rpx);

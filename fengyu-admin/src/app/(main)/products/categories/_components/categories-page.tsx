@@ -45,7 +45,7 @@ export default function CategoriesPageClient({
 }) {
   const router = useRouter()
 
-  // 动态一级分类列表（启用 + 按排序）
+  
   const activeKinds = useMemo(
     () => [...productKinds].filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder),
     [productKinds],
@@ -54,7 +54,7 @@ export default function CategoriesPageClient({
   const defaultKind = activeKinds[0]?.categoryName ?? ""
   const [activeTab, setActiveTab] = useState(defaultKind)
 
-  // Dialog state
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<ProductCategory | null>(null)
   const [form, setForm] = useState<CategoryFormData>({
@@ -66,18 +66,18 @@ export default function CategoriesPageClient({
   })
   const [saving, setSaving] = useState(false)
 
-  // AlertDialog state for disable confirmation
+  
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
-  // AlertDialog state for delete confirmation（仅已停用行显示删除按钮）
+  
   const [deleteTarget, setDeleteTarget] = useState<ProductCategory | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // 列表筛选：是否包含已停用（默认仅展示启用）
+  
   const [includeDisabled, setIncludeDisabled] = useState(false)
 
-  // 品项一级分类管理 dialog
+  
   const [kindDialogOpen, setKindDialogOpen] = useState(false)
 
   const categoriesByKind = useMemo(() => {
@@ -315,7 +315,7 @@ export default function CategoriesPageClient({
         </div>
       )}
 
-      {/* Add/Edit Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogHeader>
           <DialogTitle>{editingCategory ? "编辑分类" : "新增分类"}</DialogTitle>
@@ -382,7 +382,7 @@ export default function CategoriesPageClient({
         </DialogFooter>
       </Dialog>
 
-      {/* Disable Confirmation */}
+      {}
       <AlertDialog open={!!disableTarget} onOpenChange={(open) => !open && setDisableTarget(null)}>
         <AlertDialogTitle>确认停用</AlertDialogTitle>
         <AlertDialogDescription>
@@ -398,7 +398,7 @@ export default function CategoriesPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* Delete Confirmation（仅已停用行可触发） */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
@@ -414,7 +414,7 @@ export default function CategoriesPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 品项一级分类管理 Dialog */}
+      {}
       <ProductKindManagementDialog
         open={kindDialogOpen}
         onOpenChange={setKindDialogOpen}

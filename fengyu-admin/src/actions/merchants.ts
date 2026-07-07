@@ -12,37 +12,25 @@ import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 
-/**
- * 商户管理（拉卡拉收款商户档案，独立模块 /merchants）server actions。
- *
- * 商户（lakala_merchants）是「总部级收款配置实体」、无 store_id：门店通过
- * stores.lakala_merchant_id（N:1）反向关联。故本模块**不做门店级 scope 过滤**——
- * 与 cards/customers 等按 store_id 过滤的业务数据不同，凭 merchant:* 权限即见全部商户
- * （admin + finance 持有）。理由：① 商户是集中维护的收款配置；② finance 新建的商户在
- * 绑定门店前是「孤儿」，按门店 scope 过滤会导致「建了却看不到」的悖论。
- *
- * 收款字段权威仍是本表：clientApi resolveLakalaMerchant 运行时 JOIN 实时读，本页改动
- * （enabled / term_no / merchant_no）立即对收款生效；删除经外键 ON DELETE SET NULL 会
- * 使关联门店收款失效，故 deleteMerchant 仅允许删「无门店引用」的商户。
- */
 
-/** 生成 lm_ 前缀 KSUID（与 stores.ts 建档同格式：{prefix}{8 位时间戳}{12 位随机}） */
+
+
 function ksuid(prefix: string): string {
   const ts = Math.floor(Date.now() / 1000).toString(36).padStart(8, '0')
   const rand = randomBytes(6).toString('hex')
   return `${prefix}${ts}${rand}`
 }
 
-// ============================================================================
-// 列表（/merchants 页面）
-// ============================================================================
+
+
+
 
 export type MerchantEnabledFilter = 'all' | 'enabled' | 'disabled'
 
 export interface MerchantFilters {
   search?: string
   enabled?: MerchantEnabledFilter
-  /** 市场筛选：org_nodes type='市场' 节点 id */
+  
   marketId?: string
   page?: number
   pageSize?: number
@@ -54,9 +42,9 @@ export interface AdminMerchant {
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
-  /** 所属市场名（market_org_node_id → org_nodes.name），未分配为 null */
+  
   marketName: string | null
-  /** 关联门店数（stores.lakala_merchant_id 反查） */
+  
   storeCount: number
   createdAt: string
   updatedAt: string
@@ -67,10 +55,7 @@ export interface PaginatedMerchants {
   total: number
 }
 
-/**
- * 服务端分页商户列表 + 关联门店数。
- * 权限：merchant:list（admin + finance）。无门店 scope 过滤（见文件顶部注释）。
- */
+
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
   async (session, filters: MerchantFilters = {}): Promise<PaginatedMerchants> => {
@@ -79,7 +64,7 @@ export const getMerchantsPaginated = withPermission(
     const offset = (page - 1) * pageSize
 
     const conditions: (SQL | undefined)[] = []
-    // 商户名 / 商户号 ILIKE 搜索
+    
     if (filters.search) {
       const escaped = filters.search.replace(/[%_]/g, '\\$&')
       const pattern = `%${escaped}%`
@@ -93,30 +78,30 @@ export const getMerchantsPaginated = withPermission(
     if (filters.enabled === 'enabled') conditions.push(eq(lakalaMerchants.enabled, true))
     else if (filters.enabled === 'disabled') conditions.push(eq(lakalaMerchants.enabled, false))
 
-    // 严格市场 scope 过滤：非 admin 仅见 scope 内市场的商户；market 为空 / scope 外的
-    // 商户对非 admin 隐藏（NULL 不匹配 inArray 自动排除）。admin 走 isAdminScope 短路全开。
+    
+    
     if (!isAdminScope(session)) {
       const visibleMarketIds = await expandVisibleMarketIds(session)
       if (visibleMarketIds === null) {
-        // 总部级非 admin 角色：可见全部市场，不加过滤
+        
       } else if (visibleMarketIds.length === 0) {
         conditions.push(sql`FALSE`)
       } else {
         conditions.push(inArray(lakalaMerchants.marketOrgNodeId, visibleMarketIds))
       }
     }
-    // 市场筛选（所有角色含 admin）
+    
     if (filters.marketId) conditions.push(eq(lakalaMerchants.marketOrgNodeId, filters.marketId))
 
     const whereClause = conditions.length ? and(...conditions) : undefined
 
-    // COUNT 仅过滤 lakala_merchants 自身列，无需 JOIN
+    
     const countQuery = db
       .select({ count: sql<number>`cast(count(*) as int)` })
       .from(lakalaMerchants)
       .where(whereClause)
 
-    // DATA：LEFT JOIN stores 统计关联门店数
+    
     const dataQuery = db
       .select({
         id: lakalaMerchants.id,
@@ -124,7 +109,7 @@ export const getMerchantsPaginated = withPermission(
         merchantNo: lakalaMerchants.merchantNo,
         termNo: lakalaMerchants.termNo,
         enabled: lakalaMerchants.enabled,
-        // 所属市场名（标量子查询，避开 groupBy 复杂度；id 为 PK，functional dependency 允许）
+        
         marketName: sql<string | null>`(SELECT n.name FROM org_nodes n WHERE n.id = ${lakalaMerchants.marketOrgNodeId})`,
         createdAt: lakalaMerchants.createdAt,
         updatedAt: lakalaMerchants.updatedAt,
@@ -134,7 +119,7 @@ export const getMerchantsPaginated = withPermission(
       .leftJoin(stores, eq(stores.lakalaMerchantId, lakalaMerchants.id))
       .where(whereClause)
       .groupBy(lakalaMerchants.id)
-      // 配置型「编辑即浮顶」
+      
       .orderBy(desc(lakalaMerchants.updatedAt))
       .limit(pageSize)
       .offset(offset)
@@ -158,9 +143,9 @@ export const getMerchantsPaginated = withPermission(
   },
 )
 
-// ============================================================================
-// 详情（/merchants/[id] 页面）
-// ============================================================================
+
+
+
 
 export interface MerchantLinkedStore {
   storeId: string
@@ -174,9 +159,9 @@ export interface MerchantDetail {
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
-  /** 所属市场（org_nodes type='市场' id），未分配为 null；编辑表单回显用 */
+  
   marketOrgNodeId: string | null
-  /** 所属市场名 */
+  
   marketName: string | null
   createdAt: string
   updatedAt: string
@@ -204,7 +189,7 @@ export const getMerchantById = withPermission(
       .limit(1)
     if (!m) return null
 
-    // 关联门店 + 市场名（标量子查询，跨两级 org_nodes 取上级 market）
+    
     const marketNameExpr = sql<string | null>`(
       SELECT n.name FROM org_nodes sn
       JOIN org_nodes n ON n.id = sn.parent_id
@@ -240,12 +225,12 @@ export const getMerchantById = withPermission(
   },
 )
 
-// ============================================================================
-// 门店页下拉数据源（关联收款商户）
-//
-// 权限用 store:lakala_config（非 merchant:list）：门店编辑/新增页访问者是 admin/hr，
-// hr 无 merchant 权限；与门店「选择关联商户」的编辑权限（store:lakala_config）对齐。
-// ============================================================================
+
+
+
+
+
+
 
 export interface MerchantOption {
   id: string
@@ -275,12 +260,12 @@ export const getMerchantOptions = withPermission(
   },
 )
 
-// ============================================================================
-// 市场下拉数据源（商户管理列表筛选 + 新建/编辑表单「所属市场」）
-//
-// 权限用 merchant:list（admin + finance + manager 持有）。finance/manager 无 commission:list，
-// 不能复用 commission.getMarkets，故本函数对齐其 scope 过滤范式（expandVisibleMarketIds）。
-// ============================================================================
+
+
+
+
+
+
 
 export interface MerchantMarketOption {
   id: string
@@ -291,7 +276,7 @@ export const getMerchantMarketOptions = withPermission(
   'merchant:list',
   async (session): Promise<MerchantMarketOption[]> => {
     const visibleIds = await expandVisibleMarketIds(session)
-    // 非总部且无可见市场 → 无市场可选
+    
     if (visibleIds !== null && visibleIds.length === 0) return []
     const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
     const rows = await db
@@ -303,24 +288,20 @@ export const getMerchantMarketOptions = withPermission(
   },
 )
 
-// ============================================================================
-// 写入：新建 / 编辑 / 删除
-// ============================================================================
+
+
+
 
 export interface MerchantInput {
   merchantName: string
   merchantNo: string | null
   termNo: string | null
   enabled: boolean
-  /** 所属市场（org_nodes type='市场' id）；可选，未分配/未传为 null */
+  
   marketOrgNodeId?: string | null
 }
 
-/**
- * 共用入参校验。返回错误文案（前端 toast）或 null。
- * 启用真实支付通道时商户号 + 终端号必填：缺商户号收款失效、缺 term_no 会在
- * clientApi 支付时抛 LAKALA_TERM_NO_MISSING，配置期强制拦截。
- */
+
 function validateMerchantInput(data: MerchantInput): string | null {
   if (!data.merchantName?.trim()) return '商户名称必填'
   if (data.enabled) {
@@ -341,7 +322,7 @@ export const createMerchant = withPermission(
     const termNo = data.termNo?.trim() || null
     const marketOrgNodeId = data.marketOrgNodeId || null
 
-    // 商户号唯一校验（应用层；DB partial unique index 兜底）
+    
     if (merchantNo) {
       const dup = await db
         .select({ id: lakalaMerchants.id })
@@ -377,7 +358,7 @@ export const updateMerchant = withPermission(
     session,
     id: string,
     data: MerchantInput,
-    /** 乐观锁：提交时携带的 updated_at（ISO） */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
     if (!id) return { success: false, message: '商户不存在' }
@@ -392,7 +373,7 @@ export const updateMerchant = withPermission(
     const [before] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, id)).limit(1)
     if (!before) return { success: false, message: '商户不存在' }
 
-    // 商户号唯一校验（排除自身）
+    
     if (merchantNo) {
       const dup = await db
         .select({ id: lakalaMerchants.id })
@@ -402,7 +383,7 @@ export const updateMerchant = withPermission(
       if (dup.length) return { success: false, message: `商户号 ${merchantNo} 已被其他商户占用` }
     }
 
-    // 乐观锁：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
+    
     const whereConditions = expectedUpdatedAt
       ? and(
           eq(lakalaMerchants.id, id),
@@ -446,7 +427,7 @@ export const deleteMerchant = withPermission(
     const [before] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, id)).limit(1)
     if (!before) return { success: false, message: '商户不存在' }
 
-    // 引用校验：有门店关联则禁止删除（避免 ON DELETE SET NULL 使门店收款失效）
+    
     const [{ cnt }] = await db
       .select({ cnt: sql<number>`cast(count(*) as int)` })
       .from(stores)

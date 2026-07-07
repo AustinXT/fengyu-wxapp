@@ -1,26 +1,26 @@
-<!-- pagesProfile/messages/messages.wxml — 消息中心 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 加载骨架 -->
+  
   <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">
     <van-skeleton title row="2" />
     <van-skeleton title row="2" />
     <van-skeleton title row="2" />
   </view>
 
-  <!-- 错误态 -->
+  
   <van-empty
     wx:elif="{{loadError}}"
     image="error"
     description="加载失败，下拉刷新重试"
   />
 
-  <!-- 空态 -->
+  
   <van-empty wx:elif="{{!isLoading && records.length === 0}}" description="暂无消息" />
 
-  <!-- 消息列表 -->
+  
   <view wx:else class="message-list">
     <view
       class="message-item {{!item.isRead ? 'message-unread' : ''}}"
@@ -43,7 +43,7 @@
     </view>
   </view>
 
-  <!-- 加载更多 / 底部提示 -->
+  
   <view wx:if="{{records.length > 0}}" class="list-footer">
     <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
     <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多消息了</text>

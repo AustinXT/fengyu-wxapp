@@ -1,4 +1,4 @@
-<!-- 顶部筛选行：period chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+
 <view class="mgmt-filter-bar mgmt-filter-bar--sticky">
   <mgmt-period-picker
     options="{{ periodsForPicker }}"
@@ -13,10 +13,10 @@
 
 <view class="pc-page">
 
-  <!-- Section 标题 -->
+  
   <view class="pc-section-title">品项-顾客周期</view>
 
-  <!-- 持卡人数（截面） -->
+  
   <view class="pc-subsection">
     <view class="pc-subsection-title">
       <text>持卡人数</text>
@@ -46,7 +46,7 @@
     </view>
   </view>
 
-  <!-- 体验情况 -->
+  
   <view class="pc-subsection">
     <view class="pc-subsection-title">体验情况</view>
     <view class="pc-table">
@@ -75,7 +75,7 @@
     </view>
   </view>
 
-  <!-- 新增情况 -->
+  
   <view class="pc-subsection">
     <view class="pc-subsection-title">新增情况</view>
     <view class="pc-table">
@@ -104,7 +104,7 @@
     </view>
   </view>
 
-  <!-- 复购情况 -->
+  
   <view class="pc-subsection">
     <view class="pc-subsection-title">复购情况</view>
     <view class="pc-table">

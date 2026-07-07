@@ -11,7 +11,7 @@ export default async function Page() {
     getEmployees(),
     getEmployeesOnBusinessTrip(),
   ])
-  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工
+  
   const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
 
   return (

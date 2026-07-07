@@ -1,11 +1,11 @@
-/* pagesProfile/profile-edit/profile-edit.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
 }
 
-/* ===== 头像区域 ===== */
+
 .avatar-section {
   display: flex;
   flex-direction: column;
@@ -36,7 +36,7 @@
   margin-top: 12rpx;
 }
 
-/* ===== 编辑昵称行 ===== */
+
 .edit-name-row {
   display: flex;
   align-items: center;
@@ -82,7 +82,7 @@
   background: var(--color-primary);
 }
 
-/* ===== 区块标题 ===== */
+
 .section-title {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -90,7 +90,7 @@
   letter-spacing: 1rpx;
 }
 
-/* ===== 手机号绑定按钮 ===== */
+
 .phone-bind-btn {
   background: transparent;
   border: none;
@@ -104,7 +104,7 @@
   border: none;
 }
 
-/* ===== 信息组间距 ===== */
+
 .info-group {
   margin-top: 0 !important;
 }

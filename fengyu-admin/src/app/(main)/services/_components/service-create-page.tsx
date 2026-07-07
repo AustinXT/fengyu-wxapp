@@ -59,13 +59,13 @@ export default function ServiceCreatePageClient({
 }) {
   const [step, setStep] = useState(0)
 
-  // Step 1: Customer
+  
   const [phone, setPhone] = useState("")
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchDone, setSearchDone] = useState(false)
 
-  // Step 2: Items + Config
+  
   const [availableItems, setAvailableItems] = useState<AvailableSaleItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
@@ -73,18 +73,18 @@ export default function ServiceCreatePageClient({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
   const [remark, setRemark] = useState("")
-  // 备注模式：custom=自由输入；deposit-refund=寄存单退款专用标准化备注（提交时落 DEPOSIT_REFUND_REMARK）
+  
   const [remarkMode, setRemarkMode] = useState<"custom" | "deposit-refund">("custom")
 
-  // Step 3: Submit
+  
   const [submitting, setSubmitting] = useState(false)
   const [createdServiceOrderId, setCreatedServiceOrderId] = useState("")
 
-  // Store change → clear employee if not in new store
+  
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      // 出差员工跨门店可选，切换门店不清空（跨门店共享，2026-06-24）
+      
       if (emp && emp.storeId !== selectedStoreId && !emp.isOnBusinessTrip) {
         setSelectedEmployeeId("")
       }
@@ -99,8 +99,8 @@ export default function ServiceCreatePageClient({
     setSearching(true)
     setSearchDone(false)
     try {
-      // 与 /orders/create 行为对齐：fuzzy ILIKE 搜索，避开精确匹配的边界问题（trailing space / 历史脏数据 / openid 误过滤）
-      // 顾客可开单身份仅靠 bound_store_id IS NOT NULL（searchCustomers 内已含），不要求 openid
+      
+      
       const results = await searchCustomers(phone.trim())
       const result = results.find(c => c.phone === phone.trim()) ?? results[0] ?? null
       setSelectedCustomer(result)
@@ -217,7 +217,7 @@ export default function ServiceCreatePageClient({
 
       <StepIndicator current={step} />
 
-      {/* Step 1: 选择顾客 */}
+      {}
       {step === 0 && (
         <Card>
           <CardContent className="p-6 space-y-4">
@@ -275,7 +275,7 @@ export default function ServiceCreatePageClient({
         </Card>
       )}
 
-      {/* Step 2: 选择项目 + 配置 */}
+      {}
       {step === 1 && (
         <div className="space-y-4">
           <Card>
@@ -329,7 +329,7 @@ export default function ServiceCreatePageClient({
                               </span>
                             </td>
                             <td className="px-4 py-3 text-right">
-                              {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
+                              {}
                               {item.sessionCount !== null
                                 ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount}`
                                 : "—"}
@@ -410,7 +410,7 @@ export default function ServiceCreatePageClient({
         </div>
       )}
 
-      {/* Step 3: 确认提交 / 成功 */}
+      {}
       {step === 2 && !createdServiceOrderId && (
         <Card>
           <CardContent className="p-6 space-y-6">
@@ -467,7 +467,7 @@ export default function ServiceCreatePageClient({
         </Card>
       )}
 
-      {/* 成功页 */}
+      {}
       {step === 2 && createdServiceOrderId && (
         <Card>
           <CardContent className="p-6 text-center space-y-4">

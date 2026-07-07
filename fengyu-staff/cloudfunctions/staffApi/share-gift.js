@@ -1,30 +1,14 @@
-/**
- * 分享礼发放（跨云函数共享）
- *
- * 新客首单结清时，按 `paid_amount × percent`（clamp 到 [min,max]）向邀请人和新客
- * 各发一张动态面值代金券 + 一条站内消息；以 sale_order_id 为幂等根键。
- *
- * 以下三份副本必须保持字节级一致：
- *   - fengyu-client/cloudfunctions/payNotify/share-gift.js
- *   - fengyu-client/cloudfunctions/clientApi/share-gift.js
- *   - fengyu-staff/cloudfunctions/staffApi/share-gift.js
- *
- * 参考 ticket：notes/tickets/2026-04-24-share-gift-reward.md §5.2
- */
 
-/**
- * @param {import('pg').PoolClient} client  事务内 client（由调用方负责 BEGIN/COMMIT）
- * @param {{saleOrderId:string, clientUserId:string, paidAmount:number|string, source?:string}} order
- * @returns {Promise<{granted:boolean, reason?:string, value?:number, inviter?:string}>}
- */
+
+
 async function grantShareGift(client, order) {
-  // 0. paid_amount 必须 > 0（储值卡全额抵扣场景 paid_amount=0 → 跳过）
+  
   const paid = Number(order && order.paidAmount)
   if (!order || !order.clientUserId || !order.saleOrderId || !(paid > 0)) {
     return { granted: false, reason: 'no_paid_amount' }
   }
 
-  // 1. 读 config
+  
   const cfgRow = (await client.query(
     "SELECT value FROM system_configs WHERE key = 'share_gift_config'"
   )).rows[0]
@@ -39,7 +23,7 @@ async function grantShareGift(client, order) {
     return { granted: false, reason: 'disabled' }
   }
 
-  // 2. 首单判定：同一 client_user_id 除当前订单外无其他已支付/已完成订单
+  
   const firstOrderRow = (await client.query(
     `SELECT COUNT(*)::int AS c FROM sale_orders
       WHERE client_user_id = $1
@@ -51,7 +35,7 @@ async function grantShareGift(client, order) {
     return { granted: false, reason: 'not_first_order' }
   }
 
-  // 3. 查邀请人
+  
   const inviterRow = (await client.query(
     `SELECT inviter_user_id FROM client_wechat_users WHERE user_id = $1`,
     [order.clientUserId]
@@ -59,7 +43,7 @@ async function grantShareGift(client, order) {
   const inviter = inviterRow && inviterRow.inviter_user_id
   if (!inviter) return { granted: false, reason: 'no_inviter' }
 
-  // 4. 可选：邀请人资格（需有至少一笔已支付订单）
+  
   if (cfg.inviterMustHavePaidOrder) {
     const rs = await client.query(
       `SELECT 1 FROM sale_orders
@@ -69,7 +53,7 @@ async function grantShareGift(client, order) {
     if (rs.rows.length === 0) return { granted: false, reason: 'inviter_not_qualified' }
   }
 
-  // 5. 模板必须存在且启用
+  
   const tpl = (await client.query(
     `SELECT template_id, is_active, validity_mode, valid_days, valid_to
        FROM coupon_templates WHERE template_id = $1`,
@@ -77,7 +61,7 @@ async function grantShareGift(client, order) {
   )).rows[0]
   if (!tpl || !tpl.is_active) return { granted: false, reason: 'template_unavailable' }
 
-  // 6. 计算面值（保留 2 位，clamp 到 [minFaceValue, maxFaceValue]）
+  
   const percent = Number(cfg.percent) > 0 ? Number(cfg.percent) : 0.15
   const raw = paid * percent
   const rounded = Math.round(raw * 100) / 100
@@ -85,7 +69,7 @@ async function grantShareGift(client, order) {
   const maxV = Number(cfg.maxFaceValue) > 0 ? Number(cfg.maxFaceValue) : 500
   const value = Math.max(minV, Math.min(maxV, rounded))
 
-  // 7. expireAt：模板 days → 从 NOW 推；fixed → 用 valid_to；兜底 cfg.validityDays || 90
+  
   let expireAt
   if (tpl.validity_mode === 'days' && tpl.valid_days) {
     expireAt = new Date(Date.now() + Number(tpl.valid_days) * 86400000)
@@ -96,14 +80,14 @@ async function grantShareGift(client, order) {
     expireAt = new Date(Date.now() + fallbackDays * 86400000)
   }
 
-  // 8. 发券 × 2（inviter / invitee），ON CONFLICT DO NOTHING 幂等
+  
   const couponRecipients = [
     ['inviter', inviter],
     ['invitee', order.clientUserId],
   ]
   for (const [role, userId] of couponRecipients) {
     const couponId = `sg-${role}-${order.saleOrderId}`
-    // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底 TOCTOU
+    
     await client.query(
       `INSERT INTO user_coupons (coupon_id, template_id, user_id, status, expire_at, face_value_override, external_ref, created_at)
        VALUES ($1, $2, $3, '未使用', $4, $5, $6, NOW())
@@ -112,7 +96,7 @@ async function grantShareGift(client, order) {
     )
   }
 
-  // 9. 消息 × 2（标题为空仅跳过当条，另一条照常发）
+  
   const validityDays = Math.max(1, Math.ceil((expireAt.getTime() - Date.now()) / 86400000))
   const vars = {
     paidAmount: paid.toFixed(2),
@@ -138,7 +122,7 @@ async function grantShareGift(client, order) {
     )
   }
 
-  // 10. operation_logs 一条审计
+  
   await client.query(
     `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
      VALUES ('share.giftGranted', 'sale_order', $1, $2::jsonb, $3, NOW())`,

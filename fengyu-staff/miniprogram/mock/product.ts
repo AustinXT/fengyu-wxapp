@@ -1,4 +1,4 @@
-// mock/product.ts — 商品相关 mock
+
 
 const MOCK_CATEGORIES = [
   { id: 'cat-01', name: '蜜语生玑', big_category: '生美', category_order: 1 },

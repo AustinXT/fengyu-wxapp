@@ -2,7 +2,7 @@ ALTER TABLE "sale_order_payments" DROP CONSTRAINT "sale_order_payments_operator_
 --> statement-breakpoint
 ALTER TABLE "sale_order_payments" DROP COLUMN "operator_employee_id";--> statement-breakpoint
 ALTER TABLE "sale_order_payments" DROP COLUMN "note";--> statement-breakpoint
--- drizzle-kit 不会自动 DROP DEFAULT，但 column default 引用 enum type 会阻止 DROP TYPE
+
 ALTER TABLE "sale_orders" ALTER COLUMN "sale_order_type" DROP DEFAULT;--> statement-breakpoint
 ALTER TABLE "public"."sale_orders" ALTER COLUMN "sale_order_type" SET DATA TYPE text;--> statement-breakpoint
 DROP TYPE "public"."sale_order_type";--> statement-breakpoint

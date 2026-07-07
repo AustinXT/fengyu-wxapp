@@ -1,4 +1,4 @@
-/* packageMgmt/mgmt-traffic-stats — 客量数据子页样式 */
+
 
 .tf-page {
   padding: 0 var(--spacing-card) 80rpx;

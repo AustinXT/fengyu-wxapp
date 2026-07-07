@@ -1,19 +1,8 @@
-/**
- * 退款工具函数（TypeScript 版本）
- *
- * 与 fengyu-staff/cloudfunctions/staffApi/utils/refund.js 算法完全一致：
- *   refundable_per_item = 未使用数量 × unit_real_price
- *   total_refundable    = Σ(refundable_per_item)
- *   final_refund_amount = max(0, total_refundable − handling_fee)
- *
- * 未使用数量按 sale_items.product_type 区分（2026-05-21 单品合并后）：
- *   疗程卡（含原单品=1 次卡）：remaining_sessions
- *   家居产品：quantity − picked_up_quantity
- */
+
 
 import type { PaymentMethod, ProductType, SalesCategory } from './types'
 
-/** sale_items 行（snake_case 字段，来自 PG） */
+
 export interface RefundSourceItem {
   sale_item_id: string
   sku_id: string | null
@@ -21,7 +10,7 @@ export interface RefundSourceItem {
   product_type: ProductType | null
   session_count: number | null
   remaining_sessions: number | null
-  /** 已付费次数（已反映已审批退款）；疗程卡数量门用，null 视为历史行回退 remaining_sessions */
+  
   paid_sessions: number | null
   unit_price: string | number
   quantity: number
@@ -49,19 +38,17 @@ export interface RefundDetail {
   refundAmount: number
   salesCategory: SalesCategory | null
   serviceFee: number
-  /** 本次是否全退该明细（退款数量 >= 当前可退数量）→ 控制 cascade 是否作废其分配/提成（Bug M） */
+  
   isFullItemRefund: boolean
 }
 
-/**
- * 计算单个 sale_item 的可退未使用数量
- */
+
 export function calculateUnusedQuantity(item: RefundSourceItem | null | undefined): number {
   if (!item) return 0
   if (item.product_type === '疗程卡') {
-    // 修复（Bug A 数量门）：退款不减 remaining_sessions（Model X），真正可退 = paid_sessions − 已消费次数。
-    // paid_sessions 已反映所有已审批退款，全额退后为 0 → 可退 0。null（历史行）回退 remaining，金额门兜底。
-    // 两端镜像 staff utils/refund.js。
+    
+    
+    
     const remaining = Number(item.remaining_sessions || 0)
     if (item.paid_sessions == null) return remaining
     const consumed = Number(item.session_count || 0) - remaining
@@ -72,11 +59,7 @@ export function calculateUnusedQuantity(item: RefundSourceItem | null | undefine
   return Math.max(0, quantity - pickedUp)
 }
 
-/**
- * 校验并构建退款明细
- *
- * @throws Error INVALID_PARAMS / INVALID_STATE 前缀异常
- */
+
 export function buildRefundDetails(
   origItems: RefundSourceItem[],
   requestItems: RefundRequestItem[],
@@ -92,8 +75,8 @@ export function buildRefundDetails(
     if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
 
     const maxUnused = calculateUnusedQuantity(orig)
-    // 疗程卡必须整卡全退（不支持部分退次数）：强制 requested = maxUnused，忽略前端传入的部分数量；
-    // 家居产品仍可按未提货数量部分退。两端镜像 staff utils/refund.js。
+    
+    
     const requested =
       orig.product_type === '疗程卡' ? maxUnused : (Number(req.refundQuantity) || maxUnused)
 
@@ -108,14 +91,14 @@ export function buildRefundDetails(
     const refundAmount = Math.round(unitRealPrice * requested * 100) / 100
     totalRefund += refundAmount
 
-    // 退款行 service_fee 按比例扣减（原 service_fee 占比 × 退款数量占比）
+    
     const origServiceFee = Number(orig.service_fee || 0)
     const origQty = Number(orig.quantity) || 1
     const refundServiceFee = -Math.round((origServiceFee * requested) / origQty * 100) / 100
 
-    // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
-    // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
-    // 保护「已完成服务的提成」与「已实现营收的分配」不被退剩余次数误删（两端镜像 staff utils/refund.js）。
+    
+    
+    
     const consumedQty =
       orig.product_type === '疗程卡'
         ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0)
@@ -143,17 +126,7 @@ export function buildRefundDetails(
   }
 }
 
-/**
- * 退款封顶截断（疗程卡整卡全退专用）。
- *
- * 疗程卡强制整卡全退、退款数量不可调（见 buildRefundDetails）。部分支付订单（如疗程卡只付定金、
- * 次数全在）整卡值可能 > 净已收 refundCap，旧逻辑直接拒绝 → 该订单永远无法退款。
- * 改为：把逐项 refundAmount 等比缩到 targetGross（= refundCap + 手续费），数量不变（整卡仍作废）。
- * 退款额截断到「只退已付部分」，打破「数量↔金额自洽」（数量=整卡次数、金额=已付），符合"只能退已付"。
- *
- * 最大余数法对齐总额：逐项 floor 后把尾差补到 refundAmount 最大的一项，避免逐项 round 累积偏移。
- * 返回缩放后的 totalRefund（= targetGross）。两端镜像 staff utils/refund.js。
- */
+
 export function capRefundAmounts(
   refundDetails: Array<{ refundAmount: number }>,
   originalTotal: number,
@@ -180,13 +153,7 @@ export function capRefundAmounts(
   return Math.round(targetGross * 100) / 100
 }
 
-/**
- * 拆分退款现金 vs 储值卡
- *
- * 2026-06-28 改为「全部走现金」：退款不再按储值卡占比拆分，refundByCard 始终为 0。
- * 所有退款统一走现金（refundByOrigin），避免用户退款拿到的现金和疗程卡对应金额不一致的误解，
- * 也避免了退款时出现剩余金额无法退款的情况。
- */
+
 export function splitRefundByOriginalPayment(
   refundAmount: number,
   _origPrepaidCardAmount: number,
@@ -198,13 +165,7 @@ export function splitRefundByOriginalPayment(
   }
 }
 
-/**
- * 决定退款 payments 行的 payment_method
- *
- * 2026-06-24 改为「全部走线下退款」：退款不按原路返还，一律记 '线下'（门店现场退现金/转账），
- * 不调拉卡拉/微信原路退款接口。储值卡抵扣部分的回冲由 splitRefundByOriginalPayment +
- * approveRefund 储值卡通道处理（回冲到卡余额），不经本函数。两端镜像 staff utils/refund.js。
- */
+
 export function resolveRefundPaymentMethod(
   _origPaymentMethod?: PaymentMethod | '储值卡' | null | undefined,
 ): PaymentMethod {

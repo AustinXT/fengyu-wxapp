@@ -21,9 +21,9 @@ interface MemberLevelBenefitsFormProps {
   value: MemberLevelBenefitsMap
   onChange: (next: MemberLevelBenefitsMap) => void
   couponTemplates: Array<{ templateId: string; name: string }>
-  /** 消息标题 placeholder 生成函数，接收等级名，返回完整 placeholder 文本 */
+  
   messageTitlePlaceholder: (level: MemberLevel) => string
-  /** 积分字段提示文案 */
+  
   pointsHelperText: string
 }
 

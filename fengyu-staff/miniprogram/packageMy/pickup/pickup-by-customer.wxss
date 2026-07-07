@@ -1,4 +1,4 @@
-/* packageMy/pickup/pickup-by-customer.wxss */
+
 .container {
   background-color: #F5F5F5;
   min-height: 100vh;
@@ -182,7 +182,7 @@
   line-height: 1.6;
 }
 
-/* dialog */
+
 .dialog-mask {
   position: fixed;
   inset: 0;

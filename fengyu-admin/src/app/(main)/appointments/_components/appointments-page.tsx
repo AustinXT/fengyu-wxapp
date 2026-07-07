@@ -33,12 +33,7 @@ const TAB_OPTIONS = [
 
 type TabValue = typeof TAB_OPTIONS[number]['value']
 
-/**
- * 预约列表页 — 服务端分页
- *
- * 数据已在 Server Component 中通过 getAppointmentsPaginated() 完成 DB 级过滤+分页。
- * Tab badge 数量来自服务端独立 COUNT（scope 范围内全局统计，不受 tab/search 影响）。
- */
+
 export default function AppointmentsPageClient({
   appointments,
   stores,
@@ -52,18 +47,18 @@ export default function AppointmentsPageClient({
   total: number
   pendingCount: number
   confirmedCount: number
-  /** 是否展示行内删除入口（仅系统管理员 appointment:delete） */
+  
   canDelete?: boolean
 }) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
 
-  /** 筛选/Tab 变更时重置到第 1 页 */
+  
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
   }, [setMany])
 
-  // 搜索框防抖
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
@@ -79,7 +74,7 @@ export default function AppointmentsPageClient({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // 操作 state
+  
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null)
 
@@ -108,7 +103,7 @@ export default function AppointmentsPageClient({
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-[var(--foreground)]">预约管理</h1>
 
-      {/* Status Tabs — spec §5.15，badge 数量来自服务端 */}
+      {}
       <div className="flex items-center gap-1 border-b border-[var(--border)]">
         {TAB_OPTIONS.map((tab) => (
           <button
@@ -131,7 +126,7 @@ export default function AppointmentsPageClient({
         ))}
       </div>
 
-      {/* Filters — URL-driven, 触发服务端重新查询 */}
+      {}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
@@ -156,7 +151,7 @@ export default function AppointmentsPageClient({
         </CardContent>
       </Card>
 
-      {/* Table — 数据已经是当前页的切片 */}
+      {}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">

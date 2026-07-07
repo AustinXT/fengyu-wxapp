@@ -263,8 +263,8 @@ export const updateScrapOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      // updatedAt/confirmedAt 走 nowTs()（北京墙钟字面），因 $inferInsert 类型不接受 SQL 片段，
-      // 故不放进 patch，而在 .set() 处合并（见下）。
+      
+      
       const patch: Partial<typeof inventoryScrapOrders.$inferInsert> = {}
       if (data.docDate !== undefined) patch.docDate = data.docDate
       if (data.status !== undefined) patch.status = data.status

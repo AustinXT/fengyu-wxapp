@@ -10,7 +10,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
     redirect("/login?expired=1")
   }
 
-  // 首次登录强制改密
+  
   const mustChange = await checkMustChange()
   if (mustChange) {
     redirect("/change-password")

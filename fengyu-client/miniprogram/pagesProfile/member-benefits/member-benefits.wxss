@@ -1,4 +1,4 @@
-/* pagesProfile/member-benefits/member-benefits.wxss */
+
 
 page {
   background: var(--color-bg-page);
@@ -8,7 +8,7 @@ page {
   padding: 32rpx;
 }
 
-/* 规则说明卡 */
+
 .hero {
   margin: 24rpx;
   padding: 40rpx 32rpx 32rpx;
@@ -112,7 +112,7 @@ page {
   text-align: center;
 }
 
-/* 我的分享礼 */
+
 .section {
   margin: 24rpx;
 }

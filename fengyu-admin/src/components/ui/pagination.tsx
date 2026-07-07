@@ -9,14 +9,14 @@ export interface PaginationProps {
   page: number
   pageSize: number
   onPageChange: (page: number) => void
-  /** 提供后渲染"N条/页"下拉选择器 */
+  
   pageSizeOptions?: number[]
   onPageSizeChange?: (size: number) => void
   className?: string
 }
 
 function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onPageChange, pageSizeOptions, onPageSizeChange, className }: PaginationProps) {
-  // 输入防护：防止 NaN/Infinity/负值导致渲染异常
+  
   const total = Math.max(0, Math.floor(rawTotal) || 0)
   const pageSize = Math.max(1, Math.floor(rawPageSize) || 20)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))

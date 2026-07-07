@@ -1,4 +1,4 @@
-/* packageMy/inventory/inventory.wxss */
+
 .container {
   padding: 24rpx;
   background-color: #F5F5F5;

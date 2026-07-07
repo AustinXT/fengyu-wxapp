@@ -1,35 +1,6 @@
-/**
- * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
- *
- * 语义：行级**净实收**按比例可换到的次数，**行级**比例 floor。
- * 公式：paid_sessions = min( session_count, floor( item.received × session_count / item.sale_amount ) )
- *   先乘后除（D9=A 整数精度）：避免先除产生 0.13333…×15=1.9999… 被 FLOOR 误舍成 1（应为 2）；封顶交给外层 LEAST(session_count)
- *   - item.received 已是**净额**：STEP1 分摊毛额 → STEP 1.5（RECEIVED_REFUNDED_DEDUCT_SQL）按 note.items[].refundAmount
- *     逐项扣退款（2026-06-08 退款侧），不再按订单级 order.refunded × sale_amount / total 均摊（退一项不连累其它行）
- *   - sale_items.received 已含 '储值卡抵扣' change_type 行（跨端同义），不重复计 prepaid_card_amount
- *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
- *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
- *
- * D3=A 退款扣减：退款审批通过 → STEP 1.5 把该行 received 扣减（净额下降）→ paid_sessions 自动倒退；
- * 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，
- * recalcPaidSessionsForOrder 抛 CONFLICT 阻止退款，保护"已消费次数不可撤销"不变量。
- *
- * 同时维护两个出口：
- *   1) computePaidSessionsForItem(...) — JS 纯函数，order.create 写入新行时使用
- *   2) PAID_SESSIONS_RECALC_SQL — SQL 模板，confirmOffline/回款/退款/微信回调后重算同订单全部行
- *
- * 跨端字节同义守护：__tests__/routes/cross-end-sql-snapshot.test.js
- */
 
-/**
- * @param {object} args
- * @param {number|string} args.itemReceived       - sale_items.received（已含储值卡抵扣已支付部分）
- * @param {number|string} args.itemSaleAmount     - sale_items.sale_amount（行小计，折扣后）
- * @param {number|null} args.itemSessionCount
- * @param {number|string} args.orderTotal         - sale_orders.total_amount（用于下分订单级退款）
- * @param {number|string} [args.orderRefunded]    - sale_orders.refunded_amount（订单级累计退款）
- * @returns {number|null}
- */
+
+
 function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionCount, orderTotal, orderRefunded }) {
   if (itemSessionCount == null) return null
   const sa = Number(itemSaleAmount) || 0
@@ -38,28 +9,13 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
   if (tot <= 0) return Number(itemSessionCount)
   const itemRefundShare = tot > 0 ? (Number(orderRefunded) || 0) * sa / tot : 0
   const itemSettled = Math.max(0, (Number(itemReceived) || 0) - itemRefundShare)
-  // 先乘后除保整数精度；封顶 session_count（过付/越界兜底）
+  
   return Math.max(0, Math.min(Number(itemSessionCount), Math.floor(itemSettled * Number(itemSessionCount) / sa)))
 }
 
-/**
- * SQL 模板（pg 风格 $1 占位符 = saleOrderId）。
- * 调用方在事务内执行，紧随 sale_orders.received/prepaid_card_amount/refunded_amount 或 sale_items.received 变更后。
- *
- * 实现策略：FROM 子句把订单级（total_amount/refunded_amount）拉出来，sale_items 行内按 sale_amount 比例下分订单级 refund；
- * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
- */
-/**
- * STEP 1 received 重建（pg 风格 $1 = saleOrderId）。两路分流（2026-06-28 received = Σ spai，瀑布作回退）：
- *   A. 有 spai → received = Σ sale_payment_allocatable_items.amount per item（spai 由 capture 写入，定向精确/非定向两段式摊）
- *   B. 无 spai（历史/退款/修复）→ 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL，零回归
- * recalcPaidSessionsForOrder() 先查 spai 是否存在，再选 A 或 B。
- * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
- * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
- */
-/**
- * 分支 A：received = Σ spai.amount per item
- */
+
+
+
 const SALE_ITEMS_RECEIVED_FROM_SPAI_SQL = `UPDATE sale_items si
     SET received = COALESCE(GREATEST(0, (
       SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items spai
@@ -68,14 +24,7 @@ const SALE_ITEMS_RECEIVED_FROM_SPAI_SQL = `UPDATE sale_items si
     updated_at = NOW()
     WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`
 
-/**
- * 分支 B（回退）：旧「定向 + 两段式瀑布」（无 spai 的历史/异常单，零回归）
- *   targeted_i = Σ(已支付 payments WHERE ref_sale_item_id=i AND change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
- *   untargeted = order.received - Σtargeted；
- *   pend_cap_i = pending_received_i - targeted_i（第一段产能：朝逐行实付草稿铺）；
- *   sale_cap_i = sale_amount_i - max(pending_received_i, targeted_i)（第二段产能：实付→应付余量）；
- *   received_i = targeted_i + [untargeted 先按 pend_cap 比例铺满 Σpend_cap，溢出再按 sale_cap 比例铺开]，单次 ROUND 2 位。
- */
+
 const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
       SELECT ref_sale_item_id, SUM(amount) AS targeted
       FROM sale_order_payments
@@ -115,17 +64,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
     FROM caps, agg
     WHERE si.sale_item_id = caps.sale_item_id`
 
-/**
- * STEP 1.5 逐项退款净额 SQL（2026-06-08 退款侧 $1 = saleOrderId）：从毛额 received 扣减
- * 已支付退款流水 note.items[].refundAmount（按 refSaleItemId 聚合到行）→ received 变「净额」
- * （毛实收 − 该行被退）。效果：被退项详情自动减少、SUM(received)=净实收、paid_sessions 按项扣减。
- * note→jsonb 三重防线根除 22P02/25P02：① WHERE 仅 退款+已支付（reject='已作废'自动排除→自愈）；
- * ② 外层 note LIKE '{%' 纯文本守门；③ 嵌套 CASE 保证 ::jsonb cast 只在守门通过时求值，jsonb_typeof 兜 items 非数组。
- * 仅 item_direction='购买' 行（与 STEP1 一致，不碰 convert_out/refund_out 负数行）；GREATEST(0) clamp。
- * 幂等：每次 recalc 先跑 STEP1 把 received 重置为毛额，本 STEP 再扣 → 多次结果一致。
- * 必须在 SALE_ITEMS_RECEIVED_ALLOC_SQL 之后、PAID_SESSIONS_RECALC_SQL 之前执行。
- * 与 admin paid-sessions.ts 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
- */
+
 const RECEIVED_REFUNDED_DEDUCT_SQL = `WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
              COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
@@ -161,19 +100,12 @@ updated_at = NOW()
 FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
 
-/**
- * 在 pg 事务 client 内重算指定订单的所有 sale_items.paid_sessions。
- * D3=A 退款守护：若重算后 (session_count - remaining_sessions) > paid_sessions（已消费 > 已支付次数），
- * 抛 CONFLICT，提示调用方先取消已生成的服务单。
- *
- * @param {object} client - pg 事务 client
- * @param {string} saleOrderId
- */
+
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
-  // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
-  //   A. spai 覆盖全额 received → received = Σ spai.amount per item（精确，瀑布退役）
-  //   B. spai 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单，
-  //      仅新付款写了 spai 而旧付款无 spai 时 Σ(spai) < received，A 会清零旧 received）
+  
+  
+  
+  
   const covRes = await client.query(
     `SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = $1), 0) AS spai_total,
             (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
@@ -187,9 +119,9 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
   }
-  // STEP 1.5：从毛额扣逐项退款（note.items[].refundAmount）→ sale_items.received 变净额（被退项单独减少）
+  
   await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
-  // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
+  
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])
   const violation = await client.query(
     `SELECT sale_item_id, session_count, remaining_sessions, paid_sessions

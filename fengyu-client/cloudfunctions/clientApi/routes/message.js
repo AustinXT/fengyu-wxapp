@@ -1,12 +1,8 @@
-/**
- * 消息模块路由
- */
+
 
 const pg = require('../db/pg')
 
-/**
- * 消息列表
- */
+
 async function list(ctx) {
   const { userId } = ctx.auth
   const { page = 1, pageSize = 20 } = ctx.event.payload || {}
@@ -34,9 +30,7 @@ async function list(ctx) {
   }
 }
 
-/**
- * 标记消息已读
- */
+
 async function read(ctx) {
   const { userId } = ctx.auth
   const { messageId } = ctx.event.payload || {}
@@ -49,9 +43,7 @@ async function read(ctx) {
   ctx.result = { success: true }
 }
 
-/**
- * 未读消息数
- */
+
 async function unreadCount(ctx) {
   const { userId } = ctx.auth
   const rows = await pg.query(

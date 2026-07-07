@@ -1,19 +1,11 @@
-/**
- * 预约模块路由（员工端）
- * appointment.list — 预约列表
- * appointment.detail — 预约详情
- * appointment.confirm — 确认预约
- * appointment.checkin — 顾客到店签到
- */
+
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr } = require('../utils/datetime')
 
-/**
- * 格式化时间为北京时间可读格式：M月D日 HH:mm
- */
+
 function formatDateTime(date) {
   if (!date) return ''
   const d = new Date(date)
@@ -27,7 +19,7 @@ function formatDateTime(date) {
   return `${m}月${day}日 ${h}:${min}`
 }
 
-// 预约状态映射
+
 const STATUS_CN_TO_EN = {
   '待确认': 'pending',
   '已确认': 'confirmed',
@@ -40,9 +32,7 @@ for (const [cn, en] of Object.entries(STATUS_CN_TO_EN)) {
   STATUS_EN_TO_CN[en] = cn
 }
 
-/**
- * 预约列表
- */
+
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -64,7 +54,7 @@ async function list(ctx) {
     whereExtra += ` AND DATE(a.appointment_time) = $${params.length}::date`
   }
 
-  // 美容师只看指定自己的预约
+  
   if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND a.employee_id = $${params.length}`
@@ -110,9 +100,7 @@ async function list(ctx) {
   }))
 }
 
-/**
- * 预约详情
- */
+
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -149,7 +137,7 @@ async function detail(ctx) {
 
   const a = appointments[0]
 
-  // 美容师只能查看指定自己的预约
+  
   if (!ctx.auth.roles.includes('manager') && a.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该预约')
   }
@@ -170,9 +158,7 @@ async function detail(ctx) {
   }
 }
 
-/**
- * 确认预约
- */
+
 async function confirm(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -209,7 +195,7 @@ async function confirm(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
     }
-    // 审计日志
+    
     await logTransition(client, ctx, 'appointment.confirm', 'appointment', appointmentId, '待确认', '已确认')
   })
 
@@ -220,9 +206,7 @@ async function confirm(ctx) {
   }
 }
 
-/**
- * 顾客到店签到
- */
+
 async function checkin(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -250,7 +234,7 @@ async function checkin(ctx) {
     throw new Error(`INVALID_PARAMS: 预约状态"${appt.status}"不支持签到`)
   }
 
-  // 防止重复签到覆盖原始时间
+  
   if (appt.checkin_at) {
     ctx.result = {
       appointmentId,
@@ -262,12 +246,12 @@ async function checkin(ctx) {
 
   const now = new Date()
   await pg.transaction(async (client) => {
-    // CAS-EXEMPT: 仅写 checkin_at 时间戳，不翻 status
+    
     await client.query(
       'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
       [now, appointmentId]
     )
-    // 审计日志（签到仅打时间戳不翻状态，用 logOperation）
+    
     await logOperation(client, ctx, 'appointment.checkin', 'appointment', appointmentId, {
       _v: 3,
       status: appt.status,

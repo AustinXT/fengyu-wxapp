@@ -1,29 +1,16 @@
-/**
- * 系统配置读取 + 内存缓存（会员门槛等动态配置）
- *
- * 权威源：system_configs 表
- * 失效策略（双层）：
- *   1. 主动：admin saveSettings → 调用 config.invalidateConfig action → 清空本函数缓存
- *   2. 被动：每 30 秒最多核对一次 system_configs.updated_at 戳，变化则重读
- * 失败兜底：DB 报错 → 返回 FALLBACK_THRESHOLD（1980）
- *
- * FALLBACK_THRESHOLD 与 admin/actions/settings.ts DEFAULT_SETTINGS 对齐（1980）。
- */
+
 
 const pg = require('../db/pg')
 
 const FALLBACK_THRESHOLD = 1980
-const CACHE_TTL_MS = 5 * 60 * 1000 // 5 分钟内存 TTL（处理 warm 实例长期存活场景）
-const STALE_CHECK_INTERVAL_MS = 30 * 1000 // 30 秒最多核对一次 updated_at 戳
+const CACHE_TTL_MS = 5 * 60 * 1000 
+const STALE_CHECK_INTERVAL_MS = 30 * 1000 
 
 let _cachedValue = null
-let _cachedUpdatedAt = null // system_configs.updated_at 的毫秒戳
+let _cachedUpdatedAt = null 
 let _lastCheckAt = 0
 
-/**
- * 获取会员门槛（单位：元）。
- * @returns {Promise<number>}
- */
+
 async function getMemberThreshold() {
   const now = Date.now()
 
@@ -55,9 +42,7 @@ async function getMemberThreshold() {
   return FALLBACK_THRESHOLD
 }
 
-/**
- * 主动清缓存（供 config.invalidateConfig action 调用）
- */
+
 function invalidateCache() {
   _cachedValue = null
   _cachedUpdatedAt = null

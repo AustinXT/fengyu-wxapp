@@ -1,35 +1,4 @@
-/**
- * STEP 9 — 退款 5 通道级联巡检（audit-11 P0-11 cascade coverage，2026-05-18 新增）
- *
- * 背景：
- *   cascadeRefund (fengyu-admin/src/lib/refund-cascade.ts:56-212) 在退款审批通过
- *   时同事务级联 5 个下游通道。STEP 8 auditPaymentInvariants 只校验 received /
- *   refunded_amount / points_balance / prepaid balance / payable_amount 5 项
- *   "资金"不变量；如果某个 cascade 分支被注释掉、或新的退款入口忘了调
- *   cascadeRefund，资金侧仍对得上但提成 / 积分 / 券 / 提货已经漂移。
- *
- *   静态字面量漂移由 cross-end-sql-snapshot.test.js 守护；本 STEP 是运行时数据
- *   的镜像守护，反向检查 "已支付的退款行" 是否产生了对应的 5 通道效果。
- *
- * 5 通道（与 lib/refund-cascade.ts 1:1 对齐）：
- *   C1 sa_not_reversed        — 退款负数冲销行（sale_allocations.total_amount<0 挂退款 sop_id）应已写入
- *   C2 sc_not_voided          — service_commissions.voided_at IS NOT NULL 应已写入
- *   C3 coupon_not_returned    — user_coupons 退款生效时仍未过期的 → 应已恢复 '未使用'
- *                                 （用 sop.paid_at 对齐 cascade 的 NOW() 快照）
- *   C4 point_not_reversed     — point_transactions 正向赠送/获取 → 应存在 -amount 的 '消费冲销'
- *   C5 pickup_not_rolled_back — 原单已经提过货 → sale_items.picked_up_quantity 应 < SUM(pickup_records.pickup_quantity)
- *
- * 决议：与 STEP 5/6/7/8 一致，**只告警不修复**。
- *   - 自动 cascade 修复会掩盖上游退款逻辑 bug
- *   - 仅写 operation_logs + notifyOps，由 PM/oncall 追 commit 排查
- *
- * 告警机制：
- *   - operation_logs(action='cron.audit_refund_cascade', target_type='cascade_violation',
- *     target_id=日期戳, source='cronTask')，detail 含每通道 mismatch 计数 + 前 10 条样例
- *   - notifyOps（企微机器人）单条 markdown，每通道一行
- *
- * 当前 PG 数据 0 mismatch 是 DoD（STEP 7 同模式）。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -58,9 +27,9 @@ export interface RefundCascadeCoverageResult {
 export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeCoverageResult> {
   const details: CascadeViolation[] = []
 
-  // ── C1: sale_allocations 记负数冲销（2026-06-24 改）──
-  // 退款审批后通道 1 不再软删原行，而是 INSERT 负数镜像行（total_amount<0，挂退款 sop_id）。
-  // 反向检查：退款 scope 内有活跃正数分配（有可冲销目标）但不存在挂该退款 sop_id 的负数冲销行 → mismatch。
+  
+  
+  
   const c1 = (await db.execute(sql`
     WITH refunds AS (
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
@@ -88,7 +57,7 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     details.push({ channel: 'sa_not_reversed', count: c1.length, samples: c1 })
   }
 
-  // ── C2: service_commissions 应已 voided_at IS NOT NULL ──
+  
   const c2 = (await db.execute(sql`
     WITH refunds AS (
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
@@ -116,9 +85,9 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     details.push({ channel: 'sc_not_voided', count: c2.length, samples: c2 })
   }
 
-  // ── C3: user_coupons 应已恢复 ──
-  // cascade 的恢复门槛是 expire_at > NOW()。审计若用 NOW() 会出现"审计跑得晚→券过期→误判"，
-  // 因此用 sop.paid_at（退款 status 翻 '已支付' 的时间）对齐 cascade 当时的 NOW() 快照。
+  
+  
+  
   const c3 = (await db.execute(sql`
     WITH refunds AS (
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.paid_at
@@ -140,10 +109,10 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     details.push({ channel: 'coupon_not_returned', count: c3.length, samples: c3 })
   }
 
-  // ── C4: point_transactions 反向流水必须存在 ──
-  // 修复（Bug O）：cascadeRefund 通道4 写的是「订单维度合并比例冲销」（一行 '消费冲销'，
-  // amount = -round(grantedTotal × refunded/received)），非每笔赠送的等额负孪生。
-  // 故改为「有正向赠送的已退款订单必须存在 '消费冲销' 行」，去掉精确等额匹配以消除部分/分期退款误报。
+  
+  
+  
+  
   const c4 = (await db.execute(sql`
     WITH refunds AS (
       SELECT DISTINCT sop.sale_order_id
@@ -168,10 +137,10 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     details.push({ channel: 'point_not_reversed', count: c4.length, samples: c4 })
   }
 
-  // ── C5: sale_items.picked_up_quantity 回滚 ──
-  // 仅检"原单已经提过货"的 sale_item（pickup_records 至少 1 行）。
-  // 若 picked_up_quantity = SUM(pickup_records.pickup_quantity) → 完全没回滚 → mismatch
-  // （> 不可能：cascade 用 GREATEST(0, ...) 兜底）。
+  
+  
+  
+  
   const c5 = (await db.execute(sql`
     WITH refunds AS (
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id

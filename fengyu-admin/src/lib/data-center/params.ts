@@ -1,7 +1,4 @@
-/**
- * 数据中心 URL 入参解析（纯函数，page.tsx 把 searchParams 解析成 BoardParams）
- * 容错：非法值一律回退默认（month / all / 开启对比），不抛错。
- */
+
 import type { BoardParams, DataCenterScope, TimeRangeInput } from './types'
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -34,7 +31,7 @@ export function parseTimeRange(raw: { preset?: string; start?: string; end?: str
     return { preset: 'custom', start: raw.start, end: raw.end }
   }
   if (p === 'today' || p === 'week' || p === 'year') return { preset: p }
-  return { preset: 'month' } // 默认本月
+  return { preset: 'month' } 
 }
 
 export function parseBoardParams(raw: {
@@ -48,6 +45,6 @@ export function parseBoardParams(raw: {
   return {
     scope: parseScope(raw),
     timeRange: parseTimeRange(raw),
-    withComparison: raw.cmp !== '0', // 默认开启同比/环比
+    withComparison: raw.cmp !== '0', 
   }
 }

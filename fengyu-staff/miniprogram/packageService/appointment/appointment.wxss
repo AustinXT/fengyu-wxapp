@@ -1,4 +1,4 @@
-/* pages/appointment/appointment.wxss */
+
 
 .list-scroll {
   height: calc(100vh - 100rpx);

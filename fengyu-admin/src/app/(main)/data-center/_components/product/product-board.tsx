@@ -11,7 +11,7 @@ import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
-// ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
+
 const KPI_CARD: KpiGridItem[] = [
   { key: "cardHolders", label: "持卡人数", hint: "截面快照，不随时间区间变化" },
   { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（截面）" },
@@ -27,7 +27,7 @@ const KPI_CYCLE: KpiGridItem[] = [
   { key: "repurchaseRate", label: "复购率", hint: "复购人数 ÷ 持卡人数" },
 ]
 
-// ── 明细表列（key 对应 byMarket/byStore[].metrics）────────────────────
+
 const BREAKDOWN_COLUMNS: BreakdownColumn[] = [
   { key: "cardHolders", label: "持卡人数", unit: "count" },
   { key: "cardHolderRate", label: "持卡占比", unit: "percent" },
@@ -46,7 +46,7 @@ export function ProductBoard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // scope/时间/同比环比 + 一级(kind)/二级(category) 任一变化即重新取数
+  
   const qs = searchParams.toString()
   const kind = get("kind")
   const category = get("category")
@@ -78,7 +78,7 @@ export function ProductBoard() {
   }, [qs])
 
   const filterOptions = data?.filterOptions ?? []
-  // 二级选项跟随当前一级（kind）；未选一级时无二级可选
+  
   const secondLevel = filterOptions.find((o) => o.kind === kind)?.categories ?? []
 
   if (error) {
@@ -90,7 +90,7 @@ export function ProductBoard() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* 品项筛选器：一级 kind → 二级 category（切一级清二级）*/}
+      {}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <span className="text-sm text-[var(--muted-foreground)]">一级品项</span>
@@ -125,7 +125,7 @@ export function ProductBoard() {
         </div>
       </div>
 
-      {/* KPI：持卡（截面）*/}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
@@ -134,13 +134,13 @@ export function ProductBoard() {
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
 
-      {/* KPI：体验 / 新增 / 复购（区间）*/}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">体验 / 新增 / 复购</h2>
         <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} />
       </section>
 
-      {/* 明细表分 Tab：按市场 / 按门店 */}
+      {}
       <Tabs defaultValue="market">
         <TabsList>
           <TabsTrigger value="market">按市场</TabsTrigger>

@@ -15,7 +15,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const { id } = await params
   const session = await getSession()
   const canListAllocations = !!(session && hasPermission(session, 'allocation:list'))
-  // 支付流水 + 审计日志：订单查看者、退款提单/审批人、操作日志查看者任一即可看
+  
   const canViewOrderDetail = !!(session && (
     hasPermission(session, 'sale_order:list') ||
     hasPermission(session, 'sale_order:refund_create') ||
@@ -37,13 +37,13 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   if (!order) notFound()
 
-  // 录入回款权限 + 顾客储值卡余额（ticket 2026-04-24 多次回款 PR-B）
+  
   const canRecordPayment = !!(session && hasPermission(session, 'sale_order:record_payment'))
-  // 确认线下收款权限（与 confirmOfflinePayment action 同权限 sale_order:update）
+  
   const canConfirmOffline = !!(session && hasPermission(session, 'sale_order:update'))
-  // 「创建退款」按钮：仅提单权限（所有 admin 角色都有）；审批走 /refunds 流程
+  
   const canRefund = !!(session && hasPermission(session, 'sale_order:refund_create'))
-  // 物理删除订单：仅系统管理员（sale_order:delete）
+  
   const canDelete = !!(session && hasPermission(session, 'sale_order:delete'))
   let cardBalance: number | null = null
   if ((canRecordPayment || canConfirmOffline) && order.clientUserId) {

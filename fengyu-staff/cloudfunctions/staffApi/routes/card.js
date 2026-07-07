@@ -1,18 +1,4 @@
-/**
- * 充值卡模块路由（员工端）
- *
- * 2026-05-20 充值卡剥离 SKU 化：
- *   - 充值订单不再依赖 product_skus / sale_items；改用 sale_order_type='充值单' 标识
- *   - 档位配置从 product_skus.is_recharge_card=true 行迁到 system_configs（recharge.tiers）
- *   - total_amount=面值，payable_amount=实付，sale_items 0 行
- *
- * 入账：线下走 order.confirmOffline 识别 sale_order_type='充值单'；微信走 payNotify 同识别。
- *
- * 退款（仅退剩余余额，整笔退、不可拆、只能退 1 次）：
- *   1. card.createRefund — admin/staff 发起，写 sale_order_payments(change_type='退款', status='待审批')
- *   2. card.approveRefund — manager 审批通过：扣 balance + card_transactions(-faceVal) + status='已支付' + 调微信原路退款
- *   3. card.rejectRefund — manager 拒绝：status='已作废'
- */
+
 
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
@@ -21,18 +7,12 @@ const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
 
-// 旧系统(WorkFine)充值金转入专用备注标记（与 admin orders.ts LEGACY_INFLOW_NOTE 字面一致）
+
 const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 
-// ================= 路由 =================
 
-/**
- * 返回充值卡档位 + 自定义金额边界（与 clientApi.card.rechargeConfig 字节同义）
- *
- * 数据来源：system_configs（admin 后台 system-configs 编辑入口维护）
- *
- * 权限：登录态可读（非店长也可浏览面值/折扣表）；真正下单走 card.recharge 仍 manager-only。
- */
+
+
 async function rechargeConfig(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -48,18 +28,7 @@ async function rechargeConfig(ctx) {
   }
 }
 
-/**
- * 店长替顾客开充值卡订单
- *
- * payload: {
- *   clientUserId: string,              // 必填，已注册顾客 user_id
- *   faceValue: number,                 // 充值面值；payAmount 由后端按 system_configs 推导
- *   paymentMethod: '线下'|'微信',
- *   remark?: string
- * }
- *
- * 返回: { saleOrderId, faceValue, payAmount, paymentMethod, status }
- */
+
 async function recharge(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -77,18 +46,18 @@ async function recharge(ctx) {
   const faceVal = Number(faceValue)
 
   const storeId = ctx.auth.effectiveStoreId
-  // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
+  
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
-  // 查顾客 + document_type
+  
   const userRows = await pg.query(
     `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止充值（同 order.create 口径：账户余额可跨店查看，但充值按门店结算）
+  
   if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法充值')
   }
@@ -96,13 +65,13 @@ async function recharge(ctx) {
   const customerName = user.name || null
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'
 
-  // 事务内：advisory lock + 生成订单号 + INSERT sale_orders（不写 sale_items）
+  
   let saleOrderId
   await pg.transaction(async (client) => {
-    // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
-    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
-    // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
-    // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
+    
+    
+    
+    
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
     const pendingRows = await client.query(
       `SELECT sale_order_id FROM sale_orders
@@ -130,10 +99,10 @@ async function recharge(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    // 线下/微信 → 统一 '待支付'；线下走 confirmOffline 入账，微信走 payNotify 回调入账
+    
     const initialStatus = '待支付'
 
-    // 充值单：total_amount=面值，payable_amount=实付，prepaid_card_amount=0（充值单本身不允许储值卡支付）
+    
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
@@ -150,7 +119,7 @@ async function recharge(ctx) {
         paymentMethod, ctx.auth.staffWfId, remark || null,
       ]
     )
-    // 审计日志
+    
     await logOperation(client, ctx, 'card.recharge', 'sale_order', saleOrderId, {
       _v: 3,
       clientUserId,
@@ -171,21 +140,7 @@ async function recharge(ctx) {
   }
 }
 
-/**
- * 旧系统(WorkFine)充值金转入：把顾客在旧系统的充值金余额等额导入新系统储值卡
- *
- * 与 card.recharge 的区别：
- *   - 旧系统已收过钱 → 1:1 等额、不打折、不限额、不走 matchTier 档位；
- *   - 直接建 status='已支付' 的充值单（不经待支付 → confirmOffline），即时入账 balance += amount；
- *   - remark / 流水 note 打专用标记「旧系统充值金转入」，便于查账识别（充值单本就不计营收）。
- *
- * 转入单本质是普通充值单：将来退款天然走 card.createRefund/approveRefund（与任何充值单一致）。
- * received=amount（非 0）+ 配一条「首次支付」流水，维护资金不变量 received=Σ流水，
- * 保证将来退款 refunded_amount ≤ received，不触发 cron 资金巡检告警。
- *
- * payload: { clientUserId, amount, remark? }
- * 返回: { saleOrderId, amount, status }
- */
+
 async function inflow(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -195,14 +150,14 @@ async function inflow(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   const amt = Number(amount)
   if (!Number.isFinite(amt) || amt <= 0) throw new Error('INVALID_PARAMS: 转入金额必须为正数')
-  // 浮点容差：与 matchTier 同口径，最多保留 2 位小数
+  
   if (Math.abs(Math.round(amt * 100) - amt * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 转入金额最多保留 2 位小数')
   }
-  if (amt > 99999999.99) throw new Error('INVALID_PARAMS: 转入金额超出上限') // NUMERIC(10,2) 上界保护，非业务限额
+  if (amt > 99999999.99) throw new Error('INVALID_PARAMS: 转入金额超出上限') 
 
   const storeId = ctx.auth.effectiveStoreId
-  // market_name 以门店反查 org 树市场名为权威（INSERT 子查询），此处仅备 COALESCE 兜底
+  
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -212,7 +167,7 @@ async function inflow(ctx) {
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止转入（同 card.recharge 口径：账户余额跨店可见，但转入按门店结算）
+  
   if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法转入')
   }
@@ -221,18 +176,18 @@ async function inflow(ctx) {
   const documentType = user.customer_type === '会员客' ? '售后' : '售前'
   const note = remark ? `${LEGACY_INFLOW_NOTE}｜${remark}` : LEGACY_INFLOW_NOTE
 
-  // 幂等 token：前端每次提交生成、CloudBase SDK 自动重试携带同一值，后端据此去重，杜绝网络重试重复入账
+  
   const requestId = typeof payload.requestId === 'string' && payload.requestId ? payload.requestId : null
 
   let saleOrderId
   let idempotentHit = false
   await pg.transaction(async (client) => {
-    // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / SDK 重试）。键与 'sale_order_id_gen' 互异、
-    // 且本路径恒「先顾客锁后订单号锁」，其它路径不持顾客锁，不构成跨锁死锁。
+    
+    
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card_inflow:${clientUserId}`])
 
-    // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
-    // 注：事务内 client.query() 返回原生 node-pg Result（取 .rows），与模块级 pg.query（已解包成数组）不同
+    
+    
     if (requestId) {
       const dup = await client.query(
         `SELECT ref_order_id FROM card_transactions WHERE external_ref = $1 LIMIT 1`,
@@ -261,8 +216,8 @@ async function inflow(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid_card_amount=0，线下，paid_at=now
-    // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）
+    
+    
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
@@ -280,7 +235,7 @@ async function inflow(ctx) {
       ]
     )
 
-    // 首次支付流水（线下 / external_txn_id=NULL / 已支付）：维护 received=Σ流水（资金不变量 I1）
+    
     await client.query(
       `INSERT INTO sale_order_payments (
          sale_order_id, change_type, amount, payment_method, external_txn_id,
@@ -289,10 +244,10 @@ async function inflow(ctx) {
       [saleOrderId, amt, ctx.auth.staffWfId || null, note, now]
     )
 
-    // 充值入账（字面镜像 order.confirmOffline 充值单入账块；幂等键 card-topup-{saleOrderId} 三端统一）
-    // card_id 必须取 UPSERT 的 RETURNING 值：一户一卡，已有卡时 ON CONFLICT(user_id) 命中旧行，
-    // 其 card_id 可能是历史异格式（FY-CARD-{时间戳} / UUID / 手工值），≠ FY-CARD-{clientUserId}；
-    // card_transactions.card_id 外键指向 prepaid_cards.card_id，必须引用真实卡号否则违反外键（23503）。
+    
+    
+    
+    
     const newCardId = `FY-CARD-${clientUserId}`
     const upsertRes = await client.query(
       `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
@@ -307,11 +262,11 @@ async function inflow(ctx) {
       `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
        VALUES ($1, '充值', $2, $3, $4, NOW())
        ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-      // 优先用 requestId 幂等键（防重复入账）；无 token 时回退订单号键（与 confirmOffline 一致）
+      
       [cardId, amt, saleOrderId, requestId ? `card-inflow-${requestId}` : `card-topup-${saleOrderId}`]
     )
 
-    // 审计日志
+    
     await logOperation(client, ctx, 'card.inflow', 'sale_order', saleOrderId, {
       _v: 1,
       clientUserId,
@@ -329,22 +284,14 @@ async function inflow(ctx) {
   }
 }
 
-/**
- * 发起充值卡退款（admin 或 staff 调用）
- *
- * 仅支持"退剩余余额"语义：refundFace = balance_now，整笔退，不可拆。
- * 实际原路退款金额 = round(refundFace * payable_amount / total_amount, 2)。
- *
- * payload: { saleOrderId: string, reason?: string }
- * 返回: { paymentId, refundFace, refundPay }
- */
+
 async function createRefund(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { saleOrderId, reason } = ctx.event.payload || {}
   if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
 
-  // 校验订单存在 + 为充值单 + 已支付
+  
   const orderRows = await pg.query(
     `SELECT sale_order_id, sale_order_type, status, total_amount, payable_amount,
             client_user_id, payment_method, store_id
@@ -360,7 +307,7 @@ async function createRefund(ctx) {
     throw new Error(`INVALID_STATE: 订单状态 ${order.status} 不可退款`)
   }
 
-  // 校验无在途退款（uq_sop_status_audit 会兜底）
+  
   const existing = await pg.query(
     `SELECT id FROM sale_order_payments
      WHERE sale_order_id = $1 AND change_type = '退款' AND status IN ('待审批', '已支付')`,
@@ -370,7 +317,7 @@ async function createRefund(ctx) {
     throw new Error('CONFLICT: 该订单已有在途/已完成的退款，不可重复发起')
   }
 
-  // 取顾客当前余额（按面值口径），refundFace = balance_now
+  
   const cardRows = await pg.query(
     `SELECT pc.card_id, pc.balance FROM prepaid_cards pc WHERE pc.user_id = $1`,
     [order.client_user_id]
@@ -386,15 +333,15 @@ async function createRefund(ctx) {
   const totalAmount = Number(order.total_amount)
   const payableAmount = Number(order.payable_amount)
   if (!(totalAmount > 0)) throw new Error('INVALID_STATE: 订单总额异常，无法计算退款金额')
-  // 修复（Bug K）：prepaid_cards 是一户一钱包（聚合所有充值/转换/回冲），不能退整个 balance。
-  // 退款面值上限 = 该充值单自身面值；取 min(该单面值, 当前余额) → 退款现金 ≤ 该单实付，不超退、不殃及其它充值单的钱。
+  
+  
   const refundFace = Math.min(totalAmount, balanceNow)
   const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
 
-  // 写 sale_order_payments：change_type='退款' status='待审批' amount=负
-  // external_txn_id 必填占位（chk_sop_method_txn 对 微信/支付宝 NOT NULL 强校验）；
-  // approveRefund 调微信退款 API 后会 UPDATE 为真实 refund_id。
-  // 占位串须每次唯一（uq_sop_txn）。
+  
+  
+  
+  
   const sourceEnd = ctx.event.payload?._sourceEnd === 'admin' ? 'admin' : 'staff'
   const placeholderTxnId = `refund-pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   let paymentId
@@ -417,7 +364,7 @@ async function createRefund(ctx) {
       ]
     )
     paymentId = inserted.rows[0].id
-    // 审计日志
+    
     await logOperation(client, ctx, 'card.createRefund', 'sale_order_payment', paymentId, {
       _v: 3,
       saleOrderId,
@@ -435,18 +382,14 @@ async function createRefund(ctx) {
   }
 }
 
-/**
- * 店长审批通过充值卡退款
- *
- * payload: { paymentId: number }
- */
+
 async function approveRefund(ctx) {
   await requireManager()(ctx, async () => {})
   const { paymentId } = ctx.event.payload || {}
   if (!paymentId) throw new Error('INVALID_PARAMS: 缺少 paymentId')
 
   await pg.transaction(async (client) => {
-    // 锁定 sale_order_payments 行
+    
     const payRows = await client.query(
       `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.note,
               so.client_user_id, so.total_amount, so.payable_amount, so.store_id
@@ -461,13 +404,13 @@ async function approveRefund(ctx) {
       throw new Error(`INVALID_STATE: 退款单当前状态 ${pay.status} 不可审批`)
     }
 
-    // 权限：manager 必须覆盖订单门店
+    
     const scopeStoreIds = ctx.auth.scopeStoreIds || []
     if (!scopeStoreIds.includes(pay.store_id)) {
       throw new Error('PERMISSION_DENIED: 当前店长无权审批该门店的退款')
     }
 
-    // 读 note 拿 refundFace
+    
     let meta
     try {
       meta = JSON.parse(pay.note || '{}')
@@ -477,7 +420,7 @@ async function approveRefund(ctx) {
     const refundFace = Number(meta.refundFace)
     if (!(refundFace > 0)) throw new Error('INVALID_STATE: 退款单缺少 refundFace 元数据')
 
-    // advisory lock + 校验余额
+    
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card-balance-${pay.client_user_id}`])
     const balRows = await client.query(
       `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
@@ -490,7 +433,7 @@ async function approveRefund(ctx) {
       throw new Error(`INSUFFICIENT_BALANCE: 当前余额 ${balance} < 退款面值 ${refundFace}（审批期间已被消费）`)
     }
 
-    // 扣 balance + 写 card_transactions
+    
     await client.query(
       `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
       [refundFace, card.card_id]
@@ -501,7 +444,7 @@ async function approveRefund(ctx) {
       [card.card_id, -refundFace, pay.sale_order_id, `card-refund-${paymentId}`]
     )
 
-    // 翻 status='已支付' + 记审批人 + paid_at（CAS 守卫：仅 '待审批' → '已支付'，防并发重复审批）
+    
     const casUpd = await client.query(
       `UPDATE sale_order_payments
        SET status='已支付', audit_employee_id=$1, audit_at=NOW(), paid_at=NOW()
@@ -512,14 +455,14 @@ async function approveRefund(ctx) {
       throw new Error('INVALID_STATE: 退款单状态已变更，请刷新后重试')
     }
 
-    // sale_orders.refunded_amount 累加（应用层冗余快照）
+    
     await client.query(
       `UPDATE sale_orders SET refunded_amount = COALESCE(refunded_amount, 0) + $1, updated_at = NOW()
        WHERE sale_order_id = $2`,
       [Math.abs(Number(pay.amount)), pay.sale_order_id]
     )
 
-    // 审计日志
+    
     await logTransition(client, ctx, 'card.approveRefund', 'sale_order_payment', paymentId, '待审批', '已支付', {
       saleOrderId: pay.sale_order_id,
       refundFace,
@@ -527,16 +470,12 @@ async function approveRefund(ctx) {
     })
   })
 
-  // TODO: 调微信原路退款 API（refundPay = |pay.amount|）—— 当前 mock 阶段先跳过
+  
 
   ctx.result = { paymentId, status: '已支付' }
 }
 
-/**
- * 店长拒绝充值卡退款
- *
- * payload: { paymentId: number, reason?: string }
- */
+
 async function rejectRefund(ctx) {
   await requireManager()(ctx, async () => {})
   const { paymentId, reason } = ctx.event.payload || {}
@@ -565,7 +504,7 @@ async function rejectRefund(ctx) {
        WHERE id=$3 AND status='待审批'`,
       [ctx.auth.staffWfId || null, reason || null, paymentId]
     )
-    // 审计日志
+    
     await logTransition(client, ctx, 'card.rejectRefund', 'sale_order_payment', paymentId, '待审批', '已作废', {
       saleOrderId: payRows[0].sale_order_id,
       reason: reason || null,

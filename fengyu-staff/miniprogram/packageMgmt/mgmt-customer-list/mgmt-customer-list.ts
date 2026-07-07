@@ -1,6 +1,6 @@
-// packageMgmt/mgmt-customer-list — 管理层"顾客档案"列表子页
-// scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
-// 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
+
+
+
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 
@@ -132,7 +132,7 @@ Page({
     const value = e.detail as unknown as string;
     this.setData({ searchKeyword: value });
     if (!value.trim()) {
-      // 关键字清空 → 重置回默认列表第一页
+      
       this.loadPage(1, true);
     }
   },

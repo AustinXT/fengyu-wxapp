@@ -17,20 +17,20 @@ const KIND_PALETTE = [
 
 interface CategoryCascaderProps {
   categories: ProductCategory[]
-  /** Selected categoryId */
+  
   value: string
-  /** Called with (categoryId, productKind). Both empty = cleared */
+  
   onChange: (categoryId: string, productKind: string) => void
   placeholder?: string
   className?: string
-  /** Renders hidden input for form submission */
+  
   name?: string
   disabled?: boolean
-  /** Show "全部" options for filter use */
+  
   allowEmpty?: boolean
-  /** External kind value (for filter mode when only kind is selected) */
+  
   kindValue?: string
-  /** Dynamic product kinds (一级分类). If omitted, derived from categories */
+  
   productKinds?: ProductCategory[]
 }
 
@@ -49,7 +49,7 @@ export function CategoryCascader({
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Derive kind list: from prop or from categories
+  
   const kindList = useMemo(() => {
     if (productKinds) {
       return productKinds.filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder).map(k => k.categoryName)
@@ -65,7 +65,7 @@ export function CategoryCascader({
     return result
   }, [productKinds, categories])
 
-  // Build color map by index
+  
   const kindColors = useMemo(() => {
     const map: Record<string, string> = {}
     kindList.forEach((k, i) => {
@@ -88,7 +88,7 @@ export function CategoryCascader({
     [categories, activeKind],
   )
 
-  // Display text
+  
   const displayText = useMemo(() => {
     if (selectedCategory) {
       return `${selectedCategory.productKind} / ${selectedCategory.categoryName}`
@@ -99,7 +99,7 @@ export function CategoryCascader({
     return ""
   }, [selectedCategory, allowEmpty, kindValue])
 
-  // Click outside
+  
   useEffect(() => {
     if (!open) return
     function handleClickOutside(e: MouseEvent) {
@@ -111,7 +111,7 @@ export function CategoryCascader({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [open])
 
-  // Escape
+  
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {
@@ -208,7 +208,7 @@ export function CategoryCascader({
 
       {open && (
         <div className="absolute z-50 mt-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] shadow-md flex min-w-full">
-          {/* Left: productKind */}
+          {}
           <div className="border-r border-[var(--border)] py-1 shrink-0">
             {allowEmpty && (
               <button
@@ -267,7 +267,7 @@ export function CategoryCascader({
             })}
           </div>
 
-          {/* Right: categories */}
+          {}
           <div className="min-w-[140px] max-h-[260px] overflow-y-auto py-1">
             {allowEmpty && activeKind && (
               <button

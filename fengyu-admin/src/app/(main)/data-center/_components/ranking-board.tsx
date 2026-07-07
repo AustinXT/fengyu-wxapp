@@ -10,16 +10,12 @@ import { headerWithUnit, metricCell } from "@/lib/data-center/export"
 import type { RankingRow, MetricUnit } from "@/lib/data-center/types"
 
 export interface RankingMetric {
-  key: string // 对应 rankings 的键
+  key: string 
   label: string
   unit: MetricUnit
 }
 
-/**
- * 排名榜（泛化）：顶部 metric 切换 Tab（组件内部状态，非 URL），下方排名表。
- * 门店榜 / 员工榜共用；showMarket 控制是否展示「所属市场」列。
- * 传入 exportFilenamePrefix 时，每个 metric 表上方显示导出按钮（导出该 metric 排名）。
- */
+
 export function RankingBoard({
   title,
   rankings,

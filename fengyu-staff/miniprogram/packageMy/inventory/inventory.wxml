@@ -1,4 +1,4 @@
-<!-- packageMy/inventory/inventory.wxml — 库存管理首页 -->
+
 <view class="container">
   <view class="page-tip">
     <text>本门店库存查询。如需新建/编辑单据，请联系门店管理员在后台操作。</text>

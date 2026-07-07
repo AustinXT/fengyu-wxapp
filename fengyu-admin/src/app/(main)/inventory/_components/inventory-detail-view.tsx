@@ -17,7 +17,7 @@ interface Props {
   title: string
   order: InventoryOrderRow & {
     items: (InventoryItemDto & { id: number; createdAt: string })[]
-    // 各类型扩展字段
+    
     isCompleted?: boolean
     sourceDate?: string | null
     sourceQuantity?: number | null

@@ -1,4 +1,4 @@
-/* pagesProfile/messages/messages.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -9,7 +9,7 @@
   padding: 24rpx 32rpx;
 }
 
-/* 消息列表 */
+
 .message-list {
   padding: 0 32rpx;
 }
@@ -91,7 +91,7 @@
   flex-shrink: 0;
 }
 
-/* 加载更多 */
+
 .loading-more {
   text-align: center;
   padding: 24rpx 0;

@@ -1,11 +1,11 @@
-/* pages/profile/profile.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
 }
 
-/* ===== 头部卡片（品牌渐变） ===== */
+
 .user-header {
   padding: 60rpx 40rpx 48rpx;
   display: flex;
@@ -76,7 +76,7 @@
   color: rgba(255, 255, 255, 0.75);
 }
 
-/* ===== 四宫格 ===== */
+
 .grid-section {
   display: flex;
   background: var(--color-bg-card);
@@ -99,7 +99,7 @@
   color: var(--color-text-secondary);
 }
 
-/* ===== 消息角标 ===== */
+
 .grid-icon-wrap {
   position: relative;
   display: inline-flex;
@@ -122,7 +122,7 @@
   box-sizing: border-box;
 }
 
-/* ===== 区块标题 ===== */
+
 .section-title {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -130,7 +130,7 @@
   letter-spacing: 1rpx;
 }
 
-/* ===== 底部留白 ===== */
+
 .bottom-space {
   height: 60rpx;
 }

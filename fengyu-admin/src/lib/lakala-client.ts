@@ -1,26 +1,12 @@
-/**
- * 拉卡拉 HTTPS 客户端（admin TypeScript 副本）
- *
- * 与 fengyu-client/cloudfunctions/clientApi/utils/lakala-client.js 字面量等价；
- * admin 用 Node 内置 crypto + https + URL，无需额外依赖。
- *
- * 当前接入路径：
- *   - 退款：POST /api/v3/rfd/refund_front/refund        （成功码 '000000'，异步 trade_state）
- *   - 退款查询：POST /api/v3/rfd/refund_front/refund_query
- *
- * **注意**：本期仅提供 helper；将其挂接到 refunds.ts approveRefund 是独立 follow-up，
- * 需要同步处理拉卡拉响应的异步 trade_state (SUCCESS/PROCESSING/FAIL) → sale_order_payments.status 状态机。
- *
- * 加签算法详见 sources/documents/拉卡拉接口规范-补充.md「安全统一接入规范」。
- */
+
 
 import * as crypto from 'node:crypto'
 import * as https from 'node:https'
 import { URL } from 'node:url'
 
-// TODO Phase 3F: switch to '@/lib/lakala-redact' once Phase 1A merged.
-// 临时占位：本地 identity 函数，等 Phase 1A 的 lakala-redact.ts 合入后，
-// 替换为 `import { redact } from '@/lib/lakala-redact'`。
+
+
+
 const redact = (x: unknown): unknown => x
 
 const ALGORITHM_LABEL = 'LKLAPI-SHA256withRSA'
@@ -35,11 +21,7 @@ interface LakalaEnv {
   notifyUrl: string
 }
 
-/**
- * PEM 换行归一化：部分部署/加载链路（dotenv 未展开、cloudbaserc 单行写法等）会把换行存成
- * 字面量 "\n"，Node crypto 只认真实换行，否则报 `DECODER routines::unsupported` 导致加签/验签失败。
- * 与三端云函数 lakala-config.js 的 normalizePem 同义（幂等：真实换行不受影响）。
- */
+
 function normalizePem(s: string): string {
   return (s || '').replace(/\\n/g, '\n')
 }
@@ -55,15 +37,7 @@ function readEnv(): LakalaEnv {
   }
 }
 
-/**
- * 加签 env 就绪检查。
- *
- * 含义 = "加签私钥/平台证书/appid/序列号/基地址" 五项齐全；
- * 不再检查 defaultMerchantNo/defaultTermNo（一店一商户原则，商户号/终端号从 stores 表查，
- * env 不留默认；2026-05-29 PR-6 清理）。
- *
- * 用法：admin 退款 (refunds.ts:refundViaLakalaIfEnabled) 调一次决定是否走拉卡拉退款通道。
- */
+
 export function isReady(): boolean {
   const env = readEnv()
   return !!(
@@ -75,19 +49,13 @@ export function isReady(): boolean {
   )
 }
 
-/**
- * 入网相关方法所需的最小 env 校验（与 isReady 内容一致；保留独立函数仅为语义清晰）。
- *
- * **PEM 配置 fail-fast 改懒加载**：仅在 `request()` 首次被调用时执行；
- * 模块 import 期不抛错，避免 admin docker build 阶段缺 LAKALA_PRIVATE_KEY_PEM
- * 导致 next build 中断（参考 [admin-build-jwt-secret-placeholder] 同款坑）。
- */
+
 function assertLakalaReady(): void {
   const env = readEnv()
   if (!env.apiBase || !env.appid || !env.serialNo || !env.privateKeyPem || !env.platformCertPem) {
     throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED')
   }
-  // 强制提前解析 PEM 头/尾，若 env 里写的是字面量 "\n" 未展开 → 立刻失败
+  
   if (!/-----BEGIN[\s\S]+?-----/.test(env.privateKeyPem)) {
     throw new Error('INVALID_STATE: LAKALA_PRIVATE_KEY_PEM_FORMAT')
   }
@@ -115,17 +83,7 @@ function buildAuthorization(body: string, env: LakalaEnv): string {
   return `${ALGORITHM_LABEL} appid="${env.appid}",serial_no="${env.serialNo}",timestamp="${timestamp}",nonce_str="${nonceStr}",signature="${signature}"`
 }
 
-/**
- * 验证拉卡拉响应/回调签名。
- *
- * **Phase 1C 改动**：从 internal 改为 export，让 admin 的回调 Route Handler
- * （`/api/lakala/callback/*`）复用同一份验签实现，避免散落两份验签代码。
- *
- * Header 约定（小写后）：
- *   lklapi-appid / lklapi-serial / lklapi-timestamp / lklapi-nonce / lklapi-signature
- *
- * 签名串：`${appid}\n${serialNo}\n${timestamp}\n${nonceStr}\n${body}\n`
- */
+
 export function verifyResponseSignature(headers: Record<string, string | string[] | undefined>, body: string, platformCertPem: string): boolean {
   if (!platformCertPem) return false
   const h: Record<string, string> = {}
@@ -185,7 +143,7 @@ export async function request({
   reqData,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }: RequestOpts): Promise<RequestResponse> {
-  // PEM 配置 fail-fast 改懒加载（首次 request 才校验）。
+  
   assertLakalaReady()
   const env = readEnv()
 
@@ -240,14 +198,14 @@ export async function request({
     throw new Error(`INVALID_STATE: LAKALA_RESPONSE_NOT_JSON: ${err.message}`)
   }
 
-  // v3 响应：{ code, msg, resp_time, resp_data }；网关层异常（如 GW0004 / GW0001）也走 { code, message } 顶层结构。
+  
   const code = String(parsedRaw.code ?? '')
   const msg = String(parsedRaw.msg ?? parsedRaw.message ?? '')
   const respTime = String(parsedRaw.resp_time ?? '')
   const respData = (parsedRaw.resp_data as Record<string, unknown>) || {}
 
   const expectedCode = expectedSuccessCode(path)
-  // 出口经 redact（Phase 1A 合入后切真实 mask；当前为 identity 占位）。
+  
   const safeRespData = redact(respData) as Record<string, unknown>
 
   return {
@@ -260,23 +218,18 @@ export async function request({
   }
 }
 
-/**
- * 统一退货：POST /api/v3/rfd/refund_front/refund
- * 详见 sources/documents/拉卡拉接口规范-补充.md「退货（统一退货，推荐用）」一节。
- *
- * 返回 trade_state：SUCCESS（同步成功）/ PROCESSING / DEAL / TIMEOUT / INIT（异步，需查询确认）/ FAIL / EXCEPTION
- */
+
 export async function requestRefund(opts: {
   merchantNo: string
   termNo: string
-  outTradeNo: string                 // 商户退款流水号（唯一）
-  refundAmountFen: number            // 分
+  outTradeNo: string                 
+  refundAmountFen: number            
   refundReason?: string
-  originTradeNo?: string             // 原拉卡拉交易流水（优先）
-  originOutTradeNo?: string          // 原商户流水
-  originLogNo?: string               // 原对账单流水号
-  requestIp: string                  // admin 操作人 IP（风控必送）
-  location?: string                  // 经纬度（门店经纬度兜底）
+  originTradeNo?: string             
+  originOutTradeNo?: string          
+  originLogNo?: string               
+  requestIp: string                  
+  location?: string                  
 }): Promise<{ tradeState: string; tradeNo: string; logNo: string; payerAmountFen: number; channelRetDesc: string; raw: Record<string, unknown> }> {
   if (!opts.originTradeNo && !opts.originOutTradeNo && !opts.originLogNo) {
     throw new Error('INVALID_PARAMS: REFUND_NEEDS_ORIGIN_REFERENCE')
@@ -318,10 +271,7 @@ export async function requestRefund(opts: {
   }
 }
 
-/**
- * 统一退货查询：POST /api/v3/rfd/refund_front/refund_query
- * 用于 cron 推进 PROCESSING/TIMEOUT 状态的退款；约束：超时未知 → 30s 后再查。
- */
+
 export async function queryRefund(opts: {
   merchantNo: string
   termNo: string

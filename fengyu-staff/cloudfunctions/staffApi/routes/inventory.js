@@ -1,10 +1,4 @@
-/**
- * 门店库存只读路由（员工端）
- *
- * 4 类单据（采购入库 / 销售出库 / 调拨 / 报损）的 list + detail 查询。
- * 全员可查（仅 requireStaffBound），写入入口在 admin 后台。
- * 默认按 ctx.auth.effectiveStoreId 过滤本门店，管理层（headquarters/market）拉取全部 scope 内的。
- */
+
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
@@ -47,7 +41,7 @@ const CATEGORY_CONFIG = {
     ],
     itemExtraCols: [],
     hasSubtype: true,
-    /** 调拨需要 OR(本店是发出方, 本店是接收方) */
+    
     storeFilterMode: 'transfer',
   },
   scrap: {
@@ -64,7 +58,7 @@ function isValidCategory(c) {
 }
 
 function buildStoreFilter(auth, cfg, paramIndexStart) {
-  // 管理层（scopeStoreIds 全 null 或多店）→ ANY(array)；门店模式 → 单店等值或 OR
+  
   const ids = auth.scopeStoreIds || []
   if (ids.length === 0) {
     return { sql: 'FALSE', params: [], nextIdx: paramIndexStart }
@@ -109,7 +103,7 @@ async function list(ctx) {
   const params = []
   let idx = 1
 
-  // scope 过滤
+  
   const scope = buildStoreFilter(ctx.auth, cfg, idx)
   conditions.push(scope.sql)
   params.push(...scope.params)
@@ -205,7 +199,7 @@ async function list(ctx) {
       confirmedAt: r.confirmed_at,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-      // 类型特有扩展
+      
       isCompleted: r.is_completed ?? null,
       sourceDate: r.source_date ?? null,
       sourceQuantity: r.source_quantity == null ? null : Number(r.source_quantity),

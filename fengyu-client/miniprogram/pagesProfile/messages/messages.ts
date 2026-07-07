@@ -1,4 +1,4 @@
-// pagesProfile/messages/messages.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatRelativeTime } from '../../utils/format';
@@ -52,7 +52,7 @@ Page({
     }));
   },
 
-  /** 加载首页（重置分页） */
+  
   async loadMessages() {
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
@@ -74,7 +74,7 @@ Page({
     }
   },
 
-  /** 加载更多（追加，错误不覆盖已有数据） */
+  
   async loadMore() {
     this._page += 1;
     this.setData({ loadingMore: true });
@@ -101,7 +101,7 @@ Page({
     const record = this.data.records[index];
     if (!record) return;
 
-    // Mark as read
+    
     if (!record.isRead) {
       try {
         await callClientApi('message.read', { messageId: record.id });
@@ -111,9 +111,9 @@ Page({
       }
     }
 
-    // Navigate based on type
+    
     if (record.refEntity === 'order' && record.refId) {
-      // 临时关闭：订单详情入口（业务平稳后恢复）。见 utils/feature-flags.ts
+      
       if (!ORDERS_ENTRY_ENABLED) {
         wx.showToast({ title: '订单功能即将开放', icon: 'none' });
         return;

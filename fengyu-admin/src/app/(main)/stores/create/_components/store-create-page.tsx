@@ -40,7 +40,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
     try {
       const storeId = `store-${Date.now()}`
 
-      // 门店名以组织树节点为权威，由 createStore 取节点名；此处只传 orgNodeId
+      
       const result = await createStore({
         storeId,
         orgNodeId,
@@ -57,7 +57,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        // 关联收款商户：仅 admin（canEditPayment）提交（选填）
+        
         ...(canEditPayment ? { lakalaMerchantId: merchantId || null } : {}),
       })
 
@@ -87,7 +87,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
         </h1>
       </div>
 
-      {/* 基本信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">基本信息</CardTitle>
@@ -145,7 +145,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
         </CardContent>
       </Card>
 
-      {/* 地理位置 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">地理位置</CardTitle>
@@ -176,7 +176,7 @@ export default function StoreCreatePage({ storeNodes, canEditPayment = false, me
         </CardContent>
       </Card>
 
-      {/* 展示内容 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">展示内容</CardTitle>

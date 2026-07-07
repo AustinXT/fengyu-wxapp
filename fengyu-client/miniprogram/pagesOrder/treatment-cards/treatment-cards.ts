@@ -1,4 +1,4 @@
-// pages/treatment-cards/treatment-cards.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { calculateTriProgress } from '../../utils/format';
@@ -25,7 +25,7 @@ Page({
       const data = await callClientApi('order.appointableItems', { includeInactive: true });
       const orders: any[] = data?.orders || [];
 
-      // 展平为卡片列表（含三段进度：已用 / 已付未用 / 未付）
+      
       const cards: any[] = [];
       for (const order of orders) {
         for (const item of (order.items || [])) {
@@ -50,7 +50,7 @@ Page({
         }
       }
 
-      // 有余额的排前面，失效的排后面
+      
       cards.sort((a, b) => {
         if (a.active !== b.active) return a.active ? -1 : 1;
         return 0;
@@ -66,7 +66,7 @@ Page({
   },
 
   onCardTap(e: WechatMiniprogram.TouchEvent) {
-    // 临时关闭：订单详情入口（业务平稳后恢复）。见 utils/feature-flags.ts
+    
     if (!ORDERS_ENTRY_ENABLED) {
       wx.showToast({ title: '订单功能即将开放', icon: 'none' });
       return;
@@ -76,7 +76,7 @@ Page({
   },
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
-    // catchtap in WXML already prevents event bubbling
+    
     const { saleItemId } = e.currentTarget.dataset as { saleItemId: string };
     wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleItemId=${saleItemId}` });
   },

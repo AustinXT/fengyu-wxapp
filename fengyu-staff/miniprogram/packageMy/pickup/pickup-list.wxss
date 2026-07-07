@@ -1,4 +1,4 @@
-/* packageMy/pickup/pickup-list.wxss */
+
 .container {
   background-color: #F5F5F5;
   min-height: 100vh;

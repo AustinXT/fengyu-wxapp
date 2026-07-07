@@ -21,19 +21,19 @@ const config = [
     ],
   },
   {
-    // Register the typescript-eslint plugin so existing inline
+    
     // `// eslint-disable-next-line @typescript-eslint/no-explicit-any`
-    // comments resolve. We don't enable the rule itself — code already
-    // uses targeted disables, mass-enabling would be a separate cleanup.
+    
+    
     plugins: {
       '@typescript-eslint': tsEslintPlugin,
     },
   },
   {
-    // Soft-land pre-existing lint findings as warnings to avoid blocking
-    // CI on issues unrelated to the no-restricted-imports guard below.
-    // These rules pre-existed (just never enforced — next lint had no
-    // config). Tightening them is a separate hygiene pass.
+    
+    
+    
+    
     rules: {
       'react/no-unescaped-entities': 'warn',
       'react/no-children-prop': 'warn',
@@ -70,21 +70,7 @@ const config = [
   },
   {
     rules: {
-      /**
-       * Guard against the recurring foot-gun:
-       *   import { hasPermission } from '@/lib/auth'         // wrong — TypeError at runtime
-       *   import { requirePermission } from '@/lib/auth'     // wrong — TypeError at runtime
-       *
-       * `hasRole` / `getRoleLabel` live in @/lib/auth.
-       * `hasPermission` / `requirePermission` / `requireAnyPermission` /
-       * `scopeCondition` / `PERMISSION_MATRIX` / `isAdminScope` / `isInScope` /
-       * `buildScopeWhere` / `computeActions` / `expandScopeStoreIds`
-       * live in @/lib/permissions.
-       *
-       * Crossing the modules silently 500'd the refunds detail page (caught
-       * 2026-05-17 in link-4 E2E). Both `next lint` (no config) and tsc
-       * (skipped) failed to gate it pre-merge.
-       */
+      
       'no-restricted-imports': [
         'error',
         {
@@ -118,19 +104,7 @@ const config = [
     },
   },
   {
-    /**
-     * Enforce that every Server Action export in src/actions/ goes through
-     * the withPermission / withAnyPermission HOF (see @/lib/with-permission).
-     *
-     * Three rules together close the gap:
-     *  1. (reverse) ban bare `export async function` — forces HOF rewrite
-     *  2. (positive) require const init to be a CallExpression
-     *  3. (positive) require the callee to be withPermission / withAnyPermission
-     *
-     * S5 flipped to `error` after ticket-10d completed full actions/ migration.
-     * `src/actions/auth.ts` is ignored — it owns no-session public entries
-     * (login / logout / getSessionFromCookie / checkMustChange).
-     */
+    
     files: ['src/actions/**/*.ts'],
     ignores: ['src/actions/**/*.test.ts', 'src/actions/auth.ts'],
     rules: {
@@ -153,19 +127,7 @@ const config = [
           message:
             'Exported Server Action initializer must be withPermission or withAnyPermission (got a different callee).',
         },
-        /**
-         * 禁止裸 `.code === '23xxx'` / `err?.code === '23xxx'` 判断 pg 错误码。
-         *
-         * drizzle 0.45 把失败查询包进 DrizzleQueryError，真实 pg 错误码落在
-         * `err.cause.code`，裸 `.code` 永不命中 → 「已存在/外键/冲突」友好提示退化成
-         * 未捕获 500。一律用 `pgErrorCode(err)`（@/lib/pg-error，沿 cause 链查找，
-         * 兼容扁平错误）；约束名/详情用 `pgErrorConstraint` / `pgErrorDetail`。
-         *
-         * 两条 selector 分别覆盖 `err.code`（MemberExpression）与 `err?.code`
-         * （ChainExpression > MemberExpression）。5 位数字字面量限定：避开拉卡拉
-         * `resp.code === '000000'`（6 位）/ `'GW0004'`（含字母）等非 pg 错误码误伤。
-         * test 文件由本 block 的 ignores 豁免（mock 构造 `{code:'23xxx'}` 不是比较）。
-         */
+        
         {
           selector:
             "BinaryExpression[operator=/^===?$/][left.property.name='code'][right.value=/^[0-9]{5}$/]",

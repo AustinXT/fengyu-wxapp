@@ -1,17 +1,17 @@
-<!-- pages/shop/shop.wxml — 服务/产品浏览 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 分类标题 -->
+  
   <view class="section-title" style="padding: 16rpx 24rpx;">
     <text style="font-size: 28rpx; font-weight: 600; color: #333;">全部分类</text>
   </view>
 
-  <!-- 分类 + 商品主区域（始终显示） -->
+  
   <view class="catalog">
 
-    <!-- 左侧：Vant Sidebar -->
+    
     <scroll-view class="sidebar-scroll" scroll-y>
       <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
         <van-sidebar-item
@@ -22,16 +22,16 @@
       </van-sidebar>
     </scroll-view>
 
-    <!-- 右侧：商品列表 -->
+    
     <scroll-view class="product-scroll" scroll-y>
 
-      <!-- 骨架屏 -->
+      
       <view wx:if="{{isLoading}}" class="skeleton-wrap">
         <van-skeleton title avatar row="3" />
         <van-skeleton title avatar row="3" style="margin-top:24rpx" />
       </view>
 
-      <!-- 空态 -->
+      
       <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
         <van-empty description="该分类暂无商品" />
       </view>
@@ -39,7 +39,7 @@
         <van-empty description="该分类暂无商品" />
       </view>
 
-      <!-- SPU 卡片列表 -->
+      
       <view wx:else class="spu-list">
         <view
           wx:for="{{spuList}}"
@@ -48,7 +48,7 @@
           bindtap="onSpuTap"
           data-product-id="{{item.product_id}}"
         >
-          <!-- 商品封面 -->
+          
           <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
             <van-icon name="photo-o" size="64rpx" color="#CCCCCC" />
           </view>
@@ -60,17 +60,17 @@
             lazy-load
           />
 
-          <!-- 商品信息 -->
+          
           <view class="spu-body">
-            <!-- 标签行 -->
+            
             <view class="spu-tags" wx:if="{{item.category_name}}">
               <van-tag type="primary">{{item.category_name}}</van-tag>
             </view>
 
-            <!-- 商品名 -->
+            
             <text class="spu-name">{{item.name}}</text>
 
-            <!-- 底部：价格 + 按钮 -->
+            
             <view class="spu-footer">
               <view class="price-group">
                 <text class="price-symbol">¥</text>
@@ -89,7 +89,7 @@
     </scroll-view>
   </view>
 
-  <!-- 底部悬浮购物车栏 -->
+  
   <view class="cart-bar" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
     <view class="cart-icon-wrap">
       <van-icon name="shopping-cart-o" size="44rpx" color="#C0322A" />

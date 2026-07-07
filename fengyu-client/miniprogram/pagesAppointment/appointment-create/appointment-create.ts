@@ -1,4 +1,4 @@
-// pages/appointment-create/appointment-create.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatDate } from '../../utils/format';
@@ -20,19 +20,19 @@ const TIME_SLOTS = [
 
 Page({
   data: {
-    // 可预约项目列表（从订单列表中筛选已支付且有剩余次数的订单项）
+    
     appointableItems: [] as any[],
     selectedSaleItemId: '',
     selectedSaleOrderId: '',
 
-    // 时间
+    
     appointmentDate: '',
     appointmentTimeSlot: '',
     _timeSlotDisplay: '',
     minDate: 0,
     maxDate: 0,
 
-    // 美容师
+    
     staffList: [] as any[],
     defaultStaffName: '',
     selectedStaffWfId: '',
@@ -41,7 +41,7 @@ Page({
 
     notes: '',
 
-    // UI 状态
+    
     showCalendar: false,
     showStaffPopup: false,
     timeSlots: TIME_SLOTS,
@@ -61,7 +61,7 @@ Page({
     };
     this.loadAppointableItems(saleOrderId || orderNo, saleItemId);
     this.loadStaffList();
-    // 如果从美容师详情页传入了 employeeId，优先使用
+    
     if (employeeId) {
       this.setData({
         selectedStaffWfId: employeeId,
@@ -76,13 +76,13 @@ Page({
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
-      // 当前绑定门店作为"预约门店"；非本店卡需要禁用以符合"一张卡只能在购买门店使用"业务规则
+      
       const bookingStoreId = app.globalData.boundStoreId || '';
       const items: any[] = [];
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
-          // 疗程卡（含原单品=1 次卡）可预约；必须本店可用 + 有已付未用次数
+          
           const itemStoreId = order.storeId || '';
           const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
           if (isCrossStore) continue;
@@ -109,7 +109,7 @@ Page({
           });
         }
       }
-      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目；跨店卡不预选
+      
       const preselect = preselectItemId
         ? items.find(i => i.sale_item_id === preselectItemId && !i.disabled)
         : null;
@@ -144,26 +144,22 @@ Page({
       this.setData({ staffList });
       this._recomputeStaffLeave();
     } catch {
-      // 静默失败，美容师列表不影响预约
+      
     }
   },
 
-  /**
-   * 依据当前所选预约日期 + 时段，重算每个美容师在该时段是否休假（onLeave）。
-   * 判定与后端 appointment.create 同口径：所选时段起点 ∈ [leaveStart, leaveEnd] 即冲突。
-   * 未选时段时无法判定，全部置 false（交由提交时后端兜底）。
-   */
+  
   _recomputeStaffLeave() {
     const { appointmentDate, appointmentTimeSlot, staffList, selectedStaffWfId } = this.data;
     let slotStartMs: number | null = null;
     if (appointmentDate && appointmentTimeSlot) {
-      const startHM = appointmentTimeSlot.split('-')[0]; // "10:00"
+      const startHM = appointmentTimeSlot.split('-')[0]; 
       slotStartMs = new Date(`${appointmentDate}T${startHM}:00`).getTime();
     }
     const list = (staffList as any[]).map((s) => {
       let onLeave = false;
       if (slotStartMs !== null && s.leaveStart && s.leaveEnd) {
-        // leaveStart/leaveEnd 为墙钟串（YYYY-MM-DDTHH:mm:ss），按设备本地解析，与 slotStartMs 同基准
+        
         const ls = new Date(s.leaveStart).getTime();
         const le = new Date(s.leaveEnd).getTime();
         onLeave = !isNaN(ls) && !isNaN(le) && slotStartMs >= ls && slotStartMs <= le;
@@ -171,7 +167,7 @@ Page({
       return { ...s, onLeave };
     });
     const patch: Record<string, any> = { staffList: list };
-    // 切换时段后，若已选美容师在新时段休假，清空选择并提示
+    
     if (selectedStaffWfId) {
       const sel = list.find((s) => s.employee_id === selectedStaffWfId);
       if (sel && sel.onLeave) {
@@ -199,7 +195,7 @@ Page({
         });
       }
     } catch {
-      // 获取默认美容师失败不影响预约流程
+      
     }
   },
 
@@ -235,21 +231,21 @@ Page({
     this._recomputeStaffLeave();
   },
 
-  /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
+  
   _updateDisabledSlots(dateStr: string) {
     const today = formatDate(new Date().toISOString());
     const isToday = dateStr === today;
     const currentHour = new Date().getHours();
 
     const updatedSlots = TIME_SLOTS.map(slot => {
-      // 取时段开始小时：'09:00-11:00' → 9
+      
       const startHour = parseInt(slot.value.split(':')[0], 10);
       const disabled = isToday && currentHour >= startHour;
       return { ...slot, disabled };
     });
     this.setData({ timeSlots: updatedSlots });
 
-    // 若当前已选时段变为禁用，则清空选择
+    
     if (this.data.appointmentTimeSlot) {
       const selected = updatedSlots.find(s => s.value === this.data.appointmentTimeSlot);
       if (selected?.disabled) {
@@ -282,7 +278,7 @@ Page({
 
   onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
     const { wfId, name } = e.detail;
-    // 从已加载的 staffList 里反查头像（弹层 select 事件只携带 id/name，避免破坏现有契约）
+    
     const matched = (this.data.staffList as any[]).find((s) => s.employee_id === wfId);
     this.setData({
       selectedStaffWfId: wfId,
@@ -302,7 +298,7 @@ Page({
       Toast.fail('请选择预约日期和时段');
       return;
     }
-    // 安全校验：防止提交当天已过时段
+    
     const today = formatDate(new Date().toISOString());
     if (appointmentDate === today) {
       const startHour = parseInt(appointmentTimeSlot.split(':')[0], 10);
@@ -353,7 +349,7 @@ Page({
       await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
-      // 绑定成功后自动重新提交预约
+      
       setTimeout(() => this.onSubmit(), 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
@@ -361,7 +357,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：被分享人进入首页而非分享者的预约页
+    
     const app = getApp<IAppOption>();
     const userId = app.globalData.userId;
     const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';

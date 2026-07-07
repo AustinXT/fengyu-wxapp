@@ -1,12 +1,5 @@
 #!/usr/bin/env node
-/**
- * WXML 绑定静态检查
- * 扫描所有页面的 .wxml 文件，提取事件 handler 引用，
- * 与对应 .ts 文件中的 Page() 方法声明交叉校验。
- *
- * 用法：node scripts/check-wxml-bindings.js
- * 退出码：0 = 通过, 1 = 有错误
- */
+
 
 const fs = require('fs')
 const path = require('path')
@@ -14,7 +7,7 @@ const path = require('path')
 const ROOT = path.resolve(__dirname, '..')
 const APP_JSON = path.join(ROOT, 'app.json')
 
-// ————— 从 app.json 收集所有页面路径 —————
+
 
 function getAllPages() {
   const appJson = JSON.parse(fs.readFileSync(APP_JSON, 'utf-8'))
@@ -27,12 +20,12 @@ function getAllPages() {
   return pages
 }
 
-// ————— 从 WXML 中提取事件 handler 名称 —————
+
 
 function extractWxmlHandlers(wxmlContent) {
   const handlers = new Set()
-  // bind:xxx="handler"  bindxxx="handler"  catch:xxx="handler"  catchxxx="handler"
-  // mut-bind:xxx="handler"
+  
+  
   const re = /(?:bind:|catch:|mut-bind:|bind|catch)[\w-]+=["'](\w+)["']/g
   let m
   while ((m = re.exec(wxmlContent)) !== null) {
@@ -41,16 +34,16 @@ function extractWxmlHandlers(wxmlContent) {
   return handlers
 }
 
-// ————— 从 TS 中提取 Page({ ... }) 的方法名 —————
+
 
 function extractPageMethods(tsContent) {
   const methods = new Set()
 
-  // 匹配 Page() 内的方法定义，支持：
-  //   methodName(           — 普通方法
-  //   async methodName(     — async 方法
-  //   methodName:           — 属性简写
-  //   methodName,           — 单行属性
+  
+  
+  
+  
+  
   const re = /^ {2}(?:async\s+)?(\w+)\s*[\(:{,]/gm
   let m
   while ((m = re.exec(tsContent)) !== null) {
@@ -60,7 +53,7 @@ function extractPageMethods(tsContent) {
   return methods
 }
 
-// ————— 主检查逻辑 —————
+
 
 function check() {
   const pages = getAllPages()

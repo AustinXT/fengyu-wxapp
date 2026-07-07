@@ -1,12 +1,4 @@
-/**
- * 认证模块路由（员工端）
- * auth.login, auth.bindPhone
- *
- * employee_id 是 staff_wechat_users 的唯一主键。
- * 行来源仅：WorkFine 历史同步 或 管理后台建档。员工端不建行。
- * login 仅按 openid 查询；bindPhone 按 phone 匹配已建档行写入 openid，
- * 找不到则拒绝（非员工不落库）。
- */
+
 
 const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -20,10 +12,7 @@ const {
   expandScopeStoreIds,
 } = require('../utils/scope')
 
-/**
- * 查询员工权限角色（带 scope 类型）
- * @returns {Array<{role: string, scopeId: string, scopeType: string}>}
- */
+
 async function queryRoleBindings(employeeId) {
   if (!employeeId) return []
   const rows = await pg.query(
@@ -41,9 +30,7 @@ async function queryRoleBindings(employeeId) {
   }))
 }
 
-/**
- * 根据 scopeStoreIds 批量取店名，给前端门店下拉用
- */
+
 async function fetchScopedStores(storeIds) {
   if (!storeIds || storeIds.length === 0) return []
   const rows = await pg.query(
@@ -56,9 +43,7 @@ async function fetchScopedStores(storeIds) {
   return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name }))
 }
 
-/**
- * 组装 auth 响应的权限层级字段
- */
+
 async function buildLevelPayload(employeeId) {
   const roleBindings = await queryRoleBindings(employeeId)
   const roles = [...new Set(roleBindings.map((r) => r.role))]
@@ -69,15 +54,10 @@ async function buildLevelPayload(employeeId) {
   return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores }
 }
 
-/**
- * 员工微信登录
- * 按 openid 查询 staff_wechat_users：
- *   - 找到 → 返回员工信息 + roles
- *   - 未找到 → 返回 isNewUser:true（需 bindPhone 建档或关联）
- */
+
 async function login(ctx) {
-  // 用 ctx.auth.openid（中间件已合并 _testOpenid），不要直接 cloud.getWXContext()
-  // 否则测试模式 switchTestUser 切身份失效——_testOpenid 被忽略，永远返回真实员工
+  
+  
   const OPENID = ctx.auth.openid
 
   const users = await pg.query(`
@@ -143,20 +123,13 @@ async function login(ctx) {
   }
 }
 
-/**
- * 绑定手机号（手机号授权登录）
- * 支持 CloudID 方式（推荐）或直接传入手机号
- *
- * 逻辑：
- *   1. 按 phone 找到已有行 → 写入 openid（关联历史同步/管理后台创建的档案）
- *   2. 找不到 → 抛 NOT_FOUND（非员工，不落库；员工档案须由后台/同步先建）
- */
+
 async function bindPhone(ctx) {
   const { OPENID: realOpenid } = cloud.getWXContext()
   const { phoneNumber: directPhone, _testOpenid: payloadTestOpenid } = ctx.event.payload || {}
   const phoneData = ctx.event.phoneData
 
-  // 测试模式：_testOpenid 覆盖真实 openid（与 middleware/auth.js 同源逻辑；prod 由 runtime-guard 硬闸禁用）
+  
   const testOpenid = testBypassAllowed('ALLOW_TEST_OPENID')
     ? (payloadTestOpenid || ctx.event._testOpenid)
     : null
@@ -164,7 +137,7 @@ async function bindPhone(ctx) {
 
   let phoneNumber = null
 
-  // 方式1: CloudID 方式（推荐）
+  
   if (phoneData) {
     if (phoneData.errCode) {
       throw new Error(`INVALID_PARAMS: 手机号解密失败 (${phoneData.errMsg || phoneData.errCode})`)
@@ -178,7 +151,7 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
     }
   }
-  // 方式2: 直接传入手机号（测试用，独立 ALLOW_DIRECT_PHONE 开关 + 非生产运行时；prod 由 runtime-guard 硬闸禁用）
+  
   else if (directPhone) {
     if (!testBypassAllowed('ALLOW_DIRECT_PHONE')) {
       throw new Error('INVALID_PARAMS: phoneNumber 直传未启用')
@@ -188,15 +161,15 @@ async function bindPhone(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
   }
 
-  // openid 预检：拦截换绑 / 残留行场景，避免 INSERT 命中 uq_staff_users_openid
-  // 员工端 bindPhone 仅负责首次绑定；换手机号由管理后台操作
+  
+  
   const byOpenid = await pg.query(
     'SELECT employee_id, phone FROM staff_wechat_users WHERE openid = $1 LIMIT 1',
     [OPENID]
   )
   if (byOpenid.length > 0 && byOpenid[0].phone !== phoneNumber) {
     if (testOpenid) {
-      // 测试模式：dev openid 允许重新映射到另一员工，先把旧绑定置空
+      
       await pg.query(
         'UPDATE staff_wechat_users SET openid = NULL WHERE employee_id = $1',
         [byOpenid[0].employee_id]
@@ -205,10 +178,10 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 该微信账号已绑定其他手机号，如需变更请联系管理员')
     }
   }
-  // byOpenid.length === 0 → 继续往下按 phone 查 / INSERT
-  // byOpenid.length > 0 且 phone 相同 → 幂等，phone 查询会命中同一行走 UPDATE openid（no-op）
+  
+  
 
-  // 按手机号查找已有行（含历史同步和管理后台创建的）
+  
   const empRows = await pg.query(`
     SELECT
       u.employee_id, u.openid, u.name, u.position_name, u.is_resigned,
@@ -226,14 +199,14 @@ async function bindPhone(ctx) {
   `, [phoneNumber])
 
   if (empRows.length > 0) {
-    // 找到已有行 → 关联 openid
+    
     const emp = empRows[0]
 
     if (emp.openid && emp.openid !== OPENID) {
       if (!testOpenid) {
         throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
       }
-      // 测试模式：允许覆盖目标员工的旧 openid 绑定（下面的 UPDATE 会写新 OPENID）
+      
     }
 
     await pg.query(
@@ -264,8 +237,8 @@ async function bindPhone(ctx) {
     return
   }
 
-  // 未找到已建档行 → 该手机号不是员工，拒绝登录（不再自动建档）
-  // 合法员工档案由管理后台/历史同步预先建立，员工端仅负责绑定 openid
+  
+  
   throw new Error('NOT_FOUND: 手机号未关联员工档案，请联系管理员')
 }
 

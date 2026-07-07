@@ -1,4 +1,4 @@
-/* pagesCoupon/my-coupons/my-coupons.wxss */
+
 
 page {
   background: var(--color-bg-page);

@@ -1,17 +1,4 @@
-/**
- * STEP 4 — 感恩日权益发放（迁自 cronTask/index.js:598-737）
- *
- * 与 STEP 3 的关键差异：
- *   - 仅每月 20 号触发（DB EXTRACT(DAY FROM CURRENT_DATE) 短路；非 20 号直接 return）
- *   - 幂等键带 {YYYY-MM}（月度事件，非年度）
- *   - 优惠券固定 10 天有效期（admin UI 硬约束，不读 coupon_templates.validity_mode）
- *   - 扫描范围：当日 service_orders.status IN ('已完成','服务中') 的会员（DISTINCT 去重）
- *
- * 幂等键：
- *   消息 idempotency_key  = `thx-msg-${YYYY-MM}-${userId}`
- *   积分 external_ref     = `thx-pts-${YYYY-MM}-${userId}`
- *   优惠券 coupon_id      = `thx-${YYYY-MM}-${userId}-${templateId}`
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -43,7 +30,7 @@ export async function grantThanksgivingBenefits(
 ): Promise<ThanksgivingResult> {
   const dateSql = dateSqlOf(ctx)
 
-  // 非 20 号短路返回（避免无谓扫表日志噪音）
+  
   const dayRows = (await db.execute(sql`
     SELECT EXTRACT(DAY FROM ${dateSql})::int AS d
   `)) as Array<{ d: number }>
@@ -129,7 +116,7 @@ async function grantOneThanksgiving(
   config: BenefitItem,
   ctx?: CronContext,
 ): Promise<void> {
-  // 1) 消息
+  
   if (config.messageTitle) {
     const idem = `thx-msg-${yearMonth}-${userId}`
     await tx.execute(sql`
@@ -141,7 +128,7 @@ async function grantOneThanksgiving(
     `)
   }
 
-  // 2) 积分
+  
   if (config.points && config.points > 0) {
     const externalRef = `thx-pts-${yearMonth}-${userId}`
     const inserted = (await tx.execute(sql`
@@ -161,7 +148,7 @@ async function grantOneThanksgiving(
     }
   }
 
-  // 3) 优惠券（固定 10 天有效期，不读 validity_mode）
+  
   if (Array.isArray(config.couponTemplateIds)) {
     for (const templateId of config.couponTemplateIds) {
       const tplRows = (await tx.execute(sql`
@@ -177,7 +164,7 @@ async function grantOneThanksgiving(
 
       const expireAt = new Date(nowOf(ctx).getTime() + 10 * 86400000)
       const couponId = `thx-${yearMonth}-${userId}-${templateId}`
-      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
+      const externalRef = couponId  
       await tx.execute(sql`
         INSERT INTO user_coupons
           (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)

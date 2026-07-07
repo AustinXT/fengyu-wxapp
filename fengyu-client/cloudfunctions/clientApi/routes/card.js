@@ -1,19 +1,12 @@
-/**
- * 充值卡模块路由（顾客端）
- *
- * 2026-05-20 充值卡剥离 SKU 化：
- *   - 充值订单写 sale_orders type='充值单'，不写 sale_items（0 明细行）
- *   - 档位/边界配置来源从代码硬编码迁到 system_configs（recharge.tiers/minAmount/maxAmount）
- *   - 入账识别从 sale_items.is_recharge_card 改为 sale_orders.sale_order_type='充值单'
- */
+
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { shanghaiYYMMDD } = require('../utils/datetime')
 
-// =============================================================
-// 内部：从 system_configs 加载档位 + 匹配
-// =============================================================
+
+
+
 
 async function _loadRechargeConfig(client) {
   const queryRunner = client || pg
@@ -46,19 +39,12 @@ async function _loadRechargeConfig(client) {
   return { tiers, minAmount, maxAmount }
 }
 
-/**
- * 按面值匹配档位实付（精确命中或按最大 ≤ amount 的档位折扣比换算）
- *
- * @param {number} amount
- * @param {object} cfg - { tiers, minAmount, maxAmount }
- * @returns {{ payAmount: number, discount: number }}
- * @throws 'INVALID_PARAMS: ...'
- */
+
 function matchTier(amount, cfg) {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误')
   }
-  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  
   if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
   }
@@ -83,13 +69,11 @@ function matchTier(amount, cfg) {
   return { payAmount, discount }
 }
 
-// =============================================================
-// 路由
-// =============================================================
 
-/**
- * 充值卡列表（一户一账户，余额跨店共享）
- */
+
+
+
+
 async function list(ctx) {
   const { userId } = ctx.auth
 
@@ -109,10 +93,7 @@ async function list(ctx) {
   }
 }
 
-/**
- * 查询当前用户储值卡余额（跨店统一，一户一账户）
- * 无卡返回 { balance: 0, cardId: null }
- */
+
 async function balance(ctx) {
   await requirePhone()(ctx, async () => {})
 
@@ -134,9 +115,7 @@ async function balance(ctx) {
   }
 }
 
-/**
- * 充值卡交易记录（最近6个月）
- */
+
 async function history(ctx) {
   const { userId } = ctx.auth
   const { cardId, page = 1, pageSize = 20 } = ctx.event.payload || {}
@@ -168,11 +147,7 @@ async function history(ctx) {
   }
 }
 
-/**
- * 拉取充值档位配置（公开接口，无需登录）
- *
- * 2026-05-20 数据来源：system_configs（admin 维护）
- */
+
 async function rechargeConfig(ctx) {
   const cfg = await _loadRechargeConfig()
   ctx.result = {
@@ -186,9 +161,7 @@ async function rechargeConfig(ctx) {
   }
 }
 
-/**
- * 关闭过期的待支付订单（10 分钟）以释放唯一约束 uq_sale_orders_client_pending
- */
+
 async function _closeExpiredPendingByUser(client, userId) {
   const expired = await client.query(
     `SELECT sale_order_id FROM sale_orders
@@ -210,22 +183,7 @@ async function _closeExpiredPendingByUser(client, userId) {
   }
 }
 
-/**
- * 创建充值订单（顾客端发起，仅建单不触发支付）
- *
- * 2026-05-20 重构：
- *   - sale_orders.sale_order_type='充值单'，不写 sale_items
- *   - total_amount=面值，payable_amount=实付，prepaid_card_amount=0
- *   - 入账由 payNotify 在 status 翻 '已支付' 时触发
- *
- * 2026-05-20 支付链路复用 order.*：
- *   本函数只建单（status='待支付'，payment_method='微信' 占位），
- *   前端拿到 saleOrderId 后按所选支付方式调用 order.pay / order.alipayPay / order.offlinePay
- *   触发对应支付流程（payment_method 由这三个端点按需覆盖）
- *
- * payload: { faceValue: number }   // 面值；实付按 system_configs 推导
- * 返回:    { saleOrderId, faceValue, payAmount, discount }
- */
+
 async function recharge(ctx) {
   await requirePhone()(ctx, async () => {})
 
@@ -240,7 +198,7 @@ async function recharge(ctx) {
     throw new Error('INVALID_PARAMS: 请先绑定门店')
   }
 
-  // 查询门店 market_name 快照
+  
   const storeRows = await pg.query(
     `SELECT s.store_id, s.store_name, pm.name AS market_name
      FROM stores s
@@ -254,7 +212,7 @@ async function recharge(ctx) {
   }
   const marketName = storeRows[0].market_name || boundMarketName || ''
 
-  // 查询顾客姓名 + document_type
+  
   let customerName = null
   let documentType = '售前'
   {
@@ -299,8 +257,8 @@ async function recharge(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    // 充值单：sale_order_type='充值单'、total_amount=面值、payable_amount=实付、不写 sale_items
-    // payment_method='微信' 只是占位，前端后续调 order.pay/alipayPay/offlinePay 会按所选方式覆盖
+    
+    
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,

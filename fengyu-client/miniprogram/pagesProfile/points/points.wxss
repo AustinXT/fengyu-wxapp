@@ -1,11 +1,11 @@
-/* pagesProfile/points/points.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
 }
 
-/* VIP 卡片 */
+
 .vip-card {
   margin: 24rpx 32rpx;
   border-radius: 20rpx;
@@ -52,7 +52,7 @@
   color: rgba(255, 255, 255, 0.75);
 }
 
-/* 积分记录 */
+
 .history-section {
   background: var(--color-bg-card);
   margin-top: 24rpx;
@@ -70,7 +70,7 @@
   padding: 24rpx 32rpx;
 }
 
-/* 记录列表 */
+
 .record-list {
   padding: 0 32rpx;
 }
@@ -136,7 +136,7 @@
   color: var(--color-text-secondary);
 }
 
-/* 加载更多 */
+
 .loading-more {
   text-align: center;
   padding: 24rpx 0;

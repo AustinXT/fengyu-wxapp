@@ -1,10 +1,10 @@
-<!-- packageOrder/card-inflow/card-inflow.wxml — 旧系统充值金转入（店长） -->
+
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
 <view class="container">
 
-  <!-- 顶部 Hero -->
+  
   <view class="hero">
     <view class="hero-title">旧系统充值金转入</view>
     <view class="hero-sub">将顾客在旧系统的充值金余额等额转入</view>
@@ -14,7 +14,7 @@
     </view>
   </view>
 
-  <!-- 顾客选择块 -->
+  
   <view class="customer-block">
     <view class="block-title">顾客</view>
 
@@ -71,7 +71,7 @@
 
   <view class="body">
 
-    <!-- 转入金额（自由输入，不打折、不限额）-->
+    
     <view class="section-title">转入金额</view>
     <view class="custom-card {{amountInput ? 'custom-card--active' : ''}}">
       <view class="custom-input-row">
@@ -89,7 +89,7 @@
       <view wx:else class="custom-hint custom-hint--placeholder">等额转入·不打折·不限额（如旧系统余额 3680.5 即转入 ¥3680.5）</view>
     </view>
 
-    <!-- 备注（可选）-->
+    
     <view class="section-title">备注（可选）</view>
     <view class="custom-card">
       <input
@@ -103,7 +103,7 @@
       />
     </view>
 
-    <!-- 底部说明 -->
+    
     <view class="footer-note">
       <view class="footer-note-line">· 转入到顾客的储值卡账户（一户一账户，跨店通用）</view>
       <view class="footer-note-line">· 按旧系统余额 1:1 等额录入，不计营业额</view>
@@ -112,7 +112,7 @@
 
   </view>
 
-  <!-- 底部 sticky CTA -->
+  
   <view class="cta-bar safe-bottom">
     <button
       class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"

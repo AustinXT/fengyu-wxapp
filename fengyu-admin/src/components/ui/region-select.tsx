@@ -20,7 +20,7 @@ function getDistricts(cityCode: string) {
     .filter(([code]) => code.startsWith(prefix))
 }
 
-/** 根据名称反查 code */
+
 function findCode(list: [string, string][], name: string): string {
   return list.find(([, n]) => n === name)?.[0] ?? ""
 }
@@ -36,9 +36,9 @@ function parseValue(value: string | null | undefined) {
 }
 
 interface RegionSelectProps {
-  /** 当前值，格式 "省/市/区" */
+  
   value?: string | null
-  /** 隐藏的 input name，用于 FormData 提交 */
+  
   name?: string
 }
 
@@ -59,7 +59,7 @@ export function RegionSelect({ value, name }: RegionSelectProps) {
     ? `${pName}${SEPARATOR}${cName}${SEPARATOR}${districtName}`
     : ""
 
-  // 同步 hidden input value 以便 FormData 能读到
+  
   useEffect(() => {
     if (hiddenRef.current) hiddenRef.current.value = computedValue
   }, [computedValue])

@@ -1,20 +1,10 @@
-/**
- * 门店模块路由（员工端）
- * store.list — 门店列表（从 PG stores 查询）
- * store.unbindRequests — 查询待审批的顾客转店申请（原门店店长）
- * store.approveUnbind — 审批通过转店申请：bound_store_id 直接 from→to（店长）
- * store.rejectUnbind — 拒绝转店申请（店长）
- */
+
 
 const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
 const { logTransition } = require('../utils/operation-log')
 
-/**
- * 门店列表
- * 从 PG stores + org_nodes 查询营业中门店
- * scope 过滤：headquarters 维持全量；其余按 auth.scopeStoreIds 过滤
- */
+
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -60,9 +50,7 @@ async function list(ctx) {
   }))
 }
 
-/**
- * 查询门店待审批的顾客转店申请（原门店店长）
- */
+
 async function unbindRequests(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -100,12 +88,7 @@ async function unbindRequests(ctx) {
   }
 }
 
-/**
- * 审批通过转店申请（原门店店长）
- * 通过后 client_wechat_users.bound_store_id 直接从 from_store_id 改为 to_store_id，
- * 不再置 NULL（永不出现悬空未绑定态）。
- * payload: { requestId }
- */
+
 async function approveUnbind(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -123,16 +106,16 @@ async function approveUnbind(ctx) {
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
   if (!req.to_store_id) throw new Error('INVALID_STATE: 申请缺少目标门店，无法转店')
 
-  // 校验目标门店仍存在且未停业（避免转到已停业门店）
+  
   const target = await pg.query(
     `SELECT store_id FROM stores WHERE store_id = $1 AND is_closed = false`,
     [req.to_store_id]
   )
   if (target.length === 0) throw new Error('INVALID_PARAMS: 目标门店不存在或已停业')
 
-  // 事务：先 CAS 锁申请状态 → 命中后再把顾客门店从 from 改绑到 to
-  // 顺序调换 + CAS（state-machine-cas-guard ticket §4.5）：
-  // 命中失败立即 throw → pg.transaction 自动 ROLLBACK，不会误改顾客门店
+  
+  
+  
   await pg.transaction(async (client) => {
     const upd = await client.query(
       `UPDATE store_unbind_requests
@@ -149,7 +132,7 @@ async function approveUnbind(ctx) {
       `UPDATE client_wechat_users SET bound_store_id = $1, bound_employee_id = NULL, bound_employee_name = NULL, updated_at = NOW() WHERE user_id = $2`,
       [req.to_store_id, req.user_id]
     )
-    // 审计日志
+    
     await logTransition(client, ctx, 'store_unbind.approve', 'store_unbind_request', requestId, '待处理', '已通过', {
       clientUserId: req.user_id,
       fromStoreId: req.from_store_id,
@@ -160,10 +143,7 @@ async function approveUnbind(ctx) {
   ctx.result = { success: true }
 }
 
-/**
- * 拒绝解绑申请（店长）
- * payload: { requestId, rejectReason? }
- */
+
 async function rejectUnbind(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -192,7 +172,7 @@ async function rejectUnbind(ctx) {
         `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已拒绝`
       )
     }
-    // 审计日志
+    
     await logTransition(client, ctx, 'store_unbind.reject', 'store_unbind_request', requestId, '待处理', '已拒绝', {
       fromStoreId: req.from_store_id,
       rejectReason: rejectReason || null,

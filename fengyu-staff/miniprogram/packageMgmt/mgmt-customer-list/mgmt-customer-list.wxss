@@ -1,4 +1,4 @@
-/* packageMgmt/mgmt-customer-list/mgmt-customer-list.wxss */
+
 
 .container {
   background: var(--color-bg-page);
@@ -8,9 +8,9 @@
 .hint-wrap { padding: 80rpx 32rpx; text-align: center; }
 .hint-text { font-size: 26rpx; color: var(--color-text-hint); }
 
-/* 顶部筛选行 → 全局 .mgmt-filter-bar + .mgmt-scope-tag（app.wxss）已统一 */
 
-/* sticky 筛选容器：搜索吸顶 */
+
+
 .mc-sticky-filters {
   position: sticky;
   top: 0;
@@ -18,7 +18,7 @@
   background: var(--color-bg-page);
 }
 
-/* 加载更多 / 没有更多 */
+
 .loading-more {
   display: flex;
   justify-content: center;
@@ -30,7 +30,7 @@
   color: var(--color-text-hint);
 }
 
-/* 顾客卡片 */
+
 .customer-card {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
@@ -90,7 +90,7 @@
   color: var(--color-text-hint);
 }
 
-/* 头像文字 */
+
 .customer-avatar-text {
   font-size: 32rpx;
   font-weight: 700;
@@ -101,7 +101,7 @@
   padding-top: 8rpx;
 }
 
-/* VIP 徽章 */
+
 .vip-badge {
   font-size: 20rpx;
   font-weight: 600;
@@ -112,7 +112,7 @@
   border: 1rpx solid rgba(192, 50, 42, 0.3);
 }
 
-/* 分类徽章 — 三色由 pr.spec §3.14 强制规定，保留硬编码 */
+
 .tier-badge {
   font-size: 20rpx;
   font-weight: 600;

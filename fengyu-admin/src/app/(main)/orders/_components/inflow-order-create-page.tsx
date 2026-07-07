@@ -13,29 +13,23 @@ import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import type { Store, Customer } from "@/lib/types"
 
-/**
- * 旧系统充值金转入页（admin）
- *
- * 把 WorkFine 顾客的充值金余额等额导入小程序储值卡：1:1、不打折、不限额、不计营业额。
- * 入账门店沿用顾客绑定门店（储值卡跨店通用，store_id 仅作订单归属）；转入即时到账。
- * 转入单本质是「充值单」，将来退款走员工端充值卡退款链路（与本页解耦）。
- */
+
 export default function InflowOrderCreatePageClient({ stores }: { stores: Store[] }) {
   const router = useRouter()
 
-  // ===== 顾客 =====
+  
   const [searchKeyword, setSearchKeyword] = useState("")
   const [searching, setSearching] = useState(false)
   const [searchResults, setSearchResults] = useState<Customer[]>([])
   const [searchDone, setSearchDone] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
 
-  // ===== 金额 + 备注 + 提交 =====
+  
   const [amount, setAmount] = useState("")
   const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
-  // 幂等 token：本次进入页面唯一，跨「提交失败后重试」稳定复用。后端据此去重：
-  // 超时丢响应后再次提交不会重复入账（命中既有转入单则复用）。成功即 router.push 离开本页。
+  
+  
   const requestIdRef = useRef<string>("")
   if (!requestIdRef.current) {
     requestIdRef.current = `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
@@ -74,7 +68,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
     setSelectedCustomer(null)
   }
 
-  // 入账门店沿用顾客绑定门店（与寄存单同口径）
+  
   const storeId = selectedCustomer?.boundStoreId || null
   const storeName = useMemo(
     () => stores.find((s) => s.storeId === storeId)?.storeName || "",
@@ -105,7 +99,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         storeId,
         amount: amountNum,
         remark: remark.trim() || null,
-        // 幂等 token：本次进入页面稳定值（跨重试复用），后端据此去重防重复入账
+        
         requestId: requestIdRef.current,
       })
       if (res.success && res.saleOrderId) {
@@ -123,7 +117,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
 
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
@@ -135,7 +129,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         </div>
       </div>
 
-      {/* 提示 banner */}
+      {}
       <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280]">
         充值金转入用于把旧系统（WorkFine）顾客的充值金余额等额导入小程序储值卡，按 1:1 录入、不打折、不限额、不计入营业额 / 提成。
         <br />
@@ -144,7 +138,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         </span>
       </div>
 
-      {/* Section 1: 选择顾客 */}
+      {}
       <Card>
         <CardContent className="p-4 space-y-3">
           <h2 className="text-sm font-semibold text-[var(--foreground)]">1. 选择顾客</h2>
@@ -205,7 +199,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
         </CardContent>
       </Card>
 
-      {/* Section 2: 金额 + 备注 + 提交 */}
+      {}
       {selectedCustomer && (
         <Card>
           <CardContent className="p-4 space-y-3">

@@ -1,10 +1,10 @@
-<!-- pages/appointment/appointment.wxml — 预约管理 -->
+
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
 <view class="container">
 
-  <!-- Tab 筛选 -->
+  
   <van-tabs
     active="{{activeTab}}"
     bind:change="onTabChange"
@@ -17,30 +17,30 @@
     <van-tab title="已取消" name="cancelled" />
   </van-tabs>
 
-  <!-- 加载态 -->
+  
   <view wx:if="{{isLoading}}" class="skeleton-list">
     <van-skeleton title row="3" />
     <van-skeleton title row="3" style="margin-top:24rpx" />
   </view>
 
-  <!-- 错误态 -->
+  
   <view wx:elif="{{loadError}}" class="empty-wrap">
     <van-empty image="error" description="加载失败，下拉刷新重试" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无预约记录" />
   </view>
 
-  <!-- 预约列表 -->
+  
   <view wx:else class="list-wrap">
     <view
       wx:for="{{list}}"
       wx:key="appointment_id"
       class="appt-card"
     >
-      <!-- 卡片头：服务名 + 状态 -->
+      
       <view class="appt-card__header">
         <text class="appt-service">{{item.service_name || '—'}}</text>
         <van-tag
@@ -50,14 +50,14 @@
         >{{item.status_label}}</van-tag>
       </view>
 
-      <!-- 详情行 -->
+      
       <van-cell-group border="{{false}}">
         <van-cell title="预约时间" value="{{item.appointment_time_fmt}}" icon="clock-o" />
         <van-cell title="门店" value="{{item.store_name || '—'}}" icon="location-o" />
         <van-cell title="美容师" value="{{item.employee_name || '未指定'}}" icon="contact" />
       </van-cell-group>
 
-      <!-- 操作按钮 -->
+      
       <view class="appt-card__actions" wx:if="{{item.status === '待确认'}}">
         <van-button
           size="small"
@@ -70,14 +70,14 @@
       </view>
     </view>
 
-    <!-- 加载更多 / 底部提示 -->
+    
     <view class="list-footer">
       <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
       <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多预约了</text>
     </view>
   </view>
 
-  <!-- 底部发起预约按钮 -->
+  
   <view class="fab-wrap safe-area-bottom" wx:if="{{!isLoading}}">
     <van-button
       type="primary"

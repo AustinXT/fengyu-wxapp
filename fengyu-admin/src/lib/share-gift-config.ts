@@ -1,31 +1,26 @@
-/**
- * 分享礼运营配置
- *
- * 存储为 system_configs.share_gift_config JSON 字符串。
- * 云函数 grantShareGift(payNotify/staffApi/clientApi) 读取相同键。
- */
+
 export interface ShareGiftConfig {
-  /** 总开关；false 时 grantShareGift 直接 return */
+  
   enabled: boolean
-  /** 新客首单 paid_amount × percent 为券面值；clamp 到 [0.01, 0.5] */
+  
   percent: number
-  /** 面值下限（元，含）；计算结果 < min 时取 min */
+  
   minFaceValue: number
-  /** 面值上限（元，含）；计算结果 > max 时取 max */
+  
   maxFaceValue: number
-  /** 券模板 ID（coupon_templates.template_id）；空字符串表示未选择 */
+  
   couponTemplateId: string
-  /** 兜底有效期天数（模板为 days 模式时用模板 valid_days；fixed 模式用 valid_to） */
+  
   validityDays: number
-  /** 要求邀请人自身至少有一笔结清订单 */
+  
   inviterMustHavePaidOrder: boolean
-  /** 给邀请人的消息标题；空字符串不发该条 */
+  
   messageInviterTitle: string
-  /** 给邀请人的消息正文；支持 {paidAmount}/{couponValue}/{validityDays} 占位符 */
+  
   messageInviterBody: string
-  /** 给新客的消息标题 */
+  
   messageInviteeTitle: string
-  /** 给新客的消息正文 */
+  
   messageInviteeBody: string
 }
 
@@ -51,14 +46,7 @@ function clampNumber(n: unknown, min: number, max: number, fallback: number): nu
   return Math.max(min, Math.min(max, v))
 }
 
-/**
- * 规范化分享礼配置（与 grantShareGift 云函数 clamp 规则保持一致）。
- * - enabled / inviterMustHavePaidOrder → boolean
- * - percent → clamp 到 [0.01, 0.5]，非数字回退默认
- * - minFaceValue / maxFaceValue → ≥ 0 的 2 位小数；min > max 时交换
- * - couponTemplateId / 文案 → trim
- * - validityDays → [1, 3650] 整数
- */
+
 export function normalizeShareGiftConfig(input: unknown): ShareGiftConfig {
   if (!input || typeof input !== 'object') return { ...DEFAULT_SHARE_GIFT_CONFIG }
   const r = input as Record<string, unknown>

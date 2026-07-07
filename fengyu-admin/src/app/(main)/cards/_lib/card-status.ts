@@ -1,9 +1,4 @@
-/**
- * 疗程卡状态判定（与 getCardsPaginated SQL 语义保持一致）：
- *  - expired:   有有效期且已过期
- *  - exhausted: 剩余为 0
- *  - active:    其它（含 expire_date 为空 = 永久）
- */
+
 export type CardStatus = "active" | "exhausted" | "expired";
 
 export function computeCardStatus(row: {

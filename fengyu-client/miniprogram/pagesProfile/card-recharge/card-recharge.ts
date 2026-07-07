@@ -1,4 +1,4 @@
-// pagesProfile/card-recharge/card-recharge.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
@@ -15,7 +15,7 @@ interface TierVM {
   bonusLabel: string;
 }
 
-/** 折扣 0.99 → "9.9 折" */
+
 function formatDiscountLabel(d: number): string {
   return (d * 10).toFixed(1).replace(/\.0$/, '') + ' 折';
 }
@@ -30,8 +30,8 @@ Page({
     minAmount: 500,
     maxAmount: 100000,
 
-    selectedTier: 0,        // 选中的预设档面值；0 = 未选
-    customMode: false,      // 是否处于"自定义金额"模式
+    selectedTier: 0,        
+    customMode: false,      
     customInput: '',
     customPayAmount: 0,
     customDiscountLabel: '',
@@ -40,19 +40,19 @@ Page({
     customBonusLabel: '',
     customError: '',
 
-    // CTA
+    
     ctaText: '请选择充值金额',
     ctaDisabled: true,
 
-    // 提交态
+    
     submitting: false,
 
-    // 手机绑定
+    
     showPhoneBind: false,
   },
 
   _config: null as RechargeConfig | null,
-  _pendingFaceValue: 0,    // 手机绑定流程后自动重提交（纯逻辑层，不参与渲染）
+  _pendingFaceValue: 0,    
 
   onLoad() {
     const storeId = app.globalData.boundStoreId || '';
@@ -62,7 +62,7 @@ Page({
   },
 
   onShow() {
-    // 用户可能从门店选择页返回，更新一次
+    
     const storeId = app.globalData.boundStoreId || '';
     const storeName = app.globalData.boundStoreName || '';
     if (storeId !== this.data.boundStoreId || storeName !== this.data.boundStoreName) {
@@ -99,7 +99,7 @@ Page({
     }
   },
 
-  // ============ 选择档位 ============
+  
 
   onTierTap(e: WechatMiniprogram.TouchEvent) {
     const faceValue = Number(e.currentTarget.dataset.faceValue);
@@ -117,7 +117,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ 自定义金额 ============
+  
 
   onCustomFocus() {
     this.setData({ customMode: true, selectedTier: 0 });
@@ -180,7 +180,7 @@ Page({
     this.updateCta();
   },
 
-  /** 综合当前金额选择刷新 CTA 文案/可用态 */
+  
   updateCta() {
     const { customMode, customInput, customPayAmount, customError, selectedTier, tiers } = this.data;
 
@@ -210,12 +210,12 @@ Page({
     this.setData({ ctaText: `立即充值 ¥${formatAmount(payAmount)}`, ctaDisabled: false });
   },
 
-  // ============ 提交充值 ============
+  
 
   async onRecharge() {
     if (this.data.submitting || this.data.ctaDisabled) return;
 
-    // 算出待充值的面值
+    
     let faceValue: number;
     if (this.data.customMode) {
       faceValue = Number(this.data.customInput);
@@ -228,7 +228,7 @@ Page({
       return;
     }
 
-    // 前置：未绑定门店直接拦截（云函数也会校验，前端先拦免一次往返）
+    
     if (!this.data.boundStoreId) {
       Toast('请先绑定门店');
       Dialog.confirm({
@@ -242,7 +242,7 @@ Page({
       return;
     }
 
-    // 纯逻辑层暂存（手机绑定后回填重提交），不参与渲染 → 挂 this._ 不进 data
+    
     this._pendingFaceValue = faceValue;
     await this.doRecharge(faceValue);
   },
@@ -250,7 +250,7 @@ Page({
   async doRecharge(faceValue: number) {
     this.setData({ submitting: true });
     try {
-      // 仅建单，付款方式选择 + 支付触发由 checkout 页统一处理
+      
       const created = await callClientApi<{ saleOrderId: string }>('card.recharge', { faceValue });
       const saleOrderId = created?.saleOrderId;
       if (!saleOrderId) throw new Error('创建充值订单失败');
@@ -283,7 +283,7 @@ Page({
     }
   },
 
-  // ============ 手机绑定 ============
+  
 
   onClosePhoneBind() {
     this.setData({ showPhoneBind: false });

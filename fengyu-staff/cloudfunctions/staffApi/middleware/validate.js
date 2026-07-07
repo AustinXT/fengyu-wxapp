@@ -1,11 +1,6 @@
-/**
- * 参数校验中间件
- */
 
-/**
- * 校验必填字段
- * @param {Array<string>} fields - 必填字段列表
- */
+
+
 function requireFields(...fields) {
   return (ctx, next) => {
     const missing = fields.filter(f => !ctx.event.payload || ctx.event.payload[f] === undefined)
@@ -16,10 +11,7 @@ function requireFields(...fields) {
   }
 }
 
-/**
- * 校验字段类型
- * @param {Object} schema - 字段类型定义 { field: 'string'|'number'|'array'|'object' }
- */
+
 function validateTypes(schema) {
   return (ctx, next) => {
     const payload = ctx.event.payload || {}

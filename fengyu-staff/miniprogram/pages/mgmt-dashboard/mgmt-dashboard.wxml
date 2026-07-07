@@ -1,9 +1,9 @@
-<!-- pages/mgmt-dashboard — 管理层 Hub：4 tab 在同页内切换 -->
+
 <view class="mgmt-hub">
-  <!-- 首页（数据中心） -->
+  
   <block wx:if="{{activeTab === 'dashboard'}}">
     <view class="mgmt-dash">
-      <!-- 顶部筛选栏：时间靠左 + 市场靠右，同一行 -->
+      
       <view class="mgmt-dash-filters">
         <view class="filter-trigger" bindtap="onCalendarOpen">
           <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
@@ -17,10 +17,10 @@
         />
       </view>
 
-      <!-- 三态壳：loading / error 时由组件接管，content 时渲染 slot -->
+      
       <mgmt-data-state state="{{ summaryState }}" bind:retry="onSummaryRetry">
         <view wx:if="{{ display }}">
-          <!-- 大卡片：2×2 -->
+          
           <view class="mgmt-dash-grid-large">
             <view class="dash-card dash-card--large">
               <view class="dash-card-title">门店业绩</view>
@@ -48,7 +48,7 @@
             </view>
           </view>
 
-          <!-- 小卡片：4×1 -->
+          
           <view class="mgmt-dash-grid-small">
             <view class="dash-card dash-card--small">
               <view class="dash-card-title">客流</view>
@@ -72,7 +72,7 @@
             </view>
           </view>
 
-          <!-- A. 门店状况（按 selectedDate 历史化，2026-04-25 T2-T6 完成） -->
+          
           <view class="dash-section-title">门店状况</view>
 
           <view class="dash-status-row1">
@@ -103,7 +103,7 @@
             </view>
           </view>
 
-          <!-- B. 人效数据（按 selectedDate 历史化，2026-04-25 T6 完成） -->
+          
           <view class="dash-section-title">人效数据</view>
 
           <view class="mgmt-dash-grid-small">
@@ -159,8 +159,8 @@
         </view>
       </mgmt-data-state>
 
-      <!-- C. 入口区：4 列原生 CSS Grid（永远显示，加载失败也能跳转） -->
-      <!-- 不用 van-grid：其 grid-item 通过 relation 异步取 columnNum，首帧 width=NaN% 会塌缩到左上 -->
+      
+      
       <view class="dash-entries">
         <view class="dash-entry-card" data-entry="traffic" bindtap="onEntryTap">
           <van-icon name="friends-o" size="56rpx" color="#C0322A" />
@@ -180,7 +180,7 @@
         </view>
       </view>
 
-      <!-- 日历弹窗：主题色对齐 #C0322A；min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
+      
       <van-calendar
         show="{{ showCalendar }}"
         color="#C0322A"
@@ -194,10 +194,10 @@
     </view>
   </block>
 
-  <!-- 门店排行榜 -->
+  
   <block wx:elif="{{activeTab === 'storeRanking'}}">
     <view class="mgmt-ranking">
-      <!-- sticky 筛选区：period chip + metric tabs -->
+      
       <view class="ranking-filters">
         <mgmt-period-picker
           options="{{ rankingPeriodsForPicker }}"
@@ -212,7 +212,7 @@
         />
       </view>
 
-      <!-- 排行榜表格 -->
+      
       <view class="ranking-table">
         <view class="ranking-table-title">门店排行榜</view>
 
@@ -242,10 +242,10 @@
     </view>
   </block>
 
-  <!-- 员工排行榜 -->
+  
   <block wx:elif="{{activeTab === 'staffRanking'}}">
     <view class="mgmt-ranking">
-      <!-- sticky 筛选区 -->
+      
       <view class="ranking-filters">
         <mgmt-period-picker
           options="{{ rankingPeriodsForPicker }}"
@@ -260,7 +260,7 @@
         />
       </view>
 
-      <!-- 排行榜表格 -->
+      
       <view class="ranking-table">
         <view class="ranking-table-title">员工排行榜</view>
 
@@ -290,10 +290,10 @@
     </view>
   </block>
 
-  <!-- 我的 -->
+  
   <block wx:elif="{{activeTab === 'profile'}}">
     <view class="mgmt-profile-wrap">
-      <!-- Header（保留） -->
+      
       <view class="mgmt-profile-header">
         <view class="mgmt-profile-name">{{staffName || '未命名员工'}}</view>
         <view class="mgmt-profile-meta">
@@ -304,7 +304,7 @@
       </view>
 
       <view class="mgmt-profile-body">
-        <!-- 基本信息卡 -->
+        
         <view class="profile-section-title">基本信息</view>
         <view class="profile-card" wx:if="{{basicInfo}}">
           <view class="profile-row"><text class="lbl">姓名</text><text class="val">{{basicInfo.staffName}}</text></view>
@@ -314,7 +314,7 @@
           <view class="profile-row"><text class="lbl">层级</text><text class="val">{{basicInfo.staffLevelLabel}}</text></view>
         </view>
 
-        <!-- 组织归属卡 -->
+        
         <view class="profile-section-title">组织归属</view>
         <view class="profile-card">
           <view class="profile-table-header">
@@ -330,7 +330,7 @@
           </block>
         </view>
 
-        <!-- 管辖范围卡 -->
+        
         <view wx:if="{{storeScope}}" class="profile-section-title">管辖范围</view>
         <view wx:if="{{storeScope}}" class="profile-card">
           <view class="profile-store-title">{{storeScope.title}}</view>
@@ -352,9 +352,9 @@
           </block>
         </view>
 
-        <!-- 切换到门店视图（可切换才显示） -->
+        
         <button wx:if="{{canSwitchView}}" class="mgmt-profile-action mgmt-profile-action--ghost" bindtap="onSwitchView">切换到门店视图</button>
-        <!-- 退出登录（保留） -->
+        
         <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
       </view>
     </view>

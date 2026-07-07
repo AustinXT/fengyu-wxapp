@@ -1,13 +1,13 @@
-<!-- pagesProfile/member-benefits/member-benefits.wxml -->
+
 <van-toast id="van-toast" />
 
-<!-- 加载态 -->
+
 <view wx:if="{{isLoading}}" class="skeleton-wrap">
   <van-skeleton title row="4" />
 </view>
 
 <block wx:else>
-  <!-- 规则说明卡 -->
+  
   <view class="hero">
     <view class="hero__badge">🎁 邀请有礼</view>
     <block wx:if="{{rule.enabled}}">
@@ -46,7 +46,7 @@
     </block>
   </view>
 
-  <!-- 我的分享礼 -->
+  
   <view class="section" wx:if="{{loggedIn}}">
     <view class="section__head">我的分享礼</view>
 
@@ -84,7 +84,7 @@
     </view>
   </view>
 
-  <!-- 未登录提示 -->
+  
   <view class="section" wx:else>
     <van-empty description="登录后可查看你获得的分享礼" />
   </view>

@@ -17,21 +17,12 @@ import { calcCouponDiscount } from '@/lib/utils'
 import { beijingTs, nowTs } from '@/lib/db-time'
 import { fmtDate } from '@/lib/datetime'
 
-/**
- * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
- * 按北京字面拼 timestamp（开始=当天 00:00:00、结束=当天 23:59:59），与前端 coupon-validity-helper
- * 及 validateValidityFields 同口径。**不经 new Date/beijingTs**：date-only 串按 ES 规范当 UTC 午夜解析、
- * 再 beijingTs 会偏 +8h（同 orders.ts 报表筛选 bug，见 lib/db-time）。DB 现值（Date）走 fmtDate 取北京日期。
- */
+
 function validBoundTs(value: string | Date, time: '00:00:00' | '23:59:59') {
   return sql`${`${fmtDate(value)} ${time}`}::timestamp`
 }
 
-/**
- * 有效期字段校验（基于合并后的完整状态）。
- * createTemplate 直接传入提交数据；updateTemplate 传入 DB 现值 merge 补丁的 merged。
- * 错误消息必须与前端 `validateCouponValidityFields` helper 字符级一致。
- */
+
 function validateValidityFields(merged: {
   validityMode?: string | null
   validDays?: number | null
@@ -54,9 +45,9 @@ function validateValidityFields(merged: {
     if (!merged.validFrom || !merged.validTo) {
       return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
     }
-    // 规整为北京日期 YYYY-MM-DD：string（type=date 提交值，new Date 当 UTC 午夜会偏）取前 10 位；
-    // Date（DB 现值，admin 进程 TZ=Asia/Shanghai）按北京时区取日期。结束日期以当天 23:59:59 为界，
-    // 避免北京凌晨把"今天到期"误判为已过期（与前端 coupon-validity-helper 字符级一致）。
+    
+    
+    
     const toBeijingDate = (v: string | Date): string =>
       v instanceof Date
         ? new Intl.DateTimeFormat('en-CA', {
@@ -83,10 +74,7 @@ function validateValidityFields(merged: {
   return { ok: true }
 }
 
-/**
- * 获取所有市场节点（type='市场'），用于优惠券市场作用域选择。
- * 按当前账号 scope 过滤：总部全开；市场/门店级仅返回所在市场。
- */
+
 export const getMarkets = withPermission(
   'coupon:list',
   async (session): Promise<{ id: string; name: string }[]> => {
@@ -98,17 +86,14 @@ export const getMarkets = withPermission(
       .select({ id: orgNodes.id, name: orgNodes.name })
       .from(orgNodes)
       .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true), scopeCond))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(orgNodes.sortOrder))
 
     return rows
   },
 )
 
-/**
- * 获取品项分类列表（品项券适用范围选择用）。
- * 权限走 coupon:list，避免依赖 product:list。
- */
+
 export const getCategoriesForCoupon = withPermission(
   'coupon:list',
   async (_session): Promise<{ categoryId: string; categoryName: string; productKind: string | null }[]> => {
@@ -120,7 +105,7 @@ export const getCategoriesForCoupon = withPermission(
       })
       .from(productCategories)
       .where(eq(productCategories.isValid, true))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(productCategories.sortOrder))
 
     return rows.map((r) => ({
@@ -131,10 +116,7 @@ export const getCategoriesForCoupon = withPermission(
   },
 )
 
-/**
- * 查询顾客在当前订单金额下可用的优惠券列表。
- * 过滤规则：未使用 + 未过期 + 模板启用 + 满足 minSpend + storeId 适用（if set）+ 市场适用
- */
+
 export const getAvailableCoupons = withPermission(
   'sale_order:create',
   async (
@@ -143,8 +125,8 @@ export const getAvailableCoupons = withPermission(
     totalAmount: number,
     storeId?: string,
   ): Promise<AvailableCoupon[]> => {
-    // 防御性强制数值化：避免外部调用方透传字符串导致 PG 隐式 cast 边界抖动
-    // 并归一化到分，与 client/staff coupon.available / order.create 对齐
+    
+    
     const totalRaw = Number(totalAmount)
     if (!Number.isFinite(totalRaw) || totalRaw < 0) {
       throw new Error('INVALID_PARAMS: totalAmount 参数非法')
@@ -158,10 +140,10 @@ export const getAvailableCoupons = withPermission(
         )
       : isNull(couponTemplates.applicableStoreIds)
 
-    // 市场过滤：先解析 storeId → marketId，再检查 applicableMarketIds
+    
     let marketCondition
     if (storeId) {
-      // 通过 stores → org_nodes 找到门店所属市场
+      
       const storeRow = await db
         .select({ parentId: orgNodes.parentId })
         .from(stores)
@@ -203,7 +185,7 @@ export const getAvailableCoupons = withPermission(
         storeCondition,
         marketCondition,
       ))
-      // 例外：业务时间优先（即将过期的券靠前显示）
+      
       .orderBy(asc(userCoupons.expireAt))
 
     return rows.map((r) => {
@@ -256,11 +238,11 @@ export const getTemplates = withPermission(
     const rows = await db
       .select()
       .from(couponTemplates)
-      // 默认排序：最近编辑过的模板浮顶（admin.sys.spec.md §5）
+      
       .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt))
       .limit(500)
 
-    // 聚合每个模板的已发放数量（不受 status 过滤，反映总发放量）
+    
     const counts = await db
       .select({
         templateId: userCoupons.templateId,
@@ -313,23 +295,23 @@ export const createTemplate = withPermission(
       isActive?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
-    // 校验券种类型
+    
     const VALID_COUPON_TYPES = ['现金券', '品项券', '折扣券']
     if (!VALID_COUPON_TYPES.includes(data.couponType)) {
       return { success: false, message: `无效的券种类型: ${data.couponType}` }
     }
 
-    // 校验 discountValue
+    
     const dv = Number(data.discountValue)
     if (isNaN(dv) || dv <= 0) {
       return { success: false, message: '优惠值必须为正数' }
     }
-    // 折扣券的 discountValue 必须在 (0, 1) 之间
+    
     if (data.couponType === '折扣券' && (dv <= 0 || dv >= 1)) {
       return { success: false, message: '折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）' }
     }
 
-    // 校验有效期字段（days/fixed 分支）
+    
     const validityCheck = validateValidityFields({
       validityMode: data.validityMode,
       validDays: data.validDays ?? null,
@@ -340,7 +322,7 @@ export const createTemplate = withPermission(
       return { success: false, message: validityCheck.message }
     }
 
-    // 根据模式强制另一侧为 null，避免脏数据
+    
     const isDays = data.validityMode === 'days'
     const insertValidFrom = isDays ? null : (data.validFrom ? validBoundTs(data.validFrom, '00:00:00') : null)
     const insertValidTo = isDays ? null : (data.validTo ? validBoundTs(data.validTo, '23:59:59') : null)
@@ -402,17 +384,17 @@ export const updateTemplate = withPermission(
       description?: string | null
       isActive?: boolean
     },
-    /** 乐观锁：提交时携带的 updated_at */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff + 合并校验
+    
     const [before] = await db.select().from(couponTemplates).where(eq(couponTemplates.templateId, templateId)).limit(1)
 
     if (!before) {
       return { success: false, message: '优惠券模板不存在' }
     }
 
-    // 若 patch 触及任一有效期相关字段，必须走合并后的完整校验
+    
     const patchTouchesValidity =
       data.validityMode !== undefined ||
       data.validDays !== undefined ||
@@ -422,7 +404,7 @@ export const updateTemplate = withPermission(
     const updateData: Record<string, unknown> = { ...data }
 
     if (patchTouchesValidity) {
-      // 检测模式切换：patch 显式把 validityMode 从 before 的模式切到另一个模式
+      
       const nextMode = data.validityMode !== undefined ? data.validityMode : (before as any).validityMode
       const modeSwitched = data.validityMode !== undefined && data.validityMode !== (before as any).validityMode
 
@@ -437,7 +419,7 @@ export const updateTemplate = withPermission(
         }
       }
 
-      // 构造 merged = before ∪ patch（patch 中显式出现的字段覆盖 before）
+      
       const merged = {
         validityMode: data.validityMode !== undefined ? data.validityMode : (before as any).validityMode,
         validDays: data.validDays !== undefined ? data.validDays : (before as any).validDays,
@@ -454,22 +436,22 @@ export const updateTemplate = withPermission(
         return { success: false, message: validityCheck.message }
       }
 
-      // 根据 merged 模式强制清空另一侧字段
+      
       if (merged.validityMode === 'days') {
         updateData.validFrom = null
         updateData.validTo = null
         updateData.validDays = merged.validDays
       } else {
         updateData.validDays = null
-        // fixed 模式写 valid_from/valid_to：取 patch 串或 DB 现值，按北京字面拼 00:00:00/23:59:59
-        // （merged.validFrom 是 Date 仅供校验；写库须用 validBoundTs 避免 new Date/beijingTs 的 +8h）。
+        
+        
         const fromSrc = data.validFrom !== undefined ? data.validFrom : (before as any).validFrom
         const toSrc = data.validTo !== undefined ? data.validTo : (before as any).validTo
         updateData.validFrom = fromSrc ? validBoundTs(fromSrc, '00:00:00') : null
         updateData.validTo = toSrc ? validBoundTs(toSrc, '23:59:59') : null
       }
     } else {
-      // 未触及有效期字段，仍需规范日期序列化（保持旧行为）
+      
       if (data.validFrom !== undefined) {
         updateData.validFrom = data.validFrom ? validBoundTs(data.validFrom, '00:00:00') : null
       }
@@ -511,7 +493,7 @@ export const toggleTemplateActive = withPermission(
     session,
     templateId: string,
     isActive: boolean,
-    /** 乐观锁：提交时携带的 updated_at */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
     const whereConditions = expectedUpdatedAt
@@ -544,10 +526,7 @@ export const toggleTemplateActive = withPermission(
   },
 )
 
-/**
- * 向指定顾客发放一张优惠券。
- * 校验：模板启用 + 发放量未超限 + 顾客存在 + 有效期计算。
- */
+
 export const issueCoupon = withPermission(
   'coupon:create',
   async (
@@ -555,7 +534,7 @@ export const issueCoupon = withPermission(
     templateId: string,
     phone: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 1. 查模板
+    
     const [tpl] = await db
       .select()
       .from(couponTemplates)
@@ -565,7 +544,7 @@ export const issueCoupon = withPermission(
     if (!tpl) return { success: false, message: '优惠券模板不存在' }
     if (!tpl.isActive) return { success: false, message: '该模板已停用，无法发放' }
 
-    // 2. 校验发放量限制
+    
     if (tpl.totalCount !== null) {
       const [{ count }] = await db
         .select({ count: sql<number>`COUNT(*)::int` })
@@ -577,7 +556,7 @@ export const issueCoupon = withPermission(
       }
     }
 
-    // 3. 查顾客
+    
     const [customer] = await db
       .select({ userId: clientWechatUsers.userId, name: clientWechatUsers.name })
       .from(clientWechatUsers)
@@ -586,7 +565,7 @@ export const issueCoupon = withPermission(
 
     if (!customer) return { success: false, message: '未找到该手机号对应的顾客' }
 
-    // 4. 计算 expireAt（写北京墙钟字面，见 lib/db-time；原 new Date() 经 postgres.js 落 UTC 字面早 8h）
+    
     let expireAt: SQL
     if (tpl.validityMode === 'days' && tpl.validDays) {
       const d = new Date()
@@ -602,7 +581,7 @@ export const issueCoupon = withPermission(
       return { success: false, message: '优惠券模板有效期配置异常，请联系管理员修复后再发放' }
     }
 
-    // 5. 生成 couponId 并插入
+    
     const couponId = `cpn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
     await db.insert(userCoupons).values({
@@ -625,9 +604,7 @@ export const issueCoupon = withPermission(
   },
 )
 
-/**
- * 查询某模板下的所有已发放券记录。
- */
+
 export const getIssuedCoupons = withPermission(
   'coupon:list',
   async (_session, templateId: string): Promise<IssuedCoupon[]> => {
@@ -643,7 +620,7 @@ export const getIssuedCoupons = withPermission(
       .from(userCoupons)
       .innerJoin(clientWechatUsers, eq(userCoupons.userId, clientWechatUsers.userId))
       .where(eq(userCoupons.templateId, templateId))
-      // 例外：已发放流水，user_coupons 表无 updatedAt 列
+      
       .orderBy(desc(userCoupons.createdAt))
       .limit(500)
 
@@ -658,10 +635,7 @@ export const getIssuedCoupons = withPermission(
   },
 )
 
-/**
- * 批量向多个顾客发放优惠券。
- * 全有全无：所有手机号必须匹配顾客，否则整批拒绝。
- */
+
 export const batchIssueCoupons = withPermission(
   'coupon:create',
   async (
@@ -673,7 +647,7 @@ export const batchIssueCoupons = withPermission(
     message: string
     errors?: Array<{ phone: string; reason: string }>
   }> => {
-    // 1. 去重 + 基本校验
+    
     const uniquePhones = [...new Set(phones.map((p) => p.trim()).filter(Boolean))]
     if (uniquePhones.length === 0) {
       return { success: false, message: '请输入至少一个手机号' }
@@ -682,7 +656,7 @@ export const batchIssueCoupons = withPermission(
       return { success: false, message: '单次批量发放不能超过 200 个手机号' }
     }
 
-    // 2. 查模板
+    
     const [tpl] = await db
       .select()
       .from(couponTemplates)
@@ -692,7 +666,7 @@ export const batchIssueCoupons = withPermission(
     if (!tpl) return { success: false, message: '优惠券模板不存在' }
     if (!tpl.isActive) return { success: false, message: '该模板已停用，无法发放' }
 
-    // 3. 校验发放量限制
+    
     if (tpl.totalCount !== null) {
       const [{ count }] = await db
         .select({ count: sql<number>`COUNT(*)::int` })
@@ -708,7 +682,7 @@ export const batchIssueCoupons = withPermission(
       }
     }
 
-    // 4. 批量查顾客
+    
     const customers = await db
       .select({ userId: clientWechatUsers.userId, name: clientWechatUsers.name, phone: clientWechatUsers.phone })
       .from(clientWechatUsers)
@@ -716,7 +690,7 @@ export const batchIssueCoupons = withPermission(
 
     const customerMap = new Map(customers.map((c) => [c.phone!, { userId: c.userId, name: c.name }]))
 
-    // 5. 检查未匹配手机号
+    
     const errors: Array<{ phone: string; reason: string }> = []
     for (const phone of uniquePhones) {
       if (!customerMap.has(phone)) {
@@ -727,7 +701,7 @@ export const batchIssueCoupons = withPermission(
       return { success: false, message: `有 ${errors.length} 个手机号未匹配到顾客`, errors }
     }
 
-    // 6. 计算 expireAt（写北京墙钟字面，见 lib/db-time）
+    
     let expireAt: SQL
     if (tpl.validityMode === 'days' && tpl.validDays) {
       const d = new Date()
@@ -743,7 +717,7 @@ export const batchIssueCoupons = withPermission(
       return { success: false, message: '优惠券模板有效期配置异常，请联系管理员修复后再发放' }
     }
 
-    // 7. 事务内批量插入
+    
     const now = Date.now()
     const values = uniquePhones.map((phone, i) => {
       const customer = customerMap.get(phone)!
@@ -758,7 +732,7 @@ export const batchIssueCoupons = withPermission(
 
     await db.insert(userCoupons).values(values)
 
-    // 8. 审计日志
+    
     await logOperation(session, 'coupon.batchIssue', 'coupon_template', templateId, {
       templateName: tpl.name,
       count: uniquePhones.length,
@@ -770,10 +744,7 @@ export const batchIssueCoupons = withPermission(
   },
 )
 
-/**
- * 将组织节点 ID 解析为对应的 storeId 列表。
- * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
- */
+
 async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
   const [node] = await db
     .select({ type: orgNodes.type, parentId: orgNodes.parentId })
@@ -806,11 +777,7 @@ async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | n
   return null
 }
 
-/**
- * 批量发券时的顾客分页列表。
- * 权限走 coupon:create（而非 customer:list），以便 product 角色可用。
- * 仅返回有手机号的顾客。
- */
+
 export const getCustomersForBatchIssue = withPermission(
   'coupon:create',
   async (
@@ -831,7 +798,7 @@ export const getCustomersForBatchIssue = withPermission(
       isNotNull(clientWechatUsers.phone),
     ]
 
-    // 组织节点 → storeIds 过滤
+    
     if (filters.orgNodeId) {
       const storeIds = await resolveOrgNodeToStoreIds(filters.orgNodeId)
       if (storeIds !== null) {
@@ -874,7 +841,7 @@ export const getCustomersForBatchIssue = withPermission(
         .from(clientWechatUsers)
         .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
         .where(whereClause)
-        // 例外：picker 字母序
+        
         .orderBy(asc(clientWechatUsers.name))
         .limit(pageSize)
         .offset(offset),
@@ -893,17 +860,14 @@ export const getCustomersForBatchIssue = withPermission(
   },
 )
 
-/**
- * 组织树节点列表（批量发券筛选用）。
- * 权限走 coupon:create，product 角色无 org:list 但有此权限。
- */
+
 export const getOrgNodesForBatchIssue = withPermission(
   'coupon:create',
   async (_session): Promise<OrgNode[]> => {
     const rows = await db
       .select()
       .from(orgNodes)
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(orgNodes.sortOrder))
     return rows.map((row) => ({
       id: row.id,

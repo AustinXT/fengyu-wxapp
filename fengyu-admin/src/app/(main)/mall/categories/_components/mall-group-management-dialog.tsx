@@ -173,7 +173,7 @@ export default function MallGroupManagementDialog({
         </div>
       </Dialog>
 
-      {/* Add/Edit form dialog */}
+      {}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogHeader>
           <DialogTitle>{editing ? "编辑分组" : "新增分组"}</DialogTitle>
@@ -206,7 +206,7 @@ export default function MallGroupManagementDialog({
         </DialogFooter>
       </Dialog>
 
-      {/* Delete confirmation */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>

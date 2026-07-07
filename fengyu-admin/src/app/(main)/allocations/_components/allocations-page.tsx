@@ -21,7 +21,7 @@ import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/util
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
-/** 销售提成「回款维度」列表行（getPendingPayments 返回项；销售 Tab 用） */
+
 export interface PaymentAllocationRow {
   salePaymentId: number
   saleOrderId: string
@@ -50,9 +50,7 @@ function formatDate(dt: string | null | undefined) {
   return fmtDate(dt)
 }
 
-/**
- * 营业额分配列表 — 服务端分页 + Tab 切换（销售提成 / 服务提成）
- */
+
 export default function AllocationsPageClient({
   tab,
   stores = [],
@@ -72,9 +70,9 @@ export default function AllocationsPageClient({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // Why: 切换 Tab / 分页走 router.replace 触发 Server Component 重渲染，
-  // 同路由 searchParam 变更不会触发 loading.tsx，~500ms 内 UI 完全冻结无反馈。
-  // useTransition 提供 isPending 让我们在数据流转期间 dim 当前内容并禁用交互。
+  
+  
+  
   const [isPending, startTransition] = useTransition()
 
   const setFilter = useCallback(
@@ -89,7 +87,7 @@ export default function AllocationsPageClient({
   const dateFrom = get("from")
   const dateTo = get("to")
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback(
@@ -101,7 +99,7 @@ export default function AllocationsPageClient({
     [setFilter],
   )
 
-  // 导出走当前 URL 全部筛选（跨分页），与列表口径一致
+  
   const searchParams = useSearchParams()
 
   const handleExportSale = useCallback(async () => {
@@ -314,8 +312,8 @@ export default function AllocationsPageClient({
   )
 }
 
-// 销售提成「回款维度」：分配单元从订单下沉到每笔回款（sale_payment_id）。
-// 列：回款(类型+金额) / 顾客 / 门店 / 订单号 / 分配状态 / 到账时间 / 操作。
+
+
 function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] }) {
   return (
     <Card>

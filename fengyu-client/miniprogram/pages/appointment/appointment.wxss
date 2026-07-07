@@ -1,4 +1,4 @@
-/* pages/appointment/appointment.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -22,12 +22,12 @@
   width: 280rpx;
 }
 
-/* ===== 列表 ===== */
+
 .list-wrap {
   padding: 24rpx 24rpx 0;
 }
 
-/* ===== 预约卡片 ===== */
+
 .appt-card {
   background: var(--color-bg-card);
   border-radius: 20rpx;
@@ -60,7 +60,7 @@
   gap: 16rpx;
 }
 
-/* ===== 底部按钮 ===== */
+
 .fab-wrap {
   position: fixed;
   bottom: 0;

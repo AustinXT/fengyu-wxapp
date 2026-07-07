@@ -10,7 +10,7 @@ import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { CustomerBoardResult } from "@/lib/data-center/types"
 
-// ── KPI 分组（按语义：注册/会员状态 + 客活 / 经营）────────────────
+
 const KPI_REGISTER: KpiGridItem[] = [
   { key: "registeredMembers", label: "会员注册人数" },
   { key: "retainedMembers", label: "有效保有会员" },
@@ -39,8 +39,8 @@ const KPI_OPERATION: KpiGridItem[] = [
   { key: "consumePerVisit", label: "单次客耗", hint: "生美实耗 ÷ 频率" },
 ]
 
-// ── 明细表列定义 ──────────────────────────────────────────────
-// 表1：注册客活
+
+
 const COLS_REG_ACTIVE: BreakdownColumn[] = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
@@ -56,7 +56,7 @@ const COLS_REG_ACTIVE: BreakdownColumn[] = [
   { key: "reactivatedDeep", label: "激活休眠", unit: "count" },
 ]
 
-// 表2：消费分桶 + 经营
+
 const COLS_OPS: BreakdownColumn[] = [
   { key: "bucketD", label: "<1990", unit: "count" },
   { key: "bucketC", label: "≥1990", unit: "count" },
@@ -82,7 +82,7 @@ export function CustomerBoard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // searchParams.toString() 作为依赖：scope/时间/同比环比 任一变化即重新取数
+  
   const qs = searchParams.toString()
 
   useEffect(() => {
@@ -117,30 +117,30 @@ export function CustomerBoard() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* 客活/激活随每日重算更新提示 */}
+      {}
       <div className="text-xs text-[var(--muted-foreground)]">
         客活 / 激活随每日重算更新，上线初期可能为 0。
       </div>
 
-      {/* KPI：注册 + 保有 + 回店 */}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">注册与保有</h2>
         <KpiGrid items={KPI_REGISTER} kpis={kpis} columns={4} />
       </section>
 
-      {/* KPI：会员状态 + 客活激活 */}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">会员状态与客活</h2>
         <KpiGrid items={KPI_STATUS} kpis={kpis} columns={3} />
       </section>
 
-      {/* KPI：经营 */}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">经营</h2>
         <KpiGrid items={KPI_OPERATION} kpis={kpis} columns={3} />
       </section>
 
-      {/* 明细表分 Tab：每张表独立标签（维度 × 表型）*/}
+      {}
       <Tabs defaultValue="market-reg">
         <TabsList>
           <TabsTrigger value="market-reg">市场·注册客活</TabsTrigger>

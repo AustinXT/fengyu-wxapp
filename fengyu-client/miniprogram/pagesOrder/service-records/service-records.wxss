@@ -1,16 +1,16 @@
-/* pagesOrder/service-records/service-records.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
 }
 
-/* ===== 加载态 ===== */
+
 .skeleton-wrap {
   padding: 24rpx;
 }
 
-/* ===== 记录列表 ===== */
+
 .record-list {
   padding: 24rpx;
 }
@@ -23,7 +23,7 @@
   box-shadow: var(--shadow-card);
 }
 
-/* ===== 头部 ===== */
+
 .record-header {
   display: flex;
   align-items: center;
@@ -36,7 +36,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 项目名称 ===== */
+
 .record-title {
   font-size: 30rpx;
   font-weight: 600;
@@ -45,7 +45,7 @@
   line-height: 1.4;
 }
 
-/* ===== 详情行 ===== */
+
 .record-details {
   display: flex;
   flex-wrap: wrap;
@@ -60,7 +60,7 @@
   color: var(--color-text-secondary);
 }
 
-/* ===== 评价区 ===== */
+
 .record-review {
   margin-top: 20rpx;
   padding-top: 20rpx;
@@ -104,7 +104,7 @@
   line-height: 1.5;
 }
 
-/* ===== 评价弹窗 ===== */
+
 .review-popup {
   display: flex;
   flex-direction: column;
@@ -147,7 +147,7 @@
   flex: 1;
 }
 
-/* ===== 底部状态 ===== */
+
 .loading-more {
   display: flex;
   justify-content: center;

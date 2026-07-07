@@ -1,11 +1,4 @@
-/**
- * 前端 validity 字段校验 helper。
- * 错误消息必须与后端 `validateValidityFields`（src/actions/coupons.ts）字符级一致，
- * 以保证 AC-1/AC-2 的前后端双保险体验一致。
- *
- * 被 `coupon-create-page.tsx` 和 `coupon-detail-page.tsx` 同时消费，
- * 故抽为独立纯函数模块。
- */
+
 export function validateCouponValidityFields(input: {
   validityMode: "days" | "fixed"
   validDays?: string
@@ -29,8 +22,8 @@ export function validateCouponValidityFields(input: {
     if (!input.validFrom || !input.validTo) {
       return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
     }
-    // type="date" 产生 "YYYY-MM-DD"。按北京时区解读（开始=当天 00:00、结束=当天 23:59:59），
-    // 避免 new Date('YYYY-MM-DD') 被当 UTC 午夜——否则北京凌晨(UTC 夜)会把"今天到期"误判为已过期。
+    
+    
     const fromDate = input.validFrom.slice(0, 10)
     const toDate = input.validTo.slice(0, 10)
     const fromStart = new Date(`${fromDate}T00:00:00+08:00`)
@@ -38,7 +31,7 @@ export function validateCouponValidityFields(input: {
     if (Number.isNaN(fromStart.getTime()) || Number.isNaN(toEnd.getTime())) {
       return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
     }
-    // YYYY-MM-DD 字典序即时序，直接比较日期串
+    
     if (fromDate >= toDate) {
       return { ok: false, message: "有效期开始日期必须早于结束日期" }
     }

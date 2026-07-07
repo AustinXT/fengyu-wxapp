@@ -1,9 +1,9 @@
-<!-- pagesProfile/profile-edit/profile-edit.wxml -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 头像区域 -->
+  
   <view class="avatar-section" bindtap="onChooseAvatar">
     <view class="avatar-circle">
       <image wx:if="{{avatarUrl}}" src="{{avatarUrl}}" class="avatar-image" mode="aspectFill" />
@@ -12,9 +12,9 @@
     <text class="avatar-hint">点击更换头像</text>
   </view>
 
-  <!-- 基本信息 -->
+  
   <van-cell-group inset custom-class="info-group">
-    <!-- 昵称（可编辑） -->
+    
     <view wx:if="{{!isEditing}}">
       <van-cell
         title="昵称"
@@ -40,8 +40,8 @@
       </view>
     </view>
 
-    <!-- 手机号 -->
-    <!-- 首绑场景：直接触发 open-type=getPhoneNumber -->
+    
+    
     <button
       wx:if="{{!maskedPhone}}"
       class="phone-bind-btn"
@@ -55,7 +55,7 @@
       />
     </button>
 
-    <!-- 已绑定场景：只读展示（如需修改请联系门店） -->
+    
     <van-cell
       wx:else
       title="手机号"
@@ -64,7 +64,7 @@
     />
   </van-cell-group>
 
-  <!-- 只读信息 -->
+  
   <view class="section-title">账户信息</view>
   <van-cell-group inset custom-class="info-group">
     <van-cell

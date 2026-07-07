@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 切换 active env（dev / prod），渲染 cloudbaserc.json，写 .active 标记
-#
-# Usage: scripts/use-env.sh <dev|prod>
+
+
+
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,14 +21,14 @@ fi
 
 echo "==> Switching to: $ENV"
 
-# 渲染 cloudbaserc.json
+
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ENV"
 
-# 写 .active
+
 echo "$ENV" > "$ROOT/envs/.active"
 echo "  ✓ envs/.active = $ENV"
 
-# 解析 PG / envId 用于横幅显示
+
 PG=$(grep -E '^PG_CONNECTION_STRING=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 CLIENT_ID=$(grep -E '^CLIENT_ENV_ID=' "$ENV_FILE" | head -1 | cut -d= -f2)
 STAFF_ID=$(grep -E '^STAFF_ENV_ID=' "$ENV_FILE" | head -1 | cut -d= -f2)

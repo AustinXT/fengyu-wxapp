@@ -68,7 +68,7 @@ export default function MemberBenefitsPageClient({
     [couponTemplates, shareConfig.couponTemplateId],
   )
 
-  // 预览区：以 paidAmount=99.00 示例计算券面值
+  
   const previewValue = useMemo(() => {
     const raw = SHARE_PREVIEW_SAMPLE.paidAmount * (shareConfig.percent || 0)
     const rounded = Math.round(raw * 100) / 100

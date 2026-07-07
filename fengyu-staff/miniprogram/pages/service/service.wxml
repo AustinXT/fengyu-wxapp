@@ -1,7 +1,7 @@
-<!-- pages/service/service.wxml — 服务 Tab -->
+
 <view class="container">
 
-  <!-- Tab 筛选 -->
+  
   <van-tabs
     active="{{tabActive}}"
     bind:change="onTabChange"
@@ -16,17 +16,17 @@
     <van-tab name="completed" title="已完成" />
   </van-tabs>
 
-  <!-- 加载中 -->
+  
   <view wx:if="{{loading}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : tabActive === 'awaiting' ? '待确认' : '已完成'}}的服务单" />
   </view>
 
-  <!-- 服务单列表 -->
+  
   <view wx:else class="list-wrap">
     <view
       class="service-card"
@@ -35,7 +35,7 @@
       bindtap="onItemTap"
       data-id="{{item.id}}"
     >
-      <!-- 卡片头：编号 + 状态 -->
+      
       <view class="card-header">
         <text class="service-no">{{item.serviceOrderId}}</text>
         <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
@@ -43,14 +43,14 @@
         </view>
       </view>
 
-      <!-- 顾客信息 -->
+      
       <view class="card-customer">
         <van-icon name="manager-o" size="28rpx" color="#C0322A" />
         <text class="customer-name">{{item.customerName}}</text>
         <text class="customer-phone">{{item.customerPhone}}</text>
       </view>
 
-      <!-- 服务项目 -->
+      
       <view
         class="card-item"
         wx:for="{{item.items}}"
@@ -62,7 +62,7 @@
         <text class="item-sessions" wx:if="{{si.totalSessions > 1}}">剩余 {{si.remainingSessions}} / 已付 {{si.paidSessions}} / 共 {{si.totalSessions}} 次</text>
       </view>
 
-      <!-- 时间信息 -->
+      
       <view class="card-time">
         <van-icon name="clock-o" size="26rpx" color="#999" />
         <text class="time-text" wx:if="{{item.status === '待服务'}}">预计 {{item.serviceTime}}</text>
@@ -71,7 +71,7 @@
         <text class="time-text" wx:else>完成 {{item.completedTime}}</text>
       </view>
 
-      <!-- 操作按钮（阻止事件冒泡到卡片tap） -->
+      
       <view class="card-actions" catchtap="noop">
         <van-button
           wx:if="{{item.status === '待服务'}}"
@@ -108,7 +108,7 @@
     </view>
   </view>
 
-  <!-- FAB: 新建服务单 -->
+  
   <view class="fab" bindtap="onNewService">
     <van-icon name="plus" size="44rpx" color="#FFFFFF" />
   </view>

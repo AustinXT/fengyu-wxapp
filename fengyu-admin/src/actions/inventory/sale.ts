@@ -305,7 +305,7 @@ export const updateSaleOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      // updatedAt/confirmedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      
       const patch: Partial<typeof inventorySaleOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) patch.docSubtype = data.docSubtype
       if (data.docDate !== undefined) patch.docDate = data.docDate

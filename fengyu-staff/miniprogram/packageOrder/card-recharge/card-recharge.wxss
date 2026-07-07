@@ -1,4 +1,4 @@
-/* packageOrder/card-recharge/card-recharge.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -6,7 +6,7 @@
   padding-bottom: 200rpx;
 }
 
-/* ===== Hero ===== */
+
 .hero {
   background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   padding: 48rpx 36rpx 40rpx;
@@ -42,7 +42,7 @@
   text-decoration: underline;
 }
 
-/* ===== 顾客选择 ===== */
+
 .customer-block {
   background: #FFFFFF;
   margin: -24rpx 24rpx 0;
@@ -137,10 +137,10 @@
 .customer-result-phone { font-size: 24rpx; color: #999999; }
 .customer-cross-store { margin-left: 12rpx; font-size: 22rpx; color: #C0322A; }
 
-/* ===== 加载 ===== */
+
 .loading-block { padding: 80rpx 0; text-align: center; }
 
-/* ===== 主体 ===== */
+
 .body { padding: 8rpx 24rpx 0; }
 .section-title {
   font-size: 28rpx;
@@ -149,7 +149,7 @@
   padding: 24rpx 8rpx 16rpx;
 }
 
-/* ===== 预设档卡片 ===== */
+
 .tier-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -212,7 +212,7 @@
   white-space: nowrap;
 }
 
-/* ===== 自定义金额 ===== */
+
 .custom-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -249,7 +249,7 @@
 .custom-hint-strong { color: var(--color-primary); font-weight: 600; }
 .custom-hint-bonus { color: var(--color-primary); }
 
-/* ===== 支付方式 ===== */
+
 .payment-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -277,7 +277,7 @@
   margin-left: 20rpx;
 }
 
-/* ===== 底部说明 ===== */
+
 .footer-note {
   padding: 24rpx 8rpx 24rpx;
   display: flex;
@@ -290,7 +290,7 @@
   line-height: 1.6;
 }
 
-/* ===== 底部 CTA ===== */
+
 .cta-bar {
   position: fixed;
   left: 0;

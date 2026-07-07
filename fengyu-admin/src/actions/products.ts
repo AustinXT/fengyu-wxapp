@@ -16,10 +16,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
 
-/**
- * 获取所有市场节点（type='市场'），用于商品可见范围选择。
- * 按当前账号 scope 过滤：总部全开；市场/门店级仅返回所在市场。
- */
+
 export const getMarkets = withPermission(
   'product:list',
   async (session): Promise<{ id: string; name: string }[]> => {
@@ -31,16 +28,14 @@ export const getMarkets = withPermission(
       .select({ id: orgNodes.id, name: orgNodes.name })
       .from(orgNodes)
       .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true), scopeCond))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(orgNodes.sortOrder))
 
     return rows
   },
 )
 
-/**
- * 根据当前用户 session 自动判断管理范围。
- */
+
 export const resolveManageScope = withPermission(
   'product:list',
   async (session): Promise<{ scopeId: string | null; scopeName: string }> => {
@@ -81,11 +76,9 @@ export const resolveManageScope = withPermission(
   },
 )
 
-// ===== 项目系列字典 =====
 
-/**
- * 获取所有启用的项目系列（SKU 的"项目系列"下拉选项来源）。
- */
+
+
 export const getProjectSeries = withPermission(
   'product:list',
   async (_session): Promise<ProjectSeries[]> => {
@@ -98,20 +91,20 @@ export const getProjectSeries = withPermission(
       })
       .from(projectSeriesLookup)
       .where(eq(projectSeriesLookup.isValid, true))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(projectSeriesLookup.sortOrder), asc(projectSeriesLookup.id))
     return rows
   },
 )
 
-// ===== 品项分类（商品管理） =====
+
 
 export const getCategories = withPermission(
   'product:list',
   async (_session): Promise<ProductCategory[]> => {
-    // LEFT JOIN 父级一级行（productKind IS NULL AND categoryName = child.productKind），
-    // 把父级 capability 列回填到二级行；一级行 parent.* 列均为 NULL（自身字段已带）。
-    // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+    
+    
+    
     const parent = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
     const rows = await db
       .select({
@@ -126,10 +119,10 @@ export const getCategories = withPermission(
           eq(parent.categoryName, productCategories.productKind),
         )!,
       )
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(productCategories.sortOrder))
 
-    // drizzle 0.45 alias 后 select 类型推断退化成 never[]；用 any 解锁 build
+    
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return rows.map((r: any) => ({
       categoryId: r.child.categoryId,
@@ -146,10 +139,7 @@ export const getCategories = withPermission(
   },
 )
 
-/**
- * 获取所有一级分类（品项一级分类），即 product_kind IS NULL 的行。
- * 返回 capability 列（displayColor），供前端 tag 颜色渲染使用。
- */
+
 export const getProductKinds = withPermission(
   'product:list',
   async (_session): Promise<ProductCategory[]> => {
@@ -157,7 +147,7 @@ export const getProductKinds = withPermission(
       .select()
       .from(productCategories)
       .where(sql`${productCategories.productKind} IS NULL`)
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(productCategories.sortOrder))
 
     return rows.map((c) => ({
@@ -174,9 +164,7 @@ export const getProductKinds = withPermission(
   },
 )
 
-/**
- * 创建一级分类（品项一级分类）
- */
+
 export const createProductKind = withPermission(
   'product:create',
   async (
@@ -192,7 +180,7 @@ export const createProductKind = withPermission(
       return { success: false, message: '请输入品项一级分类名称' }
     }
 
-    // 检查重名（同名一级分类）
+    
     const [existing] = await db
       .select({ categoryId: productCategories.categoryId })
       .from(productCategories)
@@ -224,10 +212,7 @@ export const createProductKind = withPermission(
   },
 )
 
-/**
- * 更新一级分类（品项一级分类）
- * 若 categoryName 变更，事务内同步更新所有子级的 product_kind 值。
- */
+
 export const updateProductKind = withPermission(
   'product:update',
   async (
@@ -241,7 +226,7 @@ export const updateProductKind = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 查当前行（获取旧名称用于级联更新）
+    
     const [current] = await db
       .select()
       .from(productCategories)
@@ -251,14 +236,14 @@ export const updateProductKind = withPermission(
       return { success: false, message: '品项一级分类不存在' }
     }
 
-    // 乐观锁检查
+    
     if (expectedUpdatedAt && current.updatedAt.toISOString() !== expectedUpdatedAt) {
       return { success: false, message: '数据已被其他人修改，请刷新后重试' }
     }
 
     const newName = data.categoryName?.trim()
 
-    // 重名检查
+    
     if (newName && newName !== current.categoryName) {
       const [dup] = await db
         .select({ categoryId: productCategories.categoryId })
@@ -273,7 +258,7 @@ export const updateProductKind = withPermission(
       }
     }
 
-    // 事务：更新自身 + 级联更新子级 product_kind
+    
     await db.transaction(async (tx) => {
       const updateData: Record<string, unknown> = {}
       if (newName !== undefined) updateData.categoryName = newName
@@ -286,7 +271,7 @@ export const updateProductKind = withPermission(
         .set(updateData)
         .where(eq(productCategories.categoryId, categoryId))
 
-      // 若改名，级联更新所有子级的 product_kind
+      
       if (newName && newName !== current.categoryName) {
         await tx
           .update(productCategories)
@@ -313,7 +298,7 @@ export const createCategory = withPermission(
       isValid?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
-    // 业务校验：productKind 必须存在于"一级行"集合（productKind IS NULL 的有效行）
+    
     const [kindRow] = await db
       .select({ categoryId: productCategories.categoryId })
       .from(productCategories)
@@ -348,16 +333,7 @@ export const createCategory = withPermission(
   },
 )
 
-/**
- * 硬删除品项分类（决策 D11=A：未引用允许硬删，否则提示停用）。
- *
- * 校验顺序：
- *   1. SKU 引用（product_skus.category_id 含软删）→ 拒绝
- *   2. 优惠券引用（coupon_templates.applicable_category_ids @> categoryId）→ 拒绝
- *   3. CAS 守卫：UPDATED_AT 匹配才允许 DELETE
- *
- * 复用 product:update 权限（与 deleteSku / deleteMallCategory / deleteProduct 一致）。
- */
+
 export const deleteCategory = withPermission(
   'product:update',
   async (
@@ -365,7 +341,7 @@ export const deleteCategory = withPermission(
     categoryId: string,
     expectedUpdatedAt: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 1. 校验：无 SKU 引用（含软删的 SKU 也算引用，避免误删历史）
+    
     const [skuRef] = await db
       .select({ c: sql<number>`count(*)::int` })
       .from(productSkus)
@@ -377,7 +353,7 @@ export const deleteCategory = withPermission(
       }
     }
 
-    // 2. 校验：无 coupon_templates.applicable_category_ids 引用
+    
     const couponRefRes: any = await db.execute(sql`
       SELECT COUNT(*)::int AS c FROM coupon_templates
       WHERE ${categoryId} = ANY(applicable_category_ids)
@@ -393,7 +369,7 @@ export const deleteCategory = withPermission(
       }
     }
 
-    // 3. 真删（CAS 守卫）
+    
     const result: any = await db
       .delete(productCategories)
       .where(and(
@@ -425,7 +401,7 @@ export const updateCategory = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 业务校验：若传了 productKind，必须存在于"一级行"集合
+    
     if (data.productKind !== undefined) {
       const [kindRow] = await db
         .select({ categoryId: productCategories.categoryId })
@@ -441,7 +417,7 @@ export const updateCategory = withPermission(
       }
     }
 
-    // 获取旧值用于日志 diff
+    
     const [before] = await db.select().from(productCategories).where(eq(productCategories.categoryId, categoryId)).limit(1)
 
     const whereConditions = expectedUpdatedAt
@@ -469,7 +445,7 @@ export const updateCategory = withPermission(
   },
 )
 
-// ===== SKU（商品管理，独立实体） =====
+
 
 export const getAllSkus = withPermission(
   'product:list',
@@ -486,7 +462,7 @@ export const getAllSkus = withPermission(
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
       .where(isNull(productSkus.deletedAt))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(productSkus.sortOrder))
       .limit(1000)
 
@@ -516,7 +492,7 @@ export const getAllSkus = withPermission(
   },
 )
 
-/** 根据 skuId 获取单个 SKU 详情 */
+
 export const getSkuById = withPermission(
   'product:list',
   async (_session, skuId: string): Promise<ProductSku | null> => {
@@ -563,7 +539,7 @@ export const getSkuById = withPermission(
   },
 )
 
-/** 获取商城商品关联的 SKU 列表（通过 mall_product_skus） */
+
 export const getSkusByProductId = withPermission(
   'product:list',
   async (_session, productId: string): Promise<ProductSku[]> => {
@@ -580,7 +556,7 @@ export const getSkusByProductId = withPermission(
       .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
       .leftJoin(mallBundleGroups, eq(mallProductSkus.bundleGroupId, mallBundleGroups.id))
       .where(eq(mallProductSkus.productId, productId))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallProductSkus.sortOrder))
 
     return rows.map((r) => ({
@@ -626,11 +602,11 @@ export const createSku = withPermission(
       sortOrder?: number
       serviceFee?: string
       isShengmei?: boolean | null
-      /** 体验卡 capability 列 */
+      
       isExperience?: boolean
-      /** 店长特别优惠 capability 列（开单可改应付金额） */
+      
       isManagerSpecial?: boolean
-      /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+      
       projectSeriesId?: number | null
       marketScope?: string | null
       isEnabled?: boolean
@@ -657,8 +633,8 @@ export const createSku = withPermission(
       }
     }
 
-    // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验仅剩 isExperience 单值，
-    // 无需互斥防护；chk_sku_not_both_capabilities CHECK 同 migration 0043 已 DROP。
+    
+    
 
     try {
       await db.insert(productSkus).values({
@@ -692,21 +668,21 @@ export const updateSku = withPermission(
       sortOrder: number
       serviceFee: string
       isShengmei: boolean | null
-      /** 体验卡 capability 列 */
+      
       isExperience: boolean
-      /** 店长特别优惠 capability 列（开单可改应付金额） */
+      
       isManagerSpecial: boolean
-      /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+      
       projectSeriesId: number | null
       marketScope: string | null
       isEnabled: boolean
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff（不取已软删 SKU）
+    
     const [before] = await db.select().from(productSkus).where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt))).limit(1)
 
-    // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验已失去对象，应用层守卫删除。
+    
 
     const whereConditions = expectedUpdatedAt
       ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
@@ -727,8 +703,8 @@ export const updateSku = withPermission(
       }
     }
 
-    // isEnabled 切换会改变套餐「计入数量」（启用 SKU 计价），但本函数不经 recomputeBundlePrice
-    // —— 唯一缺口，故在此显式重算所有含该 SKU 的套餐展示价，避免禁用后划线/会员价与可选项脱节。
+    
+    
     if (data.isEnabled !== undefined && before && before.isEnabled !== data.isEnabled) {
       const affected = await db
         .select({ productId: mallProductSkus.productId })
@@ -762,7 +738,7 @@ export const deleteSku = withPermission(
       return { success: false, message: '该商品已被订单引用，无法删除。可通过设置有效期下架' }
     }
 
-    // 取 SKU 快照用于审计（含规格名/价格/类别）
+    
     const [snapshot] = await db
       .select()
       .from(productSkus)
@@ -783,10 +759,10 @@ export const deleteSku = withPermission(
       },
     })
 
-    // 关联表 mall_product_skus 物理删（无 PII，纯关联数据）
+    
     await db.delete(mallProductSkus).where(eq(mallProductSkus.skuId, skuId))
 
-    // product_skus 软删
+    
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = await db
       .update(productSkus)
@@ -802,15 +778,11 @@ export const deleteSku = withPermission(
   },
 )
 
-// ===== 套餐定价：组级单价下沉 + 套餐价重算（内部 helper，事务内调用） =====
+
 
 type ProductTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
-/**
- * 把分组级单价下沉到组内所有子项副本（子项价格的唯一写入点）：
- * - bundle_list_price = 组 unit_list_price（标价单价 → sale_items.unit_price 划线）
- * - bundle_price      = coalesce(组 unit_member_price, unit_list_price)（成交价 → sale_items.unit_real_price）
- */
+
 async function syncBundleGroupSkuPrices(groupId: number, tx: ProductTx): Promise<void> {
   const [g] = await tx
     .select({ listPrice: mallBundleGroups.unitListPrice, memberPrice: mallBundleGroups.unitMemberPrice })
@@ -824,12 +796,7 @@ async function syncBundleGroupSkuPrices(groupId: number, tx: ProductTx): Promise
     .where(eq(mallProductSkus.bundleGroupId, groupId))
 }
 
-/**
- * 重算套餐展示价（权威只读组级单价，绝不读子项副本）：
- * - price         = Σ 各组 unit_list_price × 计入数量
- * - special_price = Σ 各组 coalesce(unit_member_price, unit_list_price) × 计入数量；仅当 < price 时落值，否则 null
- * 计入数量 = pickCount（N选M）或 组内 SKU 数（全选组 pickCount=null）。组内同价，故套餐价与具体如何选无关。
- */
+
 async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<void> {
   const groups = await tx
     .select({
@@ -841,8 +808,8 @@ async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<v
     .from(mallBundleGroups)
     .where(eq(mallBundleGroups.productId, productId))
 
-  // 计入数量只数「启用」SKU——与开单选择器 getProductsByKind（innerJoin productSkus + isEnabled=true）口径一致，
-  // 否则禁用 SKU 仍被计价 → 套餐划线/会员价虚高于实际可选项。
+  
+  
   const counts = await tx
     .select({ groupId: mallProductSkus.bundleGroupId, cnt: sql<number>`count(*)::int` })
     .from(mallProductSkus)
@@ -864,7 +831,7 @@ async function recomputeBundlePrice(productId: string, tx: ProductTx): Promise<v
   await tx.update(products).set({ price, specialPrice }).where(eq(products.productId, productId))
 }
 
-// ===== 商城商品-SKU 关联 =====
+
 
 export const addSkuToProduct = withPermission(
   'product:update',
@@ -881,7 +848,7 @@ export const addSkuToProduct = withPermission(
       .where(eq(products.productId, productId))
       .limit(1)
     if (!prod) return { success: false, message: '商品不存在' }
-    // 套餐：所有子商品必须归入分组，且分组须属于该商品
+    
     if (prod.isBundle) {
       if (bundleGroupId == null) return { success: false, message: '套餐商品的规格必须归入分组' }
       const [grp] = await db
@@ -899,7 +866,7 @@ export const addSkuToProduct = withPermission(
           sortOrder: sortOrder ?? 0,
           bundleGroupId: bundleGroupId ?? null,
         })
-        // 套餐：新子项继承组单价（下沉副本）+ 重算套餐价（全选组计入数量 +1）
+        
         if (prod.isBundle && bundleGroupId != null) {
           await syncBundleGroupSkuPrices(bundleGroupId, tx)
           await recomputeBundlePrice(productId, tx)
@@ -938,7 +905,7 @@ export const removeSkuFromProduct = withPermission(
         .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
       if ((result as any).count === 0) return
       removed = true
-      // 套餐：移除子项后重算套餐价（全选组计入数量 -1）
+      
       if (prod?.isBundle) await recomputeBundlePrice(productId, tx)
     })
 
@@ -952,10 +919,10 @@ export const removeSkuFromProduct = withPermission(
   },
 )
 
-// updateSkuBundlePrice 已废弃（2026-06）：套餐子项价格不再逐个改价，统一由分组级
-// unit_list_price / unit_member_price 经 syncBundleGroupSkuPrices 下沉到组内所有子项副本。
 
-// ===== 套餐分组管理（mall_bundle_groups） =====
+
+
+
 
 export const getBundleGroupsByProductId = withPermission(
   'product:list',
@@ -964,7 +931,7 @@ export const getBundleGroupsByProductId = withPermission(
       .select()
       .from(mallBundleGroups)
       .where(eq(mallBundleGroups.productId, productId))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallBundleGroups.sortOrder))
 
     return rows.map((r) => ({
@@ -980,7 +947,7 @@ export const getBundleGroupsByProductId = withPermission(
   },
 )
 
-/** 校验组单价：标价必填且 ≥0；会员价可空、≥0 且 ≤ 标价。返回错误消息或 null。 */
+
 function validateBundleUnitPrices(
   listPrice: string | null | undefined,
   memberPrice: string | null | undefined,
@@ -1031,7 +998,7 @@ export const createBundleGroup = withPermission(
           unitMemberPrice: memberPrice,
         }).returning({ id: mallBundleGroups.id })
         newId = row.id
-        // 新组建立后重算（按 pickCount 计入；空全选组贡献 0）
+        
         await recomputeBundlePrice(data.productId, tx)
       })
 
@@ -1060,11 +1027,11 @@ export const updateBundleGroup = withPermission(
       return { success: false, message: '可选数量必须大于 0' }
     }
 
-    // 获取旧值（含 productId + 现有单价，用于校验与重算）
+    
     const [before] = await db.select().from(mallBundleGroups).where(eq(mallBundleGroups.id, id)).limit(1)
     if (!before) return { success: false, message: '分组不存在' }
 
-    // 单价校验：用「最终值」（入参优先，否则沿用旧值）
+    
     if (data.unitListPrice !== undefined || data.unitMemberPrice !== undefined) {
       const finalList = data.unitListPrice !== undefined ? data.unitListPrice : before.unitListPrice
       const finalMember = data.unitMemberPrice !== undefined ? data.unitMemberPrice : before.unitMemberPrice
@@ -1086,7 +1053,7 @@ export const updateBundleGroup = withPermission(
         if (Object.keys(updateData).length > 0) {
           await tx.update(mallBundleGroups).set(updateData).where(eq(mallBundleGroups.id, id))
         }
-        // 改单价 → 下沉到组内所有子项副本；改 pickCount/单价 → 重算套餐价（sync 幂等，统一调）
+        
         await syncBundleGroupSkuPrices(id, tx)
         await recomputeBundlePrice(before.productId, tx)
       })
@@ -1105,7 +1072,7 @@ export const updateBundleGroup = withPermission(
 export const deleteBundleGroup = withPermission(
   'product:update',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
-    // 取分组归属商品；组非空则拒绝删除（避免子项游离、套餐价错算）
+    
     const [grp] = await db
       .select({ productId: mallBundleGroups.productId })
       .from(mallBundleGroups)
@@ -1139,7 +1106,7 @@ export const updateSkuBundleGroup = withPermission(
     skuId: string,
     bundleGroupId: number | null,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
+    
     const [before] = await db.select().from(mallProductSkus).where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId))).limit(1)
 
     const [prod] = await db
@@ -1147,7 +1114,7 @@ export const updateSkuBundleGroup = withPermission(
       .from(products)
       .where(eq(products.productId, productId))
       .limit(1)
-    // 套餐：子项必须归入分组，且目标分组须属于该商品
+    
     if (prod?.isBundle) {
       if (bundleGroupId == null) return { success: false, message: '套餐商品的规格必须归入分组' }
       const [grp] = await db
@@ -1166,7 +1133,7 @@ export const updateSkuBundleGroup = withPermission(
         .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
       if ((result as any).count === 0) return
       moved = true
-      // 套餐：移入新组继承其单价 + 重算（两个全选组的计入数量都可能变化）
+      
       if (prod?.isBundle && bundleGroupId != null) {
         await syncBundleGroupSkuPrices(bundleGroupId, tx)
         await recomputeBundlePrice(productId, tx)
@@ -1183,7 +1150,7 @@ export const updateSkuBundleGroup = withPermission(
   },
 )
 
-// ===== 商城管理（mall_categories + products + mall_product_skus） =====
+
 
 export const getMallCategories = withPermission(
   'product:list',
@@ -1191,7 +1158,7 @@ export const getMallCategories = withPermission(
     const rows = await db
       .select()
       .from(mallCategories)
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallCategories.sortOrder))
 
     return rows.map((c) => ({
@@ -1205,7 +1172,7 @@ export const getMallCategories = withPermission(
   },
 )
 
-/** 获取商城一级分组（category_group IS NULL 的行） */
+
 export const getMallCategoryGroups = withPermission(
   'product:list',
   async (_session): Promise<MallCategory[]> => {
@@ -1213,7 +1180,7 @@ export const getMallCategoryGroups = withPermission(
       .select()
       .from(mallCategories)
       .where(sql`${mallCategories.categoryGroup} IS NULL`)
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallCategories.sortOrder))
 
     return rows.map((c) => ({
@@ -1227,7 +1194,7 @@ export const getMallCategoryGroups = withPermission(
   },
 )
 
-/** 创建商城一级分组 */
+
 export const createMallCategoryGroup = withPermission(
   'product:create',
   async (
@@ -1267,7 +1234,7 @@ export const createMallCategoryGroup = withPermission(
   },
 )
 
-/** 更新商城一级分组，改名时级联更新子级 category_group */
+
 export const updateMallCategoryGroup = withPermission(
   'product:update',
   async (
@@ -1332,7 +1299,7 @@ export const updateMallCategoryGroup = withPermission(
   },
 )
 
-/** 删除商城一级分组（级联删除子级分类） */
+
 export const deleteMallCategoryGroup = withPermission(
   'product:update',
   async (session, categoryId: string): Promise<{ success: boolean; message: string }> => {
@@ -1346,9 +1313,9 @@ export const deleteMallCategoryGroup = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      // 先删子级分类
+      
       await tx.delete(mallCategories).where(eq(mallCategories.categoryGroup, current.categoryName))
-      // 再删一级分组
+      
       await tx.delete(mallCategories).where(eq(mallCategories.categoryId, categoryId))
     })
 
@@ -1381,7 +1348,7 @@ export const getProducts = withPermission(
       .leftJoin(mallCategories, eq(products.categoryId, mallCategories.categoryId))
       .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
       .where(isNull(products.deletedAt))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(products.sortOrder))
       .limit(500)
 
@@ -1465,7 +1432,7 @@ export const createProduct = withPermission(
       isVisible?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
-    // 套餐：展示价由各组单价自动算（创建时尚无分组），强制 0；非套餐校验手填价
+    
     const isBundle = data.isBundle === true
     if (!isBundle) {
       const price = Number(data.price)
@@ -1474,7 +1441,7 @@ export const createProduct = withPermission(
       }
     }
 
-    // 校验商品分类存在
+    
     const [cat] = await db
       .select({ categoryId: mallCategories.categoryId })
       .from(mallCategories)
@@ -1520,10 +1487,10 @@ export const updateProduct = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
+    
     const [before] = await db.select().from(products).where(eq(products.productId, productId)).limit(1)
 
-    // 套餐：展示价由各组单价自动算，剔除表单手填的 price/specialPrice，避免覆盖重算结果
+    
     const finalIsBundle = data.isBundle ?? before?.isBundle ?? false
     const setData: Record<string, unknown> = { ...data }
     if (finalIsBundle) {
@@ -1556,7 +1523,7 @@ export const updateProduct = withPermission(
   },
 )
 
-/** 软删除商品（设置 deleted_at 和 deleted_by）。复用 product:update 权限。 */
+
 export const deleteProduct = withPermission(
   'product:update',
   async (
@@ -1638,7 +1605,7 @@ export const updateMallCategory = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
+    
     const [before] = await db.select().from(mallCategories).where(eq(mallCategories.categoryId, categoryId)).limit(1)
 
     const whereConditions = expectedUpdatedAt
@@ -1663,11 +1630,11 @@ export const updateMallCategory = withPermission(
   },
 )
 
-/** 删除商城二级分类（硬删除） */
+
 export const deleteMallCategory = withPermission(
   'product:update',
   async (session, categoryId: string): Promise<{ success: boolean; message: string }> => {
-    // 检查是否有商品引用
+    
     const [ref] = await db
       .select({ productId: products.productId })
       .from(products)
@@ -1688,29 +1655,9 @@ export const deleteMallCategory = withPermission(
   },
 )
 
-// ===== 开单页：按商品类型驱动的选品数据源 =====
 
-/**
- * 开单页 Step 2 数据源：按 kind 返回可加购的 SKU/套餐。
- *
-具名 kind：平铺 categories + skus，过滤 isEnabled。
- *   - '体验卡' → WHERE product_skus.is_experience=true（SKU 级 capability SSoT）
- *   - 其他字面量 kind → WHERE product_categories.product_kind=$kind（向后兼容）
- *   类型签名用 string 表达（productKindEnum 已删除，运营可自由新建 kind）。
- *   2026-05-20：'充值卡' 已退出 SKU/商品域，admin 走独立充值单入口（card 模块）。
- *
- * 特殊 '__bundle__'：
- *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
- *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
- *
- * 特殊 '__normal__'（普通商品 = 非体验卡 SKU 的所有二级分类）：
- *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL），
- *   过滤 SKU 的 isExperience=false，并 EXISTS 排除 bundle SKU。
- *   返回分组结构 `{ kind: '__normal__', groups: [{ productKind, categories }] }`，
- *   group 顺序按一级行 sortOrder，组内按二级行 sortOrder。
- *
- * 无权限：product:list。
- */
+
+
 export type ProductKindForOrder = string | '__bundle__' | '__normal__'
 
 export interface OrderPickerSku {
@@ -1724,9 +1671,9 @@ export interface OrderPickerSku {
   sessionCount: number | null
   serviceFee: string
   sortOrder: number
-  /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
+  
   isManagerSpecial: boolean
-  /** 体验卡 capability：#6=B 起同口径走会员价分流（仅会员享 special_price，非会员标价），不再豁免 */
+  
   isExperience: boolean
 }
 
@@ -1742,7 +1689,7 @@ export interface OrderPickerBundleSkuRef {
   skuId: string
   specName: string
   productType: '疗程卡' | '家居产品'
-  /** 疗程卡次数（非疗程卡为 null），开单时需快照到 sale_items.session_count */
+  
   sessionCount: number | null
   price: string
   bundlePrice: string | null
@@ -1753,7 +1700,7 @@ export interface OrderPickerBundleSkuRef {
 export interface OrderPickerBundleGroup {
   id: number
   groupName: string
-  /** N 选 M 的 M（null = 全选） */
+  
   pickCount: number | null
   sortOrder: number
   skus: OrderPickerBundleSkuRef[]
@@ -1767,27 +1714,17 @@ export interface OrderPickerBundle {
   specialPrice: string | null
   sortOrder: number
   groups: OrderPickerBundleGroup[]
-  /** 未分组的 SKU（bundle_group_id IS NULL） */
+  
   ungroupedSkus: OrderPickerBundleSkuRef[]
 }
 
-/**
- * "普通商品"模式下按 productKind 分组的二级分类集合。
- * group 顺序由一级行 sortOrder 决定；组内 categories 按二级行 sortOrder。
- */
+
 export interface OrderPickerNormalGroup {
   productKind: string
   categories: OrderPickerCategory[]
 }
 
-/**
- * discriminated union：
- * - '__normal__' → groups（分组）
- * - '__bundle__' → bundles
- * - 其余具名 kind（如 '体验卡' / '充值卡'）→ categories（平铺）
- *   使用 `Exclude<string, '__normal__' | '__bundle__'>` 语义由 TS 通过
- *   类型守卫自动识别——平铺分支声明为 string，narrowing 靠运行时 if-else 顺序。
- */
+
 export type OrderPickerResult =
   | OrderPickerNormalResult
   | OrderPickerBundleResult
@@ -1812,7 +1749,7 @@ export const getProductsByKind = withPermission(
   'product:list',
   async (_session, kind: ProductKindForOrder): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
-    // 套餐商品：products WHERE is_bundle AND is_visible AND deleted_at IS NULL
+    
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1824,7 +1761,7 @@ export const getProductsByKind = withPermission(
       })
       .from(products)
       .where(and(eq(products.isBundle, true), eq(products.isVisible, true), isNull(products.deletedAt)))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(products.sortOrder))
 
     if (bundleRows.length === 0) {
@@ -1833,15 +1770,15 @@ export const getProductsByKind = withPermission(
 
     const productIds = bundleRows.map((b) => b.productId)
 
-    // 关联分组
+    
     const groupRows = await db
       .select()
       .from(mallBundleGroups)
       .where(inArray(mallBundleGroups.productId, productIds))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallBundleGroups.sortOrder))
 
-    // 关联 SKU（含 bundleGroupId / bundlePrice）
+    
     const mpsRows = await db
       .select({
         productId: mallProductSkus.productId,
@@ -1855,7 +1792,7 @@ export const getProductsByKind = withPermission(
       .from(mallProductSkus)
       .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
       .where(and(inArray(mallProductSkus.productId, productIds), eq(productSkus.isEnabled, true)))
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(mallProductSkus.sortOrder))
 
     const bundles: OrderPickerBundle[] = bundleRows.map((b) => {
@@ -1907,10 +1844,10 @@ export const getProductsByKind = withPermission(
   }
 
   if (kind === '__normal__') {
-    // 普通商品：排除卡类 + 必须有非 bundle 有效 SKU 的二级分类
-    // JOIN 一级行（parent.productKind IS NULL AND parent.categoryName = child.productKind）
-    // 以便按一级行 sortOrder 排序 group。
-    // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+    
+    
+    
+    
     const parentCat = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
 
     const rows = await db
@@ -1933,19 +1870,19 @@ export const getProductsByKind = withPermission(
       .where(
         and(
           isNotNull(productCategories.productKind),
-          // 普通商品 = 非体验卡 SKU（充值卡 2026-05-20 已退出 SKU 域）
+          
           eq(productSkus.isExperience, false),
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),
-          // 普通商品列表不再因「SKU 进过套餐」而隐藏：一个 SKU 既可单卖也可进套餐，
-          // 套餐通过独立的 __bundle__ picker 选购，互不影响（2026-05-26 决策：彻底取消套餐排除）。
+          
+          
         ),
       )
-      // 例外：sortOrder 手工排序权重
+      
       .orderBy(asc(parentCat.sortOrder), asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 
-    // 按 productKind → categoryId 两层聚合
+    
     type GroupAccum = {
       productKind: string
       parentSortOrder: number
@@ -1954,7 +1891,7 @@ export const getProductsByKind = withPermission(
     const groupMap = new Map<string, GroupAccum>()
     for (const r of rows) {
       const kindName = r.category.productKind
-      if (!kindName) continue // defensive：已被 SQL isNotNull 过滤
+      if (!kindName) continue 
       if (!groupMap.has(kindName)) {
         groupMap.set(kindName, {
           productKind: kindName,
@@ -1994,16 +1931,16 @@ export const getProductsByKind = withPermission(
         productKind: g.productKind,
         categories: Array.from(g.catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder),
       }))
-      // 防御：某 productKind 下没有任何 category → 整组丢弃（ticket §6.3）
+      
       .filter((g) => g.categories.length > 0)
 
     return { kind: '__normal__', groups }
   }
 
-  // 具名 kind：平铺 categories
-  // - '体验卡' 用 SKU 级 capability 列判定（与 product_kind 字面量解耦）
-  // - 其他具名 kind 保留 product_kind 字面量匹配（向后兼容）
-  // - '充值卡' 已退出 SKU/商品域（2026-05-20），由独立 card 入口处理
+  
+  
+  
+  
   const capabilityCondition =
     kind === '体验卡'
       ? eq(productSkus.isExperience, true)
@@ -2017,10 +1954,10 @@ export const getProductsByKind = withPermission(
     .from(productSkus)
     .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(and(capabilityCondition, eq(productSkus.isEnabled, true), eq(productCategories.isValid, true), isNull(productSkus.deletedAt)))
-    // 例外：sortOrder 手工排序权重
+    
     .orderBy(asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 
-  // 按 categoryId 聚合
+  
   const catMap = new Map<string, OrderPickerCategory>()
   for (const r of rows) {
     if (!catMap.has(r.category.categoryId)) {

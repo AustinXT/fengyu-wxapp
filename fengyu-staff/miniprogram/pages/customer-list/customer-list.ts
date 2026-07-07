@@ -1,9 +1,9 @@
-// pages/customer-list/customer-list.ts
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDate } from '../../utils/formatters';
 
-// lastServiceDate 为后端原始 pg date（序列化成 UTC 串会偏移日期），统一格式化为 YYYY-MM-DD
+
 function fmtCustomerDates<T extends { lastServiceDate: string | null }>(list: T[]): T[] {
   return list.map(c => ({ ...c, lastServiceDate: c.lastServiceDate ? formatDate(c.lastServiceDate) : c.lastServiceDate }));
 }
@@ -17,10 +17,10 @@ interface StaffAction {
   employeeId: string;
 }
 
-// 顾客类型：'all' = 全部，其余为 customer_type 枚举字面量（须与 DB 一致）
+
 type CustomerType = 'all' | '流量客' | '体验客' | '小美客' | '会员客';
 
-// 拓展筛选选项（值须与 db/schema/enums.ts 字面量完全一致；空串 = 不筛选）
+
 const CUSTOMER_TYPE_OPTIONS = [
   { label: '全部', value: 'all' },
   { label: '流量客', value: '流量客' },
@@ -88,7 +88,7 @@ Page({
     results: [] as CustomerListItem[],
     loading: false,
     searched: false,
-    // 统计数据
+    
     stats: {
       active: 0,
       atRisk: 0,
@@ -100,25 +100,25 @@ Page({
       memberCount: 0,
       flowCount: 0,
     },
-    // 顾客类型栏：全部 + customer_type 4 枚举值
+    
     customerType: 'all' as CustomerType,
-    // 拓展筛选维度（空串 = 不筛选）
+    
     spendingTier: '',
     monthlyActivity: '',
     customerStatus: '',
     advancedExpanded: false,
-    // 拓展筛选选项常量（供 wxml 渲染）
+    
     customerTypeOptions: CUSTOMER_TYPE_OPTIONS,
     spendingTierOptions: SPENDING_TIER_OPTIONS,
     monthlyActivityOptions: MONTHLY_ACTIVITY_OPTIONS,
     customerStatusOptions: CUSTOMER_STATUS_OPTIONS,
-    // 是否有任意拓展筛选激活（含顾客类型）
+    
     hasAdvancedFilter: false,
-    // 当前选中的标签（空 = 不筛选）
+    
     activeTag: '' as '' | TagType,
     tagPage: 1,
     tagHasMore: false,
-    // 客户分配
+    
     isManager: false,
     showAssignSheet: false,
     staffActions: [] as StaffAction[],
@@ -154,18 +154,18 @@ Page({
     } catch (_) {}
   },
 
-  // 是否存在任意拓展筛选（含顾客类型）激活
+  
   computeHasAdvancedFilter(): boolean {
     const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
     return customerType !== 'all' || !!spendingTier || !!monthlyActivity || !!customerStatus;
   },
 
-  // 按当前筛选条件加载列表（无筛选时即默认全店列表）
+  
   async loadFilteredList(): Promise<void> {
     this.setData({ loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
       const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
-      // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
+      
       const params: Record<string, string | boolean> = { profileScope: true };
       if (customerType !== 'all') params.customerType = customerType;
       if (spendingTier) params.spendingTier = spendingTier;
@@ -206,21 +206,21 @@ Page({
     }
   },
 
-  // 展开/收起拓展筛选面板
+  
   toggleAdvanced() {
     this.setData({ advancedExpanded: !this.data.advancedExpanded });
   },
 
-  // 点击拓展筛选维度（顾客类型/消费档位/月度客活/到店状态），单选切换
+  
   onAdvancedFilterTap(e: WechatMiniprogram.TouchEvent) {
     const { dim, value } = e.currentTarget.dataset as { dim: string; value: string };
     if ((this.data as Record<string, unknown>)[dim] === value) return;
-    // 选拓展筛选清除统计卡片选中态（互斥）
+    
     this.setData({ [dim]: value, activeTag: '', searchKeyword: '', searched: false });
     this.loadFilteredList();
   },
 
-  // 重置全部拓展筛选（含顾客类型）
+  
   onResetFilters() {
     this.setData({
       customerType: 'all',
@@ -234,16 +234,16 @@ Page({
     this.loadFilteredList();
   },
 
-  // 点击统计卡片筛选
+  
   onStatTap(e: WechatMiniprogram.TouchEvent) {
     const tag = e.currentTarget.dataset.tag as TagType;
     if (tag === this.data.activeTag) {
-      // 取消筛选
+      
       this.setData({ activeTag: '', searchKeyword: '' });
       this.loadFilteredList();
       return;
     }
-    // 选卡片清除全部拓展筛选（互斥）
+    
     this.setData({
       activeTag: tag,
       customerType: 'all',
@@ -288,12 +288,12 @@ Page({
     wx.navigateTo({ url: `/packageCustomer/customer-detail/customer-detail?${params}` });
   },
 
-  // ===== 客户分配（仅店长，长按触发） =====
+  
   async onLongPressAssign(e: WechatMiniprogram.TouchEvent) {
     const { clientUserId, name } = e.currentTarget.dataset;
     if (!clientUserId) return;
 
-    // 懒加载员工列表
+    
     if (this.data.staffActions.length === 0) {
       try {
         const staff = await callStaffApi<Array<{ employeeId: string; name: string }>>('staff.list');

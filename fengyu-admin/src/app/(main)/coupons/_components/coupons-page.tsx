@@ -80,7 +80,7 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
     }
   }
 
-  // 搜索框防抖
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
@@ -115,7 +115,7 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
     [filtered, page, pageSize]
   )
 
-  /** 导出当前筛选命中的全部优惠券（客户端已全量加载，filtered 即全部筛选结果） */
+  
   const handleExport = useCallback(async () => {
     if (filtered.length === 0) {
       toast.info("当前筛选无数据可导出")

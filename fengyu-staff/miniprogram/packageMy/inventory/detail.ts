@@ -1,4 +1,4 @@
-// packageMy/inventory/detail.ts — 库存单据详情（只读）
+
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
 

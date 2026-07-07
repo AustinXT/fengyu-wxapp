@@ -1,4 +1,4 @@
-// pages/unbind-requests/unbind-requests.ts — 顾客转店申请审批
+
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime } from '../../utils/formatters';
 
@@ -16,7 +16,7 @@ Page({
   data: {
     loading: false,
     requests: [] as UnbindRequest[],
-    // 拒绝弹窗
+    
     showRejectDialog: false,
     rejectRequestId: '',
     rejectReason: '',

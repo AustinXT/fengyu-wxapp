@@ -1,4 +1,4 @@
-// mock/store.ts — 门店和员工相关 mock
+
 
 const MOCK_STORES = [
   { storeId: 'store-001', storeName: '南商市场·凤御旗舰店' },

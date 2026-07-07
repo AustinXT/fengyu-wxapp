@@ -1,25 +1,5 @@
 #!/usr/bin/env node
-/**
- * reset-drizzle-journal.js
- *
- * 一次性脚本：把一个 PostgreSQL 库的 drizzle.__drizzle_migrations 表重置为
- * 只包含 migrations/0000_baseline.sql 的一条记录。用于 2026-04-10 的 baseline
- * reset 收尾——让 drizzle-kit migrate 认为"已经到最新"，未来只 apply 增量。
- *
- * 使用方式：
- *   # dry-run（默认，只打印将执行的 SQL）
- *   DATABASE_URL="postgresql://..." node db/scripts/reset-drizzle-journal.js
- *
- *   # 真实执行
- *   DATABASE_URL="postgresql://..." node db/scripts/reset-drizzle-journal.js --yes
- *
- * 算法（和 drizzle-orm migrator.js 内部实现字节级一致）：
- *   hash = sha256(整个 0000_baseline.sql 字节内容).digest('hex')
- *   created_at = _journal.json 里 entries[0].when（毫秒时间戳 bigint）
- *
- * 本脚本仅适用于 baseline 只有一条 entry 的情况。之后任何增量 migration
- * 都不应再用本脚本——用标准 `npm run db:migrate` 即可。
- */
+
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -37,7 +17,7 @@ async function main() {
     process.exit(2)
   }
 
-  // 1. 读 journal 并断言只有 baseline 一条
+  
   if (!fs.existsSync(JOURNAL_PATH)) {
     throw new Error(`Journal not found: ${JOURNAL_PATH}`)
   }
@@ -53,14 +33,14 @@ async function main() {
     throw new Error(`Expected tag=0000_baseline, got tag=${entry.tag}`)
   }
 
-  // 2. 读 baseline .sql 算 hash
+  
   const sqlPath = path.join(MIGRATIONS_DIR, `${entry.tag}.sql`)
   if (!fs.existsSync(sqlPath)) {
     throw new Error(`Baseline SQL not found: ${sqlPath}`)
   }
   const sqlContent = fs.readFileSync(sqlPath, 'utf8')
   const hash = crypto.createHash('sha256').update(sqlContent).digest('hex')
-  const createdAt = String(entry.when) // bigint 兼容
+  const createdAt = String(entry.when) 
 
   console.log('========================================')
   console.log('reset-drizzle-journal.js')
@@ -72,13 +52,13 @@ async function main() {
   console.log(`Mode:          ${dryRun ? 'DRY RUN (pass --yes to execute)' : 'LIVE (--yes passed)'}`)
   console.log()
 
-  // 3. 连库
+  
   const client = new Client({ connectionString: process.env.DATABASE_URL })
   await client.connect()
 
   try {
-    // 4. 确保 drizzle schema 和 __drizzle_migrations 表存在
-    //    （drizzle-kit migrate 首次运行时会自动创建，如果从未运行则需要手动建）
+    
+    
     const { rows: schemaCheck } = await client.query(`
       SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name='drizzle') AS exists
     `)
@@ -89,7 +69,7 @@ async function main() {
     `)
     console.log(`drizzle.__drizzle_migrations exists: ${tableCheck[0].tbl ? 'YES' : 'NO'}`)
 
-    // 5. 读现状
+    
     let current = []
     if (tableCheck[0].tbl) {
       const res = await client.query(`
@@ -119,7 +99,7 @@ async function main() {
       return
     }
 
-    // 6. 真实执行
+    
     console.log('\n--- EXECUTING ---')
     await client.query(`CREATE SCHEMA IF NOT EXISTS drizzle`)
     await client.query(`
@@ -142,7 +122,7 @@ async function main() {
       throw e
     }
 
-    // 7. 后置校验
+    
     const { rows: after } = await client.query(`
       SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id
     `)

@@ -1,13 +1,4 @@
-/**
- * 营业额分配模块路由（员工端）—— 按回款逐笔分配
- * allocation.pendingPayments — 待分配/已分配回款列表（店长专用）
- * allocation.suggestPayment — 某笔回款的分配建议（店长专用）
- * allocation.savePayment — 保存某笔回款的营业额分配（店长专用）
- * allocation.deletePaymentAllocation — 删除某笔回款的营业额分配（店长专用）
- * allocation.getCommissionRates — 获取提成比例矩阵
- *
- * sale_allocations 为扁平结构：每行 = 一条 sale_item + 一个员工的分配记录。
- */
+
 
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
@@ -16,35 +7,26 @@ const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../u
 const { resolveMarketNameByStore } = require('../utils/market')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 
-// P2-14 Q5: skillTags 驱动的业绩分配校验
-// 每池 = (saleItemId, roleType) 二元组，池间互不约束
+
+
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
 const MAX_PER_POOL = 3
-const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
+const AMOUNT_TOLERANCE = 0.02 
 
-// 营业额口径白名单：仅「销售单」「转换单」产生营业额、参与销售提成分配。
-// 寄存单/充值单/内部单不计营业额（与 dashboard / staff.js / mgmt-dashboard.js 口径一致）。
+
+
 const ALLOCATABLE_ORDER_TYPES = ['销售单', '转换单']
 
-// 分配冻结窗口：订单支付（paid_at）超过 N 天后，店长端禁止再修改分配（admin 后台不受限）
+
 const FREEZE_DAYS = 3
 
-// 是否已过冻结窗口（anchor 为支付时刻；为空则保守放行）
+
 function isFrozen(anchor) {
   if (!anchor) return false
   return Date.now() - new Date(anchor).getTime() > FREEZE_DAYS * 86400000
 }
 
-/**
- * 构造销售提成率查找器（销售提成固化快照用）。
- *
- * 一次性加载该市场「销售单」的 commission_rate_matrix，返回 (role, salesCat, amount) => rate。
- * 口径与 suggest 的 lookupTierRate 完全一致：amountMin <= amount <= amountMax，多 tier 命中取
- * amountMin 最大者（高 tier 优先），跳过 rate<=0 的 grouped 项；market 为空 / 无配置 → 恒返回 0。
- * amount（tier 基准）应传订单级 received 合计，与 suggest 一致。
- *
- * 跨端约定（no-shared-cloudfunctions）：admin allocations.ts / payNotify 各保留同语义独立副本。
- */
+
 async function buildSalesRateLookup(marketName) {
   if (!marketName) return () => 0
 
@@ -89,10 +71,7 @@ async function buildSalesRateLookup(marketName) {
   }
 }
 
-/**
- * 获取提成比例矩阵（PG commission_rate_matrix）
- * 运行时 100% PG，零 MSSQL 依赖。
- */
+
 async function getCommissionRates(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -114,7 +93,7 @@ async function getCommissionRates(ctx) {
     throw new Error(`INVALID_PARAMS: 未找到市场 "${marketName}" 的提成配置`)
   }
 
-  // 将扁平行 pivot 为按 (role_type, amount_tier) 分组的结构
+  
   const grouped = new Map()
   for (const r of rows) {
     const dept = (r.role_type || '').trim()
@@ -137,10 +116,7 @@ async function getCommissionRates(ctx) {
   ctx.result = { rates: [...grouped.values()] }
 }
 
-/**
- * 查询员工技能标签（P2-14 Q5）
- * 返回 skills 数组，由 suggest 按每个 skill 生成独立 allocLine。
- */
+
 async function resolveStaffRoles(staffWfId) {
   const rows = await pg.query(
     'SELECT employee_id, name, skills FROM staff_wechat_users WHERE employee_id = $1',
@@ -157,9 +133,7 @@ async function resolveStaffRoles(staffWfId) {
   }
 }
 
-/**
- * 检查是否为新顾客
- */
+
 async function checkNewCustomer(clientPhone, currentSaleOrderId) {
   if (!clientPhone) return false
   const rows = await pg.query(
@@ -169,15 +143,12 @@ async function checkNewCustomer(clientPhone, currentSaleOrderId) {
   return rows[0].cnt === 0
 }
 
-// ============================================================================
-// 按回款逐笔分配（2026-06 需求变更）：分配单元从「订单」下沉到「回款事件」。
-// 列表/建议/保存/删除均以 sale_payment_id 为粒度；提成率档位基准 = 本次回款额。
-// ============================================================================
 
-/**
- * 待分配/已分配回款列表（店长专用）
- * 列「销售单/转换单」非历史单的回款事件主流水行（allocation_status=$）。
- */
+
+
+
+
+
 async function pendingPayments(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -204,10 +175,7 @@ async function pendingPayments(ctx) {
   ctx.result = { payments, page, pageSize }
 }
 
-/**
- * 某笔回款的分配建议（店长专用）
- * 可分配项 = sale_payment_allocatable_items（基数 amount）；提成率按【本次回款额】查档。
- */
+
 async function suggestPayment(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -242,7 +210,7 @@ async function suggestPayment(ctx) {
   const isNewCustomer = await checkNewCustomer(pay.client_phone, pay.sale_order_id)
   const beauticianRequired = !!(beauticianInfo && beauticianInfo.skills.length > 0)
 
-  // 该回款的可分配项（基数 amount；同时以 received 别名下发，复用前端「实收×比例」算法）
+  
   const items = await pg.query(
     `SELECT a.sale_item_id, a.amount::numeric AS amount, a.amount::numeric AS received,
             a.sales_category, si.product_name, si.product_type
@@ -254,7 +222,7 @@ async function suggestPayment(ctx) {
   )
   const eventAmount = Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0), 0) * 100) / 100
 
-  // 该回款已有分配（供前端恢复编辑态）
+  
   const existingAllocations = await pg.query(
     `SELECT sa.sale_item_id, sa.employee_id, sa.role_type, sa.department_name,
             sa.allocation_ratio, sa.total_amount, sa.is_void,
@@ -361,20 +329,17 @@ async function suggestPayment(ctx) {
     ratesByRole,
     allocLines,
     candidateEmployees,
-    existingAllocations,  // 该回款已有分配（恢复编辑态用）
+    existingAllocations,  
     orderStoreId: pay.store_id,
-    items,             // 每项含 amount（可分配基数）+ received（=amount 别名）+ sales_category
-    totalAmount: eventAmount, // 前端以此为「金额合计」基数（=本次回款额）
+    items,             
+    totalAmount: eventAmount, 
     customerName: pay.customer_name,
     paidAt: pay.paid_at,
     frozen: isFrozen(pay.paid_at),
   }
 }
 
-/**
- * 保存某笔回款的营业额分配（店长专用）
- * totalAmount 服务端重算 = 可分配额 × ratio；提成率按本次回款额查档。
- */
+
 async function savePayment(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -406,8 +371,8 @@ async function savePayment(ctx) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
   }
   await assertNoPendingRefund(pg, pay.sale_order_id)
-  // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
-  // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin savePaymentAllocations。
+  
+  
   await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   const allocItems = await pg.query(
@@ -421,7 +386,7 @@ async function savePayment(ctx) {
   const rateLookup = await buildSalesRateLookup(pay.market_name)
   const now = new Date()
 
-  // 空分配 = 标记该回款无需分配
+  
   if (allocations.length === 0) {
     await pg.transaction(async (client) => {
       await client.query(
@@ -429,7 +394,7 @@ async function savePayment(ctx) {
           WHERE sale_payment_id = $1 AND is_void = false`,
         [salePaymentId]
       )
-      // CAS 守卫：allocation_status 仅 2 值轻量级状态机；IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
+      
       const emptyUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')", [salePaymentId])
       if (emptyUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
       await refreshOrderAllocationRollup(client, pay.sale_order_id)
@@ -470,7 +435,7 @@ async function savePayment(ctx) {
     })
   }
 
-  // 按 (saleItemId, roleType) 分池校验：≤3 人、池内 Σ ≤ 该项可分配额、同员工不重复
+  
   const pools = new Map()
   for (const a of enriched) {
     const key = `${a.saleItemId}|${a.roleType}`
@@ -512,7 +477,7 @@ async function savePayment(ctx) {
          a.totalAmount, a.commissionRate, a.commissionAmount, salePaymentId, now]
       )
     }
-    // CAS 守卫：同上，IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
+    
     const savedUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1 AND allocation_status IN ('待分配', '已分配')", [salePaymentId])
     if (savedUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
     await refreshOrderAllocationRollup(client, pay.sale_order_id)
@@ -526,9 +491,7 @@ async function savePayment(ctx) {
   ctx.result = { salePaymentId, message: '提成分配已保存', allocationCount: enriched.length }
 }
 
-/**
- * 删除某笔回款的营业额分配（重置该回款为待分配；店长专用）
- */
+
 async function deletePaymentAllocation(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -547,7 +510,7 @@ async function deletePaymentAllocation(ctx) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
   }
   await assertNoPendingRefund(pg, pay.sale_order_id)
-  // 退款后守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止清除分配（防作废正数行后留悬空负数）。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin。
+  
   await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   await pg.transaction(async (client) => {
@@ -556,7 +519,7 @@ async function deletePaymentAllocation(ctx) {
         WHERE sale_payment_id = $1 AND is_void = false`,
       [salePaymentId]
     )
-    // CAS 守卫：删除分配只允许 '已分配'→'待分配'，挡并发双删（脏 voided_at 时间戳）
+    
     const resetUpd = await client.query("UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND allocation_status = '已分配'", [salePaymentId])
     if (resetUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
     await refreshOrderAllocationRollup(client, pay.sale_order_id)
@@ -567,7 +530,7 @@ async function deletePaymentAllocation(ctx) {
 }
 
 module.exports = {
-  // 回款级（按回款逐笔分配，当前口径）
+  
   pendingPayments, suggestPayment, savePayment, deletePaymentAllocation,
   getCommissionRates,
 }

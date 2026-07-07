@@ -72,7 +72,7 @@ export const listTransferOrders = withPermission(
     const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
 
-    // 调拨需要 OR 过滤：本门店是发起方 OR 本门店是接收方
+    
     const scopeIds = session.permissions.scopeStoreIds
     const isAdminLike = session.roles.some((r) => r.role === 'admin')
     const conditions: (SQL | undefined)[] = []
@@ -275,7 +275,7 @@ export const createTransferOrder = withPermission(
       throw new ApiError('INVALID_PARAMS', '明细缺少产品或数量')
     }
 
-    // 调拨出库 → isDispatcher=true；调拨入库 → false
+    
     const isDispatcher = data.docSubtype === '调拨出库'
 
     const id = await db.transaction(async (tx) => {
@@ -344,7 +344,7 @@ export const updateTransferOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      // updatedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      
       const patch: Partial<typeof inventoryTransferOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) {
         patch.docSubtype = data.docSubtype
@@ -402,12 +402,7 @@ export const updateTransferOrder = withPermission(
   },
 )
 
-/**
- * 接收方确认收货
- *
- * 接收门店的店长/管理员调用；记录 receiveQuantity（实际收到数量，可与发起数量不同）。
- * 一旦 confirmedAt 已写入，再次调用会抛 CONFLICT。
- */
+
 export const confirmTransferReceive = withPermission(
   'inventory:update',
   async (

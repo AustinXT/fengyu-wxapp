@@ -1,4 +1,4 @@
-// pages/appointment-detail/appointment-detail.ts
+
 import { callStaffApi } from '../../utils/cloud';
 
 interface AppointmentDetail {

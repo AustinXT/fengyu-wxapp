@@ -18,7 +18,7 @@ export default async function Page({
   const isRead =
     params.read === 'read' || params.read === 'unread' ? params.read : undefined
 
-  // (main) layout 已保证 session 存在，这里仅做类型收窄
+  
   const session = await getSession()
   const canSend = !!session && hasPermission(session, 'message:send')
 

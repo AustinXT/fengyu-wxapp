@@ -1,4 +1,4 @@
-<!-- packageCustomer/customer-detail/customer-detail.wxml — 7-Tab 顾客详情 -->
+
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -10,7 +10,7 @@
   </view>
 
   <block wx:else>
-    <!-- 头部信息卡 -->
+    
     <view class="profile-card">
       <view class="profile-header">
         <view class="profile-avatar">
@@ -43,7 +43,7 @@
       </view>
     </view>
 
-    <!-- 7-Tab 导航：6 核心（与 admin 一致）+ 日历（员工端特有） -->
+    
     <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable line-width="40rpx">
       <van-tab title="基本档案">
         <view class="tab-content">
@@ -57,7 +57,7 @@
             <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
             <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
             <van-cell title="消费金额" value="¥{{customer.totalConsumption}}" />
-            <!-- Wave 3G — 储值卡余额（跨店统一） -->
+            
             <van-cell wx:if="{{cardBalanceLoaded}}" title="储值卡余额" value="¥{{cardBalance}}" />
             <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
             <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
@@ -234,17 +234,17 @@
 
       <van-tab title="日历">
         <view class="tab-content">
-          <!-- 月份导航 -->
+          
           <view class="calendar-nav">
             <van-icon name="arrow-left" size="40rpx" bindtap="onCalendarPrev" />
             <text class="calendar-month-label">{{calendarYear}}年{{calendarMonth}}月</text>
             <van-icon name="arrow" size="40rpx" bindtap="onCalendarNext" />
           </view>
-          <!-- 星期头 -->
+          
           <view class="calendar-week-header">
             <text wx:for="{{['日','一','二','三','四','五','六']}}" wx:key="*this" class="calendar-week-cell">{{item}}</text>
           </view>
-          <!-- 日历网格 -->
+          
           <view class="calendar-grid">
             <view
               wx:for="{{calendarDays}}" wx:key="index"
@@ -256,7 +256,7 @@
               <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amountLabel}}</text>
             </view>
           </view>
-          <!-- 选中日期的订单列表 -->
+          
           <view wx:if="{{selectedDate}}" class="calendar-orders">
             <text class="calendar-orders-title">{{selectedDate}} 消费记录</text>
             <view wx:for="{{calendarOrders}}" wx:key="saleOrderId">
@@ -280,7 +280,7 @@
   <view class="safe-area-bottom" />
 </view>
 
-<!-- 底部操作栏（持卡汇总选中时） -->
+
 <view wx:if="{{selectedCount > 0}}" class="bottom-action-bar">
   <van-button
     type="primary" block

@@ -1,36 +1,36 @@
-<!-- pagesOrder/service-records/service-records.wxml -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 加载态 -->
+  
   <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">
     <van-skeleton title row="3" />
     <van-skeleton title row="3" style="margin-top:24rpx" />
     <van-skeleton title row="3" style="margin-top:24rpx" />
   </view>
 
-  <!-- 错误态 -->
+  
   <van-empty
     wx:elif="{{loadError}}"
     image="error"
     description="加载失败，下拉刷新重试"
   />
 
-  <!-- 空态 -->
+  
   <van-empty
     wx:elif="{{!isLoading && records.length === 0}}"
     description="暂无服务记录"
   />
 
-  <!-- 数据态 -->
+  
   <view wx:else class="record-list">
     <view
       wx:for="{{records}}"
       wx:key="service_order_id"
       class="record-card"
     >
-      <!-- 头部：状态 + 日期 -->
+      
       <view class="record-header">
         <van-tag
           plain
@@ -40,10 +40,10 @@
         <text class="record-date">{{item.dateFmt}}</text>
       </view>
 
-      <!-- 项目名称 -->
+      
       <view class="record-title">{{item.itemSummary || '服务项目'}}</view>
 
-      <!-- 详情行 -->
+      
       <view class="record-details">
         <view class="record-detail-item" wx:if="{{item.store_name}}">
           <van-icon name="location-o" size="24rpx" color="#999" />
@@ -59,7 +59,7 @@
         </view>
       </view>
 
-      <!-- 待客户确认：确认服务完成按钮 -->
+      
       <view wx:if="{{item.status === '待客户确认'}}" class="record-confirm">
         <view class="record-confirm-hint">美容师已完成服务，请确认</view>
         <van-button
@@ -71,9 +71,9 @@
         >确认服务完成</van-button>
       </view>
 
-      <!-- 评价区（仅已完成服务单） -->
+      
       <view wx:elif="{{item.status === '已完成'}}" class="record-review">
-        <!-- 已评价：回显星级 + 内容 -->
+        
         <view wx:if="{{item.reviewed}}" class="review-done">
           <view class="review-done-head">
             <van-rate value="{{item.review_rating}}" readonly size="28rpx" color="#C0322A" void-color="#E8E8E8" />
@@ -81,7 +81,7 @@
           </view>
           <view wx:if="{{item.review_comment}}" class="review-done-comment">{{item.review_comment}}</view>
         </view>
-        <!-- 未评价：评价按钮 -->
+        
         <view wx:else class="review-action">
           <van-button
             size="small"
@@ -95,7 +95,7 @@
       </view>
     </view>
 
-    <!-- 底部加载更多 -->
+    
     <view wx:if="{{records.length > 0}}" class="list-footer">
       <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
       <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多了</text>
@@ -104,7 +104,7 @@
 
 </view>
 
-<!-- 评价美容师弹窗 -->
+
 <van-popup
   show="{{ reviewVisible }}"
   position="bottom"

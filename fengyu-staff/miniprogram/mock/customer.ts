@@ -1,4 +1,4 @@
-// mock/customer.ts — 顾客相关 mock
+
 
 const MOCK_CUSTOMERS = [
   {
@@ -42,7 +42,7 @@ const MOCK_CUSTOMERS = [
   },
 ]
 
-// 顾客的已支付订单（用于创建服务单时选择）
+
 const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
   'client-001': [
     {
@@ -108,20 +108,20 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
 
 export const customerHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'customer.search': (payload) => {
-    // 手机号精确匹配（pickup 数字输入用）
+    
     const phone = (payload.phone || '').replace(/\s/g, '')
     if (phone) {
       const found = MOCK_CUSTOMERS.find(c => c.phone === phone)
       return found ? [found] : []
     }
-    // 关键词模糊匹配手机号 + 姓名（开单 / 充值卡 / 顾客 Tab / 服务单用；crossStore 在 mock 中无意义）
+    
     const keyword = (payload.keyword || '').trim()
     if (keyword) {
       return MOCK_CUSTOMERS.filter(
         c => (c.phone || '').includes(keyword) || (c.name || '').includes(keyword),
       )
     }
-    // 无入参时返回全部（默认列表）
+    
     return MOCK_CUSTOMERS
   },
 

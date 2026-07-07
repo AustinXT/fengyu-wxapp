@@ -14,7 +14,7 @@ import {
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { actionErrorMessage } from '@/lib/action-error'
 
-/** 删除结果约定，与各 server action 返回值一致 */
+
 export type DeleteResult = { success: boolean; message: string }
 
 interface ConfirmState {
@@ -24,10 +24,7 @@ interface ConfirmState {
   run: () => Promise<void>
 }
 
-/**
- * 删除确认通用逻辑：弹层开关 + 调用 onConfirm + toast + 成功后跳转/刷新。
- * redirectTo 有值则成功后 router.push，否则 router.refresh()。
- */
+
 function useDeleteConfirm(
   onConfirm: () => Promise<DeleteResult>,
   redirectTo?: string,
@@ -87,10 +84,7 @@ function ConfirmDialog({
   )
 }
 
-/**
- * 详情页底部「危险操作」区：弱化的边框区块 + 次要删除按钮 + 二次确认。
- * 物理删除不可恢复，入口刻意收在详情页底部，降低误触。
- */
+
 export function DangerZoneDelete({
   onConfirm,
   entityLabel,
@@ -99,11 +93,11 @@ export function DangerZoneDelete({
   buttonLabel,
 }: {
   onConfirm: () => Promise<DeleteResult>
-  /** 实体中文名，如「订单」 */
+  
   entityLabel: string
-  /** 确认弹层正文（含关键摘要） */
+  
   description?: React.ReactNode
-  /** 成功后跳转地址（通常为列表页） */
+  
   redirectTo?: string
   buttonLabel?: string
 }) {
@@ -132,10 +126,7 @@ export function DangerZoneDelete({
   )
 }
 
-/**
- * 列表行「更多(⋯)」次级菜单内的删除项 + 二次确认。
- * 删除入口收在 kebab 菜单内，不在行上暴露独立删除图标，降低误触。
- */
+
 export function RowDeleteMenu({
   onConfirm,
   entityLabel,

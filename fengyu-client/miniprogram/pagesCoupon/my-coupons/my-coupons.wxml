@@ -1,4 +1,4 @@
-<!-- pagesCoupon/my-coupons/my-coupons.wxml -->
+
 <wxs module="fmt">
 module.exports.join = function(arr, sep) { return arr ? arr.join(sep) : '' }
 module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) : '' }
@@ -11,26 +11,26 @@ module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) 
   <van-tab title="已过期" />
 </van-tabs>
 
-<!-- 加载态 -->
+
 <view wx:if="{{isLoading}}" class="skeleton-wrap">
   <van-skeleton title row="3" />
   <van-skeleton title row="3" style="margin-top:24rpx" />
 </view>
 
-<!-- 错误态 -->
+
 <van-empty
   wx:elif="{{loadError}}"
   image="error"
   description="加载失败，下拉刷新重试"
 />
 
-<!-- 空态 -->
+
 <van-empty
   wx:elif="{{coupons.length === 0}}"
   description="暂无优惠券"
 />
 
-<!-- 数据态 -->
+
 <view wx:else class="coupon-list">
   <view
     wx:for="{{coupons}}"

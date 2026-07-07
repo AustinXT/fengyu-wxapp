@@ -1,10 +1,4 @@
-/**
- * 充值卡档位类型 + matchTier 纯计算（无 DB 依赖，可在客户端组件导入）
- *
- * 2026-05-21 充值入口收敛到开单页：开单页 RechargePicker（'use client'）需要 matchTier，
- * 而 @/lib/recharge.ts 顶层 import { db } 会把 postgres 驱动拖进客户端 bundle，故把纯逻辑
- * 拆到本模块。server 侧的 loadRechargeConfig 仍在 @/lib/recharge.ts，并从这里 re-export 类型/matchTier。
- */
+
 
 export interface RechargeTier {
   faceValue: number
@@ -17,16 +11,12 @@ export interface RechargeConfig {
   maxAmount: number
 }
 
-/**
- * 按面值匹配档位实付（精确命中或按最大 ≤ amount 的档位折扣比换算）
- *
- * @throws Error 前缀 INVALID_PARAMS
- */
+
 export function matchTier(amount: number, cfg: RechargeConfig): { discount: number; payAmount: number } {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误')
   }
-  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  
   if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
   }

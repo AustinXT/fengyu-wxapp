@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 
-/**
- * 版本号生成脚本 — 把最新 git tag 写入两端小程序的 utils/version.ts
- *
- * 小程序运行时拿不到 git，所以版本号必须在构建期固化进源码。
- * 用法: node scripts/gen-version.js
- * 触发时机: 发版打 tag 后手动跑一次，或由 build-delivery.js 自动调用。
- */
+
 
 const path = require('path')
 const fs = require('fs')
@@ -28,7 +22,7 @@ function resolveVersion() {
       .toString()
       .trim()
   } catch {
-    // 无 tag（浅克隆 / 全新仓库）时退化为 dev
+    
     return 'dev'
   }
 }

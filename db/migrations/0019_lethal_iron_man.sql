@@ -8,8 +8,8 @@ ALTER TABLE "sale_order_payments" ADD CONSTRAINT "sale_order_payments_operator_e
 CREATE INDEX "idx_product_skus_is_recharge_card" ON "product_skus" USING btree ("is_recharge_card") WHERE "product_skus"."is_recharge_card" = true;--> statement-breakpoint
 ALTER TABLE "product_skus" ADD CONSTRAINT "chk_sku_not_both_capabilities" CHECK (NOT ("product_skus"."is_experience" AND "product_skus"."is_recharge_card"));
 
--- 数据回填（一次性）：从 product_categories.product_kind='充值卡' 推导现有 SKU 的 is_recharge_card
--- 来源：notes/tickets/2026-04-26-recharge-card-as-sku-flag.md §3.1 L0-3
+
+
 UPDATE "product_skus" ps
 SET "is_recharge_card" = true
 WHERE EXISTS (
@@ -18,8 +18,8 @@ WHERE EXISTS (
     AND pc."product_kind" = '充值卡'
 );
 
--- 历史订单快照回填（一次性）：从 product_skus.is_recharge_card 反向回填历史 sale_items
--- 来源：notes/tickets/2026-04-26-recharge-card-as-sku-flag.md §3.1 L0-5
+
+
 UPDATE "sale_items" si
 SET "is_recharge_card" = true
 WHERE EXISTS (

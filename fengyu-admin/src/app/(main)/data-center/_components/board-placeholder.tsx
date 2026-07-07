@@ -4,10 +4,7 @@ import { Card } from "@/components/ui/card"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 
-/**
- * 板块占位组件（地基阶段）。读 URL 参数并回显，验证公共筛选器联动。
- * 阶段二各 agent 用真实板块实现替换对应 *-board.tsx（导出名保持不变）。
- */
+
 export function BoardPlaceholder({ name }: { name: string }) {
   const { searchParams } = useUrlFilters()
   const raw = Object.fromEntries(searchParams.entries())

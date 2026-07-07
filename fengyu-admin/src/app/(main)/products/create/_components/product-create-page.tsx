@@ -125,7 +125,7 @@ export default function SkuCreatePageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">新增商品</h1>
       </div>
 
-      {/* 基本信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">基本信息</CardTitle>
@@ -187,7 +187,7 @@ export default function SkuCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 价格 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">价格</CardTitle>
@@ -210,7 +210,7 @@ export default function SkuCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 次数与排序 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">次数与排序</CardTitle>
@@ -229,7 +229,7 @@ export default function SkuCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 可见范围 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">可见范围</CardTitle>
@@ -275,7 +275,7 @@ export default function SkuCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 启用状态 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">启用状态</CardTitle>
@@ -322,7 +322,7 @@ export default function SkuCreatePageClient({
               </p>
             </div>
 
-            {/* 充值卡已退出 SKU/商品域（2026-05-20），无需勾选项；充值订单走独立入口 */}
+            {}
           </div>
         </CardContent>
       </Card>

@@ -8,12 +8,7 @@ import { ProductBoard } from "./_components/product/product-board"
 
 export const dynamic = "force-dynamic"
 
-/**
- * 数据中心入口（Server Component）。
- * - getDataCenterScopeOptions 兼任权限闸门（无 data_center:dashboard → PermissionError → 403）
- * - 按 ?tab= 渲染对应板块（懒加载：仅当前板块组件挂载并自取数）
- * - scope/时间/同比环比 状态由公共筛选器写 URL，板块组件读 URL 取数
- */
+
 export default async function Page({
   searchParams,
 }: {

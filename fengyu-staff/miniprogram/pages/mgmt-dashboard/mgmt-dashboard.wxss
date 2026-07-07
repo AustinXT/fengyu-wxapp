@@ -1,11 +1,11 @@
-/* pages/mgmt-dashboard — hub 页，4 tab 共用一份 wxss */
+
 .mgmt-hub {
   min-height: 100vh;
   background: var(--color-bg-page);
   padding-bottom: 140rpx;
 }
 
-/* 数据中心 dashboard tab */
+
 .mgmt-dash {
   padding: var(--spacing-card);
   padding-bottom: 140rpx;
@@ -34,7 +34,7 @@
   font-weight: 500;
 }
 
-/* mgmt-scope-picker 紧靠右：用 margin-left: auto 把 picker 推到行末 */
+
 .mgmt-dash-filters mgmt-scope-picker {
   margin-left: auto;
   flex-shrink: 0;
@@ -98,7 +98,7 @@
   }
 }
 
-/* 区块标题（门店状况 / 人效数据） */
+
 .dash-section-title {
   font-size: 30rpx;
   font-weight: 600;
@@ -109,7 +109,7 @@
   border-top: 2rpx solid var(--color-divider-soft);
 }
 
-/* 门店状况 - 第一行：会员数量 / 保有会员 / 占比 */
+
 .dash-status-row1 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -138,7 +138,7 @@
   font-weight: 600;
 }
 
-/* 门店状况 - 第二行：左右两个 block */
+
 .dash-status-row2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -164,7 +164,7 @@
 .status-line .lbl { color: var(--color-text-hint); }
 .status-line .val { color: var(--color-text-primary); font-weight: 600; }
 
-/* 入口区：4 列原生 CSS Grid（避开 van-grid relation 首帧塌缩） */
+
 .dash-entries {
   margin-top: 32rpx;
   display: grid;
@@ -172,7 +172,7 @@
   gap: 16rpx;
 }
 
-/* 单卡内容：图标 + 文字 居中垂直排列 */
+
 .dash-entry-card {
   display: flex;
   flex-direction: column;
@@ -255,13 +255,13 @@
   border: 1rpx solid var(--color-primary);
 }
 
-/* 排行榜 tab（store / staff 复用） */
+
 .mgmt-ranking {
   padding: var(--spacing-card);
   padding-bottom: calc(120rpx + env(safe-area-inset-bottom));
 }
 
-/* sticky 筛选区：period chip + metric tabs */
+
 .ranking-filters {
   position: sticky;
   top: 0;
@@ -274,7 +274,7 @@
   margin-bottom: var(--spacing-card);
 }
 
-/* 表格 */
+
 .ranking-table {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
@@ -337,7 +337,7 @@
   font-size: 22rpx;
 }
 
-/* mgmt-profile 重设计：基本信息 / 组织归属 / 管辖范围 卡片 */
+
 .profile-section-title {
   font-size: 26rpx;
   color: var(--color-text-hint);

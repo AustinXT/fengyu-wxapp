@@ -40,13 +40,13 @@ export default function SkillTagManagementDialog({
 }) {
   const router = useRouter()
 
-  // Inner dialog state for add/edit
+  
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<SkillTag | null>(null)
   const [form, setForm] = useState<FormData>(emptyForm)
   const [saving, setSaving] = useState(false)
 
-  // Delete confirmation
+  
   const [deleteTarget, setDeleteTarget] = useState<SkillTag | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -185,7 +185,7 @@ export default function SkillTagManagementDialog({
         </div>
       </Dialog>
 
-      {/* Add/Edit form dialog */}
+      {}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogHeader>
           <DialogTitle>{editing ? "编辑标签" : "新增标签"}</DialogTitle>
@@ -222,7 +222,7 @@ export default function SkillTagManagementDialog({
         </DialogFooter>
       </Dialog>
 
-      {/* Delete confirmation */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>

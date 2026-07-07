@@ -1,7 +1,7 @@
-<!-- pages/service-create/service-create.wxml -->
+
 <view class="container">
 
-  <!-- 关联预约（可选） -->
+  
   <view wx:if="{{appointmentInfo}}" class="appt-banner">
     <view class="appt-info">
       <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
@@ -13,7 +13,7 @@
     <van-icon name="cross" size="32rpx" color="#999" bindtap="onRemoveAppointment" />
   </view>
 
-  <!-- 顾客选择 -->
+  
   <view class="section-card">
     <text class="section-title">选择顾客</text>
     <view wx:if="{{selectedCustomer}}" class="customer-selected">
@@ -51,7 +51,7 @@
     </view>
   </view>
 
-  <!-- 选择核销订单行 -->
+  
   <view class="section-card" wx:if="{{selectedCustomer}}">
     <text class="section-title">选择核销项目</text>
 
@@ -112,7 +112,7 @@
     </view>
   </view>
 
-  <!-- 已选项目汇总 -->
+  
   <view class="section-card" wx:if="{{selectedItems.length > 0}}">
     <text class="section-title">已选核销项目</text>
     <view class="selected-item" wx:for="{{selectedItems}}" wx:key="saleItemId">
@@ -121,7 +121,7 @@
     </view>
   </view>
 
-  <!-- 服务人员 + 备注 -->
+  
   <view class="section-card">
     <van-cell-group>
       <van-cell
@@ -149,7 +149,7 @@
     </van-cell-group>
   </view>
 
-  <!-- 提交 -->
+  
   <view class="submit-bar">
     <van-button
       type="primary"
@@ -163,7 +163,7 @@
 
   <view class="safe-area-bottom" />
 
-  <!-- 店长选择服务人员 -->
+  
   <van-popup
     show="{{showStaffPicker}}"
     round
@@ -179,7 +179,7 @@
     />
   </van-popup>
 
-  <!-- 备注预设选择 -->
+  
   <van-popup
     show="{{showRemarkPicker}}"
     round

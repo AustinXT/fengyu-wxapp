@@ -1,4 +1,4 @@
-<!-- pages/order-detail/order-detail.wxml -->
+
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -10,7 +10,7 @@
   </view>
 
   <block wx:else>
-    <!-- 状态条 -->
+    
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
       <text wx:if="{{order.isActivity}}" class="activity-badge">活动</text>
@@ -18,7 +18,7 @@
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
 
-    <!-- 订单信息 -->
+    
     <van-cell-group title="订单信息" class="card-group">
       <van-cell title="下单人" value="{{order.customerName || '—'}}" />
       <van-cell title="手机号" value="{{isManager ? order.customerPhone : order.customerPhoneMasked}}" />
@@ -40,7 +40,7 @@
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>
 
-    <!-- 订单明细 -->
+    
     <view class="card-group items-card">
       <text class="items-title">订单明细</text>
       <view class="order-item" wx:for="{{order.items}}" wx:key="saleItemId">
@@ -54,13 +54,13 @@
             已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次
           </text>
         </view>
-        <!-- 三段进度条：已用（灰）/ 剩余可用（主色）/ 已付未用（浅色）/ 未付（灰条余下） -->
+        
         <view wx:if="{{item.sessionCount > 1}}" class="session-bar">
           <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
           <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
         </view>
-        <!-- 明细扩展：原价划线 / 销售分类 / 过期日期 / 已提货数量 -->
+        
         <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0}}" class="item-extra">
           <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
           <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
@@ -75,7 +75,7 @@
       </view>
     </view>
 
-    <!-- Ticket 2 PR-A：欠款 + 款项流水 -->
+    
     <view wx:if="{{order.hasDebt || order.payments.length > 0}}" class="card-group items-card">
       <text class="items-title">款项情况</text>
       <view wx:if="{{order.hasDebt}}" class="debt-row">
@@ -92,7 +92,7 @@
           <text class="debt-value debt-value--hot">¥{{order.remainingPayable}}</text>
         </view>
       </view>
-      <!-- 款项流水（payments 非空时展示） -->
+      
       <view wx:if="{{order.payments.length > 0}}" class="pay-list">
         <view
           wx:for="{{order.payments}}"
@@ -115,7 +115,7 @@
       </view>
     </view>
 
-    <!-- 操作按钮 -->
+    
     <view class="action-bar">
       <van-button
         wx:if="{{isManager && order.status === '待支付' && order.payType === 'offline'}}"
@@ -147,7 +147,7 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCloseOrder"
       >取消订单</van-button>
-      <!-- Ticket 2 PR-A：发起回款（店长 + 有欠款） -->
+      
       <van-button
         wx:if="{{isManager && order.hasDebt}}"
         block type="primary"
@@ -156,7 +156,7 @@
         bind:click="onRepayTap"
       >发起回款（欠 ¥{{order.remainingPayable}}）</van-button>
 
-      <!-- 创建服务单（已支付 + 非家居产品订单） -->
+      
       <van-button
         wx:if="{{order.status === '已支付'}}"
         block plain type="primary"
@@ -164,7 +164,7 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成/部分支付 + 仅销售单；排除 workfine 历史单 + 已有待审批退款；员工可发起→店长审批，对齐 admin order-detail-page.tsx；充值单走下方专用按钮） -->
+      
       <van-button
         wx:if="{{(order.status === '已支付' || order.status === '已完成' || order.status === '部分支付') && order.orderType === '销售单' && !order.isLegacy && !hasPendingRefund}}"
         block plain type="danger"
@@ -172,7 +172,7 @@
         bind:click="onCreateRefund"
       >申请退款</van-button>
 
-      <!-- 充值卡退款（充值单专用，走 card.createRefund 退卡内余额，员工可发起→店长审批） -->
+      
       <van-button
         wx:if="{{order.status === '已支付' && order.orderType === '充值单'}}"
         block plain type="danger"
@@ -180,9 +180,9 @@
         bind:click="onCreateCardRefund"
       >充值卡退款</van-button>
 
-      <!-- 退款审批已收口到 refund-list/refund-detail 页（后端 sale_order_type 枚举已无「退款单」，此处按钮恒不命中，已删除死代码 Bug D） -->
+      
 
-      <!-- 终态：返回工作台 -->
+      
       <van-button
         wx:if="{{order.status === '已关闭' || (!isManager && (order.status === '已完成' || order.status === '已支付'))}}"
         block plain round
@@ -193,7 +193,7 @@
     </view>
   </block>
 
-  <!-- P2: 退款原因对话框 -->
+  
   <van-dialog
     use-slot
     title="申请退款"
@@ -226,7 +226,7 @@
     </view>
   </van-dialog>
 
-  <!-- Ticket 2 PR-A：发起回款弹层 -->
+  
   <van-popup
     show="{{showRepayPopup}}"
     position="bottom"
@@ -249,7 +249,7 @@
         <view class="repay-method-card {{repayMethod === '支付宝' ? 'repay-method-card--active' : ''}}" data-method="支付宝" bind:tap="onRepayMethodTap">支付宝</view>
       </view>
 
-      <!-- 按子项实付金额表 -->
+      
       <view class="repay-lines">
         <view wx:for="{{repayLines}}" wx:key="saleItemId" class="repay-line">
           <view class="repay-line-info">
@@ -267,7 +267,7 @@
         </view>
       </view>
 
-      <!-- 储值卡抵扣勾选（仅顾客有余额时可用，勾选后自动抵满） -->
+      
       <view wx:if="{{repayCardBalance > 0}}" class="repay-card-toggle {{repayUseCard ? 'repay-card-toggle--on' : ''}}" bind:tap="onToggleUseCard">
         <text class="repay-card-mark">{{repayUseCard ? '☑' : '☐'}}</text>
         <text class="repay-card-label">使用储值卡抵扣</text>

@@ -1,6 +1,6 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
-/** 商品类型（product_skus.product_type / sale_items.product_type）*/
+
 export const productTypeEnum = pgEnum("product_type", ["疗程卡", "家居产品"]);
 
 export const orderStatusEnum = pgEnum("order_status", [
@@ -15,7 +15,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "已作废",
 ]);
 
-/** 销售单据类型（sale_orders.sale_order_type）*/
+
 export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单", "寄存单", "充值单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
@@ -24,16 +24,7 @@ export const itemDirectionEnum = pgEnum("item_direction", ["购买", "转出", "
 
 export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下", "无", "储值卡"]);
 
-/**
- * 款项流水类型（sale_order_payments.change_type）
- *
- * 首次支付：订单创建那一刻的第一笔收款，至多 1 行/订单
- * 回款：订单存活期内多次补款
- * 退款：Ticket 3 写入，amount 为负
- * 储值卡抵扣：下单时使用储值卡抵扣，与"首次支付"同事务并行写 1 行（PR-3 开始启用）
- *
- * 与 order.ts saleOrderPayments 的 chk_sop_amount_sign CHECK 保持一致。
- */
+
 export const paymentChangeTypeEnum = pgEnum("payment_change_type", [
   "首次支付",
   "回款",
@@ -41,15 +32,7 @@ export const paymentChangeTypeEnum = pgEnum("payment_change_type", [
   "储值卡抵扣",
 ]);
 
-/**
- * 款项流水状态（sale_order_payments.status）
- *
- * 待支付：线上支付已发起未到账
- * 待审批：退款已发起、待店长 / 财务审批（2026-04-26 sale-order-domain-refactor 新增）
- * 已支付：到账（线下/储值卡直接落此状态；退款审批通过亦置此并 amount<0）
- * 已作废：创建后被取消（如超时/手动关闭触发；退款被驳回亦置此）
- * 已退款：首次支付/回款行整笔退款时置此（仅原行）
- */
+
 export const paymentFlowStatusEnum = pgEnum("payment_flow_status", [
   "待支付",
   "待审批",
@@ -58,9 +41,7 @@ export const paymentFlowStatusEnum = pgEnum("payment_flow_status", [
   "已退款",
 ]);
 
-/**
- * 款项来源端（sale_order_payments.source_end）
- */
+
 export const paymentSourceEndEnum = pgEnum("payment_source_end", [
   "client",
   "staff",
@@ -124,46 +105,26 @@ export const customerStatusEnum = pgEnum("customer_status", [
   "休眠",
 ]);
 
-/**
- * 库存单据通用状态（4 张主表共用）
- */
+
 export const inventoryDocStatusEnum = pgEnum("inventory_doc_status", [
   "草稿",
   "已完成",
   "已取消",
 ]);
 
-/**
- * 采购入库类子类型（inventory_procurement_orders.doc_subtype）
- *
- * 院报货：店内向供应链/市场提需求
- * 院入库：实际收货入库（可能引用对应的院报货 / 市场出库单 SCCKD）
- * 退货出库：店内退货回供应商（库存减少；归在采购域因为是与供应商互动）
- */
+
 export const inventoryProcurementSubtypeEnum = pgEnum(
   "inventory_procurement_subtype",
   ["院报货", "院入库", "退货出库"],
 );
 
-/**
- * 销售出库类子类型（inventory_sale_orders.doc_subtype）
- *
- * 销售出库：顾客领取家居产品（库存减少）
- * 顾客退货：顾客退回家居产品（库存增加；负向出库）
- */
+
 export const inventorySaleSubtypeEnum = pgEnum("inventory_sale_subtype", [
   "销售出库",
   "顾客退货",
 ]);
 
-/**
- * 调拨类子类型（inventory_transfer_orders.doc_subtype）
- *
- * 调拨出库：本门店发出货物给对方门店
- * 调拨入库：本门店从对方门店接收货物
- *
- * 物理上同一条调拨单两端视图通过 is_dispatcher 区分；不同视图可生成两条业务记录或共享同一条。
- */
+
 export const inventoryTransferSubtypeEnum = pgEnum(
   "inventory_transfer_subtype",
   ["调拨出库", "调拨入库"],

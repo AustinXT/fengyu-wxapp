@@ -1,4 +1,4 @@
-<!-- pagesExperience/list/list.wxml — 体验卡列表 -->
+
 <wxs module="price">
 module.exports.fmt = function(n) {
   var v = parseFloat(n) || 0;
@@ -10,33 +10,33 @@ module.exports.fmt = function(n) {
 
 <view class="container">
 
-  <!-- 顶部 hero -->
+  
   <view class="hero">
     <view class="hero-title">体验卡专区</view>
     <view class="hero-sub">新人专享 · 低价体验明星项目</view>
   </view>
 
-  <!-- 加载态 -->
+  
   <view wx:if="{{isLoading && skuList.length === 0}}" class="skeleton-wrap">
     <van-skeleton title avatar row="2" />
     <van-skeleton title avatar row="2" style="margin-top: 24rpx;" />
     <van-skeleton title avatar row="2" style="margin-top: 24rpx;" />
   </view>
 
-  <!-- 错误态 -->
+  
   <van-empty
     wx:elif="{{loadError}}"
     image="error"
     description="加载失败，下拉刷新重试"
   />
 
-  <!-- 空态 -->
+  
   <van-empty
     wx:elif="{{skuList.length === 0}}"
     description="暂无体验卡，敬请期待"
   />
 
-  <!-- 列表 -->
+  
   <view wx:else class="card-list">
     <view
       wx:for="{{skuList}}"
@@ -82,7 +82,7 @@ module.exports.fmt = function(n) {
     </view>
   </view>
 
-  <!-- 底部说明 -->
+  
   <view wx:if="{{skuList.length > 0}}" class="footer-note">
     <view class="footer-note-line">· 体验卡仅限本人使用，不可转让</view>
     <view class="footer-note-line">· 购买后请到店核销，逾期作废</view>

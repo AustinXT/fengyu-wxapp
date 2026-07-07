@@ -6,23 +6,7 @@ import type { DashboardStats } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
 
-/**
- * 业务角色看板（manager/finance）零默认值。
- *
- * 2026-04-26 sale-order-domain-refactor：
- *   - 营业额公式从 `SUM(total_amount) WHERE sale_order_type != '退款单'` 切到
- *     `SUM(received - refunded_amount) WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`，
- *     与 audit-17 P0-17-01/02/03 + metrics.md 权威口径对齐
- *   - paid_amount 列已 DROP；统一改用 received（实付）+ refunded_amount（已退款）
- *   - 客流（visitors）改为 service_orders[已完成]，与 staff mgmt-dashboard 对齐
- *   - 同时保留"开单顾客数"作为辅助指标（todayOpenedCustomers）
- *   - 时区固定 Asia/Shanghai（CC7 跨午夜窗口对齐）
- *
- * **公式 / sale_order_type / status 过滤变更必须同步
- * `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js`
- * 与 `dashboard.consistency.test.ts`**
- * （字面量守护：SUMMARY v3 §2 #15 / ticket notes/tickets/2026-05-17-dashboard-three-end-consistency-test.md）。
- */
+
 const ZERO_BUSINESS: Pick<DashboardStats,
   'todayVisitors' | 'todayRevenue' | 'todayPaidAmount' | 'todayRefundedAmount' |
   'todayOpenedCustomers' | 'pendingOrders' | 'pendingAllocations' |
@@ -36,7 +20,7 @@ const ZERO_BUSINESS: Pick<DashboardStats,
   totalPaidAmount: 0,
 }
 
-/** 查询系统概览指标（admin/hr/product 共用） */
+
 async function getAdminStats() {
   const rows = await db.execute(sql`
     SELECT
@@ -55,34 +39,20 @@ async function getAdminStats() {
 }
 
 export const getDashboardStats = withPermission('dashboard:view', async (session): Promise<DashboardStats> => {
-  // 判断角色上下文
+  
   const isAdmin = hasRole(session, 'admin')
   const isHr = hasRole(session, 'hr')
   const isProduct = hasRole(session, 'product')
   const hasBusiness = session.permissions.actions.includes('data_center:dashboard')
 
-  // 业务角色（manager/finance）：返回业务指标
+  
   if (hasBusiness) {
     const scopeIds = session.permissions.scopeStoreIds
     if (scopeIds.length === 0) {
       return { ...ZERO_BUSINESS, roleContext: 'business' }
     }
 
-    /**
-     * 业绩 / 实付 / 已退款 / 待办（sale_orders 域）
-     *
-     * 关键修复（2026-04-26）：
-     *   - WHERE sale_order_type IN ('销售单','转换单')：排除"内部单"
-     *     （回款单/退款单已 5→3 重构迁出，不在数据源）
-     *   - 营业额（todayRevenue）= SUM(received) - SUM(refunded_amount)
-     *     即"净实收"，已天然冲销退款
-     *   - todayPaidAmount = SUM(received) 保留作"毛实收"（含尚未退款的部分）
-     *   - todayRefundedAmount = SUM(refunded_amount) 单独暴露，前端可独立展示
-     *   - 时区统一 Asia/Shanghai：paid_at/sale_order_datetime 是 timestamp without time zone，
-     *     库存"北京墙钟字面"（DB timezone=Asia/Shanghai，写入对进程 TZ 免疫，见 fix/003），
-     *     故直接 ::date 取北京日期即可；切勿再套 `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`
-     *     ——那会把北京墙钟当 UTC 再 +8h，使晚间/跨午夜营收错算到次日。
-     */
+    
     const orderStats = await db.execute(sql`
       WITH tz_today AS (
         SELECT (NOW() AT TIME ZONE 'Asia/Shanghai')::date AS today
@@ -147,10 +117,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
         AND legacy_source IS DISTINCT FROM 'workfine'
     `)
 
-    /**
-     * 客流（visitors）走 service_orders[已完成]，与 metrics.md §"客流" + mgmt-dashboard 对齐。
-     * 旧实现走 sale_orders.sale_order_datetime 已废弃（audit-17 P0-17-03）。
-     */
+    
     const visitorStats = await db.execute(sql`
       WITH tz_today AS (
         SELECT (NOW() AT TIME ZONE 'Asia/Shanghai')::date AS today
@@ -205,7 +172,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
     }
   }
 
-  // 非业务角色：返回系统概览 + 角色上下文
+  
   const adminStats = await getAdminStats()
   const roleContext = isAdmin ? 'admin' : isHr ? 'hr' : isProduct ? 'product' : 'admin'
 

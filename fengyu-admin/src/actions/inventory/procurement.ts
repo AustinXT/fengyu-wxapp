@@ -160,7 +160,7 @@ export const listProcurementOrders = withPermission(
       .from(inventoryProcurementOrders)
       .leftJoin(stores, eq(inventoryProcurementOrders.storeId, stores.storeId))
       .where(whereClause)
-      // 业务时间型：按单据日期倒排（admin.sys.spec.md §5）
+      
       .orderBy(
         desc(inventoryProcurementOrders.docDate),
         desc(inventoryProcurementOrders.createdAt),
@@ -331,7 +331,7 @@ export const updateProcurementOrder = withPermission(
     }
 
     await db.transaction(async (tx) => {
-      // updatedAt/confirmedAt 走 nowTs()（北京墙钟字面），$inferInsert 类型不接受 SQL 片段，故在 .set() 处合并。
+      
       const masterPatch: Partial<typeof inventoryProcurementOrders.$inferInsert> = {}
       if (data.docSubtype !== undefined) masterPatch.docSubtype = data.docSubtype
       if (data.docDate !== undefined) masterPatch.docDate = data.docDate
@@ -357,7 +357,7 @@ export const updateProcurementOrder = withPermission(
         .set({ ...masterPatch, ...confirmPatch, updatedAt: nowTs() })
         .where(eq(inventoryProcurementOrders.id, data.id))
 
-      // 整体替换明细（编辑场景下行内增/删/改通过前端发送完整快照）
+      
       if (data.items !== undefined) {
         await tx
           .delete(inventoryProcurementOrderItems)

@@ -89,7 +89,7 @@ export function RefundForm({
     return { subtotal: Math.round(subtotal * 100) / 100, fee, final }
   }, [items, lineStates, handlingFee])
 
-  // 预判等级跌档 + 超额权益扣除（500ms 防抖）
+  
   useEffect(() => {
     if (!open || !clientUserId || previewTotals.final <= 0) {
       setOverdraft(null)
@@ -181,7 +181,7 @@ export function RefundForm({
         <div className="py-6 text-center text-[#999999]">该订单没有可退明细</div>
       ) : (
         <div className="space-y-4 mt-4">
-          {/* 明细表 */}
+          {}
           <div className="overflow-x-auto border border-[var(--border)] rounded-[var(--radius)]">
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
@@ -222,7 +222,7 @@ export function RefundForm({
                       <td className="px-3 py-2 text-right">{it.unusedQuantity}</td>
                       <td className="px-3 py-2">
                         {it.productType === '疗程卡' ? (
-                          // 疗程卡必须整卡全退（不支持部分退次数）：锁定退款数量 = 全部可退次数
+                          
                           <div className="h-8 leading-8 text-right text-xs text-[#999]">
                             整卡退 {it.unusedQuantity} 次
                           </div>
@@ -254,7 +254,7 @@ export function RefundForm({
             </table>
           </div>
 
-          {/* 手续费 + 原因 */}
+          {}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">手续费（¥，可选）</label>
@@ -290,7 +290,7 @@ export function RefundForm({
             </div>
           </div>
 
-          {/* 会员权益调整区块 */}
+          {}
           {clientUserId && (overdraftLoading || overdraft) && (
             <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white px-3 py-3 text-sm space-y-2">
               <div className="font-medium">会员权益调整</div>

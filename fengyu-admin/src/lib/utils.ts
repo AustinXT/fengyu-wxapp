@@ -8,43 +8,30 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number | string | null | undefined): string {
-  // 历史 WorkFine 拉取的订单/明细金额字段可能为 NULL；空串/非数值同样兜底，
-  // 避免 num.toFixed() 在渲染期抛错导致整页白屏（React #419）。
+  
+  
   const num = typeof amount === 'string' ? parseFloat(amount) : amount
   if (num == null || Number.isNaN(num)) return '¥0.00'
   return `¥${num.toFixed(2)}`
 }
 
-/**
- * @deprecated 仅对 11 位手机号脱敏，其他长度返回明文。新代码请用
- * `import { formatPhoneSafe } from '@/lib/format'`（基于 pii.maskPhone，全长度统一脱敏）。
- */
+
 export function formatPhone(phone: string): string {
   if (!phone || phone.length !== 11) return phone
   return `${phone.slice(0, 3)}****${phone.slice(7)}`
 }
 
-/**
- * 日期：YYYY-MM-DD（Asia/Shanghai 固定时区）。
- * 转调 lib/datetime 收口实现，避免本地时区方法在非北京浏览器下偏移。
- */
+
 export function formatDate(date: string | Date | null | undefined): string {
   return fmtDate(date)
 }
 
-/**
- * 日期时间：YYYY-MM-DD HH:mm:ss（Asia/Shanghai 固定时区）。
- * 转调 lib/datetime 收口实现。
- */
+
 export function formatDateTime(date: string | Date | null | undefined): string {
   return fmtDateTime(date)
 }
 
-/**
- * 计算给定订单金额下，优惠券的实际抵扣金额。
- * - 现金券/品项券：min(discountValue, totalAmount)
- * - 折扣券：totalAmount × (1 - discountValue)，可选 maxDiscount 封顶
- */
+
 export function calcCouponDiscount(
   couponType: string,
   discountValue: string,
@@ -59,7 +46,7 @@ export function calcCouponDiscount(
   return Math.min(dv, totalAmount)
 }
 
-/** 构建组织节点的完整路径（跳过 headquarters 根节点），用 "/" 拼接 */
+
 export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string {
   if (!nodeId || orgNodes.length === 0) return ""
   const map = new Map(orgNodes.map((n) => [n.id, n]))
@@ -74,7 +61,7 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   return names.join("/")
 }
 
-/** 查找组织节点所属的市场节点 ID（向上遍历 parentId 链） */
+
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null
   const map = new Map(orgNodes.map((n) => [n.id, n]))

@@ -1,4 +1,4 @@
-<!-- slide-to-confirm: 滑动到右端触发 confirm 事件，防误点 -->
+
 <view class="stc-wrap {{disabled ? 'stc-wrap--disabled' : ''}}">
   <movable-area class="stc-area">
     <view class="stc-track-label">{{confirmed ? confirmedLabel : label}}</view>

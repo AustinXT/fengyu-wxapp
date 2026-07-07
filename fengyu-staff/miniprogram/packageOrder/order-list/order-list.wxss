@@ -1,4 +1,4 @@
-/* pages/order-list/order-list.wxss */
+
 
 .list-scroll {
   height: calc(100vh - 88rpx);

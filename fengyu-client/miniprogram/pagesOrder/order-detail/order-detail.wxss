@@ -1,4 +1,4 @@
-/* pages/order-detail/order-detail.wxss */
+
 
 .coupon-discount-value {
   color: var(--color-primary) !important;
@@ -15,7 +15,7 @@
   padding: 32rpx;
 }
 
-/* ===== 状态大图区 ===== */
+
 .status-hero {
   background: var(--color-bg-card);
   padding: 48rpx 40rpx;
@@ -62,7 +62,7 @@
   font-weight: 600;
 }
 
-/* 支付结果确认中（issue #37）：品牌色 + 轻脉冲，让用户感知在确认 */
+
 .status-hint--confirming {
   color: var(--color-primary);
   font-weight: 600;
@@ -73,7 +73,7 @@
   50% { opacity: 0.5; }
 }
 
-/* ===== 订单信息-购买产品 ===== */
+
 .cell-products {
   display: flex;
   flex-direction: column;
@@ -87,7 +87,7 @@
   line-height: 1.6;
 }
 
-/* ===== 服务明细区 ===== */
+
 .section-wrap {
   margin: 0 24rpx 24rpx;
 }
@@ -176,7 +176,7 @@
   color: var(--color-text-secondary);
 }
 
-/* 三段进度条（订单详情服务明细，ticket 2026-05-19 paid_sessions） */
+
 .oi-progress {
   display: flex;
   height: 8rpx;
@@ -217,7 +217,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 金额合计 ===== */
+
 .total-cell {
   border-top: 1px solid var(--color-border) !important;
 }
@@ -239,7 +239,7 @@
   font-weight: 700;
 }
 
-/* ===== 操作区 ===== */
+
 .actions-wrap {
   position: fixed;
   bottom: 0;
@@ -268,7 +268,7 @@
   flex: 1;
 }
 
-/* ===== 收款记录区 ===== */
+
 .pay-row {
   display: flex;
   justify-content: space-between;
@@ -328,7 +328,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 欠款提示 + 继续支付 ===== */
+
 .outstanding-wrap {
   margin: 0 24rpx 24rpx;
   background: var(--color-bg-card);
@@ -353,7 +353,7 @@
   color: var(--color-primary);
 }
 
-/* ===== 回款弹层 ===== */
+
 .repay-modal {
   padding: 40rpx 32rpx 48rpx;
 }

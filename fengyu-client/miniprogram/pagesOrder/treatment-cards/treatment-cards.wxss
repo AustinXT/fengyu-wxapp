@@ -1,4 +1,4 @@
-/* pages/treatment-cards/treatment-cards.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -13,12 +13,12 @@
   padding-top: 80rpx;
 }
 
-/* ===== 列表 ===== */
+
 .list-wrap {
   padding: 24rpx 24rpx 40rpx;
 }
 
-/* ===== 疗程卡卡片 ===== */
+
 .tc-card {
   background: var(--color-bg-card);
   border-radius: 20rpx;
@@ -31,12 +31,12 @@
   opacity: 0.6;
 }
 
-/* 头部 */
+
 .tc-card__header {
   margin-bottom: 24rpx;
 }
 
-/* 活跃卡渐变头部 — 扩展到卡片边缘 */
+
 .tc-card__header.brand-gradient {
   margin: -28rpx -28rpx 24rpx -28rpx;
   padding: 28rpx;
@@ -69,7 +69,7 @@
   color: var(--color-text-hint);
 }
 
-/* 进度条 */
+
 .tc-card__progress {
   margin-bottom: 24rpx;
 }
@@ -93,7 +93,7 @@
   background: var(--color-border);
 }
 
-/* ===== 三段进度条（已用 / 已付未用 / 未付） ===== */
+
 .progress-bar--tri {
   display: flex;
   background: transparent;
@@ -104,22 +104,22 @@
   transition: width 0.3s ease;
 }
 
-/* 已用段：浅灰 */
+
 .progress-seg--used {
   background: #B0B0B0;
 }
 
-/* 已付未用段：品牌主色（剩余可用的核心展示） */
+
 .progress-seg--paid-unused {
   background: var(--color-primary);
 }
 
-/* 已付未用段（卡失效时置灰） */
+
 .progress-seg--paid-unused-inactive {
   background: #B0B0B0;
 }
 
-/* 未付段：更浅灰 + 斜纹（视觉提示"未付不可用"） */
+
 .progress-seg--unpaid {
   background: repeating-linear-gradient(
     45deg,
@@ -157,7 +157,7 @@
   font-weight: 400;
 }
 
-/* 底部 */
+
 .tc-card__footer {
   display: flex;
   align-items: flex-end;
@@ -184,7 +184,7 @@
   color: var(--color-text-hint);
 }
 
-/* 预约按钮 */
+
 .tc-card__book-btn {
   flex-shrink: 0;
   padding: 10rpx 32rpx;
@@ -195,7 +195,7 @@
   border-radius: 32rpx;
 }
 
-/* 已失效文字 */
+
 .tc-card__status-text {
   flex-shrink: 0;
   font-size: 24rpx;

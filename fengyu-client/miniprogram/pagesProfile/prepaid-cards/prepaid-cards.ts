@@ -1,4 +1,4 @@
-// pagesProfile/prepaid-cards/prepaid-cards.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatShortDate, formatAmount } from '../../utils/format';
@@ -44,7 +44,7 @@ Page({
     const cardId = e.currentTarget.dataset.cardId;
     if (!cardId) return;
 
-    // Toggle: tap again to collapse
+    
     if (this.data.selectedCardId === cardId) {
       this.setData({ selectedCardId: '', transactions: [] });
       return;

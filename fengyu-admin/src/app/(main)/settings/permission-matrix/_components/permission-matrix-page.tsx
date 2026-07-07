@@ -17,7 +17,7 @@ const ROLES: RoleType[] = [
   'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff',
 ]
 
-/** action key 的中文分组：用前缀切片 → 中文段名，便于扫读 */
+
 const PREFIX_GROUP_LABELS: Record<string, string> = {
   dashboard: '工作台',
   org: '组织架构',
@@ -50,7 +50,7 @@ function groupOf(action: string): string {
   return PREFIX_GROUP_LABELS[prefix] ?? prefix
 }
 
-/** action 动词后缀 → 中文操作名 */
+
 const VERB_LABELS: Record<string, string> = {
   list: '查看',
   view: '查看',
@@ -78,7 +78,7 @@ const VERB_LABELS: Record<string, string> = {
   lakala_config: '收款配置',
 }
 
-/** 权限键 → 中文译名（资源组·操作），如 sale_order:refund_create → 销售订单·发起退款。底层英文键不变。 */
+
 function actionLabel(action: string): string {
   const [prefix, verb] = action.split(':')
   const group = PREFIX_GROUP_LABELS[prefix] ?? prefix
@@ -98,7 +98,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
   const dirty = initialJson !== currentJson
   useUnsavedChanges(dirty)
 
-  /** 按 action 前缀分组渲染（提升可读性，51 行铺平太密集） */
+  
   const groupedActions = useMemo(() => {
     const groups = new Map<string, string[]>()
     for (const a of allActions) {
@@ -144,7 +144,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
         const res = await saveMatrix(matrix)
         if (res.success) {
           toast.success(res.message)
-          // 把 initial 同步到 current 以重置 dirty——避免再次提示离开
+          
           window.location.reload()
         } else {
           toast.error(res.message)

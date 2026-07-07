@@ -62,13 +62,13 @@ export default function CommissionPage({ rates, markets, skillTags }: Commission
   const roleTypeFilter = get("roleType")
   const salesCategoryFilter = get("salesCategory")
 
-  // Dialog state
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingRate, setEditingRate] = useState<CommissionRate | null>(null)
   const [form, setForm] = useState<RateFormData>(emptyForm(markets[0]?.orgId ?? "", skillTags))
   const [saving, setSaving] = useState(false)
 
-  // Delete confirmation state
+  
   const [deleteTarget, setDeleteTarget] = useState<CommissionRate | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -253,7 +253,7 @@ const salesCategories = useMemo(
     },
   ]
 
-  // Collect unique values for select options (merge defaults + existing data)
+  
   const allOrderTypes = useMemo(
     () => [...new Set([...ORDER_TYPE_OPTIONS, ...orderTypes])],
     [orderTypes]
@@ -332,7 +332,7 @@ const salesCategories = useMemo(
         />
       )}
 
-      {/* Add/Edit Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogHeader>
           <DialogTitle>{editingRate ? "编辑规则" : "新增规则"}</DialogTitle>
@@ -433,7 +433,7 @@ const salesCategories = useMemo(
         </DialogFooter>
       </Dialog>
 
-      {/* Delete Confirmation */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>

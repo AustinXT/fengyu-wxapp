@@ -138,7 +138,7 @@ export default function MerchantDetailPage({
         </CardContent>
       </Card>
 
-      {/* 危险操作：删除入口放详情页底部不显眼处（有门店关联时禁用） */}
+      {}
       {canDelete && (
         <Card>
           <CardHeader>

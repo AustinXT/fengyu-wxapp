@@ -1,9 +1,9 @@
-<!-- pagesProfile/points/points.wxml — 积分页面 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- VIP 卡片 -->
+  
   <view class="vip-card brand-gradient">
     <view class="vip-level-row">
       <van-icon name="gem-o" size="36rpx" color="#FFFFFF" />
@@ -18,27 +18,27 @@
     </view>
   </view>
 
-  <!-- 积分记录 -->
+  
   <view class="history-section">
     <view class="section-title">积分记录</view>
 
-    <!-- 加载骨架 -->
+    
     <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">
       <van-skeleton title row="3" />
       <van-skeleton title row="3" />
     </view>
 
-    <!-- 错误态 -->
+    
     <van-empty
       wx:elif="{{loadError}}"
       image="error"
       description="加载失败，下拉刷新重试"
     />
 
-    <!-- 空态 -->
+    
     <van-empty wx:elif="{{!isLoading && records.length === 0}}" description="暂无积分记录" />
 
-    <!-- 记录列表 -->
+    
     <view wx:else class="record-list">
       <view class="record-item" wx:for="{{records}}" wx:key="id">
         <view class="record-icon-wrap {{item.isEarn ? 'record-icon-earn' : 'record-icon-redeem'}}">
@@ -52,7 +52,7 @@
       </view>
     </view>
 
-    <!-- 加载更多 -->
+    
     <view wx:if="{{records.length > 0}}" class="list-footer">
       <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
       <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多了</text>

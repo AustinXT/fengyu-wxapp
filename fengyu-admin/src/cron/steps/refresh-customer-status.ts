@@ -1,18 +1,4 @@
-/**
- * STEP 1 — customer_status 重算（迁自 cronTask/index.js:34-86）
- *
- * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
- * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
- *
- * 三段 SQL 在同一事务中串行：
- *   段 1：非会员客一律置 NULL（清理脏数据）
- *   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
- *   段 3：会员客但完全无到店记录的，置 '休眠'
- *
- * 与原 cronTask 的事务边界一致：整体一个 db.transaction，任一段失败 → 全段回滚。
- *
- * SQL 常量 export 出来以便测试做正则形态断言（与原 cronTask __test__ 导出对齐）。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -25,10 +11,7 @@ UPDATE client_wechat_users
    AND customer_type != '会员客'
 `
 
-/**
- * 段 2 SQL：含 CURRENT_DATE 时间引用。
- * ctx=undefined 时与原 raw SQL 等价（生产路径 + Vitest 形态断言）。
- */
+
 export const UPDATE_CUSTOMER_STATUS_SQL = `
 WITH visit_stats AS (
   SELECT so.client_user_id,
@@ -66,19 +49,16 @@ UPDATE client_wechat_users u
    )
 `
 
-/**
- * 动态构造段 2 SQL：将 raw 中的 `CURRENT_DATE` 替换为 ctx.referenceDate 注入的字面量。
- * 仅替换 `CURRENT_DATE` 三处（90 days / 6 months / 12 months 各 1），不影响 `NOW()`（updated_at 仍真实时间）。
- */
+
 function buildUpdateCustomerStatusSql(ctx?: CronContext): string {
   if (!ctx?.referenceDate) return UPDATE_CUSTOMER_STATUS_SQL
   const dateStr = formatYmd(ctx.referenceDate)
-  // 用字面量替换（参数化此处复杂度高且 PG 不缓存查询计划差异）
+  
   return UPDATE_CUSTOMER_STATUS_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`)
 }
 
 function formatYmd(d: Date): string {
-  // Asia/Shanghai 日历日期（与 PG CURRENT_DATE 在 +0800 时区一致）
+  
   const shanghaiMs = d.getTime() + 8 * 60 * 60 * 1000
   return new Date(shanghaiMs).toISOString().slice(0, 10)
 }
@@ -94,7 +74,7 @@ export async function refreshCustomerStatus(
   db: Db,
   ctx?: CronContext,
 ): Promise<CustomerStatusResult> {
-  // dateSqlOf 仅用于 stats 聚合处（无需），段 1/3 无时间引用，段 2 用 buildUpdateCustomerStatusSql
+  
   void dateSqlOf
   const updateSql = buildUpdateCustomerStatusSql(ctx)
 

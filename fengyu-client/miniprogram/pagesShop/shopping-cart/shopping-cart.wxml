@@ -1,4 +1,4 @@
-<!-- pagesShop/shopping-cart/shopping-cart.wxml — 购物车 -->
+
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 </wxs>
@@ -7,7 +7,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
 <view class="container">
 
-  <!-- 空购物车 -->
+  
   <view wx:if="{{isEmpty}}" class="empty-wrap">
     <van-empty description="购物车是空的" />
     <view class="empty-action">
@@ -15,9 +15,9 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </view>
   </view>
 
-  <!-- 购物车列表 -->
+  
   <view wx:else class="cart-content">
-    <!-- 顶部操作栏 -->
+    
     <view class="cart-header">
       <text class="cart-header-count">共 {{cartItems.length}} 件商品</text>
       <view class="cart-header-clear" bindtap="onClearAll">
@@ -31,14 +31,14 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         wx:key="skuId"
         class="cart-item"
       >
-        <!-- 勾选框 -->
+        
         <view class="cart-item-check" catchtap="onToggleItem" data-index="{{index}}">
           <van-checkbox value="{{item.checked}}" />
         </view>
 
-        <!-- 商品信息 -->
+        
         <view class="cart-item-main" bindtap="onItemTap" data-spu-id="{{item.spuId}}">
-          <!-- 封面 -->
+          
           <image
             wx:if="{{item.coverImage}}"
             class="cart-item-cover"
@@ -49,13 +49,11 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
             <van-icon name="photo-o" size="40rpx" color="#CCC" />
           </view>
 
-          <!-- 详情 -->
+          
           <view class="cart-item-info">
             <view class="cart-item-name-row">
               <text class="cart-item-name">{{item.spuName}}</text>
-              <!-- PR-D：优先用 DB 驱动的 productKind + kindDisplayColor 渲染；
-                   2026-04-26：充值卡走 capability 列 isRechargeCard 而非 bigCategory 字面量。
-                   常规商城通道已在 SKU_VALID_FILTER 排除充值卡 SKU，此分支为兜底防御。 -->
+              
               <van-tag wx:if="{{item.isRechargeCard}}" color="#D4820A" size="mini">充值</van-tag>
               <van-tag wx:elif="{{item.productKind && item.kindDisplayColor}}" color="{{item.kindDisplayColor}}" size="mini">{{item.productKind}}</van-tag>
               <van-tag wx:elif="{{item.productKind}}" type="primary" size="mini">{{item.productKind}}</van-tag>
@@ -84,14 +82,14 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           </view>
         </view>
 
-        <!-- 删除按钮 -->
+        
         <view class="cart-item-delete" catchtap="onDeleteItem" data-index="{{index}}">
           <van-icon name="delete-o" size="36rpx" color="#C0322A" />
         </view>
       </view>
     </scroll-view>
 
-    <!-- 底部结算栏 -->
+    
     <view class="cart-bottom safe-area-bottom">
       <view class="cart-bottom-left" bindtap="onToggleAll">
         <van-checkbox value="{{allChecked}}" />

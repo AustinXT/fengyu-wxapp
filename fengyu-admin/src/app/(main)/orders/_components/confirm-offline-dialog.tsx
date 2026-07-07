@@ -8,22 +8,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { confirmOfflinePayment } from "@/actions/orders"
 
-/**
- * 确认线下收款弹层 —— 线下「待支付」订单的首次收款入账入口。
- *
- * - 默认确认全额（remainingPayable）；可下调做部分确认 → 订单转「部分支付」，剩余走「录入回款」补齐。
- * - 储值卡抵扣（订单创建时预选的 prepaid_card_amount）在 confirmOfflinePayment 内一并扣减。
- * - 确认收款为线下现金确认，不强制外部交易号（外部交易号是后续「录入回款」的审计要求）。
- */
+
 export function ConfirmOfflineDialog({
   open,
   onOpenChange,
   saleOrderId,
-  /** 订单剩余应付现金（payable_amount - received），单位元 */
+  
   remainingPayable,
-  /** 开单约定实付草稿合计（pending_received 之和，已 cap 到 remainingPayable），用作默认预填；缺省回退 remainingPayable */
+  
   suggestedAmount,
-  /** 顾客当前储值卡余额，单位元（null 表示未查询或无账户） */
+  
   cardBalance,
 }: {
   open: boolean
@@ -35,7 +29,7 @@ export function ConfirmOfflineDialog({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  // 默认确认金额 = 开单约定实付（pending_received 合计）；无则回退剩余应付现金（两位小数字符串便于受控 input）
+  
   const [amount, setAmount] = useState<string>((suggestedAmount != null ? suggestedAmount : remainingPayable).toFixed(2))
 
   const handleSubmit = () => {

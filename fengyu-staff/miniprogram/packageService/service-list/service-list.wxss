@@ -1,9 +1,9 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/service-list/service-list.wxss */
+
 .page-content {
   padding: 48rpx 24rpx;
 }
 
-/* ===== 服务单列表（分包入口） ===== */
+
 .loading-wrap { padding: 120rpx 0; }
 
 .list-wrap {

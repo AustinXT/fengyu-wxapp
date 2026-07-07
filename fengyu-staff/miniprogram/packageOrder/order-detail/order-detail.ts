@@ -1,4 +1,4 @@
-// pages/order-detail/order-detail.ts
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
@@ -9,7 +9,7 @@ const PAY_TYPE_LABEL: Record<string, string> = {
 };
 
 
-// ===== API 原始类型（snake_case） =====
+
 
 interface RawOrder {
   sale_order_id: string;
@@ -25,7 +25,7 @@ interface RawOrder {
   created_at?: string;
   paid_at?: string;
   total_amount?: string;
-  // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，改用 received / refunded_amount
+  
   received?: string;
   refunded_amount?: string;
   prepaid_card_amount?: string;
@@ -33,7 +33,7 @@ interface RawOrder {
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
-  // 详情扩展字段（云函数 order SELECT * + coupon_name/offline_confirmed_by_name 衍生）
+  
   document_type?: string;
   market_name?: string;
   coupon_discount?: string;
@@ -89,37 +89,37 @@ interface OrderDetailResponse {
   order: RawOrder;
   items: RawOrderItem[];
   payments?: RawPayment[];
-  /** 顾客储值卡余额（供回款弹层「使用储值卡抵扣」自动抵满；无账户=0，无顾客=null） */
+  
   cardBalance?: number | null;
 }
 
-// ===== 展示层类型（camelCase，用于 WXML 绑定） =====
+
 
 interface DisplayOrderItem {
   saleItemId: string;
   itemName: string;
   spec: string;
   totalPrice: string;
-  /** 行应付（sale_amount）/ 已收（received）/ 可回款（应付-已收），按子项回款用 */
+  
   saleAmount: string;
   received: string;
   repayable: string;
   sessionCount: number | undefined;
   remainingSessions: number | undefined;
   paidSessions: number | undefined;
-  /** 已用次数 = sessionCount - remainingSessions（0 兜底） */
+  
   usedSessions: number;
-  /** 已付未用次数 = max(paidSessions - usedSessions, 0) */
+  
   paidUnusedSessions: number;
-  /** 三段进度条百分比（用于 WXML 内联 style） */
+  
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
-  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已提货数量（家居，0=不展示） */
+  
   salesCategory: string;
   expireDate: string;
   pickedUpQuantity: number;
-  /** 单次现价 / 原价 + 是否有折扣（原价划线展示） */
+  
   unitRealPrice: string;
   unitPrice: string;
   hasDiscount: boolean;
@@ -149,7 +149,7 @@ interface DisplayOrder {
   prepaidCardAmount: string;
   remainingPayable: string;
   hasDebt: boolean;
-  /** 详情扩展：单据类型 / 所属市场 / 券名 / 券抵扣 / 分配状态 / 历史订单标记 */
+  
   documentType: string;
   marketName: string;
   couponName: string;
@@ -172,29 +172,29 @@ Page({
     refundBadge: '',
     hasPendingRefund: false,
     _saleOrderId: '',
-    // P2: 退款
+    
     showRefundDialog: false,
     refundReason: '',
-    // 退款明细多选（可选订单内若干项；疗程卡整卡退、不支持部分退次数）
+    
     refundItemOptions: [] as Array<{ saleItemId: string; label: string }>,
     refundSelectedIds: [] as string[],
     submitting: false,
-    // Ticket 2026-05-21 按子项回款弹层（2026-06-24 重构：储值卡改独立抵扣勾选）
+    
     showRepayPopup: false,
-    // 每个购买子项一行：{ saleItemId, itemName, repayable, real(本次实付金额) }
+    
     repayLines: [] as Array<{ saleItemId: string; itemName: string; repayable: string; real: string }>,
     repayMethod: '线下' as '线下' | '微信' | '支付宝',
     repayNote: '',
-    // 储值卡抵扣：独立勾选，勾选后自动抵满 min(余额, 实付合计)
+    
     repayUseCard: false,
     repayCardBalance: 0,
-    // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡；服务端据此作扣卡 external_ref）
+    
     repayIdempKey: '',
     repayRealTotal: '0.00',
     repayCardDeduct: '0.00',
-    // 需支付金额（线下=现金 / 微信支付宝=顾客扫码）= 实付合计 − 储值卡抵扣
+    
     repayNeedPay: '0.00',
-    // 当前订单欠款（弹层内引用）
+    
     currentRemainingPayable: 0,
   },
 
@@ -240,7 +240,7 @@ Page({
           paidUnusedPct: pct(paidUnused),
           unpaidPct: pct(unpaid),
           salesCategory: it.sales_category || '',
-          // expire_date 是 pg date 列，必须 formatDate 避免 UTC 串偏移日期
+          
           expireDate: it.expire_date ? formatDate(it.expire_date) : '',
           pickedUpQuantity: Number(it.picked_up_quantity || 0),
           unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
@@ -249,9 +249,9 @@ Page({
         };
       });
 
-      // payments 流水：按 DB sale_order_payments 原样逐条展示
-      // （储值卡抵扣/首次支付/回款/退款各自真实金额，不归并；同一次收款的现金行与卡行 paid_at 相同，
-      // 用流水 id 作 wx:key 避免冲突）。历史归并方案有顺序依赖 bug（卡行先独立 push 又被现金行吸收 → 重复计算），已移除。
+      
+      
+      
       const payments: DisplayPayment[] = (res.payments || []).map((p) => {
         const amt = Number(p.amount) || 0;
         const isRefund = amt < 0 || p.change_type === '退款';
@@ -268,20 +268,20 @@ Page({
           note: p.note || '',
         };
       });
-      // 退款入口守卫：该单已有「待审批/待支付」退款则隐藏「申请退款」按钮，防重复发起（对齐 admin order-detail-page.tsx）
+      
       const hasPendingRefund = payments.some((p) => p.isRefund && (p.status === '待审批' || p.status === '待支付'));
 
       const totalAmount = Number(o.total_amount || 0);
       const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
-      // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，净到账 = received - refunded_amount
+      
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      // 欠款口径 = total − netReceived（与 status 结清判定 settleTarget = payable + prepaid 一致；
-      // received 按 I1 含储值卡抵扣，须用总额减，否则含卡部分支付单 payable(扣卡)−received(含卡) ≤ 0 → hasDebt 误判）
+      
+      
       const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
-      // 「发起回款」仅在已首次支付（部分支付）且仍有欠款时显示；
-      // 待支付走「确认线下收款」，已结清/终态均不显示回款入口
+      
+      
       const orderType = o.sale_order_type || '';
       const hasDebt = orderType === '销售单'
         && o.status === '部分支付'
@@ -327,7 +327,7 @@ Page({
         repayCardBalance: res.cardBalance != null ? Number(res.cardBalance) : 0,
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
-        // 退款后状态角标（Bug B）：按 refunded_amount 派生「已退款/部分退款」，订单主状态不变（对齐 admin）
+        
         refundBadge: refundedAmount > 0
           ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
           : '',
@@ -430,7 +430,7 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 
-  // ===== 充值卡退款（充值单专用，走 card.createRefund）=====
+  
   onCreateCardRefund() {
     const o = this.data.order;
     if (!o) return;
@@ -456,12 +456,12 @@ Page({
     });
   },
 
-  // ===== P2: 退款 =====
+  
   onCreateRefund() {
     const o = this.data.order;
     if (!o) return;
-    // 可退项：疗程卡按「已付未用次数」(paidUnusedSessions>0) 可退；家居（无 session_count）默认列出，后端校验可退量。
-    // 疗程卡整卡全退（不支持部分退次数），label 标注可退次数。
+    
+    
     const options = o.items
       .filter((it) => (it.sessionCount == null ? true : it.paidUnusedSessions > 0))
       .map((it) => ({
@@ -475,7 +475,7 @@ Page({
       showRefundDialog: true,
       refundReason: '',
       refundItemOptions: options,
-      refundSelectedIds: options.map((x) => x.saleItemId), // 默认全选
+      refundSelectedIds: options.map((x) => x.saleItemId), 
     });
   },
 
@@ -500,7 +500,7 @@ Page({
     }
     this.setData({ submitting: true });
     try {
-      // 仅退选中项；不带 refundQuantity → 后端疗程卡强制整卡全退、家居退全部未提货
+      
       const items = refundSelectedIds.map((saleItemId) => ({ saleItemId }));
       await callStaffApi('order.createRefund', {
         refSaleOrderId: order.saleOrderId,
@@ -522,11 +522,11 @@ Page({
     this.setData({ showRefundDialog: false });
   },
 
-  // 退款审批已收口到 refund-list/refund-detail 页；原 onApproveRefund/onRejectRefund 传 saleOrderId（后端需 paymentId）
-  // 且依赖恒不命中的 orderType==='退款单'，属死代码 + 传参错误，已删除（Bug D）。
+  
+  
 
-  // ===== Ticket 2026-05-21：按子项发起回款 =====
-  // 合计：实付合计 → 储值卡抵扣（勾选则自动抵满 min(余额, 实付合计)）→ 需支付
+  
+  
   _recalcRepayTotals(lines: Array<{ real: string }>) {
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const realTotal = r2(lines.reduce((s, l) => s + (Number(l.real) || 0), 0));
@@ -544,7 +544,7 @@ Page({
   onRepayTap() {
     const o = this.data.order;
     if (!o || !o.hasDebt) return;
-    // 默认线下、每行实付 = 该行可回款额（操作员可改小或清零，不要求全额）
+    
     const lines = (o.items || [])
       .filter((it) => Number(it.repayable) > 0)
       .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
@@ -556,7 +556,7 @@ Page({
     this.setData({ showRepayPopup: false });
   },
 
-  // 子项实付金额输入：data-index 指定行
+  
   onRepayLineChange(e: WechatMiniprogram.CustomEvent) {
     const idx = Number(e.currentTarget.dataset.index);
     const val = (e.detail as unknown as string) || '';
@@ -574,7 +574,7 @@ Page({
     this._recalcRepayTotals(this.data.repayLines);
   },
 
-  // 切换「使用储值卡抵扣」勾选（勾选后自动抵满 min(余额, 实付合计)）
+  
   onToggleUseCard() {
     this.setData({ repayUseCard: !this.data.repayUseCard });
     this._recalcRepayTotals(this.data.repayLines);
@@ -592,7 +592,7 @@ Page({
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const isOnline = repayMethod === '微信' || repayMethod === '支付宝';
 
-    // 实付合计 + 逐项校验（实付 ≤ 该行可回款额）
+    
     const reals = repayLines.map((l) => ({
       saleItemId: l.saleItemId,
       real: r2(Number(l.real) || 0),
@@ -618,7 +618,7 @@ Page({
       }
     }
 
-    // 储值卡抵扣（勾选则自动抵满）+ 按各子项实付比例摊分（末项补差，每项 ≤ 该行实付）
+    
     const cardDeduct = repayUseCard ? r2(Math.min(repayCardBalance, realTotal)) : 0;
     const filled = reals.filter((it) => it.real > 0);
     const cardMap: Record<string, number> = {};
@@ -630,7 +630,7 @@ Page({
       acc = r2(acc + card);
     });
 
-    // ===== 微信/支付宝：储值卡部分先即时扣，剩余生成收款码让顾客扫码在线付 =====
+    
     if (isOnline) {
       const cardItems = reals
         .map((it) => ({ saleItemId: it.saleItemId, repayAmount: 0, prepaidCardAmount: r2(cardMap[it.saleItemId] || 0) }))
@@ -649,11 +649,11 @@ Page({
         }
         this.setData({ showRepayPopup: false });
         if (needPay <= 0.001) {
-          // 储值卡已全额抵扣结清，无需出码
+          
           wx.showToast({ title: '储值卡已抵扣结清', icon: 'success' });
           this.loadDetail(this.data._saleOrderId);
         } else {
-          // 跳收款码页：顾客扫码进收银台在线付剩余应付，payNotify 回调写 change_type=回款
+          
           const params = `saleOrderId=${order.saleOrderId}&customerName=${encodeURIComponent(order.customerName)}&totalAmount=${order.totalAmount}`;
           wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
         }
@@ -666,7 +666,7 @@ Page({
       return;
     }
 
-    // ===== 线下：即时记账（实付 = 现金 repayAmount + 储值卡抵扣 prepaidCardAmount） =====
+    
     const items = reals
       .map((it) => {
         const card = r2(cardMap[it.saleItemId] || 0);
@@ -688,7 +688,7 @@ Page({
       this.loadDetail(this.data._saleOrderId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '回款失败';
-      // 剥离错误前缀（INVALID_PARAMS:OVERPAY → OVERPAY / 中文后缀）
+      
       wx.showToast({ title: msg.replace(/^[A-Z_]+:\s*/, '') || '回款失败', icon: 'none' });
     } finally {
       this.setData({ submitting: false });

@@ -18,10 +18,7 @@ import { formatPhone, formatDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
-/**
- * 类型下拉选项（静态）—— 与 db/schema/enums.ts:cardTransactionTypeEnum 同步。
- * 若枚举扩值（如新增 `退款`/`赠送`），此处需同步更新。
- */
+
 const TYPE_OPTIONS: Array<'充值' | '扣款'> = ['充值', '扣款']
 
 const MEMBER_LEVEL_COLORS: Record<string, string> = {
@@ -57,12 +54,7 @@ function formatCurrency(amount: number, withSign = false): string {
   return body
 }
 
-/**
- * 充值卡流水列表页 — 服务端分页 + 汇总统计
- *
- * 数据已在 Server Component 中通过 getCardTransactionsPaginated() 完成 DB 级过滤+分页+汇总。
- * 汇总统计（summary）反映当前筛选条件下的全量统计，而不仅是当前页。
- */
+
 export default function CardTransactionsPage({
   transactions,
   total,
@@ -89,13 +81,13 @@ export default function CardTransactionsPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // 市场列表
+  
   const markets = useMemo(() =>
     orgNodes.filter(n => n.type === '市场' && n.isActive),
     [orgNodes]
   )
 
-  // 根据选中市场过滤门店列表
+  
   const filteredStores = useMemo(() => {
     if (!marketFilter) return stores
     const storeNodeIds = new Set(
@@ -104,7 +96,7 @@ export default function CardTransactionsPage({
     return stores.filter(s => s.orgNodeId && storeNodeIds.has(s.orgNodeId))
   }, [stores, orgNodes, marketFilter])
 
-  // 搜索防抖
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
@@ -204,7 +196,7 @@ export default function CardTransactionsPage({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">充值卡流水</h1>
       </div>
 
-      {/* 汇总统计 */}
+      {}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <StatCard
           label="总充值金额"
@@ -231,7 +223,7 @@ export default function CardTransactionsPage({
         />
       </div>
 
-      {/* 筛选区 */}
+      {}
       <div className="flex flex-wrap items-center gap-3">
         <Select
           value={marketFilter}

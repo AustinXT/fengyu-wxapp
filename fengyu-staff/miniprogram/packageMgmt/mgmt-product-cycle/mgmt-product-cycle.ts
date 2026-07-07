@@ -1,6 +1,6 @@
-// packageMgmt/mgmt-product-cycle — 管理层"品项数据"子页
-// scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
-// 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
+
+
+
 import { canAccessManagement } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
@@ -11,7 +11,7 @@ type ScopeType = 'all' | 'market' | 'store'
 interface CardHolderRow {
   productKind: string
   count: number
-  rate: number | null // 0-100 数值；null → '--'
+  rate: number | null 
 }
 
 interface CardHoldersResp {
@@ -23,7 +23,7 @@ interface ProductKindRow {
   productKind: string
   count: number
   revenue: number
-  avgTicket: number | null // null → '--'
+  avgTicket: number | null 
 }
 
 interface CycleStatsResp {
@@ -88,7 +88,7 @@ Page({
     const scopeId = query?.scopeId ? query.scopeId : null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
     this.setData({ scopeType, scopeId, scopeName })
-    // 并行触发持卡人数 + 周期数据
+    
     this.loadCardHolders()
     this.loadCycleStats()
   },
@@ -103,7 +103,7 @@ Page({
     const period = e.detail?.value
     if (!period || period === this.data.period) return
     this.setData({ period })
-    // 持卡人数不重拉
+    
     this.loadCycleStats()
   },
 
@@ -147,7 +147,7 @@ Page({
       })
     } catch {
       this.setData({ loading: false, cycleError: true })
-      // 保留旧 display 防闪屏（不清空）
+      
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
   },

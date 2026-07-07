@@ -1,46 +1,33 @@
 "use client"
 
-/**
- * 转换单结算面板（PR-C C3）
- *
- * 左列：渲染 getCustomerHeldCards(clientUserId, storeId) 返回的折抵候选卡，
- *      每张一行 checkbox + 折抵金额预览。整张卡不可拆，勾选 = 全部转出。
- * 右列：当前购物车合计（应付转入金额） + 实时差额提示。
- * 底部：按差额正负分别显示
- *      - 差额 > 0：红字 "还需支付 ¥X"
- *      - 差额 = 0：绿字 "折抵抵平，无需补款"
- *      - 差额 < 0：蓝字 "将充入储值卡 ¥X"
- *
- * 本组件只负责选卡 + 计算差额并把 selectedIds 通过 onChange 回写父组件，
- * 实际提交（createConversionOrder）在父组件 Step 3 提交按钮触发。
- */
+
 import { useEffect, useMemo } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import type { HeldCardCandidate } from "@/actions/cards"
 
 export interface ConversionPanelProps {
-  /** 加载中（父组件正在调用 getCustomerHeldCards） */
+  
   loading: boolean
-  /** 候选折抵卡 */
+  
   heldCards: HeldCardCandidate[]
-  /** 当前已勾选的 saleItemId 集合 */
+  
   selectedIds: string[]
-  /** 勾选变化 */
+  
   onChange: (ids: string[]) => void
-  /** 当前购物车应付合计（人民币元） */
+  
   totalIn: number
-  /** 顾客充值卡余额（> 0 时在补差额场景渲染抵扣控件） */
+  
   cardBalance?: number
-  /** 是否启用充值卡抵扣 */
+  
   useCard?: boolean
-  /** 抵扣金额输入框值（受控；留空 = 全额抵扣到上限） */
+  
   cardAmountInput?: string
-  /** 实际生效抵扣额（父组件 clamp 后传入，用于"还需支付"展示） */
+  
   cardAmount?: number
-  /** 启用/停用抵扣 */
+  
   onToggleCard?: (checked: boolean) => void
-  /** 抵扣金额输入变化 */
+  
   onCardAmountChange?: (v: string) => void
 }
 
@@ -57,7 +44,7 @@ export function ConversionPanel({
   onToggleCard,
   onCardAmountChange,
 }: ConversionPanelProps) {
-  // heldCards 变化时清掉不在新列表里的旧选择（如换顾客 / 换门店）
+  
   useEffect(() => {
     const validIds = new Set(heldCards.map((c) => c.saleItemId))
     const filtered = selectedIds.filter((id) => validIds.has(id))
@@ -91,7 +78,7 @@ export function ConversionPanel({
         <h3 className="text-sm font-semibold">转换单结算</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* 左列：折抵卡列表 */}
+          {}
           <div className="space-y-2">
             <p className="text-xs text-[#666666]">勾选折抵卡（整张全转）</p>
             {loading && (
@@ -143,7 +130,7 @@ export function ConversionPanel({
             </div>
           </div>
 
-          {/* 右列：差额计算 */}
+          {}
           <div className="space-y-3">
             <p className="text-xs text-[#666666]">差额预览</p>
             <div className="bg-white rounded border border-[var(--border)] p-3 space-y-2">
@@ -162,7 +149,7 @@ export function ConversionPanel({
               </div>
             </div>
 
-            {/* 充值卡抵扣（仅补差额 > 0 时显示） */}
+            {}
             {priceDiff > 0 && (
               <div className="bg-white rounded border border-[var(--border)] p-3">
                 <div className="flex items-center justify-between">

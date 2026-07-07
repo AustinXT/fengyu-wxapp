@@ -1,15 +1,4 @@
-/**
- * PII 脱敏 helper（三端字面一致 — 由 cross-end-pii-snapshot.test.js 守护）
- *
- * 函数：
- *   maskPhone(phone)        — 手机号脱敏（11 位 → 138****5678）
- *   maskName(name)          — 姓名脱敏（默认 SENSITIVE_KEYS 不含 name，调用方按需调用）
- *   maskIdCard(id)          — 身份证脱敏（前 4 后 4 + 中间 *）
- *   maskEmail(email)        — 邮箱脱敏（local 首末保留）
- *   maskOpenid(openid)      — openid 脱敏（前 4 + 末 4）
- *   sanitizeDetail(input)   — 递归对象按 SENSITIVE_KEYS 脱敏（仅 PII 键）
- *   SENSITIVE_KEYS          — 默认敏感键集合
- */
+
 
 function maskPhone(phone) {
   if (!phone || typeof phone !== 'string') return ''
@@ -74,11 +63,7 @@ function maskByKey(key, value) {
   return value
 }
 
-/**
- * 递归脱敏对象。
- * 关键设计：进入 SENSITIVE_KEY 后向下"继承"当前 key 类型，使 changes.phone.{from,to} 这类
- * "diff 子对象内字符串"也按 phone 规则脱敏（详见 ticket §6.5 验证清单）。
- */
+
 function sanitizeDetail(input, inheritedKey) {
   if (input == null) return input
   if (typeof input === 'string') {

@@ -5,7 +5,7 @@ import { formatByUnit, formatDelta } from "@/lib/data-center/format"
 import type { KpiCell } from "@/lib/data-center/types"
 import { cn } from "@/lib/utils"
 
-/** 同比/环比 delta 徽章：正绿 / 负红 / null 灰('--') */
+
 function DeltaBadge({ label, value }: { label: string; value: number | null | undefined }) {
   const invalid = value == null || !Number.isFinite(value)
   const color = invalid
@@ -22,7 +22,7 @@ function DeltaBadge({ label, value }: { label: string; value: number | null | un
   )
 }
 
-/** 单个 KPI 卡片（值 + 同比/环比） */
+
 export function KpiCard({
   label,
   cell,
@@ -53,7 +53,7 @@ export interface KpiGridItem {
   hint?: string
 }
 
-/** KPI 卡片网格：按 items 顺序从 kpis 取 cell 渲染 */
+
 export function KpiGrid({
   items,
   kpis,

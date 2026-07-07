@@ -1,4 +1,4 @@
-/* pages/order-detail/order-detail.wxss */
+
 
 
 .status-banner {
@@ -58,7 +58,7 @@
 .item-sessions { font-size: 22rpx; color: var(--color-text-hint); }
 .item-flow-no { font-size: 20rpx; color: #BBB; font-family: monospace; display: block; margin-top: 4rpx; }
 
-/* 明细扩展信息（单价/原价划线、销售分类、过期日期、已提货数量） */
+
 .item-extra {
   display: flex;
   flex-wrap: wrap;
@@ -68,7 +68,7 @@
 .item-extra-tag { font-size: 22rpx; color: var(--color-text-hint); }
 .item-origin-price { text-decoration: line-through; color: #BBB; }
 
-/* 疗程卡三段进度条（剩余可用 / 已付未用 / 未付） */
+
 .session-bar {
   display: flex;
   height: 8rpx;
@@ -110,7 +110,7 @@
 
 .re-alloc-btn { margin-top: 20rpx; text-align: right; }
 
-/* Ticket 2 PR-A：欠款 + 款项流水 + 回款弹层 */
+
 .debt-row {
   display: flex;
   align-items: center;
@@ -181,7 +181,7 @@
   margin-bottom: 18rpx;
   line-height: 1.5;
 }
-/* 储值卡抵扣勾选 */
+
 .repay-card-toggle {
   display: flex;
   align-items: center;
@@ -206,7 +206,7 @@
 }
 .repay-actions > van-button { flex: 1; }
 
-/* 按回款逐笔分配入口（款项流水行内） */
+
 .pay-alloc-btn {
   margin-top: 8rpx;
   font-size: 22rpx;

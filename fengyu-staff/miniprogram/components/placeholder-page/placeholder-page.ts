@@ -1,5 +1,5 @@
-// components/placeholder-page — 占位页 UI
-// 管理层 4 tab 骨架展示"功能建设中"，业务由后续 ticket 补齐
+
+
 Component({
   properties: {
     pageTitle: { type: String, value: '' },

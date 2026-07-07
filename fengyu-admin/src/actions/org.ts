@@ -20,7 +20,7 @@ export const getOrgNodes = withPermission(
   const rows = await db
     .select()
     .from(orgNodes)
-    // 例外：sortOrder 手工排序权重
+    
     .orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
@@ -48,12 +48,12 @@ export const createOrgNode = withPermission(
       isActive: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // 校验 type 是否有效
+  
   if (!VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
-  // 校验层级约束：department 不可嵌套
+  
   if (data.parentId) {
     const [parent] = await db
       .select({ type: orgNodes.type })
@@ -63,16 +63,16 @@ export const createOrgNode = withPermission(
     if (!parent) {
       return { success: false, message: '父节点不存在' }
     }
-    // department 下不能再建 department
+    
     if (parent.type === '部门' && data.type === '部门') {
       return { success: false, message: '部门不可嵌套' }
     }
-    // 门店下只能建部门
+    
     if (parent.type === '门店' && data.type !== '部门') {
       return { success: false, message: '门店节点下只能创建部门' }
     }
 
-    // scope 隔离：非 admin 只能在自己 scope 内的父节点下创建子节点
+    
     if (!(await isNodeInScope(session, data.parentId))) {
       return { success: false, message: '无权在该节点下创建子节点' }
     }
@@ -111,20 +111,20 @@ export const updateOrgNode = withPermission(
       sortOrder: number
       isActive: boolean
     }>,
-    /** 乐观锁：提交时携带的 updated_at */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-  // 校验 type 是否有效
+  
   if (data.type && !VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
-  // scope 隔离：非 admin 只能编辑自己 scope 内的节点
+  
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权编辑该节点' }
   }
 
-  // 获取旧值用于日志 diff
+  
   const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
 
   const whereConditions = expectedUpdatedAt
@@ -157,12 +157,12 @@ export const deleteOrgNode = withPermission(
     session,
     id: string,
   ): Promise<{ success: boolean; message: string }> => {
-  // scope 隔离
+  
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }
   }
 
-  // 检查子节点
+  
   const [child] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
@@ -172,7 +172,7 @@ export const deleteOrgNode = withPermission(
     return { success: false, message: '该节点下存在子节点，请先删除子节点' }
   }
 
-  // 检查员工绑定
+  
   const [empRef] = await db
     .select({ employeeId: staffWechatUsers.employeeId })
     .from(staffWechatUsers)
@@ -182,7 +182,7 @@ export const deleteOrgNode = withPermission(
     return { success: false, message: '该节点下仍有员工，请先移除员工归属' }
   }
 
-  // 检查门店绑定
+  
   const [storeRef] = await db
     .select({ storeId: stores.storeId })
     .from(stores)
@@ -192,7 +192,7 @@ export const deleteOrgNode = withPermission(
     return { success: false, message: '该节点关联了门店，请先移除门店' }
   }
 
-  // 检查权限角色引用
+  
   const [roleRef] = await db
     .select({ id: permissionRoles.id })
     .from(permissionRoles)
@@ -202,7 +202,7 @@ export const deleteOrgNode = withPermission(
     return { success: false, message: '该节点被权限角色引用，请先移除关联权限' }
   }
 
-  // 真实删除
+  
   try {
     const result = await db.delete(orgNodes).where(eq(orgNodes.id, id))
     if ((result as any).count === 0) {

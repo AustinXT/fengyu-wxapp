@@ -1,4 +1,4 @@
-/* pages/home/home.wxss — 首页样式 */
+
 
 .container {
   display: flex;
@@ -7,7 +7,7 @@
   background: var(--color-bg-page);
 }
 
-/* ===== 搜索栏 + 门店选择 + 扫码 ===== */
+
 .header {
   display: flex;
   align-items: center;
@@ -21,7 +21,7 @@
   margin-right: 16rpx;
 }
 
-/* 自定义搜索栏 */
+
 .search-bar {
   display: flex;
   align-items: center;
@@ -98,12 +98,12 @@
   max-width: 200rpx;
 }
 
-/* ===== 顶部区域（轮播图 + 宫格） ===== */
+
 .top-section {
   flex-shrink: 0;
 }
 
-/* ===== 1. 轮播图 ===== */
+
 .section-banner {
   padding: 16rpx 16rpx 12rpx;
 }
@@ -127,7 +127,7 @@
   height: 100%;
 }
 
-/* ===== 2. 功能模块宫格区（5个一排） ===== */
+
 .section-grid {
   padding: 0 16rpx 12rpx;
 }
@@ -184,7 +184,7 @@
   font-weight: 600;
 }
 
-/* ===== 3. 商品目录区域（独立滚动） ===== */
+
 .section-catalog {
   flex: 1;
   min-height: 0;
@@ -193,7 +193,7 @@
   background: var(--color-bg-card);
 }
 
-/* ===== 搜索结果区域 ===== */
+
 .search-results-area {
   flex: 1;
   display: flex;
@@ -237,14 +237,14 @@
   background: var(--color-bg-page);
 }
 
-/* ===== 分类 + 商品双栏布局 ===== */
+
 .catalog {
   display: flex;
   flex: 1;
   min-height: 0;
 }
 
-/* ===== 自定义侧边栏 ===== */
+
 .sidebar-scroll {
   width: 200rpx;
   flex-shrink: 0;
@@ -284,19 +284,19 @@
   font-weight: 600;
 }
 
-/* ===== 右侧商品滚动区 ===== */
+
 .product-scroll {
   flex: 1;
   padding: 0 16rpx 16rpx;
   background: var(--color-bg-page);
 }
 
-/* ===== 骨架屏 ===== */
+
 .skeleton-wrap {
   padding: 16rpx;
 }
 
-/* ===== SPU 卡片列表 ===== */
+
 .spu-list {
   padding-bottom: 32rpx;
 }
@@ -383,7 +383,7 @@
   margin-left: 2rpx;
 }
 
-/* 会员价分流：划线标价起价 */
+
 .price-origin {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -409,19 +409,19 @@
   letter-spacing: 2rpx;
 }
 
-/* ===== 底部留白（保证可滚动触发下一分类） ===== */
+
 .scroll-bottom-spacer {
   height: 60vh;
 }
 
-/* ===== 加载提示 ===== */
+
 .load-more-hint {
   display: flex;
   justify-content: center;
   padding: 24rpx 0;
 }
 
-/* ===== 右下角悬浮购物车按钮 ===== */
+
 .cart-fab {
   position: fixed;
   right: 40rpx;

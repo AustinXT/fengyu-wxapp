@@ -1,4 +1,4 @@
-<!-- pages/appointment/appointment.wxml — 预约管理 -->
+
 <view class="container">
   <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A">
     <van-tab title="待确认" name="pending" />

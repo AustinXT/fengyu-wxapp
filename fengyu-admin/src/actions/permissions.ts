@@ -18,7 +18,7 @@ import { countActiveAdmins } from '@/lib/admin-guard'
 export const getRoles = withPermission(
   'permission:list',
   async (session): Promise<PermissionRole[]> => {
-  // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
+  
   const isAdmin = hasRole(session, 'admin')
   const userScopeIds = session.roles.map(r => r.scopeId)
   if (!isAdmin && userScopeIds.length === 0) return []
@@ -43,7 +43,7 @@ export const getRoles = withPermission(
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(whereCondition)
-    // 默认排序：最近分配/修改的角色浮顶（admin.sys.spec.md §5）
+    
     .orderBy(desc(permissionRoles.updatedAt), desc(permissionRoles.createdAt), desc(permissionRoles.id))
     .limit(500)
 
@@ -61,7 +61,7 @@ export const getRoles = withPermission(
   },
 )
 
-/** 按 scope 查询角色分配 */
+
 export const getRolesByScope = withPermission(
   'permission:list',
   async (session, scopeId: string): Promise<PermissionRole[]> => {
@@ -87,7 +87,7 @@ export const getRolesByScope = withPermission(
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.scopeId, scopeId))
-    // 默认排序：最近分配/修改的角色浮顶（admin.sys.spec.md §5）
+    
     .orderBy(desc(permissionRoles.updatedAt), desc(permissionRoles.createdAt), desc(permissionRoles.id))
 
   return rows.map((r) => ({
@@ -104,7 +104,7 @@ export const getRolesByScope = withPermission(
   },
 )
 
-/** 查询每个 scope 的角色分配数量 */
+
 export const getRoleCountsByScope = withPermission(
   'permission:list',
   async (session): Promise<Record<string, number>> => {
@@ -133,10 +133,7 @@ export const getRoleCountsByScope = withPermission(
   },
 )
 
-/**
- * 按员工查询权限角色，用于员工详情页。
- * 页面级 scopeCondition 已保证只有可访问的员工才会到达此处，无需再做 scope 过滤。
- */
+
 export const getEmployeeRoles = withPermission(
   'employee:list',
   async (_session, employeeId: string): Promise<PermissionRole[]> => {
@@ -154,7 +151,7 @@ export const getEmployeeRoles = withPermission(
     .from(permissionRoles)
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.employeeId, employeeId))
-    // 例外：详情页短子列表（1~3 条），按插入顺序稳定展示
+    
     .orderBy(asc(permissionRoles.id))
 
   return rows.map((r) => ({
@@ -180,12 +177,12 @@ export const assignRole = withAnyPermission(
       scopeId: string
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // admin 角色只有持 'permission:assign_admin' 才能分配
+  
   if (data.role === 'admin' && !hasPermission(session, 'permission:assign_admin')) {
     throw new Error('PERMISSION_DENIED: 无权执行 permission:assign_admin')
   }
 
-  // 非 admin 用户不能分配超出自身 scope 的权限
+  
   if (!hasRole(session, 'admin')) {
     const userScopeIds = session.roles.map(r => r.scopeId)
     if (!userScopeIds.includes(data.scopeId)) {
@@ -193,7 +190,7 @@ export const assignRole = withAnyPermission(
     }
   }
 
-  // role × scope.type 配对校验（admin: 仅总部；其余按 ROLE_SCOPE_TYPES）
+  
   const [node] = await db
     .select({ type: orgNodes.type })
     .from(orgNodes)
@@ -213,7 +210,7 @@ export const assignRole = withAnyPermission(
     throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 
-  // 检查是否已存在相同的角色记录，避免重复分配
+  
   const [existing] = await db
     .select({ id: permissionRoles.id })
     .from(permissionRoles)
@@ -258,7 +255,7 @@ export const revokeRole = withPermission(
     session,
     id: number,
   ): Promise<{ success: boolean; message: string }> => {
-  // 查询要撤销的角色记录
+  
   const [target] = await db
     .select({
       role: permissionRoles.role,
@@ -273,12 +270,12 @@ export const revokeRole = withPermission(
     return { success: false, message: '角色记录不存在' }
   }
 
-  // 只有 admin 才能撤销 admin 角色
+  
   if (target.role === 'admin' && !hasRole(session, 'admin')) {
     return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
   }
 
-  // admin 自删保护 + 最后 admin 保护（D-Q12-2026-04-26 / audit-22 P0-22-03）
+  
   if (target.role === 'admin') {
     if (target.employeeId === session.employeeId) {
       throw new Error('INVALID_STATE: 不能撤销自己的 admin 角色')
@@ -289,7 +286,7 @@ export const revokeRole = withPermission(
     }
   }
 
-  // 非 admin 用户不能撤销超出自身 scope 的角色
+  
   if (!hasRole(session, 'admin')) {
     const userScopeIds = session.roles.map(r => r.scopeId)
     if (!userScopeIds.includes(target.scopeId)) {

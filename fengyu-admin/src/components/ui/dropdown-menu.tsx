@@ -17,7 +17,7 @@ function DropdownMenu({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false)
   const containerRef = React.useRef<HTMLDivElement>(null)
 
-  // Close on outside click
+  
   React.useEffect(() => {
     if (!open) return
     const handleClick = (e: MouseEvent) => {
@@ -25,7 +25,7 @@ function DropdownMenu({ children }: { children: React.ReactNode }) {
         setOpen(false)
       }
     }
-    // Use setTimeout to avoid closing immediately on the same click that opened it
+    
     const timer = setTimeout(() => {
       document.addEventListener("click", handleClick)
     }, 0)
@@ -35,7 +35,7 @@ function DropdownMenu({ children }: { children: React.ReactNode }) {
     }
   }, [open])
 
-  // Close on Escape
+  
   React.useEffect(() => {
     if (!open) return
     const handleKeyDown = (e: KeyboardEvent) => {

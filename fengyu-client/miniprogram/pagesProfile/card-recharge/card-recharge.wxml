@@ -1,10 +1,10 @@
-<!-- pagesProfile/card-recharge/card-recharge.wxml — 充值卡充值页 -->
+
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
 <view class="container">
 
-  <!-- 顶部说明 -->
+  
   <view class="hero">
     <view class="hero-title">选择充值金额</view>
     <view class="hero-sub">金额越大优惠越大</view>
@@ -14,14 +14,14 @@
     </view>
   </view>
 
-  <!-- 加载档位 -->
+  
   <view wx:if="{{configLoading}}" class="loading-block">
     <van-loading size="20px" />
   </view>
 
   <view wx:else class="body">
 
-    <!-- 预设档卡片 -->
+    
     <view class="section-title">推荐充值</view>
     <view class="tier-grid">
       <view
@@ -38,7 +38,7 @@
       </view>
     </view>
 
-    <!-- 自定义金额 -->
+    
     <view class="section-title">自定义金额</view>
     <view class="custom-card {{customMode ? 'custom-card--active' : ''}}">
       <view class="custom-input-row">
@@ -64,7 +64,7 @@
       </view>
     </view>
 
-    <!-- 底部说明 -->
+    
     <view class="footer-note">
       <view class="footer-note-line">· 充值卡可在凤御双连锁门店消费，无使用期限</view>
       <view class="footer-note-line">· 充值后不支持退款</view>
@@ -72,7 +72,7 @@
 
   </view>
 
-  <!-- 底部 sticky CTA -->
+  
   <view wx:if="{{!configLoading}}" class="cta-bar safe-bottom">
     <button
       class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"
@@ -86,7 +86,7 @@
 
 </view>
 
-<!-- 手机绑定弹窗 -->
+
 <van-dialog
   use-slot
   show="{{showPhoneBind}}"

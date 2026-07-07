@@ -1,4 +1,4 @@
-/* pages/order-qrcode/order-qrcode.wxss */
+
 
 .qrcode-page {
   display: flex;

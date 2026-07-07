@@ -1,4 +1,4 @@
-// mock/index.ts — Mock handler 注册表
+
 import { authHandlers } from './auth'
 import { workbenchHandlers } from './workbench'
 import { customerHandlers } from './customer'

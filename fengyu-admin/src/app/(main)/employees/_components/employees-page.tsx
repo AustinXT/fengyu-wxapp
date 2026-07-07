@@ -22,11 +22,7 @@ import SkillTagManagementDialog from "./skill-tag-management-dialog";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
-/**
- * 员工列表页 — 服务端分页
- *
- * 数据已在 Server Component 中通过 getEmployeesPaginated() 完成 DB 级过滤+分页。
- */
+
 export default function EmployeesPage({
   employees,
   total,
@@ -42,7 +38,7 @@ export default function EmployeesPage({
   const { get, set, setMany } = useUrlFilters();
   const searchParams = useSearchParams();
 
-  /** 导出当前筛选命中的全部员工（跨分页，身份证脱敏） */
+  
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
     const { rows, truncated } = await exportEmployees(raw);
@@ -73,7 +69,7 @@ export default function EmployeesPage({
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
   }, [searchParams, orgNodes]);
 
-  /** 筛选变更时重置到第 1 页 */
+  
   const setFilter = useCallback(
     (key: string, value: string) => {
       setMany({ [key]: value, page: "" });
@@ -81,7 +77,7 @@ export default function EmployeesPage({
     [setMany],
   );
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  
   const [searchInput, setSearchInput] = useState(get("q"));
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
 
@@ -99,7 +95,7 @@ export default function EmployeesPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
+  
   const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
 
   const columns: Column<Employee>[] = [

@@ -1,12 +1,12 @@
-/* pagesProfile/card-recharge/card-recharge.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
-  padding-bottom: 200rpx;  /* 给底部 CTA 留位 */
+  padding-bottom: 200rpx;  
 }
 
-/* ===== 顶部 hero ===== */
+
 
 .hero {
   background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
@@ -43,14 +43,14 @@
   color: rgba(255, 255, 255, 0.95);
 }
 
-/* ===== 加载态 ===== */
+
 
 .loading-block {
   padding: 80rpx 0;
   text-align: center;
 }
 
-/* ===== 主体 ===== */
+
 
 .body {
   padding: 32rpx 24rpx 0;
@@ -63,7 +63,7 @@
   padding: 8rpx 12rpx 16rpx;
 }
 
-/* ===== 预设档卡片 ===== */
+
 
 .tier-grid {
   display: grid;
@@ -125,7 +125,7 @@
   font-weight: 500;
 }
 
-/* ===== 自定义金额 ===== */
+
 
 .custom-card {
   background: var(--color-bg-card);
@@ -183,7 +183,7 @@
   color: var(--color-primary);
 }
 
-/* ===== 支付方式 ===== */
+
 
 .pay-method-card {
   background: var(--color-bg-card);
@@ -198,7 +198,7 @@
   margin-right: 16rpx;
 }
 
-/* ===== 支付宝二维码弹窗 ===== */
+
 
 .alipay-qr-popup {
   padding: 48rpx 40rpx calc(48rpx + env(safe-area-inset-bottom));
@@ -251,7 +251,7 @@
   width: 100% !important;
 }
 
-/* ===== 底部说明 ===== */
+
 
 .footer-note {
   padding: 16rpx 12rpx 32rpx;
@@ -266,7 +266,7 @@
   line-height: 1.6;
 }
 
-/* ===== 底部 CTA ===== */
+
 
 .cta-bar {
   position: fixed;
@@ -303,7 +303,7 @@
   color: #FFFFFF !important;
 }
 
-/* ===== 手机绑定弹窗 ===== */
+
 
 .phone-bind-wrap {
   padding: 40rpx 32rpx;
@@ -327,5 +327,5 @@
 }
 
 .phone-bind-btn {
-  display: none;  /* van-dialog 的 confirm 按钮已触发，此处隐藏占位 */
+  display: none;  
 }

@@ -13,10 +13,7 @@ const BOARD_TABS = [
   { value: "product", label: "品项" },
 ] as const
 
-/**
- * 数据中心外壳：板块 Tab（绑 ?tab=，切换不重置 scope/时间）+ 公共筛选器 + 当前板块内容（children）。
- * 当前板块组件由 Server Component（page.tsx）按 tab 渲染后作为 children 传入。
- */
+
 export function DataCenterShell({
   scopeOptions,
   activeTab,

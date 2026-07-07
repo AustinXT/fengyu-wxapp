@@ -1,4 +1,4 @@
-<!-- packageOrder/refund-list/refund-list.wxml — 退款单列表（店长审批入口） -->
+
 <view class="container">
   <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
     <van-tab name="待审批" title="待审批" />

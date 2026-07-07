@@ -1,11 +1,11 @@
-<!-- packageMy/pickup/pickup-by-customer.wxml -->
+
 <view class="container">
   <view class="header">
     <view class="header-title">提货核销</view>
     <view class="header-link" bindtap="onNavToList">查看提货记录 ›</view>
   </view>
 
-  <!-- 顾客搜索 -->
+  
   <view wx:if="{{!selectedCustomer}}" class="search-area">
     <view class="search-row">
       <input
@@ -38,7 +38,7 @@
     </view>
   </view>
 
-  <!-- 选中顾客 + 可提清单 -->
+  
   <view wx:if="{{selectedCustomer}}" class="result-area">
     <view class="selected-bar">
       <view>
@@ -71,7 +71,7 @@
   </view>
 </view>
 
-<!-- 提货录入 dialog -->
+
 <view class="dialog-mask" wx:if="{{pickupDialog.visible}}" bindtap="closePickupDialog">
   <view class="dialog" catchtap="">
     <view class="dialog-title">录入提货</view>

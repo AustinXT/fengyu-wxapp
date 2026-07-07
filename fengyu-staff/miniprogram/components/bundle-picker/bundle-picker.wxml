@@ -1,12 +1,12 @@
-<!-- components/bundle-picker/bundle-picker.wxml — PR-B §2.2 -->
+
 <view class="bundle-picker">
 
-  <!-- 空态 -->
+  
   <view wx:if="{{bundles.length === 0}}" class="bundle-empty">
     <van-empty description="暂无组合套餐" />
   </view>
 
-  <!-- 列表态：未选中具体套餐 -->
+  
   <scroll-view wx:elif="{{!selectedBundleId}}" scroll-y class="bundle-list">
     <van-search
       value="{{keyword}}"
@@ -51,7 +51,7 @@
     </view>
   </scroll-view>
 
-  <!-- 详情态：已选中某套餐 → 展示 N 选 M 分组 -->
+  
   <view wx:else class="bundle-detail">
     <view class="bundle-detail-header">
       <view class="bundle-back" bindtap="onBackToList">
@@ -69,7 +69,7 @@
           <text class="bundle-group-hint">{{g.pickCountLabel}}</text>
         </view>
         <view class="bundle-group-skus">
-          <!-- 选N项：数量步进器（同一 SKU 可选多次，组内合计 = pickCount） -->
+          
           <block wx:if="{{g.mode === 'pick'}}">
             <view
               class="bundle-sku-item {{sku.qty > 0 ? 'bundle-sku-item--active' : ''}}"
@@ -92,7 +92,7 @@
               />
             </view>
           </block>
-          <!-- 全选组：勾选 toggle -->
+          
           <block wx:else>
             <view
               class="bundle-sku-item {{sku.selected ? 'bundle-sku-item--active' : ''}}"

@@ -30,7 +30,7 @@ export interface UnbindRequest {
 export const getUnbindRequests = withPermission(
   'store_unbind:list',
   async (session): Promise<UnbindRequest[]> => {
-  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  
   const toStores = alias(stores, 'to_stores') as unknown as typeof stores
   const rows = await db
     .select({
@@ -45,7 +45,7 @@ export const getUnbindRequests = withPermission(
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
     .leftJoin(toStores, eq(storeUnbindRequests.toStoreId, toStores.storeId))
     .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
-    // 默认排序：最近审批/更新的解绑申请浮顶（admin.sys.spec.md §5）
+    
     .orderBy(desc(storeUnbindRequests.updatedAt), desc(storeUnbindRequests.createdAt))
     .limit(500)
 
@@ -69,7 +69,7 @@ export const getUnbindRequests = withPermission(
 export const approveUnbind = withPermission(
   'store_unbind:approve',
   async (session, requestId: string): Promise<{ success: boolean; message: string }> => {
-  // 查找请求并校验 scope
+  
   const [request] = await db
     .select()
     .from(storeUnbindRequests)
@@ -89,8 +89,8 @@ export const approveUnbind = withPermission(
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  // 更新请求状态 + 把顾客门店从 from 转绑到 to（原子事务，防止部分成功导致数据不一致）
-  // 转店仅改门店绑定 + 清美容师绑定，不动 customer_source（获客来源是历史属性，转店不改它）
+  
+  
   try {
     await db.transaction(async (tx) => {
       await tx
@@ -166,12 +166,7 @@ export const rejectUnbind = withPermission(
   },
 )
 
-/**
- * 物理删除解绑申请（仅系统管理员；数据治理用，清理已处理的历史申请）。
- *
- * 守卫：仅「已通过 / 已拒绝 / 已取消」可删，'待处理'（进行中）禁删。
- * store_unbind_requests 无 inbound FK，直接删。
- */
+
 export const deleteUnbindRequest = withPermission(
   'store_unbind:delete',
   async (session, requestId: string): Promise<{ success: boolean; message: string }> => {

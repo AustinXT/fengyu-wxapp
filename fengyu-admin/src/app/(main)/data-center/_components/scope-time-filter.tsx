@@ -16,10 +16,7 @@ const PRESETS = [
   { key: "custom", label: "自定义" },
 ] as const
 
-/**
- * 数据中心公共筛选器（4 板块共用）：scope 三级级联 + 时间维度 + 同比/环比开关。
- * 状态全部写 URL searchParams（与全站 useUrlFilters 一致），板块组件从 URL 读取并取数。
- */
+
 export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScopeOptions }) {
   const { get, setMany } = useUrlFilters()
   const { topLevel, markets } = scopeOptions
@@ -29,7 +26,7 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
   const preset = get("preset") || "month"
   const cmpOn = get("cmp") !== "0"
 
-  // 从 URL 推导当前选中的市场/门店
+  
   const selectedMarketId = useMemo(() => {
     if (scope === "market") return scopeId
     if (scope === "store") {
@@ -46,14 +43,14 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
 
   function onMarketChange(mid: string) {
     if (!mid) {
-      setMany({ scope: "", scopeId: "" }) // 全部
+      setMany({ scope: "", scopeId: "" }) 
     } else {
-      setMany({ scope: "market", scopeId: mid }) // 选市场（清门店）
+      setMany({ scope: "market", scopeId: mid }) 
     }
   }
   function onStoreChange(sid: string) {
     if (!sid) {
-      // 回到市场级
+      
       setMany(selectedMarketId ? { scope: "market", scopeId: selectedMarketId } : { scope: "", scopeId: "" })
     } else {
       setMany({ scope: "store", scopeId: sid })
@@ -66,7 +63,7 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
 
   return (
     <Card className="p-4 flex flex-col gap-4">
-      {/* scope 三级 */}
+      {}
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-[var(--muted-foreground)]">范围</span>
         <Select
@@ -97,7 +94,7 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
         </Select>
       </div>
 
-      {/* 时间维度 */}
+      {}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-[var(--muted-foreground)] mr-1">时间</span>
         {PRESETS.map((p) => (

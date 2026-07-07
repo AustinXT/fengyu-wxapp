@@ -1,16 +1,4 @@
-/**
- * STEP 5 — 积分余额一致性校验（迁自 cronTask/index.js:748-783）
- *
- * 校验 client_wechat_users.points_balance 与 point_transactions 流水合计是否一致。
- *
- * 决策 D7：自动修补会掩盖上游 bug，**只告警不修复**。
- *   - 发现偏差仅 INSERT operation_logs(action='points.balanceMismatch')
- *   - 永远不 UPDATE client_wechat_users.points_balance
- *
- * 此 STEP 无事务（与原 cronTask 一致）：
- *   仅一次 SELECT 计算偏差 + 逐条 INSERT operation_logs；
- *   单条 INSERT 失败 → 抛到入口 STEP 级 try/catch 后跳过下一 STEP，但其他 STEP 已完成不受影响。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'

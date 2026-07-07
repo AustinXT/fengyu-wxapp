@@ -1,25 +1,15 @@
-/**
- * 系统配置读取 + 内存缓存（会员门槛）
- *
- * payNotify 为扁平结构（无 db/pg 子模块），使用 pg 库直接创建独立 Pool。
- * Pool 与 index.js 的 pgPool 互不干扰，仅用于读 system_configs 配置。
- *
- * 失效策略：
- *   1. 30 秒最多核对一次 system_configs.updated_at
- *   2. 5 分钟 TTL 兜底
- * 失败兜底：返回 FALLBACK_THRESHOLD（1980）
- */
+
 
 const pg = require('pg')
 const { Pool } = pg
 
-// 全局 OID 解析：让 numeric/bigint 直接返回 JS Number 而不是字符串。
-// 安全前提：业务金额 ≤ 9999.99（numeric(10,2)）、积分单值 << 2^53，详见 db/schema/points.ts 注释。
-pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
-pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
-// timestamp without time zone (1114)：库存北京墙钟字面，显式按 +08:00 构造 Date，与进程 TZ 解耦。
-// CloudBase 运行时 process.env.TZ 不可靠（V8/ICU 时区 spawn 期已锁 UTC），默认 parser 会把
-// 北京墙钟当 UTC 解析 → 序列化给前端再 +8 → 晚 8 小时。返回 Date（类型不变，内部运算兼容）。
+
+
+pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    
+pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    
+
+
+
 pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
 
 const FALLBACK_THRESHOLD = 1980
@@ -46,10 +36,7 @@ function getConfigPool() {
   return _configPool
 }
 
-/**
- * 获取会员门槛（单位：元）。
- * @returns {Promise<number>}
- */
+
 async function getMemberThreshold() {
   const now = Date.now()
 

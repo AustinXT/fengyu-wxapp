@@ -1,4 +1,4 @@
-/* packageMgmt/mgmt-product-cycle — 品项数据子页样式 */
+
 
 .pc-page {
   padding: 0 var(--spacing-card) 80rpx;
@@ -6,7 +6,7 @@
   min-height: 100vh;
 }
 
-/* Section 标题 */
+
 .pc-section-title {
   font-size: 30rpx;
   font-weight: 600;
@@ -17,7 +17,7 @@
   border-top: 2rpx solid var(--color-divider-soft);
 }
 
-/* 子区块 */
+
 .pc-subsection {
   margin-bottom: var(--spacing-card);
   background: var(--color-bg-card);
@@ -46,7 +46,7 @@
   line-height: 1.6;
 }
 
-/* 表格 */
+
 .pc-table {
   padding: 0 var(--spacing-tight) var(--spacing-tight);
 }

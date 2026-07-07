@@ -15,11 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-/**
- * 商户新建 / 编辑共用表单。
- * - 不传 merchant → 新建模式（createMerchant）
- * - 传 merchant → 编辑模式（updateMerchant，携带 updatedAt 乐观锁）
- */
+
 export default function MerchantForm({
   merchant,
   markets,
@@ -42,7 +38,7 @@ export default function MerchantForm({
   const markDirty = () => setFormDirty(true)
 
   const handleSubmit = async () => {
-    // 前端校验（后端 validateMerchantInput 亦校验）
+    
     if (!merchantName.trim()) {
       toast.error("商户名称必填")
       return

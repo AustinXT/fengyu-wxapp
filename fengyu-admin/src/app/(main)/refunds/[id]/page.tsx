@@ -36,7 +36,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/refunds" className="text-[#999999] hover:text-[var(--foreground)]">
@@ -49,7 +49,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         {refund.status === '待审批' && canApprove && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}
       </div>
 
-      {/* 退款单信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>退款单信息</CardTitle>
@@ -124,7 +124,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </CardContent>
       </Card>
 
-      {/* 原订单概要 */}
+      {}
       {origOrder && (
         <Card>
           <CardHeader>
@@ -157,7 +157,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </Card>
       )}
 
-      {/* 退款明细（关联商品明细） */}
+      {}
       {(refund.refSaleItemId || refund.sessionCount !== null) && (
         <Card>
           <CardHeader>
@@ -186,7 +186,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </Card>
       )}
 
-      {/* 本次退款涉及的款项流水 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>款项流水</CardTitle>

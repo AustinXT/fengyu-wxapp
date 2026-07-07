@@ -1,5 +1,5 @@
-// pagesProfile/member-benefits/member-benefits.ts
-// 分享礼门面页：规则说明 + 一键分享 + 我的分享礼券
+
+
 import Toast from '@vant/weapp/toast/toast';
 import { formatDate, formatDiscount } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
@@ -30,7 +30,7 @@ Page({
   },
 
   onShow() {
-    // 从首单结清后返回，分享礼券可能刚发放，刷新一次
+    
     if (!this.data.isLoading) {
       this.loadAll();
     }
@@ -49,12 +49,12 @@ Page({
         : '';
       this.setData({ rule, percentLabel });
 
-      // 登录后才有「我的分享礼券」可查
+      
       let coupons: any[] = [];
       if (app.globalData.userId) {
         const data = await callClientApi<{ coupons: any[] }>('coupon.list', {});
         coupons = (data?.coupons || [])
-          // 分享礼券的 coupon_id 形如 sg-{role}-{saleOrderId}，纯前端识别
+          
           .filter((c) => typeof c.couponId === 'string' && c.couponId.indexOf('sg-') === 0)
           .map((c) => ({
             ...c,
@@ -73,7 +73,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：统一回首页并附带邀请人 inv 参数
+    
     const userId = app.globalData.userId;
     const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
     return {

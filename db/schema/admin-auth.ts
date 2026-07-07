@@ -2,12 +2,7 @@ import { bigserial, boolean, pgTable, text, timestamp, uniqueIndex, varchar } fr
 import { sql } from 'drizzle-orm'
 import { staffWechatUsers } from './user'
 
-/**
- * 管理后台登录密码
- *
- * 仅持有此表记录的员工可通过手机号+密码登录管理后台。
- * staff 角色不可登录；admin/manager/finance/hr/product/customer_mgr 可登录。
- */
+
 export const adminPasswords = pgTable(
   'admin_passwords',
   {
@@ -16,9 +11,9 @@ export const adminPasswords = pgTable(
       .notNull()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .references((): any => staffWechatUsers.employeeId),
-    /** bcrypt（cost ≥ 12） */
+    
     passwordHash: text('password_hash').notNull(),
-    /** 首次登录强制改密 */
+    
     mustChange: boolean('must_change').notNull().default(true),
     lastChangedAt: timestamp('last_changed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),

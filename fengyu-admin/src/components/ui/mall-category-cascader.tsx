@@ -6,14 +6,14 @@ import type { MallCategory } from "@/lib/types"
 
 interface MallCategoryCascaderProps {
   categories: MallCategory[]
-  /** Selected sub-category ID */
+  
   value: string
-  /** Called with categoryId. Empty string = cleared */
+  
   onChange: (categoryId: string) => void
   placeholder?: string
   className?: string
   disabled?: boolean
-  /** Show "全部" options for filter use */
+  
   allowEmpty?: boolean
 }
 
@@ -60,7 +60,7 @@ export function MallCategoryCascader({
     return ""
   }, [selectedCategory])
 
-  // Click outside
+  
   useEffect(() => {
     if (!open) return
     function handleClickOutside(e: MouseEvent) {
@@ -72,7 +72,7 @@ export function MallCategoryCascader({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [open])
 
-  // Escape
+  
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {
@@ -155,7 +155,7 @@ export function MallCategoryCascader({
 
       {open && (
         <div className="absolute z-50 mt-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] shadow-md flex min-w-full">
-          {/* Left: groups */}
+          {}
           <div className="border-r border-[var(--border)] py-1 shrink-0">
             {allowEmpty && (
               <button
@@ -204,7 +204,7 @@ export function MallCategoryCascader({
             })}
           </div>
 
-          {/* Right: sub-categories */}
+          {}
           <div className="min-w-[140px] max-h-[260px] overflow-y-auto py-1">
             {filteredSubCats.length === 0 ? (
               <div className="px-4 py-2 text-sm text-[var(--muted-foreground)]">

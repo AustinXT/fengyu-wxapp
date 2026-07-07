@@ -1,4 +1,4 @@
-/* components/nav-bar/nav-bar.wxss */
+
 
 :host {
   display: block;
@@ -19,7 +19,7 @@
   position: relative;
 }
 
-/* 返回按钮：左侧绝对定位，不压缩中央区域 */
+
 .nav-back {
   position: absolute;
   left: 16rpx;
@@ -32,7 +32,7 @@
   height: 72rpx;
 }
 
-/* 中心区域 */
+
 .nav-center {
   flex: 1;
   display: flex;

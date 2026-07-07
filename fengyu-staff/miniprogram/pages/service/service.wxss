@@ -1,13 +1,13 @@
-/* pages/service/service.wxss — 护理 Tab */
 
 
-/* ===== 列表 ===== */
+
+
 .list-wrap {
   padding: 24rpx 32rpx;
   padding-bottom: 160rpx;
 }
 
-/* ===== 服务单卡片 ===== */
+
 .service-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -30,7 +30,7 @@
 }
 
 
-/* ===== 顾客信息 ===== */
+
 .card-customer {
   display: flex;
   align-items: center;
@@ -50,7 +50,7 @@
   margin-left: 8rpx;
 }
 
-/* ===== 服务项目行 ===== */
+
 .card-item {
   display: flex;
   align-items: center;
@@ -87,7 +87,7 @@
   font-weight: 500;
 }
 
-/* ===== 时间 ===== */
+
 .card-time {
   display: flex;
   align-items: center;
@@ -101,7 +101,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 操作按钮 ===== */
+
 .card-actions {
   display: flex;
   justify-content: flex-end;

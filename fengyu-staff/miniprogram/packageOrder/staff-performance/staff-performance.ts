@@ -1,4 +1,4 @@
-// packageOrder/staff-performance/staff-performance.ts — 员工绩效
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTimeShort } from '../../utils/formatters';
@@ -23,14 +23,14 @@ interface PerformanceItem {
   amount: number | string;
   ratio?: string;
   businessAmount?: number | string;
-  // sale 独有
+  
   department?: string;
-  // service 独有（服务提成双字段拆分）
+  
   roleType?: string;
-  fixedFee?: number;        // 固定手工费部分
-  consumeAmount?: number;   // 消耗提成部分
-  commissionRate?: number;  // 提成比例（0.12 = 12%）
-  servicePrice?: number | string;  // 单次划卡价（消耗业绩口径，仅展示用）
+  fixedFee?: number;        
+  consumeAmount?: number;   
+  commissionRate?: number;  
+  servicePrice?: number | string;  
   sessionUsed?: number;
   customerName: string;
   clientPhone?: string;
@@ -41,9 +41,9 @@ interface PerformanceItem {
 
 interface PerformanceResponse {
   totalSalesAlloc: number;
-  /** 服务提成新口径（= service_commissions.commission_amount 汇总） */
+  
   totalServiceCommission?: number;
-  /** 向后兼容字段，值同 totalServiceCommission */
+  
   totalServiceFee?: number;
   totalCommission: number;
   items: PerformanceItem[];
@@ -55,24 +55,24 @@ Page({
     loading: false,
     isManager: false,
     staffName: '',
-    // 时间范围
+    
     rangeType: 'today' as RangeType,
     startDate: '',
     endDate: '',
     displayDate: '',
-    // 汇总数据
+    
     totalSalesAlloc: '0.00',
     totalServiceCommission: '0.00',
     totalCommission: '0.00',
-    // 分类 Tab（5 个子分类）
+    
     activeCategoryTab: 0,
     categoryOptions: ['合计', '销售', '服务', '他销他耗', '生态合作'],
-    // 员工筛选（仅店长）
+    
     staffList: [] as StaffMember[],
     selectedStaffIndex: 0,
     staffColumns: [] as string[],
     showStaffPicker: false,
-    // 明细列表
+    
     items: [] as PerformanceItem[],
     total: 0,
     page: 1,
@@ -105,7 +105,7 @@ Page({
       const data = await callStaffApi<StaffListResponse>('staff.list');
       const list = data.staffList || [];
       const self = app.globalData.staffName || '';
-      // 自己放首位
+      
       const columns = [self + '（我）', ...list.filter(s => s.staffWfId !== app.globalData.staffWfId).map(s => s.name)];
       const allStaff: StaffMember[] = [
         { staffWfId: app.globalData.staffWfId || '', name: self },
@@ -136,7 +136,7 @@ Page({
     this.loadData(true);
   },
 
-  // ===== 时间范围切换 =====
+  
   setRange(type: RangeType) {
     const now = new Date();
     let start: string, end: string, display: string;
@@ -150,7 +150,7 @@ Page({
       end = this.formatDate(now);
       display = `${now.getFullYear()}年${now.getMonth() + 1}月`;
     } else {
-      // lastMonth
+      
       const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
       start = this.formatDate(lastMonth);
@@ -166,20 +166,20 @@ Page({
     this.setRange(e.currentTarget.dataset.type as RangeType);
   },
 
-  // ===== 分类 Tab 切换 =====
+  
   onCategoryTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeCategoryTab: index, page: 1 });
     this.loadData(true);
   },
 
-  // ===== 加载数据 =====
+  
   async loadData(reset: boolean) {
     if (this.data.loading) return;
     this.setData({ loading: true });
     try {
       const { activeCategoryTab, staffList, selectedStaffIndex, isManager: isMgr } = this.data;
-      // 分类映射：合计/销售/服务/他销他耗/生态合作
+      
       let salesCategory: string | undefined;
       let filterType: string | undefined;
       if (activeCategoryTab === 1) filterType = 'sale';
@@ -187,7 +187,7 @@ Page({
       else if (activeCategoryTab === 3) salesCategory = '他销他耗';
       else if (activeCategoryTab === 4) salesCategory = '生态合作';
 
-      // 店长可查看指定员工
+      
       const employeeId = (isMgr && staffList.length > 0) ? staffList[selectedStaffIndex]?.staffWfId : undefined;
 
       const res = await callStaffApi<PerformanceResponse>('staff.performanceDetail', {
@@ -205,7 +205,7 @@ Page({
         date: formatDateTimeShort(it.date),
       }));
       const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
-      // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
+      
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       this.setData({
         totalSalesAlloc: (res.totalSalesAlloc || 0).toFixed(2),
@@ -230,7 +230,7 @@ Page({
     }
   },
 
-  // ===== 辅助 =====
+  
   formatDate(d: Date): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   },

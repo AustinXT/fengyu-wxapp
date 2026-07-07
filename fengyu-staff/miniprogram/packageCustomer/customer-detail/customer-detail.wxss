@@ -1,6 +1,6 @@
-/* packageCustomer/customer-detail/customer-detail.wxss */
 
-/* 头部信息卡 */
+
+
 .profile-card {
   background: #FFFFFF;
   color: var(--color-text-primary);
@@ -56,7 +56,7 @@
 .stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 .stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
-/* 历史订单待核对徽章（WorkFine 导入的 status='未审核' 订单） */
+
 .legacy-orders-badge {
   display: flex;
   align-items: center;
@@ -74,13 +74,13 @@
   line-height: 1.4;
 }
 
-/* Tab 内容区 */
+
 .tab-content {
   padding: 16rpx 0;
   min-height: 400rpx;
 }
 
-/* Tab 下方提示文案（例如"仅本店卡"说明） */
+
 .tab-hint {
   padding: 8rpx 32rpx 16rpx;
   font-size: 24rpx;
@@ -88,7 +88,7 @@
   line-height: 1.5;
 }
 
-/* ===== 日历样式 ===== */
+
 .calendar-nav {
   display: flex;
   align-items: center;
@@ -156,7 +156,7 @@
   margin-bottom: 12rpx;
 }
 
-/* ===== 购买记录 ===== */
+
 .purchase-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -247,7 +247,7 @@
   line-height: 1.6;
 }
 
-/* ===== 持卡汇总（复用原有疗程卡样式） ===== */
+
 .section-header {
   display: flex;
   align-items: center;
@@ -318,7 +318,7 @@
   font-weight: 600;
 }
 
-/* 疗程卡三段进度条（已用 / 已付未用 / 未付）— 与 client treatment-cards 同款三段模型 */
+
 .session-bar {
   display: flex;
   height: 8rpx;
@@ -344,7 +344,7 @@
 .tc-stepper-label { font-size: 24rpx; color: var(--color-text-secondary); }
 .tc-stepper-unit { font-size: 24rpx; color: var(--color-text-secondary); }
 
-/* 底部操作栏 */
+
 .bottom-action-bar {
   position: fixed;
   bottom: 0;
@@ -360,7 +360,7 @@
   height: calc(120rpx + env(safe-area-inset-bottom));
 }
 
-/* ===== 退换记录 ===== */
+
 .refund-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -474,14 +474,14 @@
   padding-top: 8rpx;
 }
 
-/* ===== 备注编辑 ===== */
+
 .notes-save-wrap {
   display: flex;
   justify-content: flex-end;
   padding: 8rpx 32rpx 16rpx;
 }
 
-/* ===== 预约记录 ===== */
+
 .appt-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -526,7 +526,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 手机号变更 ===== */
+
 .phone-log-card {
   background: #FFFFFF;
   border-radius: 16rpx;

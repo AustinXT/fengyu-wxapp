@@ -5,15 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { matchTier, type RechargeConfig } from "@/lib/recharge-tier"
 
-/**
- * 充值卡档位选择器（admin 开单页「充值卡」Tab 专用）
- *
- * 2026-05-21 充值入口收敛到开单页：逻辑迁自原 customers/[id]/recharge/recharge-form.tsx
- * （该页同步删除），档位计算复用 lib/recharge.ts:matchTier，配置同源 system_configs.recharge.*。
- *
- * 受控组件：父组件持有 selectedFace / customInput 两个 state；本组件仅渲染 + 即时预览，
- * 解析后的 {faceValue, payAmount, error} 由父组件统一通过 resolveRecharge() 计算（单一来源）。
- */
+
 
 export interface RechargeResolved {
   faceValue: number
@@ -22,12 +14,7 @@ export interface RechargeResolved {
   error: string | null
 }
 
-/**
- * 按当前选择（档位优先级低于自定义输入）解析面值/实付/折扣。
- * - 自定义输入非空 → 走 matchTier（含 min/max 边界与 2 位小数校验）
- * - 否则取选中档位
- * - 都没有 → faceValue=0（父组件据此禁用「下一步」）
- */
+
 export function resolveRecharge(
   config: RechargeConfig | null,
   selectedFace: number,

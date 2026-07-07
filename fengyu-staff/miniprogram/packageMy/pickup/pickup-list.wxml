@@ -1,4 +1,4 @@
-<!-- packageMy/pickup/pickup-list.wxml -->
+
 <view class="container">
   <view class="filters">
     <picker mode="date" value="{{startDate}}" bindchange="onDateFromChange">

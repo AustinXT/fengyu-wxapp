@@ -1,4 +1,4 @@
-<!-- pages/order-detail/order-detail.wxml — 订单详情 -->
+
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 </wxs>
@@ -6,12 +6,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
 <view class="container" wx:if="{{!isLoading}}">
 
-  <!-- 状态大图区 -->
+  
   <view class="status-hero">
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
     <view class="status-label-row">
       <text class="status-label">{{order.status}}</text>
-      <!-- 2026-04-26 sale-order-domain-refactor: 已退款标签由 refunded_amount > 0 推导 -->
+      
       <view wx:if="{{order.has_refund}}" class="refund-tag">
         <van-tag color="#FFF1F0" text-color="#FF4D4F">已退款 ¥{{order.refunded_fmt}}</van-tag>
       </view>
@@ -24,7 +24,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </block>
   </view>
 
-  <!-- 订单基础信息 -->
+  
   <van-cell-group title="订单信息" inset>
     <van-cell title="订单编号" bindtap="onCopyOrderNo">
       <view slot="right-icon" class="copy-cell-value">
@@ -49,7 +49,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </van-cell>
   </van-cell-group>
 
-  <!-- 服务明细 -->
+  
   <view class="section-wrap">
     <view class="section-title">服务明细</view>
     <view class="items-card">
@@ -77,7 +77,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
             <text class="oi-price">¥{{fmt.price(item.sale_amount)}}</text>
             <view class="oi-sessions" wx:if="{{item.remaining_sessions !== null}}">
               <text class="oi-sessions-text">已用 {{item.used_sessions}} / 已付 {{item.paid_sessions}} / 共 {{item.session_count}} 次</text>
-              <!-- 三段进度条：已用(浅灰) + 已付未用(主色) + 未付(斜纹) -->
+              
               <view class="oi-progress">
                 <view class="oi-progress__seg oi-progress__seg--used" style="width: {{item.used_pct}}%"></view>
                 <view class="oi-progress__seg oi-progress__seg--paid-unused" style="width: {{item.paid_unused_pct}}%"></view>
@@ -95,7 +95,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </view>
   </view>
 
-  <!-- 金额汇总 -->
+  
   <van-cell-group title="金额明细" inset>
     <van-cell
       title="商品总价"
@@ -117,7 +117,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </van-cell>
   </van-cell-group>
 
-  <!-- 收款记录（只读，payments 为空时不渲染） -->
+  
   <view class="section-wrap" wx:if="{{payments.length > 0}}">
     <view class="section-title">收款记录</view>
     <view class="items-card">
@@ -143,7 +143,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </view>
   </view>
 
-  <!-- 欠款提示（部分支付时） -->
+  
   <view
     class="outstanding-wrap"
     wx:if="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
@@ -154,10 +154,10 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </view>
   </view>
 
-  <!-- 操作区 -->
+  
   <view class="actions-wrap safe-area-bottom">
 
-    <!-- 待支付：取消订单 + 去支付 -->
+    
     <view class="actions-row" wx:if="{{order.status === '待支付'}}">
       <van-button
         type="default"
@@ -177,7 +177,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       >去支付</van-button>
     </view>
 
-    <!-- 部分支付：继续支付（灰度开关开启时显示） -->
+    
     <view
       class="actions-row"
       wx:elif="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
@@ -192,7 +192,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       >继续支付 ¥{{order.outstanding_fmt}}</van-button>
     </view>
 
-    <!-- 已支付：发起预约（有可预约项）+ 查看疗程卡 -->
+    
     <view wx:elif="{{order.status === '已支付'}}">
       <view wx:if="{{hasAppointableItems}}" class="actions-row">
         <van-button
@@ -226,7 +226,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       >查看疗程卡</van-button>
     </view>
 
-    <!-- 终态（已完成/已关闭/支付失败）：返回首页 -->
+    
     <van-button
       wx:else
       type="primary"
@@ -242,12 +242,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
 </view>
 
-<!-- 骨架屏 -->
+
 <view wx:else class="skeleton-wrap">
   <van-skeleton title row="6" />
 </view>
 
-<!-- 继续支付弹层 -->
+
 <van-popup
   show="{{repayModalVisible}}"
   position="bottom"

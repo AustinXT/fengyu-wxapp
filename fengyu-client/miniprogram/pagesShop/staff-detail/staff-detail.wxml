@@ -1,22 +1,22 @@
-<!-- pagesShop/staff-detail/staff-detail.wxml — 美容师详情 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 加载骨架 -->
+  
   <view wx:if="{{isLoading}}" class="skeleton-wrap">
     <van-skeleton title row="4" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{!staff}}" class="empty-wrap">
     <van-empty description="美容师信息不存在" />
   </view>
 
-  <!-- 美容师详情 -->
+  
   <view wx:else>
 
-    <!-- 头部信息 -->
+    
     <view class="staff-header">
       <view class="staff-avatar staff-avatar--large">
         <image wx:if="{{staff.avatarUrl}}" src="{{staff.avatarUrl}}" class="staff-avatar-img staff-avatar-img--large" mode="aspectFill" />
@@ -51,7 +51,7 @@
       </view>
     </view>
 
-    <!-- 擅长项目 -->
+    
     <view class="section" wx:if="{{staff.skills && staff.skills.length > 0}}">
       <view class="section-title">擅长项目</view>
       <view class="skills-wrap">
@@ -67,7 +67,7 @@
       </view>
     </view>
 
-    <!-- 服务数据 -->
+    
     <view class="section">
       <view class="section-title">服务数据</view>
       <view class="stats-card">
@@ -88,7 +88,7 @@
       </view>
     </view>
 
-    <!-- 顾客评价（平均星级展示） -->
+    
     <view class="section" wx:if="{{staff.reviewCount > 0}}">
       <view class="section-title">顾客评价</view>
       <view class="rating-card">
@@ -102,11 +102,11 @@
 
   </view>
 
-  <!-- 底部占位 -->
+  
   <view class="bottom-space" />
 </view>
 
-<!-- 底部固定按钮 -->
+
 <view wx:if="{{!isLoading && staff}}" class="bottom-bar safe-area-bottom">
   <van-button
     type="primary"

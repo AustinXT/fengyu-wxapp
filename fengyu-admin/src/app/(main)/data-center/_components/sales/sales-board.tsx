@@ -10,7 +10,7 @@ import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
-/** KPI 卡片矩阵定义（key 对应后端 SalesBoardResult.kpis） */
+
 const KPI_ITEMS: KpiGridItem[] = [
   { key: "storeRevenue", label: "总业绩" },
   { key: "shengmeiRevenue", label: "生美业绩" },
@@ -25,7 +25,7 @@ const KPI_ITEMS: KpiGridItem[] = [
   { key: "employeeCount", label: "员工数", hint: "美容师 + 养生师" },
 ]
 
-/** 按市场明细列（key 对应 byMarket[].metrics） */
+
 const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "storeCount", label: "门店数", unit: "count" },
   { key: "technicianCount", label: "技师人数", unit: "count" },
@@ -41,7 +41,7 @@ const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "shengmeiConsumePerStore", label: "生美实耗店均", unit: "amount" },
 ]
 
-/** 按门店明细列（key 对应 byStore[].metrics） */
+
 const STORE_COLUMNS: BreakdownColumn[] = [
   { key: "technicianCount", label: "技师人数", unit: "count" },
   { key: "storeRevenue", label: "总业绩", unit: "amount" },
@@ -60,7 +60,7 @@ export function SalesBoard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // searchParams 变化（scope / 时间 / 同比环比开关）→ 重新拉取
+  
   const depsKey = searchParams.toString()
 
   useEffect(() => {
@@ -80,7 +80,7 @@ export function SalesBoard() {
     return () => {
       cancelled = true
     }
-    // 仅依赖 URL 序列化结果（params 是每次渲染新对象，不可直接入依赖）
+    
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depsKey])
 
@@ -96,7 +96,7 @@ export function SalesBoard() {
   return (
     <div className="flex flex-col gap-6">
       <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} />
-      {/* 明细表分 Tab：按市场 / 按门店 */}
+      {}
       <Tabs defaultValue="market">
         <TabsList>
           <TabsTrigger value="market">按市场</TabsTrigger>

@@ -1,10 +1,10 @@
-// packageOrder/card-recharge/card-recharge.ts — 店长替顾客充值
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getCurrentStoreId } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-/** 档位（来自 card.rechargeConfig，剥离 SKU 化后唯一标识改为 faceValue） */
+
 interface Tier {
   faceValue: number;
   payAmount: number;
@@ -18,7 +18,7 @@ interface TierVM extends Tier {
   bonusLabel: string;
 }
 
-/** 与 client/admin 同 shape：{ tiers, minAmount, maxAmount } */
+
 interface RechargeConfig {
   tiers: Tier[];
   minAmount: number;
@@ -32,15 +32,15 @@ interface CustomerInfo {
   name: string;
   phone: string;
   phoneMasked?: string;
-  /** 顾客绑定门店 ID（customer.search 返回，判断是否本店） */
+  
   boundStoreId?: string | null;
-  /** 顾客绑定门店名（展示「非本店」标签用） */
+  
   storeName?: string;
-  /** 是否非本店顾客（boundStoreId 缺失时为 false，放行后端兜底） */
+  
   crossStore?: boolean;
 }
 
-/** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
+
 function markCrossStore(c: CustomerInfo): CustomerInfo {
   return { ...c, crossStore: !!c.boundStoreId && c.boundStoreId !== getCurrentStoreId() };
 }
@@ -54,26 +54,22 @@ interface RechargeResponse {
   status: string;
 }
 
-/** 格式化小数（去尾 0） */
+
 function formatAmount(n: number): string {
   if (!Number.isFinite(n)) return '0';
   return (Math.round(n * 100) / 100).toString();
 }
 
-/** 折扣 0.99 → "9.9 折"；0.95 → "9.5 折" */
+
 function formatDiscountLabel(d: number): string {
   const t = d * 10;
   return t.toFixed(1).replace(/\.0$/, '') + ' 折';
 }
 
-/**
- * 前端本地 tier 匹配（与三端后端 matchTier 字节同义）
- *
- * 精确命中 → 取 tier.payAmount；非命中 → 找最大 faceValue ≤ amount 的档位，按 payAmount/faceValue 比例算
- */
+
 function matchTierLocal(amount: number, cfg: RechargeConfig): { discount: number; payAmount: number } | { error: string } {
   if (!Number.isFinite(amount)) return { error: '金额格式错误' };
-  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  
   if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) return { error: '最多保留 2 位小数' };
   if (amount < cfg.minAmount) return { error: `最低 ¥${cfg.minAmount}` };
   if (amount > cfg.maxAmount) return { error: `上限 ¥${cfg.maxAmount}` };
@@ -98,21 +94,21 @@ Page({
     configLoadFailed: false,
     boundStoreName: '',
     boundStoreId: '',
-    isManager: false, // 是否店长 — 仅店长可真正提交充值，非店长可浏览面值/折扣表
+    isManager: false, 
 
-    // 顾客
+    
     customerKeyword: '',
     customerSearching: false,
     customerInfo: null as CustomerInfo | null,
     customerResults: [] as CustomerInfo[],
 
-    // 档位 + 自定义
+    
     tiers: [] as TierVM[],
     minAmount: 500,
     maxAmount: 100000,
 
-    selectedFaceValue: 0,    // 选中的档位面值（faceValue，剥离 SKU 化后唯一标识）
-    customMode: false,       // 是否处于自定义金额模式
+    selectedFaceValue: 0,    
+    customMode: false,       
     customInput: '',
     customPayAmount: 0,
     customDiscountLabel: '',
@@ -121,14 +117,14 @@ Page({
     customBonusLabel: '',
     customError: '',
 
-    // 支付方式
+    
     paymentMethod: '线下' as '线下' | '微信',
 
-    // CTA
+    
     ctaText: '请选择充值金额',
     ctaDisabled: true,
 
-    // 提交态
+    
     submitting: false,
   },
 
@@ -139,7 +135,7 @@ Page({
     const storeName = app.globalData.boundStoreName || '';
     this.setData({ boundStoreId: storeId, boundStoreName: storeName, isManager: isManager() });
 
-    // 可选：从 URL 参数预填顾客
+    
     if (query?.clientUserId && query?.customerName) {
       this.setData({
         customerInfo: {
@@ -193,7 +189,7 @@ Page({
     }
   },
 
-  // ============ 顾客选择 ============
+  
 
   onCustomerKeywordInput(e: WechatMiniprogram.CustomEvent) {
     const value = (e.detail as { value?: string })?.value || '';
@@ -206,7 +202,7 @@ Page({
 
     this.setData({ customerSearching: true });
     try {
-      // 跨门店模糊检索：储值卡跨店统一，绑定任意门店的顾客均可充值
+      
       const results = await callStaffApi<CustomerInfo[]>('customer.search', { keyword, crossStore: true });
       const valid = (results || []).filter(r => r.clientUserId).map(markCrossStore);
       if (valid.length === 0) {
@@ -241,7 +237,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ 档位 ============
+  
 
   onTierTap(e: WechatMiniprogram.TouchEvent) {
     const faceValueRaw = e.currentTarget.dataset.faceValue;
@@ -260,7 +256,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ 自定义金额 ============
+  
 
   onCustomFocus() {
     this.setData({ customMode: true, selectedFaceValue: 0 });
@@ -286,7 +282,7 @@ Page({
     const amount = Number(raw);
     const config = this._config;
     if (!config) {
-      // 配置未加载（loadConfig 失败）：显式 surface 错误，避免静默卡死在"请输入有效金额"
+      
       this.setData({
         customError: '档位配置加载失败，请下拉刷新或重新进入页面',
         customPayAmount: 0,
@@ -323,7 +319,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ 支付方式 ============
+  
 
   onPaymentMethodChange(e: WechatMiniprogram.CustomEvent) {
     const next = (e.detail as unknown) as '线下' | '微信';
@@ -340,7 +336,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ CTA 文案 ============
+  
 
   updateCta() {
     const { customerInfo, selectedFaceValue, customMode, customInput, customPayAmount, paymentMethod, tiers } = this.data;
@@ -380,11 +376,11 @@ Page({
     });
   },
 
-  // ============ 提交 ============
+  
 
   async onSubmit() {
     if (this.data.submitting || this.data.ctaDisabled) return;
-    // 统一店长权限网关：非店长可浏览面值/折扣表，但不能提交充值
+    
     if (!this.data.isManager) {
       wx.showToast({ title: '您无开单权限，请联系店长', icon: 'none', duration: 2500 });
       return;
@@ -422,9 +418,9 @@ Page({
       if (!res?.saleOrderId) throw new Error('创建充值订单失败');
       wx.showToast({ title: '开单成功', icon: 'success', duration: 800 });
       setTimeout(() => {
-        // 统一跳 order-qrcode（与 order.create 后续流程一致）
-        // - 微信：展示小程序码供顾客扫码支付
-        // - 线下：展示确认收款按钮
+        
+        
+        
         wx.redirectTo({
           url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}`,
         });
@@ -453,7 +449,7 @@ Page({
     }
   },
 
-  // 跳转到「旧系统充值金转入」（带当前已选顾客上下文，便于老客户余额迁移）
+  
   goInflow() {
     const c = this.data.customerInfo;
     let url = '/packageOrder/card-inflow/card-inflow';

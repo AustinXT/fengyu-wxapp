@@ -1,4 +1,4 @@
-// pages/service/service.ts — 服务 Tab
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { getElapsedTime as _getElapsedTime, formatTime as _formatTime, formatDateTime } from '../../utils/formatters';
@@ -74,7 +74,7 @@ Page({
       const list = await callStaffApi<ServiceItem[]>('service.list', {
         status,
       });
-      // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
+      
       const formatted = (list || []).map((it) => ({
         ...it,
         startTime: it.startTime ? formatDateTime(it.startTime) : it.startTime,
@@ -139,7 +139,7 @@ Page({
     });
   },
 
-  // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
+  
   onConfirmService(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;

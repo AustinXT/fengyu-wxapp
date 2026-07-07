@@ -120,7 +120,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
   const router = useRouter()
   const [showInactive, setShowInactive] = useState(false)
 
-  // 过滤停用节点（默认隐藏）
+  
   const orgNodes = useMemo(
     () => (showInactive ? allOrgNodes : allOrgNodes.filter((n) => n.isActive)),
     [allOrgNodes, showInactive]
@@ -128,17 +128,17 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
 
   const [selectedId, setSelectedId] = useState<string | null>(allOrgNodes[0]?.id ?? null)
 
-  // 默认展开两层：根节点 + 根节点的直接子节点
+  
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const roots = allOrgNodes.filter((n) => n.parentId === null)
     const level1Children = allOrgNodes.filter((n) => roots.some((r) => r.id === n.parentId))
     return new Set([...roots, ...level1Children].map((n) => n.id))
   })
 
-  // Delete state
+  
   const [deleteTarget, setDeleteTarget] = useState<OrgNode | null>(null)
 
-  // Dialog state
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState<"create" | "edit">("create")
   const [dialogParentId, setDialogParentId] = useState<string | null>(null)
@@ -228,7 +228,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
         toast.success("节点创建成功")
         setDialogOpen(false)
         router.refresh()
-        // Expand parent so new node is visible, then select the new node
+        
         if (dialogParentId) {
           setExpandedIds((prev) => new Set([...prev, dialogParentId]))
         }
@@ -272,12 +272,12 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">组织架构</h1>
-        {/* 新增根节点：parentId=null（无需先选中节点）；服务端 createOrgNode 已按 org:create 鉴权 */}
+        {}
         <Button size="sm" onClick={() => openCreateDialog(null)}>新增根节点</Button>
       </div>
 
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
-        {/* Left: Tree */}
+        {}
         <Card className="w-80 shrink-0 flex flex-col">
           <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">组织树</CardTitle>
@@ -308,7 +308,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
           </CardContent>
         </Card>
 
-        {/* Right: Detail */}
+        {}
         <Card className="flex-1">
           {selectedNode ? (
             <>
@@ -419,7 +419,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
         </Card>
       </div>
 
-      {/* 新增/编辑 Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogClose onOpenChange={setDialogOpen} />
         <DialogHeader>
@@ -489,7 +489,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
         </DialogFooter>
       </Dialog>
 
-      {/* 删除确认 */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除节点？</AlertDialogTitle>
         <AlertDialogDescription>

@@ -1,4 +1,4 @@
-// pagesExperience/detail/detail.ts — 体验卡详情
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { getIsMember, priceView } from '../../utils/member-pricing';
@@ -14,9 +14,9 @@ interface ExperienceSku {
   description?: string;
   price: number;
   special_price: number | null;
-  /** 会员价分流后的展示主价（#6=B：会员=会员价，非会员=标价） */
+  
   displayPrice: number;
-  /** 划线原价（标价）；null=不划线 */
+  
   strikePrice: number | null;
   session_count: number | null;
 }
@@ -69,7 +69,7 @@ Page({
       const price = Number(raw.price || 0);
       const special_price = raw.special_price !== null && raw.special_price !== undefined
         ? Number(raw.special_price) : null;
-      // 体验卡按会员价分流（#6=B）：会员展示会员价 + 划线标价，非会员只看标价
+      
       const pv = priceView(getIsMember(), special_price, price);
       const sku: ExperienceSku = {
         sku_id: raw.sku_id,
@@ -102,12 +102,12 @@ Page({
       Toast.fail('体验卡数据未就绪');
       return;
     }
-    // 复用 pagesOrder/checkout 通用下单流（与 pagesShop/service-detail 同模式：query 参数直传）
-    // 体验卡 SKU 在 sale_items 层已带 is_experience 快照（云函数 order.create 自动写入），
-    // 走通用 checkout 享有员工选 / 储值卡 / 优惠券 / 多支付方式
+    
+    
+    
     const params = [
       `skuId=${encodeURIComponent(sku.sku_id)}`,
-      // 文案兜底用通用占位"商品"，避免字面量散落（云函数后端不依赖此字段判定卡类）
+      
       `spuName=${encodeURIComponent(sku.product_name || sku.spec_name || '商品')}`,
       `quantity=1`,
     ].join('&');

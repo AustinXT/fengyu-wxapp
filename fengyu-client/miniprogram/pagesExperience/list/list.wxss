@@ -1,4 +1,4 @@
-/* pagesExperience/list/list.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -6,7 +6,7 @@
   padding-bottom: 40rpx;
 }
 
-/* ===== 顶部 hero ===== */
+
 
 .hero {
   background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
@@ -27,13 +27,13 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
-/* ===== 骨架屏 ===== */
+
 
 .skeleton-wrap {
   padding: 32rpx 24rpx;
 }
 
-/* ===== 卡片列表 ===== */
+
 
 .card-list {
   padding: 24rpx;
@@ -161,7 +161,7 @@
   font-weight: 600;
 }
 
-/* ===== 底部说明 ===== */
+
 
 .footer-note {
   padding: 24rpx 36rpx 32rpx;

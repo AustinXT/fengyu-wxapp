@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# 数据库验证脚本
+
 
 echo "========================================"
 echo "Fengyu PostgreSQL 数据库验证"
 echo "========================================"
 echo ""
 
-# 测试连接
+
 echo "1️⃣  测试数据库连接..."
 if docker exec fengyu-postgres pg_isready -U fengyu -d fengyu > /dev/null 2>&1; then
     echo "✅ 数据库连接正常"

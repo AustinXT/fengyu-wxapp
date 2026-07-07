@@ -1,25 +1,25 @@
-<!-- pages/treatment-cards/treatment-cards.wxml — 我的疗程卡 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 加载 -->
+  
   <view wx:if="{{isLoading}}" class="skeleton-wrap">
     <van-skeleton title row="4" />
     <van-skeleton title row="4" style="margin-top:24rpx" />
   </view>
 
-  <!-- 错误态 -->
+  
   <view wx:elif="{{loadError}}" class="empty-wrap">
     <van-empty image="error" description="加载失败，下拉刷新重试" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{cards.length === 0}}" class="empty-wrap">
     <van-empty description="暂无可用疗程卡" />
   </view>
 
-  <!-- 疗程卡列表 -->
+  
   <view wx:else class="list-wrap">
     <view
       wx:for="{{cards}}"
@@ -28,7 +28,7 @@
       bindtap="onCardTap"
       data-sale-order-id="{{item.saleOrderId}}"
     >
-      <!-- 头部：项目名 + 类型标签（活跃卡用品牌渐变） -->
+      
       <view class="tc-card__header {{item.active ? 'brand-gradient' : ''}}">
         <view class="tc-card__title-row">
           <text class="tc-card__name">{{item.productName}}</text>
@@ -45,14 +45,14 @@
         </view>
       </view>
 
-      <!-- 进度区（三段：已用 / 已付未用 / 未付） -->
+      
       <view class="tc-card__progress">
         <view class="progress-bar progress-bar--tri">
-          <!-- 已用段（浅灰） -->
+          
           <view class="progress-seg progress-seg--used" style="width: {{item.usedPct}}%"></view>
-          <!-- 已付未用段（品牌主色，失效卡置灰） -->
+          
           <view class="progress-seg {{item.active ? 'progress-seg--paid-unused' : 'progress-seg--paid-unused-inactive'}}" style="width: {{item.paidUnusedPct}}%"></view>
-          <!-- 未付段（更浅灰，斜纹） -->
+          
           <view class="progress-seg progress-seg--unpaid" style="width: {{item.unpaidPct}}%"></view>
         </view>
         <view class="progress-info">
@@ -61,7 +61,7 @@
         </view>
       </view>
 
-      <!-- 底部：门店 + 有效期 + 预约按钮 -->
+      
       <view class="tc-card__footer">
         <view class="tc-card__meta">
           <view class="tc-card__store">

@@ -1,4 +1,4 @@
-// pages/appointment/appointment.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi } from '../../utils/cloud';
@@ -14,7 +14,7 @@ const STATUS_MAP: Record<string, { label: string; type: string; color: string; t
   '已关闭': { label: '已关闭', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
 };
 
-// Tab name → 数据库 status 映射
+
 const TAB_STATUS_MAP: Record<string, string> = {
   'pending':   '待确认',
   'confirmed': '已确认',
@@ -129,7 +129,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：被分享人进入首页而非分享者的预约页
+    
     const app = getApp<IAppOption>();
     const userId = app.globalData.userId;
     const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';

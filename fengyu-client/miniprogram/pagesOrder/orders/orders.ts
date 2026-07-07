@@ -1,4 +1,4 @@
-// pages/orders/orders.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { getStatusClass, formatOrderDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
@@ -19,8 +19,8 @@ Page({
   _page: 1,
 
   onLoad(options) {
-    // 临时关闭：订单列表入口兜底拦截（业务平稳后恢复）。见 utils/feature-flags.ts
-    // 显式入口已隐藏，此处防遗漏/直达；订单列表纯主动查看，无支付闭环依赖
+    
+    
     if (!ORDERS_ENTRY_ENABLED) {
       wx.showToast({ title: '订单功能即将开放', icon: 'none' });
       wx.switchTab({ url: '/pages/home/home' });
@@ -30,11 +30,11 @@ Page({
     if (status) {
       this.setData({ activeTab: status });
     }
-    // 不在此处加载，由 onShow 统一处理（避免首次进入双重请求）
+    
   },
 
   onShow() {
-    // 临时关闭期间不发起列表请求（见 utils/feature-flags.ts）
+    
     if (!ORDERS_ENTRY_ENABLED) return;
     this.loadOrders();
   },
@@ -54,8 +54,8 @@ Page({
     this.loadOrders();
   },
 
-  // 构造 order.list 请求参数：「待支付」Tab 同时纳入 部分支付（statuses 数组），
-  // 其余 Tab 走单值 status，「全部」不带过滤
+  
+  
   _buildListPayload(page: number): Record<string, any> {
     const payload: Record<string, any> = { page, pageSize: PAGE_SIZE };
     const tab = this.data.activeTab;
@@ -69,8 +69,8 @@ Page({
 
   _mapOrders(orders: any[]) {
     return orders.map(item => {
-      // 可预约判定：已支付 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
-      // ticket 2026-05-19 paid_sessions：可消费门槛由 remaining > 0 升级为"还有已付未用的次数"
+      
+      
       const hasAppointable = item.status === '已支付'
         && (item.items || []).some((i: any) => {
           if (i.product_type === '家居产品') return false;
@@ -81,11 +81,11 @@ Page({
           return paid > 0 && (paid - used) > 0;
         });
       const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
-      // 2026-04-26 sale-order-domain-refactor:
-      //   - 已退款标签由 refunded_amount > 0 推导
-      //   - 后端列表接口已返回 received / refunded_amount
+      
+      
+      
       const hasRefund = Number(item.refunded_amount || 0) > 0;
-      // 列表项三段次数展示（ticket 2026-05-19）
+      
       const mappedItems = (item.items || []).map((i: any) => {
         const total = Number(i.session_count ?? 0);
         const remaining = Number(i.remaining_sessions ?? 0);
@@ -96,8 +96,8 @@ Page({
           used_sessions: Math.max(0, total - remaining),
         };
       });
-      // 部分支付订单：计算待付额（口径与 order-detail.ts 一致）
-      // 待付 = payable_amount - 净到账（received - refunded_amount）
+      
+      
       const isPartialPay = item.status === '部分支付';
       let outstanding = 0;
       if (isPartialPay) {
@@ -153,7 +153,7 @@ Page({
         hasMore: data?.hasMore ?? false,
       });
     } catch {
-      // 加载更多失败，回退页码，用户可重试
+      
       this._page -= 1;
       Toast.fail('加载更多失败');
     } finally {
@@ -171,7 +171,7 @@ Page({
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
   },
 
-  // 部分支付订单回款：跳详情页并自动唤起回款弹层（复用 order-detail 已有流程）
+  
   onContinuePayTap(e: WechatMiniprogram.TouchEvent) {
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}&repay=1` });
@@ -202,7 +202,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：被分享人进入首页而非分享者的订单列表
+    
     const app = getApp<IAppOption>();
     const userId = app.globalData.userId;
     const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';

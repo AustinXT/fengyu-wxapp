@@ -24,7 +24,7 @@ function formatDateTimeOrDash(s: string | null | undefined): string {
 	return formatDateTime(s);
 }
 
-/** 欠款提示：已付未用 < 物理剩余时，附「（物理剩余 N）」标记 */
+
 function physicalRemainingHint(paidUnused: number | null, remaining: number | null) {
 	if (remaining === null || paidUnused === null || !(paidUnused < remaining)) return null;
 	return <span className="ml-1 text-xs font-normal text-[#D4820A]">（物理剩余{remaining}）</span>;
@@ -68,7 +68,7 @@ export default function CardDetailPageClient({
 				<h1 className="text-2xl font-bold text-[var(--foreground)]">疗程卡详情</h1>
 			</div>
 
-			{/* 卡基本信息 */}
+			{}
 			<Card>
 				<CardHeader className="flex flex-row items-center justify-between">
 					<CardTitle>卡基本信息</CardTitle>
@@ -137,7 +137,7 @@ export default function CardDetailPageClient({
 				</CardContent>
 			</Card>
 
-			{/* 顾客与门店 */}
+			{}
 			<Card>
 				<CardHeader>
 					<CardTitle>顾客与门店</CardTitle>
@@ -164,7 +164,7 @@ export default function CardDetailPageClient({
 				</CardContent>
 			</Card>
 
-			{/* 关联订单 */}
+			{}
 			<Card>
 				<CardHeader>
 					<CardTitle>关联订单</CardTitle>
@@ -204,7 +204,7 @@ export default function CardDetailPageClient({
 				</CardContent>
 			</Card>
 
-			{/* 划卡明细 */}
+			{}
 			<Card>
 				<CardHeader>
 					<CardTitle>划卡明细</CardTitle>

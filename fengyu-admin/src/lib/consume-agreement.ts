@@ -1,29 +1,17 @@
-/**
- * 消费协议运营配置
- *
- * 存储为 system_configs.consume_agreement JSON 字符串 {title, content}。
- * clientApi config.consumeAgreement 读取同键，顾客结算页点击《标题》预览。
- * content 为多段纯文本，段落以 \n 分隔；客户端按行解析、识别「一、二、…」等标题行。
- */
+
 export interface ConsumeAgreementConfig {
-  /** 协议标题（结算页《标题》链接 + 预览弹层标题） */
+  
   title: string
-  /** 协议正文，多段纯文本，段落以 \n 分隔 */
+  
   content: string
 }
 
 const DEFAULT_TITLE = '服务消费协议'
-/** title / content 长度上限，防超大文本撑爆 DB 与前端渲染 */
+
 const MAX_TITLE_LENGTH = 50
 const MAX_CONTENT_LENGTH = 20000
 
-/**
- * 默认协议文案（美容院通用示例）。
- *
- * 运营首次进入设置页时预填此文，可在此基础上替换为正式法务版本。
- * ⚠️ 与 fengyu-client 结算页 checkout-helpers.ts 的 DEFAULT_AGREEMENT_TEXT 文案手工对齐
- * （项目禁止跨端共享代码目录，各端保留独立副本）。
- */
+
 export const DEFAULT_AGREEMENT_CONTENT = `一、服务内容与适用范围
 本协议适用于您在凤御美容院（含旗下各门店）购买的护理服务、家居产品、储值卡及疗程卡等消费项目。您下单并完成支付，即视为已阅读、理解并同意本协议全部条款。
 
@@ -56,12 +44,7 @@ export const DEFAULT_CONSUME_AGREEMENT: ConsumeAgreementConfig = {
   content: DEFAULT_AGREEMENT_CONTENT,
 }
 
-/**
- * 规范化消费协议配置。
- * - title：trim 后非空则截断到 MAX_TITLE_LENGTH，否则回退默认标题（标题不允许为空）
- * - content：保留原换行（仅截断到 MAX_CONTENT_LENGTH）；允许为空（运营可清空，前端用兜底文案）
- * 非对象输入整体回退默认配置（含默认文案）。
- */
+
 export function normalizeConsumeAgreement(input: unknown): ConsumeAgreementConfig {
   if (!input || typeof input !== 'object') return { ...DEFAULT_CONSUME_AGREEMENT }
   const r = input as Record<string, unknown>

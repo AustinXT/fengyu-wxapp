@@ -1,4 +1,4 @@
-<!-- pages/order-list/order-list.wxml -->
+
 <view class="container">
   <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
     <van-tab name="全部" title="全部" />

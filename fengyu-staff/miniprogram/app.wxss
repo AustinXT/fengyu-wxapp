@@ -1,4 +1,4 @@
-/* app.wxss — 凤御员工端全局样式 */
+
 page {
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
                'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -7,26 +7,26 @@ page {
   color: #1A1A1A;
   background-color: #FAFAFA;
 
-  /* ===== 品牌色（白红系） ===== */
+  
   --color-primary:       #C0322A;
   --color-primary-light: #FFF0EE;
   --color-primary-dark:  #9B1E14;
   --color-accent:        #C0322A;
 
-  /* ===== 语义色 ===== */
+  
   --color-success:  #3D8A5A;
   --color-warning:  #D4820A;
   --color-error:    #D94040;
   --color-info:     #5E8BB3;
 
-  /* ===== 状态徽章背景（低饱和） ===== */
+  
   --color-badge-pending:   #FFF3E0;
   --color-badge-confirmed: #E8F5E9;
   --color-badge-progress:  #E3F0FF;
   --color-badge-done:      #F0F0F0;
   --color-badge-error:     #FFEBEE;
 
-  /* ===== 中性色 ===== */
+  
   --color-text-primary:   #1A1A1A;
   --color-text-secondary: #666666;
   --color-text-hint:      #999999;
@@ -34,12 +34,12 @@ page {
   --color-bg-page:        #FAFAFA;
   --color-bg-card:        #FFFFFF;
 
-  /* ===== 间距 ===== */
+  
   --spacing-page:  32rpx;
   --spacing-card:  24rpx;
   --spacing-tight: 16rpx;
 
-  /* ===== 圆角 / 阴影 / 网格 / 暖底（管理层补充） ===== */
+  
   --radius-sm:    8rpx;
   --radius-md:   12rpx;
   --radius-lg:   16rpx;
@@ -51,7 +51,7 @@ page {
   --color-divider-soft: #F0F0F0;
   --color-bg-warm:      #F5F2EE;
 
-  /* ===== Vant 主题覆盖 ===== */
+  
   --button-primary-background-color: #C0322A;
   --button-primary-border-color:     #C0322A;
   --button-primary-color:            #FFFFFF;
@@ -69,24 +69,24 @@ page {
   --sidebar-selected-color:          #C0322A;
 }
 
-/* ===== 安全区 ===== */
+
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* ===== 页面容器 ===== */
+
 .container {
   min-height: 100vh;
   background-color: var(--color-bg-page);
 }
 
-/* ===== 分割线 ===== */
+
 .divider {
   height: 1px;
   background-color: var(--color-border);
 }
 
-/* ===== 状态标签（全局通用） ===== */
+
 .status-tag {
   display: inline-flex;
   align-items: center;
@@ -102,7 +102,7 @@ page {
 .status-tag--done     { background: var(--color-badge-done);      color: #888888; }
 .status-tag--error    { background: var(--color-badge-error);     color: #D94040; }
 
-/* ===== 旧版状态色（兼容） ===== */
+
 .status-pending    { color: #D48806; }
 .status-confirm    { color: #C0322A; }
 .status-paid       { color: #389E0D; }
@@ -111,7 +111,7 @@ page {
 .status-closed     { color: #8C8C8C; }
 .status-serving    { color: #096DD9; }
 
-/* ===== 价格组合 ===== */
+
 .price-group {
   display: flex;
   align-items: baseline;
@@ -121,7 +121,7 @@ page {
 .price-symbol  { font-size: 22rpx; font-weight: 600; }
 .price-integer { font-size: 40rpx; font-weight: 700; }
 
-/* ===== 品牌渐变 ===== */
+
 .brand-gradient {
   background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
 }
@@ -135,11 +135,11 @@ page {
   color: #1A1A1A;
 }
 
-/* ===== 角色标签 ===== */
+
 .role-manager   { color: #C0322A; }
 .role-beautician { color: #3D8A5A; }
 
-/* ===== 三态容器（§3.3） ===== */
+
 .loading-wrap {
   display: flex;
   align-items: center;
@@ -154,7 +154,7 @@ page {
   padding: 80rpx 0;
 }
 
-/* ===== 卡片布局（§3.5） ===== */
+
 .section-card {
   margin: 24rpx 32rpx 0;
   background: #FFFFFF;
@@ -176,7 +176,7 @@ page {
   color: #1A1A1A;
 }
 
-/* ===== 底部固定栏 + safe-area（§3.4） ===== */
+
 .bottom-bar {
   position: fixed;
   bottom: 0;
@@ -193,7 +193,7 @@ page {
   height: calc(120rpx + env(safe-area-inset-bottom));
 }
 
-/* ===== 操作按钮容器 ===== */
+
 .action-bar {
   padding: 32rpx;
 }
@@ -203,7 +203,7 @@ page {
   gap: 24rpx;
 }
 
-/* ===== 管理层视图：顶部筛选行（5 页统一：左 时间/period chip，右 scope tag） ===== */
+
 .mgmt-filter-bar {
   display: flex;
   align-items: center;
@@ -241,7 +241,7 @@ page {
   font-weight: 600;
 }
 
-/* ===== 详情页状态条 ===== */
+
 .status-banner {
   display: flex;
   align-items: center;
@@ -258,12 +258,12 @@ page {
 .status-banner--cancelled { background: var(--color-badge-error);     color: #D94040; }
 .status-banner--error     { background: var(--color-badge-error);     color: #D94040; }
 
-/* ===== van-cell-group 卡片包装 ===== */
+
 .card-group {
   margin: 24rpx 0;
 }
 
-/* ===== FAB 浮动按钮（§4.4） ===== */
+
 .fab {
   position: fixed;
   right: 48rpx;
@@ -278,17 +278,17 @@ page {
   box-shadow: 0 8rpx 24rpx rgba(192, 50, 42, 0.45);
 }
 
-/* ===== 列表容器 ===== */
+
 .list-wrap {
   padding: 24rpx 32rpx;
 }
 
-/* ===== van-cell 左侧图标 ===== */
+
 .cell-icon {
   margin-right: 12rpx;
 }
 
-/* ===== 品牌按钮（替代 custom-style 硬编码色值） ===== */
+
 .btn-primary-brand {
   background: var(--color-primary) !important;
   border-color: var(--color-primary) !important;

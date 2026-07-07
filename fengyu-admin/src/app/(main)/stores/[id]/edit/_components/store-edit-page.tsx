@@ -54,7 +54,7 @@ export default function StoreEditPage({
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-        // 关联收款商户：仅 admin（canEditPayment）提交，避免 hr 改门店其他信息时被收款绑定权限拦截
+        
         ...(canEditPayment ? { lakalaMerchantId: merchantId || null } : {}),
       }, store.updatedAt)
       if (!result.success) {
@@ -93,7 +93,7 @@ export default function StoreEditPage({
         )}
       </div>
 
-      {/* 基本信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">基本信息</CardTitle>
@@ -136,7 +136,7 @@ export default function StoreEditPage({
         </CardContent>
       </Card>
 
-      {/* 地理位置 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">地理位置</CardTitle>
@@ -167,7 +167,7 @@ export default function StoreEditPage({
         </CardContent>
       </Card>
 
-      {/* 展示内容 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">展示内容</CardTitle>
@@ -263,7 +263,7 @@ export default function StoreEditPage({
         </Button>
       </div>
 
-      {/* 关闭门店确认 */}
+      {}
       <AlertDialog open={closeDialogOpen} onOpenChange={setCloseDialogOpen}>
         <AlertDialogTitle>确认关闭门店？</AlertDialogTitle>
         <AlertDialogDescription>

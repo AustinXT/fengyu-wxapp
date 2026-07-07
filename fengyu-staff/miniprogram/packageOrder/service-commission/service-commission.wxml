@@ -1,4 +1,4 @@
-<!-- packageOrder/service-commission/service-commission.wxml — 服务提成分配 -->
+
 <wxs module="fmt">
 module.exports.pct = function(rate) {
   return (rate * 100).toFixed(1);
@@ -11,7 +11,7 @@ module.exports.pct = function(rate) {
   </view>
 
   <block wx:else>
-    <!-- 服务单摘要 -->
+    
     <view class="order-header">
       <text class="order-no">{{serviceOrderId}}</text>
       <view class="header-info">
@@ -33,7 +33,7 @@ module.exports.pct = function(rate) {
       <text class="status-text">该服务单已分配，可修改后重新保存</text>
     </view>
 
-    <!-- 按服务明细分组 -->
+    
     <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="service_item_id">
       <view class="item-header">
         <view class="item-name-row">
@@ -44,7 +44,7 @@ module.exports.pct = function(rate) {
       </view>
       <view class="item-sub">核销 {{dItem.session_used}} 次 · 单次价基数 ¥{{dItem.consumeBase}}</view>
 
-      <!-- 分配行：技能标签 → 员工 → 分配比例 -->
+      
       <view
         class="alloc-line"
         wx:for="{{dItem.allocLines}}"
@@ -91,7 +91,7 @@ module.exports.pct = function(rate) {
       </view>
     </view>
 
-    <!-- 汇总 -->
+    
     <view class="summary-section" wx:if="{{summary.length > 0}}">
       <view class="summary-title">分配汇总</view>
       <view class="summary-row" wx:for="{{summary}}" wx:key="index">
@@ -117,7 +117,7 @@ module.exports.pct = function(rate) {
     </view>
   </block>
 
-  <!-- 技能标签选择 -->
+  
   <van-action-sheet
     show="{{skillSheetVisible}}"
     actions="{{skillSheetActions}}"
@@ -127,7 +127,7 @@ module.exports.pct = function(rate) {
     bind:close="closeSkillSheet"
   />
 
-  <!-- 分配比例选择 -->
+  
   <van-action-sheet
     show="{{ratioSheetVisible}}"
     actions="{{ratioSheetActions}}"
@@ -137,7 +137,7 @@ module.exports.pct = function(rate) {
     bind:close="closeRatioSheet"
   />
 
-  <!-- 员工选择弹窗 -->
+  
   <van-popup show="{{empPopupVisible}}" position="bottom" round bind:close="closeEmpPopup">
     <view class="picker-header">
       <text class="picker-title">{{empPopupTitle}}</text>

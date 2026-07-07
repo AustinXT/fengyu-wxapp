@@ -1,4 +1,4 @@
-/* pages/appointment-detail/appointment-detail.wxss */
+
 
 .loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
 .empty-wrap { padding: 80rpx 0; }

@@ -22,30 +22,28 @@ export type { ShareGiftConfig }
 export type { RechargeCardConfigInput }
 export type { ConsumeAgreementConfig }
 
-/**
- * 单个等级的权益配置
- */
+
 export interface MemberLevelBenefit {
-  /** 奖励积分（整数，0 表示不发） */
+  
   points: number
-  /** 发放的优惠券模板 ID 数组（templateId 来自 coupon_templates） */
+  
   couponTemplateIds: string[]
-  /** 消息标题（空字符串表示不发消息） */
+  
   messageTitle: string
-  /** 消息正文 */
+  
   messageBody: string
 }
 
-/** 五个钻石等级的权益配置映射 */
+
 export type MemberLevelBenefitsMap = Record<
   '初钻' | '星钻' | '粉钻' | '金钻' | '黑钻',
   MemberLevelBenefit
 >
 
-/** 会员权益的三种场景 */
+
 export type BenefitScenario = 'upgrade' | 'birthday' | 'thanksgiving'
 
-/** 三种场景下的权益配置 */
+
 export interface MemberBenefitsBundle {
   upgrade: MemberLevelBenefitsMap
   birthday: MemberLevelBenefitsMap
@@ -97,13 +95,7 @@ function emptyBenefits(): MemberLevelBenefitsMap {
   }
 }
 
-/**
- * 规范化用户提交的权益配置：
- * - 缺失等级用 DEFAULT_BENEFIT 补齐
- * - points 转 number 并裁剪为非负整数
- * - couponTemplateIds 去重 + 过滤空值
- * - 文案 trim
- */
+
 function normalizeBenefits(input: unknown): MemberLevelBenefitsMap {
   const result = emptyBenefits()
   if (!input || typeof input !== 'object') return result
@@ -140,7 +132,7 @@ export const getSettings = withPermission(
       if (row.key === 'new_member_threshold') settings.newMemberThreshold = row.value
       if (row.key === 'order_timeout') settings.orderTimeout = row.value
       if (row.key === 'banner_images') {
-        try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
+        try { settings.bannerImages = JSON.parse(row.value) } catch {  }
       }
       if (row.key === 'fengyuguan_image') settings.fengyuguanImage = row.value
     }
@@ -180,13 +172,13 @@ export const saveSettings = withPermission(
       `)
     }
 
-    // 凤御馆图 reupload 到固定路径，确保落到当前环境桶（与 banner 一致）。
-    // 配合 reuploadToFixedPath 的整 URL 跳过逻辑：源指向别的桶（如 dev）时会重传到本环境桶。
+    
+    
     if (settings.fengyuguanImage) {
       await reuploadToFixedPath(settings.fengyuguanImage, 'images/fengyuguan.jpg')
     }
 
-    // 将轮播图重新上传到固定 CDN 路径 (banner1.jpg, banner2.jpg, ...)
+    
     const bannerUrls = settings.bannerImages || []
     const newCount = bannerUrls.length
     await Promise.all(
@@ -195,7 +187,7 @@ export const saveSettings = withPermission(
       )
     )
 
-    // 读取旧的 banner_count，删除多余的旧固定路径图片
+    
     const oldCountRows = await db.execute<{ value: string }>(sql`
       SELECT value FROM system_configs WHERE key = 'banner_count'
     `)
@@ -208,11 +200,11 @@ export const saveSettings = withPermission(
       await deleteByCloudPaths(pathsToDelete)
     }
 
-    // 上传 config.json 到 CDN（client 端读取此文件获取轮播图数量和版本号）
+    
     const configJson = Buffer.from(JSON.stringify({ count: newCount, v: Date.now() }))
     await uploadFile(configJson, 'fengyu-client/banner/config.json')
 
-    // 保存 banner_count
+    
     await db.execute(sql`
       INSERT INTO system_configs (key, value, updated_at)
       VALUES ('banner_count', ${String(newCount)}, NOW())
@@ -228,8 +220,8 @@ export const saveSettings = withPermission(
       settings as unknown as Record<string, unknown>,
     )
 
-    // 会员门槛变化时，主动失效 admin 自身 + clientApi 内存缓存
-    // staffApi / cronTask 在另一个 envId，依赖 utils/config 的被动 updated_at 戳核对（30 秒内生效）
+    
+    
     if (oldSettings.newMemberThreshold !== settings.newMemberThreshold) {
       invalidateMemberThreshold()
       await Promise.allSettled([
@@ -253,9 +245,7 @@ export const saveSettings = withPermission(
   },
 )
 
-/**
- * 加载所有有效的优惠券模板（用于权益配置中的多选下拉）
- */
+
 export const listActiveCouponTemplates = withPermission(
   'system:config',
   async (): Promise<Array<{ templateId: string; name: string }>> => {
@@ -269,10 +259,7 @@ export const listActiveCouponTemplates = withPermission(
   },
 )
 
-/**
- * 读取三种场景（升级/生日/感恩日）的会员权益配置。
- * 任一场景缺失或 JSON 损坏静默降级为默认空值。
- */
+
 export const getMemberBenefits = withPermission(
   'system:config',
   async (): Promise<MemberBenefitsBundle> => {
@@ -295,25 +282,22 @@ export const getMemberBenefits = withPermission(
       try {
         bundle[scenario] = normalizeBenefits(JSON.parse(row.value))
       } catch {
-        // keep default
+        
       }
     }
   } catch {
-    // DB 未建表 → 返回空默认
+    
   }
 
   return bundle
   },
 )
 
-// ─── 分享礼运营配置（ticket 2026-04-24 share-gift-reward PR-2） ───
+
 
 const SHARE_GIFT_CONFIG_KEY = 'share_gift_config'
 
-/**
- * 读取分享礼配置。
- * 行缺失 / JSON 损坏均降级为 DEFAULT_SHARE_GIFT_CONFIG。
- */
+
 export const getShareGiftConfig = withPermission(
   'system:config',
   async (): Promise<ShareGiftConfig> => {
@@ -334,10 +318,7 @@ export const getShareGiftConfig = withPermission(
   },
 )
 
-/**
- * 保存分享礼配置（UPSERT system_configs）。
- * 规范化 + 审计日志 + revalidatePath('/share-gift')。
- */
+
 export const saveShareGiftConfig = withPermission(
   'system:config',
   async (
@@ -382,10 +363,7 @@ export const saveShareGiftConfig = withPermission(
   },
 )
 
-/**
- * 保存三种场景的会员权益配置（一次性写入三份 JSON）。
- * 权益变更不影响 newMemberThreshold 缓存广播逻辑。
- */
+
 export const saveMemberBenefits = withPermission(
   'system:config',
   async (
@@ -442,7 +420,7 @@ export const saveMemberBenefits = withPermission(
   },
 )
 
-// ─── 充值卡档位配置（系统配置 → 充值卡配置 Tab；存 system_configs.recharge.*） ───
+
 
 const DEFAULT_RECHARGE_CARD_CONFIG: RechargeCardConfigInput = {
   tiers: [],
@@ -450,10 +428,7 @@ const DEFAULT_RECHARGE_CARD_CONFIG: RechargeCardConfigInput = {
   maxAmount: 50000,
 }
 
-/**
- * 读取充值卡档位配置（faceValue/payAmount 列表 + min/max）。
- * 缺失或 JSON 损坏静默降级为默认空配置（不抛错，保证设置页可渲染）。
- */
+
 export const getRechargeCardConfig = withPermission(
   'system:config',
   async (): Promise<RechargeCardConfigInput> => {
@@ -475,7 +450,7 @@ export const getRechargeCardConfig = withPermission(
             .map((t) => ({ faceValue: t.faceValue, payAmount: t.payAmount }))
             .sort((a, b) => a.faceValue - b.faceValue)
         }
-      } catch { /* keep empty */ }
+      } catch {  }
     }
     if (cfg['recharge.minAmount']) {
       const n = Number(cfg['recharge.minAmount'])
@@ -492,10 +467,7 @@ export const getRechargeCardConfig = withPermission(
   },
 )
 
-/**
- * 保存充值卡档位配置（Zod 校验 + 规范化 + UPSERT 三个键 + 审计日志）。
- * 三端（admin/staff/client）读同源 system_configs.recharge.* 行保持一致。
- */
+
 export const saveRechargeCardConfig = withPermission(
   'system:config',
   async (
@@ -508,7 +480,7 @@ export const saveRechargeCardConfig = withPermission(
       return { success: false, message: parsed.error.issues[0]?.message || '配置校验失败' }
     }
 
-    // 规范化：金额保留 2 位小数 + 按面额升序
+    
     const round2 = (n: number) => Math.round(n * 100) / 100
     const tiers = parsed.data.tiers
       .map((t) => ({ faceValue: round2(t.faceValue), payAmount: round2(t.payAmount) }))
@@ -558,14 +530,11 @@ export const saveRechargeCardConfig = withPermission(
   },
 )
 
-// ─── 消费协议配置（系统配置 → 消费协议 Tab；存 system_configs.consume_agreement） ───
+
 
 const CONSUME_AGREEMENT_KEY = 'consume_agreement'
 
-/**
- * 读取消费协议配置（标题 + 正文）。
- * 行缺失 / JSON 损坏均降级为 DEFAULT_CONSUME_AGREEMENT（含默认文案）。
- */
+
 export const getConsumeAgreement = withPermission(
   'system:config',
   async (): Promise<ConsumeAgreementConfig> => {
@@ -586,10 +555,7 @@ export const getConsumeAgreement = withPermission(
   },
 )
 
-/**
- * 保存消费协议配置（规范化 + UPSERT system_configs + 审计日志 + revalidate）。
- * 顾客端 clientApi config.consumeAgreement 读同键，保存后下次拉取即生效（无内存缓存）。
- */
+
 export const saveConsumeAgreement = withPermission(
   'system:config',
   async (

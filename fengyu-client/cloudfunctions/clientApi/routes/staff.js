@@ -1,14 +1,8 @@
-/**
- * 美容师模块路由
- * 从 PG staff_wechat_users 查询美容师列表(只读)
- */
+
 
 const pg = require('../db/pg')
 
-/**
- * 美容师列表
- * 从 PG staff_wechat_users 查询在职美容师
- */
+
 async function list(ctx) {
   const { storeId } = ctx.event.payload || {}
 
@@ -16,10 +10,10 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
-  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
-  // 养生师也可被指定接单（业务诉求）；因为店长 / 高级美容师 / 资深美容师等岗位的人也
-  // 可能在技能上标"美容师"对外接单，反之新人挂"美容师"岗位但 skills 为空也不应入选。
-  // 与 staffApi/routes/mgmt-dashboard.js 的 `s.skills && ARRAY['美容师','养生师']::text[]` 同源约定。
+  
+  
+  
+  
   const rows = await pg.query(`
     SELECT
       sw.employee_id AS staff_id,
@@ -53,7 +47,7 @@ async function list(ctx) {
     skills: r.skills || [],
     phone: r.phone,
     avatarUrl: r.avatar_url || null,
-    // 请假区间墙钟串（YYYY-MM-DDTHH:mm:ss）；前端按所选预约时段判定是否冲突
+    
     leaveStart: r.leave_start || null,
     leaveEnd: r.leave_end || null,
     avgRating: r.avg_rating !== null ? Number(r.avg_rating) : null,
@@ -63,15 +57,11 @@ async function list(ctx) {
   ctx.result = { staffList }
 }
 
-/**
- * 获取默认美容师
- * 从 client_wechat_users.bound_employee_id 获取绑定美容师
- * 需要用户已绑定手机号
- */
+
 async function defaultStaff(ctx) {
   const { userId, phone } = ctx.auth
 
-  // 未绑定手机号时直接返回空结果
+  
   if (!phone) {
     ctx.result = {
       mainStaffId: null,
@@ -81,7 +71,7 @@ async function defaultStaff(ctx) {
     return
   }
 
-  // 从 client_wechat_users 查询绑定美容师
+  
   const customers = await pg.query(`
     SELECT
       u.bound_employee_id AS main_staff_id,
@@ -105,7 +95,7 @@ async function defaultStaff(ctx) {
   const mainStaffId = customers[0].main_staff_id
   const storeName = customers[0].store_name
 
-  // 查询美容师信息
+  
   const staffList = await pg.query(`
     SELECT
       employee_id AS staff_id,
@@ -125,15 +115,12 @@ async function defaultStaff(ctx) {
   }
 }
 
-/**
- * 美容师详情
- * 包含服务次数和忙碌状态
- */
+
 async function detail(ctx) {
   const { employeeId } = ctx.event.payload || {}
   if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
 
-  // Basic info
+  
   const staffRows = await pg.query(`
     SELECT s.employee_id, s.name, s.position_name, s.skills, s.gender, s.avatar_url,
            s.store_id, st.store_name,
@@ -148,7 +135,7 @@ async function detail(ctx) {
 
   const staff = staffRows[0]
 
-  // Service count + today's active appointments + review aggregate (parallel)
+  
   const [countRows, todayRows, reviewRows] = await Promise.all([
     pg.query(
       "SELECT COUNT(*)::int AS count FROM service_orders WHERE assigned_employee_id = $1 AND status = '已完成'",
@@ -171,7 +158,7 @@ async function detail(ctx) {
     skills: staff.skills || [],
     gender: staff.gender,
     avatarUrl: staff.avatar_url || null,
-    // 请假区间墙钟串；前端按设备本地时间判定「休假中」
+    
     leaveStart: staff.leave_start || null,
     leaveEnd: staff.leave_end || null,
     storeId: staff.store_id,

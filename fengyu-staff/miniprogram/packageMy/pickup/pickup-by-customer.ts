@@ -1,4 +1,4 @@
-// packageMy/pickup/pickup-by-customer.ts — 提货：顾客视角 + 录入
+
 import { callStaffApi } from '../../utils/cloud'
 
 interface Customer {
@@ -39,7 +39,7 @@ Page({
   },
 
   onLoad() {
-    // 空，等用户搜索
+    
   },
 
   onInput(e: WechatMiniprogram.Input) {
@@ -129,7 +129,7 @@ Page({
       })
       wx.showToast({ title: '提货成功', icon: 'success' })
       this.setData({ 'pickupDialog.visible': false })
-      // 刷新清单
+      
       if (this.data.selectedCustomer) {
         const customer = this.data.selectedCustomer
         const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {

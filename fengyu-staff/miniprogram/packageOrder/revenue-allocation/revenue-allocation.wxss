@@ -1,7 +1,7 @@
-/* packageOrder/revenue-allocation/revenue-allocation.wxss */
 
 
-/* 订单头部 */
+
+
 .order-header {
   background: #FFFFFF;
   padding: 32rpx;
@@ -15,7 +15,7 @@
 .amount-label { font-size: 26rpx; color: #666; }
 .amount-value { font-size: 48rpx; font-weight: 700; color: var(--color-primary); }
 
-/* 上下文提示区 */
+
 .context-hints {
   margin: 0 32rpx 24rpx;
 }
@@ -33,7 +33,7 @@
 .hint-item--new { background: #F3E5F5; }
 .hint-text { font-size: 24rpx; color: #333; line-height: 1.5; flex: 1; }
 
-/* 状态提示 */
+
 .status-notice {
   display: flex;
   align-items: center;
@@ -48,7 +48,7 @@
 .status-notice--warn .status-text { color: #E65100; }
 .status-notice--frozen .status-text { color: #D94040; }
 
-/* 分配区域 — 按订单项分组 */
+
 .alloc-section {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -68,7 +68,7 @@
 .item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
 .item-amount { font-size: 28rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; margin-left: 16rpx; }
 
-/* 分配行 */
+
 .alloc-line {
   background: #FAFAFA;
   border-radius: 12rpx;
@@ -112,7 +112,7 @@
   flex-shrink: 0;
 }
 
-/* 只读派生：提成% / 分配额 / 提成额 */
+
 .line-derived {
   display: flex;
   align-items: center;
@@ -126,7 +126,7 @@
 .derived-warn { color: #D4820A; font-weight: 600; }
 .derived-primary { color: var(--color-primary); font-weight: 600; margin-left: auto; }
 
-/* 添加人员按钮 */
+
 .add-person-btn {
   display: flex;
   align-items: center;
@@ -142,7 +142,7 @@
   color: var(--color-primary);
 }
 
-/* 选人弹窗 */
+
 .picker-header {
   display: flex;
   align-items: center;
@@ -196,7 +196,7 @@
   padding: 80rpx 0;
 }
 
-/* 汇总 */
+
 .summary-section {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -223,5 +223,5 @@
 .summary-grand-label { font-size: 28rpx; font-weight: 600; color: #2D2017; }
 .summary-grand-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 
-/* 操作区 */
+
 .action-bar { padding: 0 32rpx 32rpx; }

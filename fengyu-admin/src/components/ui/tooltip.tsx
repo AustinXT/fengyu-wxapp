@@ -1,12 +1,12 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// 使用 Omit 排除 HTMLDivElement 固有的 content 属性（原为 meta content string），
-// 使我们的 content 可以接受 ReactNode（含长文案、JSX）
+
+
 export interface TooltipProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "content"> {
   content: React.ReactNode
   side?: "top" | "bottom" | "left" | "right"
-  /** 宽松模式：允许换行，限制最大宽度（用于长文案说明） */
+  
   wide?: boolean
 }
 

@@ -1,4 +1,4 @@
-/* packageOrder/card-inflow/card-inflow.wxss — 旧系统充值金转入 */
+
 
 .container {
   min-height: 100vh;
@@ -6,7 +6,7 @@
   padding-bottom: 200rpx;
 }
 
-/* ===== Hero ===== */
+
 .hero {
   background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   padding: 48rpx 36rpx 40rpx;
@@ -29,7 +29,7 @@
 }
 .hero-store-text { font-size: 24rpx; color: rgba(255, 255, 255, 0.95); }
 
-/* ===== 顾客选择 ===== */
+
 .customer-block {
   background: #FFFFFF;
   margin: -24rpx 24rpx 0;
@@ -122,7 +122,7 @@
 .customer-result-phone { font-size: 24rpx; color: #999999; }
 .customer-cross-store { margin-left: 12rpx; font-size: 22rpx; color: #C0322A; }
 
-/* ===== 主体 ===== */
+
 .body { padding: 8rpx 24rpx 0; }
 .section-title {
   font-size: 28rpx;
@@ -131,7 +131,7 @@
   padding: 24rpx 8rpx 16rpx;
 }
 
-/* ===== 金额 / 备注卡片 ===== */
+
 .custom-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -171,7 +171,7 @@
   color: var(--color-text-primary, #1A1A1A);
 }
 
-/* ===== 底部说明 ===== */
+
 .footer-note {
   padding: 24rpx 8rpx 24rpx;
   display: flex;
@@ -184,7 +184,7 @@
   line-height: 1.6;
 }
 
-/* ===== 底部 CTA ===== */
+
 .cta-bar {
   position: fixed;
   left: 0;

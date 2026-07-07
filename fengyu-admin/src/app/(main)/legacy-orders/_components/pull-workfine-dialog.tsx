@@ -27,7 +27,7 @@ import { actionErrorMessage } from "@/lib/action-error"
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** 可选：从 /customers/[id] 入口打开时预填的手机号；Dialog 首次打开自动触发搜索 */
+  
   defaultPhone?: string
 }
 
@@ -45,7 +45,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
   const [step, setStep] = useState<Step>("search")
   const [query, setQuery] = useState("")
   const [searching, setSearching] = useState(false)
-  // WorkFine 不可用 / 搜索 / 预览失败的常驻错误（不随 toast 消失，附「重试」），绑定 search 步骤
+  
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<WorkfineCustomerCandidate[]>([])
   const [picked, setPicked] = useState<WorkfineCustomerCandidate | null>(null)
@@ -53,12 +53,12 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [orders, setOrders] = useState<WorkfineOrderPreview[]>([])
   const [availableStores, setAvailableStores] = useState<AvailableStore[]>([])
-  // WorkFine 门店名 → 新系统 storeId（默认同名匹配，可人工改选；"" = 未指派）
+  
   const [storeMapping, setStoreMapping] = useState<Record<string, string>>({})
   const [selectedOrderNos, setSelectedOrderNos] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
 
-  // 重置 / 预填
+  
   useEffect(() => {
     if (!open) return
     setStep("search")
@@ -71,7 +71,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     setErrorMsg(null)
     if (defaultPhone) {
       setQuery(defaultPhone)
-      // 自动触发一次搜索
+      
       doSearch(defaultPhone)
     } else {
       setQuery("")
@@ -96,7 +96,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       if (res.length === 0) {
         toast.error("WorkFine 中未找到匹配顾客")
       } else if (res.length === 1) {
-        // 自动选中并进预览
+        
         pickCandidate(res[0])
       }
     } catch (err) {
@@ -118,7 +118,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       setOrders(res.orders)
       setAvailableStores(res.availableStores)
 
-      // 门店映射默认值：WorkFine 门店名 → 同名新系统门店的 storeId（无同名留 ""）
+      
       const byName = new Map(res.availableStores.map((s) => [s.storeName, s.storeId] as const))
       const distinctStoreNames = [
         ...new Set(res.orders.map((o) => o.storeName).filter((s): s is string => !!s)),
@@ -127,7 +127,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       for (const name of distinctStoreNames) mapping[name] = byName.get(name) ?? ""
       setStoreMapping(mapping)
 
-      // 默认勾选：未导入 且 门店已映射（同名命中）的行
+      
       const defaultSel = new Set(
         res.orders
           .filter((o) => !o.alreadyImported && !!o.storeName && !!mapping[o.storeName])
@@ -156,7 +156,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
 
   function changeStoreMapping(storeName: string, storeId: string) {
     setStoreMapping((prev) => ({ ...prev, [storeName]: storeId }))
-    // 若该门店改为未指派（""），取消其名下已勾选的订单
+    
     if (!storeId) {
       setSelectedOrderNos((prev) => {
         const next = new Set(prev)
@@ -168,7 +168,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
     }
   }
 
-  // 当前可导入条件：未导入 且 其 WorkFine 门店已映射到新系统门店
+  
   const isAllowed = (o: WorkfineOrderPreview) =>
     !o.alreadyImported && !!o.storeName && !!storeMapping[o.storeName]
 
@@ -190,7 +190,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       if (res.skippedNoStore > 0) parts.push(`门店未匹配跳过 ${res.skippedNoStore}`)
       toast.success(parts.join("，"))
       onOpenChange(false)
-      // 跳到 /legacy-orders 并按该顾客手机号筛选
+      
       if (res.affectedPhone) {
         startTransition(() => {
           router.push(`/legacy-orders?q=${encodeURIComponent(res.affectedPhone!)}`)
@@ -207,7 +207,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
   }
 
   const importableCount = orders.filter(isAllowed).length
-  // 本次预览涉及的去重 WorkFine 门店名（用于映射表）
+  
   const distinctStoreNames = [
     ...new Set(orders.map((o) => o.storeName).filter((s): s is string => !!s)),
   ]

@@ -1,13 +1,4 @@
-/**
- * 会员等级判定纯函数（迁自 cronTask/index.js:91-113）
- *
- * 与 [member-level-rules](memory:project_member_level_rules) 一致：
- *   - 黑钻 ≥ 100000、金钻 ≥ 60000、粉钻 ≥ 30000、星钻 ≥ 10000
- *   - 初钻 ≥ system_configs.new_member_threshold（默认 1980，运行时由 getMemberThreshold 注入）
- *   - 低于初钻门槛 → null
- *
- * 升降级判定基于序数：null < 初钻 < 星钻 < 粉钻 < 金钻 < 黑钻
- */
+
 
 import { memberLevelEnum } from '@db/enums'
 

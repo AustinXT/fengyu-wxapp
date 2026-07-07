@@ -67,7 +67,7 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
         </Button>
       </div>
 
-      {/* 审批通过二次确认 */}
+      {}
       <AlertDialog open={approveOpen} onOpenChange={setApproveOpen}>
         <AlertDialogTitle>确认审批通过？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -92,7 +92,7 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 驳回弹层（需输入原因） */}
+      {}
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
         <DialogClose onOpenChange={setRejectOpen} />
         <DialogHeader>

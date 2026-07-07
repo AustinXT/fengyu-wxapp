@@ -1,8 +1,4 @@
-/**
- * 优惠券重评估纯函数
- * cart 变动后调用 coupon.available 拿到新可用列表，
- * 此函数根据原选中券 ID/金额与新列表做决策，不做 side effect
- */
+
 
 export type CouponInListItem = {
   couponId: string

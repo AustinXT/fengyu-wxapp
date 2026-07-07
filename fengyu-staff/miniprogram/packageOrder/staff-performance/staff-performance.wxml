@@ -1,7 +1,7 @@
-<!-- packageOrder/staff-performance/staff-performance.wxml — 员工绩效 -->
+
 <view class="container perf-page">
 
-  <!-- 员工信息 + 日期 -->
+  
   <view class="perf-header">
     <view class="perf-staff-row">
       <view class="perf-avatar">
@@ -21,7 +21,7 @@
     </view>
   </view>
 
-  <!-- 提成汇总卡片 -->
+  
   <view class="perf-summary-card">
     <view class="summary-row">
       <view class="summary-item">
@@ -50,12 +50,12 @@
     </view>
   </view>
 
-  <!-- 分类 Tab -->
+  
   <van-tabs active="{{activeCategoryTab}}" bind:change="onCategoryTabChange" color="#C0322A" line-width="40rpx">
     <van-tab wx:for="{{categoryOptions}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
 
-  <!-- 明细列表 -->
+  
   <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
@@ -78,7 +78,7 @@
         <text class="perf-item-label">业绩</text>
         <text class="perf-item-value">¥{{item.businessAmount}}</text>
       </view>
-      <!-- 服务提成双字段拆分：固定手工费 + 消耗提成 -->
+      
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
         <text class="perf-item-label">手工费</text>
         <text class="perf-item-value">¥{{item.fixedFee}}</text>
@@ -116,7 +116,7 @@
   <view class="safe-area-bottom" />
 </view>
 
-<!-- 员工选择弹出层 -->
+
 <van-popup
   show="{{showStaffPicker}}"
   round

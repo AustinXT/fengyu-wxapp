@@ -1,18 +1,18 @@
-<!-- pages/unbind-requests/unbind-requests.wxml — 顾客转店申请审批 -->
+
 <view class="container">
 
-  <!-- 加载态 -->
+  
   <view wx:if="{{loading}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <block wx:else>
-    <!-- 空态 -->
+    
     <view wx:if="{{requests.length === 0}}" class="empty-wrap">
       <van-empty description="暂无待审批的转店申请" />
     </view>
 
-    <!-- 申请列表 -->
+    
     <view wx:else class="list">
       <van-cell-group
         wx:for="{{requests}}"
@@ -50,7 +50,7 @@
   <view class="safe-area-bottom" />
 </view>
 
-<!-- 拒绝原因弹窗 -->
+
 <van-dialog
   show="{{ showRejectDialog }}"
   title="拒绝申请"

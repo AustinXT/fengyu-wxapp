@@ -1,17 +1,4 @@
-/**
- * STEP 3 — 生日权益发放（迁自 cronTask/index.js:421-557）
- *
- * 扫描 birthday IS NOT NULL AND member_level IS NOT NULL 且月日 = 今天的顾客。
- * 闰年策略 B1：非闰年 2/29 自然跳过（SQL EXTRACT 精确匹配，无额外分支）。
- * 每个用户独立子事务：grantBirthdayBenefits + operation_logs。
- *
- * 幂等键：
- *   消息 idempotency_key  = `birthday-msg-${YYYY}-${userId}`
- *   积分 external_ref     = `birthday-pts-${YYYY}-${userId}`
- *   优惠券 coupon_id      = `bday-${YYYY}-${userId}-${templateId}`
- *
- * 年份从 DB CURRENT_DATE 提取（§1.7 C：避免 JS 时区漂移）。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -112,7 +99,7 @@ async function grantOneBirthday(
   config: BenefitItem,
   ctx?: CronContext,
 ): Promise<void> {
-  // 1) 消息
+  
   if (config.messageTitle) {
     const idem = `birthday-msg-${year}-${userId}`
     await tx.execute(sql`
@@ -124,7 +111,7 @@ async function grantOneBirthday(
     `)
   }
 
-  // 2) 积分（仅当流水成功插入才累加余额）
+  
   if (config.points && config.points > 0) {
     const externalRef = `birthday-pts-${year}-${userId}`
     const inserted = (await tx.execute(sql`
@@ -144,7 +131,7 @@ async function grantOneBirthday(
     }
   }
 
-  // 3) 优惠券
+  
   if (Array.isArray(config.couponTemplateIds)) {
     for (const templateId of config.couponTemplateIds) {
       const tplRows = (await tx.execute(sql`
@@ -175,7 +162,7 @@ async function grantOneBirthday(
       }
 
       const couponId = `bday-${year}-${userId}-${templateId}`
-      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
+      const externalRef = couponId  
       await tx.execute(sql`
         INSERT INTO user_coupons
           (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)

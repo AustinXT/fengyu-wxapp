@@ -1,4 +1,4 @@
-// utils/calendar.ts — 日历工具函数
+
 
 export interface CalendarDay {
   day: number
@@ -9,12 +9,7 @@ export interface CalendarDay {
   isEmpty: boolean
 }
 
-/**
- * 构建月度日历格子数据
- * @param yearMonth 格式 YYYY-MM
- * @param dailyData 每日数据 [{ date, amount }]
- * @param today 可选，覆盖"今天"日期字符串（测试用）
- */
+
 export function buildCalendarDays(
   yearMonth: string,
   dailyData: Array<{ date: string; amount: number }>,
@@ -53,9 +48,7 @@ export function buildCalendarDays(
   return days
 }
 
-/**
- * 格式化月份标签
- */
+
 export function formatMonthLabel(ym: string): string {
   const [y, m] = ym.split('-')
   return `${y}年${parseInt(m)}月`

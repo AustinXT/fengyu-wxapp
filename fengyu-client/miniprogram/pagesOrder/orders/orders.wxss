@@ -1,4 +1,4 @@
-/* pages/orders/orders.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -13,12 +13,12 @@
   padding-top: 80rpx;
 }
 
-/* ===== 列表 ===== */
+
 .list-wrap {
   padding: 24rpx 24rpx 40rpx;
 }
 
-/* ===== 订单卡片 ===== */
+
 .order-card {
   background: var(--color-bg-card);
   border-radius: 20rpx;
@@ -56,9 +56,9 @@
   font-weight: 600;
 }
 
-/* 状态颜色 — 复用 app.wxss .status-* 全局类 */
 
-/* ===== 商品明细 ===== */
+
+
 .order-items {
   padding: 16rpx 28rpx;
 }
@@ -137,7 +137,7 @@
   color: var(--color-text-primary);
 }
 
-/* ===== 充值单专属摘要行 ===== */
+
 .recharge-row {
   display: flex;
   align-items: center;
@@ -179,7 +179,7 @@
   white-space: nowrap;
 }
 
-/* ===== 底部区 ===== */
+
 .order-card__footer {
   display: flex;
   align-items: center;
@@ -215,7 +215,7 @@
   color: var(--color-primary);
 }
 
-/* 部分支付待付提示行 */
+
 .order-outstanding-row {
   display: flex;
   align-items: baseline;
@@ -235,7 +235,7 @@
   color: var(--color-status-confirm);
 }
 
-/* ===== 操作区 ===== */
+
 .order-card__actions {
   display: flex;
   justify-content: flex-end;
@@ -244,4 +244,4 @@
   border-top: 1px solid var(--color-border);
 }
 
-/* 列表底部样式复用 app.wxss .list-footer */
+

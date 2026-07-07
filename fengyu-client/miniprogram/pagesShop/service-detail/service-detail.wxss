@@ -1,4 +1,4 @@
-/* pages/service-detail/service-detail.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -10,7 +10,7 @@
   padding: 32rpx;
 }
 
-/* 会员价分流：划线标价 */
+
 .price-origin {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -26,7 +26,7 @@
   background: var(--color-bg-page);
 }
 
-/* ===== 封面 ===== */
+
 .cover-wrap {
   width: 100%;
   height: 480rpx;
@@ -48,7 +48,7 @@
   justify-content: center;
 }
 
-/* ===== 信息卡 ===== */
+
 .info-card {
   background: var(--color-bg-card);
   padding: 28rpx 32rpx;
@@ -95,7 +95,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 商品详情（图文） ===== */
+
 .detail-section {
   background: var(--color-bg-card);
   margin-bottom: 16rpx;
@@ -124,7 +124,7 @@
   margin-bottom: 12rpx;
 }
 
-/* ===== SKU Popup ===== */
+
 .sku-popup {
   padding: 32rpx;
 }
@@ -238,7 +238,7 @@
   padding-top: 16rpx;
 }
 
-/* ===== 底部操作栏 ===== */
+
 .action-bar {
   position: fixed;
   bottom: 0;
@@ -348,7 +348,7 @@
   width: 100%;
 }
 
-/* ===== 套餐多选 ===== */
+
 .sku-popup__bundle {
   display: flex;
   flex-direction: column;

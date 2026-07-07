@@ -9,7 +9,7 @@ export default async function CategoriesPage() {
     getProductKinds(),
   ])
 
-  // 二级分类 = product_kind 非 null 的行
+  
   const subCategories = allCategories.filter(c => c.productKind !== null)
 
   return <CategoriesPageClient categories={subCategories} productKinds={productKinds} />

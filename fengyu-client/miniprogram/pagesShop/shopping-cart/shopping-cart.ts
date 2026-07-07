@@ -1,4 +1,4 @@
-// pagesShop/shopping-cart/shopping-cart.ts
+
 import Toast from "@vant/weapp/toast/toast";
 import Dialog from "@vant/weapp/dialog/dialog";
 import { getCart, updateQuantity, removeFromCart, clearCart } from "../../utils/cart";
@@ -96,7 +96,7 @@ Page({
       this.setData({ cartItems: [], isEmpty: true, allChecked: true, totalPrice: 0, totalCount: 0 });
       Toast.success('已清空');
     } catch {
-      // 用户取消
+      
     }
   },
 
@@ -126,7 +126,7 @@ Page({
       return;
     }
 
-    // 存储结算商品到 localStorage
+    
     wx.setStorageSync(
       "checkoutItems",
       checkedItems.map((i) => ({

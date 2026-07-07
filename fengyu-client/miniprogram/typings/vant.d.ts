@@ -1,4 +1,4 @@
-/** Vant Weapp 类型声明（JS 组件无自带 .d.ts） */
+
 declare module '@vant/weapp/toast/toast' {
   interface ToastOptions {
     type?: 'text' | 'loading' | 'success' | 'fail'

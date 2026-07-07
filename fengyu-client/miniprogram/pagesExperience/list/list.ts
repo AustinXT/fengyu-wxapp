@@ -1,4 +1,4 @@
-// pagesExperience/list/list.ts — 体验卡列表
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { getIsMember, priceView } from '../../utils/member-pricing';
@@ -11,9 +11,9 @@ interface ExperienceCardSku {
   cover_image?: string;
   price: number;
   special_price: number | null;
-  /** 会员价分流后的展示主价（#6=B：会员=会员价，非会员=标价） */
+  
   displayPrice: number;
-  /** 划线原价（标价）；null=不划线 */
+  
   strikePrice: number | null;
   session_count: number | null;
   sort_order?: number;
@@ -41,7 +41,7 @@ Page({
         'product.experienceCardList',
         {}
       );
-      // 体验卡按会员价分流（#6=B）：会员展示会员价 + 划线标价，非会员只看标价
+      
       const member = getIsMember();
       const list = (data?.skuList || []).map((s: any) => {
         const price = Number(s.price || 0);

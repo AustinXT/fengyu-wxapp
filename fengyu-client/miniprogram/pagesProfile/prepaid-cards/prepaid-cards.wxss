@@ -1,4 +1,4 @@
-/* pagesProfile/prepaid-cards/prepaid-cards.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -9,7 +9,7 @@
   padding: 24rpx 32rpx;
 }
 
-/* 总余额 */
+
 .balance-header {
   padding: 48rpx 36rpx;
   display: flex;
@@ -28,7 +28,7 @@
   color: #FFFFFF;
 }
 
-/* 卡片列表 */
+
 .card-list {
   padding: 24rpx 32rpx;
 }
@@ -88,7 +88,7 @@
   color: var(--color-text-hint);
 }
 
-/* 展开的消费明细 */
+
 .tx-section {
   border-top: 1rpx solid var(--color-border);
   padding: 20rpx 24rpx;
@@ -147,7 +147,7 @@
   color: var(--color-text-secondary);
 }
 
-/* 底部提示 */
+
 .footer-note {
   text-align: center;
   padding: 24rpx 0 16rpx;

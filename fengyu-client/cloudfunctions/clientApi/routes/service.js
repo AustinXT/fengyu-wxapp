@@ -1,7 +1,4 @@
-/**
- * 服务单模块路由
- * 顾客查询服务单状态(只读) + 顾客确认服务完成 + 服务完成后评价美容师
- */
+
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
@@ -10,21 +7,18 @@ const { checkText } = require('../utils/wx-sec-check')
 
 const MAX_COMMENT_LENGTH = 500
 
-/**
- * 服务单详情
- * 查询服务单状态和明细
- */
+
 async function detail(ctx) {
   const { userId } = ctx.auth
   const { serviceOrderId, serviceOrderNo } = ctx.event.payload || {}
 
-  // 兼容旧参数名
+  
   const id = serviceOrderId || serviceOrderNo
   if (!id) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId 参数')
   }
 
-  // 查询服务单主表
+  
   const serviceOrders = await pg.query(`
     SELECT
       so.service_order_id,
@@ -52,7 +46,7 @@ async function detail(ctx) {
 
   const serviceOrder = serviceOrders[0]
 
-  // 查询服务明细（使用 sale_items 快照字段）
+  
   const items = await pg.query(`
     SELECT
       si_svc.service_item_id,
@@ -74,10 +68,7 @@ async function detail(ctx) {
   }
 }
 
-/**
- * 服务记录列表
- * payload: { page?: number, pageSize?: number }
- */
+
 async function list(ctx) {
   const { userId } = ctx.auth
   const { page = 1, pageSize = 20 } = ctx.event.payload || {}
@@ -108,7 +99,7 @@ async function list(ctx) {
     LIMIT $2 OFFSET $3
   `, [userId, pageSize, offset])
 
-  // 批量查询服务明细
+  
   if (records.length > 0) {
     const orderIds = records.map(r => r.service_order_id)
     const items = await pg.query(`
@@ -139,14 +130,9 @@ async function list(ctx) {
   ctx.result = { records }
 }
 
-/**
- * 评价已完成服务单的美容师
- * payload: { serviceOrderId: string, rating: 1-5, comment?: string }
- *
- * 约束：仅本人的"已完成"服务单可评价；一单一评，重复评价由 PK 唯一约束拦截。
- */
+
 async function createReview(ctx) {
-  // 必须绑定手机号
+  
   await requirePhone()(ctx, async () => {})
 
   const { userId } = ctx.auth
@@ -156,12 +142,12 @@ async function createReview(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId 参数')
   }
 
-  // 星级：必须为 1-5 的整数
+  
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
     throw new Error('INVALID_PARAMS: 评分必须为 1-5 的整数')
   }
 
-  // 评价文字：选填，做长度上限保护
+  
   let normalizedComment = null
   if (comment !== undefined && comment !== null) {
     if (typeof comment !== 'string') {
@@ -174,7 +160,7 @@ async function createReview(ctx) {
     normalizedComment = trimmed || null
   }
 
-  // 查服务单：校验归属 + 状态 + 取被评价美容师
+  
   const orders = await pg.query(
     `SELECT service_order_id, status, client_user_id, assigned_employee_id
      FROM service_orders
@@ -191,7 +177,7 @@ async function createReview(ctx) {
     throw new Error('INVALID_STATE: 服务未完成不可评价')
   }
 
-  // 内容安全校验（评价 = 评论类）：违规抛 INVALID_PARAMS，不落库
+  
   await checkText(normalizedComment, { scene: 2 })
 
   try {
@@ -201,7 +187,7 @@ async function createReview(ctx) {
       [serviceOrderId, order.assigned_employee_id, userId, rating, normalizedComment]
     )
   } catch (err) {
-    // PK 冲突：该服务单已评价过
+    
     if (err.code === '23505' || err.cause?.code === '23505') {
       throw new Error('CONFLICT: 该服务已评价过')
     }
@@ -211,14 +197,7 @@ async function createReview(ctx) {
   ctx.result = { serviceOrderId, rating, comment: normalizedComment }
 }
 
-/**
- * 顾客确认服务完成（待客户确认 → 已完成）
- * payload: { serviceOrderId: string }
- *
- * 仅本人的"待客户确认"服务单可确认。确认时原子执行 finalize 副作用：
- * 扣减卡剩余次数 + 计算并写入美容师提成 + 关闭关联预约。
- * 幂等：已完成直接返回；并发（顾客 + 店长代确认）由 WHERE 锁定状态兜底。
- */
+
 async function confirm(ctx) {
   await requirePhone()(ctx, async () => {})
 
@@ -240,7 +219,7 @@ async function confirm(ctx) {
 
   const so = orders[0]
 
-  // 幂等：已完成
+  
   if (so.status === '已完成') {
     ctx.result = { serviceOrderId: id, status: '已完成', message: '服务已完成（幂等）' }
     return
@@ -250,7 +229,7 @@ async function confirm(ctx) {
     throw new Error('INVALID_STATE: 服务单当前状态不可确认')
   }
 
-  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销（顾客端）。SQL 谓词镜像 staff/admin
+  
   const pendRefund = await pg.query(
     `SELECT 1 FROM service_items sit
        JOIN sale_items si ON si.sale_item_id = sit.sale_item_id

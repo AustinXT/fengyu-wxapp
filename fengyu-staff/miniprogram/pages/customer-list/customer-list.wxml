@@ -1,7 +1,7 @@
-<!-- pages/customer-list/customer-list.wxml -->
+
 <view class="container">
 
-  <!-- 客户分类统计卡片 -->
+  
   <view class="stats-section">
     <view class="stats-row">
       <view class="stat-card stat-active {{activeTag === 'active' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="active">
@@ -33,7 +33,7 @@
     </view>
   </view>
 
-  <!-- 拓展筛选（可折叠，置于搜索框之前） -->
+  
   <view class="advanced-filter">
     <view class="advanced-header" bindtap="toggleAdvanced">
       <view class="advanced-title">
@@ -157,7 +157,7 @@
 
   <view class="safe-area-bottom" />
 
-  <!-- 客户分配 Action Sheet（仅店长） -->
+  
   <van-action-sheet
     wx:if="{{isManager}}"
     show="{{showAssignSheet}}"

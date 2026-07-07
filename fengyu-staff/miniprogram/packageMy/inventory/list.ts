@@ -1,4 +1,4 @@
-// packageMy/inventory/list.ts — 库存单据列表（只读）
+
 import { callStaffApi } from '../../utils/cloud'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'

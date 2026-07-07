@@ -37,13 +37,13 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   if (!customer) notFound()
 
-  // 仅 admin / manager / customer_mgr 可见"编辑手机号"入口（hr/finance/product 不可见）
+  
   const canEditPhone = session
     ? hasRole(session, 'admin') || hasRole(session, 'manager') || hasRole(session, 'customer_mgr')
     : false
 
   const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
-  // 物理删除顾客：仅系统管理员（customer:delete）
+  
   const canDelete = session ? hasPermission(session, 'customer:delete') : false
 
   return (

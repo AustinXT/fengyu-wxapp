@@ -1,7 +1,6 @@
-/* components/bundle-picker/bundle-picker.wxss */
 
-/* host：让自定义组件元素作为 .bundle-picker-wrap 的 flex 子项撑满宽高，
-   否则默认 inline 行为会导致右侧空白 + 内层 scroll 不受高度约束而溢出。 */
+
+
 :host {
   display: flex;
   flex: 1;
@@ -27,7 +26,7 @@
   flex: 1;
 }
 
-/* ===== 列表态：套餐卡片 ===== */
+
 .bundle-list {
   flex: 1;
   padding: 16rpx;
@@ -126,7 +125,7 @@
   font-size: 24rpx;
 }
 
-/* ===== 详情态：N 选 M ===== */
+
 .bundle-detail {
   display: flex;
   flex-direction: column;

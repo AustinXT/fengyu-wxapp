@@ -216,7 +216,7 @@ export default function CouponCreatePage({ markets, categories }: Props) {
                 onChange={(e) => {
                   const next = e.target.value as "fixed" | "days"
                   setValidityMode(next)
-                  // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                  
                   if (next === "days") {
                     setValidFrom("")
                     setValidTo("")

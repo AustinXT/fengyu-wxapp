@@ -1,4 +1,4 @@
-// packageOrder/card-inflow/card-inflow.ts — 旧系统充值金转入（店长）
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getCurrentStoreId } from '../../utils/role';
 
@@ -11,15 +11,15 @@ interface CustomerInfo {
   name: string;
   phone: string;
   phoneMasked?: string;
-  /** 顾客绑定门店 ID（customer.search 返回，判断是否本店） */
+  
   boundStoreId?: string | null;
-  /** 顾客绑定门店名（展示「非本店」标签用） */
+  
   storeName?: string;
-  /** 是否非本店顾客（boundStoreId 缺失时为 false，放行后端兜底） */
+  
   crossStore?: boolean;
 }
 
-/** 标注一条顾客是否非本店（boundStoreId 缺失时返回 false，由后端兜底校验） */
+
 function markCrossStore(c: CustomerInfo): CustomerInfo {
   return { ...c, crossStore: !!c.boundStoreId && c.boundStoreId !== getCurrentStoreId() };
 }
@@ -30,7 +30,7 @@ interface InflowResponse {
   status: string;
 }
 
-/** 格式化小数（去尾 0） */
+
 function formatAmount(n: number): string {
   if (!Number.isFinite(n)) return '0';
   return (Math.round(n * 100) / 100).toString();
@@ -40,29 +40,29 @@ Page({
   data: {
     boundStoreName: '',
     boundStoreId: '',
-    isManager: false, // 仅店长可提交转入
+    isManager: false, 
 
-    // 顾客
+    
     customerKeyword: '',
     customerSearching: false,
     customerInfo: null as CustomerInfo | null,
     customerResults: [] as CustomerInfo[],
 
-    // 转入金额（自由输入：>0、≤2 位小数、无档位/无上限/不打折）
+    
     amountInput: '',
     amountError: '',
 
-    // 备注（可选，后端自动加「旧系统充值金转入」前缀）
+    
     remark: '',
 
-    // CTA
+    
     ctaText: '请输入转入金额',
     ctaDisabled: true,
     submitting: false,
 
-    // 幂等 token：本次进入页面唯一，跨「提交失败后重试」稳定复用。
-    // 后端据此去重：超时丢响应后用户再次点击不会重复入账（命中既有转入单则复用）。
-    // 成功即 redirectTo 离开本页 → 下次进入重新生成，天然「一次进入一次转入」。
+    
+    
+    
     inflowReqId: '',
   },
 
@@ -73,11 +73,11 @@ Page({
       boundStoreId: storeId,
       boundStoreName: storeName,
       isManager: isManager(),
-      // 本次进入页面生成稳定幂等 token（跨重试复用，成功离开页后下次重新生成）
+      
       inflowReqId: `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
     });
 
-    // 可选：从 URL 参数预填顾客（如从顾客详情带入）
+    
     if (query?.clientUserId && query?.customerName) {
       this.setData({
         customerInfo: markCrossStore({
@@ -102,7 +102,7 @@ Page({
     }
   },
 
-  // ============ 顾客选择（与 card-recharge 同口径：跨店统一）============
+  
 
   onCustomerKeywordInput(e: WechatMiniprogram.CustomEvent) {
     const value = (e.detail as { value?: string })?.value || '';
@@ -148,7 +148,7 @@ Page({
     this.updateCta();
   },
 
-  // ============ 转入金额（自由输入：等额、不打折、不限档位/上限）============
+  
 
   onAmountInput(e: WechatMiniprogram.CustomEvent) {
     const raw = ((e.detail as { value?: string })?.value || '').trim();
@@ -166,7 +166,7 @@ Page({
     this.setData({ remark: (e.detail as { value?: string })?.value || '' });
   },
 
-  // ============ CTA ============
+  
 
   updateCta() {
     const { customerInfo, amountInput, amountError } = this.data;
@@ -182,11 +182,11 @@ Page({
     this.setData({ ctaText: `确认转入 · ¥${formatAmount(n)}`, ctaDisabled: false });
   },
 
-  // ============ 提交 ============
+  
 
   async onSubmit() {
     if (this.data.submitting || this.data.ctaDisabled) return;
-    // 统一店长权限网关：非店长不能提交转入
+    
     if (!this.data.isManager) {
       wx.showToast({ title: '您无操作权限，请联系店长', icon: 'none', duration: 2500 });
       return;
@@ -211,7 +211,7 @@ Page({
       return;
     }
 
-    // 资金敏感：二次确认
+    
     const confirmed = await new Promise<boolean>((resolve) => {
       wx.showModal({
         title: '确认转入',
@@ -226,8 +226,8 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      // 幂等 token：用本次进入页面生成的稳定值（跨重试复用），后端据此去重防重复入账。
-      // 兜底：万一 onLoad 未设置则即时生成。
+      
+      
       const requestId = this.data.inflowReqId || `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
       const payload: Record<string, unknown> = {
         clientUserId: customerInfo.clientUserId,

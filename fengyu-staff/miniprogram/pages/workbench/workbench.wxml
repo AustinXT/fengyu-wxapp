@@ -1,27 +1,27 @@
-<!-- pages/workbench/workbench.wxml — 工作台 -->
+
 <view class="container">
 
-  <!-- 自定义导航栏：白底 + 凤御 logo（替代原生「工作台」标题） -->
+  
   <view class="wb-navbar">
     <view style="height: {{statusBarHeight}}px;"></view>
     <view class="wb-navbar__content" style="height: {{contentHeight}}px;">
       <image class="wb-navbar__logo" src="/images/logo.png" mode="aspectFit" style="height: {{logoHeight}}px;" />
     </view>
   </view>
-  <!-- 占位：避免内容被 fixed 导航栏遮挡 -->
+  
   <view style="height: {{navBarHeight}}px;"></view>
 
-  <!-- 加载中 -->
+  
   <view wx:if="{{loading}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <block wx:else>
 
-    <!-- 1. 分成卡片（两列） -->
+    
     <view class="section-wrap">
       <view class="commission-card">
-        <!-- 员工信息行 -->
+        
         <view class="commission-staff-row">
           <text class="commission-staff-name">{{staffName}}</text>
           <view class="commission-store-wrap {{hasMultiStore ? 'commission-store-wrap--clickable' : ''}}" bindtap="openStorePicker">
@@ -35,56 +35,56 @@
       </view>
     </view>
 
-    <!-- 2. 常用功能入口（Bento 瓷砖；仅店长入口对非店长显示但点按拦截） -->
+    
     <view class="func-grid">
-      <!-- 订单管理 -->
+      
       <view class="func-item func-item--hero" style="background: linear-gradient(135deg, #56B0F0 0%, #2E8FE0 100%);" bindtap="goOrders">
         <view wx:if="{{pendingOrderCount > 0}}" class="func-badge">{{pendingOrderCount > 99 ? '99+' : pendingOrderCount}}</view>
         <van-icon name="orders-o" size="72rpx" color="#FFFFFF" />
         <text class="func-label">订单管理</text>
       </view>
-      <!-- 预约管理 -->
+      
       <view class="func-item func-item--third" style="background: linear-gradient(135deg, #F2708F 0%, #E8476E 100%);" bindtap="goAppointmentList">
         <view wx:if="{{pendingAppointmentCount > 0}}" class="func-badge">{{pendingAppointmentCount > 99 ? '99+' : pendingAppointmentCount}}</view>
         <van-icon name="clock-o" size="56rpx" color="#FFFFFF" />
         <text class="func-label">预约管理</text>
       </view>
-      <!-- 服务记录 -->
+      
       <view class="func-item func-item--third" style="background: linear-gradient(135deg, #3FD0DE 0%, #14B8C9 100%);" bindtap="goServiceList">
         <view wx:if="{{pendingServiceCount > 0}}" class="func-badge">{{pendingServiceCount > 99 ? '99+' : pendingServiceCount}}</view>
         <van-icon name="flower-o" size="56rpx" color="#FFFFFF" />
         <text class="func-label">服务记录</text>
       </view>
-      <!-- 收入查看（绩效明细） -->
+      
       <view class="func-item func-item--third" style="background: linear-gradient(135deg, #5BD68F 0%, #2BB866 100%);" bindtap="goPerformance" data-range="month">
         <van-icon name="gold-coin-o" size="56rpx" color="#FFFFFF" />
         <text class="func-label">收入查看</text>
       </view>
-      <!-- 营业额分配（仅店长可点；非店长显示但点按拦截） -->
+      
       <view class="func-item func-item--half" style="background: linear-gradient(135deg, #BC77E2 0%, #A33FCF 100%);" bindtap="goAllocationList">
         <view wx:if="{{pendingAllocationCount > 0}}" class="func-badge">{{pendingAllocationCount > 99 ? '99+' : pendingAllocationCount}}</view>
         <van-icon name="balance-o" size="60rpx" color="#FFFFFF" />
         <text class="func-label">营业额分配</text>
       </view>
-      <!-- 库存管理（仅店长可点；非店长显示但点按拦截） -->
+      
       <view class="func-item func-item--half" style="background: linear-gradient(135deg, #F86B71 0%, #EF3640 100%);" bindtap="goInventory">
         <van-icon name="goods-collect-o" size="60rpx" color="#FFFFFF" />
         <text class="func-label">库存管理</text>
       </view>
-      <!-- 提货核销（仅店长可点；非店长显示但点按拦截） -->
+      
       <view class="func-item func-item--bar" style="background: linear-gradient(135deg, #FBC04F 0%, #F5A623 100%);" bindtap="goPickup">
         <van-icon name="cart-o" size="52rpx" color="#FFFFFF" />
         <text class="func-label">提货核销</text>
       </view>
     </view>
 
-    <!-- 3. 代办事项（仅店长有待办；普通员工隐藏整块） -->
+    
     <view class="section-card" wx:if="{{isManager}}">
       <view class="section-header">
         <text class="section-title">待处理事项</text>
       </view>
       <view class="todo-grid">
-        <!-- 待审批退款 -->
+        
         <view wx:if="{{isManager}}" class="todo-item" bindtap="goRefundList">
           <view class="todo-icon-wrap" style="background: rgba(198, 40, 40, 0.12);">
             <van-icon name="revoke" size="44rpx" color="#C62828" />
@@ -92,7 +92,7 @@
           </view>
           <text class="todo-label">退款审批</text>
         </view>
-        <!-- 待审批解绑申请 -->
+        
         <view wx:if="{{isManager}}" class="todo-item" bindtap="goUnbindRequests">
           <view class="todo-icon-wrap" style="background: rgba(192, 50, 42, 0.12);">
             <van-icon name="exchange" size="44rpx" color="#C0322A" />
@@ -103,12 +103,12 @@
       </view>
     </view>
 
-    <!-- 底部安全区 -->
+    
     <view class="safe-area-bottom" />
 
   </block>
 
-  <!-- 门店切换 action sheet（多店时可用） -->
+  
   <van-action-sheet
     show="{{storePickerVisible}}"
     actions="{{storePickerActions}}"

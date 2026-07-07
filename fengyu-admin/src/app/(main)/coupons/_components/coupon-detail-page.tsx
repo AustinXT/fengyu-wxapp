@@ -61,7 +61,7 @@ interface Props {
 export default function CouponDetailPage({ template, markets, issuedCoupons, categories }: Props) {
   const router = useRouter()
 
-  // Edit mode state
+  
   const [editing, setEditing] = useState(false)
   useUnsavedChanges(editing)
   const [saving, setSaving] = useState(false)
@@ -86,20 +86,20 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
   const marketMap = useMemo(() => new Map(markets.map((m) => [m.id, m.name])), [markets])
   const categoryMap = useMemo(() => new Map(categories.map((c) => [c.categoryId, c.categoryName])), [categories])
 
-  // Issue coupon dialog state
+  
   const [issueOpen, setIssueOpen] = useState(false)
   const [issuePhone, setIssuePhone] = useState("")
   const [issueCustomerName, setIssueCustomerName] = useState("")
   const [issueSearched, setIssueSearched] = useState(false)
   const [issueLoading, setIssueLoading] = useState(false)
 
-  // Batch issue dialog state
+  
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchMode, setBatchMode] = useState<"manual" | "select">("manual")
   const [batchPhoneText, setBatchPhoneText] = useState("")
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchErrors, setBatchErrors] = useState<Array<{ phone: string; reason: string }>>([])
-  // Select mode state
+  
   const [batchCustomers, setBatchCustomers] = useState<BatchCouponCustomer[]>([])
   const [batchTotal, setBatchTotal] = useState(0)
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set())
@@ -110,7 +110,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
   const [batchOrgNodes, setBatchOrgNodes] = useState<OrgNode[]>([])
   const [batchOrgLoaded, setBatchOrgLoaded] = useState(false)
 
-  // Parse manual phone input
+  
   const parsedPhones = useMemo(() => {
     if (!batchPhoneText.trim()) return []
     return [...new Set(
@@ -121,10 +121,10 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
     )]
   }, [batchPhoneText])
 
-  // Get phones for current mode
+  
   const batchPhoneList = batchMode === "manual" ? parsedPhones : [...batchSelected]
 
-  // Load org nodes on first open
+  
   useEffect(() => {
     if (batchOpen && !batchOrgLoaded) {
       getOrgNodesForBatchIssue().then((nodes) => {
@@ -134,7 +134,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
     }
   }, [batchOpen, batchOrgLoaded])
 
-  // Load customers for select mode
+  
   const loadBatchCustomers = useCallback(async (p = 1) => {
     try {
       const result = await getCustomersForBatchIssue({
@@ -151,7 +151,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
     }
   }, [batchOrgFilter, batchLevelFilter, batchSearch])
 
-  // Reload customers when filters change
+  
   useEffect(() => {
     if (batchOpen && batchMode === "select") {
       setBatchPage(1)
@@ -407,7 +407,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
         </Badge>
       </div>
 
-      {/* Template Info */}
+      {}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">券模板信息</CardTitle>
@@ -501,7 +501,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                   onChange={(e) => {
                     const next = e.target.value as "fixed" | "days"
                     setEditValidityMode(next)
-                    // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                    
                     if (next === "days") {
                       setEditValidFrom("")
                       setEditValidTo("")
@@ -747,7 +747,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
 
       <Separator />
 
-      {/* Issued Coupons */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">已发放优惠券</CardTitle>
@@ -761,7 +761,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
         </CardContent>
       </Card>
 
-      {/* Issue Coupon Dialog */}
+      {}
       <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
         <DialogHeader>
           <DialogTitle>发放优惠券 - {template.name}</DialogTitle>
@@ -802,13 +802,13 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
         </DialogFooter>
       </Dialog>
 
-      {/* Batch Issue Coupon Dialog */}
+      {}
       <Dialog open={batchOpen} onOpenChange={(open) => { if (!open) handleCloseBatch(); else setBatchOpen(true) }} className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>批量发放优惠券 - {template.name}</DialogTitle>
         </DialogHeader>
         <div className="mt-4 space-y-4">
-          {/* Tab 切换 */}
+          {}
           <div className="flex gap-2">
             <Button
               variant={batchMode === "manual" ? "default" : "outline"}
@@ -846,7 +846,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
             </div>
           ) : (
             <div className="space-y-3">
-              {/* 筛选栏 */}
+              {}
               <div className="flex gap-2">
                 <OrgTreeSelect
                   orgNodes={batchOrgNodes}
@@ -876,7 +876,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                 />
               </div>
 
-              {/* 顾客列表 */}
+              {}
               <div className="rounded-[var(--radius)] border border-[var(--border)]">
                 <table className="w-full text-sm">
                   <thead>
@@ -940,7 +940,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
             </div>
           )}
 
-          {/* 错误列表 */}
+          {}
           {batchErrors.length > 0 && (
             <div className="rounded-[var(--radius)] border border-[#D94040]/30 bg-[#FFF0F0] p-3 space-y-1">
               <div className="text-sm font-medium text-[#D94040]">以下手机号未匹配到顾客：</div>

@@ -1,4 +1,4 @@
-// pages/order-qrcode/order-qrcode.ts
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
 
@@ -15,7 +15,7 @@ Page({
     qrcodeUrl: '',
     qrcodeError: '',
     retryCount: 0,
-    status: '待扫码',    // UI-only 标签：'待扫码' | '待确认收款' | '部分支付' | '已支付' | '已关闭'（不直接是 DB order_status）
+    status: '待扫码',    
     isManager: false,
     isCreator: false,
   },
@@ -50,7 +50,7 @@ Page({
       const data = await callStaffApi<any>('order.qrcode', { saleOrderId });
       const isCreator = data.openedBy === getStaffWfId();
 
-      // 后端返回了 qrcodeError 说明小程序码生成失败
+      
       if (data.qrcodeError && !data.qrcodeUrl) {
         const retryCount = this.data.retryCount + 1;
         this.setData({
@@ -65,7 +65,7 @@ Page({
           isCreator,
           loading: false,
         });
-        // 连续 3 次失败后停止轮询，等用户手动重试
+        
         if (retryCount >= 3) {
           this.stopPolling();
         }
@@ -133,11 +133,11 @@ Page({
           const result = await callStaffApi<{ status?: string }>('order.confirmOffline', { saleOrderId: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           if (result && result.status === '已支付') {
-            // 全额结清：刷新 → 命中「已支付」分支 → 自动跳回工作台
+            
             this.loadQrcode(this.data.saleOrderId);
           } else {
-            // 线下仅收部分款（首付/欠款）：订单仍部分支付，尾款走订单详情「发起回款」，
-            // 此处不再 loadQrcode（避免落入「待扫码」扫码页），直接跳回工作台
+            
+            
             this.stopPolling();
             setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 1500);
           }
@@ -152,7 +152,7 @@ Page({
   },
 
   async onCloseOrder() {
-    // 滑动确认组件触发：滑到右端 ≥80% 才发事件，物理动作即承诺，无需额外 modal
+    
     if ((!this.data.isManager && !this.data.isCreator) || this.data.submitting) return;
     this.setData({ submitting: true });
     try {
@@ -163,7 +163,7 @@ Page({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
-      // 失败时重置滑块允许重试
+      
       const slider = this.selectComponent('#closeSlider') as { reset?: () => void } | null;
       slider?.reset?.();
     } finally {

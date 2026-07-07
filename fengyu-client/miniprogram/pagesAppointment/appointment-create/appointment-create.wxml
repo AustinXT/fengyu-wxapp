@@ -1,15 +1,15 @@
-<!-- pages/appointment-create/appointment-create.wxml — 发起预约 -->
+
 <van-toast id="van-toast" />
 
 <view class="container">
 
-  <!-- 关联疗程卡（可选） -->
+  
   <van-cell-group title="关联疗程卡（可选）" inset>
     <view wx:if="{{appointableItems.length === 0}}" class="no-items-tip">
       <van-cell title="无可关联项目" label="您可以直接预约到店时间" icon="info-o" />
     </view>
     <view wx:else>
-      <!-- 不关联选项 -->
+      
       <van-cell
         title="不关联疗程卡"
         label="仅预约到店时间"
@@ -44,7 +44,7 @@
     </view>
   </van-cell-group>
 
-  <!-- 预约时间 -->
+  
   <van-cell-group title="预约到店时间" inset>
     <van-cell
       title="选择日期"
@@ -70,7 +70,7 @@
     </view>
   </van-cell-group>
 
-  <!-- 选择美容师（可选） -->
+  
   <van-cell-group title="指定美容师（可选）" inset>
     <van-cell
       title="{{selectedStaffName || '不指定'}}"
@@ -86,7 +86,7 @@
     </van-cell>
   </van-cell-group>
 
-  <!-- 备注 -->
+  
   <van-cell-group title="备注" inset>
     <van-field
       model:value="{{notes}}"
@@ -99,7 +99,7 @@
     />
   </van-cell-group>
 
-  <!-- 底部提交 -->
+  
   <view class="submit-wrap safe-area-bottom">
     <van-button
       type="primary"
@@ -111,7 +111,7 @@
     >提交预约申请</van-button>
   </view>
 
-  <!-- 日期选择器 -->
+  
   <van-calendar
     show="{{showCalendar}}"
     min-date="{{minDate}}"
@@ -122,7 +122,7 @@
     title="选择到店日期"
   />
 
-  <!-- 手机号绑定 Overlay -->
+  
   <van-overlay show="{{showPhoneBind}}" bind:click="onClosePhoneBind">
     <view class="phone-bind-overlay" catchtap="onClosePhoneBind">
       <view class="phone-bind-card">
@@ -137,7 +137,7 @@
     </view>
   </van-overlay>
 
-  <!-- 美容师选择 Popup -->
+  
   <staff-popup
     show="{{showStaffPopup}}"
     staff-list="{{staffList}}"

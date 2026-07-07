@@ -9,7 +9,7 @@ export default async function MallCategoriesPage() {
     getMallCategoryGroups(),
   ])
 
-  // 二级分类 = category_group 非 null 的行
+  
   const subCategories = allCategories.filter(c => c.categoryGroup !== null)
 
   return <MallCategoriesPageClient categories={subCategories} groups={groups} />

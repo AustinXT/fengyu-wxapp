@@ -18,9 +18,9 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
     onOpenChangeRef.current = onOpenChange
   }, [onOpenChange])
 
-  // Drive native <dialog> open state from the React prop. useLayoutEffect
-  // ensures showModal() runs before paint, avoiding the React 19 concurrent
-  // rendering race where the dialog never appears.
+  
+  
+  
   React.useLayoutEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
@@ -45,8 +45,8 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
     }
   }, [open])
 
-  // Bind native "close" event once (use ref for callback to avoid re-attaching
-  // on every parent re-render, which previously raced with showModal).
+  
+  
   React.useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
@@ -57,10 +57,10 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
   }, [])
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDialogElement>) => {
-    // Only treat clicks landing on the <dialog> itself as backdrop clicks —
-    // clicks bubbling up from descendants have a different target and should
-    // not close the dialog (regression fix: old code would close on inner
-    // clicks when the dialog rect hadn't committed yet).
+    
+    
+    
+    
     if (e.target !== e.currentTarget) return
     const dialog = dialogRef.current
     if (!dialog) return

@@ -3,11 +3,7 @@ import { operationLogs } from '@db/operation-log'
 import type { AuthSession } from './types'
 import { sanitizeDetail } from './pii'
 
-/**
- * 对比 before/after，返回实际变更的字段 diff。
- * 只遍历 after 中的 key（Partial 更新只有变更字段）。
- * 返回 null 表示无实际变更。
- */
+
 export function computeChanges(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -24,11 +20,7 @@ export function computeChanges(
   return Object.keys(changes).length > 0 ? changes : null
 }
 
-/**
- * 写入操作日志
- *
- * orgNodeId/orgNodeName 从 session 的主要角色 scopeId 中获取
- */
+
 export async function logOperation(
   session: AuthSession,
   action: string,
@@ -38,7 +30,7 @@ export async function logOperation(
 ) {
   const primaryRole = session.roles[0]
 
-  // 从角色 scope 中获取组织节点上下文
+  
   let orgNodeId: string | null = null
   let orgNodeName: string | null = null
   if (primaryRole?.scopeId) {
@@ -55,7 +47,7 @@ export async function logOperation(
         orgNodeName = node.name
       }
     } catch {
-      // 查询失败不影响日志写入
+      
     }
   }
 
@@ -73,12 +65,7 @@ export async function logOperation(
   })
 }
 
-/**
- * 写入更新操作日志（结构化 diff）
- *
- * detail 格式：{ _v: 3, _t: 'update', changes: { field: { from, to } } }
- * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail（敏感 PII 字段入库前脱敏）
- */
+
 export async function logUpdate(
   session: AuthSession,
   action: string,
@@ -96,12 +83,7 @@ export async function logUpdate(
   })
 }
 
-/**
- * 写入状态变更日志（状态流转 + 上下文）
- *
- * detail 格式：{ _v: 3, _t: 'transition', from, to, context? }
- * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail
- */
+
 export async function logTransition(
   session: AuthSession,
   action: string,

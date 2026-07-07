@@ -31,7 +31,7 @@ import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } fro
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
 
-/** 库内墙钟字符串（"YYYY-MM-DD HH:mm:ss" 或带 T）→ datetime-local 输入值 "YYYY-MM-DDTHH:mm" */
+
 function toDatetimeLocal(v: string | null): string {
   if (!v) return ""
   return v.replace("T", " ").slice(0, 16).replace(" ", "T")
@@ -43,14 +43,14 @@ interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
   skillTags: SkillTag[]
-  /** 是否展示「危险操作」删除入口（仅系统管理员 employee:delete） */
+  
   canDelete?: boolean
 }
 
 export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, skillTags, canDelete = false }: Props) {
   const router = useRouter()
 
-  // Edit info state
+  
   const [isEditing, setIsEditing] = useState(false)
   const [resignDialogOpen, setResignDialogOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -72,23 +72,23 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     socialInsurance: employee.socialInsurance,
   })
 
-  // 离职弹窗表单（离职日期 + 离职原因）
+  
   const [resignForm, setResignForm] = useState({
     resignedAt: shanghaiToday(),
     resignationReason: "",
   })
 
-  // Inline role editing state
+  
   const [isEditingRoles, setIsEditingRoles] = useState(false)
   useUnsavedChanges(isEditing || isEditingRoles)
   const [roleEntries, setRoleEntries] = useState<{ role: RoleType; scopeId: string }[]>([])
   const [savingRoles, setSavingRoles] = useState(false)
 
-  // Password reset state
+  
   const [resetPwdDialogOpen, setResetPwdDialogOpen] = useState(false)
   const [resettingPwd, setResettingPwd] = useState(false)
 
-  // 根据所属组织的市场过滤门店
+  
   const filteredStores = useMemo(() => {
     const marketId = findAncestorMarketId(form.orgNodeId || null, orgNodes)
     if (!marketId) return stores
@@ -129,7 +129,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   }
 
   async function handleSave() {
-    // 姓名 / 身份证必填校验（与新建表单 + Server Action 一致）
+    
     if (!form.name.trim()) {
       toast.error("姓名不能为空")
       return
@@ -142,7 +142,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       toast.error("身份证号格式不正确")
       return
     }
-    // 请假区间成对 + 顺序校验（前端提前提示，Server Action + DB chk_swu_leave_range 兜底）
+    
     if ((form.leaveStart && !form.leaveEnd) || (!form.leaveStart && form.leaveEnd)) {
       toast.error("请假开始和结束时间需同时填写")
       return
@@ -232,7 +232,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         toast.error(res.message)
       }
     } catch (err) {
-      // withPermission HOF 在权限不足时 throw PERMISSION_DENIED:<action>，把它友好化为中文消息
+      
       const msg = err instanceof Error ? err.message : ''
       if (msg.startsWith('PERMISSION_DENIED:')) {
         toast.error('仅系统管理员可重置密码')
@@ -484,7 +484,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       value={form.orgNodeId}
                       onChange={(id) => {
                         handleFormChange("orgNodeId", id)
-                        // 组织变更时，若当前门店不在新市场下则清空
+                        
                         const newMarketId = findAncestorMarketId(id, orgNodes)
                         const storeMarketId = findAncestorMarketId(
                           stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
@@ -674,7 +674,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         </TabsContent>
       </Tabs>
 
-      {/* 离职确认 — 填报离职日期 + 离职原因 */}
+      {}
       <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
         <AlertDialogTitle>标记离职</AlertDialogTitle>
         <AlertDialogDescription>
@@ -738,7 +738,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 重置密码确认 */}
+      {}
       <AlertDialog open={resetPwdDialogOpen} onOpenChange={setResetPwdDialogOpen}>
         <AlertDialogTitle>确认重置密码？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -752,7 +752,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 危险操作：物理删除员工（仅系统管理员，仅无业务关联的测试号可删） */}
+      {}
       {canDelete && (
         <DangerZoneDelete
           entityLabel="员工"

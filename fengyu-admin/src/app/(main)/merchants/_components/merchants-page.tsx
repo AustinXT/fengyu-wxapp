@@ -36,7 +36,7 @@ export default function MerchantsPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // 搜索防抖 300ms
+  
   const handleSearchChange = useCallback(
     (value: string) => {
       setSearchInput(value)

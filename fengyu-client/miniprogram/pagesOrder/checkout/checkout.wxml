@@ -1,4 +1,4 @@
-<!-- pages/checkout/checkout.wxml — 下单确认 + 支付 -->
+
 <wxs module="price">
 module.exports.fmt = function(val) {
   return (Math.round(val * 100) / 100).toFixed(2)
@@ -15,14 +15,14 @@ module.exports.date = function(s) {
 
 <view class="container">
 
-  <!-- 充值卡摘要（仅 sale_order_type='充值单' 时展示） -->
+  
   <van-cell-group wx:if="{{isRecharge}}" title="充值卡" inset>
     <van-cell title="充值面值" value="¥{{price.fmt(rechargeFaceValue)}}" />
     <van-cell wx:if="{{rechargeBonus > 0}}" title="活动优惠" value="{{rechargeDiscountLabel}}（送 ¥{{price.fmt(rechargeBonus)}}）" value-class="coupon-selected-value" />
     <van-cell title="充值至门店" value="{{storeName}}" />
   </van-cell-group>
 
-  <!-- 商品明细（充值单不显示） -->
+  
   <van-cell-group wx:if="{{!isRecharge}}" title="{{bundleProductId ? '套餐内容（' + spuName + '）' : '商品明细'}}" inset>
     <view class="checkout-items">
       <view wx:for="{{displayItems}}" wx:key="skuId" class="checkout-item">
@@ -61,7 +61,7 @@ module.exports.date = function(s) {
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
 
-  <!-- 订单总额（充值单不显示，由"充值卡"摘要替代） -->
+  
   <van-cell-group wx:if="{{!isRecharge}}" title="订单总额" inset>
     <van-cell title="{{bundleProductId ? '套餐合计' : (fromCart ? '商品合计' : '服务单价')}}" value="¥{{price.fmt(unitPrice)}}" />
     <van-cell wx:if="{{!fromCart && !bundleProductId && quantity > 1}}" title="数量" value="x{{quantity}}" />
@@ -73,9 +73,9 @@ module.exports.date = function(s) {
     </van-cell>
   </van-cell-group>
 
-  <!-- 抵扣（优惠券 + 储值卡，与"支付方式"严格分开；充值单本身不允许抵扣，整块隐藏） -->
+  
   <van-cell-group wx:if="{{!isRecharge}}" title="抵扣" inset>
-    <!-- 优惠券选择（扫码场景不展示） -->
+    
     <van-cell
       wx:if="{{!existingOrderNo}}"
       title="优惠券"
@@ -86,7 +86,7 @@ module.exports.date = function(s) {
     />
     <van-cell wx:else title="优惠券" value="{{couponDiscount > 0 ? '-¥' + price.fmt(couponDiscount) : '- ¥0.00'}}" value-class="{{couponDiscount > 0 ? 'coupon-selected-value' : ''}}" />
 
-    <!-- 储值卡 -->
+    
     <view class="card-deduction-row">
       <view class="card-deduction-row__head">
         <view class="card-deduction-row__title">
@@ -109,7 +109,7 @@ module.exports.date = function(s) {
     </view>
   </van-cell-group>
 
-  <!-- 实付金额 -->
+  
   <van-cell-group title="实付金额" inset>
     <van-cell title="实付" class="total-row">
       <view slot="right-icon" class="total-amount">
@@ -117,7 +117,7 @@ module.exports.date = function(s) {
         <text class="total-value">{{price.fmt(paidAmount)}}</text>
       </view>
     </van-cell>
-    <!-- 仅实付 > 0 时显示支付方式按钮组 -->
+    
     <block wx:if="{{showPayMethodGroup}}">
       <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
         <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
@@ -137,8 +137,8 @@ module.exports.date = function(s) {
     <van-cell wx:else title="" label="全额抵扣，无需选择支付方式" label-class="pay-empty-hint" />
   </van-cell-group>
 
-  <!-- 消费协议（充值单已在充值页底部展示充值条款，此处不再勾选） -->
-  <!-- 链接移到 checkbox 外 + catchtap 阻断冒泡：点链接只预览、点「我已阅读并同意」/圆圈才切换勾选 -->
+  
+  
   <van-cell-group wx:if="{{!isRecharge}}" title="消费协议" inset>
     <van-cell>
       <view slot="title" class="agreement-row">
@@ -155,7 +155,7 @@ module.exports.date = function(s) {
     </van-cell>
   </van-cell-group>
 
-  <!-- 底部提交：金额按"实付"展示；全额抵扣按钮文案改为"确认支付" -->
+  
   <van-submit-bar
     wx:if="{{!showPhoneBind}}"
     price="{{price.cents(paidAmount)}}"
@@ -168,7 +168,7 @@ module.exports.date = function(s) {
     safe-area-inset-bottom
   />
 
-  <!-- 需要绑定手机号时替换提交栏 -->
+  
   <view wx:if="{{showPhoneBind}}" class="phone-bind-bar">
     <button
       class="phone-bind-btn"
@@ -180,7 +180,7 @@ module.exports.date = function(s) {
 </view>
 
 
-<!-- 支付宝吱口令弹窗（聚合主扫 share_code 方案：复制吱口令 → 切到支付宝识别）-->
+
 <van-popup
   show="{{showAlipayShare}}"
   round
@@ -201,7 +201,7 @@ module.exports.date = function(s) {
   </view>
 </van-popup>
 
-<!-- 优惠券选择 Popup -->
+
 <van-popup
   show="{{showCouponPopup}}"
   position="bottom"
@@ -245,7 +245,7 @@ module.exports.date = function(s) {
   </view>
 </van-popup>
 
-<!-- 美容师选择 Popup -->
+
 <staff-popup
   show="{{showStaffPopup}}"
   staff-list="{{staffList}}"
@@ -254,7 +254,7 @@ module.exports.date = function(s) {
   bind:close="onCloseStaffPopup"
 />
 
-<!-- 消费协议预览 Popup（底部弹层 + 滚动 + 保留段落/标题排版） -->
+
 <van-popup
   show="{{showAgreement}}"
   position="bottom"

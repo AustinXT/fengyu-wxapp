@@ -1,4 +1,4 @@
-// pages/store-select/store-select.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { getCurrentLocation } from '../utils/location';
 import { haversineKm, formatDistance, formatStoreAddress } from '../utils/distance';
@@ -17,7 +17,7 @@ interface Store {
   longitude?: string | number | null;
   open_date?: string;
   available_beds?: number;
-  // 派生字段
+  
   fullAddress?: string;
   distanceKm?: number | null;
   distanceText?: string;
@@ -35,7 +35,7 @@ Page({
     userLat: null as number | null,
     userLng: null as number | null,
     locationFailed: false,
-    // 'search': 定位失败，提示搜索；'minlen': 输入不足2字符；'': 正常
+    
     showHint: '' as '' | 'search' | 'minlen',
   },
 
@@ -57,7 +57,7 @@ Page({
       });
     } catch (err: any) {
       console.warn('[loadStoresWithLocation] 定位失败或被拒绝:', err);
-      // 定位失败：标记状态，预加载全量门店供搜索使用
+      
       this.setData({ locationFailed: true, showHint: 'search' });
     }
     this.loadStores(city);
@@ -74,7 +74,7 @@ Page({
         store_region: s.store_region || '',
       }));
 
-      // 按城市筛选后无门店：提示并停止，不降级显示全部
+      
       if (city && stores.length === 0) {
         Toast.fail(`${city}暂无门店`);
         this.setData({ allStores: [], stores: [] });
@@ -83,13 +83,13 @@ Page({
 
       this.setData({ allStores: stores });
 
-      // 定位失败时预加载全量门店供搜索，但不展示列表
+      
       if (this.data.locationFailed) return;
 
       this.setData({ stores: this.decorateAndSort(stores) });
     } catch (err: any) {
       console.error('[loadStores] error:', err);
-      // 可能是权限拒绝，检查错误类型
+      
       if (err.errMsg?.includes('auth deny') || err.errMsg?.includes('authorize')) {
         Toast.fail('需要定位权限才能显示附近门店');
       } else {
@@ -100,7 +100,7 @@ Page({
     }
   },
 
-  // 计算地址/距离并按距离升序（无法计算距离的排最后）
+  
   decorateAndSort(stores: Store[]): Store[] {
     const { userLat, userLng } = this.data;
     const decorated = stores.map(s => {
@@ -133,14 +133,14 @@ Page({
       this.setData({ showHint: '', stores: this.decorateAndSort(filtered) });
     } else if (keyword.length === 0) {
       if (this.data.locationFailed) {
-        // 定位失败：清空搜索恢复提示
+        
         this.setData({ stores: [], showHint: 'search' });
       } else {
-        // 定位成功：清空搜索恢复城市门店
+        
         this.setData({ showHint: '', stores: this.decorateAndSort(this.data.allStores) });
       }
     } else {
-      // 1 个字符：提示需要至少2个字符
+      
       this.setData({ stores: [], showHint: 'minlen' });
     }
   },
@@ -157,7 +157,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：被分享人进入首页而非分享者的门店选择页
+    
     const app = getApp<IAppOption>();
     const userId = app.globalData.userId;
     const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';

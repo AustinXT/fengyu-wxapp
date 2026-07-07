@@ -1,11 +1,11 @@
-// packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTime, formatDate } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
-// ===== 数据接口 =====
+
 
 interface CustomerDetail {
   id: string | null;
@@ -26,11 +26,11 @@ interface CustomerDetail {
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
-  /** WorkFine 历史订单待核对数（按手机号匹配；> 0 时顾客详情展示徽章提示） */
+  
   legacyOrderCount: number;
 }
 
-/** Wave 2B 新增 customer.customerBalance 响应（跨店统一余额） */
+
 interface CustomerBalanceResponse {
   balance: number;
   cardId: string | null;
@@ -46,7 +46,7 @@ interface ClientIdentifier {
   clientPhone?: string;
 }
 
-// Tab 1: 日历
+
 interface DailySummary {
   date: string;
   orderCount: number;
@@ -77,7 +77,7 @@ interface CalendarDay {
   hasData?: boolean;
 }
 
-// Tab 2: 购买记录
+
 interface PaidOrderItem {
   saleItemId: string;
   itemName: string;
@@ -97,18 +97,18 @@ interface PaidOrder {
   storeId?: string;
   storeName?: string;
   items: PaidOrderItem[];
-  // 消费记录列表（customer.orderHistory）扩展字段
+  
   createdAt?: string;
   payableAmount?: string;
   received?: string;
   remark?: string;
-  // 前端预算的展示字段
+  
   statusClass?: string;
   amountText?: string;
   timeText?: string;
 }
 
-// 订单状态 → status-tag 修饰类（app.wxss 定义：pending/success/progress/done/error）
+
 const ORDER_STATUS_CLASS: Record<string, string> = {
   待支付: 'pending',
   已支付: 'success',
@@ -118,7 +118,7 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
   部分支付: 'progress',
 };
 
-// Tab 3: 持卡汇总
+
 interface TreatmentCard {
   saleItemId: string;
   itemName: string;
@@ -126,7 +126,7 @@ interface TreatmentCard {
   remainingSessions: number;
   totalSessions: number;
   paidSessions: number | null;
-  /** 可消费次数 = min(remaining, paid - used)。stepper.max 用此值。 */
+  
   consumableSessions: number;
   usedSessions: number;
   paidUnusedSessions: number;
@@ -140,7 +140,7 @@ interface TreatmentCard {
   storeId?: string;
 }
 
-// Tab 4: 服务记录
+
 interface ServiceRecord {
   serviceOrderId: string;
   status: string;
@@ -151,7 +151,7 @@ interface ServiceRecord {
   items: Array<{ itemName: string; spec: string }>;
 }
 
-// 预约记录
+
 interface AppointmentRecord {
   id: string;
   customerName: string;
@@ -165,7 +165,7 @@ interface AppointmentRecord {
   createdAt: string;
 }
 
-// 手机号变更
+
 interface PhoneChangeRecord {
   id: number;
   createdAt: string;
@@ -176,7 +176,7 @@ interface PhoneChangeRecord {
   sourceText: string;
 }
 
-// ===== 页面逻辑 =====
+
 
 Page({
   data: {
@@ -184,11 +184,11 @@ Page({
     customer: null as CustomerDetail | null,
     isManager: false,
     activeTab: 0,
-    // Tab 0: 详情（客户信息）
+    
     notesValue: '',
     notesDirty: false,
     notesSaving: false,
-    // Tab 1: 日历
+    
     calendarYear: 0,
     calendarMonth: 0,
     calendarDays: [] as CalendarDay[],
@@ -196,23 +196,23 @@ Page({
     calendarOrders: [] as CalendarOrder[],
     selectedDate: '',
     calendarLoaded: false,
-    // Tab 2: 购买记录
+    
     purchaseOrders: [] as PaidOrder[],
     purchaseLoaded: false,
-    // Tab 3: 持卡汇总
+    
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
     selectedCount: 0,
-    // Tab 4: 服务记录
+    
     serviceRecords: [] as ServiceRecord[],
     serviceLoaded: false,
-    // 预约记录
+    
     appointmentRecords: [] as AppointmentRecord[],
     appointmentsLoaded: false,
-    // 手机号变更
+    
     phoneChangeRecords: [] as PhoneChangeRecord[],
     phoneLoaded: false,
-    // Wave 3G — 储值卡余额（跨店统一，仅店长视角）
+    
     cardBalance: 0 as number,
     cardBalanceLoaded: false as boolean,
   },
@@ -240,7 +240,7 @@ Page({
   onShow() {
     if (this._loaded && this._query) {
       this.loadCustomer();
-      // 刷新已加载的 tab 数据（疗程卡次数可能因服务单完成而变化）
+      
       if (this.data.cardsLoaded) {
         this.setData({ cardsLoaded: false });
         this.loadTreatmentCards();
@@ -253,10 +253,10 @@ Page({
     this.setData({ loading: true });
     try {
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
-      // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
+      
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
       this.setData({ customer, notesValue: customer.notes || '', notesDirty: false });
-      // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
+      
       void this.loadCardBalance();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -266,11 +266,7 @@ Page({
     }
   },
 
-  /**
-   * Wave 3G — 加载顾客储值卡余额（跨店统一）
-   * - 仅当 customer.clientUserId 存在时调用
-   * - 静默失败：余额展示 0，不阻塞页面
-   */
+  
   async loadCardBalance() {
     const { customer } = this.data;
     if (!customer?.clientUserId) {
@@ -293,8 +289,8 @@ Page({
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    // 7-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
-    //         5 手机号变更 / 6 日历
+    
+    
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
@@ -310,7 +306,7 @@ Page({
     }
   },
 
-  /** 构建客户标识参数（clientUserId 优先，否则 clientPhone） */
+  
   _clientId(): ClientIdentifier | null {
     const { customer } = this.data;
     if (!customer) return null;
@@ -319,7 +315,7 @@ Page({
       : { clientPhone: customer.phone };
   },
 
-  // ===== Tab 1: 日历 =====
+  
   async loadCalendar() {
     const id = this._clientId();
     if (!id) return;
@@ -387,12 +383,12 @@ Page({
     this.setData({ selectedDate: this.data.selectedDate === date ? '' : date });
   },
 
-  // ===== Tab 2: 购买记录 =====
+  
   async loadPurchaseHistory() {
     const id = this._clientId();
     if (!id) return;
     try {
-      // 消费记录走 orderHistory（全状态 + 跨门店）；疗程卡 Tab 仍走 paidOrders（仅已支付可核销卡）
+      
       const orders = (await callStaffApi<PaidOrder[]>('customer.orderHistory', id) || [])
         .map(o => ({
           ...o,
@@ -409,7 +405,7 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 
-  // ===== Tab 3: 持卡汇总 =====
+  
   async loadTreatmentCards() {
     const id = this._clientId();
     if (!id) return;
@@ -425,7 +421,7 @@ Page({
           const paidUnused = Math.max(paid - used, 0);
           const unpaid = Math.max(total - paid, 0);
           const consumable = Math.max(0, Math.min(remain, paid - used));
-          // D6=A：paid_sessions=0 或 已用满已付 → 整张卡锁死，不显示
+          
           if (consumable <= 0) continue;
           const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
           cards.push({
@@ -499,7 +495,7 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 
-  // ===== Tab 4: 服务记录 =====
+  
   async loadServiceHistory() {
     const id = this._clientId();
     if (!id) return;
@@ -528,7 +524,7 @@ Page({
     wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${id}` });
   },
 
-  // ===== 预约记录 =====
+  
   async loadAppointments() {
     const id = this._clientId();
     if (!id) return;
@@ -552,7 +548,7 @@ Page({
     }
   },
 
-  // ===== 手机号变更 =====
+  
   async loadPhoneChangeLogs() {
     const id = this._clientId();
     if (!id) return;
@@ -569,7 +565,7 @@ Page({
     }
   },
 
-  // ===== 备注编辑 =====
+  
   onNotesChange(e: WechatMiniprogram.CustomEvent) {
     const val = e.detail as unknown as string;
     this.setData({

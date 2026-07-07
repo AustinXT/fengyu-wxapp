@@ -1,13 +1,13 @@
-/* packageMgmt/mgmt-customer-detail/mgmt-customer-detail.wxss */
+
 
 .container {
   background: var(--color-bg-page);
   min-height: 100vh;
 }
 
-/* 顶部筛选行 → 全局 .mgmt-filter-bar + .mgmt-scope-tag（app.wxss）已统一 */
 
-/* 头部信息卡 */
+
+
 .profile-card {
   background: var(--color-bg-card);
   color: var(--color-text-primary);
@@ -67,13 +67,13 @@
 .stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 .stat-divider { width: 1rpx; height: 48rpx; background: var(--color-border); }
 
-/* Tab 内容区 */
+
 .tab-content {
   padding: var(--spacing-tight) 0;
   min-height: 400rpx;
 }
 
-/* Tab 下方提示文案 */
+
 .tab-hint {
   padding: 8rpx var(--spacing-page) var(--spacing-tight);
   font-size: 24rpx;
@@ -81,7 +81,7 @@
   line-height: 1.5;
 }
 
-/* ===== 日历样式 ===== */
+
 .calendar-nav {
   display: flex;
   align-items: center;
@@ -159,7 +159,7 @@
   margin-bottom: 12rpx;
 }
 
-/* ===== 购买记录 ===== */
+
 .purchase-card {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
@@ -238,7 +238,7 @@
   color: var(--color-primary);
 }
 
-/* ===== 持卡汇总（管理层只读） ===== */
+
 .card-list { padding: 0 var(--spacing-card) var(--spacing-card); }
 
 .treatment-card {
@@ -292,7 +292,7 @@
   font-weight: 600;
 }
 
-/* 疗程卡三段进度条（剩余可用 / 已付未用 / 未付） */
+
 .session-bar {
   display: flex;
   height: 8rpx;
@@ -307,7 +307,7 @@
 .session-bar__seg--paid-unused { background: #C0322A; }
 .session-bar__seg--unpaid { background: #F2B6B0; }
 
-/* ===== 赠送记录 ===== */
+
 .gift-section-title {
   display: block;
   font-size: 26rpx;
@@ -370,7 +370,7 @@
   margin-top: 8rpx;
 }
 
-/* ===== 退换记录 ===== */
+
 .refund-card {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
@@ -414,7 +414,7 @@
   padding: 4rpx 0;
 }
 
-/* refund 流向标签：在 status-tag 基础上覆写为更紧凑尺寸 */
+
 .refund-item-direction.status-tag {
   font-size: 20rpx;
   padding: 2rpx 8rpx;

@@ -67,7 +67,7 @@ export default function MallProductDetailPageClient({
     product.marketScope ? product.marketScope.split(",") : [],
   );
 
-  // Mall category groups for grouped select
+  
   const mallGroups = useMemo(
     () => mallCategories.filter((c) => c.categoryGroup === null).sort((a, b) => a.sortOrder - b.sortOrder),
     [mallCategories],
@@ -83,7 +83,7 @@ export default function MallProductDetailPageClient({
     return m?.name ?? product.manageScope;
   }, [product.manageScope, markets]);
 
-  // SKU Picker state
+  
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [pickerCategoryId, setPickerCategoryId] = useState("");
@@ -91,22 +91,22 @@ export default function MallProductDetailPageClient({
   const [addingSku, setAddingSku] = useState<string | null>(null);
   const [pickerTargetGroupId, setPickerTargetGroupId] = useState<number | null>(null);
 
-  // Remove dialog state
+  
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const [removingSkuId, setRemovingSkuId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
-  // Bundle group dialog state
+  
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<MallBundleGroup | null>(null);
   const [groupSaving, setGroupSaving] = useState(false);
 
-  // Delete group dialog
+  
   const [deleteGroupDialogOpen, setDeleteGroupDialogOpen] = useState(false);
   const [deletingGroupId, setDeletingGroupId] = useState<number | null>(null);
   const [deletingGroup, setDeletingGroup] = useState(false);
 
-  // Delete product dialog
+  
   const [deleteProductDialogOpen, setDeleteProductDialogOpen] = useState(false);
   const [deletingProduct, setDeletingProduct] = useState(false);
 
@@ -130,7 +130,7 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // SKU Picker computed (uses skuCategories = product_categories)
+  
   const linkedSkuIds = useMemo(() => new Set(skus.map((s) => s.skuId)), [skus]);
 
   const subCategories = useMemo(() => skuCategories.filter((c) => c.productKind !== null), [skuCategories]);
@@ -155,14 +155,14 @@ export default function MallProductDetailPageClient({
     return list;
   }, [allSkus, linkedSkuIds, pickerSearch, pickerCategoryId, pickerKindValue]);
 
-  // --- Product Save ---
+  
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget;
     const fd = new FormData(form);
 
     const name = (fd.get("name") as string).trim();
-    // 套餐(isBundle)时价格输入框为禁用展示态无 name，fd.get("price") 为 null，须空值兜底
+    
     const price = ((fd.get("price") as string | null) ?? "").trim();
 
     if (!name) {
@@ -217,7 +217,7 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // --- SKU Picker ---
+  
   const openPicker = (groupId?: number | null) => {
     setPickerSearch("");
     setPickerCategoryId("");
@@ -243,7 +243,7 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // --- SKU Remove ---
+  
   const openRemoveDialog = (skuId: string) => {
     setRemovingSkuId(skuId);
     setRemoveDialogOpen(true);
@@ -269,7 +269,7 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // --- Bundle Group CRUD ---
+  
   const openGroupDialog = (group?: MallBundleGroup) => {
     setEditingGroup(group ?? null);
     setGroupDialogOpen(true);
@@ -349,7 +349,7 @@ export default function MallProductDetailPageClient({
     }
   };
 
-  // --- SKU columns ---
+  
   const skuColumns: Column<ProductSku>[] = useMemo(() => {
     const cols: Column<ProductSku>[] = [
       {
@@ -420,7 +420,7 @@ export default function MallProductDetailPageClient({
     return cols;
   }, [isBundle]);
 
-  // Group SKUs by bundleGroupId for bundle view
+  
   const ungroupedSkus = useMemo(() => skus.filter((s) => !s.bundleGroupId), [skus]);
   const skusByGroup = useMemo(() => {
     const map: Record<number, ProductSku[]> = {};
@@ -450,7 +450,7 @@ export default function MallProductDetailPageClient({
         </Button>
       </div>
 
-      {/* 是否套餐切换 */}
+      {}
       <Card>
         <CardContent className="pt-6">
           <div className="flex items-center gap-4">
@@ -470,7 +470,7 @@ export default function MallProductDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 套餐分组管理（isBundle 时显示） */}
+      {}
       {isBundle && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -522,7 +522,7 @@ export default function MallProductDetailPageClient({
               })
             )}
 
-            {/* 未分组规格：正常态应为空（所有子商品必须归入分组）；非空=配置异常告警 */}
+            {}
             {ungroupedSkus.length > 0 && (
               <div className="border border-[var(--destructive)] rounded-[var(--radius)]">
                 <div className="flex items-center justify-between px-4 py-3 bg-[var(--destructive)]/10">
@@ -540,7 +540,7 @@ export default function MallProductDetailPageClient({
         </Card>
       )}
 
-      {/* 非套餐：平铺 SKU 列表 */}
+      {}
       {!isBundle && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -556,7 +556,7 @@ export default function MallProductDetailPageClient({
       )}
 
       <form onSubmit={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
-        {/* 基本信息 */}
+        {}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">基本信息</CardTitle>
@@ -598,7 +598,7 @@ export default function MallProductDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 价格 */}
+        {}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">价格</CardTitle>
@@ -638,7 +638,7 @@ export default function MallProductDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 展示 */}
+        {}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">展示</CardTitle>
@@ -675,7 +675,7 @@ export default function MallProductDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 可见范围 */}
+        {}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">可见范围</CardTitle>
@@ -719,7 +719,7 @@ export default function MallProductDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 客户端展示 */}
+        {}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">客户端展示</CardTitle>
@@ -750,7 +750,7 @@ export default function MallProductDetailPageClient({
         </div>
       </form>
 
-      {/* SKU Picker Dialog */}
+      {}
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen} className="max-w-2xl">
         <DialogHeader className="relative">
           <DialogTitle>添加规格{pickerTargetGroupId ? ` — ${bundleGroups.find((g) => g.id === pickerTargetGroupId)?.groupName}` : ""}</DialogTitle>
@@ -818,7 +818,7 @@ export default function MallProductDetailPageClient({
         </div>
       </Dialog>
 
-      {/* Remove SKU Confirmation */}
+      {}
       <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
         <AlertDialogTitle>确认移除</AlertDialogTitle>
         <AlertDialogDescription>
@@ -840,7 +840,7 @@ export default function MallProductDetailPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* Bundle Group Create/Edit Dialog */}
+      {}
       <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
         <DialogHeader className="relative">
           <DialogTitle>{editingGroup ? "编辑分组" : "添加分组"}</DialogTitle>
@@ -903,7 +903,7 @@ export default function MallProductDetailPageClient({
         </form>
       </Dialog>
 
-      {/* Delete Group Confirmation */}
+      {}
       <AlertDialog open={deleteGroupDialogOpen} onOpenChange={setDeleteGroupDialogOpen}>
         <AlertDialogTitle>确认删除分组</AlertDialogTitle>
         <AlertDialogDescription>
@@ -925,7 +925,7 @@ export default function MallProductDetailPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* Delete Product Confirmation */}
+      {}
       <AlertDialog open={deleteProductDialogOpen} onOpenChange={setDeleteProductDialogOpen}>
         <AlertDialogTitle>确认删除商品</AlertDialogTitle>
         <AlertDialogDescription>

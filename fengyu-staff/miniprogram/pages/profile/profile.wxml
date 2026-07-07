@@ -1,4 +1,4 @@
-<!-- pages/profile/profile.wxml — 我的 -->
+
 <view class="container">
   <view class="profile-header brand-gradient">
     <view class="avatar-wrap" bindtap="onChooseAvatar">
@@ -19,7 +19,7 @@
     </view>
   </view>
 
-  <!-- 手机号绑定 -->
+  
   <view class="section-card" wx:if="{{!phone}}">
     <view class="bind-tip">
       <van-icon name="warning-o" color="#FAAD14" size="32rpx" />
@@ -55,7 +55,7 @@
     </van-cell-group>
   </view>
 
-  <!-- 快捷功能 -->
+  
   <view class="section-card">
     <van-cell-group title="工作功能">
       <van-cell title="订单管理" icon="orders-o" is-link bindtap="onNavOrders" />
@@ -75,7 +75,7 @@
   </view>
 </view>
 
-<!-- 门店切换 action sheet（仅 scope 内多店时启用） -->
+
 <van-action-sheet
   show="{{storePickerVisible}}"
   actions="{{storePickerActions}}"

@@ -1,4 +1,4 @@
-// packageMy/inventory/inventory.ts — 库存管理首页（4 类入口）
+
 
 interface Category {
   key: 'procurement' | 'sale' | 'transfer' | 'scrap'

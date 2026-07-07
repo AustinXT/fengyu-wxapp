@@ -1,18 +1,6 @@
 "use client"
 
-/**
- * 组合套餐 picker（PR-C C1）
- *
- * 数据源：getProductsByKind('__bundle__').bundles[]
- *
- * 阶段一基础形态（参考 ticket §5 第一行风险妥协）：
- * - 套餐右侧"加入套餐"按钮 → 把套餐内"未分组 + 各分组下 pickCount=null 的全部 SKU"
- *   一次性加入购物车，使用 bundlePrice（套餐价）作为 specialPrice。
- * - 当套餐定义了 pickCount=N（选N项）的分组时，分组内每个 SKU 提供数量步进器，
- *   允许同一 SKU 选多次；N 按"组内各 SKU 数量之和"统计（非种类数），合计满 N 才可加入。
- * - 落库：前端只按 SKU 传 quantity=N，后端既有 B2 拆行规则处理
- *   （疗程卡 quantity>1 拆 N 行 / 家居产品合 1 行），无需后端改动。
- */
+
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import type { Product, ProductSku } from "@/lib/types"
@@ -25,12 +13,12 @@ import { bundleSkuToProductSku, type BundleAddPayload, type BundlePickerProps } 
 interface BundleRowProps {
   bundle: OrderPickerBundle
   onAdd: (product: Product, sku: ProductSku) => void
-  /** 一次性回调（组合套餐分支走替换 cart + 跳转确认页） */
+  
   onBundleAdded?: (payload: BundleAddPayload) => void
 }
 
 function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
-  // 各「选N项」分组的当前选择状态：groupId → { skuId → 数量 }
+  
   const pickGroups = useMemo(
     () => bundle.groups.filter((g) => g.pickCount != null && g.pickCount > 0),
     [bundle.groups],
@@ -42,7 +30,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
 
   const [selections, setSelections] = useState<Record<number, Record<string, number>>>({})
 
-  // 组内已选数量合计（N 按数量统计，非种类数）
+  
   const groupTotal = (groupId: number): number =>
     Object.values(selections[groupId] ?? {}).reduce((s, q) => s + q, 0)
 
@@ -69,7 +57,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
   }
 
   const handleAddBundle = () => {
-    // 校验：每个「选N项」分组的数量合计必须 === pickCount
+    
     for (const g of pickGroups) {
       if (groupTotal(g.id) !== (g.pickCount ?? 0)) {
         toast.error(`「${g.groupName}」需选 ${g.pickCount} 项`)
@@ -77,7 +65,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
       }
     }
 
-    // 收集要加入的 SKU + 数量：未分组 + 全选分组各 1 份；选N项分组按已选数量
+    
     const toAdd: { ref: OrderPickerBundleSkuRef; quantity: number }[] = []
     for (const ref of bundle.ungroupedSkus) toAdd.push({ ref, quantity: 1 })
     for (const g of allSelectGroups) for (const ref of g.skus) toAdd.push({ ref, quantity: 1 })
@@ -94,7 +82,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
       return
     }
 
-    // 套餐封面占位 product：cart 显示套餐名 + 子规格
+    
     const fakeProduct: Product = {
       productId: bundle.productId,
       categoryId: '',
@@ -114,12 +102,12 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
     }
 
     if (onBundleAdded) {
-      // 一次性替换分支：父级负责清空旧 cart + 填入新套餐 + 跳 Step 3
+      
       const items = toAdd.map(({ ref, quantity }) => ({ sku: bundleSkuToProductSku(ref), quantity }))
       onBundleAdded({ product: fakeProduct, items })
     } else {
-      // 兼容分支：未提供一次性回调时走 addToCart 循环（保留既有单测路径）。
-      // page 的 addToCart 按 skuId 累加，故同一 SKU 调 quantity 次等价 quantity=N。
+      
+      
       for (const { ref, quantity } of toAdd) {
         const sku = bundleSkuToProductSku(ref)
         for (let i = 0; i < quantity; i++) onAdd(fakeProduct, sku)
@@ -141,7 +129,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
           <Button size="sm" onClick={handleAddBundle}>加入套餐</Button>
         </div>
 
-        {/* 未分组 SKU 展示（信息性） */}
+        {}
         {bundle.ungroupedSkus.length > 0 && (
           <>
             <Separator />
@@ -157,7 +145,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
           </>
         )}
 
-        {/* 全选分组（信息性） */}
+        {}
         {allSelectGroups.map((g) => (
           <div key={g.id}>
             <Separator />
@@ -173,7 +161,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
           </div>
         ))}
 
-        {/* 选N项分组（交互式数量步进器，同一 SKU 可选多次，N 按数量合计） */}
+        {}
         {pickGroups.map((g) => {
           const pickCount = g.pickCount ?? 0
           const total = groupTotal(g.id)

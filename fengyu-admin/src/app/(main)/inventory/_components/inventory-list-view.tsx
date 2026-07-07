@@ -44,9 +44,9 @@ interface Props {
   stores: Store[]
   canCreate: boolean
   canDelete: boolean
-  /** Server Action 包装：createXxxOrder({...}) — 跨 4 模块共享，参数为各自的 *CreateInput，统一收 any */
+  
   onCreate: (input: any) => Promise<{ id: string }>
-  /** Server Action：deleteXxxOrder(id) */
+  
   onDelete: (id: string) => Promise<{ success: true }>
 }
 
@@ -326,7 +326,7 @@ export default function InventoryListView({
   )
 }
 
-// ── Create Dialog（schema-driven） ─────────────────────────────────────────
+
 
 interface CreateDialogProps {
   open: boolean
@@ -343,7 +343,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
   const [counterpartStoreId, setCounterpartStoreId] = useState('')
   const [docSubtype, setDocSubtype] = useState(subtypes[0] ?? '')
   const [docDate, setDocDate] = useState(() => {
-    // 上海时区当日 YYYY-MM-DD，避免 UTC 截断跨午夜
+    
     const d = new Date()
     const tz = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai',
@@ -351,7 +351,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
       month: '2-digit',
       day: '2-digit',
     }).format(d)
-    return tz // en-CA 格式即 YYYY-MM-DD
+    return tz 
   })
   const [customerName, setCustomerName] = useState('')
   const [remark, setRemark] = useState('')
@@ -417,7 +417,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
-          {/* 主表字段 */}
+          {}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="门店">
               <Select value={storeId} onChange={(e) => setStoreId(e.target.value)}>
@@ -479,7 +479,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
             <Input value={remark} onChange={(e) => setRemark(e.target.value)} />
           </Field>
 
-          {/* 明细行：表头 + 表格式录入 */}
+          {}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">明细行（{items.length}）</span>
@@ -489,7 +489,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
             </div>
 
             <div className="border border-[var(--border)] rounded-md overflow-hidden">
-              {/* 表头 */}
+              {}
               <div className="grid gap-2 px-3 py-2 bg-[#F8F8F8] text-xs text-[#666666] font-medium"
                    style={{ gridTemplateColumns: '140px 1fr 140px 100px 120px 140px 40px' }}>
                 <div>产品编号</div>
@@ -501,7 +501,7 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
                 <div></div>
               </div>
 
-              {/* 数据行 */}
+              {}
               {items.map((it, idx) => (
                 <div
                   key={idx}

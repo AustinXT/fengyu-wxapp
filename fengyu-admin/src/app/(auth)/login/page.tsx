@@ -59,17 +59,17 @@ export default function LoginPage() {
 
   return (
     <div className="w-full max-w-md">
-      {/* Header */}
+      {}
       <div className="mb-8 text-center">
         <Image src={logoFull} alt="凤御美业" width={150} height={58} className="mx-auto mb-4" priority />
         <h1 className="text-2xl font-bold text-[var(--foreground)]">凤御美业管理后台</h1>
         <div className="mx-auto mt-3 h-0.5 w-16 bg-[var(--primary)]" />
       </div>
 
-      {/* Login Card */}
+      {}
       <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-white p-8 shadow-sm">
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Phone */}
+          {}
           <div>
             <label htmlFor="phone" className="mb-1.5 block text-sm font-medium text-[var(--foreground)]">
               手机号
@@ -85,7 +85,7 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* Password */}
+          {}
           <div>
             <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-[var(--foreground)]">
               密码
@@ -100,12 +100,12 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* Error */}
+          {}
           {error && (
             <p className="text-sm text-[var(--destructive)]">{error}</p>
           )}
 
-          {/* Submit */}
+          {}
           <Button
             type="submit"
             className="w-full"
@@ -116,7 +116,7 @@ export default function LoginPage() {
         </form>
       </div>
 
-      {/* Footer */}
+      {}
       <p className="mt-6 text-center text-xs text-[#999999]">
         首次登录？请联系管理员开通权限
       </p>

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-// ─── 登录表单 ───
+
 export const loginSchema = z.object({
   phone: z.string()
     .min(1, '请输入手机号')
@@ -10,7 +10,7 @@ export const loginSchema = z.object({
 })
 export type LoginInput = z.infer<typeof loginSchema>
 
-// ─── 修改密码 ───
+
 export const changePasswordSchema = z.object({
   newPassword: z.string()
     .min(8, '密码至少 8 位')
@@ -23,13 +23,13 @@ export const changePasswordSchema = z.object({
 })
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
 
-// 日期字符串校验：YYYY-MM-DD（admin 表单 `<Input type="date">` 格式）
+
 const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
 
-// 日期时间字符串校验：YYYY-MM-DDTHH:mm（admin 表单 `<Input type="datetime-local">` 格式）
+
 const dateTimeStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, '时间格式应为 YYYY-MM-DDTHH:mm')
 
-// ─── 员工表单 ───
+
 export const employeeSchema = z.object({
   employeeId: z.string().min(1, '员工编号不能为空'),
   name: z.string().min(1, '姓名不能为空'),
@@ -38,7 +38,7 @@ export const employeeSchema = z.object({
     .optional()
     .or(z.literal('')),
   gender: z.enum(['男', '女']).optional().nullable(),
-  // 身份证号必填（应用层强制；DB 列仍可空以兼容历史/同步行）
+  
   idCard: z.string()
     .min(1, '请输入身份证号')
     .regex(/^\d{17}[\dXx]$/, '身份证号格式不正确'),
@@ -47,27 +47,27 @@ export const employeeSchema = z.object({
   positionName: z.string().optional().nullable(),
   birthday: z.string().optional().nullable(),
   skills: z.array(z.string()).optional().nullable(),
-  /** 是否缴纳社保；默认否 */
+  
   socialInsurance: z.boolean().optional(),
-  /** 入职日期；mgmt-dashboard 员工数历史化所需（ticket 2026-04-25 T3） */
+  
   hiredAt: dateStringSchema.optional().nullable().or(z.literal('')),
-  /** 请假开始时间；与 leaveEnd 成对，请假期间顾客端不可预约 */
+  
   leaveStart: dateTimeStringSchema.optional().nullable().or(z.literal('')),
-  /** 请假结束时间 */
+  
   leaveEnd: dateTimeStringSchema.optional().nullable().or(z.literal('')),
-  /** 离职日期；NULL 表示在职。与 isResigned 双写一致 */
+  
   resignedAt: dateStringSchema.optional().nullable().or(z.literal('')),
-  /** 离职原因（自由文本） */
+  
   resignationReason: z.string().optional().nullable(),
 })
 export type EmployeeInput = z.infer<typeof employeeSchema>
 
-// ─── 门店表单（ticket 2026-04-25 T4：闭店日期历史化） ───
+
 export const storeSchema = z.object({
   storeName: z.string().min(1, '请输入门店名称'),
   marketId: z.string().min(1, '请选择所属市场'),
   openingDate: dateStringSchema.optional().nullable().or(z.literal('')),
-  /** 闭店日期；NULL 表示在营。与 isClosed 双写一致 */
+  
   closedAt: dateStringSchema.optional().nullable().or(z.literal('')),
   bedCount: z.number().int().min(0).optional().nullable(),
   phone: z.string().optional().nullable(),
@@ -75,12 +75,12 @@ export const storeSchema = z.object({
 })
 export type StoreInput = z.infer<typeof storeSchema>
 
-// ─── 支付方式枚举（与 db/schema/enums.ts:23 对齐） ───
-// `'无'` 语义：全额储值卡抵扣，实付 = 0，不走任何支付通道
+
+
 export const paymentMethodSchema = z.enum(['微信', '支付宝', '线下', '无'])
 export type PaymentMethodInput = z.infer<typeof paymentMethodSchema>
 
-// ─── 订单创建 ───
+
 export const createOrderSchema = z.object({
   storeId: z.string().min(1, '请选择门店'),
   marketName: z.string().min(1, '市场名称不能为空'),
@@ -88,22 +88,15 @@ export const createOrderSchema = z.object({
   clientPhone: z.string().regex(/^1\d{10}$/, '请输入正确的手机号'),
   customerName: z.string().min(1, '顾客姓名不能为空'),
   paymentMethod: paymentMethodSchema,
-  // 2026-04-26 sale-order-domain-refactor：仅允许用户创建 3 种类型；'回款单'/'退款单' 已迁至 sale_order_payments
+  
   saleOrderType: z.enum(['销售单', '内部单', '转换单']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),
-  /**
-   * 本次收款金额（部分支付基础 ticket PR-3）
-   * - 未传 / undefined → 视为全额收款（= payable_amount）
-   * - 0 → 纯挂账（status='待支付'，不写 payments 行）
-   * - 0 < v < payable_amount → 部分支付（status='部分支付'）
-   * - = payable_amount → 全额（线上 → status='已支付'；线下 → status='待支付'，confirmOffline 入账）
-   * 上界校验由 action 层在计算出 payable_amount 后做（schema 只保障非负数）。
-   */
+  
   receivedAmount: z.number().min(0, '本次收款金额不能为负').optional(),
-  // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券，schema 层用 z.string() 拒绝 array
+  
   couponId: z.string().optional().nullable(),
-  // 活动单标记（纯标识，不影响金额/提成口径）
+  
   isActivity: z.boolean().optional(),
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
@@ -118,7 +111,7 @@ export const createOrderSchema = z.object({
 })
 export type CreateOrderInput = z.infer<typeof createOrderSchema>
 
-// ─── 提成矩阵 ───
+
 export const commissionRateSchema = z.object({
   orgId: z.string().min(1, '请选择市场'),
   orderType: z.string().min(1, '请选择订单类型'),
@@ -136,7 +129,7 @@ export const commissionRateSchema = z.object({
 })
 export type CommissionRateInput = z.infer<typeof commissionRateSchema>
 
-// ─── 顾客档案 ───
+
 export const customerSchema = z.object({
   name: z.string().optional().nullable(),
   gender: z.string().optional().nullable(),
@@ -156,7 +149,7 @@ export const customerSchema = z.object({
 })
 export type CustomerInput = z.infer<typeof customerSchema>
 
-// ─── 权限分配 ───
+
 export const assignRoleSchema = z.object({
   employeeId: z.string().min(1, '请选择员工'),
   role: z.enum(['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']),
@@ -164,10 +157,10 @@ export const assignRoleSchema = z.object({
 })
 export type AssignRoleInput = z.infer<typeof assignRoleSchema>
 
-// ─── 录入回款（ticket 2026-04-24 多次回款 PR-B） ───
-// admin 端 paymentMethod 仅支持线下 / 储值卡（后台不收线上钱）；
-// 线下要求 externalTxnId（银行回执号），储值卡场景 externalTxnId 为空。
-// 允许 repayAmount=0 + prepaidCardAmount>0（纯储值卡抵扣回款），但两者之和必须 > 0。
+
+
+
+
 export const recordPaymentInputSchema = z.object({
   saleOrderId: z.string().min(1, '订单号不能为空'),
   repayAmount: z.number().multipleOf(0.01, '金额精度最多 2 位小数').min(0, '回款金额不能为负'),
@@ -175,7 +168,7 @@ export const recordPaymentInputSchema = z.object({
   externalTxnId: z.string().optional(),
   prepaidCardAmount: z.number().multipleOf(0.01, '金额精度最多 2 位小数').min(0, '储值卡抵扣金额不能为负').default(0),
   note: z.string().optional(),
-  // 前端为「本次回款意向」生成的幂等键（重试/误点复用同一值）；仅储值卡抵扣场景用作扣卡 external_ref 防重复扣卡。
+  
   idempotencyKey: z.string().optional(),
 }).refine((v) => v.repayAmount + v.prepaidCardAmount > 0, {
   message: '回款金额与储值卡抵扣不能都为 0',
@@ -186,7 +179,7 @@ export const recordPaymentInputSchema = z.object({
 )
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
 
-// ─── 充值卡档位配置（系统配置 → 充值卡配置 Tab） ───
+
 export const rechargeTierSchema = z.object({
   faceValue: z.number().positive('面额必须 > 0'),
   payAmount: z.number().min(0, '实付金额不能为负'),

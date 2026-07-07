@@ -1,4 +1,4 @@
-<!-- 顶部筛选行：period chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+
 <view class="mgmt-filter-bar mgmt-filter-bar--sticky">
   <mgmt-period-picker
     options="{{ periodsForPicker }}"
@@ -13,10 +13,10 @@
 
 <view class="tf-page">
 
-  <!-- 三态壳：loading / error 时由组件接管 -->
+  
   <mgmt-data-state state="{{ state }}" bind:retry="onRetry">
     <view wx:if="{{display}}">
-      <!-- Section 1：注册情况 -->
+      
       <view class="tf-section-title">注册情况（截至当天）</view>
       <view class="tf-grid-4">
         <mgmt-stat-card size="md" count="{{display.registration.regTotal}}"  label="总注册数" />
@@ -25,7 +25,7 @@
         <mgmt-stat-card size="md" count="{{display.registration.regMember}}" label="会员客" />
       </view>
 
-      <!-- Section 2：到店客流数据 -->
+      
       <view class="tf-section-title">到店客流数据（区间内）</view>
       <view class="tf-grid-4">
         <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.count}}" label="{{item.label}}" />
@@ -37,10 +37,10 @@
         <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.sessions}}" label="项目数" />
       </view>
 
-      <!-- Section 3：会员状态与客活 -->
+      
       <view class="tf-section-title">会员状态与客活</view>
       <view class="tf-status-grid">
-        <!-- 左列：截面 5 项 -->
+        
         <view>
           <view class="tf-row">
             <text class="lbl">保有会员-稳定</text>
@@ -63,7 +63,7 @@
             <text class="val">{{display.status.dormantDeep}}</text>
           </view>
         </view>
-        <!-- 右列：客活 2 项 + 激活 3 项（带角标） -->
+        
         <view>
           <view class="tf-row">
             <text class="lbl">一次客活</text>
@@ -89,7 +89,7 @@
       </view>
       <view class="tf-note">* 按区间起点前 1 日实时反推</view>
 
-      <!-- Section 4：会员被经营情况 -->
+      
       <view class="tf-section-title">会员被经营情况（区间内）</view>
       <view wx:for="{{display.memberOps.buckets}}" wx:key="tier" class="tf-row">
         <text class="lbl">{{item.tierLabel}}</text>
@@ -101,7 +101,7 @@
         <mgmt-stat-card size="lg" variant="primary" count="{{display.memberOps.avgTicket}}" label="会员客单价" />
       </view>
 
-      <!-- Section 5：新会员经营 -->
+      
       <view class="tf-section-title">新会员经营</view>
       <view class="tf-grid-4">
         <mgmt-stat-card size="md" count="{{display.newMembers.count}}"     label="新增会员数" />

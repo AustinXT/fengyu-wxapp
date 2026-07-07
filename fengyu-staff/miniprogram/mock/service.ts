@@ -1,4 +1,4 @@
-// mock/service.ts — 服务单相关 mock
+
 
 const MOCK_SERVICES = [
   {

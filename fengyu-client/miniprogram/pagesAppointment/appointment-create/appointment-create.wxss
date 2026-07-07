@@ -1,4 +1,4 @@
-/* pages/appointment-create/appointment-create.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -6,17 +6,17 @@
   padding-bottom: 180rpx;
 }
 
-/* 无可预约项提示 */
+
 .no-items-tip {
   padding: 40rpx 0;
 }
 
-/* 已选中的项目行 */
+
 .item-selected {
   background: var(--color-primary-light) !important;
 }
 
-/* 跨店卡：置灰 + 禁点（.wxml 仍保留 bind:click 做 Toast 提示） */
+
 .item-disabled {
   opacity: 0.45;
 }
@@ -26,7 +26,7 @@
   color: var(--color-text-hint) !important;
 }
 
-/* ===== 时段 picker 行 ===== */
+
 .time-slot-row {
   padding: 20rpx 32rpx 24rpx;
   background: var(--color-bg-card);
@@ -38,7 +38,7 @@
   margin-bottom: 12rpx;
 }
 
-/* ===== 时段 tag 按钮 ===== */
+
 .time-slots {
   display: flex;
   gap: 16rpx;
@@ -74,7 +74,7 @@
   pointer-events: none;
 }
 
-/* ===== 底部提交 ===== */
+
 .submit-wrap {
   position: fixed;
   bottom: 0;
@@ -85,9 +85,9 @@
   border-top: 1px solid var(--color-border);
 }
 
-/* 美容师弹窗 — 复用 app.wxss 全局 .staff-* 样式 */
 
-/* van-cell 左侧美容师头像（icon slot） */
+
+
 .cell-staff-avatar {
   width: 56rpx;
   height: 56rpx;

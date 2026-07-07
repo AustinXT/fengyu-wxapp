@@ -15,7 +15,7 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
           orientation === "vertical" && "overflow-y-auto overflow-x-hidden",
           orientation === "horizontal" && "overflow-x-auto overflow-y-hidden",
           orientation === "both" && "overflow-auto",
-          // Thin scrollbar styling
+          
           "[&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar]:h-2",
           "[&::-webkit-scrollbar-track]:bg-transparent",
           "[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[var(--border)]",

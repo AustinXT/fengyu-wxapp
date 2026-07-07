@@ -1,4 +1,4 @@
-/* packageOrder/allocation-list/allocation-list.wxss */
+
 
 .loading-wrap { display: flex; justify-content: center; padding: 80rpx 0; }
 .loading-more { display: flex; justify-content: center; padding: 32rpx 0; }

@@ -1,4 +1,4 @@
-/* components/conversion-panel/conversion-panel.wxss */
+
 
 .conv-panel {
   background: #FFFFFF;
@@ -30,7 +30,7 @@
   padding: 20rpx 0;
 }
 
-/* ===== 卡列表 ===== */
+
 .conv-card-list {
   display: flex;
   flex-direction: column;
@@ -102,7 +102,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 底部差额汇总 ===== */
+
 .conv-summary {
   background: #F5F2EE;
   border-radius: 12rpx;

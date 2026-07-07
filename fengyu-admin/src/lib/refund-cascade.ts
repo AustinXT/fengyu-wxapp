@@ -1,25 +1,4 @@
-/**
- * 退款级联回滚（cascadeRefund）—— 逐 item + 语义收敛
- *
- * 2026-04-26 sale-order-domain-refactor 新建；2026-06-08 重构（Bug Q/M）：
- *   - 改为按本次退款明细逐 item 级联（params.items），不再用单 saleItemId / null 整单分支；
- *     修复「多项退真子集误走整单分支清掉未退明细的分配/提成/券/提货」（Bug Q）。
- *   - 通道 3（券）仅整单全退（isWholeOrderRefund）才回滚。
- *
- * 2026-06-24 退款联级重构（记负数冲销）：
- *   - 通道 1（销售提成 sale_allocations）：由「软删 is_void」改为「记负数冲销」——对所有被退 item
- *     按本次实退额（params.items[].refundAmount）记负数镜像行（保留原正数行，报表 SUM 自动净额化），
- *     负数行挂退款流水 id（params.refundPaymentId）。消费过的卡退剩余次数 → 等比部分冲销，已消费业绩保留。
- *   - 通道 2（服务提成 service_commissions）：保持软删（仅零消费 isFullItemRefund item，恒 no-op）——
- *     已消费次数的服务提成保留（退的是未消费次数，本无服务提成）。
- *
- * 在退款审批通过（approveRefund）的同事务内调用。
- *
- * **修改本文件必须同步 fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js**
- * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
- * `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`
- * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { db } from '@/db'
@@ -27,13 +6,10 @@ import { rowsAffected } from '@/lib/pg-rows'
 
 export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
-/** 可执行 SQL 的对象（db 顶层或事务 tx 均可） */
+
 type SqlExecutor = Pick<typeof db, 'execute'> | TransactionLike
 
-/**
- * 待审批退款冻结判定（Bug I）：订单存在待审批退款时返回 true，调用方返回 {success:false} 阻止操作。
- * admin action 范式用返回值（throw 会冒泡成 500 且生产脱敏）；SQL 谓词镜像 staff utils/refund.js。
- */
+
 export async function hasPendingRefund(executor: SqlExecutor, saleOrderId: string): Promise<boolean> {
   if (!saleOrderId) return false
   const r = await executor.execute(sql`
@@ -43,8 +19,7 @@ export async function hasPendingRefund(executor: SqlExecutor, saleOrderId: strin
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 已结算退款守卫（2026-06-24）：订单存在「已支付」退款时返回 true，调用方禁止重分配/清除分配（防悬空负数）。SQL 谓词镜像 staff utils/refund.js assertNoSettledRefund。
- *  订单级粒度——仅用于整单全作废重插的 batchSaveAllocations；回款级路径请用 hasSettledRefundForPayment。 */
+
 export async function hasSettledRefund(executor: SqlExecutor, saleOrderId: string): Promise<boolean> {
   if (!saleOrderId) return false
   const r = await executor.execute(sql`
@@ -54,10 +29,7 @@ export async function hasSettledRefund(executor: SqlExecutor, saleOrderId: strin
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 已结算退款守卫·回款级（2026-06-24）：仅当本回款 salePaymentId 的可分配 item 中存在「已被结算退款冲销」的 item 时返回 true。
- *  收窄订单级守卫——使同单其它无关 item 的后续回款仍可正常分配，不被同单一笔无关退款误锁。
- *  判定：本回款的 sale_payment_allocatable_items ∩ 挂在「已支付退款流水」上的负数 sale_allocations 冲销行（sale_item 维度）≠ ∅。
- *  SQL 谓词镜像 staff utils/refund.js assertNoSettledRefundForPayment。 */
+
 export async function hasSettledRefundForPayment(
   executor: SqlExecutor,
   salePaymentId: number | string,
@@ -78,7 +50,7 @@ export async function hasSettledRefundForPayment(
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 按服务单反查其涉及的所有订单是否有待审批退款（confirmServiceOrder 用）。 */
+
 export async function hasPendingRefundByServiceOrder(
   executor: SqlExecutor,
   serviceOrderId: string,
@@ -93,7 +65,7 @@ export async function hasPendingRefundByServiceOrder(
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 退款通知：发起 → 门店店长（自审降噪）。executor 须事务内 tx。Bug C；SQL 谓词镜像 staff utils/refund.js。 */
+
 export async function notifyRefundCreated(
   executor: SqlExecutor,
   p: { paymentId: number; saleOrderId: string; storeId: string | null; operatorId: string | null; amount: number; customerName: string | null },
@@ -114,7 +86,7 @@ export async function notifyRefundCreated(
   }
 }
 
-/** 退款审批结果通知：通过/驳回 → 发起人。executor 须事务内 tx。Bug C。 */
+
 export async function notifyRefundResult(
   executor: SqlExecutor,
   p: { paymentId: number; saleOrderId: string; recipientEmployeeId: string | null; approved: boolean; reason?: string; amount: number },
@@ -134,24 +106,24 @@ export async function notifyRefundResult(
 
 export interface CascadeRefundItem {
   saleItemId: string
-  /** 退疗程卡/家居的数量；NULL 时通道 5 跳过 */
+  
   sessionCount: number | null
-  /** 本次该 item 的退款金额（元）；通道 1 据此记负数冲销销售提成。NULL/0 → 通道 1 跳过该 item */
+  
   refundAmount: number | null
-  /** 该 item 本次是否零消费全退（控制通道 2 服务提成门控 + 通道 3 整单券判定；通道 1 不再依赖） */
+  
   isFullItemRefund: boolean
 }
 
 export interface CascadeRefundParams {
-  /** 被退款的原销售单 ID */
+  
   saleOrderId: string
-  /** 退款流水 sale_order_payments.id —— 通道 1 负数冲销行的 sale_payment_id 归属键 */
+  
   refundPaymentId: number
-  /** 本次退款涉及的明细行 */
+  
   items: CascadeRefundItem[]
-  /** 是否整单全退（所有购买项全退）→ 控制 user_coupons 回滚 */
+  
   isWholeOrderRefund: boolean
-  /** 退款原因；写入 voided_reason */
+  
   refundReason: string
 }
 
@@ -170,7 +142,7 @@ export async function cascadeRefund(
   const { saleOrderId, refundPaymentId, items, isWholeOrderRefund, refundReason } = params
   const reason = `退款审批通过：${refundReason ?? ''}`.slice(0, 500)
 
-  // 兜底：items 为空（老退款行 / 整单退无明细）→ 查所有购买项视为全退（兼容历史数据）
+  
   let effItems = Array.isArray(items) ? items.filter((it) => it && it.saleItemId) : []
   let wholeOrder = !!isWholeOrderRefund
   if (effItems.length === 0) {
@@ -182,14 +154,14 @@ export async function cascadeRefund(
     wholeOrder = true
   }
 
-  // 仅「零消费全退」item 才作废服务提成（通道 2）+ 参与整单券判定（通道 3）；通道 1 不再依赖（Bug M 语义收敛）
+  
   const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
 
-  // ── 1) sale_allocations 记负数冲销（销售提成）：对所有被退 item 按实退额冲销 ───────────
-  // 业务口径（2026-06-24）：退款撤销营业额分配 = 记负数（保留原正数行 + 新增负数镜像行，报表 SUM 自动净额化）。
-  // item 级目标冲销额 = min(本次该 item 退款额, 该 item 活跃正数分配 Σtotal_amount)，按各 (emp,role) 行
-  // total_amount 权重最大余数法分摊到分；负数行挂退款流水 id（新维度，不撞 uq_sale_alloc_item_emp_role_payment）。
-  // 消费过的卡退剩余次数 → 退额 < 已分配额 → 等比部分冲销，已消费部分业绩保留。两端镜像 staff helpers/refund-cascade.js。
+  
+  
+  
+  
+  
   let voidedAllocations = 0
   for (const it of effItems) {
     const refundAmt = Number(it.refundAmount || 0)
@@ -212,7 +184,7 @@ export async function cascadeRefund(
     const baseCents = allocRows.reduce((s, r) => s + Math.round(Number(r.sum_total) * 100), 0)
     if (baseCents <= 0) continue
     const targetCents = Math.min(Math.round(refundAmt * 100), baseCents)
-    // 最大余数法：按各组 total_amount 权重分摊 targetCents，余数逐分补给小数部分最大者（精确到分）
+    
     const parts = allocRows.map((r) => {
       const wCents = Math.round(Number(r.sum_total) * 100)
       const exact = (targetCents * wCents) / baseCents
@@ -227,7 +199,7 @@ export async function cascadeRefund(
       const voidTotal = p.cents / 100
       const sumTotal = Number(p.r.sum_total)
       const sumComm = Number(p.r.sum_comm || 0)
-      // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
+      
       const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
       await tx.execute(sql`
         INSERT INTO sale_allocations
@@ -241,7 +213,7 @@ export async function cascadeRefund(
     }
   }
 
-  // ── 2) service_commissions 软删（仅全退 item） ──────────────────────
+  
   let voidedCommissions = 0
   if (fullItemIds.length > 0) {
     const res = await tx.execute(sql`
@@ -260,7 +232,7 @@ export async function cascadeRefund(
     voidedCommissions = rowsAffected(res)
   }
 
-  // ── 3) user_coupons 已用且未过期券恢复（仅整单全退） ──────────────
+  
   let refundedCoupons = 0
   if (wholeOrder) {
     const res = await tx.execute(sql`
@@ -276,7 +248,7 @@ export async function cascadeRefund(
     refundedCoupons = rowsAffected(res)
   }
 
-  // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算（订单级） ──
+  
   let reversedPoints = 0
   {
     const giftRes = await tx.execute(sql`
@@ -322,13 +294,13 @@ export async function cascadeRefund(
     }
   }
 
-  // ── 5) 家居退款计入已结算（逐被退家居 item，按退款数量） ──
-  // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
-  // 原 GREATEST(0, picked_up - qty) 错把退款数从已提货里减 → 损坏提货账 + refundable
-  // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
-  // 「已结算」= 已提货 + 已退），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
-  // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
-  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
+  
+  
+  
+  
+  
+  
+  
   let rolledBackPickups = 0
   for (const it of effItems) {
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null

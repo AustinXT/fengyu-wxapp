@@ -1,4 +1,4 @@
-/* components/mgmt-scope-picker — 市场/门店二级筛选样式 */
+
 
 .scope-picker {
   display: inline-block;

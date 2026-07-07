@@ -1,4 +1,4 @@
-// pagesShop/staff-detail/staff-detail.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 
@@ -18,7 +18,7 @@ Page({
     this.setData({ isLoading: true });
     try {
       const data: any = await callClientApi('staff.detail', { employeeId });
-      // 按设备本地时间判定「休假中」（leaveStart/leaveEnd 为墙钟串 YYYY-MM-DDTHH:mm:ss）
+      
       const now = Date.now();
       const ls = data?.leaveStart ? new Date(data.leaveStart).getTime() : NaN;
       const le = data?.leaveEnd ? new Date(data.leaveEnd).getTime() : NaN;
@@ -40,7 +40,7 @@ Page({
   },
 
   onShareAppMessage() {
-    // 分享礼：统一回首页并附带邀请人 inv 参数，保留原 title 文案
+    
     const { staff } = this.data;
     const app = getApp<IAppOption>();
     const userId = app.globalData.userId;

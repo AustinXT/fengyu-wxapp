@@ -45,7 +45,7 @@ export default function MallCategoriesPageClient({
   const defaultGroup = activeGroups[0]?.categoryName ?? ""
   const [activeTab, setActiveTab] = useState(defaultGroup)
 
-  // Dialog state
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<MallCategory | null>(null)
   const [form, setForm] = useState<CategoryFormData>({
@@ -55,11 +55,11 @@ export default function MallCategoriesPageClient({
   })
   const [saving, setSaving] = useState(false)
 
-  // Delete confirmation
+  
   const [deleteTarget, setDeleteTarget] = useState<MallCategory | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // 分组管理 dialog
+  
   const [groupDialogOpen, setGroupDialogOpen] = useState(false)
 
   const categoriesByGroup = useMemo(() => {
@@ -224,7 +224,7 @@ export default function MallCategoriesPageClient({
         </div>
       )}
 
-      {/* Add/Edit Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogHeader>
           <DialogTitle>{editingCategory ? "编辑分类" : "新增分类"}</DialogTitle>
@@ -270,7 +270,7 @@ export default function MallCategoriesPageClient({
         </DialogFooter>
       </Dialog>
 
-      {/* Delete Confirmation */}
+      {}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
@@ -286,7 +286,7 @@ export default function MallCategoriesPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 分组管理 Dialog */}
+      {}
       <MallGroupManagementDialog
         open={groupDialogOpen}
         onOpenChange={setGroupDialogOpen}

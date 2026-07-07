@@ -1,4 +1,4 @@
-// mock/auth.ts — 认证相关 mock
+
 
 export const authHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'auth.login': () => ({

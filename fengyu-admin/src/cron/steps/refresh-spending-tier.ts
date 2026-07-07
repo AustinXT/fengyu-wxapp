@@ -1,21 +1,4 @@
-/**
- * STEP — spending_tier（历史消费档位）重算（迁自 db/scripts/calc-spending-tier.js）
- *
- * 业务口径：
- *   spending_tier = 顾客**累计（终身）消费额**分档，对所有顾客都有值（默认 '<1990'）。
- *   净额 = SUM(GREATEST(received - refunded_amount, 0))
- *          FILTER (WHERE sale_order_type IN ('销售单','转换单'))。
- *   与 member_level 的区别：spending_tier 是终身累计、**不加时间过滤**（故 WorkFine 同步的
- *   历史已完成单 paid_at=NULL 也计入），member_level 限滚动 12 个月。因此本 STEP 不依赖
- *   CURRENT_DATE/ctx 时间注入。
- *
- *   分档阈值（与 member_level 5 档数值一致，多一个 1990 下界）：
- *     >= 100000 → '10W+'，>= 60000 → '6-10W'，>= 30000 → '3-6W'，
- *     >= 10000 → '1-3W'，>= 1990 → '1990-1W'，其余 → '<1990'。
- *
- * 幂等、可重入：仅更新档位发生变化的行（IS DISTINCT FROM），避免无谓 updated_at churn。
- * SQL 常量 export 以便测试做正则形态断言。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'

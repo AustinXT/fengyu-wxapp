@@ -1,41 +1,33 @@
-/**
- * clientApi 云函数入口
- * 客户端统一接口,按 action 字段路由分发
- *
- * 入口分流：
- *   1. event.httpMethod 存在 → HTTP 触发器入口（仅 staffApi 跨 env 转上传走此路径，
- *      HMAC + 时间戳 + allowlist 三重守卫，详见 handleHttpEntry）
- *   2. 其他 → 原 cloud.callFunction 入口（小程序前端 + admin callClientFunction）
- */
 
-// 强制进程时区为东八区。CloudBase 运行时默认 UTC，否则 new Date(y,m,d) / getHours/getDate
-// 等本地时间方法会偏差 8 小时（须在任何 Date 操作与模块 require 之前设置）。
+
+
+
 process.env.TZ = 'Asia/Shanghai'
 
 const cloud = require('wx-server-sdk')
 const crypto = require('crypto')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
-// 导入中间件
+
 const { auth } = require('./middleware/auth')
 const { buildErrorResponse } = require('./utils/error-codes')
 const { extractAppVersion } = require('./utils/app-version')
 
-// HTTP 触发器仅放白名单 action（其他即使签对了也 403）
-// 任何新增需要 HTTP 暴露的 action 必须显式加这里
+
+
 const HTTP_ACTION_ALLOWLIST = new Set(['auth.uploadStaffAvatar'])
 
-// HMAC 时间戳容忍窗口（±5min）
+
 const HMAC_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000
 
-// 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
+
 const routes = {
   'auth.login': () => require('./routes/auth').login,
   'auth.bindPhone': () => require('./routes/auth').bindPhone,
   'auth.bindStore': () => require('./routes/auth').bindStore,
   'auth.updateProfile': () => require('./routes/auth').updateProfile,
   'auth.uploadAvatar': () => require('./routes/auth').uploadAvatar,
-  // 跨 env 入口：仅供 staffApi 通过 HTTP 触发器 + HMAC 调用，cloud.callFunction 直调被 _fromHttp 守卫拒绝
+  
   'auth.uploadStaffAvatar': () => require('./routes/auth').uploadStaffAvatar,
   'store.list': () => require('./routes/store').list,
   'store.detail': () => require('./routes/store').detail,
@@ -94,51 +86,49 @@ const routes = {
   'config.consumeAgreement': () => require('./routes/config').consumeAgreement
 }
 
-/**
- * 云函数入口函数
- */
+
 exports.main = async (event, context) => {
-  // ─── HTTP 触发器入口分流 ───
-  // CloudBase HTTP 触发器把 event 包成 {httpMethod, headers, body, ...}
-  // 命中此分支即走 HMAC 校验链路，不走 cloud.callFunction 默认 auth 中间件
+  
+  
+  
   if (event && event.httpMethod) {
     return await handleHttpEntry(event, context)
   }
 
   const { action, payload } = event
 
-  // 参数校验
+  
   if (!action) {
     return { code: -1, message: '缺少 action 参数' }
   }
 
-  // 查找路由（懒加载：首次调用时才 require 对应模块）
+  
   const resolver = routes[action]
   if (!resolver) {
     return { code: -1, message: `未知的 action: ${action}` }
   }
   const handler = resolver()
 
-  // 构造上下文
+  
   const ctx = {
     event,
     context,
-    auth: {}, // 将由认证中间件填充
-    appVersion: extractAppVersion(payload), // 前端 _appVersion（供向后兼容分流），公开接口同样可读
+    auth: {}, 
+    appVersion: extractAppVersion(payload), 
     result: null
   }
 
-  // 无需认证的公开接口
-  // config.invalidateConfig 虽列于此，但授信前提是 admin 通过 CloudBase node-sdk 持密调用；
-  // 被恶意调用的副作用仅限清一次进程内缓存，不涉及数据写入。
+  
+  
+  
   const publicActions = ['config.banners', 'config.fengyuguan', 'config.shareGift', 'config.consumeAgreement', 'config.invalidateConfig', 'card.rechargeConfig']
 
   try {
     if (publicActions.includes(action)) {
-      // 公开接口，跳过认证
+      
       await handler(ctx)
     } else {
-      // 执行中间件链 + 业务处理
+      
       await auth(ctx, async () => {
         await handler(ctx)
       })
@@ -155,23 +145,7 @@ exports.main = async (event, context) => {
   }
 }
 
-/**
- * HTTP 触发器入口（跨 env 转上传专用通道）
- *
- * 调用方：staffApi 通过 HTTPS POST 转发头像上传（详见 fengyu-staff/cloudfunctions/staffApi/routes/staff.js uploadAvatar）
- *
- * 守卫链：
- *   1. 仅接受 POST + JSON body
- *   2. x-fengyu-signature 头必须 = HMAC-SHA256(rawBody, CLIENT_SECRET)，timingSafeEqual 比较
- *   3. body.timestamp 必须在 ±5min 内（防重放）
- *   4. body.action 必须在 HTTP_ACTION_ALLOWLIST（即使 HMAC 持有者也不能打其他接口）
- *
- * 校验通过后向 ctx.event 注入 _fromHttp=true + _hmacVerified=true，
- * 路由函数自身可二次断言（如 auth.uploadStaffAvatar 拒绝任何缺这两个 flag 的调用）。
- *
- * 错误响应统一 statusCode=200 + body.code != 0（CloudBase HTTP 触发器对非 2xx
- * 状态码会改写响应体，统一用 200 + 业务 code 让客户端正常解析）。
- */
+
 async function handleHttpEntry(event, context) {
   const jsonResp = (codeOrObj) => {
     const body = typeof codeOrObj === 'object' ? codeOrObj : { code: codeOrObj }
@@ -232,7 +206,7 @@ async function handleHttpEntry(event, context) {
     event: { ...event, payload: payload || {}, _fromHttp: true, _hmacVerified: true },
     context,
     auth: {},
-    appVersion: extractAppVersion(payload), // 跨 env HTTP 入口无前端版本，恒为 null，仅为 ctx 结构一致
+    appVersion: extractAppVersion(payload), 
     result: null,
   }
 

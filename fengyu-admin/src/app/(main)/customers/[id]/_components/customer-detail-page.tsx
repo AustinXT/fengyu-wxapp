@@ -43,7 +43,7 @@ interface CustomerDetailPageProps {
   prepaidBalance?: string
   canEditPhone?: boolean
   canPullLegacy?: boolean
-  /** 是否展示「危险操作」删除入口（仅系统管理员 customer:delete） */
+  
   canDelete?: boolean
 }
 
@@ -65,7 +65,7 @@ export default function CustomerDetailPage({
   const [merging, setMerging] = useState<string | null>(null)
   const [pullLegacyOpen, setPullLegacyOpen] = useState(false)
 
-  // 手机号编辑（独立于"基本档案 编辑/保存"，因为手机号修改影响登录/会员识别，需要单独的二次确认流程）
+  
   const [phoneEditing, setPhoneEditing] = useState(false)
   const [phoneInput, setPhoneInput] = useState(customer.phone ?? "")
   const [phoneSaving, setPhoneSaving] = useState(false)
@@ -87,7 +87,7 @@ export default function CustomerDetailPage({
       return
     }
     if (next === (customer.phone ?? "")) {
-      // 与原号一致，无需提示，直接退出编辑态
+      
       setPhoneEditing(false)
       return
     }
@@ -98,8 +98,8 @@ export default function CustomerDetailPage({
     setPhoneSaving(true)
     setPhoneConfirmOpen(false)
     try {
-      // TODO(perf): admin 改 phone 后，client 端 AUTH_CACHE 仍按 OPENID 缓存 5min，自然过期。
-      // 若日后出现性能/一致性问题，可考虑通过 cloudbase 触发缓存失效；当前不实现跨服务调用。
+      
+      
       const result = await updateCustomer(
         customer.userId,
         { phone: phoneInput.trim() },
@@ -138,7 +138,7 @@ export default function CustomerDetailPage({
     }
   }
 
-  // Edit state
+  
   const [isEditing, setIsEditing] = useState(false)
   useUnsavedChanges(isEditing)
   const [saving, setSaving] = useState(false)
@@ -163,7 +163,7 @@ export default function CustomerDetailPage({
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  // 推荐人搜索选择（异步搜索，不受 scope/limit 限制）
+  
   type PromoterOption = { employeeId: string; name: string | null; phone: string | null }
   const [promoterSearch, setPromoterSearch] = useState("")
   const [promoterOpen, setPromoterOpen] = useState(false)
@@ -250,8 +250,8 @@ export default function CustomerDetailPage({
     }
   }
 
-  // Employees filtered by customer's bound store — 严格美容师身份（skills 含 '美容师'），
-  // 与 client `staff.list` / staff `staff.list` / admin orders|services create 统一。
+  
+  
   const storeEmployees = useMemo(() => {
     const isBeautician = (e: typeof employees[number]) =>
       !e.isResigned && e.skills?.includes('美容师')
@@ -312,7 +312,7 @@ export default function CustomerDetailPage({
       cell: (row) => <span>{row.skuName ?? "—"}</span>,
     },
     {
-      // ticket 2026-05-19 D10=A：合并展示「已用 / 已付 / 共」三段次数
+      
       key: "sessionCount",
       header: "已用/已付/共",
       cell: (row) =>
@@ -937,7 +937,7 @@ export default function CustomerDetailPage({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 危险操作：物理删除顾客（仅系统管理员，仅无业务关联的测试号可删） */}
+      {}
       {canDelete && (
         <DangerZoneDelete
           entityLabel="顾客"

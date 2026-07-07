@@ -1,4 +1,4 @@
-// pagesProfile/points/points.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatDateTimeShort } from '../../utils/format';
@@ -62,7 +62,7 @@ Page({
     }));
   },
 
-  /** 加载首页（重置分页） */
+  
   async loadHistory() {
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
@@ -84,7 +84,7 @@ Page({
     }
   },
 
-  /** 加载更多（追加，错误不覆盖已有数据） */
+  
   async loadMore() {
     this._page += 1;
     this.setData({ loadingMore: true });

@@ -1,32 +1,13 @@
-/**
- * 管理层数据中心模块路由（员工端）
- *
- * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
- *   - HQ 账号：返回所有市场及其下属门店
- *   - market 账号：仅返回 roleBindings 中 scopeType='市场' 对应的市场
- *   - 5 分钟内存缓存全量 markets，每次请求按 ctx.auth 过滤后返回
- *
- * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
- *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
- *   口径定义：notes/references/metrics.md
- *
- * **公式 / sale_order_type / status 过滤变更必须同步
- * `fengyu-admin/src/actions/dashboard.ts`
- * 与 `fengyu-admin/src/actions/dashboard.consistency.test.ts`**
- * （字面量守护：SUMMARY v3 §2 #15 / ticket notes/tickets/2026-05-17-dashboard-three-end-consistency-test.md）。
- */
+
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
-/**
- * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
- * 月度业绩是整月维度，对应整月在营/在职的口径，分母用月末快照。
- */
+
 function lastDayOfMonth(dateStr) {
   const [y, m] = dateStr.split('-').map(Number)
-  // m 为下一月用 0 号 = 当月月末
+  
   const d = new Date(Date.UTC(y, m, 0))
   const yy = d.getUTCFullYear()
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
@@ -34,15 +15,12 @@ function lastDayOfMonth(dateStr) {
   return `${yy}-${mm}-${dd}`
 }
 
-// 模块级缓存：存放 HQ 全量 markets 列表（按账号过滤前的视图）
-// 不同账号每次请求基于此缓存按 staffLevel + roleBindings 派生自己的视图
+
+
 const CACHE_TTL_MS = 5 * 60 * 1000
 let CACHE = { ts: 0, data: null }
 
-/**
- * 加载 HQ 全量 markets 列表（带 5 分钟内存缓存）
- * @returns {Promise<Array<{id: string, name: string, stores: Array<{storeId: string, storeName: string}>}>>}
- */
+
 async function loadAllMarkets() {
   if (CACHE.data && Date.now() - CACHE.ts < CACHE_TTL_MS) {
     return CACHE.data
@@ -63,7 +41,7 @@ async function loadAllMarkets() {
     ORDER BY m.name ASC, s.store_name ASC
   `)
 
-  // 聚合为 markets[].stores[] 结构
+  
   const map = new Map()
   for (const r of rows) {
     if (!map.has(r.market_id)) {
@@ -87,15 +65,7 @@ async function loadAllMarkets() {
   return markets
 }
 
-/**
- * mgmtDashboard.scopeOptions
- * 入参：无（按账号权限自动过滤）
- * 出参：
- *   {
- *     staffLevel: 'headquarters' | 'market',
- *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...]
- *   }
- */
+
 async function scopeOptions(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
@@ -111,7 +81,7 @@ async function scopeOptions(ctx) {
     )
     visible = allMarkets.filter((m) => allowedMarketIds.has(m.id))
   }
-  // headquarters 走全量；其它分支由 requireManagementLevel 拦截
+  
 
   ctx.result = {
     staffLevel,
@@ -119,15 +89,11 @@ async function scopeOptions(ctx) {
   }
 }
 
-// =====================================================================
-// summary —— 8 卡片汇总
-// =====================================================================
 
-/**
- * 校验请求 scope 是否在账号权限内
- * - headquarters：放行所有 scopeType
- * - market：禁 'all'；'market' 必须命中 roleBindings 的 scopeId；'store' 必须在 scopeStoreIds 内
- */
+
+
+
+
 function validateScope(auth, scopeType, scopeId) {
   if (auth.staffLevel === 'headquarters') return
 
@@ -154,19 +120,13 @@ function validateScope(auth, scopeType, scopeId) {
   }
 }
 
-/**
- * 构造 sale/service 表的 store_id scope 过滤片段
- * @param {string} scopeType
- * @param {string} scopeId
- * @param {string} alias 表别名（默认 'so'）
- * @param {number} startIdx 起始 $n 下标
- */
+
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
     return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
   }
-  // market：走 stores JOIN org_nodes 子查询，与 scope.js 现有口径一致
+  
   return {
     sql:
       `${alias}.store_id IN (` +
@@ -177,7 +137,7 @@ function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/** client_wechat_users.bound_store_id scope */
+
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -193,7 +153,7 @@ function buildClientScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/** staff_wechat_users.store_id scope */
+
 function buildStaffScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -209,24 +169,18 @@ function buildStaffScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/**
- * 时间窗口 SQL 片段
- * @param {string} col 列引用
- * @param {'day'|'month'} mode
- * @param {number} idx $n 下标（指向 date 参数）
- * @param {boolean} isDateColumn col 本身是 date 类型则不必再 ::date
- */
+
 function timeWindow(col, mode, idx, isDateColumn) {
   const dayLeft = isDateColumn ? col : `${col}::date`
   if (mode === 'day') return `${dayLeft} = $${idx}::date`
   return `date_trunc('month', ${col}) = date_trunc('month', $${idx}::date)`
 }
 
-/* ----- 7 个指标查询 ----- */
+
 
 async function queryStoreRevenue(scopeType, scopeId, date, mode) {
-  // 2026-04-26 sale-order-domain-refactor：paid_amount → received - refunded_amount
-  // 与 admin getDashboardStats 对齐（audit-17 P0-17-01）
+  
+  
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
     `SELECT COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS v
@@ -333,12 +287,12 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
-// 「员工收入」口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
-//   销售部分 = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
-//   服务部分 = SUM(service_commissions.commission_amount) — 真实【服务提成】
-//   收入 = 两者相加（见 staffRankingIncome）。销售/服务两侧均为真实提成收入，
-//   与 staffApi/routes/staff.js performanceDetail 三处自洽。
-//   注意区分 staffRankingRevenue（纯销售营业额份额 SUM(total_amount)，= 门店视图首卡「今日分成（营业额）」口径）。
+
+
+
+
+
+
 async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
@@ -374,15 +328,7 @@ async function queryServiceCommissionIncome(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 新会员（2026-04-25 起按 became_member_at 判定）
- *
- * 口径：所选时段内首次成为会员客。
- * 与 metrics.md "新会员"行严格对齐；与 became_member_at（与 customer_type='会员客' 跃迁同事务维护）作权威字段。
- *
- * 旧口径（已废弃）：`old_member_level IS NULL AND member_level IS NOT NULL AND [member_level_upgraded_at]`
- * — 旧口径会把"会员等级内跃迁（初钻→星钻 等）"也算作新会员，与业务语义偏离。
- */
+
 async function queryNewMembers(scopeType, scopeId, date, mode) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
@@ -396,18 +342,7 @@ async function queryNewMembers(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 会员数（截面快照，2026-04-25 T2 起按 selectedDate 历史化）
- *
- * 口径：「$date 那天为止累计成为会员客」 = COUNT(c.became_member_at::date <= $date)
- *
- * 不再用 c.customer_type = '会员客'（那是当前快照，无法反映历史日期）。
- * 改为用 c.became_member_at 时间戳，任意 $date 都可还原"那一天的会员数"。
- *
- * 跃迁路径在 `staffApi/routes/order.js`（recalcCustomerType）和
- * `payNotify/index.js`（重算路径）中已与 customer_type 跃迁同步写入 became_member_at = NOW()。
- * 历史数据由 `db/scripts/backfill-became-member-at.js` 一次性回填。
- */
+
 async function queryMemberCount(scopeType, scopeId, date) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
@@ -421,15 +356,7 @@ async function queryMemberCount(scopeType, scopeId, date) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 保有会员数（方案 B 实时计算，2026-04-25 T5 起）
- *
- * 口径：「$date 那天已是会员客」 ∩ 「$date 前 90 天到店至少 1 次」
- *
- * 不再读 client_wechat_users.customer_status 列（那是当前快照、cronTask 每日重算，
- * 无法反映历史日期）。改为基于 service_orders 实时聚合 + became_member_at 守卫，
- * 任意 $date 都可还原"那一天的保有会员数"。
- */
+
 async function queryRetainedMemberCount(scopeType, scopeId, date) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
@@ -447,18 +374,7 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 员工数（截面快照，2026-04-25 T3 起按 selectedDate 历史化）
- *
- * 口径：「$date 那天为止已入职且未离职」 =
- *   COUNT(s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date))
- *
- * 不再用 s.is_resigned = FALSE（那是当前快照，无法反映历史日期）。
- * 改为用 s.hired_at + s.resigned_at 时间戳，任意 $date 都可还原"那一天的在职员工数"。
- *
- * 字段维护：admin 员工管理表单写入；当前 hired_at 由 created_at::date 兜底（WorkFine 无入职日期源），
- * resigned_at 由 updated_at::date 兜底。后续由管理后台维护。
- */
+
 async function queryEmployeeCount(scopeType, scopeId, date) {
   const sc = buildStaffScope(scopeType, scopeId, 's', 2)
   const rows = await pg.query(
@@ -474,15 +390,7 @@ async function queryEmployeeCount(scopeType, scopeId, date) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 门店数（截面快照，2026-04-25 T4 起按 selectedDate 历史化）
- *
- * 口径：「$date 那天在营」 =
- *   COUNT(s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date))
- *
- * 单店模式（scope=store）短路返回 1，不依赖快照。
- * all/market 模式 JOIN stores 表，加 opening_date/closed_at 守卫。
- */
+
 async function queryStoreCount(scopeType, scopeId, date) {
   if (scopeType === 'store') return 1
   if (scopeType === 'all') {
@@ -528,11 +436,7 @@ async function resolveScopeName(scopeType, scopeId) {
   return rows[0]?.store_name || ''
 }
 
-/**
- * mgmtDashboard.summary
- * 入参：{ date: 'YYYY-MM-DD', scopeType: 'all'|'market'|'store', scopeId? }
- * 出参：见 ticket §1.2
- */
+
 async function summary(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
@@ -591,16 +495,16 @@ async function summary(ctx) {
     queryServiceCommissionIncome(scopeType, scopeId, date, 'month'),
     queryMemberCount(scopeType, scopeId, date),
     queryRetainedMemberCount(scopeType, scopeId, date),
-    queryEmployeeCount(scopeType, scopeId, date),     // 当日（selectedDate 当日的在职员工数）
-    queryStoreCount(scopeType, scopeId, date),         // 当日（selectedDate 当日在营的门店数）
-    queryEmployeeCount(scopeType, scopeId, monthEnd),  // 月末（用于月度派生指标分母）
-    queryStoreCount(scopeType, scopeId, monthEnd),     // 月末（月度业绩对应的整月在营门店数）
+    queryEmployeeCount(scopeType, scopeId, date),     
+    queryStoreCount(scopeType, scopeId, date),         
+    queryEmployeeCount(scopeType, scopeId, monthEnd),  
+    queryStoreCount(scopeType, scopeId, monthEnd),     
     resolveScopeName(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
-  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
+  
   const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : 0)
 
   ctx.result = {
@@ -638,7 +542,7 @@ async function summary(ctx) {
       today: round2(serviceCommissionToday),
       month: round2(serviceCommissionMonth),
     },
-    // T6（2026-04-25）：双口径 — day 给屏幕展示与日维度派生分母用，month 给月维度派生分母用
+    
     storeCount: { day: storeCountDay, month: storeCountMonth },
     employeeCount: { day: employeeCountDay, month: employeeCountMonth },
     memberCount,
@@ -651,17 +555,11 @@ async function summary(ctx) {
   }
 }
 
-// =====================================================================
-// storeRanking —— 门店排行榜（mgmt-dashboard ranking tab）
-// =====================================================================
 
-/**
- * 落 period 区间（用于业绩/实耗/客流/新会员/项目数）
- * 锚点固定为 NOW()::date，无 date 参数（设计稿无日历组件，3 个 period 固定相对值）
- * @param {string} col 列引用（含别名）
- * @param {'month'|'lastMonth'|'year'} period
- * @param {boolean} _isDateColumn 保留形参便于未来扩展（NOW()::date 与 timestamp 比较时 PG 会自动处理）
- */
+
+
+
+
 function timeWindowPeriod(col, period, _isDateColumn) {
   if (period === 'month') {
     return `date_trunc('month', ${col}) = date_trunc('month', NOW()::date)`
@@ -669,15 +567,11 @@ function timeWindowPeriod(col, period, _isDateColumn) {
   if (period === 'lastMonth') {
     return `date_trunc('month', ${col}) = date_trunc('month', NOW()::date - INTERVAL '1 month')`
   }
-  // year
+  
   return `date_trunc('year', ${col}) = date_trunc('year', NOW()::date)`
 }
 
-/**
- * 保有会员（方案 B）的 refDate SQL 表达式
- * - month / year：本月或本年还未结束 → 用 NOW()::date
- * - lastMonth：上月最后一天
- */
+
 function getRefDateExpr(period) {
   if (period === 'lastMonth') {
     return `(date_trunc('month', NOW()::date) - INTERVAL '1 day')::date`
@@ -704,21 +598,13 @@ function getSalesDataPeriod(period) {
   return { startDate: `${y}-01-01`, endDate: today }
 }
 
-/**
- * 当前账号可见门店列表
- * @returns {string[] | null} null 表示不过滤（headquarters）；[] 表示空集（market 但 scopeStoreIds 为空）
- */
+
 function getVisibleStoreIds(auth) {
   if (auth.staffLevel === 'headquarters') return null
   return auth.scopeStoreIds || []
 }
 
-/**
- * 构造 stores 表的 store_id 过滤片段
- * @param {string[]|null} visibleStoreIds null=不过滤；[]=空集（返回 FALSE 让 SQL 短路）
- * @param {string} alias 表别名（默认 's'）
- * @param {number} startIdx 起始 $n 下标
- */
+
 function buildStoreFilter(visibleStoreIds, alias, startIdx) {
   if (!visibleStoreIds) return { sql: 'TRUE', params: [] }
   if (visibleStoreIds.length === 0) {
@@ -730,11 +616,7 @@ function buildStoreFilter(visibleStoreIds, alias, startIdx) {
   }
 }
 
-/**
- * 同值并列 RANK 跳号语义（标准 SQL RANK()）
- * [200,100,50] → 1/2/3；[100,100,50] → 1/1/3
- * 调用前 rows 必须已按 value DESC 排序
- */
+
 function assignRanks(rows) {
   let rank = 0
   let lastValue = null
@@ -748,7 +630,7 @@ function assignRanks(rows) {
   return rows
 }
 
-/* ----- 6 个排行榜 metric 子查询 ----- */
+
 
 async function rankingRevenue(period, storeFilter) {
   return pg.query(
@@ -825,12 +707,7 @@ async function rankingRetainedMember(period, storeFilter) {
   )
 }
 
-/**
- * 新会员排名（2026-04-25 起按 became_member_at 判定，与 metrics.md "新会员"行对齐）
- *
- * 旧口径（已废弃）：`old_member_level IS NULL AND member_level IS NOT NULL AND [member_level_upgraded_at]`
- * 旧口径包含"会员等级内跃迁"，与"首次成会员"业务语义偏离。
- */
+
 async function rankingNewMember(period, storeFilter) {
   return pg.query(
     `SELECT
@@ -911,17 +788,13 @@ const METRIC_DISPATCH = {
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 const VALID_METRICS = ['revenue', 'consume', 'retainedMember', 'newMember', 'projectCount', 'footfall']
 
-// 用户面错误信息使用中文标签（与 internal enum value 一一对应）
+
 const PERIOD_CN = '本月/上月/本年'
 const METRIC_CN = '业绩/实耗/留存会员/新会员/项目数/客流'
 const STAFF_METRIC_CN = '业绩/实耗/新会员/客流/项目数/收入'
 const SCOPE_TYPE_CN = '全部/市场/门店'
 
-/**
- * mgmtDashboard.storeRanking
- * 入参：{ period: 'month'|'lastMonth'|'year', metric: 6 选 1 }
- * 出参：{ period, metric, unit, rows: [{rank, storeId, storeName, marketName, value}], computedAt }
- */
+
 async function storeRanking(ctx) {
   await requireManagementLevel()(ctx, async () => {})
   const { period, metric } = ctx.event.payload || {}
@@ -963,27 +836,24 @@ async function storeRanking(ctx) {
   }
 }
 
-// =====================================================================
-// staffRanking —— 员工排行榜（mgmt-dashboard ranking tab 「员工」子视图）
-// =====================================================================
-//
-// 与 storeRanking 的关系：
-//   - 复用 helper：timeWindowPeriod / getVisibleStoreIds / buildStoreFilter / assignRanks
-//   - 独立 SQL：所有 metric 都先用 producer_employees CTE 锁定"产能员工"再 LEFT JOIN
-//   - metric 集合不同：员工无 retainedMember；员工独有 income（销售提成 + 服务提成）
-//
-// 产能员工口径（2026-05-20 修订，原 skills && ARRAY['美容师','养生师'] 已删除）：
-//   hired_at/resigned_at + NOW() 锚点 ∩ scope（store_id 可见列表）
-// 不再用 skills 字段门控 — staff_wechat_users.skills 在历史员工档案中 1174/2020 为 NULL/空（如刘恋
-// FY-240804002 hired_at=2026-03-13、skills 空但有 888 元 allocation），导致 ranking 漏算 33% 业绩。
-// 角色过滤由各 metric 子查询通过 sale_allocations.role_type 等字段自然完成；
-// 末尾再用 WHERE COALESCE(value,0) > 0 把零值员工排除（无业绩不入榜）。
-// metrics.md employeeCount 指标仍保留 skills 过滤（语义是"产能技师在职数"，与 ranking 候选池语义不同）。
 
-/**
- * 拼接 producer_employees CTE 头部（所有 metric 共享）。
- * @param {{sql: string, params: any[]}} storeFilter buildStoreFilter('sw', startIdx) 的结果
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function producerEmployeesCte(storeFilter) {
   return `WITH producer_employees AS (
   SELECT
@@ -1002,7 +872,7 @@ function producerEmployeesCte(storeFilter) {
 
 const STAFF_ORDER_BY = `ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC`
 
-/* ----- 6 个员工排行榜 metric 子查询 ----- */
+
 
 async function staffRankingRevenue(period, storeFilter) {
   return pg.query(
@@ -1064,13 +934,7 @@ ${STAFF_ORDER_BY}`,
   )
 }
 
-/**
- * 新会员排名（2026-04-25 起按 became_member_at 判定，与 metrics.md "新会员"行对齐）
- * 旧口径（已废弃）：old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]
- *
- * 归属字段：client_wechat_users.bound_employee_id（绑定美容师）
- * bound_employee_id IS NULL 的新会员不归属任何员工（"无归属新会员"由监控关注，本接口不展示）
- */
+
 async function staffRankingNewMember(period, storeFilter) {
   return pg.query(
     `${producerEmployeesCte(storeFilter)},
@@ -1155,13 +1019,7 @@ ${STAFF_ORDER_BY}`,
   )
 }
 
-/**
- * 收入排名 = 销售提成 + 服务提成（2026-05-26 §3.15：销售部分改用真实提成 commission_amount）
- *   - 销售部分 = SUM(sale_allocations.commission_amount)（≠ staffRankingRevenue 的 total_amount 营业额份额）
- *   - 服务部分来自 service_commissions.commission_amount（已是计算后的实拿提成）
- *   - 与 querySalesCommissionIncome / staff.js performanceDetail 三处自洽
- * role_type IN ('美容师','养生师') ∩ is_void=FALSE
- */
+
 async function staffRankingIncome(period, storeFilter) {
   return pg.query(
     `${producerEmployeesCte(storeFilter)},
@@ -1218,11 +1076,7 @@ const STAFF_METRIC_DISPATCH = {
 
 const VALID_STAFF_METRICS = ['revenue', 'consume', 'newMember', 'footfall', 'projectCount', 'income']
 
-/**
- * mgmtDashboard.staffRanking
- * 入参：{ period: 'month'|'lastMonth'|'year', metric: 6 选 1 }
- * 出参：{ period, metric, unit, rows: [{rank, employeeId, employeeName, storeId, storeName, value}], computedAt }
- */
+
 async function staffRanking(ctx) {
   await requireManagementLevel()(ctx, async () => {})
   const { period, metric } = ctx.event.payload || {}
@@ -1235,7 +1089,7 @@ async function staffRanking(ctx) {
   }
 
   const visibleStoreIds = getVisibleStoreIds(ctx.auth)
-  // 注意：员工查询 store filter 别名是 sw（staff_wechat_users）
+  
   const storeFilter = buildStoreFilter(visibleStoreIds, 'sw', 1)
 
   const t0 = Date.now()
@@ -1266,22 +1120,15 @@ async function staffRanking(ctx) {
   }
 }
 
-// =====================================================================
-// salesData —— 销售数据页（业绩与实耗 + 品项维度汇总）
-// =====================================================================
 
-// 销售数据页骨架常量（仅经营类型 — 与 db/schema/enums.ts::salesCategoryEnum 同源）
-// 一级/二级品项骨架不在此写死，运行时从 product_categories 表读取（见 SQL 9）
+
+
+
+
+
 const SALES_CATEGORY_SKELETON = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
 
-/**
- * mgmtDashboard.salesData
- * 入参：{ period: 'month'|'lastMonth'|'year', scope: { type: 'all'|'market'|'store', id?: string } }
- * 出参：totalRevenue / 分客型业绩 / totalConsume / 分客型实耗 / 品项汇总
- *
- * 时间轴：BETWEEN period.startDate AND period.endDate（与 summary 的 date_trunc 不同）
- * 顾客分型：取 client_wechat_users 当前快照（新增会员 = became_member_at >= startDate）
- */
+
 async function salesData(ctx) {
   await requireManagementLevel()(ctx, async () => {})
   const { period, scope } = ctx.event.payload || {}
@@ -1303,7 +1150,7 @@ async function salesData(ctx) {
   const { startDate, endDate } = getSalesDataPeriod(period)
   const fmt = (v) => parseFloat(v || 0).toFixed(2)
 
-  // $1=startDate, $2=endDate, $3...=scope params
+  
   const scSale = buildSaleScope(scopeType, scopeId, 'o', 3)
   const scSvc = buildSaleScope(scopeType, scopeId, 'so', 3)
   const saleP = [startDate, endDate, ...scSale.params]
@@ -1312,7 +1159,7 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩（2026-04-26 refactor：paid_amount → received - refunded_amount）
+      
       pg.query(
         `SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
            FROM sale_orders o
@@ -1323,10 +1170,10 @@ async function salesData(ctx) {
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
-      // SQL 2: 分客型业绩（2026-05-20 P0-2 修复）
-      //   原口径 SUM(si.received) 在订单有 received 但无 sale_items 行时漏算（如缺明细订单）。
-      //   现改用订单层 SUM(o.received - refunded_amount)，与 SQL 1 总额同口径，保证守恒；
-      //   并把 became_member_at IS NULL（历史回填缺口）的"会员客"归到"老会员"（COALESCE 兜底）。
+      
+      
+      
+      
       pg.query(
         `SELECT
             COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
@@ -1349,7 +1196,7 @@ async function salesData(ctx) {
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
-      // SQL 3: 总实耗
+      
       pg.query(
         `SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
            FROM service_items sit
@@ -1361,7 +1208,7 @@ async function salesData(ctx) {
             AND ${excludeDepositRefundSql('so')}`,
         svcP,
       ),
-      // SQL 4: 分客型项目实耗（2026-05-20 P0-3 修复：became_member_at NULL 兜底归老会员）
+      
       pg.query(
         `SELECT
             COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
@@ -1385,7 +1232,7 @@ async function salesData(ctx) {
             AND ${excludeDepositRefundSql('so')}`,
         svcP,
       ),
-      // SQL 5: 分客型产品出库（product_type='家居产品' 行级；2026-05-20 P0-3 修复 NULL 兜底）
+      
       pg.query(
         `SELECT
             COALESCE(SUM(si.received::numeric) FILTER (
@@ -1409,7 +1256,7 @@ async function salesData(ctx) {
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
-      // SQL 6: 按经营类型汇总
+      
       pg.query(
         `SELECT si.sales_category AS label,
                 COALESCE(SUM(si.received::numeric), 0) AS value
@@ -1424,7 +1271,7 @@ async function salesData(ctx) {
           ORDER BY value DESC`,
         saleP,
       ),
-      // SQL 7: 按一级品项汇总
+      
       pg.query(
         `SELECT pc.product_kind AS label,
                 COALESCE(SUM(si.received::numeric), 0) AS value
@@ -1441,7 +1288,7 @@ async function salesData(ctx) {
           ORDER BY value DESC`,
         saleP,
       ),
-      // SQL 8: 按一二级品项当期销售（嵌套用）
+      
       pg.query(
         `SELECT pc.product_kind AS kind,
                 pc.category_name AS label,
@@ -1459,7 +1306,7 @@ async function salesData(ctx) {
           GROUP BY pc.product_kind, pc.category_name`,
         saleP,
       ),
-      // SQL 9: 品项骨架（不依赖时间窗 / scope，是 product_categories 表的当前全量快照）
+      
       pg.query(
         `SELECT product_kind, category_name
            FROM product_categories
@@ -1482,7 +1329,7 @@ async function salesData(ctx) {
     return dv !== 0 ? dv : a.label.localeCompare(b.label, 'zh-Hans-CN')
   }
 
-  // 经营类型骨架（4 行硬展示，pgEnum 序）+ 占比（分母=4 行金额之和）
+  
   const catMap = new Map(catRows.map((r) => [r.label, r.value]))
   const salesCategoryTotal = Array.from(catMap.values())
     .reduce((s, v) => s + parseFloat(v || 0), 0)
@@ -1491,19 +1338,19 @@ async function salesData(ctx) {
     return { label: lbl, value: fmt(v), ratio: fmtPct(v, salesCategoryTotal) }
   })
 
-  // 一级/二级骨架来自 SQL 9 的 product_categories 快照
+  
   const kindTotalMap = new Map(kindRows.map((r) => [r.label, r.value]))
-  const leafValueMap = new Map() // `${kind}::${label}` -> value
+  const leafValueMap = new Map() 
   for (const r of nameRows) {
     leafValueMap.set(`${r.kind}::${r.label}`, r.value)
   }
 
-  // 品项总额（一级金额之和）— 一级和二级 ratio 的统一分母
+  
   const productKindTotal = kindRows
     .reduce((s, r) => s + parseFloat(r.value || 0), 0)
 
-  // 按 product_kind 分组骨架（children 暂存数值原值供 ratio 计算）
-  const groupBuilder = new Map() // kind -> { children: [{label, value}] }
+  
+  const groupBuilder = new Map() 
   for (const sk of skeletonRows) {
     if (!groupBuilder.has(sk.product_kind)) {
       groupBuilder.set(sk.product_kind, { children: [] })
@@ -1516,7 +1363,7 @@ async function salesData(ctx) {
     })
   }
 
-  // 装配最终结构：一级 value 取 kindRows，children 排序，一级整体按 value DESC + label 升序
+  
   const byProductKind = Array.from(groupBuilder.entries())
     .map(([kind, { children }]) => {
       const kv = kindTotalMap.get(kind) || 0
@@ -1550,7 +1397,7 @@ async function salesData(ctx) {
   }
 }
 
-// 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
+
 function __resetMarketsCache() {
   CACHE = { ts: 0, data: null }
 }

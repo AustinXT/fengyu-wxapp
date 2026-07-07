@@ -11,7 +11,7 @@ export default async function ProductsPage() {
     getProductKinds(),
   ])
 
-  // 二级分类
+  
   const subCategories = categories.filter(c => c.productKind !== null)
 
   return (

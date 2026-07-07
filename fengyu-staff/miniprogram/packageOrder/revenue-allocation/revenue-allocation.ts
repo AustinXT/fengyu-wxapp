@@ -1,6 +1,6 @@
-// packageOrder/revenue-allocation/revenue-allocation.ts — 提成分配（支付后）
-// 交互对齐 admin：每行「先选技能标签 → 选有该技能的员工 → 选分配比例」，
-// 自动派生 提成%（只读）/ 分配额(=实收×分配比例) / 提成额(=分配额×提成%)。
+
+
+
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 import { formatDateTime } from '../../utils/formatters';
@@ -32,7 +32,7 @@ interface BeauticianInfo {
   resolvedDept: string | null;
 }
 
-/** 候选员工（订单门店 ∪ 出差员工，供 admin 式按技能筛选） */
+
 interface CandidateEmployee {
   staffWfId: string;
   name: string;
@@ -40,24 +40,24 @@ interface CandidateEmployee {
   storeName: string;
   skills: string[];
   department: string;
-  /** 是否出差支援（跨门店共享）；true 时可跨门店被选中 */
+  
   isOnBusinessTrip?: boolean;
 }
 
-/** 每个 item × person 的分配行 */
+
 interface AllocLine {
   saleItemId: string;
-  roleType: string;        // 技能标签（''=未选），分池校验键
-  staffWfId: string;       // 员工（''=未选）
+  roleType: string;        
+  staffWfId: string;       
   staffName: string;
   salesCategory: string;
-  ratioPercent: number;    // 分配比例（0=未选，10~100 整十）
-  commissionRate: number;  // 提成比例，只读，按 roleType+salesCat 查表
-  allocAmount: string;     // 分配额 = 实收 × 分配比例
-  commissionAmount: string; // 提成额 = 分配额 × 提成比例
+  ratioPercent: number;    
+  commissionRate: number;  
+  allocAmount: string;     
+  commissionAmount: string; 
 }
 
-/** suggest 预建行（云函数下发） */
+
 interface SuggestLine {
   saleItemId: string;
   roleType: string;
@@ -69,7 +69,7 @@ interface SuggestLine {
   autoFilled?: boolean;
 }
 
-/** 展示用：item + 内嵌分配行 */
+
 interface DisplayItem {
   sale_item_id: string;
   product_name: string;
@@ -78,7 +78,7 @@ interface DisplayItem {
   allocLines: AllocLine[];
 }
 
-/** 订单摘要（分配页仅用到这几个字段） */
+
 interface OrderSummary {
   saleOrderId: string;
   status: string;
@@ -88,10 +88,10 @@ interface OrderSummary {
   paid_at?: string;
 }
 
-/** allocation.suggestPayment API 响应（按回款逐笔分配；items[].received 为该笔回款逐项可分配额） */
+
 interface SuggestResponse {
   items: OrderItem[];
-  totalAmount: number;       // = 本次回款额（eventAmount）
+  totalAmount: number;       
   rates: RateRow[];
   ratesByRole?: Record<string, Record<string, number>>;
   beautyRates?: Record<string, Record<string, number>>;
@@ -106,17 +106,17 @@ interface SuggestResponse {
   allocationStatus?: string;
   customerName?: string;
   paidAt?: string;
-  frozen?: boolean; // 到账超 3 天冻结
+  frozen?: boolean; 
 }
 
-/** order.detail API 响应 */
+
 interface OrderDetailResponse {
   order: OrderSummary;
   items: OrderItem[];
   allocations: AllocationRecord[];
 }
 
-/** 云函数返回的分配记录（snake_case） */
+
 interface AllocationRecord {
   sale_item_id?: string;
   employee_id?: string;
@@ -133,7 +133,7 @@ Page({
   data: {
     loading: false,
     submitting: false,
-    // 按回款逐笔分配：本页以一笔回款（sale_payment_id）为单元
+    
     salePaymentId: 0,
     saleOrderId: '',
     order: null as OrderSummary | null,
@@ -141,35 +141,35 @@ Page({
     totalAmount: 0,
     rates: [] as RateRow[],
     beautyRates: {} as Record<string, Record<string, number>>,
-    // 候选员工（市场内）+ 订单门店（按技能筛选用）
+    
     candidateEmployees: [] as CandidateEmployee[],
     orderStoreId: '',
-    // items + 内嵌 allocLines 的展示数据
+    
     displayItems: [] as DisplayItem[],
-    // 汇总
+    
     summary: [] as Array<{ staffName: string; department: string; total: string }>,
     grandTotal: '0.00',
-    // 存在「填了技能标签/比例但未选员工」的行 → 提成额未计入汇总，提示店长补全
+    
     hasUnassigned: false,
-    // 已分配状态
+    
     isAllocated: false,
-    // 支付超 3 天冻结，禁止修改分配
+    
     frozen: false,
-    // suggest 上下文
+    
     isNewCustomer: false,
     beauticianInfo: null as BeauticianInfo | null,
     deptAnomalous: false,
-    // ---- 选择器 ----
+    
     pickerItemIdx: -1,
     pickerLineIdx: -1,
-    // 技能标签 action-sheet
+    
     skillSheetVisible: false,
-    // 技能标签下拉选项：init 时从 staff.skillTags（skill_tags 字典表）动态拉取
+    
     skillSheetActions: [] as Array<{ name: string }>,
-    // 分配比例 action-sheet
+    
     ratioSheetVisible: false,
     ratioSheetActions: RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })),
-    // 员工选择 popup
+    
     empPopupVisible: false,
     empPopupList: [] as CandidateEmployee[],
     empPopupTitle: '选择员工',
@@ -197,7 +197,7 @@ Page({
 
       const skillSheetActions = (skillTagData.skillTags || []).map(name => ({ name }));
 
-      // suggestPayment 自带订单/回款上下文，合成 order 摘要（不再单独拉 order.detail）
+      
       const items: OrderItem[] = suggestData.items || [];
       const totalAmount = suggestData.totalAmount || 0;
       const allocationStatus = suggestData.allocationStatus || '待分配';
@@ -208,7 +208,7 @@ Page({
         totalAmount: String(totalAmount),
         allocation_status: allocationStatus,
         customer_name: suggestData.customerName,
-        // paidAt 是 timestamp 列(UTC ISO)，格式化为 YYYY-MM-DD HH:mm:ss 再展示（WXML 原裸绑定会显示 ISO）
+        
         paid_at: suggestData.paidAt ? formatDateTime(suggestData.paidAt) : '',
       };
       const rates: RateRow[] = suggestData.rates || [];
@@ -252,7 +252,7 @@ Page({
     }
   },
 
-  /** 根据技能标签+销售分类查提成比例（只取 commissionRate） */
+  
   lookupRate(roleType: string, salesCat: string, received: number): number {
     const { commissionRate } = _lookupRate(
       roleType, salesCat, received, this.data.beautyRates, this.data.rates, this.data.totalAmount
@@ -260,7 +260,7 @@ Page({
     return commissionRate;
   },
 
-  /** 计算单行的分配额/提成额（实收 × 分配比例，再 × 提成比例） */
+  
   computeLine(line: AllocLine, received: number): AllocLine {
     const ratio = line.ratioPercent / 100;
     const allocAmount = received * ratio;
@@ -272,7 +272,7 @@ Page({
     };
   },
 
-  /** 用 suggest 预建行初始化（按 roleType+员工 预填，比例默认 100%） */
+  
   buildSuggestedItems(suggestLines: SuggestLine[], items: OrderItem[]) {
     const displayItems: DisplayItem[] = items.map(item => {
       const received = Number(item.received) || 0;
@@ -302,7 +302,7 @@ Page({
     this.computeSummary();
   },
 
-  /** 从已有分配记录恢复（补算 commissionRate / 金额） */
+  
   restoreAllocations(allocations: AllocationRecord[], items: OrderItem[]) {
     const nameMap = new Map<string, string>();
     this.data.candidateEmployees.forEach(e => nameMap.set(e.staffWfId, e.name));
@@ -345,7 +345,7 @@ Page({
     this.computeSummary();
   },
 
-  /** 添加一条空分配行 */
+  
   onAddLine(e: WechatMiniprogram.TouchEvent) {
     const itemIdx = e.currentTarget.dataset.itemIdx as number;
     const di = this.data.displayItems[itemIdx];
@@ -364,7 +364,7 @@ Page({
     this.setData({ [`displayItems[${itemIdx}].allocLines`]: [...di.allocLines, newLine] });
   },
 
-  /** 移除分配行 */
+  
   onRemoveLine(e: WechatMiniprogram.TouchEvent) {
     const itemIdx = e.currentTarget.dataset.itemIdx as number;
     const lineIdx = e.currentTarget.dataset.lineIdx as number;
@@ -375,7 +375,7 @@ Page({
     this.computeSummary();
   },
 
-  // ---------- 技能标签 ----------
+  
   openSkillPicker(e: WechatMiniprogram.TouchEvent) {
     const itemIdx = e.currentTarget.dataset.itemIdx as number;
     const lineIdx = e.currentTarget.dataset.lineIdx as number;
@@ -389,7 +389,7 @@ Page({
     if (!di) { this.closeSkillSheet(); return; }
     const received = Number(di.received) || 0;
     const line = di.allocLines[lineIdx];
-    // 切换技能：清空已选员工 + 重查提成比例
+    
     const commissionRate = this.lookupRate(roleType, line.salesCategory, received);
     const updated = this.computeLine(
       { ...line, roleType, staffWfId: '', staffName: '', commissionRate },
@@ -406,7 +406,7 @@ Page({
     this.setData({ skillSheetVisible: false });
   },
 
-  // ---------- 员工 ----------
+  
   openEmployeePicker(e: WechatMiniprogram.TouchEvent) {
     const itemIdx = e.currentTarget.dataset.itemIdx as number;
     const lineIdx = e.currentTarget.dataset.lineIdx as number;
@@ -427,7 +427,7 @@ Page({
     });
   },
 
-  /** 按技能筛选候选员工（跨门店共享 2026-06-24）：统一「订单门店 ∪ 出差员工」+ 技能匹配（取消市场级与品项老师特例） */
+  
   getFilteredEmployees(skillTag: string): CandidateEmployee[] {
     const { candidateEmployees, orderStoreId } = this.data;
     return candidateEmployees.filter(e => {
@@ -443,7 +443,7 @@ Page({
     const di = displayItems[itemIdx];
     if (!di) { this.closeEmpPopup(); return; }
     const line = di.allocLines[lineIdx];
-    // 防重复：同 item 同技能标签池内不重复员工
+    
     const dup = di.allocLines.some((l: AllocLine, i: number) =>
       i !== lineIdx && l.roleType === line.roleType && l.staffWfId === staffWfId
     );
@@ -462,7 +462,7 @@ Page({
     this.setData({ empPopupVisible: false });
   },
 
-  // ---------- 分配比例 ----------
+  
   openRatioPicker(e: WechatMiniprogram.TouchEvent) {
     const itemIdx = e.currentTarget.dataset.itemIdx as number;
     const lineIdx = e.currentTarget.dataset.lineIdx as number;
@@ -492,7 +492,7 @@ Page({
     this.setData({ summary, grandTotal, hasUnassigned });
   },
 
-  /** 标记为无需分配 */
+  
   async onSkipAllocation() {
     if (this.data.frozen) {
       wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
@@ -531,7 +531,7 @@ Page({
     }
     const { displayItems, salePaymentId } = this.data;
 
-    // 收集完整行（技能标签 + 员工 + 分配比例 三者齐全）
+    
     const effectiveLines: AllocLine[] = [];
     let hasPartial = false;
     for (const di of displayItems) {
@@ -555,7 +555,7 @@ Page({
       return;
     }
 
-    // 前端轻量预校验：同 (saleItemId, roleType) 池 ≤3 人 / 比例合计 ≤100%
+    
     const pools = new Map<string, AllocLine[]>();
     for (const l of effectiveLines) {
       const key = `${l.saleItemId}|${l.roleType}`;

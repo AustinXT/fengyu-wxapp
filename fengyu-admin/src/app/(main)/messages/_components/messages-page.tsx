@@ -45,10 +45,10 @@ const RECIPIENT_TYPE_OPTIONS: Array<'客户' | '员工'> = ['客户', '员工']
 
 const MEMBER_LEVEL_OPTIONS = ['黑钻', '金钻', '粉钻', '星钻', '初钻'] as const
 
-/** 批量发送对话框：单次最多发送的人数上限（需与 Server Action 保持一致） */
+
 const BATCH_SEND_MAX = 1000
 
-/** 消息分类英文枚举 → 中文展示（未知值回退原值） */
+
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
   order: '订单',
   promotion: '促销',
@@ -57,7 +57,7 @@ const MESSAGE_TYPE_LABELS: Record<string, string> = {
   appointment: '预约',
 }
 
-/** 关联实体类型英文枚举 → 中文展示（未知值回退原值） */
+
 const REF_ENTITY_TYPE_LABELS: Record<string, string> = {
   sale_order: '销售订单',
   service_order: '服务单',
@@ -76,11 +76,7 @@ interface Props {
   canSend: boolean
 }
 
-/**
- * 消息中心管理页 — 服务端分页
- *
- * messages 表无 store 维度，仅 admin 可访问（菜单+权限矩阵双重控制）。
- */
+
 export default function MessagesPage({ messages, messageTypes, total, canSend }: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
@@ -101,7 +97,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
     ? Number(get('size'))
     : 20
 
-  // 搜索防抖
+  
   const [searchInput, setSearchInput] = useState(get('q'))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback(
@@ -113,10 +109,10 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
     [setFilter, debounceRef],
   )
 
-  // Detail dialog
+  
   const [detail, setDetail] = useState<AdminMessage | null>(null)
 
-  // Delete dialog
+  
   const [pendingDelete, setPendingDelete] = useState<AdminMessage | null>(null)
   const [deleting, setDeleting] = useState(false)
   const handleDelete = async () => {
@@ -138,7 +134,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
     }
   }
 
-  // ----- 批量发送消息 Dialog state -----
+  
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchTitle, setBatchTitle] = useState('')
   const [batchBody, setBatchBody] = useState('')
@@ -155,7 +151,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set())
   const [batchSending, setBatchSending] = useState(false)
 
-  // 加载组织节点（首次打开时）
+  
   useEffect(() => {
     if (batchOpen && !batchOrgLoaded) {
       getOrgNodesForBatchMessage()
@@ -186,7 +182,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
     [batchOrgFilter, batchLevelFilter, batchSearch],
   )
 
-  // 打开对话框或筛选条件变更时重新加载顾客
+  
   useEffect(() => {
     if (batchOpen) {
       setBatchPage(1)
@@ -479,7 +475,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
-      {/* Detail Dialog */}
+      {}
       <Dialog open={detail !== null} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogClose onOpenChange={(open) => !open && setDetail(null)} />
         <DialogHeader>
@@ -541,7 +537,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         )}
       </Dialog>
 
-      {/* Delete Confirmation */}
+      {}
       <AlertDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
@@ -568,7 +564,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 批量发送消息 Dialog */}
+      {}
       <Dialog
         open={batchOpen}
         onOpenChange={(open) => {
@@ -587,7 +583,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
         </DialogHeader>
 
         <div className="mt-4 space-y-4">
-          {/* 消息内容 */}
+          {}
           <div className="space-y-3 rounded-[var(--radius)] border border-[var(--border)] p-3">
             <div>
               <label className="mb-1 block text-sm font-medium">
@@ -626,7 +622,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
             </div>
           </div>
 
-          {/* 接收人筛选 */}
+          {}
           <div className="space-y-3 rounded-[var(--radius)] border border-[var(--border)] p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">接收人</span>
@@ -648,7 +644,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
               </div>
             </div>
 
-            {/* 筛选栏 */}
+            {}
             <div className="flex flex-wrap gap-2">
               <OrgTreeSelect
                 orgNodes={batchOrgNodes}
@@ -678,7 +674,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
               />
             </div>
 
-            {/* 顾客表格 / 筛选模式提示 */}
+            {}
             {batchMode === 'select' ? (
               <>
                 <div className="rounded-[var(--radius)] border border-[var(--border)]">

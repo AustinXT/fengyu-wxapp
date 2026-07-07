@@ -1,4 +1,4 @@
-/* slide-to-confirm 样式 */
+
 .stc-wrap {
   width: 100%;
   padding: 8rpx 0;

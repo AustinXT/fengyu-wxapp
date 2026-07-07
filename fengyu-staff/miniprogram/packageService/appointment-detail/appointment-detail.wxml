@@ -1,4 +1,4 @@
-<!-- pages/appointment-detail/appointment-detail.wxml -->
+
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -10,12 +10,12 @@
   </view>
 
   <block wx:else>
-    <!-- 状态条 -->
+    
     <view class="status-banner status-banner--{{statusCls}}">
       <text class="status-banner-text">{{statusText}}</text>
     </view>
 
-    <!-- 基本信息 -->
+    
     <van-cell-group title="预约信息" class="card-group">
       <van-cell title="顾客姓名" value="{{appt.customerName}}" />
       <van-cell title="顾客电话" value="{{appt.customerPhone}}" />
@@ -25,13 +25,13 @@
       <van-cell wx:if="{{appt.remark}}" title="备注" value="{{appt.remark}}" />
     </van-cell-group>
 
-    <!-- 关联服务单 -->
+    
     <van-cell-group wx:if="{{appt.serviceOrderId}}" title="关联服务单" class="card-group">
       <van-cell title="服务单 ID" value="{{appt.serviceOrderId}}" is-link
         bind:click="onViewServiceOrder" />
     </van-cell-group>
 
-    <!-- 操作按钮 -->
+    
     <view class="action-bar">
       <van-button
         wx:if="{{appt.status === 'pending'}}"
@@ -60,7 +60,7 @@
           bind:click="onCreateService"
         >创建服务单</van-button>
       </view>
-      <!-- 终态：返回工作台 -->
+      
       <van-button
         wx:if="{{appt.status === 'completed' || appt.status === 'cancelled' || appt.status === 'closed'}}"
         type="primary" block plain

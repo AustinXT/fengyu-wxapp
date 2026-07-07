@@ -1,25 +1,18 @@
-/**
- * 门店模块路由
- * 从 PG stores + org_nodes 查询门店数据
- */
+
 
 const pg = require('../db/pg')
 const crypto = require('crypto')
 const { checkText } = require('../utils/wx-sec-check')
 
-/**
- * 门店列表
- * 从 PG stores + org_nodes 查询，排除已停业的门店
- * @param {string} ctx.event.payload.city - 可选，按城市筛选
- */
+
 async function list(ctx) {
   const { city } = ctx.event.payload || {}
 
   const params = []
   let whereClause = 'WHERE s.is_closed = false'
 
-  // 如果传入 city 参数，按门店自身 district 筛选
-  // （admin 录入的「省/市/区」，门店真实城市来源；不依赖市场节点命名）
+  
+  
   if (city) {
     params.push(`%${city}%`)
     whereClause += ` AND s.district LIKE $${params.length}`
@@ -49,7 +42,7 @@ async function list(ctx) {
     ORDER BY pm.name, s.store_name
   `, params)
 
-  // 格式化开业时间
+  
   stores.forEach(s => {
     s.open_date = formatOpenDate(s.open_date)
   })
@@ -57,22 +50,19 @@ async function list(ctx) {
   ctx.result = { stores }
 }
 
-/**
- * 门店详情
- * 按 storeId 查询单条门店记录，并行查询员工数和顾客数
- */
+
 async function detail(ctx) {
   const { storeId, storeName } = ctx.event.payload || {}
   if (!storeId && !storeName) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 或 storeName')
   }
 
-  // 支持按 storeId 或 storeName 查询
+  
   const storeFilter = storeId
     ? { sql: 's.store_id = $1', param: storeId }
     : { sql: 's.store_name = $1', param: storeName }
 
-  // 先查门店基本信息
+  
   const storeResult = await pg.query(`
     SELECT
       s.store_id,
@@ -106,7 +96,7 @@ async function detail(ctx) {
   store.open_date = formatOpenDate(store.open_date)
   store.images = Array.isArray(store.images) ? store.images : []
 
-  // 用确定的 store_id 并行查询员工数和顾客数
+  
   const actualStoreId = store.store_id
   const [staffResult, customerResult] = await Promise.all([
     pg.query(
@@ -124,9 +114,7 @@ async function detail(ctx) {
   ctx.result = { store }
 }
 
-/**
- * 格式化开业时间: date → "yyyy年M月"
- */
+
 function formatOpenDate(date) {
   if (!date) return ''
   const d = new Date(date)
@@ -134,12 +122,7 @@ function formatOpenDate(date) {
   return `${d.getFullYear()}年${d.getMonth() + 1}月`
 }
 
-/**
- * 申请转店
- * 顾客从当前绑定门店（from）转绑到目标门店（to），向原门店店长提交申请。
- * 「选新门店」前置：审批通过后 bound_store_id 直接 from→to，永不出现悬空未绑定态。
- * payload: { toStoreId（必填）, note? }
- */
+
 async function requestUnbind(ctx) {
   const { userId, boundStoreId } = ctx.auth
   if (!userId) throw new Error('UNAUTHORIZED: 未登录')
@@ -149,14 +132,14 @@ async function requestUnbind(ctx) {
   if (!toStoreId) throw new Error('INVALID_PARAMS: 缺少目标门店 toStoreId')
   if (toStoreId === boundStoreId) throw new Error('INVALID_PARAMS: 目标门店不能与当前门店相同')
 
-  // 校验目标门店存在且未停业
+  
   const target = await pg.query(
     `SELECT store_id FROM stores WHERE store_id = $1 AND is_closed = false`,
     [toStoreId]
   )
   if (target.length === 0) throw new Error('INVALID_PARAMS: 目标门店不存在或已停业')
 
-  // 检查是否已有 pending 申请
+  
   const existing = await pg.query(
     `SELECT request_id FROM store_unbind_requests WHERE user_id = $1 AND status = '待处理'`,
     [userId]
@@ -165,10 +148,10 @@ async function requestUnbind(ctx) {
     throw new Error('INVALID_PARAMS: 已有待审批的转店申请，请等待审批结果')
   }
 
-  // 内容安全校验（转店备注 = 资料类）：违规抛 INVALID_PARAMS，不创建申请
+  
   await checkText(note, { scene: 1 })
 
-  // partial unique uq_store_unbind_pending 兜底 TOCTOU：同顾客双击提交
+  
   const requestId = crypto.randomUUID()
   const insRes = await pg.query(
     `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, to_store_id, status, note)
@@ -184,9 +167,7 @@ async function requestUnbind(ctx) {
   ctx.result = { requestId }
 }
 
-/**
- * 查询当前用户最新的 pending 转店申请（含目标门店）
- */
+
 async function getUnbindRequest(ctx) {
   const { userId } = ctx.auth
   if (!userId) {
@@ -220,10 +201,7 @@ async function getUnbindRequest(ctx) {
   }
 }
 
-/**
- * 取消解绑申请
- * payload: { requestId }
- */
+
 async function cancelUnbindRequest(ctx) {
   const { userId } = ctx.auth
   if (!userId) throw new Error('UNAUTHORIZED: 未登录')
@@ -252,10 +230,7 @@ async function cancelUnbindRequest(ctx) {
   ctx.result = { success: true }
 }
 
-/**
- * 逆地理编码：将经纬度转换为城市名
- * payload: { latitude, longitude }
- */
+
 async function geocode(ctx) {
   const { latitude, longitude } = ctx.event.payload || {}
   if (!latitude || !longitude) throw new Error('INVALID_PARAMS: 缺少坐标')

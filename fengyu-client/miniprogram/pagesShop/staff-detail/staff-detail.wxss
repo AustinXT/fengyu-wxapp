@@ -1,4 +1,4 @@
-/* pagesShop/staff-detail/staff-detail.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -14,7 +14,7 @@
   padding-top: 80rpx;
 }
 
-/* 头部信息 */
+
 .staff-header {
   display: flex;
   align-items: center;
@@ -65,7 +65,7 @@
   color: var(--color-text-secondary);
 }
 
-/* 区块 */
+
 .section {
   margin-top: 24rpx;
   background: var(--color-bg-card);
@@ -79,7 +79,7 @@
   margin-bottom: 24rpx;
 }
 
-/* 技能标签 */
+
 .skills-wrap {
   display: flex;
   flex-wrap: wrap;
@@ -90,7 +90,7 @@
   margin: 0 !important;
 }
 
-/* 服务数据 */
+
 .stats-card {
   display: flex;
   align-items: center;
@@ -124,7 +124,7 @@
   background: var(--color-border);
 }
 
-/* 顾客评价卡片 */
+
 .rating-card {
   display: flex;
   align-items: center;
@@ -152,12 +152,12 @@
   color: var(--color-text-hint);
 }
 
-/* 底部占位 */
+
 .bottom-space {
   height: 60rpx;
 }
 
-/* 底部固定按钮 */
+
 .bottom-bar {
   position: fixed;
   left: 0;

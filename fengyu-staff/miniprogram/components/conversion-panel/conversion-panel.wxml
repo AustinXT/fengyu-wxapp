@@ -1,6 +1,6 @@
-<!-- components/conversion-panel/conversion-panel.wxml — 转换单折抵面板 -->
+
 <view class="conv-panel">
-  <!-- 转入商品明细（复用 confirm-item-* 样式，对齐销售单/内部单确认页） -->
+  
   <text class="conv-title">转入商品</text>
   <view class="confirm-items">
     <view class="confirm-item-block" wx:for="{{cartItems}}" wx:key="skuId">
@@ -12,7 +12,7 @@
         <text class="confirm-item-label">价格</text>
         <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
       </view>
-      <!-- 疗程卡规定次数（仅次数卡展示） -->
+      
       <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
         <text class="confirm-item-label">规定次数</text>
         <text class="confirm-item-value">{{item.sessionCount}} 次</text>
@@ -26,23 +26,23 @@
 
   <text class="conv-title">折抵卡选择</text>
 
-  <!-- 加载中 -->
+  
   <view wx:if="{{loading}}" class="conv-loading">
     <van-loading size="36rpx" />
     <text class="conv-loading-text">加载顾客折抵卡</text>
   </view>
 
-  <!-- 错误 -->
+  
   <view wx:elif="{{errorMsg}}" class="conv-empty">
     <van-empty description="{{errorMsg}}" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{cards.length === 0}}" class="conv-empty">
     <van-empty description="该顾客暂无可折抵卡" />
   </view>
 
-  <!-- 卡列表 -->
+  
   <view wx:else class="conv-card-list">
     <view
       wx:for="{{cards}}"
@@ -73,7 +73,7 @@
     </view>
   </view>
 
-  <!-- 底部差额汇总 -->
+  
   <view class="conv-summary">
     <view class="conv-summary-row">
       <text class="conv-summary-label">转入金额</text>
@@ -97,7 +97,7 @@
     </view>
   </view>
 
-  <!-- 充值卡抵扣（prepaid-card-section 样式，对齐销售单；仅补差额 > 0） -->
+  
   <view wx:if="{{priceDiff > 0}}" class="prepaid-card-section">
     <text class="prepaid-card-section-title">抵扣（预选）</text>
     <view class="prepaid-card-row">
@@ -122,7 +122,7 @@
     </view>
   </view>
 
-  <!-- 还需支付（仿销售单 prepaid-paid-summary；仅补差额 > 0） -->
+  
   <view wx:if="{{priceDiff > 0}}" class="prepaid-paid-summary">
     <text class="prepaid-paid-label">还需支付</text>
     <block wx:if="{{remaining > 0}}">
@@ -131,7 +131,7 @@
     <text wx:else class="prepaid-paid-fullcover-hint">储值卡全额抵扣，无需补款</text>
   </view>
 
-  <!-- 支付方式：3 卡片组（仅 priceDiff>0 && remaining>0），对齐销售单 order-type-cards -->
+  
   <view wx:if="{{priceDiff > 0 && remaining > 0}}" class="order-type-cards">
     <view
       class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
@@ -159,7 +159,7 @@
     </view>
   </view>
 
-  <!-- 活动勾选（对齐销售单 activity-section） -->
+  
   <view class="activity-section">
     <view class="activity-row">
       <text class="activity-label">活动</text>

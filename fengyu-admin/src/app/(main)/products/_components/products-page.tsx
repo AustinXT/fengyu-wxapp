@@ -43,7 +43,7 @@ export default function ProductsPageClient({
     setMany({ [key]: value, page: '' })
   }, [setMany])
 
-  // 搜索框防抖
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
@@ -59,7 +59,7 @@ export default function ProductsPageClient({
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // Build dynamic KIND_COLORS
+  
   const kindColors = useMemo(() => {
     if (!productKinds) return {} as Record<string, string>
     const sorted = [...productKinds].filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder)
@@ -86,7 +86,7 @@ export default function ProductsPageClient({
     [filtered, page, pageSize]
   )
 
-  /** 导出当前筛选命中的全部商品（客户端已全量加载，filtered 即全部筛选结果） */
+  
   const handleExport = useCallback(async () => {
     if (filtered.length === 0) {
       toast.info("当前筛选无数据可导出")

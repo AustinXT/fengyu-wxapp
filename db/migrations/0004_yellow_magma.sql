@@ -27,17 +27,17 @@ ALTER TABLE "sale_order_payments" ADD CONSTRAINT "sale_order_payments_operator_e
 CREATE INDEX "idx_sop_order" ON "sale_order_payments" USING btree ("sale_order_id");--> statement-breakpoint
 CREATE INDEX "idx_sop_status_created" ON "sale_order_payments" USING btree ("status","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_sop_txn" ON "sale_order_payments" USING btree ("sale_order_id","payment_method","external_txn_id") WHERE external_txn_id IS NOT NULL;--> statement-breakpoint
--- ============================================================================
--- 手工追加（drizzle-kit 不生成）
--- ============================================================================
--- 1. DROP 0003 引入的约束 chk_prepaid_paid_sum（prepaid_card_amount + paid_amount = total_amount）
---    该约束与"部分支付"状态直接冲突（部分支付时和式 < total_amount）。
---    由 sale_order_payments 表 + 应用层双写保证语义一致性。
+
+
+
+
+
+
 ALTER TABLE "sale_orders" DROP CONSTRAINT IF EXISTS "chk_prepaid_paid_sum";--> statement-breakpoint
--- 2. 回填 payable_amount = total_amount - prepaid_card_amount（含退款单的负值）
+
 UPDATE "sale_orders" SET "payable_amount" = "total_amount" - "prepaid_card_amount";--> statement-breakpoint
--- 3. 回填销售单首次支付流水（只对 status IN ('已支付','已完成') 且 paid_amount > 0 的单据，
---    避免历史异常订单违反 chk_sop_method_txn：微信/支付宝行必须有 external_txn_id）
+
+
 INSERT INTO "sale_order_payments" (
   "sale_order_id", "change_type", "amount", "payment_method",
   "external_txn_id", "status", "source_end", "operator_employee_id",
@@ -60,7 +60,7 @@ WHERE "sale_order_type" = '销售单'
   AND "status" IN ('已支付', '已完成')
   AND "paid_amount" > 0
   AND ("payment_method" NOT IN ('微信','支付宝') OR COALESCE("wechat_transaction_id","alipay_transaction_id") IS NOT NULL);--> statement-breakpoint
--- 4. 回款单：对应原销售单写一行'回款'流水
+
 INSERT INTO "sale_order_payments" (
   "sale_order_id", "change_type", "amount", "payment_method",
   "external_txn_id", "status", "source_end", "operator_employee_id",
@@ -84,7 +84,7 @@ WHERE "sale_order_type" = '回款单'
   AND "status" IN ('已支付', '已完成')
   AND "paid_amount" > 0
   AND ("payment_method" NOT IN ('微信','支付宝') OR COALESCE("wechat_transaction_id","alipay_transaction_id") IS NOT NULL);--> statement-breakpoint
--- 5. 退款单：对应原销售单写一行'退款'流水（退款单 paid_amount 本身为负数）
+
 INSERT INTO "sale_order_payments" (
   "sale_order_id", "change_type", "amount", "payment_method",
   "external_txn_id", "status", "source_end", "operator_employee_id",

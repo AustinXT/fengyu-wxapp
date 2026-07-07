@@ -34,7 +34,7 @@ function formatDate(dt: string | null | undefined) {
 
 interface Props {
   requests: UnbindRequest[]
-  /** 是否展示行内删除入口（仅系统管理员 store_unbind:delete） */
+  
   canDelete?: boolean
 }
 
@@ -95,7 +95,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-[var(--foreground)]">门店解绑审批</h1>
 
-      {/* 待处理 */}
+      {}
       {pendingRequests.length > 0 && (
         <Card>
           <CardContent className="p-0">
@@ -161,7 +161,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
         </Card>
       )}
 
-      {/* 已处理 */}
+      {}
       {processedRequests.length > 0 && (
         <>
           <h2 className="text-lg font-semibold text-[var(--foreground)] mt-6">历史记录</h2>
@@ -212,7 +212,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
         </>
       )}
 
-      {/* 通过确认 */}
+      {}
       <AlertDialog open={!!approveTarget} onOpenChange={(open) => !open && setApproveTarget(null)}>
         <AlertDialogTitle>确认通过转店？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -224,7 +224,7 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 拒绝弹窗 */}
+      {}
       <Dialog open={!!rejectTarget} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <DialogHeader>
           <DialogTitle>拒绝解绑申请</DialogTitle>

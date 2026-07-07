@@ -11,7 +11,7 @@ import { RankingBoard, type RankingMetric } from "../ranking-board"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { EfficiencyBoardResult } from "@/lib/data-center/types"
 
-// ── KPI 卡片矩阵（key 对应 EfficiencyBoardResult.kpis）────────────────
+
 const KPI_ITEMS: KpiGridItem[] = [
   { key: "empAvgRevenue", label: "员工人均业绩" },
   { key: "empAvgConsume", label: "员工人均实耗" },
@@ -22,7 +22,7 @@ const KPI_ITEMS: KpiGridItem[] = [
   { key: "managerAvgEmployees", label: "店长人均员工数", hint: "员工数 ÷ 店长数" },
 ]
 
-// ── 按市场人效明细列（key 对应 byMarket[].metrics）────────────────────
+
 const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "managerCount", label: "店长人数", unit: "count" },
   { key: "managerAvgIncome", label: "店长人均收入", unit: "amount" },
@@ -35,8 +35,8 @@ const MARKET_COLUMNS: BreakdownColumn[] = [
   { key: "techAvgProjects", label: "技师人均项目数", unit: "count" },
 ]
 
-// ── 按技师人效明细列（key 对应 byStaff[].metrics）──
-// 销售额按 salesCategoryEnum 4 枚举值拆分（4 列之和=当月业绩），实耗合并为单列「实耗合计」。
+
+
 const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
   { key: "revenue", label: "当月业绩", unit: "amount" },
   { key: "saleZxzh", label: "自销自耗", unit: "amount" },
@@ -50,7 +50,7 @@ const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
   { key: "serviceVisits", label: "服务人次", unit: "count" },
 ]
 
-// ── 门店排名榜 metric（key 对应 storeRankings）────────────────────────
+
 const STORE_RANK_METRICS: RankingMetric[] = [
   { key: "revenue", label: "业绩", unit: "amount" },
   { key: "consume", label: "实耗", unit: "amount" },
@@ -59,7 +59,7 @@ const STORE_RANK_METRICS: RankingMetric[] = [
   { key: "projectCount", label: "项目数", unit: "count" },
 ]
 
-// ── 员工排名榜 metric（key 对应 staffRankings）────────────────────────
+
 const STAFF_RANK_METRICS: RankingMetric[] = [
   { key: "revenue", label: "业绩", unit: "amount" },
   { key: "consume", label: "实耗", unit: "amount" },
@@ -74,7 +74,7 @@ export function EfficiencyBoard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // searchParams.toString() 作为依赖：scope/时间/同比环比 任一变化即重新取数
+  
   const qs = searchParams.toString()
 
   useEffect(() => {
@@ -107,13 +107,13 @@ export function EfficiencyBoard() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* 人均派生 KPI */}
+      {}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">人均效能</h2>
         <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} />
       </section>
 
-      {/* 明细 + 排名榜分 Tab（排名榜跟随顶部时间维度，不算同比环比）*/}
+      {}
       <Tabs defaultValue="detail">
         <TabsList>
           <TabsTrigger value="detail">按市场人效</TabsTrigger>

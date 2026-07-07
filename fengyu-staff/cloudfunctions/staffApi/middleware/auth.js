@@ -1,10 +1,4 @@
-/**
- * 员工认证中间件
- * 从 cloud.getWXContext() 获取 OPENID，查询 staff_wechat_users 获取员工信息
- * 权限角色从 permission_roles JOIN org_nodes 读取（拿 scopeType）
- *
- * ctx.auth 结构见 auth() 函数注释。
- */
+
 
 const cloud = require('wx-server-sdk')
 
@@ -18,13 +12,11 @@ const {
   STORE_LEVELS,
 } = require('../utils/scope')
 
-// 员工基础信息缓存（不含 loginLevel/currentStoreId 等动态字段）：OPENID → { data, ts }
-const AUTH_CACHE = new Map()
-const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 
-/**
- * 从 payload / event 读取登录层级相关参数
- */
+const AUTH_CACHE = new Map()
+const CACHE_TTL = 5 * 60 * 1000 
+
+
 function readLoginParams(ctx) {
   const payload = ctx.event.payload || {}
   return {
@@ -33,15 +25,13 @@ function readLoginParams(ctx) {
   }
 }
 
-/**
- * 根据 staffLevel + scopeStoreIds + fallback storeId + 请求参数，派生 loginLevel / effectiveStoreId
- */
+
 function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
   const { staffLevel, scopeStoreIds, fallbackStoreId } = base
 
   const available = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
 
-  // 1. loginLevel
+  
   let loginLevel = loginLevelInput
   if (loginLevel && !available.includes(loginLevel)) {
     throw new Error('PERMISSION_DENIED: 无权以该身份登录')
@@ -54,15 +44,15 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
     return { loginLevel: null, currentStoreId: null, effectiveStoreId: null }
   }
 
-  // 2. 管理层模式：effectiveStoreId = null（查询基于 scopeStoreIds）
+  
   if (loginLevel === 'management') {
     return { loginLevel, currentStoreId: null, effectiveStoreId: null }
   }
 
-  // 3. 门店模式：effectiveStoreId 需要在 scopeStoreIds 内
+  
   let storeId = currentStoreIdInput
   if (!storeId) {
-    // fallback：优先 staff 自身 store_id；否则取 scope 第一个
+    
     if (fallbackStoreId && scopeStoreIds.includes(fallbackStoreId)) {
       storeId = fallbackStoreId
     } else if (scopeStoreIds.length > 0) {
@@ -81,27 +71,11 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
   return { loginLevel, currentStoreId: storeId, effectiveStoreId: storeId }
 }
 
-/**
- * 认证中间件
- *
- * ctx.auth = {
- *   openid, phone, staffWfId,
- *   storeId,                 // staff_wechat_users.store_id — 员工档案默认门店（兼容字段）
- *   roles,                   // string[]（兼容字段，去重后的 role 名）
- *   roleBindings,            // [{role, scopeId, scopeType}]
- *   staffLevel,              // headquarters | market | store_manager | store_staff | null
- *   scopeStoreIds,           // string[] — 有权可见的全部 store_id（全角色并集）
- *   managerStoreIds,         // string[] — 仅 manager 角色绑定展开的门店；店长写操作授权用
- *   loginLevel,              // store | management | null
- *   currentStoreId,          // 门店模式下的当前门店
- *   effectiveStoreId,        // 业务 SQL 应该使用的门店过滤值；管理层模式 = null
- *   position, storeName, marketName, department, skills
- * }
- */
+
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
 
-  // 测试模式: 仅在 env 开启 且 非生产运行时 允许 _testOpenid 覆盖（prod 由 runtime-guard 硬闸禁用）
+  
   let effectiveOpenid = OPENID
   if (testBypassAllowed('ALLOW_TEST_OPENID')) {
     const testOpenid = ctx.event.payload?._testOpenid || ctx.event._testOpenid
@@ -112,7 +86,7 @@ async function auth(ctx, next) {
     throw new Error('UNAUTHORIZED: 无法获取用户身份')
   }
 
-  // 基础信息缓存命中 → 直接用，再跑运行时派生
+  
   let base = AUTH_CACHE.get(effectiveOpenid)
   if (base && Date.now() - base.ts < CACHE_TTL) {
     base = base.data
@@ -120,7 +94,7 @@ async function auth(ctx, next) {
     base = await loadAuthBase(effectiveOpenid)
     AUTH_CACHE.set(effectiveOpenid, { data: base, ts: Date.now() })
 
-    // 防止缓存无限增长
+    
     if (AUTH_CACHE.size > 200) {
       const keys = [...AUTH_CACHE.keys()]
       for (let i = 0; i < 100; i++) {
@@ -142,11 +116,9 @@ async function auth(ctx, next) {
   await next()
 }
 
-/**
- * 从 DB 读取员工基础信息（静态部分，不含 loginLevel）
- */
+
 async function loadAuthBase(effectiveOpenid) {
-  // 查询员工用户（JOIN 获取门店名、市场名、部门名）
+  
   const users = await pg.query(`
     SELECT
       u.employee_id,
@@ -174,7 +146,7 @@ async function loadAuthBase(effectiveOpenid) {
   let managerStoreIds = []
 
   if (users.length === 0) {
-    // 未注册员工
+    
     authData = {
       openid: effectiveOpenid,
       phone: null,
@@ -197,7 +169,7 @@ async function loadAuthBase(effectiveOpenid) {
     const isActive = user.employee_id && !user.is_resigned
 
     if (isActive) {
-      // 查角色 + scopeType
+      
       const rows = await pg.query(`
         SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name
         FROM permission_roles pr
@@ -212,7 +184,7 @@ async function loadAuthBase(effectiveOpenid) {
       }))
       staffLevel = deriveStaffLevel(roleBindings)
       scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
-      // 仅展开 manager 角色绑定 → 店长写操作可达的门店集（区别于全角色并集 scopeStoreIds）
+      
       const managerBindings = roleBindings.filter((r) => r.role === 'manager')
       managerStoreIds = managerBindings.length > 0
         ? await expandScopeStoreIds(managerBindings, pg)
@@ -248,9 +220,7 @@ async function loadAuthBase(effectiveOpenid) {
   }
 }
 
-/**
- * 要求必须绑定手机号且已关联员工档案
- */
+
 function requireStaffBound() {
   return async (ctx, next) => {
     if (!ctx.auth.phone) {
@@ -263,21 +233,16 @@ function requireStaffBound() {
   }
 }
 
-/**
- * 要求拥有 manager 角色（总部 / 市场 / 门店 任一层级均可）。
- * 门店模式下（已选定 effectiveStoreId）还要求该门店落在 manager 角色覆盖的门店集
- * （managerStoreIds，仅展开 manager 绑定）内，从而把市场/总部 manager 精确限定到本人管辖门店，
- * 并拦掉「manager@门店A + finance@门店B 在 B 越权做店长操作」的情形。
- */
+
 function requireManager() {
   return async (ctx, next) => {
     if (!ctx.auth.staffWfId) {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
     const bindings = ctx.auth.roleBindings || []
-    // manager 角色须落在合法 scope（总部/市场/门店）；部门级 manager 绑定被 scope.js 忽略
-    // （staffLevel=null），此处一并拒绝，避免「manager@部门」越过店长门禁（纵深防御，
-    // 即便 admin UI 已禁止该配对）。旧缓存无 roleBindings 时退化到 roles 判定。
+    
+    
+    
     const VALID_MANAGER_SCOPES = ['总部', '市场', '门店']
     const hasManagerRole = bindings.length > 0
       ? bindings.some((r) => r.role === 'manager' && VALID_MANAGER_SCOPES.includes(r.scopeType))
@@ -285,8 +250,8 @@ function requireManager() {
     if (!hasManagerRole) {
       throw new Error('PERMISSION_DENIED: 仅店长可执行此操作')
     }
-    // 已选定门店（门店模式）时，该门店必须落在 manager 角色覆盖的门店集内。
-    // managerStoreIds 为空（旧缓存 / 数据缺失）则退化为仅校验角色，避免误拦真实店长。
+    
+    
     const managerStoreIds = ctx.auth.managerStoreIds || []
     const eff = ctx.auth.effectiveStoreId
     if (eff && managerStoreIds.length > 0 && !managerStoreIds.includes(eff)) {
@@ -296,9 +261,7 @@ function requireManager() {
   }
 }
 
-/**
- * 要求以管理层身份登录（总部 / 市场 层级，且当前 loginLevel = management）
- */
+
 function requireManagementLevel() {
   return async (ctx, next) => {
     if (!ctx.auth.staffWfId) {
@@ -314,9 +277,7 @@ function requireManagementLevel() {
   }
 }
 
-/**
- * 清除指定 OPENID 的认证缓存
- */
+
 function invalidateAuthCache(openid) {
   AUTH_CACHE.delete(openid)
 }
@@ -327,6 +288,6 @@ module.exports = {
   requireManager,
   requireManagementLevel,
   invalidateAuthCache,
-  // 导出 helper 便于测试
+  
   _resolveRuntimeAuth: resolveRuntimeAuth,
 }

@@ -1,12 +1,4 @@
-/**
- * 顾客档案模块路由（员工端）
- * customer.search — 搜索顾客（PG 单源）
- * customer.calendar — 顾客消费日历
- * customer.detail — 顾客档案详情
- * customer.paidOrders — 顾客已支付订单（含明细）
- *
- * 运行时 100% PG，零 MSSQL 依赖。WorkFine 数据通过同步模块写入 client_wechat_users。
- */
+
 
 const pg = require("../db/pg");
 const { requireStaffBound, requireManager } = require("../middleware/auth");
@@ -23,11 +15,7 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 
-/**
- * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
- * 仅门店普通员工（store_staff）触发员工级校验；店长/管理层无额外开销（直接放行）。
- * 入参可为 clientUserId 或 clientPhone（后者先解析 user_id）。
- */
+
 async function assertProfileVisibleByIdentifier(auth, clientUserId, clientPhone) {
   if (!restrictToBoundEmployee(auth)) return;
   let cuid = clientUserId;
@@ -41,19 +29,13 @@ async function assertProfileVisibleByIdentifier(auth, clientUserId, clientPhone)
   await assertCustomerProfileVisible(pg, auth, cuid);
 }
 
-// 顾客档案枚举筛选白名单（值须与 db/schema/enums.ts 字面量完全一致）
+
 const CUSTOMER_TYPE_VALUES = ['流量客', '体验客', '小美客', '会员客'];
 const SPENDING_TIER_VALUES = ['10W+', '6-10W', '3-6W', '1-3W', '1990-1W', '<1990'];
 const MONTHLY_ACTIVITY_VALUES = ['二次客活', '一次客活', '0次客活'];
 const CUSTOMER_STATUS_VALUES = ['保有会员-稳定', '保有会员-有效', '沉睡', '冰冻', '休眠'];
 
-/**
- * 顾客档案拓展筛选条件构造（顾客 Tab 拓展筛选区用）。
- * customerType 现按 customer_type 枚举等值过滤（'all'/缺省不过滤）；
- * 另支持 spendingTier / monthlyActivity / customerStatus 三个枚举维度。
- * 仅接受白名单内取值，非法/空值忽略（容错，不抛错）。
- * @returns {{columns: string[], values: string[]}}
- */
+
 function buildProfileFilters(payload) {
   const { customerType, spendingTier, monthlyActivity, customerStatus } = payload || {};
   const columns = [];
@@ -77,33 +59,30 @@ function buildProfileFilters(payload) {
   return { columns, values };
 }
 
-/** 把枚举筛选渲染成 ` AND col = $n ...`，占位符从 startIdx 起。 */
+
 function renderProfileFilters(filters, startIdx) {
   return filters.columns.map((col, i) => ` AND ${col} = $${startIdx + i}`).join('');
 }
 
-/**
- * 搜索顾客（PG 单源）
- * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
- */
+
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
   const { keyword, phone, crossStore, profileScope } = ctx.event.payload || {};
 
-  // 拓展筛选：customer_type / spending_tier / monthly_activity / customer_status 等值过滤
+  
   const filters = buildProfileFilters(ctx.event.payload);
 
-  // 顾客档案浏览（profileScope，仅顾客 Tab 传）：门店普通员工只见绑定本人的顾客。
-  // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
+  
+  
   const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
   const limit = 20;
   let rows = [];
 
   if (phone) {
-    // 精确手机号定位：账户级资产（积分/储值卡/会员等级）不跟门店绑定，
-    // 故含已解绑（bound_store_id IS NULL）顾客也应可被定位查看。
+    
+    
     const fSql = renderProfileFilters(filters, 2);
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level, c.customer_type,
@@ -116,9 +95,9 @@ async function search(ctx) {
   } else if (keyword && keyword.trim()) {
     const kw = `%${keyword.trim()}%`;
     if (crossStore) {
-      // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
-      // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
-      // is_cross_store_temp（需求21）随行返回，供前端判断「临时跨店顾客是否允许跨门店开单」
+      
+      
+      
       const fSql = renderProfileFilters(filters, 2);
       const limitIdx = 2 + filters.values.length;
       rows = await pg.query(
@@ -131,10 +110,10 @@ async function search(ctx) {
         [kw, ...filters.values, limit],
       );
     } else {
-      // 门店内模糊检索：顾客 Tab / 服务单选顾客用
-      // 顾客 Tab（profileScope）普通员工额外按 bound_employee_id 收紧
-      // 门店范围对齐统一 helper：门店模式=单一 effectiveStoreId；管理层模式=ANY(scopeStoreIds)
-      // $1 = kw，门店范围从 $2 起
+      
+      
+      
+      
       const scope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 2);
       const params = [kw, ...scope.params];
       let empClause = '';
@@ -156,9 +135,9 @@ async function search(ctx) {
       );
     }
   } else {
-    // 无 keyword 全量拉取：门店范围对齐统一 helper
-    // 门店模式=单一 effectiveStoreId；管理层模式=ANY(scopeStoreIds)
-    // （修复管理层模式 effectiveStoreId=null 致 bound_store_id=NULL 空数组）
+    
+    
+    
     const scope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1);
     const params = [...scope.params];
     let empClause = '';
@@ -191,18 +170,18 @@ async function search(ctx) {
     customerType: r.customer_type || null,
     storeName: r.store_name ? r.store_name.trim() : "",
     boundStoreId: r.bound_store_id || null,
-    // 临时跨门店标记（需求21）：仅 crossStore 分支 SELECT 带出，其它分支为 undefined → false
+    
     isCrossStoreTemp: r.is_cross_store_temp === true,
     lastServiceDate: null,
     lastPurchaseName: null,
     source: r.customer_id ? "both" : "miniprogram",
   }));
 
-  // 补充 lastServiceDate、lastPurchaseName
+  
   const allClientUserIds = results.map(r => r.clientUserId).filter(Boolean);
 
   if (allClientUserIds.length > 0) {
-    // 最近服务日期
+    
     const svcDateRows = await pg.query(`
       SELECT DISTINCT ON (so.client_user_id)
              so.client_user_id, so.service_date
@@ -215,7 +194,7 @@ async function search(ctx) {
       svcDateMap[r.client_user_id] = r.service_date;
     }
 
-    // 最近购买商品名
+    
     const lastPurchaseRows = await pg.query(`
       SELECT DISTINCT ON (o.client_user_id)
              o.client_user_id, si.product_name AS last_product_name
@@ -242,9 +221,7 @@ async function search(ctx) {
   ctx.result = results;
 }
 
-/**
- * 顾客消费日历
- */
+
 async function calendar(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
@@ -284,7 +261,7 @@ async function calendar(ctx) {
     `;
   }
 
-  // 交易数据跟顾客走：消费日历不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
+  
 
   const rows = await pg.query(
     `
@@ -342,9 +319,7 @@ async function calendar(ctx) {
   };
 }
 
-/**
- * 顾客档案详情（PG 单源）
- */
+
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
@@ -360,7 +335,7 @@ async function detail(ctx) {
   const fromClause = `FROM client_wechat_users c
     LEFT JOIN stores s ON s.store_id = c.bound_store_id`;
 
-  // 按优先级依次查找：customer_id → user_id → phone
+  
   let pgUser = null;
   if (id) {
     const rows = await pg.query(
@@ -390,18 +365,18 @@ async function detail(ctx) {
     throw new Error("INVALID_PARAMS: 顾客不存在");
   }
 
-  // Scope check: customer must belong to a store within current employee's scope
+  
   if (pgUser.bound_store_id && !isStoreInScope(ctx.auth, pgUser.bound_store_id)) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
   }
-  // 顾客档案主闸门：门店普通员工只能查看绑定本人的顾客
+  
   if (restrictToBoundEmployee(ctx.auth) && pgUser.bound_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 顾客未分配给当前员工')
   }
 
   const phone = pgUser.phone || "";
 
-  // 姓名回退：client_wechat_users.name → sale_orders.customer_name
+  
   let name = pgUser.name || "";
   if (!name && phone) {
     const nameRows = await pg.query(
@@ -413,7 +388,7 @@ async function detail(ctx) {
     if (nameRows.length > 0) name = nameRows[0].customer_name;
   }
 
-  // 指定美容师名称
+  
   let preferredStaffName = null;
   if (pgUser.bound_employee_id) {
     const staffRows = await pg.query(
@@ -425,12 +400,12 @@ async function detail(ctx) {
 
   const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id);
 
-  // 到店信息（上次到店 + 到店频率 + 常购商品），并行查询
+  
   const clientUserId = pgUser.user_id;
   const [visitInfo, purchaseInfo, legacyCountRow] = await Promise.all([
     getVisitInfo(clientUserId),
     getTopProduct(clientUserId),
-    // 历史订单待核对数（按 phone 匹配；未绑定 client_user_id 的 legacy 行也算）
+    
     phone
       ? pg.query(
           `SELECT COUNT(*)::int AS cnt FROM sale_orders
@@ -464,10 +439,7 @@ async function detail(ctx) {
   };
 }
 
-/**
- * 到店信息（上次到店日期 + 到店频率）
- * 频率基于近 90 天内的服务单去重天数计算
- */
+
 async function getVisitInfo(clientUserId) {
   if (!clientUserId) return { lastServiceDate: null, visitFrequency: null };
 
@@ -491,9 +463,7 @@ async function getVisitInfo(clientUserId) {
   return { lastServiceDate: lastDate, visitFrequency };
 }
 
-/**
- * 常购商品（购买次数最多的商品名称）
- */
+
 async function getTopProduct(clientUserId) {
   if (!clientUserId) return null;
 
@@ -512,9 +482,7 @@ async function getTopProduct(clientUserId) {
   return rows.length > 0 ? rows[0].product_name : null;
 }
 
-/**
- * 查询消费统计（单次查询同时计算累计 + 年度）
- */
+
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 };
 
@@ -534,9 +502,7 @@ async function getConsumptionStats(clientUserId) {
   };
 }
 
-/**
- * 顾客已支付订单（含明细）
- */
+
 async function paidOrders(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
@@ -547,8 +513,8 @@ async function paidOrders(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // 手机号 → clientUserId：统一走 clientUserId 守卫分支
-  //（复用现有 assertCustomerInScope 可见性逻辑，不引入新逻辑）
+  
+  
   if (!clientUserId && clientPhone) {
     const r = await pg.query(
       "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
@@ -557,21 +523,21 @@ async function paidOrders(ctx) {
     clientUserId = r[0]?.user_id || null;
   }
 
-  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑保持原样）
+  
   if (clientUserId) {
     await assertCustomerInScope(pg, ctx.auth, clientUserId)
   }
 
-  // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
-  // 状态口径：已支付 + 部分支付。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
-  //   admin getCustomerAvailableServices 一致）；待支付单 paid_sessions=0，前端 consumable<=0 兜底自动隐藏。
+  
+  
+  
   let whereClause, params;
   if (clientUserId) {
     whereClause = "o.status IN ('已支付', '部分支付') AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
-    // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
-    // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
+    
+    
     const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
     whereClause = `o.status IN ('已支付', '部分支付') AND o.client_phone = $1 AND ${scope.sql}`;
     params = [clientPhone, ...scope.params];
@@ -652,16 +618,7 @@ async function paidOrders(ctx) {
   }));
 }
 
-/**
- * 顾客消费记录（全状态 + 跨门店，仅展示用）
- *
- * 与 paidOrders 的区别 / 为何独立成 action：
- *   paidOrders 返回「已支付/部分支付」订单并对 items 做退款冻结过滤，前端复用它提取
- *   疗程卡 Tab 的可核销卡（→ service.create 核销次数；部分支付卡按 paid_sessions 限额核销）。
- *   本 action（orders）查全部状态供消费记录列表展示，items 不参与核销，
- *   故待支付/已关闭等非可核销订单也展示（仅记录，不可点选核销）。
- *   故消费记录列表独立成此 action：查全部状态、跨门店，items 仅作展示，不参与核销。
- */
+
 async function orderHistory(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
@@ -672,7 +629,7 @@ async function orderHistory(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // 手机号 → clientUserId：统一走 clientUserId 守卫分支（与 paidOrders 一致）
+  
   if (!clientUserId && clientPhone) {
     const r = await pg.query(
       "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
@@ -681,24 +638,24 @@ async function orderHistory(ctx) {
     clientUserId = r[0]?.user_id || null;
   }
 
-  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（可见性逻辑与 paidOrders 一致）
+  
   if (clientUserId) {
     await assertCustomerInScope(pg, ctx.auth, clientUserId);
   }
 
-  // 交易数据跟顾客走：放开门店过滤 + 不限状态，按顾客查全量（含跨门店、各状态）
+  
   let whereClause, params;
   if (clientUserId) {
     whereClause = "o.client_user_id = $1";
     params = [clientUserId];
   } else {
-    // 极端：手机号无对应顾客——无顾客可绑则退回门店 scope 过滤，杜绝凭手机号越权枚举全门店订单（与 paidOrders 一致）。
+    
     const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
     whereClause = `o.client_phone = $1 AND ${scope.sql}`;
     params = [clientPhone, ...scope.params];
   }
 
-  // 待支付订单 paid_at 为 NULL，按 COALESCE(paid_at, created_at) 排序避免乱序
+  
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.created_at,
             o.payable_amount, o.received, o.store_id, s.store_name, o.remark
@@ -714,7 +671,7 @@ async function orderHistory(ctx) {
     return;
   }
 
-  // 消费记录仅展示商品名，不做 paidOrders 的退款冻结/可核销过滤
+  
   const orderIds = orders.map((o) => o.sale_order_id);
   const items = await pg.query(
     `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.product_type
@@ -750,13 +707,7 @@ async function orderHistory(ctx) {
   }));
 }
 
-/**
- * 服务记录（顾客档案「服务记录」Tab）
- *
- * 交易数据跟顾客走：放开门店过滤 + 不限状态，按 client_user_id 查全量服务单（含跨门店、各状态）。
- * 可见性由 assertCustomerInScope（bound_store_id ∈ scope）守护，与 orderHistory 同口径。
- * 点进详情走 service.detail（已支持顾客档案场景的跨门店只读放行）。
- */
+
 async function serviceHistory(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
@@ -767,7 +718,7 @@ async function serviceHistory(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
-  // 手机号 → clientUserId（service_orders 仅有 client_user_id，无 client_phone 列）
+  
   if (!clientUserId && clientPhone) {
     const r = await pg.query(
       "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
@@ -780,7 +731,7 @@ async function serviceHistory(ctx) {
     return;
   }
 
-  // scope 守卫：校验该顾客 bound_store_id ∈ 当前 scope（与 orderHistory 一致）
+  
   await assertCustomerInScope(pg, ctx.auth, clientUserId);
 
   const serviceOrders = await pg.query(
@@ -800,7 +751,7 @@ async function serviceHistory(ctx) {
     return;
   }
 
-  // 批量查询服务明细摘要（项目名）
+  
   const soIds = serviceOrders.map((s) => s.service_order_id);
   const itemsSummary = await pg.query(
     `SELECT si.service_order_id, COALESCE(sli.product_name, '') AS product_name
@@ -819,7 +770,7 @@ async function serviceHistory(ctx) {
     });
   }
 
-  // 批量查询员工姓名
+  
   const staffWfIds = [...new Set(serviceOrders.map((s) => s.assigned_employee_id).filter(Boolean))];
   const staffNameMap = {};
   if (staffWfIds.length > 0) {
@@ -845,10 +796,7 @@ async function serviceHistory(ctx) {
   }));
 }
 
-/**
- * 顾客分类统计（基于最近服务日期 + 生日）
- * 返回各状态的顾客数量
- */
+
 async function stats(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -857,8 +805,8 @@ async function stats(ctx) {
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // scope 过滤：兼容门店模式(单一)+管理层模式(多门店)
-  // 普通员工（store_staff）顾客统计仅覆盖绑定本人的顾客
+  
+  
   const restrictEmp = restrictToBoundEmployee(ctx.auth)
   const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
   let cWhere = cScope.sql
@@ -887,11 +835,11 @@ async function stats(ctx) {
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
   for (const r of rows) {
-    // 活跃度分类
-    // 会员客：按 admin cron 预算的 customer_status 映射（与后台数据中心对齐）：
-    //   保有会员-稳定/有效→活跃, 沉睡→即将流失, 冰冻→流失, 休眠→沉睡
-    //   customer_status 为空（cron 未跑 / 刚升级会员）时兜底走时间衰减，避免漏桶
-    // 流量客及其它：按 last_service_date 30/60/90 天实时分桶
+    
+    
+    
+    
+    
     if (r.customer_type === '会员客' && r.customer_status) {
       switch (r.customer_status) {
         case '保有会员-稳定':
@@ -910,7 +858,7 @@ async function stats(ctx) {
     } else {
       sleeping++
     }
-    // 生日
+    
     if (r.birthday) {
       const bMonth = new Date(r.birthday).getMonth() + 1
       if (bMonth === currentMonth) birthday++
@@ -918,7 +866,7 @@ async function stats(ctx) {
     }
   }
 
-  // 会员客/流量客统计
+  
   const memberScope = buildStoreScopeCondition(ctx.auth, 'bound_store_id', 1)
   let memberWhere = memberScope.sql
   const memberParams = [...memberScope.params]
@@ -940,10 +888,7 @@ async function stats(ctx) {
   }
 }
 
-/**
- * 按标签筛选顾客列表
- * tag: active | atRisk | lost | sleeping | birthday | birthdayNext
- */
+
 async function listByTag(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -957,8 +902,8 @@ async function listByTag(ctx) {
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // 查询所有绑定本店的顾客及其最近服务日期（兼容门店/管理层 scope）
-  // 普通员工（store_staff）仅覆盖绑定本人的顾客
+  
+  
   const restrictEmp = restrictToBoundEmployee(ctx.auth)
   const cScope = buildStoreScopeCondition(ctx.auth, 'c.bound_store_id', 1)
   let cWhere = cScope.sql
@@ -981,7 +926,7 @@ async function listByTag(ctx) {
     GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
   `, [...cParams, ...soScope.params])
 
-  // 按 tag 过滤
+  
   const filtered = allRows.filter(r => {
     if (tag === 'birthday') {
       return r.birthday && (new Date(r.birthday).getMonth() + 1) === currentMonth
@@ -999,11 +944,11 @@ async function listByTag(ctx) {
     return true
   })
 
-  // 分页
+  
   const offset = (page - 1) * pageSize
   const paged = filtered.slice(offset, offset + pageSize)
 
-  // 最近购买商品名（仅查分页后的用户，减少查询量）
+  
   const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
   const lastPurchaseMap = {}
   if (pagedUserIds.length > 0) {
@@ -1041,15 +986,7 @@ async function listByTag(ctx) {
   }
 }
 
-/**
- * 退换记录
- *
- * 数据源 = sale_order_payments[change_type='退款'] + 转换单
- *   退款：从 sale_order_payments[change_type='退款']（refund_reason / audit_* / note 已合并到主表）
- *   转换：保留原 sale_orders[sale_order_type='转换单'] 路径
- *
- * scope：staff 端必须加 store_id 过滤（audit-CC3 P0-CC3-02）
- */
+
 async function refundHistory(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -1058,7 +995,7 @@ async function refundHistory(ctx) {
 
   await assertProfileVisibleByIdentifier(ctx.auth, clientUserId, clientPhone)
 
-  // 退款流水（来自 sale_order_payments）+ store_id scope
+  
   let refundParams, refundClientWhere
   if (clientUserId) {
     refundClientWhere = 'so.client_user_id = $1'
@@ -1067,7 +1004,7 @@ async function refundHistory(ctx) {
     refundClientWhere = 'so.client_phone = $1'
     refundParams = [clientPhone]
   }
-  // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
+  
   const refundWhere = refundClientWhere
   refundParams.push(pageSize, (page - 1) * pageSize)
   const refundRows = await pg.query(`
@@ -1093,7 +1030,7 @@ async function refundHistory(ctx) {
     LIMIT $${refundParams.length - 1} OFFSET $${refundParams.length}
   `, refundParams)
 
-  // 转换单（仍保留 sale_orders 路径）+ store_id scope
+  
   let convParams, convClientWhere
   if (clientUserId) {
     convClientWhere = 'o.client_user_id = $1'
@@ -1102,7 +1039,7 @@ async function refundHistory(ctx) {
     convClientWhere = 'o.client_phone = $1'
     convParams = [clientPhone]
   }
-  // 交易数据跟顾客走：转换单不再按门店过滤
+  
   const convWhere = convClientWhere
   const convRows = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
@@ -1113,7 +1050,7 @@ async function refundHistory(ctx) {
     ORDER BY o.created_at DESC
   `, convParams)
 
-  // 转换单的明细
+  
   const convOrderIds = convRows.map(o => o.sale_order_id)
   let convItems = []
   if (convOrderIds.length > 0) {
@@ -1146,10 +1083,10 @@ async function refundHistory(ctx) {
     }
     return {
       paymentId: r.payment_id,
-      saleOrderId: r.sale_order_id,    // 此处指向"原销售单"
+      saleOrderId: r.sale_order_id,    
       type: '退款',
       status: r.status,
-      totalAmount: Number(r.amount),    // 已含负号
+      totalAmount: Number(r.amount),    
       refundReason: r.refund_reason,
       handlingFee: parsedDetail?.handlingFee ?? null,
       refOrderId: r.sale_order_id,
@@ -1172,15 +1109,13 @@ async function refundHistory(ctx) {
     items: convItemsByOrder[o.sale_order_id] || [],
   }))
 
-  // 合并 + 按时间倒序（与历史返回结构兼容：扁平数组）
+  
   ctx.result = [...refunds, ...conversions].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   )
 }
 
-/**
- * 更新顾客备注
- */
+
 async function updateNotes(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -1190,8 +1125,8 @@ async function updateNotes(ctx) {
 
   const trimmed = notes.trim().slice(0, 500)
 
-  // scope 守卫：assertCustomerInScope 校验顾客存在 + bound_store_id ∈ 当前 scope
-  // （store 模式 = effectiveStoreId；management 模式 = scopeStoreIds）
+  
+  
   await assertCustomerInScope(pg, ctx.auth, clientUserId)
 
   await pg.transaction(async (client) => {
@@ -1199,7 +1134,7 @@ async function updateNotes(ctx) {
       'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
       [trimmed || null, clientUserId]
     )
-    // Audit log
+    
     await logOperation(client, ctx, 'customer.updateNotes', 'customer', clientUserId, {
       _v: 3,
       notesLength: trimmed ? trimmed.length : 0,
@@ -1209,11 +1144,7 @@ async function updateNotes(ctx) {
   ctx.result = { message: '备注已保存' }
 }
 
-/**
- * 查询顾客储值卡余额（店长专用，跨店共享）
- * payload: { customerUserId: string }
- * 返回: { cardId: string|null, balance: number }
- */
+
 async function customerBalance(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -1222,9 +1153,9 @@ async function customerBalance(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 customerUserId')
   }
 
-  // scope 守卫：储值卡余额是账户级资产（prepaid_cards 跨店共享，无 store_id 列），
-  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）」——
-  // 解绑顾客的余额仍可查；仅「仍绑定他店」的活跃顾客继续 PERMISSION_DENIED。
+  
+  
+  
   const scopeRows = await pg.query(
     'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
     [customerUserId]
@@ -1253,9 +1184,7 @@ async function customerBalance(ctx) {
   }
 }
 
-/**
- * 客户分配（店长将顾客分配给美容师）
- */
+
 async function assign(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -1263,7 +1192,7 @@ async function assign(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
 
-  // scope 守卫：顾客与员工都必须 ∈ 当前 scope
+  
   await assertCustomerInScope(pg, ctx.auth, clientUserId)
   await assertEmployeeInScope(pg, ctx.auth, employeeId)
 
@@ -1280,7 +1209,7 @@ async function assign(ctx) {
       'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
       [employeeId, clientUserId]
     )
-    // Audit log
+    
     await logOperation(client, ctx, 'customer.assign', 'customer', clientUserId, {
       _v: 3,
       employeeId,
@@ -1294,12 +1223,7 @@ async function assign(ctx) {
   }
 }
 
-/**
- * 顾客预约记录（顾客档案 Tab）
- * 按 clientUserId|clientPhone 查该顾客全部预约 + store_id scope + 普通员工档案闸门。
- * 顾客已通过档案闸门（普通员工仅见绑定本人的顾客），故不再按 employee_id 过滤预约行，
- * 展示该顾客完整预约历史。
- */
+
 async function appointments(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -1347,11 +1271,7 @@ async function appointments(ctx) {
   }))
 }
 
-/**
- * 顾客手机号变更记录（顾客档案 Tab）
- * 镜像 admin getCustomerPhoneChangeLogs：
- *   auth.rebindPhone（顾客自助换绑，已下线但保留历史） + customer.update(detail.changes 含 phone)
- */
+
 async function phoneChangeLogs(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -1360,7 +1280,7 @@ async function phoneChangeLogs(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
 
-  // 手机号变更日志按 client_user_id 关联，先解析 user_id
+  
   let cuid = clientUserId
   if (!cuid && clientPhone) {
     const r = await pg.query(
@@ -1371,7 +1291,7 @@ async function phoneChangeLogs(ctx) {
   }
   if (!cuid) { ctx.result = []; return }
 
-  // 档案闸门（门店 scope + 普通员工 bound_employee_id）
+  
   await assertCustomerProfileVisible(pg, ctx.auth, cuid)
 
   const rows = await pg.query(`
@@ -1399,7 +1319,7 @@ async function phoneChangeLogs(ctx) {
         source: 'admin',
       }
     }
-    // auth.rebindPhone：operator 为空 + detail.clientUserId 存在 → 顾客自助
+    
     const operatorLabel = r.operator_employee_id
       ? (r.operator_name || r.operator_employee_id)
       : (detail.clientUserId ? '顾客自助' : (r.operator_name || '—'))

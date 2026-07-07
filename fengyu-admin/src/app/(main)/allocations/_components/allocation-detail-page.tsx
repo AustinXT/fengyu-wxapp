@@ -12,31 +12,31 @@ import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate, SkillTag } from "@/lib/types"
 
-// --------------- 常量 ---------------
+
 
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
-// --------------- 类型 ---------------
+
 
 interface AllocationEntry {
   id: number
-  skillTag: string        // 先选：'美容师' | '养生师' | '推广师'
-  employeeId: string      // 后选：按 skillTag 筛选后的员工
-  ratioPercent: string    // '10' | '20' | ... | '100' | ''
-  amount: string          // 自动 = ratioPercent/100 × received
-  commissionRate: number  // 自动从提成矩阵获取
-  commissionAmount: string // 自动 = amount × commissionRate
+  skillTag: string        
+  employeeId: string      
+  ratioPercent: string    
+  amount: string          
+  commissionRate: number  
+  commissionAmount: string 
 }
 
-// --------------- 工具函数 ---------------
 
-/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+
+
 function getPoolKey(roleType: string): string {
   return roleType
 }
 
-/** 根据市场、角色、销售分类、金额匹配提成比例 */
+
 function findMatchingRate(
   rates: CommissionRate[],
   marketName: string,
@@ -54,21 +54,21 @@ function findMatchingRate(
   ) ?? null
 }
 
-/** 员工按职位排序 */
+
 function sortByPosition(employees: Employee[]): Employee[] {
   return [...employees].sort((a, b) =>
     (a.positionName || '').localeCompare(b.positionName || '', 'zh-CN')
   )
 }
 
-/** 计算分配金额 */
+
 function calcAmount(ratioPercent: string, received: number): string {
   const ratio = Number(ratioPercent)
   if (isNaN(ratio) || ratio <= 0) return '0.00'
   return ((ratio / 100) * received).toFixed(2)
 }
 
-// --------------- 初始化状态 ---------------
+
 
 function initAllocations(
   items: SaleItem[],
@@ -114,7 +114,7 @@ function initAllocations(
   return result
 }
 
-// --------------- 主组件 ---------------
+
 
 export default function AllocationDetailPageClient({
   order,
@@ -129,17 +129,17 @@ export default function AllocationDetailPageClient({
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
 }) {
-  // 技能标签下拉选项：严格来自数据库 skill_tags（is_valid + sort_order 已在 action 内处理）
+  
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
-  // 所有在职员工（不区分门店，后续按 skillTag 动态筛选）
+  
   const allActiveEmployees = useMemo(
     () => sortByPosition(employees.filter((e) => !e.isResigned)),
     [employees],
   )
 
-  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
-  // 「订单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
-  // 全公司补充池并入候选，故能跨门店命中；每日 03:00 cron 重置出差标记。
+  
+  
+  
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
     return allActiveEmployees.filter(
@@ -189,20 +189,20 @@ export default function AllocationDetailPageClient({
           if (e.id !== entryId) return e
           const updated = { ...e, [field]: value }
 
-          // 切换 skillTag → 清空员工（因为员工列表变了）、重查提成比例
+          
           if (field === 'skillTag') {
             updated.employeeId = ''
             const rateRef = findMatchingRate(commissionRates, marketName, value, item?.salesCategory ?? null, received)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
-          // 选择员工时也重查提成比例（金额可能影响阶梯匹配）
+          
           if (field === 'employeeId' && updated.skillTag) {
             const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, item?.salesCategory ?? null, received)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
-          // 重算金额和提成
+          
           updated.amount = calcAmount(updated.ratioPercent, received)
           updated.commissionAmount = (Number(updated.amount) * updated.commissionRate).toFixed(2)
 
@@ -228,7 +228,7 @@ export default function AllocationDetailPageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">营业额分配</h1>
       </div>
 
-      {/* 订单摘要 */}
+      {}
       <Card>
         <CardHeader><CardTitle>订单信息</CardTitle></CardHeader>
         <CardContent>
@@ -253,7 +253,7 @@ export default function AllocationDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 逐 SKU 分配卡片 */}
+      {}
       {items.length > 0 ? (
         items.map((item) => (
           <ItemAllocationCard
@@ -278,7 +278,7 @@ export default function AllocationDetailPageClient({
         </Card>
       )}
 
-      {/* 保存 */}
+      {}
       <Card>
         <CardContent className="pt-6">
           <SaveButton orderId={order.saleOrderId} items={items} itemAllocs={itemAllocs} />
@@ -288,7 +288,7 @@ export default function AllocationDetailPageClient({
   )
 }
 
-// --------------- SKU 分配卡片 ---------------
+
 
 function ItemAllocationCard({
   item,
@@ -309,7 +309,7 @@ function ItemAllocationCard({
 }) {
   const received = Number(item.received)
 
-  // 按 roleType 分池统计分配比例合计（P2-14 Q5：三角色独立）
+  
   const groupSums: Record<string, number> = {}
   for (const e of entries) {
     if (!e.skillTag) continue
@@ -344,7 +344,7 @@ function ItemAllocationCard({
 
             return (
               <div key={entry.id} className="bg-[#FAFAFA] rounded-lg px-4 py-2.5 flex items-end gap-2 flex-wrap">
-                {/* 技能标签 */}
+                {}
                 <div className="w-24 shrink-0">
                   <label className="text-[10px] text-[#999999]">技能标签</label>
                   <Select
@@ -358,7 +358,7 @@ function ItemAllocationCard({
                   </Select>
                 </div>
 
-                {/* 员工 */}
+                {}
                 <div className="w-32 shrink-0">
                   <label className="text-[10px] text-[#999999]">员工</label>
                   <Select
@@ -375,7 +375,7 @@ function ItemAllocationCard({
                   </Select>
                 </div>
 
-                {/* 提成比例（只读） */}
+                {}
                 <div className="w-16 shrink-0 text-center">
                   <label className="text-[10px] text-[#999999]">提成</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-center">
@@ -387,7 +387,7 @@ function ItemAllocationCard({
                   </p>
                 </div>
 
-                {/* 分配比例 */}
+                {}
                 <div className="w-20 shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
                   <Select
@@ -401,19 +401,19 @@ function ItemAllocationCard({
                   </Select>
                 </div>
 
-                {/* 分配金额（只读） */}
+                {}
                 <div className="w-20 shrink-0 text-right">
                   <label className="text-[10px] text-[#999999]">分配额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end">¥{Number(entry.amount).toLocaleString()}</p>
                 </div>
 
-                {/* 提成金额（只读） */}
+                {}
                 <div className="w-20 shrink-0 text-right">
                   <label className="text-[10px] text-[#999999]">提成额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end text-[var(--primary)]">¥{Number(entry.commissionAmount).toLocaleString()}</p>
                 </div>
 
-                {/* 删除 */}
+                {}
                 <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </Button>
@@ -424,7 +424,7 @@ function ItemAllocationCard({
           <p className="text-xs text-[#999999] py-2">暂无分配，点击"添加分配"开始</p>
         )}
 
-        {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}
+        {}
         <div className="flex items-center justify-between pt-1">
           <div className="flex gap-4 text-xs flex-wrap">
             {Object.entries(groupSums).map(([role, sum]) => (
@@ -446,7 +446,7 @@ function ItemAllocationCard({
   )
 }
 
-// --------------- 保存按钮 ---------------
+
 
 function SaveButton({
   orderId,
@@ -479,7 +479,7 @@ function SaveButton({
         }
       }
 
-      // 按 (roleType) 分池校验（P2-14 Q5：三角色独立）
+      
       const pools: Record<string, AllocationEntry[]> = {}
       for (const e of entries) {
         const g = getPoolKey(e.skillTag)

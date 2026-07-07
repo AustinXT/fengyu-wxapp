@@ -95,12 +95,7 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
   )
 }
 
-/**
- * 服务单列表页 — 服务端分页
- *
- * 数据已在 Server Component 中通过 getServiceOrdersPaginated() 完成 DB 级过滤+分页，
- * 此组件仅负责展示和 URL 筛选控制。
- */
+
 export default function ServicesPageClient({
   serviceOrders,
   stores,
@@ -113,7 +108,7 @@ export default function ServicesPageClient({
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
 
-  /** 导出当前筛选命中的全部服务单（跨分页，含服务项明细聚合列） */
+  
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
     const { rows, truncated } = await exportServiceOrders(raw)
@@ -141,12 +136,12 @@ export default function ServicesPageClient({
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
   }, [searchParams])
 
-  /** 筛选变更时重置到第 1 页 */
+  
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
   }, [setMany])
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
@@ -172,7 +167,7 @@ export default function ServicesPageClient({
         </Link>
       </div>
 
-      {/* Filters — URL-driven, 触发服务端重新查询 */}
+      {}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
@@ -205,7 +200,7 @@ export default function ServicesPageClient({
         </CardContent>
       </Card>
 
-      {/* Table — 数据已经是当前页的切片 */}
+      {}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">

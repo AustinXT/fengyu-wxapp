@@ -12,26 +12,21 @@ import type { RoleType } from '@/lib/types'
 
 const PERMISSION_MATRIX_KEY = 'permission_matrix'
 
-/** 7 个合法角色（与 RoleType 对齐） */
+
 const ALL_ROLES: RoleType[] = [
   'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff',
 ]
 
-/**
- * admin 必备 actions —— 删除任何一个都会让"再次进入矩阵编辑页 / 重置密码"通道被锁死。
- * saveMatrix 校验，缺失即拒绝写入（防自锁）。
- */
+
 const ADMIN_REQUIRED_ACTIONS = [
-  'system:config',         // 缺失则无法再次进入本页
-  'permission:assign_admin', // 缺失则无法重新授予 admin
-  'admin:reset_password',  // 缺失则无法重置员工密码
+  'system:config',         
+  'permission:assign_admin', 
+  'admin:reset_password',  
 ] as const
 
 export type PermissionMatrix = Record<RoleType, string[]>
 
-/**
- * 规范化用户提交的矩阵：补齐 7 角色 key，每个 actions 去重 + 排序 + 过滤空串。
- */
+
 function normalizeMatrix(input: unknown): PermissionMatrix {
   const result: PermissionMatrix = {
     admin: [], manager: [], finance: [], hr: [], product: [], customer_mgr: [], staff: [],
@@ -51,11 +46,7 @@ function normalizeMatrix(input: unknown): PermissionMatrix {
   return result
 }
 
-/**
- * 读取当前权限矩阵（DB 单源，缺失时回退 DEFAULT）。
- * 不走 lib/permissions.getPermissionMatrix 的进程缓存——本入口供编辑页打开时使用，
- * 必须看到最新落库值。
- */
+
 export const getMatrix = withPermission(
   'system:config',
   async (): Promise<PermissionMatrix> => {
@@ -76,12 +67,7 @@ export const getMatrix = withPermission(
   },
 )
 
-/**
- * 保存权限矩阵（UPSERT system_configs.permission_matrix）。
- *
- * 强校验：admin 必须保留 ADMIN_REQUIRED_ACTIONS（防自锁）。
- * 写入后立即 invalidate 进程缓存 + revalidatePath。
- */
+
 export const saveMatrix = withPermission(
   'system:config',
   async (
@@ -90,7 +76,7 @@ export const saveMatrix = withPermission(
   ): Promise<{ success: boolean; message: string }> => {
     const normalized = normalizeMatrix(newMatrix)
 
-    // 防自锁校验
+    
     const missingAdminAction = ADMIN_REQUIRED_ACTIONS.find(
       (a) => !normalized.admin.includes(a),
     )
@@ -102,7 +88,7 @@ export const saveMatrix = withPermission(
     }
 
     try {
-      // 取 before 快照用于 diff（行不存在时按 DEFAULT 算）
+      
       const beforeRows = await db.execute<{ value: string }>(
         sql`SELECT value FROM system_configs WHERE key = ${PERMISSION_MATRIX_KEY} LIMIT 1`,
       )
@@ -137,9 +123,7 @@ export const saveMatrix = withPermission(
   },
 )
 
-/**
- * 重置权限矩阵为代码内置默认值（DELETE DB 行后自然走 fallback）。
- */
+
 export const resetMatrix = withPermission(
   'system:config',
   async (session): Promise<{ success: boolean; message: string }> => {

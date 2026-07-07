@@ -218,7 +218,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
 
       <PullWorkfineDialog open={pullOpen} onOpenChange={setPullOpen} />
 
-      {/* 筛选 */}
+      {}
       <Card>
         <CardContent className="p-4">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -283,7 +283,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </CardContent>
       </Card>
 
-      {/* 表格 */}
+      {}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -331,7 +331,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
                       <td className="px-4 py-3">{o.customerName || o.clientName || "—"}</td>
                       <td className="px-4 py-3">
                         {(() => {
-                          // 核对对象是 WorkFine 原始门店名（存于快照）；o.storeName 是映射后的新系统门店
+                          
                           const snap = o.legacyRawSnapshot as { store_name?: string } | null
                           const legacyStoreName = snap?.store_name || null
                           const mappedStoreName = o.storeName || null
@@ -442,7 +442,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </CardContent>
       </Card>
 
-      {/* 通过确认 */}
+      {}
       <AlertDialog open={!!approveTarget} onOpenChange={(open) => !open && setApproveTarget(null)}>
         <AlertDialogTitle>确认通过核对？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -455,7 +455,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 作废确认 */}
+      {}
       <AlertDialog open={!!rejectTarget} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <AlertDialogTitle>确认作废这条历史订单？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -470,7 +470,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 改手机号 */}
+      {}
       <Dialog open={!!phoneTarget} onOpenChange={(open) => !open && setPhoneTarget(null)}>
         <DialogHeader>
           <DialogTitle>修改手机号（WorkFine 错填修正）</DialogTitle>
@@ -504,7 +504,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </DialogFooter>
       </Dialog>
 
-      {/* 改金额 */}
+      {}
       <Dialog open={!!amountTarget} onOpenChange={(open) => !open && setAmountTarget(null)}>
         <DialogHeader>
           <DialogTitle>修改订单金额（WorkFine 错填修正）</DialogTitle>
@@ -543,7 +543,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
         </DialogFooter>
       </Dialog>
 
-      {/* 批量通过 */}
+      {}
       <AlertDialog open={batchOpen} onOpenChange={setBatchOpen}>
         <AlertDialogTitle>批量通过 {selected.size} 条历史订单？</AlertDialogTitle>
         <AlertDialogDescription>

@@ -20,24 +20,24 @@ function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
   }
 }
 
-/** 全量查询技能标签 */
+
 export const getSkillTags = withPermission('employee:list', async (): Promise<SkillTag[]> => {
   const rows = await db
     .select()
     .from(skillTags)
-    // 例外：sortOrder 手工排序权重
+    
     .orderBy(asc(skillTags.sortOrder))
 
   return rows.map(rowToSkillTag)
 })
 
-/** 查询启用中的技能标签（用于选项） */
+
 export const getActiveSkillTags = withPermission('employee:list', async (): Promise<SkillTag[]> => {
   const rows = await db
     .select()
     .from(skillTags)
     .where(eq(skillTags.isValid, true))
-    // 例外：sortOrder 手工排序权重
+    
     .orderBy(asc(skillTags.sortOrder))
 
   return rows.map(rowToSkillTag)
@@ -88,7 +88,7 @@ export const updateSkillTag = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
+    
     const [before] = await db.select().from(skillTags).where(eq(skillTags.id, id)).limit(1)
 
     const whereConditions = expectedUpdatedAt

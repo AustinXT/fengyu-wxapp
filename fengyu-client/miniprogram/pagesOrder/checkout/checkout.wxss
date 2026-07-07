@@ -1,20 +1,20 @@
-/* pages/checkout/checkout.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
-  /* 留足底部空间：submit-bar (~100rpx) + tip 行 (~70rpx) + 安全区，避免遮挡协议勾选 */
+  
   padding-bottom: calc(280rpx + env(safe-area-inset-bottom));
 }
 
-/* 底部提交按钮：拉宽 + 不换行，避免"支付宝付款 / 确认支付（已抵扣）"等多字按钮文字溢出 */
+
 .checkout-submit-btn {
   min-width: 240rpx !important;
   padding: 0 28rpx !important;
   white-space: nowrap !important;
 }
 
-/* 消费协议行 */
+
 .agreement-row {
   display: flex;
   align-items: center;
@@ -31,7 +31,7 @@
   color: var(--color-primary);
 }
 
-/* 价格合计行 */
+
 .total-row {
   border-top: 1px solid var(--color-border);
 }
@@ -53,7 +53,7 @@
   font-weight: 700;
 }
 
-/* ===== 手机号绑定底栏 ===== */
+
 .phone-bind-bar {
   position: fixed;
   bottom: 0;
@@ -80,7 +80,7 @@
   border: none;
 }
 
-/* ===== 支付宝二维码弹窗 ===== */
+
 .pay-icon {
   width: 40rpx;
   height: 40rpx;
@@ -139,7 +139,7 @@
   margin-bottom: 16rpx;
 }
 
-/* 支付宝吱口令文本框（聚合主扫 share_code 方案）*/
+
 .alipay-share-token {
   width: 100%;
   box-sizing: border-box;
@@ -157,7 +157,7 @@
   user-select: text;
 }
 
-/* ===== 优惠券选择 ===== */
+
 .coupon-selected-value {
   color: var(--color-primary) !important;
   font-weight: 600;
@@ -259,7 +259,7 @@
   padding: 20rpx 24rpx;
 }
 
-/* ===== 储值卡抵扣区 ===== */
+
 .card-deduction-row {
   padding: 24rpx 32rpx;
   border-top: 1rpx solid var(--color-border);
@@ -308,15 +308,15 @@
   color: var(--color-text-hint);
 }
 
-/* 实付金额段 — 全额抵扣副文案 */
+
 .pay-empty-hint {
   font-size: 24rpx;
   color: var(--color-text-hint);
 }
 
-/* 美容师选择 Popup — 复用 app.wxss 全局 .staff-* 样式 */
 
-/* ===== 商品明细列表 ===== */
+
+
 .checkout-items {
   padding: 8rpx 0;
 }
@@ -382,7 +382,7 @@
   font-weight: 600;
 }
 
-/* 会员价分流：划线标价 */
+
 .price-origin {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -395,7 +395,7 @@
   color: var(--color-text-secondary);
 }
 
-/* van-cell 左侧美容师头像（icon slot） */
+
 .cell-staff-avatar {
   width: 56rpx;
   height: 56rpx;
@@ -415,7 +415,7 @@
   border-radius: 28rpx;
 }
 
-/* ===== 消费协议预览 Popup ===== */
+
 .agreement-popup {
   display: flex;
   flex-direction: column;
@@ -427,7 +427,7 @@
   font-size: 32rpx;
   font-weight: 600;
   color: var(--color-text-primary);
-  /* 右侧留空给 closeable 关闭图标 */
+  
   padding: 32rpx 64rpx 20rpx;
 }
 
@@ -451,7 +451,7 @@
   padding: 100rpx 0;
 }
 
-/* 每段独占一行（text 默认 inline，需 block） */
+
 .agreement-popup__para {
   display: block;
   font-size: 26rpx;

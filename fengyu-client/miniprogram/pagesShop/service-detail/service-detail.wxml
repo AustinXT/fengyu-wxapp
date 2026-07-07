@@ -1,4 +1,4 @@
-<!-- pages/service-detail/service-detail.wxml — 商品详情 + SKU 选择 -->
+
 <wxs module="price">
 module.exports.fmt = function(val) {
   return (Math.round(val * 100) / 100).toFixed(2)
@@ -20,14 +20,14 @@ module.exports.strike = function(isMember, special, list) {
 </wxs>
 <van-toast id="van-toast" />
 
-<!-- 错误态 -->
+
 <view wx:if="{{!isLoading && loadError}}" class="error-wrap">
   <van-empty image="error" description="加载失败，下拉刷新重试" />
 </view>
 
 <view class="container" wx:elif="{{!isLoading}}">
 
-  <!-- 封面图 -->
+  
   <view class="cover-wrap">
     <image
       wx:if="{{spu.cover_image}}"
@@ -40,7 +40,7 @@ module.exports.strike = function(isMember, special, list) {
     </view>
   </view>
 
-  <!-- 商品基础信息 -->
+  
   <view class="info-card">
     <view class="info-tags" wx:if="{{spu.category_name}}">
       <van-tag type="primary">{{spu.category_name}}</van-tag>
@@ -48,7 +48,7 @@ module.exports.strike = function(isMember, special, list) {
     </view>
     <text class="spu-name">{{spu.name}}</text>
 
-    <!-- 套餐：展示套餐价；非套餐：选中 SKU 价格 -->
+    
     <view class="price-row" wx:if="{{spu.is_bundle}}">
       <view class="price-group">
         <text class="price-symbol">¥</text>
@@ -69,7 +69,7 @@ module.exports.strike = function(isMember, special, list) {
     </view>
   </view>
 
-  <!-- SKU 规格选择入口 -->
+  
   <van-cell-group inset>
     <van-cell
       wx:if="{{spu.is_bundle}}"
@@ -87,7 +87,7 @@ module.exports.strike = function(isMember, special, list) {
     />
   </van-cell-group>
 
-  <!-- 选择美容师（可选） -->
+  
   <van-cell-group title="指定美容师（可选）" inset>
     <van-cell
       title="{{selectedStaffName || '不指定美容师'}}"
@@ -98,7 +98,7 @@ module.exports.strike = function(isMember, special, list) {
     />
   </van-cell-group>
 
-  <!-- 商品详情（图文，竖向依次排列） -->
+  
   <view
     class="detail-section"
     wx:if="{{spu.description || (spu.detail_images && spu.detail_images.length)}}"
@@ -115,9 +115,9 @@ module.exports.strike = function(isMember, special, list) {
     />
   </view>
 
-  <!-- 底部操作栏 -->
+  
   <view class="action-bar safe-area-bottom">
-    <!-- 套餐：展示已选合计；非套餐：单 SKU × 数量 -->
+    
     <view class="action-bar__price" wx:if="{{spu.is_bundle}}">
       <text class="action-bar__price-symbol">¥</text>
       <text class="action-bar__price-value">{{price.fmt(bundleTotalPrice)}}</text>
@@ -132,13 +132,13 @@ module.exports.strike = function(isMember, special, list) {
       <text class="action-bar__price-hint">请选择规格</text>
     </view>
 
-    <!-- 购物车图标：套餐不显示 -->
+    
     <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{!spu.is_bundle}}">
       <van-icon name="shopping-cart-o" size="48rpx" />
       <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
     </view>
 
-    <!-- 按钮区 -->
+    
     <view class="action-bar__btns">
       <view wx:if="{{!spu.is_bundle}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
       <view wx:if="{{spu.is_bundle}}" class="action-bar__btn action-bar__btn--buy action-bar__btn--full {{!bundleCanSubmit ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
@@ -146,7 +146,7 @@ module.exports.strike = function(isMember, special, list) {
     </view>
   </view>
 
-  <!-- 美容师选择 Popup -->
+  
   <staff-popup
     show="{{showStaffPopup}}"
     staff-list="{{staffList}}"
@@ -156,7 +156,7 @@ module.exports.strike = function(isMember, special, list) {
     bind:close="onCloseStaffPopup"
   />
 
-  <!-- SKU 选择 Popup -->
+  
   <van-popup
     show="{{showSkuPopup}}"
     position="bottom"
@@ -165,7 +165,7 @@ module.exports.strike = function(isMember, special, list) {
     bind:close="onCloseSkuPopup"
   >
     <view class="sku-popup">
-      <!-- 顶部：封面 + 价格 -->
+      
       <view class="sku-popup__header">
         <image
           wx:if="{{spu.cover_image}}"
@@ -192,7 +192,7 @@ module.exports.strike = function(isMember, special, list) {
         </view>
       </view>
 
-      <!-- 套餐分支：分组多选 -->
+      
       <block wx:if="{{spu.is_bundle}}">
         <view class="sku-popup__bundle">
           <view class="sku-popup__group" wx:for="{{bundleViewGroups}}" wx:for-item="g" wx:key="id">
@@ -201,7 +201,7 @@ module.exports.strike = function(isMember, special, list) {
               <text class="sku-popup__group-hint">{{g.hint}}</text>
             </view>
             <view class="sku-popup__group-skus">
-              <!-- 选 N 项组：数量步进器（同一 SKU 可选多件，组内合计 = pickCount） -->
+              
               <block wx:if="{{g.mode === 'pick'}}">
                 <view
                   wx:for="{{g.skus}}"
@@ -227,7 +227,7 @@ module.exports.strike = function(isMember, special, list) {
                   />
                 </view>
               </block>
-              <!-- 全选组：复选框（默认全选、锁定） -->
+              
               <block wx:else>
                 <view
                   wx:for="{{g.skus}}"
@@ -256,7 +256,7 @@ module.exports.strike = function(isMember, special, list) {
         </view>
       </block>
 
-      <!-- 非套餐分支：普通 SKU 平铺 -->
+      
       <block wx:else>
         <view class="sku-popup__title">选择规格</view>
         <view class="sku-popup__list">
@@ -273,7 +273,7 @@ module.exports.strike = function(isMember, special, list) {
           </view>
         </view>
 
-        <!-- 数量（套餐不显示） -->
+        
         <view class="sku-popup__quantity">
           <text class="sku-popup__quantity-label">购买数量</text>
           <van-stepper
@@ -287,7 +287,7 @@ module.exports.strike = function(isMember, special, list) {
         </view>
       </block>
 
-      <!-- 确认按钮：套餐→加入套餐+提交；非套餐→仅关闭弹层 -->
+      
       <view class="sku-popup__confirm safe-area-bottom">
         <van-button
           wx:if="{{spu.is_bundle}}"
@@ -309,7 +309,7 @@ module.exports.strike = function(isMember, special, list) {
 
 </view>
 
-<!-- 骨架屏 -->
+
 <view wx:else class="skeleton-wrap">
   <van-skeleton title avatar row="5" />
 </view>

@@ -33,16 +33,11 @@ interface Props {
   stores: Store[]
   total: number
   canCreate: boolean
-  /** 是否展示行内删除入口（仅系统管理员 pickup_record:delete） */
+  
   canDelete?: boolean
 }
 
-/**
- * 提货记录管理页 — 服务端分页
- *
- * scope 过滤基于 pickup_records.store_id，非 admin 角色仅看到 scopeStoreIds 内的门店记录。
- * canCreate=true 时（manager 角色）显示"新建提货记录"入口。
- */
+
 export default function PickupRecordsPage({ records, stores, total, canCreate, canDelete = false }: Props) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
@@ -60,7 +55,7 @@ export default function PickupRecordsPage({ records, stores, total, canCreate, c
     ? Number(get('size'))
     : 20
 
-  // 搜索防抖
+  
   const [searchInput, setSearchInput] = useState(get('q'))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback(
@@ -227,7 +222,7 @@ export default function PickupRecordsPage({ records, stores, total, canCreate, c
         onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
-      {/* Detail Dialog */}
+      {}
       <Dialog
         open={detail !== null}
         onOpenChange={(open) => !open && setDetail(null)}

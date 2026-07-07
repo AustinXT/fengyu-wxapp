@@ -11,17 +11,17 @@ if [ -z "$BRANCH" ]; then
   exit 1
 fi
 
-# 1. 创建 worktree（新建分支或 checkout 现有分支）
+
 git worktree add "$DIR" -b "$BRANCH" 2>/dev/null || git worktree add "$DIR" "$BRANCH"
 
 WT_ABS="$REPO_ROOT/$DIR"
 
-# 2. 复制 .env 文件（不覆盖已有）
+
 for f in fengyu-admin/.env.local fengyu-client/.env fengyu-staff/.env db/.env; do
   cp -n "$f" "$DIR/$f" 2>/dev/null || true
 done
 
-# 3. 复制小程序私有配置（含 appid、devtools 设置）
+
 for f in fengyu-client/miniprogram/project.private.config.json \
          fengyu-staff/miniprogram/project.private.config.json; do
   if [ -f "$f" ]; then
@@ -29,7 +29,7 @@ for f in fengyu-client/miniprogram/project.private.config.json \
   fi
 done
 
-# 4. 复制 miniprogram_npm（小程序 devtools 不识别 symlink，必须实体目录）
+
 for d in fengyu-client/miniprogram/miniprogram_npm \
          fengyu-staff/miniprogram/miniprogram_npm; do
   if [ -d "$d" ] && [ ! -e "$DIR/$d" ]; then
@@ -37,7 +37,7 @@ for d in fengyu-client/miniprogram/miniprogram_npm \
   fi
 done
 
-# 5. 软链 node_modules（admin + db），避免 bun/npm install 等待
+
 link_node_modules() {
   local sub=$1
   local src="$REPO_ROOT/$sub/node_modules"
@@ -55,18 +55,18 @@ link_node_modules() {
 link_node_modules "fengyu-admin"
 link_node_modules "db"
 
-# 6. 给 admin dev 写入专属端口，避免与主仓 3000 冲突
+
 ADMIN_ENV="$DIR/fengyu-admin/.env.local"
 if [ -f "$ADMIN_ENV" ] && ! grep -q '^PORT=' "$ADMIN_ENV"; then
   printf '\n# worktree 并行端口\nPORT=3010\n' >> "$ADMIN_ENV"
 fi
 
-# 7. 复制 admin 的 next-env.d.ts（Next.js 类型声明，被 .gitignore 忽略但 tsc 必需）
+
 if [ -f "fengyu-admin/next-env.d.ts" ] && [ ! -f "$DIR/fengyu-admin/next-env.d.ts" ]; then
   cp "fengyu-admin/next-env.d.ts" "$DIR/fengyu-admin/next-env.d.ts"
 fi
 
-# 8. 生成 admin 的 src/generated/version.ts（被 predev/prebuild 生成，tsc 依赖）
+
 if [ -f "fengyu-admin/scripts/gen-version.mjs" ] && [ ! -f "$DIR/fengyu-admin/src/generated/version.ts" ]; then
   (cd "$DIR/fengyu-admin" && node scripts/gen-version.mjs) || true
 fi

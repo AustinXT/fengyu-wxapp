@@ -1,23 +1,12 @@
-/**
- * 商品模块路由（客户端/商城管理）
- * 数据从 PG mall_categories / products / mall_product_skus / product_skus 查询
- */
+
 
 const pg = require('../db/pg')
 
-/**
- * 有效性过滤条件（商城商品层 + SKU 层叠加）
- *
- * 商城常规通道默认排除体验卡（sk.is_experience=true，仅 client 体验卡入口可见）。
- * 充值卡已剥离 SKU 化（2026-05-20），不再有充值卡 SKU 需要过滤。
- */
+
 const PRODUCT_VALID_FILTER = `p.deleted_at IS NULL AND p.is_visible = true`
 const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT sk.is_experience`
 
-/**
- * 内部函数：获取商品分类列表（mall_categories）
- * 仅返回含有效商品的分类
- */
+
 async function getCategoriesList(marketName) {
   const params = []
   let marketFilter
@@ -51,10 +40,7 @@ async function getCategoriesList(marketName) {
   return pg.query(sql, params)
 }
 
-/**
- * 内部函数：获取一级分组列表（category_group IS NULL）
- * 仅返回下属二级分类中含有效商品的分组
- */
+
 async function getCategoryGroups(marketName) {
   const params = []
   let marketFilter
@@ -92,18 +78,14 @@ async function getCategoryGroups(marketName) {
   return pg.query(sql, params)
 }
 
-/**
- * 商品分类列表
- */
+
 async function categories(ctx) {
   const marketName = ctx.auth?.boundMarketName || null
   const categoriesList = await getCategoriesList(marketName)
   ctx.result = { categories: categoriesList }
 }
 
-/**
- * 内部函数：按分类获取商城商品列表（含 SKU）
- */
+
 async function getProductListByCategory({ categoryId, marketName, keyword }) {
   const params = []
 
@@ -122,13 +104,13 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
     whereClause += ` AND p.category_id = $${params.length}`
   }
 
-  // 全量搜索：按商品名模糊匹配（首页搜索框，跨全部分类）
+  
   if (keyword) {
     params.push(`%${keyword}%`)
     whereClause += ` AND p.name ILIKE $${params.length}`
   }
 
-  // 仅返回有有效 SKU 的商品
+  
   whereClause += ` AND EXISTS (
     SELECT 1 FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
@@ -148,9 +130,9 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
     ORDER BY p.sort_order ASC
   `, params)
 
-  // 批量查询所有商品的 SKU（通过 mall_product_skus 关联）
-  // PR-D：附带 product_kind + kind_display_color（一级行 display_color），
-  // 用于客户端购物车 tag 颜色渲染（DB 驱动）
+  
+  
+  
   const productIds = productRows.map(p => p.product_id)
   let allSkus = []
   if (productIds.length > 0) {
@@ -184,7 +166,7 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
 
   return productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
-    // priceFrom=会员/特价起价（含 special_price，会员视图）；listPriceFrom=标价起价（非会员视图）
+    
     const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
     const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
     return {
@@ -196,9 +178,7 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
   })
 }
 
-/**
- * 商品列表
- */
+
 async function spuList(ctx) {
   const { categoryId } = ctx.event.payload || {}
   const marketName = ctx.auth?.boundMarketName || null
@@ -206,11 +186,7 @@ async function spuList(ctx) {
   ctx.result = { spuList: result }
 }
 
-/**
- * 全量商品搜索（首页搜索框）
- * 按商品名模糊匹配、跨全部分类——替代纯前端本地缓存搜索，
- * 让顾客能搜到任何可见商品（含未浏览过分类的商品）。
- */
+
 async function search(ctx) {
   const kw = (ctx.event.payload?.keyword || '').trim()
   if (!kw) {
@@ -222,9 +198,7 @@ async function search(ctx) {
   ctx.result = { spuList: result }
 }
 
-/**
- * Shop 页初始化接口（合并 categories + 第一个分类的商品列表）
- */
+
 async function shopInit(ctx) {
   const marketName = ctx.auth?.boundMarketName || null
 
@@ -233,7 +207,7 @@ async function shopInit(ctx) {
     getCategoriesList(marketName),
   ])
 
-  // 找第一个 group 下的第一个二级分类，加载其商品
+  
   let firstSpuList = []
   if (groups.length > 0 && categoriesList.length > 0) {
     const firstChild = categoriesList.find(c => c.category_group === groups[0].category_name)
@@ -241,7 +215,7 @@ async function shopInit(ctx) {
       firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, marketName })
     }
   } else if (categoriesList.length > 0) {
-    // 降级：无分组时取第一个分类
+    
     firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, marketName })
   }
 
@@ -252,9 +226,7 @@ async function shopInit(ctx) {
   }
 }
 
-/**
- * SKU 详情
- */
+
 async function skuDetail(ctx) {
   const { skuId, productId } = ctx.event.payload || {}
 
@@ -262,9 +234,9 @@ async function skuDetail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')
   }
 
-  // cover_image 取自 products 表。同一 sku 可挂在多个商品下（mall_product_skus 唯一键
-  // 是 (product_id, sku_id) 复合），故传入 productId 时按该商品精确取封面；
-  // 缺省时确定性兜底：优先非套餐商品、再按映射插入序，避免随机命中错误封面。
+  
+  
+  
   const rows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -289,9 +261,7 @@ async function skuDetail(ctx) {
   ctx.result = { sku: rows[0] }
 }
 
-/**
- * 热门推荐列表
- */
+
 async function hotList(ctx) {
   const { limit = 6 } = ctx.event.payload || {}
   const marketName = ctx.auth?.boundMarketName || null
@@ -324,7 +294,7 @@ async function hotList(ctx) {
     LIMIT $1
   `, params)
 
-  // 批量查询 SKU（取最低价）
+  
   const productIds = productRows.map(p => p.product_id)
   let allSkus = []
   if (productIds.length > 0) {
@@ -357,9 +327,7 @@ async function hotList(ctx) {
   ctx.result = { spuList: result }
 }
 
-/**
- * 商品详情（含 SKU 列表）
- */
+
 async function spuDetail(ctx) {
   const { spuId, productId: inputProductId } = ctx.event.payload || {}
   const marketName = ctx.auth?.boundMarketName || null
@@ -395,7 +363,7 @@ async function spuDetail(ctx) {
 
   const product = productRows[0]
 
-  // PR-D：JOIN product_categories pc → parent_pc，带出 product_kind + kind_display_color
+  
   const skuList = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -421,7 +389,7 @@ async function spuDetail(ctx) {
   const prices = skuList.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
   const listPrices = skuList.map(s => Number(s.bundle_price || s.price || 0))
 
-  // 构建分组信息（套餐商品）
+  
   let bundleGroups = null
   if (product.is_bundle) {
     const groupRows = await pg.query(`
@@ -450,18 +418,7 @@ async function spuDetail(ctx) {
   }
 }
 
-/**
- * 体验卡 SKU 列表（client 体验卡入口专用）
- *
- * 与商城常规通道（spuList / shopInit / hotList）互斥：
- *   - 商城通道用 SKU_VALID_FILTER，默认排除 is_experience = true
- *   - 本入口反向只取 is_experience = true 的 SKU
- *
- * 返回顺序按 sortOrder ASC（admin 配置项 C5），同 sortOrder 时按 sku_id 兜底稳定排序。
- * 一并返回所属商品名 / 封面图（mall_product_skus → products JOIN），便于列表卡片直接渲染。
- *
- * 不做 marketName 过滤：体验卡是拉新工具，所有市场可见（如未来需限制可加 p.market_scope 校验）。
- */
+
 async function experienceCardList(ctx) {
   const rows = await pg.query(`
     SELECT

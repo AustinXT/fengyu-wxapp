@@ -21,8 +21,8 @@ export default async function Page({ params }: { params: Promise<{ serviceOrderI
 
   if (!serviceOrder) notFound()
 
-  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工（按 employeeId 去重），
-  // 前端按「服务单门店 ∪ 出差」+ 技能筛选；取消原市场级 marketStoreIds 与品项老师补充池。
+  
+  
   const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
 
   return (

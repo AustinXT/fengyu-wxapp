@@ -1,8 +1,8 @@
-// components/mgmt-period-picker — 时间段筛选 chip（边框 + 红填充式）
-// 替代 dashboard 排行 .ranking-periods / product-cycle .pc-filter / traffic-stats .tf-filter
+
+
 Component({
   properties: {
-    options: { type: Array, value: [] }, // [{ label, value }]
+    options: { type: Array, value: [] }, 
     value: { type: String, value: '' },
   },
   methods: {

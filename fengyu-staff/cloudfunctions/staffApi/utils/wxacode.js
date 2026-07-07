@@ -1,25 +1,20 @@
-/**
- * 小程序码生成工具
- * 使用 HTTP API 生成客户端小程序码（跨 appid）
- */
+
 
 const cloud = require('wx-server-sdk')
 const https = require('https')
 
-// 模块级 access_token 缓存
+
 let cachedToken = null
 let tokenExpiresAt = 0
 
 const CLIENT_APPID = process.env.CLIENT_APPID || 'wx811eb4ded3dfba3f'
-// 客户端小程序真实 appsecret（换 access_token 用）。
-// 注意：必须是客户端小程序的 appsecret（32 位 hex），与跨 env HMAC 用的 CLIENT_SECRET 区分开——
-// 二者曾共用 CLIENT_SECRET，prod 把它配成了 64 位内部 HMAC 密钥，导致换 token 报 40125 invalid appsecret。
+
+
+
 const CLIENT_APPSECRET = process.env.CLIENT_APPSECRET
 const WXACODE_ENV_VERSION = process.env.WXACODE_ENV_VERSION || 'release'
 
-/**
- * 获取客户端小程序 access_token（带缓存）
- */
+
 async function getClientAccessToken(forceRefresh = false) {
   if (!CLIENT_APPSECRET) {
     throw new Error('未配置 CLIENT_APPSECRET 环境变量')
@@ -38,27 +33,22 @@ async function getClientAccessToken(forceRefresh = false) {
   }
 
   cachedToken = data.access_token
-  // 提前 5 分钟过期
+  
   tokenExpiresAt = Date.now() + (data.expires_in - 300) * 1000
   return cachedToken
 }
 
-/**
- * 生成客户端小程序码
- * @param {string} scene - 场景值（max 32 chars）
- * @param {string} page - 小程序页面路径
- * @returns {Buffer} PNG 图片 buffer
- */
+
 async function generateWxacode(scene, page) {
   let token = await getClientAccessToken()
   let buffer = await requestWxacode(token, scene, page)
 
-  // 响应小于 1000 字节可能是错误 JSON
+  
   if (buffer.length < 1000) {
     try {
       const errData = JSON.parse(buffer.toString())
       if (errData.errcode === 42001 || errData.errcode === 40001) {
-        // token 过期，清缓存重试一次
+        
         token = await getClientAccessToken(true)
         buffer = await requestWxacode(token, scene, page)
         if (buffer.length < 1000) {
@@ -70,19 +60,14 @@ async function generateWxacode(scene, page) {
       }
     } catch (e) {
       if (e.message.startsWith('生成小程序码')) throw e
-      // 不是 JSON，当作正常图片
+      
     }
   }
 
   return buffer
 }
 
-/**
- * 上传图片到云存储并获取 CDN URL
- * @param {Buffer} buffer - 图片数据
- * @param {string} cloudPath - 云存储路径
- * @returns {string} CDN URL
- */
+
 async function uploadToCloudStorage(buffer, cloudPath) {
   const uploadRes = await cloud.uploadFile({
     cloudPath,
@@ -101,7 +86,7 @@ async function uploadToCloudStorage(buffer, cloudPath) {
   return fileInfo.tempFileURL
 }
 
-// ========== 内部工具 ==========
+
 
 function httpGet(url) {
   return new Promise((resolve, reject) => {
@@ -125,7 +110,7 @@ function requestWxacode(token, scene, page) {
     env_version: WXACODE_ENV_VERSION,
     width: 430,
     auto_color: false,
-    line_color: { r: 212, g: 167, b: 106 } // 品牌金色
+    line_color: { r: 212, g: 167, b: 106 } 
   })
 
   return new Promise((resolve, reject) => {

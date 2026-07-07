@@ -24,26 +24,22 @@ import { cn } from "@/lib/utils"
 const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
-/**
- * 将 cloud:// 协议的 fileID 转换为 HTTPS CDN URL
- * 标准格式: cloud://envId.bucketSuffix/path → CDN_BASE/path（第一段含 . 则为 envId，跳过）
- * 简化格式: cloud://store-covers/nc02.jpg  → CDN_BASE/store-covers/nc02.jpg（整段都是路径）
- */
+
 export function toHttpUrl(url: string): string {
   if (!url || !url.startsWith("cloud://")) return url
   const withoutProtocol = url.slice("cloud://".length)
   const slashIndex = withoutProtocol.indexOf("/")
   if (slashIndex === -1) return url
   const firstSegment = withoutProtocol.slice(0, slashIndex)
-  // 标准 fileID 的第一段是 envId.bucketSuffix（含 .），简化格式不含 .
+  
   if (firstSegment.includes(".")) {
     return `${CDN_BASE}/${withoutProtocol.slice(slashIndex + 1)}`
   }
-  // 简化格式：整个 withoutProtocol 都是 cloudPath
+  
   return `${CDN_BASE}/${withoutProtocol}`
 }
 
-// ── Sortable image item ──────────────────────────────────────────────────────
+
 
 function SortableImageItem({
   id,
@@ -96,7 +92,7 @@ function SortableImageItem({
   )
 }
 
-// ── Static image item (no drag, for single mode) ────────────────────────────
+
 
 function StaticImageItem({
   url,
@@ -123,18 +119,18 @@ function StaticImageItem({
   )
 }
 
-// ── Main component ───────────────────────────────────────────────────────────
+
 
 interface ImageUploadProps {
   value: string | string[]
   onChange: (value: string | string[]) => void
-  /** Upload path prefix, e.g. "product-covers", "store-images" */
+  
   path?: string
-  /** Exact cloud key to overwrite, e.g. "fengyu-client/banner/banner1.jpg" */
+  
   exactKey?: string
-  /** Allow multiple images */
+  
   multiple?: boolean
-  /** Max number of images (only for multiple) */
+  
   max?: number
   className?: string
 }
@@ -157,7 +153,7 @@ export function ImageUpload({
     : value ? [value as string] : []
   ).map(toHttpUrl)
 
-  // dnd-kit needs stable string IDs; use URL as ID
+  
   const sortableIds = urls
 
   const sensors = useSensors(
@@ -214,7 +210,7 @@ export function ImageUpload({
             toast.error(data.error || "上传失败")
             continue
           }
-          // Append cache-buster for exactKey uploads
+          
           newUrls.push(exactKey ? `${data.url}?t=${Date.now()}` : data.url)
         }
 
@@ -292,7 +288,7 @@ export function ImageUpload({
     />
   )
 
-  // Single mode or only 0-1 images: no drag context needed
+  
   if (!canDrag) {
     return (
       <div className={cn("flex flex-wrap gap-2", className)}>
@@ -309,7 +305,7 @@ export function ImageUpload({
     )
   }
 
-  // Multiple mode with 2+ images: enable dnd-kit sortable
+  
   return (
     <div className={cn("flex flex-wrap gap-2", className)}>
       <DndContext

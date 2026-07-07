@@ -25,18 +25,18 @@ interface Props {
 export default function PickupRecordCreatePageClient({ stores }: Props) {
   const router = useRouter()
 
-  // 顾客搜索
+  
   const [phone, setPhone] = useState('')
   const [searching, setSearching] = useState(false)
   const [searchDone, setSearchDone] = useState(false)
   const [customer, setCustomer] = useState<Customer | null>(null)
 
-  // 可提货明细
+  
   const [items, setItems] = useState<AvailablePickupItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItemId, setSelectedItemId] = useState<string>('')
 
-  // 提货参数
+  
   const [pickupQuantity, setPickupQuantity] = useState<number>(1)
   const [pickupStoreId, setPickupStoreId] = useState<string>(stores[0]?.storeId || '')
   const [remark, setRemark] = useState('')
@@ -62,7 +62,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       if (result.boundStoreId && stores.some((s) => s.storeId === result.boundStoreId)) {
         setPickupStoreId(result.boundStoreId)
       }
-      // 加载可提货明细
+      
       setLoadingItems(true)
       try {
         const list = await getAvailablePickupItems(result.userId)
@@ -106,7 +106,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
     if (!canSubmit || !customer || !selectedItem) return
     setSubmitting(true)
     try {
-      // 每次按钮点击生成新 idempotencyKey；按钮 disabled 期间双击不会重新生成
+      
       const idempotencyKey = `pickup-${selectedItem.saleItemId}-${Date.now()}`
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
@@ -152,7 +152,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
         <h1 className="text-2xl font-bold text-[var(--foreground)]">新建提货记录</h1>
       </div>
 
-      {/* 步骤 1：搜索顾客 */}
+      {}
       <Card>
         <CardContent className="p-6 space-y-4">
           <h2 className="text-base font-semibold">1. 搜索顾客</h2>
@@ -205,7 +205,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
         </CardContent>
       </Card>
 
-      {/* 步骤 2：选择可提货明细 */}
+      {}
       {customer && (
         <Card>
           <CardContent className="p-6 space-y-4">
@@ -285,7 +285,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
         </Card>
       )}
 
-      {/* 步骤 3：填写提货信息 */}
+      {}
       {customer && selectedItem && (
         <Card>
           <CardContent className="p-6 space-y-4">

@@ -20,7 +20,7 @@ export const getMarkets = withPermission(
   'commission:list',
   async (session): Promise<MarketOption[]> => {
   const visibleIds = await expandVisibleMarketIds(session)
-  // 非总部且无可见市场 → 直接返回空
+  
   if (visibleIds !== null && visibleIds.length === 0) return []
 
   const scopeCond = visibleIds === null ? undefined : inArray(orgNodes.id, visibleIds)
@@ -28,7 +28,7 @@ export const getMarkets = withPermission(
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
     .where(and(eq(orgNodes.type, '市场'), scopeCond))
-    // 例外：sortOrder 手工排序权重
+    
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map((r) => ({ orgId: r.id, name: r.name }))
@@ -54,7 +54,7 @@ export const getRates = withPermission(
     })
     .from(commissionRateMatrix)
     .leftJoin(orgNodes, eq(commissionRateMatrix.orgId, orgNodes.id))
-    // 默认排序：最近编辑过的规则浮顶（admin.sys.spec.md §5）
+    
     .orderBy(desc(commissionRateMatrix.updatedAt), desc(commissionRateMatrix.id))
     .limit(1000)
 
@@ -88,7 +88,7 @@ export const createRate = withPermission(
       commissionRate: string
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // 金额阶段重叠校验（AC-07）
+  
   if (await hasTierOverlap(data)) {
     return { success: false, message: '金额阶段与现有规则重叠，请调整区间范围' }
   }
@@ -132,10 +132,10 @@ export const updateRate = withPermission(
       amountTierMax?: string | null
       commissionRate?: string
     },
-    /** 乐观锁：提交时携带的 updated_at */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-  // 金额阶段重叠校验（只有同时提供分类键和区间时才检查）
+  
   if (
     data.orgId && data.orderType && data.roleType &&
     data.salesCategory && data.amountTierMin !== undefined
@@ -152,7 +152,7 @@ export const updateRate = withPermission(
     }
   }
 
-  // 获取旧值用于日志 diff
+  
   const [before] = await db.select().from(commissionRateMatrix).where(eq(commissionRateMatrix.id, id)).limit(1)
 
   const whereConditions = expectedUpdatedAt
@@ -204,12 +204,7 @@ export const deleteRate = withPermission(
   },
 )
 
-/**
- * 检测给定分类键下新区间 [newMin, newMax) 是否与已有记录重叠。
- * 两区间 [a,b) 和 [c,d) 重叠条件：a < d AND c < b（null 视为 +∞）
- *
- * @param excludeId  更新时排除自身（避免与自身比较误判）
- */
+
 async function hasTierOverlap(
   data: {
     orgId: string
@@ -226,21 +221,21 @@ async function hasTierOverlap(
     eq(commissionRateMatrix.orderType, data.orderType),
     eq(commissionRateMatrix.roleType, data.roleType),
     eq(commissionRateMatrix.salesCategory, data.salesCategory),
-    // 现有区间右端 > 新区间左端（existMax > newMin, NULL=∞ 视为满足）
+    
     or(
       isNull(commissionRateMatrix.amountTierMax),
       gt(commissionRateMatrix.amountTierMax, data.amountTierMin),
     ) as ReturnType<typeof eq>,
   ]
 
-  // 若新区间有上限：现有区间左端 < 新区间右端（existMin < newMax）
+  
   if (data.amountTierMax) {
     conditions.push(
       lt(commissionRateMatrix.amountTierMin, data.amountTierMax) as ReturnType<typeof eq>,
     )
   }
 
-  // 更新时排除自身
+  
   if (excludeId !== undefined) {
     conditions.push(ne(commissionRateMatrix.id, excludeId) as ReturnType<typeof eq>)
   }

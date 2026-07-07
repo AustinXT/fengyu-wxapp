@@ -10,15 +10,7 @@ import { Select, SelectOption } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { recordPayment, getRepayable, generateOrderWxacode } from "@/actions/orders"
 
-/**
- * 录入回款弹层（ticket 2026-05-21 按子项定向回款；2026-06-24 重构：储值卡改独立抵扣勾选）
- *
- * 交互：支付方式三选一（线下 / 微信 / 支付宝）；各子项填「实付金额」；
- *   储值卡作为独立勾选项，勾选后自动抵满 min(余额, 实付合计)，按子项实付比例摊分入账。
- * 线下：即时记账（recordPayment paymentMethod='线下'，含储值卡抵扣）。
- * 微信 / 支付宝：储值卡部分先即时扣（paymentMethod='储值卡'），剩余生成 client 小程序码让顾客扫码在线付，
- *   payNotify 回调写 change_type='回款'（admin 不直接收线上钱）。
- */
+
 type RepayableItem = {
   saleItemId: string
   productName: string
@@ -29,8 +21,8 @@ type RepayableItem = {
 
 type PayMethod = "线下" | "微信" | "支付宝"
 
-// 生成回款幂等键：弹层打开时生成一次，同次意向的重试/误点复用同一值；成功关弹层后重开换新。
-// 服务端据此派生扣卡 external_ref，命中即整笔跳过防重复扣卡（见 recordPayment 幂等预检）。
+
+
 const genRepayIdempKey = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID()
@@ -42,9 +34,9 @@ export function RecordPaymentDialog({
   open,
   onOpenChange,
   saleOrderId,
-  /** 订单剩余欠款（fallback，打开后由 getRepayable 刷新），单位元 */
+  
   remainingPayable: remainingPayableProp,
-  /** 顾客当前储值卡余额（fallback），单位元（null 表示未查询或无账户） */
+  
   cardBalance: cardBalanceProp,
 }: {
   open: boolean
@@ -60,19 +52,19 @@ export function RecordPaymentDialog({
   const [items, setItems] = useState<RepayableItem[]>([])
   const [remainingPayable, setRemainingPayable] = useState<number>(remainingPayableProp)
   const [cardBalance, setCardBalance] = useState<number | null>(cardBalanceProp)
-  // 各子项实付金额（saleItemId → 金额字符串）
+  
   const [lineReal, setLineReal] = useState<Record<string, string>>({})
-  // 是否用储值卡抵扣（勾选后自动抵满 min(余额, 实付合计)）
+  
   const [useCard, setUseCard] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState<PayMethod>("线下")
   const [note, setNote] = useState<string>("")
-  // 在线收款码（微信/支付宝）：储值卡先扣后，生成 client 小程序码让顾客扫码付剩余
+  
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [qrAmount, setQrAmount] = useState<number>(0)
-  // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡）
+  
   const [idempotencyKey, setIdempotencyKey] = useState<string>("")
 
-  // 打开时拉取可回款子项；默认每行实付 = 该行可回款额（操作员可改小或清零）
+  
   useEffect(() => {
     if (!open) return
     let cancelled = false
@@ -102,12 +94,12 @@ export function RecordPaymentDialog({
   const round2 = (n: number) => Math.round(n * 100) / 100
   const isOnline = paymentMethod === "微信" || paymentMethod === "支付宝"
   const sumReal = round2(items.reduce((s, it) => s + (Number(lineReal[it.saleItemId] || 0) || 0), 0))
-  // 储值卡抵扣额：勾选后自动抵满 min(余额, 实付合计)，随实付响应式重算
+  
   const cardDeduct = useCard && cardBalance != null ? round2(Math.min(cardBalance, sumReal)) : 0
-  // 剩余需用所选方式支付的金额（线下=现金 / 微信支付宝=顾客扫码）
+  
   const needPay = round2(Math.max(0, sumReal - cardDeduct))
 
-  // 储值卡按各子项实付比例摊分（末项补差，保证 Σ = cardDeduct，且每项 ≤ 该行实付）
+  
   const allocateCard = (totalCard: number): Record<string, number> => {
     const map: Record<string, number> = {}
     for (const it of items) map[it.saleItemId] = 0
@@ -117,14 +109,14 @@ export function RecordPaymentDialog({
     filled.forEach((it, idx) => {
       const real = round2(Number(lineReal[it.saleItemId] || 0) || 0)
       let card = idx === filled.length - 1 ? round2(totalCard - acc) : round2((totalCard * real) / sumReal)
-      card = Math.max(0, Math.min(card, real)) // 兜底：不超过该行实付，不为负
+      card = Math.max(0, Math.min(card, real)) 
       map[it.saleItemId] = card
       acc = round2(acc + card)
     })
     return map
   }
 
-  // 构造 recordPayment 的 items：实付拆为 repayAmount（非储值卡部分）+ prepaidCardAmount
+  
   const buildItems = (cardMap: Record<string, number>) =>
     items
       .map((it) => {
@@ -134,7 +126,7 @@ export function RecordPaymentDialog({
       })
       .filter((it) => it.repayAmount > 0 || it.prepaidCardAmount > 0)
 
-  // 通用校验：实付合计 > 0、≤ 剩余欠款、逐项 ≤ 该行可回款额
+  
   const validateReal = (): boolean => {
     if (sumReal <= 0) {
       toast.error("请至少为一个子项填写实付金额")
@@ -158,7 +150,7 @@ export function RecordPaymentDialog({
     return true
   }
 
-  // 微信 / 支付宝：储值卡部分先即时扣（若勾选），剩余生成收款码顾客扫码在线付
+  
   const handleOnlineSubmit = () => {
     if (!validateReal()) return
     const cardItems = buildItems(allocateCard(cardDeduct))
@@ -166,7 +158,7 @@ export function RecordPaymentDialog({
       .filter((it) => it.prepaidCardAmount > 0)
 
     startTransition(async () => {
-      // 1) 储值卡先扣（即时入账）
+      
       if (cardItems.length > 0) {
         const cardRes = await recordPayment({
           saleOrderId,
@@ -180,14 +172,14 @@ export function RecordPaymentDialog({
           return
         }
       }
-      // 2) 储值卡已全额抵扣 → 结清，无需出码
+      
       if (needPay <= 0.001) {
         toast.success("储值卡已抵扣结清")
         onOpenChange(false)
         router.refresh()
         return
       }
-      // 3) 生成 client 小程序码，顾客扫码进收银台用微信/支付宝付剩余
+      
       const qrRes = await generateOrderWxacode(saleOrderId)
       if (!qrRes.success || !qrRes.dataUrl) {
         toast.error(qrRes.message || "生成收款码失败")
@@ -205,7 +197,7 @@ export function RecordPaymentDialog({
       handleOnlineSubmit()
       return
     }
-    // ===== 线下：即时记账（实付 = 现金 + 储值卡抵扣） =====
+    
     if (!validateReal()) return
     const payloadItems = buildItems(allocateCard(cardDeduct))
 
@@ -244,7 +236,7 @@ export function RecordPaymentDialog({
       </DialogHeader>
 
       {qrDataUrl ? (
-        // ===== 在线收款码视图 =====
+        
         <div className="flex flex-col items-center gap-3 mt-4">
           <div className="text-sm text-[#666]">请让顾客用微信扫描下方小程序码，进入收银台完成支付</div>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -292,7 +284,7 @@ export function RecordPaymentDialog({
               </Select>
             </div>
 
-            {/* 按子项实付金额表 */}
+            {}
             <div className="border border-[#E8E8E8] rounded-[var(--radius)] overflow-hidden">
               <div className="grid grid-cols-[1fr_auto] gap-2 px-3 py-2 bg-[#F5F5F5] text-xs text-[#666] font-medium">
                 <span>子项 / 应付·已收·可回款</span>
@@ -333,7 +325,7 @@ export function RecordPaymentDialog({
               </div>
             </div>
 
-            {/* 储值卡抵扣勾选（仅顾客有余额时可用） */}
+            {}
             {cardBalance != null && cardBalance > 0 && (
               <label className="flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius)] bg-[#F0FAF4] border border-[#BEE3CD] cursor-pointer select-none">
                 <input

@@ -46,13 +46,13 @@ export default function ProductKindManagementDialog({
 }) {
   const router = useRouter()
 
-  // Inner dialog state for add/edit
+  
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ProductCategory | null>(null)
   const [form, setForm] = useState<FormData>(emptyForm)
   const [saving, setSaving] = useState(false)
 
-  // Disable confirmation
+  
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
@@ -228,7 +228,7 @@ export default function ProductKindManagementDialog({
         </div>
       </Dialog>
 
-      {/* Add/Edit form dialog */}
+      {}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogHeader>
           <DialogTitle>{editing ? "编辑品项一级分类" : "新增品项一级分类"}</DialogTitle>
@@ -285,7 +285,7 @@ export default function ProductKindManagementDialog({
         </DialogFooter>
       </Dialog>
 
-      {/* Disable confirmation */}
+      {}
       <AlertDialog open={!!disableTarget} onOpenChange={(o) => !o && setDisableTarget(null)}>
         <AlertDialogTitle>确认停用</AlertDialogTitle>
         <AlertDialogDescription>

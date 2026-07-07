@@ -51,11 +51,7 @@ const CUSTOMER_STATUS_COLORS: Record<string, string> = {
   "休眠": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
 }
 
-/**
- * 顾客列表页 — 服务端分页
- *
- * 数据已在 Server Component 中通过 getCustomersPaginated() 完成 DB 级过滤+分页。
- */
+
 export default function CustomersPage({
   customers,
   stores,
@@ -84,13 +80,13 @@ export default function CustomersPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // 市场列表
+  
   const markets = useMemo(() =>
     orgNodes.filter(n => n.type === '市场' && n.isActive),
     [orgNodes]
   )
 
-  // 根据选中市场过滤门店列表
+  
   const filteredStores = useMemo(() => {
     if (!marketFilter) return stores
     const storeNodeIds = new Set(
@@ -99,7 +95,7 @@ export default function CustomersPage({
     return stores.filter(s => s.orgNodeId && storeNodeIds.has(s.orgNodeId))
   }, [stores, orgNodes, marketFilter])
 
-  // 搜索防抖
+  
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
@@ -108,7 +104,7 @@ export default function CustomersPage({
     debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
   }, [setFilter, debounceRef])
 
-  // Create dialog state
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newPhone, setNewPhone] = useState("")
@@ -350,7 +346,7 @@ export default function CustomersPage({
         onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
-      {/* 新增顾客 Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogClose onOpenChange={setDialogOpen} />
         <DialogHeader>

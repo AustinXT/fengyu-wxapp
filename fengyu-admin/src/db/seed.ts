@@ -1,13 +1,9 @@
-/**
- * Seed script — 按 FK 顺序 INSERT 测试数据
- *
- * 用法: bun run db:seed
- */
+
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import { sql } from 'drizzle-orm'
 
-// Schema tables
+
 import { orgNodes, stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productCategories, products, productSkus, mallCategories, mallProductSkus } from '@db/product'
@@ -25,14 +21,14 @@ const connectionString =
 const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)
 
-// ---------------------------------------------------------------------------
-// Seed Data
-// ---------------------------------------------------------------------------
 
-// 注意：不插入 headquarters / market 节点，这些由 sync-workfine.js 同步创建。
-// Seed 仅插入测试门店和部门节点，挂在 sync 创建的市场节点下。
-// sync HQ: 16d1184b46db099a (总部)
-// sync 南昌市场: 6707cc8b88579108 / sync 九江市场: dad2db0b1249daca
+
+
+
+
+
+
+
 const ORG_NODES = [
   { id: 'org-store-nc01', name: '南昌旗舰店', type: '门店' as const, parentId: '6707cc8b88579108', sortOrder: 1, isActive: true },
   { id: 'org-store-nc02', name: '青山湖店', type: '门店' as const, parentId: '6707cc8b88579108', sortOrder: 2, isActive: true },
@@ -127,7 +123,7 @@ const CLIENTS = [
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻' as const, customerSource: '小程序' as const, birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
-// 一级分类（品项一级分类）：product_kind = null；带 capability 列（DB 驱动 SSoT）
+
 const PRODUCT_KINDS = [
   { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, displayColor: '#C0322A' },
   { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, displayColor: '#1989FA' },
@@ -136,8 +132,8 @@ const PRODUCT_KINDS = [
   { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, displayColor: '#8B5CF6' },
 ]
 
-// 二级分类：product_kind = 所属一级分类的 categoryName
-// 注：组合套餐已从 product_kind 枚举移除（由 products.is_bundle 表达），故 cat-hl-* 的 productKind 为 null
+
+
 const PRODUCT_CATEGORIES = [
   { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: null, salesCategory: '自销自耗' as const, sortOrder: 1, isValid: true },
   { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: null, salesCategory: '自销自耗' as const, sortOrder: 2, isValid: true },
@@ -151,26 +147,26 @@ const PRODUCT_CATEGORIES = [
   { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自销自耗' as const, sortOrder: 2, isValid: true },
 ]
 
-// 一级分组（category_group = null，Tab/分组头，不直接关联商品）
-// 二级分类（category_group = 对应一级分组的 categoryName，商品挂载到此层）
+
+
 const MALL_CATEGORIES = [
-  // 一级分组
+  
   { categoryId: 'mall-group-care', categoryName: '护理项目', sortOrder: 1 },
   { categoryId: 'mall-group-combo', categoryName: '组合套餐', sortOrder: 2 },
   { categoryId: 'mall-group-home', categoryName: '家居产品', sortOrder: 3 },
   { categoryId: 'mall-group-card', categoryName: '充值卡', sortOrder: 4 },
-  // 二级分类 — 护理项目
+  
   { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', categoryGroup: '护理项目', sortOrder: 1 },
   { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', categoryGroup: '护理项目', sortOrder: 2 },
   { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', categoryGroup: '护理项目', sortOrder: 3 },
-  // 二级分类 — 组合套餐
+  
   { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', categoryGroup: '组合套餐', sortOrder: 1 },
   { categoryId: 'mall-cat-hl-02', categoryName: '季节活动', categoryGroup: '组合套餐', sortOrder: 2 },
   { categoryId: 'mall-cat-hl-03', categoryName: '周年庆', categoryGroup: '组合套餐', sortOrder: 3 },
-  // 二级分类 — 家居产品
+  
   { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', categoryGroup: '家居产品', sortOrder: 1 },
   { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', categoryGroup: '家居产品', sortOrder: 2 },
-  // 二级分类 — 充值卡
+  
   { categoryId: 'mall-cat-cz-01', categoryName: '储值卡', categoryGroup: '充值卡', sortOrder: 1 },
   { categoryId: 'mall-cat-cz-02', categoryName: '次卡', categoryGroup: '充值卡', sortOrder: 2 },
 ]
@@ -316,91 +312,91 @@ const OPERATION_LOGS = [
 
 ]
 
-// ---------------------------------------------------------------------------
-// Execute Seed
-// ---------------------------------------------------------------------------
+
+
+
 
 async function seed() {
   console.log('Seeding database...')
 
   await db.transaction(async (tx) => {
-    // 1. org_nodes
+    
     console.log('  org_nodes...')
     await tx.insert(orgNodes).values(ORG_NODES).onConflictDoNothing()
 
-    // 2. stores
+    
     console.log('  stores...')
     await tx.insert(stores).values(STORES).onConflictDoNothing()
 
-    // 3. staff_wechat_users
+    
     console.log('  staff_wechat_users...')
     await tx.insert(staffWechatUsers).values(STAFF).onConflictDoNothing()
 
-    // 4. client_wechat_users
+    
     console.log('  client_wechat_users...')
     await tx.insert(clientWechatUsers).values(CLIENTS).onConflictDoNothing()
 
-    // 5a. product_categories — 一级分类（品项一级分类）
+    
     console.log('  product_categories (kinds)...')
     await tx.insert(productCategories).values(PRODUCT_KINDS).onConflictDoNothing()
 
-    // 5b. product_categories — 二级分类
+    
     console.log('  product_categories (sub)...')
     await tx.insert(productCategories).values(PRODUCT_CATEGORIES).onConflictDoNothing()
 
-    // 6. product_skus (SKU，独立实体)
+    
     console.log('  product_skus...')
     await tx.insert(productSkus).values(PRODUCT_SKUS).onConflictDoNothing()
 
-    // 7. mall_categories (商品分类)
+    
     console.log('  mall_categories...')
     await tx.insert(mallCategories).values(MALL_CATEGORIES).onConflictDoNothing()
 
-    // 8. products (商城商品)
+    
     console.log('  products...')
     await tx.insert(products).values(PRODUCTS).onConflictDoNothing()
 
-    // 9. mall_product_skus (商城商品-SKU关联)
+    
     console.log('  mall_product_skus...')
     await tx.insert(mallProductSkus).values(MALL_PRODUCT_SKUS).onConflictDoNothing()
 
-    // 8. sale_orders
+    
     console.log('  sale_orders...')
     await tx.insert(saleOrders).values(SALE_ORDERS).onConflictDoNothing()
 
-    // 9. sale_items
+    
     console.log('  sale_items...')
     await tx.insert(saleItems).values(SALE_ITEMS).onConflictDoNothing()
 
-    // 10. sale_allocations
+    
     console.log('  sale_allocations...')
     await tx.insert(saleAllocations).values(SALE_ALLOCATIONS).onConflictDoNothing()
 
-    // 11. appointments
+    
     console.log('  appointments...')
     await tx.insert(appointments).values(APPOINTMENTS).onConflictDoNothing()
 
-    // 12. service_orders
+    
     console.log('  service_orders...')
     await tx.insert(serviceOrders).values(SERVICE_ORDERS).onConflictDoNothing()
 
-    // 13. service_items
+    
     console.log('  service_items...')
     await tx.insert(serviceItems).values(SERVICE_ITEMS).onConflictDoNothing()
 
-    // 14. permission_roles
+    
     console.log('  permission_roles...')
     await tx.insert(permissionRoles).values(PERMISSION_ROLES).onConflictDoNothing()
 
-    // 15. commission_rate_matrix
+    
     console.log('  commission_rate_matrix...')
     await tx.insert(commissionRateMatrix).values(COMMISSION_RATES).onConflictDoNothing()
 
-    // 16. coupon_templates
+    
     console.log('  coupon_templates...')
     await tx.insert(couponTemplates).values(COUPON_TEMPLATES).onConflictDoNothing()
 
-    // 17. operation_logs
+    
     console.log('  operation_logs...')
     await tx.insert(operationLogs).values(OPERATION_LOGS).onConflictDoNothing()
   })

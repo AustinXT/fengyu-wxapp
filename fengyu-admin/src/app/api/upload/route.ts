@@ -4,14 +4,14 @@ import { uploadFile } from "@/lib/cloudbase"
 import { JWT_SECRET } from "@/lib/jwt-secret"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
-const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 // 5MB
-const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图专用）
+const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 
+const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 
 const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
 
 const COOKIE_NAME = 'fy-admin-token'
 
 export async function POST(req: NextRequest) {
-  // 认证校验
+  
   const token = req.cookies.get(COOKIE_NAME)?.value
   if (!token) {
     return NextResponse.json({ error: "未授权" }, { status: 401 })
@@ -37,11 +37,11 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // exactKey: use as-is; path: generate timestamped name under that path
+    
     const exactKey = formData.get("exactKey") as string | null
     const pathPrefix = formData.get("path") as string | null
 
-    // 凤御馆宣传图是超长品牌图，单独放宽到 20MB；其余维持 5MB
+    
     const maxSize = exactKey === FENGYUGUAN_KEY ? MAX_SIZE_FENGYUGUAN : MAX_SIZE_DEFAULT
     if (file.size > maxSize) {
       return NextResponse.json(

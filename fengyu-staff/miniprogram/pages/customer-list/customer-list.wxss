@@ -1,8 +1,8 @@
-/* pages/customer-list/customer-list.wxss */
+
 .hint-wrap { padding: 80rpx 32rpx; text-align: center; }
 .hint-text { font-size: 26rpx; color: #999; }
 
-/* 统计卡片 */
+
 .stats-section {
   padding: 24rpx 24rpx 8rpx;
   background: #f5f5f5;
@@ -37,13 +37,13 @@
 .stat-birthday .stat-count { color: var(--color-primary); }
 .stat-birthday-next .stat-count { color: #a06abf; }
 
-/* 选中态 */
+
 .stat-card--selected {
   border: 2rpx solid var(--color-primary);
   background: var(--color-primary-light) !important;
 }
 
-/* ===== 统计栏（全部/会员客/流量客） ===== */
+
 .type-tabs {
   display: flex;
   gap: 12rpx;
@@ -67,7 +67,7 @@
   font-weight: 600;
 }
 
-/* ===== 拓展筛选面板 ===== */
+
 .advanced-filter {
   background: #FFFFFF;
   border-top: 1rpx solid #F0F0F0;
@@ -155,14 +155,14 @@
   border-radius: 28rpx;
 }
 
-/* 加载更多 */
+
 .loading-more {
   display: flex;
   justify-content: center;
   padding: 24rpx;
 }
 
-/* ===== 标签筛选行 ===== */
+
 .tag-filter {
   display: flex;
   flex-wrap: wrap;
@@ -170,7 +170,7 @@
   padding: 16rpx 24rpx;
 }
 
-/* ===== 顾客卡片 ===== */
+
 .customer-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -230,7 +230,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 头像文字 ===== */
+
 .customer-avatar-text {
   font-size: 32rpx;
   font-weight: 700;
@@ -241,7 +241,7 @@
   padding-top: 8rpx;
 }
 
-/* ===== VIP 徽章 ===== */
+
 .vip-badge {
   font-size: 20rpx;
   font-weight: 600;

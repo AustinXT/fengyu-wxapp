@@ -1,4 +1,4 @@
-// app.ts — 凤御员工端小程序
+
 import { MOCK_ENABLED } from './utils/dev-config'
 import { getCloudEnv } from './utils/cloud-env'
 
@@ -8,7 +8,7 @@ App<IAppOption>({
     staffName: '' as string,
     position: '' as string,
     roles: [] as string[],
-    skills: [] as string[], // P2-14：技能标签，用于业绩分配角色推断
+    skills: [] as string[], 
     avatarUrl: '' as string,
     boundStoreName: '' as string,
     boundStoreId: '' as string,
@@ -27,7 +27,7 @@ App<IAppOption>({
     wx.cloud.init({ env: getCloudEnv(), traceUser: true });
     this.restoreFromCache();
     if (MOCK_ENABLED) {
-      // Mock 模式：使用模拟用户数据，跳过真实 auth.login
+      
       this.setStaffInfo({
         staffWfId: 'WF-00001',
         staffName: '王店长',
@@ -106,15 +106,15 @@ App<IAppOption>({
           boundStoreName, boundStoreId,
           staffLevel, roleBindings, availableLoginLevels, scopedStores,
         });
-        // loginLevel 若本地已有且在 available 内则保留，否则 fallback available[0]
+        
         const existingLogin = this.globalData.loginLevel;
         const levels = (availableLoginLevels || []) as LoginLevel[];
         if (existingLogin && levels.includes(existingLogin)) {
-          // 保留用户选择
+          
         } else if (levels.length > 0) {
           this.setLoginLevel(levels[0]);
         }
-        // currentStoreId：若本地已有且在 scope 内保留，否则取第一个
+        
         const scoped = (scopedStores || []) as ScopedStore[];
         const cur = this.globalData.currentStoreId;
         const inScope = !!cur && scoped.some((s) => s.storeId === cur);
@@ -148,7 +148,7 @@ App<IAppOption>({
       this.globalData.skills = info.skills;
       wx.setStorageSync('skills', info.skills);
     }
-    // 头像允许清空（'avatarUrl' in info 才覆盖；undefined 视为不变）
+    
     if ('avatarUrl' in info) {
       this.globalData.avatarUrl = info.avatarUrl || '';
       wx.setStorageSync('avatarUrl', info.avatarUrl || '');
@@ -157,7 +157,7 @@ App<IAppOption>({
       this.globalData.phone = info.phone;
       wx.setStorageSync('phone', info.phone);
     }
-    // 门店信息允许清空（解绑时为 null/空）
+    
     if ('boundStoreName' in info) {
       this.globalData.boundStoreName = info.boundStoreName || '';
       wx.setStorageSync('boundStoreName', info.boundStoreName || '');
@@ -210,35 +210,35 @@ App<IAppOption>({
     this.globalData.scopedStores = [];
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
-    // 清除临时页面状态
+    
     (this.globalData as any)._serviceCreatePreload = null;
     wx.clearStorageSync();
   },
 
   switchLoginLevel(target: LoginLevel) {
     const available = this.globalData.availableLoginLevels || [];
-    // 防御：不可切换 / 目标非法 / 已是当前 → 静默返回
+    
     if (available.length < 2 || !available.includes(target)) return;
     if (this.globalData.loginLevel === target) return;
 
-    // 1) 清「视图绑定」业务缓存，防止串缓存。
-    //    ⚠️ 单一扩展点：未来若新增「按视图/门店隔离」的本地缓存，往这里加 removeStorageSync。
+    
+    
     wx.removeStorageSync('recentCustomers');
     (this.globalData as any)._serviceCreatePreload = null;
 
-    // 2) 切回门店视图时，确保 currentStoreId 落在 scope 内（镜像 syncLoginState 的兜底）
+    
     if (target === 'store') {
       const scoped = this.globalData.scopedStores || [];
       const cur = this.globalData.currentStoreId;
       const inScope = !!cur && scoped.some((s) => s.storeId === cur);
       if (!inScope && scoped.length > 0) this.setCurrentStoreId(scoped[0].storeId);
     }
-    // 切管理层：保留 currentStoreId（management 不依赖；返回门店时仍可用）
+    
 
-    // 3) 写入并持久化新视图
+    
     this.setLoginLevel(target);
 
-    // 4) reLaunch 到目标视图根页面，销毁所有旧视图页面
+    
     wx.reLaunch({
       url: target === 'management'
         ? '/pages/mgmt-dashboard/mgmt-dashboard'
@@ -263,8 +263,8 @@ App<IAppOption>({
       console.log('[switchTestUser] bound:', res.result.data?.staffName || '(无姓名)', '<-', phone);
       this.resetStaffInfo();
       wx.setStorageSync('__devTestOpenid', openid);
-      // reLaunch 不会重跑 App.onLaunch，必须手动重跑 syncLoginState
-      // 让 globalData.staffWfId 在 login 页 onLoad 之前就填上 dev 身份
+      
+      
       this._loginReady = this.syncLoginState();
       await this._loginReady;
     } else {

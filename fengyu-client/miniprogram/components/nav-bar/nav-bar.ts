@@ -1,20 +1,20 @@
-// components/nav-bar/nav-bar.ts
+
 
 const app = getApp<IAppOption>();
 
 Component({
   properties: {
-    /** 页面标题文字（与 showLogo 互斥，title 优先） */
+    
     title: {
       type: String,
       value: "",
     },
-    /** 是否显示 Logo（默认 true；设置 title 时自动切换为文字） */
+    
     showLogo: {
       type: Boolean,
       value: true,
     },
-    /** 导航栏背景色 */
+    
     background: {
       type: String,
       value: "#FFFFFF",
@@ -35,8 +35,8 @@ Component({
     },
   },
 
-  // 折叠屏展开/折叠、屏幕旋转时触发
-  // 先让 App 重算 globalData（onLaunch 只算一次），再 nextTick 重读（避开 getMenuButton 同步返回 resize 前旧值的坑）
+  
+  
   pageLifetimes: {
     resize() {
       app.initNavBarInfo();

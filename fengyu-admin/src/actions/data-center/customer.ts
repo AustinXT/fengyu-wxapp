@@ -1,32 +1,6 @@
 'use server'
 
-/**
- * 数据中心 — 客量板块取数 action（getCustomerBoard）
- *
- * 口径权威：notes/references/metrics.md「客量数据子页」全 5 大类
- *   1. 注册情况（截面，截至 endDate）
- *   2. 到店客流（区间）
- *   3. 会员状态与客活（截面 5 档 + 区间客活 2 档 + 本月激活 anchor 反推 3 档）
- *   4. 会员被经营（6 档消费分桶 member_spend CTE + 会员客单价）
- *   5. 新会员经营（成交率 / 客单价）
- *
- * 移植源（纯 JS 原生 SQL，禁止 import，照搬成 Drizzle raw SQL）：
- *   fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js（summary）
- *
- * 关键口径红线（与 mgmt-traffic.js 字面一致，consistency.customer.test.ts 守护）：
- *   - 新会员/会员数 = became_member_at（历史化）；保有会员 = 90 天到店窗口 + became_member_at 守卫
- *   - 消费分桶 = member_spend CTE 左闭右开 [1990,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
- *     不复用 spending_tier 列（lifetime 快照）；spend = received - refunded_amount（与 mgmt-traffic.js 一致）
- *   - 成交率分母 = 区间内到店的「体验客 + 小美客」（D-conv-denom=B）
- *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
- *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
- *   - 客户维度 scope 用 bound_store_id，服务/订单维度用 store_id
- *   - 本月激活 3 档：anchor=startDate-1 实时反推 customer_status（D-react-source=C），
- *     用 last_dt 区间判定（沉睡 last_dt>=anchor-6m / 冰冻 [anchor-12m,anchor-6m) / 休眠 <anchor-12m OR NULL）
- *
- * 性能：6 分桶 + anchor CTE + 多档查询较重。明细表（byMarket/byStore）按 scope 骨架逐组聚合，
- * 不做同比环比。激活/客活依赖 cron 重算的 customer_status，前端加小字提示。
- */
+
 
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
@@ -45,24 +19,21 @@ import type {
   ResolvedRange,
 } from '@/lib/data-center/types'
 
-// ── 工具 ──────────────────────────────────────────────────────────────
+
 const num = (v: unknown): number => {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
 }
 const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100
-/** 取数组首行（db.execute 返回数组） */
+
 const first = (rows: unknown): Record<string, unknown> =>
   ((rows as unknown[])[0] as Record<string, unknown>) ?? {}
 
-// =====================================================================
-// 单标量 KPI 查询（供 withComparison 跑本期/上期/去年同期）
-// =====================================================================
 
-/**
- * 注册情况单项（截面，截至区间 endDate）。
- * 会员客切 became_member_at（精确历史截面，与首页实时 memberCount 用 customer_type 不矛盾——历史报表用成为会员时间才准）；其余 3 档仍 customer_type 当前快照 + created_at 截面。
- */
+
+
+
+
 async function queryRegistration(
   session: AuthSession,
   scope: DataCenterScope,
@@ -90,7 +61,7 @@ async function queryRegistration(
   return num(first(rows).v)
 }
 
-/** 当期到店客流量（行数）/ 对应人数（DISTINCT user）/ 项目数 —— 按 customer_type 过滤 */
+
 async function queryTrafficCount(
   session: AuthSession,
   scope: DataCenterScope,
@@ -112,7 +83,7 @@ async function queryTrafficCount(
   return num(first(rows).v)
 }
 
-/** 项目数（扣卡次数）：SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗') */
+
 async function queryProjectCount(
   session: AuthSession,
   scope: DataCenterScope,
@@ -132,7 +103,7 @@ async function queryProjectCount(
   return num(first(rows).v)
 }
 
-/** 服务人次（service_orders 行数，已完成） */
+
 async function queryServiceCount(
   session: AuthSession,
   scope: DataCenterScope,
@@ -149,7 +120,7 @@ async function queryServiceCount(
   return num(first(rows).v)
 }
 
-/** 生美实耗（区间）：SUM(unit_real_price * session_used) WHERE is_shengmei，供「单次客耗」分子 */
+
 async function queryShengmeiConsume(
   session: AuthSession,
   scope: DataCenterScope,
@@ -169,7 +140,7 @@ async function queryShengmeiConsume(
   return num(first(rows).v)
 }
 
-/** 5 档截面状态人数（按 customer_status；沉睡追加 customer_type='会员客'） */
+
 async function queryStatusCount(
   session: AuthSession,
   scope: DataCenterScope,
@@ -186,7 +157,7 @@ async function queryStatusCount(
   return num(first(rows).v)
 }
 
-/** 一次客活 / 二次客活（区间内到店次数 = 1 或 >= 2，且 customer_status 为保有会员） */
+
 async function queryActive(
   session: AuthSession,
   scope: DataCenterScope,
@@ -216,14 +187,7 @@ async function queryActive(
   return num(first(rows).v)
 }
 
-/**
- * 本月激活 3 档（anchor = startDate-1 的 customer_status 实时反推，D-react-source=C）。
- *   - warn(沉睡):   last_dt >= anchor - 6 months
- *   - frozen(冰冻): last_dt < anchor - 6 months AND last_dt >= anchor - 12 months
- *   - deep(休眠):   last_dt < anchor - 12 months OR last_dt IS NULL
- * anchor 非保有（visits_90d_prev = 0）+ became_member_at::date <= anchor 守卫；
- * 期内有到店（visited_in_period）即视为本期激活。
- */
+
 async function queryReactivated(
   session: AuthSession,
   scope: DataCenterScope,
@@ -284,7 +248,7 @@ async function queryReactivated(
   return num(first(rows).v)
 }
 
-/** 会员经营人数（区间内单笔订单消费 >= 1990 的会员客去重人数） */
+
 async function queryOperatedMembers(
   session: AuthSession,
   scope: DataCenterScope,
@@ -311,7 +275,7 @@ async function queryOperatedMembers(
   return num(first(rows).v)
 }
 
-/** 会员客单价（整个 member_spend：SUM(spend)/COUNT(*)；防除零 → null） */
+
 async function queryMemberAvgTicket(
   session: AuthSession,
   scope: DataCenterScope,
@@ -340,7 +304,7 @@ async function queryMemberAvgTicket(
   return cnt > 0 ? round2(num(r.total_spend) / cnt) : null
 }
 
-/** 新增会员数（became_member_at 落在区间内） */
+
 async function queryNewMemberCount(
   session: AuthSession,
   scope: DataCenterScope,
@@ -357,7 +321,7 @@ async function queryNewMemberCount(
   return num(first(rows).v)
 }
 
-/** 新增会员对应消费（这群人区间内全部销售消费，D-newMemberSpend=A） */
+
 async function queryNewMemberSpend(
   session: AuthSession,
   scope: DataCenterScope,
@@ -379,7 +343,7 @@ async function queryNewMemberSpend(
   return num(first(rows).v)
 }
 
-/** 当月流量客人数（成交率分母）= 区间内到店的「体验客 + 小美客」DISTINCT（D-conv-denom=B） */
+
 async function queryTrialFootfall(
   session: AuthSession,
   scope: DataCenterScope,
@@ -398,7 +362,7 @@ async function queryTrialFootfall(
   return num(first(rows).v)
 }
 
-/** 有效保有会员（90 天到店窗口 + became_member_at 守卫，截至 range.end，与首页 retainedMemberCount 同口径） */
+
 async function queryRetainedMembers(
   session: AuthSession,
   scope: DataCenterScope,
@@ -419,11 +383,11 @@ async function queryRetainedMembers(
   return num(first(rows).v)
 }
 
-// =====================================================================
-// 明细表（byMarket / byStore）：scope 骨架逐组聚合，不做同比环比
-// =====================================================================
 
-/** 注册客活组（一组 = 一行 BreakdownRow.metrics 的注册/客活相关列） */
+
+
+
+
 interface RegActiveAgg {
   registered: number
   retained: number
@@ -437,7 +401,7 @@ interface RegActiveAgg {
   reactivatedDeep: number
 }
 
-/** 消费分桶 + 经营组 */
+
 interface OpsAgg {
   bucketD: number
   bucketC: number
@@ -451,21 +415,14 @@ interface OpsAgg {
   trafficVisits: number
   memberVisits: number
   projectCount: number
-  memberSpendTotal: number // 内部：算 memberAvgTicket
-  memberSpendCount: number // 内部：算 memberAvgTicket 分母
-  newMemberSpendTotal: number // 内部：算 newCustomerAvgTicket
-  shengmeiConsumeTotal: number // 内部：算 consumePerVisit 分子
-  serviceCount: number // 内部：服务人次（consumePerVisit 分母）
+  memberSpendTotal: number 
+  memberSpendCount: number 
+  newMemberSpendTotal: number 
+  shengmeiConsumeTotal: number 
+  serviceCount: number 
 }
 
-/**
- * 注册客活明细：scope 骨架 LEFT JOIN 各子聚合，按 group_col（市场或门店）GROUP BY。
- * group='market' → 市场维度（骨架 market_id/market_name）；group='store' → 门店维度。
- *
- * 客户维度（registered/retained/dormant/...）按 bound_store_id 归组；
- * 服务维度（visitOnce/visitTwice）按 service_orders 归组（用 c.bound_store_id 与客户一致，避免跨店漂移）。
- * 本月激活 3 档按 anchor 反推 + bound_store_id 归组。
- */
+
 async function queryRegActiveBreakdown(
   session: AuthSession,
   scope: DataCenterScope,
@@ -622,11 +579,7 @@ async function queryRegActiveBreakdown(
   return map
 }
 
-/**
- * 消费分桶 + 经营明细：scope 骨架 LEFT JOIN 各子聚合，按 group_col GROUP BY。
- * 6 档分桶左闭右开（member_spend CTE）；客户/订单维度归组取 store_id（服务/订单按 so/o.store_id，
- * 客户类按 bound_store_id），明细表通常一致（顾客在绑定店产生服务）。
- */
+
 async function queryOpsBreakdown(
   session: AuthSession,
   scope: DataCenterScope,
@@ -801,17 +754,17 @@ async function queryOpsBreakdown(
   return map
 }
 
-/** 安全除法（分母 0 → null，前端 '--'） */
+
 const safeDiv = (a: number, b: number): number | null => (b > 0 ? a / b : null)
 
-/** 组装 byMarket / byStore 行：骨架去重出组列表，逐组填 metrics */
+
 function buildBreakdownRows(
   group: 'market' | 'store',
   skeletonRows: Array<{ marketId: string; marketName: string; storeId: string; storeName: string }>,
   regActive: Map<string, RegActiveAgg>,
   ops: Map<string, OpsAgg>,
 ): BreakdownRow[] {
-  // 去重出该维度的组
+  
   const groups = new Map<string, { name: string; marketName: string }>()
   for (const s of skeletonRows) {
     if (group === 'market') {
@@ -827,7 +780,7 @@ function buildBreakdownRows(
     const op = ops.get(id)
     const memberAvg = op ? safeDiv(round2(op.memberSpendTotal), op.memberSpendCount) : null
     const newAvg = op ? safeDiv(round2(op.newMemberSpendTotal), op.newMembers) : null
-    // 单次客耗 = 生美实耗 ÷ 服务人次（2026-05-26 用户拍板；防除零）
+    
     const consumePerVisit = op ? safeDiv(round2(op.shengmeiConsumeTotal), op.serviceCount) : null
     const conv = op ? safeDiv(op.newMembers, op.trafficCustomers) : null
 
@@ -836,7 +789,7 @@ function buildBreakdownRows(
       groupName: info.name,
       ...(group === 'store' ? { marketName: info.marketName } : {}),
       metrics: {
-        // 注册客活组
+        
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
@@ -849,7 +802,7 @@ function buildBreakdownRows(
         reactivatedFrozen: ra?.reactivatedFrozen ?? 0,
         deep: ra?.deep ?? 0,
         reactivatedDeep: ra?.reactivatedDeep ?? 0,
-        // 消费分桶 + 经营组
+        
         bucketD: op?.bucketD ?? 0,
         bucketC: op?.bucketC ?? 0,
         bucketB: op?.bucketB ?? 0,
@@ -869,14 +822,14 @@ function buildBreakdownRows(
       },
     })
   }
-  // 稳定排序：按 groupName
+  
   rows.sort((a, b) => a.groupName.localeCompare(b.groupName, 'zh-Hans-CN'))
   return rows
 }
 
-// =====================================================================
-// 入口
-// =====================================================================
+
+
+
 
 export const getCustomerBoard = withPermission(
   'data_center:dashboard',
@@ -885,9 +838,9 @@ export const getCustomerBoard = withPermission(
     const { scope, comparison, enabled } = ctx
     const cur = comparison.current
 
-    // ── KPI（按语义分组并行查询）──────────────────────────────
-    // 同比环比类（注册/到店/经营核心指标）走 withComparison；
-    // 激活/客活/截面状态只对当期有意义，传 enabled=false（仅算 current）。
+    
+    
+    
     const reg = (
       ct: '流量客' | '体验客' | '会员客' | null,
     ) => (r: ResolvedRange) => queryRegistration(session, scope, r, ct)
@@ -916,29 +869,29 @@ export const getCustomerBoard = withPermission(
       projectCount,
       consumePerVisit,
     ] = await Promise.all([
-      // 会员注册人数（截面，对齐 memberCount）
+      
       withComparison(reg('会员客'), comparison, 'count', enabled),
-      // 有效保有会员（90 天窗口）
+      
       withComparison((r) => queryRetainedMembers(session, scope, r), comparison, 'count', enabled),
-      // 一次/二次客活（截面客活，仅当期）
+      
       withComparison((r) => queryActive(session, scope, r, 'once'), comparison, 'count', false),
       withComparison((r) => queryActive(session, scope, r, 'twice'), comparison, 'count', false),
-      // 5 档状态（截面，仅当期）
+      
       withComparison(() => queryStatusCount(session, scope, '沉睡'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'warn'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '冰冻'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'frozen'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '休眠'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'deep'), comparison, 'count', false),
-      // 会员经营人数（单笔≥1990）
+      
       withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
-      // 会员新增
+      
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
-      // 当月流量客人数（成交率分母）
+      
       withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', enabled),
-      // 会员客单价
+      
       withComparison((r) => queryMemberAvgTicket(session, scope, r), comparison, 'amount', enabled),
-      // 新客客单价
+      
       withComparison(
         async (r) => {
           const [spend, count] = await Promise.all([
@@ -951,11 +904,11 @@ export const getCustomerBoard = withPermission(
         'amount',
         enabled,
       ),
-      // 服务人次
+      
       withComparison((r) => queryServiceCount(session, scope, r), comparison, 'count', enabled),
-      // 服务项目数
+      
       withComparison((r) => queryProjectCount(session, scope, r), comparison, 'count', enabled),
-      // 单次客耗 = 生美实耗 ÷ 服务人次（2026-05-26 用户拍板，对齐 metrics.md 明细区分母语义）
+      
       withComparison(
         async (r) => {
           const [smConsume, svcCount] = await Promise.all([
@@ -970,13 +923,13 @@ export const getCustomerBoard = withPermission(
       ),
     ])
 
-    // 成交率 = 会员新增 ÷ 当月流量客（派生自上面已算的两个 KPI 的 value）
+    
     const convRate: KpiCell = {
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
       ...(enabled ? { mom: null, yoy: null } : {}),
     }
-    // 当月一次/二次人数（与客活同值，单列展示）—— 复用 visitOnce/visitTwice 的 value
+    
     const visitOnceCell: KpiCell = { value: visitOnce.value, unit: 'count' }
     const visitTwiceCell: KpiCell = { value: visitTwice.value, unit: 'count' }
 
@@ -1002,8 +955,8 @@ export const getCustomerBoard = withPermission(
       consumePerVisit,
     }
 
-    // ── 明细表（byMarket / byStore，仅当期）──────────────────────
-    // 骨架（去重出组列表 + 所属市场名）
+    
+    
     const skelRows = (await db.execute(scopeStoreSkeletonSql(session, scope))) as unknown[]
     const skeleton = skelRows.map((raw) => {
       const r = raw as Record<string, unknown>

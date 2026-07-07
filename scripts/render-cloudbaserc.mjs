@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// 渲染 fengyu-{client,staff}/cloudbaserc.json
-// 输入：envs/<env>.env + fengyu-X/cloudbaserc.example.json
-// 输出：fengyu-X/cloudbaserc.json (gitignored)
-//
-// Usage: node scripts/render-cloudbaserc.mjs <env>   # env = dev | prod
+
+
+
+
+
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -24,14 +24,14 @@ if (!fs.existsSync(envPath)) {
   process.exit(1)
 }
 
-// --- dotenv 解析（支持引号包多行 PEM）---
+
 function parseDotenv(content) {
   const vars = {}
   const lines = content.split('\n')
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
-    // 跳过注释和空行
+    
     if (!line.trim() || line.trim().startsWith('#')) {
       i++
       continue
@@ -43,7 +43,7 @@ function parseDotenv(content) {
     }
     const key = line.slice(0, eq).trim()
     let val = line.slice(eq + 1)
-    // 引号包裹的多行（开始引号在当前行，结束引号在后续行）
+    
     if (val.startsWith('"') && !isClosedQuote(val)) {
       let buf = val.slice(1)
       i++
@@ -52,7 +52,7 @@ function parseDotenv(content) {
         i++
       }
       if (i < lines.length) {
-        buf += '\n' + lines[i].slice(0, -1)  // 去掉结束引号
+        buf += '\n' + lines[i].slice(0, -1)  
       }
       val = buf
     } else if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
@@ -65,12 +65,12 @@ function parseDotenv(content) {
 }
 
 function isClosedQuote(s) {
-  // 简化：检测 "...." 闭合（不考虑转义）
+  
   if (!s.startsWith('"')) return true
   return s.length >= 2 && s.endsWith('"')
 }
 
-// --- 第二轮：解析 ${VAR} 引用（如 LAKALA_NOTIFY_URL=${CLIENT_SERVICE_URL}/lakala/notify）---
+
 function resolveRefs(vars) {
   const resolved = { ...vars }
   let changed = true
@@ -91,12 +91,12 @@ function resolveRefs(vars) {
   return resolved
 }
 
-// --- 渲染：read cloudbaserc.example.json，遍历替换 ${VAR}，写 cloudbaserc.json ---
+
 function render(side, vars) {
   const tplPath = path.join(ROOT, `fengyu-${side}`, 'cloudbaserc.example.json')
   const outPath = path.join(ROOT, `fengyu-${side}`, 'cloudbaserc.json')
 
-  // 读 JSON → 解析为 object → 递归遍历 → 写回
+  
   const tpl = JSON.parse(fs.readFileSync(tplPath, 'utf8'))
 
   const missing = new Set()
@@ -114,7 +114,7 @@ function render(side, vars) {
     if (node && typeof node === 'object') {
       const out = {}
       for (const k of Object.keys(node)) {
-        if (k === '_comment') continue  // 渲染产物不保留 _comment
+        if (k === '_comment') continue  
         out[k] = walk(node[k])
       }
       return out
@@ -134,11 +134,11 @@ function render(side, vars) {
   console.log(`  ✓ fengyu-${side}/cloudbaserc.json`)
 }
 
-// --- main ---
+
 const raw = parseDotenv(fs.readFileSync(envPath, 'utf8'))
 const vars = resolveRefs(raw)
 
-// 必检字段（缺一项 abort）
+
 const required = ['ENV_PROFILE', 'PG_CONNECTION_STRING', 'CLIENT_ENV_ID', 'STAFF_ENV_ID']
 const missing = required.filter((k) => !vars[k])
 if (missing.length > 0) {

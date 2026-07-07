@@ -1,7 +1,7 @@
-// pages/login/login.ts — 登录页
-// 两阶段状态机：
-//   initial  → 显示「授权手机号登录」按钮
-//   authed   → 已拿到 availableLoginLevels（2 项时），显示 radio + 「登录」按钮
+
+
+
+
 import { bindPhone } from '../../utils/auth'
 
 const app = getApp<IAppOption>()
@@ -24,8 +24,8 @@ Page({
   },
 
   async checkAuth() {
-    // 即使缓存里有 staffWfId 也要等 syncLoginState 用最新服务端结果覆盖；
-    // 否则 storage 残留 loginLevel='management' 的用户会被甩进未授权的管理层页。
+    
+    
     await app._loginReady
     if (app.globalData.staffWfId) {
       this.jumpByLoginLevel()
@@ -51,7 +51,7 @@ Page({
 
   jumpByLoginLevel() {
     const level = app.globalData.loginLevel || 'store'
-    // 管理层 4 页未放入原生 tabBar（小程序 list 上限 5 项），用 reLaunch 切换页面栈
+    
     if (level === 'management') {
       wx.reLaunch({ url: ROUTE_MANAGEMENT_HOME })
     } else {
@@ -82,12 +82,12 @@ Page({
         return
       }
       if (levels.length === 1) {
-        // 唯一视图权限：直接进入，不显示 radio
+        
         app.setLoginLevel(levels[0])
         this.jumpByLoginLevel()
         return
       }
-      // 两种视图权限：进入 authed 阶段让用户手动选择
+      
       this.refreshLevelData()
       this.setData({ phase: 'authed', binding: false })
     } catch (err: unknown) {

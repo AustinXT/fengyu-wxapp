@@ -1,4 +1,4 @@
-<!-- packageOrder/refund-detail/refund-detail.wxml — 退款凭证单详情 -->
+
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -10,13 +10,13 @@
   </view>
 
   <block wx:else>
-    <!-- 状态条 -->
+    
     <view class="status-banner status-banner--{{refund.statusClass}}">
       <text class="status-label">{{refund.statusLabel}}</text>
       <text wx:if="{{refund.rejected_reason}}" class="status-sub">驳回原因：{{refund.rejected_reason}}</text>
     </view>
 
-    <!-- 退款单信息 -->
+    
     <view class="card-group">
       <van-cell-group>
         <van-cell title="关联原单" value="{{refund.ref_sale_order_id}}" is-link bind:click="onTapOrigOrder" value-class="mono-value" />
@@ -28,7 +28,7 @@
       </van-cell-group>
     </view>
 
-    <!-- 退款原因 / 手续费 -->
+    
     <view class="card-group">
       <view class="section-title">退款说明</view>
       <view class="reason-row">
@@ -45,7 +45,7 @@
       </view>
     </view>
 
-    <!-- 退款明细 -->
+    
     <view class="card-group" wx:if="{{refundItems.length > 0}}">
       <view class="section-title">退款明细</view>
       <view class="item-row" wx:for="{{refundItems}}" wx:key="saleItemId">
@@ -60,7 +60,7 @@
       </view>
     </view>
 
-    <!-- 原单概要 -->
+    
     <view class="card-group" wx:if="{{origOrder}}">
       <view class="section-title">原销售单</view>
       <view class="orig-row">
@@ -77,14 +77,14 @@
       </view>
     </view>
 
-    <!-- 审批操作按钮（仅店长 + 待审批） -->
+    
     <view class="action-bar" wx:if="{{isManager && refund.status === '待审批'}}">
       <van-button type="danger" plain bind:click="onShowReject" custom-class="btn-reject">驳回</van-button>
       <van-button type="primary" bind:click="onApprove" custom-class="btn-approve">审批通过</van-button>
     </view>
   </block>
 
-  <!-- 驳回弹窗 -->
+  
   <van-popup show="{{rejectPopup}}" position="bottom" round bind:close="onCloseReject">
     <view class="popup-box">
       <view class="popup-title">驳回退款</view>

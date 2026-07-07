@@ -1,4 +1,4 @@
-/* pages/shop/shop.wxss */
+
 
 .container {
   display: flex;
@@ -7,14 +7,14 @@
   overflow: hidden;
 }
 
-/* ===== 分类+内容双栏 ===== */
+
 .catalog {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-/* 左侧分类滚动区 */
+
 .sidebar-scroll {
   width: var(--sidebar-width);
   flex-shrink: 0;
@@ -22,13 +22,13 @@
   overflow: hidden;
 }
 
-/* Vant Sidebar 覆盖 */
+
 .sidebar-scroll .van-sidebar {
   width: 100%;
   background: transparent;
 }
 
-/* 右侧商品滚动区 */
+
 .product-scroll {
   flex: 1;
   padding: 16rpx;
@@ -36,12 +36,12 @@
   background: var(--color-bg-page);
 }
 
-/* ===== 骨架屏 ===== */
+
 .skeleton-wrap {
   padding: 16rpx;
 }
 
-/* ===== SPU 卡片列表 ===== */
+
 .spu-list {
   padding-bottom: 32rpx;
 }
@@ -89,7 +89,7 @@
   justify-content: space-between;
 }
 
-/* 会员价分流：划线标价起价 */
+
 .price-origin {
   font-size: 24rpx;
   color: var(--color-text-hint);
@@ -108,7 +108,7 @@
   flex-shrink: 0;
 }
 
-/* ===== 底部悬浮购物车栏 ===== */
+
 .cart-bar {
   position: fixed;
   bottom: calc(env(safe-area-inset-bottom) + 40rpx);

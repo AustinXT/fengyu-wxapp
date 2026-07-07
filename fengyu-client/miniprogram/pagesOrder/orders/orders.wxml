@@ -1,4 +1,4 @@
-<!-- pages/orders/orders.wxml — 订单列表 -->
+
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 </wxs>
@@ -19,23 +19,23 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     <van-tab title="已完成" name="已完成" />
   </van-tabs>
 
-  <!-- 加载 -->
+  
   <view wx:if="{{isLoading}}" class="skeleton-list">
     <van-skeleton title row="4" />
     <van-skeleton title row="4" style="margin-top:24rpx" />
   </view>
 
-  <!-- 错误态 -->
+  
   <view wx:elif="{{loadError}}" class="empty-wrap">
     <van-empty image="error" description="加载失败，下拉刷新重试" />
   </view>
 
-  <!-- 空态 -->
+  
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无订单" />
   </view>
 
-  <!-- 订单卡片 -->
+  
   <view wx:else class="list-wrap">
     <view
       wx:for="{{list}}"
@@ -44,12 +44,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       bindtap="onOrderTap"
       data-sale-order-id="{{item.sale_order_id}}"
     >
-      <!-- 卡片头 -->
+      
       <view class="order-card__header">
         <view class="order-header-left">
           <view class="order-no-row">
             <text class="order-no">{{item.sale_order_id}}</text>
-            <!-- 2026-04-26 sale-order-domain-refactor: 已退款标签由 refunded_amount > 0 推导，不再依赖 sale_order_type='退款单' -->
+            
             <view wx:if="{{item.has_refund}}" class="order-refund-tag">
               <van-tag color="#FFF1F0" text-color="#FF4D4F" size="medium">已退款</van-tag>
             </view>
@@ -59,9 +59,9 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <text class="order-status {{item.statusClass}}">{{item.status}}</text>
       </view>
 
-      <!-- 商品明细摘要 -->
+      
       <view class="order-items">
-        <!-- 充值单：不写 sale_items，单独渲染充值卡摘要行 -->
+        
         <view wx:if="{{item.isRecharge}}" class="recharge-row">
           <view class="recharge-icon">
             <van-icon name="gift-o" size="44rpx" color="#FFF" />
@@ -72,7 +72,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
           </view>
         </view>
 
-        <!-- 普通订单：保留原 items loop -->
+        
         <block wx:else>
           <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
             <image
@@ -102,7 +102,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         </block>
       </view>
 
-      <!-- 底部：件数 + 金额 -->
+      
       <view class="order-card__footer">
         <text class="order-count">{{item.isRecharge ? '充值卡' : ('共 ' + item.itemCount + ' 件')}}</text>
         <view class="order-amount-wrap">
@@ -111,13 +111,13 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         </view>
       </view>
 
-      <!-- 部分支付：待付金额提示 -->
+      
       <view wx:if="{{item.isPartialPay}}" class="order-outstanding-row">
         <text class="order-outstanding-label">待付</text>
         <text class="order-outstanding-value">¥{{item.outstanding_fmt}}</text>
       </view>
 
-      <!-- 操作按钮 -->
+      
       <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
         <van-button size="small" plain round catch:tap="onCancelTap" data-sale-order-id="{{item.sale_order_id}}">取消订单</van-button>
         <van-button size="small" type="primary" round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
@@ -134,7 +134,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
     </view>
 
-    <!-- 加载更多 / 底部提示 -->
+    
     <view class="list-footer">
       <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
       <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多订单了</text>

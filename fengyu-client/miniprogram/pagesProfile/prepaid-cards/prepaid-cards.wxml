@@ -1,4 +1,4 @@
-<!-- pagesProfile/prepaid-cards/prepaid-cards.wxml — 充值卡 -->
+
 <wxs module="fmt">
 module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).toFixed(2) }
 </wxs>
@@ -6,30 +6,30 @@ module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).t
 
 <view class="container">
 
-  <!-- 加载骨架 -->
+  
   <view wx:if="{{isLoading}}" class="skeleton-wrap">
     <van-skeleton title row="4" />
   </view>
 
   <block wx:else>
 
-    <!-- 错误态 -->
+    
     <van-empty
       wx:if="{{loadError}}"
       image="error"
       description="加载失败，下拉刷新重试"
     />
 
-    <!-- 总余额 -->
+    
     <view class="balance-header brand-gradient">
       <text class="balance-label">充值卡总余额（元）</text>
       <text class="balance-value">{{fmt.price(totalBalance)}}</text>
     </view>
 
-    <!-- 空态 -->
+    
     <van-empty wx:if="{{cards.length === 0}}" description="暂无充值卡" />
 
-    <!-- 卡片列表 -->
+    
     <view wx:else class="card-list">
       <view
         class="card-item {{selectedCardId === item.cardId ? 'card-active' : ''}}"
@@ -50,7 +50,7 @@ module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).t
           <van-icon name="{{selectedCardId === item.cardId ? 'arrow-up' : 'arrow-down'}}" size="28rpx" color="var(--color-text-hint)" />
         </view>
 
-        <!-- 展开的消费明细 -->
+        
         <view wx:if="{{selectedCardId === item.cardId}}" class="tx-section">
           <view wx:if="{{txLoading}}" class="tx-loading">
             <van-loading size="32rpx" color="#999">加载中...</van-loading>
@@ -70,7 +70,7 @@ module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).t
         </view>
       </view>
 
-      <!-- 底部提示 -->
+      
       <view class="footer-note">
         <text class="footer-note-text">仅显示最近半年消费明细</text>
       </view>

@@ -1,4 +1,4 @@
-// pages/shop/shop.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 import { callClientApi } from '../../utils/cloud';
@@ -14,7 +14,7 @@ interface SpuItem {
   category_name: string;
   cover_image: string;
   min_price: string;
-  /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
+  
   strike_min_price?: string;
   is_recommend: boolean;
   skuList?: any[];
@@ -30,10 +30,10 @@ Page({
     cartCount: 0,
   },
 
-  // 所有分类
+  
   _allCategories: [] as Category[],
 
-  // 页面级 SPU 缓存：按 categoryId 缓存
+  
   _spuCache: {} as Record<string, SpuItem[]>,
 
   onLoad() {
@@ -64,7 +64,7 @@ Page({
     this.setData({ cartCount: getCartCount() });
   },
 
-  // 点击"加入购物车"按钮
+  
   async onAddToCart(e: WechatMiniprogram.TouchEvent) {
     (e as any).stopPropagation();
     const { productId } = e.currentTarget.dataset as { productId: string };
@@ -79,8 +79,8 @@ Page({
 
     const sku = skuList[0];
 
-    // 会员价分流：套餐组件价（bundle_price）固定不分流；普通 SKU 会员→会员价、非会员→标价。
-    // 与后端 order.create 权威定价同口径，避免购物车/结算预览与实收不一致。
+    
+    
     const hasBundlePrice = Number(sku.bundle_price) > 0;
     const pv = priceView(getIsMember(), sku.special_price, sku.price);
     const dealPrice = hasBundlePrice ? Number(sku.bundle_price) : pv.display;
@@ -96,10 +96,10 @@ Page({
       listPrice,
       bigCategory: spu.category_name,
       productType: sku.product_type,
-      // PR-D：DB 驱动 tag 渲染（来自 product.shopInit / spuList JOIN product_categories）
+      
       productKind: sku.product_kind || undefined,
       kindDisplayColor: sku.kind_display_color || undefined,
-      // 充值卡剥离 SKU 化（2026-05-20）：商城 SKU 已不含充值卡
+      
     });
 
     this.updateCartCount();
@@ -118,7 +118,7 @@ Page({
       const categories: Category[] = initData?.categories || [];
       const spuList: SpuItem[] = initData?.spuList || [];
 
-      // 会员价分流：会员看会员起价（priceFrom）+ 划线标价起价；非会员只看标价起价（listPriceFrom）
+      
       const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
@@ -128,7 +128,7 @@ Page({
 
       this._allCategories = categories;
 
-      // 缓存第一个分类
+      
       if (categories.length > 0) {
         this._spuCache[categories[0].category_id] = listWithPrice;
       }
@@ -171,7 +171,7 @@ Page({
       const data = await callClientApi<{ spuList: SpuItem[] }>('product.spuList', { categoryId });
 
       const spuList: SpuItem[] = data?.spuList || [];
-      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      
       const isMember = getIsMember();
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,

@@ -1,4 +1,4 @@
-// pages/workbench/workbench.ts — 工作台
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
@@ -18,25 +18,25 @@ Page({
     storePickerVisible: false,
     storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
     today: '',
-    // 今日分成
+    
     todayCommission: '0.00',
     todayOrderCount: 0,
     todayServiceCount: 0,
     storeTodayRevenue: '0.00',
-    // 本月累计（首卡：个人分成口径）
+    
     monthlyCommission: '0.00',
     monthlyOrderCount: 0,
     monthlyServiceCount: 0,
-    // 上月累计
+    
     lastMonthCommission: '0.00',
     lastMonthOrderCount: 0,
     lastMonthServiceCount: 0,
-    // 代办事项计数
+    
     pendingAppointmentCount: 0,
     pendingServiceCount: 0,
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
-    pendingOrderCount: 0, // 订单管理磁贴红点：线下收款 + 确认订单 之和
+    pendingOrderCount: 0, 
     pendingUnbindCount: 0,
     pendingAllocationCount: 0,
     pendingRefundCount: 0,
@@ -51,23 +51,23 @@ Page({
     this.setTodayDate();
   },
 
-  // 折叠屏展开/折叠、屏幕旋转时重算自定义导航栏高度（onLoad 只算一次，尺寸变化后 logo 会错位/掉下来）
-  // nextTick：避开 getMenuButtonBoundingClientRect 同步返回 resize 前（折叠态）旧值的坑
+  
+  
   onResize() {
     wx.nextTick(() => this.initNavBar());
   },
 
-  // 计算自定义导航栏高度（状态栏 + 胶囊按钮区），供顶部 logo 导航栏使用
+  
   initNavBar() {
     try {
       const menu = wx.getMenuButtonBoundingClientRect();
-      const { statusBarHeight = 44 } = wx.getWindowInfo(); // 解构默认值（仅 undefined 替换）等价 ??；折叠态 statusBarHeight 合法为 0，勿用 || 44
-      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2; // 对齐微信原生导航栏内容高度（胶囊垂直居中），与其他 Tab 顶栏一致
+      const { statusBarHeight = 44 } = wx.getWindowInfo(); 
+      const contentHeight = menu.height + (menu.top - statusBarHeight) * 2; 
       this.setData({
         statusBarHeight,
         contentHeight,
         navBarHeight: statusBarHeight + contentHeight,
-        logoHeight: Math.round(menu.height * 0.8), // logo 跟胶囊高度，多端一致（rpx 在 iPad/折叠屏宽屏会放大，改 px 按胶囊比例）
+        logoHeight: Math.round(menu.height * 0.8), 
       });
     } catch (e) {
       console.warn('[workbench] initNavBar 失败，使用兜底高度', e);
@@ -85,7 +85,7 @@ Page({
   },
 
   onReady() {
-    // 订阅门店切换事件（其他 tab 切换门店时刷新）
+    
     this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, () => {
       this.syncStoreContext();
       this.loadWorkbench();
@@ -150,7 +150,7 @@ Page({
 
   async loadWorkbench() {
     this.setData({ loading: true });
-    // 超时保护：10 秒后自动关闭 loading
+    
     const timer = setTimeout(() => {
       if (this.data.loading) {
         this.setData({ loading: false });
@@ -236,7 +236,7 @@ Page({
     wx.switchTab({ url: '/pages/service/service' });
   },
 
-  // ===== 常用功能入口 =====
+  
   goOrders() {
     wx.navigateTo({ url: '/packageOrder/order-list/order-list' });
   },

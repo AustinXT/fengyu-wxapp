@@ -61,7 +61,7 @@ export default function ChangePasswordPage() {
 
   return (
     <div className="w-full max-w-md">
-      {/* Header */}
+      {}
       <div className="mb-8 text-center">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">修改密码</h1>
         <p className="mt-2 text-sm text-[#999999]">
@@ -69,10 +69,10 @@ export default function ChangePasswordPage() {
         </p>
       </div>
 
-      {/* Card */}
+      {}
       <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-white p-8 shadow-sm">
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* New Password */}
+          {}
           <div>
             <label htmlFor="new-password" className="mb-1.5 block text-sm font-medium text-[var(--foreground)]">
               新密码
@@ -93,7 +93,7 @@ export default function ChangePasswordPage() {
             )}
           </div>
 
-          {/* Confirm Password */}
+          {}
           <div>
             <label htmlFor="confirm-password" className="mb-1.5 block text-sm font-medium text-[var(--foreground)]">
               确认密码
@@ -114,7 +114,7 @@ export default function ChangePasswordPage() {
             )}
           </div>
 
-          {/* Submit */}
+          {}
           <Button
             type="submit"
             className="w-full"

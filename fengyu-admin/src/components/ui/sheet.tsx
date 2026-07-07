@@ -11,7 +11,7 @@ export interface SheetProps {
 }
 
 function Sheet({ open, onOpenChange, children, className }: SheetProps) {
-  // Prevent body scroll when sheet is open
+  
   React.useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden"
@@ -23,7 +23,7 @@ function Sheet({ open, onOpenChange, children, className }: SheetProps) {
     }
   }, [open])
 
-  // Close on Escape
+  
   React.useEffect(() => {
     if (!open) return
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -37,12 +37,12 @@ function Sheet({ open, onOpenChange, children, className }: SheetProps) {
 
   return (
     <div className="fixed inset-0 z-50">
-      {/* Overlay */}
+      {}
       <div
         className="fixed inset-0 bg-black/50"
         onClick={() => onOpenChange(false)}
       />
-      {/* Panel */}
+      {}
       <div
         className={cn(
           "fixed inset-y-0 right-0 w-full max-w-[400px] bg-[var(--card)] border-l border-[var(--border)] shadow-lg flex flex-col animate-in slide-in-from-right",

@@ -1,4 +1,4 @@
-// packageOrder/refund-detail/refund-detail.ts — 退款凭证单详情 + 审批操作
+
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTimeShort } from '../../utils/formatters';
@@ -131,7 +131,7 @@ Page({
         refund_abs: Math.abs(Number(p.amount || 0)).toFixed(2),
         handling_fee_display: fee > 0 ? fee.toFixed(2) : '',
         refund_reason: d.refundReason,
-        // 驳回原因复用审批备注（驳回时 auditRemark 记录原因）
+        
         rejected_reason: p.status === '已作废' ? d.auditRemark : null,
         ref_sale_order_id: p.saleOrderId,
         customer_name: res.origOrder?.customerName ?? null,
@@ -175,7 +175,7 @@ Page({
   },
 
   onApprove() {
-    // 充值单退款走 card.approveRefund（扣 prepaid_cards.balance）；销售单退款走 order.approveRefund（5 通道 cascade）
+    
     const isRecharge = this.data.saleOrderType === '充值单';
     wx.showModal({
       title: '审批通过',
@@ -222,7 +222,7 @@ Page({
     }
     wx.showLoading({ title: '提交中', mask: true });
     try {
-      // 充值单退款走 card.rejectRefund（读 reason），销售单走 order.rejectRefund（读 auditRemark）；传两字段兼容
+      
       const action = this.data.saleOrderType === '充值单' ? 'card.rejectRefund' : 'order.rejectRefund';
       await callStaffApi(action, {
         paymentId: Number(this.data.refundId),

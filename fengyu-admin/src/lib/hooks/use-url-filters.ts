@@ -1,39 +1,25 @@
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useCallback, useRef, useEffect } from 'react'
 
-/**
- * URL 驱动的列表筛选 hook
- *
- * 将筛选状态同步到 URL searchParams，支持浏览器后退/前进和 URL 分享。
- * 读取初始值来自 URL；变更时 replace URL（不产生额外历史记录）。
- *
- * ```tsx
- * const { get, set, setMany } = useUrlFilters()
- *
- * // 读取：get('status') → URL 中 ?status=xxx 的值，无则 ''
- * // 写入：set('status', '待支付') → URL 变为 ?status=待支付
- * // 清除：set('status', '') → 从 URL 删除 status 参数
- * // 批量：setMany({ status: '待支付', page: '1' })
- * ```
- */
+
 export function useUrlFilters() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
 
-  // 用 ref 保存最新 searchParams 避免闭包过期
+  
   const paramsRef = useRef(searchParams)
   useEffect(() => {
     paramsRef.current = searchParams
   }, [searchParams])
 
-  /** 读取单个筛选值 */
+  
   const get = useCallback(
     (key: string, defaultValue = '') => searchParams.get(key) ?? defaultValue,
     [searchParams]
   )
 
-  /** 设置单个筛选值（空字符串=删除该参数） */
+  
   const set = useCallback(
     (key: string, value: string) => {
       const params = new URLSearchParams(paramsRef.current.toString())
@@ -48,7 +34,7 @@ export function useUrlFilters() {
     [router, pathname]
   )
 
-  /** 批量设置筛选值 */
+  
   const setMany = useCallback(
     (updates: Record<string, string>) => {
       const params = new URLSearchParams(paramsRef.current.toString())

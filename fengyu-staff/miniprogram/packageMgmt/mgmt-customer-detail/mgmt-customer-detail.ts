@@ -1,14 +1,14 @@
-// packageMgmt/mgmt-customer-detail — 管理层"顾客档案"详情子页（只读）
-// scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不展示 scope-picker
-// 区别于门店视图（packageCustomer/customer-detail）：
-//   - 移除：客户分配 / 备注保存 / 储值卡余额 / 持卡勾选 + 创建服务单
-//   - 保留：订单详情跳转（只读浏览）
+
+
+
+
+
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatCount } from '../../utils/number';
 import { formatDateTime, formatDate } from '../../utils/formatters';
 
-// ===== 数据接口 =====
+
 
 type ScopeType = 'all' | 'market' | 'store';
 
@@ -33,7 +33,7 @@ interface CustomerDetail {
   topProductName: string | null;
 }
 
-// Tab 1: 日历
+
 interface DailySummary {
   date: string;
   orderCount: number;
@@ -66,7 +66,7 @@ interface CalendarDay {
   hasData?: boolean;
 }
 
-// Tab 2: 购买记录
+
 interface PaidOrderItem {
   saleItemId: string;
   itemName: string;
@@ -86,7 +86,7 @@ interface PaidOrder {
   storeId?: string;
   storeName?: string;
   items: PaidOrderItem[];
-  // 消费记录列表（mgmtCustomer.orderHistory）扩展字段
+  
   createdAt?: string;
   payableAmount?: string;
   received?: string;
@@ -95,7 +95,7 @@ interface PaidOrder {
   timeText?: string;
 }
 
-// 订单状态 → status-tag 修饰类（app.wxss 定义：pending/success/progress/done/error）
+
 const ORDER_STATUS_CLASS: Record<string, string> = {
   待支付: 'pending',
   已支付: 'success',
@@ -105,7 +105,7 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
   部分支付: 'progress',
 };
 
-// Tab 3: 持卡汇总（管理层视图：纯展示，无勾选/步进器）
+
 interface TreatmentCard {
   saleItemId: string;
   itemName: string;
@@ -123,7 +123,7 @@ interface TreatmentCard {
   storeId?: string;
 }
 
-// Tab 4: 赠送记录
+
 interface GiftItem {
   saleItemId: string;
   productName: string;
@@ -132,7 +132,7 @@ interface GiftItem {
   sessionCount: number;
   remainingSessions: number;
   paidSessions: number | null;
-  /** 已付未用次数（与持卡汇总同口径）；paidSessions 为 null 时退回物理剩余 */
+  
   paidUnusedSessions: number;
   createdAt?: string;
 }
@@ -158,7 +158,7 @@ interface GiftData {
   giftItems: GiftItem[];
 }
 
-// Tab 5: 服务记录
+
 interface ServiceRecord {
   serviceOrderId: string;
   status: string;
@@ -170,7 +170,7 @@ interface ServiceRecord {
   items: Array<{ itemName: string; spec: string }>;
 }
 
-// ===== 页面逻辑 =====
+
 
 Page({
   data: {
@@ -178,11 +178,11 @@ Page({
     customerError: false,
     customer: null as CustomerDetail | null,
     activeTab: 0,
-    // scope 透传
+    
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
-    // Tab 1: 日历
+    
     calendarYear: 0,
     calendarMonth: 0,
     calendarDays: [] as CalendarDay[],
@@ -190,16 +190,16 @@ Page({
     calendarOrders: [] as CalendarOrder[],
     selectedDate: '',
     calendarLoaded: false,
-    // Tab 2: 购买记录
+    
     purchaseOrders: [] as PaidOrder[],
     purchaseLoaded: false,
-    // Tab 3: 持卡汇总
+    
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
-    // Tab 4: 赠送记录
+    
     giftData: null as GiftData | null,
     giftLoaded: false,
-    // Tab 5: 服务记录
+    
     serviceRecords: [] as ServiceRecord[],
     serviceLoaded: false,
   },
@@ -240,7 +240,7 @@ Page({
       return;
     }
     if (this._loaded && this._clientUserId) {
-      // 刷新已加载的 tab 数据（疗程卡次数可能因服务单完成而变化）
+      
       if (this.data.cardsLoaded) {
         this.setData({ cardsLoaded: false });
         this.loadTreatmentCards();
@@ -248,7 +248,7 @@ Page({
     }
   },
 
-  /** 公共 scope payload */
+  
   _scopePayload(): { scopeType: ScopeType; scopeId: string | null } {
     return {
       scopeType: this.data.scopeType,
@@ -267,8 +267,8 @@ Page({
       this.setData({ customer });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
-      // 优先按 errorType 路由（callStaffApi 已把 errorType 挂到 Error 实例），
-      // 回退到 message indexOf 兜底（仅在 errorType 字段未透出时生效）
+      
+      
       const errorType = (err as { errorType?: string } | null)?.errorType;
       if (errorType === 'PERMISSION_DENIED' || (!errorType && msg.indexOf('PERMISSION_DENIED') >= 0)) {
         wx.showToast({ title: '顾客不在当前数据范围', icon: 'none' });
@@ -325,7 +325,7 @@ Page({
     }
   },
 
-  // ===== Tab 1: 日历 =====
+  
   async loadCalendar() {
     if (!this._clientUserId) return;
     try {
@@ -393,11 +393,11 @@ Page({
     this.setData({ selectedDate: this.data.selectedDate === date ? '' : date });
   },
 
-  // ===== Tab 2: 购买记录 =====
+  
   async loadPurchaseHistory() {
     if (!this._clientUserId) return;
     try {
-      // 消费记录走 orderHistory（全状态 + 跨门店）；疗程卡 Tab 仍走 paidOrders（仅已支付可核销卡）
+      
       const orders = (await callStaffApi<PaidOrder[]>('mgmtCustomer.orderHistory', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
@@ -416,7 +416,7 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 
-  // ===== Tab 3: 持卡汇总（仅展示） =====
+  
   async loadTreatmentCards() {
     if (!this._clientUserId) return;
     try {
@@ -462,7 +462,7 @@ Page({
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 
-  // ===== Tab 4: 赠送记录 =====
+  
   async loadGiftHistory() {
     if (!this._clientUserId) return;
     try {
@@ -499,7 +499,7 @@ Page({
     }
   },
 
-  // ===== Tab 5: 服务记录 =====
+  
   async loadServiceHistory() {
     if (!this._clientUserId) return;
     const statusClassMap: Record<string, string> = {

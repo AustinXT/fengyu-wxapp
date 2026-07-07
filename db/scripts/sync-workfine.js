@@ -1,31 +1,11 @@
 #!/usr/bin/env node
-/**
- * WorkFine → PostgreSQL 主数据同步脚本（核心定时任务）
- *
- * ⚠️ 此脚本为系统数据一致性核心，建议每日定时执行（cron 02:00）。
- * 停止同步将导致 PostgreSQL 与 WorkFine 主数据不一致，影响员工/顾客/商品业务。
- *
- * 使用方法：
- *   node scripts/sync-workfine.js              # 全量同步 + 一次性导入
- *   node scripts/sync-workfine.js --sync-only   # 仅定期同步域（org/stores/employees/customers）
- *   node scripts/sync-workfine.js --import-only  # 仅一次性导入域（品项分类/商品）
- *   node scripts/sync-workfine.js --dry-run      # 预览模式
- *
- * 同步顺序（存在依赖）：
- *   1. org_nodes（组织架构树）— 无依赖
- *   2. stores（门店详情）— 依赖 org_nodes
- *   3. staff_wechat_users（员工）— 依赖 stores + org_nodes
- *   4. permission_roles（权限自动推导）— 依赖 staff_wechat_users + org_nodes
- *   5. client_wechat_users（顾客档案）— 依赖 stores
- *   6. product_categories（品项分类）— 无依赖（一次性导入）
- *   7. products + product_skus（商品）— 依赖 product_categories（一次性导入）
- */
+
 
 const mssql = require('mssql')
 const { Pool } = require('pg')
 const crypto = require('crypto')
 
-// ─── 配置 ────────────────────────────────────────────────
+
 
 const MSSQL_CONFIG = {
   user: process.env.MSSQL_USER || 'SD',
@@ -42,17 +22,14 @@ const PG_CONFIG = {
   max: 5,
 }
 
-// ─── 工具函数 ──────────────────────────────────────────────
 
-/** 确定性 ID（相同输入 → 相同输出） */
+
+
 function hashId(...parts) {
   return crypto.createHash('sha256').update(parts.join(':')).digest('hex').substring(0, 16)
 }
 
-/**
- * 创建顾客 user_id 序列生成器：FYGK-{YYYYMMDD}-{5位序号}
- * 在事务内调用 init() 查询当日最大序号，后续调用 next() 递增
- */
+
 function createClientIdGenerator() {
   let seq = 0
   let prefix = ''
@@ -76,27 +53,27 @@ function createClientIdGenerator() {
   }
 }
 
-/** 文本 '是'/'否' → boolean */
+
 function toBool(val) {
   if (val === null || val === undefined) return false
   return String(val).trim() === '是'
 }
 
-/** RTRIM + null 处理 */
+
 function trim(val) {
   if (val === null || val === undefined) return null
   const s = String(val).trim()
   return s === '' ? null : s
 }
 
-/** 中国手机号校验：11位数字、1开头，不符合则返回 null */
+
 function validPhone(val) {
   if (!val) return null
   const s = String(val).trim()
   return /^1\d{10}$/.test(s) ? s : null
 }
 
-/** 日期格式化（MSSQL Date → YYYY-MM-DD 字符串） */
+
 function toDateStr(val) {
   if (!val) return null
   if (val instanceof Date) {
@@ -112,12 +89,12 @@ function log(domain, msg) {
   console.log(`[${domain}] ${msg}`)
 }
 
-// ─── 1. 同步 org_nodes + stores ──────────────────────────────
+
 
 async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
   log('ORG+STORES', '开始同步...')
 
-  // 查询 WorkFine 门店数据
+  
   const { recordset: rows } = await mssqlPool.request().query(`
     SELECT
       RTRIM(UDF_M_437) AS market_name,
@@ -139,7 +116,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 1. UPSERT 总部节点
+    
     const hqId = hashId('org', 'headquarters', '总部')
     await client.query(`
       INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
@@ -147,9 +124,9 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       ON CONFLICT (id) DO UPDATE SET name = '总部', updated_at = now()
     `, [hqId])
 
-    // 2. 收集唯一市场
+    
     const markets = [...new Set(rows.map(r => trim(r.market_name)).filter(Boolean))]
-    const marketIdMap = {} // marketName → orgNodeId
+    const marketIdMap = {} 
 
     for (let i = 0; i < markets.length; i++) {
       const marketId = hashId('org', 'market', markets[i])
@@ -162,7 +139,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
     }
     log('ORG+STORES', `UPSERT ${markets.length} 个市场节点`)
 
-    // 3. 为每个门店 UPSERT org_nodes(type='store') + stores
+    
     let storeCount = 0
     for (const row of rows) {
       const storeName = trim(row.store_name)
@@ -172,14 +149,14 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       const storeOrgNodeId = hashId('org', 'store', storeName)
       const parentMarketId = marketName ? marketIdMap[marketName] : hqId
 
-      // org_nodes store 节点
+      
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
         VALUES ($1, $2, '门店', $3, 0, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [storeOrgNodeId, storeName, parentMarketId])
 
-      // stores 详情
+      
       const storeId = hashId('store', storeName)
       const isClosed = toBool(row.is_closed_raw)
       await client.query(`
@@ -207,7 +184,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
   }
 }
 
-// ─── 2. 同步员工 → staff_wechat_users ──────────────────────────
+
 
 async function syncEmployees(mssqlPool, pgPool, dryRun) {
   log('EMPLOYEES', '开始同步...')
@@ -238,20 +215,20 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 预加载 stores lookup (store_name → store_id + org_node_id)
+    
     const storesRes = await client.query('SELECT store_id, store_name, org_node_id FROM stores')
-    const storeMap = {}          // store_name → store_id
-    const storeOrgNodeMap = {}   // store_name → org_node_id (org tree)
+    const storeMap = {}          
+    const storeOrgNodeMap = {}   
     storesRes.rows.forEach(r => {
       storeMap[r.store_name] = r.store_id
       storeOrgNodeMap[r.store_name] = r.org_node_id
     })
 
-    // 收集门店级部门对 + 无门店的全局部门
+    
     const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = '总部' LIMIT 1")
     const hqId = hqRes.rows[0]?.id
-    const storeDeptPairs = new Set()  // "storeName|deptName"
-    const globalDeptNames = new Set() // 无门店员工的部门
+    const storeDeptPairs = new Set()  
+    const globalDeptNames = new Set() 
     for (const row of rows) {
       const storeName = trim(row.store_name)
       const deptName = trim(row.dept_name)
@@ -263,8 +240,8 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       }
     }
 
-    // 创建门店级部门节点（挂在各门店 org_node 下）
-    const storeDeptMap = {} // "storeName|deptName" → orgNodeId
+    
+    const storeDeptMap = {} 
     for (const pair of storeDeptPairs) {
       const [storeName, deptName] = pair.split('|')
       const deptId = hashId('org', 'department', storeName, deptName)
@@ -277,7 +254,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       storeDeptMap[pair] = deptId
     }
 
-    // 创建全局部门节点（无门店员工的 fallback，挂在总部下）
+    
     const globalDeptMap = {}
     if (hqId) {
       for (const deptName of globalDeptNames) {
@@ -292,9 +269,9 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     }
     log('EMPLOYEES', `UPSERT ${storeDeptPairs.size} 个门店部门 + ${globalDeptNames.size} 个全局部门`)
 
-    // 处理手机号去重：同一手机号多条记录，在职优先保留一条，其余设为 null
-    // 同时过滤占位符手机号（如全 1、全 0）
-    const empPhones = {} // employee_id → phone（最终分配）
+    
+    
+    const empPhones = {} 
 
     for (const row of rows) {
       const empId = trim(row.employee_id)
@@ -302,7 +279,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       empPhones[empId] = validPhone(row.phone)
     }
 
-    // 手机号去重：在职优先，先到先得
+    
     const phoneCount = {}
     for (const row of rows) {
       const empId = trim(row.employee_id)
@@ -315,12 +292,12 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     let dupPhoneCleared = 0
     for (const [phone, emps] of Object.entries(phoneCount)) {
       if (emps.length <= 1) continue
-      // 在职优先，其次按 employee_id 字典序
+      
       emps.sort((a, b) => {
         if (a.isResigned !== b.isResigned) return a.isResigned ? 1 : -1
         return a.empId.localeCompare(b.empId)
       })
-      // 仅第一条保留手机号
+      
       for (let i = 1; i < emps.length; i++) {
         empPhones[emps[i].empId] = null
         dupPhoneCleared++
@@ -330,11 +307,11 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       log('EMPLOYEES', `手机号去重：${dupPhoneCleared} 条重复手机号已清除`)
     }
 
-    // 先清空所有员工手机号，避免 UPSERT 时触发 phone 唯一约束冲突
-    // （因为同步重新分配手机号，旧数据可能占位）
+    
+    
     await client.query("UPDATE staff_wechat_users SET phone = NULL WHERE phone IS NOT NULL")
 
-    // UPSERT staff_wechat_users（以 employee_id 为冲突键，openid 可为 null）
+    
     let count = 0
     for (const row of rows) {
       const empId = trim(row.employee_id)
@@ -380,7 +357,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       count++
     }
 
-    // 清理不再被引用的全局部门节点（挂在总部下但无员工指向的）
+    
     if (hqId) {
       const { rowCount } = await client.query(`
         DELETE FROM org_nodes
@@ -403,7 +380,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
   }
 }
 
-// ─── 3. 自动推导 permission_roles ──────────────────────────────
+
 
 async function syncPermissionRoles(pgPool, dryRun) {
   log('PERMISSIONS', '开始自动推导...')
@@ -412,7 +389,7 @@ async function syncPermissionRoles(pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 查询在职员工 + store org_node + department name
+    
     const { rows: emps } = await client.query(`
       SELECT
         e.employee_id,
@@ -442,12 +419,12 @@ async function syncPermissionRoles(pgPool, dryRun) {
       const storeScope = emp.store_org_node_id
       const marketScope = emp.market_org_node_id
 
-      if (!storeScope) continue // 无门店归属的员工跳过
+      if (!storeScope) continue 
 
       let role = 'staff'
       let scopeId = storeScope
 
-      // 代理经理 → 默认 staff
+      
       if (pos.includes('代理')) {
         role = 'staff'
       } else if (pos === '门店经理') {
@@ -459,7 +436,7 @@ async function syncPermissionRoles(pgPool, dryRun) {
         role = 'finance'
       }
 
-      // UPSERT（仅 sync 创建的记录）
+      
       await client.query(`
         INSERT INTO permission_roles (employee_id, role, scope_id, created_by, updated_by)
         VALUES ($1, $2, $3, 'sync', 'sync')
@@ -480,7 +457,7 @@ async function syncPermissionRoles(pgPool, dryRun) {
   }
 }
 
-// ─── 4. 同步顾客档案（批量优化版） ───────────────────────────────
+
 
 async function syncCustomers(mssqlPool, pgPool, dryRun) {
   log('CUSTOMERS', '开始同步...')
@@ -517,12 +494,12 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 预加载 stores lookup
+    
     const storesRes = await client.query('SELECT store_id, store_name FROM stores')
     const storeMap = {}
     storesRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
 
-    // 1. 创建临时 staging 表
+    
     await client.query(`
       CREATE TEMP TABLE _cust_staging (
         user_id text NOT NULL,
@@ -545,12 +522,12 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       )
     `)
 
-    // 2. 批量插入到 staging 表（每批 500 行）
+    
     const BATCH = 500
     let skipped = 0
     const staged = []
 
-    // 初始化顾客 ID 生成器（FYGK-{YYYYMMDD}-{4位序号}）
+    
     const idGen = createClientIdGenerator()
     await idGen.init(client)
 
@@ -603,8 +580,8 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       }
     }
 
-    // 3-pre. 先按 customer_id 更新已有行（处理 PG 中无 phone 但 WorkFine 新增 phone 的场景）
-    // 避免 step 3a INSERT 时触发 customer_id 唯一约束冲突
+    
+    
     const preUpdate = await client.query(`
       UPDATE client_wechat_users c SET
         phone = CASE
@@ -630,14 +607,14 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     `)
     log('CUSTOMERS', `PRE-UPDATE by customer_id: ${preUpdate.rowCount} 条`)
 
-    // 从 staging 中移除已按 customer_id 更新的行，避免 step 3a 重复处理
+    
     await client.query(`
       DELETE FROM _cust_staging s
       USING client_wechat_users c
       WHERE s.customer_id IS NOT NULL AND s.customer_id = c.customer_id
     `)
 
-    // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
+    
     const upsertByPhone = await client.query(`
       INSERT INTO client_wechat_users (
         user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
@@ -673,7 +650,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     `)
     log('CUSTOMERS', `UPSERT by phone: ${upsertByPhone.rowCount} 条`)
 
-    // 3b. 无手机号但有 customer_id：UPDATE 已存在的行（去重）
+    
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
@@ -693,7 +670,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     `)
     log('CUSTOMERS', `UPDATE by customer_id (无手机号): ${updateByCustId.rowCount} 条`)
 
-    // 3c. 无手机号有 customer_id 但不存在：INSERT 新行（去重）
+    
     const insertNew = await client.query(`
       INSERT INTO client_wechat_users (
         user_id, customer_id, name, bound_store_id, bound_employee_id,
@@ -724,7 +701,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
   }
 }
 
-// ─── 5. 导入品项分类 ─────────────────────────────────────────
+
 
 async function importProductCategories(mssqlPool, pgPool, dryRun) {
   log('CATEGORIES', '开始导入品项分类...')
@@ -780,7 +757,7 @@ async function importProductCategories(mssqlPool, pgPool, dryRun) {
   }
 }
 
-/** 映射 big_category_raw → product_kind 枚举 */
+
 function mapProductKind(raw) {
   if (!raw) return '护理项目'
   if (raw.includes('充值')) return '充值卡'
@@ -790,7 +767,7 @@ function mapProductKind(raw) {
   return '护理项目'
 }
 
-/** 映射产品类型（2026-05-21 单品合并：单品 → 疗程卡 1 次，不再产出 '单品'） */
+
 function mapProductType(raw) {
   if (!raw) return '家居产品'
   if (raw.includes('疗程')) return '疗程卡'
@@ -798,12 +775,12 @@ function mapProductType(raw) {
   return '疗程卡'
 }
 
-// ─── 6. 导入商品 + 规格 ─────────────────────────────────────
+
 
 async function importProducts(mssqlPool, pgPool, dryRun) {
   log('PRODUCTS', '开始导入商品...')
 
-  // 6a. 查询各数据源
+  
   const queries = {
     UDT_M_1281: `
       SELECT
@@ -859,7 +836,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
     }
   }
 
-  // 促销方案
+  
   try {
     const { recordset } = await mssqlPool.request().query(`
       SELECT
@@ -894,12 +871,12 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 预加载品项分类 lookup
+    
     const catRes = await client.query('SELECT category_id, category_name, product_kind FROM product_categories')
-    const catMap = {} // categoryName → { category_id, product_kind }
+    const catMap = {} 
     catRes.rows.forEach(r => { catMap[r.category_name] = { id: r.category_id, kind: r.product_kind } })
 
-    // 找到或创建默认分类（无法匹配时使用）
+    
     let defaultCatId = catMap['其他']?.id
     if (!defaultCatId) {
       defaultCatId = hashId('cat', '其他', '护理项目')
@@ -913,11 +890,11 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 
     let productCount = 0, skuCount = 0
 
-    // ── 6b. 可售项目（UDT_M_1281 + UDT_M_1383）──
+    
     const serviceItems = [...(wfData.UDT_M_1281 || []), ...(wfData.UDT_M_1383 || [])]
 
-    // 按 (category_name, name) 分组 → 一条 product，不同规格各生成一条 sku
-    const productGroups = new Map() // key → { rows, category_name, name, ... }
+    
+    const productGroups = new Map() 
 
     for (const row of serviceItems) {
       const name = trim(row.name)
@@ -942,7 +919,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       const catId = cat.id
       const productId = hashId('product', key)
 
-      // 计算标价（取 SKU 最低价）
+      
       const prices = group.skus.map(s => parseFloat(s.price) || 0).filter(p => p > 0)
       const minPrice = prices.length > 0 ? Math.min(...prices) : 0
 
@@ -958,10 +935,10 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       `, [productId, catId, group.name, group.isShengmei, minPrice, group.manageScope, group.marketScope])
       productCount++
 
-      // 创建 SKU
+      
       for (const sku of group.skus) {
         const productType = mapProductType(trim(sku.product_type_raw))
-        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        
         const sessionCount = productType === '家居产品' ? null : (parseInt(sku.session_count) || 1)
         const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : '单次体验'
         const skuId = hashId('sku', productId, trim(sku.wf_item_id))
@@ -977,8 +954,8 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       }
     }
 
-    // ── 6c. 家居产品（UDT_M_341，WorkFine 原表为"院装产品"）── 每条 1:1 product + sku
-    // 优先找 product_kind='家居产品' 的分类，按名称匹配；无匹配则用 '美容耗材' 兜底
+    
+    
     let homeCatId = null
     for (const [, v] of Object.entries(catMap)) {
       if (v.kind === '家居产品') { homeCatId = v.id; break }
@@ -997,7 +974,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       if (!name) continue
 
       const catName = trim(row.category_name) || '美容耗材'
-      // 优先按名称匹配已有分类，否则用 家居产品 类下的兜底分类
+      
       const cat = catMap[catName] || { id: homeCatId }
       const productId = hashId('product', 'home', trim(row.wf_item_id))
 
@@ -1020,8 +997,8 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       skuCount++
     }
 
-    // ── 6d. 促销方案 → products (is_bundle=true) + product_skus (is_bundle_sku=true) ──
-    const promoGroups = new Map() // scheme_id → { name, price, market_scope, items[] }
+    
+    const promoGroups = new Map() 
     for (const row of (wfData.PROMOTIONS || [])) {
       const schemeId = trim(row.scheme_id)
       if (!schemeId) continue
@@ -1037,7 +1014,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       promoGroups.get(schemeId).items.push(row)
     }
 
-    // 找到或创建组合套餐分类
+    
     let promoCatId = null
     for (const [, v] of Object.entries(catMap)) {
       if (v.kind === '组合套餐') { promoCatId = v.id; break }
@@ -1066,7 +1043,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
         const isGift = toBool(item.is_gift_raw)
         const itemPrice = isGift ? 0 : (parseFloat(item.item_price) || 0)
         const productType = mapProductType(trim(item.product_type_raw))
-        // 疗程卡至少 1 次（原"单品"并入疗程卡=1 次卡）；家居产品无次数
+        
         const sessionCount = productType === '家居产品' ? null : (parseInt(item.session_count) || 1)
         const specName = trim(item.item_name) || '促销项'
         const skuId = hashId('sku', productId, trim(item.wf_item_id))
@@ -1093,7 +1070,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
   }
 }
 
-// ─── 验证 ──────────────────────────────────────────────────
+
 
 async function verify(pgPool) {
   console.log('\n=== 数据验证 ===')
@@ -1106,35 +1083,35 @@ async function verify(pgPool) {
     console.log(`  ${t}: ${rows[0].cnt} 条`)
   }
 
-  // org_nodes 按类型
+  
   const { rows: orgTypes } = await pgPool.query(
     "SELECT type, count(*) AS cnt FROM org_nodes GROUP BY type ORDER BY type"
   )
   console.log('\n  org_nodes 按类型:')
   orgTypes.forEach(r => console.log(`    ${r.type}: ${r.cnt}`))
 
-  // staff_wechat_users 在职/离职（含员工编号的行）
+  
   const { rows: empStatus } = await pgPool.query(
     "SELECT is_resigned, count(*) AS cnt FROM staff_wechat_users WHERE employee_id IS NOT NULL GROUP BY is_resigned"
   )
   console.log('\n  staff_wechat_users 员工状态:')
   empStatus.forEach(r => console.log(`    ${r.is_resigned ? '离职' : '在职'}: ${r.cnt}`))
 
-  // permission_roles 按角色
+  
   const { rows: roles } = await pgPool.query(
     "SELECT role, count(*) AS cnt FROM permission_roles GROUP BY role ORDER BY role"
   )
   console.log('\n  permission_roles 按角色:')
   roles.forEach(r => console.log(`    ${r.role}: ${r.cnt}`))
 
-  // product_categories 按 product_kind
+  
   const { rows: catKinds } = await pgPool.query(
     "SELECT product_kind, count(*) AS cnt FROM product_categories GROUP BY product_kind ORDER BY product_kind"
   )
   console.log('\n  product_categories 按类型:')
   catKinds.forEach(r => console.log(`    ${r.product_kind}: ${r.cnt}`))
 
-  // product_skus 按 product_type
+  
   const { rows: skuTypes } = await pgPool.query(
     "SELECT product_type, count(*) AS cnt FROM product_skus GROUP BY product_type ORDER BY product_type"
   )
@@ -1142,7 +1119,7 @@ async function verify(pgPool) {
   skuTypes.forEach(r => console.log(`    ${r.product_type}: ${r.cnt}`))
 }
 
-// ─── 主函数 ─────────────────────────────────────────────────
+
 
 async function main() {
   const args = process.argv.slice(2)
@@ -1157,7 +1134,7 @@ async function main() {
   let pgPool = null
 
   try {
-    // 连接
+    
     console.log('连接 WorkFine SQL Server...')
     mssqlPool = await mssql.connect(MSSQL_CONFIG)
     console.log('✓ MSSQL 连接成功')
@@ -1166,7 +1143,7 @@ async function main() {
     await pgPool.query('SELECT 1')
     console.log('✓ PostgreSQL 连接成功\n')
 
-    // 定期同步域
+    
     if (!importOnly) {
       await syncOrgNodesAndStores(mssqlPool, pgPool, dryRun)
       await syncEmployees(mssqlPool, pgPool, dryRun)
@@ -1174,13 +1151,13 @@ async function main() {
       await syncCustomers(mssqlPool, pgPool, dryRun)
     }
 
-    // 一次性导入域
+    
     if (!syncOnly) {
       await importProductCategories(mssqlPool, pgPool, dryRun)
       await importProducts(mssqlPool, pgPool, dryRun)
     }
 
-    // 验证
+    
     if (!dryRun) {
       await verify(pgPool)
     }

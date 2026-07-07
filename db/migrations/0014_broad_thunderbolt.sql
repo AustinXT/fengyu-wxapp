@@ -3,7 +3,7 @@ ALTER TABLE "product_categories" ADD COLUMN "display_color" text;--> statement-b
 ALTER TABLE "product_categories" ADD COLUMN "display_icon" text;--> statement-breakpoint
 ALTER TABLE "product_categories" ADD COLUMN "requires_shengmei_flag" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 
--- 数据回填：把现行硬编码 capability 落库（一级行）
+
 UPDATE "product_categories"
    SET "is_card_kind" = true
  WHERE "product_kind" IS NULL

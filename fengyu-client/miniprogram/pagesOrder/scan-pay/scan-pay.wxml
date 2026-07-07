@@ -1,4 +1,4 @@
-<!-- pages/scan-pay/scan-pay.wxml — 扫码收款 -->
+
 <wxs module="fmt">
 module.exports.price = function(n) {
   return (Math.round(n * 100) / 100).toFixed(2)
@@ -13,19 +13,19 @@ module.exports.unit = function(total, divisor) {
   return (Math.round((t / d) * 100) / 100).toFixed(2)
 }
 </wxs>
-<!-- fmt.unit: 单次/单价由权威行总额 saleAmount 反推，除以次数或数量得单价，divisor 非法时回退整额 -->
+
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
 <view class="container">
 
-  <!-- 加载中 -->
+  
   <view wx:if="{{isLoading}}" class="loading-wrap">
     <van-loading size="60rpx" color="#C0322A" />
     <text class="loading-text">正在加载订单信息...</text>
   </view>
 
-  <!-- 错误态 -->
+  
   <view wx:elif="{{errorMsg}}" class="error-wrap">
     <van-icon name="warning-o" size="120rpx" color="#FF4D4F" />
     <text class="error-title">无法获取订单</text>
@@ -33,7 +33,7 @@ module.exports.unit = function(total, divisor) {
     <van-button type="default" size="normal" round bindtap="onBackHome">返回首页</van-button>
   </view>
 
-  <!-- 非待支付状态提示 -->
+  
   <view wx:elif="{{statusMsg}}" class="error-wrap">
     <van-icon name="info-o" size="120rpx" color="#C0322A" />
     <text class="error-title">订单提示</text>
@@ -41,10 +41,10 @@ module.exports.unit = function(total, divisor) {
     <van-button type="default" size="normal" round bindtap="onBackHome">返回首页</van-button>
   </view>
 
-  <!-- 订单展示 -->
+  
   <view wx:elif="{{order}}" class="order-wrap">
 
-    <!-- 门店 + 开单人 + 状态 -->
+    
     <view class="order-header">
       <view class="order-header-left">
         <text class="order-store">{{order.storeName}}</text>
@@ -53,7 +53,7 @@ module.exports.unit = function(total, divisor) {
       <van-tag type="primary">{{order.status}}</van-tag>
     </view>
 
-    <!-- 商品明细 -->
+    
     <view class="items-section">
       <view
         wx:for="{{items}}"
@@ -79,7 +79,7 @@ module.exports.unit = function(total, divisor) {
       </view>
     </view>
 
-    <!-- 合计 -->
+    
     <view class="order-total">
       <text class="total-label">订单总额</text>
       <view class="total-amount">
@@ -88,8 +88,7 @@ module.exports.unit = function(total, divisor) {
       </view>
     </view>
 
-    <!-- 抵扣区：储值卡（与优惠券并列；优惠券暂只展示，不可改）。
-         回款场景仍展示储值卡（抵扣尾款），但隐藏优惠券行（券已在首付时计入） -->
+    
     <view class="deduction-section">
       <view class="deduction-section__title">抵扣</view>
 
@@ -126,7 +125,7 @@ module.exports.unit = function(total, divisor) {
       </view>
     </view>
 
-    <!-- 实付区 -->
+    
     <view class="paid-section">
       <view class="paid-section__row">
         <text class="paid-section__label">实付</text>
@@ -135,16 +134,16 @@ module.exports.unit = function(total, divisor) {
           <text class="paid-section__value">{{fmt.price(paidAmount)}}</text>
         </view>
       </view>
-      <!-- 首付提示：admin 设置了 first_payment_amount 且本次扫码为首次（received=0） -->
+      
       <view wx:if="{{isFirstPartialScan}}" class="paid-section__hint">
         本次支付 ¥{{fmt.price(firstPaymentAmount)}}（首付），剩余款项可后续扫码支付
       </view>
-      <!-- 回款提示：部分支付订单（已有首付到账，本次付剩余应付） -->
+      
       <view wx:if="{{isRepayment}}" class="paid-section__hint">
         本单已部分支付，本次为回款，支付剩余应付款项
       </view>
 
-      <!-- 支付方式：仅 paid > 0 时展示 -->
+      
       <view wx:if="{{showPayMethodGroup}}" class="pay-method-wrap">
         <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
           <van-cell-group inset>
@@ -166,7 +165,7 @@ module.exports.unit = function(total, divisor) {
       <view wx:else class="paid-section__hint">全额抵扣，无需选择支付方式</view>
     </view>
 
-    <!-- 底部确认 -->
+    
     <van-submit-bar
       price="{{fmt.cents(paidAmount)}}"
       button-text="{{paidAmount === 0 ? '确认抵扣' : (paymentMethod === '微信' ? '微信支付' : '确认付款')}}"
@@ -179,7 +178,7 @@ module.exports.unit = function(total, divisor) {
 
 </view>
 
-<!-- 支付宝吱口令弹窗（聚合主扫 share_code 方案）-->
+
 <van-popup
   show="{{showAlipayShare}}"
   round

@@ -40,7 +40,7 @@ export default function MallProductCreatePageClient({
   const [allMarkets, setAllMarkets] = useState(true);
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([]);
 
-  // Mall category groups for grouped select
+  
   const mallGroups = useMemo(
     () => mallCategories.filter((c) => c.categoryGroup === null).sort((a, b) => a.sortOrder - b.sortOrder),
     [mallCategories],
@@ -56,7 +56,7 @@ export default function MallProductCreatePageClient({
     const fd = new FormData(form);
 
     const name = (fd.get("name") as string).trim();
-    // 套餐(isBundle)时价格 Card 不渲染，fd.get("price") 为 null，须空值兜底
+    
     const price = ((fd.get("price") as string | null) ?? "").trim();
 
     if (!name) {
@@ -119,7 +119,7 @@ export default function MallProductCreatePageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">新增商城商品</h1>
       </div>
 
-      {/* 基本信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">基本信息</CardTitle>
@@ -181,7 +181,7 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 价格（套餐价由详情页分组单价自动计算，此处仅非套餐填写） */}
+      {}
       {!isBundle && (
         <Card>
           <CardHeader>
@@ -202,7 +202,7 @@ export default function MallProductCreatePageClient({
         </Card>
       )}
 
-      {/* 展示 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">展示</CardTitle>
@@ -239,7 +239,7 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 可见范围 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">可见范围</CardTitle>
@@ -283,7 +283,7 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 客户端展示 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">客户端展示</CardTitle>

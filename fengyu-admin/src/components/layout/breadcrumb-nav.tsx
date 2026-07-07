@@ -35,13 +35,13 @@ interface BreadcrumbItem {
 function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
   const items: BreadcrumbItem[] = []
 
-  // Direct match first
+  
   if (ROUTE_LABELS[pathname]) {
     items.push({ label: ROUTE_LABELS[pathname], href: pathname })
     return items
   }
 
-  // Build from path segments
+  
   const segments = pathname.split("/").filter(Boolean)
   let currentPath = ""
 
@@ -52,7 +52,7 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
     if (label) {
       items.push({ label, href: currentPath })
     } else if (items.length > 0) {
-      // Dynamic segment like [id] — show as "详情"
+      
       items.push({ label: "详情", href: currentPath })
     }
   }

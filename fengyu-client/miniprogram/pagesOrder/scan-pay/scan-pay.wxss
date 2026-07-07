@@ -1,11 +1,11 @@
-/* pages/scan-pay/scan-pay.wxss */
+
 
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
 }
 
-/* ===== 加载态 ===== */
+
 .loading-wrap {
   padding-top: 240rpx;
   display: flex;
@@ -19,7 +19,7 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 错误态 ===== */
+
 .error-wrap {
   padding-top: 160rpx;
   display: flex;
@@ -43,7 +43,7 @@
   margin-bottom: 16rpx;
 }
 
-/* ===== 订单展示 ===== */
+
 .order-wrap {
   padding-bottom: 180rpx;
 }
@@ -74,7 +74,7 @@
   color: var(--color-text-secondary);
 }
 
-/* ===== 商品明细 ===== */
+
 .items-section {
   background: var(--color-bg-card);
   padding: 16rpx 32rpx 24rpx;
@@ -132,7 +132,7 @@
   flex-shrink: 0;
 }
 
-/* ===== 合计 ===== */
+
 .order-total {
   background: var(--color-bg-card);
   padding: 24rpx 32rpx;
@@ -165,14 +165,14 @@
   font-weight: 700;
 }
 
-/* ===== 支付图标 ===== */
+
 .pay-icon {
   width: 40rpx;
   height: 40rpx;
   margin-right: 16rpx;
 }
 
-/* ===== 抵扣区 ===== */
+
 .deduction-section {
   background: var(--color-bg-card);
   margin: 16rpx 0;
@@ -245,7 +245,7 @@
   margin-top: 8rpx;
 }
 
-/* ===== 实付区 ===== */
+
 .paid-section {
   background: var(--color-bg-card);
   padding: 24rpx 32rpx;
@@ -291,7 +291,7 @@
   margin-top: 16rpx;
 }
 
-/* ===== 支付宝二维码弹窗 ===== */
+
 .alipay-qr-popup {
   padding: 48rpx 32rpx;
   display: flex;
@@ -340,7 +340,7 @@
   margin-bottom: 16rpx;
 }
 
-/* 支付宝吱口令文本框（聚合主扫 share_code 方案）*/
+
 .alipay-share-token {
   width: 100%;
   box-sizing: border-box;

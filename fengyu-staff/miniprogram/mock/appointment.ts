@@ -1,4 +1,4 @@
-// mock/appointment.ts — 预约相关 mock
+
 
 const MOCK_APPOINTMENTS = [
   {

@@ -1,4 +1,4 @@
-<!-- packageMy/inventory/detail.wxml -->
+
 <view class="container" wx:if="{{detail}}">
   <view class="head">
     <view class="head-line">

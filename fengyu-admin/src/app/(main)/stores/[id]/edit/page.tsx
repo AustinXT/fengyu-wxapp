@@ -12,11 +12,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const store = await getStoreById(id)
   if (!store) notFound()
 
-  // 门店↔收款商户绑定：仅 admin（store:lakala_config）可编辑，其它角色（含 hr）不显示收款卡
+  
   const session = await getSessionFromCookie()
   const canEditPayment = !!(session && hasPermission(session, 'store:lakala_config'))
 
-  // 收款商户下拉数据（仅 admin 可读，故非授权返回空：编辑页不渲染收款卡）
+  
   const merchantOptions = canEditPayment ? await getMerchantOptions() : []
 
   return (

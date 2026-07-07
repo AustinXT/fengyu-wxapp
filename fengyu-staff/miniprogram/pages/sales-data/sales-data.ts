@@ -1,6 +1,6 @@
-// pages/sales-data — 管理层"销售数据"页
-// 数据来源：staffApi mgmtDashboard.salesData
-// scope 由 hub（mgmt-dashboard）通过路由参数透传
+
+
+
 import { callStaffApi } from '../../utils/cloud'
 
 type Period = 'month' | 'lastMonth' | 'year'

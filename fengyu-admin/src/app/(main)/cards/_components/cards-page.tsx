@@ -27,12 +27,7 @@ interface Props {
 	total: number;
 }
 
-/**
- * 疗程卡管理页 — 服务端分页
- *
- * 卡包定义：sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
- * 类型徽章：session_count=1 → 单次卡；>=2 → 疗程卡
- */
+
 export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 	const { get, set, setMany } = useUrlFilters();
 	const setFilter = useCallback(
@@ -49,10 +44,10 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 	const currentPage = Math.max(1, Number(get("page", "1")) || 1);
 	const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-	// 市场列表
+	
 	const markets = useMemo(() => orgNodes.filter((n) => n.type === "市场" && n.isActive), [orgNodes]);
 
-	// 根据市场级联过滤门店
+	
 	const filteredStores = useMemo(() => {
 		if (!marketFilter) return stores;
 		const storeNodeIds = new Set(
@@ -61,7 +56,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 		return stores.filter((s) => s.orgNodeId && storeNodeIds.has(s.orgNodeId));
 	}, [stores, orgNodes, marketFilter]);
 
-	// 搜索防抖 300ms
+	
 	const [searchInput, setSearchInput] = useState(get("q"));
 	const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
 	const handleSearchChange = useCallback(
@@ -108,9 +103,9 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			key: "typeBadge",
 			header: "类型",
 			cell: (row) => {
-				// B2 兜底：单次卡若历史行 quantity>1（未拆历史数据），显示"单次卡 ×N"
-				// 新行（修写入侧后）quantity 恒 = 1，labelKey 走"单次卡"分支即可
-				// ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+				
+				
+				
 				const sessionCount = row.sessionCount ?? 0;
 				const labelKey = sessionCount === 1 ? "单次卡" : "疗程卡";
 				const label =
@@ -214,7 +209,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 							))}
 						</Select>
 
-						{/* Segmented: 卡类型 */}
+						{}
 						<div className="flex rounded-md border border-[var(--border)] bg-white p-0.5 text-sm">
 							{[
 								{ value: "", label: "全部" },

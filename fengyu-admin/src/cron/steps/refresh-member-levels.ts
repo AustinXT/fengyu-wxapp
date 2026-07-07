@@ -1,20 +1,4 @@
-/**
- * STEP 2 — member_level 重算 + 升降级权益发放
- * 迁自 cronTask/index.js:215-384（refreshMemberLevels / processUpgrade / processDowngrade / grantUpgradeBenefits）
- *
- * 事务模型：
- *   - 外层 refreshMemberLevels 无事务，按用户循环
- *   - processUpgrade / processDowngrade（实际降级路径）各自 db.transaction：
- *     UPDATE + operation_logs + grantUpgradeBenefits 三件套同事务
- *   - 单用户失败 → ROLLBACK 该用户、errorCount++、继续下个用户
- *
- * 不写 became_member_at（仅在 customer_type 跃迁到 '会员客' 时由 staffApi/payNotify 写入）。
- *
- * 幂等键：
- *   消息 idempotency_key  = `member-upgrade-${userId}-${toLevel}`
- *   积分 external_ref     = `member-upgrade-${userId}-${toLevel}`
- *   优惠券 coupon_id      = `cpn-up-${userId}-${toLevel}-${templateId}`
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -43,10 +27,10 @@ export interface MemberLevelsResult {
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-/** 支付链路即时升级后，cron 幂等补发礼包的回看窗口（覆盖上次 cron 至今，留余量）。 */
+
 const RECENT_UPGRADE_WINDOW_MS = 36 * 60 * 60 * 1000
 
-/** 该用户的 member_level 是否在近 RECENT_UPGRADE_WINDOW_MS 内被升级过（含支付链路即时升级）。 */
+
 function wasRecentlyUpgraded(
   upgradedAt: Date | string | null,
   ctx?: CronContext,
@@ -63,15 +47,15 @@ export async function refreshMemberLevels(
   const memberThreshold = await getMemberThreshold(db)
   const nowSql = nowSqlOf(ctx)
 
-  // 2026-05-17 perf: 把"每个用户一次 SELECT spend"折叠成单次 JOIN+GROUP BY，
-  // 1647 用户 × 142k sale_orders 实测 ~136ms（vs 原 ~210s，~1500× 提速）。
-  //
-  // 等价口径（保持完全一致）：
-  //   - paid_amount 列已 DROP，统一改用 received（unique source of truth）
-  //   - saleOrderType 5→3（删除"回款单"/"退款单"），过滤改为正向枚举 IN
-  //   - 业绩口径：received - refunded_amount（已含 5 通道退款冲销）；
-  //     退款审批通过后会同事务双写 refunded_amount，因此不再需要按 type 过滤退款单
-  //   - LEFT JOIN + FILTER 保证无订单/订单全过期的用户 spend=0（与原 COALESCE(SUM,0) 等价）
+  
+  
+  
+  
+  
+  
+  
+  
+  
   const memberClients = (await db.execute(sql`
     SELECT
       cwu.user_id,
@@ -107,11 +91,11 @@ export async function refreshMemberLevels(
       const oldLevel = row.member_level
 
       if (newLevel === oldLevel) {
-        // 支付结算链路（payNotify / staffApi / clientApi）可能已在 cron 之外把等级即时升到位，
-        // 但升级礼包（消息/积分/优惠券）仍由本 cron 发放。此时 newLevel === oldLevel 会跳过
-        // processUpgrade → 礼包丢失。故对近 36h 内升级过的会员客幂等补发礼包
-        // （grantUpgradeBenefits 内 idempotency_key / external_ref / coupon_id 防重复，
-        // 旧升级重试即 no-op；窗口限定避免对全部会员客无谓尝试）。
+        
+        
+        
+        
+        
         if (
           newLevel &&
           benefitsConfig?.[newLevel] &&
@@ -162,12 +146,7 @@ export async function refreshMemberLevels(
   }
 }
 
-/**
- * 升级路径：UPDATE 等级 + 写 150 天保级期 + memberLevelChange 日志 + 三件套权益
- * 全在一个事务内；任一步失败 → 全部回滚（包括权益发放）。
- *
- * 2026-05-18：export 给 src/lib/recompute-customer-tags.ts 复用（历史订单审核通过时单顾客触发）。
- */
+
 export async function processUpgrade(
   db: Db,
   userId: string,
@@ -213,12 +192,7 @@ export async function processUpgrade(
   })
 }
 
-/**
- * 降级路径：保级期内只记 memberLevelHeld 日志（无事务，单条 INSERT）；
- * 保级期已过 → UPDATE 等级 + 清 locked_until + memberLevelChange 日志（事务）。
- *
- * @returns true=保级跳过；false=实际降级
- */
+
 export async function processDowngrade(
   db: Db,
   userId: string,
@@ -269,12 +243,7 @@ export async function processDowngrade(
   return false
 }
 
-/**
- * 升级三件套：消息 / 积分 / 优惠券。
- *
- * 积分规则（与原 cronTask 一致）：流水插入成功（未发生幂等冲突）时才累加 points_balance，
- * 避免幂等冲突情况下重复增加余额。
- */
+
 async function grantUpgradeBenefits(
   tx: Tx,
   userId: string,
@@ -284,7 +253,7 @@ async function grantUpgradeBenefits(
 ): Promise<void> {
   const idemKey = `member-upgrade-${userId}-${toLevel}`
 
-  // 1) 消息
+  
   if (config.messageTitle) {
     await tx.execute(sql`
       INSERT INTO messages
@@ -295,7 +264,7 @@ async function grantUpgradeBenefits(
     `)
   }
 
-  // 2) 积分
+  
   if (config.points && config.points > 0) {
     const inserted = (await tx.execute(sql`
       INSERT INTO point_transactions
@@ -314,7 +283,7 @@ async function grantUpgradeBenefits(
     }
   }
 
-  // 3) 优惠券
+  
   if (Array.isArray(config.couponTemplateIds)) {
     for (const templateId of config.couponTemplateIds) {
       const tplRows = (await tx.execute(sql`
@@ -346,7 +315,7 @@ async function grantUpgradeBenefits(
       }
 
       const couponId = `cpn-up-${userId}-${toLevel}-${templateId}`
-      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
+      const externalRef = couponId  
       await tx.execute(sql`
         INSERT INTO user_coupons
           (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)

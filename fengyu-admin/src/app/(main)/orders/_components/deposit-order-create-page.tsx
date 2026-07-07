@@ -20,11 +20,7 @@ import type { Store, Customer, ProductSku, Product } from "@/lib/types"
 import { NormalSkuPicker } from "./order-create/normal-sku-picker"
 import type { CartItem } from "./order-create/types"
 
-/**
- * 寄存单 picker 数据形态：固定走 getProductsByKind('__normal__')，
- * 只暴露"普通商品"（含疗程卡等带剩余次数的 SKU）。
- * 体验卡 / 充值卡 / 组合套餐均不纳入。
- */
+
 interface KindData {
   normalGroups: OrderPickerNormalGroup[]
 }
@@ -32,23 +28,23 @@ interface KindData {
 export default function DepositOrderCreatePageClient({ stores }: { stores: Store[] }) {
   const router = useRouter()
 
-  // ===== 顾客 =====
+  
   const [searchKeyword, setSearchKeyword] = useState("")
   const [searching, setSearching] = useState(false)
   const [searchResults, setSearchResults] = useState<Customer[]>([])
   const [searchDone, setSearchDone] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
 
-  // ===== 商品 picker（固定普通商品） =====
+  
   const [kindData, setKindData] = useState<KindData | null>(null)
   const [prefetching, setPrefetching] = useState(false)
 
-  // ===== 购物车 =====
+  
   const [cart, setCart] = useState<CartItem[]>([])
-  // 每行历史实收金额输入（key=skuId，字符串便于受控输入；提交时转数字，默认 0）
+  
   const [receivedMap, setReceivedMap] = useState<Record<string, string>>({})
 
-  // ===== 备注 + 提交 =====
+  
   const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -87,7 +83,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
     setReceivedMap({})
   }
 
-  // 顾客绑定门店校验（寄存单沿用 client 的 bound_store_id 作为开单门店）
+  
   const storeId = selectedCustomer?.boundStoreId || null
   const storeName = useMemo(
     () => stores.find((s) => s.storeId === storeId)?.storeName || "",
@@ -98,7 +94,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
     [stores, storeId],
   )
 
-  // ===== picker 数据按需加载（仅普通商品） =====
+  
   const loadProducts = useCallback(async () => {
     if (kindData) return
     setPrefetching(true)
@@ -114,12 +110,12 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
     }
   }, [kindData])
 
-  // 选定顾客后预拉数据
+  
   useEffect(() => {
     if (selectedCustomer) loadProducts()
   }, [selectedCustomer, loadProducts])
 
-  // ===== cart 操作 =====
+  
   const addToCart = (product: Product, sku: ProductSku) => {
     setCart((prev) => {
       const idx = prev.findIndex((it) => it.sku.skuId === sku.skuId)
@@ -151,7 +147,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
     )
   }
 
-  // ===== 提交 =====
+  
   const handleSubmit = async () => {
     if (!selectedCustomer) {
       toast.error("请先选择顾客")
@@ -193,7 +189,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
 
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
@@ -205,14 +201,14 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
         </div>
       </div>
 
-      {/* B5 提示 banner */}
+      {}
       <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280]">
         寄存单用于把 WorkFine 上顾客的剩余次数初始化到小程序，不收款、不计入营业额 / 提成 / 客单价统计；可正常生成服务单核销次数。
         <br />
         <span className="text-xs">商品范围仅限"普通商品"；禁用：优惠券 / 储值卡 / 行级改价 / 体验卡 / 充值卡 / 组合套餐。</span>
       </div>
 
-      {/* Section 1: 选择顾客 */}
+      {}
       <Card>
         <CardContent className="p-4 space-y-3">
           <h2 className="text-sm font-semibold text-[var(--foreground)]">1. 选择顾客</h2>
@@ -273,7 +269,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
         </CardContent>
       </Card>
 
-      {/* Section 2: 选择商品（仅顾客已选定时显示；固定普通商品 picker） */}
+      {}
       {selectedCustomer && storeId && (
         <Card>
           <CardContent className="p-4 space-y-3">
@@ -290,7 +286,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
               />
             )}
 
-            {/* 购物车 */}
+            {}
             {cart.length > 0 && (
               <>
                 <Separator className="my-3" />
@@ -372,7 +368,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
         </Card>
       )}
 
-      {/* Section 3: 备注 + 提交 */}
+      {}
       {selectedCustomer && cart.length > 0 && (
         <Card>
           <CardContent className="p-4 space-y-3">

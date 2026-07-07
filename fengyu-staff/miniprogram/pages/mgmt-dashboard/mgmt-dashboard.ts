@@ -1,5 +1,5 @@
-// pages/mgmt-dashboard — 管理层 Hub 页
-// 4 个 tab（首页/门店排行榜/员工排行榜/我的）在同一页面内切换，避免 wx.reLaunch 开销
+
+
 import { canAccessManagement, canSwitchLoginLevel } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
@@ -96,7 +96,7 @@ interface SummaryData {
   projectCount: { today: number; month: number }
   salesCommissionIncome: { today: number; month: number }
   serviceCommissionIncome: { today: number; month: number }
-  // T6（2026-04-25）：双口径 — day 用于日维度派生分母 + 屏幕展示，month 用于月维度派生分母
+  
   storeCount: { day: number; month: number }
   employeeCount: { day: number; month: number }
   memberCount: number
@@ -147,7 +147,7 @@ interface DisplayData {
 
 const DEFAULT_SCOPE: ScopeValue = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
 
-// 日历历史起点：业务系统 2019 年才上线，2015 年留足缓冲
+
 const CALENDAR_MIN_YEAR = 2015
 
 Page({
@@ -174,7 +174,7 @@ Page({
     },
     canSwitchView: false,
 
-    // 数据中心
+    
     selectedDate: '',
     showCalendar: false,
     minDate: 0,
@@ -187,7 +187,7 @@ Page({
     display: null as DisplayData | null,
     summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
 
-    // 门店排行榜
+    
     storeRanking: {
       period: 'month' as RankingPeriod,
       metric: 'revenue' as StoreRankingMetric,
@@ -196,7 +196,7 @@ Page({
       rows: [] as StoreRankingDisplayRow[],
       unit: 'amount' as 'amount' | 'count',
     },
-    // 员工排行榜
+    
     staffRanking: {
       period: 'month' as RankingPeriod,
       metric: 'revenue' as StaffRankingMetric,
@@ -208,7 +208,7 @@ Page({
     rankingPeriods: RANKING_PERIODS,
     storeRankingMetrics: STORE_RANKING_METRICS,
     staffRankingMetrics: STAFF_RANKING_METRICS,
-    // 给 mgmt-period-picker / mgmt-metric-tabs 用的 { label, value } 形态
+    
     rankingPeriodsForPicker: RANKING_PERIODS.map((p) => ({ label: p.label, value: p.key })),
     storeRankingMetricsForTabs: STORE_RANKING_METRICS.map((m) => ({ label: m.label, value: m.key })),
     staffRankingMetricsForTabs: STAFF_RANKING_METRICS.map((m) => ({ label: m.label, value: m.key })),
@@ -281,7 +281,7 @@ Page({
     }
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
-      // scopeName 留空，由 mgmt-scope-picker 加载 scopeOptions 后回填真实市场名
+      
       return {
         scopeType: 'market',
         scopeId: marketBinding.scopeId,
@@ -348,12 +348,12 @@ Page({
   },
 
   buildDisplay(s: SummaryData): DisplayData {
-    // T6（2026-04-25）：双口径分母 — day 给当日 / 屏幕展示用，month 给月度派生分母用
+    
     const empDay = s.employeeCount.day
     const empMonth = s.employeeCount.month
     const storesDay = s.storeCount.day
 
-    // 派生字段：除数为 0 时返回 '--'，避免 NaN/Infinity
+    
     const safeDiv = (
       n: number,
       d: number,
@@ -398,13 +398,13 @@ Page({
         memberCount: formatCount(s.memberCount),
         retainedMemberCount: formatCount(s.retainedMemberCount),
         retainRate,
-        // 屏幕展示卡：按 selectedDate 当日的截面
+        
         storeCount: formatCount(storesDay),
         employeeCount: formatCount(empDay),
         avgMembersPerStore: safeDiv(s.memberCount, storesDay, formatCount),
         avgRetainedPerStore: safeDiv(s.retainedMemberCount, storesDay, formatCount),
         avgMembersPerEmp: safeDiv(s.memberCount, empDay, formatCount),
-        // 截图中右下重复位：与上一行同口径，按字面渲染（业务暂未给出真实指标）
+        
         avgMembersPerEmp2: safeDiv(s.memberCount, empDay, formatCount),
       },
 

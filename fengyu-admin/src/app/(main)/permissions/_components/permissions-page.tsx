@@ -41,11 +41,11 @@ interface PermissionsPageProps {
   roleCounts: Record<string, number>
   allEmployees: Employee[]
   orgNodes: OrgNode[]
-  /** 操作者可操作的 scope 节点 id；null = admin 全开，左侧树不置灰 */
+  
   accessibleScopeIds: string[] | null
 }
 
-/* ─── Org Tree Node ─── */
+
 
 interface TreeNodeProps {
   node: OrgNode
@@ -54,7 +54,7 @@ interface TreeNodeProps {
   selectedId: string | null
   expandedIds: Set<string>
   roleCounts: Record<string, number>
-  /** 操作者可操作的 scope 节点 id；null = admin 全开；非 null 时集合外节点置灰禁选 */
+  
   accessibleIds: Set<string> | null
   onSelect: (id: string) => void
   onToggle: (id: string) => void
@@ -68,7 +68,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
   const isExpanded = expandedIds.has(node.id)
   const isSelected = selectedId === node.id
   const count = roleCounts[node.id] || 0
-  // 超出操作者 scope 的节点置灰禁选（展开三角仍可用，以露出下层可操作节点）
+  
   const isDisabled = accessibleIds != null && !accessibleIds.has(node.id)
 
   return (
@@ -121,29 +121,29 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
   )
 }
 
-/* ─── Main Component ─── */
+
 
 export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes, accessibleScopeIds }: PermissionsPageProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
-  // 过滤：仅保留 headquarters/market/store 且 active
+  
   const permissionNodes = useMemo(
     () => orgNodes.filter(n => n.isActive && n.type !== "部门"),
     [orgNodes],
   )
 
-  // 操作者可操作节点集合（null = admin 全开）；集合外节点在左侧树置灰禁选
+  
   const accessibleIdSet = useMemo(
     () => (accessibleScopeIds ? new Set(accessibleScopeIds) : null),
     [accessibleScopeIds],
   )
 
-  // 当前选中 scope 及其角色数据
+  
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialScopeId || null)
   const [scopeRoles, setScopeRoles] = useState<PermissionRole[]>(initialRoles)
 
-  // 展开前两层
+  
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const roots = permissionNodes.filter(n => !n.parentId)
     const initial = new Set(roots.map(n => n.id))
@@ -152,7 +152,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         initial.add(child.id)
       }
     }
-    // 额外展开可操作节点的祖先链，保证非 admin 操作者的 scope 节点默认可见
+    
     if (accessibleScopeIds) {
       const byId = new Map(permissionNodes.map(n => [n.id, n]))
       for (const id of accessibleScopeIds) {
@@ -175,7 +175,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
     })
   }, [])
 
-  // 选中 scope 时按需加载角色
+  
   const handleSelectNode = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId)
     startTransition(async () => {
@@ -188,7 +188,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
     })
   }, [])
 
-  // 刷新当前 scope 的角色数据
+  
   const refreshCurrentScope = useCallback(() => {
     if (!selectedNodeId) return
     startTransition(async () => {
@@ -196,13 +196,13 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         const roles = await getRolesByScope(selectedNodeId)
         setScopeRoles(roles)
       } catch {
-        // ignore
+        
       }
     })
-    router.refresh() // 刷新 roleCounts
+    router.refresh() 
   }, [selectedNodeId, router])
 
-  // 当前 scope 的角色分组
+  
   const selectedNode = useMemo(
     () => orgNodes.find(n => n.id === selectedNodeId) ?? null,
     [orgNodes, selectedNodeId],
@@ -219,11 +219,11 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
     return groups
   }, [scopeRoles])
 
-  // ─── 分配角色 Dialog ───
+  
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignEmployeeId, setAssignEmployeeId] = useState("")
-  // 默认 manager：弹层下拉不含 staff，且 manager scope 类型全开（总部/市场/门店），
-  // 对左侧预填的任意 scope 都合法，避免初始角色与范围置灰矛盾
+  
+  
   const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("manager")
   const [assignScopeId, setAssignScopeId] = useState("")
   const [assigning, setAssigning] = useState(false)
@@ -288,7 +288,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       </div>
 
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
-        {/* 左侧：组织树 */}
+        {}
         <Card className="w-72 shrink-0 flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">权限范围</CardTitle>
@@ -311,7 +311,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
           </CardContent>
         </Card>
 
-        {/* 右侧：角色分配详情 */}
+        {}
         <Card className="flex-1">
           {selectedNode ? (
             <>
@@ -401,7 +401,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         </Card>
       </div>
 
-      {/* 分配角色 Dialog */}
+      {}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogClose onOpenChange={setDialogOpen} />
         <DialogHeader>
@@ -436,7 +436,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                   setAssignScopeId(hq ? hq.id : "")
                   return
                 }
-                // 切换角色后，清空已变非法（超出新角色 scope 类型）的已选范围
+                
                 if (assignScopeId) {
                   const node = orgNodes.find(n => n.id === assignScopeId)
                   if (!node || !ROLE_SCOPE_TYPES[role].includes(node.type)) {
@@ -485,7 +485,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         </DialogFooter>
       </Dialog>
 
-      {/* 撤销角色二次确认 */}
+      {}
       <AlertDialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <AlertDialogTitle>确认撤销角色？</AlertDialogTitle>
         <AlertDialogDescription>
@@ -498,7 +498,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 分配 admin 角色二次确认 */}
+      {}
       <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
         <AlertDialogTitle>确认分配系统管理员？</AlertDialogTitle>
         <AlertDialogDescription>

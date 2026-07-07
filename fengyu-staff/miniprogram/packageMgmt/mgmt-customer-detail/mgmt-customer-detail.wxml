@@ -1,7 +1,7 @@
-<!-- packageMgmt/mgmt-customer-detail — 管理层 6-Tab 顾客详情（只读） -->
+
 <view class="container">
 
-  <!-- 顶部筛选行：仅市场范围 tag（顾客详情无时间维度） -->
+  
   <view class="mgmt-filter-bar">
     <view class="mgmt-scope-tag">
       <text>范围：</text>
@@ -9,14 +9,14 @@
     </view>
   </view>
 
-  <!-- 顶层三态壳：loading / error / empty / content -->
+  
   <mgmt-data-state
     state="{{ loading ? 'loading' : (customerError ? 'error' : (!customer ? 'empty' : 'content')) }}"
     empty-text="顾客不存在"
     bind:retry="onCustomerRetry"
   >
     <view wx:if="{{customer}}">
-      <!-- 头部信息卡 -->
+      
       <view class="profile-card">
         <view class="profile-header">
           <view class="profile-avatar">
@@ -43,7 +43,7 @@
         </view>
       </view>
 
-      <!-- 6-Tab 导航（sticky 吸顶） -->
+      
       <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" sticky scrollable line-width="40rpx">
         <van-tab title="详情">
           <view class="tab-content">
@@ -66,17 +66,17 @@
 
         <van-tab title="日历">
           <view class="tab-content">
-            <!-- 月份导航 -->
+            
             <view class="calendar-nav">
               <van-icon name="arrow-left" size="40rpx" bindtap="onCalendarPrev" />
               <text class="calendar-month-label">{{calendarYear}}年{{calendarMonth}}月</text>
               <van-icon name="arrow" size="40rpx" bindtap="onCalendarNext" />
             </view>
-            <!-- 星期头 -->
+            
             <view class="calendar-week-header">
               <text wx:for="{{['日','一','二','三','四','五','六']}}" wx:key="*this" class="calendar-week-cell">{{item}}</text>
             </view>
-            <!-- 日历网格 -->
+            
             <view class="calendar-grid">
               <view
                 wx:for="{{calendarDays}}" wx:key="index"
@@ -88,7 +88,7 @@
                 <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amountLabel}}</text>
               </view>
             </view>
-            <!-- 选中日期的订单列表 -->
+            
             <view wx:if="{{selectedDate}}" class="calendar-orders">
               <text class="calendar-orders-title">{{selectedDate}} 消费记录</text>
               <view wx:for="{{calendarOrders}}" wx:key="saleOrderId">
@@ -175,7 +175,7 @@
               <van-loading type="spinner" color="#C0322A" />
             </view>
             <view wx:elif="{{giftData && (giftData.promoOrders.length > 0 || giftData.giftItems.length > 0)}}">
-              <!-- 组合套餐订单 -->
+              
               <view wx:if="{{giftData.promoOrders.length > 0}}">
                 <text class="gift-section-title">组合套餐</text>
                 <view class="gift-card" wx:for="{{giftData.promoOrders}}" wx:key="saleOrderId">
@@ -191,7 +191,7 @@
                   <text class="gift-card-time">{{item.paidAt}}</text>
                 </view>
               </view>
-              <!-- 套餐赠品 -->
+              
               <view wx:if="{{giftData.giftItems.length > 0}}">
                 <text class="gift-section-title">套餐赠品</text>
                 <view class="gift-card" wx:for="{{giftData.giftItems}}" wx:key="saleItemId">

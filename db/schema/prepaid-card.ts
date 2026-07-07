@@ -4,12 +4,7 @@ import { cardTransactionTypeEnum } from './enums'
 import { clientWechatUsers } from './user'
 import { saleOrders } from './order'
 
-/**
- * 充值卡账户
- *
- * 业务规则：一户一账户，余额跨店共享 —— 顾客换绑门店后原余额继续可用。
- * 消费时云函数只需校验 user_id，无门店范围限制。
- */
+
 export const prepaidCards = pgTable(
   'prepaid_cards',
   {
@@ -27,9 +22,7 @@ export const prepaidCards = pgTable(
   ],
 )
 
-/**
- * 充值卡流水
- */
+
 export const cardTransactions = pgTable(
   'card_transactions',
   {
@@ -38,11 +31,11 @@ export const cardTransactions = pgTable(
       .notNull()
       .references(() => prepaidCards.cardId),
     type: cardTransactionTypeEnum('type').notNull(),
-    /** 金额（topup 为正，deduct 为负） */
+    
     amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
-    /** 关联订单ID（可选） */
+    
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
-    /** 外部幂等引用；由调用方按场景拼接（如 card-deduct-{saleOrderId} / card-refund-{refundPaymentId}），NULL 时不参与唯一约束 */
+    
     externalRef: text('external_ref'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },

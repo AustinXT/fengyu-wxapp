@@ -1,15 +1,4 @@
-/**
- * 会员门槛（system_configs.new_member_threshold）双层缓存
- *
- * 迁自 fengyu-client/cloudfunctions/cronTask/config.js。
- *   - 30s 内重复调用直接返回缓存（避免 STEP 2 内每个用户都查 DB）
- *   - 5min TTL：超过则强制重读（兜底配置变更后未及时刷新）
- *   - DB 失败 → 返回 FALLBACK_THRESHOLD=1980（与原值一致）
- *
- * cron-worker 是长驻进程，缓存命中率远高于云函数冷启动场景。
- * benefits 类配置（member_level_benefits / birthday_benefits / thanksgiving_benefits）
- * **不缓存**：admin 改了 system_configs.value 后下次 03:00 应即时生效（详见 ticket §1.7 D）。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from './run'

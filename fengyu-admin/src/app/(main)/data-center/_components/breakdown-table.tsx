@@ -8,17 +8,12 @@ import { headerWithUnit, metricCell } from "@/lib/data-center/export"
 import type { BreakdownRow, MetricUnit } from "@/lib/data-center/types"
 
 export interface BreakdownColumn {
-  key: string // 对应 BreakdownRow.metrics 的键
+  key: string 
   label: string
   unit: MetricUnit
 }
 
-/**
- * 按市场/按门店明细表（泛化，4 板块复用）。
- * 第一列为分组名（市场/门店）；showMarket=true 时额外插入「所属市场」列（按门店分组用）。
- * textColumns：分组名之后插入的额外文本列（取 row.labels[key]，如按技师明细的门店/职级）。
- * 传入 exportFilename 时，标题行右侧显示导出按钮（导出当前 rows，原始数值）。
- */
+
 export function BreakdownTable({
   title,
   rows,

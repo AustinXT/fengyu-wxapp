@@ -1,4 +1,4 @@
-<!-- components/staff-popup — 美容师选择弹层（含养生师，3 页面复用） -->
+
 <van-popup
   show="{{show}}"
   position="bottom"
@@ -9,7 +9,7 @@
   <view class="staff-popup">
     <view class="staff-popup__title">选择美容师</view>
     <view class="staff-list">
-      <!-- 不指定 -->
+      
       <view
         class="staff-item {{!selectedId ? 'staff-item--active' : ''}}"
         bindtap="onSelect"
@@ -21,9 +21,9 @@
         </view>
         <text class="staff-name">不指定</text>
       </view>
-      <!-- 加载中 -->
+      
       <van-loading wx:if="{{loading && staffList.length === 0}}" size="24px" vertical style="padding: 40rpx 0;">加载中...</van-loading>
-      <!-- 美容师列表 -->
+      
       <view
         wx:for="{{staffList}}"
         wx:key="employee_id"
@@ -45,7 +45,7 @@
           <text class="staff-rating-text">{{item.avgRating}}（{{item.reviewCount}}）</text>
         </view>
       </view>
-      <!-- 空态 -->
+      
       <view wx:if="{{!loading && staffList.length === 0}}" class="staff-empty">
         <text>暂无可选美容师</text>
       </view>

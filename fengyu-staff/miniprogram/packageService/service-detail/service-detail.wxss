@@ -1,4 +1,4 @@
-/* pages/service-detail/service-detail.wxss */
+
 
 
 .status-banner {
@@ -55,7 +55,7 @@
   margin-top: 24rpx;
 }
 
-/* 顾客评价 */
+
 .review-box { background: #FFFFFF; padding: 24rpx 32rpx; }
 .review-rate-row { display: flex; align-items: center; gap: 16rpx; margin-bottom: 12rpx; }
 .review-score { font-size: 26rpx; color: #C0322A; font-weight: 600; }

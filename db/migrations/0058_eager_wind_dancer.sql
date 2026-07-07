@@ -73,17 +73,17 @@ CREATE INDEX "idx_lakala_merchants_applicant_user_id" ON "lakala_merchants" USIN
 ALTER TABLE "stores" ADD CONSTRAINT "stores_lakala_merchant_id_lakala_merchants_id_fk" FOREIGN KEY ("lakala_merchant_id") REFERENCES "public"."lakala_merchants"("id") ON DELETE set null ON UPDATE cascade;--> statement-breakpoint
 CREATE INDEX "idx_stores_lakala_merchant_id" ON "stores" USING btree ("lakala_merchant_id");--> statement-breakpoint
 
--- ============================================================
--- Legacy 数据搬迁（plan §1.4.1）
---
--- prod 已有手填 lakala_merchant_no（蓝茉店等，[lakala-per-store-merchant]）。
--- 开发阶段虽 [no-legacy-compat]，但 prod 数据不能丢，故 migration 0058 内嵌一次性搬迁：
---   1. 为每个有手填 merchant_no 的 store 造一行 lm_legacy_* 的 lakala_merchants stub
---   2. 把 stores.lakala_merchant_id 指回该 stub
--- UI 列表标注「legacy 入库」，运营按需补全表单/附件后转入正规流程。
---
--- 幂等：ON CONFLICT DO NOTHING（id / out_org_code 双 UNIQUE 都拦得住）。
--- ============================================================
+
+
+
+
+
+
+
+
+
+
+
 
 INSERT INTO "lakala_merchants" (
     "id",

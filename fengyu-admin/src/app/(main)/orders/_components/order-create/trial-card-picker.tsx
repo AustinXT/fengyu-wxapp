@@ -1,12 +1,6 @@
 "use client"
 
-/**
- * 体验卡 picker（PR-C C1）
- *
- * 体验卡品类少，无需左侧分类导航，直接平铺成单页 grid。复用 NormalSkuPicker 的
- * SKU 卡片视觉，但去掉分类切换。数据源：getProductsByKind('体验卡').categories
- * 扁平展开成 SKU 数组。
- */
+
 import type { Product } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,7 +33,7 @@ export function TrialCardPicker({ categories, onAdd, buyerIsMember }: NormalKind
               createdAt: '',
               updatedAt: '',
             }
-            // 会员价分流（#6=B：体验卡同口径，会员→会员价、非会员→标价）：会员且会员价 < 标价 → 会员价为主 + 划线标价
+            
             const hasMemberPrice =
               sku.specialPrice != null && sku.specialPrice !== '' && Number(sku.specialPrice) < Number(sku.price)
             const showMemberPrice = buyerIsMember === true && hasMemberPrice

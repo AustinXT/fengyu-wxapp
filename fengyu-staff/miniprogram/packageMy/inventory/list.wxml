@@ -1,4 +1,4 @@
-<!-- packageMy/inventory/list.wxml -->
+
 <view class="container">
   <view class="filters">
     <view class="filter-row" wx:if="{{subtypes.length > 0}}">

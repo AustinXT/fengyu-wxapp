@@ -1,5 +1,5 @@
-// utils/event-bus.ts — 简单事件总线
-// 用于跨页广播（e.g. workbench 切换门店 → 其他 tab 刷新数据）
+
+
 type Handler = (...args: any[]) => void
 
 const handlers = new Map<string, Set<Handler>>()

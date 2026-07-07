@@ -14,7 +14,7 @@ function formatDateTime(dt: string | null) {
   return fmtDateTime(dt)
 }
 
-/** 只读星级展示（admin 无现成组件，内联实现，品牌色 #C0322A） */
+
 function StarDisplay({ rating }: { rating: number }) {
   const r = Math.max(0, Math.min(5, rating))
   return (
@@ -34,7 +34,7 @@ export default function ServiceDetailPageClient({
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
   serviceReview: ServiceReview | null
-  /** 是否展示「危险操作」删除入口（仅系统管理员 service:delete） */
+  
   canDelete?: boolean
 }) {
   return (
@@ -49,7 +49,7 @@ export default function ServiceDetailPageClient({
         )}
       </div>
 
-      {/* 服务单信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>服务单信息</CardTitle>
@@ -106,7 +106,7 @@ export default function ServiceDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 服务明细 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>关联服务明细</CardTitle>
@@ -126,7 +126,7 @@ export default function ServiceDetailPageClient({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {serviceItems.length > 0 ? serviceItems.map((item) => {
-                  // ticket 2026-05-19 D10=A：三段简写 已用/已付/共
+                  
                   const used = item.sessionCount !== null
                     ? item.sessionCount - (item.remainingSessions ?? 0)
                     : null
@@ -169,7 +169,7 @@ export default function ServiceDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 客户评价（仅已完成单展示；service:list 权限已在 action 层限定，所有有权限用户可见） */}
+      {}
       {serviceOrder.status === "已完成" && (
         <Card>
           <CardHeader>
@@ -194,7 +194,7 @@ export default function ServiceDetailPageClient({
         </Card>
       )}
 
-      {/* 危险操作：物理删除服务单（仅系统管理员；跨门店只读访问不展示） */}
+      {}
       {canDelete && !serviceOrder.readOnly && (
         <DangerZoneDelete
           entityLabel="服务单"

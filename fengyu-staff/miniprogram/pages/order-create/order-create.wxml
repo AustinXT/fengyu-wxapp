@@ -1,7 +1,7 @@
-<!-- pages/order-create/order-create.wxml — 开单 -->
+
 <view class="container order-create-page">
 
-  <!-- 顶部商品类型 4 选 1（PR-B §2.1）-->
+  
   <van-tabs
     active="{{productKindChoiceIndex}}"
     bind:change="onBigCategoryChange"
@@ -12,7 +12,7 @@
     <van-tab wx:for="{{productKindChoices}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
 
-  <!-- 普通商品：商品名称模糊查询（跨分类全量匹配） -->
+  
   <van-search
     wx:if="{{productKindChoice === '普通商品'}}"
     value="{{productKeyword}}"
@@ -21,10 +21,10 @@
     bind:clear="onProductKeywordClear"
   />
 
-  <!-- 分类 + 商品主区域 -->
+  
   <view class="catalog-layout">
 
-    <!-- 组合套餐：独立 BundlePicker 子视图（隐藏侧边栏）-->
+    
     <block wx:if="{{productKindChoice === '组合套餐'}}">
       <view class="bundle-picker-wrap">
         <bundle-picker
@@ -34,7 +34,7 @@
       </view>
     </block>
 
-    <!-- 体验卡：扁平 SKU 卡片列表（无分类侧边栏，参照 admin TrialCardPicker） -->
+    
     <block wx:elif="{{productKindChoice === '体验卡'}}">
       <scroll-view class="trial-card-scroll" scroll-y>
         <view wx:if="{{spuList.length === 0}}" class="trial-card-empty">
@@ -67,11 +67,11 @@
       </scroll-view>
     </block>
 
-    <!-- 其他类型：侧边栏 + SKU 列表 -->
+    
     <block wx:else>
-      <!-- 左侧：分类侧边栏 -->
+      
       <scroll-view class="sidebar-scroll" scroll-y>
-        <!-- PR-B：普通商品模式用自定义分组 view（van-sidebar 不支持分组） -->
+        
         <block wx:if="{{productKindChoice === '普通商品'}}">
           <view
             class="grouped-sidebar"
@@ -92,7 +92,7 @@
             >{{sub.name}}</view>
           </view>
         </block>
-        <!-- 其他 Tab（体验卡/充值卡）：保留 van-sidebar 平坦结构 -->
+        
         <van-sidebar wx:else active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
           <van-sidebar-item
             wx:for="{{categories}}"
@@ -102,20 +102,20 @@
         </van-sidebar>
       </scroll-view>
 
-      <!-- 右侧：商品列表 -->
+      
       <scroll-view class="product-scroll" scroll-y>
-        <!-- 骨架屏 -->
+        
         <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
           <van-skeleton title avatar row="3" />
           <van-skeleton title avatar row="3" style="margin-top:24rpx" />
         </view>
 
-        <!-- 搜索无结果 -->
+        
         <view wx:elif="{{searching && spuList.length === 0}}">
           <van-empty description="未找到相关商品" />
         </view>
 
-        <!-- 空态 -->
+        
         <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
           <van-empty description="暂无商品" />
         </view>
@@ -123,9 +123,9 @@
           <van-empty description="该分类暂无商品" />
         </view>
 
-        <!-- SPU 列表（isCardType=true 时 grid 简化布局；否则单行卡片，向体验卡列表看齐）-->
+        
         <view wx:else>
-          <!-- 卡类型（充值卡）：grid 简化按钮块 -->
+          
           <view wx:if="{{isCardType}}" class="spu-list-inner spu-list-inner--grid">
             <view
               class="sku-grid-item"
@@ -142,7 +142,7 @@
             </view>
           </view>
 
-          <!-- 普通商品：单行精简卡片（左 名称 + meta，右 价格 + 加入），与体验卡列表对齐 -->
+          
           <view wx:else class="trial-card-list">
             <view
               class="trial-card-item"
@@ -172,8 +172,7 @@
     </block>
   </view>
 
-  <!-- 底部操作栏（普通分类有数据 / 体验卡有数据时显示）
-       组合套餐独占下单流程，由 bundle-picker 自带的"去下单"按钮直接进入结算 → 不显示页面级底栏 -->
+  
   <view class="bottom-bar" wx:if="{{productKindChoice !== '组合套餐' && (categories.length > 0 || (productKindChoice === '体验卡' && spuList.length > 0))}}">
     <view class="bottom-bar-cart {{cartCount === 0 ? 'bottom-bar-cart--disabled' : ''}}" bindtap="onOpenCartPopup">
       <text class="bottom-bar-cart-text">已选 {{cartCount}} 项</text>
@@ -191,7 +190,7 @@
     >下单</van-button>
   </view>
 
-  <!-- 已选项目弹层 -->
+  
   <van-popup
     show="{{cartPopupVisible}}"
     position="bottom"
@@ -237,7 +236,7 @@
     </view>
   </van-popup>
 
-  <!-- 结算面板弹层 -->
+  
   <van-popup
     show="{{showCheckout}}"
     position="bottom"
@@ -245,14 +244,14 @@
     bind:close="onCloseCheckout"
   >
     <view class="checkout-panel">
-      <!-- 步骤条（PR-D3.1：简化为 2 步；Step 1 编号保留 2 避免 git blame 噪声） -->
+      
       <view class="checkout-steps">
         <view class="checkout-step {{checkoutStep >= 0 ? 'checkout-step--active' : ''}}">选顾客</view>
         <view class="checkout-step-line" />
         <view class="checkout-step {{checkoutStep === 2 ? 'checkout-step--active' : ''}}">确认订单</view>
       </view>
 
-      <!-- Step 0: 选择顾客 -->
+      
       <view wx:if="{{checkoutStep === 0}}" class="checkout-body">
         <view wx:if="{{recentCustomers.length > 0}}" class="recent-section">
           <text class="section-label">最近选择</text>
@@ -315,13 +314,13 @@
         </view>
       </view>
 
-      <!-- Step 2: 确认订单 -->
+      
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
           顾客：{{customerInfo.name || customerInfo.phone}} · {{saleOrderType}}
         </text>
 
-        <!-- PR-C §C1 / B5 — 订单类型 4 选 1（寄存单：剩余次数初始化，不收钱） -->
+        
         <view class="order-type-cards">
           <view
             class="order-type-card {{saleOrderType === '销售单' ? 'order-type-card--active' : ''}}"
@@ -357,7 +356,7 @@
           </view>
         </view>
 
-        <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
+        
         <block wx:if="{{saleOrderType === '转换单'}}">
           <conversion-panel
             clientUserId="{{customerInfo.clientUserId}}"
@@ -368,7 +367,7 @@
           />
         </block>
 
-        <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数；可录入历史实收（仅记账） -->
+        
         <block wx:elif="{{saleOrderType === '寄存单'}}">
           <view class="deposit-banner">
             <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
@@ -379,7 +378,7 @@
                 <text class="confirm-item-name">{{item.spuName}}</text>
                 <text class="confirm-item-spec">{{item.specName}}</text>
               </view>
-              <!-- 疗程卡规定次数（仅次数卡展示） -->
+              
               <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
                 <text class="confirm-item-label">规定次数</text>
                 <text class="confirm-item-value">{{item.sessionCount}} 次</text>
@@ -388,7 +387,7 @@
                 <text class="confirm-item-label">数量</text>
                 <text class="confirm-item-value">× {{item.quantity}}</text>
               </view>
-              <!-- 历史实收：可选，默认 0（不收钱），仅记账 -->
+              
               <view class="confirm-item-row">
                 <text class="confirm-item-label">历史实收</text>
                 <view class="confirm-discount-input-wrap">
@@ -407,9 +406,9 @@
           </view>
         </block>
 
-        <!-- 销售单 / 内部单：行级明细 -->
+        
         <block wx:else>
-          <!-- 优惠券控件迁到商品清单"上方"（仅销售单可见；内部单云函数侧守卫拒券） -->
+          
           <block wx:if="{{saleOrderType === '销售单'}}">
             <view class="confirm-coupon-row" bindtap="onSelectCoupon">
               <text class="confirm-item-label">顾客优惠券</text>
@@ -430,7 +429,7 @@
                 <text class="confirm-item-name">{{item.spuName}}</text>
                 <text class="confirm-item-spec">{{item.specName}}</text>
               </view>
-              <!-- 疗程卡规定次数（仅次数卡展示） -->
+              
               <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
                 <text class="confirm-item-label">规定次数</text>
                 <text class="confirm-item-value">{{item.sessionCount}} 次</text>
@@ -440,7 +439,7 @@
                 <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
               </view>
 
-              <!-- 应付金额：店长特别优惠（销售单+普通商品）可向下编辑至 0；否则只读（内部单走半价，仅由优惠券冲抵） -->
+              
               <view class="confirm-item-row">
                 <text class="confirm-item-label">应付金额</text>
                 <view
@@ -467,7 +466,7 @@
                 <text wx:else class="confirm-item-receivable">¥{{item.saleAmount}}</text>
               </view>
 
-              <!-- 实付金额：可编辑，0 ≤ received ≤ 应付 -->
+              
               <view class="confirm-item-row">
                 <text class="confirm-item-label">实付金额</text>
                 <view class="confirm-discount-input-wrap">
@@ -484,7 +483,7 @@
               </view>
             </view>
 
-            <!-- 内部单合计区加"5 折"标签 + 划线原价 + 应付合计 -->
+            
             <view class="confirm-total-row">
               <view class="confirm-total-label-group">
                 <text class="confirm-total-label">应付合计</text>
@@ -500,7 +499,7 @@
             </view>
           </view>
 
-          <!-- 活动单标记（纯标识，不影响金额/提成口径） -->
+          
           <view class="activity-section">
             <view class="activity-row">
               <text class="activity-label">活动</text>
@@ -513,7 +512,7 @@
             </view>
           </view>
 
-          <!-- Wave 3G — 抵扣区（预选）：充值卡。与支付方式区明确分离 -->
+          
           <view class="prepaid-card-section">
             <text class="prepaid-card-section-title">抵扣（预选）</text>
             <view class="prepaid-card-row">
@@ -540,7 +539,7 @@
             </view>
           </view>
 
-          <!-- 现金应收行（= 当下实付 − 充值卡抵扣；computePrepaidDeduction 以 receivedTotal 为基准产出 paidAmount） -->
+          
           <view class="prepaid-paid-summary">
             <text class="prepaid-paid-label">现金应收</text>
             <text class="prepaid-paid-amount">¥{{paidAmount}}</text>
@@ -549,8 +548,8 @@
             <text>全额抵扣，支付方式：无</text>
           </view>
 
-          <!-- 支付方式：3 选 1（销售单 / 内部单）；转换单由 ConversionPanel 内部 picker 管理 -->
-          <!-- Wave 3G：仅在实付 > 0 时展示按钮组（作为建议通道） -->
+          
+          
           <view wx:if="{{showPayMethodGroup}}" class="order-type-cards">
             <view
               class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
@@ -578,14 +577,14 @@
             </view>
           </view>
 
-          <!-- Wave 3G — 固定副文案：消除"店长点了就扣了"的误解 -->
+          
           <view class="prepaid-warning-tip">
             <van-icon name="warning-o" size="28rpx" color="#FA8C16" />
             <text class="prepaid-warning-text">顾客扫码确认后才真正扣卡</text>
           </view>
         </block>
 
-        <!-- 指定美容师（可选，用于默认分配） -->
+        
         <van-cell
           title="指定美容师"
           value="{{preferredStaffName || '不指定'}}"
@@ -614,7 +613,7 @@
     </view>
   </van-popup>
 
-  <!-- 美容师选择 Popup -->
+  
   <van-popup
     show="{{showStaffPicker}}"
     round
@@ -630,7 +629,7 @@
     />
   </van-popup>
 
-  <!-- 优惠券选择 Popup -->
+  
   <van-popup
     show="{{showCouponPopup}}"
     position="bottom"

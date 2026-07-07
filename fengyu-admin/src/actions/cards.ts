@@ -13,17 +13,17 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { nowTs } from '@/lib/db-time'
 
-// ============================================================================
-// 管理端卡包列表（/cards 页面）
-// ============================================================================
 
-/** 卡类型（UI segmented） */
+
+
+
+
 export type CardTypeFilter = 'all' | '疗程卡' | '单次卡'
 
-/** 状态（UI 下拉） */
+
 export type CardStatusFilter = 'active' | 'exhausted' | 'expired'
 
-/** 卡包列表筛选参数 */
+
 export interface CardFilters {
   marketId?: string
   storeId?: string
@@ -34,29 +34,25 @@ export interface CardFilters {
   pageSize?: number
 }
 
-/** 管理端卡包行模型 */
+
 export interface AdminCard {
   saleItemId: string
   saleOrderId: string
-  /** 商品名快照 */
+  
   productName: string | null
-  /** 总次数 */
+  
   sessionCount: number | null
-  /** 剩余次数（物理剩余，含未付款次数） */
+  
   remainingSessions: number | null
-  /** 已付次数（按付款比例 floor） */
+  
   paidSessions: number | null
-  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
+  
   paidUnusedSessions: number | null
-  /**
-   * 购买数量（B2 兜底字段）：
-   * 修写入侧（疗程卡 quantity>1 拆 N 行）后，正常情况下 quantity 应恒 = 1。
-   * 列表渲染层用此字段做"老卡 ×N"兜底显示（D8=B 决策不动历史）。
-   */
+  
   quantity: number
-  /** 有效期（YYYY-MM-DD 或 null） */
+  
   expireDate: string | null
-  /** 购买时间（paid_at，ISO） */
+  
   paidAt: string | null
   storeId: string
   storeName: string | null
@@ -66,33 +62,15 @@ export interface AdminCard {
   clientPhone: string | null
 }
 
-/** 分页结果 */
+
 export interface PaginatedCards {
   data: AdminCard[]
   total: number
 }
 
-/**
- * 服务端分页卡包列表
- *
- * "卡包" = sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
- *   - session_count = 1  → UI 标记为"单次卡"
- *   - session_count >= 2 → UI 标记为"疗程卡"
- *
- * scope 基于 sale_items.store_id（购买门店），与 PR-A 新增的 store_id 列绑定。
- *
- * 状态判定：
- *   - active:    remaining_sessions > 0 AND (expire_date IS NULL OR expire_date >= CURRENT_DATE)
- *   - exhausted: remaining_sessions = 0
- *   - expired:   expire_date IS NOT NULL AND expire_date < CURRENT_DATE
- */
 
-/**
- * 已付未用次数（可用次数）派生表达式（admin 单源，列表 + 详情两处复用）：
- *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
- *   - 否则 max(paid − used, 0)，used = max(session_count − remaining, 0)（clamp 防脏数据 remaining>session_count 时负值）
- * 口径须与 client/staff 前端 paidUnusedSessions 派生一致（cross-end-sql-snapshot.test.js 守护）。
- */
+
+
 const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSessions} IS NULL THEN ${saleItems.remainingSessions} ELSE GREATEST(COALESCE(${saleItems.paidSessions}, 0) - GREATEST(${saleItems.sessionCount} - ${saleItems.remainingSessions}, 0), 0) END`.as('paid_unused_sessions')
 
 export const getCardsPaginated = withPermission(
@@ -103,35 +81,35 @@ export const getCardsPaginated = withPermission(
   const offset = (page - 1) * pageSize
 
   const conditions: (SQL | undefined)[] = [
-    // 基础过滤：仅购买方向的疗程卡（含余次追踪）
+    
     eq(saleItems.itemDirection, '购买'),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
-    // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
-    // 避免欠款卡误显「剩余 0 / 已用完」红色进度条（历史 NULL 行同样视作未付款排除）
+    
+    
     sql`${saleItems.paidSessions} > 0`,
-    // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
+    
     scopeCondition(session, saleItems.storeId),
   ]
 
-  // 市场筛选（subquery：orgNodes.parentId = marketId 下的所有门店节点 → stores）
+  
   if (filters.marketId) {
     const sub = db.select({ storeId: stores.storeId }).from(stores)
       .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
       .where(eq(orgNodes.parentId, filters.marketId))
     conditions.push(inArray(saleItems.storeId, sub))
   }
-  // 门店筛选
+  
   if (filters.storeId) {
     conditions.push(eq(saleItems.storeId, filters.storeId))
   }
-  // 卡类型筛选
+  
   if (filters.type === '疗程卡') {
     conditions.push(gte(saleItems.sessionCount, 2))
   } else if (filters.type === '单次卡') {
     conditions.push(eq(saleItems.sessionCount, 1))
   }
-  // 状态筛选
+  
   if (filters.status === 'active') {
     conditions.push(sql`${saleItems.remainingSessions} > 0`)
     conditions.push(
@@ -146,7 +124,7 @@ export const getCardsPaginated = withPermission(
     conditions.push(isNotNull(saleItems.expireDate))
     conditions.push(sql`${saleItems.expireDate} < CURRENT_DATE`)
   }
-  // 顾客姓名/手机号搜索（ILIKE 命中被 JOIN 的 clientWechatUsers 列）
+  
   if (filters.search) {
     const escaped = filters.search.replace(/[%_]/g, '\\$&')
     const pattern = `%${escaped}%`
@@ -160,7 +138,7 @@ export const getCardsPaginated = withPermission(
 
   const whereClause = and(...conditions)
 
-  // 市场名称标量子查询（参考 customers.ts 范式）
+  
   const marketNameExpr = sql<string | null>`(
     SELECT n.name FROM stores s
     JOIN org_nodes sn ON sn.id = s.org_node_id
@@ -168,7 +146,7 @@ export const getCardsPaginated = withPermission(
     WHERE s.store_id = ${saleItems.storeId}
   )`.as('market_name')
 
-  // COUNT 查询（同样需要 JOIN clientWechatUsers 因为 search 命中该表列）
+  
   const countQuery = db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(saleItems)
@@ -176,7 +154,7 @@ export const getCardsPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
 
-  // DATA 查询
+  
   const dataQuery = db
     .select({
       saleItemId: saleItems.saleItemId,
@@ -201,7 +179,7 @@ export const getCardsPaginated = withPermission(
     .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    // 例外：业务时间优先（支付时间优于"最近编辑"）
+    
     .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
     .limit(pageSize)
     .offset(offset)
@@ -232,23 +210,23 @@ export const getCardsPaginated = withPermission(
   },
 )
 
-// ============================================================================
-// 卡详情（/cards/[id] 页面）
-//
-// 权限：sale_item:list（admin/manager/finance/customer_mgr 均默认持有）。
-//   - scope 由 saleItems.storeId 约束，非 admin 角色跨门店 saleItemId 直接返回 null。
-//   - 强制 item_direction='购买'：转换出/退款出的 sale_item 是流水副本不是卡，详情入口不展示。
-// ============================================================================
+
+
+
+
+
+
+
 
 export interface CardDetail {
-  // sale_items 快照
+  
   saleItemId: string
   saleOrderId: string
   productName: string | null
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
-  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0) */
+  
   paidUnusedSessions: number | null
   unitPrice: string
   unitRealPrice: string
@@ -258,14 +236,14 @@ export interface CardDetail {
   expireDate: string | null
   itemDirection: string
   productType: '疗程卡' | '家居产品' | null
-  // 顾客 / 门店
+  
   storeId: string
   storeName: string | null
   marketName: string | null
   clientUserId: string | null
   clientName: string | null
   clientPhone: string | null
-  // 关联订单
+  
   paidAt: string | null
   orderCreatedAt: string | null
   orderStatus: string | null
@@ -276,7 +254,7 @@ export const getCardById = withPermission(
   async (session, saleItemId: string): Promise<CardDetail | null> => {
     if (!saleItemId) return null
 
-    // 复用 cards 列表的市场名 scalar subquery 范式（cards.ts:148-153）
+    
     const marketNameExpr = sql<string | null>`(
       SELECT n.name FROM stores s
       JOIN org_nodes sn ON sn.id = s.org_node_id
@@ -402,32 +380,21 @@ export const getCardTransactions = withPermission(
   },
 )
 
-// ============================================================================
-// 转换单候选卡（PR-A 新增）
-// ============================================================================
 
-/**
- * 转换单候选卡 — 顾客在指定门店可折抵的购买行。
- *
- * 来源口径：sale_items 上 item_direction='购买'，且归属该顾客（通过 sale_orders
- * 反向 JOIN client_user_id）、归属指定 store_id；状态为"已支付/已完成"的订单。
- *
- * 折抵对象（2026-05-21 单品合并后放开）：
- *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
- *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
- *
- * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
- */
+
+
+
+
 export interface HeldCardCandidate {
   saleItemId: string
   productName: string | null
   productType: '疗程卡' | '家居产品'
-  /** 剩余次数（疗程卡） */
+  
   remainingSessions: number | null
-  /** 剩余可提货数量；疗程卡返回 null */
+  
   remainingQty: number | null
   unitRealPrice: string
-  /** 折抵金额 = unitRealPrice × remainingSessions */
+  
   deductibleAmount: string
 }
 
@@ -439,7 +406,7 @@ export const getCustomerHeldCards = withPermission(
     storeId: string,
   ): Promise<HeldCardCandidate[]> => {
   if (!clientUserId || !storeId) return []
-  // scope 校验：admin 可全量，其余角色需 storeId 在 scope 内
+  
   if (!isInScope(session, storeId)) return []
 
   const rows = await db
@@ -463,17 +430,17 @@ export const getCustomerHeldCards = withPermission(
         eq(saleOrders.clientUserId, clientUserId),
         eq(saleItems.itemDirection, '购买'),
         or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
-        // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
+        
         eq(saleItems.productType, '疗程卡'),
         sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
-        // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
+        
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
-        // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+        
         sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 
-  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
+  
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
     const remSess = r.remainingSessions ?? 0
@@ -490,37 +457,31 @@ export const getCustomerHeldCards = withPermission(
   },
 )
 
-// ============================================================================
-// 充值档位配置（admin 开单页 PrepaidCardPicker 数据源）
-//
-// 2026-05-20 充值卡剥离 SKU 化：档位/边界来源从 product_skus 迁到 system_configs。
-// admin / staff / client 三端均通过同步读取相同的 system_configs 行保持一致。
-// ============================================================================
+
+
+
+
+
+
 
 import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { revalidatePath } from 'next/cache'
 
-/**
- * 充值档位（system_configs 驱动；admin 开单页可选档位）
- */
+
 export interface RechargeCardTier {
-  /** 面值 */
+  
   faceValue: number
-  /** 实付 */
+  
   payAmount: number
-  /** 赠送金额 = faceValue - payAmount */
+  
   bonus: number
-  /** 折扣 = payAmount / faceValue */
+  
   discount: number
 }
 
-/**
- * 拉 admin 开单页可选的充值档位（system_configs.recharge.tiers 驱动）
- *
- * 权限：复用 sale_order:create —— 开单页 SSR 时一同 fetch。
- */
+
 export const getRechargeCardTiers = withPermission(
   'sale_order:create',
   async (_session): Promise<RechargeCardTier[]> => {
@@ -537,14 +498,7 @@ export const getRechargeCardTiers = withPermission(
   },
 )
 
-/**
- * 查询顾客充值卡余额（跨店统一；admin 新增开单页"充值卡抵扣"使用）
- *
- * 与 staff customer.customerBalance 同 SQL，使用 prepaid_cards.balance（聚合维护的余额列）。
- * 没有 prepaid_cards 行 / 余额 ≤ 0 → 返回 0。
- *
- * 权限：sale_order:create（开单上下文）
- */
+
 export const getCustomerCardBalance = withPermission(
   'sale_order:create',
   async (_session, clientUserId: string): Promise<number> => {
@@ -560,11 +514,7 @@ export const getCustomerCardBalance = withPermission(
   },
 )
 
-/**
- * 拉充值档位配置（含 minAmount/maxAmount）—— 自建充值页表单实时校验用
- *
- * 与 staff card.rechargeConfig + client card.rechargeConfig 同 shape。
- */
+
 export const getRechargeConfig = withPermission(
   'sale_order:create',
   async (_session): Promise<RechargeConfig> => {
@@ -580,21 +530,7 @@ export const getRechargeConfig = withPermission(
   },
 )
 
-/**
- * admin 自建充值订单
- *
- * 与 staff card.recharge 同义：
- *   - 校验顾客 + 门店 scope
- *   - 拒绝并发待支付订单
- *   - 事务内 advisory lock → 生成 saleOrderId → INSERT sale_orders type='充值单'，0 sale_items
- *   - total_amount = faceValue，payable_amount = matchTier(faceValue).payAmount
- *
- * paymentMethod 支持 线下 / 微信 / 支付宝：
- *   - 线下：创建后由 admin 在完成页「确认收款」(confirmOfflinePayment) 触发入账
- *   - 微信/支付宝：创建后展示小程序码，顾客扫码支付 → payNotify 回调触发入账
- * 三条路径统一走 applyRechargeOnOrderPaid（UPSERT prepaid_cards.balance += faceValue +
- * INSERT card_transactions(type='充值')，幂等键 card-topup-{saleOrderId}）。
- */
+
 export const createRechargeOrder = withPermission(
   'sale_order:create',
   async (
@@ -628,7 +564,7 @@ export const createRechargeOrder = withPermission(
       return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
     }
 
-    // 顾客 + market_name + documentType 快照
+    
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
@@ -642,7 +578,7 @@ export const createRechargeOrder = withPermission(
     if (!client) return { success: false, message: '顾客不存在' }
     const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
 
-    // 门店 + marketName 快照（与 staff card.recharge 同口径：跨两级 org_nodes 取上级 market）
+    
     const storeRows = (await db.execute(sql`
       SELECT s.store_id, pm.name AS market_name
       FROM stores s
@@ -654,7 +590,7 @@ export const createRechargeOrder = withPermission(
     if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
     const marketName = storeRows[0].market_name || ''
 
-    // 拒绝并发待支付订单（uq_sale_orders_client_pending 兜底）
+    
     const existing = await db
       .select({ saleOrderId: saleOrders.saleOrderId })
       .from(saleOrders)
@@ -667,7 +603,7 @@ export const createRechargeOrder = withPermission(
       }
     }
 
-    // 事务：advisory lock → 生成 saleOrderId → INSERT sale_orders（type='充值单'，0 items）
+    
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {

@@ -110,7 +110,7 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
               </CardContent>
             </Card>
 
-            {/* 首页轮播图 */}
+            {}
             <Card className="max-w-2xl">
               <CardHeader>
                 <CardTitle>首页轮播图</CardTitle>
@@ -127,7 +127,7 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
               </CardContent>
             </Card>
 
-            {/* 凤御馆宣传图 */}
+            {}
             <Card className="max-w-2xl">
               <CardHeader>
                 <CardTitle>凤御馆宣传图</CardTitle>

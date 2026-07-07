@@ -47,7 +47,7 @@ export default function RechargeConfigForm({ initialConfig }: RechargeConfigForm
   }
 
   const handleSave = async () => {
-    // 解析 + 前端预校验
+    
     const parsedTiers = tiers.map((t) => ({ faceValue: Number(t.faceValue), payAmount: Number(t.payAmount) }))
     for (const t of parsedTiers) {
       if (!Number.isFinite(t.faceValue) || t.faceValue <= 0) { toast.error("档位面额必须为大于 0 的数字"); return }

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// 生成 src/generated/version.ts —— 在 dev / build 前自动跑（package.json 的 predev/prebuild 钩子）。
-//
-// 版本号来源优先级：
-//   1. 环境变量 APP_VERSION / APP_COMMIT（Docker 构建场景，由 --build-arg 注入）
-//   2. monorepo 根目录的 git：
-//        git describe --tags --abbrev=0 --match 'v*'   → APP_VERSION
-//        git rev-parse --short HEAD                    → APP_COMMIT
-//   3. 都失败则 version="dev"、commit=""
-//
-// 之所以过滤 'v*'：仓库里还有 `p2-14-phase-d-done` 这类里程碑 tag，不过滤会错取。
+
+
+
+
+
+
+
+
+
+
 
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";

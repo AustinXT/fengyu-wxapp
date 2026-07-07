@@ -1,7 +1,7 @@
-<!-- packageMgmt/mgmt-customer-list/mgmt-customer-list.wxml -->
+
 <view class="container">
 
-  <!-- 顶部筛选行：仅市场范围 tag（顾客档案无时间维度，左侧空） -->
+  
   <view class="mgmt-filter-bar">
     <view class="mgmt-scope-tag">
       <text>范围：</text>
@@ -9,7 +9,7 @@
     </view>
   </view>
 
-  <!-- sticky 筛选区：搜索 -->
+  
   <view class="mc-sticky-filters">
     <van-search
       value="{{searchKeyword}}"
@@ -22,7 +22,7 @@
     </van-search>
   </view>
 
-  <!-- 三态壳：错误 / 加载 / 空 / 内容 -->
+  
   <mgmt-data-state
     state="{{ listError ? 'error' : (loading && results.length === 0 ? 'loading' : (results.length === 0 ? 'empty' : 'content')) }}"
     empty-text="{{searched ? '未找到该顾客' : '当前范围内暂无顾客'}}"

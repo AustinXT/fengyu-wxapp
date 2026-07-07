@@ -1,4 +1,4 @@
-/* pages/sales-data — 销售数据页样式 */
+
 
 .sd-page {
   min-height: 100vh;
@@ -7,7 +7,7 @@
   box-sizing: border-box;
 }
 
-/* 顶部 chip：保留下划线 chip 风格（嵌入 mgmt-filter-bar 内，inline 紧凑无 sticky/卡片） */
+
 .sd-period-tabs {
   display: inline-flex;
   align-items: center;
@@ -38,7 +38,7 @@
   border-radius: 2rpx;
 }
 
-/* 区段 */
+
 .sd-section {
   margin-bottom: 32rpx;
 }
@@ -52,7 +52,7 @@
   padding-top: 8rpx;
 }
 
-/* 4 列业绩矩阵 */
+
 .sd-matrix-card {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -92,7 +92,7 @@
   line-height: 1.3;
 }
 
-/* 实耗卡：左 25% + 右 75% (3x2) */
+
 .sd-consume-card {
   display: flex;
   align-items: stretch;
@@ -143,7 +143,7 @@
   min-width: 0;
 }
 
-/* 品项汇总分组（标题条 + 列表/空态合体卡片） */
+
 .sd-breakdown-group {
   margin-bottom: var(--gap-grid);
 }
@@ -209,7 +209,7 @@
   flex-shrink: 0;
 }
 
-/* 一级品项行：左竖条 + 主色加粗 */
+
 .sd-kind-row {
   display: flex;
   align-items: center;
@@ -249,7 +249,7 @@
   flex-shrink: 0;
 }
 
-/* 二级品项行：缩进 + 灰色 · 项目符号 */
+
 .sd-leaf-row {
   display: flex;
   justify-content: space-between;
@@ -280,7 +280,7 @@
   flex-shrink: 0;
 }
 
-/* 小屏幕适配 */
+
 @media (max-width: 360px) {
   .sd-cell-label {
     font-size: 20rpx;

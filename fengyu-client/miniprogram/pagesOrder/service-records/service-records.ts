@@ -1,4 +1,4 @@
-// pagesOrder/service-records/service-records.ts
+
 import Toast from '@vant/weapp/toast/toast';
 import { formatDate, safeParseDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
@@ -21,7 +21,7 @@ interface ServiceRecord {
     session_used: number;
     service_duration: number;
   }>;
-  // 格式化后的字段
+  
   dateFmt: string;
   statusColor: string;
   durationFmt: string;
@@ -35,14 +35,14 @@ Page({
     loadingMore: false,
     loadError: false,
     hasMore: true,
-    // 评价弹窗状态
+    
     reviewVisible: false,
     reviewOrderId: '',
     reviewStaffName: '',
     reviewRating: 0,
     reviewComment: '',
     reviewSubmitting: false,
-    // 确认服务完成状态
+    
     confirmingId: '',
   },
 
@@ -72,7 +72,7 @@ Page({
     }));
   },
 
-  /** 加载首页（重置分页） */
+  
   async loadRecords() {
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
@@ -94,7 +94,7 @@ Page({
     }
   },
 
-  /** 加载更多（追加，错误不覆盖已有数据） */
+  
   async loadMore() {
     this._page += 1;
     this.setData({ loadingMore: true });
@@ -117,10 +117,10 @@ Page({
   },
 
   onTapRecord(_e: WechatMiniprogram.TouchEvent) {
-    // 服务记录为只读卡片，详情信息已在列表中展示
+    
   },
 
-  /** 确认服务完成（待客户确认 → 已完成），确认后才扣减疗程次数 */
+  
   async onConfirmCompletion(e: WechatMiniprogram.TouchEvent) {
     const { id } = e.currentTarget.dataset as { id: string };
     if (this.data.confirmingId) return;
@@ -135,7 +135,7 @@ Page({
     try {
       await callClientApi('service.confirm', { serviceOrderId: id });
       Toast.success('已确认完成');
-      // 局部更新该条记录状态为已完成
+      
       const records = this.data.records.map((r) =>
         r.service_order_id === id
           ? { ...r, status: '已完成', statusColor: getStatusColor('已完成') }
@@ -149,7 +149,7 @@ Page({
     }
   },
 
-  /** 打开评价弹窗 */
+  
   onTapReview(e: WechatMiniprogram.TouchEvent) {
     const { id, name } = e.currentTarget.dataset as { id: string; name?: string };
     this.setData({
@@ -161,7 +161,7 @@ Page({
     });
   },
 
-  /** 关闭评价弹窗 */
+  
   onReviewClose() {
     if (this.data.reviewSubmitting) return;
     this.setData({ reviewVisible: false });
@@ -175,7 +175,7 @@ Page({
     this.setData({ reviewComment: e.detail });
   },
 
-  /** 提交评价 */
+  
   async onSubmitReview() {
     const { reviewOrderId, reviewRating, reviewComment, reviewSubmitting } = this.data;
     if (reviewSubmitting) return;
@@ -192,7 +192,7 @@ Page({
         comment: reviewComment.trim(),
       });
       Toast.success('评价成功');
-      // 局部更新该条记录的已评价状态，无需整表重载
+      
       const records = this.data.records.map((r) =>
         r.service_order_id === reviewOrderId
           ? { ...r, reviewed: true, review_rating: reviewRating, review_comment: reviewComment.trim() || null }
@@ -225,7 +225,7 @@ function calcDuration(record: any): string {
     const mins = Math.round((end - start) / 60000);
     if (mins > 0) return `${mins}分钟`;
   }
-  // 从 items 中累计 service_duration
+  
   const items = record.items || [];
   const total = items.reduce((sum: number, i: any) => sum + (i.service_duration || 0), 0);
   return total > 0 ? `${total}分钟` : '';

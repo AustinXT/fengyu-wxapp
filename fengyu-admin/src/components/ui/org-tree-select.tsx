@@ -12,7 +12,7 @@ interface OrgTreeSelectProps {
   disabled?: boolean
   className?: string
   excludeTypes?: string[]
-  /** 允许选择的节点类型；不传 = 全部可选。超出的节点置灰禁选（展开仍可用） */
+  
   allowedTypes?: string[]
 }
 
@@ -59,7 +59,7 @@ export function OrgTreeSelect({
     return initial
   })
 
-  // 点击外部关闭
+  
   useEffect(() => {
     if (!open) return
     function handleClickOutside(e: MouseEvent) {
@@ -71,7 +71,7 @@ export function OrgTreeSelect({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [open])
 
-  // Escape 关闭
+  
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {
@@ -114,7 +114,7 @@ export function OrgTreeSelect({
     const hasChildren = children.length > 0
     const isExpanded = expandedIds.has(node.id)
     const isSelected = node.id === value
-    // 展开三角独立于禁用按钮：置灰节点仍可展开以露出下层可选节点
+    
     const isNodeDisabled = !!allowedTypes && !allowedTypes.includes(node.type)
 
     return (

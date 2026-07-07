@@ -131,7 +131,7 @@ export default function RefundsPageClient({
             </table>
           </div>
 
-          {/* 简单分页 */}
+          {}
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--border)]">
               <span className="text-sm text-[#999]">第 {page} / {totalPages} 页</span>

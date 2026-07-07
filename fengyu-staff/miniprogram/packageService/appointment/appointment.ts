@@ -1,4 +1,4 @@
-// pages/appointment/appointment.ts — 预约管理
+
 import { callStaffApi } from '../../utils/cloud';
 
 type ApptStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'closed';

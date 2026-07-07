@@ -31,14 +31,7 @@ interface Props {
   stats: DashboardStats
 }
 
-/**
- * 业务角色看板：manager / finance
- *
- * 2026-04-26 sale-order-domain-refactor 关键展示口径：
- *   - "今日客流" = service_orders[已完成] DISTINCT client_user_id（与 metrics §"客流"对齐）
- *   - "今日业绩" = SUM(received - refunded_amount)，已扣退款（audit-17 P0-17-01/02 修复）
- *   - "今日已退款"独立展示（refunded_amount > 0 时才点亮，避免噪音）
- */
+
 function BusinessDashboard({ stats }: Props) {
   const metricCards = [
     {
@@ -162,7 +155,7 @@ function BusinessDashboard({ stats }: Props) {
   )
 }
 
-/** 系统管理看板：admin / hr / product */
+
 function SystemDashboard({ stats }: Props) {
   const a = stats.adminStats
   if (!a) return null

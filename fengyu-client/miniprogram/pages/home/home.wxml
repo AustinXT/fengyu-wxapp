@@ -1,4 +1,4 @@
-<!-- pages/home/home.wxml — 首页 -->
+
 <wxs module="price">
 module.exports.min = function(n) {
   var v = parseFloat(n) || 0;
@@ -10,10 +10,10 @@ module.exports.min = function(n) {
 
 <view class="container">
 
-  <!-- 自定义导航栏 -->
+  
   <nav-bar />
 
-  <!-- 搜索栏 + 门店选择 + 扫码 -->
+  
   <view class="header">
     <view class="header-left">
       <view class="search-bar">
@@ -43,10 +43,10 @@ module.exports.min = function(n) {
     </view>
   </view>
 
-  <!-- 顶部区域：轮播图 + 功能宫格（搜索时隐藏，腾出空间给结果列表） -->
+  
   <view class="top-section" wx:if="{{!isSearching}}">
 
-    <!-- ===== 1. 轮播图 ===== -->
+    
     <view class="section-banner" wx:if="{{banners.length > 0}}">
       <swiper
         class="banner-swiper"
@@ -65,7 +65,7 @@ module.exports.min = function(n) {
       </swiper>
     </view>
 
-    <!-- ===== 2. 功能模块宫格区（5个一排） ===== -->
+    
     <view class="section-grid">
       <view class="grid-row grid-row-5">
         <view class="grid-item" bindtap="onGridTap" data-type="coupon">
@@ -97,10 +97,10 @@ module.exports.min = function(n) {
 
   </view>
 
-  <!-- ===== 3. 商品目录区域（独立滚动） ===== -->
+  
   <view class="section-catalog">
 
-    <!-- 搜索结果模式 -->
+    
     <view wx:if="{{isSearching}}" class="search-results-area">
       <view class="search-results-header">
         <text class="search-results-title">搜索结果</text>
@@ -143,21 +143,21 @@ module.exports.min = function(n) {
       </scroll-view>
     </view>
 
-    <!-- 正常浏览模式 -->
+    
     <view wx:else class="catalog">
 
-      <!-- 左侧：自定义分类侧边栏（一级分组标题 + 二级分类可点击） -->
+      
       <scroll-view class="sidebar-scroll" scroll-y scroll-into-view="{{sidebarScrollIntoView}}">
         <view
           wx:for="{{sidebarItems}}"
           wx:key="id"
           id="{{item.id}}"
         >
-          <!-- 一级分组标题 -->
+          
           <view wx:if="{{item.type === 'title'}}" class="sidebar-title">
             <text class="sidebar-title-text">{{item.label}}</text>
           </view>
-          <!-- 二级分类项 -->
+          
           <view
             wx:else
             class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
@@ -169,28 +169,28 @@ module.exports.min = function(n) {
         </view>
       </scroll-view>
 
-      <!-- 右侧：商品列表（独立滚动，触底自动切换下一分类） -->
+      
       <scroll-view class="product-scroll" scroll-y bindscrolltolower="onScrollToLower" lower-threshold="100">
 
-        <!-- 骨架屏 -->
+        
         <view wx:if="{{isLoading && spuList.length === 0}}" class="skeleton-wrap">
           <van-skeleton title avatar row="3" />
           <van-skeleton title avatar row="3" style="margin-top:24rpx" />
         </view>
 
-        <!-- 错误态 -->
+        
         <van-empty
           wx:elif="{{loadError}}"
           image="error"
           description="加载失败，下拉刷新重试"
         />
 
-        <!-- 空态 -->
+        
         <view wx:elif="{{spuList.length === 0}}">
           <van-empty description="该分类暂无商品" />
         </view>
 
-        <!-- SPU 卡片列表 -->
+        
         <view wx:else class="spu-list">
           <view
             wx:for="{{spuList}}"
@@ -199,7 +199,7 @@ module.exports.min = function(n) {
             bindtap="onSpuTap"
             data-product-id="{{item.product_id}}"
           >
-            <!-- 左侧封面 -->
+            
             <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
               <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
             </view>
@@ -211,12 +211,12 @@ module.exports.min = function(n) {
               lazy-load
             />
 
-            <!-- 右侧信息 -->
+            
             <view class="spu-body">
-              <!-- 商品名 -->
+              
               <text class="spu-name">{{item.name}}</text>
 
-              <!-- 底部：价格 + 按钮 -->
+              
               <view class="spu-footer">
                 <view class="price-group">
                   <text class="price-symbol">¥</text>
@@ -231,13 +231,13 @@ module.exports.min = function(n) {
             </view>
           </view>
 
-          <!-- 加载提示 -->
+          
           <view wx:if="{{isLoading}}" class="load-more-hint">
             <van-loading size="20px" />
           </view>
         </view>
 
-        <!-- 底部留白，确保单个商品也能触发滚动切换下一分类 -->
+        
         <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0}}" />
 
       </scroll-view>
@@ -245,7 +245,7 @@ module.exports.min = function(n) {
 
   </view>
 
-  <!-- 右下角悬浮购物车按钮 -->
+  
   <view class="cart-fab" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
     <van-icon name="shopping-cart-o" size="48rpx" color="#FFFFFF" />
     <view class="cart-fab-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>

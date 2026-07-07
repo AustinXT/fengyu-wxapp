@@ -1,4 +1,4 @@
-<!-- pages/cart/cart.wxml — 凤御馆宣传页 -->
+
 <view class="container">
   <image
     wx:for="{{strips}}"

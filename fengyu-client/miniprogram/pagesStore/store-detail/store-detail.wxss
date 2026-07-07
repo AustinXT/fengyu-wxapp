@@ -1,4 +1,4 @@
-/* pages/store-detail/store-detail.wxss */
+
 
 .container {
   min-height: 100vh;
@@ -14,7 +14,7 @@
   padding-top: 80rpx;
 }
 
-/* 封面图 */
+
 .cover-wrap {
   width: 100%;
   height: 400rpx;
@@ -26,7 +26,7 @@
   height: 100%;
 }
 
-/* 门店名称区 */
+
 .store-name-section {
   padding: 28rpx 32rpx 16rpx;
 }
@@ -43,7 +43,7 @@
   color: var(--color-text-primary);
 }
 
-/* 门店信息卡 */
+
 .info-card {
   margin: 24rpx 32rpx 0;
   padding: 8rpx 28rpx;
@@ -52,7 +52,7 @@
   box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
 }
 
-/* 服务顾客 + 营业时间 顶部行 */
+
 .info-meta-row {
   display: flex;
   align-items: center;
@@ -73,7 +73,7 @@
   color: var(--color-text-secondary);
 }
 
-/* 地址 / 电话 可操作行 */
+
 .info-line {
   display: flex;
   align-items: center;
@@ -116,7 +116,7 @@
   justify-content: center;
 }
 
-/* 门店公告 */
+
 .announcement {
   margin: 24rpx 32rpx 0;
   padding: 24rpx 28rpx;
@@ -156,7 +156,7 @@
   line-height: 1.6;
 }
 
-/* 门店图片 */
+
 .gallery {
   display: flex;
   flex-wrap: wrap;
@@ -171,7 +171,7 @@
   background: var(--color-bg-section);
 }
 
-/* Hero 区域（无封面时） */
+
 .hero {
   display: flex;
   align-items: center;
@@ -191,7 +191,7 @@
   color: var(--color-text-primary);
 }
 
-/* 审批中提示 */
+
 .review-notice {
   display: flex;
   align-items: center;
@@ -213,7 +213,7 @@
   height: 60rpx;
 }
 
-/* 绑定提示 */
+
 .bind-hint {
   font-size: 24rpx;
   color: var(--color-text-secondary);
@@ -221,7 +221,7 @@
   margin-bottom: 16rpx;
 }
 
-/* 底部固定操作栏 */
+
 .bottom-bar {
   position: fixed;
   left: 0;
@@ -232,7 +232,7 @@
   box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
 }
 
-/* 转店备注弹窗 */
+
 .dialog-body {
   padding: 16rpx 0;
 }
@@ -244,7 +244,7 @@
   padding: 0 32rpx 12rpx;
 }
 
-/* 来源渠道弹窗 */
+
 .source-popup {
   padding: 32rpx;
   padding-bottom: calc(32rpx + env(safe-area-inset-bottom));

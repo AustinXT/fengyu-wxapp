@@ -1,33 +1,4 @@
-/**
- * STEP 7 — 5 项资金不变量守护（2026-04-26 sale-order-domain-refactor §4.6 + audit-CC1 §7）
- *
- * 背景：
- *   重构后 sale_orders.received / refunded_amount / prepaid_card_amount 均为
- *   sale_order_payments 的冗余快照；customer_points.points_balance / prepaid_cards.balance
- *   也是流水的冗余快照。任何应用层双写漏写、并发写偏、或人为脱拍都会让冗余值与
- *   流水真值漂移。本 STEP 每日只读校验 5 项不变量，发现偏差仅告警不修复（与 STEP 5
- *   auditPointsBalance / STEP 6 auditRoleTypeNulls 决策一致 — 自动修补会掩盖上游 bug）。
- *
- * 5 项不变量（详见 ticket §1.2 + audit-CC1 §7）：
- *   I1: sale_orders.received        = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
- *   I2: sale_orders.refunded_amount = -Σ sop[已支付, 退款].amount
- *   I3: client_wechat_users.points_balance = Σ point_transactions.amount
- *   I4: prepaid_cards.balance       = Σ card_transactions.amount
- *   I5: sale_orders.payable_amount  = total_amount - prepaid_card_amount
- *
- * 容差：金额不变量（I1/I2/I4/I5）容忍 0.01 元（NUMERIC(10,2) 累加边界），
- *       积分不变量（I3）严格相等（integer，无舍入误差）。
- *
- * 告警机制（与 STEP 5/6 一致）：
- *   - operation_logs(action='cron.audit_invariants', target_type='invariant_violation')
- *     单条 INSERT，detail 含每项 violations 行数 + 前 100 条样例
- *   - 命中任意 violation 时调用 notifyOps（企微机器人）
- *   - 永远不修补（自动修复会掩盖上游 bug）
- *
- * 执行频次：每日 1 次（与 cron-worker 其他 STEP 同 03:00 串行）。
- *   ticket 原文建议"凌晨 4 点单独跑"避免与其他 STEP 争资源；当前 cron-worker
- *   STEP 串行 + 全部只读 SELECT，放在 03:00 STEP 链末尾即可，无需独立 cron 句柄。
- */
+
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
@@ -51,7 +22,7 @@ const SAMPLE_LIMIT = 100
 export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsResult> {
   const details: ViolationSample[] = []
 
-  // ── I1: received = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount ──
+  
   const r1 = (await db.execute(sql`
     SELECT so.sale_order_id,
            so.received::numeric                  AS received,
@@ -69,7 +40,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'received_eq_sum_payments', count: r1.length, samples: r1 as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I2: refunded_amount = -Σ sop[已支付, 退款].amount ──
+  
   const r2 = (await db.execute(sql`
     SELECT so.sale_order_id,
            so.refunded_amount::numeric             AS refunded_amount,
@@ -87,7 +58,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'refunded_amount_eq_neg_sum_refund_payments', count: r2.length, samples: r2 as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I2b: refunded_amount ≤ received（监控-1，守护 Bug A 超额退款资损：累计退款不得超过实收）──
+  
   const r2b = (await db.execute(sql`
     SELECT so.sale_order_id,
            so.received::numeric        AS received,
@@ -100,9 +71,9 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'refunded_le_received', count: r2b.length, samples: r2b as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I3: client_wechat_users.points_balance = Σ point_transactions.amount ──
-  // 与 STEP 5 (audit-points-balance) 重叠，但语义独立：本处作为"5 项不变量"统一报表的一项。
-  // 容差严格相等（integer 无浮点误差）。
+  
+  
+  
   const r3 = (await db.execute(sql`
     WITH sums AS (
       SELECT user_id, COALESCE(SUM(amount), 0)::int AS total_from_txns
@@ -121,7 +92,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'points_balance_eq_sum_txns', count: r3.length, samples: r3 as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I4: prepaid_cards.balance = Σ card_transactions.amount ──
+  
   const r4 = (await db.execute(sql`
     SELECT pc.card_id,
            pc.balance::numeric                    AS balance,
@@ -136,11 +107,11 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'prepaid_balance_eq_sum_card_txns', count: r4.length, samples: r4 as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I5: payable_amount = total_amount - prepaid_card_amount ──
-  // 白名单：销售单 / 内部单 / 转换单 / 寄存单 满足该不变量。
-  // 排除「充值单」—— total_amount 是充值卡面额、payable_amount 是顾客实付，
-  // 差额 = 充值卡赠送（例：充1000送20、充10万送5000），业务正向差，非不变量违规。
-  // 白名单形式而非黑名单：未来再加单据类型默认不校验，加入时主动决策。
+  
+  
+  
+  
+  
   const r5 = (await db.execute(sql`
     SELECT sale_order_id,
            total_amount::numeric        AS total_amount,
@@ -161,7 +132,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   }
 
   if (details.length > 0) {
-    // operation_logs 单条聚合写入（避免 N 条小写）。target_id 用日期戳便于查询。
+    
     const dateStamp = new Date().toISOString().slice(0, 10)
     const detailJson = JSON.stringify({
       _v: 1,

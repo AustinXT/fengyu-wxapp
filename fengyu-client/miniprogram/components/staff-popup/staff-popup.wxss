@@ -1,4 +1,4 @@
-/* 样式继承自 app.wxss 全局 .staff-popup / .staff-list / .staff-item 等 */
+
 
 .staff-rating {
   display: flex;
@@ -11,7 +11,7 @@
   color: var(--color-primary);
 }
 
-/* 请假员工：灰显 + 红框「请假」标签（仅预约流程置 onLeave） */
+
 .staff-item--leave {
   opacity: 0.55;
 }

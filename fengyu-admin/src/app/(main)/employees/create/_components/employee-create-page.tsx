@@ -39,14 +39,14 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
     positionName: "",
     avatarUrl: "",
     birthday: "",
-    // 默认今天作为入职日，可在表单内调整；DB 兜底为 created_at::date
+    
     hiredAt: shanghaiToday(),
     skills: [] as string[],
-    // 是否缴纳社保（默认否）
+    
     socialInsurance: false,
   })
 
-  // 根据所属组织的市场过滤门店
+  
   const filteredStores = useMemo(() => {
     const marketId = findAncestorMarketId(form.orgNodeId || null, orgNodes)
     if (!marketId) return stores

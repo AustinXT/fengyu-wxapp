@@ -14,17 +14,14 @@ import { maskPhone } from "@/lib/pii";
 import { DangerZoneDelete } from "@/components/delete-action";
 import { deleteOrder } from "@/actions/orders";
 
-/** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
+
 const paymentChangeTypeLabelMap: Record<string, string> = {
   首次支付: "首次支付",
   回款: "回款",
   退款: "退款",
   储值卡抵扣: "储值卡抵扣",
 };
-/**
- * 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 4→5 值，新增 '待审批'
- * （退款审批流："发起 → 待审批 → 已支付 / 已作废"）
- */
+
 const paymentFlowStatusColorMap: Record<string, string> = {
   待支付: "bg-[#FFF7E6] text-[#D4820A]",
   待审批: "bg-[#FFF7E6] text-[#D4820A]",
@@ -40,9 +37,9 @@ const paymentMethodMap: Record<string, string> = {
   无: "无（全额抵扣）",
 };
 
-// 2026-04-26 sale-order-domain-refactor：5→3 值
-// 历史"回款单"/"退款单"语义已迁至 sale_order_payments[change_type]
-// 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
+
+
+
 const orderTypeColorMap: Record<string, string> = {
   销售单: "bg-[#E8F0FE] text-[#3574C4]",
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
@@ -72,20 +69,17 @@ export default function OrderDetailPageClient({
   allocations: SaleAllocation[];
   logs: OperationLog[];
   payments?: SaleOrderPayment[];
-  /** ticket 2026-04-24 多次回款 PR-B — 是否展示"录入回款"按钮 */
+  
   canRecordPayment?: boolean;
-  /** 是否展示"确认收款"按钮（线下待支付首次收款入账，权限 sale_order:update） */
+  
   canConfirmOffline?: boolean;
-  /** ticket 2026-04-24 退款 PR-Y — 是否展示"创建退款"按钮 */
+  
   canRefund?: boolean;
-  /** 顾客当前储值卡余额（元，null=未查询或无账户） */
+  
   cardBalance?: number | null;
-  /**
-   * 是否拥有 `allocation:list` 权限。
-   * 缺该权限的角色（如 admin）不展示"营业额分配"分区，避免误导（admin 不参与分配流程）。
-   */
+  
   canListAllocations?: boolean;
-  /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
+  
   canDelete?: boolean;
 }) {
   const items = order.items || [];
@@ -93,28 +87,28 @@ export default function OrderDetailPageClient({
   const paidAmount = Number(order.received ?? "0");
   const refundedAmount = Number(order.refundedAmount ?? "0");
   const hasPrepaidDeduction = prepaidCardAmount > 0;
-  // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
+  
   const hasRefund = refundedAmount > 0;
   const couponDiscount = Number(order.couponDiscount ?? "0");
-  // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
+  
   const isLegacy = order.legacySource === "workfine";
 
   const totalAmount = Number(order.totalAmount ?? "0");
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100);
-  // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
-  // 用于「录入回款」按钮条件 + 剩余欠款展示。旧口径 payable(扣卡) − paidAmount(含卡) 会让含卡部分支付单
-  // 算成 ≤0 → clamp 死锁（按钮消失、显示欠款¥0），故回款改用总额减。
+  
+  
+  
   const repayRemaining = Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100);
-  // 确认收款的剩余应收现金（payable 口径，不含储值卡）：作确认收款弹层预填/上限。
+  
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
-  // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
+  
   const pendingReceivedTotal = Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
-  // 确认收款：线下「待支付」订单的首次收款入账入口
+  
   const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 
-  // 录入回款：用于已开始收款的订单补尾款。
-  // 与确认收款互斥——线下「待支付」走确认收款，避免双按钮歧义（录入回款写'回款'且不自动扣预选卡）。
-  // 回款仅对销售单 + 非历史订单可见（寄存单/历史订单禁止事后资金变更，后端亦兜底拒绝）
+  
+  
+  
   const canShowRecordPayment =
     canRecordPayment &&
     order.saleOrderType === "销售单" &&
@@ -127,23 +121,23 @@ export default function OrderDetailPageClient({
   const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false);
   const [refundFormOpen, setRefundFormOpen] = useState(false);
 
-  // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
-  // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
+  
+  
   const canShowRefund =
     canRefund &&
     order.saleOrderType === "销售单" &&
     order.legacySource !== "workfine" &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
-  // 是否存在待审批中的退款（payments 中有 change_type='退款' status∈{'待审批','待支付'}）
-  // 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 新增 '待审批'；兼容旧数据保留 '待支付' 检测
+  
+  
   const hasPendingRefund = (payments ?? []).some(
     (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
   );
 
-  // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
-  // 支持多笔卡支付同 paid_at 归并（for 循环收集所有匹配行，非单次 findIndex）
-  // paidAt 为 null 时 fallback 到 createdAt（与 staff 端对齐，防止 null===null 误合并）
+  
+  
+  
     const rawWithPaidAt = (payments ?? []).map((p) => ({
       ...p,
       paidAt: (p as { paidAt: string | null }).paidAt || (p as { createdAt: string | null }).createdAt,
@@ -184,7 +178,7 @@ export default function OrderDetailPageClient({
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
@@ -203,7 +197,7 @@ export default function OrderDetailPageClient({
         </div>
       </div>
 
-      {/* 退款审批中提示 */}
+      {}
       {hasPendingRefund && (
         <div className="rounded-[var(--radius)] bg-[#FFF7E6] border border-[#F3C77E] px-4 py-3 text-sm text-[#D4820A]">
           该订单有退款申请正在审批中，审批完成后可再次发起退款。
@@ -213,7 +207,7 @@ export default function OrderDetailPageClient({
         </div>
       )}
 
-      {/* B5 — 寄存单提示：不计入营业额 / 提成 / 客单价等统计；仅次数维度纳入 cardHolders */}
+      {}
       {order.saleOrderType === "寄存单" && (
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
           <span>
@@ -223,7 +217,7 @@ export default function OrderDetailPageClient({
         </div>
       )}
 
-      {/* 订单信息 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>订单信息</CardTitle>
@@ -246,19 +240,19 @@ export default function OrderDetailPageClient({
                 <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                   {order.saleOrderType}
                 </Badge>
-                {/* 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"角标 */}
+                {}
                 {hasRefund && (
                   <Badge variant="secondary" className="bg-[#FFEBEE] text-[#C62828]">
                     已退款
                   </Badge>
                 )}
-                {/* 历史订单（WorkFine 导入）角标 */}
+                {}
                 {isLegacy && (
                   <Badge variant="secondary" className="bg-[#F3F4F6] text-[#6B7280]">
                     历史订单
                   </Badge>
                 )}
-                {/* 活动单角标 */}
+                {}
                 {order.isActivity && (
                   <Badge variant="secondary" className="bg-[#FCE8E6] text-[#C0322A]">
                     活动
@@ -369,7 +363,7 @@ export default function OrderDetailPageClient({
                 </div>
               </>
             )}
-            {/* 2026-04-26 sale-order-domain-refactor：已退款金额由 saleOrders.refunded_amount 直接读取（聚合 sale_order_payments[退款,已支付]） */}
+            {}
             {hasRefund && (
               <div>
                 <span className="text-[#999999]">已退款金额</span>
@@ -386,7 +380,7 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 商品明细 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>商品明细</CardTitle>
@@ -407,8 +401,8 @@ export default function OrderDetailPageClient({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {items.map((item) => {
-                  // ticket 2026-05-19 D10=A：三段次数展示
-                  // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
+                  
+                  
                   const sessionCell =
                     item.sessionCount !== null
                       ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
@@ -454,7 +448,7 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 款项流水（ticket 2026-04-24 PR-3 §3.3） */}
+      {}
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <div>
@@ -496,7 +490,7 @@ export default function OrderDetailPageClient({
                 {(mergedPayments ?? []).map((p) => {
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
-                  // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
+                  
                   const refundDetailParts: string[] = [];
                   if (isRefund) {
                     if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`);
@@ -508,7 +502,7 @@ export default function OrderDetailPageClient({
                       );
                     }
                   }
-                  // 退款行 note 现为 JSON（含 items/拆分）；只提取手续费/超额扣除文案展示，非退款行原样
+                  
                   let noteLine = p.note || "—";
                   if (isRefund && p.note) {
                     try {
@@ -519,7 +513,7 @@ export default function OrderDetailPageClient({
                         parts.push(`超额扣除 ¥${Number(n.overdraftDeduction).toLocaleString()}`);
                       noteLine = parts.join(" · ") || "—";
                     } catch {
-                      /* 旧文本 note 原样展示 */
+                      
                     }
                   }
                   const detailLine = refundDetailParts.join(" · ");
@@ -571,7 +565,7 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 营业额分配 — 仅 allocation:list 权限可见 + 该订单类型参与分配（销售单/转换单，非历史订单） */}
+      {}
       {canListAllocations && order.allocatable && (
         <Card>
           <CardHeader className="flex-row items-center justify-between">
@@ -623,7 +617,7 @@ export default function OrderDetailPageClient({
         </Card>
       )}
 
-      {/* 操作日志 */}
+      {}
       <Card>
         <CardHeader>
           <CardTitle>操作日志</CardTitle>
@@ -657,7 +651,7 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 录入回款弹层（ticket 2026-04-24 多次回款 PR-B） */}
+      {}
       {canShowRecordPayment && (
         <RecordPaymentDialog
           open={repaymentDialogOpen}
@@ -668,7 +662,7 @@ export default function OrderDetailPageClient({
         />
       )}
 
-      {/* 确认收款弹层（线下待支付首次收款入账） */}
+      {}
       {canShowConfirmOffline && (
         <ConfirmOfflineDialog
           open={confirmOfflineDialogOpen}
@@ -680,12 +674,12 @@ export default function OrderDetailPageClient({
         />
       )}
 
-      {/* 创建退款弹层（ticket 2026-04-24 退款 PR-Y） */}
+      {}
       {canShowRefund && (
         <RefundForm open={refundFormOpen} onOpenChange={setRefundFormOpen} saleOrderId={order.saleOrderId} />
       )}
 
-      {/* 危险操作：物理删除订单（仅系统管理员） */}
+      {}
       {canDelete && (
         <DangerZoneDelete
           entityLabel="订单"
