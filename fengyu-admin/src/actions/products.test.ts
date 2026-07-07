@@ -889,11 +889,14 @@ describe('getAllSkus — 全量 SKU', () => {
 
   it('返回全量 SKU 列表', async () => {
     const mockRow = { sku: mockSkuRow, categoryName: '护理项目', productKind: '护理项目', salesCategory: null }
-    const limit = vi.fn().mockResolvedValue([mockRow])
-    const orderBy = vi.fn().mockReturnValue({ limit })
-    const where = vi.fn().mockReturnValue({ orderBy })
-    const leftJoin = vi.fn().mockReturnValue({ where, orderBy })
-    const from = vi.fn().mockReturnValue({ leftJoin })
+    // chain 自引用：leftJoin/where/orderBy 都返回 chain 本身，支持连续 leftJoin
+    // （products.ts getAllSkus 有 2 个 leftJoin：productCategories + projectSeriesLookup）。
+    const chain: any = {}
+    chain.limit = vi.fn().mockResolvedValue([mockRow])
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    const from = vi.fn().mockReturnValue(chain)
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getAllSkus()

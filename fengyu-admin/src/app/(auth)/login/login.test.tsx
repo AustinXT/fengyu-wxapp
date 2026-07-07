@@ -16,6 +16,11 @@ vi.mock('sonner', () => ({
   },
 }))
 
+// Mock next/image（happy-dom 对 next/image 的 src 做 URL 解析抛 Invalid URL，改用裸 img）
+vi.mock('next/image', () => ({
+  default: (props: any) => <img {...props} />,
+}))
+
 // Mock login server action
 const mockLogin = vi.fn()
 vi.mock('@/actions/auth', () => ({
