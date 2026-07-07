@@ -146,12 +146,15 @@ export const getCardsPaginated = withPermission(
     conditions.push(isNotNull(saleItems.expireDate))
     conditions.push(sql`${saleItems.expireDate} < CURRENT_DATE`)
   }
-  // 顾客姓名/手机号搜索（ILIKE 命中被 JOIN 的 clientWechatUsers 列）
+  // 搜索：订单号精准匹配 OR 顾客姓名/手机号模糊匹配（命中 JOIN 的 saleOrders / clientWechatUsers 列）
   if (filters.search) {
     const escaped = filters.search.replace(/[%_]/g, '\\$&')
     const pattern = `%${escaped}%`
     conditions.push(
       or(
+        // 订单号精准匹配（sale_order_id 主键唯一，输入完整单号即定位唯一卡）
+        eq(saleOrders.saleOrderId, filters.search),
+        // 顾客姓名/手机号模糊匹配
         ilike(clientWechatUsers.name, pattern),
         ilike(clientWechatUsers.phone, pattern),
       ),

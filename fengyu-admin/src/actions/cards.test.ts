@@ -292,6 +292,15 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(ilike).toHaveBeenCalledWith('phone', '%100\\%\\_off%')
   })
 
+  it('search 筛选 → 订单号精准匹配 eq(sale_order_id, search)', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCardsPaginated({ search: 'FY-XSD-WX-2604100001' })
+
+    // sale_order_id 主键唯一：精确匹配（不走 % 模糊），输入完整单号即定位唯一卡
+    expect(eq).toHaveBeenCalledWith('sale_order_id', 'FY-XSD-WX-2604100001')
+  })
+
   it('status=exhausted → eq(remaining_sessions, 0)', async () => {
     mockPaginatedChain(0, [])
 
