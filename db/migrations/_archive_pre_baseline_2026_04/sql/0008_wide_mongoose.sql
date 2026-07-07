@@ -1,1 +1,0 @@
-ALTER TABLE "coupon_templates" ADD COLUMN "applicable_market_ids" text[];

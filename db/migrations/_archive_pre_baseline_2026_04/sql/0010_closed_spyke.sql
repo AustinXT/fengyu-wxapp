@@ -1,1 +1,0 @@
-ALTER TABLE "service_orders" ADD COLUMN "commission_status" "allocation_status";
