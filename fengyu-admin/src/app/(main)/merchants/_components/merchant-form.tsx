@@ -152,7 +152,7 @@ export default function MerchantForm({
                   setTermNo(e.target.value)
                   markDirty()
                 }}
-                placeholder="如：D9261078"
+                placeholder="如：终端号"
                 maxLength={32}
               />
             </div>

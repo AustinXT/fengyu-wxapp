@@ -16,7 +16,7 @@ import { couponTemplates } from '@db/coupon'
 import { operationLogs } from '@db/operation-log'
 
 const connectionString =
-  process.env.DATABASE_URL ?? 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  process.env.DATABASE_URL ?? 'postgresql://user:password@host:5432/dbname'
 
 const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)

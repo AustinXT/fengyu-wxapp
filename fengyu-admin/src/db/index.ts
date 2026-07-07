@@ -10,7 +10,7 @@ const globalForDb = globalThis as unknown as {
 const connectionString =
   process.env.E2E_DATABASE_URL ??
   process.env.DATABASE_URL ??
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://user:password@host:5432/dbname'
 
 const client = globalForDb.pgClient ?? postgres(connectionString, { max: 5 })
 

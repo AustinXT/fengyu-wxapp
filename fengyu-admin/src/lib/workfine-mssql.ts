@@ -55,10 +55,10 @@ const CONNECT_TIMEOUT_MS = parseInt(process.env.MSSQL_CONNECT_TIMEOUT_MS || '800
 const REQUEST_TIMEOUT_MS = parseInt(process.env.MSSQL_REQUEST_TIMEOUT_MS || '10000', 10)
 
 const MSSQL_CONFIG: mssql.config = {
-  user: PARSED.user || process.env.MSSQL_USER || 'admin',
+  user: PARSED.user || process.env.MSSQL_USER || '',
   password: PARSED.password || process.env.MSSQL_PASSWORD || '',
-  database: PARSED.database || process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
-  server: PARSED.server || process.env.MSSQL_SERVER || '47.96.87.33',
+  database: PARSED.database || process.env.MSSQL_DATABASE || '',
+  server: PARSED.server || process.env.MSSQL_SERVER || '',
   port: PARSED.port || parseInt(process.env.MSSQL_PORT || '1433', 10),
   pool: { max: 3, min: 0, idleTimeoutMillis: 30_000, acquireTimeoutMillis: CONNECT_TIMEOUT_MS },
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
