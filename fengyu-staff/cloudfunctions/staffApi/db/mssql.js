@@ -1,6 +1,9 @@
 /**
- * WorkFine SQL Server 连接(只读)
- * 用于查询员工、产品、门店等业务主数据
+ * WorkFine SQL Server 主数据库连接
+ *
+ * WorkFine 是员工、产品、门店、组织架构等核心业务主数据的权威来源。
+ * 本模块为 staffApi 的主数据查询入口，staff/customer/product 等查询均经此。
+ * 运行时依赖 process.env.MSSQL_CONNECTION_STRING（必须配置，否则 staffApi 启动失败）。
  *
  * 重要: 所有操作仅限 SELECT,严禁任何写入
  */

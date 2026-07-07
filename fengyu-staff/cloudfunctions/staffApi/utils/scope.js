@@ -7,6 +7,9 @@
  * - 构造 SQL WHERE 片段给门店过滤使用
  *
  * org_nodes.type 枚举（中文）：总部 / 市场 / 门店 / 部门
+ *
+ * 权限层级（高→低）：部门 > 总部 > 市场 > 门店
+ * 部门级账号为超级管理员，自动拥有全部门店的数据可见性（不受 scopeStoreIds 约束）
  */
 
 const LEVEL_HEADQUARTERS = 'headquarters'
@@ -40,7 +43,7 @@ function deriveStaffLevel(roleBindings) {
       if (rb.role === 'manager') hasStoreManager = true
       else hasStoreOther = true
     }
-    // 部门级忽略
+    // 部门级：超级管理员，权限在 buildStoreScopeCondition 内全量放行，此处跳过门店归并
   }
 
   if (hasHq) return LEVEL_HEADQUARTERS

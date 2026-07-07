@@ -5,8 +5,7 @@
  * 无法开正常退款单。顾客退寄存疗程卡次数时走正常服务单流程扣减次数，并在备注选此预设打标，
  * 便于后续从消耗业绩统计中过滤剔除（过滤逻辑见后续 ticket）。
  *
- * ⚠️ 须与 fengyu-staff/miniprogram/packageService/service-create/service-create.ts 的
- * DEPOSIT_REFUND_REMARK 字面量完全一致（项目禁止跨端共享代码目录，各端保留独立副本）。
+ * 此常量为 admin 内部使用，无跨端依赖，可自由修改字符串内容。
  *
  * 纯字符串、无 db/server 依赖，可被 'use client' 组件安全引用（避免 server 代码进 client bundle）。
  */

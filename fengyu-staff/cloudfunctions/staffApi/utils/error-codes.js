@@ -1,24 +1,4 @@
-/**
- * 错误码/错误前缀白名单（云函数侧）
- *
- * 9 项官方白名单 + parseErrorPrefix + buildErrorResponse 工具函数。
- * 与 fengyu-client/cloudfunctions/clientApi/utils/error-codes.js、
- * fengyu-client/cloudfunctions/payNotify/error-codes.js、
- * fengyu-admin/src/lib/api-error.ts 三处必须字节同义。
- *
- * 跨端一致性由以下 snapshot 测试守护，任一端漂移立即报错：
- *   - fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-error-codes-snapshot.test.js
- *   - fengyu-admin/src/lib/__tests__/error-codes-cross-end.test.ts
- *
- * code 映射注意：
- *   - PHONE_REQUIRED 与 PERMISSION_DENIED 共用 -403 → 前端必须按 errorType 区分
- *   - INVALID_PARAMS / INSUFFICIENT_BALANCE / INVALID_STATE / CLIENT_NOT_REGISTERED
- *     共用 -400 → 同理按 errorType 区分
- *
- * 二级前缀语法（CAS-guard / payNotify feature flag 等场景）：
- *   throw new Error('INVALID_STATE: STATE_TRANSITION_BLOCKED: 订单状态已被其他操作变更')
- *   parseErrorPrefix 仅解析一级前缀，子标签随 displayMessage 透出。
- */
+/** 错误码/错误前缀（云函数侧）*/
 
 'use strict'
 

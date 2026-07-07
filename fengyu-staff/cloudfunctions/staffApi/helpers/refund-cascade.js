@@ -12,10 +12,9 @@
  *     负数行挂退款流水 id（params.refundPaymentId）。消费过的卡退剩余次数 → 等比部分冲销，已消费业绩保留。
  *   - 通道 2（服务提成 service_commissions）：保持软删（仅零消费 isFullItemRefund item，恒 no-op）。
  *
- * **修改本文件必须同步 fengyu-admin/src/lib/refund-cascade.ts**
- * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
- * `staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`
- * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
+ * 本文件为 staff 端独立实现，可自由修改，无需同步其他端。
+ * （fengyu-admin 已有更新版本的 refund-cascade.ts，此 helper 仅为兼容旧调用保留，
+ *   修改不会影响 admin 端，也不会触发任何跨端一致性校验。）
  *
  * 通道：
  *   1. sale_allocations:    INSERT 负数镜像行（记负数冲销销售提成，对所有被退 item 按 refundAmount，挂退款流水 id）

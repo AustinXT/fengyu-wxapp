@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * WorkFine → PostgreSQL 全量同步脚本
+ * WorkFine → PostgreSQL 主数据同步脚本（核心定时任务）
+ *
+ * ⚠️ 此脚本为系统数据一致性核心，建议每日定时执行（cron 02:00）。
+ * 停止同步将导致 PostgreSQL 与 WorkFine 主数据不一致，影响员工/顾客/商品业务。
  *
  * 使用方法：
  *   node scripts/sync-workfine.js              # 全量同步 + 一次性导入

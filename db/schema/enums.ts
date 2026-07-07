@@ -1,16 +1,6 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
-/**
- * 商品类型（product_skus.product_type / sale_items.product_type）—— 决定核销流程
- *
- * 2026-05-21 单品合并：原 3 值 [疗程卡, 单品, 家居产品] → 2 值。
- * 单品本质是 session_count=1 的疗程卡（消费引擎对两者零分支），故并入疗程卡：
- *   - 原 session_count=1 的单品 → 疗程卡（次数=1）
- *   - 原实物零售单品（session_count=null，如精华液/礼盒）→ 家居产品
- * 退款统一按 remaining_sessions（家居产品仍按 quantity−picked_up）；
- * 转换抵扣放开（remaining_sessions>0 即可抵，不再要求 is_experience）；
- * 单品 1 年有效期自动赋值已移除。详见 migration 0050。
- */
+/** 商品类型（product_skus.product_type / sale_items.product_type）*/
 export const productTypeEnum = pgEnum("product_type", ["疗程卡", "家居产品"]);
 
 export const orderStatusEnum = pgEnum("order_status", [
@@ -25,17 +15,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "已作废",
 ]);
 
-/**
- * 销售单据类型（sale_orders.sale_order_type）
- *
- * 2026-04-26 sale-order-domain-refactor：5→3 值。
- * 回款单/退款单已下沉到 sale_order_payments（change_type='回款'/'退款'）。
- * 2026-05-18 新增"寄存单"：WorkFine 剩余次数初始化专用，不收钱、不入金额统计；
- * 但 sale_items 正常落 remaining_sessions 供 service_orders 核销。
- * 2026-05-19 新增"充值单"：充值卡退出 SKU 化，独立用 sale_order_type 区分；
- * 充值单不写 sale_items，total_amount=面值、payable_amount=实付，
- * 入账识别从 sale_items.is_recharge_card 改为本枚举值。
- */
+/** 销售单据类型（sale_orders.sale_order_type）*/
 export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单", "寄存单", "充值单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
