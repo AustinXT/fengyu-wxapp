@@ -1,7 +1,7 @@
 {
   "name": "staffApi",
   "version": "1.0.0",
-  "description": "员工端统一云函数入口",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "test": "vitest run",

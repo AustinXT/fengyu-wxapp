@@ -1,7 +1,7 @@
 {
   "name": "payNotify",
   "version": "1.0.0",
-  "description": "微信支付回调云函数",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "test": "vitest run",

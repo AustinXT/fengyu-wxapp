@@ -2,7 +2,7 @@
   "name": "fengyu-db",
   "version": "1.0.0",
   "private": true,
-  "description": "Drizzle ORM schema & migrations for fengyu PG database",
+  "description": "",
   "scripts": {
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

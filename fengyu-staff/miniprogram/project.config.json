@@ -22,7 +22,7 @@
     },
     "checkInvalidKey": true,
     "checkSiteMap": true,
-    "uploadWithSourceMap": true,
+    "uploadWithSourceMap": false,
     "useMultiFrameRuntime": true,
     "useApiHook": true,
     "useApiHostProcess": true,
@@ -44,7 +44,7 @@
   },
   "appid": "wxe3f5d9ee6a94d22d",
   "projectname": "fengyu-staff",
-  "description": "凤御员工端小程序",
+  "description": "",
   "editorSetting": {
     "tabIndent": "insertSpaces",
     "tabSize": 2

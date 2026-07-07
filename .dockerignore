@@ -5,7 +5,6 @@
 # prod 公钥改由 deploy-admin.sh 显式 --build-arg 注入。
 **/.env
 **/.env.*
-!**/.env.example
 
 # 依赖与构建产物（builder 内会重装 / 重建，拷进来只会拖慢上下文传输）
 **/node_modules
