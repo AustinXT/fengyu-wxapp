@@ -77,10 +77,10 @@ function buildConditions(
   // 时间范围
   if (filters.startDate) {
     // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
-    conditions.push(gte(cardTransactions.createdAt, sql`${`${filters.startDate} 00:00:00`}::timestamp`))
+    conditions.push(gte(cardTransactions.createdAt, sql`${`${filters.startDate} 00:00:00`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
   if (filters.endDate) {
-    conditions.push(lte(cardTransactions.createdAt, sql`${`${filters.endDate} 23:59:59`}::timestamp`))
+    conditions.push(lte(cardTransactions.createdAt, sql`${`${filters.endDate} 23:59:59`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
 
   return conditions

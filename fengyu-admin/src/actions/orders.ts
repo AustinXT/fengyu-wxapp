@@ -374,11 +374,11 @@ function buildOrderConditions(
     // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
     // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
     // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
-    conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
+    conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
   if (filters.dateTo) {
     // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
-    conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
+    conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`

@@ -57,10 +57,10 @@ export const getLogs = withPermission(
   }
   if (filter?.startDate) {
     // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
-    conditions.push(gte(operationLogs.createdAt, sql`${`${filter.startDate} 00:00:00`}::timestamp`))
+    conditions.push(gte(operationLogs.createdAt, sql`${`${filter.startDate} 00:00:00`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
   if (filter?.endDate) {
-    conditions.push(lte(operationLogs.createdAt, sql`${`${filter.endDate} 23:59:59`}::timestamp`))
+    conditions.push(lte(operationLogs.createdAt, sql`${`${filter.endDate} 23:59:59`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
   }
 
   const rows = await db

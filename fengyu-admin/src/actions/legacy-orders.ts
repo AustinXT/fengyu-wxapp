@@ -104,10 +104,10 @@ export const listLegacyOrders = withPermission(
     if (filters.dateFrom) {
       // 日期串拼北京字面 00:00:00::timestamp（sale_order_datetime 库存北京字面）；不经 new Date——
       // date-only 串按 ES 规范当 UTC 午夜解析、postgres.js 发 UTC ISO 会早 8h，漏当天 00:00-08:00。
-      conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp`))
+      conditions.push(gte(saleOrders.saleOrderDatetime, sql`${`${filters.dateFrom} 00:00:00`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
     }
     if (filters.dateTo) {
-      conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp`))
+      conditions.push(lt(saleOrders.saleOrderDatetime, sql`${`${filters.dateTo} 23:59:59`}::timestamp AT TIME ZONE 'Asia/Shanghai'`))
     }
     // 小程序匹配语义：client_wechat_users.openid IS NOT NULL 才算真·小程序注册顾客
     // （WorkFine 同步的幽灵顾客 openid 为 null，不算）
@@ -757,7 +757,7 @@ export const importWorkfineOrdersByCustomer = withPermission(
             legacy_source, legacy_customer_id, legacy_raw_snapshot
           ) VALUES (
             ${o.legacyOrderNo}, '未审核'::order_status, '销售单'::sale_order_type, ${marketName}, ${storeId}, ${o.storeName},
-            ${o.saleDate}::timestamp, ${clientUserId}, ${o.phone}, ${o.customerName},
+            ${o.saleDate}::timestamp AT TIME ZONE 'Asia/Shanghai', ${clientUserId}, ${o.phone}, ${o.customerName},
             ${amountStr}::numeric, ${amountStr}::numeric, 0, '无',
             'workfine', ${o.legacyCustomerId}, ${JSON.stringify(snapshot)}::jsonb
           )
