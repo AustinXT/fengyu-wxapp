@@ -26,8 +26,8 @@ export const permissionRoles = pgTable(
     /** 同步脚本标记 'sync'，手动标记操作人员工编号 */
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_perm_roles_emp_role_scope')

@@ -72,9 +72,9 @@ export const inventoryProcurementOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -108,7 +108,7 @@ export const inventoryProcurementOrderItems = pgTable(
     /** 院报货明细的报货数量（UDF_M_1893） */
     requestQuantity: numeric('request_quantity', { precision: 12, scale: 2 }),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_proc_items_order').on(table.orderId),
@@ -151,9 +151,9 @@ export const inventorySaleOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -193,7 +193,7 @@ export const inventorySaleOrderItems = pgTable(
     /** 销售出库特有：验证产品编号（UDF_M_18918） */
     verificationCode: text('verification_code'),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_sale_items_order').on(table.orderId),
@@ -240,9 +240,9 @@ export const inventoryTransferOrders = pgTable(
       () => staffWechatUsers.employeeId,
     ),
     /** 接收方确认收货时间（NULL 表示尚未确认收货） */
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -278,7 +278,7 @@ export const inventoryTransferOrderItems = pgTable(
     unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
     amount: numeric('amount', { precision: 12, scale: 2 }),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_transfer_items_order').on(table.orderId),
@@ -311,9 +311,9 @@ export const inventoryScrapOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -347,7 +347,7 @@ export const inventoryScrapOrderItems = pgTable(
     /** 用途细分（保留扩展） */
     itemUsage: text('item_usage'),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_scrap_items_order').on(table.orderId),

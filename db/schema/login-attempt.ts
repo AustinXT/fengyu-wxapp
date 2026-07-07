@@ -17,10 +17,10 @@ export const loginAttempts = pgTable(
     /** 当前连续失败次数 */
     failCount: integer('fail_count').notNull().default(0),
     /** 锁定到期时间；NULL 或已过期表示未锁定 */
-    lockedUntil: timestamp('locked_until'),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
     /** 最近一次失败时间 */
-    lastFailedAt: timestamp('last_failed_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    lastFailedAt: timestamp('last_failed_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_login_attempts_phone').on(table.phone),

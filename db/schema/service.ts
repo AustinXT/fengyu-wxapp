@@ -34,15 +34,15 @@ export const serviceOrders = pgTable(
     appointmentId: text('appointment_id').references(() => appointments.appointmentId),
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
     /** 服务开始时间（状态转为"服务中"时记录） */
-    startedAt: timestamp('started_at'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
     /** 员工标记完成时间（状态转为"待客户确认"时记录） */
-    staffCompletedAt: timestamp('staff_completed_at'),
+    staffCompletedAt: timestamp('staff_completed_at', { withTimezone: true }),
     /** 服务完成时间（顾客/代确认使状态转为"已完成"时记录） */
-    completedAt: timestamp('completed_at'),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
     /** 提成分配状态（仅已完成的服务单有值） */
     commissionStatus: allocationStatusEnum('commission_status'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_svc_orders_store_date').on(table.storeId, table.serviceDate),
@@ -102,8 +102,8 @@ export const serviceItems = pgTable(
       .references(() => staffWechatUsers.employeeId),
     /** 服务时长（分钟） */
     serviceDuration: integer('service_duration'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_svc_items_order_id').on(table.serviceOrderId),
@@ -135,7 +135,7 @@ export const serviceReviews = pgTable(
     rating: integer('rating').notNull(),
     /** 评价文字内容，选填 */
     comment: text('comment'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     /** 支撑按美容师聚合 avg(rating)/count 的列表与详情展示 */

@@ -32,15 +32,15 @@ export const couponTemplates = pgTable('coupon_templates', {
   /** fixed=固定日期区间，days=领取后N天 */
   validityMode: text('validity_mode').default('fixed'),
   /** fixed 模式：生效日期 */
-  validFrom: timestamp('valid_from'),
+  validFrom: timestamp('valid_from', { withTimezone: true }),
   /** fixed 模式：到期日期 */
-  validTo: timestamp('valid_to'),
+  validTo: timestamp('valid_to', { withTimezone: true }),
   /** days 模式：领取后有效天数 */
   validDays: integer('valid_days'),
   description: text('description'),
   isActive: boolean('is_active').default(true),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
 })
 
 /**
@@ -61,7 +61,7 @@ export const userCoupons = pgTable(
       .references(() => clientWechatUsers.userId),
     status: couponStatusEnum('status').notNull().default('未使用'),
     /** 到期时间（发放时根据 validity_mode 计算） */
-    expireAt: timestamp('expire_at').notNull(),
+    expireAt: timestamp('expire_at', { withTimezone: true }).notNull(),
     /** 运行时动态面值（分享礼等场景写入）；NULL 时读取点回退到 template.discount_value */
     faceValueOverride: numeric('face_value_override', { precision: 10, scale: 2 }),
     /** 外部幂等引用（cron 批次键如 bday-{YYYY}-{userId}-{templateId} / share-gift sg-{role}-{saleOrderId}），NULL 时不参与唯一约束 */
@@ -69,9 +69,9 @@ export const userCoupons = pgTable(
     /** 使用时写入的订单ID */
     usedSaleOrderId: varchar('used_sale_order_id', { length: 30 })
       .references(() => saleOrders.saleOrderId),
-    usedAt: timestamp('used_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_user_coupons_user_status').on(table.userId, table.status),

@@ -48,7 +48,7 @@ export const clientWechatUsers = pgTable(
     /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
     inviterUserId: text('inviter_user_id').references((): any => clientWechatUsers.userId),
     /** 成为被邀请人的时间戳（审计） */
-    invitedAt: timestamp('invited_at'),
+    invitedAt: timestamp('invited_at', { withTimezone: true }),
     /** 顾客类型：流量客/体验客/小美客/会员客，默认流量客 */
     customerType: customerTypeEnum('customer_type').notNull().default('流量客'),
     /** 首次/当前成为会员客的时间戳，与 customer_type 跃迁同步维护 */
@@ -73,10 +73,10 @@ export const clientWechatUsers = pgTable(
     /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
     pointsBalance: bigint('points_balance', { mode: 'number' }).notNull().default(0),
     /** 最近积分更新时间 */
-    pointsUpdatedAt: timestamp('points_updated_at'),
-    lastLoginAt: timestamp('last_login_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    pointsUpdatedAt: timestamp('points_updated_at', { withTimezone: true }),
+    lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_client_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
@@ -120,10 +120,12 @@ export const staffWechatUsers = pgTable(
     avatarUrl: text('avatar_url'),
     // Layer 4 — 个人档案
     birthday: date('birthday'),
-    /** 请假开始时间（墙钟，无时区）；与 leaveEnd 成对，二者皆非空才视为有请假区间。请假期间顾客端不可预约 */
-    leaveStart: timestamp('leave_start', { mode: 'string' }),
-    /** 请假结束时间（墙钟，无时区）；与 appointment_time 同款墙钟语义，比较走 ::timestamp */
-    leaveEnd: timestamp('leave_end', { mode: 'string' }),
+    /** 请假开始时间；与 leaveEnd 成对，二者皆非空才视为有请假区间。请假期间顾客端不可预约。
+     *  mode:'string' + withTimezone：PG 存绝对时刻(1184)，drizzle 读 raw "YYYY-MM-DD HH:mm:ss+08"，
+     *  前端 toDatetimeLocal 走字面 slice(0,16) 取墙钟（+08 被截断），与浏览器/进程 TZ 无关。 */
+    leaveStart: timestamp('leave_start', { mode: 'string', withTimezone: true }),
+    /** 请假结束时间（同 leaveStart，mode:'string' + withTimezone） */
+    leaveEnd: timestamp('leave_end', { mode: 'string', withTimezone: true }),
     /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；每日 03:00 cron 重置为 false */
     isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
     /** 技能标签数组，由员工端手动维护 */
@@ -137,9 +139,9 @@ export const staffWechatUsers = pgTable(
     resignedAt: date('resigned_at'),
     /** 离职原因（自由文本）；NULL 表示在职或未填 */
     resignationReason: text('resignation_reason'),
-    lastLoginAt: timestamp('last_login_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_staff_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),

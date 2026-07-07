@@ -37,15 +37,13 @@ const client = globalForDb.pgClient ??
     max: 5,
     types: {
       beijingTimestamp: {
-        // serialize 经 typeHandlers (postgres/src/types.js) 注册到 serializers[1184]（来自 to）
-        // 与 serializers[1114]（来自 from 每项）；inferType 对 Date 实例返回 1184，故**每个
-        // 把 Date 传进 timestamp / timestamptz 列的查询参数都命中**——不是"不会被触发"的死路径。
-        // 当前实现与内置 date handler 字节等价（`(x instanceof Date ? x : new Date(x)).toISOString()`），
-        // 写入零回归。但**严禁**在此改写 serialize 想"统一修写入侧"：serializers[1184] 被全局
-        // 覆盖，包含 db/schema/user.ts 的 3 个 withTimezone(timestamptz) 列，把 1184 列原本的
-        // "ISO UTC → PG session TZ 解释" 正确链改成单偏移字面，静默偏 8h。修写入侧请走
-        // src/lib/db-time.ts 的 nowTs() / beijingTs()。
-        to: 1184,
+        // to:1114 与 from:[1114] 对称 → serialize 仅注册到 serializers[1114]；serializers[1184]
+        // （timestamptz）保留内置 date handler 不动。inferType(Date)=1184，Date 入参走内置
+        // serializers[1184]（字节等价 `(x instanceof Date ? x : new Date(x)).toISOString()`），
+        // 故此 serialize 实际不会被 Date 触发——保留仅为满足 PostgresType 类型约束。写入侧统一走
+        // src/lib/db-time.ts 的 nowTs()/beijingTs()，勿在此改 serialize 想"修写入"：虽覆盖面已收窄到
+        // 1114，仍会污染任何显式标 1114 类型的查询参数。
+        to: 1114,
         from: [1114],
         serialize: (x: Date | string | number) =>
           (x instanceof Date ? x : new Date(x)).toISOString(),

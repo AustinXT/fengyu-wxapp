@@ -24,8 +24,8 @@ export const commissionRateMatrix = pgTable(
     amountTierMax: numeric('amount_tier_max', { precision: 10, scale: 2 }),
     /** 提成比例（如 0.08 = 8%） */
     commissionRate: numeric('commission_rate', { precision: 5, scale: 4 }).notNull(),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     unique('uq_commission_matrix').on(

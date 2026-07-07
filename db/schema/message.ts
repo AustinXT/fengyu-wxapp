@@ -26,9 +26,9 @@ export const messages = pgTable(
     refEntityId: text('ref_entity_id'),
     /** 幂等键；cronTask/权益发放/系统触发类消息使用，业务消息可为 null */
     idempotencyKey: text('idempotency_key'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /** 软删时间戳；NULL=未删 */
-    deletedAt: timestamp('deleted_at'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     /** 软删操作人（staff_wechat_users.employee_id 字符串快照，不加 FK 以兼容历史回填） */
     deletedBy: text('deleted_by'),
   },
