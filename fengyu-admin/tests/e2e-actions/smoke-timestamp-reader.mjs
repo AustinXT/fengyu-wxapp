@@ -5,7 +5,9 @@
  * 背景：0076 前 admin 读 1114 列经 drizzle column reader `new Date(value + "+0000")` 硬当 UTC，
  * 导致 T+8。0076 改 1184 后，PG 发带 +08 偏移字面，postgres.js 内置 parser → drizzle reader
  * `new Date(value)` 正确解析。vitest 单测 mock 不连真库，挡不住 schema 漏改 / drizzle 升级改 reader /
- * PG 偏移异常。本 smoke 连真库 ORM select 真实 1184 列，验证 drizzle reader 返回的 Date 与 PG 字面一致。
+ * PG 偏移异常。本 smoke 连真库 ORM select 真实 1184 列，验证 drizzle reader 返回的 Date 与 PG 字面一致，
+ * 并前置断言 server TimeZone=Asia/Shanghai（migration 0028）——整套 withTimezone 方案（裸串 ::timestamptz
+ * / 1114→1184 存量重解释 / beijingTs 写入）全压在此 TZ 上，一旦失效全线偏移。
  *
  * 运行：cd fengyu-admin && bun tests/e2e-actions/smoke-timestamp-reader.mjs
  * 默认 fengyu_e2e@5434；可用 PG_CONNECTION_STRING / DATABASE_URL 覆盖（空库自动 skip）。
@@ -24,6 +26,16 @@ const { saleOrders } = await import('../../../db/schema/order')
 let exitCode = 1
 
 async function main() {
+  const errors = []
+
+  // ③ 前置不变量：server TimeZone 须为 Asia/Shanghai（migration 0028 锁定）。
+  const tzRows = await db.execute(sql`SHOW TIME ZONE`)
+  const tzRow = tzRows[0] || {}
+  const tz = tzRow.timezone ?? tzRow.TimeZone ?? Object.values(tzRow)[0]
+  if (tz !== 'Asia/Shanghai') {
+    errors.push(`server TimeZone 须为 Asia/Shanghai（migration 0028），实际 "${tz}"——裸串 ::timestamptz 按此 TZ 解释，全线偏移风险`)
+  }
+
   // ① ORM select 真实 1184 列：createdAt 走 drizzle reader（withTimezone → new Date(value)）。
   const rows = await db
     .select({ createdAt: saleOrders.createdAt })
@@ -43,7 +55,6 @@ async function main() {
   )
   const lit = litRows[0]?.lit
 
-  const errors = []
   if (!(r.createdAt instanceof Date)) {
     errors.push(`createdAt 应为 Date，实际 ${typeof r.createdAt}=${r.createdAt}`)
   }

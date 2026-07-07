@@ -45,3 +45,19 @@ export function beijingTs(d: Date) {
   const wallClock = fmtDateTime(d) // 'YYYY-MM-DD HH:mm:ss' Asia/Shanghai 墙钟
   return sql`${wallClock}::timestamp AT TIME ZONE 'Asia/Shanghai'`
 }
+
+/**
+ * 报表/列表筛选的日期边界：date input 串 'YYYY-MM-DD' + 时分秒 → 北京 timestamptz。
+ *
+ * 列表筛选 dateFrom/dateTo（或 startDate/endDate）来自 `<input type="date">`，是裸日期串；ES 规范按
+ * UTC 午夜解析 `new Date(串)` 会早 8h（postgres.js 发 UTC ISO → PG 当墙钟落库）。直接拼北京时分秒墙钟，
+ * 再 `::timestamp AT TIME ZONE 'Asia/Shanghai'` 显式当北京转 timestamptz，与业务时间列（1184）同语义。
+ *
+ * 集中收敛此处，避免每个列表 action 各自内联同一 idiom 时漏写 `AT TIME ZONE`——裸 `::timestamp` 赋予 1184
+ * 列会按 session TZ 解释，session 非 Shanghai 即偏移。用法：
+ *   `gte(col, beijingBoundaryTs(filters.dateFrom, '00:00:00'))` /
+ *   `lt(col, beijingBoundaryTs(filters.dateTo, '23:59:59'))`。
+ */
+export function beijingBoundaryTs(dateStr: string, time: '00:00:00' | '23:59:59') {
+  return sql`${`${dateStr} ${time}`}::timestamp AT TIME ZONE 'Asia/Shanghai'`
+}
