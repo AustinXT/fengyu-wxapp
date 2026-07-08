@@ -19,10 +19,10 @@ export const storeUnbindRequests = pgTable(
     status:       storeUnbindRequestStatusEnum('status').notNull().default('待处理'),
     note:         text('note'),
     reviewedBy:   varchar('reviewed_by', { length: 30 }).references(() => staffWechatUsers.employeeId),
-    reviewedAt:   timestamp('reviewed_at'),
+    reviewedAt:   timestamp('reviewed_at', { withTimezone: true }),
     rejectReason: text('reject_reason'),
-    createdAt:    timestamp('created_at').notNull().defaultNow(),
-    updatedAt:    timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     

@@ -13,8 +13,8 @@ export const prepaidCards = pgTable(
       .notNull()
       .references(() => clientWechatUsers.userId),
     balance: numeric('balance', { precision: 10, scale: 2 }).notNull().default('0'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_prepaid_cards_user').on(table.userId),
@@ -37,7 +37,7 @@ export const cardTransactions = pgTable(
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
     
     externalRef: text('external_ref'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_card_txns_card_id').on(table.cardId),

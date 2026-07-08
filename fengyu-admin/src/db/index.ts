@@ -12,6 +12,14 @@ const connectionString =
   process.env.DATABASE_URL ??
   'postgresql://user:password@host:5432/dbname'
 
+// timestamp 列自 migration 0076 起统一为 `timestamp with time zone`（OID 1184）。PG 在 server
+// timezone=Asia/Shanghai（migration 0028 锁定）下发送带 +08 偏移字面，postgres.js 内置 date parser
+// `new Date(value)` 正确解析为绝对时刻，drizzle column reader 直通——无需任何自定义 type parser。
+//
+// 历史：PR #42 曾在此注册 types.beijingTimestamp（1114 按 +08:00 解析），但对 drizzle 完全无效——
+// drizzle `construct()`（drizzle-orm/postgres-js/driver.cjs）把 1114/1184 等时间 OID 的 parser
+// 强制覆盖为 transparent `(val)=>val`，且 1114 column reader 硬编码 `new Date(value + "+0000")`
+// 当 UTC，是 admin T+8 的根因。根治在 schema 层（0076 改 1184），非此 client 层。
 const client = globalForDb.pgClient ?? postgres(connectionString, { max: 5 })
 
 if (process.env.NODE_ENV !== 'production') {

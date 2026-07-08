@@ -22,17 +22,31 @@ import { stores } from './org'
 import { clientWechatUsers, staffWechatUsers } from './user'
 import { saleOrders } from './order'
 
+/**
+ * 门店库存域 v1（2026-05-19 落地）
+ *
+ * 8 种 WorkFine 库存单据迁到 PG 后按业务方向归类为 4 对表：
+ *   procurement — 院报货 / 院入库 / 退货出库     （与供应商互动）
+ *   sale         — 销售出库 / 顾客退货             （与顾客互动）
+ *   transfer    — 调拨出库 / 调拨入库（单条物理记录 + is_dispatcher 方向位）
+ *   scrap       — 报损出库                          （异常损耗）
+ *
+ * 全部表都是门店级实体：store_id NOT NULL FK stores.storeId。
+ * 市场（market）通过 JOIN org_nodes 反查 store 的 parent 拿到，不冗余存储。
+ *
+ * 写入入口：admin 后台 Server Actions；员工端小程序只读。
+ * WorkFine 桌面端上线即弃用；PG 是唯一真理源；不导历史数据。
+ */
 
-
-
-
-
-
+// ──────────────────────────────────────────────────────────────────────
+// 采购入库类（procurement）
+// 涵盖：院报货 / 院入库 / 退货出库
+// ──────────────────────────────────────────────────────────────────────
 
 export const inventoryProcurementOrders = pgTable(
   'inventory_procurement_orders',
   {
-    
+    /** 内部主键 / 单据号，如 'PROC-202605-0001' */
     id: text('id').primaryKey(),
     docSubtype: inventoryProcurementSubtypeEnum('doc_subtype').notNull(),
     status: inventoryDocStatusEnum('status').notNull().default('已完成'),
@@ -41,15 +55,15 @@ export const inventoryProcurementOrders = pgTable(
       .references(() => stores.storeId),
     docDate: date('doc_date').notNull(),
     totalQuantity: numeric('total_quantity', { precision: 12, scale: 2 }),
-    
+    /** 院报货是否完成（WorkFine UDF_S_3684 语义） */
     isCompleted: boolean('is_completed').notNull().default(false),
-    
+    /** 院入库的市场配货日期（UDF_S_6240） */
     sourceDate: date('source_date'),
-    
+    /** 院入库的市场配货数量合计（UDF_S_15470） */
     sourceQuantity: numeric('source_quantity', { precision: 12, scale: 2 }),
-    
+    /** 院入库的签字图 URL（UDF_S_19043，19% 有值） */
     signatureUrl: text('signature_url'),
-    
+    /** 院入库引用的市场出库单号（SCCKD-xxx，UDF_S_3685） */
     relatedDocNo: text('related_doc_no'),
     remark: text('remark'),
     createdBy: varchar('created_by', { length: 30 })
@@ -58,9 +72,9 @@ export const inventoryProcurementOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -87,14 +101,14 @@ export const inventoryProcurementOrderItems = pgTable(
     expiryDate: date('expiry_date'),
     isGift: boolean('is_gift').notNull().default(false),
     quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull(),
-    
+    /** 操作时该 SKU+批号 的库存快照 */
     stockOnHand: numeric('stock_on_hand', { precision: 12, scale: 2 }),
     unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
     amount: numeric('amount', { precision: 12, scale: 2 }),
-    
+    /** 院报货明细的报货数量（UDF_M_1893） */
     requestQuantity: numeric('request_quantity', { precision: 12, scale: 2 }),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_proc_items_order').on(table.orderId),
@@ -104,10 +118,10 @@ export const inventoryProcurementOrderItems = pgTable(
   ],
 )
 
-
-
-
-
+// ──────────────────────────────────────────────────────────────────────
+// 销售出库类（sale）
+// 涵盖：销售出库 / 顾客退货（出库为正向，退货数量记负或用 docSubtype 区分）
+// ──────────────────────────────────────────────────────────────────────
 
 export const inventorySaleOrders = pgTable(
   'inventory_sale_orders',
@@ -120,13 +134,13 @@ export const inventorySaleOrders = pgTable(
       .references(() => stores.storeId),
     docDate: date('doc_date').notNull(),
     totalQuantity: numeric('total_quantity', { precision: 12, scale: 2 }),
-    
+    /** 顾客身份（销售出库 / 顾客退货均需要） */
     clientUserId: text('client_user_id').references(
       () => clientWechatUsers.userId,
     ),
-    
+    /** 顾客姓名快照（即使 client 删除也保留） */
     customerName: varchar('customer_name', { length: 50 }),
-    
+    /** 引用的销售单（销售出库可引用 sale_orders；UDF_S_9176） */
     relatedSaleOrderId: varchar('related_sale_order_id', { length: 30 }).references(
       () => saleOrders.saleOrderId,
     ),
@@ -137,9 +151,9 @@ export const inventorySaleOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -170,16 +184,16 @@ export const inventorySaleOrderItems = pgTable(
     stockOnHand: numeric('stock_on_hand', { precision: 12, scale: 2 }),
     unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
     amount: numeric('amount', { precision: 12, scale: 2 }),
-    
+    /** 销售出库特有：销售流水号（UDF_M_17672，约 20% 有值） */
     saleFlowNo: text('sale_flow_no'),
-    
+    /** 销售出库特有：顾客剩余可领取（UDF_M_17685） */
     customerRemaining: numeric('customer_remaining', { precision: 12, scale: 2 }),
-    
+    /** 销售出库特有：验证产品名称（UDF_M_18917） */
     verificationName: text('verification_name'),
-    
+    /** 销售出库特有：验证产品编号（UDF_M_18918） */
     verificationCode: text('verification_code'),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_sale_items_order').on(table.orderId),
@@ -189,13 +203,13 @@ export const inventorySaleOrderItems = pgTable(
   ],
 )
 
-
-
-
-
-
-
-
+// ──────────────────────────────────────────────────────────────────────
+// 调拨类（transfer）
+// 涵盖：调拨出库 / 调拨入库
+// 物理：单条记录 + is_dispatcher 方向位 + counterpart_store_id
+// store_id = 当前操作门店；counterpart_store_id = 对方门店
+// 接收方确认收货通过 confirmed_at + receive_quantity 体现
+// ──────────────────────────────────────────────────────────────────────
 
 export const inventoryTransferOrders = pgTable(
   'inventory_transfer_orders',
@@ -203,32 +217,32 @@ export const inventoryTransferOrders = pgTable(
     id: text('id').primaryKey(),
     docSubtype: inventoryTransferSubtypeEnum('doc_subtype').notNull(),
     status: inventoryDocStatusEnum('status').notNull().default('已完成'),
-    
+    /** 发起门店（调拨出库方） */
     storeId: text('store_id')
       .notNull()
       .references(() => stores.storeId),
-    
+    /** 接收门店（调拨入库方） */
     counterpartStoreId: text('counterpart_store_id')
       .notNull()
       .references(() => stores.storeId),
-    
+    /** 当前操作门店是否为发起方（true=出库方/发起方；false=接收方记录视图） */
     isDispatcher: boolean('is_dispatcher').notNull().default(true),
     docDate: date('doc_date').notNull(),
     totalQuantity: numeric('total_quantity', { precision: 12, scale: 2 }),
-    
+    /** 接收确认的实际收货数量（UDF_S_13030，可能与发起数量不同） */
     receiveQuantity: numeric('receive_quantity', { precision: 12, scale: 2 }),
     remark: text('remark'),
     createdBy: varchar('created_by', { length: 30 })
       .notNull()
       .references(() => staffWechatUsers.employeeId),
-    
+    /** 接收方确认人 */
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    /** 接收方确认收货时间（NULL 表示尚未确认收货） */
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -264,7 +278,7 @@ export const inventoryTransferOrderItems = pgTable(
     unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
     amount: numeric('amount', { precision: 12, scale: 2 }),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_transfer_items_order').on(table.orderId),
@@ -274,11 +288,11 @@ export const inventoryTransferOrderItems = pgTable(
   ],
 )
 
-
-
-
-
-
+// ──────────────────────────────────────────────────────────────────────
+// 报损类（scrap）
+// 涵盖：报损出库
+// 独立字段体系（WorkFine UDF_M_5172-5181）
+// ──────────────────────────────────────────────────────────────────────
 
 export const inventoryScrapOrders = pgTable(
   'inventory_scrap_orders',
@@ -297,9 +311,9 @@ export const inventoryScrapOrders = pgTable(
     confirmedBy: varchar('confirmed_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
     ),
-    confirmedAt: timestamp('confirmed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => sql`NOW()`),
@@ -328,12 +342,12 @@ export const inventoryScrapOrderItems = pgTable(
     stockOnHand: numeric('stock_on_hand', { precision: 12, scale: 2 }),
     unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
     amount: numeric('amount', { precision: 12, scale: 2 }),
-    
+    /** 报损原因（UDF_M_5181，100% 有值，如 "店用"/"客用"/"顾客xxx"） */
     scrapReason: text('scrap_reason').notNull(),
-    
+    /** 用途细分（保留扩展） */
     itemUsage: text('item_usage'),
     remark: text('remark'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_inv_scrap_items_order').on(table.orderId),
@@ -343,9 +357,9 @@ export const inventoryScrapOrderItems = pgTable(
   ],
 )
 
-
-
-
+// ──────────────────────────────────────────────────────────────────────
+// 类型导出
+// ──────────────────────────────────────────────────────────────────────
 
 export type InventoryProcurementOrder = typeof inventoryProcurementOrders.$inferSelect
 export type NewInventoryProcurementOrder = typeof inventoryProcurementOrders.$inferInsert

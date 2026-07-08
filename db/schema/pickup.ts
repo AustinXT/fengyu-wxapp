@@ -28,7 +28,7 @@ export const pickupRecords = pgTable(
     remark: text('remark'),
     
     idempotencyKey: text('idempotency_key'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_pickup_records_sale_item').on(table.saleItemId),

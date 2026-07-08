@@ -15,9 +15,9 @@ export const adminPasswords = pgTable(
     passwordHash: text('password_hash').notNull(),
     
     mustChange: boolean('must_change').notNull().default(true),
-    lastChangedAt: timestamp('last_changed_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => sql`NOW()`),
+    lastChangedAt: timestamp('last_changed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     uniqueIndex('uq_admin_passwords_employee').on(table.employeeId),

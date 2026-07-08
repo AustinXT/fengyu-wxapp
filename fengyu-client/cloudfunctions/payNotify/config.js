@@ -1,16 +1,24 @@
-
+/**
+ * 系统配置读取 + 内存缓存（会员门槛）
+ *
+ * payNotify 为扁平结构（无 db/pg 子模块），使用 pg 库直接创建独立 Pool。
+ * Pool 与 index.js 的 pgPool 互不干扰，仅用于读 system_configs 配置。
+ *
+ * 失效策略：
+ *   1. 30 秒最多核对一次 system_configs.updated_at
+ *   2. 5 分钟 TTL 兜底
+ * 失败兜底：返回 FALLBACK_THRESHOLD（1980）
+ */
 
 const pg = require('pg')
 const { Pool } = pg
 
-
-
-pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    
-pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    
-
-
-
-pg.types.setTypeParser(1114, (val) => (val === null ? null : new Date(val.replace(' ', 'T') + '+08:00')))
+// 全局 OID 解析：让 numeric/bigint 直接返回 JS Number 而不是字符串。
+// 安全前提：业务金额 ≤ 9999.99（numeric(10,2)）、积分单值 << 2^53，详见 db/schema/points.ts 注释。
+pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
+pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
+// timestamp 列自 migration 0076 起统一为 timestamptz（1184）：PG 发带 +08 偏移字面，pg 内置 parser
+// 按字面偏移正确解析为 Date，无需自定义 1114 parser（库已无 1114 列）。
 
 const FALLBACK_THRESHOLD = 1980
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -36,7 +44,10 @@ function getConfigPool() {
   return _configPool
 }
 
-
+/**
+ * 获取会员门槛（单位：元）。
+ * @returns {Promise<number>}
+ */
 async function getMemberThreshold() {
   const now = Date.now()
 
