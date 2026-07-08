@@ -448,8 +448,8 @@ export const getCustomerOrders = withPermission(
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
       clientUserId: r.order.clientUserId,
       // 顾客档案权威 > sale_orders 兜底
-      clientPhone: r.custPhone ?? r.order.clientPhone ?? null,
-      customerName: r.custName ?? r.order.customerName ?? null,
+      clientPhone: r.custPhone || r.order.clientPhone || null,
+      customerName: r.custName || r.order.customerName || null,
       totalAmount: r.order.totalAmount,
       prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
       received: r.order.received ?? '0',

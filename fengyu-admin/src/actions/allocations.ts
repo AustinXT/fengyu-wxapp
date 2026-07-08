@@ -573,8 +573,8 @@ export const getPendingPayments = withPermission(
         paidAt: r.paidAt instanceof Date ? r.paidAt.toISOString() : (r.paidAt ?? null),
         allocationStatus: r.allocationStatus ?? null,
         // 顾客档案权威 > sale_orders 兜底
-        customerName: r.custName ?? r.fallbackName ?? null,
-        clientPhone: r.custPhone ?? r.fallbackPhone ?? null,
+        customerName: r.custName || r.fallbackName || null,
+        clientPhone: r.custPhone || r.fallbackPhone || null,
         storeName: r.storeName ?? null,
         preferredEmployeeId: r.preferredEmployeeId ?? null,
       })),

@@ -359,8 +359,8 @@ export const exportCards = withPermission(
     const rows: ExportCardRow[] = page.map((r) => {
       const sessionCount = r.sessionCount ?? 0
       return {
-        clientName: r.clientName ?? r.fallbackName ?? '',
-        clientPhone: r.clientPhone ?? r.fallbackPhone ?? '',
+        clientName: r.clientName || r.fallbackName || '',
+        clientPhone: r.clientPhone || r.fallbackPhone || '',
         categoryL1: r.productKind ?? null,
         categoryL2: r.categoryName ?? null,
         productSpec: r.productName ?? r.specName ?? null,
