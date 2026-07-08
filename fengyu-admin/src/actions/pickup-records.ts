@@ -26,12 +26,12 @@ export interface AdminPickupRecord {
   confirmedBy: string
   remark: string | null
   createdAt: string
-  // joined
+  
   storeName?: string
   clientName?: string
   clientPhone?: string
   confirmedByName?: string
-  /** SKU 完整名称，已包含商品名和规格（如"蜜语水润嫩肤护理 10次卡"） */
+  
   skuName?: string
   saleOrderId?: string
   itemQuantity?: number
@@ -40,7 +40,7 @@ export interface AdminPickupRecord {
 
 export interface PickupRecordFilters {
   storeId?: string
-  /** 搜索：saleItemId / 顾客姓名 / 员工姓名 / SKU 名称 */
+  
   search?: string
   dateFrom?: string
   dateTo?: string
@@ -53,12 +53,7 @@ export interface PaginatedPickupRecords {
   total: number
 }
 
-/**
- * 服务端分页提货记录列表
- *
- * scope 基于 pickup_records.store_id（提货门店）。
- * JOIN sale_items/stores/client/staff/product/sku 拼接展示信息。
- */
+
 export const getPickupRecordsPaginated = withPermission(
   'pickup_record:list',
   async (
@@ -89,7 +84,7 @@ export const getPickupRecordsPaginated = withPermission(
     )
   }
   if (filters.dateFrom) {
-    // 日期串拼北京字面 timestamp（created_at 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
+    
     conditions.push(gte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
   }
   if (filters.dateTo) {
@@ -98,7 +93,7 @@ export const getPickupRecordsPaginated = withPermission(
 
   const whereClause = and(...conditions)
 
-  // COUNT 查询（同样需要 JOIN，因为 search 命中了被 JOIN 的列）
+  
   const countQuery = db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(pickupRecords)
@@ -108,7 +103,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(whereClause)
 
-  // 数据查询（多一个 stores JOIN 用于展示门店名）
+  
   const dataQuery = db
     .select({
       record: pickupRecords,
@@ -128,7 +123,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(saleItems, eq(pickupRecords.saleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(whereClause)
-    // 例外：提货流水型表无 updatedAt 列
+    
     .orderBy(desc(pickupRecords.createdAt))
     .limit(pageSize)
     .offset(offset)
@@ -159,9 +154,7 @@ export const getPickupRecordsPaginated = withPermission(
   },
 )
 
-/**
- * 提货记录详情（单条）
- */
+
 export const getPickupRecordById = withPermission(
   'pickup_record:list',
   async (
@@ -215,15 +208,7 @@ export const getPickupRecordById = withPermission(
   },
 )
 
-/**
- * 顾客可提货的家居产品销售明细
- *
- * 筛选条件：
- * - 订单已支付
- * - item_direction = '购买'
- * - product_type = '家居产品'
- * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
- */
+
 export interface AvailablePickupItem {
   saleItemId: string
   saleOrderId: string
@@ -263,8 +248,8 @@ export const getAvailablePickupItems = withPermission(
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 
-  // 不按原订单门店过滤：提货店可能与原销售店不同（顾客跨店提货），
-  // scope 约束在 createPickupRecord 对"实际提货门店"生效。
+  
+  
   return (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
     saleItemId: r.sale_item_id as string,
     saleOrderId: r.sale_order_id as string,
@@ -279,14 +264,7 @@ export const getAvailablePickupItems = withPermission(
   },
 )
 
-/**
- * 创建提货记录
- *
- * 事务内原子累加 sale_items.picked_up_quantity 并插入 pickup_records。
- * 使用 UPDATE ... WHERE 中的条件保证并发安全：
- *   (COALESCE(picked_up_quantity, 0) + $1) <= quantity
- * 若超出可提数量，UPDATE 返回 0 行，事务回滚。
- */
+
 export const createPickupRecord = withPermission(
   'pickup_record:create',
   async (
@@ -300,7 +278,7 @@ export const createPickupRecord = withPermission(
       idempotencyKey?: string | null
     },
   ): Promise<{ success: boolean; message: string; createdId?: number }> => {
-  // 基础参数校验
+  
   if (!data.saleItemId) {
     return { success: false, message: '缺少销售明细号' }
   }
@@ -314,8 +292,8 @@ export const createPickupRecord = withPermission(
     return { success: false, message: '无权在该门店创建提货记录' }
   }
 
-  // 冻结闭环（Bug I）：该明细所属订单有待审批退款时禁止提货（与 staff createPickup 对齐；
-  // 退款 cascade 通道5 会回滚 picked_up_quantity，待审批期提货会被随后 approve 静默回滚 → 提货账漂移）
+  
+  
   const ordRows = (await db.execute(sql`
     SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
   `)) as unknown as Array<{ sale_order_id: string }>
@@ -323,8 +301,8 @@ export const createPickupRecord = withPermission(
     return { success: false, message: '该订单退款审批中，暂不可提货' }
   }
 
-  // 幂等前置：若传 idempotencyKey 且已存在对应行，直接返回当前 ID（不再 UPDATE/INSERT）
-  // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
+  
+  
   const idemKey = data.idempotencyKey?.trim() || null
   if (idemKey) {
     const existing = (await db.execute(sql`
@@ -339,7 +317,7 @@ export const createPickupRecord = withPermission(
 
   try {
     const createdId = await db.transaction(async (tx) => {
-      // 1. 原子累加 picked_up_quantity，仅家居产品，超量会被 WHERE 拦截
+      
       const updated = await tx.execute(sql`
         UPDATE sale_items
            SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity},
@@ -359,7 +337,7 @@ export const createPickupRecord = withPermission(
         throw new ApiError('INVALID_STATE', '销售明细不存在、非家居产品或超出可提数量')
       }
 
-      // 2. 插入 pickup_records；DB 层 uq_pickup_idempotency 兜底 race，命中即整事务回滚防 UPDATE 重复累加
+      
       try {
         const inserted = await tx
           .insert(pickupRecords)
@@ -404,13 +382,7 @@ export const createPickupRecord = withPermission(
   },
 )
 
-/**
- * 物理删除提货记录（仅系统管理员；数据治理用）。
- *
- * 关键：提货记录创建时原子累加了 sale_items.picked_up_quantity，
- * 删除必须在同事务内回退该计数（GREATEST 防越界为负），否则"可提数量"虚低。
- * pickup_records 无任何 inbound FK，无级联。
- */
+
 export const deletePickupRecord = withPermission(
   'pickup_record:delete',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
@@ -438,7 +410,7 @@ export const deletePickupRecord = withPermission(
         if ((result as any).count === 0) {
           throw new Error('PICKUP_ROW_GONE')
         }
-        // 回退已提数量（不低于 0）
+        
         await tx.execute(sql`
           UPDATE sale_items
              SET picked_up_quantity = GREATEST(COALESCE(picked_up_quantity, 0) - ${rec.pickupQuantity}, 0),

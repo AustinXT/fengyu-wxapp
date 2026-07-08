@@ -5,15 +5,7 @@ import { stores } from './org'
 import { clientWechatUsers, staffWechatUsers } from './user'
 import { saleItems } from './order'
 
-/**
- * 预约
- *
- * 状态流转：
- *   待确认 -> 已确认 -> 已完成（到店核销完成后自动流转）
- *   待确认 -> 已取消（顾客取消）
- *   已确认 -> 已取消（顾客取消）
- *   待确认/已确认 -> 已关闭（超过预约时间一天未到店）
- */
+
 export const appointments = pgTable(
   'appointments',
   {
@@ -26,12 +18,12 @@ export const appointments = pgTable(
       .notNull()
       .references(() => clientWechatUsers.userId),
     clientName: varchar('client_name', { length: 50 }).notNull(),
-    /** 预约美容师（可选）：顾客可不指定，由门店后续分配 */
+    
     employeeId: varchar('employee_id', { length: 30 }).references(() => staffWechatUsers.employeeId),
     employeeName: varchar('employee_name', { length: 50 }),
     saleItemId: varchar('sale_item_id', { length: 30 }).references(() => saleItems.saleItemId),
     appointmentTime: timestamp('appointment_time', { withTimezone: true }).notNull(),
-    /** 确认时间（员工确认预约时记录） */
+    
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     checkinAt: timestamp('checkin_at', { withTimezone: true }),
     notes: text('notes'),
@@ -43,7 +35,7 @@ export const appointments = pgTable(
     index('idx_appts_store_id').on(table.storeId),
     index('idx_appts_client_user_id').on(table.clientUserId),
     index('idx_appts_employee_time').on(table.employeeId, table.appointmentTime),
-    /** 同一 sale_item 同时只能有 1 个活跃预约：防 client 双发 create */
+    
     uniqueIndex('uq_appt_sale_item_active')
       .on(table.saleItemId)
       .where(sql`sale_item_id IS NOT NULL AND status IN ('待确认','已确认')`),
