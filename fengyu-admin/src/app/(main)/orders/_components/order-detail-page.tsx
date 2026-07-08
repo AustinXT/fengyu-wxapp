@@ -694,8 +694,7 @@ export default function OrderDetailPageClient({
           description={
             // 历史已作废单（WorkFine 导入）专属文案：明确告知"删除后可重新拉取"的动机，
             // 强调其它守卫（无实收/无积分储值卡流水/无下游服务/无回退款子单）必须全部满足才可删。
-            // status 类型为 OrderStatus 不含 '已作废'（legacy 专用）；as string 跳过 TS 字面量类型检查。
-            isLegacy && (order.status as string) === "已作废" ? (
+            isLegacy && order.status === "已作废" ? (
               <>
                 确定要删除历史订单 <span className="font-medium">{order.saleOrderId}</span>（
                 {order.customerName || "—"}）吗？该单已通过「作废」核对，本操作将物理删除以便
