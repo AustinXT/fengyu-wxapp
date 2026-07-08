@@ -1,0 +1,1 @@
+ALTER TABLE "sale_orders" ADD COLUMN "is_membership_upgrade" boolean DEFAULT false NOT NULL;
