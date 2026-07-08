@@ -210,6 +210,20 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
     `)
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
+    // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
+    await tx.execute(sql`
+      UPDATE sale_orders SET is_membership_upgrade = true
+      WHERE sale_order_id = (
+        SELECT o.sale_order_id FROM sale_orders o
+        WHERE o.client_user_id = ${clientUserId}
+          AND o.status IN ('已支付', '已完成')
+          AND o.sale_order_type = '销售单'
+          AND o.total_amount >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        LIMIT 1
+      )
+    `)
   }
 }
 
@@ -672,8 +686,8 @@ export const exportAllocationOrders = withPermission(
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
         productType: saleItems.productType,
-        categoryL1: productCategories.categoryName,
-        categoryL2: productCategories.productKind,
+        categoryL1: productCategories.productKind,
+        categoryL2: productCategories.categoryName,
         productName: saleItems.productName,
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,

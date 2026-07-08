@@ -117,6 +117,7 @@ import {
   deleteServiceOrder,
   getServiceOrderById,
   exportAllocationServiceOrders,
+  exportServiceOrders,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -901,8 +902,8 @@ describe('exportAllocationServiceOrders — 明细导出 + 派生列 + 截断', 
           customerPhone: null,
           fallbackPhone: '13151094335',
           productType: '疗程卡',
-          categoryL1: '圣源养心',
-          categoryL2: '护理项目',
+          categoryL1: '护理项目',
+          categoryL2: '圣源养心',
           productName: '【王牌】疼痛管理',
           sessionUsed: 1,
           unitRealPrice: '300.00',
@@ -960,5 +961,72 @@ describe('exportAllocationServiceOrders — 明细导出 + 派生列 + 截断', 
     const { rows, truncated } = await exportAllocationServiceOrders({})
     expect(truncated).toBe(true)
     expect(rows).toHaveLength(10000)
+  })
+})
+
+// ── exportServiceOrders — 服务单管理页导出（复用 helper，明细展开） ──────────────
+describe('exportServiceOrders — 服务单管理页明细导出（复用提成分配查询）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('产出 30 列明细行 + 派生列（与 exportAllocationServiceOrders 同口径）', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([
+        {
+          market: '九江',
+          storeName: '世纪店',
+          serviceOrderId: 'SO1',
+          saleOrderType: '销售单',
+          serviceOrderType: '售后',
+          customerName: '王女士',
+          customerPhone: '13151094335',
+          fallbackPhone: null,
+          productType: '疗程卡',
+          categoryL1: '护理项目',
+          categoryL2: '圣源养心',
+          productName: '【王牌】疼痛管理',
+          sessionUsed: 1,
+          unitRealPrice: '300.00',
+          status: '已完成',
+          employeeName: '王雯馨',
+          positionName: '美容师',
+          allocationRatio: '0.30',
+          commissionRate: '0.1500',
+          commissionAmount: '162.00',
+          rating: 5,
+          reviewComment: '好评',
+          salesCategory: '自销自耗',
+          customerType: '会员客',
+          openedByName: '张凯',
+          sourceSaleOrderId: 'FY-XSD-WX-2606080003',
+          serviceDate: '2026-06-08',
+          createdAt: new Date('2026-06-08T15:26:32.000Z'),
+          remark: null,
+          scId: 1,
+        },
+      ]),
+    )
+    const { rows, truncated } = await exportServiceOrders({})
+    expect(rows).toHaveLength(1)
+    expect(truncated).toBe(false)
+    const r = rows[0]
+    expect(r.serviceOrderId).toBe('SO1')
+    expect(r.market).toBe('九江')
+    // 派生列：消耗金额 = 单次价 × 次数；分配额 = 消耗金额 × 占比
+    expect(r.consumeMoney).toBe(300)
+    expect(r.allocationAmount).toBe(90)
+    expect(r.commissionAmount).toBe(162)
+  })
+
+  it('沿用服务单管理列表筛选口径（parseServiceOrderFilters：不锁已完成，解析 from/to）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    await exportServiceOrders({ status: '已完成', store: 'store-1', from: '2026-01-01', to: '2026-12-31', q: '王' })
+    // date 筛选由 parseServiceOrderFilters 的 from/to → buildServiceOrderConditions 的 gte/lte
+    expect(gte).toHaveBeenCalledWith(expect.anything(), '2026-01-01')
+    expect(lte).toHaveBeenCalledWith(expect.anything(), '2026-12-31')
+    // search 走 ilike
+    expect(ilike).toHaveBeenCalled()
   })
 })

@@ -98,7 +98,7 @@ vi.mock('@/lib/permissions', () => ({
   isInScope: vi.fn(),
 }))
 
-import { getCardsPaginated, getCustomerHeldCards, getCardById, getCardTransactions } from './cards'
+import { getCardsPaginated, getCustomerHeldCards, getCardById, getCardTransactions, exportCards } from './cards'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
@@ -656,5 +656,116 @@ describe('getCardTransactions — 划卡明细', () => {
 
     expect(rows).toEqual([])
     expect(db.select).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// exportCards tests（疗程卡导出）
+// ============================================================================
+
+/** mock exportCards 单查链：.from.leftJoin×5.where.orderBy.limit → Promise<rows> */
+function mockExportChain(rows: any[]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
+const mockExportRow = {
+  productName: '蜜语水润嫩肤护理',
+  specName: '蜜语水润嫩肤护理 10次卡',
+  sessionCount: 10,
+  paidUnusedSessions: 7,
+  unitPrice: '500.00',
+  unitRealPrice: '400.00',
+  saleAmount: '4000.00',
+  received: '4000.00',
+  productKind: '护理项目',
+  categoryName: '蜜语系列',
+  storeName: '南昌旗舰店',
+  marketName: '南昌市场',
+  clientName: '李女士',
+  clientPhone: '13812345678',
+  fallbackName: null,
+  fallbackPhone: null,
+  saleOrderId: 'FY-XSD-WX-2604100001',
+  saleOrderDatetime: new Date('2026-04-01T09:55:00Z'),
+  orderStatus: '已支付',
+  paidAt: new Date('2026-04-01T10:00:00Z'),
+}
+
+describe('exportCards — 疗程卡导出', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockCardsPaginatedSession)
+  })
+
+  it('字段映射：金额 number 化、剩余用 paidUnusedSessions、类型派生、L1/L2 正向、时间转 ISO', async () => {
+    mockExportChain([mockExportRow])
+
+    const { rows, truncated } = await exportCards({})
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(1)
+    const r = rows[0]
+    expect(r.clientName).toBe('李女士')
+    expect(r.clientPhone).toBe('13812345678')
+    expect(r.categoryL1).toBe('护理项目') // productKind（一级父级名，正向）
+    expect(r.categoryL2).toBe('蜜语系列') // categoryName（二级行名）
+    expect(r.productSpec).toBe('蜜语水润嫩肤护理') // productName 快照优先于 specName
+    expect(r.cardType).toBe('10次卡') // sessionCount=10 派生
+    expect(r.remaining).toBe(7) // 已付未用口径
+    expect(r.totalSessions).toBe(10)
+    expect(r.unitPrice).toBe(500) // numeric string → number
+    expect(r.unitRealPrice).toBe(400)
+    expect(r.saleAmount).toBe(4000)
+    expect(r.received).toBe(4000)
+    expect(r.storeDisplay).toBe('南昌旗舰店 / 南昌市场')
+    expect(r.saleOrderDatetime).toBe('2026-04-01T09:55:00.000Z')
+    expect(r.saleOrderId).toBe('FY-XSD-WX-2604100001')
+    expect(r.orderStatus).toBe('已支付')
+    expect(r.paidAt).toBe('2026-04-01T10:00:00.000Z')
+  })
+
+  it('单次卡 → cardType=单次卡；顾客主档 / productName 缺失时回退订单快照与 specName', async () => {
+    mockExportChain([{
+      ...mockExportRow,
+      sessionCount: 1,
+      clientName: null,
+      clientPhone: null,
+      fallbackName: '快照顾客',
+      fallbackPhone: '13900000000',
+      productName: null,
+      specName: '体验项目 1次卡',
+    }])
+
+    const { rows } = await exportCards({})
+
+    expect(rows[0].cardType).toBe('单次卡')
+    expect(rows[0].clientName).toBe('快照顾客')
+    expect(rows[0].clientPhone).toBe('13900000000')
+    expect(rows[0].productSpec).toBe('体验项目 1次卡')
+  })
+
+  it('空结果：当前筛选无命中 → { rows: [], truncated: false }', async () => {
+    mockExportChain([])
+
+    const { rows, truncated } = await exportCards({})
+
+    expect(rows).toEqual([])
+    expect(truncated).toBe(false)
+  })
+
+  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+    const many = Array.from({ length: 10001 }, (_, i) => ({ ...mockExportRow, saleOrderId: `FY-${i}` }))
+    mockExportChain(many)
+
+    const { rows, truncated } = await exportCards({})
+
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
   })
 })

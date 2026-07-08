@@ -9,6 +9,7 @@ import type { OrderFilters } from '@/actions/orders'
 import type { ServiceOrderFilters } from '@/actions/services'
 import type { EmployeeFilters } from '@/actions/employees'
 import type { PointTransactionFilters } from '@/actions/points'
+import type { CardFilters } from '@/actions/cards'
 
 export function parseOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
@@ -85,5 +86,23 @@ export function parsePointFilters(params: Record<string, string | undefined>): P
     search: params.q,
     startDate: params.start,
     endDate: params.end,
+  }
+}
+
+/**
+ * 疗程卡管理页筛选解析（列表分页与导出共用，防漂移）。
+ * type/status 仅接受合法枚举值，其余视为未选（与 cards/page.tsx 原手工解析口径一致）。
+ */
+export function parseCardFilters(params: Record<string, string | undefined>): CardFilters {
+  const type = params.type as CardFilters['type'] | undefined
+  const status = params.status as CardFilters['status'] | undefined
+  return {
+    marketId: params.market,
+    storeId: params.store,
+    type: type === '疗程卡' || type === '单次卡' || type === 'all' ? type : undefined,
+    status: status === 'active' || status === 'exhausted' || status === 'expired' ? status : undefined,
+    search: params.q,
+    page: params.page ? Number(params.page) : undefined,
+    pageSize: params.size ? Number(params.size) : undefined,
   }
 }

@@ -11,6 +11,7 @@ import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from '
 import type { SQL } from 'drizzle-orm'
 import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
+import { parseCardFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
 
 // ============================================================================
@@ -95,15 +96,17 @@ export interface PaginatedCards {
  */
 const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSessions} IS NULL THEN ${saleItems.remainingSessions} ELSE GREATEST(COALESCE(${saleItems.paidSessions}, 0) - GREATEST(${saleItems.sessionCount} - ${saleItems.remainingSessions}, 0), 0) END`.as('paid_unused_sessions')
 
-export const getCardsPaginated = withPermission(
-  'sale_item:list',
-  async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
-
+/**
+ * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
+ * 基础过滤：购买方向 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
+ * market 分支用子查询（不预查节点类型），故为同步函数。
+ */
+function buildCardConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: CardFilters,
+): (SQL | undefined)[] {
+  // 基础过滤：仅购买方向的疗程卡（含余次追踪）
   const conditions: (SQL | undefined)[] = [
-    // 基础过滤：仅购买方向的疗程卡（含余次追踪）
     eq(saleItems.itemDirection, '购买'),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
@@ -160,8 +163,17 @@ export const getCardsPaginated = withPermission(
       ),
     )
   }
+  return conditions
+}
 
-  const whereClause = and(...conditions)
+export const getCardsPaginated = withPermission(
+  'sale_item:list',
+  async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const whereClause = and(...buildCardConditions(session, filters))
 
   // 市场名称标量子查询（参考 customers.ts 范式）
   const marketNameExpr = sql<string | null>`(
@@ -232,6 +244,142 @@ export const getCardsPaginated = withPermission(
     })),
     total: countRow?.count ?? 0,
   }
+  },
+)
+
+// ============================================================================
+// 疗程卡导出（/cards 页面「导出」按钮）
+//
+// 权限：sale_item:list（与列表同）；scope 由 saleItems.storeId 约束。
+// 复用 buildCardConditions + paidUnusedSessionsExpr，保证筛选条件 / 剩余次数口径与列表一致。
+// 金额 4 列 Number 化便于 Excel 求和；时间列交前端 fmtDateTime（Asia/Shanghai）。
+// ============================================================================
+
+/** 疗程卡导出行（16 列，与表头一致） */
+export interface ExportCardRow {
+  /** 顾客（主档优先，回退订单快照） */
+  clientName: string
+  /** 手机号 */
+  clientPhone: string
+  /** 一级品项（product_kind，父级 L1 名） */
+  categoryL1: string | null
+  /** 二级品项（category_name，L2 行名） */
+  categoryL2: string | null
+  /** 商品/规格（productName 快照优先，脏数据 fallback specName） */
+  productSpec: string | null
+  /** 类型（单次卡 / N次卡，sessionCount 派生，与列表 typeBadge 一致） */
+  cardType: string
+  /** 剩余次数（已付未用口径） */
+  remaining: number
+  /** 总次数 */
+  totalSessions: number
+  /** 单次标价 */
+  unitPrice: number | null
+  /** 单次优惠后价 */
+  unitRealPrice: number | null
+  /** 行应付总额 */
+  saleAmount: number | null
+  /** 行实收（行级净实收，退款/转出可为负） */
+  received: number | null
+  /** 购买门店（门店名 / 市场名） */
+  storeDisplay: string | null
+  /** 开单时间（sale_order_datetime，ISO） */
+  saleOrderDatetime: string | null
+  /** 订单号 */
+  saleOrderId: string
+  /** 订单状态 */
+  orderStatus: string | null
+  /** 付款时间（paid_at，ISO；待支付为 null） */
+  paidAt: string | null
+}
+
+/** numeric 列（postgres.js 返回 string）转 number；null/空/非数字 → null */
+const numOrNull = (v: unknown): number | null => {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** 导出疗程卡（当前筛选命中，跨分页）。LIMIT 10000 防 OOM。 */
+export const exportCards = withPermission(
+  'sale_item:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportCardRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseCardFilters(params)
+    const whereClause = and(...buildCardConditions(session, filters))
+
+    // 市场名 scalar subquery（与列表/详情同范式）
+    const marketNameExpr = sql<string | null>`(
+      SELECT n.name FROM stores s
+      JOIN org_nodes sn ON sn.id = s.org_node_id
+      JOIN org_nodes n ON n.id = sn.parent_id
+      WHERE s.store_id = ${saleItems.storeId}
+    )`.as('market_name')
+
+    const raw = await db
+      .select({
+        productName: saleItems.productName,
+        specName: productSkus.specName,
+        sessionCount: saleItems.sessionCount,
+        paidUnusedSessions: paidUnusedSessionsExpr,
+        unitPrice: saleItems.unitPrice,
+        unitRealPrice: saleItems.unitRealPrice,
+        saleAmount: saleItems.saleAmount,
+        received: saleItems.received,
+        productKind: productCategories.productKind,
+        categoryName: productCategories.categoryName,
+        storeName: stores.storeName,
+        marketName: marketNameExpr,
+        clientName: clientWechatUsers.name,
+        clientPhone: clientWechatUsers.phone,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        saleOrderId: saleItems.saleOrderId,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        orderStatus: saleOrders.status,
+        paidAt: saleOrders.paidAt,
+      })
+      .from(saleItems)
+      .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .where(whereClause)
+      // 例外：业务时间优先（支付时间优于"最近编辑"），与列表排序一致
+      .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+      .limit(LIMIT + 1)
+
+    const truncated = raw.length > LIMIT
+    const page = truncated ? raw.slice(0, LIMIT) : raw
+
+    const rows: ExportCardRow[] = page.map((r) => {
+      const sessionCount = r.sessionCount ?? 0
+      return {
+        clientName: r.clientName ?? r.fallbackName ?? '',
+        clientPhone: r.clientPhone ?? r.fallbackPhone ?? '',
+        categoryL1: r.productKind ?? null,
+        categoryL2: r.categoryName ?? null,
+        productSpec: r.productName ?? r.specName ?? null,
+        cardType: sessionCount === 1 ? '单次卡' : `${sessionCount}次卡`,
+        remaining: r.paidUnusedSessions ?? 0,
+        totalSessions: sessionCount,
+        unitPrice: numOrNull(r.unitPrice),
+        unitRealPrice: numOrNull(r.unitRealPrice),
+        saleAmount: numOrNull(r.saleAmount),
+        received: numOrNull(r.received),
+        storeDisplay: [r.storeName, r.marketName].filter(Boolean).join(' / ') || null,
+        saleOrderDatetime: r.saleOrderDatetime?.toISOString() ?? null,
+        saleOrderId: r.saleOrderId,
+        orderStatus: r.orderStatus ?? null,
+        paidAt: r.paidAt?.toISOString() ?? null,
+      }
+    })
+
+    return { rows, truncated }
   },
 )
 

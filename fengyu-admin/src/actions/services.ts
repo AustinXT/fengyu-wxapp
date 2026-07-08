@@ -176,87 +176,19 @@ export const getServiceOrdersPaginated = withPermission(
   },
 )
 
-/** 服务单导出行（一行一单，服务项聚合成 itemsSummary 一列） */
-export interface ExportServiceOrderRow {
-  serviceOrderId: string
-  status: string
-  serviceOrderType: string
-  customerName: string | null
-  clientPhone: string | null
-  storeName: string | null
-  employeeName: string | null
-  serviceDate: string | null
-  createdAt: string
-  itemsSummary: string
-}
-
-/** 导出服务单（全部筛选命中，含服务项明细聚合列）。LIMIT 10000 防 OOM。 */
+/**
+ * 服务单管理页导出（明细级，一行 = 一条有效 service_commissions 提成分配）。
+ * 复用 selectServiceCommissionExportRows 的主链 JOIN，筛选沿用服务单管理列表口径
+ * （parseServiceOrderFilters：status/store/from/to/q）。因主链为 service_commissions，
+ * 仅含已生成提成分配行的服务单出现，按被分配员工 × 服务项展开多行。
+ */
 export const exportServiceOrders = withPermission(
   'service:list',
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportServiceOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-    const filters = parseServiceOrderFilters(params)
-    const whereClause = and(...buildServiceOrderConditions(session, filters))
-
-    const orderRows = await db
-      .select({
-        service_order: serviceOrders,
-        storeName: stores.storeName,
-        employeeName: staffWechatUsers.name,
-        customerName: clientWechatUsers.name,
-        clientPhone: clientWechatUsers.phone,
-      })
-      .from(serviceOrders)
-      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
-      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
-      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-      .where(whereClause)
-      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
-      .limit(LIMIT + 1)
-
-    const truncated = orderRows.length > LIMIT
-    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
-    const ids = page.map((r) => r.service_order.serviceOrderId)
-
-    // 批量查服务项明细（service_items → sale_items 取名称），避免 N+1
-    const itemsMap = new Map<string, string[]>()
-    if (ids.length > 0) {
-      const itemRows = await db
-        .select({
-          serviceOrderId: serviceItems.serviceOrderId,
-          sessionUsed: serviceItems.sessionUsed,
-          productName: saleItems.productName,
-          skuName: productSkus.specName,
-        })
-        .from(serviceItems)
-        .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
-        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-        .where(inArray(serviceItems.serviceOrderId, ids))
-      for (const it of itemRows) {
-        const name = it.productName ?? it.skuName ?? '—'
-        const arr = itemsMap.get(it.serviceOrderId) ?? []
-        arr.push(`${name}x${it.sessionUsed}`)
-        itemsMap.set(it.serviceOrderId, arr)
-      }
-    }
-
-    const rows: ExportServiceOrderRow[] = page.map((r) => ({
-      serviceOrderId: r.service_order.serviceOrderId,
-      status: r.service_order.status,
-      serviceOrderType: r.service_order.serviceOrderType,
-      customerName: r.customerName,
-      clientPhone: r.clientPhone,
-      storeName: r.storeName,
-      employeeName: r.employeeName,
-      serviceDate: r.service_order.serviceDate,
-      createdAt: r.service_order.createdAt.toISOString(),
-      itemsSummary: (itemsMap.get(r.service_order.serviceOrderId) ?? []).join('、'),
-    }))
-
-    return { rows, truncated }
+  ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
+    return selectServiceCommissionExportRows(session, parseServiceOrderFilters(params))
   },
 )
 
@@ -299,10 +231,128 @@ export interface ExportAllocationServiceRow {
 }
 
 /**
+ * 服务单提成分配明细导出查询（一行 = 一条有效 service_commissions）。
+ * 主链 service_commissions → service_items → service_orders，12 表 JOIN。
+ * 服务单管理页(exportServiceOrders) 与 营业额分配-服务提成(exportAllocationServiceOrders) 共用，
+ * 仅入参 filters 的 parser 不同（列表筛选 vs 锁定已完成 + allocStatus）。LIMIT 10000 防 OOM。
+ */
+async function selectServiceCommissionExportRows(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: ServiceOrderFilters,
+  limit = 10000,
+): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
+  const whereClause = and(
+    eq(serviceCommissions.isVoid, false),
+    ...buildServiceOrderConditions(session, filters),
+  )
+
+  // staff_wechat_users 需两次 JOIN：负责美容师(=sc.employee_id) 与 开单人(=slo.opened_by)
+  // drizzle 0.45 alias() 返回类型与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
+
+  const raw = await db
+    .select({
+      market: serviceOrders.marketName,
+      storeName: stores.storeName,
+      serviceOrderId: serviceOrders.serviceOrderId,
+      saleOrderType: saleOrders.saleOrderType,
+      serviceOrderType: serviceOrders.serviceOrderType,
+      customerName: clientWechatUsers.name,
+      customerPhone: clientWechatUsers.phone,
+      fallbackPhone: saleOrders.clientPhone,
+      productType: saleItems.productType,
+      categoryL1: productCategories.productKind,
+      categoryL2: productCategories.categoryName,
+      productName: saleItems.productName,
+      sessionUsed: serviceItems.sessionUsed,
+      unitRealPrice: serviceItems.unitRealPrice,
+      status: serviceOrders.status,
+      employeeName: staffWechatUsers.name,
+      positionName: staffWechatUsers.positionName,
+      allocationRatio: serviceCommissions.allocationRatio,
+      commissionRate: serviceCommissions.commissionRate,
+      commissionAmount: serviceCommissions.commissionAmount,
+      rating: serviceReviews.rating,
+      reviewComment: serviceReviews.comment,
+      salesCategory: serviceItems.salesCategory,
+      customerType: clientWechatUsers.customerType,
+      openedByName: openedByStaff.name,
+      sourceSaleOrderId: saleItems.saleOrderId,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      remark: serviceOrders.remark,
+      scId: serviceCommissions.id,
+    })
+    .from(serviceCommissions)
+    .innerJoin(serviceItems, eq(serviceCommissions.serviceItemId, serviceItems.serviceItemId))
+    .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(staffWechatUsers, eq(serviceCommissions.employeeId, staffWechatUsers.employeeId))
+    .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
+    .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(whereClause)
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
+    .limit(limit + 1)
+
+  const truncated = raw.length > limit
+  const page = truncated ? raw.slice(0, limit) : raw
+
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const rows: ExportAllocationServiceRow[] = page.map((r) => {
+    const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
+    const sessions = r.sessionUsed ?? null
+    const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
+    const ratioNum = r.allocationRatio == null ? null : Number(r.allocationRatio)
+    const allocationAmount =
+      consumeMoney == null || ratioNum == null ? null : round2(consumeMoney * ratioNum)
+    return {
+      market: r.market,
+      storeName: r.storeName,
+      serviceOrderId: r.serviceOrderId,
+      saleOrderType: r.saleOrderType,
+      serviceOrderType: r.serviceOrderType,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionUsed: sessions,
+      consumeMoney,
+      unitRealPrice: unit,
+      status: r.status,
+      employeeName: r.employeeName,
+      positionName: r.positionName,
+      allocationRatio: r.allocationRatio,
+      allocationAmount,
+      commissionRate: r.commissionRate,
+      commissionAmount: r.commissionAmount == null ? null : Number(r.commissionAmount),
+      rating: r.rating ?? null,
+      reviewComment: r.reviewComment,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
+      openedByName: r.openedByName,
+      sourceSaleOrderId: r.sourceSaleOrderId,
+      serviceDate: r.serviceDate,
+      createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+      remark: r.remark,
+    }
+  })
+
+  return { rows, truncated }
+}
+
+/**
  * 导出营业额分配「服务提成」明细（一行一条有效 service_commissions，每被分配员工一行）。
- * 数据源主链 service_commissions → service_items → service_orders，筛选复用列表口径
- * （状态锁定已完成 + allocStatus 走提成状态 + 门店/日期/搜索）。LIMIT 10000 防 OOM。
- * 仅含已分配（service_commissions 有行）的服务消耗；筛选「待分配」时为空属预期。
+ * 筛选锁定已完成 + allocStatus（parseAllocationServiceFilters）；查询主体复用
+ * selectServiceCommissionExportRows。仅含已分配（service_commissions 有行）的服务消耗；
+ * 筛选「待分配」时为空属预期。
  */
 export const exportAllocationServiceOrders = withPermission(
   'service:list',
@@ -310,113 +360,7 @@ export const exportAllocationServiceOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-    const filters = parseAllocationServiceFilters(params)
-    // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
-    const whereClause = and(
-      eq(serviceCommissions.isVoid, false),
-      ...buildServiceOrderConditions(session, filters),
-    )
-
-    // staff_wechat_users 需两次 JOIN：负责美容师(=sc.employee_id) 与 开单人(=slo.opened_by)
-    // drizzle 0.45 alias() 返回类型与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
-    const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
-
-    const raw = await db
-      .select({
-        market: serviceOrders.marketName,
-        storeName: stores.storeName,
-        serviceOrderId: serviceOrders.serviceOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        serviceOrderType: serviceOrders.serviceOrderType,
-        customerName: clientWechatUsers.name,
-        customerPhone: clientWechatUsers.phone,
-        fallbackPhone: saleOrders.clientPhone,
-        productType: saleItems.productType,
-        categoryL1: productCategories.categoryName,
-        categoryL2: productCategories.productKind,
-        productName: saleItems.productName,
-        sessionUsed: serviceItems.sessionUsed,
-        unitRealPrice: serviceItems.unitRealPrice,
-        status: serviceOrders.status,
-        employeeName: staffWechatUsers.name,
-        positionName: staffWechatUsers.positionName,
-        allocationRatio: serviceCommissions.allocationRatio,
-        commissionRate: serviceCommissions.commissionRate,
-        commissionAmount: serviceCommissions.commissionAmount,
-        rating: serviceReviews.rating,
-        reviewComment: serviceReviews.comment,
-        salesCategory: serviceItems.salesCategory,
-        customerType: clientWechatUsers.customerType,
-        openedByName: openedByStaff.name,
-        sourceSaleOrderId: saleItems.saleOrderId,
-        serviceDate: serviceOrders.serviceDate,
-        createdAt: serviceOrders.createdAt,
-        remark: serviceOrders.remark,
-        scId: serviceCommissions.id,
-      })
-      .from(serviceCommissions)
-      .innerJoin(serviceItems, eq(serviceCommissions.serviceItemId, serviceItems.serviceItemId))
-      .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
-      .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
-      .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
-      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(staffWechatUsers, eq(serviceCommissions.employeeId, staffWechatUsers.employeeId))
-      .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
-      .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(whereClause)
-      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
-      .limit(LIMIT + 1)
-
-    const truncated = raw.length > LIMIT
-    const page = truncated ? raw.slice(0, LIMIT) : raw
-
-    const round2 = (n: number) => Math.round(n * 100) / 100
-    const rows: ExportAllocationServiceRow[] = page.map((r) => {
-      const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
-      const sessions = r.sessionUsed ?? null
-      const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
-      const ratioNum = r.allocationRatio == null ? null : Number(r.allocationRatio)
-      const allocationAmount =
-        consumeMoney == null || ratioNum == null ? null : round2(consumeMoney * ratioNum)
-      return {
-        market: r.market,
-        storeName: r.storeName,
-        serviceOrderId: r.serviceOrderId,
-        saleOrderType: r.saleOrderType,
-        serviceOrderType: r.serviceOrderType,
-        customerName: r.customerName,
-        customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
-        productType: r.productType,
-        categoryL1: r.categoryL1,
-        categoryL2: r.categoryL2,
-        productName: r.productName,
-        sessionUsed: sessions,
-        consumeMoney,
-        unitRealPrice: unit,
-        status: r.status,
-        employeeName: r.employeeName,
-        positionName: r.positionName,
-        allocationRatio: r.allocationRatio,
-        allocationAmount,
-        commissionRate: r.commissionRate,
-        commissionAmount: r.commissionAmount == null ? null : Number(r.commissionAmount),
-        rating: r.rating ?? null,
-        reviewComment: r.reviewComment,
-        salesCategory: r.salesCategory,
-        customerType: r.customerType,
-        openedByName: r.openedByName,
-        sourceSaleOrderId: r.sourceSaleOrderId,
-        serviceDate: r.serviceDate,
-        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
-        remark: r.remark,
-      }
-    })
-
-    return { rows, truncated }
+    return selectServiceCommissionExportRows(session, parseAllocationServiceFilters(params))
   },
 )
 

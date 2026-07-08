@@ -73,7 +73,7 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, getCustomerServiceOrders, assignCustomer, getCustomerPrepaidBalance } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, getCustomerServiceOrders, assignCustomer, getCustomerPrepaidBalance, exportCustomers } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, requirePermission, scopeCondition } from '@/lib/permissions'
@@ -927,5 +927,92 @@ describe('getCustomerPrepaidBalance — 账户级、未绑定放行', () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     await getCustomerPrepaidBalance('user-1')
     expect(scopeCondition).not.toHaveBeenCalled()
+  })
+})
+
+describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计消费）', () => {
+  /**
+   * mock 两次 db.select：
+   *   1) 主查询 .from().where().orderBy().limit() → customerRows
+   *   2) 消费补查 .from().where().groupBy() → spendRows（仅 customerRows 非空时触发）
+   * spendRows=null 表示不挂第二次 mock（空结果用例）。
+   */
+  function mockExportChains(customerRows: any[], spendRows: any[] | null) {
+    const mainChain: any = {}
+    mainChain.from = vi.fn().mockReturnValue(mainChain)
+    mainChain.where = vi.fn().mockReturnValue(mainChain)
+    mainChain.orderBy = vi.fn().mockReturnValue(mainChain)
+    mainChain.limit = vi.fn().mockResolvedValue(customerRows)
+    ;(db.select as any).mockReturnValueOnce(mainChain)
+
+    if (spendRows !== null) {
+      const spendChain: any = {}
+      spendChain.from = vi.fn().mockReturnValue(spendChain)
+      spendChain.where = vi.fn().mockReturnValue(spendChain)
+      spendChain.groupBy = vi.fn().mockResolvedValue(spendRows)
+      ;(db.select as any).mockReturnValueOnce(spendChain)
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('字段映射 + 累计消费回填（spending_tier 口径；无消费记录回退 0；birthday 按 Asia/Shanghai）', async () => {
+    const customerRows = [
+      {
+        userId: 'u1', name: '张三', phone: '13800000001', storeName: '南昌店',
+        customerType: '会员客', memberLevel: '金钻', spendingTier: '3-6W', customerStatus: '保有会员-稳定',
+        boundEmployeeName: '李美容', promoterName: '王推荐', customerSource: '老带新',
+        birthday: new Date('1990-05-20T00:00:00.000Z'),
+      },
+      {
+        userId: 'u2', name: null, phone: null, storeName: null,
+        customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
+        boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null,
+      },
+    ]
+    mockExportChains(customerRows, [{ clientUserId: 'u1', total: '35000.00' }])
+
+    const { rows, truncated } = await exportCustomers({})
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({
+      name: '张三', phone: '13800000001', storeName: '南昌店',
+      customerType: '会员客', memberLevel: '金钻', spendingTier: '3-6W', customerStatus: '保有会员-稳定',
+      employeeName: '李美容', promoterName: '王推荐', customerSource: '老带新',
+      totalSpend: '35000.00', // 与 spendingTier '3-6W' 自洽
+    })
+    expect(rows[0].birthday).toBe('1990-05-20') // fmtDate（Asia/Shanghai）
+    // u2 无消费记录 → totalSpend 回退 '0'；null 字段透传
+    expect(rows[1].totalSpend).toBe('0')
+    expect(rows[1].name).toBeNull()
+    expect(rows[1].birthday).toBeNull()
+  })
+
+  it('超过 LIMIT(10000) → truncated=true 且截断到 10000 行', async () => {
+    const customerRows = Array.from({ length: 10001 }, (_, i) => ({
+      userId: `u${i}`, name: `顾客${i}`, phone: null, storeName: null,
+      customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
+      boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null,
+    }))
+    mockExportChains(customerRows, [])
+
+    const { rows, truncated } = await exportCustomers({})
+
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
+  })
+
+  it('空结果 → rows=[] truncated=false，不触发消费补查（db.select 仅 1 次）', async () => {
+    mockExportChains([], null)
+
+    const { rows, truncated } = await exportCustomers({})
+
+    expect(rows).toEqual([])
+    expect(truncated).toBe(false)
+    expect(db.select).toHaveBeenCalledTimes(1)
   })
 })

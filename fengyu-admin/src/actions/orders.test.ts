@@ -3636,7 +3636,7 @@ describe('exportAllocationOrders — 销售提成分配明细导出', () => {
       market: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-XSD-WX-2606080027',
       saleOrderType: '销售单', documentType: '售后',
       customerName: '张凯顾客', customerPhone: '13617216903', fallbackName: null, fallbackPhone: null,
-      productType: '疗程卡', categoryL1: '圣源养心', categoryL2: '护理项目',
+      productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
       productName: '【王牌】疼痛管理', sessionCount: 10, remainingSessions: 10,
       saleAmount: '5200.00', prepaidCardAmount: '0.00', received: '3600.00', refundedAmount: '300.00',
       unitRealPrice: '300.00', status: '部分支付',
