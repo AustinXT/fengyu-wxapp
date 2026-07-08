@@ -252,6 +252,28 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(normalizeSql(paynotifyAttr)).toContain('o.total_amount >= ?')
     })
 
+    test('staff / admin orders.ts / admin recompute 三端无回款单累计分支（仅看单笔 total）', () => {
+      // 三端的会员客 CASE 本身就不含回款累计（staff 注释明确「保留 total_amount 直接判定」），
+      // 故归因段也无回款累计。两侧条件不同源，跨端标签值会存在差异：
+      //   - 场景 A：顾客 A 一笔销售单 total=15000（< 阈值 20000），后续回款 8000 累计达标
+      //     → payNotify 打标，staff/admin 不打标（合法差异，非 bug）
+      //   - 场景 B：单笔 total ≥ 阈值 → 四端都打标
+      expect(staffAttr).not.toContain('ref_sale_order_id')
+      expect(staffAttr).not.toContain("'回款单'")
+      expect(adminAttr).not.toContain('ref_sale_order_id')
+      expect(adminAttr).not.toContain("'回款单'")
+      expect(adminRecomputeAttr).not.toContain('ref_sale_order_id')
+      expect(adminRecomputeAttr).not.toContain("'回款单'")
+    })
+
+    test('payNotify 归因段确实使用 OR 拼接：单笔达标 OR 单笔+回款累计达标', () => {
+      // 字面量断言：归因条件形如 `(o.total_amount >= $2 OR (o.total_amount + COALESCE(...)) >= $2)`
+      // 防回款单累计分支被改成「AND 拼接」或被「去掉外层括号」导致语义变化。
+      // 允许跨行空白（SQL 模板字符串里 $2 周围有换行/缩进）；$ 字面量匹配。
+      const orBranch = /o\.total_amount\s*>=\s*\$2\s*OR\s*\(\s*o\.total_amount\s*\+\s*COALESCE/s
+      expect(paynotifyAttr).toMatch(orBranch)
+    })
+
     test('四端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
       const re = /ORDER BY o\.paid_at ASC NULLS LAST/
       expect(staffAttr).toMatch(re)
