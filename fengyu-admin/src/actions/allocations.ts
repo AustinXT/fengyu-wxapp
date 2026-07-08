@@ -524,7 +524,7 @@ export const getPendingPayments = withPermission(
 
     const where = and(...(conds as any[]))
 
-    // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
+    
     const rows = await db
       .select({
         salePaymentId: saleOrderPayments.id,
@@ -564,7 +564,7 @@ export const getPendingPayments = withPermission(
         paymentMethod: r.paymentMethod,
         paidAt: r.paidAt instanceof Date ? r.paidAt.toISOString() : (r.paidAt ?? null),
         allocationStatus: r.allocationStatus ?? null,
-        // 顾客档案权威 > sale_orders 兜底
+        
         customerName: r.custName || r.fallbackName || null,
         clientPhone: r.custPhone || r.fallbackPhone || null,
         storeName: r.storeName ?? null,

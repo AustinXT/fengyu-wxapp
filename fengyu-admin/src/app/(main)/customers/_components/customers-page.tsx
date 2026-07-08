@@ -144,7 +144,7 @@ export default function CustomersPage({
     }
   }
 
-  /** 导出当前筛选命中的全部顾客（跨分页，12 列含累计消费/推荐人等扩展字段） */
+  
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
     const { rows, truncated } = await exportCustomers(raw)

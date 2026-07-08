@@ -988,8 +988,8 @@ exports.main = async (event) => {
               `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
               [targetOrder.client_user_id]
             )
-            // 给触发本次首次跃迁的达标销售单打会员升级标记。WHERE 与本端会员客判定 CASE 同源
-            // （含回款单累计：单笔达标 或 单笔+回款累计达标）。paid_at 最早 = 确立会员资格的首笔达标单。
+            
+            
             await client.query(
               `UPDATE sale_orders SET is_membership_upgrade = true
                WHERE sale_order_id = (

@@ -686,8 +686,8 @@ export default function OrderDetailPageClient({
           redirectTo="/orders"
           onConfirm={() => deleteOrder(order.saleOrderId)}
           description={
-            // 历史已作废单（WorkFine 导入）专属文案：明确告知"删除后可重新拉取"的动机，
-            // 强调其它守卫（无实收/无积分储值卡流水/无下游服务/无回退款子单）必须全部满足才可删。
+            
+            
             isLegacy && order.status === "已作废" ? (
               <>
                 确定要删除历史订单 <span className="font-medium">{order.saleOrderId}</span>（

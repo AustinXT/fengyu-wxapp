@@ -1178,7 +1178,7 @@ export const listRefunds = withAnyPermission(
     .where(whereClause)
   const total = countRow?.count ?? 0
 
-  // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  
   const rows = await db
     .select({
       payment: saleOrderPayments,
@@ -1217,7 +1217,7 @@ export const getRefundById = withAnyPermission(
   const idNum = Number(refundPaymentId)
   if (!Number.isFinite(idNum) || idNum <= 0) return null
 
-  // 2026-07-08 修复 T1：与 getRefunds 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  
   const rows = await db
     .select({
       payment: saleOrderPayments,
@@ -1250,7 +1250,7 @@ export const getRefundById = withAnyPermission(
   let origOrder: SaleOrder | null = null
   if (base.refSaleOrderId && rows[0].order) {
     const o = rows[0].order
-    // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
+    
     origOrder = {
       saleOrderId: o.saleOrderId,
       status: o.status as OrderStatus,
@@ -1351,7 +1351,7 @@ function mapRefundRow(r: {
     marketName: r.order?.marketName ?? null,
     storeId: r.order?.storeId ?? null,
     storeName: r.storeName,
-    // 顾客档案权威 > sale_orders 兜底（防 client_wechat_users.name='' 的旧数据被原样展示）
+    
     customerName: r.custName || r.order?.customerName || null,
     clientPhone: r.custPhone || r.order?.clientPhone || null,
     amount: r.payment.amount,

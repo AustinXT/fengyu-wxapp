@@ -74,7 +74,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 
 	const searchParams = useSearchParams();
 
-	/** 导出当前筛选命中的全部疗程卡（跨分页，最多 10000 条） */
+	
 	const handleExport = useCallback(async () => {
 		const raw = Object.fromEntries(searchParams.entries());
 		const { rows, truncated } = await exportCards(raw);

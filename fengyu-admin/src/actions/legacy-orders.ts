@@ -139,7 +139,7 @@ export const listLegacyOrders = withPermission(
       storeId: r.order.storeId,
       storeName: r.storeName ?? null,
       marketName: r.order.marketName,
-      // 2026-07-08 修复 T1：顾客档案权威 > sale_orders 兜底（防 phone-as-name 污染）
+      
       clientPhone: r.clientAuthPhone || r.order.clientPhone || null,
       clientUserId: r.order.clientUserId,
       clientName: r.clientName ?? null,

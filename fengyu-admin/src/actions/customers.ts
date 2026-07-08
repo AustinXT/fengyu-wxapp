@@ -14,7 +14,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
 
-// 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
+
 const storeName = sql<string | null>`(
   SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
 )`.as('store_name')
@@ -74,12 +74,12 @@ function serializeCustomer(row: CustomerRow): Customer {
   }
 }
 
-/** 推荐人姓名（promoter_employee_id → staff_wechat_users.name）— 导出专用标量子查询 */
+
 const promoterName = sql<string | null>`(
   SELECT name FROM staff_wechat_users WHERE employee_id = ${clientWechatUsers.promoterEmployeeId}
 )`.as('promoter_name')
 
-/** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
+
 const exportCustomerColumns = {
   userId: clientWechatUsers.userId,
   name: clientWechatUsers.name,
@@ -109,10 +109,7 @@ export const searchCustomerByPhone = withPermission(
   },
 )
 
-/**
- * 模糊搜索顾客 — 按姓名或手机号 ILIKE 匹配，返回最多 20 条结果。
- * 用于开单页面的顾客搜索。
- */
+
 export const searchCustomers = withPermission(
   'customer:list',
   async (session, keyword: string): Promise<Customer[]> => {
@@ -125,7 +122,7 @@ export const searchCustomers = withPermission(
     .from(clientWechatUsers)
     .where(
       and(
-        // 本门店已绑定顾客 ∪ 标记临时跨店的外门店顾客（需求21：跨门店临时绑定）
+        
         or(
           and(
             scopeCondition(session, clientWechatUsers.boundStoreId),
@@ -139,7 +136,7 @@ export const searchCustomers = withPermission(
         ),
       ),
     )
-    // 例外：picker 字母序
+    
     .orderBy(asc(clientWechatUsers.name))
     .limit(20)
 
@@ -150,13 +147,13 @@ export const searchCustomers = withPermission(
 export const getCustomers = withPermission(
   'customer:list',
   async (session): Promise<Customer[]> => {
-  // admin 不碰顾客数据（规范约束），但 scopeCondition 会返回 undefined（无过滤）
-  // 非 admin 角色按 boundStoreId scope 过滤
+  
+  
   const rows = await db
     .select(customerColumns)
     .from(clientWechatUsers)
     .where(scopeCondition(session, clientWechatUsers.boundStoreId))
-    // 例外：picker 字母序
+    
     .orderBy(asc(clientWechatUsers.name))
     .limit(500)
 
@@ -164,7 +161,7 @@ export const getCustomers = withPermission(
   },
 )
 
-/** 顾客列表筛选参数 */
+
 export interface CustomerFilters {
   marketId?: string
   storeId?: string
@@ -179,13 +176,13 @@ export interface CustomerFilters {
   pageSize?: number
 }
 
-/** URL searchParams → CustomerFilters（列表/导出入参解析单一来源，与 page.tsx 共用） */
-// 注：实际实现已迁出到 `@/lib/list-filters.ts` 的 `parseCustomerFilters`，
-// 与 `parseOrderFilters` / `parseServiceOrderFilters` / `parseCardFilters` 同处一处，
-// 避免 page.tsx 与 action 间出现筛选映射漂移。
+
+
+
+
 import { parseCustomerFilters } from '@/lib/list-filters'
 
-/** 构建顾客列表/导出共用 WHERE 条件（scope + 8 筛选维度 + 姓名/手机号搜索） */
+
 function buildCustomerConditions(
   session: AuthSession,
   filters: CustomerFilters,
@@ -234,18 +231,13 @@ function buildCustomerConditions(
   return conditions
 }
 
-/** 分页结果 */
+
 export interface PaginatedCustomers {
   data: Customer[]
   total: number
 }
 
-/**
- * 服务端分页顾客列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * scope 基于 boundStoreId（顾客归属门店）。
- * 搜索支持：姓名、手机号（ILIKE）。
- */
+
 export const getCustomersPaginated = withPermission(
   'customer:list',
   async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
@@ -262,7 +254,7 @@ export const getCustomersPaginated = withPermission(
     db.select(customerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序
+      
       .orderBy(asc(clientWechatUsers.name))
       .limit(pageSize)
       .offset(offset),
@@ -275,7 +267,7 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
-/** 顾客导出行（对应 12 列表头） */
+
 export interface ExportCustomerRow {
   name: string | null
   phone: string | null
@@ -285,21 +277,14 @@ export interface ExportCustomerRow {
   spendingTier: string
   customerStatus: string | null
   employeeName: string | null
-  /** 累计消费（spending_tier 口径，与「消费档位」列自洽） */
+  
   totalSpend: string
   promoterName: string | null
   customerSource: string | null
   birthday: string | null
 }
 
-/**
- * 导出顾客（全部筛选命中，跨分页）。LIMIT 10000 防 OOM。
- *
- * 累计消费口径 = refresh-spending-tier.ts 的 spending_tier 分桶原值：
- *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
- * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
- * 推荐人 = promoter_employee_id 对应的员工姓名（标量子查询）。
- */
+
 export const exportCustomers = withPermission(
   'customer:list',
   async (
@@ -314,7 +299,7 @@ export const exportCustomers = withPermission(
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）
+      
       .orderBy(asc(clientWechatUsers.name))
       .limit(LIMIT + 1)
 
@@ -322,7 +307,7 @@ export const exportCustomers = withPermission(
     const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
     const userIds = page.map((r) => r.userId)
 
-    // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
+    
     const spendMap = new Map<string, string>()
     if (userIds.length > 0) {
       const spendRows = await db
@@ -334,7 +319,7 @@ export const exportCustomers = withPermission(
         .where(inArray(saleOrders.clientUserId, userIds))
         .groupBy(saleOrders.clientUserId)
       for (const sr of spendRows) {
-        // clientUserId 理论可空（匿名单），但 WHERE 已限定 IN userIds（非空），守卫仅作类型收窄
+        
         if (sr.clientUserId) spendMap.set(sr.clientUserId, sr.total)
       }
     }
@@ -361,7 +346,7 @@ export const exportCustomers = withPermission(
 export const getCustomerById = withPermission(
   'customer:list',
   async (session, userId: string): Promise<Customer | null> => {
-  // admin 纯角色不碰顾客数据（admin+manager 双角色可访问）
+  
   const isAdminOnly = isAdminScope(session) && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
   if (isAdminOnly) return null
 
@@ -379,8 +364,8 @@ export const getCustomerById = withPermission(
 export const getCustomerOrders = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<SaleOrder[]> => {
-  // scope 守卫：与退款 / 服务记录同口径，顾客不在当前 scope 内返回空，
-  // 杜绝受限角色凭 userId 越权枚举他店顾客订单 / 转换单（getCustomerById 内含 scopeCondition）。
+  
+  
   const customer = await getCustomerById(userId)
   if (!customer) return []
 
@@ -391,10 +376,10 @@ export const getCustomerOrders = withPermission(
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
 
-  // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  
   const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
 
-  // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  
   const rows = await db
     .select({
       order: saleOrders,
@@ -408,10 +393,10 @@ export const getCustomerOrders = withPermission(
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(eq(saleOrders.clientUserId, userId))
-    // 例外：详情页子列表，业务时间（订单日期）优先
+    
     .orderBy(desc(saleOrders.saleOrderDatetime))
 
-  // 批量查询所有订单的明细（避免 N+1）
+  
   const orderIds = rows.map(r => r.order.saleOrderId)
   const allItemRows = orderIds.length > 0
     ? await db
@@ -424,7 +409,7 @@ export const getCustomerOrders = withPermission(
         .where(inArray(saleItems.saleOrderId, orderIds))
     : []
 
-  // 按订单 ID 分组
+  
   const itemsByOrderId = new Map<string, typeof allItemRows>()
   for (const ir of allItemRows) {
     const oid = ir.item.saleOrderId
@@ -447,7 +432,7 @@ export const getCustomerOrders = withPermission(
       storeId: r.order.storeId,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
       clientUserId: r.order.clientUserId,
-      // 顾客档案权威 > sale_orders 兜底
+      
       clientPhone: r.custPhone || r.order.clientPhone || null,
       customerName: r.custName || r.order.customerName || null,
       totalAmount: r.order.totalAmount,
@@ -499,7 +484,7 @@ export const getCustomerOrders = withPermission(
 export const getCustomerAppointments = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<Appointment[]> => {
-  // scope 守卫：顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客预约记录（getCustomerById 内含 scopeCondition）。
+  
   const customer = await getCustomerById(userId)
   if (!customer) return []
 
@@ -515,7 +500,7 @@ export const getCustomerAppointments = withPermission(
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
     .where(eq(appointments.clientUserId, userId))
-    // 例外：详情页子列表，业务时间（预约时间）优先
+    
     .orderBy(desc(appointments.appointmentTime))
 
   return rows.map((r) => {
@@ -550,11 +535,11 @@ export interface CustomerRefundItem {
 }
 
 export interface CustomerRefundRecord {
-  /** 退款指向原销售单；转换单指向转换单自身 */
+  
   saleOrderId: string
   type: '退款' | '转换单'
   status: string
-  /** 退款金额已含负号；转换单为单据总额 */
+  
   totalAmount: string
   refundReason: string | null
   createdAt: string
@@ -562,23 +547,19 @@ export interface CustomerRefundRecord {
   items: CustomerRefundItem[]
 }
 
-/**
- * 顾客退换记录（顾客档案「退换记录」Tab，与员工端 customer.refundHistory 同口径）
- * 数据源 = sale_order_payments[change_type='退款'] + sale_orders[sale_order_type='转换单']
- * scope：按 sale_orders.store_id 过滤（与列表同 scope；admin 无过滤）
- */
+
 export const getCustomerRefundHistory = withPermission(
   'customer:list',
   async (session, userId: string): Promise<CustomerRefundRecord[]> => {
-  // scope 守卫：交易数据虽「跟顾客走」不按门店过滤，但「能否查这位顾客」仍受 scope 限制。
-  // 复用 getCustomerById 的 scopeCondition（与 getCustomerPhoneChangeLogs 同口径）：
-  // 顾客不在当前 scope 内则返回空，杜绝受限角色凭 userId 越权枚举他店顾客退款 / 转换单历史。
+  
+  
+  
   const customer = await getCustomerById(userId)
   if (!customer) return []
 
   const { saleOrders, saleItems, saleOrderPayments } = await import('@db/order')
 
-  // 退款流水（来自 sale_order_payments）
+  
   const refundRows = await db
     .select({
       saleOrderId: saleOrderPayments.saleOrderId,
@@ -592,7 +573,7 @@ export const getCustomerRefundHistory = withPermission(
     .from(saleOrderPayments)
     .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .where(
-      // 交易数据跟顾客走：退款流水不按门店过滤（顾客可见性由 getCustomerById 守护）
+      
       and(
         eq(saleOrderPayments.changeType, '退款'),
         eq(saleOrders.clientUserId, userId),
@@ -600,7 +581,7 @@ export const getCustomerRefundHistory = withPermission(
     )
     .orderBy(desc(saleOrderPayments.createdAt))
 
-  // 转换单
+  
   const convRows = await db
     .select({
       saleOrderId: saleOrders.saleOrderId,
@@ -611,7 +592,7 @@ export const getCustomerRefundHistory = withPermission(
     })
     .from(saleOrders)
     .where(
-      // 交易数据跟顾客走：转换单不按门店过滤
+      
       and(
         eq(saleOrders.clientUserId, userId),
         eq(saleOrders.saleOrderType, '转换单'),
@@ -619,7 +600,7 @@ export const getCustomerRefundHistory = withPermission(
     )
     .orderBy(desc(saleOrders.createdAt))
 
-  // 转换单明细
+  
   const convOrderIds = convRows.map((o) => o.saleOrderId)
   const convItemRows = convOrderIds.length > 0
     ? await db
@@ -650,13 +631,13 @@ export const getCustomerRefundHistory = withPermission(
   const refunds: CustomerRefundRecord[] = refundRows.map((r) => {
     let parsed: { items?: CustomerRefundItem[] } | null = null
     if (r.note) {
-      try { parsed = typeof r.note === 'string' ? JSON.parse(r.note) : r.note } catch { /* ignore */ }
+      try { parsed = typeof r.note === 'string' ? JSON.parse(r.note) : r.note } catch {  }
     }
     return {
       saleOrderId: r.saleOrderId,
       type: '退款',
       status: r.status,
-      totalAmount: r.amount, // 已含负号
+      totalAmount: r.amount, 
       refundReason: r.refundReason,
       createdAt: r.createdAt.toISOString(),
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -694,16 +675,12 @@ export interface CustomerServiceRecord {
   items: CustomerServiceItem[]
 }
 
-/**
- * 顾客服务记录（顾客档案「服务记录」Tab）
- * 交易数据跟顾客走：按 clientUserId 查全量服务单（含跨门店、各状态），无 store scope。
- * 与 getCustomerRefundHistory 同 scope 口径（顾客可见性由 getCustomerById 守护）。
- */
+
 export const getCustomerServiceOrders = withPermission(
   'customer:list',
   async (session, userId: string): Promise<CustomerServiceRecord[]> => {
-  // scope 守卫：与 getCustomerRefundHistory 同口径，复用 getCustomerById 的 scopeCondition；
-  // 顾客不在当前 scope 内返回空，杜绝越权枚举他店顾客跨门店服务记录。
+  
+  
   const customer = await getCustomerById(userId)
   if (!customer) return []
 
@@ -778,18 +755,18 @@ export const updateCustomer = withPermission(
     promoterEmployeeId: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
-    /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
+    
     isCrossStoreTemp: boolean
     }>,
-    /** 乐观锁：提交时携带的 updated_at */
+    
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-  // 服务端输入校验
+  
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
-  // boundEmployeeId 变更时同步写入冗余姓名
+  
   if ('boundEmployeeId' in data) {
     if (data.boundEmployeeId) {
       const { staffWechatUsers } = await import('@db/user')
@@ -801,7 +778,7 @@ export const updateCustomer = withPermission(
     }
   }
 
-  // 获取旧值用于日志 diff
+  
   const [before] = await db.select().from(clientWechatUsers).where(eq(clientWechatUsers.userId, userId)).limit(1)
 
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
@@ -838,19 +815,14 @@ export const updateCustomer = withPermission(
   },
 )
 
-/**
- * 客户分配（将顾客绑定给指定美容师）— 对齐 staff 端 customer.assign。
- *
- * 复用 customer:update 权限（免改权限矩阵）。校验员工存在后 UPDATE
- * bound_employee_id + bound_employee_name（冗余姓名）。scope 由 scopeCondition 守护。
- */
+
 export const assignCustomer = withPermission(
   'customer:update',
   async (session, userId: string, employeeId: string): Promise<{ success: boolean; message: string }> => {
   if (!userId) return { success: false, message: '缺少顾客 userId' }
   if (!employeeId) return { success: false, message: '请选择美容师' }
 
-  // 校验员工存在并取冗余姓名 + 门店（与 updateCustomer 同范式）
+  
   const { staffWechatUsers } = await import('@db/user')
   const [emp] = await db
     .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
@@ -859,9 +831,9 @@ export const assignCustomer = withPermission(
     .limit(1)
   if (!emp) return { success: false, message: '员工不存在' }
 
-  // 员工 scope 校验（对齐 staff 端 assertEmployeeInScope）：
-  // 防止门店店长把本店顾客分配给其他门店的美容师。
-  // isInScope 对 admin 角色放行；员工无门店（storeId=null）时非 admin 拒绝。
+  
+  
+  
   if (!isInScope(session, emp.storeId ?? '')) {
     return { success: false, message: '无权分配给该门店的员工' }
   }
@@ -887,12 +859,7 @@ export const assignCustomer = withPermission(
   },
 )
 
-/**
- * 顾客储值卡余额（基本档案 Tab 展示）— 对齐 staff 端 customer.customerBalance。
- *
- * 账户级资产：prepaid_cards 一户一账户、跨店共享、无 store_id 列，故不加 scope 过滤
- * （未绑定门店的顾客余额仍可查）。无行返回 { cardId: null, balance: '0' }。
- */
+
 export const getCustomerPrepaidBalance = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<{ cardId: string | null; balance: string }> => {
@@ -919,7 +886,7 @@ export const createCustomer = withPermission(
   boundEmployeeId?: string | null
     },
   ): Promise<{ success: boolean; message: string; userId?: string }> => {
-  // 服务端输入校验
+  
   if (!data.name?.trim()) {
     return { success: false, message: '姓名不能为空' }
   }
@@ -930,12 +897,12 @@ export const createCustomer = withPermission(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
-  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
+  
   if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
     return { success: false, message: '无权在该门店创建顾客' }
   }
 
-  // 检查手机号是否已存在
+  
   const existing = await db
     .select({ userId: clientWechatUsers.userId })
     .from(clientWechatUsers)
@@ -946,7 +913,7 @@ export const createCustomer = withPermission(
     return { success: false, message: '该手机号已存在顾客记录' }
   }
 
-  // 解析绑定美容师姓名
+  
   let boundEmployeeName: string | null = null
   if (data.boundEmployeeId) {
     const { staffWechatUsers } = await import('@db/user')
@@ -955,7 +922,7 @@ export const createCustomer = withPermission(
     boundEmployeeName = emp?.name ?? null
   }
 
-  // 服务端生成 userId
+  
   const { randomBytes } = await import('crypto')
   const userId = `FYGK-${randomBytes(6).toString('hex')}`
 
@@ -983,9 +950,7 @@ export const createCustomer = withPermission(
   },
 )
 
-/* ============================================================
- * P1 — 手机号变更日志（顾客详情 Tab，只读）
- * ============================================================ */
+
 
 export interface PhoneChangeLog {
   id: number
@@ -994,30 +959,19 @@ export interface PhoneChangeLog {
   newPhone: string | null
   mergedOrders: number
   operatorLabel: string
-  /** 'client'：顾客端 P0/P1 自助换绑历史；'admin'：管理后台代客修改 */
+  
   source: 'client' | 'admin'
-  /** 仅 admin 来源时填充：操作员姓名 */
+  
   operatorName: string | null
 }
 
-/**
- * 读取指定顾客的手机号变更记录
- *
- * 数据源（合并展示）：
- *   1. action='auth.rebindPhone' AND target_type='client_user'
- *      （P0/P1 客户端自助换绑历史，2026-04-16 已下线，仅供历史回看）
- *      detail 形如 { oldPhone, newPhone, clientUserId, mergedOrders }（P0 已脱敏）
- *   2. action='customer.update' AND target_type='customer'
- *      （admin-only 改 phone，detail 由 logUpdate 写入）
- *      detail 形如 { _v: 2, _t: 'update', changes: { phone: { from, to }, ... } }
- *      仅 changes.phone 存在的记录被纳入
- */
+
 export const getCustomerPhoneChangeLogs = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<PhoneChangeLog[]> => {
   const { operationLogs } = await import('@db/operation-log')
 
-  // scope 保护：非 admin 需确认顾客在其 scope 内（复用 getCustomerById 的 scope 过滤）
+  
   const customer = await getCustomerById(userId)
   if (!customer) return []
 
@@ -1043,18 +997,18 @@ export const getCustomerPhoneChangeLogs = withPermission(
           eq(operationLogs.action, 'customer.update'),
           eq(operationLogs.targetType, 'customer'),
           eq(operationLogs.targetId, userId),
-          // 仅当 detail.changes 中包含 phone 字段时才计入（admin 改了非 phone 字段的更新不应进入手机号变更 Tab）
+          
           sql`(${operationLogs.detail} -> 'changes' ? 'phone')`,
         ),
       ),
     )
-    // 例外：流水型表无 updatedAt 列（operation_logs）
+    
     .orderBy(desc(operationLogs.createdAt))
     .limit(200)
 
   return rows.map((r) => {
     if (r.action === 'customer.update') {
-      // logUpdate 写入的 diff 结构：{ _v: 2, _t: 'update', changes: { phone: { from, to } } }
+      
       const detail = (r.detail ?? {}) as {
         changes?: { phone?: { from?: string | null; to?: string | null } }
       }
@@ -1071,9 +1025,9 @@ export const getCustomerPhoneChangeLogs = withPermission(
       }
     }
 
-    // auth.rebindPhone 历史记录
+    
     const detail = (r.detail ?? {}) as { oldPhone?: string; newPhone?: string; clientUserId?: string; mergedOrders?: number }
-    // operator_employee_id 为 null + detail.clientUserId 存在 → 顾客自助
+    
     const operatorLabel = r.operatorEmployeeId
       ? (r.operatorName ?? r.operatorEmployeeId)
       : (detail.clientUserId ? '顾客自助' : (r.operatorName ?? '—'))
@@ -1091,9 +1045,7 @@ export const getCustomerPhoneChangeLogs = withPermission(
   },
 )
 
-/* ============================================================
- * P1 — 顾客合并工具（孤儿档案认领）
- * ============================================================ */
+
 
 export interface OrphanProfile {
   userId: string
@@ -1108,15 +1060,11 @@ export interface OrphanProfile {
   createdAt: string
 }
 
-/**
- * 查询与当前顾客同手机号的"孤儿档案"（openid IS NULL 且 user_id 不同）
- *
- * 用于顾客详情页展示"合并历史档案"入口。
- */
+
 export const getOrphanProfilesByUserId = withPermission(
   'customer:list',
   async (_session, userId: string): Promise<OrphanProfile[]> => {
-  // 先拿到当前行（受 scope 限制）
+  
   const current = await getCustomerById(userId)
   if (!current || !current.phone) return []
 
@@ -1159,22 +1107,7 @@ export const getOrphanProfilesByUserId = withPermission(
   },
 )
 
-/**
- * 合并客户档案（孤儿行 → 活跃行）
- *
- * 条件：
- *   - 目标（source）必须是活跃行（openid NOT NULL）
- *   - 来源（orphan）必须是孤儿行（openid IS NULL）
- *   - 权限：仅店长（manager）/ admin
- *
- * 事务内：
- *   1. 把孤儿行的档案字段填入活跃行（活跃行已有非空字段**不覆盖**）
- *   2. 重挂 sale_orders / user_coupons / point_transactions / prepaid_cards /
- *      card_transactions / appointments / messages / service_orders
- *      的 client_user_id = orphan → source
- *   3. DELETE 孤儿行
- *   4. 审计日志 admin.mergeClientProfile
- */
+
 export const mergeClientProfile = withPermission(
   'customer:update',
   async (
@@ -1182,7 +1115,7 @@ export const mergeClientProfile = withPermission(
     sourceUserId: string,
     orphanUserId: string,
   ): Promise<{ success: boolean; message: string; fieldsMigrated?: string[]; ordersReassigned?: number }> => {
-  // 仅店长 / admin 允许合并
+  
   if (!hasRole(session, 'manager') && !isAdminScope(session)) {
     return { success: false, message: '仅店长或管理员可执行顾客合并' }
   }
@@ -1191,7 +1124,7 @@ export const mergeClientProfile = withPermission(
     return { success: false, message: '源顾客与目标孤儿档案必须是两个不同的 userId' }
   }
 
-  // 校验两边状态
+  
   const [sourceRow] = await db
     .select()
     .from(clientWechatUsers)
@@ -1211,14 +1144,14 @@ export const mergeClientProfile = withPermission(
     return { success: false, message: '两条档案手机号不一致，请先核实' }
   }
 
-  // 非 admin 需 scope 允许访问活跃顾客所属门店
+  
   if (!isAdminScope(session)) {
     if (sourceRow.boundStoreId && !isInScope(session, sourceRow.boundStoreId)) {
       return { success: false, message: '无权对该门店的顾客执行合并' }
     }
   }
 
-  // 可迁移字段（源行**缺失**才从孤儿行搬）
+  
   const migratable: Array<keyof typeof clientWechatUsers.$inferSelect> = [
     'customerId', 'memberLevel', 'spendingTier', 'pointsBalance', 'skinType',
     'name', 'gender', 'notes', 'birthday', 'occupation', 'customerSource',
@@ -1250,15 +1183,15 @@ export const mergeClientProfile = withPermission(
       const { serviceOrders } = await import('@db/service')
       const { pickupRecords } = await import('@db/pickup')
 
-      // 1. 档案字段回填（仅缺失项）
+      
       if (Object.keys(patch).length > 0) {
         await tx.update(clientWechatUsers)
           .set(patch as any)
           .where(eq(clientWechatUsers.userId, sourceUserId))
       }
 
-      // 2. 业务引用重挂（各表列名不同：order/appointment/service 用 clientUserId，
-      //    coupon/points/prepaid 用 userId，messages 用 recipientType+recipientId）
+      
+      
       const reassignCol = async (table: any, col: any, setObj: Record<string, unknown>) => {
         const res: any = await tx.update(table).set(setObj as any).where(eq(col, orphanUserId))
         return (res?.count ?? res?.rowCount ?? 0) as number
@@ -1267,16 +1200,16 @@ export const mergeClientProfile = withPermission(
       await reassignCol(userCoupons, userCoupons.userId, { userId: sourceUserId })
       await reassignCol(pointTransactions, pointTransactions.userId, { userId: sourceUserId })
       await reassignCol(prepaidCards, prepaidCards.userId, { userId: sourceUserId })
-      // card_transactions 通过 card_id → prepaid_cards 间接关联，无需直接迁移
+      
       await reassignCol(appointments, appointments.clientUserId, { clientUserId: sourceUserId })
       await reassignCol(serviceOrders, serviceOrders.clientUserId, { clientUserId: sourceUserId })
       await reassignCol(pickupRecords, pickupRecords.clientUserId, { clientUserId: sourceUserId })
-      // messages: recipientType='客户' AND recipient_id = orphan
+      
       await tx.update(messages)
         .set({ recipientId: sourceUserId })
         .where(and(eq(messages.recipientType, '客户'), eq(messages.recipientId, orphanUserId)))
 
-      // 3. 删除孤儿行
+      
       await tx.delete(clientWechatUsers).where(eq(clientWechatUsers.userId, orphanUserId))
     })
   } catch (err: any) {
@@ -1298,13 +1231,7 @@ export const mergeClientProfile = withPermission(
   },
 )
 
-/**
- * 物理删除顾客（仅系统管理员；数据治理用，清理测试顾客账号）。
- *
- * 仅适用于"无任何业务关联"的测试号：顾客被订单/服务/预约/积分/储值卡/优惠券等引用即由
- * PG FK RESTRICT 拦截，pgErrorCode 23503 兜底并提示。顾客无可随删的从属表（messages 无 FK 快照），
- * 故直接删主表 + 兜底。注意：积分/储值卡/券等资产流水绝不级联删除。
- */
+
 export const deleteCustomer = withPermission(
   'customer:delete',
   async (session, userId: string): Promise<{ success: boolean; message: string }> => {

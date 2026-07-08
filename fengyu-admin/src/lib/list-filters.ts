@@ -57,7 +57,7 @@ export function parseAllocationServiceFilters(params: Record<string, string | un
 }
 
 export function parseEmployeeFilters(params: Record<string, string | undefined>): EmployeeFilters {
-  // skills 多选 URL 编码：逗号分隔（与 useUrlFilters 单值接口兼容，避免动 URL 多 key 协议）
+  
   const skillRaw = params.skill
   const skills = skillRaw
     ? skillRaw.split(',').map(s => s.trim()).filter(Boolean)
@@ -84,10 +84,7 @@ export function parsePointFilters(params: Record<string, string | undefined>): P
   }
 }
 
-/**
- * 疗程卡管理页筛选解析（列表分页与导出共用，防漂移）。
- * type/status 仅接受合法枚举值，其余视为未选（与 cards/page.tsx 原手工解析口径一致）。
- */
+
 export function parseCardFilters(params: Record<string, string | undefined>): CardFilters {
   const type = params.type as CardFilters['type'] | undefined
   const status = params.status as CardFilters['status'] | undefined
@@ -102,10 +99,7 @@ export function parseCardFilters(params: Record<string, string | undefined>): Ca
   }
 }
 
-/**
- * 顾客管理页筛选解析（列表分页与导出共用，防漂移）。
- * 8 维度筛选 + 姓名/手机号搜索；page/size 转 number 后透传。
- */
+
 export function parseCustomerFilters(params: Record<string, string | undefined>): CustomerFilters {
   return {
     marketId: params.market,
