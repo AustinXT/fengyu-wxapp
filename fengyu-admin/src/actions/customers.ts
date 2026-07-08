@@ -2,6 +2,7 @@
 
 import { db } from '@/db'
 import { clientWechatUsers } from '@db/user'
+import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
@@ -179,21 +180,10 @@ export interface CustomerFilters {
 }
 
 /** URL searchParams → CustomerFilters（列表/导出入参解析单一来源，与 page.tsx 共用） */
-function parseCustomerFilters(params: Record<string, string | undefined>): CustomerFilters {
-  return {
-    marketId: params.market,
-    storeId: params.store,
-    memberLevel: params.level,
-    customerSource: params.source,
-    customerType: params.type,
-    spendingTier: params.tier,
-    monthlyActivity: params.activity,
-    customerStatus: params.status,
-    search: params.q,
-    page: params.page ? Number(params.page) : undefined,
-    pageSize: params.size ? Number(params.size) : undefined,
-  }
-}
+// 注：实际实现已迁出到 `@/lib/list-filters.ts` 的 `parseCustomerFilters`，
+// 与 `parseOrderFilters` / `parseServiceOrderFilters` / `parseCardFilters` 同处一处，
+// 避免 page.tsx 与 action 间出现筛选映射漂移。
+import { parseCustomerFilters } from '@/lib/list-filters'
 
 /** 构建顾客列表/导出共用 WHERE 条件（scope + 8 筛选维度 + 姓名/手机号搜索） */
 function buildCustomerConditions(
@@ -335,7 +325,6 @@ export const exportCustomers = withPermission(
     // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
     const spendMap = new Map<string, string>()
     if (userIds.length > 0) {
-      const { saleOrders } = await import('@db/order')
       const spendRows = await db
         .select({
           clientUserId: saleOrders.clientUserId,

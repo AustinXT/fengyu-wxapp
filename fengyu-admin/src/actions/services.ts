@@ -177,10 +177,25 @@ export const getServiceOrdersPaginated = withPermission(
 )
 
 /**
- * 服务单管理页导出（明细级，一行 = 一条有效 service_commissions 提成分配）。
- * 复用 selectServiceCommissionExportRows 的主链 JOIN，筛选沿用服务单管理列表口径
- * （parseServiceOrderFilters：status/store/from/to/q）。因主链为 service_commissions，
- * 仅含已生成提成分配行的服务单出现，按被分配员工 × 服务项展开多行。
+ * ⚠️ BREAKING CHANGE（v1.3.13 起）：导出语义从「服务单 + itemsSummary 聚合」改为
+ * 「提成分配明细」（一行 = 一条有效 service_commissions，按被分配员工 × 服务项展开多行）。
+ *
+ * **列变更**：
+ * - 移除：`itemsSummary`（服务项聚合列）、`clientPhone`（→ 改用 `customerPhone` 主档 + `fallbackPhone` 兜底）
+ * - 新增：`market` / `saleOrderType` / `productType` / `categoryL1` / `categoryL2` /
+ *   `consumeMoney` / `unitRealPrice` / `positionName` / `allocationRatio` /
+ *   `allocationAmount` / `commissionRate` / `commissionAmount` / `rating` /
+ *   `reviewComment` / `salesCategory` / `customerType` / `openedByName` /
+ *   `sourceSaleOrderId` / `remark`
+ *
+ * **影响面**：依赖原 `itemsSummary` 列的下游（Excel 模板、BI 拉数脚本、定时任务）会静默失败。
+ * 若需保留旧版「服务单 + 聚合明细」语义，请使用 `exportAllocationServiceOrders` 之前的
+ * 调用方约定，或重新加一个 `exportServiceOrdersItems` 兼容旧列。
+ *
+ * 主链 service_commissions → service_items → service_orders，12 表 JOIN，详见
+ * `selectServiceCommissionExportRows`。筛选沿用服务单管理列表口径
+ * （parseServiceOrderFilters：status/store/from/to/q）；因主链为 service_commissions，
+ * 仅含已生成提成分配行的服务单出现。
  */
 export const exportServiceOrders = withPermission(
   'service:list',
