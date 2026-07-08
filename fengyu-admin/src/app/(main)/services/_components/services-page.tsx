@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
 import { ExportButton } from "@/components/ui/export-button"
-import { exportToXlsx, fmtDate as xlsxFmtDate, fmtDateTime } from "@/lib/export-xlsx"
+import { exportToXlsx, fmtDate as xlsxDate, fmtDateTime as xlsxDateTime, fmtPercent } from "@/lib/export-xlsx"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
@@ -95,7 +95,12 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
   )
 }
 
-
+/**
+ * 服务单列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getServiceOrdersPaginated() 完成 DB 级过滤+分页，
+ * 此组件仅负责展示和 URL 筛选控制。
+ */
 export default function ServicesPageClient({
   serviceOrders,
   stores,
@@ -108,7 +113,7 @@ export default function ServicesPageClient({
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
 
-  
+  /** 导出当前筛选命中的服务单提成分配明细（按被分配员工×服务项展开，跨分页） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
     const { rows, truncated } = await exportServiceOrders(raw)
@@ -117,31 +122,51 @@ export default function ServicesPageClient({
       return
     }
     await exportToXlsx({
-      filename: "服务单",
-      sheetName: "服务单",
+      filename: "服务单-提成明细",
+      sheetName: "服务单提成",
       columns: [
+        { header: "市场", width: 12, accessor: (r) => r.market },
+        { header: "门店", width: 18, accessor: (r) => r.storeName },
         { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "状态", accessor: (r) => r.status },
-        { header: "类型", accessor: (r) => r.serviceOrderType },
+        { header: "订单类型", width: 12, accessor: (r) => r.saleOrderType },
+        { header: "单据类型", width: 12, accessor: (r) => r.serviceOrderType },
         { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
-        { header: "门店", accessor: (r) => r.storeName },
+        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
+        { header: "商品类型", width: 12, accessor: (r) => r.productType },
+        { header: "品项（一级）", width: 14, accessor: (r) => r.categoryL1 },
+        { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
+        { header: "商品明细", width: 24, accessor: (r) => r.productName },
+        { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
+        { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
+        { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "状态", width: 12, accessor: (r) => r.status },
         { header: "负责美容师", accessor: (r) => r.employeeName },
-        { header: "服务日期", width: 14, accessor: (r) => xlsxFmtDate(r.serviceDate) },
-        { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
-        { header: "服务项明细", width: 40, accessor: (r) => r.itemsSummary },
+        { header: "员工职位", width: 12, accessor: (r) => r.positionName },
+        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
+        { header: "分配额", width: 12, accessor: (r) => r.allocationAmount },
+        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
+        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
+        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
+        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
+        { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
+        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
+        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "来源订单号", width: 22, accessor: (r) => r.sourceSaleOrderId },
+        { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
+        { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
+        { header: "备注", width: 20, accessor: (r) => r.remark },
       ],
       rows,
     })
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
   }, [searchParams])
 
-  
+  /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
   }, [setMany])
 
-  
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
@@ -167,7 +192,7 @@ export default function ServicesPageClient({
         </Link>
       </div>
 
-      {}
+      {/* Filters — URL-driven, 触发服务端重新查询 */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
@@ -200,7 +225,7 @@ export default function ServicesPageClient({
         </CardContent>
       </Card>
 
-      {}
+      {/* Table — 数据已经是当前页的切片 */}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">

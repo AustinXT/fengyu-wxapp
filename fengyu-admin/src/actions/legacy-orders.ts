@@ -122,6 +122,7 @@ export const listLegacyOrders = withPermission(
         order: saleOrders,
         storeName: stores.storeName,
         clientName: clientWechatUsers.name,
+        clientAuthPhone: clientWechatUsers.phone,
         clientOpenid: clientWechatUsers.openid,
       })
       .from(saleOrders)
@@ -138,10 +139,11 @@ export const listLegacyOrders = withPermission(
       storeId: r.order.storeId,
       storeName: r.storeName ?? null,
       marketName: r.order.marketName,
-      clientPhone: r.order.clientPhone,
+      // 2026-07-08 修复 T1：顾客档案权威 > sale_orders 兜底（防 phone-as-name 污染）
+      clientPhone: r.clientAuthPhone || r.order.clientPhone || null,
       clientUserId: r.order.clientUserId,
       clientName: r.clientName ?? null,
-      customerName: r.order.customerName,
+      customerName: r.clientName || r.order.customerName || null,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
       totalAmount: r.order.totalAmount,
       legacyCustomerId: r.order.legacyCustomerId,

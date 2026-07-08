@@ -1,0 +1,9 @@
+{
+  "name": "pack-delivery-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "pack-delivery skill 内置脚本依赖（@babel/parser 供 strip-comments.mjs 做 AST 剥注释）",
+  "dependencies": {
+    "@babel/parser": "^8.0.0"
+  }
+}

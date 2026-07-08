@@ -40,8 +40,8 @@ const PAYMENT_METHOD_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "无", label: "无（全额抵扣）" },
 ];
 
-
-
+// 2026-04-26 sale-order-domain-refactor：5→3 值
+// 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
 const orderTypeColorMap: Record<string, string> = {
   销售单: "bg-[#E8F0FE] text-[#3574C4]",
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
@@ -155,7 +155,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
         )}
       </div>
 
-      {}
+      {/* 二维码弹窗 */}
       <Dialog open={confirmDialog === "qrcode"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
         <DialogClose onOpenChange={(open) => !open && setConfirmDialog(null)} />
         <DialogHeader>
@@ -231,7 +231,12 @@ function OrderActions({ order }: { order: SaleOrder }) {
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
-
+/**
+ * 订单列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getOrdersPaginated() 完成 DB 级过滤+分页，
+ * 此组件仅负责展示和 URL 筛选控制。筛选变更触发 URL 更新 → Server Component 重新执行。
+ */
 export default function OrdersPageClient({
   orders,
   stores,
@@ -246,7 +251,7 @@ export default function OrdersPageClient({
   const { get, set, setMany } = useUrlFilters();
   const searchParams = useSearchParams();
 
-  
+  /** 导出当前筛选命中的全部订单（明细级，一行一 sale_items；订单级字段按行重复） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
     const { rows, truncated } = await exportOrders(raw);
@@ -258,30 +263,46 @@ export default function OrdersPageClient({
       filename: "订单",
       sheetName: "订单",
       columns: [
+        { header: "市场", width: 12, accessor: (r) => r.marketName },
+        { header: "门店", width: 16, accessor: (r) => r.storeName ?? "" },
         { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-        { header: "类型", accessor: (r) => r.saleOrderType },
-        { header: "单据类型", accessor: (r) => r.documentType },
-        { header: "状态", accessor: (r) => r.status },
-        { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
-        { header: "门店", accessor: (r) => r.storeName },
-        { header: "订单金额", accessor: (r) => r.totalAmount },
-        { header: "储值卡抵扣", accessor: (r) => r.prepaidCardAmount },
-        { header: "实付", accessor: (r) => r.received },
-        { header: "已退", accessor: (r) => r.refundedAmount },
-        { header: "支付方式", accessor: (r) => paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod },
-        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "类型", width: 10, accessor: (r) => r.saleOrderType },
+        { header: "单据类型", width: 10, accessor: (r) => r.documentType ?? "" },
+        { header: "顾客", width: 12, accessor: (r) => r.customerName ?? "" },
+        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone ?? "" },
+        { header: "商品类型", width: 10, accessor: (r) => r.productType ?? "" },
+        { header: "品质(一级)", width: 14, accessor: (r) => r.categoryL1 ?? "" },
+        { header: "品质(二级)", width: 14, accessor: (r) => r.categoryL2 ?? "" },
+        { header: "商品明细", width: 28, accessor: (r) => r.productName ?? "" },
+        { header: "总次数", width: 8, accessor: (r) => r.sessionCount ?? "—" },
+        { header: "可用次数", width: 10, accessor: (r) => r.remainingSessions ?? "—" },
+        { header: "订单金额", width: 10, accessor: (r) => r.totalAmount },
+        { header: "储值卡抵扣", width: 10, accessor: (r) => r.prepaidCardAmount },
+        { header: "实付", width: 10, accessor: (r) => r.received },
+        { header: "已退", width: 10, accessor: (r) => r.refundedAmount },
+        { header: "单次价格", width: 10, accessor: (r) => r.unitRealPrice ?? "" },
+        { header: "状态", width: 10, accessor: (r) => r.status },
+        {
+          header: "支付方式",
+          width: 12,
+          accessor: (r) =>
+            paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod ?? "",
+        },
+        { header: "是否纳客", width: 8, accessor: (r) => (r.isMembershipUpgrade ? "是" : "否") },
+        { header: "是否活动", width: 8, accessor: (r) => (r.isActivity ? "是" : "否") },
+        { header: "经营类型", width: 10, accessor: (r) => r.salesCategory ?? "" },
+        { header: "顾客类型", width: 10, accessor: (r) => r.customerType ?? "未注册" },
+        { header: "开单人", width: 10, accessor: (r) => r.openedByName ?? "" },
         { header: "下单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
         { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
-        { header: "商品明细", width: 40, accessor: (r) => r.itemsSummary },
-        { header: "备注", width: 24, accessor: (r) => r.remark },
+        { header: "备注", width: 24, accessor: (r) => r.remark ?? "" },
       ],
       rows,
     });
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条明细（按商品行计数），请缩小筛选范围");
   }, [searchParams]);
 
-  
+  /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(
     (key: string, value: string) => {
       setMany({ [key]: value, page: "" });
@@ -289,7 +310,7 @@ export default function OrdersPageClient({
     [setMany],
   );
 
-  
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"));
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
 
@@ -332,7 +353,7 @@ export default function OrdersPageClient({
         )}
       </div>
 
-      {}
+      {/* Filters — URL-driven, 触发服务端重新查询 */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
@@ -346,8 +367,8 @@ export default function OrdersPageClient({
             </Select>
             <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
               <option value="">全部单据</option>
-              {}
-              {}
+              {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
+              {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
               {(["销售单", "内部单", "转换单", "寄存单", "充值单"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -404,7 +425,7 @@ export default function OrdersPageClient({
         </CardContent>
       </Card>
 
-      {}
+      {/* Table — 数据已经是当前页的切片 */}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -417,7 +438,7 @@ export default function OrdersPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">订单金额</th>
-                  {}
+                  {/* 2026-04-26 sale-order-domain-refactor：实付（received）+ 已退款（refunded_amount）；paid_amount 列已 DROP */}
                   <th className="px-4 py-3 text-right font-medium text-gray-500">实付 / 已退</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">支付方式</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">开单人</th>
@@ -449,7 +470,7 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">{order.customerName || "—"}</td>
                     <td className="px-4 py-3">{order.storeName || "—"}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
-                    {}
+                    {/* 实付（received） + 已退款（refunded_amount > 0 时点亮） */}
                     <td className="px-4 py-3 text-right text-xs">
                       <div>¥{Number(order.received ?? "0").toLocaleString()}</div>
                       {Number(order.refundedAmount ?? "0") > 0 && (

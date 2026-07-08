@@ -15,7 +15,9 @@ import { Pagination } from "@/components/ui/pagination"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatPhone } from "@/lib/utils"
 import { actionErrorMessage } from "@/lib/action-error"
-import { createCustomer } from "@/actions/customers"
+import { ExportButton } from "@/components/ui/export-button"
+import { exportToXlsx } from "@/lib/export-xlsx"
+import { createCustomer, exportCustomers } from "@/actions/customers"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -64,7 +66,7 @@ export default function CustomersPage({
   total: number
 }) {
   const router = useRouter()
-  const { get, set, setMany } = useUrlFilters()
+  const { get, set, setMany, searchParams } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
   }, [setMany])
@@ -141,6 +143,36 @@ export default function CustomersPage({
       setCreating(false)
     }
   }
+
+  /** 导出当前筛选命中的全部顾客（跨分页，12 列含累计消费/推荐人等扩展字段） */
+  const handleExport = useCallback(async () => {
+    const raw = Object.fromEntries(searchParams.entries())
+    const { rows, truncated } = await exportCustomers(raw)
+    if (rows.length === 0) {
+      toast.info("当前筛选无数据可导出")
+      return
+    }
+    await exportToXlsx({
+      filename: "顾客",
+      sheetName: "顾客",
+      columns: [
+        { header: "姓名", width: 14, accessor: (r) => r.name ?? "" },
+        { header: "手机号", width: 14, accessor: (r) => r.phone ?? "" },
+        { header: "归属门店", width: 18, accessor: (r) => r.storeName ?? "" },
+        { header: "顾客类型", width: 10, accessor: (r) => r.customerType },
+        { header: "会员等级", width: 10, accessor: (r) => r.memberLevel ?? "" },
+        { header: "消费档位", width: 10, accessor: (r) => r.spendingTier },
+        { header: "到店状态", width: 14, accessor: (r) => r.customerStatus ?? "" },
+        { header: "所属美容师", width: 14, accessor: (r) => r.employeeName ?? "" },
+        { header: "累计消费", width: 14, accessor: (r) => r.totalSpend },
+        { header: "推荐人", width: 14, accessor: (r) => r.promoterName ?? "" },
+        { header: "顾客来源", width: 14, accessor: (r) => r.customerSource ?? "" },
+        { header: "生日", width: 14, accessor: (r) => r.birthday ?? "" },
+      ],
+      rows,
+    })
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
+  }, [searchParams])
 
   const columns: Column<Customer>[] = [
     {
@@ -333,6 +365,7 @@ export default function CustomersPage({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
+        <ExportButton onExport={handleExport} />
       </div>
 
       <DataTable columns={columns} data={customers} />

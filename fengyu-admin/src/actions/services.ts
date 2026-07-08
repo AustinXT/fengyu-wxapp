@@ -64,7 +64,7 @@ export const getServiceOrders = withPermission(
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, serviceOrders.storeId))
-    
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
     .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(500)
 
@@ -72,20 +72,20 @@ export const getServiceOrders = withPermission(
   },
 )
 
-
+/** 服务单列表筛选参数 */
 export interface ServiceOrderFilters {
   status?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
   search?: string
-  
+  /** 提成状态筛选（'待分配' | '已分配'，用于营业额分配页） */
   commissionStatus?: string
   page?: number
   pageSize?: number
 }
 
-
+/** 构建服务单列表 WHERE 条件（列表分页与导出共用） */
 function buildServiceOrderConditions(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
@@ -111,7 +111,7 @@ function buildServiceOrderConditions(
     conditions.push(
       or(
         ilike(serviceOrders.serviceOrderId, pattern),
-        
+        // 跨表搜索通过子查询实现，避免 JOIN 影响 COUNT
         sql`EXISTS (SELECT 1 FROM staff_wechat_users sw WHERE sw.employee_id = ${serviceOrders.assignedEmployeeId} AND sw.name ILIKE ${pattern})`,
         sql`EXISTS (SELECT 1 FROM client_wechat_users cw WHERE cw.user_id = ${serviceOrders.clientUserId} AND cw.name ILIKE ${pattern})`,
       ),
@@ -124,13 +124,18 @@ function buildServiceOrderConditions(
   return conditions
 }
 
-
+/** 分页结果 */
 export interface PaginatedServiceOrders {
   data: ServiceOrder[]
   total: number
 }
 
-
+/**
+ * 服务端分页服务单列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * 替代 getServiceOrders() 的客户端过滤模式。
+ * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
+ */
 export const getServiceOrdersPaginated = withPermission(
   'service:list',
   async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
@@ -138,10 +143,10 @@ export const getServiceOrdersPaginated = withPermission(
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
 
-  
+  // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildServiceOrderConditions(session, filters))
 
-  
+  // COUNT 查询
   const [countRow] = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(serviceOrders)
@@ -149,7 +154,7 @@ export const getServiceOrdersPaginated = withPermission(
 
   const total = countRow?.count ?? 0
 
-  
+  // 数据查询 — JOIN + ORDER + LIMIT/OFFSET
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -162,7 +167,7 @@ export const getServiceOrdersPaginated = withPermission(
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
     .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(pageSize)
     .offset(offset)
@@ -171,91 +176,42 @@ export const getServiceOrdersPaginated = withPermission(
   },
 )
 
-
-export interface ExportServiceOrderRow {
-  serviceOrderId: string
-  status: string
-  serviceOrderType: string
-  customerName: string | null
-  clientPhone: string | null
-  storeName: string | null
-  employeeName: string | null
-  serviceDate: string | null
-  createdAt: string
-  itemsSummary: string
-}
-
-
+/**
+ * ⚠️ BREAKING CHANGE（v1.3.13 起）：导出语义从「服务单 + itemsSummary 聚合」改为
+ * 「提成分配明细」（一行 = 一条有效 service_commissions，按被分配员工 × 服务项展开多行）。
+ *
+ * **列变更**：
+ * - 移除：`itemsSummary`（服务项聚合列）、`clientPhone`（→ 改用 `customerPhone` 主档 + `fallbackPhone` 兜底）
+ * - 新增：`market` / `saleOrderType` / `productType` / `categoryL1` / `categoryL2` /
+ *   `consumeMoney` / `unitRealPrice` / `positionName` / `allocationRatio` /
+ *   `allocationAmount` / `commissionRate` / `commissionAmount` / `rating` /
+ *   `reviewComment` / `salesCategory` / `customerType` / `openedByName` /
+ *   `sourceSaleOrderId` / `remark`
+ *
+ * **影响面**：依赖原 `itemsSummary` 列的下游（Excel 模板、BI 拉数脚本、定时任务）会静默失败。
+ * 若需保留旧版「服务单 + 聚合明细」语义，请使用 `exportAllocationServiceOrders` 之前的
+ * 调用方约定，或重新加一个 `exportServiceOrdersItems` 兼容旧列。
+ *
+ * 主链 service_commissions → service_items → service_orders，12 表 JOIN，详见
+ * `selectServiceCommissionExportRows`。筛选沿用服务单管理列表口径
+ * （parseServiceOrderFilters：status/store/from/to/q）；因主链为 service_commissions，
+ * 仅含已生成提成分配行的服务单出现。
+ */
 export const exportServiceOrders = withPermission(
   'service:list',
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportServiceOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-    const filters = parseServiceOrderFilters(params)
-    const whereClause = and(...buildServiceOrderConditions(session, filters))
-
-    const orderRows = await db
-      .select({
-        service_order: serviceOrders,
-        storeName: stores.storeName,
-        employeeName: staffWechatUsers.name,
-        customerName: clientWechatUsers.name,
-        clientPhone: clientWechatUsers.phone,
-      })
-      .from(serviceOrders)
-      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
-      .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
-      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-      .where(whereClause)
-      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
-      .limit(LIMIT + 1)
-
-    const truncated = orderRows.length > LIMIT
-    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
-    const ids = page.map((r) => r.service_order.serviceOrderId)
-
-    
-    const itemsMap = new Map<string, string[]>()
-    if (ids.length > 0) {
-      const itemRows = await db
-        .select({
-          serviceOrderId: serviceItems.serviceOrderId,
-          sessionUsed: serviceItems.sessionUsed,
-          productName: saleItems.productName,
-          skuName: productSkus.specName,
-        })
-        .from(serviceItems)
-        .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
-        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-        .where(inArray(serviceItems.serviceOrderId, ids))
-      for (const it of itemRows) {
-        const name = it.productName ?? it.skuName ?? '—'
-        const arr = itemsMap.get(it.serviceOrderId) ?? []
-        arr.push(`${name}x${it.sessionUsed}`)
-        itemsMap.set(it.serviceOrderId, arr)
-      }
-    }
-
-    const rows: ExportServiceOrderRow[] = page.map((r) => ({
-      serviceOrderId: r.service_order.serviceOrderId,
-      status: r.service_order.status,
-      serviceOrderType: r.service_order.serviceOrderType,
-      customerName: r.customerName,
-      clientPhone: r.clientPhone,
-      storeName: r.storeName,
-      employeeName: r.employeeName,
-      serviceDate: r.service_order.serviceDate,
-      createdAt: r.service_order.createdAt.toISOString(),
-      itemsSummary: (itemsMap.get(r.service_order.serviceOrderId) ?? []).join('、'),
-    }))
-
-    return { rows, truncated }
+  ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
+    return selectServiceCommissionExportRows(session, parseServiceOrderFilters(params))
   },
 )
 
-
+/**
+ * 营业额分配「服务提成」导出行（明细级，一行 = 一条 service_commissions 提成）。
+ * 金额列为 number（便于 Excel 求和）；占比/比例保留 string 原值，交前端 fmtPercent 格式化；
+ * 日期/时间为 string（serviceDate 为 date 串，createdAt 为 ISO 串，前端再按时区格式化）。
+ */
 export interface ExportAllocationServiceRow {
   market: string | null
   storeName: string | null
@@ -289,128 +245,145 @@ export interface ExportAllocationServiceRow {
   remark: string | null
 }
 
+/**
+ * 服务单提成分配明细导出查询（一行 = 一条有效 service_commissions）。
+ * 主链 service_commissions → service_items → service_orders，12 表 JOIN。
+ * 服务单管理页(exportServiceOrders) 与 营业额分配-服务提成(exportAllocationServiceOrders) 共用，
+ * 仅入参 filters 的 parser 不同（列表筛选 vs 锁定已完成 + allocStatus）。LIMIT 10000 防 OOM。
+ */
+async function selectServiceCommissionExportRows(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: ServiceOrderFilters,
+  limit = 10000,
+): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
+  const whereClause = and(
+    eq(serviceCommissions.isVoid, false),
+    ...buildServiceOrderConditions(session, filters),
+  )
 
+  // staff_wechat_users 需两次 JOIN：负责美容师(=sc.employee_id) 与 开单人(=slo.opened_by)
+  // drizzle 0.45 alias() 返回类型与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+  const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
+
+  const raw = await db
+    .select({
+      market: serviceOrders.marketName,
+      storeName: stores.storeName,
+      serviceOrderId: serviceOrders.serviceOrderId,
+      saleOrderType: saleOrders.saleOrderType,
+      serviceOrderType: serviceOrders.serviceOrderType,
+      customerName: clientWechatUsers.name,
+      customerPhone: clientWechatUsers.phone,
+      fallbackPhone: saleOrders.clientPhone,
+      productType: saleItems.productType,
+      categoryL1: productCategories.productKind,
+      categoryL2: productCategories.categoryName,
+      productName: saleItems.productName,
+      sessionUsed: serviceItems.sessionUsed,
+      unitRealPrice: serviceItems.unitRealPrice,
+      status: serviceOrders.status,
+      employeeName: staffWechatUsers.name,
+      positionName: staffWechatUsers.positionName,
+      allocationRatio: serviceCommissions.allocationRatio,
+      commissionRate: serviceCommissions.commissionRate,
+      commissionAmount: serviceCommissions.commissionAmount,
+      rating: serviceReviews.rating,
+      reviewComment: serviceReviews.comment,
+      salesCategory: serviceItems.salesCategory,
+      customerType: clientWechatUsers.customerType,
+      openedByName: openedByStaff.name,
+      sourceSaleOrderId: saleItems.saleOrderId,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      remark: serviceOrders.remark,
+      scId: serviceCommissions.id,
+    })
+    .from(serviceCommissions)
+    .innerJoin(serviceItems, eq(serviceCommissions.serviceItemId, serviceItems.serviceItemId))
+    .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(staffWechatUsers, eq(serviceCommissions.employeeId, staffWechatUsers.employeeId))
+    .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
+    .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(whereClause)
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
+    .limit(limit + 1)
+
+  const truncated = raw.length > limit
+  const page = truncated ? raw.slice(0, limit) : raw
+
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const rows: ExportAllocationServiceRow[] = page.map((r) => {
+    const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
+    const sessions = r.sessionUsed ?? null
+    const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
+    const ratioNum = r.allocationRatio == null ? null : Number(r.allocationRatio)
+    const allocationAmount =
+      consumeMoney == null || ratioNum == null ? null : round2(consumeMoney * ratioNum)
+    return {
+      market: r.market,
+      storeName: r.storeName,
+      serviceOrderId: r.serviceOrderId,
+      saleOrderType: r.saleOrderType,
+      serviceOrderType: r.serviceOrderType,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionUsed: sessions,
+      consumeMoney,
+      unitRealPrice: unit,
+      status: r.status,
+      employeeName: r.employeeName,
+      positionName: r.positionName,
+      allocationRatio: r.allocationRatio,
+      allocationAmount,
+      commissionRate: r.commissionRate,
+      commissionAmount: r.commissionAmount == null ? null : Number(r.commissionAmount),
+      rating: r.rating ?? null,
+      reviewComment: r.reviewComment,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
+      openedByName: r.openedByName,
+      sourceSaleOrderId: r.sourceSaleOrderId,
+      serviceDate: r.serviceDate,
+      createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+      remark: r.remark,
+    }
+  })
+
+  return { rows, truncated }
+}
+
+/**
+ * 导出营业额分配「服务提成」明细（一行一条有效 service_commissions，每被分配员工一行）。
+ * 筛选锁定已完成 + allocStatus（parseAllocationServiceFilters）；查询主体复用
+ * selectServiceCommissionExportRows。仅含已分配（service_commissions 有行）的服务消耗；
+ * 筛选「待分配」时为空属预期。
+ */
 export const exportAllocationServiceOrders = withPermission(
   'service:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-    const filters = parseAllocationServiceFilters(params)
-    
-    const whereClause = and(
-      eq(serviceCommissions.isVoid, false),
-      ...buildServiceOrderConditions(session, filters),
-    )
-
-    
-    
-    const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
-
-    const raw = await db
-      .select({
-        market: serviceOrders.marketName,
-        storeName: stores.storeName,
-        serviceOrderId: serviceOrders.serviceOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        serviceOrderType: serviceOrders.serviceOrderType,
-        customerName: clientWechatUsers.name,
-        customerPhone: clientWechatUsers.phone,
-        fallbackPhone: saleOrders.clientPhone,
-        productType: saleItems.productType,
-        categoryL1: productCategories.categoryName,
-        categoryL2: productCategories.productKind,
-        productName: saleItems.productName,
-        sessionUsed: serviceItems.sessionUsed,
-        unitRealPrice: serviceItems.unitRealPrice,
-        status: serviceOrders.status,
-        employeeName: staffWechatUsers.name,
-        positionName: staffWechatUsers.positionName,
-        allocationRatio: serviceCommissions.allocationRatio,
-        commissionRate: serviceCommissions.commissionRate,
-        commissionAmount: serviceCommissions.commissionAmount,
-        rating: serviceReviews.rating,
-        reviewComment: serviceReviews.comment,
-        salesCategory: serviceItems.salesCategory,
-        customerType: clientWechatUsers.customerType,
-        openedByName: openedByStaff.name,
-        sourceSaleOrderId: saleItems.saleOrderId,
-        serviceDate: serviceOrders.serviceDate,
-        createdAt: serviceOrders.createdAt,
-        remark: serviceOrders.remark,
-        scId: serviceCommissions.id,
-      })
-      .from(serviceCommissions)
-      .innerJoin(serviceItems, eq(serviceCommissions.serviceItemId, serviceItems.serviceItemId))
-      .innerJoin(serviceOrders, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
-      .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
-      .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
-      .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(staffWechatUsers, eq(serviceCommissions.employeeId, staffWechatUsers.employeeId))
-      .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
-      .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(whereClause)
-      .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
-      .limit(LIMIT + 1)
-
-    const truncated = raw.length > LIMIT
-    const page = truncated ? raw.slice(0, LIMIT) : raw
-
-    const round2 = (n: number) => Math.round(n * 100) / 100
-    const rows: ExportAllocationServiceRow[] = page.map((r) => {
-      const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
-      const sessions = r.sessionUsed ?? null
-      const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
-      const ratioNum = r.allocationRatio == null ? null : Number(r.allocationRatio)
-      const allocationAmount =
-        consumeMoney == null || ratioNum == null ? null : round2(consumeMoney * ratioNum)
-      return {
-        market: r.market,
-        storeName: r.storeName,
-        serviceOrderId: r.serviceOrderId,
-        saleOrderType: r.saleOrderType,
-        serviceOrderType: r.serviceOrderType,
-        customerName: r.customerName,
-        customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
-        productType: r.productType,
-        categoryL1: r.categoryL1,
-        categoryL2: r.categoryL2,
-        productName: r.productName,
-        sessionUsed: sessions,
-        consumeMoney,
-        unitRealPrice: unit,
-        status: r.status,
-        employeeName: r.employeeName,
-        positionName: r.positionName,
-        allocationRatio: r.allocationRatio,
-        allocationAmount,
-        commissionRate: r.commissionRate,
-        commissionAmount: r.commissionAmount == null ? null : Number(r.commissionAmount),
-        rating: r.rating ?? null,
-        reviewComment: r.reviewComment,
-        salesCategory: r.salesCategory,
-        customerType: r.customerType,
-        openedByName: r.openedByName,
-        sourceSaleOrderId: r.sourceSaleOrderId,
-        serviceDate: r.serviceDate,
-        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
-        remark: r.remark,
-      }
-    })
-
-    return { rows, truncated }
+    return selectServiceCommissionExportRows(session, parseAllocationServiceFilters(params))
   },
 )
 
 export const getServiceOrderById = withPermission(
   'service:list',
   async (session, serviceOrderId: string): Promise<ServiceOrder | null> => {
-  
-  
+  // 交易数据跟顾客走：详情读取不限门店 scope（顾客档案「服务记录」可跨门店点进只读查看）。
+  // 越权写入安全边界由各 mutation action 自带的 scopeCondition 守护；本读取仅标记 readOnly。
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -491,7 +464,7 @@ export const getServiceItems = withPermission(
   },
 )
 
-
+/** 顾客对已完成服务单的评价（一单一评，service_order_id 作 PK） */
 export interface ServiceReview {
   rating: number
   comment: string | null
@@ -519,7 +492,7 @@ export const getServiceReview = withPermission(
   },
 )
 
-
+/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡） */
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
@@ -528,7 +501,7 @@ export interface AvailableSaleItem {
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
-  
+  /** 可用次数（已付未用）；paidSessions 为 NULL 时退回物理剩余。步进器 max 用此值 */
   paidUnusedSessions: number
   unitRealPrice: string
   expireDate: string | null
@@ -594,11 +567,11 @@ export const getAvailableSaleItems = withPermission(
   },
 )
 
-
+/** C4: 开始服务 — WHERE status = '待服务' */
 export const startServiceOrder = withPermission(
   'service:update',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
-  
+  // 获取上下文用于日志
   const [svcCtx] = await db
     .select({
       assignedEmployeeId: serviceOrders.assignedEmployeeId,
@@ -639,11 +612,16 @@ export const startServiceOrder = withPermission(
   },
 )
 
-
+/**
+ * C4: 员工标记完成服务 — 服务中 → 待客户确认（轻量，仅翻状态 + 记 staff_completed_at）
+ *
+ * 不扣次数 / 不关预约——这些副作用推迟到顾客确认（confirmServiceOrder）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属。
+ */
 export const completeServiceOrder = withPermission(
   'service:update',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
-  
+  // 获取上下文用于日志 + 非 admin scope 预检查
   const [svcCtx] = await db
     .select({
       storeId: serviceOrders.storeId,
@@ -690,11 +668,16 @@ export const completeServiceOrder = withPermission(
   },
 )
 
-
+/**
+ * C1+C4: 后台代客户确认服务 — 待客户确认 → 已完成（原子扣减 remaining_sessions + 状态推进）
+ *
+ * 兜底入口：顾客不便用小程序时由后台 / 店长代确认。执行 finalize 副作用（扣次数）。
+ * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL。
+ */
 export const confirmServiceOrder = withPermission(
   'service:update',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
-  
+  // 获取上下文用于日志 + 非 admin scope 预检查
   const [svcCtx] = await db
     .select({
       storeId: serviceOrders.storeId,
@@ -714,17 +697,17 @@ export const confirmServiceOrder = withPermission(
     }
   }
 
-  
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销。两端镜像 staff service.js
   if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
     return { success: false, message: '关联订单退款审批中，暂不可确认' }
   }
 
   let result: any
   try {
-    
-    
-    
-    
+    // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
+    // 扣减条件叠加 paid_sessions 限额——扣减后已用次数
+    //   (session_count - remaining_sessions + session_used) 不得超 COALESCE(paid_sessions, session_count)。
+    // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
@@ -760,7 +743,7 @@ export const confirmServiceOrder = withPermission(
   if (!row || Number(row.status_updated) === 0) {
     return { success: false, message: '服务单状态已变更，无法确认' }
   }
-  
+  // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
   if (row && Number(row.items_deducted) < Number(row.items_total)) {
     return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
   }
@@ -774,11 +757,11 @@ export const confirmServiceOrder = withPermission(
   },
 )
 
-
+/** C4: 取消服务 — WHERE status = '待服务'，不扣次数 */
 export const cancelServiceOrder = withPermission(
   'service:update',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
-  
+  // 获取上下文用于日志
   const [svcCtx] = await db
     .select({ customerName: clientWechatUsers.name })
     .from(serviceOrders)
@@ -813,7 +796,13 @@ export const cancelServiceOrder = withPermission(
   },
 )
 
-
+/**
+ * 物理删除服务单（仅系统管理员；数据治理用，清理测试服务单）。
+ *
+ * 守卫：仅 待服务 / 已取消 可删（服务中 / 待客户确认 / 已完成 一律禁删，避免误删已计提成的服务记录）。
+ * 可删时事务内级联删：service_commissions → service_items → service_reviews → service_orders。
+ * 23503 兜底回滚。
+ */
 export const deleteServiceOrder = withPermission(
   'service:delete',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
@@ -884,7 +873,7 @@ export const deleteServiceOrder = withPermission(
   },
 )
 
-
+/** 管理后台创建服务单 */
 export const createServiceOrder = withPermission(
   'service:create',
   async (
@@ -902,26 +891,26 @@ export const createServiceOrder = withPermission(
   }>
     },
   ): Promise<{ success: boolean; message: string; serviceOrderId?: string }> => {
-  
+  // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
   }
 
-  
-  
+  // 根据顾客成为会员客的时间戳判定服务单类型：
+  // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
   const [customerRow] = await db
     .select({ becameMemberAt: clientWechatUsers.becameMemberAt, boundStoreId: clientWechatUsers.boundStoreId })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
     .limit(1)
-  
+  // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
   if (customerRow?.boundStoreId !== data.storeId) {
     return { success: false, message: '顾客当前绑定门店非该门店，疗程卡只能在其绑定门店核销/开单' }
   }
   const serviceOrderType: '售前' | '售后' =
     customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date() ? '售后' : '售前'
 
-  
+  // 自动关联：查找该顾客在该门店已签到、且尚未关联服务单的最近预约
   const [pendingAppt] = await db
     .select({ appointmentId: appointments.appointmentId })
     .from(appointments)
@@ -942,10 +931,10 @@ export const createServiceOrder = withPermission(
     .limit(1)
   const resolvedAppointmentId = pendingAppt?.appointmentId ?? null
 
-  
-  
-  
-  
+  // 先校验订单状态 + 剩余次数（事务外，只读查询）
+  // 2026-05-20 ticket：放宽消费条件——只要"已支付/部分支付" + remainingSessions > 0 即可消费
+  // 不再校验 paid_sessions 限额（之前的 D6=A 锁死规则已废止）
+  // 注：退款冻结是独立守卫（与 D6 无关）——审批中拒绝整单，审批后按 paid_sessions 有效余量拒绝已退完的卡
   const saleItemSnapshots: Array<{
     saleItemId: string
     unitRealPrice: string
@@ -961,8 +950,8 @@ export const createServiceOrder = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
         orderStatus: saleOrders.status,
-        
-        
+        // service_items 快照源：优先 sale_items 行级值，NULL 时回查 product_skus / product_categories
+        // （对齐 staff service.js 的 COALESCE 兜底，避免 admin 自建服务单两列为 NULL）
         isShengmei: sql<boolean | null>`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
         salesCategory: sql<(typeof saleItems.$inferInsert)['salesCategory']>`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
         hasPendingRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
@@ -978,16 +967,16 @@ export const createServiceOrder = withPermission(
     if (!saleItem) {
       return { success: false, message: `销售明细 ${item.saleItemId} 不存在` }
     }
-    
+    // orderStatus 显式不在白名单时拒绝（mock 中可能 undefined，按通过处理）
     if (saleItem.orderStatus && !['已支付', '部分支付'].includes(saleItem.orderStatus)) {
       return { success: false, message: `销售明细 ${item.saleItemId} 对应订单状态为 ${saleItem.orderStatus}，不可消费` }
     }
-    
+    // 在途退款冻结：原订单存在 '待审批' 退款时不可开单
     if (saleItem.hasPendingRefund) {
       return { success: false, message: `销售明细 ${item.saleItemId} 对应订单退款审批中，不可开单` }
     }
-    
-    
+    // remainingSessions=null 视作无次数追踪（非疗程卡），跳过次数校验（保持旧行为）。
+    // 否则收紧到「已付未用」(paidUnused) 口径，与 staff service-create consumable 对齐（推翻 2026-05-20 D6=A 放宽）。
     if (saleItem.remainingSessions != null) {
       const used = saleItem.sessionCount == null
         ? 0
@@ -1007,7 +996,7 @@ export const createServiceOrder = withPermission(
     })
   }
 
-  
+  // 事务：ID 生成 + 服务单 + 服务明细，原子提交
   let serviceOrderId: string
   try {
     serviceOrderId = await db.transaction(async (tx) => {
@@ -1054,7 +1043,7 @@ export const createServiceOrder = withPermission(
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
           employeeId: data.assignedEmployeeId,
-          
+          // 生美 / 销售分类快照（COALESCE sale_items → product_skus/product_categories）
           isShengmei: snapshot.isShengmei,
           salesCategory: snapshot.salesCategory,
         })
@@ -1063,7 +1052,7 @@ export const createServiceOrder = withPermission(
       return id
     })
   } catch (err: any) {
-    
+    // PG 外键违反（storeId / clientUserId / assignedEmployeeId 不存在）
     if (pgErrorCode(err) === '23503') {
       return { success: false, message: '关联数据不存在，请检查员工或顾客信息' }
     }

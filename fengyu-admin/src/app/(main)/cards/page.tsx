@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
-import { getCardsPaginated, type CardFilters } from '@/actions/cards'
+import { getCardsPaginated } from '@/actions/cards'
+import { parseCardFilters } from '@/lib/list-filters'
 import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
 import CardsPageClient from './_components/cards-page'
@@ -13,19 +14,8 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const type = (params.type as CardFilters['type']) || undefined
-  const status = (params.status as CardFilters['status']) || undefined
-
   const [{ data: cards, total }, stores, orgNodes] = await Promise.all([
-    getCardsPaginated({
-      marketId: params.market,
-      storeId: params.store,
-      type: type === '疗程卡' || type === '单次卡' || type === 'all' ? type : undefined,
-      status: status === 'active' || status === 'exhausted' || status === 'expired' ? status : undefined,
-      search: params.q,
-      page: params.page ? Number(params.page) : undefined,
-      pageSize: params.size ? Number(params.size) : undefined,
-    }),
+    getCardsPaginated(parseCardFilters(params)),
     getStores(),
     getOrgNodes(),
   ])
