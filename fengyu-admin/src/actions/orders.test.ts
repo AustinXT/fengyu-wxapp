@@ -1022,6 +1022,81 @@ describe('createOrder — sales_category / is_shengmei 后端反查（不信前�
   })
 })
 
+describe('createOrder — 顾客档案权威覆写 clientPhone/customerName（2026-07-08 T1）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('入参被 phone-as-name 污染 → sale_orders 落库用客户档案权威 phone/name', async () => {
+    // 所有事务外 db.select（顾客类型 + SKU 反查 + 权威覆写）共享此 row：
+    // phone/name = 客户档案权威值，应覆盖入参的 phone-as-name 污染值。
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      customerType: '散客',
+      memberLevel: null,
+      serviceFee: '0',
+      sessionCount: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      isShengmei: false,
+      salesCategory: '自销自耗',
+      phone: '13800009999', // 客户档案权威 phone
+      name: '徐丽珍',        // 客户档案权威 name
+    }))
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260708001')
+
+    // 入参：customerName 被前端 `name || phone` fallback 污染成手机号
+    const result = await createOrder({
+      ...baseOrderData,
+      clientPhone: '13800001111',  // 入参污染 phone
+      customerName: '13800001111', // 入参污染 name（phone-as-name）
+    })
+
+    expect(result.success).toBe(true)
+    const orderInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleOrderId' in c.values && 'customerName' in c.values,
+    )
+    expect(orderInserts).toHaveLength(1)
+    // 权威覆写：sale_orders 落库用客户档案 phone/name，非入参污染值
+    expect(orderInserts[0].values.clientPhone).toBe('13800009999')
+    expect(orderInserts[0].values.customerName).toBe('徐丽珍')
+  })
+
+  it('客户档案 phone/name 为空 → 回落入参值（后端不强行清空，由前端阻断 + 回填脚本兜底）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      customerType: '散客',
+      memberLevel: null,
+      serviceFee: '0',
+      sessionCount: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      isShengmei: false,
+      salesCategory: '自销自耗',
+      phone: null,
+      name: null,
+    }))
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260708002')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientPhone: '13800001111',
+      customerName: '老顾客快照',
+    })
+
+    expect(result.success).toBe(true)
+    const orderInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleOrderId' in c.values && 'customerName' in c.values,
+    )
+    expect(orderInserts).toHaveLength(1)
+    // 档案为空 → 权威覆写短路（if (authCust?.phone)），保留入参快照
+    expect(orderInserts[0].values.clientPhone).toBe('13800001111')
+    expect(orderInserts[0].values.customerName).toBe('老顾客快照')
+  })
+})
+
 describe('createOrder — documentType 使用 getMemberThreshold helper', () => {
   beforeEach(() => {
     vi.clearAllMocks()
