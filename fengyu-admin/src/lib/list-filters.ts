@@ -10,6 +10,7 @@ import type { ServiceOrderFilters } from '@/actions/services'
 import type { EmployeeFilters } from '@/actions/employees'
 import type { PointTransactionFilters } from '@/actions/points'
 import type { CardFilters } from '@/actions/cards'
+import type { CustomerFilters } from '@/actions/customers'
 
 export function parseOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
@@ -101,6 +102,26 @@ export function parseCardFilters(params: Record<string, string | undefined>): Ca
     storeId: params.store,
     type: type === '疗程卡' || type === '单次卡' || type === 'all' ? type : undefined,
     status: status === 'active' || status === 'exhausted' || status === 'expired' ? status : undefined,
+    search: params.q,
+    page: params.page ? Number(params.page) : undefined,
+    pageSize: params.size ? Number(params.size) : undefined,
+  }
+}
+
+/**
+ * 顾客管理页筛选解析（列表分页与导出共用，防漂移）。
+ * 8 维度筛选 + 姓名/手机号搜索；page/size 转 number 后透传。
+ */
+export function parseCustomerFilters(params: Record<string, string | undefined>): CustomerFilters {
+  return {
+    marketId: params.market,
+    storeId: params.store,
+    memberLevel: params.level,
+    customerSource: params.source,
+    customerType: params.type,
+    spendingTier: params.tier,
+    monthlyActivity: params.activity,
+    customerStatus: params.status,
     search: params.q,
     page: params.page ? Number(params.page) : undefined,
     pageSize: params.size ? Number(params.size) : undefined,
