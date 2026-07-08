@@ -1,0 +1,66 @@
+name: Guard main branch
+
+# main 分支守护：私有库 + GitHub 免费版无原生分支保护（API 403），
+# 用 Action 强制「main 只接受来自 dev 的 PR」。
+#   - enforce-dev-source：PR 到 main 且 head≠dev → 自动关闭 + 评论
+#   - detect-direct-push：push 到 main 且该 commit 不属于 dev→main 合并 PR → 开 issue 报警
+# 免费库无法在物理层阻止直推 main，detect 仅事后报警（默认不自动 revert）。
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, ready_for_review, synchronize]
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  enforce-dev-source:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject PR to main not coming from dev
+        if: github.event.pull_request.head.ref != 'dev'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "Reject: PR -> main, but head is '$HEAD' (expected dev)."
+          gh pr comment "$PR_NUMBER" --body "main 仅接受来自 dev 的 PR（当前 head: $HEAD）。
+
+          请先把改动合入 dev，再从 dev 向 main 提 PR。此 PR 将被自动关闭。"
+          gh pr close "$PR_NUMBER"
+          exit 1
+
+  detect-direct-push:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify push to main came via a dev merged PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -e
+          SHORT=${AFTER:0:7}
+          # after 是否属于一个 base=main、head=dev 的「已合并」PR
+          COUNT=$(gh api "repos/$REPO/commits/$AFTER/pulls" \
+            --jq '[.[] | select(.base.ref == "main" and .head.ref == "dev" and .merged_at != null)] | length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "OK: $AFTER is a legit dev->main merge."
+            exit 0
+          fi
+          echo "WARN: $AFTER not from any dev->main merged PR -- opening issue."
+          gh issue create --repo "$REPO" \
+            --title "main 收到未经 dev PR 的提交 $SHORT" \
+            --body "提交 $AFTER 被直接推送或经非 dev 分支进入 main，未通过 dev -> PR -> main 流程。
+
+          责任人请核查：https://github.com/$REPO/commit/$AFTER
+
+          由 guard-main.yml 守护 workflow 自动创建。"
