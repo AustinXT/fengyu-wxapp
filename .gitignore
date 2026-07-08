@@ -69,6 +69,7 @@ fengyu-delivery-*.zip
 .claude/skills/wx-release-check
 .claude/skills/release-prod
 .claude/skills/remote-deploy
+.claude/skills/pack-delivery
 
 # Progress reports (PDF output)
 reports/
