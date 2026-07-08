@@ -386,7 +386,7 @@ export const getCustomerOrders = withPermission(
 
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
-  const { staffWechatUsers } = await import('@db/user')
+  const { staffWechatUsers, clientWechatUsers } = await import('@db/user')
   const { productSkus } = await import('@db/product')
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
@@ -394,15 +394,19 @@ export const getCustomerOrders = withPermission(
   // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
   const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
 
+  // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
     .select({
       order: saleOrders,
       storeName: stores.storeName,
       openedByName: opener.name,
+      custName: clientWechatUsers.name,
+      custPhone: clientWechatUsers.phone,
     })
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(eq(saleOrders.clientUserId, userId))
     // 例外：详情页子列表，业务时间（订单日期）优先
     .orderBy(desc(saleOrders.saleOrderDatetime))
@@ -443,8 +447,9 @@ export const getCustomerOrders = withPermission(
       storeId: r.order.storeId,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
       clientUserId: r.order.clientUserId,
-      clientPhone: r.order.clientPhone,
-      customerName: r.order.customerName,
+      // 顾客档案权威 > sale_orders 兜底
+      clientPhone: r.custPhone ?? r.order.clientPhone ?? null,
+      customerName: r.custName ?? r.order.customerName ?? null,
       totalAmount: r.order.totalAmount,
       prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
       received: r.order.received ?? '0',

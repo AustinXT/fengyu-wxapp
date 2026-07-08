@@ -1029,4 +1029,42 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
     // search 走 ilike
     expect(ilike).toHaveBeenCalled()
   })
+
+  // 回归守护：v1.3.13 起 exportServiceOrders 改为明细级（service_commissions 主链），
+  // 旧列 itemsSummary 不应再出现。若有人手贱回滚到 serviceOrders 主链，下列断言失败。
+  it('回归守护：v1.3.13 BREAKING — 30 列明细级 shape（无 itemsSummary，有 consumeMoney/allocationAmount）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const { rows } = await exportServiceOrders({})
+    expect(rows).toEqual([])
+    // 明细级列集合（30 列，与 services-page.tsx 导出列一一对应）
+    const expectedColumns = [
+      'market', 'storeName', 'serviceOrderId', 'saleOrderType', 'serviceOrderType',
+      'customerName', 'customerPhone', 'productType', 'categoryL1', 'categoryL2',
+      'productName', 'sessionUsed', 'consumeMoney', 'unitRealPrice', 'status',
+      'employeeName', 'positionName', 'allocationRatio', 'allocationAmount',
+      'commissionRate', 'commissionAmount', 'reviewComment', 'rating',
+      'salesCategory', 'customerType', 'openedByName', 'sourceSaleOrderId',
+      'serviceDate', 'createdAt', 'remark',
+    ]
+    // 通过导出空行 + 静态类型对照，断言列集合稳定（防止有人手贱增删列）
+    // vitest 无法直接枚举 interface 字段；用「mock 1 行后取 keys」做集合断言
+    ;(db.select as any).mockImplementationOnce(
+      makeSelectChain([
+        {
+          market: null, storeName: null, serviceOrderId: 'SO1', saleOrderType: null, serviceOrderType: null,
+          customerName: null, customerPhone: null, fallbackPhone: null,
+          productType: null, categoryL1: null, categoryL2: null, productName: null,
+          sessionUsed: null, unitRealPrice: null, status: null,
+          employeeName: null, positionName: null,
+          allocationRatio: null, commissionRate: null, commissionAmount: null,
+          rating: null, reviewComment: null,
+          salesCategory: null, customerType: null, openedByName: null,
+          sourceSaleOrderId: null, serviceDate: null, createdAt: null, remark: null,
+          scId: 1,
+        },
+      ]),
+    )
+    const r2 = (await exportServiceOrders({})).rows[0]
+    expect(Object.keys(r2).sort()).toEqual(expectedColumns.sort())
+  })
 })

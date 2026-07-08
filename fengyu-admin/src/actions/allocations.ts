@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
 import { saleAllocations, saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { clientWechatUsers } from '@db/user'
 import { eq, sql, and, or, inArray, desc, ilike } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation, AuthSession } from '@/lib/types'
@@ -531,6 +532,7 @@ export const getPendingPayments = withPermission(
 
     const where = and(...(conds as any[]))
 
+    // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
     const rows = await db
       .select({
         salePaymentId: saleOrderPayments.id,
@@ -540,13 +542,16 @@ export const getPendingPayments = withPermission(
         paymentMethod: saleOrderPayments.paymentMethod,
         paidAt: saleOrderPayments.paidAt,
         allocationStatus: saleOrderPayments.allocationStatus,
-        customerName: saleOrders.customerName,
-        clientPhone: saleOrders.clientPhone,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        custName: clientWechatUsers.name,
+        custPhone: clientWechatUsers.phone,
         storeName: saleOrders.storeName,
         preferredEmployeeId: saleOrders.preferredEmployeeId,
       })
       .from(saleOrderPayments)
       .innerJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .where(where)
       .orderBy(desc(saleOrderPayments.paidAt), desc(saleOrderPayments.id))
       .limit(pageSize)
@@ -567,8 +572,9 @@ export const getPendingPayments = withPermission(
         paymentMethod: r.paymentMethod,
         paidAt: r.paidAt instanceof Date ? r.paidAt.toISOString() : (r.paidAt ?? null),
         allocationStatus: r.allocationStatus ?? null,
-        customerName: r.customerName ?? null,
-        clientPhone: r.clientPhone ?? null,
+        // 顾客档案权威 > sale_orders 兜底
+        customerName: r.custName ?? r.fallbackName ?? null,
+        clientPhone: r.custPhone ?? r.fallbackPhone ?? null,
         storeName: r.storeName ?? null,
         preferredEmployeeId: r.preferredEmployeeId ?? null,
       })),

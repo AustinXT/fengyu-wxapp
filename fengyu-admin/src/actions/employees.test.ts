@@ -79,7 +79,10 @@ vi.mock('drizzle-orm', () => ({
   asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
     vi.fn((...args) => ({ type: 'sql', args })),
-    { raw: vi.fn() },
+    {
+      raw: vi.fn((s) => ({ type: 'sql.raw', value: s })),
+      join: vi.fn((chunks, sep) => ({ type: 'sql.join', chunks, sep })),
+    },
   ),
 }))
 
@@ -92,7 +95,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
-import { eq, ilike, inArray, isNull } from 'drizzle-orm'
+import { eq, ilike, inArray, isNull, sql } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 
 const mockSession = {
@@ -872,6 +875,47 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     await getEmployeesPaginated({ marketId: 'dept-1' })
 
     expect(eq).toHaveBeenCalledWith('org_node_id', 'dept-1')
+  })
+
+  it('skills 筛选（单标签） → sql.join + && ARRAY 模板被调用，标签作为参数化占位传入', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ skills: ['美容师'] })
+
+    // sql.join([sql`美容师`], sql.raw(', ')) 把单标签包成 1 元素数组
+    expect((sql as any).join).toHaveBeenCalledWith(
+      [{ type: 'sql', args: [expect.anything(), '美容师'] }],
+      { type: 'sql.raw', value: ', ' },
+    )
+    // 外层模板: skills && ARRAY[...]::text[] 被 sql 模板函数调用
+    const overlapCalls = (sql as any).mock.results.filter(
+      (r: any) => Array.isArray(r.value?.args) && r.value.args.some(
+        (a: any) => typeof a === 'object' && a?.type === 'sql.join',
+      ),
+    )
+    expect(overlapCalls.length).toBeGreaterThan(0)
+  })
+
+  it('skills 筛选（多标签 OR） → 每个标签作为独立参数化占位传入 sql.join', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ skills: ['美容师', '养生师'] })
+
+    expect((sql as any).join).toHaveBeenCalledWith(
+      [
+        { type: 'sql', args: [expect.anything(), '美容师'] },
+        { type: 'sql', args: [expect.anything(), '养生师'] },
+      ],
+      { type: 'sql.raw', value: ', ' },
+    )
+  })
+
+  it('skills: [] 空数组 → 不调用 sql.join（短路）', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ skills: [] })
+
+    expect((sql as any).join).not.toHaveBeenCalled()
   })
 })
 
