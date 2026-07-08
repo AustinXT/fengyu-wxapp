@@ -71,11 +71,19 @@ export function parseAllocationServiceFilters(params: Record<string, string | un
 }
 
 export function parseEmployeeFilters(params: Record<string, string | undefined>): EmployeeFilters {
+  // skills 多选 URL 编码：逗号分隔（与 useUrlFilters 单值接口兼容，避免动 URL 多 key 协议）
+  const skillRaw = params.skill
+  const skills = skillRaw
+    ? skillRaw.split(',').map(s => s.trim()).filter(Boolean)
+    : undefined
   return {
     marketId: params.market || undefined,
     storeId: params.store,
     status: (params.status as 'active' | 'resigned') || undefined,
     search: params.q,
+    skills: skills?.length ? skills : undefined,
+    page: params.page ? Number(params.page) : undefined,
+    pageSize: params.size ? Number(params.size) : undefined,
   }
 }
 
