@@ -2,15 +2,17 @@
 
 import { db } from '@/db'
 import { clientWechatUsers } from '@db/user'
+import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
-import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
+import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
+import { fmtDate } from '@/lib/datetime'
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
 const storeName = sql<string | null>`(
@@ -70,6 +72,27 @@ function serializeCustomer(row: CustomerRow): Customer {
     employeeName: row.boundEmployeeName ?? undefined,
     marketName: row.marketName ?? undefined,
   }
+}
+
+/** 推荐人姓名（promoter_employee_id → staff_wechat_users.name）— 导出专用标量子查询 */
+const promoterName = sql<string | null>`(
+  SELECT name FROM staff_wechat_users WHERE employee_id = ${clientWechatUsers.promoterEmployeeId}
+)`.as('promoter_name')
+
+/** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
+const exportCustomerColumns = {
+  userId: clientWechatUsers.userId,
+  name: clientWechatUsers.name,
+  phone: clientWechatUsers.phone,
+  customerType: clientWechatUsers.customerType,
+  memberLevel: clientWechatUsers.memberLevel,
+  spendingTier: clientWechatUsers.spendingTier,
+  customerStatus: clientWechatUsers.customerStatus,
+  customerSource: clientWechatUsers.customerSource,
+  birthday: clientWechatUsers.birthday,
+  boundEmployeeName: clientWechatUsers.boundEmployeeName,
+  storeName,
+  promoterName,
 }
 
 export const searchCustomerByPhone = withPermission(
@@ -156,25 +179,17 @@ export interface CustomerFilters {
   pageSize?: number
 }
 
-/** 分页结果 */
-export interface PaginatedCustomers {
-  data: Customer[]
-  total: number
-}
+/** URL searchParams → CustomerFilters（列表/导出入参解析单一来源，与 page.tsx 共用） */
+// 注：实际实现已迁出到 `@/lib/list-filters.ts` 的 `parseCustomerFilters`，
+// 与 `parseOrderFilters` / `parseServiceOrderFilters` / `parseCardFilters` 同处一处，
+// 避免 page.tsx 与 action 间出现筛选映射漂移。
+import { parseCustomerFilters } from '@/lib/list-filters'
 
-/**
- * 服务端分页顾客列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * scope 基于 boundStoreId（顾客归属门店）。
- * 搜索支持：姓名、手机号（ILIKE）。
- */
-export const getCustomersPaginated = withPermission(
-  'customer:list',
-  async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
-
+/** 构建顾客列表/导出共用 WHERE 条件（scope + 8 筛选维度 + 姓名/手机号搜索） */
+function buildCustomerConditions(
+  session: AuthSession,
+  filters: CustomerFilters,
+): (SQL | undefined)[] {
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, clientWechatUsers.boundStoreId),
   ]
@@ -216,7 +231,29 @@ export const getCustomersPaginated = withPermission(
     )
   }
 
-  const whereClause = and(...conditions)
+  return conditions
+}
+
+/** 分页结果 */
+export interface PaginatedCustomers {
+  data: Customer[]
+  total: number
+}
+
+/**
+ * 服务端分页顾客列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * scope 基于 boundStoreId（顾客归属门店）。
+ * 搜索支持：姓名、手机号（ILIKE）。
+ */
+export const getCustomersPaginated = withPermission(
+  'customer:list',
+  async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const whereClause = and(...buildCustomerConditions(session, filters))
 
   const [[countRow], rows] = await Promise.all([
     db.select({ count: sql<number>`cast(count(*) as int)` })
@@ -235,6 +272,89 @@ export const getCustomersPaginated = withPermission(
     data: rows.map(serializeCustomer),
     total: countRow?.count ?? 0,
   }
+  },
+)
+
+/** 顾客导出行（对应 12 列表头） */
+export interface ExportCustomerRow {
+  name: string | null
+  phone: string | null
+  storeName: string | null
+  customerType: string
+  memberLevel: string | null
+  spendingTier: string
+  customerStatus: string | null
+  employeeName: string | null
+  /** 累计消费（spending_tier 口径，与「消费档位」列自洽） */
+  totalSpend: string
+  promoterName: string | null
+  customerSource: string | null
+  birthday: string | null
+}
+
+/**
+ * 导出顾客（全部筛选命中，跨分页）。LIMIT 10000 防 OOM。
+ *
+ * 累计消费口径 = refresh-spending-tier.ts 的 spending_tier 分桶原值：
+ *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
+ * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
+ * 推荐人 = promoter_employee_id 对应的员工姓名（标量子查询）。
+ */
+export const exportCustomers = withPermission(
+  'customer:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+  ): Promise<{ rows: ExportCustomerRow[]; truncated: boolean }> => {
+    const LIMIT = 10000
+    const filters = parseCustomerFilters(params)
+    const whereClause = and(...buildCustomerConditions(session, filters))
+
+    const dataRows = await db
+      .select(exportCustomerColumns)
+      .from(clientWechatUsers)
+      .where(whereClause)
+      // 例外：picker 字母序（与列表一致）
+      .orderBy(asc(clientWechatUsers.name))
+      .limit(LIMIT + 1)
+
+    const truncated = dataRows.length > LIMIT
+    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
+    const userIds = page.map((r) => r.userId)
+
+    // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
+    const spendMap = new Map<string, string>()
+    if (userIds.length > 0) {
+      const spendRows = await db
+        .select({
+          clientUserId: saleOrders.clientUserId,
+          total: sql<string>`COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单')), 0)::text`,
+        })
+        .from(saleOrders)
+        .where(inArray(saleOrders.clientUserId, userIds))
+        .groupBy(saleOrders.clientUserId)
+      for (const sr of spendRows) {
+        // clientUserId 理论可空（匿名单），但 WHERE 已限定 IN userIds（非空），守卫仅作类型收窄
+        if (sr.clientUserId) spendMap.set(sr.clientUserId, sr.total)
+      }
+    }
+
+    const rows: ExportCustomerRow[] = page.map((r) => ({
+      name: r.name,
+      phone: r.phone,
+      storeName: r.storeName,
+      customerType: r.customerType,
+      memberLevel: r.memberLevel,
+      spendingTier: r.spendingTier,
+      customerStatus: r.customerStatus,
+      employeeName: r.boundEmployeeName,
+      totalSpend: spendMap.get(r.userId) ?? '0',
+      promoterName: r.promoterName,
+      customerSource: r.customerSource,
+      birthday: r.birthday ? fmtDate(r.birthday) : null,
+    }))
+
+    return { rows, truncated }
   },
 )
 

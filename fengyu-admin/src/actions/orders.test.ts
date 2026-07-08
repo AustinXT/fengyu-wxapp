@@ -22,6 +22,8 @@ vi.mock('@db/order', () => ({
     status: 'status',
     saleOrderType: 'sale_order_type',
     storeId: 'store_id',
+    marketName: 'market_name',
+    storeName: 'store_name',
     saleOrderDatetime: 'sale_order_datetime',
     customerName: 'customer_name',
     clientPhone: 'client_phone',
@@ -32,8 +34,26 @@ vi.mock('@db/order', () => ({
     payableAmount: 'payable_amount',
     // 2026-04-26 sale-order-domain-refactor：DB 列名已由 paid_amount 重命名为 received
     received: 'received',
+    refundedAmount: 'refunded_amount',
+    totalAmount: 'total_amount',
+    documentType: 'document_type',
+    remark: 'remark',
+    isActivity: 'is_activity',
+    // 迁移 0077 双库已迁；admin 导出/列表 select 字段
+    isMembershipUpgrade: 'is_membership_upgrade',
+    openedBy: 'opened_by',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    allocationStatus: 'allocation_status',
+    couponId: 'coupon_id',
+    couponDiscount: 'coupon_discount',
+    refSaleOrderId: 'ref_sale_order_id',
+    preferredEmployeeId: 'preferred_employee_id',
+    legacySource: 'legacy_source',
+    lakalaOutOrderNo: 'lakala_out_order_no',
+    firstPaymentAmount: 'first_payment_amount',
     $inferInsert: {} as any,
   },
   saleItems: {
@@ -44,6 +64,19 @@ vi.mock('@db/order', () => ({
     remainingSessions: 'remaining_sessions',
     pickedUpQuantity: 'picked_up_quantity',
     quantity: 'quantity',
+    productName: 'product_name',
+    productType: 'product_type',
+    salesCategory: 'sales_category',
+    sessionCount: 'session_count',
+    unitPrice: 'unit_price',
+    unitRealPrice: 'unit_real_price',
+    saleAmount: 'sale_amount',
+    received: 'received',
+    pendingReceived: 'pending_received',
+    skuId: 'sku_id',
+    refSaleItemId: 'ref_sale_item_id',
+    paidSessions: 'paid_sessions',
+    expireDate: 'expire_date',
     $inferInsert: {} as any,
   },
   /** ticket 2026-04-24 PR-3 — 款项流水表 */
@@ -113,7 +146,7 @@ vi.mock('@db/system-config', () => ({
 vi.mock('@db/product', () => ({
   productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
   products: { productId: 'product_id', name: 'name' },
-  productCategories: { categoryId: 'category_id', productKind: 'product_kind', salesCategory: 'sales_category' },
+  productCategories: { categoryId: 'category_id', productKind: 'product_kind', categoryName: 'category_name', salesCategory: 'sales_category' },
   // 2026-04-27 dfa4847: orders.ts createOrder 优惠券范围校验需查 mall_product_skus → product 的映射
   mallProductSkus: { productId: 'product_id', skuId: 'sku_id', bundleGroupId: 'bundle_group_id', bundlePrice: 'bundle_price', sortOrder: 'sort_order' },
 }))
@@ -201,7 +234,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportAllocationOrders } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -3636,7 +3669,7 @@ describe('exportAllocationOrders — 销售提成分配明细导出', () => {
       market: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-XSD-WX-2606080027',
       saleOrderType: '销售单', documentType: '售后',
       customerName: '张凯顾客', customerPhone: '13617216903', fallbackName: null, fallbackPhone: null,
-      productType: '疗程卡', categoryL1: '圣源养心', categoryL2: '护理项目',
+      productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
       productName: '【王牌】疼痛管理', sessionCount: 10, remainingSessions: 10,
       saleAmount: '5200.00', prepaidCardAmount: '0.00', received: '3600.00', refundedAmount: '300.00',
       unitRealPrice: '300.00', status: '部分支付',
@@ -3696,6 +3729,29 @@ describe('exportAllocationOrders — 销售提成分配明细导出', () => {
     expect(r.paidAt).toBe(new Date('2026-06-08T16:14:58.000Z').toISOString()) // 回退订单级 paidAt
   })
 
+  it('会员升级单：isMembershipUpgrade 透传到导出行', async () => {
+    const rawRow = {
+      market: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-UP-1', saleOrderType: '销售单', documentType: null,
+      customerName: '新客', customerPhone: null, fallbackName: null, fallbackPhone: null,
+      productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
+      productName: '【王牌】疼痛管理', sessionCount: 10, remainingSessions: 10,
+      saleAmount: '5000.00', prepaidCardAmount: '0.00', received: '5000.00', refundedAmount: '0.00',
+      unitRealPrice: '500.00', status: '已支付',
+      payAllocStatus: '已分配', orderAllocStatus: '已分配',
+      employeeName: '员工', positionName: '美容师',
+      allocationRatio: '1.00', allocationAmount: '5000.00', commissionRate: '0.1500', commissionAmount: '750.00',
+      isActivity: false, isMembershipUpgrade: true,
+      salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
+      payPaidAt: new Date('2026-06-08T16:59:49.000Z'), orderPaidAt: null, remark: null,
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportAllocationOrders({})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].isMembershipUpgrade).toBe(true)
+  })
+
   it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({ saleOrderId: `FY-${i}`, isActivity: false }))
     ;(db.select as any).mockReturnValue(makeChain(many))
@@ -3704,5 +3760,232 @@ describe('exportAllocationOrders — 销售提成分配明细导出', () => {
 
     expect(truncated).toBe(true)
     expect(rows).toHaveLength(10000)
+  })
+})
+
+/**
+ * exportOrders（订单管理列表导出，明细级一行一 sale_items，迁移 0077 后）
+ *
+ * 与 exportAllocationOrders 区别：以 sale_items 为起点（不是 sale_allocations），
+ * 不分摊 sale_allations；订单基础字段在每条 item 行重复，行级字段（商品类型/品质/次数/单价）按 item 各填。
+ */
+describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
+  // sale_items 为起点的链式 mock：from → innerJoin → 5 个 leftJoin → where(与) → orderBy(双参) → limit 收口
+  function makeChain(rows: any[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      rightJoin: vi.fn(() => chain),
+      fullJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn().mockResolvedValue(rows),
+      offset: vi.fn(() => chain),
+      groupBy: vi.fn(() => chain),
+      having: vi.fn(() => chain),
+    }
+    return chain
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(scopeCondition as any).mockReturnValue(undefined)
+  })
+
+  it('明细级一行一 item：订单基础字段重复，行级字段按 item 各填；isMembershipUpgrade 已 select', async () => {
+    const rawA = {
+      marketName: '九江',
+      storeName: '南昌英伦店',
+      saleOrderId: 'FY-XSD-WX-2606080027',
+      saleOrderType: '销售单',
+      documentType: '售后',
+      status: '部分支付',
+      custName: '张凯顾客',
+      custPhone: '13617216903',
+      fallbackName: null,
+      fallbackPhone: null,
+      totalAmount: '5200.00',
+      prepaidCardAmount: '0.00',
+      received: '3600.00',
+      refundedAmount: '300.00',
+      paymentMethod: '微信',
+      isMembershipUpgrade: true,
+      isActivity: false,
+      customerType: '会员客',
+      openedByName: '张凯',
+      saleOrderDatetime: new Date('2026-06-08T16:00:00.000Z'),
+      createdAt: new Date('2026-06-08T16:05:00.000Z'),
+      remark: '备注A',
+      productType: '疗程卡',
+      salesCategory: '自销自耗',
+      productName: '【王牌】疼痛管理',
+      sessionCount: 10,
+      remainingSessions: 8,
+      unitRealPrice: '300.00',
+      categoryL1: '护理项目',
+      categoryL2: '圣源养心',
+    }
+    const rawB = {
+      ...rawA,
+      productName: '【王牌】肩颈舒缓',
+      sessionCount: 6,
+      remainingSessions: 4,
+      unitRealPrice: '500.00',
+      saleItemId: 'item-2',
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawA, rawB]))
+
+    const { rows, truncated } = await exportOrders({})
+
+    expect(truncated).toBe(false)
+    // 一行一 item，同订单号重复，但 productName 区分
+    expect(rows).toHaveLength(2)
+    expect(rows[0].saleOrderId).toBe('FY-XSD-WX-2606080027')
+    expect(rows[1].saleOrderId).toBe('FY-XSD-WX-2606080027')
+    expect(rows[0].productName).toBe('【王牌】疼痛管理')
+    expect(rows[1].productName).toBe('【王牌】肩颈舒缓')
+    // 关键：是否纳客已 select 并透传（迁移 0077 双库已迁）
+    expect(rows[0].isMembershipUpgrade).toBe(true)
+    expect(rows[0].isActivity).toBe(false)
+    // 订单级
+    expect(rows[0].marketName).toBe('九江')
+    expect(rows[0].storeName).toBe('南昌英伦店')
+    expect(rows[0].customerName).toBe('张凯顾客')
+    expect(rows[0].clientPhone).toBe('13617216903')
+    expect(rows[0].totalAmount).toBe('5200.00')
+    expect(rows[0].paymentMethod).toBe('微信')
+    // 行级
+    expect(rows[0].productType).toBe('疗程卡')
+    expect(rows[0].categoryL1).toBe('护理项目')
+    expect(rows[0].categoryL2).toBe('圣源养心')
+    expect(rows[0].sessionCount).toBe(10)
+    expect(rows[0].remainingSessions).toBe(8)
+    expect(rows[0].unitRealPrice).toBe(300) // number 化
+    expect(rows[0].salesCategory).toBe('自销自耗')
+    expect(rows[0].customerType).toBe('会员客')
+    // 时间 ISO 化
+    expect(rows[0].saleOrderDatetime).toBe('2026-06-08T16:00:00.000Z')
+    expect(rows[0].createdAt).toBe('2026-06-08T16:05:00.000Z')
+  })
+
+  it('clientUserId 为 NULL → customerType=null 由前端 fallback「未注册」（SQL 不预设）', async () => {
+    const rawRow = {
+      marketName: '九江', storeName: '店', saleOrderId: 'FY-1',
+      saleOrderType: '销售单', documentType: null, status: '已支付',
+      custName: null, custPhone: null, fallbackName: '快照顾客', fallbackPhone: '13800000000',
+      totalAmount: '0.01', prepaidCardAmount: '0.00', received: '0.01', refundedAmount: '0.00',
+      paymentMethod: '无', isMembershipUpgrade: false, isActivity: false,
+      customerType: null, openedByName: '测试', remark: null,
+      saleOrderDatetime: new Date('2026-06-01T00:00:00.000Z'),
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      productType: null, salesCategory: null, productName: null,
+      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      categoryL1: null, categoryL2: null,
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportOrders({})
+
+    // SQL 端 customerType 为 null，由前端「顾客类型」列 accessor 执行 r.customerType ?? '未注册'
+    expect(rows[0].customerType).toBeNull()
+    // 顾客名走 fallback：client.name=null → sale_orders.customer_name='快照顾客'
+    expect(rows[0].customerName).toBe('快照顾客')
+    expect(rows[0].clientPhone).toBe('13800000000')
+  })
+
+  it('非次数卡（家居产品）：sessionCount/remainingSessions NULL 透传给前端 → 「—」', async () => {
+    const rawRow = {
+      marketName: '九江', storeName: '店', saleOrderId: 'FY-2',
+      saleOrderType: '销售单', documentType: null, status: '已支付',
+      custName: null, custPhone: null, fallbackName: '甲', fallbackPhone: null,
+      totalAmount: '580.00', prepaidCardAmount: '0.00', received: '580.00', refundedAmount: '0.00',
+      paymentMethod: '线下', isMembershipUpgrade: false, isActivity: false,
+      customerType: '流量客', openedByName: '员工',
+      remark: null, saleOrderDatetime: new Date(), createdAt: new Date(),
+      productType: '家居产品',
+      salesCategory: '他销他耗',
+      productName: '精华液',
+      sessionCount: null, // 非次数卡 → NULL
+      remainingSessions: null,
+      unitRealPrice: '580.00',
+      categoryL1: '家居产品',
+      categoryL2: '精华液',
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportOrders({})
+
+    expect(rows[0].productType).toBe('家居产品')
+    expect(rows[0].sessionCount).toBeNull()
+    expect(rows[0].remainingSessions).toBeNull()
+  })
+
+  it('unitRealPrice 用优惠后价 string → number 化便于 Excel 求和', async () => {
+    const rawRow = {
+      marketName: 'X', storeName: 'Y', saleOrderId: 'FY-3',
+      saleOrderType: '销售单', documentType: null, status: '已支付',
+      custName: '甲', custPhone: null, fallbackName: null, fallbackPhone: null,
+      totalAmount: '158.50', prepaidCardAmount: '0.00', received: '158.50', refundedAmount: '0.00',
+      paymentMethod: '微信', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: null,
+      remark: null, saleOrderDatetime: new Date(), createdAt: new Date(),
+      productType: '疗程卡', salesCategory: '自销自耗',
+      productName: '套餐', sessionCount: 1, remainingSessions: 1,
+      unitRealPrice: '158.50', categoryL1: null, categoryL2: null,
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportOrders({})
+
+    expect(typeof rows[0].unitRealPrice).toBe('number')
+    expect(rows[0].unitRealPrice).toBe(158.5)
+  })
+
+  it('超过 LIMIT 10000 → truncated=true 且按 item 截断到 10000', async () => {
+    const many = Array.from({ length: 10001 }, () => ({
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-X', saleOrderType: '销售单',
+      documentType: null, status: '已支付', custName: null, custPhone: null,
+      fallbackName: null, fallbackPhone: null,
+      totalAmount: '0', prepaidCardAmount: '0', received: '0', refundedAmount: '0',
+      paymentMethod: null, isMembershipUpgrade: false, isActivity: false,
+      customerType: null, openedByName: null, remark: null,
+      saleOrderDatetime: new Date(), createdAt: new Date(),
+      productType: null, salesCategory: null, productName: null,
+      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      categoryL1: null, categoryL2: null,
+    }))
+    ;(db.select as any).mockReturnValue(makeChain(many))
+
+    const { rows, truncated } = await exportOrders({})
+
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(10000)
+  })
+
+  it('费用列（totalAmount/received/refundedAmount）：prepaidCardAmount 等缺失 fallback 0', async () => {
+    const rawRow = {
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-4',
+      saleOrderType: '销售单', documentType: null, status: '已支付',
+      custName: '甲', custPhone: null, fallbackName: null, fallbackPhone: null,
+      totalAmount: '100.00',
+      prepaidCardAmount: null, // DB nullable → fallback '0'
+      received: null,
+      refundedAmount: null,
+      paymentMethod: null, isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: null, remark: null,
+      saleOrderDatetime: new Date(), createdAt: new Date(),
+      productType: null, salesCategory: null, productName: null,
+      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      categoryL1: null, categoryL2: null,
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportOrders({})
+
+    expect(rows[0].prepaidCardAmount).toBe('0')
+    expect(rows[0].received).toBe('0')
+    expect(rows[0].refundedAmount).toBe('0')
   })
 })

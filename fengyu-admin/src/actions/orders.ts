@@ -210,6 +210,20 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
     `)
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
+    // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
+    await tx.execute(sql`
+      UPDATE sale_orders SET is_membership_upgrade = true
+      WHERE sale_order_id = (
+        SELECT o.sale_order_id FROM sale_orders o
+        WHERE o.client_user_id = ${clientUserId}
+          AND o.status IN ('已支付', '已完成')
+          AND o.sale_order_type = '销售单'
+          AND o.total_amount >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        LIMIT 1
+      )
+    `)
   }
 }
 
@@ -487,6 +501,8 @@ export const getOrdersPaginated = withPermission(
     couponDiscount: r.order.couponDiscount,
     remark: r.order.remark,
     isActivity: r.order.isActivity ?? false,
+    /** 会员升级单标记（saleOrders.isMembershipUpgrade，recalcCustomerType 自动打标，迁移 0077 双库已迁） */
+    isMembershipUpgrade: r.order.isMembershipUpgrade ?? false,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -497,28 +513,57 @@ export const getOrdersPaginated = withPermission(
   },
 )
 
-/** 导出行（一行一单，明细聚合成 itemsSummary 一列） */
+/**
+ * 导出行（明细级，一行 = 一条 sale_items[item_direction='购买']）。
+ * 订单级字段（订单号/金额/实付等）在每条 item 行内重复；
+ * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示。
+ * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
+ */
 export interface ExportOrderRow {
+  // —— 订单级（每条 item 行重复）——
+  marketName: string
+  storeName: string | null
   saleOrderId: string
   saleOrderType: string
   documentType: string | null
   status: string
   customerName: string | null
   clientPhone: string | null
-  storeName: string | null
   totalAmount: string
   prepaidCardAmount: string
   received: string
   refundedAmount: string
   paymentMethod: string | null
+  /** 是否纳客：sale_orders.is_membership_upgrade（recalcCustomerType 在顾客首次跃迁为会员客时自动打标） */
+  isMembershipUpgrade: boolean
+  isActivity: boolean
+  /** 经营类型：sale_items.sales_category（行级，订单级页保留便于看清） */
+  salesCategory: string | null
+  /** 顾客类型：client_wechat_users.customer_type；client_user_id=NULL 时由前端 fallback「未注册」 */
+  customerType: string | null
   openedByName: string | null
   saleOrderDatetime: string
   createdAt: string
+  // —— item 级（每条 item 不同）——
+  /** 商品类型：sale_items.product_type（疗程卡 / 家居产品） */
+  productType: string | null
+  /** 品质一级：product_categories.product_kind（一级分类名） */
+  categoryL1: string | null
+  /** 品质二级：product_categories.category_name（二级分类名） */
+  categoryL2: string | null
+  /** 商品明细：sale_items.product_name 行级商品名称快照（不再聚合多行） */
+  productName: string | null
+  /** 总次数：sale_items.session_count；非次数卡（家居产品）为 NULL → 前端 fallback「—」 */
+  sessionCount: number | null
+  /** 可用次数：sale_items.remaining_sessions；同上 */
+  remainingSessions: number | null
+  /** 单次价格：sale_items.unit_real_price（优惠后价 → number 化便于 Excel 求和） */
+  unitRealPrice: number | null
+  /** 订单备注（按行重复） */
   remark: string | null
-  itemsSummary: string
 }
 
-/** 导出订单（全部筛选命中，含商品明细聚合列）。LIMIT 10000 防 OOM。 */
+/** 导出订单（明细级，一行一 sale_items 行；LIMIT 10000 按 item 计数防 OOM）。 */
 export const exportOrders = withPermission(
   'sale_order:list',
   async (
@@ -529,58 +574,92 @@ export const exportOrders = withPermission(
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
 
-    const orderRows = await db
-      .select({ order: saleOrders, storeName: stores.storeName, openedByName: opener.name })
-      .from(saleOrders)
+    // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
+    // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
+    // WHERE 追加 item_direction='购买'：sale_items 同时承载 4 种单据方向的明细行
+    //   （schema order.ts line 168-172），明细级导出仅保留购买行避免双倍行
+    const itemRows = await db
+      .select({
+        // 订单级
+        marketName: saleOrders.marketName,
+        storeName: saleOrders.storeName,
+        saleOrderId: saleOrders.saleOrderId,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        status: saleOrders.status,
+        custName: clientWechatUsers.name,
+        custPhone: clientWechatUsers.phone,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        totalAmount: saleOrders.totalAmount,
+        prepaidCardAmount: saleOrders.prepaidCardAmount,
+        received: saleOrders.received,
+        refundedAmount: saleOrders.refundedAmount,
+        paymentMethod: saleOrders.paymentMethod,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+        isActivity: saleOrders.isActivity,
+        customerType: clientWechatUsers.customerType,
+        openedByName: opener.name,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        createdAt: saleOrders.createdAt,
+        remark: saleOrders.remark,
+        // item 级
+        productType: saleItems.productType,
+        salesCategory: saleItems.salesCategory,
+        productName: saleItems.productName,
+        sessionCount: saleItems.sessionCount,
+        remainingSessions: saleItems.remainingSessions,
+        unitRealPrice: saleItems.unitRealPrice,
+        categoryL1: productCategories.productKind,
+        categoryL2: productCategories.categoryName,
+      })
+      .from(saleItems)
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
       .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .where(whereClause)
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .where(and(whereClause, eq(saleItems.itemDirection, '购买')))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
       .limit(LIMIT + 1)
 
-    const truncated = orderRows.length > LIMIT
-    const page = truncated ? orderRows.slice(0, LIMIT) : orderRows
-    const ids = page.map((r) => r.order.saleOrderId)
+    const truncated = itemRows.length > LIMIT
+    const page = truncated ? itemRows.slice(0, LIMIT) : itemRows
 
-    // 批量查明细，避免 N+1
-    const itemsMap = new Map<string, string[]>()
-    if (ids.length > 0) {
-      const itemRows = await db
-        .select({
-          saleOrderId: saleItems.saleOrderId,
-          productName: saleItems.productName,
-          skuName: productSkus.specName,
-          quantity: saleItems.quantity,
-        })
-        .from(saleItems)
-        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-        .where(inArray(saleItems.saleOrderId, ids))
-      for (const it of itemRows) {
-        const name = it.productName ?? it.skuName ?? '—'
-        const arr = itemsMap.get(it.saleOrderId) ?? []
-        arr.push(`${name}x${it.quantity}`)
-        itemsMap.set(it.saleOrderId, arr)
-      }
-    }
+    const num = (v: string | null) => (v == null ? null : Number(v))
 
     const rows: ExportOrderRow[] = page.map((r) => ({
-      saleOrderId: r.order.saleOrderId,
-      saleOrderType: r.order.saleOrderType,
-      documentType: r.order.documentType,
-      status: r.order.status,
-      customerName: r.order.customerName,
-      clientPhone: r.order.clientPhone,
+      // 订单级
+      marketName: r.marketName,
       storeName: r.storeName,
-      totalAmount: r.order.totalAmount,
-      prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
-      received: r.order.received ?? '0',
-      refundedAmount: r.order.refundedAmount ?? '0',
-      paymentMethod: r.order.paymentMethod,
+      saleOrderId: r.saleOrderId,
+      saleOrderType: r.saleOrderType,
+      documentType: r.documentType,
+      status: r.status,
+      customerName: r.custName ?? r.fallbackName ?? null,
+      clientPhone: r.custPhone ?? r.fallbackPhone ?? null,
+      totalAmount: r.totalAmount,
+      prepaidCardAmount: r.prepaidCardAmount ?? '0',
+      received: r.received ?? '0',
+      refundedAmount: r.refundedAmount ?? '0',
+      paymentMethod: r.paymentMethod,
+      isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+      isActivity: r.isActivity ?? false,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
       openedByName: r.openedByName,
-      saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
-      createdAt: r.order.createdAt.toISOString(),
-      remark: r.order.remark,
-      itemsSummary: (itemsMap.get(r.order.saleOrderId) ?? []).join('、'),
+      saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+      createdAt: r.createdAt.toISOString(),
+      // item 级
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionCount: r.sessionCount ?? null,
+      remainingSessions: r.remainingSessions ?? null,
+      unitRealPrice: num(r.unitRealPrice),
+      remark: r.remark,
     }))
 
     return { rows, truncated }
@@ -590,7 +669,7 @@ export const exportOrders = withPermission(
 /**
  * 营业额分配「销售提成」导出行（明细级，一行 = 一条有效 sale_allocations，每被分配员工一行）。
  * 与服务提成导出（ExportAllocationServiceRow）对称。金额列为 number 便于 Excel 求和；
- * 占比/比例保留 string 原值交前端 fmtPercent；isActivity 为 boolean 交前端转「是/否」。
+ * 占比/比例保留 string 原值交前端 fmtPercent；isActivity / isMembershipUpgrade 为 boolean 交前端转「是/否」。
  */
 export interface ExportAllocationOrderRow {
   market: string | null
@@ -620,6 +699,7 @@ export interface ExportAllocationOrderRow {
   commissionRate: string | null
   commissionAmount: number | null
   isActivity: boolean
+  isMembershipUpgrade: boolean
   salesCategory: string | null
   customerType: string | null
   openedByName: string | null
@@ -672,8 +752,8 @@ export const exportAllocationOrders = withPermission(
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
         productType: saleItems.productType,
-        categoryL1: productCategories.categoryName,
-        categoryL2: productCategories.productKind,
+        categoryL1: productCategories.productKind,
+        categoryL2: productCategories.categoryName,
         productName: saleItems.productName,
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
@@ -692,6 +772,7 @@ export const exportAllocationOrders = withPermission(
         commissionRate: saleAllocations.commissionRate,
         commissionAmount: saleAllocations.commissionAmount,
         isActivity: saleOrders.isActivity,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
         salesCategory: saleItems.salesCategory,
         customerType: clientWechatUsers.customerType,
         openedByName: opener.name,
@@ -745,6 +826,7 @@ export const exportAllocationOrders = withPermission(
       commissionRate: r.commissionRate,
       commissionAmount: num(r.commissionAmount),
       isActivity: r.isActivity ?? false,
+      isMembershipUpgrade: r.isMembershipUpgrade ?? false,
       salesCategory: r.salesCategory,
       customerType: r.customerType,
       openedByName: r.openedByName,

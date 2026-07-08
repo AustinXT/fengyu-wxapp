@@ -77,6 +77,22 @@ function extractNonMemberBranches(sql) {
   return match ? match[1] : sql
 }
 
+/**
+ * 提取会员升级归因 UPDATE 段（首次跃迁为会员客时给触发单打 is_membership_upgrade 标记）
+ * 用于跨端镜像对比：staff / admin orders.ts / admin recompute-customer-tags 三端逐字一致；
+ * payNotify 因会员客判定含回款单累计而条件为超集（合法差异，单独验证）。
+ * @param {string} filePath
+ * @returns {string}
+ */
+function extractMembershipUpgradeAttribution(filePath) {
+  const src = fs.readFileSync(filePath, 'utf8')
+  const match = src.match(/UPDATE sale_orders SET is_membership_upgrade[\s\S]*?LIMIT 1\s*\)/)
+  if (!match) {
+    throw new Error(`未在 ${filePath} 找到会员升级归因 UPDATE 段（is_membership_upgrade）`)
+  }
+  return match[0]
+}
+
 describe('recalcCustomerType SQL 源文件守卫', () => {
   let staffSql
   let paynotifySql
@@ -197,6 +213,51 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(paynotifySql).not.toMatch(olderDeadPattern)
       expect(adminSql).not.toMatch(olderDeadPattern)
       expect(adminRecomputeSql).not.toMatch(olderDeadPattern)
+    })
+  })
+
+  describe('会员升级归因 UPDATE（is_membership_upgrade）镜像一致性', () => {
+    let staffAttr
+    let paynotifyAttr
+    let adminAttr
+    let adminRecomputeAttr
+
+    beforeAll(() => {
+      staffAttr = extractMembershipUpgradeAttribution(STAFF_ORDER_JS)
+      paynotifyAttr = extractMembershipUpgradeAttribution(PAYNOTIFY_JS)
+      adminAttr = extractMembershipUpgradeAttribution(ADMIN_ORDERS_TS)
+      adminRecomputeAttr = extractMembershipUpgradeAttribution(ADMIN_RECOMPUTE_TS)
+    })
+
+    test('四端归因段目标列一致：UPDATE sale_orders SET is_membership_upgrade = true', () => {
+      const re = /^UPDATE sale_orders SET is_membership_upgrade = true/
+      expect(staffAttr).toMatch(re)
+      expect(paynotifyAttr).toMatch(re)
+      expect(adminAttr).toMatch(re)
+      expect(adminRecomputeAttr).toMatch(re)
+    })
+
+    test('staff / admin orders.ts / admin recompute 三端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+      const staffN = normalizeSql(staffAttr)
+      expect(normalizeSql(adminAttr)).toBe(staffN)
+      expect(normalizeSql(adminRecomputeAttr)).toBe(staffN)
+    })
+
+    test('payNotify 归因段含回款单累计变体（与本端会员客 CASE 分支同源，合法差异）', () => {
+      expect(paynotifyAttr).toContain('ref_sale_order_id')
+      expect(paynotifyAttr).toContain("r.sale_order_type = '回款单'")
+    })
+
+    test('payNotify 归因条件是 staff 的超集：必须含纯 total_amount >= 阈值 分支', () => {
+      expect(normalizeSql(paynotifyAttr)).toContain('o.total_amount >= ?')
+    })
+
+    test('四端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
+      const re = /ORDER BY o\.paid_at ASC NULLS LAST/
+      expect(staffAttr).toMatch(re)
+      expect(paynotifyAttr).toMatch(re)
+      expect(adminAttr).toMatch(re)
+      expect(adminRecomputeAttr).toMatch(re)
     })
   })
 })

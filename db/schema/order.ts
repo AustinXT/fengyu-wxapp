@@ -114,6 +114,8 @@ export const saleOrders = pgTable(
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
     isActivity: boolean("is_activity").notNull().default(false),
+    /** 会员升级单标记（该订单触发顾客首次跃迁为会员客；由 recalcCustomerType 在首次跃迁时自动打标，非手动勾选） */
+    isMembershipUpgrade: boolean("is_membership_upgrade").notNull().default(false),
     /**
      * 历史订单来源标记。NULL=系统原生订单；'workfine'=WorkFine 历史导入（默认 status='未审核'）。
      * 由 db/scripts/import-workfine-legacy.js 写入；admin /legacy-orders 页按此筛选。

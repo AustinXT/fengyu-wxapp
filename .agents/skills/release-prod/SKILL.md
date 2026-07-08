@@ -175,4 +175,4 @@ scripts/use-env.sh dev
 - 需要 DB schema 迁移 → 走 `db/AGENTS.md`，迁移到 5433 是独立人工前置。
 - 首次 prod provisioning 全流程（HTTP 触发器、lakala 凭证、CLIENT_SERVICE_URL 收尾）。
 - 本地 dev 联调 → 用各端原生命令。
-- 客户交付混淆产物 → 那是 `scripts/build-delivery.js` 产 `delivery/`，与本技能无关；本技能部署的是**原始** `cloudfunctions/`。
+- 客户交付源码 zip → 用 `/pack-delivery` skill（合并 main→prod + 剥净注释 + 内置 pack-delivery.mjs 加固打包），与本技能无关；本技能部署的是**原始** `cloudfunctions/`。

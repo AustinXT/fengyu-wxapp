@@ -380,6 +380,11 @@ export interface SaleOrder {
   remark: string | null
   /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
   isActivity?: boolean
+  /**
+   * 会员升级单标记（recalcCustomerType 在顾客首次跃迁为会员客时自动打标）。
+   * 由 is_membership_upgrade 列同步四端字节；导出与列表均暴露。
+   */
+  isMembershipUpgrade?: boolean
   createdAt: string
   updatedAt: string
   // joined

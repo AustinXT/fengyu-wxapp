@@ -2,8 +2,12 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import type { AdminCard } from "@/actions/cards";
+import { exportCards, type AdminCard } from "@/actions/cards";
+import { ExportButton } from "@/components/ui/export-button";
+import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import type { Store, OrgNode } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +76,42 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 		},
 		[setFilter, debounceRef],
 	);
+
+	const searchParams = useSearchParams();
+
+	/** 导出当前筛选命中的全部疗程卡（跨分页，最多 10000 条） */
+	const handleExport = useCallback(async () => {
+		const raw = Object.fromEntries(searchParams.entries());
+		const { rows, truncated } = await exportCards(raw);
+		if (rows.length === 0) {
+			toast.info("当前筛选无数据可导出");
+			return;
+		}
+		await exportToXlsx({
+			filename: "疗程卡",
+			sheetName: "疗程卡",
+			columns: [
+				{ header: "顾客", width: 14, accessor: (r) => r.clientName },
+				{ header: "手机号", width: 14, accessor: (r) => r.clientPhone },
+				{ header: "一级品项", width: 14, accessor: (r) => r.categoryL1 },
+				{ header: "二级品项", width: 14, accessor: (r) => r.categoryL2 },
+				{ header: "商品/规格", width: 28, accessor: (r) => r.productSpec },
+				{ header: "类型", accessor: (r) => r.cardType },
+				{ header: "剩余/总次数", width: 12, accessor: (r) => `${r.remaining} / ${r.totalSessions}` },
+				{ header: "单次标价", accessor: (r) => r.unitPrice },
+				{ header: "单次优惠后价", width: 14, accessor: (r) => r.unitRealPrice },
+				{ header: "行应付总额", width: 12, accessor: (r) => r.saleAmount },
+				{ header: "行实收", accessor: (r) => r.received },
+				{ header: "购买门店", width: 18, accessor: (r) => r.storeDisplay },
+				{ header: "开单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
+				{ header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
+				{ header: "订单状态", accessor: (r) => r.orderStatus },
+				{ header: "付款时间", width: 20, accessor: (r) => fmtDateTime(r.paidAt) },
+			],
+			rows,
+		});
+		if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
+	}, [searchParams]);
 
 	const columns: Column<AdminCard>[] = [
 		{
@@ -250,6 +290,7 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 							onChange={(e) => handleSearchChange(e.target.value)}
 							className="max-w-xs"
 						/>
+						<ExportButton onExport={handleExport} />
 					</div>
 				</CardContent>
 			</Card>
