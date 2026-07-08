@@ -6,6 +6,8 @@
 //
 // 加固项：
 //   1. 复制 prod 树到 staging（排除 node_modules/.git/.next/.claude/.agents/知识目录/锁文件等）
+//      ※ 部署 admin 必需资产(.claude/skills/remote-deploy skill / fengyu-admin/bun.lock / db lockfile)走白名单放行；
+//        envs/ 下只保留 *.example，排除真值与密钥(防部署 worktree 的 envs/prod.env 泄露)
 //   2. 删架构泄露资产（DEPLOY.md / db 修复脚本 / typings / drizzle snapshot / 测试）
 //   3. 关小程序 sourcemap 上传（uploadWithSourceMap=false）
 //   4. 泛化 package.json（description 置空、移除 repository/bugs/homepage 源码仓 URL）
@@ -37,6 +39,17 @@ const EXCLUDE_FILES = new Set([
   'bun.lock', 'package-lock.json', 'yarn.lock',
   'DEPLOY.md', 'CLAUDE.md', '.gitleaks.toml',
 ])
+
+// 部署 admin 必需、但被上面 EXCLUDE 规则挡住的文件/目录（allowed() 白名单放行）：
+//   - .claude/skills/remote-deploy/：部署 skill(deploy-admin.sh + SKILL.md)，.claude 被 EXCLUDE_TOP 排除
+//   - fengyu-admin/bun.lock：Dockerfile `bun install --frozen-lockfile` 必需
+//   - db/{bun.lock,package-lock.json}：deploy-admin.sh 迁移预检 `cd db && npm run db:migrate` 依赖
+const DEPLOY_REQUIRED_FILES = new Set([
+  'fengyu-admin/bun.lock',
+  'db/bun.lock',
+  'db/package-lock.json',
+])
+const DEPLOY_REQUIRED_DIRS = ['.claude/skills/remote-deploy']
 
 // 复制后从 staging 删除的架构泄露脚本（保留 bootstrap-from-zero.sh 供首建库）
 const DELETE_REL = [
@@ -91,6 +104,13 @@ function readVersion() {
 // ---------- 加固函数 ----------
 function allowed(rel, base, isDir) {
   const parts = rel.split(path.sep)
+  // 部署 admin 必需文件/目录白名单（覆盖下方 EXCLUDE_TOP .claude / EXCLUDE_FILES lockfile）
+  //   目录若是白名单祖先(.claude / .claude/skills)也放行进入遍历，内部再由本规则精确过滤；
+  //   release-prod 等同目录其他 skill 不被命中 → 仍被 EXCLUDE_TOP '.claude' 排除
+  if (DEPLOY_REQUIRED_DIRS.some((d) => rel === d || rel.startsWith(d + '/') || (isDir && d.startsWith(rel + '/')))) return true
+  if (!isDir && DEPLOY_REQUIRED_FILES.has(rel)) return true
+  // envs/ 下只放行 *.example：排除真值(prod.env/dev.env/.active)与密钥(*.pem/*.cer)
+  if (parts[0] === 'envs' && !isDir && !base.endsWith('.example')) return false
   if (EXCLUDE_TOP.has(parts[0])) return false
   if (EXCLUDE_FILES.has(base)) return false
   if (!isDir && /\.(test|spec)\.(ts|tsx|js|jsx|mjs)$/.test(base)) return false
@@ -195,6 +215,9 @@ function stripLineComments(src, prefix) {
 function stripSafeComments() {
   let n = 0
   walkFiles(STAGING, (full) => {
+    const rel = path.relative(STAGING, full)
+    // deploy-admin.sh 的注释是部署操作说明（RSA 配置/迁移预检/回滚步骤），有文档价值，保留
+    if (rel === '.claude/skills/remote-deploy/deploy-admin.sh') return
     const ext = path.extname(full)
     let src
     try { src = fs.readFileSync(full, 'utf8') } catch { return }
