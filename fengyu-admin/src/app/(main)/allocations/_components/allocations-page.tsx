@@ -142,6 +142,7 @@ export default function AllocationsPageClient({
         { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
         { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
         { header: "是否活动", width: 10, accessor: (r) => (r.isActivity ? "是" : "否") },
+        { header: "是否新客", width: 10, accessor: (r) => (r.isMembershipUpgrade ? "是" : "否") },
         { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
         { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
         { header: "开单人", accessor: (r) => r.openedByName },

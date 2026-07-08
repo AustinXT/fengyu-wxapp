@@ -251,7 +251,7 @@ export default function OrdersPageClient({
   const { get, set, setMany } = useUrlFilters();
   const searchParams = useSearchParams();
 
-  /** 导出当前筛选命中的全部订单（跨分页，含商品明细聚合列） */
+  /** 导出当前筛选命中的全部订单（明细级，一行一 sale_items；订单级字段按行重复） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
     const { rows, truncated } = await exportOrders(raw);
@@ -263,27 +263,43 @@ export default function OrdersPageClient({
       filename: "订单",
       sheetName: "订单",
       columns: [
+        { header: "市场", width: 12, accessor: (r) => r.marketName },
+        { header: "门店", width: 16, accessor: (r) => r.storeName ?? "" },
         { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-        { header: "类型", accessor: (r) => r.saleOrderType },
-        { header: "单据类型", accessor: (r) => r.documentType },
-        { header: "状态", accessor: (r) => r.status },
-        { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone },
-        { header: "门店", accessor: (r) => r.storeName },
-        { header: "订单金额", accessor: (r) => r.totalAmount },
-        { header: "储值卡抵扣", accessor: (r) => r.prepaidCardAmount },
-        { header: "实付", accessor: (r) => r.received },
-        { header: "已退", accessor: (r) => r.refundedAmount },
-        { header: "支付方式", accessor: (r) => paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod },
-        { header: "开单人", accessor: (r) => r.openedByName },
+        { header: "类型", width: 10, accessor: (r) => r.saleOrderType },
+        { header: "单据类型", width: 10, accessor: (r) => r.documentType ?? "" },
+        { header: "顾客", width: 12, accessor: (r) => r.customerName ?? "" },
+        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone ?? "" },
+        { header: "商品类型", width: 10, accessor: (r) => r.productType ?? "" },
+        { header: "品质(一级)", width: 14, accessor: (r) => r.categoryL1 ?? "" },
+        { header: "品质(二级)", width: 14, accessor: (r) => r.categoryL2 ?? "" },
+        { header: "商品明细", width: 28, accessor: (r) => r.productName ?? "" },
+        { header: "总次数", width: 8, accessor: (r) => r.sessionCount ?? "—" },
+        { header: "可用次数", width: 10, accessor: (r) => r.remainingSessions ?? "—" },
+        { header: "订单金额", width: 10, accessor: (r) => r.totalAmount },
+        { header: "储值卡抵扣", width: 10, accessor: (r) => r.prepaidCardAmount },
+        { header: "实付", width: 10, accessor: (r) => r.received },
+        { header: "已退", width: 10, accessor: (r) => r.refundedAmount },
+        { header: "单次价格", width: 10, accessor: (r) => r.unitRealPrice ?? "" },
+        { header: "状态", width: 10, accessor: (r) => r.status },
+        {
+          header: "支付方式",
+          width: 12,
+          accessor: (r) =>
+            paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod ?? "",
+        },
+        { header: "是否纳客", width: 8, accessor: (r) => (r.isMembershipUpgrade ? "是" : "否") },
+        { header: "是否活动", width: 8, accessor: (r) => (r.isActivity ? "是" : "否") },
+        { header: "经营类型", width: 10, accessor: (r) => r.salesCategory ?? "" },
+        { header: "顾客类型", width: 10, accessor: (r) => r.customerType ?? "未注册" },
+        { header: "开单人", width: 10, accessor: (r) => r.openedByName ?? "" },
         { header: "下单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
         { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
-        { header: "商品明细", width: 40, accessor: (r) => r.itemsSummary },
-        { header: "备注", width: 24, accessor: (r) => r.remark },
+        { header: "备注", width: 24, accessor: (r) => r.remark ?? "" },
       ],
       rows,
     });
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
+    if (truncated) toast.warning("数据量过大，已导出前 10000 条明细（按商品行计数），请缩小筛选范围");
   }, [searchParams]);
 
   /** 筛选变更时重置到第 1 页 */
