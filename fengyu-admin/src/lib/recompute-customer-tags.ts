@@ -153,6 +153,10 @@ async function recomputeCustomerTypeForUser(
       UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
     `)
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
+    // ⚠️ 与 payNotify 归因段的合法差异：admin 端只看 `o.total_amount >= ${threshold}`（单笔达标），
+    // payNotify 端额外含「回款单累计」分支（单笔+回款 ≥ 阈值），因 payNotify 的会员客判定 CASE 同源含累计。
+    // 后果：total<阈值但 total+回款累计达阈值时，payNotify 路径打标、admin 路径不打标。
+    // 守护：`recalc-customer-type-sql.test.js` 中 payNotify/admin 段 normalize 后差异已断言。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (

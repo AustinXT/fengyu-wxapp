@@ -162,7 +162,15 @@ async function main() {
     }
   }
 
-  // ─── C. 部分支付订单超净已收退款被拒（P2 守护）───
+  // ─── C. 部分支付疗程卡整卡退超净：截断到 refundCap（仅退净已收）───
+  // 2026-07-08 同步：退款联级规则 f0c77982 把 createRefund 改为
+  // 「疗程卡强制整卡全退 + 数量不可调 → 截断退款额到 refundCap（仅退已付，整卡仍作废）；
+  //   家居产品可调数量 → 仍拒绝」。case C 是疗程卡 + 退全部 1 次 = 800 元
+  //   > refundCap=200（received - refunded_amount），所以走「截断」而非「拒绝」：
+  //   - refC.code === 0、finalRefundAmount=200
+  //   - sale_order_payments.amount=-200、status='待审批'（不强制走审批）
+  // 反例：家居产品（hasCourseCard=false）走拒绝分支，仍报 INVALID_STATE: 退款金额超过订单可退余额
+  // （这条规则由 smoke-order-payment-refund-matrix 守护，不在本文件重复）。
   const orderC = `${NS}_RFD_C_PARTIAL`
   await createTestSaleOrder({
     saleOrderId: orderC,
@@ -175,23 +183,39 @@ async function main() {
     status: '部分支付',
     salesCategory: '他销自耗',
   })
-  // 部分支付：只收 200 现金（received=200），次数全在（remaining=1，unit_real_price=800）；无 payments 流水
+  // 部分支付：只收 200 现金（received=200），无 sale_order_payments 流水（部分支付仍待登记）
   await pgQuery(`UPDATE sale_orders SET received = 200 WHERE sale_order_id = $1`, [orderC])
   const cItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderC])
   const itemC = cItems[0].sale_item_id
-  // 退全部 1 次 = 800 元 > 可退余额（净已收 200）→ 必须被拒（防超退商家净亏）
+  // 退全部 1 次 = 800 元 > refundCap（净已收 200）→ 截断到 200，整卡待审批作废
   const refC = await invokeStaffApi('order.createRefund', {
     _testOpenid: TEST_MANAGER_OPENID,
     refSaleOrderId: orderC,
     items: [{ saleItemId: itemC, refundQuantity: 1 }],
     refundReason: 'e2e_refund_C_overrefund',
   })
-  if (refC.code === 0) {
-    errors.push('C.部分支付超净已收退款应被拒，却成功了')
-  } else if (!(refC.message || '').includes('可退余额')) {
-    errors.push(`C.拒绝消息不符，实际='${refC.message}'`)
+  if (refC.code !== 0) {
+    errors.push(`C.部分支付超净已收应被「截断」到 200，却失败了：code=${refC.code} msg=${refC.message}`)
   } else {
-    rec(`  ✓ createRefund C: 超净已收(200) 退款 800 被拒 — ${refC.message}`)
+    const finalC = Number(refC.data.finalRefundAmount || 0)
+    if (Math.abs(finalC - 200) > 0.01) {
+      errors.push(`C.finalRefundAmount 应截断到 200，实际=${finalC}`)
+    }
+    const sopC = await pgQuery(
+      `SELECT status, amount FROM sale_order_payments WHERE id = $1`,
+      [refC.data.paymentId]
+    )
+    if (sopC.length !== 1) {
+      errors.push(`C.payments 应=1 行`)
+    } else {
+      if (sopC[0].status !== '待审批') {
+        errors.push(`C.status 应='待审批'，实际='${sopC[0].status}'`)
+      }
+      if (Math.abs(Number(sopC[0].amount) - (-200)) > 0.01) {
+        errors.push(`C.amount 应=-200（截断写入），实际=${sopC[0].amount}`)
+      }
+    }
+    rec(`  ✓ createRefund C: 超净已收(200) 整卡退 800 → 截断到 ${finalC} — paymentId=${refC.data.paymentId}`)
   }
 
   // ─── D. customer.refundHistory — 复用 A(已通过) + B(已作废) 的 fixture ───

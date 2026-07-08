@@ -1562,6 +1562,20 @@ Page({
 
     this.setData({ submitting: true });
     try {
+      // 2026-07-08 修复 T1：顾客未在小程序填写姓名时禁止开单。
+      // 后端 sale_orders.customer_name 兜底逻辑是「客户档案权威 > 写入侧入参」，
+      // 但这里拒绝让顾客在「未填写姓名」状态下开单，避免下游订单列表展示手机号当姓名。
+      // 引导顾客先在小程序个人中心补全姓名（auth.updateProfile）。
+      if (!customerInfo.name || !customerInfo.name.trim()) {
+        wx.showModal({
+          title: '无法开单',
+          content: '该顾客尚未在小程序内填写姓名，请先让顾客在「我的-个人资料」补全姓名后再开单。',
+          showCancel: false,
+          confirmText: '知道了',
+        });
+        this.setData({ submitting: false });
+        return;
+      }
       // Wave 3G — 充值卡预选（不扣卡，仅作为后端写订单的预选值）
       // 决策 #6：店长开单 = 预选；balance 不动，extraField useCard + prepaidCardAmount 透传给云函数
       const useCard = this.data.useCard && this.data.prepaidCardAmount > 0;
@@ -1569,7 +1583,7 @@ Page({
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
         clientUserId: customerInfo.clientUserId,
         clientPhone: customerInfo.phone,
-        clientName: customerInfo.name || customerInfo.phone,
+        clientName: customerInfo.name,
         // 销售单 / 内部单可选 微信 / 支付宝 / 线下；转换单不走此分支
         // Wave 3G：实付=0 时由后端强制覆盖为 '无'，前端仍传 paymentMethod 作为建议通道
         paymentMethod: this.data.paymentMethod,

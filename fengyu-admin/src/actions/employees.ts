@@ -179,6 +179,8 @@ export interface EmployeeFilters {
   storeId?: string
   status?: 'active' | 'resigned'
   search?: string
+  /** 技能标签多选 OR 筛选（与 staff_wechat_users.skills text[] 数组 overlap `&&` 语义一致） */
+  skills?: string[]
   page?: number
   pageSize?: number
 }
@@ -243,6 +245,18 @@ async function buildEmployeeConditions(
         ilike(staffWechatUsers.employeeId, pattern),
         ilike(staffWechatUsers.phone, pattern),
       ),
+    )
+  }
+  if (filters.skills?.length) {
+    // PG 数组 overlap `&&` 等价于 OR（任一命中即匹配）。
+    // 用 sql.join + sql.raw 分隔符把每个标签作为参数化占位传入，避免拼接注入；
+    // 与 admin data-center/sales.ts:194、fengyu-staff/cloudfunctions/staffApi/routes/staff.js:104 同口径。
+    const values = sql.join(
+      filters.skills.map(s => sql`${s}`),
+      sql.raw(', '),
+    )
+    conditions.push(
+      sql`${staffWechatUsers.skills} && ARRAY[${values}]::text[]`,
     )
   }
 

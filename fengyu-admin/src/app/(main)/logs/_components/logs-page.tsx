@@ -28,6 +28,7 @@ const actionLabels: Record<string, string> = {
   // 订单
   "order.create": "创建订单", "order.confirmPayment": "确认收款",
   "order.close": "关闭订单", "order.resetFailed": "重置支付失败",
+  "order.delete": "删除订单",  // 含历史已作废单清理（detail.snapshot.auditReason=historical_void_cleanup 区分场景）
   // 分配
   "allocation.save": "保存分配", "allocation.delete": "删除分配", "allocation.batchSave": "批量保存分配",
   // 服务

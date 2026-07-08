@@ -96,6 +96,11 @@ export default function EmployeesPage({
 
   const marketFilter = get("market");
   const statusFilter = get("status");
+  // 技能标签多选：URL 单值字符串以逗号分隔
+  const selectedSkills = useMemo(() => {
+    const raw = get("skill");
+    return raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  }, [get]);
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
@@ -148,6 +153,27 @@ export default function EmployeesPage({
       key: "positionName",
       header: "职位",
       cell: (row) => <span>{row.positionName ?? "—"}</span>,
+    },
+    {
+      key: "skills",
+      header: "技能",
+      cell: (row) => (
+        <div className="flex flex-wrap gap-1">
+          {row.skills?.length ? (
+            row.skills.map((s) => (
+              <Badge
+                key={s}
+                variant="outline"
+                className="border-[var(--brand)] text-[var(--brand)] bg-[var(--brand-light)]"
+              >
+                {s}
+              </Badge>
+            ))
+          ) : (
+            <span className="text-[var(--muted-foreground)]">—</span>
+          )}
+        </div>
+      ),
     },
     {
       key: "isResigned",
@@ -204,6 +230,26 @@ export default function EmployeesPage({
           <option value="">全部状态</option>
           <option value="active">在职</option>
           <option value="resigned">已离职</option>
+        </Select>
+        <Select
+          multiple
+          value={selectedSkills}
+          onChange={(e) => {
+            const arr = Array.from(e.target.selectedOptions).map((o) => o.value);
+            setFilter("skill", arr.join(","));
+          }}
+          className="w-48"
+        >
+          <option value="" disabled>
+            技能标签
+          </option>
+          {skillTags
+            .filter((t) => t.isValid)
+            .map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
+              </option>
+            ))}
         </Select>
         <Input
           placeholder="搜索编号 / 姓名 / 手机号"

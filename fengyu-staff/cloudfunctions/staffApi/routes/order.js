@@ -381,8 +381,6 @@ async function create(ctx) {
 
   const payload = ctx.event.payload || {}
   const {
-    clientPhone,
-    clientName,
     items,
     paymentMethod,
     saleOrderType: saleOrderTypeParam,
@@ -394,6 +392,11 @@ async function create(ctx) {
     isActivity,
     bundleProductId,
   } = payload
+
+  // 2026-07-08 修复 T1：clientPhone / clientName 改为 let，下方会用客户档案权威覆写。
+  // 前端 order-create.ts:1572 有 `name || phone` fallback 污染入参；后端以客户档案为权威。
+  let clientPhone = payload.clientPhone
+  let clientName = payload.clientName
 
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
@@ -444,8 +447,9 @@ async function create(ctx) {
   // 行级"应付金额"由订单级券摊算得出，不再可手工编辑
 
   // 查询顾客是否已注册客户端小程序并绑定门店
+  // 2026-07-08 修复 T1：补 select phone, name —— 下方 let 覆写（line 466-467 客户档案权威覆盖）需要这俩字段
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level, phone, name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
@@ -460,6 +464,13 @@ async function create(ctx) {
   const clientUserId = clientUsers[0].user_id
   // 会员价分流：会员客 或 有钻石等级即会员，决定普通单品成交价用会员价还是标价
   const buyerIsMember = isMember(clientUsers[0].customer_type, clientUsers[0].member_level)
+
+  // 2026-07-08 修复 T1：顾客档案权威（client_wechat_users.phone/name）覆盖入参。
+  // 前端 order-create.ts:1572 有 `name || phone` fallback（client_wechat_users.name 为空时
+  // 把 phone 写入 clientName），后端在这里权威反查并覆写为客户档案的 phone/name。
+  // sale_orders.customer_name/client_phone 是 denormalized 快照，此处保持单一权威源 = 客户档案。
+  if (clientUsers[0].phone) clientPhone = clientUsers[0].phone
+  if (clientUsers[0].name) clientName = clientUsers[0].name
 
   // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
   const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
@@ -1738,12 +1749,15 @@ async function list(ctx) {
     whereExtra += ` AND o.preferred_employee_id = $${params.length}`
   }
 
-  // 2026-04-26 sale-order-domain-refactor：has_refund / has_pending_refund 从 sale_order_payments 推断
+  // 2026-07-08 修复 T1：与 admin orders.ts 对齐，LEFT JOIN client_wechat_users
+  // 把 cust_name / cust_phone 作为权威；sale_orders.customer_name / client_phone 仅作 fallback。
+  // 防前端开单时 `name || phone` fallback 污染写入的 sale_orders 字段在列表原样展示。
   const orders = await pg.query(`
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
       o.paid_at, o.created_at, o.opened_by, o.total_amount, o.is_activity,
+      c.name AS cust_name, c.phone AS cust_phone,
       -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
       (o.sale_order_type IN ('销售单','转换单') AND o.legacy_source IS DISTINCT FROM 'workfine') AS allocatable,
       EXISTS(
@@ -1759,13 +1773,20 @@ async function list(ctx) {
           AND sop.status = '待审批'
       ) AS has_pending_refund
     FROM sale_orders o
+    LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE o.store_id = $1
     ${whereExtra}
     ORDER BY o.created_at DESC
     LIMIT $2 OFFSET $3
   `, params)
 
-  ctx.result = { orders, page, pageSize }
+  // 顾客档案权威 > sale_orders 兜底
+  const mapped = orders.map((o) => ({
+    ...o,
+    customer_name: o.cust_name || o.customer_name || null,
+    client_phone: o.cust_phone || o.client_phone || null,
+  }))
+  ctx.result = { orders: mapped, page, pageSize }
 }
 
 /**
@@ -1826,23 +1847,17 @@ async function detail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
-  // 兜底补充顾客信息
-  if (!order.client_phone && order.client_user_id) {
+  // 2026-07-08 修复 T1：与 list 对齐，正向兜底（客户档案权威 > sale_orders 兜底）。
+  // 之前是 `if (!order.client_phone)` 反向兜底，sale_orders 已污染的脏数据会原样返回；
+  // 改为正向兜底，与 admin orders.ts 行为一致。
+  if (order.client_user_id) {
     const clientRows = await pg.query(
-      'SELECT phone FROM client_wechat_users WHERE user_id = $1 LIMIT 1',
+      'SELECT phone, name FROM client_wechat_users WHERE user_id = $1 LIMIT 1',
       [order.client_user_id]
     )
-    if (clientRows.length > 0 && clientRows[0].phone) {
-      order.client_phone = clientRows[0].phone
-    }
-  }
-  if (!order.customer_name && order.client_phone) {
-    const nameRows = await pg.query(
-      'SELECT name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
-      [order.client_phone]
-    )
-    if (nameRows.length > 0 && nameRows[0].name) {
-      order.customer_name = nameRows[0].name
+    if (clientRows.length > 0) {
+      if (clientRows[0].phone) order.client_phone = clientRows[0].phone
+      if (clientRows[0].name) order.customer_name = clientRows[0].name
     }
   }
 

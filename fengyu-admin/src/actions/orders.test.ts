@@ -136,7 +136,9 @@ vi.mock('@db/org', () => ({
 
 vi.mock('@db/user', () => ({
   staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
-  clientWechatUsers: { userId: 'user_id', customerType: 'customer_type' },
+  // 2026-07-08 修复 T1：orders.ts getOrders/getOrdersPaginated/getOrderById 读取 list 端点
+  // 全部 left join clientWechatUsers.name / phone 做兜底，createOrder 也在事务内反查 name/phone 作为权威。
+  clientWechatUsers: { userId: 'user_id', customerType: 'customer_type', name: 'name', phone: 'phone' },
 }))
 
 vi.mock('@db/system-config', () => ({
@@ -1020,6 +1022,81 @@ describe('createOrder — sales_category / is_shengmei 后端反查（不信前�
   })
 })
 
+describe('createOrder — 顾客档案权威覆写 clientPhone/customerName（2026-07-08 T1）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('入参被 phone-as-name 污染 → sale_orders 落库用客户档案权威 phone/name', async () => {
+    // 所有事务外 db.select（顾客类型 + SKU 反查 + 权威覆写）共享此 row：
+    // phone/name = 客户档案权威值，应覆盖入参的 phone-as-name 污染值。
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      customerType: '散客',
+      memberLevel: null,
+      serviceFee: '0',
+      sessionCount: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      isShengmei: false,
+      salesCategory: '自销自耗',
+      phone: '13800009999', // 客户档案权威 phone
+      name: '徐丽珍',        // 客户档案权威 name
+    }))
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260708001')
+
+    // 入参：customerName 被前端 `name || phone` fallback 污染成手机号
+    const result = await createOrder({
+      ...baseOrderData,
+      clientPhone: '13800001111',  // 入参污染 phone
+      customerName: '13800001111', // 入参污染 name（phone-as-name）
+    })
+
+    expect(result.success).toBe(true)
+    const orderInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleOrderId' in c.values && 'customerName' in c.values,
+    )
+    expect(orderInserts).toHaveLength(1)
+    // 权威覆写：sale_orders 落库用客户档案 phone/name，非入参污染值
+    expect(orderInserts[0].values.clientPhone).toBe('13800009999')
+    expect(orderInserts[0].values.customerName).toBe('徐丽珍')
+  })
+
+  it('客户档案 phone/name 为空 → 回落入参值（后端不强行清空，由前端阻断 + 回填脚本兜底）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      customerType: '散客',
+      memberLevel: null,
+      serviceFee: '0',
+      sessionCount: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      isShengmei: false,
+      salesCategory: '自销自耗',
+      phone: null,
+      name: null,
+    }))
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260708002')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      clientPhone: '13800001111',
+      customerName: '老顾客快照',
+    })
+
+    expect(result.success).toBe(true)
+    const orderInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleOrderId' in c.values && 'customerName' in c.values,
+    )
+    expect(orderInserts).toHaveLength(1)
+    // 档案为空 → 权威覆写短路（if (authCust?.phone)），保留入参快照
+    expect(orderInserts[0].values.clientPhone).toBe('13800001111')
+    expect(orderInserts[0].values.customerName).toBe('老顾客快照')
+  })
+})
+
 describe('createOrder — documentType 使用 getMemberThreshold helper', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1577,9 +1654,15 @@ describe('getOrdersPaginated — 服务端分页', () => {
     },
     storeName: '南昌旗舰店',
     openedByName: '张三',
+    // 2026-07-08 修复 T1：list 端点 left join clientWechatUsers 后加这俩字段做权威兜底
+    custName: '李女士',
+    custPhone: '13812345678',
   }
 
-  /** 构建完整的链式调用 mock：select → from → leftJoin → leftJoin → where → orderBy → limit → offset */
+  /** 构建完整的链式调用 mock：select → from → leftJoin ×N → where → orderBy → limit → offset
+   * 2026-07-08 修复 T1：data 查询链加 3rd leftJoin（clientWechatUsers）后改用自引用 chain
+   * 抗 JOIN 增减漂移（参考 [[project_admin_test_mock_drift]]）。
+   */
   function mockPaginatedChain(countResult: number, dataRows: any[]) {
     let callIndex = 0
     ;(db.select as any).mockImplementation(() => {
@@ -1590,14 +1673,15 @@ describe('getOrdersPaginated — 服务端分页', () => {
         const from = vi.fn().mockReturnValue({ where })
         return { from }
       }
-      // DATA 查询链：select → from → leftJoin → leftJoin → where → orderBy → limit → offset
+      // DATA 查询链：自引用 chain，含 where/orderBy/limit/offset
       const offset = vi.fn().mockResolvedValue(dataRows)
       const limit = vi.fn().mockReturnValue({ offset })
       const orderBy = vi.fn().mockReturnValue({ limit })
       const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin2 = vi.fn().mockReturnValue({ where })
-      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      const chain: any = { where, orderBy, limit, offset }
+      chain.leftJoin = vi.fn().mockReturnValue(chain)
+      chain.innerJoin = vi.fn().mockReturnValue(chain)
+      const from = vi.fn().mockReturnValue(chain)
       return { from }
     })
   }
@@ -1626,6 +1710,53 @@ describe('getOrdersPaginated — 服务端分页', () => {
 
     expect(result.total).toBe(0)
     expect(result.data).toEqual([])
+  })
+
+  // 2026-07-08 修复 T1：list 端点 left join clientWechatUsers 做 name/phone 兜底。
+  // 顾客档案权威（custName）应覆盖 sale_orders.customer_name 污染值。
+  describe('customerName 兜底（list）', () => {
+    it('custName 有值 → 覆盖 sale_orders 旧值（防 phone-as-name 污染）', async () => {
+      // sale_orders 旧值是手机号 18270881485（污染），client_wechat_users.name 是 '徐丽珍'（权威）
+      mockPaginatedChain(1, [{
+        ...mockOrderRow,
+        order: { ...mockOrderRow.order, customerName: '18270881485', clientPhone: '18270881485' },
+        custName: '徐丽珍',
+        custPhone: '18270881485',
+      }])
+
+      const result = await getOrdersPaginated()
+
+      expect(result.data[0].customerName).toBe('徐丽珍')
+      expect(result.data[0].clientPhone).toBe('18270881485')
+    })
+
+    it('custName 为 null → fallback 到 sale_orders.customerName', async () => {
+      mockPaginatedChain(1, [{
+        ...mockOrderRow,
+        order: { ...mockOrderRow.order, customerName: '老顾客快照', clientPhone: '13800000000' },
+        custName: null,
+        custPhone: null,
+      }])
+
+      const result = await getOrdersPaginated()
+
+      expect(result.data[0].customerName).toBe('老顾客快照')
+      expect(result.data[0].clientPhone).toBe('13800000000')
+    })
+
+    it('custName 和 sale_orders.customerName 都为 null → 返回 null', async () => {
+      mockPaginatedChain(1, [{
+        ...mockOrderRow,
+        order: { ...mockOrderRow.order, customerName: null, clientPhone: null },
+        custName: null,
+        custPhone: null,
+      }])
+
+      const result = await getOrdersPaginated()
+
+      expect(result.data[0].customerName).toBe(null)
+      expect(result.data[0].clientPhone).toBe(null)
+    })
   })
 
   it('page/pageSize 传入 → 调用链包含 limit + offset', async () => {
@@ -3636,6 +3767,64 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     const result = await deleteOrder('FY-DEP-RACE')
     expect(result.success).toBe(false)
     expect(result.message).toContain('关联业务数据')
+  })
+
+  // ── 历史已作废单特例：legacySource='workfine' AND status='已作废' ─────
+  // 场景：店长把 WorkFine 导入的历史订单点错「作废」后，要清理掉以重新拉取 WorkFine 数据。
+  // 守卫放宽：事务内 DELETE 守卫加 and(legacy='workfine', status='已作废') 分支放行；
+  //          其他守卫（资金/已支付流水/积分储值卡/下游引用/子单引用）天然放行（received=0、无 items/流水/下游）。
+  const legacyVoidedOrder = {
+    status: '已作废',
+    received: '0',
+    customerName: '历史客',
+    totalAmount: '1000.00',
+    saleOrderType: '销售单',
+    legacySource: 'workfine',
+  }
+
+  it('干净历史已作废单（legacySource=workfine, status=已作废, received=0, 无下游）→ 物理删除成功 + 审计含 legacySource + auditReason=historical_void_cleanup', async () => {
+    // 历史已作废单路径 select：order→paidPayment→childOrder 共 3 次（!isDeposit）
+    enqueueSelect([[legacyVoidedOrder], [], []])
+    enqueueExecute([[], [], []]) // pt / ct / downstream 全空
+    setupTx(1)
+    const { logOperation } = await import('@/lib/operation-log')
+    const result = await deleteOrder('FY-XSD2503210091')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'order.delete',   // 保持原 action 名，向后兼容所有审计查询
+      'sale_order',
+      'FY-XSD2503210091',
+      expect.objectContaining({
+        snapshot: expect.objectContaining({
+          legacySource: 'workfine',
+          auditReason: 'historical_void_cleanup',
+        }),
+      }),
+    )
+  })
+
+  it('历史已作废单但 received>0（异常边界：理论上历史单不该有实收但保险）→ 资金守卫前置拦截，不进事务', async () => {
+    // 资金守卫在事务前拦截（received>0 → 资金守卫返回「订单已有实收...不可删除」），不进事务
+    enqueueSelect([[{ ...legacyVoidedOrder, received: '500.00' }]])
+    const result = await deleteOrder('FY-LEGACY-RECEIVED')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实收')
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(db.execute).not.toHaveBeenCalled() // 没走到积分/储值卡/下游守卫
+  })
+
+  it('已作废但 legacySource IS NULL（future-proof：原生单理论上不会 status=已作废）→ 事务守卫新分支不放行', async () => {
+    // 走完业务守卫全放行（received=0, status 不在白名单但前置守卫未拦），进事务后 DELETE 命中 0 行 → 回滚 + 「订单状态已变更」
+    enqueueSelect([[{ ...legacyVoidedOrder, legacySource: null }], [], []])
+    enqueueExecute([[], [], []])
+    setupTx(0)   // 事务内 DELETE rowCount=0 模拟守卫拒绝
+    const result = await deleteOrder('FY-NATIVE-VOIDED')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已变更')
+    // 关键：原生单即使 status='已作废' 也不能删除 —— 这是新分支最易回归的边界
   })
 })
 

@@ -1276,6 +1276,67 @@ describe('order.create', () => {
     // 两步式：create 阶段无任何 payments 行（首次支付 / 储值卡抵扣 均留 confirmOffline）
     expect(paymentInserts.length).toBe(0)
   })
+
+  // 2026-07-08 修复 T1：客户档案权威覆盖入参 clientName / clientPhone
+  // 防前端 order-create.ts:1572 的 `name || phone` fallback 把手机号写入 customerName。
+  test('顾客档案权威覆盖入参 clientName / clientPhone（防 phone-as-name 污染）', async () => {
+    // 入参：name 字段被污染成手机号（前端 fallback 触发场景）
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '13800001111', // ← 前端 name || phone fallback 触发后的污染值
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      // client_wechat_users lookup：含权威 name + phone（权威源 = 客户档案）
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001', bound_store_id: 'store-001',
+        phone: '13800009999', name: '徐丽珍',
+        customer_type: '会员客', member_level: '金卡',
+      }])
+      // SKU 查询
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
+        spec_name: '基础款', price: '1000.00', session_count: 10,
+        service_fee: '0', is_shengmei: false, is_experience: false, is_manager_special: false,
+        sales_category: '自销自耗', product_kind: '护理',
+      }])
+      // is_cross_store_temp
+      .mockResolvedValueOnce([{ is_cross_store_temp: false }])
+      // 日序号
+      .mockResolvedValueOnce([])
+      // 业务校验
+      .mockResolvedValueOnce([])
+
+    // 捕获 INSERT INTO sale_orders 调用入参
+    let orderInsertParams = null
+    pg.transaction.mockImplementation(async (fn) => {
+      const client = {
+        query: vi.fn().mockImplementation(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('INSERT INTO sale_orders')) {
+            orderInsertParams = params
+            return { rows: [] }
+          }
+          return { rows: [] }
+        }),
+      }
+      // generateOrderNo inside transaction
+      client.query.mockResolvedValueOnce({ rows: [{ id: 'FY-XSD-WX-2607080001' }] })
+      return fn(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // INSERT 应当使用客户档案权威值而非入参污染值
+    // 参数顺序（与 order.js INSERT 语句对应）：
+    // 0:saleOrderId, 1:saleOrderType, 2:documentType, 3:marketName, 4:storeId, 5:now,
+    // 6:totalAmount, 7:clientUserId, 8:clientPhone, 9:clientName, ...
+    expect(orderInsertParams).not.toBeNull()
+    expect(orderInsertParams[8]).toBe('13800009999')  // clientPhone 来自客户档案
+    expect(orderInsertParams[9]).toBe('徐丽珍')        // clientName 来自客户档案（非入参 '13800001111'）
+  })
 })
 
 describe('order.confirmOffline', () => {
@@ -2228,10 +2289,8 @@ describe('order.detail', () => {
         preferred_employee_id: null, client_phone: null, client_user_id: 'cu-002',
         customer_name: null, coupon_id: null,
       }])
-      // client_phone fallback → 找到手机号
-      .mockResolvedValueOnce([{ phone: '13911112222' }])
-      // customer_name fallback → 找到姓名
-      .mockResolvedValueOnce([{ name: '顾客B' }])
+      // 2026-07-08 修复 T1：customerName/clientPhone 兜底改为单次 SELECT 同时取 phone/name
+      .mockResolvedValueOnce([{ phone: '13911112222', name: '顾客B' }])
       // items
       .mockResolvedValueOnce([])
       // allocations

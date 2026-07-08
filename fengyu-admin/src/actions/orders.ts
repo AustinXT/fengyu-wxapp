@@ -295,15 +295,21 @@ async function deductPrepaidCardAtCreation(
 export const getOrders = withPermission(
   'sale_order:list',
   async (session): Promise<SaleOrder[]> => {
+  // 2026-07-08 修复 T1：listOrders/getOrdersPaginated 历史上直接读 sale_orders.customerName /
+  // clientPhone，没有 left join client_wechat_users。导出端（exportOrders）已做兜底，
+  // 这里对齐：客户档案为权威，sale_orders 仅作 fallback（已污染的旧数据可被自动治愈）。
   const rows = await db
     .select({
       order: saleOrders,
       storeName: stores.storeName,
       openedByName: opener.name,
+      custName: clientWechatUsers.name,
+      custPhone: clientWechatUsers.phone,
     })
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, saleOrders.storeId))
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
     .orderBy(desc(saleOrders.saleOrderDatetime))
@@ -320,8 +326,9 @@ export const getOrders = withPermission(
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
     clientUserId: r.order.clientUserId,
-    clientPhone: r.order.clientPhone,
-    customerName: r.order.customerName,
+    // 顾客档案权威 > sale_orders 兜底（防 client_wechat_users.name='' 的旧数据被原样展示）
+    clientPhone: r.custPhone || r.order.clientPhone || null,
+    customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
     received: r.order.received ?? '0',
@@ -460,15 +467,19 @@ export const getOrdersPaginated = withPermission(
   const total = countRow?.count ?? 0
 
   // 数据查询 — JOIN + ORDER + LIMIT/OFFSET
+  // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
     .select({
       order: saleOrders,
       storeName: stores.storeName,
       openedByName: opener.name,
+      custName: clientWechatUsers.name,
+      custPhone: clientWechatUsers.phone,
     })
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
     .orderBy(desc(saleOrders.saleOrderDatetime))
@@ -486,8 +497,8 @@ export const getOrdersPaginated = withPermission(
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
     clientUserId: r.order.clientUserId,
-    clientPhone: r.order.clientPhone,
-    customerName: r.order.customerName,
+    clientPhone: r.custPhone || r.order.clientPhone || null,
+    customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
     received: r.order.received ?? '0',
@@ -637,8 +648,8 @@ export const exportOrders = withPermission(
       saleOrderType: r.saleOrderType,
       documentType: r.documentType,
       status: r.status,
-      customerName: r.custName ?? r.fallbackName ?? null,
-      clientPhone: r.custPhone ?? r.fallbackPhone ?? null,
+      customerName: r.custName || r.fallbackName || null,
+      clientPhone: r.custPhone || r.fallbackPhone || null,
       totalAmount: r.totalAmount,
       prepaidCardAmount: r.prepaidCardAmount ?? '0',
       received: r.received ?? '0',
@@ -843,6 +854,7 @@ export const exportAllocationOrders = withPermission(
 export const getOrderById = withAnyPermission(
   ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
   async (session, saleOrderId: string): Promise<SaleOrder | null> => {
+  // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
     .select({
       order: saleOrders,
@@ -850,12 +862,15 @@ export const getOrderById = withAnyPermission(
       openedByName: opener.name,
       preferredEmployeeName: preferredStaff.name,
       offlineConfirmedByName: offlineConfirmer.name,
+      custName: clientWechatUsers.name,
+      custPhone: clientWechatUsers.phone,
     })
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(preferredStaff, eq(saleOrders.preferredEmployeeId, preferredStaff.employeeId))
     .leftJoin(offlineConfirmer, eq(saleOrders.offlineConfirmedBy, offlineConfirmer.employeeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
@@ -909,8 +924,9 @@ export const getOrderById = withAnyPermission(
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
     clientUserId: r.order.clientUserId,
-    clientPhone: r.order.clientPhone,
-    customerName: r.order.customerName,
+    // 顾客档案权威 > sale_orders 兜底（防 client_wechat_users.name='' 的旧数据被原样展示）
+    clientPhone: r.custPhone || r.order.clientPhone || null,
+    customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
     received: r.order.received ?? '0',
@@ -1373,6 +1389,9 @@ export const deleteOrder = withPermission(
         customerName: saleOrders.customerName,
         totalAmount: saleOrders.totalAmount,
         saleOrderType: saleOrders.saleOrderType,
+        // 历史已作废单的删除分支会读这个字段写入 audit snapshot；
+        // 同时事务内 DELETE 守卫通过它识别"是否 WorkFine 历史单"以放行。
+        legacySource: saleOrders.legacySource,
       })
       .from(saleOrders)
       .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
@@ -1463,9 +1482,18 @@ export const deleteOrder = withPermission(
           .where(and(
             eq(saleOrders.saleOrderId, saleOrderId),
             // 寄存单 status='已支付' 是常态，复检放行：未消耗寄存单无视 status 可删
+            // 历史已作废单（legacy_source='workfine' AND status='已作废'）放行：
+            //   历史单已通过 rejectLegacyOrder 软标记为'已作废'，物理删除是为了释放 PK 让 WorkFine 数据可重新拉取；
+            //   其它守卫（资金/已支付流水/积分储值卡/下游引用/子单引用）天然放行（received=0、无 items/流水/下游）。
+            //   双重限定 and(legacy, status) 防 future-proof 误放行：legacySource='workfine' 唯一来源是 WorkFine 导入脚本，
+            //   status='已作废' 唯一来源是 rejectLegacyOrder（已限定 legacy_source='workfine'），二者同时成立只能是历史已作废单。
             or(
               inArray(saleOrders.status, ['待支付', '支付失败', '已关闭']),
               eq(saleOrders.saleOrderType, '寄存单'),
+              and(
+                eq(saleOrders.legacySource, 'workfine'),
+                eq(saleOrders.status, '已作废'),
+              ),
             ),
             scopeCondition(session, saleOrders.storeId),
           ))
@@ -1495,11 +1523,20 @@ export const deleteOrder = withPermission(
         totalAmount: order.totalAmount,
         customerName: order.customerName,
         saleOrderType: order.saleOrderType,
+        // 历史已作废单删除需在审计中明确区分：auditReason='historical_void_cleanup' 便于日后追溯
+        // 「为释放 PK 重新拉取 WorkFine 而清理作废单」这类操作的频次与责任人。
+        legacySource: order.legacySource,
+        auditReason: order.legacySource === 'workfine' && order.status === '已作废'
+          ? 'historical_void_cleanup' : 'admin_cleanup',
       },
     })
 
     revalidatePath('/orders')
     revalidatePath('/allocations')
+    // 友好性：删完后店长去 /legacy-orders 重新拉取 WorkFine 时，新落库的「未审核」单能立即可见，
+    // 不必手动刷新。虽然已作废单本身不在 /legacy-orders 列表（listLegacyOrders 限定 status='未审核'），
+    // 但 revalidate 一处对未来"删除历史已通过单"等场景也是安全的兜底。
+    revalidatePath('/legacy-orders')
     return { success: true, message: '订单已删除' }
   },
 )
@@ -2053,6 +2090,22 @@ export const createOrder = withPermission(
 
   // 充值卡剥离 SKU 化（2026-05-20）后 D4 混单守卫已删除（充值订单走独立 createRechargeOrder 入口）。
 
+  // 2026-07-08 修复 T1：顾客档案权威（clientWechatUsers.phone/name）覆盖入参。
+  // 与 staffApi order.create 对齐：sale_orders.customer_name/client_phone 是 denormalized 快照，
+  // 此处保持单一权威源 = 客户档案，防前端 order-create-page.tsx:1468 的 `name || phone` fallback
+  // 把手机号写入 customer_name。
+  let authoritativePhone = data.clientPhone
+  let authoritativeName = data.customerName
+  {
+    const [authCust] = await db
+      .select({ phone: clientWechatUsers.phone, name: clientWechatUsers.name })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (authCust?.phone) authoritativePhone = authCust.phone
+    if (authCust?.name) authoritativeName = authCust.name
+  }
+
   // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
   let saleOrderId: string
   try {
@@ -2104,8 +2157,8 @@ export const createOrder = withPermission(
         storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
         saleOrderDatetime: nowTs(),
         clientUserId: data.clientUserId,
-        clientPhone: data.clientPhone,
-        customerName: data.customerName,
+        clientPhone: authoritativePhone,
+        customerName: authoritativeName,
         totalAmount: totalAmount.toFixed(2),
         prepaidCardAmount: prepaidCardAmount.toFixed(2),
         payableAmount: payableAmount.toFixed(2),
