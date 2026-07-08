@@ -1459,13 +1459,22 @@ export default function OrderCreatePageClient({
 
                 setSubmitting(true)
                 try {
+                  // 2026-07-08 修复 T1：顾客档案未填写姓名时禁止开单。
+                  // 后端 createOrder 现在会以 clientWechatUsers.name 为权威覆写，但此处
+                  // 阻断可避免「sale_orders.customer_name 一直是 null 等待后端回填」的中间态。
+                  // admin 端无法让顾客填姓名，提示先到顾客档案补全。
+                  if (!selectedCustomer!.name || !selectedCustomer!.name.trim()) {
+                    toast.error('该顾客未设置姓名，请先到顾客档案补全姓名后再开单');
+                    setSubmitting(false);
+                    return;
+                  }
                   const store = stores.find((s) => s.storeId === selectedStoreId)
                   const res = await createOrder({
                     storeId: selectedStoreId,
                     marketName: store?.marketName || "未知市场",
                     clientUserId: selectedCustomer!.userId,
                     clientPhone: selectedCustomer!.phone ?? '',
-                    customerName: selectedCustomer!.name?.trim() || selectedCustomer!.phone || '',
+                    customerName: selectedCustomer!.name!.trim(),
                     paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
