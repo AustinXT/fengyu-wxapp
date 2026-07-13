@@ -12,7 +12,7 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createCtx, createManagerCtx } = require('../helpers')
+const { createCtx, createManagerCtx, createManagementCtx } = require('../helpers')
 const { summary, scopeOptions, storeRanking, staffRanking, salesData, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
 
 // ---- ctx 构造 ----
@@ -83,8 +83,24 @@ describe('mgmtDashboard.summary 参数与权限校验', () => {
     await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围 ID/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+  test('store_manager + loginLevel=store → 被 loginLevel 闸拦截（须以管理层身份登录）', async () => {
     const ctx = createManagerCtx({ date: '2026-04-25', scopeType: 'all' })
+    await expect(summary(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('store_manager + management 选 all → PERMISSION_DENIED（店长禁看全量）', async () => {
+    const ctx = createManagementCtx(
+      { date: '2026-04-25', scopeType: 'all' },
+      { staffLevel: 'store_manager' }
+    )
+    await expect(summary(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('store_manager + management 选 market → PERMISSION_DENIED（店长禁按市场查）', async () => {
+    const ctx = createManagementCtx(
+      { date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' },
+      { staffLevel: 'store_manager' }
+    )
     await expect(summary(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
@@ -1056,11 +1072,42 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(ctx.result.markets[0].stores).toHaveLength(2)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+  test('store_manager + loginLevel=store → 被 loginLevel 闸拦截（须以管理层身份登录）', async () => {
     const ctx = createManagerCtx({})
     await expect(scopeOptions(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     // 未走到 pg 查询（中间件在 handler 入口就抛）
     expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('store_manager + management → 仅返回 managerStoreIds 覆盖的门店（跨市场也各自保留）', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
+
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'store_manager',
+        loginLevel: 'management',
+        effectiveStoreId: null,
+        currentStoreId: null,
+        // 跨市场管辖 2 店（mkt-A 的上海A店 + mkt-B 的广州A店）；mkt-C 无管辖门店
+        managerStoreIds: ['store-A1', 'store-B1'],
+        scopeStoreIds: ['store-A1', 'store-B1'],
+        roleBindings: [
+          { role: 'manager', scopeId: 'org-A1', scopeType: '门店' },
+          { role: 'manager', scopeId: 'org-B1', scopeType: '门店' },
+        ],
+      },
+    })
+
+    await scopeOptions(ctx)
+
+    expect(ctx.result.staffLevel).toBe('store_manager')
+    // 仅 mkt-A / mkt-B 各保留 1 家管辖门店；mkt-C 无管辖门店被丢弃
+    expect(ctx.result.markets).toHaveLength(2)
+    const a = ctx.result.markets.find((m) => m.id === 'mkt-A')
+    const b = ctx.result.markets.find((m) => m.id === 'mkt-B')
+    expect(a.stores.map((s) => s.storeId)).toEqual(['store-A1'])
+    expect(b.stores.map((s) => s.storeId)).toEqual(['store-B1'])
+    expect(ctx.result.markets.find((m) => m.id === 'mkt-C')).toBeUndefined()
   })
 
   test('连续两次调用命中缓存，pg.query 仅被调用一次', async () => {

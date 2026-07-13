@@ -165,7 +165,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.currentStoreId).toBeNull()
   })
 
-  test('_loginLevel=management 但 staffLevel=store_manager → 拒绝', async () => {
+  test('_loginLevel=management 且 staffLevel=store_manager → 通过（店长放开管理层视图）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'openid-store-manager' })
     pg.query
       .mockResolvedValueOnce([{
@@ -184,6 +184,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
         { role: 'manager', scope_id: 'node-s1', scope_type: '门店' },
       ])
       .mockResolvedValueOnce([{ store_id: 'S1' }])
+      .mockResolvedValueOnce([{ store_id: 'S1' }])
 
     const ctx = {
       event: { payload: { _loginLevel: 'management' } },
@@ -191,7 +192,13 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
       auth: {},
       result: null,
     }
-    await expect(auth(ctx, async () => {})).rejects.toThrow(/PERMISSION_DENIED/)
+    await auth(ctx, async () => {})
+
+    expect(ctx.auth.staffLevel).toBe('store_manager')
+    expect(ctx.auth.loginLevel).toBe('management')
+    // availableLoginLevels 由 deriveAvailableLoginLevels 派生，store_manager + management 通过
+    // 即隐含含 'management'（否则 resolveRuntimeAuth 会拒），该字段不暴露在 ctx.auth
+    expect(ctx.auth.effectiveStoreId).toBeNull()
   })
 
   test('_currentStoreId 不在 scopeStoreIds 内 → 拒绝', async () => {
@@ -316,9 +323,27 @@ describe('requireManagementLevel', () => {
     await requireManagementLevel()(ctx, async () => {})
   })
 
-  test('store_manager + management 请求头 → 拒绝', async () => {
+  test('store_manager + management → 通过（放开管理层视图）', async () => {
     const ctx = {
       auth: { staffWfId: 'e1', staffLevel: 'store_manager', loginLevel: 'management' },
+    }
+    let called = false
+    await requireManagementLevel()(ctx, async () => { called = true })
+    expect(called).toBe(true)
+  })
+
+  test('store_manager + loginLevel=store → 拒绝（loginLevel 闸保留）', async () => {
+    const ctx = {
+      auth: { staffWfId: 'e1', staffLevel: 'store_manager', loginLevel: 'store' },
+    }
+    await expect(requireManagementLevel()(ctx, async () => {})).rejects.toThrow(
+      /管理层身份登录/
+    )
+  })
+
+  test('store_staff + management → 拒绝（美容师不放开）', async () => {
+    const ctx = {
+      auth: { staffWfId: 'e1', staffLevel: 'store_staff', loginLevel: 'management' },
     }
     await expect(requireManagementLevel()(ctx, async () => {})).rejects.toThrow(
       /PERMISSION_DENIED/

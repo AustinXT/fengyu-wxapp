@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
 import { saleAllocations, saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { clientWechatUsers } from '@db/user'
-import { eq, sql, and, or, inArray, desc, ilike } from 'drizzle-orm'
+import { eq, sql, and, or, inArray, desc, ilike, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope, isInScope } from '@/lib/permissions'
@@ -13,7 +13,7 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefund, hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
-import { nowTs } from '@/lib/db-time'
+import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -490,6 +490,9 @@ export const getPendingPayments = withPermission(
       pageSize?: number
       storeId?: string
       search?: string
+      /** 按到账时间（paid_at）过滤的日期区间，'YYYY-MM-DD' 串 */
+      dateFrom?: string
+      dateTo?: string
     } = {},
   ): Promise<{
     data: Array<{
@@ -507,20 +510,28 @@ export const getPendingPayments = withPermission(
     }>
     total: number
   }> => {
-    const status: '待分配' | '已分配' = params.allocationStatus === '已分配' ? '已分配' : '待分配'
+    // allocationStatus 缺省（「全部状态」）时不按状态过滤，只限定 allocation_status IS NOT NULL
+    // 命中主流水行（走 partial index idx_sop_alloc_status，排除退款/储值卡抵扣从行/待支付等 NULL 行）。
     const page = Math.max(1, Number(params.page) || 1)
     const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
     const offset = (page - 1) * pageSize
 
     const scopeIds = session.permissions.scopeStoreIds
     const conds = [
-      eq(saleOrderPayments.allocationStatus, status),
+      params.allocationStatus
+        ? eq(saleOrderPayments.allocationStatus, params.allocationStatus)
+        : sql`${saleOrderPayments.allocationStatus} IS NOT NULL`,
       inArray(saleOrders.saleOrderType, ['销售单', '转换单'] as any),
       sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`,
       isAdminScope(session)
         ? undefined
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
+      // 按下单日期过滤（匹配 UI「下单日期」标签；与导出 buildOrderConditions 用 sale_order_datetime 同口径）
+      params.dateFrom
+        ? gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateFrom, '00:00:00'))
+        : undefined,
+      params.dateTo ? lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateTo, '23:59:59')) : undefined,
       params.search
         ? or(
             ilike(saleOrders.customerName, `%${params.search}%`),

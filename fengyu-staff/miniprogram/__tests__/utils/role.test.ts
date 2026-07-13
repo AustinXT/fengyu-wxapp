@@ -5,7 +5,7 @@
  * `['manager','admin','finance'].some(r => roles.includes(r))`）。
  */
 
-import { hasRole } from '../../utils/role'
+import { hasRole, canAccessManagement } from '../../utils/role'
 
 // 在 globalThis 上注入 getApp mock；每个 test 通过 setGlobalRoles 改 globalData.roles
 function setGlobalRoles(roles: string[] | undefined) {
@@ -55,5 +55,33 @@ describe('hasRole', () => {
   test('未传任何 roleName → false（空 .some 永远 false）', () => {
     setGlobalRoles(['manager'])
     expect(hasRole()).toBe(false)
+  })
+})
+
+describe('canAccessManagement', () => {
+  function setStaffLevel(staffLevel: string | null | undefined) {
+    const fakeApp = { globalData: { staffLevel } }
+    ;(globalThis as any).getApp = () => fakeApp
+  }
+  afterEach(() => {
+    delete (globalThis as any).getApp
+  })
+
+  test('headquarters / market / store_manager → true（店长放开管理层视图）', () => {
+    setStaffLevel('headquarters')
+    expect(canAccessManagement()).toBe(true)
+    setStaffLevel('market')
+    expect(canAccessManagement()).toBe(true)
+    setStaffLevel('store_manager')
+    expect(canAccessManagement()).toBe(true)
+  })
+
+  test('store_staff / null / undefined → false（美容师与未登录不放开）', () => {
+    setStaffLevel('store_staff')
+    expect(canAccessManagement()).toBe(false)
+    setStaffLevel(null)
+    expect(canAccessManagement()).toBe(false)
+    setStaffLevel(undefined)
+    expect(canAccessManagement()).toBe(false)
   })
 })

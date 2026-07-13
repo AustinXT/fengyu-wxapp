@@ -7,6 +7,8 @@
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
+  canAccessManagementLevel,
+  validateManagementScope,
   expandScopeStoreIds,
   buildStoreScopeCondition,
   isStoreInScope,
@@ -119,11 +121,18 @@ describe('deriveStaffLevel', () => {
 })
 
 describe('deriveAvailableLoginLevels', () => {
-  test('store_manager → [store]', () => {
-    expect(deriveAvailableLoginLevels('store_manager', ['s1'])).toEqual(['store'])
+  test('store_manager + 有 scope → [store, management]（放开管理层视图）', () => {
+    expect(deriveAvailableLoginLevels('store_manager', ['s1'])).toEqual([
+      'store',
+      'management',
+    ])
   })
 
-  test('store_staff → [store]', () => {
+  test('store_manager + 空 scope → [store]（数据异常兜底，不下发 management）', () => {
+    expect(deriveAvailableLoginLevels('store_manager', [])).toEqual(['store'])
+  })
+
+  test('store_staff → [store]（美容师仍只门店视图）', () => {
     expect(deriveAvailableLoginLevels('store_staff', ['s1'])).toEqual(['store'])
   })
 
@@ -148,6 +157,79 @@ describe('deriveAvailableLoginLevels', () => {
 
   test('null → []', () => {
     expect(deriveAvailableLoginLevels(null, [])).toEqual([])
+  })
+})
+
+describe('canAccessManagementLevel', () => {
+  test('headquarters / market / store_manager → true', () => {
+    expect(canAccessManagementLevel('headquarters')).toBe(true)
+    expect(canAccessManagementLevel('market')).toBe(true)
+    expect(canAccessManagementLevel('store_manager')).toBe(true)
+  })
+  test('store_staff / null → false', () => {
+    expect(canAccessManagementLevel('store_staff')).toBe(false)
+    expect(canAccessManagementLevel(null)).toBe(false)
+  })
+})
+
+describe('validateManagementScope', () => {
+  const hqAuth = {
+    staffLevel: 'headquarters',
+    roleBindings: [],
+    scopeStoreIds: ['s1'],
+    managerStoreIds: ['s1'],
+  }
+  const marketAuth = {
+    staffLevel: 'market',
+    roleBindings: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+    scopeStoreIds: ['s1'],
+    managerStoreIds: ['s1'],
+  }
+  // 边缘：manager@门店A + customer_mgr@门店B → scopeStoreIds=[A,B] 但 managerStoreIds=[A]
+  const storeManagerAuth = {
+    staffLevel: 'store_manager',
+    roleBindings: [
+      { role: 'manager', scopeId: 'node-A', scopeType: '门店' },
+      { role: 'customer_mgr', scopeId: 'node-B', scopeType: '门店' },
+    ],
+    scopeStoreIds: ['A', 'B'],
+    managerStoreIds: ['A'],
+  }
+
+  test('headquarters 放行所有 scopeType', () => {
+    expect(() => validateManagementScope(hqAuth, 'all', null)).not.toThrow()
+    expect(() => validateManagementScope(hqAuth, 'market', 'mX')).not.toThrow()
+    expect(() => validateManagementScope(hqAuth, 'store', 'sX')).not.toThrow()
+  })
+
+  test('market: all 拒绝', () => {
+    expect(() => validateManagementScope(marketAuth, 'all', null)).toThrow(/PERMISSION_DENIED/)
+  })
+  test('market: 他人 market 拒绝', () => {
+    expect(() => validateManagementScope(marketAuth, 'market', 'mOther')).toThrow(/PERMISSION_DENIED/)
+  })
+  test('market: 自己 market 通过', () => {
+    expect(() => validateManagementScope(marketAuth, 'market', 'm1')).not.toThrow()
+  })
+  test('market: 自己 store 通过', () => {
+    expect(() => validateManagementScope(marketAuth, 'store', 's1')).not.toThrow()
+  })
+  test('market: 他人 store 拒绝', () => {
+    expect(() => validateManagementScope(marketAuth, 'store', 'sOther')).toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('store_manager: 自己 managerStoreIds 内门店通过', () => {
+    expect(() => validateManagementScope(storeManagerAuth, 'store', 'A')).not.toThrow()
+  })
+  test('store_manager: all 拒绝', () => {
+    expect(() => validateManagementScope(storeManagerAuth, 'all', null)).toThrow(/PERMISSION_DENIED/)
+  })
+  test('store_manager: market 拒绝', () => {
+    expect(() => validateManagementScope(storeManagerAuth, 'market', 'm1')).toThrow(/PERMISSION_DENIED/)
+  })
+  test('store_manager: scopeStoreIds 含但 managerStoreIds 不含的门店 → 拒绝（防 customer_mgr@B 越权）', () => {
+    // B ∈ scopeStoreIds 但 ∉ managerStoreIds，必须拒绝（证明用 managerStoreIds 而非 scopeStoreIds）
+    expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).toThrow(/PERMISSION_DENIED/)
   })
 })
 

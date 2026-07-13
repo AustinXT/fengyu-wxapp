@@ -1,16 +1,64 @@
 /**
- * parseMssqlConnString 单测 — ticket 2026-05-26 ELOGIN 修复
+ * WorkFine MSSQL 客户端单测
  *
- * 根因：admin 容器只注入 MSSQL_CONNECTION_STRING，旧代码只读分离变量 →
- * 空密码登录失败（ELOGIN）。本测试守护连接字符串解析与 envs/*.env 格式对齐。
+ * 覆盖：
+ *   - parseMssqlConnString（envs/*.env 格式对齐，ticket 2026-05-26 ELOGIN 修复守护）
+ *   - normalizeWorkfineAmount（金额 ×10 还原）
+ *   - WorkfineUnavailableError（digest 透传扛 prod 脱敏 + 统一文案）
+ *   - actionErrorMessage 脱敏扩展（框架级 "unexpected response" 等不再泄露给用户）
+ *   - isTransientMssqlError 判定矩阵
+ *   - runQuery 瞬态错误重试（mock mssql，via searchCustomersByPhone）
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// vi.hoisted 早于 import 执行：清除 MOCK_WORKFINE，确保 workfine-mssql 模块加载时
+// USE_MOCK=false（走真 mssql 路径，由下方 vi.mock 替身接管），重试测试才有效。
+const { queryMock } = vi.hoisted(() => {
+  delete process.env.MOCK_WORKFINE
+  return { queryMock: vi.fn() }
+})
+
+// 用 mssql 替身接管 workfine-mssql 的 ConnectionPool：注入可控 queryMock，
+// 使 runQuery 的瞬态重试可被精确观测（第 N 次抛什么错、共调几次）。
+vi.mock('mssql', () => {
+  const fakePool = {
+    connected: true,
+    request: () => ({ input: () => ({ query: queryMock }) }),
+    close: () => Promise.resolve(undefined),
+    on: () => {},
+    connect: () => Promise.resolve(fakePool),
+  }
+  return {
+    default: {
+      // getPool 用 `new mssql.ConnectionPool(config)`；构造函数返回带 connect 的对象即可。
+      ConnectionPool: function ConnectionPool() {
+        return fakePool
+      },
+      NVarChar: () => 'nvarchar',
+    },
+  }
+})
+
 import {
   normalizeWorkfineAmount,
   parseMssqlConnString,
   WorkfineUnavailableError,
+  isTransientMssqlError,
+  searchCustomersByPhone,
 } from '../workfine-mssql'
 import { actionErrorMessage } from '../action-error'
+import { WORKFINE_CONNECT_ERROR_MSG } from '../workfine-constants'
+
+// 清理 workfine-mssql 的 globalThis 池缓存 + 重置 query 行为，隔离每个 case
+beforeEach(() => {
+  const g = globalThis as typeof globalThis & {
+    __workfineMssqlPool?: unknown
+    __workfineMssqlPoolPromise?: unknown
+  }
+  g.__workfineMssqlPool = null
+  g.__workfineMssqlPoolPromise = null
+  queryMock.mockReset()
+})
 
 describe('parseMssqlConnString', () => {
   it('解析 envs/prod.env 实际格式（Server 含端口）', () => {
@@ -91,10 +139,10 @@ describe('WorkfineUnavailableError（WorkFine 不可用提示在 prod 的透传�
     expect(err.digest.length).toBeGreaterThan(0)
   })
 
-  it('前端展示干净友好文案，不暴露 INVALID_STATE / WORKFINE_UNAVAILABLE 前缀', () => {
+  it('前端展示统一友好文案，不暴露 INVALID_STATE / WORKFINE_UNAVAILABLE 前缀', () => {
     // actionErrorMessage 优先读 digest、剥一级前缀后展示——模拟 PullWorkfineDialog 的 catch
     const shown = actionErrorMessage(new WorkfineUnavailableError(), '搜索失败')
-    expect(shown).toBe('WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员')
+    expect(shown).toBe(WORKFINE_CONNECT_ERROR_MSG)
     expect(shown).not.toContain('WORKFINE_UNAVAILABLE')
     expect(shown).not.toContain('INVALID_STATE')
   })
@@ -103,5 +151,106 @@ describe('WorkfineUnavailableError（WorkFine 不可用提示在 prod 的透传�
     const err = new WorkfineUnavailableError()
     expect(err.message).toContain('WORKFINE_UNAVAILABLE')
     expect(err.name).toBe('WorkfineUnavailableError')
+  })
+})
+
+describe('actionErrorMessage（框架级异常脱敏扩展）', () => {
+  // 根因：WorkFine 远程 MSSQL 偶发慢/抖动 → Next.js Server Action 的 POST 响应不是
+  // 合法 RSC 响应 → 客户端自抛 "An unexpected response was received from the server."
+  // （无 digest）。旧 actionErrorMessage 只识别 "Server Components render"，漏掉这句
+  // 英文 → 原样回显给用户。扩展后命中即回退 fallback。
+  it('"An unexpected response was received from the server." → 回退 fallback（本次元凶）', () => {
+    expect(
+      actionErrorMessage(
+        { message: 'An unexpected response was received from the server.' },
+        WORKFINE_CONNECT_ERROR_MSG,
+      ),
+    ).toBe(WORKFINE_CONNECT_ERROR_MSG)
+  })
+
+  it('"Failed to fetch" / "NetworkError..." → 回退 fallback', () => {
+    expect(actionErrorMessage({ message: 'Failed to fetch' }, 'fb')).toBe('fb')
+    expect(
+      actionErrorMessage({ message: 'NetworkError when attempting to fetch resource' }, 'fb'),
+    ).toBe('fb')
+  })
+
+  it('大小写不敏感（"UNEXPECTED RESPONSE" 也命中）', () => {
+    expect(actionErrorMessage({ message: 'UNEXPECTED RESPONSE' }, 'fb')).toBe('fb')
+  })
+
+  it('可读业务文案仍正常透传（不被误脱敏）', () => {
+    expect(actionErrorMessage({ digest: 'CONFLICT: 顾客姓名已存在' }, 'fb')).toBe('顾客姓名已存在')
+  })
+
+  it('空 message / null → fallback', () => {
+    expect(actionErrorMessage({}, 'fb')).toBe('fb')
+    expect(actionErrorMessage(null, 'fb')).toBe('fb')
+  })
+})
+
+describe('isTransientMssqlError（瞬态错误判定矩阵）', () => {
+  it('连接层 name（ConnectionError / ConnectionLost）→ 瞬态', () => {
+    expect(
+      isTransientMssqlError({ name: 'ConnectionError', message: 'connection closed' }),
+    ).toBe(true)
+    expect(isTransientMssqlError({ name: 'ConnectionLost' })).toBe(true)
+  })
+  it('socket 错误码 ECONNRESET/ESOCKET/ETIMEDOUT/EPIPE/ECONNREFUSED → 瞬态', () => {
+    expect(isTransientMssqlError({ code: 'ECONNRESET' })).toBe(true)
+    expect(isTransientMssqlError({ code: 'ESOCKET' })).toBe(true)
+    expect(isTransientMssqlError({ code: 'ETIMEDOUT' })).toBe(true)
+    expect(isTransientMssqlError({ code: 'econnreset' })).toBe(true) // 大小写不敏感
+  })
+  it('message 含 "connection lost" / "socket hang up" / "read econnreset" → 瞬态', () => {
+    expect(isTransientMssqlError({ message: 'Connection lost' })).toBe(true)
+    expect(isTransientMssqlError({ message: 'socket hang up' })).toBe(true)
+    expect(isTransientMssqlError({ message: 'read ECONNRESET' })).toBe(true)
+  })
+  it('登录失败(ELOGIN)/语法错等 → 非瞬态（不重试）', () => {
+    expect(
+      isTransientMssqlError({ name: 'RequestError', code: 'ELOGIN', message: 'login failed' }),
+    ).toBe(false)
+    expect(isTransientMssqlError({ name: 'RequestError', message: 'Invalid column name' })).toBe(false)
+  })
+  it('null / undefined / 非对象 → false', () => {
+    expect(isTransientMssqlError(null)).toBe(false)
+    expect(isTransientMssqlError(undefined)).toBe(false)
+    expect(isTransientMssqlError('string')).toBe(false)
+  })
+})
+
+describe('runQuery 瞬态错误重试（via searchCustomersByPhone）', () => {
+  it('瞬态错误(ECONNRESET)重试一次后成功', async () => {
+    queryMock
+      .mockRejectedValueOnce({ code: 'ECONNRESET', message: 'read ECONNRESET' })
+      .mockResolvedValueOnce({
+        recordset: [{ customer_id: 'C1', name: '罗珍', phone: '13576939399' }],
+      })
+    const res = await searchCustomersByPhone('13576939399')
+    expect(res).toEqual([{ customerId: 'C1', name: '罗珍', phone: '13576939399' }])
+    expect(queryMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('非瞬态错误(ELOGIN)不重试，直接抛 WorkfineUnavailableError', async () => {
+    queryMock.mockRejectedValueOnce({
+      name: 'RequestError',
+      code: 'ELOGIN',
+      message: 'login failed',
+    })
+    await expect(searchCustomersByPhone('13576939399')).rejects.toBeInstanceOf(
+      WorkfineUnavailableError,
+    )
+    expect(queryMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('连续瞬态错误（重试也失败）→ 抛 WorkfineUnavailableError', async () => {
+    queryMock
+      .mockRejectedValueOnce({ code: 'ECONNRESET', message: 'read ECONNRESET' })
+      .mockRejectedValueOnce({ code: 'ESOCKET', message: 'socket hang up' })
+    await expect(searchCustomersByPhone('13576939399')).rejects.toBeInstanceOf(
+      WorkfineUnavailableError,
+    )
+    expect(queryMock).toHaveBeenCalledTimes(2)
   })
 })

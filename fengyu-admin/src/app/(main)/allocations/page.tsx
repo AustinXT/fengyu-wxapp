@@ -44,12 +44,14 @@ export default async function Page({
     )
   }
 
-  // 销售提成改「回款维度」：按每笔回款（sale_payment_id）逐笔分配。
-  // getPendingPayments 仅认 待分配/已分配 两态（缺省=待分配），且不支持日期区间过滤。
+  // 销售提成「回款维度」：按每笔回款（sale_payment_id）逐笔分配。
+  // allocationStatus 缺省=「全部状态」（已分配 + 待分配）；支持按到账时间区间过滤。
   const { data: payments, total } = await getPendingPayments({
     allocationStatus:
       allocStatus === '已分配' ? '已分配' : allocStatus === '待分配' ? '待分配' : undefined,
     storeId,
+    dateFrom,
+    dateTo,
     search,
     page,
     pageSize,

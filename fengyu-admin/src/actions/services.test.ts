@@ -883,83 +883,104 @@ describe('getServiceOrderById — 读取不限 scope + readOnly 标记', () => {
   })
 })
 
-// ── exportAllocationServiceOrders — 服务提成明细导出（30 列） ──────────────────
-describe('exportAllocationServiceOrders — 明细导出 + 派生列 + 截断', () => {
+// ── exportAllocationServiceOrders — 服务提成三态导出（已分配明细 + 待分配占位行） ──
+describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    ;(scopeCondition as any).mockReturnValue(undefined)
   })
 
-  it('maps a service_commissions detail row to export fields + derived columns', async () => {
-    ;(db.select as any).mockImplementation(
-      makeSelectChain([
-        {
-          market: '九江',
-          storeName: '世纪店',
-          serviceOrderId: 'SO1',
-          saleOrderType: '销售单',
-          serviceOrderType: '售后',
-          customerName: '王女士',
-          customerPhone: null,
-          fallbackPhone: '13151094335',
-          productType: '疗程卡',
-          categoryL1: '护理项目',
-          categoryL2: '圣源养心',
-          productName: '【王牌】疼痛管理',
-          sessionUsed: 1,
-          unitRealPrice: '300.00',
-          status: '已完成',
-          employeeName: '王雯馨',
-          positionName: '美容师',
-          allocationRatio: '0.30',
-          commissionRate: '0.1500',
-          commissionAmount: '162.00',
-          rating: 5,
-          reviewComment: '好评',
-          salesCategory: '自销自耗',
-          customerType: '会员客',
-          openedByName: '张凯',
-          sourceSaleOrderId: 'FY-XSD-WX-2606080003',
-          serviceDate: '2026-06-08',
-          createdAt: new Date('2026-06-08T15:26:32.000Z'),
-          remark: null,
-          scId: 1,
-        },
-      ])
-    )
-    const { rows } = await exportAllocationServiceOrders({})
+  // 已分配段 raw（service_commissions 来源，含分配/提成/评价列）
+  const allocatedRaw = {
+    market: '九江', storeName: '世纪店', serviceOrderId: 'SO1',
+    saleOrderType: '销售单', serviceOrderType: '售后',
+    customerName: '王女士', customerPhone: null, fallbackPhone: '13151094335',
+    productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
+    productName: '【王牌】疼痛管理', sessionUsed: 1, unitRealPrice: '300.00',
+    status: '已完成',
+    employeeName: '王雯馨', positionName: '美容师',
+    allocationRatio: '0.30', commissionRate: '0.1500', commissionAmount: '162.00',
+    rating: 5, reviewComment: '好评',
+    salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
+    sourceSaleOrderId: 'FY-XSD-WX-2606080003',
+    serviceDate: '2026-06-08', createdAt: new Date('2026-06-08T15:26:32.000Z'), remark: null,
+  }
+
+  // 待分配段 raw（无 service_commissions，select 里没分配/提成/评价字段）
+  const pendingRaw = {
+    market: '九江', storeName: '世纪店', serviceOrderId: 'SO2',
+    saleOrderType: '销售单', serviceOrderType: '售后',
+    customerName: '李女士', customerPhone: null, fallbackPhone: '13000000000',
+    productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
+    productName: '【王牌】疼痛管理', sessionUsed: 1, unitRealPrice: '300.00',
+    status: '已完成',
+    salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
+    sourceSaleOrderId: 'FY-XSD-WX-2607010001',
+    serviceDate: '2026-07-10', createdAt: new Date('2026-07-10T10:00:00.000Z'), remark: null,
+  }
+
+  it('「已分配」→ 只查已分配段，字段映射 + 派生列（消耗金额/分配额）+ 顾客手机回退', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([allocatedRaw]))
+    const { rows } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
+
     expect(rows).toHaveLength(1)
+    expect(db.select).toHaveBeenCalledTimes(1)
     const r = rows[0]
     expect(r.serviceOrderId).toBe('SO1')
-    expect(r.market).toBe('九江')
-    expect(r.saleOrderType).toBe('销售单')
-    expect(r.serviceOrderType).toBe('售后')
-    // 顾客手机回退到来源销售单 client_phone
-    expect(r.customerPhone).toBe('13151094335')
-    // 派生：消耗金额 = 单次价 × 消耗次数；分配额 = 消耗金额 × 分配占比
-    expect(r.consumeMoney).toBe(300)
+    expect(r.customerPhone).toBe('13151094335') // 回退来源销售单 client_phone
+    expect(r.consumeMoney).toBe(300) // 单次价 × 消耗次数
     expect(r.unitRealPrice).toBe(300)
-    expect(r.allocationAmount).toBe(90)
-    // 金额转 number；占比/比例保留原始小数串交前端格式化
+    expect(r.allocationAmount).toBe(90) // 消耗金额 × 分配占比
     expect(r.commissionAmount).toBe(162)
     expect(r.allocationRatio).toBe('0.30')
     expect(r.commissionRate).toBe('0.1500')
     expect(r.rating).toBe(5)
-    // createdAt 序列化为 ISO 串
     expect(r.createdAt).toBe('2026-06-08T15:26:32.000Z')
   })
 
-  it('truncates at 10000 rows', async () => {
+  it('「待分配」→ 只查待分配段，占位行（分配/提成/评价列 null，派生消耗金额仍算）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([pendingRaw]))
+    const { rows, truncated } = await exportAllocationServiceOrders({ allocStatus: '待分配' })
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(1)
+    expect(db.select).toHaveBeenCalledTimes(1)
+    const r = rows[0]
+    expect(r.serviceOrderId).toBe('SO2')
+    expect(r.employeeName).toBeNull()
+    expect(r.positionName).toBeNull()
+    expect(r.allocationRatio).toBeNull()
+    expect(r.allocationAmount).toBeNull()
+    expect(r.commissionRate).toBeNull()
+    expect(r.commissionAmount).toBeNull()
+    expect(r.rating).toBeNull()
+    expect(r.reviewComment).toBeNull()
+    expect(r.consumeMoney).toBe(300) // 派生列仍由 unitRealPrice × sessionUsed 算出
+    expect(r.productName).toBe('【王牌】疼痛管理')
+  })
+
+  it('「全部」(缺省) → 两段都查，按 createdAt desc 合并（待分配 07-10 在前，已分配 06-08 在后）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectSequence([allocatedRaw], [pendingRaw]))
+    const { rows, truncated } = await exportAllocationServiceOrders({})
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(2)
+    expect(db.select).toHaveBeenCalledTimes(2)
+    expect(rows[0].serviceOrderId).toBe('SO2') // 待分配（07-10）在前
+    expect(rows[0].employeeName).toBeNull()
+    expect(rows[1].serviceOrderId).toBe('SO1') // 已分配（06-08）
+    expect(rows[1].employeeName).toBe('王雯馨')
+  })
+
+  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({
-      serviceOrderId: `SO${i}`,
-      sessionUsed: 1,
-      unitRealPrice: '100.00',
-      allocationRatio: '1.00',
-      commissionAmount: '10.00',
+      serviceOrderId: `SO${i}`, sessionUsed: 1, unitRealPrice: '100.00',
+      allocationRatio: '1.00', commissionAmount: '10.00',
       createdAt: new Date('2026-06-08T00:00:00.000Z'),
     }))
     ;(db.select as any).mockImplementation(makeSelectChain(many))
-    const { rows, truncated } = await exportAllocationServiceOrders({})
+    const { rows, truncated } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
     expect(truncated).toBe(true)
     expect(rows).toHaveLength(10000)
   })

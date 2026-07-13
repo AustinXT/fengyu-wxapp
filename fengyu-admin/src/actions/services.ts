@@ -364,10 +364,113 @@ async function selectServiceCommissionExportRows(
 }
 
 /**
- * 导出营业额分配「服务提成」明细（一行一条有效 service_commissions，每被分配员工一行）。
- * 筛选锁定已完成 + allocStatus（parseAllocationServiceFilters）；查询主体复用
- * selectServiceCommissionExportRows。仅含已分配（service_commissions 有行）的服务消耗；
- * 筛选「待分配」时为空属预期。
+ * 服务提成导出「待分配」占位段（一行 = 一个已完成但 commission_status='待分配' 的服务单 × service_item）。
+ * 无 service_commissions，分配/提成/评价列留空；与 selectServiceCommissionExportRows（已分配段）粒度对称。
+ * 仅 exportAllocationServiceOrders 使用，不影响服务单管理页导出（exportServiceOrders）。
+ */
+async function selectPendingServiceCommissionExportRows(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: ServiceOrderFilters,
+  limit = 10000,
+): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  const whereClause = and(
+    eq(serviceOrders.commissionStatus, '待分配'),
+    eq(serviceOrders.status, '已完成'),
+    ...buildServiceOrderConditions(session, { ...filters, commissionStatus: undefined }),
+  )
+
+  // staff_wechat_users 两次 JOIN 之一：开单人(=slo.opened_by)；占位段无负责美容师(=sc.employee_id)
+  const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
+
+  const raw = await db
+    .select({
+      market: serviceOrders.marketName,
+      storeName: stores.storeName,
+      serviceOrderId: serviceOrders.serviceOrderId,
+      saleOrderType: saleOrders.saleOrderType,
+      serviceOrderType: serviceOrders.serviceOrderType,
+      customerName: clientWechatUsers.name,
+      customerPhone: clientWechatUsers.phone,
+      fallbackPhone: saleOrders.clientPhone,
+      productType: saleItems.productType,
+      categoryL1: productCategories.productKind,
+      categoryL2: productCategories.categoryName,
+      productName: saleItems.productName,
+      sessionUsed: serviceItems.sessionUsed,
+      unitRealPrice: serviceItems.unitRealPrice,
+      status: serviceOrders.status,
+      salesCategory: serviceItems.salesCategory,
+      customerType: clientWechatUsers.customerType,
+      openedByName: openedByStaff.name,
+      sourceSaleOrderId: saleItems.saleOrderId,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      remark: serviceOrders.remark,
+    })
+    .from(serviceOrders)
+    .innerJoin(serviceItems, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(whereClause)
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+    .limit(limit + 1)
+
+  const truncated = raw.length > limit
+  const page = truncated ? raw.slice(0, limit) : raw
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const rows: ExportAllocationServiceRow[] = page.map((r) => {
+    const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
+    const sessions = r.sessionUsed ?? null
+    const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
+    return {
+      market: r.market,
+      storeName: r.storeName,
+      serviceOrderId: r.serviceOrderId,
+      saleOrderType: r.saleOrderType,
+      serviceOrderType: r.serviceOrderType,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionUsed: sessions,
+      consumeMoney,
+      unitRealPrice: unit,
+      status: r.status,
+      // 待分配：无 service_commissions，分配/提成/评价列留空
+      employeeName: null,
+      positionName: null,
+      allocationRatio: null,
+      allocationAmount: null,
+      commissionRate: null,
+      commissionAmount: null,
+      rating: null,
+      reviewComment: null,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
+      openedByName: r.openedByName,
+      sourceSaleOrderId: r.sourceSaleOrderId,
+      serviceDate: r.serviceDate,
+      createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+      remark: r.remark,
+    }
+  })
+
+  return { rows, truncated }
+}
+
+/**
+ * 导出营业额分配「服务提成」（allocStatus 三态分流，合并后按 createdAt desc 截断 LIMIT 10000）：
+ * - 全部：已分配明细（service_commissions 主链）∪ 待分配占位行（已完成但 commission_status='待分配' 的服务单 × item）；
+ * - 已分配：仅明细段；待分配：仅占位段（分配/提成/评价列留空）。
+ * 列表筛选 parseAllocationServiceFilters 锁定 status='已完成'；导出两段按 commission_status 各自控制，
+ * 不依赖 buildServiceOrderConditions 的 commissionStatus 分支（该分支仍服务列表侧）。
  */
 export const exportAllocationServiceOrders = withPermission(
   'service:list',
@@ -375,7 +478,34 @@ export const exportAllocationServiceOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
-    return selectServiceCommissionExportRows(session, parseAllocationServiceFilters(params))
+    const LIMIT = 10000
+    const filters = parseAllocationServiceFilters(params)
+    const commissionStatus = filters.commissionStatus
+    filters.commissionStatus = undefined
+    const merged: Array<{ row: ExportAllocationServiceRow; sort: number }> = []
+
+    // selectServiceCommissionExportRows / selectPending 各自 limit+1 内部截断；
+    // 合并层需 OR 两段的 truncated 标志（否则单段 10001 被内部截到 10000，合并 length 不超 LIMIT 漏报）。
+    let overflow = false
+    if (commissionStatus !== '待分配') {
+      const result = await selectServiceCommissionExportRows(session, filters, LIMIT)
+      overflow = overflow || result.truncated
+      for (const r of result.rows) {
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+      }
+    }
+    if (commissionStatus !== '已分配') {
+      const result = await selectPendingServiceCommissionExportRows(session, filters, LIMIT)
+      overflow = overflow || result.truncated
+      for (const r of result.rows) {
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+      }
+    }
+
+    merged.sort((a, b) => b.sort - a.sort)
+    const truncated = overflow || merged.length > LIMIT
+    const rows = (merged.length > LIMIT ? merged.slice(0, LIMIT) : merged).map((m) => m.row)
+    return { rows, truncated }
   },
 )
 

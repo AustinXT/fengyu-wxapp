@@ -527,45 +527,56 @@ export const searchWorkfineCustomer = withPermission(
       throw new LegacyOrderError('INVALID_PARAMS: 手机号或顾客编号至少传一个')
     }
 
-    let candidates: WorkfineCustomer[] = []
-    if (customerId) {
-      const one = await wfSearchByCustomerId(customerId)
-      if (one) candidates = [one]
-    } else if (phone) {
-      candidates = await wfSearchByPhone(phone)
+    try {
+      let candidates: WorkfineCustomer[] = []
+      if (customerId) {
+        const one = await wfSearchByCustomerId(customerId)
+        if (one) candidates = [one]
+      } else if (phone) {
+        candidates = await wfSearchByPhone(phone)
+      }
+
+      if (candidates.length === 0) return []
+
+      // 标记 PG 命中：phone 或 customer_id 任一匹配即算
+      const phones = candidates.map((c) => c.phone).filter((p): p is string => !!p)
+      const customerIds = candidates.map((c) => c.customerId)
+
+      const phoneHits = phones.length
+        ? await db
+            .select({ userId: clientWechatUsers.userId, phone: clientWechatUsers.phone })
+            .from(clientWechatUsers)
+            .where(inArray(clientWechatUsers.phone, phones))
+        : []
+      const customerIdHits = customerIds.length
+        ? await db
+            .select({ userId: clientWechatUsers.userId, customerId: clientWechatUsers.customerId })
+            .from(clientWechatUsers)
+            .where(inArray(clientWechatUsers.customerId, customerIds))
+        : []
+
+      const phoneToUser = new Map(phoneHits.map((r) => [r.phone, r.userId] as const))
+      const customerIdToUser = new Map(
+        customerIdHits.map((r) => [r.customerId, r.userId] as const),
+      )
+
+      return candidates.map((c) => {
+        const pgUserId =
+          (c.phone && phoneToUser.get(c.phone)) ||
+          customerIdToUser.get(c.customerId) ||
+          null
+        return { ...c, existsInPg: pgUserId !== null, pgUserId }
+      })
+    } catch (err) {
+      // 可观测性：admin 手动拉历史订单"偶尔失败"时记录入参 + 错误，便于在 server 日志定位
+      // 是 WorkFine 连接抖动 / 超时 / 还是 PG 命中查询出错（runQuery 已把 MSSQL 错收敛成
+      // WorkfineUnavailableError）。成功不记，避免噪音。
+      console.error(
+        `[searchWorkfineCustomer] failed phone=${phone ?? '-'} customerId=${customerId ?? '-'}`,
+        err,
+      )
+      throw err
     }
-
-    if (candidates.length === 0) return []
-
-    // 标记 PG 命中：phone 或 customer_id 任一匹配即算
-    const phones = candidates.map((c) => c.phone).filter((p): p is string => !!p)
-    const customerIds = candidates.map((c) => c.customerId)
-
-    const phoneHits = phones.length
-      ? await db
-          .select({ userId: clientWechatUsers.userId, phone: clientWechatUsers.phone })
-          .from(clientWechatUsers)
-          .where(inArray(clientWechatUsers.phone, phones))
-      : []
-    const customerIdHits = customerIds.length
-      ? await db
-          .select({ userId: clientWechatUsers.userId, customerId: clientWechatUsers.customerId })
-          .from(clientWechatUsers)
-          .where(inArray(clientWechatUsers.customerId, customerIds))
-      : []
-
-    const phoneToUser = new Map(phoneHits.map((r) => [r.phone, r.userId] as const))
-    const customerIdToUser = new Map(
-      customerIdHits.map((r) => [r.customerId, r.userId] as const),
-    )
-
-    return candidates.map((c) => {
-      const pgUserId =
-        (c.phone && phoneToUser.get(c.phone)) ||
-        customerIdToUser.get(c.customerId) ||
-        null
-      return { ...c, existsInPg: pgUserId !== null, pgUserId }
-    })
   },
 )
 

@@ -126,7 +126,7 @@ export const staffWechatUsers = pgTable(
     leaveStart: timestamp('leave_start', { mode: 'string', withTimezone: true }),
     /** 请假结束时间（同 leaveStart，mode:'string' + withTimezone） */
     leaveEnd: timestamp('leave_end', { mode: 'string', withTimezone: true }),
-    /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；每日 03:00 cron 重置为 false */
+    /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；长期保留直至 admin 手动改回 false（2026-07-13 起不再每日重置） */
     isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),

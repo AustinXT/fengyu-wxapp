@@ -8,6 +8,7 @@
  */
 
 import mssql from 'mssql'
+import { WORKFINE_CONNECT_ERROR_MSG } from './workfine-constants'
 
 /**
  * 解析 ADO.NET 风格连接字符串（`Server=host,port;Database=..;User Id=..;Password=..`）。
@@ -71,15 +72,20 @@ const MSSQL_CONFIG: mssql.config = {
   database: PARSED.database || process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
   server: PARSED.server || process.env.MSSQL_SERVER || '47.96.87.33',
   port: PARSED.port || parseInt(process.env.MSSQL_PORT || '1433', 10),
-  pool: { max: 3, min: 0, idleTimeoutMillis: 30_000, acquireTimeoutMillis: CONNECT_TIMEOUT_MS },
+  // min:1 常驻一条健康连接——WorkFine 是跨公网远程库，min:0 时池空闲 30s 后清空，
+  // 下次首请求要重新付 TCP+登录建连成本（命中 8s 建连超时即偶发"闲一阵再搜失败"）。
+  pool: { max: 3, min: 1, idleTimeoutMillis: 30_000, acquireTimeoutMillis: CONNECT_TIMEOUT_MS },
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
   connectionTimeout: CONNECT_TIMEOUT_MS,
   requestTimeout: REQUEST_TIMEOUT_MS,
 }
 
+// WORKFINE_CONNECT_ERROR_MSG 定义在 ./workfine-constants（纯文案、无 Node 依赖），server / client
+// 共享同一 source：本模块用于 digest 透传，前端 PullWorkfineDialog 的 catch fallback 也从那里
+// import——避免在 client component 误 import 本模块（含 mssql Node-only 依赖）拉崩浏览器 bundle。
+
 /** server 日志用：带 WORKFINE_UNAVAILABLE 子标签便于故障归类排查 */
-const WORKFINE_UNAVAILABLE_LOG_MSG =
-  'INVALID_STATE: WORKFINE_UNAVAILABLE: WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员'
+const WORKFINE_UNAVAILABLE_LOG_MSG = `INVALID_STATE: WORKFINE_UNAVAILABLE: ${WORKFINE_CONNECT_ERROR_MSG}`
 
 /**
  * WorkFine 不可用时统一抛出的友好错误。
@@ -91,7 +97,7 @@ const WORKFINE_UNAVAILABLE_LOG_MSG =
  * 子标签：前端剥一级前缀 `INVALID_STATE:` 后即得干净文案；子标签仅留在 `message` 供 server 日志归类。
  */
 export class WorkfineUnavailableError extends Error {
-  readonly digest = 'INVALID_STATE: WorkFine 历史数据库暂时不可用，请稍后重试或联系管理员'
+  readonly digest = `INVALID_STATE: ${WORKFINE_CONNECT_ERROR_MSG}`
   constructor() {
     super(WORKFINE_UNAVAILABLE_LOG_MSG)
     this.name = 'WorkfineUnavailableError'
@@ -135,20 +141,92 @@ async function getPool(): Promise<mssql.ConnectionPool> {
 }
 
 /**
+ * 关闭并丢弃当前缓存的池（若有），强制下次 getPool 重新建连。
+ * 用于查询命中"池级致命错"（整个池已不可用）时清理僵尸池，避免后续请求持续命中同一坏池。
+ */
+function resetPool(): void {
+  const pool = g.__workfineMssqlPool
+  g.__workfineMssqlPool = null
+  g.__workfineMssqlPoolPromise = null
+  if (pool) {
+    pool.close().catch((err) => console.error('[workfine-mssql] pool.close 失败', err))
+  }
+}
+
+/**
+ * 判定 MSSQL 错误是否为"瞬态"（重试有望成功）：跨公网链路上 NAT/防火墙静默丢弃空闲
+ * TCP 连接后，下一条查询命中死连接会报这些错。重试时 mssql 池会销毁坏连接，常拿到健康连接。
+ *
+ * node-mssql(tedious) 的典型瞬态信号：
+ *   - err.name 含 ConnectionError / ConnectionLost
+ *   - err.code: ECONNRESET / ESOCKET / ETIMEDOUT / EPIPE / ECONNREFUSED（底层 socket）
+ *   - message 含 "connection lost" / "socket hang up" / "read econnreset"
+ *
+ * 导出供单测覆盖判定矩阵。
+ */
+export function isTransientMssqlError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { code?: string; name?: string; message?: string }
+  const code = (e.code ?? '').toUpperCase()
+  const name = (e.name ?? '').toUpperCase()
+  const msg = (e.message ?? '').toLowerCase()
+  if (name.includes('CONNECTION')) return true
+  if (['ECONNRESET', 'ESOCKET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED'].includes(code)) return true
+  if (msg.includes('connection lost') || msg.includes('socket hang up') || msg.includes('read econnreset')) {
+    return true
+  }
+  return false
+}
+
+/**
+ * 判定是否为"池级致命错"——整个池已不可用，保留它只会让后续请求持续命中同一坏池。
+ * 典型：pool 已断开（connected=false）且错误是 ConnectionError/PoolError。普通单条查询的
+ * RequestError 不算（池本身仍健康，mssql 内部会自愈该连接）。
+ */
+function isFatalPoolError(err: unknown, pool: mssql.ConnectionPool): boolean {
+  if (pool.connected) return false
+  const name = (err as { name?: string } | null)?.name ?? ''
+  return name.includes('ConnectionError') || name.includes('PoolError')
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 瞬态错误重试次数（WorkFine 全只读、查询幂等，重试安全）。 */
+const TRANSIENT_RETRY = 1
+/** 瞬态错误重试前的等待（ms），给 mssql 池一点时间销毁坏连接。 */
+const TRANSIENT_RETRY_DELAY_MS = 200
+
+/**
  * 包裹查询执行：把任何 MSSQL 连接/查询/超时错误转成统一的 WorkfineUnavailableError，
- * 让上层 action 抛出可读消息（Dialog 显示「WorkFine 暂不可用」），而不是 raw 500 / 卡死。
- * 已经是 WorkfineUnavailableError（来自 getPool）的错误原样透传，不重复包裹。
+ * 让上层 action 抛出可读消息（Dialog 显示「连接 WorkFine 数据库出错」），而不是 raw 500 / 卡死。
+ *
+ * 对瞬态错误（死连接 / ECONNRESET / 超时）自动重试 1 次——跨公网 WorkFine 的"偶尔失败"
+ * 大多是这类，重试一次往往就成功。已经是 WorkfineUnavailableError（来自 getPool）的错误
+ * 原样透传，不重复包裹。重试耗尽或非瞬态错时，若判定为池级致命错则 resetPool() 清理僵尸池。
  */
 async function runQuery<T>(fn: (pool: mssql.ConnectionPool) => Promise<T>): Promise<T> {
   // getPool 失败时已抛出 WorkfineUnavailableError，直接透传。
   const pool = await getPool()
-  try {
-    return await fn(pool)
-  } catch (err) {
-    if (err instanceof WorkfineUnavailableError) throw err
-    console.error('[workfine-mssql] 查询 WorkFine MSSQL 失败', err)
-    throw new WorkfineUnavailableError()
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY; attempt++) {
+    try {
+      return await fn(pool)
+    } catch (err) {
+      if (err instanceof WorkfineUnavailableError) throw err
+      lastErr = err
+      // 瞬态错误且仍有重试额度：短暂等待后重试（mssql 池内部会销毁坏连接）
+      if (attempt < TRANSIENT_RETRY && isTransientMssqlError(err)) {
+        await sleep(TRANSIENT_RETRY_DELAY_MS)
+        continue
+      }
+      break
+    }
   }
+  console.error('[workfine-mssql] 查询 WorkFine MSSQL 失败', lastErr)
+  if (lastErr && isFatalPoolError(lastErr, pool)) resetPool()
+  throw new WorkfineUnavailableError()
 }
 
 function trim(v: unknown): string | null {

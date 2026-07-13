@@ -114,7 +114,7 @@ export const getItemTeachers = withPermission(
  *
  * is_on_business_trip=true 的员工可被任意门店的开单 / 营业额分配 / 服务提成分配选中，
  * 故**不加 scopeCondition**，返回全部在职出差员工。调用方需与 getEmployees 结果按
- * employeeId 去重合并，再交前端按「本门店 ∪ 出差」+ 技能筛选。每日 03:00 cron 重置标记。
+ * employeeId 去重合并，再交前端按「本门店 ∪ 出差」+ 技能筛选。出差标记长期保留直至 admin 手动改回（不再每日重置）。
  */
 export const getEmployeesOnBusinessTrip = withPermission(
   'employee:list',
@@ -553,7 +553,7 @@ export const updateEmployee = withPermission(
       leaveStart: string | null
       /** 请假结束时间（datetime-local YYYY-MM-DDTHH:mm） */
       leaveEnd: string | null
-      /** 是否出差支援（跨门店共享标记）；每日 03:00 cron 重置为 false */
+      /** 是否出差支援（跨门店共享标记）；长期保留直至 admin 手动改回 false（不再每日重置） */
       isOnBusinessTrip: boolean
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null

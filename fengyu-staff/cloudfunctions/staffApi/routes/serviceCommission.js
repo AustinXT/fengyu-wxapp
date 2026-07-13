@@ -18,6 +18,7 @@ const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
+const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
@@ -157,7 +158,7 @@ async function detail(ctx) {
 
   // 5. 候选员工（admin 式按技能筛选用）：跨门店共享（2026-06-24，取消市场级与品项老师特例）。
   //    候选池 = 服务单门店在职员工 ∪ 标记出差的在职员工；前端按「服务单门店 ∪ 出差」+ 技能筛选。
-  //    出差标记 staff_wechat_users.is_on_business_trip 每日 03:00 cron 重置；本 action 已 requireManager() 门控。
+  //    出差标记 staff_wechat_users.is_on_business_trip 长期保留直至 admin 手动改回（2026-07-13 起不再每日重置）；本 action 已 requireManager() 门控。
   let candidateEmployees = []
   if (order.store_id) {
     const empRows = await pg.query(`
@@ -206,7 +207,7 @@ async function save(ctx) {
 
   // 服务单 scope + 状态校验
   const orders = await pg.query(
-    'SELECT service_order_id, status, commission_status, completed_at FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
+    'SELECT service_order_id, status, commission_status, completed_at, remark FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
     [serviceOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) {
@@ -226,17 +227,10 @@ async function save(ctx) {
   // 冻结闭环（Bug I）：关联订单退款审批中禁止改服务提成（退款 cascade 会作废提成）
   await assertNoPendingRefundByServiceOrder(pg, serviceOrderId)
 
-  // 寄存单不参与提成分配（寄存单仅初始化剩余次数，不计营业额/客单价/提成）
-  const depositChk = await pg.query(`
-    SELECT 1
-    FROM service_items sit
-    JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    WHERE sit.service_order_id = $1 AND so.sale_order_type = '寄存单'
-    LIMIT 1
-  `, [serviceOrderId])
-  if (depositChk.length > 0) {
-    throw new Error('INVALID_STATE: 寄存单不参与提成分配')
+  // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
+  // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成 sale_allocations，由 ALLOCATABLE_ORDER_TYPES 守卫）。
+  if (order.remark === DEPOSIT_REFUND_REMARK) {
+    throw new Error('INVALID_STATE: 寄存单退款专用服务单不参与提成分配')
   }
 
   // 加载服务明细定价（校验归属 + 重算）
