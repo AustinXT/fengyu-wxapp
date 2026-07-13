@@ -1178,7 +1178,7 @@ describe('mgmtDashboard.storeRanking', () => {
   // ---- 权限 ----
 
   describe('权限', () => {
-    test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+    test('store_manager + loginLevel=store → 被 loginLevel 闸拦截（须以管理层身份登录）', async () => {
       const ctx = createManagerCtx({ period: 'month', metric: 'revenue' })
       await expect(storeRanking(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     })
@@ -1205,6 +1205,38 @@ describe('mgmtDashboard.storeRanking', () => {
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/s\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(params).toEqual([['store-001']])
+    })
+
+    test('store_manager + management：ANY 参数 = managerStoreIds（非 scopeStoreIds，防 manager@A + customer_mgr@B 漏出 B）', async () => {
+      // getVisibleStoreIds 对 store_manager 返回 managerStoreIds（仅 manager 绑定），区别于 scopeStoreIds（全角色并集）。
+      // storeRanking/staffRanking 直接消费它构造 ANY 数组。此用例守护该分支：
+      // 若有人把 getVisibleStoreIds 改回 scopeStoreIds，B 店会泄漏给 A 店长排行榜，本用例即失败。
+      setupDefaultRankingMocks()
+      const ctx = createCtx({
+        payload: { period: 'month', metric: 'revenue' },
+        auth: {
+          staffLevel: 'store_manager',
+          loginLevel: 'management',
+          effectiveStoreId: null,
+          currentStoreId: null,
+          // manager@门店A + customer_mgr@门店B：scopeStoreIds 含 A+B，但 managerStoreIds 仅 A
+          managerStoreIds: ['store-001'],
+          scopeStoreIds: ['store-001', 'store-002'],
+          roleBindings: [
+            { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+            { role: 'customer_mgr', scopeId: 'org-node-store-002', scopeType: '门店' },
+          ],
+          roles: ['manager', 'customer_mgr'],
+        },
+      })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      const params = pg.query.mock.calls[0][1]
+      expect(sql).toMatch(/s\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      // 关键：ANY 数组必须是 managerStoreIds(['store-001'])，绝不能是 scopeStoreIds(['store-001','store-002'])
+      expect(params).toEqual([['store-001']])
+      expect(params[0]).not.toContain('store-002')
     })
 
     test('market 且 scopeStoreIds 为空：SQL 走 FALSE，rows=[]', async () => {
@@ -1591,7 +1623,7 @@ describe('mgmtDashboard.staffRanking', () => {
   // ---- 权限 ----
 
   describe('权限', () => {
-    test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+    test('store_manager + loginLevel=store → 被 loginLevel 闸拦截（须以管理层身份登录）', async () => {
       const ctx = createManagerCtx({ period: 'month', metric: 'revenue' })
       await expect(staffRanking(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     })
@@ -1621,6 +1653,34 @@ describe('mgmtDashboard.staffRanking', () => {
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(params).toEqual([['store-001']])
+    })
+
+    test('store_manager + management：ANY 参数 = managerStoreIds（非 scopeStoreIds，防 manager@A + customer_mgr@B 漏出 B）', async () => {
+      // 与 storeRanking 同口径守护：getVisibleStoreIds 对 store_manager 返回 managerStoreIds。
+      setupDefaultStaffMocks()
+      const ctx = createCtx({
+        payload: { period: 'month', metric: 'revenue' },
+        auth: {
+          staffLevel: 'store_manager',
+          loginLevel: 'management',
+          effectiveStoreId: null,
+          currentStoreId: null,
+          managerStoreIds: ['store-001'],
+          scopeStoreIds: ['store-001', 'store-002'],
+          roleBindings: [
+            { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+            { role: 'customer_mgr', scopeId: 'org-node-store-002', scopeType: '门店' },
+          ],
+          roles: ['manager', 'customer_mgr'],
+        },
+      })
+      await staffRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      const params = pg.query.mock.calls[0][1]
+      expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(params).toEqual([['store-001']])
+      expect(params[0]).not.toContain('store-002')
     })
 
     test('market 且 scopeStoreIds 为空：SQL 走 FALSE，rows=[]', async () => {
