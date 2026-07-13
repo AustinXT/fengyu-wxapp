@@ -42,12 +42,32 @@ vi.mock('@db/order', () => ({
     saleItemId: 'sale_item_id',
     received: 'received',
   },
+  saleOrderPayments: {
+    id: 'id',
+    saleOrderId: 'sale_order_id',
+    allocationStatus: 'allocation_status',
+    paidAt: 'paid_at',
+    status: 'status',
+    changeType: 'change_type',
+    amount: 'amount',
+    paymentMethod: 'payment_method',
+  },
+  clientWechatUsers: {
+    userId: 'user_id',
+    name: 'name',
+    phone: 'phone',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  or: vi.fn((...args) => ({ type: 'or', args })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
+  gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
+  lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
+  desc: vi.fn((a) => ({ type: 'desc', a })),
+  ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -69,8 +89,20 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { deleteAllocation, batchSaveAllocations, savePaymentAllocations } from './allocations'
+vi.mock('@/lib/db-time', () => ({
+  nowTs: vi.fn(),
+  beijingBoundaryTs: vi.fn((d: string, t: string) => ({ type: 'boundary', d, t })),
+}))
+
+import {
+  deleteAllocation,
+  batchSaveAllocations,
+  savePaymentAllocations,
+  getPendingPayments,
+} from './allocations'
 import { db } from '@/db'
+import { saleOrderPayments } from '@db/order'
+import { eq, gte, lt } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
@@ -623,5 +655,71 @@ describe('savePaymentAllocations — 退款守卫粒度（回款级，非订单�
     // #2 核心回归：回款级守卫被咨询，订单级守卫绝不参与回款级路径 → 无关回款不被同单退款误锁
     expect(hasSettledRefundForPayment).toHaveBeenCalledWith(db, 7)
     expect(hasSettledRefund).not.toHaveBeenCalled()
+  })
+})
+
+// ── getPendingPayments — 全部状态 + 日期筛选（防「全部状态」假全部回归） ─────────
+// fluent select 链：支持 .from().innerJoin().leftJoin().where().orderBy().limit().offset()
+// 以及直接 await .where()（count 查询）。builder 自身是 thenable，await 得 result。
+function makePendingSelectChain(result: any[]) {
+  const resolve = () => Promise.resolve(result)
+  const builder: any = {
+    then: (onFulfilled: any, onRejected: any) => resolve().then(onFulfilled, onRejected),
+  }
+  for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit']) {
+    builder[m] = vi.fn(() => builder)
+  }
+  builder.offset = vi.fn(() => resolve())
+  return vi.fn(() => builder)
+}
+
+describe('getPendingPayments — 全部状态/日期筛选', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makePendingSelectChain([{ id: 1 }]))
+  })
+
+  it('「全部状态」(allocationStatus 缺省) → 不强制兜底为待分配，不出现 eq(allocation_status, ...)', async () => {
+    await getPendingPayments({})
+
+    // 旧逻辑：undefined → 强制 eq(allocation_status, '待分配')。修复后应消失。
+    const anyAllocEq = (eq as any).mock.calls.find(
+      ([col]: any[]) => col === saleOrderPayments.allocationStatus,
+    )
+    expect(anyAllocEq).toBeUndefined()
+  })
+
+  it('「待分配」→ eq(allocation_status, 待分配) 命中一次', async () => {
+    await getPendingPayments({ allocationStatus: '待分配' })
+
+    const hit = (eq as any).mock.calls.filter(
+      ([col, val]: any[]) => col === saleOrderPayments.allocationStatus && val === '待分配',
+    )
+    expect(hit).toHaveLength(1)
+  })
+
+  it('「已分配」→ eq(allocation_status, 已分配) 命中一次', async () => {
+    await getPendingPayments({ allocationStatus: '已分配' })
+
+    const hit = (eq as any).mock.calls.filter(
+      ([col, val]: any[]) => col === saleOrderPayments.allocationStatus && val === '已分配',
+    )
+    expect(hit).toHaveLength(1)
+  })
+
+  it('dateFrom/dateTo → 触发 gte/lt on paid_at（修复日期筛选失效）', async () => {
+    await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+  })
+
+  it('无日期 → 不触发 gte/lt on paid_at', async () => {
+    await getPendingPayments({})
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
   })
 })

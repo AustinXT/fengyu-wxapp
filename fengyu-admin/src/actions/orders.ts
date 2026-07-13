@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
-import { saleOrders, saleItems, saleOrderPayments, saleAllocations } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments, saleAllocations, salePaymentAllocatableItems } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -678,9 +678,10 @@ export const exportOrders = withPermission(
 )
 
 /**
- * 营业额分配「销售提成」导出行（明细级，一行 = 一条有效 sale_allocations，每被分配员工一行）。
- * 与服务提成导出（ExportAllocationServiceRow）对称。金额列为 number 便于 Excel 求和；
- * 占比/比例保留 string 原值交前端 fmtPercent；isActivity / isMembershipUpgrade 为 boolean 交前端转「是/否」。
+ * 导出营业额分配「销售提成」导出行。已分配段一行 = 一条 sale_allocations（每被分配员工一行）；
+ * 待分配占位段一行 = 一笔回款 × 一个可分配 item（分配/提成列空）。与服务提成导出（ExportAllocationServiceRow）对称。
+ * 金额列为 number 便于 Excel 求和；占比/比例保留 string 原值交前端 fmtPercent；
+ * isActivity / isMembershipUpgrade 为 boolean 交前端转「是/否」。
  */
 export interface ExportAllocationOrderRow {
   market: string | null
@@ -719,9 +720,11 @@ export interface ExportAllocationOrderRow {
 }
 
 /**
- * 导出营业额分配「销售提成」明细（一行 = 一条有效 sale_allocations，每被分配员工一行）。
- * 主链 sale_allocations → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
- * 仅含已分配（sale_allocations 有行）；按「待分配」筛选时为空属预期。LIMIT 10000 防 OOM。
+ * 导出营业额分配「销售提成」（allocStatus 三态分流，合并后按下单时间 desc 截断 LIMIT 10000）：
+ * - 全部：已分配明细（sale_allocations 主链，每被分配员工一行）∪ 待分配占位行（回款 × 可分配 item）；
+ * - 已分配：仅明细段；待分配：仅占位段（分配/提成列留空，allocation_status=待分配）。
+ * 已分配段 sale_allocations → sale_items → sale_orders；待分配段 sale_order_payments(待分配) →
+ * sale_payment_allocatable_items → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
  *
  * 口径：
  * - 金额走「商品行口径」：订单金额=sale_items.sale_amount、实付=sale_items.received（行级净实收）；
@@ -737,114 +740,224 @@ export const exportAllocationOrders = withPermission(
   ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
     const LIMIT = 10000
 
-    // 分配明细本质只含已分配；按「待分配」筛选直接为空（与服务提成导出一致）
-    if (params.allocStatus === '待分配') return { rows: [], truncated: false }
-
-    // 复用 list-filters 的 URL→filters 映射，但覆盖两处：
+    // 复用 list-filters 的 URL→filters 映射；覆盖两处：
     // status：不锁「已支付」（部分支付订单的已分配回款也要导出）；
-    // allocationStatus：分配明细本质已分配，订单级状态不再二次过滤（仅上面短路用 allocStatus）。
+    // allocationStatus：订单级状态不二次过滤，按回款级 allocation_status 在两段查询里各自控制。
     const filters = parseAllocationOrderFilters(params)
     filters.status = undefined
     filters.allocationStatus = undefined
-    const whereClause = and(
-      eq(saleAllocations.isVoid, false),
-      ...buildOrderConditions(session, filters),
-    )
+    const allocStatus = params.allocStatus
 
-    const raw = await db
-      .select({
-        market: saleOrders.marketName,
-        storeName: stores.storeName,
-        saleOrderId: saleOrders.saleOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        documentType: saleOrders.documentType,
-        customerName: clientWechatUsers.name,
-        customerPhone: clientWechatUsers.phone,
-        fallbackName: saleOrders.customerName,
-        fallbackPhone: saleOrders.clientPhone,
-        productType: saleItems.productType,
-        categoryL1: productCategories.productKind,
-        categoryL2: productCategories.categoryName,
-        productName: saleItems.productName,
-        sessionCount: saleItems.sessionCount,
-        remainingSessions: saleItems.remainingSessions,
-        saleAmount: saleItems.saleAmount,
-        prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleItems.received,
-        refundedAmount: saleOrders.refundedAmount,
-        unitRealPrice: saleItems.unitRealPrice,
-        status: saleOrders.status,
-        payAllocStatus: saleOrderPayments.allocationStatus,
-        orderAllocStatus: saleOrders.allocationStatus,
-        employeeName: staffWechatUsers.name,
-        positionName: staffWechatUsers.positionName,
-        allocationRatio: saleAllocations.allocationRatio,
-        allocationAmount: saleAllocations.totalAmount,
-        commissionRate: saleAllocations.commissionRate,
-        commissionAmount: saleAllocations.commissionAmount,
-        isActivity: saleOrders.isActivity,
-        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
-        salesCategory: saleItems.salesCategory,
-        customerType: clientWechatUsers.customerType,
-        openedByName: opener.name,
-        payPaidAt: saleOrderPayments.paidAt,
-        orderPaidAt: saleOrders.paidAt,
-        remark: saleOrders.remark,
-      })
-      .from(saleAllocations)
-      .innerJoin(saleItems, eq(saleAllocations.saleItemId, saleItems.saleItemId))
-      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(staffWechatUsers, eq(saleAllocations.employeeId, staffWechatUsers.employeeId))
-      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .leftJoin(saleOrderPayments, eq(saleAllocations.salePaymentId, saleOrderPayments.id))
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(whereClause)
-      .orderBy(desc(saleOrders.saleOrderDatetime), saleAllocations.id)
-      .limit(LIMIT + 1)
+    const num = (v: string | null | undefined) => (v == null ? null : Number(v))
+    // sale_order_datetime 在 admin 运行时为 Date 对象（timestamptz 默认 parser），统一折成 ms 便于合并排序
+    const toMs = (d: unknown) => (d instanceof Date ? d.getTime() : d ? Date.parse(String(d)) : 0)
+    const merged: Array<{ row: ExportAllocationOrderRow; sort: number }> = []
 
-    const truncated = raw.length > LIMIT
-    const page = truncated ? raw.slice(0, LIMIT) : raw
+    // 已分配明细段（一行 = 一条有效 sale_allocations，每被分配员工一行）
+    if (allocStatus !== '待分配') {
+      const whereClause = and(eq(saleAllocations.isVoid, false), ...buildOrderConditions(session, filters))
+      const raw = await db
+        .select({
+          market: saleOrders.marketName,
+          storeName: stores.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          customerName: clientWechatUsers.name,
+          customerPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          productType: saleItems.productType,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          productName: saleItems.productName,
+          sessionCount: saleItems.sessionCount,
+          remainingSessions: saleItems.remainingSessions,
+          saleAmount: saleItems.saleAmount,
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleItems.received,
+          refundedAmount: saleOrders.refundedAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          status: saleOrders.status,
+          payAllocStatus: saleOrderPayments.allocationStatus,
+          orderAllocStatus: saleOrders.allocationStatus,
+          employeeName: staffWechatUsers.name,
+          positionName: staffWechatUsers.positionName,
+          allocationRatio: saleAllocations.allocationRatio,
+          allocationAmount: saleAllocations.totalAmount,
+          commissionRate: saleAllocations.commissionRate,
+          commissionAmount: saleAllocations.commissionAmount,
+          isActivity: saleOrders.isActivity,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          salesCategory: saleItems.salesCategory,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          payPaidAt: saleOrderPayments.paidAt,
+          orderPaidAt: saleOrders.paidAt,
+          remark: saleOrders.remark,
+          sortDatetime: saleOrders.saleOrderDatetime,
+        })
+        .from(saleAllocations)
+        .innerJoin(saleItems, eq(saleAllocations.saleItemId, saleItems.saleItemId))
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(staffWechatUsers, eq(saleAllocations.employeeId, staffWechatUsers.employeeId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .leftJoin(saleOrderPayments, eq(saleAllocations.salePaymentId, saleOrderPayments.id))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(whereClause)
+        .orderBy(desc(saleOrders.saleOrderDatetime), saleAllocations.id)
+        .limit(LIMIT + 1)
 
-    const num = (v: string | null) => (v == null ? null : Number(v))
-    const rows: ExportAllocationOrderRow[] = page.map((r) => ({
-      market: r.market,
-      storeName: r.storeName,
-      saleOrderId: r.saleOrderId,
-      saleOrderType: r.saleOrderType,
-      documentType: r.documentType,
-      customerName: r.customerName ?? r.fallbackName ?? null,
-      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
-      productType: r.productType,
-      categoryL1: r.categoryL1,
-      categoryL2: r.categoryL2,
-      productName: r.productName,
-      sessionCount: r.sessionCount ?? null,
-      remainingSessions: r.remainingSessions ?? null,
-      saleAmount: num(r.saleAmount),
-      prepaidCardAmount: num(r.prepaidCardAmount),
-      received: num(r.received),
-      refundedAmount: num(r.refundedAmount),
-      unitRealPrice: num(r.unitRealPrice),
-      status: r.status,
-      allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
-      employeeName: r.employeeName,
-      positionName: r.positionName,
-      allocationRatio: r.allocationRatio,
-      allocationAmount: num(r.allocationAmount),
-      commissionRate: r.commissionRate,
-      commissionAmount: num(r.commissionAmount),
-      isActivity: r.isActivity ?? false,
-      isMembershipUpgrade: r.isMembershipUpgrade ?? false,
-      salesCategory: r.salesCategory,
-      customerType: r.customerType,
-      openedByName: r.openedByName,
-      paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
-      remark: r.remark,
-    }))
+      for (const r of raw as any[]) {
+        merged.push({
+          row: {
+            market: r.market,
+            storeName: r.storeName,
+            saleOrderId: r.saleOrderId,
+            saleOrderType: r.saleOrderType,
+            documentType: r.documentType,
+            customerName: r.customerName ?? r.fallbackName ?? null,
+            customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+            productType: r.productType,
+            categoryL1: r.categoryL1,
+            categoryL2: r.categoryL2,
+            productName: r.productName,
+            sessionCount: r.sessionCount ?? null,
+            remainingSessions: r.remainingSessions ?? null,
+            saleAmount: num(r.saleAmount),
+            prepaidCardAmount: num(r.prepaidCardAmount),
+            received: num(r.received),
+            refundedAmount: num(r.refundedAmount),
+            unitRealPrice: num(r.unitRealPrice),
+            status: r.status,
+            allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
+            employeeName: r.employeeName,
+            positionName: r.positionName,
+            allocationRatio: r.allocationRatio,
+            allocationAmount: num(r.allocationAmount),
+            commissionRate: r.commissionRate,
+            commissionAmount: num(r.commissionAmount),
+            isActivity: r.isActivity ?? false,
+            isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+            salesCategory: r.salesCategory,
+            customerType: r.customerType,
+            openedByName: r.openedByName,
+            paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            remark: r.remark,
+          },
+          sort: toMs(r.sortDatetime),
+        })
+      }
+    }
 
+    // 待分配占位段（一行 = 一笔回款 × 一个可分配 item；无 sale_allocations，分配/提成列留空）
+    if (allocStatus !== '已分配') {
+      const whereClause = and(
+        eq(saleOrderPayments.allocationStatus, '待分配'),
+        eq(saleOrderPayments.status, '已支付'),
+        ...buildOrderConditions(session, filters),
+      )
+      const raw = await db
+        .select({
+          market: saleOrders.marketName,
+          storeName: stores.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          customerName: clientWechatUsers.name,
+          customerPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          productType: saleItems.productType,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          productName: saleItems.productName,
+          sessionCount: saleItems.sessionCount,
+          remainingSessions: saleItems.remainingSessions,
+          saleAmount: saleItems.saleAmount,
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleItems.received,
+          refundedAmount: saleOrders.refundedAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          status: saleOrders.status,
+          payAllocStatus: saleOrderPayments.allocationStatus,
+          orderAllocStatus: saleOrders.allocationStatus,
+          isActivity: saleOrders.isActivity,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          salesCategory: saleItems.salesCategory,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          payPaidAt: saleOrderPayments.paidAt,
+          orderPaidAt: saleOrders.paidAt,
+          remark: saleOrders.remark,
+          sortDatetime: saleOrders.saleOrderDatetime,
+        })
+        .from(saleOrderPayments)
+        .innerJoin(
+          salePaymentAllocatableItems,
+          eq(salePaymentAllocatableItems.salePaymentId, saleOrderPayments.id),
+        )
+        .innerJoin(saleItems, eq(salePaymentAllocatableItems.saleItemId, saleItems.saleItemId))
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(whereClause)
+        .orderBy(desc(saleOrders.saleOrderDatetime), saleOrderPayments.id)
+        .limit(LIMIT + 1)
+
+      for (const r of raw as any[]) {
+        merged.push({
+          row: {
+            market: r.market,
+            storeName: r.storeName,
+            saleOrderId: r.saleOrderId,
+            saleOrderType: r.saleOrderType,
+            documentType: r.documentType,
+            customerName: r.customerName ?? r.fallbackName ?? null,
+            customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+            productType: r.productType,
+            categoryL1: r.categoryL1,
+            categoryL2: r.categoryL2,
+            productName: r.productName,
+            sessionCount: r.sessionCount ?? null,
+            remainingSessions: r.remainingSessions ?? null,
+            saleAmount: num(r.saleAmount),
+            prepaidCardAmount: num(r.prepaidCardAmount),
+            received: num(r.received),
+            refundedAmount: num(r.refundedAmount),
+            unitRealPrice: num(r.unitRealPrice),
+            status: r.status,
+            allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
+            // 待分配：无 sale_allocations，分配/提成列留空
+            employeeName: null,
+            positionName: null,
+            allocationRatio: null,
+            allocationAmount: null,
+            commissionRate: null,
+            commissionAmount: null,
+            isActivity: r.isActivity ?? false,
+            isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+            salesCategory: r.salesCategory,
+            customerType: r.customerType,
+            openedByName: r.openedByName,
+            paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            remark: r.remark,
+          },
+          sort: toMs(r.sortDatetime),
+        })
+      }
+    }
+
+    // 统一按下单时间 desc 排序（与原已分配段排序键一致），截断 LIMIT
+    merged.sort((a, b) => b.sort - a.sort)
+    const truncated = merged.length > LIMIT
+    const rows = (truncated ? merged.slice(0, LIMIT) : merged).map((m) => m.row)
     return { rows, truncated }
   },
 )
