@@ -7,7 +7,7 @@ import { stores } from '@db/org'
 import { eq, desc } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
 import { nowTs } from '@/lib/db-time'
@@ -175,6 +175,7 @@ export const rejectUnbind = withPermission(
 export const deleteUnbindRequest = withPermission(
   'store_unbind:delete',
   async (session, requestId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [request] = await db
       .select({ status: storeUnbindRequests.status, fromStoreId: storeUnbindRequests.fromStoreId, userId: storeUnbindRequests.userId })
       .from(storeUnbindRequests)

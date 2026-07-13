@@ -29,6 +29,7 @@ vi.mock('drizzle-orm/pg-core', () => ({ alias: vi.fn((t) => t) }))
 vi.mock('@/lib/auth', () => ({ getSession: vi.fn() }))
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAdmin: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
 }))

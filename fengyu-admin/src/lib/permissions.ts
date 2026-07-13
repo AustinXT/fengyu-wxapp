@@ -458,6 +458,23 @@ export function requirePermission(session: AuthSession | null, action: string): 
 }
 
 /**
+ * 物理删除专属硬闸：仅系统管理员（admin 角色）可通过，不受权限矩阵 UI 支配。
+ *
+ * 用于所有物理删除（db.delete 真删）Server Action 的函数体首行——前置的
+ * withPermission('xxx:delete', ...) 仍保留（满足 ESLint HOF 强制 + 纵深过滤），
+ * 但真正的「仅系统管理员」判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
+ * 角色勾上 :delete 点，物理删除也无法实际执行。isAdminScope 即 role==='admin'。
+ */
+export function requireAdmin(session: AuthSession | null): asserts session is AuthSession {
+  if (!session) {
+    redirect('/login?expired=1')
+  }
+  if (!isAdminScope(session)) {
+    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行物理删除')
+  }
+}
+
+/**
  * 权限校验：拥有 actions 中任一即可通过（OR 关系）
  *
  * 用于同一 Server Action 服务多个角色的场景：例如订单详情页 getOrderById

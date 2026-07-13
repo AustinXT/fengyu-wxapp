@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import { getPickupRecordsPaginated } from '@/actions/pickup-records'
 import { getStores } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasPermission, isAdminScope } from '@/lib/permissions'
 import PickupRecordsPageClient from './_components/pickup-records-page'
 
 export const dynamic = 'force-dynamic'
@@ -28,7 +28,7 @@ export default async function Page({
   ])
 
   const canCreate = session ? hasPermission(session, 'pickup_record:create') : false
-  const canDelete = session ? hasPermission(session, 'pickup_record:delete') : false
+  const canDelete = session ? isAdminScope(session) : false
 
   return (
     <Suspense>

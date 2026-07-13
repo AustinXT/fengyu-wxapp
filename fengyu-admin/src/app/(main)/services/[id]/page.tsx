@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getServiceOrderById, getServiceItems, getServiceReview } from '@/actions/services'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { isAdminScope } from '@/lib/permissions'
 import ServiceDetailPageClient from '../_components/service-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -18,7 +18,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   if (!serviceOrder) notFound()
 
   // 物理删除服务单：仅系统管理员（service:delete）
-  const canDelete = !!(session && hasPermission(session, 'service:delete'))
+  const canDelete = !!(session && isAdminScope(session))
 
   return <ServiceDetailPageClient serviceOrder={serviceOrder} serviceItems={serviceItems} serviceReview={serviceReview} canDelete={canDelete} />
 }

@@ -51,9 +51,10 @@ interface CommissionPageProps {
   rates: CommissionRate[]
   markets: MarketOption[]
   skillTags: SkillTag[]
+  canDelete: boolean
 }
 
-export default function CommissionPage({ rates, markets, skillTags }: CommissionPageProps) {
+export default function CommissionPage({ rates, markets, skillTags, canDelete }: CommissionPageProps) {
   const router = useRouter()
   const { get, set } = useUrlFilters()
   const activeTab = get("market") || ""
@@ -240,14 +241,16 @@ const salesCategories = useMemo(
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[var(--destructive)]"
-            onClick={() => setDeleteTarget(row)}
-          >
-            删除
-          </Button>
+          {canDelete && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDeleteTarget(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },

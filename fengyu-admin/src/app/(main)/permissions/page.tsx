@@ -3,7 +3,7 @@ import { getRolesByScope, getRoleCountsByScope } from '@/actions/permissions'
 import { getEmployees } from '@/actions/employees'
 import { getOrgNodes } from '@/actions/org'
 import { getSession } from '@/lib/auth'
-import { accessiblePermissionScopeIds } from '@/lib/permissions'
+import { accessiblePermissionScopeIds, hasPermission } from '@/lib/permissions'
 import PermissionsPage from './_components/permissions-page'
 
 export const dynamic = 'force-dynamic'
@@ -18,6 +18,8 @@ export default async function Page() {
 
   // 操作者可操作的 scope 节点集合：admin → null（全开）；非 admin → 精确 scopeId（不展开子树）
   const accessibleScopeIds = session ? accessiblePermissionScopeIds(session) : null
+  // 撤销角色：持有 permission:revoke 的角色（admin + hr）可见可执行
+  const canDelete = session ? hasPermission(session, 'permission:revoke') : false
 
   // 默认选中节点：admin → 总部（现状）；非 admin → 其第一个可操作 scope 节点
   //（避免默认选中被置灰的总部）
@@ -38,6 +40,7 @@ export default async function Page() {
         allEmployees={allEmployees}
         orgNodes={orgNodes}
         accessibleScopeIds={accessibleScopeIds}
+        canDelete={canDelete}
       />
     </Suspense>
   )
