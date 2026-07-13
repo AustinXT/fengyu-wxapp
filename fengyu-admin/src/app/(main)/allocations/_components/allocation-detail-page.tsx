@@ -139,7 +139,7 @@ export default function AllocationDetailPageClient({
 
   // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
   // 「订单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
-  // 全公司补充池并入候选，故能跨门店命中；每日 03:00 cron 重置出差标记。
+  // 全公司补充池并入候选，故能跨门店命中；出差标记长期保留直至 admin 手动改回（2026-07-13 起不再每日重置）。
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
     return allActiveEmployees.filter(

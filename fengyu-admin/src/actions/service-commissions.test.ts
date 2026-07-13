@@ -103,6 +103,12 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
   })
 
   function mockScopeAndItems(items: Array<{ serviceItemId: string }>) {
+    // 生产 batchSaveServiceCommissions 的 db.select 调用序（4 步，须与生产逐一对齐）：
+    //   call1: verifyServiceOrderScope → [{ storeId }]
+    //   call2: remark 反查（service-commissions.ts:103）→ [{ remark: null }] 建模正常消费核销单
+    //          （含寄存单正常核销；remark 字段非 DEPOSIT_REFUND_REMARK → 不命中退款专用拦截）
+    //   call3: validItems 校验（:116）→ items
+    //   call4: pricing JOIN serviceItems × saleItems（:176）→ pricingRows
     // Pricing rows mirror serviceItems with sessionUsed=0/unitRealPrice='0' so
     // consumeBase=0 → rate-lookup result of 0 is acceptable (no INVALID_STATE).
     const pricingRows = items.map((i) => ({
@@ -118,8 +124,9 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])()
-      if (callCount === 2) return makeSelectChain(items)()
-      // 3rd call: pricing JOIN serviceItems × saleItems
+      if (callCount === 2) return makeSelectChain([{ remark: null }])()
+      if (callCount === 3) return makeSelectChain(items)()
+      // 4th call: pricing JOIN serviceItems × saleItems
       return makeSelectChain(pricingRows)()
     })
   }
@@ -249,12 +256,14 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
    * 捕获最终 INSERT 的 values 数组以验证 consume/commission 金额。
    */
   function setupCardScenario(pricingRow: any, rate: string = '0.3000') {
+    // 4 步调用序对齐 mockScopeAndItems：scope → remark(null) → items → pricing
     const items = [{ serviceItemId: pricingRow.serviceItemId }]
     let selectCalls = 0
     ;(db.select as any).mockImplementation(() => {
       selectCalls++
       if (selectCalls === 1) return makeSelectChain([{ storeId: 'store-1' }])()
-      if (selectCalls === 2) return makeSelectChain(items)()
+      if (selectCalls === 2) return makeSelectChain([{ remark: null }])()
+      if (selectCalls === 3) return makeSelectChain(items)()
       return makeSelectChain([pricingRow])()
     })
 

@@ -490,7 +490,7 @@ export const getPendingPayments = withPermission(
       pageSize?: number
       storeId?: string
       search?: string
-      /** 按到账时间（paid_at）过滤的日期区间，'YYYY-MM-DD' 串 */
+      /** 按下单日期（sale_order_datetime）过滤的日期区间，'YYYY-MM-DD' 串；匹配 UI『下单日期』标签，与导出 buildOrderConditions 同口径 */
       dateFrom?: string
       dateTo?: string
     } = {},

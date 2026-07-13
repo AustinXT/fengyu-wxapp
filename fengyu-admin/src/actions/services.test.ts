@@ -123,7 +123,8 @@ import {
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
-import { eq, ilike, gte, lte } from 'drizzle-orm'
+import { eq, ilike, gte, lte, desc } from 'drizzle-orm'
+import { serviceOrders } from '@db/service'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -983,6 +984,20 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
     const { rows, truncated } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
     expect(truncated).toBe(true)
     expect(rows).toHaveLength(10000)
+  })
+
+  it('段内 orderBy 主键=createdAt（与合并层 sort 同键，防段内截断键漂移）', async () => {
+    // 回归守护：合并层按 createdAt desc 截断 LIMIT，段内 orderBy 主键也必须是 createdAt，
+    // 否则单段 >10000 时段内 slice 会保留 updatedAt-top（被改过的老单）而非 createdAt-top，
+    // 合并后返回非真实 createdAt-top-10000。db.select 被 mock 使 orderBy 在测试里是 no-op，
+    // 故直接查 desc mock 的调用序列：断言 createdAt 紧邻在 updatedAt 之前（即主键在前）。
+    ;(db.select as any).mockImplementation(makeSelectChain([allocatedRaw]))
+    await exportAllocationServiceOrders({ allocStatus: '已分配' })
+
+    const descCols = (desc as any).mock.calls.map((c: any[]) => c[0])
+    const ci = descCols.indexOf(serviceOrders.createdAt)
+    expect(ci).toBeGreaterThanOrEqual(0)
+    expect(descCols[ci + 1]).toBe(serviceOrders.updatedAt) // createdAt 主键 → updatedAt 次键
   })
 })
 

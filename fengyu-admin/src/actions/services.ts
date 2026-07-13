@@ -312,7 +312,11 @@ async function selectServiceCommissionExportRows(
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
-    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), serviceCommissions.id)
+    // 段内 orderBy 主键须为 createdAt：exportAllocationServiceOrders 合并层按 createdAt desc 截断 LIMIT 10000，
+    // 段内 slice(0,limit) 必须保留 createdAt-top 才与合并层同口径——若主键是 updatedAt，单段 >10000 时段内
+    // 会保留 updatedAt-top（最近被改过的老单），合并后返回的并非真实 createdAt-top-10000，污染提成/财务导出。
+    // 本 helper 与 exportServiceOrders（服务单管理页导出）共用，导出以 createdAt 为自然序同样合理。
+    .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id)
     .limit(limit + 1)
 
   const truncated = raw.length > limit
@@ -417,7 +421,8 @@ async function selectPendingServiceCommissionExportRows(
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
-    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+    // 同 selectServiceCommissionExportRows：主键 createdAt，与 exportAllocationServiceOrders 合并层截断键一致
+    .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt))
     .limit(limit + 1)
 
   const truncated = raw.length > limit

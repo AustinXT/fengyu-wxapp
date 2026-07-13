@@ -8,6 +8,7 @@ import type { Employee, OrgNode, SkillTag } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { OrgTreeSelect } from "@/components/ui/org-tree-select";
 import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/ui/data-table";
@@ -233,26 +234,15 @@ export default function EmployeesPage({
           <option value="active">在职</option>
           <option value="resigned">已离职</option>
         </Select>
-        <Select
-          multiple
-          value={selectedSkills}
-          onChange={(e) => {
-            const arr = Array.from(e.target.selectedOptions).map((o) => o.value);
-            setFilter("skill", arr.join(","));
-          }}
-          className="w-48"
-        >
-          <option value="" disabled>
-            技能标签
-          </option>
-          {skillTags
+        <MultiSelect
+          options={skillTags
             .filter((t) => t.isValid)
-            .map((t) => (
-              <option key={t.id} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-        </Select>
+            .map((t) => ({ value: t.name, label: t.name }))}
+          value={selectedSkills}
+          onChange={(arr) => setFilter("skill", arr.join(","))}
+          placeholder="技能标签"
+          className="w-48"
+        />
         <Input
           placeholder="搜索编号 / 姓名 / 手机号"
           value={searchInput}
