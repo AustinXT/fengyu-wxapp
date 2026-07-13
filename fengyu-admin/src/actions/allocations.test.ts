@@ -710,14 +710,20 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect(hit).toHaveLength(1)
   })
 
-  it('dateFrom/dateTo → 触发 gte/lt on paid_at（修复日期筛选失效）', async () => {
+  it('dateFrom/dateTo → 触发 gte/lt on sale_order_datetime（修复日期筛选失效）', async () => {
     await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
 
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
+
+    // 补强：第二参必须是 beijingBoundaryTs 的返回（防退化成 gte(col, 'YYYY-MM-DD') 裸串致早 8h 时区漂移）
+    const gteCall = (gte as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
+    expect(gteCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-01', t: '00:00:00' })
+    const ltCall = (lt as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
+    expect(ltCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-31', t: '23:59:59' })
   })
 
-  it('无日期 → 不触发 gte/lt on paid_at', async () => {
+  it('无日期 → 不触发 gte/lt on sale_order_datetime', async () => {
     await getPendingPayments({})
 
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
