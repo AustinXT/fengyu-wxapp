@@ -45,7 +45,7 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn(),
   asc: vi.fn(),
   inArray: vi.fn(),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn(() => ({})) }),
+  sql: Object.assign(vi.fn(() => ({ as: vi.fn().mockReturnValue({ type: 'sql-as' }) })), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
