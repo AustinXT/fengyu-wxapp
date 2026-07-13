@@ -15,7 +15,9 @@
 | 2 | 员工信息 | UDT_S_287 + UDT_S_211 / UDT_M_212 | CloudBase 云函数直连 WorkFine 只读查询 |
 | 3 | 产品与服务 | UDT_S_340/341、UDT_S_1280/1281、UDT_S_1382/1383、UDT_S_1459/1460、UDT_S_228/229 | CloudBase 云函数直连 WorkFine 只读查询 |
 | 4 | 门店信息 | UDT_S_218 + UDT_M_219 | CloudBase 云函数直连 WorkFine 只读查询 |
-| 5 | 订单（销售单） | UDT_S_209 + UDT_M_213 + UDT_M_217 + UDT_M_1259 | **建立 PG 实体**，参考 WorkFine 结构优化设计 |
+| 5 | 订单（销售单/转换单/回款单） | 销售单 `UDT_S_209`+`UDT_M_213`；转换单 `UDT_S_570`+`UDT_M_704`；回款单 `UDT_S_261`+`UDT_M_263`（`UDV_273` 视图 UNION 三者） | **建立 PG 实体**，参考 WorkFine 结构优化设计 |
+
+> ⚠️ **2026-07-13 连库订正**：早期文档误称"销售/回款/转换/退款共用 `UDT_S_209`、靠单号前缀区分"——实际是**三张独立主表**（退款单不存在，明细无负实收、无 `FY-TKD` 数据）。回款单顾客编号字段是 `UDF_S_1488`（与销售/转换的 `UDF_S_1485` 不同）。详见 `.42cog/pm/workfine-sync.spec.md` §9.8。
 | 6 | 护理单 | UDT_S_762 / UDT_M_763 + UDT_S_259 / UDT_M_260 | **建立 PG 实体**，参考 WorkFine 结构优化设计 |
 
 ---
