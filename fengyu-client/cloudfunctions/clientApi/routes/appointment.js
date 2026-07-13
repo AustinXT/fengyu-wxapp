@@ -55,6 +55,20 @@ async function create(ctx) {
         throw new Error('INVALID_STATE: 该美容师所选时段休假中，请另选时段或美容师')
       }
     }
+
+    // 时段冲突检测（1 对 1 口径）：该美容师该时段起点已有活跃预约则拒绝。
+    // 用 parsedTime（已按 +08:00 解析的绝对时刻），pg 库序列化为 UTC ISO，
+    // 与 appointment_time(timestamptz) 按绝对时刻比较，不依赖 session tz（tz-safe）。
+    const conflictRows = await pg.query(
+      `SELECT 1 FROM appointments
+       WHERE employee_id = $1 AND appointment_time = $2
+         AND status IN ('待确认','已确认')
+       LIMIT 1`,
+      [staffWfId, parsedTime]
+    )
+    if (conflictRows.length > 0) {
+      throw new Error('CONFLICT: APPOINTMENT_STAFF_TIME_CONFLICT: 该美容师该时段已约满，请另选时段或美容师')
+    }
   }
 
   // 查询顾客信息
@@ -142,8 +156,13 @@ async function create(ctx) {
       parsedTime, notes || '', saleItemId || null, now
     ])
   } catch (err) {
-    if (err && err.code === '23505' && err.constraint === 'uq_appt_sale_item_active') {
-      throw new Error('CONFLICT: 该订单明细已有待确认或已确认的预约')
+    if (err && err.code === '23505') {
+      if (err.constraint === 'uq_appt_sale_item_active') {
+        throw new Error('CONFLICT: 该订单明细已有待确认或已确认的预约')
+      }
+      if (err.constraint === 'uq_appt_employee_time_active') {
+        throw new Error('CONFLICT: APPOINTMENT_STAFF_TIME_CONFLICT: 该美容师该时段已约满')
+      }
     }
     throw err
   }
@@ -272,6 +291,48 @@ async function cancel(ctx) {
 }
 
 /**
+ * 美容师时段占用查询
+ * 顾客选定日期后，查该门店当日每位美容师已被占用（待确认/已确认）的时段起点列表。
+ * 前端据此在美容师弹层标注「已约满」（1 对 1 口径：一个美容师一个时段只能被一位顾客预约）。
+ */
+async function staffSchedule(ctx) {
+  const { storeId, date } = ctx.event.payload || {}
+
+  if (!storeId) {
+    throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
+  }
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('INVALID_PARAMS: date 需为 YYYY-MM-DD 格式')
+  }
+
+  // AT TIME ZONE 'Asia/Shanghai' 取北京时间墙钟，不依赖 session tz（tz-safe）
+  const rows = await pg.query(
+    `SELECT employee_id,
+            to_char(appointment_time AT TIME ZONE 'Asia/Shanghai', 'HH24:MI') AS slot_start
+     FROM appointments
+     WHERE store_id = $1
+       AND employee_id IS NOT NULL
+       AND status IN ('待确认','已确认')
+       AND (appointment_time AT TIME ZONE 'Asia/Shanghai')::date = $2::date`,
+    [storeId, date]
+  )
+
+  const map = new Map()
+  for (const r of rows) {
+    if (!r.employee_id) continue
+    if (!map.has(r.employee_id)) map.set(r.employee_id, new Set())
+    map.get(r.employee_id).add(r.slot_start)
+  }
+
+  ctx.result = {
+    staffSchedule: [...map.entries()].map(([employeeId, set]) => ({
+      employeeId,
+      busySlots: [...set].sort(),
+    })),
+  }
+}
+
+/**
  * 解析前端时段字符串为 Date 对象
  */
 function parseAppointmentTime(timeStr) {
@@ -293,5 +354,6 @@ function generateAppointmentId() {
 module.exports = {
   create,
   list,
-  cancel
+  cancel,
+  staffSchedule
 }

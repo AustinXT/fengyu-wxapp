@@ -71,6 +71,7 @@ const routes = {
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,
+  'appointment.staffSchedule': () => require('./routes/appointment').staffSchedule,
   'service.detail': () => require('./routes/service').detail,
   'service.list': () => require('./routes/service').list,
   'service.confirm': () => require('./routes/service').confirm,

@@ -16,10 +16,14 @@ Component({
 
   methods: {
     onSelect(e: WechatMiniprogram.TouchEvent) {
-      const { wfId, name, onLeave } = e.currentTarget.dataset as { wfId: string; name: string; onLeave?: boolean };
-      // 请假员工不可选（仅预约流程会传 onLeave；结算页不计算该字段，照常可选）
+      const { wfId, name, onLeave, booked } = e.currentTarget.dataset as { wfId: string; name: string; onLeave?: boolean; booked?: boolean };
+      // 休假/已约满员工不可选（仅预约流程会传 onLeave/booked；结算页不计算该字段，照常可选）
       if (onLeave) {
-        wx.showToast({ title: '该美容师该时段休假中', icon: 'none' });
+        wx.showToast({ title: '该美容师该时段休息中', icon: 'none' });
+        return;
+      }
+      if (booked) {
+        wx.showToast({ title: '该美容师该时段已约满', icon: 'none' });
         return;
       }
       this.triggerEvent('select', { wfId, name });

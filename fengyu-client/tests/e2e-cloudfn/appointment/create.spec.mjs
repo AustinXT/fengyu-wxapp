@@ -16,7 +16,7 @@
  *
  * 重要发现/差异：
  *   - schema 实际列名是 sale_items.remaining_sessions（fixture 用 remaining_count 是 bug，本 spec 直接 SQL）
- *   - 路由不校验同员工同时段冲突（没有 staffWfId+appointment_time 唯一性 SQL）→ 跳过此 case
+ *   - 同员工同时段冲突 → CONFLICT:APPOINTMENT_STAFF_TIME_CONFLICT（caseStaffTimeConflictRejected）
  *   - 缺手机号：通过 requirePhone 中间件，与 order.create 同
  */
 import '../setup.mjs'
@@ -161,13 +161,12 @@ async function caseDuplicatePendingRejected() {
   const { saleItemId } = await newPaidCourseOrder({ orderNo, remainingSessions: 5 })
   const r1 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
     saleItemId, appointmentTime: tomorrowSlot(),
-    staffWfId: employeeId,
+    // 不指定美容师：本 case 专注 sale_item 重复，避免被美容师时段冲突先拦截
   })
   expectSuccess(r1)
   // 再发一次同 saleItemId
   const r2 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
     saleItemId, appointmentTime: tomorrowSlot(),
-    staffWfId: employeeId,
   })
   expectError(r2, 'INVALID_PARAMS', { messageIncludes: '已有待确认' })
 }
@@ -252,6 +251,89 @@ async function caseStaffLeaveNonOverlapAllowed() {
   expectSuccess(res)
 }
 
+// 同美容师同时段冲突：用不同 saleItemId（避免被 sale_item 重复先拦下），第二次 → CONFLICT 已约满
+async function caseStaffTimeConflictRejected() {
+  await createTestClient()
+  const { employeeId } = await createTestBeautician({
+    employeeId: `${NS}_APTCF2_BEAUT`,
+    openid: `${NS}_APTCF2_BEAUT_OPENID`,
+    phone: '19999099206',
+  })
+  const slot = tomorrowSlot() // 同一时段
+  const o1 = await newPaidCourseOrder({ orderNo: `${NS}_APT_CF1`.slice(0, 30), remainingSessions: 5 })
+  const o2 = await newPaidCourseOrder({ orderNo: `${NS}_APT_CF2`.slice(0, 30), remainingSessions: 5 })
+  // 第一次：美容师 + 时段 → 成功
+  const r1 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o1.saleItemId, appointmentTime: slot,
+    staffWfId: employeeId, staffName: `${NS}_美容师CF`,
+  })
+  expectSuccess(r1)
+  // 第二次：同美容师 + 同时段（不同 saleItemId）→ CONFLICT 已约满
+  const r2 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o2.saleItemId, appointmentTime: slot,
+    staffWfId: employeeId, staffName: `${NS}_美容师CF`,
+  })
+  expectError(r2, 'CONFLICT', { messageIncludes: '已约满' })
+}
+
+// 同美容师不同时段 / 不同美容师同时段 → 放行（不误伤）
+async function caseStaffTimeNonConflictAllowed() {
+  await createTestClient()
+  const { employeeId: e1 } = await createTestBeautician({
+    employeeId: `${NS}_APTCE1_BEAUT`, openid: `${NS}_APTCE1_OPENID`, phone: '19999099207',
+  })
+  const { employeeId: e2 } = await createTestBeautician({
+    employeeId: `${NS}_APTCE2_BEAUT`, openid: `${NS}_APTCE2_OPENID`, phone: '19999099208',
+  })
+  const date = tomorrowDate()
+  const o1 = await newPaidCourseOrder({ orderNo: `${NS}_APT_NC1`.slice(0, 30), remainingSessions: 5 })
+  const o2 = await newPaidCourseOrder({ orderNo: `${NS}_APT_NC2`.slice(0, 30), remainingSessions: 5 })
+  const o3 = await newPaidCourseOrder({ orderNo: `${NS}_APT_NC3`.slice(0, 30), remainingSessions: 5 })
+  // e1 占 10:00-11:00
+  const r0 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o1.saleItemId, appointmentTime: `${date} 上午 10:00-11:00`,
+    staffWfId: e1, staffName: 'E1',
+  })
+  expectSuccess(r0)
+  // e1 不同时段 11:00-12:00 → 放行
+  const r2 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o2.saleItemId, appointmentTime: `${date} 上午 11:00-12:00`,
+    staffWfId: e1, staffName: 'E1',
+  })
+  expectSuccess(r2)
+  // e2 同时段 10:00-11:00 → 放行（不同美容师）
+  const r3 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o3.saleItemId, appointmentTime: `${date} 上午 10:00-11:00`,
+    staffWfId: e2, staffName: 'E2',
+  })
+  expectSuccess(r3)
+}
+
+// 占用预约取消后，该美容师该时段可再约（活跃态口径：仅 待确认/已确认 占时段）
+async function caseStaffTimeFreedAfterCancel() {
+  await createTestClient()
+  const { employeeId } = await createTestBeautician({
+    employeeId: `${NS}_APTCFD_BEAUT`, openid: `${NS}_APTCFD_OPENID`, phone: '19999099209',
+  })
+  const slot = tomorrowSlot()
+  const o1 = await newPaidCourseOrder({ orderNo: `${NS}_APT_FD1`.slice(0, 30), remainingSessions: 5 })
+  const o2 = await newPaidCourseOrder({ orderNo: `${NS}_APT_FD2`.slice(0, 30), remainingSessions: 5 })
+  const r1 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o1.saleItemId, appointmentTime: slot,
+    staffWfId: employeeId, staffName: `${NS}_美容师FD`,
+  })
+  expectSuccess(r1)
+  // 取消该预约 → status=已取消，释放时段
+  const cancelRes = await invokeAs(TEST_CLIENT_OPENID, 'appointment.cancel', { appointmentId: r1.data.appointmentId })
+  expectSuccess(cancelRes)
+  // 同美容师同时段（不同 saleItemId）→ 应放行
+  const r2 = await invokeAs(TEST_CLIENT_OPENID, 'appointment.create', {
+    saleItemId: o2.saleItemId, appointmentTime: slot,
+    staffWfId: employeeId, staffName: `${NS}_美容师FD`,
+  })
+  expectSuccess(r2)
+}
+
 const CASES = [
   ['happy → appointments row inserted with status=待确认', caseHappy],
   ['no staff + no saleItemId (walk-in) → appointment inserted, employee_id NULL', caseNoStaffWalkin],
@@ -261,6 +343,9 @@ const CASES = [
   ['missing appointmentTime → INVALID_PARAMS 缺少预约时间', caseMissingAppointmentTime],
   ['staff on leave (slot start in range) → INVALID_STATE 休假中', caseStaffOnLeaveRejected],
   ['staff leave non-overlap (slot start outside range) → success', caseStaffLeaveNonOverlapAllowed],
+  ['same staff same slot (diff saleItemId) → CONFLICT 已约满', caseStaffTimeConflictRejected],
+  ['same staff diff slot / diff staff same slot → success', caseStaffTimeNonConflictAllowed],
+  ['staff slot freed after cancel → success', caseStaffTimeFreedAfterCancel],
 ]
 
 let pass = 0, fail = 0
