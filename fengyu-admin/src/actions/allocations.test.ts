@@ -36,6 +36,7 @@ vi.mock('@db/order', () => ({
     storeId: 'store_id',
     allocationStatus: 'allocation_status',
     saleOrderType: 'sale_order_type',
+    saleOrderDatetime: 'sale_order_datetime',
   },
   saleItems: {
     saleOrderId: 'sale_order_id',
@@ -101,7 +102,7 @@ import {
   getPendingPayments,
 } from './allocations'
 import { db } from '@/db'
-import { saleOrderPayments } from '@db/order'
+import { saleOrderPayments, saleOrders } from '@db/order'
 import { eq, gte, lt } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
@@ -712,14 +713,14 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
   it('dateFrom/dateTo → 触发 gte/lt on paid_at（修复日期筛选失效）', async () => {
     await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
 
-    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
-    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
   })
 
   it('无日期 → 不触发 gte/lt on paid_at', async () => {
     await getPendingPayments({})
 
-    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
-    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
   })
 })

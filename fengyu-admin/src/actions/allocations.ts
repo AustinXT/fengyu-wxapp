@@ -527,11 +527,11 @@ export const getPendingPayments = withPermission(
         ? undefined
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
-      // 按到账时间过滤（与「到账时间」列同口径；日期串拼北京字面边界，避免 UTC 午夜偏移）
+      // 按下单日期过滤（匹配 UI「下单日期」标签；与导出 buildOrderConditions 用 sale_order_datetime 同口径）
       params.dateFrom
-        ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(params.dateFrom, '00:00:00'))
+        ? gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateFrom, '00:00:00'))
         : undefined,
-      params.dateTo ? lt(saleOrderPayments.paidAt, beijingBoundaryTs(params.dateTo, '23:59:59')) : undefined,
+      params.dateTo ? lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateTo, '23:59:59')) : undefined,
       params.search
         ? or(
             ilike(saleOrders.customerName, `%${params.search}%`),
