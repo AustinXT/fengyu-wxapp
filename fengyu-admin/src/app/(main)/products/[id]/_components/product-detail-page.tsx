@@ -93,7 +93,10 @@ export default function SkuDetailPageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const serviceFee = (fd.get("serviceFee") as string).trim() || "0"
     const sessionCountRaw = (fd.get("sessionCount") as string).trim()
-    const sessionCount = sessionCountRaw ? parseInt(sessionCountRaw) : null
+    // 疗程卡默认 1 次（避免漏填导致 session_count=null）；家居产品保持 null
+    const sessionCount = sessionCountRaw
+      ? parseInt(sessionCountRaw)
+      : productType === '疗程卡' ? 1 : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const isEnabled = fd.get("isEnabled") === "on"
 
@@ -279,7 +282,7 @@ export default function SkuDetailPageClient({
                   type="number"
                   min={1}
                   defaultValue={sku.sessionCount ?? ""}
-                  placeholder="疗程卡必填（单次填 1）"
+                  placeholder="疗程卡不填默认 1 次"
                 />
               </div>
               <div className="space-y-2">
