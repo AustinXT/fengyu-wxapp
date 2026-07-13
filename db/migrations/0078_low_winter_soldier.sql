@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uq_appt_employee_time_active" ON "appointments" USING btree ("employee_id","appointment_time") WHERE employee_id IS NOT NULL AND status IN ('待确认','已确认');

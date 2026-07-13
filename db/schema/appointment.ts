@@ -47,6 +47,10 @@ export const appointments = pgTable(
     uniqueIndex('uq_appt_sale_item_active')
       .on(table.saleItemId)
       .where(sql`sale_item_id IS NOT NULL AND status IN ('待确认','已确认')`),
+    /** 同一美容师同一时段起点只能有 1 个活跃预约：1 对 1 防重复预约 + 并发兜底 */
+    uniqueIndex('uq_appt_employee_time_active')
+      .on(table.employeeId, table.appointmentTime)
+      .where(sql`employee_id IS NOT NULL AND status IN ('待确认','已确认')`),
   ],
 )
 

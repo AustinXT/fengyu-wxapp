@@ -34,6 +34,8 @@ Page({
 
     // 美容师
     staffList: [] as any[],
+    // employeeId -> 该日已占用时段起点列表（['10:00', ...]），由 staffSchedule 拉取
+    staffBusyMap: {} as Record<string, string[]>,
     defaultStaffName: '',
     selectedStaffWfId: '',
     selectedStaffName: '',
@@ -140,26 +142,30 @@ Page({
         leaveStart: s.leaveStart || null,
         leaveEnd: s.leaveEnd || null,
         onLeave: false,
+        booked: false,
       }));
       this.setData({ staffList });
-      this._recomputeStaffLeave();
+      this._recomputeStaffAvailability();
     } catch {
       // 静默失败，美容师列表不影响预约
     }
   },
 
   /**
-   * 依据当前所选预约日期 + 时段，重算每个美容师在该时段是否休假（onLeave）。
-   * 判定与后端 appointment.create 同口径：所选时段起点 ∈ [leaveStart, leaveEnd] 即冲突。
-   * 未选时段时无法判定，全部置 false（交由提交时后端兜底）。
+   * 依据当前所选预约日期 + 时段，重算每个美容师在该时段的可用性：
+   *   - onLeave：时段起点 ∈ [leaveStart, leaveEnd]（与后端 appointment.create 同口径）
+   *   - booked：该美容师该时段起点 ∈ staffBusyMap[employeeId]（staffSchedule 拉取的当日占用）
+   * 未选日期/时段时无法判定，全部置 false（交由提交时后端兜底）。
    */
-  _recomputeStaffLeave() {
-    const { appointmentDate, appointmentTimeSlot, staffList, selectedStaffWfId } = this.data;
+  _recomputeStaffAvailability() {
+    const { appointmentDate, appointmentTimeSlot, staffList, selectedStaffWfId, staffBusyMap } = this.data;
     let slotStartMs: number | null = null;
+    let slotStart = '';
     if (appointmentDate && appointmentTimeSlot) {
-      const startHM = appointmentTimeSlot.split('-')[0]; // "10:00"
-      slotStartMs = new Date(`${appointmentDate}T${startHM}:00`).getTime();
+      slotStart = appointmentTimeSlot.split('-')[0]; // "10:00"
+      slotStartMs = new Date(`${appointmentDate}T${slotStart}:00`).getTime();
     }
+    const busyMap = staffBusyMap as Record<string, string[]>;
     const list = (staffList as any[]).map((s) => {
       let onLeave = false;
       if (slotStartMs !== null && s.leaveStart && s.leaveEnd) {
@@ -168,20 +174,44 @@ Page({
         const le = new Date(s.leaveEnd).getTime();
         onLeave = !isNaN(ls) && !isNaN(le) && slotStartMs >= ls && slotStartMs <= le;
       }
-      return { ...s, onLeave };
+      const booked = !!slotStart && (busyMap[s.employee_id] || []).includes(slotStart);
+      return { ...s, onLeave, booked };
     });
     const patch: Record<string, any> = { staffList: list };
-    // 切换时段后，若已选美容师在新时段休假，清空选择并提示
+    // 切换时段后，若已选美容师在新时段休假或已约满，清空选择并提示
     if (selectedStaffWfId) {
       const sel = list.find((s) => s.employee_id === selectedStaffWfId);
-      if (sel && sel.onLeave) {
+      if (sel && (sel.onLeave || sel.booked)) {
         patch.selectedStaffWfId = '';
         patch.selectedStaffName = '';
         patch.selectedStaffAvatarUrl = '';
-        Toast('该美容师该时段休假中，已取消选择');
+        Toast(sel.onLeave ? '该美容师该时段休息中，已取消选择' : '该美容师该时段已约满，已取消选择');
       }
     }
     this.setData(patch);
+  },
+
+  /**
+   * 拉取指定日期该门店各美容师的时段占用（待确认/已确认），用于弹层标注「已约满」。
+   * 失败静默（不阻塞预约，后端 create 兜底冲突检测）。
+   */
+  async loadStaffSchedule(date: string) {
+    const storeId = app.globalData.boundStoreId;
+    if (!storeId || !date) return;
+    try {
+      const data = await callClientApi<{ staffSchedule: { employeeId: string; busySlots: string[] }[] }>(
+        'appointment.staffSchedule',
+        { storeId, date },
+      );
+      const busyMap: Record<string, string[]> = {};
+      for (const item of data?.staffSchedule || []) {
+        busyMap[item.employeeId] = item.busySlots || [];
+      }
+      this.setData({ staffBusyMap: busyMap });
+    } catch {
+      // 静默失败：保留旧 map 或空，不阻塞预约流程
+    }
+    this._recomputeStaffAvailability();
   },
 
   async loadDefaultStaff() {
@@ -232,7 +262,7 @@ Page({
     const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
     this._updateDisabledSlots(fmt);
-    this._recomputeStaffLeave();
+    this.loadStaffSchedule(fmt);
   },
 
   /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
@@ -269,7 +299,7 @@ Page({
       appointmentTimeSlot: value,
       _timeSlotDisplay: text,
     });
-    this._recomputeStaffLeave();
+    this._recomputeStaffAvailability();
   },
 
   onShowStaffPopup() {

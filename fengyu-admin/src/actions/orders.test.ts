@@ -4214,4 +4214,39 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].received).toBe('0')
     expect(rows[0].refundedAmount).toBe('0')
   })
+
+  it('寄存单：total=0 设计 + received 真金实付 → 4 金额列留空避免误导（item 级列照常透传）', async () => {
+    const rawRow = {
+      marketName: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-XSD-WX-2607100001',
+      saleOrderType: '寄存单', documentType: '售后', status: '已支付',
+      custName: '杜佳月', custPhone: '15070000581', fallbackName: null, fallbackPhone: null,
+      totalAmount: '0.00', // 寄存单 total 设计为 0
+      prepaidCardAmount: '0.00',
+      received: '3900.00', // 真金实付（「寄存单初始化实收」回款行写入）
+      refundedAmount: '0.00',
+      paymentMethod: '无', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: '员工',
+      remark: null,
+      saleOrderDatetime: new Date('2026-07-10T01:28:27.000Z'),
+      createdAt: new Date('2026-07-10T01:28:27.000Z'),
+      productType: '疗程卡', salesCategory: '自销自耗',
+      productName: '水活焕能水光', sessionCount: 10, remainingSessions: 10,
+      unitRealPrice: '390.00', // received / session_count 按实付重算
+      categoryL1: '护理项目', categoryL2: '水光',
+    }
+    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+
+    const { rows } = await exportOrders({})
+
+    // 4 个销售口径金额列对寄存单留空（避免 total=0 与 received=3900 并存误导）
+    expect(rows[0].totalAmount).toBe('')
+    expect(rows[0].prepaidCardAmount).toBe('')
+    expect(rows[0].received).toBe('')
+    expect(rows[0].refundedAmount).toBe('')
+    // item 级列 + 订单级非金额列照常透传
+    expect(rows[0].saleOrderType).toBe('寄存单')
+    expect(rows[0].productName).toBe('水活焕能水光')
+    expect(rows[0].sessionCount).toBe(10)
+    expect(rows[0].unitRealPrice).toBe(390)
+  })
 })

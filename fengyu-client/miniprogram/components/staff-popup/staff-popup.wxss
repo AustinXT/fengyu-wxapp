@@ -11,11 +11,12 @@
   color: var(--color-primary);
 }
 
-/* 请假员工：灰显 + 红框「请假」标签（仅预约流程置 onLeave） */
+/* 不可选员工（休假/已约满）：灰显（仅预约流程置 onLeave/booked） */
 .staff-item--leave {
   opacity: 0.55;
 }
 
+/* 休假：红色框标签（美容师个人状态，醒目） */
 .staff-leave-tag {
   margin-top: 4rpx;
   padding: 0 10rpx;
@@ -23,5 +24,16 @@
   line-height: 1.6;
   color: var(--color-primary);
   border: 1rpx solid var(--color-primary);
+  border-radius: 16rpx;
+}
+
+/* 已约满：灰色框标签（时段被占，与休假红色区分） */
+.staff-booked-tag {
+  margin-top: 4rpx;
+  padding: 0 10rpx;
+  font-size: 20rpx;
+  line-height: 1.6;
+  color: var(--color-text-hint);
+  border: 1rpx solid var(--color-text-hint);
   border-radius: 16rpx;
 }

@@ -66,7 +66,12 @@ async function buildLevelPayload(employeeId) {
   const scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
   const availableLoginLevels = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
   const scopedStores = await fetchScopedStores(scopeStoreIds)
-  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores }
+  // managerStores：仅 manager 角色绑定的门店（管理层视图默认 scope 用，区别于 scopedStores 全角色并集；
+  // 防 manager@A + customer_mgr@B 时 scopedStores 按店名排序默认到 B，触发 validateManagementScope 越权拦）
+  const managerBindings = roleBindings.filter((r) => r.role === 'manager')
+  const managerStoreIds = managerBindings.length > 0 ? await expandScopeStoreIds(managerBindings, pg) : []
+  const managerStores = await fetchScopedStores(managerStoreIds)
+  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores }
 }
 
 /**
@@ -106,6 +111,7 @@ async function login(ctx) {
       staffLevel: null,
       availableLoginLevels: [],
       scopedStores: [],
+      managerStores: [],
       skills: [],
       avatarUrl: null,
       boundStoreName: null,
@@ -123,7 +129,7 @@ async function login(ctx) {
   const isActive = user.employee_id && !user.is_resigned
   const level = isActive
     ? await buildLevelPayload(user.employee_id)
-    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [] }
+    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [] }
 
   ctx.result = {
     isNewUser: false,
@@ -136,6 +142,7 @@ async function login(ctx) {
     staffLevel: level.staffLevel,
     availableLoginLevels: level.availableLoginLevels,
     scopedStores: level.scopedStores,
+    managerStores: level.managerStores,
     skills: isActive && Array.isArray(user.skills) ? user.skills : [],
     avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
@@ -256,6 +263,7 @@ async function bindPhone(ctx) {
       staffLevel: level.staffLevel,
       availableLoginLevels: level.availableLoginLevels,
       scopedStores: level.scopedStores,
+      managerStores: level.managerStores,
       skills: Array.isArray(emp.skills) ? emp.skills : [],
       avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,
