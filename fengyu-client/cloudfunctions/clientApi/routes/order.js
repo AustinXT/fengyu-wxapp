@@ -707,11 +707,8 @@ async function create(ctx) {
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
-  // document_type：customer_type 已在定价前判定为初值；此处按订单金额阈值兜底升级为售后
-  if (documentType === '售前') {
-    const threshold = await getMemberThreshold()
-    if (totalAmount >= threshold) documentType = '售后'
-  }
+  // document_type 仅按下单时会员身份判（售前=非会员客，售后=会员客），已在定价前查 customer_type 时定值；
+  // 「成为会员那一单」下单时仍非会员客 → 售前，不再按金额阈值兜底升级为售后。
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
   let orderNo
