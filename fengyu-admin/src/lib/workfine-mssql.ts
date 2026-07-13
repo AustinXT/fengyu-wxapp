@@ -267,6 +267,14 @@ export interface WorkfineOrder {
   amount: number
   legacyCustomerId: string | null
   phone: string | null
+  /**
+   * WorkFine 来源单据类型（销售单 UDT_S_209 / 转换单 UDT_S_570 / 回款单 UDT_S_261）。
+   * 仅用于 legacy_raw_snapshot.source_type 备查——PG 一律标 sale_order_type='销售单'，
+   * 靠单号前缀（FY-XSD / FY-ABZH / FY-HKD）与该字段区分来源。
+   */
+  sourceType: '销售单' | '转换单' | '回款单'
+  /** 回款单引用的原销售单/转换单号（UDT_S_261.UDF_S_917）；仅回款单有值，存 snapshot 备查 */
+  originalOrderNo: string | null
 }
 
 const USE_MOCK = process.env.MOCK_WORKFINE === '1'
@@ -290,6 +298,34 @@ const MOCK_ORDERS: WorkfineOrder[] = [
     amount: 998,
     legacyCustomerId: 'WF-MOCK-001',
     phone: '13800138000',
+    sourceType: '销售单',
+    originalOrderNo: null,
+  },
+  // 转换单（UDT_S_570 / FY-ABZH）：补差价，amount 为 WorkFine 缩放值，×10 还原
+  {
+    legacyOrderNo: 'WF-ABZH-MOCK-001',
+    saleDate: '2024-01-10T10:00:00.000Z',
+    marketName: '南昌市场',
+    storeName: '南昌旗舰店（E2E）',
+    customerName: '测试顾客 A',
+    amount: 10,
+    legacyCustomerId: 'WF-MOCK-001',
+    phone: '13800138000',
+    sourceType: '转换单',
+    originalOrderNo: null,
+  },
+  // 回款单（UDT_S_261 / FY-HKD）：补交欠款；originalOrderNo 引用原销售单（UDF_S_917）
+  {
+    legacyOrderNo: 'WF-HKD-MOCK-001',
+    saleDate: '2024-03-20T10:00:00.000Z',
+    marketName: '南昌市场',
+    storeName: '南昌旗舰店（E2E）',
+    customerName: '测试顾客 A',
+    amount: 20,
+    legacyCustomerId: 'WF-MOCK-001',
+    phone: '13800138000',
+    sourceType: '回款单',
+    originalOrderNo: 'WF-ORD-001',
   },
 ]
 
@@ -355,9 +391,16 @@ export async function searchCustomerByCustomerId(
 }
 
 /**
- * 按 WorkFine 顾客编号拉该顾客全部销售订单。
- * SELECT shape 与 db/scripts/import-workfine-legacy.js 一致（4 字段最小化），
- * 仅 WHERE 改为参数化按 customer_id。
+ * 按 WorkFine 顾客编号拉该顾客全部历史订单（销售单 / 转换单 / 回款单）。
+ *
+ * WorkFine 中三类单据各自独立存储：销售单 UDT_S_209（FY-XSD）、转换单 UDT_S_570
+ * （FY-ABZH）、回款单 UDT_S_261（FY-HKD），核心字段（UDF_S_372 单号 / 350 日期 /
+ * 348 市场 / 349 门店 / 370 姓名 / 507 金额）同名同义，故 UNION ALL 合并拉取。
+ * 唯一差异：回款单顾客编号字段是 UDF_S_1488（非 1485），其 WHERE/JOIN 单独用 1488；
+ * 回款单额外取 UDF_S_917（原销售单/转换单号）作 original_order_no 备查。
+ *
+ * 金额取主表 UDF_S_507 订单级汇总（= 顾客实付：销售单收款合计 / 转换单补差价 /
+ * 回款单补交欠款），统一 normalizeWorkfineAmount ×10 还原。
  */
 export async function queryOrdersByCustomerId(customerId: string): Promise<WorkfineOrder[]> {
   const normalized = trim(customerId)
@@ -381,6 +424,8 @@ export async function queryOrdersByCustomerId(customerId: string): Promise<Workf
         customer_name: string | null
         amount: number | string
         phone: string | null
+        src_type: '销售单' | '转换单' | '回款单'
+        original_order_no: string | null
       }>(`
         SELECT
           RTRIM(s.UDF_S_372)  AS legacy_order_no,
@@ -390,32 +435,68 @@ export async function queryOrdersByCustomerId(customerId: string): Promise<Workf
           RTRIM(s.UDF_S_1485) AS legacy_customer_id,
           RTRIM(s.UDF_S_370)  AS customer_name,
           s.UDF_S_507          AS amount,
-          RTRIM(k.UDF_S_1478) AS phone
+          RTRIM(k.UDF_S_1478) AS phone,
+          '销售单'             AS src_type,
+          CAST(NULL AS NVARCHAR(30)) AS original_order_no
         FROM UDT_S_209 s
         LEFT JOIN UDT_S_311 k ON RTRIM(s.UDF_S_1485) = RTRIM(k.UDF_S_1475)
         WHERE RTRIM(s.UDF_S_1485) = @customerId
           AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
-        ORDER BY s.UDF_S_350
+        UNION ALL
+        SELECT
+          RTRIM(s.UDF_S_372)  AS legacy_order_no,
+          s.UDF_S_350          AS sale_date,
+          RTRIM(s.UDF_S_348)  AS market_name,
+          RTRIM(s.UDF_S_349)  AS store_name,
+          RTRIM(s.UDF_S_1485) AS legacy_customer_id,
+          RTRIM(s.UDF_S_370)  AS customer_name,
+          s.UDF_S_507          AS amount,
+          RTRIM(k.UDF_S_1478) AS phone,
+          '转换单'             AS src_type,
+          CAST(NULL AS NVARCHAR(30)) AS original_order_no
+        FROM UDT_S_570 s
+        LEFT JOIN UDT_S_311 k ON RTRIM(s.UDF_S_1485) = RTRIM(k.UDF_S_1475)
+        WHERE RTRIM(s.UDF_S_1485) = @customerId
+          AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
+        UNION ALL
+        SELECT
+          RTRIM(s.UDF_S_372)  AS legacy_order_no,
+          s.UDF_S_350          AS sale_date,
+          RTRIM(s.UDF_S_348)  AS market_name,
+          RTRIM(s.UDF_S_349)  AS store_name,
+          RTRIM(s.UDF_S_1488) AS legacy_customer_id,
+          RTRIM(s.UDF_S_370)  AS customer_name,
+          s.UDF_S_507          AS amount,
+          RTRIM(k.UDF_S_1478) AS phone,
+          '回款单'             AS src_type,
+          RTRIM(s.UDF_S_917)  AS original_order_no
+        FROM UDT_S_261 s
+        LEFT JOIN UDT_S_311 k ON RTRIM(s.UDF_S_1488) = RTRIM(k.UDF_S_1475)
+        WHERE RTRIM(s.UDF_S_1488) = @customerId
+          AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
+        ORDER BY sale_date
       `)
 
     return result.recordset
       .map((r) => {
-      const legacyOrderNo = trim(r.legacy_order_no)
-      if (!legacyOrderNo) return null
-      const saleDate =
-        r.sale_date instanceof Date
-          ? r.sale_date.toISOString()
-          : String(r.sale_date ?? new Date().toISOString())
-      return {
-        legacyOrderNo,
-        saleDate,
-        marketName: trim(r.market_name),
-        storeName: trim(r.store_name),
-        customerName: trim(r.customer_name),
-        amount: normalizeWorkfineAmount(r.amount),
-        legacyCustomerId: trim(r.legacy_customer_id),
-        phone: trim(r.phone),
-      } satisfies WorkfineOrder
+        const legacyOrderNo = trim(r.legacy_order_no)
+        if (!legacyOrderNo) return null
+        const saleDate =
+          r.sale_date instanceof Date
+            ? r.sale_date.toISOString()
+            : String(r.sale_date ?? new Date().toISOString())
+        return {
+          legacyOrderNo,
+          saleDate,
+          marketName: trim(r.market_name),
+          storeName: trim(r.store_name),
+          customerName: trim(r.customer_name),
+          amount: normalizeWorkfineAmount(r.amount),
+          legacyCustomerId: trim(r.legacy_customer_id),
+          phone: trim(r.phone),
+          sourceType: r.src_type,
+          originalOrderNo: trim(r.original_order_no),
+        } satisfies WorkfineOrder
       })
       .filter((x): x is WorkfineOrder => x !== null)
   })

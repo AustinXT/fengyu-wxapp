@@ -755,12 +755,17 @@ export const importWorkfineOrdersByCustomer = withPermission(
 
         const snapshot = {
           legacy_order_no: o.legacyOrderNo,
+          // WorkFine 来源单据类型（销售/转换/回款）；PG 一律标 sale_order_type='销售单'，
+          // 此字段仅备查，靠单号前缀（FY-XSD/FY-ABZH/FY-HKD）与之一致区分来源。
+          source_type: o.sourceType,
           phone: o.phone,
           store_name: o.storeName,
           amount,
           sale_date: o.saleDate,
           customer_id: o.legacyCustomerId,
           customer_name: o.customerName,
+          // 回款单引用的原销售单/转换单号（UDF_S_261.UDF_S_917）；仅回款单有值
+          ...(o.originalOrderNo ? { original_order_no: o.originalOrderNo } : {}),
         }
 
         const insRes = await tx.execute(sql`
