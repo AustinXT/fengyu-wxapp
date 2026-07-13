@@ -32,11 +32,13 @@ export default function EmployeesPage({
   total,
   orgNodes,
   skillTags,
+  canDelete,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
   skillTags: SkillTag[];
+  canDelete: boolean;
 }) {
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
@@ -275,6 +277,7 @@ export default function EmployeesPage({
         open={skillTagDialogOpen}
         onOpenChange={setSkillTagDialogOpen}
         skillTags={skillTags}
+        canDelete={canDelete}
       />
     </div>
   );

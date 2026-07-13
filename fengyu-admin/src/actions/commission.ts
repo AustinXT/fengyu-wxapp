@@ -8,7 +8,7 @@ import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc, inArray } from 'drizzl
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
-import { expandVisibleMarketIds } from '@/lib/permissions'
+import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 export interface MarketOption {
@@ -185,6 +185,7 @@ export const updateRate = withPermission(
 export const deleteRate = withPermission(
   'commission:delete',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
+  requireAdmin(session)
   let deleteResult: any
   try {
     deleteResult = await db

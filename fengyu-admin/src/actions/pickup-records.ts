@@ -10,7 +10,7 @@ import { productSkus } from '@db/product'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import { beijingBoundaryTs } from '@/lib/db-time'
 import type { SQL } from 'drizzle-orm'
-import { isInScope, scopeCondition } from '@/lib/permissions'
+import { isInScope, scopeCondition, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -414,6 +414,7 @@ export const createPickupRecord = withPermission(
 export const deletePickupRecord = withPermission(
   'pickup_record:delete',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [rec] = await db
       .select({
         saleItemId: pickupRecords.saleItemId,

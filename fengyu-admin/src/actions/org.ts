@@ -10,6 +10,7 @@ import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
+import { requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
@@ -157,6 +158,7 @@ export const deleteOrgNode = withPermission(
     session,
     id: string,
   ): Promise<{ success: boolean; message: string }> => {
+  requireAdmin(session)
   // scope 隔离
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }

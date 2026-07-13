@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
-import { expandVisibleMarketIds } from '@/lib/permissions'
+import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
@@ -365,6 +365,7 @@ export const deleteCategory = withPermission(
     categoryId: string,
     expectedUpdatedAt: string,
   ): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     // 1. 校验：无 SKU 引用（含软删的 SKU 也算引用，避免误删历史）
     const [skuRef] = await db
       .select({ c: sql<number>`count(*)::int` })
@@ -1336,6 +1337,7 @@ export const updateMallCategoryGroup = withPermission(
 export const deleteMallCategoryGroup = withPermission(
   'product:update',
   async (session, categoryId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [current] = await db
       .select({ categoryName: mallCategories.categoryName })
       .from(mallCategories)
@@ -1667,6 +1669,7 @@ export const updateMallCategory = withPermission(
 export const deleteMallCategory = withPermission(
   'product:update',
   async (session, categoryId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     // 检查是否有商品引用
     const [ref] = await db
       .select({ productId: products.productId })

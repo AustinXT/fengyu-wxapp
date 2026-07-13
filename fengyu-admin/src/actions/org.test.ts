@@ -43,6 +43,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAdmin: vi.fn(),
   isAdminScope: vi.fn(() => true), // 默认 admin（不限 scope）
 }))
 

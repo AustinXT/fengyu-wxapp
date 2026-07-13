@@ -92,6 +92,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAdmin: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(),
   isAdminScope: vi.fn(),

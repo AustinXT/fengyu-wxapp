@@ -11,7 +11,7 @@ import {
 import { getStores } from '@/actions/stores'
 import { getEmployees } from '@/actions/employees'
 import { getSession, hasRole } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasPermission, isAdminScope } from '@/lib/permissions'
 import CustomerDetailPage from './_components/customer-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -44,7 +44,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
   // 物理删除顾客：仅系统管理员（customer:delete）
-  const canDelete = session ? hasPermission(session, 'customer:delete') : false
+  const canDelete = session ? isAdminScope(session) : false
 
   return (
     <CustomerDetailPage

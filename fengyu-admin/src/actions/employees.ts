@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -739,6 +739,7 @@ export const updateEmployee = withPermission(
 export const deleteEmployee = withPermission(
   'employee:delete',
   async (session, employeeId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     if (employeeId === session.employeeId) {
       return { success: false, message: '不能删除当前登录的自己' }
     }

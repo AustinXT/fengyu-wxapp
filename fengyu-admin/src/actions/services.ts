@@ -13,7 +13,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
-import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, isAdminScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -806,6 +806,7 @@ export const cancelServiceOrder = withPermission(
 export const deleteServiceOrder = withPermission(
   'service:delete',
   async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [svc] = await db
       .select({
         status: serviceOrders.status,

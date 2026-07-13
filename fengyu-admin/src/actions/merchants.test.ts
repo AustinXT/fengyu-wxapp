@@ -48,6 +48,7 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('@/lib/auth', () => ({ getSession: vi.fn() }))
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAdmin: vi.fn(),
   isAdminScope: vi.fn(() => true),
   expandVisibleMarketIds: vi.fn(async () => null),
 }))

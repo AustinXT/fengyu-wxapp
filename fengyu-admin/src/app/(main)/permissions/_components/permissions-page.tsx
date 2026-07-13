@@ -43,6 +43,8 @@ interface PermissionsPageProps {
   orgNodes: OrgNode[]
   /** 操作者可操作的 scope 节点 id；null = admin 全开，左侧树不置灰 */
   accessibleScopeIds: string[] | null
+  /** 撤销角色按钮可见性：持有 permission:revoke 的角色（admin + hr） */
+  canDelete: boolean
 }
 
 /* ─── Org Tree Node ─── */
@@ -123,7 +125,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
 
 /* ─── Main Component ─── */
 
-export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes, accessibleScopeIds }: PermissionsPageProps) {
+export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes, accessibleScopeIds, canDelete }: PermissionsPageProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
@@ -373,14 +375,16 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                                     {formatDate(pr.createdAt) || "—"}
                                   </td>
                                   <td className="px-3 py-2">
-                                    <Button
-                                      variant="link"
-                                      size="sm"
-                                      className="h-auto p-0 text-[var(--destructive)]"
-                                      onClick={() => setRevokeTarget(pr)}
-                                    >
-                                      撤销
-                                    </Button>
+                                    {canDelete && (
+                                      <Button
+                                        variant="link"
+                                        size="sm"
+                                        className="h-auto p-0 text-[var(--destructive)]"
+                                        onClick={() => setRevokeTarget(pr)}
+                                      >
+                                        撤销
+                                      </Button>
+                                    )}
                                   </td>
                                 </tr>
                               ))}

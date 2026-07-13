@@ -13,7 +13,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
@@ -1381,6 +1381,7 @@ export const resetOrderFailed = withPermission(
 export const deleteOrder = withPermission(
   'sale_order:delete',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     // 1. 读取 + 业务守卫
     const [order] = await db
       .select({

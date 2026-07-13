@@ -1,16 +1,20 @@
 import { getCategories, getProductKinds } from '@/actions/products'
+import { getSession } from '@/lib/auth'
+import { isAdminScope } from '@/lib/permissions'
 import CategoriesPageClient from './_components/categories-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function CategoriesPage() {
-  const [allCategories, productKinds] = await Promise.all([
+  const [allCategories, productKinds, session] = await Promise.all([
     getCategories(),
     getProductKinds(),
+    getSession(),
   ])
 
   // 二级分类 = product_kind 非 null 的行
   const subCategories = allCategories.filter(c => c.productKind !== null)
+  const canDelete = !!session && isAdminScope(session)
 
-  return <CategoriesPageClient categories={subCategories} productKinds={productKinds} />
+  return <CategoriesPageClient categories={subCategories} productKinds={productKinds} canDelete={canDelete} />
 }

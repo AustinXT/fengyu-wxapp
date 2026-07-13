@@ -45,6 +45,7 @@ vi.mock('next/cache', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAdmin: vi.fn(),
   requireAnyPermission: vi.fn((session: any, actions: string[]) => {
     if (!session) throw new Error('NO_SESSION')
     const has = actions.some((a: string) => session.permissions?.actions?.includes(a))
