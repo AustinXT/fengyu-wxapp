@@ -71,6 +71,7 @@ import { batchSaveServiceCommissions } from './service-commissions'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
+import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -150,13 +151,24 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     expect(result.message).toContain('整十')
   })
 
-  it('寄存单不参与提成分配 → 拒绝', async () => {
+  it('寄存单正常消费服务单（remark 非退款标记）→ 允许分配', async () => {
+    // remark 查询返回的行无 remark 字段（undefined）= 正常消费核销单（含寄存单正常核销），不命中退款专用单拦截
+    mockScopeAndItems([{ serviceItemId: 'si-1' }])
+    mockTx()
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.50', commissionRate: '0.30', commissionAmount: '15.00' },
+    ])
+
+    expect(result.success).toBe(true)
+  })
+
+  it('寄存单退款专用服务单（remark 命中）→ 拒绝', async () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope
-      if (callCount === 2) return makeSelectChain([{ serviceItemId: 'si-1' }])() // validItems
-      return makeSelectChain([{ saleOrderType: '寄存单' }])() // deposit 反查
+      return makeSelectChain([{ remark: DEPOSIT_REFUND_REMARK }])() // remark 反查
     })
 
     const result = await batchSaveServiceCommissions('so-dep', [
@@ -164,7 +176,7 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     ])
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('寄存单')
+    expect(result.message).toContain('寄存单退款专用服务单')
   })
 
   it('同技能标签超过 3 人 → 拒绝（P2-14 Q5）', async () => {

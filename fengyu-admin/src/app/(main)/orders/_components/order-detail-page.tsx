@@ -213,12 +213,12 @@ export default function OrderDetailPageClient({
         </div>
       )}
 
-      {/* B5 — 寄存单提示：不计入营业额 / 提成 / 客单价等统计；仅次数维度纳入 cardHolders */}
+      {/* B5 — 寄存单提示：不计入营业额分成 / 客单价（服务单提成正常参与）；仅次数维度纳入 cardHolders */}
       {order.saleOrderType === "寄存单" && (
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
           <span>
-            此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 /
-            客单价统计；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。若填错且该卡从未被核销，系统管理员可在此页底部「危险操作」物理删除。
+            此订单为剩余次数寄存单，不收款、不计入营业额分成 /
+            客单价（服务单提成正常参与分配）；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。若填错且该卡从未被核销，系统管理员可在此页底部「危险操作」物理删除。
           </span>
         </div>
       )}

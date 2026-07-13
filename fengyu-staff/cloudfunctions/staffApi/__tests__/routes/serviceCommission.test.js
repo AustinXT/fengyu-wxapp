@@ -14,6 +14,7 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const routes = require('../../routes/serviceCommission')
+const { DEPOSIT_REFUND_REMARK } = require('../../utils/consume-filter')
 
 // INSERT service_commissions 参数顺序：
 // [0]=serviceItemId [1]=employeeId [2]=roleType [3]=ratio
@@ -48,11 +49,10 @@ function mockOrderAndItems(order, items) {
   pg.query
     .mockResolvedValueOnce([order])
     .mockResolvedValueOnce([])   // 冻结闭环（Bug I）：assertNoPendingRefundByServiceOrder 无待审批退款
-    .mockResolvedValueOnce([])   // 寄存单校验：非寄存单（serviceCommission.js depositChk）
     .mockResolvedValueOnce(items)
 }
 
-const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配' }
+const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配', remark: null }
 
 describe('serviceCommission.pendingList', () => {
   beforeEach(() => { vi.clearAllMocks() })
@@ -199,6 +199,32 @@ describe('serviceCommission.save', () => {
     await routes.save(ctx)
     expect(ctx.result.commissionCount).toBe(0)
     expect(ctx.result.message).toContain('清空')
+  })
+
+  test('寄存单正常消费服务单（remark 非退款标记）允许分配提成', async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    // remark=null 代表正常消费核销单（含寄存单正常核销），不命中退款专用单拦截
+    mockOrderAndItems({ ...COMPLETED_ORDER, remark: null }, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const captured = mockTxnCapture('0.3000')
+    await routes.save(ctx)
+    expect(ctx.result.commissionCount).toBe(1)
+    expect(captured).toHaveLength(1)
+  })
+
+  test('寄存单退款专用服务单（remark 命中）拒绝分配提成', async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{ ...COMPLETED_ORDER, remark: DEPOSIT_REFUND_REMARK }])
+      .mockResolvedValueOnce([]) // assertNoPendingRefund
+    await expect(routes.save(ctx)).rejects.toThrow(/寄存单退款专用服务单不参与提成分配/)
   })
 
   test('非已完成服务单拒绝', async () => {

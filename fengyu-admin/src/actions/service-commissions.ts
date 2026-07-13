@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
 import { serviceCommissions } from '@db/service-commission'
 import { serviceOrders, serviceItems } from '@db/service'
-import { saleItems, saleOrders } from '@db/order'
+import { saleItems } from '@db/order'
 import { commissionRateMatrix } from '@db/commission'
 import { eq, sql, and, inArray, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -14,6 +14,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
+import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 /** 校验服务单是否在用户 scope 内 */
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
@@ -98,6 +99,17 @@ export const batchSaveServiceCommissions = withPermission(
     return { success: false, message: '关联订单退款审批中，暂不可调整提成分配' }
   }
 
+  // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
+  // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成 sale_allocations，由 ALLOCATABLE_ORDER_TYPES 守卫）。
+  const [svcRemark] = await db
+    .select({ remark: serviceOrders.remark })
+    .from(serviceOrders)
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+  if (svcRemark?.remark === DEPOSIT_REFUND_REMARK) {
+    return { success: false, message: '寄存单退款专用服务单不参与提成分配' }
+  }
+
   // 校验所有 serviceItemId 属于该服务单
   if (commissions.length > 0) {
     const serviceItemIds = [...new Set(commissions.map((c) => c.serviceItemId))]
@@ -112,17 +124,6 @@ export const batchSaveServiceCommissions = withPermission(
     const invalid = serviceItemIds.find((id) => !validSet.has(id))
     if (invalid) {
       return { success: false, message: '服务明细不属于该服务单，请刷新后重试' }
-    }
-
-    // 寄存单不参与提成分配（寄存单仅初始化剩余次数，不计营业额/客单价/提成）
-    const depositRows = await db
-      .select({ saleOrderType: saleOrders.saleOrderType })
-      .from(serviceItems)
-      .innerJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
-      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .where(inArray(serviceItems.serviceItemId, serviceItemIds))
-    if (depositRows.some((r) => r.saleOrderType === '寄存单')) {
-      return { success: false, message: '寄存单不参与提成分配' }
     }
 
     // 校验分配比例为整十
