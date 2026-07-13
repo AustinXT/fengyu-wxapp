@@ -18,42 +18,10 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { validateManagementScope } = require('../utils/scope')
 const { getMemberThreshold } = require('../utils/config')
 
-// ====================================================================
-// 共享 helper（与 mgmt-dashboard.js 隔离的本地副本，避免跨 module 耦合）
-// ====================================================================
-
-/**
- * 校验请求 scope 是否在账号权限内
- * - headquarters：放行所有 scopeType
- * - market：禁 'all'；'market' 必须命中 roleBindings 的 scopeId；'store' 必须在 scopeStoreIds 内
- */
-function validateScope(auth, scopeType, scopeId) {
-  if (auth.staffLevel === 'headquarters') return
-
-  if (auth.staffLevel === 'market') {
-    if (scopeType === 'all') {
-      throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
-    }
-    if (scopeType === 'market') {
-      const allowed = (auth.roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
-      }
-      return
-    }
-    if (scopeType === 'store') {
-      const allowed = auth.scopeStoreIds || []
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
-      }
-      return
-    }
-  }
-}
+// scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
 
 /**
  * 构造 sale/service 表的 store_id scope 过滤片段
@@ -158,7 +126,7 @@ async function cardHolders(ctx) {
     throw new Error('INVALID_PARAMS: scopeType 为 market/store 时必须提供 scopeId')
   }
 
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const t0 = Date.now()
 
@@ -255,7 +223,7 @@ async function cycleStats(ctx) {
     throw new Error('INVALID_PARAMS: scopeType 为 market/store 时必须提供 scopeId')
   }
 
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const { startDate, endDate } = getSalesDataPeriod(period)
   const threshold = await getMemberThreshold()

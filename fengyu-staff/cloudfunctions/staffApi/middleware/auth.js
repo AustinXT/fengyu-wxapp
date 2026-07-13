@@ -13,9 +13,8 @@ const { testBypassAllowed } = require('../utils/runtime-guard')
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
+  canAccessManagementLevel,
   expandScopeStoreIds,
-  MANAGEMENT_LEVELS,
-  STORE_LEVELS,
 } = require('../utils/scope')
 
 // 员工基础信息缓存（不含 loginLevel/currentStoreId 等动态字段）：OPENID → { data, ts }
@@ -297,14 +296,15 @@ function requireManager() {
 }
 
 /**
- * 要求以管理层身份登录（总部 / 市场 层级，且当前 loginLevel = management）
+ * 要求以管理层身份登录（总部 / 市场 / 门店店长 store_manager 层级，且当前 loginLevel = management）
+ * store_manager 放开管理层视图：数据范围由各 mgmt 路由的 validateManagementScope 收口到 managerStoreIds。
  */
 function requireManagementLevel() {
   return async (ctx, next) => {
     if (!ctx.auth.staffWfId) {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
-    if (!MANAGEMENT_LEVELS.has(ctx.auth.staffLevel)) {
+    if (!canAccessManagementLevel(ctx.auth.staffLevel)) {
       throw new Error('PERMISSION_DENIED: 仅管理层可执行此操作')
     }
     if (ctx.auth.loginLevel !== 'management') {

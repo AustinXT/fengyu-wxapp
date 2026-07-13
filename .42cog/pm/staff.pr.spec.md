@@ -13,6 +13,8 @@
 **标语**: 门店经营与服务管理一站式工作平台
 **目标用户**: 门店员工（店长、美容师）、市场管理层、总部管理层
 
+> 2026-07-13 补丁：管理层视图（mgmt-dashboard 数据中心 + packageMgmt 4 页：顾客档案/客流/品项周期）受众扩展到**门店店长**（store_manager = `permission_roles.role='manager'` 绑 `type='门店'` 的 org_node）。店长进入后数据范围 = 管辖门店（managerStoreIds），筛选器逐门店查看；门店/员工排行榜天然多店合计。市场/总部保留全量/市场维度，美容师（store_staff）仍仅门店视图。判定与越权防护见 `staffApi/utils/scope.js` 的 `canAccessManagementLevel` / `validateManagementScope`。
+
 **色彩方案**（白红主题）:
 - 主色：中国红 `#C0322A`（品牌色，按钮/Tab/高亮/FAB 等全局主色）
 - 辅助浅色：`#FFF0EE`（浅红背景，头像/卡片点缀）、`#F5F2EE`（暖米色，侧边栏/商品占位图）

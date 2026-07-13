@@ -13,39 +13,12 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { validateManagementScope } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
-/**
- * 校验请求 scope 是否在账号权限内
- * 实现与 mgmt-dashboard.js 同名 helper 一致
- */
-function validateScope(auth, scopeType, scopeId) {
-  if (auth.staffLevel === 'headquarters') return
-
-  if (auth.staffLevel === 'market') {
-    if (scopeType === 'all') {
-      throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
-    }
-    if (scopeType === 'market') {
-      const allowed = (auth.roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
-      }
-      return
-    }
-    if (scopeType === 'store') {
-      const allowed = auth.scopeStoreIds || []
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
-      }
-      return
-    }
-  }
-}
+// scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
 
 /** sale/service 表的 store_id scope 过滤片段（与 mgmt-dashboard.js 同实现） */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
@@ -558,7 +531,7 @@ async function summary(ctx) {
     throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const { startDate, endDate } = resolvePeriodRange(period)
 

@@ -58,6 +58,14 @@ function deriveStaffLevel(roleBindings) {
  */
 function deriveAvailableLoginLevels(staffLevel, scopeStoreIds) {
   if (!staffLevel) return []
+  // store_manager（门店店长）放开管理层视图：数据范围 = 管辖门店（managerStoreIds）。
+  // 必须在 STORE_LEVELS 判断之前显式分支——store_manager 同时属于 STORE_LEVELS，
+  // 否则 L61 的 STORE_LEVELS.has 会先命中只返回 ['store']。
+  if (staffLevel === LEVEL_STORE_MANAGER) {
+    return scopeStoreIds && scopeStoreIds.length > 0
+      ? ['store', 'management']
+      : ['store']
+  }
   if (STORE_LEVELS.has(staffLevel)) return ['store']
   if (MANAGEMENT_LEVELS.has(staffLevel)) {
     return scopeStoreIds && scopeStoreIds.length > 0
@@ -65,6 +73,17 @@ function deriveAvailableLoginLevels(staffLevel, scopeStoreIds) {
       : ['management']
   }
   return []
+}
+
+/**
+ * 判定某 staffLevel 是否可进入管理层视图。
+ * 总部 / 市场 / 门店店长（store_manager）放行；门店其他（store_staff）/ null 拒绝。
+ * 供 requireManagementLevel 守卫与 mgmt 路由 isMgmtFullPhone 共用，避免判定散落漂移。
+ * @param {string|null} staffLevel
+ * @returns {boolean}
+ */
+function canAccessManagementLevel(staffLevel) {
+  return MANAGEMENT_LEVELS.has(staffLevel) || staffLevel === LEVEL_STORE_MANAGER
 }
 
 /**
@@ -155,6 +174,58 @@ function buildStoreScopeCondition(auth, column, startIndex = 1) {
   return {
     sql: `${column} = $${startIndex}`,
     params: [auth.effectiveStoreId],
+  }
+}
+
+/**
+ * 校验管理层请求 scope（scopeType / scopeId）是否在账号权限内，越权抛 PERMISSION_DENIED。
+ * 抽取自 mgmt-dashboard / mgmt-customer / mgmt-product / mgmt-traffic 四路由原本地副本，
+ * 避免拷贝漂移（历史上 4 份都漏了 store_manager 分支，导致店长穿透无校验）。
+ *
+ * - headquarters：放行所有 scopeType
+ * - market：禁 'all'；'market' 必须命中 roleBindings 的市场 scopeId；'store' 必须 ∈ scopeStoreIds
+ * - store_manager（门店店长）：仅允许 'store' 且 scopeId ∈ managerStoreIds；禁 'all'、禁 'market'。
+ *   用 managerStoreIds（非 scopeStoreIds）——防 "manager@门店A + customer_mgr@门店B" 在 B 越权
+ *   查看管理层数据（customer_mgr 角色不是店长，不应在管理层视图看 B 的汇总）。
+ *
+ * @param {{staffLevel: string|null, roleBindings: Array, scopeStoreIds: string[], managerStoreIds: string[]}} auth
+ * @param {string} scopeType 'all' | 'market' | 'store'
+ * @param {string} [scopeId]
+ */
+function validateManagementScope(auth, scopeType, scopeId) {
+  if (auth.staffLevel === LEVEL_HEADQUARTERS) return
+
+  if (auth.staffLevel === LEVEL_STORE_MANAGER) {
+    if (scopeType === 'store') {
+      const allowed = auth.managerStoreIds || []
+      if (!allowed.includes(scopeId)) {
+        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
+      }
+      return
+    }
+    throw new Error('PERMISSION_DENIED: 店长账号仅可查看所辖门店')
+  }
+
+  if (auth.staffLevel === LEVEL_MARKET) {
+    if (scopeType === 'all') {
+      throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
+    }
+    if (scopeType === 'market') {
+      const allowed = (auth.roleBindings || [])
+        .filter((rb) => rb && rb.scopeType === '市场')
+        .map((rb) => rb.scopeId)
+      if (!allowed.includes(scopeId)) {
+        throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
+      }
+      return
+    }
+    if (scopeType === 'store') {
+      const allowed = auth.scopeStoreIds || []
+      if (!allowed.includes(scopeId)) {
+        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
+      }
+      return
+    }
   }
 }
 
@@ -316,8 +387,10 @@ async function assertEmployeeInScope(client, auth, employeeId) {
 module.exports = {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
+  canAccessManagementLevel,
   expandScopeStoreIds,
   buildStoreScopeCondition,
+  validateManagementScope,
   isStoreInScope,
   assertCustomerInScope,
   assertOrderInScope,

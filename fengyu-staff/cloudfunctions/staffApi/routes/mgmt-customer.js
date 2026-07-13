@@ -21,40 +21,13 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { validateManagementScope, canAccessManagementLevel } = require('../utils/scope')
 const { maskPhone } = require('../utils/pii')
 
 // ====================================================================
-// 共享 helper（与 mgmt-product.js 完全一致的本地副本，避免跨 module 耦合）
+// 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
+// scope 校验已统一抽取到 utils/scope.js::validateManagementScope，避免 4 路由拷贝漂移）
 // ====================================================================
-
-/**
- * 校验请求 scope 是否在账号权限内
- */
-function validateScope(auth, scopeType, scopeId) {
-  if (auth.staffLevel === 'headquarters') return
-
-  if (auth.staffLevel === 'market') {
-    if (scopeType === 'all') {
-      throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
-    }
-    if (scopeType === 'market') {
-      const allowed = (auth.roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
-      }
-      return
-    }
-    if (scopeType === 'store') {
-      const allowed = auth.scopeStoreIds || []
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
-      }
-      return
-    }
-  }
-}
 
 /**
  * 构造 sale/service 表的 store_id scope 过滤片段
@@ -102,9 +75,11 @@ function validateScopeParams(scopeType, scopeId) {
   }
 }
 
-/** 是否对管理层返回原始手机号（D-mgmt-phone-mask） */
+/** 是否对管理层返回原始手机号（D-mgmt-phone-mask）。
+ *  总部 / 市场 / 门店店长均返回全号——店长在管理层视图的数据范围已被 validateManagementScope
+ *  锁定在其 managerStoreIds 内（与门店视图同一批顾客），不构成额外隐私降级。 */
 function isMgmtFullPhone(auth) {
-  return auth.staffLevel === 'headquarters' || auth.staffLevel === 'market'
+  return canAccessManagementLevel(auth.staffLevel)
 }
 
 /** 解析 scope 名称（与 mgmt-product.js 保持一致） */
@@ -258,7 +233,7 @@ async function search(ctx) {
 
   const { keyword, phone, page, pageSize, scopeType, scopeId } = ctx.event.payload || {}
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
@@ -422,7 +397,7 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 id、phone 或 clientUserId 参数')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
@@ -537,7 +512,7 @@ async function calendar(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 year 或 month')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const startDate = new Date(year, month - 1, 1)
   const endDate = new Date(year, month, 1)
@@ -613,7 +588,7 @@ async function paidOrders(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
   // 状态口径：已支付 + 部分支付（部分支付疗程卡按 paid_sessions 限额核销，与 service.create / customer.paidOrders 一致）
@@ -696,7 +671,7 @@ async function orderHistory(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店 + 不限状态
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
@@ -768,7 +743,7 @@ async function serviceHistory(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店 + 不限状态
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
@@ -847,7 +822,7 @@ async function giftHistory(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫，放开门店过滤、按顾客查全量
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
@@ -946,7 +921,7 @@ async function refundHistory(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
   validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫，放开门店过滤、按顾客查全量
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)

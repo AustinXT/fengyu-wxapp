@@ -18,6 +18,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { validateManagementScope } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 /**
@@ -110,8 +111,15 @@ async function scopeOptions(ctx) {
         .map((rb) => rb.scopeId)
     )
     visible = allMarkets.filter((m) => allowedMarketIds.has(m.id))
+  } else if (staffLevel === 'store_manager') {
+    // 门店店长：按 managerStoreIds 过滤每个市场下的门店，丢弃无管辖门店的空市场。
+    // 用 managerStoreIds（非 scopeStoreIds）与 validateManagementScope 口径一致。
+    const allowed = new Set(ctx.auth.managerStoreIds || [])
+    visible = allMarkets
+      .map((m) => ({ ...m, stores: (m.stores || []).filter((s) => allowed.has(s.storeId)) }))
+      .filter((m) => m.stores.length > 0)
   }
-  // headquarters 走全量；其它分支由 requireManagementLevel 拦截
+  // headquarters 走全量；store_staff 由 requireManagementLevel 拦截，不会走到这里
 
   ctx.result = {
     staffLevel,
@@ -122,37 +130,6 @@ async function scopeOptions(ctx) {
 // =====================================================================
 // summary —— 8 卡片汇总
 // =====================================================================
-
-/**
- * 校验请求 scope 是否在账号权限内
- * - headquarters：放行所有 scopeType
- * - market：禁 'all'；'market' 必须命中 roleBindings 的 scopeId；'store' 必须在 scopeStoreIds 内
- */
-function validateScope(auth, scopeType, scopeId) {
-  if (auth.staffLevel === 'headquarters') return
-
-  if (auth.staffLevel === 'market') {
-    if (scopeType === 'all') {
-      throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
-    }
-    if (scopeType === 'market') {
-      const allowed = (auth.roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
-      }
-      return
-    }
-    if (scopeType === 'store') {
-      const allowed = auth.scopeStoreIds || []
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
-      }
-      return
-    }
-  }
-}
 
 /**
  * 构造 sale/service 表的 store_id scope 过滤片段
@@ -548,7 +525,7 @@ async function summary(ctx) {
     throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const monthEnd = lastDayOfMonth(date)
 
@@ -710,6 +687,9 @@ function getSalesDataPeriod(period) {
  */
 function getVisibleStoreIds(auth) {
   if (auth.staffLevel === 'headquarters') return null
+  // store_manager 用 managerStoreIds，与 validateManagementScope 口径一致，
+  // 防 manager@A + customer_mgr@B 在排行榜里漏出 B
+  if (auth.staffLevel === 'store_manager') return auth.managerStoreIds || []
   return auth.scopeStoreIds || []
 }
 
@@ -1298,7 +1278,7 @@ async function salesData(ctx) {
     throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 
-  validateScope(ctx.auth, scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
 
   const { startDate, endDate } = getSalesDataPeriod(period)
   const fmt = (v) => parseFloat(v || 0).toFixed(2)
