@@ -35,6 +35,7 @@ interface IAppOption {
     roleBindings: RoleBinding[];
     availableLoginLevels: LoginLevel[];
     scopedStores: ScopedStore[];
+    managerStores: ScopedStore[];
     // 运行时
     loginLevel: LoginLevel | null;
     currentStoreId: string;
@@ -60,6 +61,7 @@ interface IAppOption {
     roleBindings?: RoleBinding[];
     availableLoginLevels?: LoginLevel[];
     scopedStores?: ScopedStore[];
+    managerStores?: ScopedStore[];
   }): void;
   setLoginLevel(level: LoginLevel): void;
   setCurrentStoreId(storeId: string): void;

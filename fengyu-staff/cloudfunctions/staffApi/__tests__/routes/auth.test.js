@@ -134,6 +134,36 @@ describe('auth.login', () => {
       { role: 'manager', scopeId: 'org-store-1', scopeType: '门店', scopeName: '龙岗店' },
     ])
   })
+
+  test('managerStores 仅含 manager 角色绑定门店（manager@A + customer_mgr@B → 只 A）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ // 员工行
+        employee_id: 'emp-multi-role', phone: '138', name: '多角色店长',
+        position_name: '门店经理', is_resigned: false, skills: [],
+        store_id: 'store-A', store_name: 'A店', market_name: 'M',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE last_login_at
+      .mockResolvedValueOnce([ // queryRoleBindings
+        { role: 'manager', scope_id: 'node-A', scope_type: '门店', scope_name: 'A店' },
+        { role: 'customer_mgr', scope_id: 'node-B', scope_type: '门店', scope_name: 'B店' },
+      ])
+      .mockResolvedValueOnce([{ store_id: 'store-A' }, { store_id: 'store-B' }]) // expandScopeStoreIds(全角色) → [A,B]
+      .mockResolvedValueOnce([ // fetchScopedStores(scopeStoreIds=[A,B])
+        { store_id: 'store-A', store_name: 'A店' },
+        { store_id: 'store-B', store_name: 'B店' },
+      ])
+      .mockResolvedValueOnce([{ store_id: 'store-A' }]) // expandScopeStoreIds(managerBindings) → [A]
+      .mockResolvedValueOnce([{ store_id: 'store-A', store_name: 'A店' }]) // fetchScopedStores(managerStoreIds=[A])
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    // scopedStores = 全角色并集（A+B）
+    expect(ctx.result.scopedStores.map((s) => s.storeId).sort()).toEqual(['store-A', 'store-B'])
+    // managerStores 仅 manager 绑定（A）—— 前端 computeDefaultScope 据此默认到 A，
+    // 避免按 scopedStores 店名序默认到 B（∉managerStoreIds）触发 validateManagementScope 越权拦
+    expect(ctx.result.managerStores.map((s) => s.storeId)).toEqual(['store-A'])
+  })
 })
 
 describe('auth.bindPhone', () => {
