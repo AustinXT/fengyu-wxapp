@@ -16,7 +16,7 @@
  *   5. spendingTier             — 重算 spending_tier 终身消费档位（依赖 sale_orders）
  *   6. birthday                 — 当日生日权益（依赖 member_level）
  *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
- *   8. resetCrossStoreFlags     — 重置员工出差/顾客临时跨店标记（写入清扫；新增 2026-06-24）
+ *   8. resetCrossStoreFlags     — 重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13）
  *   9. pointsAudit              — 积分余额一致性校验（只读告警）
  *  10. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
  *  11. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
@@ -70,7 +70,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   // —— 权益发放 ——
   ['birthday', grantBirthdayBenefits],
   ['thanksgiving', grantThanksgivingBenefits],
-  // —— 跨门店临时标记重置（写入清扫，每日重置出差/临时跨店，不感知 ctx）——
+  // —— 顾客临时跨店标记重置（写入清扫；员工出差已改为长期保留，不感知 ctx）——
   ['resetCrossStoreFlags', resetCrossStoreFlags as StepFn],
   // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
   ['pointsAudit', auditPointsBalance as StepFn],

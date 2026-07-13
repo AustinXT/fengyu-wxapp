@@ -149,7 +149,7 @@ export const getRefundDetail = withAnyPermission(
 | STEP 5 | `steps/refresh-spending-tier.ts` | 重算 `spending_tier` 终身消费档位（2026-05-26 从 db/scripts 纳入） |
 | STEP 6 | `steps/grant-birthday-benefits.ts` | 当日生日权益（年度幂等键 `bday-{YYYY}`） |
 | STEP 7 | `steps/grant-thanksgiving-benefits.ts` | 仅每月 20 号；月度幂等键；优惠券固定 10 天 |
-| STEP 8 | `steps/reset-cross-store-flags.ts` | 重置员工出差 / 顾客临时跨店标记（写入清扫；新增 2026-06-24） |
+| STEP 8 | `steps/reset-cross-store-flags.ts` | 仅重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13） |
 | STEP 9 | `steps/audit-points-balance.ts` | 积分余额校验（仅告警不修复） |
 | STEP 10 | `steps/audit-role-type-nulls.ts` | sa/sc role_type NULL 监控（只读告警） |
 | STEP 11 | `steps/audit-payment-invariants.ts` | 5 项资金不变量守护（只读告警） |

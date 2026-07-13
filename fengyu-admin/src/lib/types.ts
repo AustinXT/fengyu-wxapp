@@ -65,7 +65,7 @@ export interface Employee {
   leaveStart: string | null
   /** 请假结束时间（墙钟 YYYY-MM-DD HH:mm:ss） */
   leaveEnd: string | null
-  /** 是否出差支援；true 时可被本门店外的开单 / 营业额分配选中（跨门店共享），每日 03:00 cron 重置 */
+  /** 是否出差支援；true 时可被本门店外的开单 / 营业额分配选中（跨门店共享），长期保留直至 admin 手动改回 */
   isOnBusinessTrip: boolean
   /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
   resignedAt: string | null
