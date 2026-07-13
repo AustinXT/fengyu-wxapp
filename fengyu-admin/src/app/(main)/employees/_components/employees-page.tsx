@@ -16,6 +16,7 @@ import { Pagination } from "@/components/ui/pagination";
 import { toHttpUrl } from "@/components/ui/image-upload";
 import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
+import { filterValidSkillValues } from "@/lib/list-filters";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportEmployees } from "@/actions/employees";
 import { exportToXlsx, fmtDate, maskIdCard } from "@/lib/export-xlsx";
@@ -43,11 +44,24 @@ export default function EmployeesPage({
 }) {
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
+
+  // 当前有效的技能标签名集合（isValid）：清洗 URL 残留的已停用标签，防幽灵筛选。
+  // 三处同源清洗：列表 page.tsx（后端查询前）+ selectedSkills（前端展示）+ handleExport（导出）。
+  const validSkillNames = useMemo(
+    () => new Set(skillTags.filter((t) => t.isValid).map((t) => t.name)),
+    [skillTags],
+  );
   const searchParams = useSearchParams();
 
   /** 导出当前筛选命中的全部员工（跨分页，身份证脱敏） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
+    // 清洗失效标签：exportEmployees 独立解析 URL，须经与列表同源的清洗，防导出幽灵筛选
+    if (raw.skill) {
+      const rawSkills = raw.skill.split(",").map((s) => s.trim()).filter(Boolean);
+      const valid = filterValidSkillValues(rawSkills, validSkillNames);
+      raw.skill = valid?.length ? valid.join(",") : "";
+    }
     const { rows, truncated } = await exportEmployees(raw);
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出");
@@ -74,7 +88,7 @@ export default function EmployeesPage({
       rows,
     });
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
-  }, [searchParams, orgNodes]);
+  }, [searchParams, orgNodes, validSkillNames]);
 
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(
@@ -99,11 +113,12 @@ export default function EmployeesPage({
 
   const marketFilter = get("market");
   const statusFilter = get("status");
-  // 技能标签多选：URL 单值字符串以逗号分隔
+  // 技能标签多选：URL 单值字符串以逗号分隔；剔除已停用标签防幽灵筛选（validSkillNames 见上）
   const selectedSkills = useMemo(() => {
     const raw = get("skill");
-    return raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
-  }, [get]);
+    const arr = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    return filterValidSkillValues(arr, validSkillNames) ?? [];
+  }, [get, validSkillNames]);
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 

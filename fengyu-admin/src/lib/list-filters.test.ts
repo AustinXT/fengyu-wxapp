@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseEmployeeFilters } from './list-filters'
+import { parseEmployeeFilters, filterValidSkillValues } from './list-filters'
 
 /**
  * parseEmployeeFilters 回归测试 — URL searchParams → EmployeeFilters 单值真源。
@@ -70,5 +70,42 @@ describe('parseEmployeeFilters', () => {
       storeId: 'store-1',
       search: '张三',
     })
+  })
+})
+
+/**
+ * filterValidSkillValues 回归测试 — 剔除 URL 残留的已停用技能标签，防幽灵筛选。
+ * 双端调用方（page.tsx 后端查询前 + employees-page.tsx 前端 selectedSkills）依赖：
+ * 空输入/清洗后空 → undefined（与 parseEmployeeFilters 的 skills 契约一致）。
+ */
+describe('filterValidSkillValues', () => {
+  const valid = new Set(['护理', '家居'])
+
+  it('undefined → undefined', () => {
+    expect(filterValidSkillValues(undefined, valid)).toBeUndefined()
+  })
+
+  it('空数组 → undefined', () => {
+    expect(filterValidSkillValues([], valid)).toBeUndefined()
+  })
+
+  it('全有效 → 原样返回', () => {
+    expect(filterValidSkillValues(['护理', '家居'], valid)).toEqual(['护理', '家居'])
+  })
+
+  it('含失效 → 只保留有效（剔除已停用标签）', () => {
+    expect(filterValidSkillValues(['护理', '已停用标签', '家居'], valid)).toEqual(['护理', '家居'])
+  })
+
+  it('全失效 → undefined（防幽灵筛选：后端不再按失效标签过滤）', () => {
+    expect(filterValidSkillValues(['旧标签1', '旧标签2'], valid)).toBeUndefined()
+  })
+
+  it('validNames 为空集 → 任意输入都 undefined（无有效标签时筛选 no-op）', () => {
+    expect(filterValidSkillValues(['护理'], new Set())).toBeUndefined()
+  })
+
+  it('保留有效项的原始顺序', () => {
+    expect(filterValidSkillValues(['家居', '护理', '失效'], valid)).toEqual(['家居', '护理'])
   })
 })
