@@ -161,6 +161,19 @@ docker rm -f pg-from-zero
 
 同步以 phone 为匹配键 UPSERT，运行时需 `MSSQL_CONNECTION_STRING` 和 `DATABASE_URL` 环境变量。
 
+## 导出/备份
+
+`scripts/dump-prod.sh` — 导出生产业务库（5433/fengyu_wxapp）为 custom-format dump（只读，AccessShareLock 不阻塞业务，但执行期间避免跑 db:migrate）：
+
+```bash
+bash db/scripts/dump-prod.sh                       # 全库导出（默认 ~/backups/fengyu/，custom format）
+bash db/scripts/dump-prod.sh -t sale_orders        # 仅指定表（可重复 -t，支持通配符）
+bash db/scripts/dump-prod.sh -F plain              # 纯 SQL 文本
+```
+
+连接串从 `envs/prod.env` 读取（不硬编码密码）；需本地 `postgresql@16`（pg_dump major 须 ≥ 服务端 16）；
+内置防误连开发库校验（必须 5433/fengyu_wxapp，否则拒绝）；产物落项目外，避免敏感数据误入 git。
+
 ## 与云函数的关系
 
 Drizzle 仅用于此目录的 schema 管理和迁移生成。两者共享同一个 PostgreSQL 数据库，此处的 schema 定义是权威来源。
