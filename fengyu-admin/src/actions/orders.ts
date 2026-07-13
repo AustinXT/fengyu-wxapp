@@ -640,38 +640,44 @@ export const exportOrders = withPermission(
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
-    const rows: ExportOrderRow[] = page.map((r) => ({
-      // 订单级
-      marketName: r.marketName,
-      storeName: r.storeName,
-      saleOrderId: r.saleOrderId,
-      saleOrderType: r.saleOrderType,
-      documentType: r.documentType,
-      status: r.status,
-      customerName: r.custName || r.fallbackName || null,
-      clientPhone: r.custPhone || r.fallbackPhone || null,
-      totalAmount: r.totalAmount,
-      prepaidCardAmount: r.prepaidCardAmount ?? '0',
-      received: r.received ?? '0',
-      refundedAmount: r.refundedAmount ?? '0',
-      paymentMethod: r.paymentMethod,
-      isMembershipUpgrade: r.isMembershipUpgrade ?? false,
-      isActivity: r.isActivity ?? false,
-      salesCategory: r.salesCategory,
-      customerType: r.customerType,
-      openedByName: r.openedByName,
-      saleOrderDatetime: r.saleOrderDatetime.toISOString(),
-      createdAt: r.createdAt.toISOString(),
-      // item 级
-      productType: r.productType,
-      categoryL1: r.categoryL1,
-      categoryL2: r.categoryL2,
-      productName: r.productName,
-      sessionCount: r.sessionCount ?? null,
-      remainingSessions: r.remainingSessions ?? null,
-      unitRealPrice: num(r.unitRealPrice),
-      remark: r.remark,
-    }))
+    const rows: ExportOrderRow[] = page.map((r) => {
+      // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
+      // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 4 列对寄存单留空；
+      // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
+      const isDeposit = r.saleOrderType === '寄存单'
+      return {
+        // 订单级
+        marketName: r.marketName,
+        storeName: r.storeName,
+        saleOrderId: r.saleOrderId,
+        saleOrderType: r.saleOrderType,
+        documentType: r.documentType,
+        status: r.status,
+        customerName: r.custName || r.fallbackName || null,
+        clientPhone: r.custPhone || r.fallbackPhone || null,
+        totalAmount: isDeposit ? '' : r.totalAmount,
+        prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0'),
+        received: isDeposit ? '' : (r.received ?? '0'),
+        refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
+        paymentMethod: r.paymentMethod,
+        isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+        isActivity: r.isActivity ?? false,
+        salesCategory: r.salesCategory,
+        customerType: r.customerType,
+        openedByName: r.openedByName,
+        saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+        createdAt: r.createdAt.toISOString(),
+        // item 级
+        productType: r.productType,
+        categoryL1: r.categoryL1,
+        categoryL2: r.categoryL2,
+        productName: r.productName,
+        sessionCount: r.sessionCount ?? null,
+        remainingSessions: r.remainingSessions ?? null,
+        unitRealPrice: num(r.unitRealPrice),
+        remark: r.remark,
+      }
+    })
 
     return { rows, truncated }
   },
