@@ -24,7 +24,7 @@ import { getMemberThreshold } from '@/lib/member-threshold'
 import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
-import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
@@ -566,8 +566,8 @@ export interface ExportOrderRow {
   productName: string | null
   /** 总次数：sale_items.session_count；非次数卡（家居产品）为 NULL → 前端 fallback「—」 */
   sessionCount: number | null
-  /** 可用次数：sale_items.remaining_sessions；同上 */
-  remainingSessions: number | null
+  /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL（历史行/家居产品）退回物理剩余 */
+  paidUnusedSessions: number | null
   /** 单次价格：sale_items.unit_real_price（优惠后价 → number 化便于 Excel 求和） */
   unitRealPrice: number | null
   /** 订单备注（按行重复） */
@@ -619,7 +619,7 @@ export const exportOrders = withPermission(
         salesCategory: saleItems.salesCategory,
         productName: saleItems.productName,
         sessionCount: saleItems.sessionCount,
-        remainingSessions: saleItems.remainingSessions,
+        paidUnusedSessions: paidUnusedSessionsExpr,
         unitRealPrice: saleItems.unitRealPrice,
         categoryL1: productCategories.productKind,
         categoryL2: productCategories.categoryName,
@@ -673,7 +673,7 @@ export const exportOrders = withPermission(
         categoryL2: r.categoryL2,
         productName: r.productName,
         sessionCount: r.sessionCount ?? null,
-        remainingSessions: r.remainingSessions ?? null,
+        paidUnusedSessions: r.paidUnusedSessions ?? null,
         unitRealPrice: num(r.unitRealPrice),
         remark: r.remark,
       }
@@ -702,7 +702,8 @@ export interface ExportAllocationOrderRow {
   categoryL2: string | null
   productName: string | null
   sessionCount: number | null
-  remainingSessions: number | null
+  /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL 退回物理剩余 */
+  paidUnusedSessions: number | null
   saleAmount: number | null
   prepaidCardAmount: number | null
   received: number | null
@@ -778,7 +779,7 @@ export const exportAllocationOrders = withPermission(
           categoryL2: productCategories.categoryName,
           productName: saleItems.productName,
           sessionCount: saleItems.sessionCount,
-          remainingSessions: saleItems.remainingSessions,
+          paidUnusedSessions: paidUnusedSessionsExpr,
           saleAmount: saleItems.saleAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
           received: saleItems.received,
@@ -832,7 +833,7 @@ export const exportAllocationOrders = withPermission(
             categoryL2: r.categoryL2,
             productName: r.productName,
             sessionCount: r.sessionCount ?? null,
-            remainingSessions: r.remainingSessions ?? null,
+            paidUnusedSessions: r.paidUnusedSessions ?? null,
             saleAmount: num(r.saleAmount),
             prepaidCardAmount: num(r.prepaidCardAmount),
             received: num(r.received),
@@ -882,7 +883,7 @@ export const exportAllocationOrders = withPermission(
           categoryL2: productCategories.categoryName,
           productName: saleItems.productName,
           sessionCount: saleItems.sessionCount,
-          remainingSessions: saleItems.remainingSessions,
+          paidUnusedSessions: paidUnusedSessionsExpr,
           saleAmount: saleItems.saleAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
           received: saleItems.received,
@@ -932,7 +933,7 @@ export const exportAllocationOrders = withPermission(
             categoryL2: r.categoryL2,
             productName: r.productName,
             sessionCount: r.sessionCount ?? null,
-            remainingSessions: r.remainingSessions ?? null,
+            paidUnusedSessions: r.paidUnusedSessions ?? null,
             saleAmount: num(r.saleAmount),
             prepaidCardAmount: num(r.prepaidCardAmount),
             received: num(r.received),
@@ -2152,18 +2153,10 @@ export const createOrder = withPermission(
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
   const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
 
-  // 计算 document_type（售前/售后快照）
+  // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
   // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
-  let documentType: '售前' | '售后' = '售前'
-  if (buyerCustomerType === '会员客') {
-    documentType = '售后'
-  }
-  if (documentType === '售前') {
-    const threshold = await getMemberThreshold()
-    if (totalAmount >= threshold) {
-      documentType = '售后'
-    }
-  }
+  // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType，不影响本快照。
+  const documentType: '售前' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前'
 
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
   // 与 is_experience（capability 权威源）。
@@ -2732,12 +2725,8 @@ export const createConversionOrder = withPermission(
       const saleOrderId = (idRows as any[])[0]?.id as string
       if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
-      // 4. 计算 documentType（售前/售后）
-      let documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
-      if (documentType === '售前') {
-        const threshold = await getMemberThreshold()
-        if (totalIn >= threshold) documentType = '售后'
-      }
+      // 4. 计算 documentType（售前/售后）：仅按下单时会员身份判（售前=非会员客，售后=会员客）
+      const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
