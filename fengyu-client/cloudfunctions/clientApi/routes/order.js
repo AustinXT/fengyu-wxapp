@@ -17,6 +17,170 @@ const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
 /**
+ * 重算顾客消费档位（spending_tier，净额口径）—— clientApi 独立副本，镜像 staffApi
+ * routes/order.js:73-99；SQL 与 payNotify index.js:998-1018、admin refunds.ts refreshSpendingTierTx、
+ * cron refresh-spending-tier 字面对齐。修改须同步另外三端。
+ * @param {object} client - pg 事务客户端
+ * @param {string} clientUserId - client_wechat_users.user_id
+ */
+async function refreshSpendingTier(client, clientUserId) {
+  if (!clientUserId) return
+  // 净额 SUM(GREATEST(received - refunded_amount, 0))，原毛额 total_amount 不减退款/欠款。
+  // 仅纳入"销售单 + 转换单"；充值单（预收）/ 内部单 / 寄存单不算消费。
+  await client.query(
+    `UPDATE client_wechat_users
+     SET spending_tier = CASE
+       WHEN t.total >= 100000 THEN '10W+'
+       WHEN t.total >= 60000  THEN '6-10W'
+       WHEN t.total >= 30000  THEN '3-6W'
+       WHEN t.total >= 10000  THEN '1-3W'
+       WHEN t.total >= 1990   THEN '1990-1W'
+       ELSE '<1990'
+     END::spending_tier,
+     updated_at = NOW()
+     FROM (
+       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+       FROM sale_orders
+       WHERE client_user_id = $1
+         AND status IN ('已支付', '已完成')
+         AND sale_order_type IN ('销售单','转换单')
+     ) t
+     WHERE user_id = $1`,
+    [clientUserId]
+  )
+}
+
+/**
+ * 重算顾客类型（customer_type，只升不降）。clientApi 独立副本，镜像 staffApi routes/order.js:109-202。
+ * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = NOW()，
+ * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
+ *
+ * 四端 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts），
+ * 修改必须同步另外三端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ * clientApi 用单笔口径（不含 payNotify 的回款单累计分支——该分支为 sale-order-domain-refactor 后死代码）。
+ * @param {object} client - pg 事务客户端
+ * @param {string} clientUserId - client_wechat_users.user_id
+ */
+async function recalcCustomerType(client, clientUserId) {
+  if (!clientUserId) return
+
+  // 已是最高级，无需重算
+  const cur = await client.query(
+    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId]
+  )
+  if (cur.rows[0]?.customer_type === '会员客') return
+
+  const threshold = await getMemberThreshold()
+
+  const typeResult = await client.query(
+    `SELECT CASE
+       WHEN EXISTS (
+         SELECT 1 FROM sale_orders o
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '销售单'
+           AND o.total_amount >= $2
+       ) THEN '会员客'
+       WHEN EXISTS (
+         SELECT 1
+         FROM sale_orders o
+         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '销售单'
+           AND si.is_experience = false
+       ) THEN '小美客'
+       WHEN EXISTS (
+         SELECT 1
+         FROM sale_orders o
+         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '销售单'
+           AND si.is_experience = true
+       ) THEN '体验客'
+       ELSE '流量客'
+     END AS computed_type`,
+    [clientUserId, threshold]
+  )
+
+  const newType = typeResult.rows[0]?.computed_type
+  // 防御：SELECT CASE 在真实 PG 必返回一行（ELSE '流量客' 兜底）；测试 mock 空 rows 时安全早退。
+  if (!newType) return
+  const updateResult = await client.query(
+    `UPDATE client_wechat_users
+     SET customer_type = $2::customer_type, updated_at = NOW()
+     WHERE user_id = $1
+       AND (CASE customer_type
+              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+            END)
+         < (CASE $2::customer_type
+              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+            END)
+     RETURNING customer_type`,
+    [clientUserId, newType]
+  )
+
+  // 若本次 UPDATE 实际将顾客升级为"会员客"，同步写入 became_member_at + 打会员升级归因标记。
+  // 函数开头"已是会员客即 return"保证只在首次跃迁时执行一次。
+  if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
+    await client.query(
+      `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
+      [clientUserId]
+    )
+    await client.query(
+      `UPDATE sale_orders SET is_membership_upgrade = true
+       WHERE sale_order_id = (
+         SELECT o.sale_order_id FROM sale_orders o
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '销售单'
+           AND o.total_amount >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         LIMIT 1
+       )`,
+      [clientUserId, threshold]
+    )
+  }
+}
+
+/**
+ * 转已支付统一结算副作用五件套（clientApi 版），镜像 staffApi settlePaidByCardAtCreation
+ * （routes/order.js:262-282）与 payNotify inline 链（index.js:998-1149）。
+ * 顺序：refreshSpendingTier → recalcCustomerType（含 became_member_at + is_membership_upgrade 打标）
+ *      → recalcMemberLevel → settlePointsSafe → grantShareGift（SAVEPOINT 隔离，非致命）。
+ * clientApi 三处支付完成点（zeroPayable / confirmPrepaidFull / repay 纯卡）共用此入口，
+ * 与 staffApi / payNotify / admin recordPayment 同口径。paid_sessions 由各调用点的
+ * recalcPaidSessionsForOrder 负责，此处不重复。paidAmount=0 时 grantShareGift 内部早退。
+ * @param {object} client - pg 事务客户端
+ * @param {{saleOrderId:string, clientUserId:string, paidAmount:number, source:string}} args
+ */
+async function settlePaidEffects(client, { saleOrderId, clientUserId, paidAmount, source }) {
+  if (clientUserId) {
+    await refreshSpendingTier(client, clientUserId)
+    await recalcCustomerType(client, clientUserId)
+    // 会员等级即时重算（只升不降；与 recalcCustomerType 同口径，礼包留给 cron）
+    await recalcMemberLevel(client, clientUserId, await getMemberThreshold(), 'clientApi')
+  }
+  await settlePointsSafe(client, saleOrderId, source)
+  // 分享礼（首单结清；savepoint 隔离，非致命）
+  if (clientUserId) {
+    try {
+      await client.query('SAVEPOINT sp_share_gift')
+      const { grantShareGift } = require('../share-gift')
+      await grantShareGift(client, { saleOrderId, clientUserId, paidAmount, source: 'clientApi' })
+      await client.query('RELEASE SAVEPOINT sp_share_gift')
+    } catch (sgErr) {
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_share_gift') } catch (e) {}
+      console.error('[clientApi/share-gift] error (non-fatal):', sgErr)
+    }
+  }
+}
+
+/**
  * 解析门店的拉卡拉商户号 + 终端号
  *
  * 一店一商户、一店一终端，env 不留默认；支付失败就让失败，不兜底。
@@ -934,8 +1098,8 @@ async function create(ctx) {
     // 与既有 confirmPrepaidFull 口径一致。零应付单永远不会有 payNotify/confirmOffline 来触发结算，
     // 故必须在创建时就地结算（与"所有转已支付的触发点走同一入口"原则一致）。
     if (zeroPayable) {
-      await settlePointsSafe(client, orderNo, 'clientApi.create.zeroPayable')
-      await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
+      // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
+      await settlePaidEffects(client, { saleOrderId: orderNo, clientUserId: userId, paidAmount: prepaidCardAmount, source: 'clientApi.create.zeroPayable' })
     }
   })
 
@@ -2075,13 +2239,10 @@ async function confirmPrepaidFull(ctx) {
     // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
     await recalcPaidSessionsForOrder(client, saleOrderId)
 
-    // 积分结算（订单链净额差值法，幂等）
-    // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
-    // 保留调用以保证"所有状态转已支付的触发点"都走同一入口
-    await settlePointsSafe(client, saleOrderId, 'clientApi.confirmPrepaidFull')
-
-    // 会员等级即时重算（只升不降；仅会员客生效，礼包留给 cron）
-    await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
+    // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
+    // confirmPrepaidFull 仅对 payable_amount=0 的纯卡抵扣订单：积分链净额=0 → delta=0 → 无积分写入（AC-05）
+    // 保留 settlePaidEffects 调用以保证"所有状态转已支付的触发点"都走同一入口
+    await settlePaidEffects(client, { saleOrderId, clientUserId: userId, paidAmount: prepaidCardAmount, source: 'clientApi.confirmPrepaidFull' })
   })
 
   ctx.result = {
@@ -2343,10 +2504,9 @@ async function repay(ctx) {
       // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
       // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
       await recalcPaidSessionsForOrder(client, saleOrderId)
-      // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
-      await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
-      // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）
-      await recalcMemberLevel(client, userId, await getMemberThreshold(), 'clientApi')
+      // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
+      // 纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发
+      await settlePaidEffects(client, { saleOrderId, clientUserId: userId, paidAmount: prepaidCardAmountInput, source: 'clientApi.repay' })
     }
   })
 

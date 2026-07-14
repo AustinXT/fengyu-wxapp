@@ -40,6 +40,10 @@ const ADMIN_RECOMPUTE_TS = path.resolve(
   __dirname,
   '../../../../../fengyu-admin/src/lib/recompute-customer-tags.ts'
 )
+const CLIENT_API_ORDER_JS = path.resolve(
+  __dirname,
+  '../../../../../fengyu-client/cloudfunctions/clientApi/routes/order.js'
+)
 
 /**
  * 从源文件提取 `SELECT CASE ... END AS computed_type` 段
@@ -103,6 +107,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
   let adminSql
   let adminSrc
   let adminRecomputeSql
+  let clientApiSql
 
   beforeAll(() => {
     staffSql = extractCaseSql(STAFF_ORDER_JS)
@@ -110,6 +115,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     adminSql = extractCaseSql(ADMIN_ORDERS_TS)
     adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
     adminRecomputeSql = extractCaseSql(ADMIN_RECOMPUTE_TS)
+    clientApiSql = extractCaseSql(CLIENT_API_ORDER_JS)
   })
 
   describe('staffApi routes/order.js', () => {
@@ -158,6 +164,35 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(paynotifySql).not.toContain('JOIN product_skus')
       expect(paynotifySql).not.toContain('JOIN product_categories')
       expect(paynotifySql).not.toContain('is_card_kind')
+    })
+  })
+
+  describe('fengyu-client clientApi/routes/order.js', () => {
+    test('小美客分支必须使用 si.is_experience = false', () => {
+      expect(clientApiSql).toContain('si.is_experience = false')
+    })
+
+    test('体验客分支必须使用 si.is_experience = true', () => {
+      expect(clientApiSql).toContain('si.is_experience = true')
+    })
+
+    test('ELSE 兜底必须是流量客', () => {
+      expect(clientApiSql).toMatch(/ELSE '流量客'/)
+    })
+
+    test('不含回款单累计死代码分支（clientApi 用单笔口径，与 staff/admin 同）', () => {
+      expect(clientApiSql).not.toContain('ref_sale_order_id')
+      expect(clientApiSql).not.toContain("'回款单'")
+    })
+
+    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
+      expect(clientApiSql).not.toContain('JOIN product_skus')
+      expect(clientApiSql).not.toContain('JOIN product_categories')
+      expect(clientApiSql).not.toContain('is_card_kind')
+    })
+
+    test('JOIN sale_items 直接挂 is_experience 条件', () => {
+      expect(clientApiSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
     })
   })
 
@@ -210,6 +245,12 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(recomputeBranches).toBe(staffBranches)
     })
 
+    test('clientApi vs staff 规范化后逐字相同（clientApi 支付完成链路第 5 端副本，单笔口径）', () => {
+      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
+      const clientApiBranches = normalizeSql(extractNonMemberBranches(clientApiSql))
+      expect(clientApiBranches).toBe(staffBranches)
+    })
+
     test('不再出现 ② ③ 分支字节级相同的死分支模式', () => {
       // 旧 bug 模式：两个相邻 WHEN EXISTS 块完全一样，只查 sale_orders 不 JOIN
       const olderDeadPattern = /WHEN EXISTS \(\s*SELECT 1 FROM sale_orders\s*WHERE[^)]*sale_order_type = '销售单'\s*\)\s*THEN '小美客'/
@@ -217,6 +258,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(paynotifySql).not.toMatch(olderDeadPattern)
       expect(adminSql).not.toMatch(olderDeadPattern)
       expect(adminRecomputeSql).not.toMatch(olderDeadPattern)
+      expect(clientApiSql).not.toMatch(olderDeadPattern)
     })
   })
 
@@ -225,26 +267,30 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     let paynotifyAttr
     let adminAttr
     let adminRecomputeAttr
+    let clientApiAttr
 
     beforeAll(() => {
       staffAttr = extractMembershipUpgradeAttribution(STAFF_ORDER_JS)
       paynotifyAttr = extractMembershipUpgradeAttribution(PAYNOTIFY_JS)
       adminAttr = extractMembershipUpgradeAttribution(ADMIN_ORDERS_TS)
       adminRecomputeAttr = extractMembershipUpgradeAttribution(ADMIN_RECOMPUTE_TS)
+      clientApiAttr = extractMembershipUpgradeAttribution(CLIENT_API_ORDER_JS)
     })
 
-    test('四端归因段目标列一致：UPDATE sale_orders SET is_membership_upgrade = true', () => {
+    test('五端归因段目标列一致：UPDATE sale_orders SET is_membership_upgrade = true', () => {
       const re = /^UPDATE sale_orders SET is_membership_upgrade = true/
       expect(staffAttr).toMatch(re)
       expect(paynotifyAttr).toMatch(re)
       expect(adminAttr).toMatch(re)
       expect(adminRecomputeAttr).toMatch(re)
+      expect(clientApiAttr).toMatch(re)
     })
 
-    test('staff / admin orders.ts / admin recompute 三端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+    test('staff / admin orders.ts / admin recompute / clientApi 四端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
       const staffN = normalizeSql(staffAttr)
       expect(normalizeSql(adminAttr)).toBe(staffN)
       expect(normalizeSql(adminRecomputeAttr)).toBe(staffN)
+      expect(normalizeSql(clientApiAttr)).toBe(staffN)
     })
 
     test('payNotify 归因段保留回款单累计死代码文本（refactor 后恒为空，仅守护历史 SQL）', () => {
@@ -256,7 +302,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(normalizeSql(paynotifyAttr)).toContain('o.total_amount >= ?')
     })
 
-    test('staff / admin orders.ts / admin recompute 三端无回款单累计分支（仅看单笔 total）', () => {
+    test('staff / admin orders.ts / admin recompute / clientApi 四端无回款单累计分支（仅看单笔 total）', () => {
       // 2026-04-26 sale-order-domain-refactor 后，回款记录下沉到
       // sale_order_payments.change_type='回款'，sale_orders 不再产生 sale_order_type='回款单' 行。
       // 因此 payNotify 文本中保留的累计子句恒为空，已不触发「单笔未达标、回款后累计达标」场景；
@@ -267,6 +313,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(adminAttr).not.toContain("'回款单'")
       expect(adminRecomputeAttr).not.toContain('ref_sale_order_id')
       expect(adminRecomputeAttr).not.toContain("'回款单'")
+      expect(clientApiAttr).not.toContain('ref_sale_order_id')
+      expect(clientApiAttr).not.toContain("'回款单'")
     })
 
     test('payNotify 归因段仍保留历史 OR 拼接文本（回款累计右支为恒空死代码）', () => {
@@ -276,12 +324,13 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(paynotifyAttr).toMatch(orBranch)
     })
 
-    test('四端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
+    test('五端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
       const re = /ORDER BY o\.paid_at ASC NULLS LAST/
       expect(staffAttr).toMatch(re)
       expect(paynotifyAttr).toMatch(re)
       expect(adminAttr).toMatch(re)
       expect(adminRecomputeAttr).toMatch(re)
+      expect(clientApiAttr).toMatch(re)
     })
   })
 })
