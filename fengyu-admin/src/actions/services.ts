@@ -17,8 +17,10 @@ import { scopeCondition, isInScope, isAdminScope, requireAdmin } from '@/lib/per
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 import { pgErrorCode } from '@/lib/pg-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
+import { settleServiceCommissions } from '@/lib/service-commission-settle'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
 
@@ -837,49 +839,67 @@ export const confirmServiceOrder = withPermission(
     return { success: false, message: '关联订单退款审批中，暂不可确认' }
   }
 
-  let result: any
+  // 扣减次数 + 置已完成 + 写服务提成，全部在同一事务内（任一步失败整体回滚）。
+  // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
+  // 扣减条件叠加 paid_sessions 限额——扣减后已用次数
+  //   (session_count - remaining_sessions + session_used) 不得超 COALESCE(paid_sessions, session_count)。
+  // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
+  // 服务提成写入（settleServiceCommissions）镜像 staff/client finalizeServiceOrder：
+  //   三端 confirm/finalize 都应产出 service_commissions + commission_status='已分配'。
+  let outcome: { kind: 'ok' } | { kind: 'status_changed' } | { kind: 'insufficient_paid' }
   try {
-    // D6=A 不变量（2026-05-19 ticket）：分期付款的卡只能消费"已支付"的那部分次数。
-    // 扣减条件叠加 paid_sessions 限额——扣减后已用次数
-    //   (session_count - remaining_sessions + session_used) 不得超 COALESCE(paid_sessions, session_count)。
-    // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
-    result = await db.execute(sql`
-      WITH status_check AS (
-        UPDATE service_orders
-        SET status = '已完成', completed_at = NOW(), updated_at = NOW()
-        WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
-        RETURNING service_order_id
-      ),
-      deduct AS (
-        UPDATE sale_items
-        SET remaining_sessions = remaining_sessions - si.session_used,
-            updated_at = NOW()
-        FROM service_items si
-        WHERE sale_items.sale_item_id = si.sale_item_id
-          AND si.service_order_id = ${serviceOrderId}
-          AND sale_items.remaining_sessions >= si.session_used
-          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
-          AND EXISTS (SELECT 1 FROM status_check)
-        RETURNING sale_items.sale_item_id
-      ),
-      total_items AS (
-        SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
-      )
-      SELECT
-        (SELECT COUNT(*) FROM status_check) AS status_updated,
-        (SELECT COUNT(*) FROM deduct) AS items_deducted,
-        (SELECT n FROM total_items) AS items_total
-    `)
+    outcome = await db.transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        WITH status_check AS (
+          UPDATE service_orders
+          SET status = '已完成', completed_at = NOW(), updated_at = NOW()
+          WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
+          RETURNING service_order_id
+        ),
+        deduct AS (
+          UPDATE sale_items
+          SET remaining_sessions = remaining_sessions - si.session_used,
+              updated_at = NOW()
+          FROM service_items si
+          WHERE sale_items.sale_item_id = si.sale_item_id
+            AND si.service_order_id = ${serviceOrderId}
+            AND sale_items.remaining_sessions >= si.session_used
+            AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
+            AND EXISTS (SELECT 1 FROM status_check)
+          RETURNING sale_items.sale_item_id
+        ),
+        total_items AS (
+          SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
+        )
+        SELECT
+          (SELECT COUNT(*) FROM status_check) AS status_updated,
+          (SELECT COUNT(*) FROM deduct) AS items_deducted,
+          (SELECT n FROM total_items) AS items_total
+      `)
+      const row = (result as unknown as Array<{ status_updated: unknown; items_deducted: unknown; items_total: unknown }>)[0]
+      if (!row || Number(row.status_updated) === 0) {
+        return { kind: 'status_changed' as const }
+      }
+      // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
+      if (Number(row.items_deducted) < Number(row.items_total)) {
+        return { kind: 'insufficient_paid' as const }
+      }
+      // 扣减 + 置已完成均成功 → 写服务提成 + commission_status='已分配'（镜像 staff/client finalize）
+      await settleServiceCommissions(tx, serviceOrderId, {
+        employeeId: session.employeeId,
+        name: session.name,
+        role: session.roles[0]?.role ?? null,
+      })
+      return { kind: 'ok' as const }
+    })
   } catch {
     return { success: false, message: '确认服务失败，请稍后重试' }
   }
 
-  const row = (result as any[])[0]
-  if (!row || Number(row.status_updated) === 0) {
+  if (outcome.kind === 'status_changed') {
     return { success: false, message: '服务单状态已变更，无法确认' }
   }
-  // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
-  if (row && Number(row.items_deducted) < Number(row.items_total)) {
+  if (outcome.kind === 'insufficient_paid') {
     return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
   }
 
@@ -1183,6 +1203,25 @@ export const createServiceOrder = withPermission(
           isShengmei: snapshot.isShengmei,
           salesCategory: snapshot.salesCategory,
         })
+      }
+
+      // 寄存单退款打标强制校验（M8）：service_items 已落库，反查是否含寄存卡。
+      // 含寄存卡但 remark 空 → 拒绝（防漏选导致假消耗计入业绩）；非寄存卡但误标预设 → 拒绝（防误标）。
+      const depositCheck = await tx.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM service_items si
+          JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+          JOIN sale_orders o ON o.sale_order_id = sli.sale_order_id
+          WHERE si.service_order_id = ${id} AND o.sale_order_type = '寄存单'
+        ) AS has_deposit
+      `)
+      const hasDeposit = ((depositCheck as any[])[0]?.has_deposit === true)
+      const isDepositRefund = (data.remark || null) === DEPOSIT_REFUND_REMARK
+      if (hasDeposit && !data.remark) {
+        throw new ApiError('INVALID_PARAMS', '含寄存疗程卡，请显式选择「寄存单退款专用」或填写正常消耗备注')
+      }
+      if (isDepositRefund && !hasDeposit) {
+        throw new ApiError('INVALID_PARAMS', '非寄存卡不可标记为寄存单退款')
       }
 
       return id

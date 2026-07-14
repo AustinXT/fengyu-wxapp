@@ -87,6 +87,9 @@ const FILES = {
   // 顾客确认链路首次把"扣次数 + 算提成"SQL 引入 clientApi，故纳入跨端守护。
   staffServiceJs: path.resolve(__dirname, '../../routes/service.js'),
   clientServiceFinalizeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js'),
+  // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
+  adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
+  adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
 }
 
 function readFile(p) {
@@ -1321,7 +1324,7 @@ describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
 // 三条核心 SQL（扣减 UPDATE / commission_rate_matrix 查率 / service_commissions 写入）
 // 必须与 staff finalizeServiceOrder 字面量一致；任一端漂移 → fail，提示同步另一端。
 // operation_logs 缺率告警 INSERT 因 operator/source 字面不同（staffApi vs clientApi），不纳入比对。
-describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceOrder vs client service-finalize）', () => {
+describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端）', () => {
   const MARKER_SVC_DEDUCT = 'remaining_sessions = remaining_sessions - $1'
   const MARKER_SVC_RATE = 'commission_rate FROM commission_rate_matrix'
   const MARKER_SVC_COMM_INSERT = 'INSERT INTO service_commissions'
@@ -1331,6 +1334,7 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
   beforeAll(() => {
     const staffSrc = readFile(FILES.staffServiceJs)
     const clientSrc = readFile(FILES.clientServiceFinalizeJs)
+    const adminSrc = readFile(FILES.adminServiceCommissionSettleTs)
     deduct = {
       staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_DEDUCT)),
       client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_DEDUCT)),
@@ -1338,10 +1342,12 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
     rate = {
       staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_RATE)),
       client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_RATE)),
+      admin: normalizeSql(extractBacktickStringContaining(adminSrc, MARKER_SVC_RATE)),
     }
     commInsert = {
       staff: normalizeSql(extractBacktickStringContaining(staffSrc, MARKER_SVC_COMM_INSERT)),
       client: normalizeSql(extractBacktickStringContaining(clientSrc, MARKER_SVC_COMM_INSERT)),
+      admin: normalizeSql(extractBacktickStringContaining(adminSrc, MARKER_SVC_COMM_INSERT)),
     }
   })
 
@@ -1350,25 +1356,40 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
     test('含 paid_sessions 限额条件（防漂移退化）', () => {
       expect(deduct.staff).toContain('COALESCE(paid_sessions, session_count)')
     })
+    test('admin confirmServiceOrder 扣减 CTE 也含 paid_sessions 限额（M1：三端扣减口径对齐）', () => {
+      const adminServicesSrc = readFile(FILES.adminServicesTs)
+      expect(adminServicesSrc).toContain('COALESCE(sale_items.paid_sessions, sale_items.session_count)')
+    })
   })
 
   describe('提成比例矩阵查询 SELECT 镜像比对', () => {
-    test('staff vs client 一致', () => { expect(rate.client).toBe(rate.staff) })
+    test('staff / client / admin 三端归一化后一致', () => {
+      expect(rate.client).toBe(rate.staff)
+      expect(rate.admin).toBe(rate.staff)
+    })
     test("order_type = '服务单' 限定（防误取销售单费率）", () => {
       expect(rate.staff).toContain("order_type = '服务单'")
+      expect(rate.admin).toContain("order_type = '服务单'")
     })
     test('按服务单所属市场过滤（org_id = store→org 树解析市场节点，防跨市场费率行碰撞）', () => {
       expect(rate.staff).toContain('org_id =')
       expect(rate.staff).toContain('JOIN org_nodes m ON son.parent_id = m.id')
       expect(rate.client).toContain('org_id =')
+      expect(rate.admin).toContain('org_id =')
+      expect(rate.admin).toContain('JOIN org_nodes m ON son.parent_id = m.id')
     })
   })
 
   describe('service_commissions 写入 INSERT 镜像比对', () => {
-    test('staff vs client 一致', () => { expect(commInsert.client).toBe(commInsert.staff) })
+    test('staff / client / admin 三端归一化后一致', () => {
+      expect(commInsert.client).toBe(commInsert.staff)
+      expect(commInsert.admin).toBe(commInsert.staff)
+    })
     test('ON CONFLICT DO NOTHING 幂等（防重复确认重复计提成）', () => {
       expect(commInsert.staff).toContain('ON CONFLICT')
       expect(commInsert.staff).toContain('DO NOTHING')
+      expect(commInsert.admin).toContain('ON CONFLICT')
+      expect(commInsert.admin).toContain('DO NOTHING')
     })
   })
 
@@ -1376,6 +1397,20 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceO
     test('finalize 三条核心 SQL 文本快照', () => {
       expect({ deduct: deduct.staff, rate: rate.staff, commInsert: commInsert.staff }).toMatchSnapshot()
     })
+  })
+})
+
+// admin confirmServiceOrder 入口守护（M1：确保 services.ts 代确认时真的接上了提成写入，
+// 防"提成 helper 存在但入口忘记调用"的回归——这正是本次审计发现的原始 bug）
+describe('admin confirmServiceOrder 接入服务提成写入守护（M1）', () => {
+  test('services.ts confirmServiceOrder 在事务内调用 settleServiceCommissions', () => {
+    const src = readFile(FILES.adminServicesTs)
+    expect(src).toMatch(/settleServiceCommissions\s*\(/)
+    expect(src).toMatch(/db\.transaction\(async\s*\(tx\)\s*=>\s*\{[\s\S]*?settleServiceCommissions/)
+  })
+  test('lib/service-commission-settle.ts 把 commission_status 置「已分配」（镜像 staff/client finalize）', () => {
+    const src = readFile(FILES.adminServiceCommissionSettleTs)
+    expect(src).toContain("commission_status = '已分配'")
   })
 })
 
