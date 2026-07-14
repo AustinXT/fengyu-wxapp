@@ -101,7 +101,7 @@ async function finalizeServiceOrder(client, so, items, now) {
   // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
   // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞确认
   for (const row of items) {
-    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（service.create 已强制 remark 打标；此为 finalize 兜底防漏）
+    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（仅当显式选「寄存单退款专用」备注打标时；remark 非必填，空备注按正常消耗计提成；此为 finalize 兜底防漏）
     if (so.remark === DEPOSIT_REFUND_REMARK) continue
 
     const skills = Array.isArray(row.skills) ? row.skills : []

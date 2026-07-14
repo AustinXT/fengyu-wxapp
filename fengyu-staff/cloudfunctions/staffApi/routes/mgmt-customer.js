@@ -619,7 +619,8 @@ async function paidOrders(ctx) {
     `SELECT
        si.sale_order_id, si.sale_item_id, si.store_id,
        si.session_count, si.remaining_sessions, si.paid_sessions,
-       si.sku_id, si.product_type, si.product_name
+       si.sku_id, si.product_type, si.product_name,
+       si.unit_real_price
      FROM sale_items si
      WHERE si.sale_order_id = ANY($1)
      ORDER BY si.sale_item_id`,
@@ -639,6 +640,7 @@ async function paidOrders(ctx) {
       totalSessions: item.session_count,
       paidSessions: item.paid_sessions,
       productType: item.product_type || '',
+      unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
     })
   }
 

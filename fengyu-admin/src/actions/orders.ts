@@ -526,8 +526,12 @@ export const getOrdersPaginated = withPermission(
 
 /**
  * 导出行（明细级，一行 = 一条 sale_items[item_direction='购买']）。
- * 订单级字段（订单号/金额/实付等）在每条 item 行内重复；
+ * 订单号/状态/顾客/支付方式等订单级字段在每条 item 行内重复；
+ * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
+ *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/已退因库内无行级字段，取整单
+ *   sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示。
+ * 寄存单 4 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
  */
 export interface ExportOrderRow {
@@ -540,9 +544,13 @@ export interface ExportOrderRow {
   status: string
   customerName: string | null
   clientPhone: string | null
+  /** 订单金额：sale_items.sale_amount（行应付，行级；同单多行各不同，可正确求和） */
   totalAmount: string
+  /** 储值卡抵扣：sale_orders.prepaid_card_amount（订单级，库内无行级字段，同单多行重复） */
   prepaidCardAmount: string
+  /** 实付：sale_items.received（行级净实收，已扣该行退款） */
   received: string
+  /** 已退：sale_orders.refunded_amount（订单级，库内无行级字段，同单多行重复） */
   refundedAmount: string
   paymentMethod: string | null
   /** 是否纳客：sale_orders.is_membership_upgrade（recalcCustomerType 在顾客首次跃迁为会员客时自动打标） */
@@ -602,9 +610,9 @@ export const exportOrders = withPermission(
         custPhone: clientWechatUsers.phone,
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
-        totalAmount: saleOrders.totalAmount,
+        totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
         prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleOrders.received,
+        received: saleItems.received,             // 行级净实收（商品行口径）
         refundedAmount: saleOrders.refundedAmount,
         paymentMethod: saleOrders.paymentMethod,
         isMembershipUpgrade: saleOrders.isMembershipUpgrade,

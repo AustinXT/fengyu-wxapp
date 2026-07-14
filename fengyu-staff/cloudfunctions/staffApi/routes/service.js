@@ -299,8 +299,9 @@ async function create(ctx) {
       )
     }
 
-    // 寄存单退款打标强制校验（M8）：service_items 已落库，反查是否含寄存卡。
-    // 含寄存卡但 remark 空 → 拒绝（防漏选导致假消耗计入业绩）；非寄存卡但误标预设 → 拒绝（防误标）。
+    // 寄存单退款打标校验（M8）：service_items 已落库，反查是否含寄存卡。
+    // remark 非必填：空备注按正常消耗计业绩（写提成 + 计消耗业绩，营业额分成按寄存单 sale_order 排除）。
+    // 仅防误标：非寄存卡但误标「寄存单退款专用」预设 → 拒绝。
     const depositCheck = await client.query(
       `SELECT EXISTS (
          SELECT 1 FROM service_items si
@@ -312,9 +313,6 @@ async function create(ctx) {
     )
     const hasDeposit = depositCheck.rows[0]?.has_deposit === true
     const isDepositRefund = remark === DEPOSIT_REFUND_REMARK
-    if (hasDeposit && !remark) {
-      throw new Error('INVALID_PARAMS: 含寄存疗程卡，请显式选择「寄存单退款专用」或填写正常消耗备注')
-    }
     if (isDepositRefund && !hasDeposit) {
       throw new Error('INVALID_PARAMS: 非寄存卡不可标记为寄存单退款')
     }
@@ -490,7 +488,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
   // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
   // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞确认
   for (const row of items) {
-    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（service.create 已强制 remark 打标；此为 finalize 兜底防漏）
+    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（仅当显式选「寄存单退款专用」备注打标时；remark 非必填，空备注按正常消耗计提成；此为 finalize 兜底防漏）
     if (so.remark === DEPOSIT_REFUND_REMARK) continue
 
     const skills = Array.isArray(row.skills) ? row.skills : []
