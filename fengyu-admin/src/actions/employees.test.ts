@@ -90,13 +90,22 @@ vi.mock('drizzle-orm/pg-core', () => ({
   alias: vi.fn((_table, aliasName) => ({ _aliasName: aliasName })),
 }))
 
-import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
+vi.mock('@/actions/skill-tags', () => ({
+  getSkillTags: vi.fn(),
+  getActiveSkillTags: vi.fn(),
+  createSkillTag: vi.fn(),
+  updateSkillTag: vi.fn(),
+  deleteSkillTag: vi.fn(),
+}))
+
+import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
+import { getSkillTags } from '@/actions/skill-tags'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -1035,5 +1044,116 @@ describe('getEmployees — picker 数据源不得有 LIMIT', () => {
     expect(orderBy).toHaveBeenCalledTimes(1)
     // 防止有人未来再加回 .limit() —— orderBy 返回的 promise 上不应有 .limit 被调
     expect((orderBy.mock.results[0]?.value as any).limit).toBeUndefined()
+  })
+})
+
+// ── exportEmployees — 导出 + 技能标签服务端兜底 ──────────────────────────────────
+
+describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列表 page.tsx）', () => {
+  const listSession = {
+    ...mockSession,
+    permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+  }
+
+  /**
+   * mock 单次 db.select → exportEmployees 员工数据查询链路：
+   * select → from → leftJoin → where → orderBy → limit
+   */
+  function mockExportChain(rows: any[]) {
+    const limit = vi.fn().mockResolvedValue(rows)
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(listSession)
+    ;(getSkillTags as any).mockResolvedValue([
+      { id: 'tag-1', name: '护理', isValid: true },
+      { id: 'tag-2', name: '美容师', isValid: true },
+      // 已停用的幽灵标签（admin 已停用，但 URL ?skill= 可能残留）
+      { id: 'tag-3', name: '旧标签', isValid: false },
+    ])
+  })
+
+  it('无 skills 筛选 → 返回 rows + truncated=false，getSkillTags 被调一次（防御层始终启用）', async () => {
+    mockExportChain([])
+
+    const result = await exportEmployees({})
+
+    expect(result.rows).toEqual([])
+    expect(result.truncated).toBe(false)
+    // 不传 skill 也会跑服务端兜底（与列表对称），保证逻辑不漂移
+    expect(getSkillTags).toHaveBeenCalledTimes(1)
+    expect((sql as any).join).not.toHaveBeenCalled()
+  })
+
+  it('skills 全有效 → 原样传入 buildEmployeeConditions（sql.join 含全部有效标签）', async () => {
+    mockExportChain([])
+
+    await exportEmployees({ skill: '护理,美容师' })
+
+    expect((sql as any).join).toHaveBeenCalledWith(
+      [
+        { type: 'sql', args: [expect.anything(), '护理'] },
+        { type: 'sql', args: [expect.anything(), '美容师'] },
+      ],
+      { type: 'sql.raw', value: ', ' },
+    )
+  })
+
+  it('skills 含失效标签 → 服务端兜底剔除失效项（防幽灵筛选，对称列表 page.tsx）', async () => {
+    mockExportChain([])
+
+    // URL 残留已停用的"旧标签"（前端 handleExport 漏清洗场景）
+    await exportEmployees({ skill: '护理,旧标签,美容师' })
+
+    // sql.join 仅含有效标签（护理、美容师），失效"旧标签"被剔除
+    expect((sql as any).join).toHaveBeenCalledWith(
+      [
+        { type: 'sql', args: [expect.anything(), '护理'] },
+        { type: 'sql', args: [expect.anything(), '美容师'] },
+      ],
+      { type: 'sql.raw', value: ', ' },
+    )
+  })
+
+  it('skills 全失效 → sql.join 不被调用（清洗后为 undefined → no-op，列表不被静默收窄）', async () => {
+    mockExportChain([])
+
+    await exportEmployees({ skill: '旧标签' })
+
+    // 全失效 → filterValidSkillValues 返回 undefined → buildEmployeeConditions 跳过 skills 条件
+    expect((sql as any).join).not.toHaveBeenCalled()
+  })
+
+  it('truncated 标记：返回 > LIMIT → truncated=true 且截断至 LIMIT', async () => {
+    // mock 超量返回（LIMIT + 1 行）以触发 truncated 逻辑
+    const overflow = Array.from({ length: 10001 }, (_, i) => ({
+      staff_wechat_users: {
+        employeeId: `FY-${String(i).padStart(5, '0')}`,
+        name: `员工${i}`,
+        gender: null,
+        phone: null,
+        idCard: null,
+        orgNodeId: null,
+        skills: null,
+        positionName: null,
+        birthday: null,
+        socialInsurance: false,
+        isResigned: false,
+        resignationReason: null,
+      },
+      stores: null,
+    }))
+    mockExportChain(overflow)
+
+    const result = await exportEmployees({})
+
+    expect(result.truncated).toBe(true)
+    expect(result.rows).toHaveLength(10000)
   })
 })
