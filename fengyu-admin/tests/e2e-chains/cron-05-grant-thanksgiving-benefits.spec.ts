@@ -147,9 +147,10 @@ test.describe.serial('cron-05 grantThanksgivingBenefits', () => {
 
     // 券有效期硬约束 10 天
     // referenceDate=2026-11-20 03:00 +0800 = 2026-11-19 19:00 UTC
-    // +10d = 2026-11-29 19:00 UTC，slice(0,10) = '2026-11-29'
+    // +10d = 2026-11-29 19:00 UTC = 2026-11-30 03:00 +08（migration 0076 后 expire_at 为 timestamptz；
+    // listUserCouponsByPrefix 的 expire_at::text 按 session TZ Asia/Shanghai 显示，slice 取 +08 日历日）
     const coupons = listUserCouponsByPrefix(`thx-2026-11-${uid}-`)
-    expect(coupons[0].expire_at.slice(0, 10)).toBe('2026-11-29')
+    expect(coupons[0].expire_at.slice(0, 10)).toBe('2026-11-30')
     expect(coupons[0].template_id).toBe('FY-FIX-CT-DISCOUNT')
   })
 
