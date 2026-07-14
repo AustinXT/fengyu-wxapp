@@ -18,7 +18,7 @@ export default async function Page() {
 
   
   const accessibleScopeIds = session ? accessiblePermissionScopeIds(session) : null
-  // 撤销角色：持有 permission:revoke 的角色（admin + hr）可见可执行
+  
   const canDelete = session ? hasPermission(session, 'permission:revoke') : false
 
   

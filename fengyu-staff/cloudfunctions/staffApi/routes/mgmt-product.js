@@ -1,31 +1,13 @@
-/**
- * 管理层 - 品项数据子页（mgmt-product-cycle）路由
- *
- * 入口：mgmt-dashboard 首页"品项数据"卡片（entry === 'products'）
- *
- * mgmtProduct.cardHolders — 持卡人数（截面快照，不随 period 变化）
- *   持卡 = 未使用完的疗程卡（含原单品=1 次卡）（product_type = '疗程卡' AND remaining_sessions > 0）
- *   按 product_kind 分组 + memberCount（分母）
- *
- * mgmtProduct.cycleStats — 体验/新增/复购（区间维度）
- *   达标日：SUM(received) 在 (client_user_id, store_id, product_kind, paid_at::date) 分组下 ≥ threshold
- *   entry_date：跨店合并，全历史最早达标日
- *   复购：在 [startDate, endDate] 内有达标日（threshold 共用，不再要求"非首日"）
- *   单次 SQL（CTE 链 + 三段 UNION ALL）
- *
- * 口径定义：notes/references/metrics.md "品项顾客周期子页"章节
- */
+
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { validateManagementScope } = require('../utils/scope')
 const { getMemberThreshold } = require('../utils/config')
 
-// scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
 
-/**
- * 构造 sale/service 表的 store_id scope 过滤片段
- */
+
+
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -41,7 +23,7 @@ function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/** client_wechat_users.bound_store_id scope */
+
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -57,10 +39,7 @@ function buildClientScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/**
- * period → { startDate, endDate }，与 sales-data 页时间窗口一致
- * 锚点 NOW()，与 metrics.md "时间窗口补充" 表对齐。
- */
+
 function getSalesDataPeriod(period) {
   const now = new Date()
   const y = now.getFullYear()
@@ -96,24 +75,11 @@ async function resolveScopeName(scopeType, scopeId) {
   return rows[0]?.store_name || ''
 }
 
-// ====================================================================
-// cardHolders —— 持卡人数（截面快照）
-// ====================================================================
 
-/**
- * mgmtProduct.cardHolders
- * 入参：{ scopeType: 'all'|'market'|'store', scopeId? }
- * 出参：{ memberCount: number, cardHolders: [{ productKind, count, rate }] }
- *   rate = count / memberCount * 100，保留 2 位小数（数值类型）；memberCount=0 → null
- *
- * SQL：
- *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
- *     WHERE product_type = '疗程卡' AND remaining_sessions > 0
- *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
- *     （寄存单为 WorkFine 剩余次数初始化，按次数维度纳入持卡人数）
- *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
- *     （与 metrics.md memberCount T2 历史化口径一致；持卡人数为截面，本接口不带 $date 守卫）
- */
+
+
+
+
 async function cardHolders(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
@@ -130,7 +96,7 @@ async function cardHolders(ctx) {
 
   const t0 = Date.now()
 
-  // 持卡 SQL —— $1=scopeId（仅当 scopeType !== 'all'）
+  
   const sc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const cardSql = `
     SELECT pc.product_kind AS product_kind,
@@ -148,8 +114,8 @@ async function cardHolders(ctx) {
        AND pc.product_kind IS NOT NULL
      GROUP BY pc.product_kind`
 
-  // 会员 SQL（与 metrics.md memberCount 定义对齐：T2 历史化口径，与 mgmt-dashboard.js 一致）
-  // —— $1=scopeId（仅当 scopeType !== 'all'）
+  
+  
   const cs = buildClientScope(scopeType, scopeId, 'c', 1)
   const memberSql = `
     SELECT COUNT(*)::int AS cnt
@@ -186,28 +152,11 @@ async function cardHolders(ctx) {
   }
 }
 
-// ====================================================================
-// cycleStats —— 体验/新增/复购（区间维度）
-// ====================================================================
 
-/**
- * mgmtProduct.cycleStats
- * 入参：{ period: 'month'|'lastMonth'|'year', scopeType: 'all'|'market'|'store', scopeId? }
- * 出参：{ period, scope, startDate, endDate,
- *         trial: [{productKind, count, revenue, avgTicket}],
- *         newEntry: [{...}],
- *         repurchase: [{...}] }
- *
- * 内部：
- *   - getSalesDataPeriod(period) → { startDate, endDate }
- *   - getMemberThreshold() → threshold
- *   - 单次 SQL：WITH daily_agg → qualifying_days → first_entry → period_agg → xinzeng/fugou/tiyan
- *     最后用 UNION ALL 拆三段（group_kind: 'trial' / 'new' / 'repurchase'）
- *
- * 参数顺序：$1=startDate, $2=endDate, $3=threshold, $4...=scope params
- *   daily_agg WHERE: paid_at::date <= $2（全历史下界）
- *   period_agg WHERE: BETWEEN $1 AND $2
- */
+
+
+
+
 async function cycleStats(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
@@ -228,7 +177,7 @@ async function cycleStats(ctx) {
   const { startDate, endDate } = getSalesDataPeriod(period)
   const threshold = await getMemberThreshold()
 
-  // scope params 起始下标 $4
+  
   const sc = buildSaleScope(scopeType, scopeId, 'so', 4)
   const params = [startDate, endDate, threshold, ...sc.params]
 

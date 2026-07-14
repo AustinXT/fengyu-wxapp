@@ -16,7 +16,7 @@ import { ApiError } from '@/lib/api-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
-/** 校验服务单是否在用户 scope 内 */
+
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
   if (isAdminScope(session)) return true
   const scopeIds = session.permissions.scopeStoreIds
@@ -66,15 +66,15 @@ export const getServiceOrderCommissions = withPermission(
   },
 )
 
-/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+
 function getPoolKey(roleType: string): string {
   return roleType
 }
 
-/** 合法的分配比例（整十百分比） */
+
 const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
 
-/** 批量保存服务提成（先作废旧的，再插入新的） */
+
 export const batchSaveServiceCommissions = withPermission(
   'allocation:save',
   async (
@@ -93,14 +93,14 @@ export const batchSaveServiceCommissions = withPermission(
     return { success: false, message: '无权操作该服务单的提成分配' }
   }
 
-  // 冻结闭环（Bug I）：关联订单有待审批退款时禁止改提成（与 staff serviceCommission.save 对齐；
-  // 退款 cascade 通道2 会作废服务提成，待审批期改提成会被随后 approve 静默作废）
+  
+  
   if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
     return { success: false, message: '关联订单退款审批中，暂不可调整提成分配' }
   }
 
-  // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
-  // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成 sale_allocations，由 ALLOCATABLE_ORDER_TYPES 守卫）。
+  
+  
   const [svcRemark] = await db
     .select({ remark: serviceOrders.remark })
     .from(serviceOrders)
@@ -110,7 +110,7 @@ export const batchSaveServiceCommissions = withPermission(
     return { success: false, message: '寄存单退款专用服务单不参与提成分配' }
   }
 
-  // 校验所有 serviceItemId 属于该服务单
+  
   if (commissions.length > 0) {
     const serviceItemIds = [...new Set(commissions.map((c) => c.serviceItemId))]
     const validItems = await db
@@ -126,14 +126,14 @@ export const batchSaveServiceCommissions = withPermission(
       return { success: false, message: '服务明细不属于该服务单，请刷新后重试' }
     }
 
-    // 校验分配比例为整十
+    
     for (const c of commissions) {
       if (!VALID_RATIOS.has(c.allocationRatio)) {
         return { success: false, message: '分配比例必须为整十百分比（10%~100%）' }
       }
     }
 
-    // 按 (serviceItemId, roleType) 分池校验（P2-14 Q5：三角色独立池）
+    
     const pools = new Map<string, typeof commissions>()
     for (const c of commissions) {
       const key = `${c.serviceItemId}|${getPoolKey(c.roleType)}`
@@ -162,8 +162,8 @@ export const batchSaveServiceCommissions = withPermission(
     }
   }
 
-  // ---------- Pre-fetch pricing data for server-side calculation ----------
-  // per_session 已是 unit_real_price 直接取用，不再需要 quantity/session_count（per-session 重构后）
+  
+  
   const pricingByItemId = new Map<string, {
     unitRealPrice: string
     sessionUsed: number
@@ -205,7 +205,7 @@ export const batchSaveServiceCommissions = withPermission(
       `)
 
       if (commissions.length > 0) {
-        // Calculate each commission server-side
+        
         const values = []
         for (const c of commissions) {
           const pricing = pricingByItemId.get(c.serviceItemId)
@@ -214,14 +214,14 @@ export const batchSaveServiceCommissions = withPermission(
           }
 
           const ratio = Number(c.allocationRatio)
-          // fixed_fee 与 consume_amount 均按 allocationRatio 拆分（多人同池各取份额，对齐前端展示 + 销售提成侧）
+          
           const fixedFee = Math.round(Number(pricing.serviceFee) * pricing.sessionUsed * ratio * 100) / 100
-          // per-session 价格：service_items.unit_real_price 已是 per-session 单次价，直接取用（不再 ÷session_count）
+          
           const perSession = Number(pricing.unitRealPrice)
-          // consumeBase 为整池基数（不乘 ratio），仅用于 rate tier 命中；金额再按 ratio 拆分
+          
           const consumeBase = Math.round(perSession * pricing.sessionUsed * 100) / 100
 
-          // Look up commission rate from matrix
+          
           const salesCategory = pricing.salesCategory
           const rateRows = await tx
             .select({ commissionRate: commissionRateMatrix.commissionRate })
@@ -232,7 +232,7 @@ export const batchSaveServiceCommissions = withPermission(
               sql`${commissionRateMatrix.salesCategory} = ${salesCategory}`,
               sql`${commissionRateMatrix.amountTierMin} <= ${consumeBase}`,
               sql`(${commissionRateMatrix.amountTierMax} IS NULL OR ${commissionRateMatrix.amountTierMax} >= ${consumeBase})`,
-              // 按服务单所属市场过滤（service_order→store→org 树解析市场节点），避免跨市场费率行碰撞；与三端云函数镜像
+              
               sql`${commissionRateMatrix.orgId} = (
                 SELECT m.id FROM service_orders so
                   JOIN stores s ON so.store_id = s.store_id

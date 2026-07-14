@@ -93,7 +93,7 @@ export default function SkuDetailPageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const serviceFee = (fd.get("serviceFee") as string).trim() || "0"
     const sessionCountRaw = (fd.get("sessionCount") as string).trim()
-    // 疗程卡默认 1 次（避免漏填导致 session_count=null）；家居产品保持 null
+    
     const sessionCount = sessionCountRaw
       ? parseInt(sessionCountRaw)
       : productType === '疗程卡' ? 1 : null

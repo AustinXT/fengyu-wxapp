@@ -1,10 +1,4 @@
-/**
- * 积分发放工具 — 订单链净额差值法（ticket 2026-04-24 points-accrual-on-sale-order）
- *
- * 逻辑副本：与 clientApi/utils/points.js、staffApi/utils/points.js 保持完全一致；
- * payNotify 是独立云函数（扁平结构，无 utils/ 子目录），故平铺在根目录。
- * 三端任一处修改后必须同步其它两份。
- */
+
 
 const ORDER_TYPES_EARN_POINTS = new Set(['销售单'])
 
@@ -31,8 +25,8 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
     return { delta: 0, expected: 0, granted: 0, skipped: `order-type-${saleOrderType}` }
   }
 
-  // 2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount
-  // 退款单 refunded_amount 为正，回款单 received 为正；累加得链净额
+  
+  
   const sumRes = await client.query(
     `SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled
        FROM sale_orders
@@ -58,9 +52,9 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   }
 
   const type = delta > 0 ? '消费赠送' : '消费冲销'
-  // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
-  // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
-  // 避免裸 INSERT 撞唯一索引导致整事务回滚。四端字面同义，由 cross-end-sql-snapshot 守护。
+  
+  
+  
   await client.query(
     `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
      VALUES ($1, $2, $3, $4, NOW())
@@ -85,8 +79,8 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
   if (process.env.POINTS_ACCRUAL_ENABLED === 'false') {
     return { skipped: 'feature-flag-disabled' }
   }
-  // SAVEPOINT 真隔离：积分发放报错只回滚子事务，外层资金事务不受影响
-  // （决策：资金正确优先，积分失败仅告警，由 cronTask 兜底重算）。
+  
+  
   let savepointCreated = false
   try {
     await client.query('SAVEPOINT sp_settle_points')
@@ -96,7 +90,7 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
     return result
   } catch (err) {
     if (savepointCreated) {
-      try { await client.query('ROLLBACK TO SAVEPOINT sp_settle_points') } catch (_) { /* noop */ }
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_settle_points') } catch (_) {  }
     }
     try {
       await client.query(
@@ -108,7 +102,7 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
           triggerSource || 'payNotify',
         ],
       )
-    } catch (_) { /* noop */ }
+    } catch (_) {  }
     return { error: err.message, skipped: 'settle-failed' }
   }
 }

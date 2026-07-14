@@ -94,7 +94,7 @@ Page({
         return {
           ...i,
           paid_sessions: paid,
-          // NULL 卡（0040 前未回填）：wxml 据此把「已付 0」改显「已付 —」
+          
           paid_sessions_null: paidNull,
           used_sessions: Math.max(0, total - remaining),
         };

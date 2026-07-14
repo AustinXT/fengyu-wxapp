@@ -28,7 +28,7 @@ export function MultiSelect({
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // 点击外部关闭
+  
   useEffect(() => {
     if (!open) return
     function handleClickOutside(e: MouseEvent) {
@@ -40,7 +40,7 @@ export function MultiSelect({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [open])
 
-  // Escape 关闭
+  
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {

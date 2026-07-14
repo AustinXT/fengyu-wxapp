@@ -24,11 +24,7 @@ import SkillTagManagementDialog from "./skill-tag-management-dialog";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
-/**
- * 员工列表页 — 服务端分页
- *
- * 数据已在 Server Component 中通过 getEmployeesPaginated() 完成 DB 级过滤+分页。
- */
+
 export default function EmployeesPage({
   employees,
   total,
@@ -45,18 +41,18 @@ export default function EmployeesPage({
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
 
-  // 当前有效的技能标签名集合（isValid）：清洗 URL 残留的已停用标签，防幽灵筛选。
-  // 三处同源清洗：列表 page.tsx（后端查询前）+ selectedSkills（前端展示）+ handleExport（导出）。
+  
+  
   const validSkillNames = useMemo(
     () => new Set(skillTags.filter((t) => t.isValid).map((t) => t.name)),
     [skillTags],
   );
   const searchParams = useSearchParams();
 
-  /** 导出当前筛选命中的全部员工（跨分页，身份证脱敏） */
+  
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
-    // 清洗失效标签：exportEmployees 独立解析 URL，须经与列表同源的清洗，防导出幽灵筛选
+    
     if (raw.skill) {
       const rawSkills = raw.skill.split(",").map((s) => s.trim()).filter(Boolean);
       const valid = filterValidSkillValues(rawSkills, validSkillNames);
@@ -90,7 +86,7 @@ export default function EmployeesPage({
     if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
   }, [searchParams, orgNodes, validSkillNames]);
 
-  /** 筛选变更时重置到第 1 页 */
+  
   const setFilter = useCallback(
     (key: string, value: string) => {
       setMany({ [key]: value, page: "" });
@@ -98,7 +94,7 @@ export default function EmployeesPage({
     [setMany],
   );
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  
   const [searchInput, setSearchInput] = useState(get("q"));
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
 
@@ -113,7 +109,7 @@ export default function EmployeesPage({
 
   const marketFilter = get("market");
   const statusFilter = get("status");
-  // 技能标签多选：URL 单值字符串以逗号分隔；剔除已停用标签防幽灵筛选（validSkillNames 见上）
+  
   const selectedSkills = useMemo(() => {
     const raw = get("skill");
     const arr = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -122,7 +118,7 @@ export default function EmployeesPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
+  
   const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
 
   const columns: Column<Employee>[] = [

@@ -76,7 +76,7 @@ interface PaidOrderItem {
   paidSessions: number | null;
   productType: string;
   storeId?: string;
-  /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
+  
   unitRealPrice?: string;
 }
 
@@ -123,7 +123,7 @@ interface TreatmentCard {
   saleOrderId: string;
   paidAt: string;
   storeId?: string;
-  /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
+  
   unitRealPrice?: string;
 }
 

@@ -21,7 +21,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     getActiveSkillTags(),
   ])
   if (!employee) notFound()
-  // 物理删除员工：仅系统管理员（employee:delete）
+  
   const canDelete = !!(session && isAdminScope(session))
   return <EmployeeDetailPage employee={employee} roles={roles} stores={stores} orgNodes={orgNodes} skillTags={skillTags} canDelete={canDelete} />
 }

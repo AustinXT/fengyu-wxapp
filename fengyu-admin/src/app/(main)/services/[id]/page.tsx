@@ -17,7 +17,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   if (!serviceOrder) notFound()
 
-  // 物理删除服务单：仅系统管理员（service:delete）
+  
   const canDelete = !!(session && isAdminScope(session))
 
   return <ServiceDetailPageClient serviceOrder={serviceOrder} serviceItems={serviceItems} serviceReview={serviceReview} canDelete={canDelete} />

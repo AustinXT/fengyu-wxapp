@@ -482,7 +482,7 @@ export const getPendingPayments = withPermission(
       pageSize?: number
       storeId?: string
       search?: string
-      /** 按下单日期（sale_order_datetime）过滤的日期区间，'YYYY-MM-DD' 串；匹配 UI『下单日期』标签，与导出 buildOrderConditions 同口径 */
+      
       dateFrom?: string
       dateTo?: string
     } = {},
@@ -502,8 +502,8 @@ export const getPendingPayments = withPermission(
     }>
     total: number
   }> => {
-    // allocationStatus 缺省（「全部状态」）时不按状态过滤，只限定 allocation_status IS NOT NULL
-    // 命中主流水行（走 partial index idx_sop_alloc_status，排除退款/储值卡抵扣从行/待支付等 NULL 行）。
+    
+    
     const page = Math.max(1, Number(params.page) || 1)
     const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
     const offset = (page - 1) * pageSize
@@ -519,7 +519,7 @@ export const getPendingPayments = withPermission(
         ? undefined
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
-      // 按下单日期过滤（匹配 UI「下单日期」标签；与导出 buildOrderConditions 用 sale_order_datetime 同口径）
+      
       params.dateFrom
         ? gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateFrom, '00:00:00'))
         : undefined,

@@ -1,4 +1,4 @@
-// Organization
+
 export interface OrgNode {
   id: string
   name: string
@@ -17,7 +17,7 @@ export interface Store {
   openingDate: string | null
   bedCount: number | null
   isClosed: boolean
-  /** 闭店日期（YYYY-MM-DD）；NULL 表示在营。与 isClosed 双写一致 */
+  
   closedAt: string | null
   coverImage: string | null
   images: string[] | null
@@ -30,15 +30,11 @@ export interface Store {
   description: string | null
   announcement: string | null
   parkingInfo: string | null
-  /**
-   * 关联拉卡拉商户 ID（N:1，stores.lakala_merchant_id；arch-007）。
-   * 收款字段（商户号/终端号/启用）收敛在 lakala_merchants 表，门店仅持外键；
-   * 商户档案在「商户管理」(/merchants) 维护，门店编辑页只选择关联哪个商户。
-   */
+  
   lakalaMerchantId: string | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   marketName?: string
 }
 
@@ -52,29 +48,29 @@ export interface Employee {
   storeId: string | null
   orgNodeId: string | null
   positionName: string | null
-  /** 头像 URL（cloud:// 或 https://；通过 image-upload 组件 toHttpUrl 渲染） */
+  
   avatarUrl: string | null
   birthday: string | null
   skills: string[] | null
-  /** 是否缴纳社保；默认否 */
+  
   socialInsurance: boolean
   isResigned: boolean
-  /** 入职日期（YYYY-MM-DD） */
+  
   hiredAt: string | null
-  /** 请假开始时间（墙钟 YYYY-MM-DD HH:mm:ss）；与 leaveEnd 成对，请假期间顾客端不可预约 */
+  
   leaveStart: string | null
-  /** 请假结束时间（墙钟 YYYY-MM-DD HH:mm:ss） */
+  
   leaveEnd: string | null
-  /** 是否出差支援；true 时可被本门店外的开单 / 营业额分配选中（跨门店共享），长期保留直至 admin 手动改回 */
+  
   isOnBusinessTrip: boolean
-  /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
+  
   resignedAt: string | null
-  /** 离职原因（自由文本）；NULL 表示在职或未填 */
+  
   resignationReason: string | null
   lastLoginAt: string | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   storeName?: string
   departmentName?: string
   marketName?: string
@@ -89,12 +85,12 @@ export interface Customer {
   gender: string | null
   boundStoreId: string | null
   boundEmployeeId: string | null
-  /** 临时跨门店标记（需求21）；true 时可被非绑定门店的店长开单（跨店临时消费），每日 03:00 cron 重置 */
+  
   isCrossStoreTemp: boolean
   memberLevel: string | null
-  /** 最近一次升级时间（ISO 字符串） */
+  
   memberLevelUpgradedAt: string | null
-  /** 保级截止时间（ISO 字符串）；NULL 或 ≤now 表示保级期已过 */
+  
   memberLevelLockedUntil: string | null
   customerSource: string | null
   promoterEmployeeId: string | null
@@ -113,14 +109,14 @@ export interface Customer {
   notes: string | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   storeName?: string
   employeeName?: string
   promoterName?: string
   marketName?: string
 }
 
-/** 积分流水 */
+
 export interface PointTransaction {
   id: number
   userId: string
@@ -128,7 +124,7 @@ export interface PointTransaction {
   amount: number
   refOrderId: string | null
   createdAt: string
-  // joined
+  
   customerName: string | null
   customerPhone: string | null
   memberLevel: string | null
@@ -137,7 +133,7 @@ export interface PointTransaction {
   marketName: string | null
 }
 
-/** 积分流水汇总统计 */
+
 export interface PointTransactionSummary {
   totalEarn: number
   totalSpend: number
@@ -146,7 +142,7 @@ export interface PointTransactionSummary {
   userCount: number
 }
 
-/** 充值卡流水 */
+
 export interface AdminCardTransaction {
   id: number
   cardId: string
@@ -156,21 +152,17 @@ export interface AdminCardTransaction {
   balance: number
   refOrderId: string | null
   createdAt: string
-  // joined
+  
   customerName: string | null
   customerPhone: string | null
   memberLevel: string | null
-  /**
-   * 顾客当前绑定门店（近似"卡账户所属门店"）。
-   * 自 2026-04-24 prepaid_cards.store_id 被 DROP 后，储值卡跨店共享，
-   * 此字段退回为 `client_wechat_users.bound_store_id`，可能为 null。
-   */
+  
   storeId: string | null
   storeName: string | null
   marketName: string | null
 }
 
-/** 充值卡流水汇总统计 */
+
 export interface CardTransactionSummary {
   totalRecharge: number
   totalDeduct: number
@@ -188,31 +180,12 @@ export interface SkillTag {
   updatedAt: string
 }
 
-/**
- * 品项一级分类名称。完全数据库驱动，由 `product_categories WHERE productKind IS NULL`
- * 行决定，运营在 admin "品项分类 → 品项一级分类管理" 内增删。
- *
- * 不再用字面量联合类型——4/17 会议要求拆分护理项目→招牌/王牌/明星，未来还会变化。
- */
+
 export type ProductKind = string
 export type ProductType = '疗程卡' | '家居产品'
-/**
- * 销售订单状态（saleOrders.status）。
- * 与 db/schema/enums.ts 的 orderStatusEnum 同源；'未审核' / '已作废' 为 WorkFine 历史单
- * 专用态（legacy_source='workfine'），原生订单不会出现。改枚举须同步 db/schema/enums.ts。
- */
+
 export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付' | '未审核' | '已作废'
-/**
- * 销售单据类型（saleOrders.sale_order_type）
- *
- * 2026-04-26 sale-order-domain-refactor 重构：5 → 3 值
- * 删除：'回款单'（迁至 sale_order_payments[change_type='回款']）
- *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
- * 2026-05-18 B5：+'寄存单'（WorkFine 剩余次数初始化，金额维度不入统计，
- *       次数维度可生成 service_orders 核销）
- * 2026-06-24：+'充值单'（充值卡开单 / 旧系统充值金转入，金额不计营业额；
- *       前端列表/详情徽标展示用，转入单靠 remark 标记区分旧系统迁移）
- */
+
 export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单' | '充值单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
@@ -225,7 +198,7 @@ export type CouponType = '现金券' | '品项券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
 export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
 
-/** 角色中文名（全局唯一权威定义，所有展示/错误提示均引用此常量） */
+
 export const ROLE_LABELS: Record<RoleType, string> = {
   admin: '系统管理员',
   manager: '店长',
@@ -239,19 +212,19 @@ export const ROLE_LABELS: Record<RoleType, string> = {
 export interface ProductCategory {
   categoryId: string
   categoryName: string
-  productKind: string | null  // null = 一级分类（品项一级分类）
+  productKind: string | null  
   salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean
-  /** 一级行的展示色（HEX），二级行 null 时由前端继承父级 */
+  
   displayColor: string | null
-  /** 二级行回填：父级一级行的展示色，二级行展示时使用 */
+  
   parentDisplayColor?: string | null
   createdAt: string
   updatedAt: string
 }
 
-/** 商城商品（products 表，category_id → mall_categories） */
+
 export interface Product {
   productId: string
   categoryId: string
@@ -268,13 +241,13 @@ export interface Product {
   isVisible: boolean
   createdAt: string
   updatedAt: string
-  // joined
+  
   categoryName?: string
   categoryGroup?: string
   skuCount?: number
 }
 
-/** SKU（独立实体，category_id → product_categories） */
+
 export interface ProductSku {
   skuId: string
   categoryId: string
@@ -286,38 +259,32 @@ export interface ProductSku {
   sortOrder: number
   serviceFee: string
   isShengmei: boolean | null
-  /**
-   * 体验卡 capability 列（与 product_skus.is_experience 同名同义）。
-   * 仅在 SKU 编辑/查询表单上下文需要，前端运行时按需读取。
-   */
+  
   isExperience?: boolean
-  /**
-   * 店长特别优惠 capability 列（与 product_skus.is_manager_special 同名同义）。
-   * true 时 admin/staff 开单（销售单 + 普通商品）允许店长改应付金额。
-   */
+  
   isManagerSpecial?: boolean
-  // 充值卡 capability 列已退出（2026-05-20 充值卡剥离 SKU 化，DB 列已 DROP）
-  /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+  
+  
   projectSeriesId?: number | null
   marketScope: string | null
   isEnabled: boolean
   createdAt: string
   updatedAt: string
-  // joined
+  
   categoryName?: string
   productKind?: string
   salesCategory?: SalesCategory | null
-  /** 项目系列名称（JOIN project_series_lookup.name） */
+  
   projectSeriesName?: string | null
-  /** 套餐内成交价副本（= 所属组 unit_member_price ?? unit_list_price），落 unit_real_price */
+  
   bundlePrice?: string | null
-  /** 套餐内标价单价副本（= 所属组 unit_list_price），落 unit_price 划线 */
+  
   bundleListPrice?: string | null
   bundleGroupId?: number | null
   groupName?: string | null
 }
 
-/** 项目系列字典（lookup 表 project_series_lookup） */
+
 export interface ProjectSeries {
   id: number
   name: string
@@ -330,9 +297,9 @@ export interface MallBundleGroup {
   productId: string
   groupName: string
   pickCount: number | null
-  /** 组「标价单价」（划线）。应用层必填；组内所有子项共享 */
+  
   unitListPrice: string | null
-  /** 组「会员价单价」（成交）。null = 该组按标价单价成交 */
+  
   unitMemberPrice: string | null
   sortOrder: number
   createdAt: string
@@ -355,7 +322,7 @@ export interface SaleOrder {
   saleOrderType: SaleOrderType
   documentType: DocumentType | null
   refSaleOrderId: string | null
-  /** 历史订单来源标记：'workfine'=WorkFine 历史导入（禁止退款/回款/改实收）；null=系统原生 */
+  
   legacySource: string | null
   marketName: string
   storeId: string
@@ -364,43 +331,37 @@ export interface SaleOrder {
   clientPhone: string | null
   customerName: string | null
   totalAmount: string
-  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 received 之和等于 totalAmount */
+  
   prepaidCardAmount: string
-  /**
-   * 实收金额（聚合 sale_order_payments[change_type∈(首次支付/回款/储值卡抵扣), status='已支付'] 的快照）。
-   * 2026-04-26 sale-order-domain-refactor：原 paidAmount 列与 received 重复，已 DROP；统一改用 received。
-   */
+  
   received: string
-  /** 已退款金额（聚合 sale_order_payments[change_type='退款',status='已支付'] 取负值；2026-04-26 新增） */
+  
   refundedAmount: string
   paymentMethod: PaymentMethod
   openedBy: string | null
   preferredEmployeeId: string | null
   paidAt: string | null
-  /** 线下确认收款时间（offline_confirmed_at；订单详情页填充，列表查询不取） */
+  
   offlineConfirmedAt?: string | null
   allocationStatus: AllocationStatus | null
   couponId: string | null
   couponDiscount: string | null
   remark: string | null
-  /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
+  
   isActivity?: boolean
-  /**
-   * 会员升级单标记（recalcCustomerType 在顾客首次跃迁为会员客时自动打标）。
-   * 由 is_membership_upgrade 列同步四端字节；导出与列表均暴露。
-   */
+  
   isMembershipUpgrade?: boolean
   createdAt: string
   updatedAt: string
-  // joined
+  
   storeName?: string
   openedByName?: string
-  /** 指定美容师姓名（preferred_employee_id → staff_wechat_users.name） */
+  
   preferredEmployeeName?: string
-  /** 线下确认人姓名（offline_confirmed_by → staff_wechat_users.name） */
+  
   offlineConfirmedByName?: string
   items?: SaleItem[]
-  /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
+  
   allocatable?: boolean
 }
 
@@ -418,16 +379,16 @@ export interface SaleItem {
   unitRealPrice: string
   saleAmount: string
   received: string
-  /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
+  
   pendingReceived: string
   expireDate: string | null
-  /** 已提货数量（家居产品；picked_up_quantity；订单详情页填充，其它查询不取） */
+  
   pickedUpQuantity?: number | null
   remark: string | null
   salesCategory: SalesCategory | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   skuName?: string
   productName?: string
 }
@@ -444,7 +405,7 @@ export interface SaleAllocation {
   isVoid: boolean
   createdAt: string
   updatedAt: string
-  // joined
+  
   employeeName?: string
   departmentName?: string
   saleItemName?: string
@@ -464,11 +425,11 @@ export interface ServiceOrder {
   commissionStatus?: AllocationStatus | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   storeName?: string
   employeeName?: string
   customerName?: string
-  /** 跨门店只读访问（顾客档案场景）：门店不在当前账号 scope 内 → 仅可查看不可操作 */
+  
   readOnly?: boolean
 }
 
@@ -483,7 +444,7 @@ export interface ServiceCommission {
   isVoid: boolean
   createdAt: string
   updatedAt: string
-  // joined
+  
   employeeName?: string
   departmentName?: string
 }
@@ -502,7 +463,7 @@ export interface Appointment {
   notes: string | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   storeName?: string
 }
 
@@ -514,7 +475,7 @@ export interface PermissionRole {
   createdBy: string | null
   createdAt: string
   updatedAt: string
-  // joined
+  
   employeeName?: string
   scopeName?: string
 }
@@ -530,7 +491,7 @@ export interface CommissionRate {
   commissionRate: string
   createdAt: string
   updatedAt: string
-  // joined
+  
   orgName?: string
 }
 
@@ -557,7 +518,7 @@ export interface CouponTemplate {
   updatedAt: string
 }
 
-/** 开单时可选用的顾客优惠券（已按订单金额过滤） */
+
 export interface AvailableCoupon {
   couponId: string
   templateId: string
@@ -569,11 +530,11 @@ export interface AvailableCoupon {
   applicableProductIds: string[] | null
   applicableCategoryIds: string[] | null
   expireAt: string
-  /** 针对当前订单金额计算出的实际优惠金额 */
+  
   discountAmount: string
 }
 
-/** 批量发券时的顾客选择项 */
+
 export interface BatchCouponCustomer {
   userId: string
   name: string | null
@@ -582,7 +543,7 @@ export interface BatchCouponCustomer {
   memberLevel: string | null
 }
 
-/** 批量发送消息时的顾客选择项 */
+
 export interface BatchMessageCustomer {
   userId: string
   name: string | null
@@ -591,7 +552,7 @@ export interface BatchMessageCustomer {
   memberLevel: string | null
 }
 
-/** 已发放优惠券记录（详情页展示用） */
+
 export interface IssuedCoupon {
   couponId: string
   customerName: string
@@ -631,44 +592,33 @@ export interface AuthSession {
   }
 }
 
-// Dashboard
-/**
- * 业务角色看板统计（manager/finance）。
- *
- * 2026-04-26 sale-order-domain-refactor 重写 SQL 口径：
- *   - todayVisitors / yesterdayVisitors  ← service_orders[status='已完成'] DISTINCT client_user_id（与 metrics §"客流"对齐）
- *   - todayRevenue / yesterdayRevenue    ← SUM(received - refunded_amount)，已天然冲销退款
- *   - todayPaidAmount / yesterdayPaidAmount ← SUM(received) 毛实收（不扣退款）
- *   - todayRefundedAmount                ← SUM(refunded_amount)，今日已退款金额
- *   - todayOpenedCustomers               ← sale_orders DISTINCT client_user_id（按 sale_order_datetime），辅助"今日开单顾客数"
- *   - 全部 SQL `WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`
- *   - 时区固定 Asia/Shanghai（与 metrics.md / mgmt-dashboard 对齐）
- */
+
+
 export interface DashboardStats {
-  /** 今日客流（service_orders[已完成] DISTINCT client_user_id） */
+  
   todayVisitors: number
-  /** 今日业绩 = SUM(received - refunded_amount)，已扣退款 */
+  
   todayRevenue: number
-  /** 今日毛实收 = SUM(received)，不扣退款 */
+  
   todayPaidAmount: number
-  /** 今日已退款金额 = SUM(refunded_amount) */
+  
   todayRefundedAmount: number
-  /** 今日开单顾客数（sale_orders DISTINCT client_user_id by sale_order_datetime） */
+  
   todayOpenedCustomers: number
   pendingOrders: number
   pendingAllocations: number
   pendingAppointments: number
   activeServices: number
   yesterdayVisitors: number
-  /** 昨日业绩（同 todayRevenue 公式） */
+  
   yesterdayRevenue: number
-  /** 昨日毛实收（同 todayPaidAmount 公式） */
+  
   yesterdayPaidAmount: number
-  /** 全量订单累计实付金额（SUM received，'销售单'+'转换单' + 已支付） */
+  
   totalPaidAmount: number
-  /** 角色上下文：决定前端展示哪种看板 */
+  
   roleContext: 'business' | 'admin' | 'hr' | 'product'
-  /** admin/hr 角色的系统概览指标 */
+  
   adminStats?: {
     totalStores: number
     totalEmployees: number
@@ -677,26 +627,20 @@ export interface DashboardStats {
   }
 }
 
-// ─── 订单款项流水（sale_order_payments） ───
+
 export type PaymentChangeType = '首次支付' | '回款' | '退款' | '储值卡抵扣'
-/**
- * 款项流水状态。2026-04-26 sale-order-domain-refactor 新增 '待审批'（退款审批流）。
- */
+
 export type PaymentFlowStatus = '待支付' | '待审批' | '已支付' | '已作废' | '已退款'
 export type PaymentSourceEnd = 'client' | 'staff' | 'admin' | 'notify'
 
-/**
- * 订单款项流水行（与 db/schema/order.ts:saleOrderPayments 对齐）
- *
- * 2026-05-03 子表回收：原 sale_order_payment_details 字段全部并入主表，本接口字段一一对应主表列。
- */
+
 export interface SaleOrderPayment {
   id: number
   saleOrderId: string
   changeType: PaymentChangeType
-  /** 金额字符串（numeric），退款为负 */
+  
   amount: string
-  /** 流水通道；储值卡抵扣对应 '储值卡' */
+  
   paymentMethod: PaymentMethod | '储值卡'
   externalTxnId: string | null
   status: PaymentFlowStatus
@@ -705,7 +649,7 @@ export interface SaleOrderPayment {
   note: string | null
   createdAt: string
   paidAt: string | null
-  // 可选 join 字段
+  
   operatorName?: string | null
   refundReason?: string | null
   refSaleItemId?: string | null

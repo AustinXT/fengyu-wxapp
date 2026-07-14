@@ -1,45 +1,39 @@
-/**
- * 预约模块路由
- * 顾客发起预约、查看预约、取消预约
- */
+
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { checkText } = require('../utils/wx-sec-check')
 
-/**
- * 发起预约
- * 顾客针对已支付订单的次数余额发起预约
- */
+
 async function create(ctx) {
-  // 必须绑定手机号
+  
   await requirePhone()(ctx, async () => {})
 
   const { userId } = ctx.auth
   const payload = ctx.event.payload
 
   const {
-    saleItemId, // 销售明细ID,对应 sale_items.sale_item_id（可选）
-    staffWfId, // 预约美容师(可选)
-    staffName: inputStaffName, // 美容师姓名(前端传入)
-    appointmentTime, // 预约到店时间
-    notes // 备注(可选)
+    saleItemId, 
+    staffWfId, 
+    staffName: inputStaffName, 
+    appointmentTime, 
+    notes 
   } = payload
 
   if (!appointmentTime) {
     throw new Error('INVALID_PARAMS: 缺少预约时间')
   }
 
-  // 解析前端传入的时段字符串
+  
   const parsedTime = parseAppointmentTime(appointmentTime)
 
-  // 校验预约时间不能为过去（允许 5 分钟容差，避免网络延迟误拒）
+  
   if (parsedTime.getTime() < Date.now() - 5 * 60 * 1000) {
     throw new Error('INVALID_PARAMS: 预约时间不能为过去')
   }
 
-  // 请假拦截（权威校验）：指定了美容师且所选时段起点落入其请假区间则拒绝。
-  // 用墙钟串 ::timestamptz 比较，与 admin 录入、parseAppointmentTime 的 +08:00 口径一致，不经 now()/时区转换。
+  
+  
   if (staffWfId) {
     const m = String(appointmentTime).match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
     const slotStart = m ? `${m[1]} ${m[2]}:00` : null
@@ -56,9 +50,9 @@ async function create(ctx) {
       }
     }
 
-    // 时段冲突检测（1 对 1 口径）：该美容师该时段起点已有活跃预约则拒绝。
-    // 用 parsedTime（已按 +08:00 解析的绝对时刻），pg 库序列化为 UTC ISO，
-    // 与 appointment_time(timestamptz) 按绝对时刻比较，不依赖 session tz（tz-safe）。
+    
+    
+    
     const conflictRows = await pg.query(
       `SELECT 1 FROM appointments
        WHERE employee_id = $1 AND appointment_time = $2
@@ -71,7 +65,7 @@ async function create(ctx) {
     }
   }
 
-  // 查询顾客信息
+  
   const users = await pg.query(
     `SELECT u.phone, u.name, u.bound_store_id,
             s.store_name AS bound_store_name
@@ -86,7 +80,7 @@ async function create(ctx) {
   let orderItem = null
 
   if (saleItemId) {
-    // 关联疗程卡：验证权限和剩余次数
+    
     const orderItems = await pg.query(`
       SELECT
         si.sale_item_id,
@@ -113,7 +107,7 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 剩余次数不足')
     }
 
-    // 检查是否已有待确认或已确认的预约
+    
     const existingAppointments = await pg.query(
       `SELECT appointment_id FROM appointments
        WHERE sale_item_id = $1 AND status IN ('待确认', '已确认')`,
@@ -125,21 +119,21 @@ async function create(ctx) {
     }
   }
 
-  // 门店信息：优先从订单取，否则从用户绑定门店取
+  
   const storeId = orderItem?.store_id || userStoreId
   if (!storeId) {
     throw new Error('INVALID_PARAMS: 请先绑定门店后再预约')
   }
 
-  // 顾客姓名从 client_wechat_users
+  
   let clientName = users[0]?.name || ''
   if (!clientName) clientName = users[0]?.phone || ''
 
-  // 内容安全校验（备注 = 资料类）：违规抛 INVALID_PARAMS，不创建预约
+  
   await checkText(notes, { scene: 1 })
 
-  // 创建预约
-  // partial unique uq_appt_sale_item_active 兜底 TOCTOU：同 sale_item 双发 create
+  
+  
   const appointmentId = generateAppointmentId()
   const now = new Date()
 
@@ -174,15 +168,12 @@ async function create(ctx) {
   }
 }
 
-/**
- * 预约列表
- * 查询顾客的所有预约
- */
+
 async function list(ctx) {
   const { userId } = ctx.auth
   const { status, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
 
-  // 分页参数（默认 20 条/页，上限 50）
+  
   const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
   const page = Math.max(Number(pageParam) || 1, 1)
   const offset = (page - 1) * pageSize
@@ -195,7 +186,7 @@ async function list(ctx) {
     whereClause += ` AND a.status = $${params.length}`
   }
 
-  // 多取 1 条用于判断是否有下一页
+  
   const fetchLimit = pageSize + 1
   params.push(fetchLimit, offset)
 
@@ -229,10 +220,7 @@ async function list(ctx) {
   ctx.result = { appointments, hasMore }
 }
 
-/**
- * 取消预约
- * 顾客可取消待确认或已确认状态的预约
- */
+
 async function cancel(ctx) {
   const { userId } = ctx.auth
   const { appointmentId, cancelledReason } = ctx.event.payload || {}
@@ -256,10 +244,10 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 仅待确认的预约可取消')
   }
 
-  // 已关联服务单且服务已开始/完成的预约不可取消：
-  // service.create 关联预约但不改其状态，预约在 待服务/服务中 阶段仍是 已确认，
-  // 若放行取消会造成「服务已发生（已扣次数、已产生提成）却显示已取消」的数据不一致。
-  // 服务单 已取消 不拦截，以便释放预约。
+  
+  
+  
+  
   const linkedService = await pg.query(
     `SELECT 1 FROM service_orders
      WHERE appointment_id = $1
@@ -290,11 +278,7 @@ async function cancel(ctx) {
   }
 }
 
-/**
- * 美容师时段占用查询
- * 顾客选定日期后，查该门店当日每位美容师已被占用（待确认/已确认）的时段起点列表。
- * 前端据此在美容师弹层标注「已约满」（1 对 1 口径：一个美容师一个时段只能被一位顾客预约）。
- */
+
 async function staffSchedule(ctx) {
   const { storeId, date } = ctx.event.payload || {}
 
@@ -305,7 +289,7 @@ async function staffSchedule(ctx) {
     throw new Error('INVALID_PARAMS: date 需为 YYYY-MM-DD 格式')
   }
 
-  // AT TIME ZONE 'Asia/Shanghai' 取北京时间墙钟，不依赖 session tz（tz-safe）
+  
   const rows = await pg.query(
     `SELECT employee_id,
             to_char(appointment_time AT TIME ZONE 'Asia/Shanghai', 'HH24:MI') AS slot_start
@@ -332,9 +316,7 @@ async function staffSchedule(ctx) {
   }
 }
 
-/**
- * 解析前端时段字符串为 Date 对象
- */
+
 function parseAppointmentTime(timeStr) {
   const match = timeStr.match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
   if (!match) {

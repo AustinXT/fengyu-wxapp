@@ -13,27 +13,27 @@ import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, Employee, CommissionRate } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
 
-// --------------- 常量 ---------------
+
 
 const SKILL_TAGS = ['美容师', '养生师', '推广师', '品项老师'] as const
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
-// --------------- 类型 ---------------
+
 
 interface CommissionEntry {
   id: number
   skillTag: string
   employeeId: string
   ratioPercent: string
-  allocAmount: string       // 分配金额 = ratioPercent/100 × perSessionPrice × sessionUsed
-  commissionRate: number    // 提成比例（从矩阵获取，按 consumeBase 查档）
-  commissionAmount: string  // 提成金额 = allocAmount × commissionRate
+  allocAmount: string       
+  commissionRate: number    
+  commissionAmount: string  
 }
 
-// --------------- 工具函数 ---------------
 
-/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+
+
 function getPoolKey(roleType: string): string {
   return roleType
 }
@@ -61,16 +61,12 @@ function sortByPosition(employees: Employee[]): Employee[] {
   )
 }
 
-/**
- * 单次（per-session）价格。
- * service_items.unit_real_price 是 sale_items.unit_real_price 的快照，
- * 已是 per-session 单次价，直接取用（不再 ÷session_count）。
- */
+
 function perSessionPrice(item: ServiceItemDetail): number {
   return Number(item.unitRealPrice ?? 0)
 }
 
-/** 本次服务可分配金额基底 = perSessionPrice × sessionUsed */
+
 function consumeBase(item: ServiceItemDetail): number {
   return Math.round(perSessionPrice(item) * item.sessionUsed * 100) / 100
 }
@@ -81,9 +77,9 @@ function calcAllocAmount(ratioPercent: string, base: number): string {
   return ((ratio / 100) * base).toFixed(2)
 }
 
-// --------------- 初始化 ---------------
 
-/** 按员工 skills 推导技能标签（推广师 > 养生师 > 美容师 兜底）；无员工时回退美容师 */
+
+
 function deriveSkillTag(emp: Employee | undefined): string {
   const skills = emp?.skills || []
   if (skills.includes('推广师')) return '推广师'
@@ -91,7 +87,7 @@ function deriveSkillTag(emp: Employee | undefined): string {
   return '美容师'
 }
 
-/** 按服务明细 + 比例计算一行提成条目（已分配回填 / 默认预填共用同一套算法） */
+
 function buildEntry(
   item: ServiceItemDetail | undefined,
   skillTag: string,
@@ -140,8 +136,8 @@ function initCommissions(
     )
   }
 
-  // 未分配的服务明细默认预填 1 行：指派美容师 + 100% + 按费率算的单人提成
-  // （用户可改/可加行；提交仍走 batchSaveServiceCommissions）
+  
+  
   if (assignedEmployeeId) {
     const assignedEmp = employees.find((e) => e.employeeId === assignedEmployeeId)
     const assignedSkillTag = deriveSkillTag(assignedEmp)
@@ -157,7 +153,7 @@ function initCommissions(
   return result
 }
 
-// --------------- 主组件 ---------------
+
 
 export default function ServiceCommissionDetailPageClient({
   serviceOrder,
@@ -177,9 +173,9 @@ export default function ServiceCommissionDetailPageClient({
     [employees],
   )
 
-  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
-  // 「服务单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
-  // 全公司补充池并入候选，故能跨门店命中；出差标记长期保留直至 admin 手动改回（2026-07-13 起不再每日重置）。
+  
+  
+  
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
     return allActiveEmployees.filter(
@@ -264,7 +260,7 @@ export default function ServiceCommissionDetailPageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务提成分配</h1>
       </div>
 
-      {/* 服务单摘要 */}
+      {}
       <Card>
         <CardHeader><CardTitle>服务单信息</CardTitle></CardHeader>
         <CardContent>
@@ -297,7 +293,7 @@ export default function ServiceCommissionDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 逐服务明细分配卡片 */}
+      {}
       {serviceItems.map((item) => (
         <ServiceItemCard
           key={item.serviceItemId}
@@ -310,7 +306,7 @@ export default function ServiceCommissionDetailPageClient({
         />
       ))}
 
-      {/* 保存 */}
+      {}
       <Card>
         <CardContent className="pt-6">
           <SaveButton
@@ -324,7 +320,7 @@ export default function ServiceCommissionDetailPageClient({
   )
 }
 
-// --------------- 服务明细卡片 ---------------
+
 
 function ServiceItemCard({
   item,
@@ -343,7 +339,7 @@ function ServiceItemCard({
 }) {
   const base = consumeBase(item)
 
-  // 按 roleType 分池统计分配比例合计（P2-14 Q5：三角色独立）
+  
   const groupSums: Record<string, number> = {}
   for (const e of entries) {
     if (!e.skillTag) continue
@@ -378,7 +374,7 @@ function ServiceItemCard({
 
             return (
               <div key={entry.id} className="bg-[#FAFAFA] rounded-lg px-4 py-2.5 flex items-end gap-2 flex-wrap">
-                {/* 技能标签 */}
+                {}
                 <div className="w-24 shrink-0">
                   <label className="text-[10px] text-[#999999]">技能标签</label>
                   <Select
@@ -392,7 +388,7 @@ function ServiceItemCard({
                   </Select>
                 </div>
 
-                {/* 员工 */}
+                {}
                 <div className="w-32 shrink-0">
                   <label className="text-[10px] text-[#999999]">员工</label>
                   <Select
@@ -409,7 +405,7 @@ function ServiceItemCard({
                   </Select>
                 </div>
 
-                {/* 提成比例（只读） */}
+                {}
                 <div className="w-16 shrink-0 text-center">
                   <label className="text-[10px] text-[#999999]">提成</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-center">
@@ -421,7 +417,7 @@ function ServiceItemCard({
                   </p>
                 </div>
 
-                {/* 分配比例 */}
+                {}
                 <div className="w-20 shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
                   <Select
@@ -435,19 +431,19 @@ function ServiceItemCard({
                   </Select>
                 </div>
 
-                {/* 分配金额（只读） */}
+                {}
                 <div className="w-20 shrink-0 text-right">
                   <label className="text-[10px] text-[#999999]">分配额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end">¥{Number(entry.allocAmount).toLocaleString()}</p>
                 </div>
 
-                {/* 提成金额（只读） */}
+                {}
                 <div className="w-20 shrink-0 text-right">
                   <label className="text-[10px] text-[#999999]">提成额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end text-[var(--primary)]">¥{Number(entry.commissionAmount).toLocaleString()}</p>
                 </div>
 
-                {/* 删除 */}
+                {}
                 <Button size="sm" variant="ghost" onClick={() => onRemove(item.serviceItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </Button>
@@ -458,7 +454,7 @@ function ServiceItemCard({
           <p className="text-xs text-[#999999] py-2">暂无分配，点击"添加分配"开始</p>
         )}
 
-        {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}
+        {}
         <div className="flex items-center justify-between pt-1">
           <div className="flex gap-4 text-xs flex-wrap">
             {Object.entries(groupSums).map(([role, sum]) => (
@@ -480,7 +476,7 @@ function ServiceItemCard({
   )
 }
 
-// --------------- 保存按钮 ---------------
+
 
 function SaveButton({
   serviceOrderId,
@@ -514,7 +510,7 @@ function SaveButton({
         }
       }
 
-      // 按 (roleType) 分池校验（P2-14 Q5：三角色独立）
+      
       const pools: Record<string, CommissionEntry[]> = {}
       for (const e of entries) {
         const g = getPoolKey(e.skillTag)

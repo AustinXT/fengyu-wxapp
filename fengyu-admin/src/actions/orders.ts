@@ -22,7 +22,7 @@ import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
-// TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
+
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
@@ -30,27 +30,27 @@ import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
 
-// drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
+
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
-// 订单详情：指定美容师 / 线下确认人 各自 JOIN staff_wechat_users 取姓名
+
 const preferredStaff = alias(staffWechatUsers, 'preferredStaff') as unknown as typeof staffWechatUsers
 const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown as typeof staffWechatUsers
 
-// 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
-// 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
+
+
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
-// 旧系统(WorkFine)充值金转入专用备注标记（与 staff routes/card.js LEGACY_INFLOW_NOTE 字面一致）
+
 const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 
-// 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
+
 type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
-// 寄存单疗程卡「实际单价按实付重算」—— unit_real_price = 实付received / 总次数session_count。
-// 实付=0 的行回落标价单价 unit_price（保持现状，非置 0）；仅 product_type='疗程卡'，家居产品行(session_count NULL)保持标价。
-// ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后调用（理由见 staff routes/order.js 同名注释）：
-//   并进通用 recalc 会腰斩所有欠款单 per-session 价（腐蚀提成/退款/转换）；勿 DRY 进 recalcPaidSessionsForOrder。
-// 与 staff routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
+
+
+
+
+
 async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Promise<void> {
   await tx.execute(sql`UPDATE sale_items
       SET unit_real_price = CASE
@@ -63,20 +63,12 @@ async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Pr
       -- DEPOSIT_REAL_PRICE`)
 }
 
-/**
- * 充值卡订单入账（2026-05-20 重构：充值卡剥离 SKU 化）
- *
- * 在订单状态翻转到"已支付"的同事务内调用。识别 sale_orders.sale_order_type='充值单'，
- * 面值直接读 sale_orders.total_amount（不再扫 sale_items）。
- *
- * 幂等：card_transactions.external_ref 唯一约束 + ref_order_id 软查；
- * 与 staff order.confirmOffline + payNotify 同源（external_ref='card-topup-{saleOrderId}'）。
- */
+
 async function applyRechargeOnOrderPaid(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   saleOrderId: string,
-  // 可选幂等键覆盖：充值金转入(inflow)传 card-inflow-{requestId} 以跨「不同订单号的重试」去重；
-  // 不传则沿用 card-topup-{saleOrderId}（confirmOfflinePayment / createRechargeOrder 原行为不变）。
+  
+  
   externalRef?: string,
 ): Promise<void> {
   const [order] = await tx
@@ -89,19 +81,19 @@ async function applyRechargeOnOrderPaid(
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
 
-  // 非充值单 / 未实名订单 → 跳过
+  
   if (!order || !order.clientUserId || order.saleOrderType !== '充值单') return
 
   const faceValue = Number(order.totalAmount)
   if (!(faceValue > 0)) return
 
-  // 幂等：防重放
+  
   const dup = await tx.execute(sql`
     SELECT 1 FROM card_transactions WHERE ref_order_id = ${saleOrderId} AND type = '充值' LIMIT 1
   `)
   if ((dup as unknown as any[]).length > 0) return
 
-  // 确定性 card_id（Bug U）：一户一卡，避免 Date.now()+random 并发撞 PK
+  
   const newCardId = `FY-CARD-${order.clientUserId}`
 
   const upsertRows = await tx.execute(sql`
@@ -122,24 +114,7 @@ async function applyRechargeOnOrderPaid(
   `)
 }
 
-/**
- * customer_type 跃迁（admin recordPayment 触发点）。
- *
- * 三端跃迁触发点之一（与 fengyu-staff/cloudfunctions/staffApi/routes/order.js
- * recalcCustomerType + fengyu-client/cloudfunctions/payNotify/index.js 镜像一致）。
- *
- * 业务口径（2026-04-26 体验卡 ticket Round 2）：
- *   - 会员客：销售单 total_amount >= memberThreshold
- *   - 小美客：销售单中存在非体验卡明细行（si.is_experience = false）
- *   - 体验客：销售单中存在体验卡明细行（si.is_experience = true）
- *   - 流量客：兜底
- *
- * 只升不降；跃迁为"会员客"时同步写入 became_member_at = NOW()。
- *
- * SQL 关键字段（is_experience capability 列、不再 JOIN product_categories）必须与
- * staffApi/routes/order.js + payNotify/index.js 字面一致 —— 守卫测试
- * recalc-customer-type-sql.test.js 跨三个文件比对。
- */
+
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
 async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<void> {
@@ -153,9 +128,9 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
 
   const threshold = await getMemberThreshold()
 
-  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-  // 与 cross-end-sql-snapshot.test.js 守护，任一端漂移立即触发测试失败。
+  
+  
+  
   const typeRes = await tx.execute(sql`
     SELECT CASE
        WHEN EXISTS (
@@ -210,8 +185,8 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
-    // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
+    
+    
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (
@@ -227,20 +202,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   }
 }
 
-/**
- * 开单时即时扣储值卡（全额抵扣场景：payable==0、无需付现金）。
- *
- * 与 confirmOfflinePayment 的扣卡块字面对齐：锁余额 → 校验 → UPDATE prepaid_cards.balance
- * → card_transactions(type='扣款') → sale_order_payments(change_type='储值卡抵扣')。
- * 幂等键 external_ref='card-deduct-{saleOrderId}'；余额不足抛 INSUFFICIENT_BALANCE。
- *
- * 仅在订单全额由储值卡抵扣（payable_amount==0 且 prepaid>0）时于创建事务内调用，
- * 是对「先付款后记账」不变量的有意例外（用户 2026-05-21 拍板）：无现金可收，挂"待支付"
- * 反而会卡死（payment_method='无' 无法走 confirmOfflinePayment），故创建时直接扣卡 + 结清。
- *
- * 注意：此扣卡块需与 staff order.js deductPrepaidCardAtCreation + confirmOffline / payNotify
- * 字面对齐，跨端 snapshot 测试守护。
- */
+
 async function deductPrepaidCardAtCreation(
   tx: AdminTx,
   args: { saleOrderId: string; clientUserId: string; amount: number; employeeId: string; note: string },
@@ -248,7 +210,7 @@ async function deductPrepaidCardAtCreation(
   const { saleOrderId, clientUserId, amount, employeeId, note } = args
   if (!(amount > 0) || !clientUserId) return null
 
-  // 幂等：已扣过则跳过
+  
   const dupRes = await tx.execute(sql`
     SELECT 1 FROM card_transactions
     WHERE ref_order_id = ${saleOrderId} AND type = '扣款' LIMIT 1
@@ -295,9 +257,9 @@ async function deductPrepaidCardAtCreation(
 export const getOrders = withPermission(
   'sale_order:list',
   async (session): Promise<SaleOrder[]> => {
-  // 2026-07-08 修复 T1：listOrders/getOrdersPaginated 历史上直接读 sale_orders.customerName /
-  // clientPhone，没有 left join client_wechat_users。导出端（exportOrders）已做兜底，
-  // 这里对齐：客户档案为权威，sale_orders 仅作 fallback（已污染的旧数据可被自动治愈）。
+  
+  
+  
   const rows = await db
     .select({
       order: saleOrders,
@@ -311,7 +273,7 @@ export const getOrders = withPermission(
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, saleOrders.storeId))
-    // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
+    
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(500)
 
@@ -326,7 +288,7 @@ export const getOrders = withPermission(
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
     clientUserId: r.order.clientUserId,
-    // 顾客档案权威 > sale_orders 兜底（防 client_wechat_users.name='' 的旧数据被原样展示）
+    
     clientPhone: r.custPhone || r.order.clientPhone || null,
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
@@ -350,7 +312,7 @@ export const getOrders = withPermission(
   },
 )
 
-/** 订单列表筛选参数 */
+
 export interface OrderFilters {
   status?: string
   type?: string
@@ -358,22 +320,19 @@ export interface OrderFilters {
   dateFrom?: string
   dateTo?: string
   search?: string
-  /** 支付方式筛选（含 `'无'` = 全额储值卡抵扣） */
+  
   paymentMethod?: string
-  /** 是否仅筛选"有储值卡抵扣"的订单（prepaid_card_amount > 0） */
+  
   hasPrepaidDeduction?: boolean
-  /** 分配状态筛选（'待分配' | '已分配'，用于营业额分配页） */
+  
   allocationStatus?: string
-  /**
-   * 仅营业额分配页/导出传 true：只保留参与营业额分配的订单类型（销售单/转换单），
-   * 排除寄存单/充值单/内部单（口径与 dashboard 待分配计数一致）。
-   */
+  
   allocationEligibleOnly?: boolean
   page?: number
   pageSize?: number
 }
 
-/** 构建订单列表 WHERE 条件（列表分页与导出共用，保证筛选口径一致） */
+
 function buildOrderConditions(
   session: Parameters<typeof scopeCondition>[0],
   filters: OrderFilters,
@@ -392,13 +351,13 @@ function buildOrderConditions(
     conditions.push(eq(saleOrders.storeId, filters.storeId))
   }
   if (filters.dateFrom) {
-    // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
-    // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
-    // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
+    
+    
+    
     conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
   }
   if (filters.dateTo) {
-    // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
+    
     conditions.push(lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateTo, '23:59:59')))
   }
   if (filters.search) {
@@ -411,7 +370,7 @@ function buildOrderConditions(
       ),
     )
   }
-  // 支付方式筛选（枚举已扩展为 4 值：微信/支付宝/线下/无）
+  
   if (
     filters.paymentMethod === '微信' ||
     filters.paymentMethod === '支付宝' ||
@@ -420,14 +379,14 @@ function buildOrderConditions(
   ) {
     conditions.push(eq(saleOrders.paymentMethod, filters.paymentMethod))
   }
-  // 有储值卡抵扣（prepaid_card_amount > 0）
+  
   if (filters.hasPrepaidDeduction) {
     conditions.push(gt(saleOrders.prepaidCardAmount, '0'))
   }
   if (filters.allocationStatus === '待分配' || filters.allocationStatus === '已分配') {
     conditions.push(eq(saleOrders.allocationStatus, filters.allocationStatus))
   }
-  // 营业额分配页/导出：只保留参与营业额分配的订单类型，排除寄存单/充值单/内部单 + 历史订单（workfine）
+  
   if (filters.allocationEligibleOnly) {
     conditions.push(inArray(saleOrders.saleOrderType, ['销售单', '转换单']))
     conditions.push(sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`)
@@ -436,18 +395,13 @@ function buildOrderConditions(
   return conditions
 }
 
-/** 分页结果 */
+
 export interface PaginatedOrders {
   data: SaleOrder[]
   total: number
 }
 
-/**
- * 服务端分页订单列表 — DB 级过滤 + LIMIT/OFFSET
- *
- * 替代 getOrders() 的客户端过滤模式，支持大数据量下的高效分页。
- * 筛选条件通过 URL searchParams → Server Component → 此函数流转。
- */
+
 export const getOrdersPaginated = withPermission(
   'sale_order:list',
   async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
@@ -455,10 +409,10 @@ export const getOrdersPaginated = withPermission(
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
 
-  // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
+  
   const whereClause = and(...buildOrderConditions(session, filters))
 
-  // COUNT 查询（与数据查询共用相同 WHERE）
+  
   const [countRow] = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(saleOrders)
@@ -466,8 +420,8 @@ export const getOrdersPaginated = withPermission(
 
   const total = countRow?.count ?? 0
 
-  // 数据查询 — JOIN + ORDER + LIMIT/OFFSET
-  // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  
+  
   const rows = await db
     .select({
       order: saleOrders,
@@ -481,7 +435,7 @@ export const getOrdersPaginated = withPermission(
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
+    
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(pageSize)
     .offset(offset)
@@ -512,7 +466,7 @@ export const getOrdersPaginated = withPermission(
     couponDiscount: r.order.couponDiscount,
     remark: r.order.remark,
     isActivity: r.order.isActivity ?? false,
-    /** 会员升级单标记（saleOrders.isMembershipUpgrade，recalcCustomerType 自动打标，迁移 0077 双库已迁） */
+    
     isMembershipUpgrade: r.order.isMembershipUpgrade ?? false,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
@@ -524,18 +478,9 @@ export const getOrdersPaginated = withPermission(
   },
 )
 
-/**
- * 导出行（明细级，一行 = 一条 sale_items[item_direction='购买']）。
- * 订单号/状态/顾客/支付方式等订单级字段在每条 item 行内重复；
- * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
- *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/已退因库内无行级字段，取整单
- *   sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。
- * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示。
- * 寄存单 4 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
- * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
- */
+
 export interface ExportOrderRow {
-  // —— 订单级（每条 item 行重复）——
+  
   marketName: string
   storeName: string | null
   saleOrderId: string
@@ -544,45 +489,45 @@ export interface ExportOrderRow {
   status: string
   customerName: string | null
   clientPhone: string | null
-  /** 订单金额：sale_items.sale_amount（行应付，行级；同单多行各不同，可正确求和） */
+  
   totalAmount: string
-  /** 储值卡抵扣：sale_orders.prepaid_card_amount（订单级，库内无行级字段，同单多行重复） */
+  
   prepaidCardAmount: string
-  /** 实付：sale_items.received（行级净实收，已扣该行退款） */
+  
   received: string
-  /** 已退：sale_orders.refunded_amount（订单级，库内无行级字段，同单多行重复） */
+  
   refundedAmount: string
   paymentMethod: string | null
-  /** 是否纳客：sale_orders.is_membership_upgrade（recalcCustomerType 在顾客首次跃迁为会员客时自动打标） */
+  
   isMembershipUpgrade: boolean
   isActivity: boolean
-  /** 经营类型：sale_items.sales_category（行级，订单级页保留便于看清） */
+  
   salesCategory: string | null
-  /** 顾客类型：client_wechat_users.customer_type；client_user_id=NULL 时由前端 fallback「未注册」 */
+  
   customerType: string | null
   openedByName: string | null
   saleOrderDatetime: string
   createdAt: string
-  // —— item 级（每条 item 不同）——
-  /** 商品类型：sale_items.product_type（疗程卡 / 家居产品） */
+  
+  
   productType: string | null
-  /** 品质一级：product_categories.product_kind（一级分类名） */
+  
   categoryL1: string | null
-  /** 品质二级：product_categories.category_name（二级分类名） */
+  
   categoryL2: string | null
-  /** 商品明细：sale_items.product_name 行级商品名称快照（不再聚合多行） */
+  
   productName: string | null
-  /** 总次数：sale_items.session_count；非次数卡（家居产品）为 NULL → 前端 fallback「—」 */
+  
   sessionCount: number | null
-  /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL（历史行/家居产品）退回物理剩余 */
+  
   paidUnusedSessions: number | null
-  /** 单次价格：sale_items.unit_real_price（优惠后价 → number 化便于 Excel 求和） */
+  
   unitRealPrice: number | null
-  /** 订单备注（按行重复） */
+  
   remark: string | null
 }
 
-/** 导出订单（明细级，一行一 sale_items 行；LIMIT 10000 按 item 计数防 OOM）。 */
+
 export const exportOrders = withPermission(
   'sale_order:list',
   async (
@@ -593,13 +538,13 @@ export const exportOrders = withPermission(
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
 
-    // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
-    // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
-    // WHERE 追加 item_direction='购买'：sale_items 同时承载 4 种单据方向的明细行
-    //   （schema order.ts line 168-172），明细级导出仅保留购买行避免双倍行
+    
+    
+    
+    
     const itemRows = await db
       .select({
-        // 订单级
+        
         marketName: saleOrders.marketName,
         storeName: saleOrders.storeName,
         saleOrderId: saleOrders.saleOrderId,
@@ -610,9 +555,9 @@ export const exportOrders = withPermission(
         custPhone: clientWechatUsers.phone,
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
-        totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
+        totalAmount: saleItems.saleAmount,        
         prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleItems.received,             // 行级净实收（商品行口径）
+        received: saleItems.received,             
         refundedAmount: saleOrders.refundedAmount,
         paymentMethod: saleOrders.paymentMethod,
         isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -622,7 +567,7 @@ export const exportOrders = withPermission(
         saleOrderDatetime: saleOrders.saleOrderDatetime,
         createdAt: saleOrders.createdAt,
         remark: saleOrders.remark,
-        // item 级
+        
         productType: saleItems.productType,
         salesCategory: saleItems.salesCategory,
         productName: saleItems.productName,
@@ -649,12 +594,12 @@ export const exportOrders = withPermission(
     const num = (v: string | null) => (v == null ? null : Number(v))
 
     const rows: ExportOrderRow[] = page.map((r) => {
-      // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
-      // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 4 列对寄存单留空；
-      // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
+      
+      
+      
       const isDeposit = r.saleOrderType === '寄存单'
       return {
-        // 订单级
+        
         marketName: r.marketName,
         storeName: r.storeName,
         saleOrderId: r.saleOrderId,
@@ -675,7 +620,7 @@ export const exportOrders = withPermission(
         openedByName: r.openedByName,
         saleOrderDatetime: r.saleOrderDatetime.toISOString(),
         createdAt: r.createdAt.toISOString(),
-        // item 级
+        
         productType: r.productType,
         categoryL1: r.categoryL1,
         categoryL2: r.categoryL2,
@@ -691,12 +636,7 @@ export const exportOrders = withPermission(
   },
 )
 
-/**
- * 导出营业额分配「销售提成」导出行。已分配段一行 = 一条 sale_allocations（每被分配员工一行）；
- * 待分配占位段一行 = 一笔回款 × 一个可分配 item（分配/提成列空）。与服务提成导出（ExportAllocationServiceRow）对称。
- * 金额列为 number 便于 Excel 求和；占比/比例保留 string 原值交前端 fmtPercent；
- * isActivity / isMembershipUpgrade 为 boolean 交前端转「是/否」。
- */
+
 export interface ExportAllocationOrderRow {
   market: string | null
   storeName: string | null
@@ -710,7 +650,7 @@ export interface ExportAllocationOrderRow {
   categoryL2: string | null
   productName: string | null
   sessionCount: number | null
-  /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL 退回物理剩余 */
+  
   paidUnusedSessions: number | null
   saleAmount: number | null
   prepaidCardAmount: number | null
@@ -734,19 +674,7 @@ export interface ExportAllocationOrderRow {
   remark: string | null
 }
 
-/**
- * 导出营业额分配「销售提成」（allocStatus 三态分流，合并后按下单时间 desc 截断 LIMIT 10000）：
- * - 全部：已分配明细（sale_allocations 主链，每被分配员工一行）∪ 待分配占位行（回款 × 可分配 item）；
- * - 已分配：仅明细段；待分配：仅占位段（分配/提成列留空，allocation_status=待分配）。
- * 已分配段 sale_allocations → sale_items → sale_orders；待分配段 sale_order_payments(待分配) →
- * sale_payment_allocatable_items → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
- *
- * 口径：
- * - 金额走「商品行口径」：订单金额=sale_items.sale_amount、实付=sale_items.received（行级净实收）；
- *   储值卡抵扣/已退库内无行级字段，取整单 sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。
- * - 不锁订单 status='已支付'：部分支付订单的回款同样可被分配，需纳入导出（与回款维度列表一致）。
- * - 支付时间/分配状态优先取回款级（sale_payment_id），旧订单维度分配（payment_id 为 NULL）回退订单级。
- */
+
 export const exportAllocationOrders = withPermission(
   'sale_order:list',
   async (
@@ -755,20 +683,20 @@ export const exportAllocationOrders = withPermission(
   ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
     const LIMIT = 10000
 
-    // 复用 list-filters 的 URL→filters 映射；覆盖两处：
-    // status：不锁「已支付」（部分支付订单的已分配回款也要导出）；
-    // allocationStatus：订单级状态不二次过滤，按回款级 allocation_status 在两段查询里各自控制。
+    
+    
+    
     const filters = parseAllocationOrderFilters(params)
     filters.status = undefined
     filters.allocationStatus = undefined
     const allocStatus = params.allocStatus
 
     const num = (v: string | null | undefined) => (v == null ? null : Number(v))
-    // sale_order_datetime 在 admin 运行时为 Date 对象（timestamptz 默认 parser），统一折成 ms 便于合并排序
+    
     const toMs = (d: unknown) => (d instanceof Date ? d.getTime() : d ? Date.parse(String(d)) : 0)
     const merged: Array<{ row: ExportAllocationOrderRow; sort: number }> = []
 
-    // 已分配明细段（一行 = 一条有效 sale_allocations，每被分配员工一行）
+    
     if (allocStatus !== '待分配') {
       const whereClause = and(eq(saleAllocations.isVoid, false), ...buildOrderConditions(session, filters))
       const raw = await db
@@ -868,7 +796,7 @@ export const exportAllocationOrders = withPermission(
       }
     }
 
-    // 待分配占位段（一行 = 一笔回款 × 一个可分配 item；无 sale_allocations，分配/提成列留空）
+    
     if (allocStatus !== '已分配') {
       const whereClause = and(
         eq(saleOrderPayments.allocationStatus, '待分配'),
@@ -949,7 +877,7 @@ export const exportAllocationOrders = withPermission(
             unitRealPrice: num(r.unitRealPrice),
             status: r.status,
             allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
-            // 待分配：无 sale_allocations，分配/提成列留空
+            
             employeeName: null,
             positionName: null,
             allocationRatio: null,
@@ -969,7 +897,7 @@ export const exportAllocationOrders = withPermission(
       }
     }
 
-    // 统一按下单时间 desc 排序（与原已分配段排序键一致），截断 LIMIT
+    
     merged.sort((a, b) => b.sort - a.sort)
     const truncated = merged.length > LIMIT
     const rows = (truncated ? merged.slice(0, LIMIT) : merged).map((m) => m.row)
@@ -977,12 +905,12 @@ export const exportAllocationOrders = withPermission(
   },
 )
 
-// 订单详情页可由订单查看者（sale_order:list）或退款相关角色
-// （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
+
+
 export const getOrderById = withAnyPermission(
   ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
   async (session, saleOrderId: string): Promise<SaleOrder | null> => {
-  // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  
   const rows = await db
     .select({
       order: saleOrders,
@@ -1006,7 +934,7 @@ export const getOrderById = withAnyPermission(
 
   const r = rows[0]
 
-  // Get items with SKU join (product_name from sale_items snapshot)
+  
   const itemRows = await db
     .select({
       item: saleItems,
@@ -1052,7 +980,7 @@ export const getOrderById = withAnyPermission(
     storeId: r.order.storeId,
     saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
     clientUserId: r.order.clientUserId,
-    // 顾客档案权威 > sale_orders 兜底（防 client_wechat_users.name='' 的旧数据被原样展示）
+    
     clientPhone: r.custPhone || r.order.clientPhone || null,
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
@@ -1075,27 +1003,19 @@ export const getOrderById = withAnyPermission(
     preferredEmployeeName: r.preferredEmployeeName ?? undefined,
     offlineConfirmedByName: r.offlineConfirmedByName ?? undefined,
     offlineConfirmedAt: r.order.offlineConfirmedAt?.toISOString() ?? null,
-    // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocations.ts 白名单一致），控制详情页分配入口显隐
+    
     allocatable: ['销售单', '转换单'].includes(r.order.saleOrderType) && r.order.legacySource !== 'workfine',
     items,
   }
   },
 )
 
-/**
- * 查询订单款项流水（ticket 2026-04-24 PR-3 §3.3）
- *
- * 只读，按 created_at 升序返回；
- * - LEFT JOIN staff_wechat_users 带出操作人姓名
- * - 退款专属字段（refundReason / refSaleItemId / sessionCount / auditEmployeeId / auditAt / auditRemark）
- *   2026-05-03 起已合并到 sale_order_payments 主表，无需 JOIN。
- * 用于订单详情页展示款项流水表（首次支付 / 回款 / 退款 / 储值卡抵扣）。
- */
-// 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
+
+
 export const getOrderPayments = withAnyPermission(
   ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
   async (session, saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> => {
-  // scope 校验：只有订单所在门店在 scope 内才允许查看流水
+  
   const [order] = await db
     .select({ storeId: saleOrders.storeId })
     .from(saleOrders)
@@ -1111,7 +1031,7 @@ export const getOrderPayments = withAnyPermission(
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
-    // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
+    
     .orderBy(asc(saleOrderPayments.createdAt))
 
   return rows.map((r) => ({
@@ -1138,16 +1058,7 @@ export const getOrderPayments = withAnyPermission(
   },
 )
 
-/**
- * C4: 确认线下收款 — 仅匹配 status='待支付' AND payment_method='线下' + scope。
- *
- * 支持部分确认（confirmAmount，对齐员工端 staffApi confirmOffline）：
- *   - confirmAmount 缺省 = 剩余应付现金（payable_amount - received）；可下调做部分收款。
- *   - 写 1 行现金流水（首次/回款）+ 扣全额预选储值卡（写'储值卡抵扣'行）。
- *   - 重算 received 后：received ≥ total → '已支付'，否则 '部分支付'，剩余走「录入回款」补齐。
- * 并发：FOR UPDATE 锁原单 + 终态 UPDATE 仍带 WHERE status='待支付' 守卫 + 扣卡幂等键 card-deduct-${id}。
- * 因创建时不再写款项流水，首次确认恒写'首次支付'；双击/并发再次进入会因 status≠待支付 被拦下。
- */
+
 export const confirmOfflinePayment = withPermission(
   'sale_order:update',
   async (
@@ -1161,7 +1072,7 @@ export const confirmOfflinePayment = withPermission(
     | null = null
   try {
     txResult = await db.transaction(async (tx) => {
-      // 锁原单 + 校验状态/支付方式/scope
+      
       const lockRes = await tx.execute(sql`
         SELECT status, payment_method, store_id, total_amount, payable_amount,
                received, prepaid_card_amount, client_user_id, customer_name
@@ -1181,19 +1092,19 @@ export const confirmOfflinePayment = withPermission(
         : Math.round((orderTotal - orderPrepaid) * 100) / 100
       const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
 
-      // 缺省确认金额（两步式 2026-06-07）= 开单约定实付草稿合计（pending_received）− 已收，cap 到剩余应付；
-      // 无草稿（旧订单）回退全额 remainingPayable。前端 dialog 通常显式传 confirmAmount（已按 pending 预填），
-      // 此默认主要兜底"不传金额"的调用，与 staff confirmOffline 对齐。
+      
+      
+      
       const pendRes = await tx.execute(sql`
         SELECT COALESCE(SUM(pending_received), 0) AS pt FROM sale_items WHERE sale_order_id = ${saleOrderId}
       `)
       const pendingTotal = Math.round(Number((pendRes as unknown as Array<{ pt: number | string }>)[0]?.pt || 0) * 100) / 100
 
-      // 本次确认现金金额：缺省 = 约定实付差额（无草稿回退剩余应付）；传入则校验 0 ≤ v ≤ remainingPayable
+      
       let cashAmount: number
       if (confirmAmount === undefined || confirmAmount === null) {
-        // ⚠️ 充值卡从「当下实付」里抵：现金 = pending − prepaid − 已收（与 staff confirmOffline 字面对齐，
-        //    否则欠款+卡订单会多收一笔卡额）。外层 max(0,…) 兜底 pending < prepaid。
+        
+        
         cashAmount = pendingTotal > 0
           ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPrepaid - orderReceived) * 100) / 100))
           : remainingPayable
@@ -1207,7 +1118,7 @@ export const confirmOfflinePayment = withPermission(
         }
       }
 
-      // 设置卡到期日（确认收款即视为卡生效，1 年有效期；部分确认也设置，避免后续补款无触发点）
+      
       await tx.execute(sql`
         UPDATE sale_items
         SET expire_date = (NOW() + INTERVAL '1 year')::date,
@@ -1216,11 +1127,11 @@ export const confirmOfflinePayment = withPermission(
           AND expire_date IS NULL
       `)
 
-      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
-      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
-      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
+      
+      
+      
       const clientUserId = locked.client_user_id as string | null
-      // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
+      
       let cashPaymentId: number | string | null = null
       let cardPaymentId: number | string | null = null
       if (orderPrepaid > 0 && clientUserId) {
@@ -1268,8 +1179,8 @@ export const confirmOfflinePayment = withPermission(
         }
       }
 
-      // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
-      // change_type：已存在非储值卡 payments → '回款'，否则 '首次支付'（正常路径恒为首次支付）。
+      
+      
       if (cashAmount > 0) {
         const existRes = await tx.execute(sql`
           SELECT 1 FROM sale_order_payments
@@ -1291,9 +1202,9 @@ export const confirmOfflinePayment = withPermission(
         cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
       }
 
-      // 重算 received / prepaid_card_amount（跨端字面对齐 staff confirmOffline / recordPayment）：
-      //   received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
-      //   prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
+      
+      
+      
       const sumRes = await tx.execute(sql`
         SELECT
           COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
@@ -1307,12 +1218,12 @@ export const confirmOfflinePayment = withPermission(
       const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
 
-      // 结清判定基准 = payable_amount + 原始 prepaid 快照（orderPrepaid，锁单时的预选抵扣额）。
-      // 普通单 payable + 快照 === total（行为不变）；充值单 payable(实付) ≠ total(面额)，
-      // 须用 payable 否则全额付款仍判为「部分支付」（与 staff confirmOffline / payNotify 跨端对齐）。
+      
+      
+      
       const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
       const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
-      // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
+      
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
@@ -1326,16 +1237,16 @@ export const confirmOfflinePayment = withPermission(
         WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
       `)
       if (rowsAffected(updRes) === 0) {
-        // 并发：状态在本事务可见性内已变更
+        
         return { matched: false as const }
       }
 
-      // 充值卡入账 + 客户分类跃迁：仅订单结清（已支付）时触发
+      
       if (targetStatus === '已支付') {
         await applyRechargeOnOrderPaid(tx, saleOrderId)
       }
-      // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      
+      
       const cashThis = cashPaymentId ? cashAmount : 0
       const cardThis = cardPaymentId ? orderPrepaid : 0
       const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1350,8 +1261,8 @@ export const confirmOfflinePayment = withPermission(
         await refreshOrderAllocationRollup(tx, saleOrderId)
       }
 
-      // 积分发放 + paid_sessions 重算：始终执行（净额/幂等；部分支付也要按比例推进 paid_sessions）
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      
+      
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
       await recalcPaidSessionsForOrder(tx, saleOrderId)
       if (targetStatus === '已支付' && clientUserId) {
@@ -1370,7 +1281,7 @@ export const confirmOfflinePayment = withPermission(
     if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
       return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
     }
-    // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
+    
     const msg: string = err?.message || ''
     if (msg.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = msg.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
@@ -1398,18 +1309,18 @@ export const confirmOfflinePayment = withPermission(
   },
 )
 
-/** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
+
 export const closeOrder = withPermission(
   'sale_order:update',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
-  // 获取上下文用于日志
+  
   const [orderCtx] = await db
     .select({ status: saleOrders.status, customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
 
-  // 事务：关闭订单 + 作废分配，原子提交
+  
   try {
     const txResult = await db.transaction(async (tx) => {
       const result = await tx
@@ -1425,7 +1336,7 @@ export const closeOrder = withPermission(
         return { matched: false }
       }
 
-      // 作废关联的分配记录（规范：订单关闭时作废分配）
+      
       await tx.execute(sql`
         UPDATE sale_allocations SET is_void = true, voided_at = NOW()
         WHERE sale_item_id IN (
@@ -1433,7 +1344,7 @@ export const closeOrder = withPermission(
         ) AND is_void = false
       `)
 
-      // 归还优惠券（订单关闭时释放已核销的券）
+      
       await tx
         .update(userCoupons)
         .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
@@ -1459,11 +1370,11 @@ export const closeOrder = withPermission(
   },
 )
 
-/** C4: 重置支付失败 → 待支付（仅店长） */
+
 export const resetOrderFailed = withPermission(
   'sale_order:update',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
-  // 获取上下文用于日志
+  
   const [orderCtx] = await db
     .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
     .from(saleOrders)
@@ -1497,20 +1408,12 @@ export const resetOrderFailed = withPermission(
   },
 )
 
-/**
- * 物理删除订单（仅系统管理员；数据治理用，清理无意义的测试单据）。
- *
- * 强守卫：有实收 / 已支付状态 / 有已支付款项流水 / 关联积分·储值卡流水 /
- *         明细被服务·提货·预约引用 / 存在引用本单的回款·退款·转换子单 → 一律禁删。
- * 财务/资产流水（point_transactions / card_transactions / 已支付 payment）绝不级联删除，只做守卫拦截。
- * 可删时事务内：释放优惠券 → 删 sale_allocations → 删（仅剩的待支付）payment → 删 sale_items → 删主单。
- * 任何残留外键引用由 pgErrorCode 23503 兜底回滚，安全失败而非误删。
- */
+
 export const deleteOrder = withPermission(
   'sale_order:delete',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
     requireAdmin(session)
-    // 1. 读取 + 业务守卫
+    
     const [order] = await db
       .select({
         status: saleOrders.status,
@@ -1518,8 +1421,8 @@ export const deleteOrder = withPermission(
         customerName: saleOrders.customerName,
         totalAmount: saleOrders.totalAmount,
         saleOrderType: saleOrders.saleOrderType,
-        // 历史已作废单的删除分支会读这个字段写入 audit snapshot；
-        // 同时事务内 DELETE 守卫通过它识别"是否 WorkFine 历史单"以放行。
+        
+        
         legacySource: saleOrders.legacySource,
       })
       .from(saleOrders)
@@ -1529,9 +1432,9 @@ export const deleteOrder = withPermission(
     if (!order) {
       return { success: false, message: '订单不存在或无权操作' }
     }
-    // 寄存单是手工填报的剩余次数初始化单，可能填错；未消耗时无视 status（含已支付）允许物理删除。
+    
     const isDeposit = order.saleOrderType === '寄存单'
-    // 非寄存单的资金守卫：寄存单 status='已支付' 是常态，此处跳过（由 downstream「未消耗」守卫单独把关）
+    
     if (
       !isDeposit &&
       (Number(order.received) > 0 || (['已支付', '已完成', '部分支付'] as string[]).includes(order.status))
@@ -1539,8 +1442,8 @@ export const deleteOrder = withPermission(
       return { success: false, message: '订单已有实收或已支付，不可删除（财务数据受保护）' }
     }
 
-    // 非寄存单：已支付款项流水（财务，禁删）。寄存单跳过 —— 其历史实收初始化流水（note='寄存单初始化实收'）
-    // 在事务内级联清理（sale_order_payments WHERE sale_order_id 删行）
+    
+    
     if (!isDeposit) {
       const [paidPayment] = await db
         .select({ id: saleOrderPayments.id })
@@ -1552,7 +1455,7 @@ export const deleteOrder = withPermission(
       }
     }
 
-    // 积分 / 储值卡流水关联（账户级资产，禁删）
+    
     const [ptRef] = await db.execute<{ one: number }>(
       sql`SELECT 1 AS one FROM point_transactions WHERE ref_order_id = ${saleOrderId} LIMIT 1`,
     ) as unknown as Array<{ one: number }>
@@ -1563,8 +1466,8 @@ export const deleteOrder = withPermission(
       return { success: false, message: '订单关联了积分或储值卡流水，不可删除' }
     }
 
-    // 明细被服务单 / 提货记录 / 预约引用（已产生下游业务，禁删）
-    // 对寄存单：这是「疗程卡未消耗」的唯一闸门 —— 一旦被核销/提货/预约引用即拒删
+    
+    
     const [downstream] = await db.execute<{ one: number }>(
       sql`SELECT 1 AS one
           FROM sale_items si
@@ -1580,7 +1483,7 @@ export const deleteOrder = withPermission(
       return { success: false, message: '订单已产生服务单 / 提货 / 预约，不可删除' }
     }
 
-    // 被回款 / 退款 / 转换子单引用
+    
     const [childOrder] = await db
       .select({ id: saleOrders.saleOrderId })
       .from(saleOrders)
@@ -1590,7 +1493,7 @@ export const deleteOrder = withPermission(
       return { success: false, message: '存在引用本单的回款 / 退款 / 转换单据，不可删除' }
     }
 
-    // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
+    
     try {
       const txResult = await db.transaction(async (tx) => {
         await tx
@@ -1602,7 +1505,7 @@ export const deleteOrder = withPermission(
           DELETE FROM sale_allocations
           WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId})
         `)
-        // 仅剩待支付/已作废流水（已支付已被守卫拦截）
+        
         await tx.execute(sql`DELETE FROM sale_order_payments WHERE sale_order_id = ${saleOrderId}`)
         await tx.execute(sql`DELETE FROM sale_items WHERE sale_order_id = ${saleOrderId}`)
 
@@ -1610,12 +1513,12 @@ export const deleteOrder = withPermission(
           .delete(saleOrders)
           .where(and(
             eq(saleOrders.saleOrderId, saleOrderId),
-            // 寄存单 status='已支付' 是常态，复检放行：未消耗寄存单无视 status 可删
-            // 历史已作废单（legacy_source='workfine' AND status='已作废'）放行：
-            //   历史单已通过 rejectLegacyOrder 软标记为'已作废'，物理删除是为了释放 PK 让 WorkFine 数据可重新拉取；
-            //   其它守卫（资金/已支付流水/积分储值卡/下游引用/子单引用）天然放行（received=0、无 items/流水/下游）。
-            //   双重限定 and(legacy, status) 防 future-proof 误放行：legacySource='workfine' 唯一来源是 WorkFine 导入脚本，
-            //   status='已作废' 唯一来源是 rejectLegacyOrder（已限定 legacy_source='workfine'），二者同时成立只能是历史已作废单。
+            
+            
+            
+            
+            
+            
             or(
               inArray(saleOrders.status, ['待支付', '支付失败', '已关闭']),
               eq(saleOrders.saleOrderType, '寄存单'),
@@ -1627,7 +1530,7 @@ export const deleteOrder = withPermission(
             scopeCondition(session, saleOrders.storeId),
           ))
         if ((result as any).count === 0) {
-          // 状态在读取后被改（并发），抛出以回滚全部子表删除
+          
           throw new Error('ORDER_STATE_CHANGED')
         }
         return true
@@ -1652,8 +1555,8 @@ export const deleteOrder = withPermission(
         totalAmount: order.totalAmount,
         customerName: order.customerName,
         saleOrderType: order.saleOrderType,
-        // 历史已作废单删除需在审计中明确区分：auditReason='historical_void_cleanup' 便于日后追溯
-        // 「为释放 PK 重新拉取 WorkFine 而清理作废单」这类操作的频次与责任人。
+        
+        
         legacySource: order.legacySource,
         auditReason: order.legacySource === 'workfine' && order.status === '已作废'
           ? 'historical_void_cleanup' : 'admin_cleanup',
@@ -1662,15 +1565,15 @@ export const deleteOrder = withPermission(
 
     revalidatePath('/orders')
     revalidatePath('/allocations')
-    // 友好性：删完后店长去 /legacy-orders 重新拉取 WorkFine 时，新落库的「未审核」单能立即可见，
-    // 不必手动刷新。虽然已作废单本身不在 /legacy-orders 列表（listLegacyOrders 限定 status='未审核'），
-    // 但 revalidate 一处对未来"删除历史已通过单"等场景也是安全的兜底。
+    
+    
+    
     revalidatePath('/legacy-orders')
     return { success: true, message: '订单已删除' }
   },
 )
 
-/** 管理后台开单 — source='admin' */
+
 export const createOrder = withPermission(
   'sale_order:create',
   async (
@@ -1682,33 +1585,21 @@ export const createOrder = withPermission(
   clientPhone: string
   customerName: string
   paymentMethod: '微信' | '支付宝' | '线下'
-  // 2026-04-26 sale-order-domain-refactor：5→3 值
-  // '回款单' 走 recordPayment（写 sop[change_type='回款']）；
-  // '退款单' 走 createRefund（写 sop[change_type='退款']）；
-  // 此处仅接受 3 个真实业务类型
+  
+  
+  
+  
   saleOrderType: '销售单' | '内部单' | '转换单'
   openedBy?: string
   preferredEmployeeId?: string
   remark?: string | null
-  /** 活动单标记（纯标识，不影响金额/提成口径） */
+  
   isActivity?: boolean
-  /** 可选：顾客选择使用的优惠券实例ID */
+  
   couponId?: string | null
-  /**
-   * 本次收款金额（ticket §2.1 决策树 + 2026-05-20 partial-payment-online）
-   * - 线下：
-   *   - undefined → 全额（payable_amount）；线下走 confirmOffline 翻终态
-   *   - 0 → 纯挂账 status='待支付'；不写 payments 流水
-   *   - 0 < v < payable_amount → 部分支付 status='部分支付'；写 1 行首次支付
-   *   - = payable_amount → 全额 status='待支付'（线下保持，由 confirmOffline 入账）；写 1 行首次支付
-   * - 微信/支付宝：
-   *   - undefined / 0 / = payable_amount → 全额 QR（status='待支付' 等 payNotify 回调）
-   *   - 0 < v < payable_amount → 首付限额（写 sale_orders.first_payment_amount，QR 收限额，
-   *     payNotify 入账后落 部分支付 + 清 first_payment_amount）
-   * 校验：0 ≤ v ≤ payable_amount
-   */
+  
   receivedAmount?: number
-  /** 储值卡抵扣金额（> 0 时额外写 1 行 change_type='储值卡抵扣' payments 流水） */
+  
   prepaidCardAmount?: number
   items: Array<{
     skuId: string
@@ -1718,16 +1609,12 @@ export const createOrder = withPermission(
     unitPrice: string
     unitRealPrice: string
     quantity: number
-    /** 手动应付金额（可选，覆盖 unitRealPrice * quantity） */
+    
     saleAmount?: string
-    /** 手动实付金额（可选，覆盖 saleAmount） */
+    
     received?: string
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
-    /**
-     * 套餐子项标记（前端 BundlePicker 加购时置 true）：套餐价是独立机制，
-     * 后端「会员价分流权威定价」对其豁免（维持现状，沿用前端套餐价）。
-     * 普通商品/体验卡为 undefined/false，后端按会员价分流权威重定价。
-     */
+    
     isBundle?: boolean
   }>
     },
@@ -1735,12 +1622,12 @@ export const createOrder = withPermission(
     success: boolean
     message: string
     saleOrderId?: string
-    /** 订单初始 status，前端 Step 4 据此分支文案：'部分支付' / '待支付' / '已支付' */
+    
     status?: '待支付' | '部分支付' | '已支付'
   }> => {
-  // 2026-04-26 sale-order-domain-refactor: saleOrderType 5→3 运行时硬校验
-  // 静态联合类型已限定在 createOrder data 入参；此处再做一次 runtime 兜底防绕过
-  // （旧前端/外部调用可能传入 '回款单'/'退款单'，统一拒绝）
+  
+  
+  
   const ALLOWED_SALE_ORDER_TYPES = ['销售单', '内部单', '转换单'] as const
   if (!ALLOWED_SALE_ORDER_TYPES.includes(data.saleOrderType as typeof ALLOWED_SALE_ORDER_TYPES[number])) {
     return {
@@ -1749,8 +1636,8 @@ export const createOrder = withPermission(
     }
   }
 
-  // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券；schema 已用 z.string() 拒绝 array，
-  // 此处再做 runtime 兜底防外部调用绕过 schema 校验
+  
+  
   if (Array.isArray(data.couponId)) {
     return {
       success: false,
@@ -1762,27 +1649,27 @@ export const createOrder = withPermission(
     return { success: false, message: '顾客未注册小程序或未绑定门店' }
   }
 
-  // 校验 storeId 在用户 scope 内
+  
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
 
-  // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
-  // 不再走 createSaleOrder。这里删除原"isRechargeOrder 识别 + 字段强制覆盖"块。
+  
+  
 
-  // ── 会员价分流 + 后端权威定价（2026-06-24）─────────────────────────────
-  // 后端为定价权威（与 staff cloudfunctions/staffApi/routes/order.js 同口径）：
-  //   - 普通商品（非套餐、非店长特价）：忽略前端单价，按会员价分流取适用单价
-  //     （会员→会员价 special_price、非会员→标价 price；体验卡 is_experience 同口径，#6=B 不再豁免）。
-  //   - 店长特价（is_manager_special，仅普通商品）：允许前端向下改价，钳制到 [0, 适用单价]。
-  //   - 套餐子项（item.isBundle，前端 BundlePicker 注入）：套餐价独立机制，维持现状不分流。
-  //   - 内部单：标价 price × 50% 重算（后端权威，不受会员价/前端影响）；unit_price 原价快照不变。
-  // service_fee（手工费）不受影响，仍按 SKU 快照。
+  
+  
+  
+  
+  
+  
+  
+  
   if (data.saleOrderType === '内部单' && data.couponId) {
     return { success: false, message: '内部单不允许叠加优惠券' }
   }
 
-  // 取每个下单 SKU 的标价/会员价/体验卡/店长特价（权威 = DB，不信前端单价）
+  
   const repriceSkuIds = data.items.map((i) => i.skuId).filter((s): s is string => !!s)
   const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean }>()
   if (repriceSkuIds.length > 0) {
@@ -1806,11 +1693,11 @@ export const createOrder = withPermission(
     }
   }
 
-  // 内部单引用了已下架/不存在的 SKU：fail-closed 拒绝建单（与 staff order.js / client order.js「商品 X 不存在」同口径）。
-  // ⚠️ 软删 SKU 行仍在 product_skus（deleted_at 置位，PK 行保留 → sale_items.sku_id FK 仍满足），下游 INSERT
-  //    不会 23503 报错。内部单若放行：下方重定价 map 的 `if (!pricing) return item` 会短路在 ×50% 之前 →
-  //    漏减半 → 落库 ≈2× 应付金额（资金 bug）。故内部单缺价必须拦截在重定价前。
-  //    （销售单/转换单缺价仍走 `if (!pricing) return item` 兜底：前端透传价已按会员价分流算好，无翻倍风险。）
+  
+  
+  
+  
+  
   if (data.saleOrderType === '内部单') {
     const missingInternalSkuId = repriceSkuIds.find((id) => !skuPricingMap.has(id))
     if (missingInternalSkuId) {
@@ -1818,8 +1705,8 @@ export const createOrder = withPermission(
     }
   }
 
-  // 会员判定：会员客 或 有钻石等级（member_level 非空），任一满足。
-  // 顺带缓存 customerType 供下方 document_type 快照复用（省一次查询）。
+  
+  
   let buyerCustomerType: string | null = null
   let buyerIsMember = false
   if (data.clientUserId) {
@@ -1832,14 +1719,14 @@ export const createOrder = withPermission(
     buyerIsMember = isMember(buyerRow?.customerType, buyerRow?.memberLevel)
   }
 
-  // 逐项后端权威重定价：覆盖 data.items 的 unitPrice/unitRealPrice/saleAmount/received
-  // （saleAmount = 成交单价 × 数量；received 钳制到 ≤ saleAmount）。
+  
+  
   data = {
     ...data,
     items: data.items.map((item) => {
       const pricing = skuPricingMap.get(item.skuId)
-      // 缺价兜底：无 skuId 的项、或销售单/转换单引用了软删 SKU（前端透传价已按会员价分流算好）→ 原样放行。
-      // 内部单缺价已在上方 fail-closed 拦截，不会走到这里（否则会漏 ×50% → 翻倍）。
+      
+      
       if (!pricing) return item
       const listUnit = Number(pricing.price) || 0
       const qty = item.quantity || 1
@@ -1850,7 +1737,7 @@ export const createOrder = withPermission(
       const clampReceived = (sale: number) =>
         item.received !== undefined ? Math.max(0, Math.min(Number(item.received), sale)).toFixed(2) : undefined
 
-      // 内部单：标价 × 50%（后端权威，不分流；unit_price 原价快照保留标价）
+      
       if (data.saleOrderType === '内部单') {
         const realUnit = Math.round(listUnit * 50) / 100
         const sale = Math.round(realUnit * qty * 100) / 100
@@ -1863,10 +1750,10 @@ export const createOrder = withPermission(
         }
       }
 
-      // 套餐子项：套餐价独立机制，维持现状（沿用前端套餐价，不分流）
+      
       if (item.isBundle === true) return item
 
-      // 店长特价（仅普通商品）：允许前端向下改价，钳制 [0, 适用单价]
+      
       if (pricing.isManagerSpecial) {
         const rawUnit = item.unitRealPrice != null && item.unitRealPrice !== ''
           ? Number(item.unitRealPrice)
@@ -1882,7 +1769,7 @@ export const createOrder = withPermission(
         }
       }
 
-      // 普通商品：会员价分流后端权威，忽略前端单价（堵非会员套用会员价）
+      
       const sale = Math.round(applicableUnit * qty * 100) / 100
       return {
         ...item,
@@ -1894,7 +1781,7 @@ export const createOrder = withPermission(
     }),
   }
 
-  // 校验手动金额
+  
   for (const item of data.items) {
     if (item.saleAmount !== undefined) {
       const sa = Number(item.saleAmount)
@@ -1908,17 +1795,17 @@ export const createOrder = withPermission(
     }
   }
 
-  // ========== B2 拆行：疗程卡 quantity>1 → N 行 quantity=1 ==========
-  // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
-  // 业务语义：每张卡（无论 sku.session_count 是 1 还是 N）都是独立可转换/核销的实体，
-  // 应在 sale_items 写成 N 行（每行 quantity=1, session_count=sku.session_count）。
-  // 家居产品（productType='家居产品'）继续合行（quantity 累加）。
-  // 与 staff order.js 同步（见 cross-end-sql-snapshot 守护）。
-  //
-  // saleAmount 按 N 等分，最后一行吸收尾差（sum 守恒）。
-  // received **改贪心填满**（2026-06-01 bundle-paid-sessions fix）：前几行先吃满 cap=perSaleAmount，
-  // 最后一行收剩余。避免均分稀释导致 paid_sessions=0（净化美人付 800 应解锁 1 次而非 0 次）。
-  // 与 staff order.js B2 拆行算法字节同义。
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   data = {
     ...data,
     items: data.items.flatMap((item) => {
@@ -1942,7 +1829,7 @@ export const createOrder = withPermission(
           ? totalSaleCents - perSaleCents * (n - 1)
           : perSaleCents
         const saleStr = (saleCents / 100).toFixed(2)
-        // received 贪心填满：本行最多吃 cap = saleCents，剩余进下一行
+        
         let receivedStr: string | undefined = undefined
         if (remainingReceivedCents !== null) {
           const takenCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
@@ -1952,10 +1839,10 @@ export const createOrder = withPermission(
         rows.push({
           ...item,
           quantity: 1,
-          // unitRealPrice 重写为本行 per-card 单价（保持入参 unitRealPrice 不变；不再以 received 覆盖）
+          
           unitRealPrice: item.unitRealPrice,
-          // saleAmount / received 仅在原入参显式提供时保留分行覆盖；
-          // 否则保留原入参的 undefined（让后续按 unitRealPrice × 1 计算）
+          
+          
           saleAmount: item.saleAmount !== undefined ? saleStr : undefined,
           received: receivedStr,
         })
@@ -1964,21 +1851,21 @@ export const createOrder = withPermission(
     }),
   }
 
-  // 计算商品总金额（应付，基于 saleAmount/unitRealPrice，不依赖 item.received）
-  // 与 sale_items.sale_amount 落库口径一致（L1286-1287），跨端与 staff order.js L523 /
-  // client order.js L405-416 对齐。item.received（部分支付实收）不参与 total_amount。
-  // 浮点 round 兜底（行级 + 累加后），见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
+  
+  
+  
+  
   const rawTotal = Math.round(data.items.reduce((sum, item) => {
     const computed = Number(item.unitRealPrice) * item.quantity
     const itemAmount = item.saleAmount ? Number(item.saleAmount) : computed
     return sum + Math.round(itemAmount * 100) / 100
   }, 0) * 100) / 100
 
-  // 提前校验优惠券（事务外查询，避免在事务内做复杂查询）
-  // ticket B9：minSpend / 折扣基数已切换到 eligibleTotal（scope 内应付合计），不再使用全单合计
+  
+  
   let couponDiscount = 0
   if (data.couponId && data.clientUserId) {
-    // 查询 SKU 的 categoryId 和 productId，用于优惠券范围校验
+    
     const orderSkuIds = data.items.map(i => i.skuId).filter(Boolean)
     const [skuCatRows, skuProdRows] = await Promise.all([
       db.select({ skuId: productSkus.skuId, categoryId: productSkus.categoryId })
@@ -2014,14 +1901,14 @@ export const createOrder = withPermission(
     if (coupon.expireAt < new Date()) return { success: false, message: '优惠券已过期' }
     if (!coupon.isActive) return { success: false, message: '该优惠券模板已停用' }
 
-    // 范围校验：门店维度（NULL/空数组 = 不限制）
+    
     if (coupon.applicableStoreIds && coupon.applicableStoreIds.length > 0) {
       if (!data.storeId || !coupon.applicableStoreIds.includes(data.storeId)) {
         return { success: false, message: '该优惠券不适用于当前门店' }
       }
     }
 
-    // 范围校验：市场维度（NULL/空数组 = 不限制）
+    
     if (coupon.applicableMarketIds && coupon.applicableMarketIds.length > 0) {
       const [storeRow] = await db
         .select({ parentId: orgNodes.parentId })
@@ -2035,10 +1922,10 @@ export const createOrder = withPermission(
       }
     }
 
-    // 范围校验：品类 + 商品维度（NULL/空数组 = 不限制；同时设置时取交集）
-    // 计算 eligibleItems：满足 category AND product 双重限制
-    // 与 client/staff order.create 对齐（fengyu-client/cloudfunctions/clientApi/routes/order.js L329-355
-    // 和 fengyu-staff/cloudfunctions/staffApi/routes/order.js L390-410）
+    
+    
+    
+    
     const hasCatRestriction = !!(coupon.applicableCategoryIds && coupon.applicableCategoryIds.length > 0)
     const hasProdRestriction = !!(coupon.applicableProductIds && coupon.applicableProductIds.length > 0)
     let eligibleItems = data.items
@@ -2060,9 +1947,9 @@ export const createOrder = withPermission(
       }
     }
 
-    // 满减门槛 / 折扣基数：必须基于 eligibleItems（scope 内）应付金额合计，而非全单
-    // ticket B9：admin 此前用 saleAmountTotal 作为基数，与 client/staff 行为不一致；
-    // 见 notes/tickets/2026-05-18-coupon-binding-restriction-not-enforced.md
+    
+    
+    
     const eligibleTotalRaw = eligibleItems.reduce((sum, item) => {
       const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
       return sum + Math.round(itemSale * 100) / 100
@@ -2070,19 +1957,19 @@ export const createOrder = withPermission(
     const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
 
     const minSpend = parseFloat(coupon.minSpend ?? '0')
-    // +0.001 兜底 JS 浮点累计误差，与 client/staff coupon.available 保持一致
+    
     if (eligibleTotal + 0.001 < minSpend) {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
     }
     couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, eligibleTotal)
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 把订单级券折扣按 saleAmount 比例摊到 eligibleItems 各行（与 client/staff 对齐）
-    // 后端为权威源；前端提交体仍传 pre-coupon saleAmount，后端首次摊到行（不会双扣）
-    // 覆盖入参 item.saleAmount / item.received 使 L1480-1521 INSERT 落库为 post-coupon
+    
+    
+    
     if (couponDiscount > 0 && eligibleItems.length > 0) {
-      // 浅克隆 data.items 避免污染调用方传入对象（与 L1100 内部单 / L1135 B2 拆行模式一致）
-      // 否则 baseOrderData 等共享 fixture 被改后跨用例污染
+      
+      
       const eligibleIdx = eligibleItems.map((it) => data.items.indexOf(it))
       data = { ...data, items: data.items.map((it) => ({ ...it })) }
       eligibleItems = eligibleIdx.map((i) => data.items[i])
@@ -2110,20 +1997,20 @@ export const createOrder = withPermission(
 
   const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100
 
-  // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
-  // payable_amount = total_amount - prepaid_card_amount（冗余列，用于状态机决策和前端展示）
+  
+  
   const prepaidCardAmount = Math.max(0, data.prepaidCardAmount ?? 0)
   if (prepaidCardAmount > totalAmount + 0.005) {
     return { success: false, message: '储值卡抵扣金额不能超过订单总额' }
   }
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
 
-  // 本次收款校验：
-  // - 线下：开单时一律不记款，effectiveReceived 恒为 0，**忽略入参 receivedAmount**
-  //   （实际款项在「确认收款」时才写流水 + 扣储值卡）。这样既统一了"先付款后转态"不变量，
-  //   也避免前端传未扣卡的应付合计在有储值卡抵扣时误触 receivedAmount > payable 的超额报错。
-  // - 微信/支付宝：传 0 < v < payable → 线上首付（写 first_payment_amount，QR 收限额）；
-  //   v = payable 或 undefined → 全额 QR（保持既有行为）；v = 0 显式表示挂账等扫码（与 undefined 等价处理）。
+  
+  
+  
+  
+  
+  
   const isOnlinePay = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
   const receivedAmount = isOnlinePay
     ? (data.receivedAmount !== undefined ? Math.round(Number(data.receivedAmount) * 100) / 100 : 0)
@@ -2135,54 +2022,54 @@ export const createOrder = withPermission(
     return { success: false, message: '本次收款金额不能超过应付实金' }
   }
 
-  // 线上 + receivedAmount < payable → 把"首付限额"写入 sale_orders.first_payment_amount
-  // （线下场景该列保持 NULL）。
+  
+  
   const firstPaymentAmount: number | null =
     isOnlinePay && receivedAmount > 0 && receivedAmount + 0.005 < payableAmount
       ? Math.min(receivedAmount, payableAmount)
       : null
 
-  // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，挂"待支付"会卡死
-  //   （payment_method='无' 走不了 confirmOfflinePayment），故创建事务内直接扣卡 + 结清。
-  //   用户 2026-05-21 拍板：销售单/转换单全额抵扣均在提交订单时即时抵扣。
+  
+  
+  
   const isFullCardCoverage = prepaidCardAmount > 0 && payableAmount === 0
 
-  // 决策树（三端对齐"先付款、后转态记账"不变量）：
-  //   - 全额储值卡抵扣：'已支付'（事务内即时扣卡 + 结算）
-  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
-  //   - 线下：'待支付'（开单不记款；现金 + 部分储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
-  // createOrder 仅全额抵扣场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
+  
+  
+  
+  
+  
   const initialStatus: typeof saleOrders.$inferInsert['status'] = isFullCardCoverage ? '已支付' : '待支付'
 
-  // 全额抵扣时 payment_method 落 '无'（现金通道无需使用，与 staff order.create 对齐）。
+  
   const effectivePaymentMethod = isFullCardCoverage ? '无' : data.paymentMethod
 
-  // received 创建时：全额抵扣 = prepaid（已结清）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
-  // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
+  
+  
   const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
 
-  // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
-  // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
-  // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType，不影响本快照。
+  
+  
+  
   const documentType: '售前' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前'
 
-  // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
-  // 与 is_experience（capability 权威源）。
-  // 用于 sale_items 快照：service_fee 供服务完成时参与提成计算，
-  // session_count 对组合套餐路径做兜底（bundleSkuToProductSku 硬编码 null，前端传来不可信），
-  // is_experience 拷贝用于客户分类跃迁（per-order SUM FILTER WHERE is_experience）。
-  // 充值卡剥离 SKU 化（2026-05-20）后无需 is_recharge_card 字段。
+  
+  
+  
+  
+  
+  
   const skuIdList = data.items.map(i => i.skuId).filter((s): s is string => !!s)
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuExperienceMap = new Map<string, boolean>()
-  // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
+  
   const skuManagerSpecialMap = new Map<string, boolean>()
-  // 生美 / 销售分类行级快照源（权威 = DB，不信前端）：
-  //   is_shengmei  ← product_skus.is_shengmei（护理项目 true/false，其他品类 null）
-  //   sales_category ← product_categories.sales_category（按 sku 的 category）
-  // 服务核销后 admin/staff「服务提成分配」页读 sale_items.sales_category 匹配提成矩阵 + 渲染徽章，
-  // 早期 admin 开单只取前端 payload（硬编码 null）→ 卡核销后徽章缺失 + 提成 0%，故此处后端反查兜实。
+  
+  
+  
+  
+  
   const skuShengmeiMap = new Map<string, boolean | null>()
   const skuSalesCategoryMap = new Map<string, (typeof saleItems.$inferInsert)['salesCategory']>()
   if (skuIdList.length > 0) {
@@ -2209,12 +2096,12 @@ export const createOrder = withPermission(
     }
   }
 
-  // 充值卡剥离 SKU 化（2026-05-20）后 D4 混单守卫已删除（充值订单走独立 createRechargeOrder 入口）。
+  
 
-  // 2026-07-08 修复 T1：顾客档案权威（clientWechatUsers.phone/name）覆盖入参。
-  // 与 staffApi order.create 对齐：sale_orders.customer_name/client_phone 是 denormalized 快照，
-  // 此处保持单一权威源 = 客户档案，防前端 order-create-page.tsx:1468 的 `name || phone` fallback
-  // 把手机号写入 customer_name。
+  
+  
+  
+  
   let authoritativePhone = data.clientPhone
   let authoritativeName = data.customerName
   {
@@ -2227,11 +2114,11 @@ export const createOrder = withPermission(
     if (authCust?.name) authoritativeName = authCust.name
   }
 
-  // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
+  
   let saleOrderId: string
   try {
     saleOrderId = await db.transaction(async (tx) => {
-      // advisory lock 在事务内持有，直到 commit 才释放
+      
       const idRows = await tx.execute(sql`
         WITH lock AS (
           SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
@@ -2250,8 +2137,8 @@ export const createOrder = withPermission(
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
-      // 顾客维度全量待支付单互斥：业务守卫查所有待支付单（含自助单），本事务 order-gen
-      // advisory lock 串行化开单使其原子；DB uq 仅兜底 opened_by IS NULL 自助单
+      
+      
       if (initialStatus === '待支付' && data.clientUserId) {
         const existing = await tx
           .select({ saleOrderId: saleOrders.saleOrderId })
@@ -2296,13 +2183,13 @@ export const createOrder = withPermission(
         paidAt: isFullCardCoverage ? nowTs() : null,
       })
 
-      // 开单时不写款项流水（统一"先付款、后记账"不变量）：
-      //   - 线上（微信/支付宝）：由 payNotify 回调写入并翻态
-      //   - 线下：由 confirmOfflinePayment「确认收款」写入现金/储值卡抵扣流水并翻态
-      //   - prepaid_card_amount 仅作为订单上的"预选"金额，确认收款时才扣卡 + 写 '储值卡抵扣' 行
+      
+      
+      
+      
 
-      // 原子核销优惠券：WHERE coupon_id = X AND status = '未使用' 防止重用
-      // 必须在 insert sale_orders 之后，因为 used_sale_order_id 有外键约束
+      
+      
       if (data.couponId) {
         const voidResult = await tx
           .update(userCoupons)
@@ -2319,36 +2206,36 @@ export const createOrder = withPermission(
         const saleItemId = `${id}-${String(i + 1).padStart(2, '0')}`
         const computedSaleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
         const saleAmount = item.saleAmount ?? computedSaleAmount
-        // 实付草稿（开单填的逐行实付）落 pending_received，**不进** received（资金铁律：
-        // received/paid_sessions 只认 status='已支付' 流水）。行级 received 开单一律写 0，
-        // 由下方 recalcPaidSessionsForOrder STEP1 从订单级 sale_orders.received 派生填充
-        // （待支付=0；全额储值卡抵扣=prepaid 分摊）。修复"待支付可消费疗程卡" P0。
+        
+        
+        
+        
         const pendingReceived = item.received ?? saleAmount
         const received = '0.00'
 
-        // 固定手工费快照 = product_skus.service_fee × quantity
+        
         const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
         const serviceFee = (skuServiceFee * item.quantity).toFixed(2)
 
-        // sessionCount 以服务端 productSkus.session_count 为权威（对组合套餐疗程卡兜底）。
-        // sale_items.session_count / remaining_sessions 是"行总次数"维度
-        // （service.complete 按次扣减 remaining_sessions），应 = sku.session_count × quantity；
-        // 漏乘 quantity 会导致剩余次数显示 1/1 而非 N/N，且核销超过 1 次即被扣减守护卡住。
+        
+        
+        
+        
         const skuSessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * item.quantity : null
 
-        // per-session 派生：unit_real_price/unit_price 存单次价（sale_amount 为权威行总额）；
-        //   卡 = 行总额 / 总次数；非卡 = 行总额 / 数量（per-unit 退化）。入参 unitPrice/unitRealPrice 是 per-card 表单值。
+        
+        
         const psDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : item.quantity
         const listTotalRow = Number(item.unitPrice) * item.quantity
         const unitRealPrice = psDenom > 0 ? (Number(saleAmount) / psDenom).toFixed(2) : Number(saleAmount).toFixed(2)
         const unitPrice = psDenom > 0 ? (listTotalRow / psDenom).toFixed(2) : Number(item.unitPrice).toFixed(2)
 
-        // is_experience 行级快照：以服务端 product_skus.is_experience 为权威。
-        // 用于客户分类跃迁 SQL（SUM(received) FILTER WHERE si.is_experience）。
+        
+        
         const isExperience = skuExperienceMap.get(item.skuId) ?? false
 
-        // 店长特别优惠行级快照：以服务端 product_skus.is_manager_special 为权威
+        
         const isManagerSpecial = skuManagerSpecialMap.get(item.skuId) ?? false
 
         await tx.insert(saleItems).values({
@@ -2367,8 +2254,8 @@ export const createOrder = withPermission(
           saleAmount,
           received,
           pendingReceived,
-          // 后端反查为权威：sales_category ← product_categories（前端硬编码 null，仅兜底）；
-          // is_shengmei ← product_skus.is_shengmei（含 true/false/null 原值）
+          
+          
           salesCategory: skuSalesCategoryMap.get(item.skuId) ?? item.salesCategory ?? null,
           isShengmei: skuShengmeiMap.get(item.skuId) ?? null,
           serviceFee,
@@ -2377,9 +2264,9 @@ export const createOrder = withPermission(
         })
       }
 
-      // 充值卡剥离 SKU 化（2026-05-20）后 D4 事后兜底校验已删除（migration 0043 拆触发器）
+      
 
-      // 全额储值卡抵扣：事务内即时扣卡 + 写 '储值卡抵扣' 流水（与 confirmOfflinePayment 已支付分支对齐）
+      
       let fullCardPaymentId: number | string | null = null
       if (isFullCardCoverage && data.clientUserId) {
         fullCardPaymentId = await deductPrepaidCardAtCreation(tx, {
@@ -2391,8 +2278,8 @@ export const createOrder = withPermission(
         })
       }
 
-      // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      
+      
       if (fullCardPaymentId && prepaidCardAmount > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: fullCardPaymentId,
@@ -2403,14 +2290,14 @@ export const createOrder = withPermission(
         await refreshOrderAllocationRollup(tx, id)
       }
 
-      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
-      // - 全额储值卡抵扣：received=prepaid_card_amount → paid_sessions=session_count（创建即结清）
-      // - 待支付（线下/线上，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
-      // 不再按行级实付草稿直算 paid_sessions（旧 else 分支是"待支付可消费疗程卡" P0 资金漏洞根因：
-      // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
+      
+      
+      
+      
+      
       await recalcPaidSessionsForOrder(tx, id)
 
-      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      
       if (isFullCardCoverage) {
         await settlePointsSafe(tx, id, 'admin.createOrder')
         if (data.clientUserId) {
@@ -2421,32 +2308,32 @@ export const createOrder = withPermission(
       return id
     })
   } catch (err: any) {
-    // 业务异常（ApiError）：剥离一级前缀后直接透出真实消息。
-    // 覆盖 CONFLICT(已有待支付订单 / 优惠券已被使用)、INVALID_STATE(订单号生成失败)、
-    // INSUFFICIENT_BALANCE(全额抵扣余额不足) 等。
-    // 修复 f4248169 把这些 throw 迁移到 ApiError（带 "<PREFIX>: " 前缀）后，
-    // 旧的 err.message === / startsWith('<中文>') 匹配器全部失配，被吞成通用「创建订单失败」的回归。
+    
+    
+    
+    
+    
     if (err instanceof ApiError) {
       const parsed = parseErrorPrefix(err.message)
       return { success: false, message: parsed?.displayMessage ?? err.message }
     }
-    // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
-    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
-    // 需用专用正则连子标签一起剥掉（parseErrorPrefix 会残留 NO_CARD/数字子标签）。
+    
+    
+    
     if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
-    // PG 外键违反（storeId / skuId / clientUserId 不存在）
+    
     if (pgErrorCode(err) === '23503') {
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
     }
-    // PG NOT NULL 违反（字段缺失）
+    
     if (pgErrorCode(err) === '23502') {
       console.error('[createOrder] not_null_violation:', err)
       return { success: false, message: '订单字段缺失，请联系管理员' }
     }
-    // PG 唯一约束冲突（advisory lock 下极罕见）
+    
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '订单号冲突，请稍后重试' }
     }
@@ -2469,22 +2356,7 @@ export const createOrder = withPermission(
   },
 )
 
-/**
- * 转换单 — 顾客持卡折抵换购
- *
- * 业务流程：
- * 1. 锁住 convertOutSaleItemIds 对应 sale_items 行（FOR UPDATE），校验 store_id / item_direction / 状态
- * 2. 计算转出折抵金额 totalOut = sum(unit_real_price × remaining_sessions)
- *    - 仅疗程卡可折抵（含原"体验卡单品"=1 次卡）；放开后不再要求 is_experience
- * 3. 计算转入应付金额 totalIn = sum(sku.price × quantity)
- * 4. priceDiff = totalIn - totalOut
- *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'
- *    - priceDiff = 0：不收款，status='已支付'
- *    - priceDiff < 0：差额 UPSERT 到 prepaid_cards，INSERT card_transactions('充值')
- * 5. 原子标记转出行已耗尽：疗程卡 remaining_sessions=0
- * 6. INSERT 转出行（sale_amount/received 为负折抵，item_direction='转出'，ref_sale_item_id）
- * 7. INSERT 转入行（item_direction='转入'，sale_amount/received=转入金额）
- */
+
 export const createConversionOrder = withPermission(
   'sale_order:create',
   async (
@@ -2492,14 +2364,14 @@ export const createConversionOrder = withPermission(
     data: {
   storeId: string
   marketName: string
-  /** 转换单必须实名顾客（要挂储值卡），不允许 manualPhone */
+  
   clientUserId: string
   paymentMethod: '微信' | '支付宝' | '线下'
   preferredEmployeeId?: string
   remark?: string | null
-  /** 转出：整张卡（不带数量，全部折抵） */
+  
   convertOutSaleItemIds: string[]
-  /** 转入项目（来自 Step 2 的购物车） */
+  
   convertInItems: Array<{
     skuId: string
     productName: string
@@ -2509,7 +2381,7 @@ export const createConversionOrder = withPermission(
     quantity: number
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
-  /** 储值卡抵扣金额（仅补差额 priceDiff > 0 时有效；clamp 到 [0, priceDiff]） */
+  
   prepaidCardAmount?: number
     },
   ): Promise<{
@@ -2520,7 +2392,7 @@ export const createConversionOrder = withPermission(
   totalOut?: number
   priceDiff?: number
   prepaidCardCredit?: number
-  /** 本单实际充值卡抵扣额（priceDiff > 0 时 = clamp 后的抵扣额） */
+  
   prepaidCardAmount?: number
   }> => {
   if (!isInScope(session, data.storeId)) {
@@ -2536,7 +2408,7 @@ export const createConversionOrder = withPermission(
     return { success: false, message: '请选择至少一个转入项目' }
   }
 
-  // 查顾客基本信息（姓名快照 + phone 快照）
+  
   const [client] = await db
     .select({
       userId: clientWechatUsers.userId,
@@ -2551,7 +2423,7 @@ export const createConversionOrder = withPermission(
     return { success: false, message: '顾客不存在' }
   }
 
-  // 事务：锁转出行 + 校验 + 计算金额 + 插入订单 + 插入两段 items + 储值卡补差
+  
   let result: {
     saleOrderId: string
     totalIn: number
@@ -2563,7 +2435,7 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 锁住转出候选行（FOR UPDATE）
+      
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -2621,14 +2493,14 @@ export const createConversionOrder = withPermission(
       const outItems: OutItem[] = []
 
       for (const row of held) {
-        // 归属校验：store_id / client_user_id / direction / 状态
+        
         if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
         if (row.item_direction !== '购买') throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行非购买行，不可折抵')
         if (row.order_status !== '已支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
-        // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵（与 staff createConversion 对齐）
+        
         if (await hasPendingRefund(tx, row.sale_order_id as string)) {
           throw new ApiError('INVALID_STATE', 'REFUND_IN_PROGRESS: 部分卡所属订单退款审批中，暂不可折抵')
         }
@@ -2636,7 +2508,7 @@ export const createConversionOrder = withPermission(
         const unit = Number(row.unit_real_price)
         const productType = row.product_type as string
 
-        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+        
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
@@ -2648,7 +2520,7 @@ export const createConversionOrder = withPermission(
 
         const amount = Math.round(unit * qty * 100) / 100
         totalOut += amount
-        // 按折抵数量比例扣减 service_fee（负值）
+        
         const origServiceFee = Number(row.service_fee ?? 0)
         const origQty = Number(row.quantity) || 1
         const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
@@ -2670,7 +2542,7 @@ export const createConversionOrder = withPermission(
         })
       }
 
-      // 2. 加载转入 SKU 详情（price / service_fee / session_count / sales_category / is_experience）
+      
       const inSkuIds = data.convertInItems.map((i) => i.skuId)
       const skuRows = await tx
         .select({
@@ -2706,15 +2578,15 @@ export const createConversionOrder = withPermission(
 
       const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
 
-      // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
-      // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则创建事务内即时扣卡 + 结清。
+      
+      
       const card = priceDiff > 0
         ? Math.min(Math.max(0, Math.round((data.prepaidCardAmount ?? 0) * 100) / 100), priceDiff)
         : 0
       const payable = Math.max(0, Math.round((Math.max(0, priceDiff) - card) * 100) / 100)
       const isFullCardCoverage = card > 0 && payable === 0
 
-      // 3. 生成订单号（advisory lock + 当日序号）
+      
       const idRows = await tx.execute(sql`
         WITH lock AS (
           SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
@@ -2733,14 +2605,14 @@ export const createConversionOrder = withPermission(
       const saleOrderId = (idRows as any[])[0]?.id as string
       if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
-      // 4. 计算 documentType（售前/售后）：仅按下单时会员身份判（售前=非会员客，售后=会员客）
+      
       const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
 
-      // 5. 插入订单主表
-      // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
-      //   - payable > 0（仍需付现金）：'待支付'，扣卡延后到 confirmOffline / payNotify
-      //   - payable == 0 且有抵扣（全额抵扣）：事务内即时扣卡 → '已支付'，payment_method='无'
-      // 其他（priceDiff <= 0）：total_amount=0 & status='已支付'
+      
+      
+      
+      
+      
       const orderTotal = Math.max(0, priceDiff).toFixed(2)
       const orderStatus: typeof saleOrders.$inferInsert['status'] =
         priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
@@ -2771,7 +2643,7 @@ export const createConversionOrder = withPermission(
         paidAt: orderPaid ? nowTs() : null,
       })
 
-      // 6. 转出行 + 原子扣减原卡余量
+      
       let seq = 1
       for (const out of outItems) {
         const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
@@ -2793,14 +2665,14 @@ export const createConversionOrder = withPermission(
           received: (-out.amount).toFixed(2),
           salesCategory: (out.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ?? null,
           serviceFee: out.serviceFee.toFixed(2),
-          // 转出行镜像原 sale_items.is_experience：负 received × is_experience=true 会冲销
-          // 原订单的 trial_amount 累计，与跃迁 SQL 的"只升不降"语义一致。
+          
+          
           isExperience: out.isExperience,
-          // 转出行镜像原 sale_items.is_shengmei（COALESCE product_skus 兜底）
+          
           isShengmei: out.isShengmei,
         })
 
-        // 原子标记耗尽：疗程卡 remaining_sessions=0（单品合并后转出行恒为疗程卡）
+        
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
@@ -2816,17 +2688,17 @@ export const createConversionOrder = withPermission(
         }
       }
 
-      // 7. 转入行
+      
       for (const inRow of inItems) {
         const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
         seq++
-        // sessionCount 以服务端查到的 productSkus.session_count 为权威，
-        // 组合套餐前端 payload 里疗程卡会丢失该字段（bundleSkuToProductSku 硬编码 null），
-        // 这里兜底保证 remaining_sessions 正确，否则卡永远无法核销。
-        // 同 createOrder：sale_items.session_count 是行总次数维度，需 × quantity。
+        
+        
+        
+        
         const skuSessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * inRow.item.quantity : null
-        // per-session 单价（转入无折扣：unit_price = unit_real_price = amount/总次数；非卡 = amount/qty）
+        
         const inDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : inRow.item.quantity
         const unitPrice = inDenom > 0 ? (inRow.amount / inDenom).toFixed(2) : Number(inRow.sku.price).toFixed(2)
         await tx.insert(saleItems).values({
@@ -2849,19 +2721,19 @@ export const createConversionOrder = withPermission(
             (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
             null,
           serviceFee: inRow.serviceFee.toFixed(2),
-          // 转入行从 product_skus 快照写入 is_experience / is_shengmei
+          
           isExperience: inRow.sku.isExperience === true,
           isShengmei: inRow.sku.isShengmei ?? null,
         })
       }
 
-      // 8. 差额退余：priceDiff < 0 → UPSERT prepaid_cards + card_transactions
+      
       let prepaidCardCredit = 0
       if (priceDiff < 0) {
         const creditAmount = Math.abs(priceDiff)
         prepaidCardCredit = creditAmount
 
-        // UPSERT prepaid_cards（按 user_id 唯一；store_id 列已于 2026-04-24 DROP，卡跨店共享）
+        
         const upsertRows = await tx.execute(sql`
           INSERT INTO prepaid_cards (card_id, user_id, balance)
           VALUES (gen_random_uuid()::text, ${data.clientUserId}, ${creditAmount.toFixed(2)})
@@ -2881,8 +2753,8 @@ export const createConversionOrder = withPermission(
         })
       }
 
-      // 8b. 补差额全额抵扣（priceDiff > 0 且 payable==0）：事务内即时扣卡 + 写 '储值卡抵扣' 流水。
-      //     与 8（负差额充值）互斥（全额抵扣要求 priceDiff > 0）。
+      
+      
       let convFullCardPaymentId: number | string | null = null
       if (isFullCardCoverage) {
         convFullCardPaymentId = await deductPrepaidCardAtCreation(tx, {
@@ -2894,8 +2766,8 @@ export const createConversionOrder = withPermission(
         })
       }
 
-      // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额 + 置待分配 + 汇总刷新（非定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      
+      
       if (convFullCardPaymentId && card > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: convFullCardPaymentId,
@@ -2906,11 +2778,11 @@ export const createConversionOrder = withPermission(
         await refreshOrderAllocationRollup(tx, saleOrderId)
       }
 
-      // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      
+      
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
-      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      
       if (isFullCardCoverage) {
         await settlePointsSafe(tx, saleOrderId, 'admin.createConversion')
         await recalcCustomerType(tx, data.clientUserId)
@@ -2937,7 +2809,7 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
     if (m?.includes('PREPAID_CARD_UPSERT_FAILED')) return { success: false, message: '储值卡入账失败，请稍后重试' }
-    // 全额抵扣即时扣卡失败（余额不足 / 无卡）
+    
     if (m?.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = m.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
@@ -2968,7 +2840,7 @@ export const createConversionOrder = withPermission(
   })
 
   revalidatePath('/orders')
-  // 补差额抵扣后实际仍需付现金 = priceDiff - 抵扣额
+  
   const remainingPayable = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
   return {
     success: true,
@@ -2990,22 +2862,9 @@ export const createConversionOrder = withPermission(
   },
 )
 
-// ========== B5: 寄存单（剩余次数初始化） ==========
 
-/**
- * 管理后台开寄存单（admin）
- *
- * 与 staffApi.order.createDeposit 语义对齐：
- *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
- *   - 不收钱：received=0 / payable=0 / total=0 / payment_method='无' / status='已支付'
- *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
- *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
- *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
- *   - 仅 manager 角色（沿用 'sale_order:create' 权限）
- *
- * 输入：
- *   storeId / marketName / clientUserId（必填）+ items[{skuId, quantity}] + remark
- */
+
+
 export const createDepositOrder = withPermission(
   'sale_order:create',
   async (
@@ -3019,9 +2878,9 @@ export const createDepositOrder = withPermission(
       items: Array<{
         skuId: string
         quantity: number
-        // 该行历史实收金额（老顾客这张卡当时实际收了多少钱）。可选，默认 0。
-        // >0 时写一条 sale_order_payments('回款',线下,ref=该行) 流水，total_amount 仍保持 0
-        // （次数全开 + 统计排除不变）。
+        
+        
+        
         received?: number
       }>
     },
@@ -3045,7 +2904,7 @@ export const createDepositOrder = withPermission(
       }
     }
 
-    // 查顾客（client_identity_rule：bound_store_id 即可，openid 可空）
+    
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
@@ -3063,7 +2922,7 @@ export const createDepositOrder = withPermission(
       return { success: false, message: '顾客未绑定门店' }
     }
 
-    // 拉 SKU 信息（充值卡剥离 SKU 化后，寄存单输入只剩普通商品）
+    
     const skuIds = data.items.map(i => i.skuId)
     const skuRows = await db
       .select({
@@ -3086,7 +2945,7 @@ export const createDepositOrder = withPermission(
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 
-    // 在事务内生成订单号 + 写 sale_orders + sale_items
+    
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
@@ -3135,7 +2994,7 @@ export const createDepositOrder = withPermission(
           allocationStatus: '待分配',
         })
 
-        // 生成 sale_item 流水号序列
+        
         const dateStr = shanghaiYmd(now)
         const maxRows = await tx.execute(sql`
           SELECT sale_item_id FROM sale_items
@@ -3148,7 +3007,7 @@ export const createDepositOrder = withPermission(
           seq = parseInt(String(lastRow.sale_item_id).slice(-4)) + 1
         }
 
-        // 收集需要写实收流水的行（received>0），循环后统一 INSERT sale_order_payments + 更新 received
+        
         const receiptRows: Array<{ saleItemId: string; received: number }> = []
         for (let i = 0; i < data.items.length; i++) {
           const item = data.items[i]
@@ -3158,12 +3017,12 @@ export const createDepositOrder = withPermission(
           const quantity = item.quantity
           const itemReceived = Math.round((Number(item.received) || 0) * 100) / 100
           if (itemReceived > 0) receiptRows.push({ saleItemId, received: itemReceived })
-          // 次数 × 数量；家居产品不带次数
+          
           const sc = sku.productType === '家居产品'
             ? null
             : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
           const depSaleAmount = (Math.round(basePrice * quantity * 100) / 100).toFixed(2)
-          // per-session 单价：卡 = sale_amount/总次数；非卡 = sale_amount/quantity（per-unit 退化）
+          
           const depDenom = (sc != null && sc > 0) ? sc : quantity
           const depUnit = depDenom > 0 ? (Number(depSaleAmount) / depDenom).toFixed(2) : depSaleAmount
 
@@ -3189,10 +3048,10 @@ export const createDepositOrder = withPermission(
           })
         }
 
-        // 历史实收录入：对 received>0 的行写一条 '回款'(线下) 流水（ref=该行，targeted）
-        // 并把 sale_orders.received 设为合计。total_amount 仍保持 0：
-        //   → paid_sessions 走 recalc STEP2 的 total_amount<=0 兜底 = session_count（次数全开）
-        //   → dashboard 按 sale_order_type 排除寄存单，received 不进统计
+        
+        
+        
+        
         if (receiptRows.length > 0) {
           for (const r of receiptRows) {
             await tx.insert(saleOrderPayments).values({
@@ -3216,11 +3075,11 @@ export const createDepositOrder = withPermission(
             .where(eq(saleOrders.saleOrderId, id))
         }
 
-        // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0 → 兜底全付 = session_count
-        // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
+        
+        
         await recalcPaidSessionsForOrder(tx, id)
 
-        // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 回落标价）。必须在 recalc 之后。
+        
         await recomputeDepositRealPrice(tx, id)
 
         return id
@@ -3261,20 +3120,9 @@ export const createDepositOrder = withPermission(
   },
 )
 
-// ========== 旧系统充值金转入（WorkFine 充值金迁移） ==========
 
-/**
- * 旧系统(WorkFine)充值金转入：把顾客在旧系统的充值金余额等额导入新系统储值卡
- *
- * 与 createRechargeOrder（cards.ts）的区别：旧系统已收过钱 → 1:1 等额、不打折、不限额、
- * 不走 matchTier 档位；直接建 status='已支付' 的充值单（不经待支付 → confirmOfflinePayment），
- * 即时入账 balance += amount。remark / 流水 note 打专用标记「旧系统充值金转入」便于查账识别
- * （充值单本就不计营收，无需改统计 SQL）。
- *
- * 转入单本质是普通充值单：将来退款天然走员工端 card.createRefund/approveRefund（与任何充值单一致）。
- * received=amount（非 0）+ 配一条「首次支付」流水，维护 received=Σ流水（资金不变量 I1），
- * 保证将来退款 refunded_amount ≤ received，不触发 cron 资金巡检告警。
- */
+
+
 export const createPrepaidInflow = withPermission(
   'sale_order:create',
   async (
@@ -3284,21 +3132,21 @@ export const createPrepaidInflow = withPermission(
       storeId: string
       amount: number
       remark?: string | null
-      requestId?: string // 幂等 token：重复提交 / 重试携带同值，后端据此去重防重复入账
+      requestId?: string 
     },
   ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
     if (!data.clientUserId) return { success: false, message: '请选择顾客' }
     if (!data.storeId) return { success: false, message: '请选择入账门店' }
     const amt = Number(data.amount)
     if (!Number.isFinite(amt) || amt <= 0) return { success: false, message: '转入金额无效' }
-    // 浮点容差：与 matchTier 同口径，最多保留 2 位小数
+    
     if (Math.abs(Math.round(amt * 100) - amt * 100) > 1e-6) {
       return { success: false, message: '转入金额最多保留 2 位小数' }
     }
-    if (amt > 99999999.99) return { success: false, message: '转入金额超出上限' } // NUMERIC(10,2) 上界保护
+    if (amt > 99999999.99) return { success: false, message: '转入金额超出上限' } 
     if (!isInScope(session, data.storeId)) return { success: false, message: '无权在该门店转入' }
 
-    // 顾客 + documentType 快照
+    
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
@@ -3312,7 +3160,7 @@ export const createPrepaidInflow = withPermission(
     if (!client) return { success: false, message: '顾客不存在' }
     const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
 
-    // 门店 + marketName 快照（跨两级 org_nodes 取上级 market，同 createRechargeOrder）
+    
     const storeRows = (await db.execute(sql`
       SELECT s.store_id, pm.name AS market_name
       FROM stores s
@@ -3324,15 +3172,15 @@ export const createPrepaidInflow = withPermission(
     if (storeRows.length === 0) return { success: false, message: '入账门店不存在' }
     const marketName = storeRows[0].market_name || ''
     const note = data.remark ? `${LEGACY_INFLOW_NOTE}｜${data.remark}` : LEGACY_INFLOW_NOTE
-    // 幂等键：前端每次提交生成 requestId，重复提交 / 重试携带同值 → 据此去重防重复入账
+    
     const inflowRef = data.requestId ? `card-inflow-${data.requestId}` : null
 
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
-        // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / 重试），先于订单号锁获取
+        
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'card_inflow:' + data.clientUserId}))`)
-        // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
+        
         if (inflowRef) {
           const dupRows = (await tx.execute(sql`
             SELECT ref_order_id FROM card_transactions WHERE external_ref = ${inflowRef} LIMIT 1
@@ -3357,8 +3205,8 @@ export const createPrepaidInflow = withPermission(
         const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
-        // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
-        // 不加待支付并发守卫（uq_sale_orders_client_pending 现仅约束 opened_by IS NULL 自助单，迁移不应被无关待支付单卡住）
+        
+        
         await tx.insert(saleOrders).values({
           saleOrderId: id,
           status: '已支付',
@@ -3386,7 +3234,7 @@ export const createPrepaidInflow = withPermission(
           paidAt: nowTs(),
         })
 
-        // 首次支付流水（线下 / external_txn_id=NULL / 已支付）：维护 received=Σ流水（资金不变量 I1）
+        
         await tx.insert(saleOrderPayments).values({
           saleOrderId: id,
           changeType: '首次支付',
@@ -3400,8 +3248,8 @@ export const createPrepaidInflow = withPermission(
           paidAt: nowTs(),
         })
 
-        // 充值入账（复用 applyRechargeOnOrderPaid：balance += total + card_transactions 充值）。
-        // 转入传 card-inflow-{requestId} 幂等键，使「不同订单号的重试」也能去重防重复入账。
+        
+        
         await applyRechargeOnOrderPaid(tx, id, inflowRef ?? undefined)
 
         return id
@@ -3425,25 +3273,13 @@ export const createPrepaidInflow = withPermission(
   },
 )
 
-// ========== 录入回款（ticket 2026-04-24 多次回款 PR-B） ==========
 
-/**
- * 管理后台录入回款（admin 线下/储值卡回款）
- *
- * 设计对齐：staffApi.order.createRepayment（ticket-2 PR-A，staff 实现）
- *   - 双写：1 条 FY-HKD 凭证单 sale_orders 行 + 1~2 条 sale_order_payments 流水行
- *   - 线下：payments.change_type='回款' payment_method='线下' external_txn_id=银行回执 status='已支付' source_end='admin'
- *   - 储值卡：事务内锁 prepaid_cards.balance → 扣减 → INSERT card_transactions + payments.change_type='储值卡抵扣'
- *   - 基于 SUM(payments) 重算原单 paid_amount / prepaid_card_amount，付清翻 '已支付'
- *   - admin 端不接受线上支付（微信/支付宝），paymentMethod 限定 '线下' / '储值卡'
- *   - 幂等：本 ticket 简化，依赖前端防重复提交；'线下' external_txn_id 仅作审计凭证，不建唯一键
- *
- * 返回：{ success: true, data: { repaymentOrderId } } 或 { success: false, error: { code, message } }
- */
-// 注：'use server' 文件不允许 export type/const 非函数（Next.js 限制）。
-// 原 RecordPaymentResult 类型直接内联到 recordPayment 返回类型上。
 
-// getRepayable：查询原单各购买子项的应付/已收/可回款额，供 record-payment-dialog 按子项录入。
+
+
+
+
+
 export const getRepayable = withPermission(
   'sale_order:record_payment',
   async (
@@ -3488,8 +3324,8 @@ export const getRepayable = withPermission(
       }
     })
 
-    // 欠款 = total − received（= settleTarget − received，与 status 结清判定一致）。
-    // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单算成无欠款。
+    
+    
     const remainingPayable = Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
 
     let cardBalance: number | null = null
@@ -3516,18 +3352,18 @@ export const recordPayment = withPermission(
   paymentMethod: '线下' | '储值卡'
   externalTxnId?: string
   prepaidCardAmount?: number
-  // 按子项定向回款：每行现金 repayAmount + 储值卡 prepaidCardAmount，写带 ref_sale_item_id 的 payment 行。
-  // 未传时退回订单级单行（ref=null，按比例分摊），向后兼容。
+  
+  
   items?: Array<{ saleItemId: string; repayAmount?: number; prepaidCardAmount?: number }>
   note?: string
-  // 前端为「本次回款意向」生成的幂等键（重试/误点复用同一值）；储值卡抵扣场景用作扣卡 external_ref 防重复扣卡。
+  
   idempotencyKey?: string
     },
   ): Promise<
     | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string; idempotent?: boolean } }
     | { success: false; error: { code: string; message: string } }
   > => {
-  // 入参归一 + 基本校验（Zod 在前端/Action 边界均可使用；此处做防御校验避免直接被调用时绕过）
+  
   const saleOrderId = String(input.saleOrderId || '').trim()
   if (!saleOrderId) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '订单号不能为空' } }
@@ -3537,7 +3373,7 @@ export const recordPayment = withPermission(
     return { success: false, error: { code: 'INVALID_PARAMS', message: '支付方式仅支持 线下 / 储值卡' } }
   }
 
-  // items[] 优先：归一化各子项金额并合计为订单级 repayAmount / prepaidCardAmount
+  
   const repayItems = Array.isArray(input.items) && input.items.length > 0
     ? input.items
         .map((it) => ({
@@ -3566,7 +3402,7 @@ export const recordPayment = withPermission(
     return { success: false, error: { code: 'INVALID_PARAMS', message: '回款金额与储值卡抵扣不能都为 0' } }
   }
 
-  // 储值卡付款方式下不应再传 repayAmount（语义是纯储值卡回款）
+  
   if (paymentMethod === '储值卡' && repayAmount > 0) {
     return {
       success: false,
@@ -3577,24 +3413,24 @@ export const recordPayment = withPermission(
     }
   }
 
-  // externalTxnId 可选（保留作审计凭证：银行回执号/扫码流水号）。
-  // 线下不再强制：线下现金行写 external_txn_id=NULL，不受 uq_sop_txn（partial WHERE NOT NULL）
-  // 与 chk_sop_method_txn（仅约束微信/支付宝）约束。
+  
+  
+  
   const externalTxnId = input.externalTxnId?.trim() || null
 
-  // 幂等键（2026-06-29 防重复扣卡）：前端为本次回款意向生成 idempotencyKey，重试/误点复用同一值。
-  // 仅储值卡抵扣场景（prepaidCardAmount>0）用作扣卡 external_ref —— 纯现金回款由 uq_sop_txn 守护、不需此键。
-  // 缺失时退回旧 repaymentOrderId-based external_ref（向后兼容老前端，仅放弃幂等保护）。
+  
+  
+  
   const idempotencyKey = input.idempotencyKey?.trim() || null
   const repayIdempRef = idempotencyKey && prepaidCardAmount > 0
     ? `card-repay-${saleOrderId}-${idempotencyKey}`
     : null
 
-  // 事务：锁原单 + 校验 + 扣卡 + 插凭证单 + 插 payments + 重算原单
+  
   let result: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string; idempotent?: boolean }
   try {
     result = await db.transaction(async (tx) => {
-      // 1) 锁原单 + 校验
+      
       const lockRes = await tx.execute(sql`
         SELECT * FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
       `)
@@ -3604,12 +3440,12 @@ export const recordPayment = withPermission(
       }
       const locked = lockedRows[0]
 
-      // scope 保护：admin 跨门店免检；manager / finance 等 scoped 角色按 storeId 校验
+      
       if (!isInScope(session, locked.store_id)) {
         throw new ApiError('PERMISSION_DENIED', 'OUT_OF_SCOPE: 该订单不在你的可见门店范围内')
       }
 
-      // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持回款
+      
       if (locked.sale_order_type === '寄存单') {
         throw new ApiError('INVALID_STATE', '寄存单不支持回款')
       }
@@ -3617,7 +3453,7 @@ export const recordPayment = withPermission(
         throw new ApiError('INVALID_STATE', '历史订单不支持回款')
       }
 
-      // 冻结闭环（Bug I）：订单有待审批退款时禁止回款（与 staff createRepayment 对齐，防 received 在 create→approve 间漂移）
+      
       if (await hasPendingRefund(tx, saleOrderId)) {
         throw new ApiError('INVALID_STATE', 'REFUND_IN_PROGRESS: 该订单退款审批中，暂不可回款')
       }
@@ -3630,9 +3466,9 @@ export const recordPayment = withPermission(
         throw new ApiError('CLIENT_NOT_REGISTERED', '顾客未注册小程序，无法使用储值卡抵扣')
       }
 
-      // 幂等预检（2026-06-29 防重复扣卡）：锁原单后查同 idempotencyKey 的 card-repay 扣款是否已落库。
-      // 命中 → 整笔回款已处理（余额已扣、流水已记），直接返回当前状态、跳过本次扣卡/payments/received 全部逻辑。
-      // 行锁（上面 SELECT ... FOR UPDATE）串行化同单请求，两次重试无竞态：第二次拿到锁时首次已 COMMIT 可见。
+      
+      
+      
       if (repayIdempRef) {
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions WHERE external_ref = ${repayIdempRef} LIMIT 1
@@ -3648,20 +3484,20 @@ export const recordPayment = withPermission(
         }
       }
 
-      // 2) 计算欠款：total - received（= settleTarget - received，与下方结清判定 line 3558 一致）。
-      // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单
-      // 算成无欠款 → 超额校验误拒。2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，改用 received。
-      // payable + prepaid 在「回款新增储值卡抵扣」时会破裂（见下方结清判定注释），故直接锚 total 单调正确。
+      
+      
+      
+      
       const origTotal = Number(locked.total_amount || 0)
       const origPaid = Number(locked.received || 0)
       const remainingPayable = Math.round((origTotal - origPaid) * 100) / 100
 
-      // 3) 超额校验
+      
       if (totalThisTime > remainingPayable + 0.001) {
         throw new ApiError('CONFLICT', `OVERPAY:${remainingPayable.toFixed(2)}: 本次回款金额超过订单欠款`)
       }
 
-      // 3b) 按子项校验：逐项 (现金+储值卡) ≤ 该行可回款额(sale_amount - received)
+      
       if (hasItems) {
         const itemRowsRes = await tx.execute(sql`
           SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
@@ -3680,7 +3516,7 @@ export const recordPayment = withPermission(
         }
       }
 
-      // 4) 生成 FY-HKD 凭证单号（advisory lock + 当日序号，前缀 FY-HKD-WX-YYMMDDNNNN）
+      
       const idRows = await tx.execute(sql`
         WITH lock AS (
           SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
@@ -3699,7 +3535,7 @@ export const recordPayment = withPermission(
       const repaymentOrderId = (idRows as unknown as any[])[0]?.id as string
       if (!repaymentOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 回款单号生成失败')
 
-      // 5) 储值卡抵扣：锁余额 + 扣减 + 写 card_transactions
+      
       if (prepaidCardAmount > 0) {
         const balRes = await tx.execute(sql`
           SELECT card_id, balance FROM prepaid_cards
@@ -3720,10 +3556,10 @@ export const recordPayment = withPermission(
               updated_at = NOW()
           WHERE card_id = ${cardId}
         `)
-        // ref_order_id 指向原销售单（FK 约束要求 ref_order_id 必须存在于 sale_orders；
-        // 回款凭证单 FY-HKD 不再 INSERT 到 sale_orders，故用 saleOrderId 满足 FK）。
-        // 幂等 external_ref：优先用前端 idempotencyKey 派生的稳定键（重试命中同一键 → 上方预检整笔跳过 / 唯一约束兜底）；
-        // 缺失 idempotencyKey 时退回 repaymentOrderId-based（向后兼容，仅放弃幂等保护）。
+        
+        
+        
+        
         await tx.insert(cardTransactions).values({
           cardId,
           type: '扣款',
@@ -3733,17 +3569,17 @@ export const recordPayment = withPermission(
         })
       }
 
-      // 2026-04-26 sale-order-domain-refactor：
-      //   不再 INSERT FY-HKD 回款单（saleOrderType='回款单' 已删除），
-      //   "回款"语义完全由 sale_order_payments[change_type='回款'] 表达。
-      //   repaymentOrderId 仍生成（FY-HKD 编号格式保留用作业务流水编号 / 操作日志主键）。
+      
+      
+      
+      
 
-      // 7) 向原销售单写 payments 流水 —— 款项记录合并为「一笔现金流动」，不按子项拆行：
-      //    现金合并 1 行 '回款'（ref=null）+ 储值卡合并 1 行 '储值卡抵扣'（ref=null）。
-      //    repayAmount / prepaidCardAmount 已是各子项合计（见上方 2799-2804）。
-      //    子项定向（钱精确落选中卡）改由下方 7b 更新 sale_items.pending_received 承载，
-      //    不再靠 payment.ref_sale_item_id —— 这样多子项回款共用一个交易号也不会撞 uq_sop_txn。
-      // 回款事件主流水行 id（现金行优先；纯储值卡回款取储值卡抵扣行）—— 按回款逐笔分配的归属键
+      
+      
+      
+      
+      
+      
       let cashPaymentId: number | string | null = null
       let cardPaymentId: number | string | null = null
       if (repayAmount > 0) {
@@ -3776,13 +3612,13 @@ export const recordPayment = withPermission(
         }).returning({ id: saleOrderPayments.id })
         cardPaymentId = cardIns[0]?.id ?? null
       }
-      // 线下/储值卡回款均即时已支付：现金行优先为主流水行，纯储值卡取抵扣行
+      
       const primaryPaymentId = cashPaymentId || cardPaymentId
 
-      // 7b) 子项定向：把「本次每张卡补多少」覆盖写入 sale_items.pending_received
-      //     （2026-06-27 营业额分配重构：pending_received = 本次逐项实付，不再累加 received+refunded+delta）。
-      //     非定向 capture 读 pending_received 作为权重；定向 capture 用 directedItems 不读此值。
-      //     无 items[] 的订单级回款（hasItems=false）不动 pending，退回 untargeted 比例分摊（向后兼容）。
+      
+      
+      
+      
       if (hasItems) {
         const repayValues = sql.join(
           repayItems!.map(
@@ -3802,13 +3638,13 @@ export const recordPayment = withPermission(
         `)
       }
 
-      // 8) 重算原单 received / refunded_amount / prepaid_card_amount + status
-      //    2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一改用 received
-      //    received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
-      //                            ※ 与 staff confirmOffline / createRepayment 跨端字面对齐；
-      //                              received 含储值卡抵扣，paid_sessions SQL settled = received - refunded 才能取到上限。
-      //    refunded_amount     = -Σ(amount WHERE status='已支付' AND change_type='退款')
-      //    prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
+      
+      
+      
+      
+      
+      
+      
       const sumRes = await tx.execute(sql`
         SELECT
           COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
@@ -3825,14 +3661,14 @@ export const recordPayment = withPermission(
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
       const settled = newReceived
-      // 结清判定基准 = total_amount（固定锚）。received 含现金 + 储值卡抵扣（I1），达 total 即结清。
-      // 原用 payable + origPrepaidSnapshot 在「回款新增储值卡抵扣」时破裂（payable 不随 prepaid 减少，
-      // 多笔储值卡回款后 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
-      // 充值单不进回款路径（一次性付清），total 锚无副作用。
+      
+      
+      
+      
       const settleTarget = Math.round(origTotal * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
-      // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()；未结清→保留原值（paid_at = paid_at 无害）。
-      // 原 ISO 字符串内插会让 postgres.js 走 UTC 字面落库（早 8h）；改 SQL 片段根治。
+      
+      
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`paid_at`
 
       const updRes = await tx.execute(sql`
@@ -3849,21 +3685,21 @@ export const recordPayment = withPermission(
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
       }
 
-      // 9) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
-      // 与 staff confirmOffline / payNotify 三端对齐，保证 admin 财务补录回款
-      // 也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
+      
+      
+      
       if (targetStatus === '已支付' && locked.client_user_id) {
         await recalcCustomerType(tx, locked.client_user_id)
       }
 
-      // 10) 积分发放（修复 audit-15 P0-15-01：admin recordPayment 触发点缺失）
-      //     无论本次是否结清都尝试 settle：链净额差值法天然幂等，
-      //     可正确处理"分次回款只发增量积分"的场景
+      
+      
+      
       await settlePointsSafe(tx, saleOrderId, 'admin.recordPayment')
 
-      // 12) 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态。
-      //     items[] 定向回款 → 逐项金额（现金+储值卡）即可分配额；否则非定向按剩余应付比例摊。
-      //     必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      
+      
+      
       const directedForCapture = repayItems
         ? repayItems.map((it) => ({
             saleItemId: it.saleItemId,
@@ -3878,8 +3714,8 @@ export const recordPayment = withPermission(
       })
       await refreshOrderAllocationRollup(tx, saleOrderId)
 
-      // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-      //     必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      
+      
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       return {
@@ -3894,7 +3730,7 @@ export const recordPayment = withPermission(
     if (msg?.includes('REF_ORDER_NOT_FOUND')) {
       return { success: false, error: { code: 'REF_ORDER_NOT_FOUND', message: '原订单不存在' } }
     }
-    // 状态机拒绝（保留原行为：行 1895 throw new Error(`INVALID_STATE:${locked.status}`) 仍生效）
+    
     if (msg?.startsWith('INVALID_STATE:') && !msg.includes('ORDER_ID_GEN_FAILED')) {
       const status = msg.split(':')[1] || ''
       return {
@@ -3941,8 +3777,8 @@ export const recordPayment = withPermission(
       return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '回款单号生成失败，请稍后重试' } }
     }
     if (pgErrorCode(err) === '23505') {
-      // 款项合并后该路径已不再 INSERT sale_orders（单号段只 SELECT），唯一现实的 23505 = uq_sop_txn
-      //（同订单同通道二次填相同交易号）。废弃旧「订单号冲突」措辞。
+      
+      
       return {
         success: false,
         error: {
@@ -3954,16 +3790,16 @@ export const recordPayment = withPermission(
       }
     }
     console.error('[recordPayment] unexpected error:', err)
-    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）；
-    // 非 DB 错误才保留 err.message 便于排查。
+    
+    
     if (pgErrorCode(err)) {
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
     return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
   }
 
-  // 幂等命中：首次回款已处理（余额已扣、操作日志已记），本次为重复提交 → 直接返回当前状态，
-  // 不重复记日志 / 不 revalidate（首次成功已 revalidate）。
+  
+  
   if (result.idempotent) {
     return { success: true, data: result }
   }
@@ -3984,7 +3820,7 @@ export const recordPayment = withPermission(
   },
 )
 
-// ========== 小程序码生成 ==========
+
 
 const WX_CLIENT_APPID = process.env.WX_CLIENT_APPID || 'wx811eb4ded3dfba3f'
 const WX_CLIENT_SECRET = process.env.WX_CLIENT_SECRET
@@ -4011,7 +3847,7 @@ async function getClientAccessToken(forceRefresh = false): Promise<string> {
   return cachedToken!
 }
 
-/** 生成客户端小程序码，返回 base64 data URL */
+
 export const generateOrderWxacode = withPermission(
   'sale_order:list',
   async (_session, saleOrderId: string): Promise<{ success: boolean; dataUrl?: string; message?: string }> => {
@@ -4023,7 +3859,7 @@ export const generateOrderWxacode = withPermission(
     let token = await getClientAccessToken()
     let buffer = await requestWxacode(token, saleOrderId, 'pagesOrder/scan-pay/scan-pay')
 
-    // 响应小于 1000 字节可能是错误 JSON
+    
     if (buffer.byteLength < 1000) {
       const text = new TextDecoder().decode(buffer)
       try {
@@ -4039,7 +3875,7 @@ export const generateOrderWxacode = withPermission(
           return { success: false, message: `生成失败: ${errData.errcode} ${errData.errmsg}` }
         }
       } catch {
-        // 不是 JSON，当作正常图片
+        
       }
     }
 

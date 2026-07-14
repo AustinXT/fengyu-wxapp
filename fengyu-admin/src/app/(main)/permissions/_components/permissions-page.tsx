@@ -43,7 +43,7 @@ interface PermissionsPageProps {
   orgNodes: OrgNode[]
   
   accessibleScopeIds: string[] | null
-  /** 撤销角色按钮可见性：持有 permission:revoke 的角色（admin + hr） */
+  
   canDelete: boolean
 }
 

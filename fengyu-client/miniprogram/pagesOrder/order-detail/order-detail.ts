@@ -21,7 +21,7 @@ interface OrderDetailItem {
   used_pct?: number;
   paid_unused_pct?: number;
   unpaid_pct?: number;
-  // NULL 卡（paid_sessions 原始为 null）：wxml 据此把「已付 0」改显「已付 —」
+  
   paid_sessions_null?: boolean;
 }
 
@@ -184,7 +184,7 @@ Page({
           
           expire_date: i.expire_date ? formatDate(i.expire_date) : i.expire_date,
           paid_sessions: paid,
-          // NULL 卡（0040 前未回填）：wxml 据此把「已付 0」改显「已付 —」
+          
           paid_sessions_null: paidNull,
           used_sessions: used,
           used_pct: usedPct,

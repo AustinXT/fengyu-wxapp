@@ -1,15 +1,4 @@
-/**
- * 管理层客量数据子页（mgmtTraffic）
- *
- * summary — 一次返回 5 个 section：
- *   1. 注册情况（截至 endDate）
- *   2. 到店客流（区间维度）
- *   3. 会员状态与客活（截面 + 区间 + 本月激活）
- *   4. 会员被经营（6 桶 + 客单价）
- *   5. 新会员经营（数量 / 消费 / trialFootfall）
- *
- * 口径权威源：notes/references/metrics.md「客量数据子页」章节
- */
+
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
@@ -18,9 +7,9 @@ const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
-// scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
 
-/** sale/service 表的 store_id scope 过滤片段（与 mgmt-dashboard.js 同实现） */
+
+
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -36,7 +25,7 @@ function buildSaleScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/** client_wechat_users.bound_store_id scope（与 mgmt-dashboard.js 同实现） */
+
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
   if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'store') {
@@ -52,14 +41,11 @@ function buildClientScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
-/**
- * 解析 period → { startDate, endDate } YYYY-MM-DD 字符串
- * 锚点为"今天"（执行时刻），与 SQL 内 NOW() 同源
- */
+
 function resolvePeriodRange(period) {
   const now = new Date()
   const y = now.getFullYear()
-  const m = now.getMonth() // 0-based
+  const m = now.getMonth() 
   const d = now.getDate()
   const fmt = (yy, mm, dd) =>
     `${yy}-${String(mm + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
@@ -70,18 +56,18 @@ function resolvePeriodRange(period) {
   if (period === 'lastMonth') {
     const startY = m === 0 ? y - 1 : y
     const startM = m === 0 ? 11 : m - 1
-    // 上月最后一天 = 当月 0 号
+    
     const endDay = new Date(y, m, 0)
     return {
       startDate: fmt(startY, startM, 1),
       endDate: fmt(endDay.getFullYear(), endDay.getMonth(), endDay.getDate()),
     }
   }
-  // year
+  
   return { startDate: fmt(y, 0, 1), endDate: fmt(y, m, d) }
 }
 
-/** endDate 表达式：用 NOW() 锚点避免时区漂移 */
+
 function endDateExpr(period) {
   if (period === 'lastMonth') {
     return `(date_trunc('month', NOW()) - INTERVAL '1 day')::date`
@@ -89,7 +75,7 @@ function endDateExpr(period) {
   return `NOW()::date`
 }
 
-/** startDate 表达式：用 NOW() 锚点 */
+
 function startDateExpr(period) {
   if (period === 'month') {
     return `date_trunc('month', NOW())::date`
@@ -116,14 +102,14 @@ async function resolveScopeName(scopeType, scopeId) {
   return rows[0]?.store_name || ''
 }
 
-// =====================================================================
-// Section 1：注册情况（4 项截面）
-// =====================================================================
+
+
+
 
 async function querySingleRegistration(scopeType, scopeId, period, customerType) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 1)
 
-  // 会员客切 became_member_at 与 mgmt-dashboard.summary.memberCount 对齐（2026-04-25）
+  
   if (customerType === '会员客') {
     const rows = await pg.query(
       `SELECT COUNT(*) AS v
@@ -136,7 +122,7 @@ async function querySingleRegistration(scopeType, scopeId, period, customerType)
     return Number(rows[0]?.v || 0)
   }
 
-  // 其他类型仍用 customer_type 快照（regOnly/regTrial/regTotal）
+  
   const typeClause = customerType
     ? ` AND c.customer_type = '${customerType}'`
     : ''
@@ -160,9 +146,9 @@ async function queryRegistration(scopeType, scopeId, period) {
   return { regTotal, regOnly, regTrial, regMember }
 }
 
-// =====================================================================
-// Section 2：到店客流（trafficCount / trafficUsers / trafficSessions × 4 列）
-// =====================================================================
+
+
+
 
 const TRAFFIC_TYPES = [
   { type: 'total', label: '总', customerType: null },
@@ -171,9 +157,7 @@ const TRAFFIC_TYPES = [
   { type: 'member', label: '会员客', customerType: '会员客' },
 ]
 
-/**
- * 一次性出 trafficCount + trafficUsers（按 customer_type ROLLUP，total 行 customer_type=NULL）
- */
+
 async function queryTrafficCountUsers(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const rows = await pg.query(
@@ -192,9 +176,7 @@ async function queryTrafficCountUsers(scopeType, scopeId, period) {
   return rows
 }
 
-/**
- * 一次性出 trafficSessions（按 customer_type ROLLUP，限定 sales_category）
- */
+
 async function queryTrafficSessions(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const rows = await pg.query(
@@ -246,17 +228,14 @@ async function queryTraffic(scopeType, scopeId, period) {
   })
 }
 
-// =====================================================================
-// Section 3：会员状态与客活
-// =====================================================================
 
-/**
- * 5 项截面（按 customer_status 分组）
- *   - 沉睡 需追加 customer_type='会员客' 过滤（D-6 落地：migration 0013 已对齐）
- */
+
+
+
+
 async function queryStatusBreakdown(scopeType, scopeId) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 1)
-  // 'normal' 集合：customer_status IN (4 项)
+  
   const normalRows = await pg.query(
     `SELECT c.customer_status AS s, COUNT(*) AS v
        FROM client_wechat_users c
@@ -265,7 +244,7 @@ async function queryStatusBreakdown(scopeType, scopeId) {
       GROUP BY c.customer_status`,
     sc.params,
   )
-  // dormantWarn 单独查（追加 customer_type='会员客'）
+  
   const warnRows = await pg.query(
     `SELECT COUNT(*) AS v
        FROM client_wechat_users c
@@ -285,9 +264,7 @@ async function queryStatusBreakdown(scopeType, scopeId) {
   }
 }
 
-/**
- * 一次客活 / 二次客活
- */
+
 async function queryActiveOnce(scopeType, scopeId, period) {
   const ssc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
@@ -336,16 +313,9 @@ async function queryActiveTwice(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
-/**
- * 本月激活 3 档（anchor=startDate-1 的 customer_status 实时反推）
- *
- * @param {'warn'|'frozen'|'deep'} bucket
- *   - warn:   last_dt >= anchor - 6 months
- *   - frozen: last_dt < anchor - 6 months AND last_dt >= anchor - 12 months
- *   - deep:   last_dt < anchor - 12 months OR last_dt IS NULL
- */
+
 async function queryReactivated(scopeType, scopeId, period, startDate, bucket) {
-  const ssc = buildSaleScope(scopeType, scopeId, 'so', 2) // $1=startDate
+  const ssc = buildSaleScope(scopeType, scopeId, 'so', 2) 
   const csc = buildClientScope(
     scopeType,
     scopeId,
@@ -362,7 +332,7 @@ async function queryReactivated(scopeType, scopeId, period, startDate, bucket) {
        AND a.last_dt < ($1::date - 1 - INTERVAL '6 months')::date
        AND a.last_dt >= ($1::date - 1 - INTERVAL '12 months')::date`
   } else {
-    // deep
+    
     lastDtClause = `(a.last_dt IS NULL
        OR a.last_dt < ($1::date - 1 - INTERVAL '12 months')::date)`
   }
@@ -407,9 +377,9 @@ async function queryReactivated(scopeType, scopeId, period, startDate, bucket) {
   return Number(rows[0]?.v || 0)
 }
 
-// =====================================================================
-// Section 4：会员被经营（6 桶 + 客单价）
-// =====================================================================
+
+
+
 
 async function queryMemberOps(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
@@ -462,9 +432,9 @@ async function queryMemberOps(scopeType, scopeId, period) {
   }
 }
 
-// =====================================================================
-// Section 5：新会员经营（count / spend / trialFootfall）
-// =====================================================================
+
+
+
 
 async function queryNewMemberCount(scopeType, scopeId, period) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 1)
@@ -512,9 +482,9 @@ async function queryTrialFootfall(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
-// =====================================================================
-// summary 入口
-// =====================================================================
+
+
+
 
 async function summary(ctx) {
   await requireManagementLevel()(ctx, async () => {})

@@ -182,14 +182,14 @@ export const getAvailableCoupons = withPermission(
         eq(userCoupons.status, '未使用'),
         gt(userCoupons.expireAt, nowTs()),
         eq(couponTemplates.isActive, true),
-        // minSpend 改 JS 用 eligibleTotal（合格品类行小计）判定，与 client/staff coupon.available + order.create 一致（M10）
+        
         storeCondition,
         marketCondition,
       ))
       
       .orderBy(asc(userCoupons.expireAt))
 
-    // 若传入订单明细（items），按 applicableCategoryIds 算合格行小计 eligibleTotal（M10：与 client/staff 对齐）
+    
     let skuCatMap: Map<string, string | null> | null = null
     if (items && items.length > 0) {
       const skuRows = await db
@@ -200,7 +200,7 @@ export const getAvailableCoupons = withPermission(
     }
 
     return rows.flatMap((r) => {
-      // eligibleTotal：传 items 时按 applicableCategoryIds 过滤合格行小计；未传则用订单总额（兼容旧调用方）
+      
       let eligibleTotal = total
       if (skuCatMap && items) {
         const cats = r.applicableCategoryIds
@@ -208,11 +208,11 @@ export const getAvailableCoupons = withPermission(
           cats && cats.length > 0
             ? items.filter((it) => cats.includes(skuCatMap!.get(it.skuId) ?? ''))
             : items
-        if (eligibleItems.length === 0) return [] // 该券无合格行 → 不可用
+        if (eligibleItems.length === 0) return [] 
         eligibleTotal = Math.round(eligibleItems.reduce((s, it) => s + Number(it.amount || 0), 0) * 100) / 100
       }
       const minSpend = Math.round((Number(r.minSpend) || 0) * 100) / 100
-      if (eligibleTotal + 0.001 < minSpend) return [] // 不满足满减门槛
+      if (eligibleTotal + 0.001 < minSpend) return [] 
       const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, eligibleTotal)
       return [{
         couponId: r.couponId,

@@ -280,7 +280,7 @@
   background: #FFF0EE;
 }
 
-/* NULL 历史卡：灰显不可核销（参考 appointment-create .item-disabled） */
+
 .treatment-card--disabled {
   opacity: 0.45;
 }

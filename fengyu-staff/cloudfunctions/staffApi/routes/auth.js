@@ -51,8 +51,8 @@ async function buildLevelPayload(employeeId) {
   const scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
   const availableLoginLevels = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
   const scopedStores = await fetchScopedStores(scopeStoreIds)
-  // managerStores：仅 manager 角色绑定的门店（管理层视图默认 scope 用，区别于 scopedStores 全角色并集；
-  // 防 manager@A + customer_mgr@B 时 scopedStores 按店名排序默认到 B，触发 validateManagementScope 越权拦）
+  
+  
   const managerBindings = roleBindings.filter((r) => r.role === 'manager')
   const managerStoreIds = managerBindings.length > 0 ? await expandScopeStoreIds(managerBindings, pg) : []
   const managerStores = await fetchScopedStores(managerStoreIds)

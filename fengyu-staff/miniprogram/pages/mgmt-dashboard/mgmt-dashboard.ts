@@ -280,10 +280,10 @@ Page({
       return { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
     }
     if (staffLevel === 'store_manager') {
-      // 门店店长：默认锁到管辖门店（managerStores[0]；多店店长可在 picker 切换其它管辖门店）。
-      // 用 managerStores 而非 scopedStores——后者含全角色并集门店（如 manager@A + customer_mgr@B），
-      // 按店名字母序可能默认到非管辖门店 B，触发 validateManagementScope 越权拦。
-      // 后端 validateManagementScope 仅允许 scopeType='store' 且 scopeId ∈ managerStoreIds。
+      
+      
+      
+      
       const stores = managerStores || []
       if (stores.length > 0) {
         return { scopeType: 'store', scopeId: stores[0].storeId, scopeName: stores[0].storeName }
