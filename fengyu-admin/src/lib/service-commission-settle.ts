@@ -68,7 +68,7 @@ export async function settleServiceCommissions(
 
   // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（镜像 staff service.js:494 /
   // client service-finalize.js:105 的 `if (so.remark === DEPOSIT_REFUND_REMARK) continue`）。
-  // service.create 已强制 remark 打标，此处为 finalize 兜底防漏。⚠ commission_status='已分配'
+  // service.create 不再强制 remark 打标（空备注按正常消耗计业绩），此处为 finalize 兜底防漏。⚠ commission_status='已分配'
   // 仍在循环后无条件置（与 staff/client 一致——它们也把 commission_status 写进无条件的状态翻转 UPDATE）。
   const remarkRows = (await executor.execute(sql`
     SELECT remark FROM service_orders WHERE service_order_id = ${serviceOrderId}
