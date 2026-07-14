@@ -3,10 +3,10 @@
  * 分配结果 3 天冻结 冒烟（仅约束员工端店长；admin 后台不受限，不在本测试范围）
  *
  * 验证两条写路径在超过冻结窗口（FREEZE_DAYS=3）后被拒、窗口内放行：
- *   A. allocation.save —— 锚点 sale_orders.paid_at
+ *   A. allocation.savePayment —— 锚点 sale_order_payments.paid_at（按回款逐笔分配）
  *        A1. paid_at = 4 天前 → 拒（INVALID_STATE: ALLOCATION_FROZEN）
  *        A2. paid_at = 1 天前 → 放行（正常保存）
- *   B. serviceCommission.save —— 锚点 service_orders.completed_at
+ *   B. serviceCommission.save —— 锚点 service_orders.completed_at（未改）
  *        B1. completed_at = 4 天前 → 拒（ALLOCATION_FROZEN，gate 在清空分支之前）
  *        B2. completed_at = 1 天前 → 放行（清空提成成功）
  *
@@ -39,7 +39,7 @@ async function main() {
   const errors = []
 
   // ───────────────────────────────────────────────────────────────
-  // A. allocation.save — paid_at 锚点
+  // A. allocation.savePayment — sale_order_payments.paid_at 锚点
   // ───────────────────────────────────────────────────────────────
   const saleOrderId = `${NS}_FRZ_SALE`
   await createTestSaleOrder({
@@ -60,15 +60,35 @@ async function main() {
   const saleItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [saleOrderId])
   const saleItemId = saleItems[0].sale_item_id
 
+  // 造一笔待分配回款 + spai（可分配基数）；冻结锚点 = 这条 payment 的 paid_at
+  const payRows = await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, status, source_end,
+       operator_employee_id, paid_at, allocation_status, created_at
+     )
+     VALUES ($1, '首次支付'::payment_change_type, 1000, '线下'::payment_method,
+             '已支付'::payment_flow_status, 'staff'::payment_source_end,
+             $2, NOW(), '待分配'::allocation_status, NOW())
+     RETURNING id`,
+    [saleOrderId, TEST_MANAGER_EMP_ID]
+  )
+  const salePaymentId = payRows[0].id
+  await pgQuery(
+    `INSERT INTO sale_payment_allocatable_items
+       (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+     VALUES ($1, $2, $3, 1000, '他销自耗'::sales_category, NOW())`,
+    [salePaymentId, saleOrderId, saleItemId]
+  )
+
   const saleAlloc = [
     { saleItemId, employeeId: TEST_MANAGER_EMP_ID, roleType: '美容师', allocationRatio: 1.0 },
   ]
 
   // A1. paid_at 4 天前 → 冻结拒绝
-  await pgQuery(`UPDATE sale_orders SET paid_at = NOW() - INTERVAL '4 days' WHERE sale_order_id = $1`, [saleOrderId])
-  const a1 = await invokeStaffApi('allocation.save', {
+  await pgQuery(`UPDATE sale_order_payments SET paid_at = NOW() - INTERVAL '4 days' WHERE id = $1`, [salePaymentId])
+  const a1 = await invokeStaffApi('allocation.savePayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId,
+    salePaymentId,
     allocations: saleAlloc,
   })
   if (a1.code === 0) {
@@ -80,10 +100,10 @@ async function main() {
   }
 
   // A2. paid_at 1 天前 → 放行
-  await pgQuery(`UPDATE sale_orders SET paid_at = NOW() - INTERVAL '1 day' WHERE sale_order_id = $1`, [saleOrderId])
-  const a2 = await invokeStaffApi('allocation.save', {
+  await pgQuery(`UPDATE sale_order_payments SET paid_at = NOW() - INTERVAL '1 day' WHERE id = $1`, [salePaymentId])
+  const a2 = await invokeStaffApi('allocation.savePayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId,
+    salePaymentId,
     allocations: saleAlloc,
   })
   if (a2.code !== 0) {
@@ -93,7 +113,7 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────
-  // B. serviceCommission.save — completed_at 锚点
+  // B. serviceCommission.save — completed_at 锚点（未改）
   // ───────────────────────────────────────────────────────────────
   const serviceOrderId = `${NS}_FRZ_SVC`
   await createTestServiceOrder({

@@ -2,11 +2,14 @@
 /**
  * 管理层 mgmt-* 入口准入边界 smoke
  *
- * 覆盖 2 个 case：所有都期望 PERMISSION_DENIED：
- *   1. manager@门店（staffLevel='store_manager'）调 mgmtDashboard.summary 应 403
- *      → middleware/auth.js:287 "仅管理层可执行此操作"
+ * 覆盖 3 个 case：所有都期望 PERMISSION_DENIED：
+ *   1. manager@门店（staffLevel='store_manager'）调 mgmtDashboard.summary(scopeType='all') 应 403
+ *      → store_manager 已放开管理层视图（双视图互切，scope.js canAccessManagementLevel），
+ *        deny 边界移到 validateManagementScope：店长禁止 'all'/'market' 范围，仅可查所辖门店
+ *        → utils/scope.js:206 "店长账号仅可查看所辖门店"
  *   2. finance@门店（staffLevel='store_staff'）调 mgmtCustomer.search 应 403
- *      → 同上 — 验证"角色虽是 finance 但绑门店仍不能进 mgmt-*"
+ *      → requireManagementLevel: canAccessManagementLevel(store_staff)=false → "仅管理层可执行此操作"
+ *      — 验证"角色虽是 finance 但绑门店仍不能进 mgmt-*"
  *
  * 同时验证：3) staff@门店 调 mgmtDashboard.scopeOptions 应 403（再保险一次）
  */
@@ -50,16 +53,16 @@ async function run() {
   const today = new Date().toISOString().slice(0, 10)
   const results = []
 
-  // 1) manager@门店 试 mgmtDashboard.summary → 403
-  // 注：staff_manager 试 _loginLevel='management' 会先在 resolveRuntimeAuth 抛
-  // "无权以该身份登录"；不传 _loginLevel 时也走不通因 staffLevel='store_manager'
+  // 1) manager@门店 试 mgmtDashboard.summary(scopeType='all') → 403
+  // 注：双视图互切后 store_manager 可登 management（deriveAvailableLoginLevels 含 management，
+  // requireManagementLevel 放行）；deny 边界在 validateManagementScope：店长禁止 'all'/'market'。
   results.push(await expectFail('mgmtDashboard.summary',
     {
       _testOpenid: MGR_STORE.oid, _loginLevel: 'management',
-      scopeType: 'store', scopeId: S_A1.storeId, date: today,
+      scopeType: 'all', date: today,
     },
     'PERMISSION_DENIED',
-    'store-manager.mgmt.summary'))
+    'store-manager.mgmt.summary.scopeAll (设计意图：店长放开 mgmt 视图但禁止 all/market 范围)'))
 
   // 2) finance@门店 试 mgmtCustomer.search → 403（绑门店的 finance 不能进 mgmt-*）
   results.push(await expectFail('mgmtCustomer.search',

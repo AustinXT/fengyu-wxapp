@@ -4,7 +4,7 @@
  *
  *   Q 多明细退真子集（Bug Q，原无 snapshot/e2e 守护，回归会静默）：
  *     2 明细单(A 卡 1000/10 + B 卡 800/8，均 0 消费已付)，**只退 A** →
- *     A 的 sale_allocations 作废，**B 的 sale_allocations 不作废**（不误清未退明细）。
+ *     A 的 sale_allocations 负数冲销(净额=0)，**B 的 sale_allocations 不被冲**（不误清未退明细）。
  *
  *   M 退剩余次数保护已挣提成（Bug M 强化 2026-06-08，本轮修复核心）：
  *     1 卡 1000/10、已消费 3 次（remaining=7，3 条 service_commissions）、1 条 alloc，
@@ -88,11 +88,23 @@ async function main() {
   if (payQ) {
     const q2 = await invokeStaffApi('order.approveRefund', { _testOpenid: TEST_MANAGER_OPENID, paymentId: payQ })
     if (q2.code !== 0) errors.push(`Q approveRefund 应成功，code=${q2.code} msg=${q2.message}`)
-    const aA = await pgQuery(`SELECT is_void FROM sale_allocations WHERE sale_item_id = $1`, [qA])
-    const aB = await pgQuery(`SELECT is_void FROM sale_allocations WHERE sale_item_id = $1`, [qB])
-    if (aA[0]?.is_void !== true) errors.push(`Q 退的 A 行分配应作废 is_void=true，实际=${aA[0]?.is_void}`)
-    if (aB[0]?.is_void !== false) errors.push(`Q 未退的 B 行分配不应被清 is_void=false，实际=${aB[0]?.is_void}（Bug Q 回归！）`)
-    if (aA[0]?.is_void === true && aB[0]?.is_void === false) rec(`  ✓ Q 子集退款: A 分配作废 / B 分配保留`)
+    // 通道1（2026-06-24 起记负数冲销，非 is_void 软删）：退的 A 行新增挂退款流水 payQ 的 -1000 镜像行，净额=0；
+    // 未退的 B 行保留 +800 不被误冲（Bug Q 守护——子集退款不清未退明细）
+    const aA = await pgQuery(
+      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE total_amount < 0 AND sale_payment_id = $2) AS neg
+         FROM sale_allocations WHERE sale_item_id = $1`,
+      [qA, payQ]
+    )
+    const aB = await pgQuery(
+      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE total_amount < 0) AS neg
+         FROM sale_allocations WHERE sale_item_id = $1`,
+      [qB]
+    )
+    if (Number(aA[0]?.net) !== 0 || Number(aA[0]?.neg) !== 1) errors.push(`Q 退的 A 行分配应被负数冲销净额=0(1 条镜像行)，实际 net=${aA[0]?.net} neg=${aA[0]?.neg}`)
+    if (Number(aB[0]?.net) !== 800 || Number(aB[0]?.neg) !== 0) errors.push(`Q 未退的 B 行分配不应被冲 net=800，实际 net=${aB[0]?.net} neg=${aB[0]?.neg}（Bug Q 回归！）`)
+    if (Number(aA[0]?.net) === 0 && Number(aB[0]?.net) === 800) rec(`  ✓ Q 子集退款: A 分配负数冲销净额=0 / B 分配保留净额=800`)
   }
 
   // ───────────────────────────────────────────────────────────────────────

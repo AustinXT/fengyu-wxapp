@@ -1,18 +1,23 @@
 #!/usr/bin/env bun
 /**
- * allocation.suggest 冒烟
+ * allocation.suggestPayment 冒烟（按回款逐笔分配，spai 模型）
  *
  * 验证：
  *   A. 单 SKU + 单 sales_category，双 skill 员工 → 每个 skill 1 条 allocLine，
- *      rate 来自 commission_rate_matrix，allocationRatio 默认 1.00（金额由前端按 实收×比例 算）
- *      + candidateEmployees / orderStoreId 字段下发
- *   B. 多 SKU + 多 sales_category 同订单 → 每个 sale_item 各 1 条 allocLine，
+ *      rate 来自 commission_rate_matrix（按本次回款额 eventAmount 查档），allocationRatio 默认 1.00
+ *      + candidateEmployees / orderStoreId / beauticianRequired 字段下发
+ *   B. 多 SKU + 多 sales_category 同回款 → 每个 sale_item 各 1 条 allocLine，
  *      rate 按 sales_category 切换，allocationRatio 默认 1.00
- *   C. 跨市场隔离 → market_name 不命中矩阵时 rates=[] / allocLines.commRate=0
- *   D. tier 阶梯切换 → 同 sales_category 不同 totalAmount 命中不同 tier rate
+ *   C. 脏 market_name 修正（store_id 反查为权威市场）→ ratesByRole 非空、commissionRate>0
+ *   D. tier 阶梯切换 → 同 sales_category 不同 eventAmount 命中不同 tier rate
+ *   E. allocation.pendingPayments（按回款粒度）字段完整性 + 非法 allocationStatus 拒
+ *   F. allocation.rates（提成矩阵，未改名）字段完整性 + 不存在市场拒
  *
- * 依赖：ensureTestCommissionMatrix() 注入规则到 TEST_MARKET_ORG_ID
+ * 依赖：ensureTestCommissionMatrix() 注入规则到 TEST_MARKET_ORG_ID（name=`${NS}_市场`）
  *      （销售单 自销自耗 拆 tier(0,5000)=0.08 + tier(5000,NULL)=0.10）
+ *
+ * 新模型 fixture：每张订单造一笔待分配回款 + sale_payment_allocatable_items 行（基数 amount），
+ *   suggestPayment 以 salePaymentId 为粒度；eventAmount = Σ spai.amount（提成档位基准）。
  */
 import './setup.mjs'
 import {
@@ -30,6 +35,40 @@ import {
 let pass = false
 let exitCode = 1
 function rec(line) { console.log(line) }
+
+/**
+ * 造一笔待分配回款 + 每项一行 spai（可分配基数）。返回 salePaymentId。
+ * items: [{ saleItemId, amount, salesCategory }]
+ */
+async function createPaymentWithSpai({ saleOrderId, items, amount }) {
+  const payRows = await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, status, source_end,
+       operator_employee_id, paid_at, allocation_status, created_at
+     )
+     VALUES ($1, '首次支付'::payment_change_type, $2, '线下'::payment_method,
+             '已支付'::payment_flow_status, 'staff'::payment_source_end,
+             $3, NOW(), '待分配'::allocation_status, NOW())
+     RETURNING id`,
+    [saleOrderId, amount, TEST_MANAGER_EMP_ID]
+  )
+  const paymentId = payRows[0].id
+  for (const it of items) {
+    await pgQuery(
+      `INSERT INTO sale_payment_allocatable_items
+         (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+       VALUES ($1, $2, $3, $4, $5::sales_category, NOW())`,
+      [paymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory]
+    )
+  }
+  return paymentId
+}
+
+/** 取订单首个 sale_item_id（createTestSaleOrder 生成 `${order}_ITEM_1`） */
+async function firstItemId(saleOrderId) {
+  const rows = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 ORDER BY sale_item_id LIMIT 1`, [saleOrderId])
+  return rows[0].sale_item_id
+}
 
 async function main() {
   rec(`[smoke-alloc-suggest] start | ${new Date().toISOString()}`)
@@ -50,7 +89,7 @@ async function main() {
     positionName: '美容师',
     skills: ['美容师', '养生师'],
   })
-  // 单 skill 美容师（用例 B、C）
+  // 单 skill 美容师（用例 B、C、D）
   await createTestStaff({
     employeeId: `${NS}_BEAU_SOLO`,
     openid: `${NS}_BEAU_SOLO_OPENID`,
@@ -60,19 +99,9 @@ async function main() {
     positionName: '美容师',
     skills: ['美容师'],
   })
-  // 无 skill 员工（用例 deptAnomalous）
-  await createTestStaff({
-    employeeId: `${NS}_NOSKILL`,
-    openid: `${NS}_NOSKILL_OPENID`,
-    phone: '19999098006',
-    name: `${NS}_无技能`,
-    isManager: false,
-    positionName: '美容师',
-    skills: [],
-  })
   await createTestClient()
 
-  // SKU 准备：A 用 他销自耗 / B 用 自销自耗 + 他销他耗
+  // SKU 准备：A/C 用 他销自耗 / B 用 自销自耗 + 他销他耗 / D 用 自销自耗
   const skuA = await createTestProduct({
     suffix: 'ALLOC_A',
     productKind: '家居产品', productType: '家居产品',
@@ -103,14 +132,16 @@ async function main() {
     status: '已支付', salesCategory: '他销自耗',
     preferredEmployeeId: `${NS}_BEAU`,
   })
-  await pgQuery(
-    `UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`,
-    [orderA]
-  )
+  await pgQuery(`UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`, [orderA])
+  const itemA = await firstItemId(orderA)
+  const payA = await createPaymentWithSpai({
+    saleOrderId: orderA, amount: 500,
+    items: [{ saleItemId: itemA, amount: 500, salesCategory: '他销自耗' }],
+  })
 
-  const sugA = await invokeStaffApi('allocation.suggest', {
+  const sugA = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderA,
+    salePaymentId: payA,
   })
   if (sugA.code !== 0) {
     errors.push(`A.suggest 应成功 实际 code=${sugA.code} msg=${sugA.message}`)
@@ -130,30 +161,26 @@ async function main() {
     }
     if (sugA.data.beauticianRequired !== true) errors.push(`A.beauticianRequired 应=true`)
     if (sugA.data.deptAnomalous === true) errors.push(`A.deptAnomalous 应=false`)
-    // 新字段：候选员工 + 订单门店（admin 式按技能筛选用）
+    // 候选员工 + 订单门店（admin 式按技能筛选用）
     if (!Array.isArray(sugA.data.candidateEmployees)) errors.push(`A.candidateEmployees 应为数组`)
     if (!sugA.data.orderStoreId) errors.push(`A.orderStoreId 应非空`)
   }
 
-  // ─── 用例 B：多 SKU 多 sales_category 同订单 ───
+  // ─── 用例 B：多 SKU 多 sales_category 同回款 ───
   const orderB = `${NS}_SUG_B`
   await createTestSaleOrder({
     saleOrderId: orderB, clientUserId: TEST_CLIENT_USER_ID,
     skuId: skuB1.skuId, productName: skuB1.specName,
-    productType: '家居产品', quantity: 1, totalAmount: 500,  // 200(item1) + 300(item2)
+    productType: '家居产品', quantity: 1, totalAmount: 200,
     status: '已支付', salesCategory: '自销自耗',
     preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
-  // createTestSaleOrder 的第一行 received 默认 = totalAmount = 500，需要先纠正为 200
-  await pgQuery(
-    `UPDATE sale_items SET unit_price=200, unit_real_price=200, sale_amount=200, received=200
-       WHERE sale_order_id=$1`,
-    [orderB]
-  )
+  const itemB1 = await firstItemId(orderB)
   // 追加第二个 sale_item，salesCategory=他销他耗
+  const itemB2 = `${orderB}_ITEM_2`
   await createTestSaleItem({
     saleOrderId: orderB,
-    saleItemId: `${orderB}_ITEM_2`,
+    saleItemId: itemB2,
     skuId: skuB2.skuId,
     productName: skuB2.specName,
     productType: '家居产品',
@@ -161,14 +188,18 @@ async function main() {
     unitPrice: 300,
     salesCategory: '他销他耗',
   })
-  await pgQuery(
-    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
-    [orderB]
-  )
+  await pgQuery(`UPDATE sale_orders SET total_amount = 500, allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`, [orderB])
+  const payB = await createPaymentWithSpai({
+    saleOrderId: orderB, amount: 500,
+    items: [
+      { saleItemId: itemB1, amount: 200, salesCategory: '自销自耗' },
+      { saleItemId: itemB2, amount: 300, salesCategory: '他销他耗' },
+    ],
+  })
 
-  const sugB = await invokeStaffApi('allocation.suggest', {
+  const sugB = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderB,
+    salePaymentId: payB,
   })
   if (sugB.code !== 0) {
     errors.push(`B.suggest 应成功 实际 code=${sugB.code} msg=${sugB.message}`)
@@ -191,7 +222,7 @@ async function main() {
     }
   }
 
-  // ─── 用例 C：market_name 快照脏值修正（store_id 反查为权威，修复脏快照致提成/选员工查空 bug）───
+  // ─── 用例 C：market_name 快照脏值修正（store_id 反查为权威市场）───
   const orderC = `${NS}_SUG_C`
   await createTestSaleOrder({
     saleOrderId: orderC, clientUserId: TEST_CLIENT_USER_ID,
@@ -201,25 +232,30 @@ async function main() {
     preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
   // 把订单 market_name 改成不存在的市场（模拟开单人登录态快照脏/空）。
-  // suggest 已弃用 market_name 快照、改以 store_id 反查 org 树定位真实市场（TE2LS_市场），
-  // 故仍命中提成矩阵——验证脏 market_name 不再导致候选员工/提成查空（本次修复的核心）。
+  // suggestPayment 已弃用 market_name 快照、改以 store_id 反查 org 树定位真实市场（TE2LS_市场），
+  // 故仍命中提成矩阵——验证脏 market_name 不再导致候选员工/提成查空。
   await pgQuery(
-    `UPDATE sale_orders SET market_name='${NS}_不存在市场', allocation_status='待分配', received=total_amount
-       WHERE sale_order_id=$1`,
+    `UPDATE sale_orders SET market_name='${NS}_不存在市场', allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
     [orderC]
   )
+  const itemC = await firstItemId(orderC)
+  const payC = await createPaymentWithSpai({
+    saleOrderId: orderC, amount: 500,
+    items: [{ saleItemId: itemC, amount: 500, salesCategory: '他销自耗' }],
+  })
 
-  const sugC = await invokeStaffApi('allocation.suggest', {
+  const sugC = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderC,
+    salePaymentId: payC,
   })
   if (sugC.code !== 0) {
     errors.push(`C.suggest 应成功 实际 code=${sugC.code} msg=${sugC.message}`)
   } else {
     const lines = sugC.data.allocLines || []
-    const ratesCount = (sugC.data.rates || []).length
-    rec(`  C: rates=${ratesCount} allocLines=${lines.length} (store_id 反查修正脏 market_name)`)
-    if (ratesCount === 0) errors.push(`C.rates 应>0（store_id 反查真实市场、命中矩阵；脏 market_name 不再致空），实际=${ratesCount}`)
+    const ratesByRole = sugC.data.ratesByRole || {}
+    const rolesCount = Object.keys(ratesByRole).length
+    rec(`  C: ratesByRole=${rolesCount} 个角色 allocLines=${lines.length} (store_id 反查修正脏 market_name)`)
+    if (rolesCount === 0) errors.push(`C.ratesByRole 应>0（store_id 反查真实市场、命中矩阵；脏 market_name 不再致空），实际=${rolesCount}`)
     if (lines.length !== 1) errors.push(`C.allocLines 应=1（单 skill），实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
@@ -228,10 +264,10 @@ async function main() {
     }
   }
 
-  // ─── 用例 D：销售单 tier 阶梯切换 ───
+  // ─── 用例 D：销售单 tier 阶梯切换（eventAmount = Σ spai.amount）───
   // 自销自耗 tier(0,5000)=0.08 + tier(5000,NULL)=0.10
-  // D1 小金额订单 2000 → 命中 tier1 rate=0.08
-  // D2 大金额订单 8000 → 命中 tier2 rate=0.10
+  // D1 小额回款 2000 → 命中 tier1 rate=0.08
+  // D2 大额回款 8000 → 命中 tier2 rate=0.10
   const skuD = await createTestProduct({
     suffix: 'ALLOC_D',
     productKind: '家居产品', productType: '家居产品',
@@ -247,20 +283,22 @@ async function main() {
     status: '已支付', salesCategory: '自销自耗',
     preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
-  await pgQuery(
-    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
-    [orderD1]
-  )
+  await pgQuery(`UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`, [orderD1])
+  const itemD1 = await firstItemId(orderD1)
+  const payD1 = await createPaymentWithSpai({
+    saleOrderId: orderD1, amount: 2000,
+    items: [{ saleItemId: itemD1, amount: 2000, salesCategory: '自销自耗' }],
+  })
 
-  const sugD1 = await invokeStaffApi('allocation.suggest', {
+  const sugD1 = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderD1,
+    salePaymentId: payD1,
   })
   if (sugD1.code !== 0) {
     errors.push(`D1.suggest 应成功 实际 code=${sugD1.code} msg=${sugD1.message}`)
   } else {
     const lines = sugD1.data.allocLines || []
-    rec(`  D1: totalAmount=2000 allocLines=${lines.length} (tier1 切换)`)
+    rec(`  D1: eventAmount=2000 allocLines=${lines.length} (tier1 切换)`)
     if (lines.length !== 1) errors.push(`D1.allocLines 应=1，实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
@@ -277,20 +315,22 @@ async function main() {
     status: '已支付', salesCategory: '自销自耗',
     preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
-  await pgQuery(
-    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
-    [orderD2]
-  )
+  await pgQuery(`UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`, [orderD2])
+  const itemD2 = await firstItemId(orderD2)
+  const payD2 = await createPaymentWithSpai({
+    saleOrderId: orderD2, amount: 8000,
+    items: [{ saleItemId: itemD2, amount: 8000, salesCategory: '自销自耗' }],
+  })
 
-  const sugD2 = await invokeStaffApi('allocation.suggest', {
+  const sugD2 = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderD2,
+    salePaymentId: payD2,
   })
   if (sugD2.code !== 0) {
     errors.push(`D2.suggest 应成功 实际 code=${sugD2.code} msg=${sugD2.message}`)
   } else {
     const lines = sugD2.data.allocLines || []
-    rec(`  D2: totalAmount=8000 allocLines=${lines.length} (tier2 切换)`)
+    rec(`  D2: eventAmount=8000 allocLines=${lines.length} (tier2 切换)`)
     if (lines.length !== 1) errors.push(`D2.allocLines 应=1，实际=${lines.length}`)
     if (lines.length > 0) {
       const rate = Number(lines[0].commissionRate)
@@ -299,39 +339,38 @@ async function main() {
     }
   }
 
-  // ─── E. allocation.pendingList — 复用 A/B/D 的待分配订单（已设 allocation_status='待分配' + received=total）
-  // 但 paid_at 仍为 NULL（fixture 未填）；pendingList SQL 按 paid_at DESC 排序，paid_at NULL 仍含在结果（PG 默认 NULLS LAST）
-  const pendR = await invokeStaffApi('allocation.pendingList', {
+  // ─── E. allocation.pendingPayments — 复用 A/B/C/D 的待分配回款（allocation_status='待分配'）───
+  const pendR = await invokeStaffApi('allocation.pendingPayments', {
     _testOpenid: TEST_MANAGER_OPENID,
     allocationStatus: '待分配',
     page: 1, pageSize: 50,
   })
   if (pendR.code !== 0) {
-    errors.push(`allocation.pendingList 应成功，实际 code=${pendR.code} msg=${pendR.message}`)
+    errors.push(`allocation.pendingPayments 应成功，实际 code=${pendR.code} msg=${pendR.message}`)
   } else {
-    const orders = pendR.data?.orders || []
-    const nsOrders = orders.filter(o => String(o.sale_order_id || '').startsWith(NS))
-    if (nsOrders.length === 0) {
-      errors.push(`pendingList(待分配) 应含 NS 前缀订单（fixture 已 UPDATE allocation_status='待分配'），实际 0 条`)
+    const payments = pendR.data?.payments || []
+    const nsPayments = payments.filter(p => String(p.sale_order_id || '').startsWith(NS))
+    if (nsPayments.length === 0) {
+      errors.push(`pendingPayments(待分配) 应含 NS 前缀回款（fixture 已造待分配 payment），实际 0 条`)
     } else {
-      const o0 = nsOrders[0]
-      // 字段完整性（routes/allocation.js:427-431）
-      for (const k of ['sale_order_id', 'status', 'sale_order_type', 'client_phone', 'customer_name',
-                       'payment_method', 'allocation_status', 'total_amount']) {
-        if (!(k in o0)) errors.push(`pendingList row 缺字段 '${k}'`)
+      const p0 = nsPayments[0]
+      // 字段完整性（routes/allocation.js pendingPayments SELECT）
+      for (const k of ['sale_payment_id', 'sale_order_id', 'change_type', 'amount', 'payment_method',
+                       'allocation_status', 'customer_name', 'client_phone', 'sale_order_type', 'total_amount']) {
+        if (!(k in p0)) errors.push(`pendingPayments row 缺字段 '${k}'`)
       }
-      rec(`  ✓ allocation.pendingList: ${nsOrders.length} 张 NS 待分配单`)
+      rec(`  ✓ allocation.pendingPayments: ${nsPayments.length} 笔 NS 待分配回款`)
     }
   }
 
-  // pendingList(allocationStatus='非法值') → INVALID_PARAMS
-  const pendBadR = await invokeStaffApi('allocation.pendingList', {
+  // pendingPayments(allocationStatus='非法值') → INVALID_PARAMS
+  const pendBadR = await invokeStaffApi('allocation.pendingPayments', {
     _testOpenid: TEST_MANAGER_OPENID,
     allocationStatus: '不存在',
   })
-  if (pendBadR.code === 0) errors.push(`pendingList(非法 allocationStatus) 应 INVALID_PARAMS，实际成功`)
+  if (pendBadR.code === 0) errors.push(`pendingPayments(非法 allocationStatus) 应 INVALID_PARAMS，实际成功`)
 
-  // ─── F. allocation.rates — 用 NS 市场名 ───
+  // ─── F. allocation.rates — 用 NS 市场名（未改名）───
   const ratesR = await invokeStaffApi('allocation.rates', {
     _testOpenid: TEST_MANAGER_OPENID,
     marketName: `${NS}_市场`,
@@ -366,7 +405,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — A/B/C/D + pendingList/rates 6 路径全过`)
+  rec(`  ✅ PASS — A/B/C/D + pendingPayments/rates 6 路径全过`)
 }
 
 try {
