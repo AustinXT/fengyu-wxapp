@@ -498,6 +498,8 @@ describe('previewWorkfineOrders', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
       {
         legacyOrderNo: 'O-2',
@@ -508,6 +510,8 @@ describe('previewWorkfineOrders', () => {
         amount: 200,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(db.select as any)
@@ -586,6 +590,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // storeMapping 为空 → 无门店存在性校验 select；lookup queries: phone, customerId
@@ -633,6 +639,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(isInScope as any).mockReturnValue(false)
@@ -658,6 +666,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // 存在性校验 select 返回空 → storeId 不存在
@@ -688,6 +698,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 998,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(db.select as any)
@@ -748,6 +760,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: null,
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // phone is null → phone query skipped；只剩 门店存在性校验 + customerId 两次 select
