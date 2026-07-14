@@ -193,7 +193,9 @@ describe('order.create 浮点 round 兜底（R2 真漂移 case）', () => {
       session_count: 1, sales_category: null,
       is_recharge_card: false, is_experience: false,
     }])
-    // mock 5: coupon validate
+    // mock 5: 顾客姓名 + 会员身份（document_type 判断 + 会员价分流，order.js:505）
+    pg.query.mockResolvedValueOnce([{ name: '李四', customer_type: '会员客', member_level: null }])
+    // mock 6: coupon validate
     pg.query.mockResolvedValueOnce([{
       coupon_id: 'cpn-r', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
       coupon_type: '现金券', discount_value: 0.5, min_spend: 0,
@@ -201,10 +203,8 @@ describe('order.create 浮点 round 兜底（R2 真漂移 case）', () => {
       applicable_category_ids: null, applicable_store_ids: null,
       applicable_product_ids: null, applicable_market_ids: null,
     }])
-    // mock 6: skuMeta
+    // mock 7: skuMeta
     pg.query.mockResolvedValueOnce([{ sku_id: 'sku-float', category_id: 'cat-1', product_id: 'p-float' }])
-    // mock 7: customer name
-    pg.query.mockResolvedValueOnce([{ name: '李四', customer_type: '会员客' }])
 
     captureInsertCalls()
 

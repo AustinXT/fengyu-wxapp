@@ -155,6 +155,48 @@ describe('order.create', () => {
     expect(insertItemCall[1][9]).toBe(5)   // quantity 透传
   })
 
+  // PR #55 把 document_type 判定从「会员客→售后；否则若 total>=threshold→售后（分支 B）」
+  // 改为「仅按下单时会员身份判（售前=非会员客，售后=会员客）」。
+  // 防回归：未来若误加回 totalAmount>=getMemberThreshold() 阈值分支，本测试用大额非会员客拦截。
+  test('document_type 仅按会员身份判：非会员客 + 大额 → 售前（不再因金额达标升级为售后）', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
+    pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
+    pg.query.mockResolvedValueOnce([])  // check pending
+    pg.query.mockResolvedValueOnce([{   // SKU query - 大额 5000（远超默认阈值 1980）
+      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
+      spec_name: '标准', price: '5000', special_price: null,
+      session_count: 1, product_name: '护理A', sales_category: null,
+    }])
+    // mock 5: 顾客身份查询 - 非会员客（customer_type=null）
+    pg.query.mockResolvedValueOnce([{ name: null, customer_type: null, member_level: null }])
+
+    let orderInsertCall
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (/INSERT INTO sale_orders/.test(sql)) {
+            orderInsertCall = [sql, params]
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+    })
+    await routes.create(ctx)
+
+    expect(ctx.result.totalAmount).toBe(5000)
+    expect(orderInsertCall).toBeDefined()
+    // params 顺序：$1=orderNo $2=initialStatus $3=documentType $4=marketName $5=storeId ...
+    // JS 数组索引 [2] 对应 $3=document_type（详见 order.js L823-838）
+    expect(orderInsertCall[1][2]).toBe('售前')
+  })
+
   test('无手机号 → PHONE_REQUIRED', async () => {
     const ctx = createCtx({
       payload: { storeId: 's1', items: [{ skuId: 'sku-1' }], paymentMethod: '微信' },
@@ -225,6 +267,8 @@ describe('order.create', () => {
       session_count: 1, product_name: '护理A', sales_category: null,
       ...skuOverrides,
     }])
+    // mock 5: 顾客姓名 + 会员身份（document_type 判断 + 会员价分流共用，order.js:505）
+    pg.query.mockResolvedValueOnce([{ name: null, customer_type: null, member_level: null }])
   }
 
   function mockCreateTransaction() {
@@ -489,18 +533,20 @@ describe('order.create', () => {
       { sku_id: 'sku-a', product_id: 'pa', product_type: '疗程卡', spec_name: '标准', price: '300', special_price: null, session_count: 1, product_name: '护理A', sales_category: null },
       { sku_id: 'sku-b', product_id: 'pb', product_type: '疗程卡', spec_name: '5次卡', price: '200', special_price: null, session_count: 5, product_name: '护理B', sales_category: null },
     ])
-    // mock 5: 优惠券
+    // mock 5: 顾客姓名 + 会员身份（order.js:505）
+    pg.query.mockResolvedValueOnce([{ name: null, customer_type: null, member_level: null }])
+    // mock 6: 优惠券
     pg.query.mockResolvedValueOnce([{
       coupon_id: 'cpn-multi', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
       coupon_type: '现金券', discount_value: 100, min_spend: 0,
       applicable_category_ids: null, applicable_store_ids: null,
     }])
-    // mock 6: 品项分类
+    // mock 7: 品项分类
     pg.query.mockResolvedValueOnce([
       { sku_id: 'sku-a', category_id: 'cat-1' },
       { sku_id: 'sku-b', category_id: 'cat-2' },
     ])
-    // mock 7: 顾客名
+    // mock 8: 顾客名（历史遗留 slot，create 流不再消费，保留以免漂移断言）
     pg.query.mockResolvedValueOnce([{ name: '李四' }])
 
     // 同 mockCreateTransaction：按 SQL pattern match coupon claim rowCount=1
@@ -800,6 +846,18 @@ describe('order.pay', () => {
         client_user_id: 'user-001',        sale_order_datetime: expiredTime.toISOString(),
       }])
       .mockResolvedValueOnce([])
+
+    // closeExpiredOrder 用 pg.transaction 关单：默认 transaction mock 给 rowCount=0
+    // → 永远不抛超时。此处令 UPDATE sale_orders 返回 rowCount=1 模拟真关单成功。
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (/UPDATE\s+sale_orders/i.test(sql)) return { rows: [], rowCount: 1 }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return await cb(client)
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*超时/)
