@@ -13,6 +13,8 @@
  *            + routes/{mgmt-dashboard,mgmt-traffic}.js（调用方）
  *   - staff 写入端: miniprogram/packageService/service-create/service-create.ts（常量；真正落库
  *            service_orders.remark 的那一端，admin/staffApi 的 === DEPOSIT_REFUND_REMARK 拦截完全依赖此字面量）
+ *   - clientApi: cloudfunctions/clientApi/utils/deposit-refund-remark.js（常量；M8 起 finalize 拦截
+ *            寄存退款单提成写入用，字面量须与上三端一致）
  *
  * 守护策略（仿同目录 consistency.*.test.ts 源码字面量匹配）：
  *   1. 常量两端逐字节一致，且 == 期望契约字面量（防两端一起漂走）
@@ -44,6 +46,8 @@ const PATHS = {
   // 写入端第 3 份副本（miniprogram 落库 service_orders.remark 的字面量）。
   // 与 STAFF() 同根（fengyu-staff/），仅子路径不同，跨包 fs 读取在 vitest 已被前两份验证可行。
   staffWriteSide: A('../../../../../fengyu-staff/miniprogram/packageService/service-create/service-create.ts'),
+  // 第 4 份副本（clientApi finalize 拦截用，M8）：跨包 fs 读取，与 staffWriteSide 同根层数。
+  clientConst: A('../../../../../fengyu-client/cloudfunctions/clientApi/utils/deposit-refund-remark.js'),
 }
 
 /** 抽取 DEPOSIT_REFUND_REMARK 的单引号字面量值 */
@@ -64,7 +68,7 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
     for (const [k, p] of Object.entries(PATHS)) src[k] = fs.readFileSync(p, 'utf-8')
   })
 
-  describe('数据契约常量三端逐字节一致', () => {
+  describe('数据契约常量四端逐字节一致', () => {
     it('admin service-remark.ts 常量 == 期望契约字面量', () => {
       expect(extractRemark(src.adminConst)).toBe(EXPECTED_REMARK)
     })
@@ -74,13 +78,19 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
     it('staff 写入端 service-create.ts 常量 == 期望契约字面量（落库字面量守护）', () => {
       expect(extractRemark(src.staffWriteSide)).toBe(EXPECTED_REMARK)
     })
-    it('三端常量互等（防任意一端漂移到非期望值）', () => {
+    it('clientApi deposit-refund-remark.js 常量 == 期望契约字面量（M8 finalize 拦截用）', () => {
+      expect(extractRemark(src.clientConst)).toBe(EXPECTED_REMARK)
+    })
+    it('四端常量互等（防任意一端漂移到非期望值）', () => {
       const admin = extractRemark(src.adminConst)
       const staffRead = extractRemark(src.staffHelper)
       const staffWrite = extractRemark(src.staffWriteSide)
+      const clientApi = extractRemark(src.clientConst)
       expect(admin).toBe(staffRead)
       expect(admin).toBe(staffWrite)
+      expect(admin).toBe(clientApi)
       expect(staffRead).toBe(staffWrite)
+      expect(staffRead).toBe(clientApi)
     })
   })
 
