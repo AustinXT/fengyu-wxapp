@@ -22,7 +22,7 @@ exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守
 }
 `;
 
-exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > admin cards.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
+exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > admin paid-sessions.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
 
 exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > 基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端） 1`] = `
 [

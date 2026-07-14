@@ -87,9 +87,6 @@ const FILES = {
   // 顾客确认链路首次把"扣次数 + 算提成"SQL 引入 clientApi，故纳入跨端守护。
   staffServiceJs: path.resolve(__dirname, '../../routes/service.js'),
   clientServiceFinalizeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js'),
-
-  // ticket 2026-06-29 paidUnusedSessions 派生口径守护 — admin cards.ts SQL 表达式（前端三端 JS 派生基准见同文件 case 表）
-  adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
 }
 
 function readFile(p) {
@@ -1523,18 +1520,18 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
 // ticket 2026-06-29 paidUnusedSessions 派生口径守护
 //
 // 「已付未用次数」(可用次数) 是跨四端展示口径（剩余次数从物理剩余改为此口径）。
-// admin cards.ts 用 SQL 表达式派生（getCardsPaginated + getCardById 共用同一 paidUnusedSessionsExpr）；
+// admin lib/paid-sessions.ts 用 SQL 表达式派生（cards.ts 卡包 + orders.ts 导出复用同一 paidUnusedSessionsExpr）；
 // client/staff 前端用 JS 派生（无法跨语言做 SQL 镜像比对）。
 // 本守护：
-//   1. snapshot admin cards.ts 的 paidUnused SQL 文本（防 cards.ts 误改 / 复用点漂移）
+//   1. snapshot admin lib/paid-sessions.ts 的 paidUnusedSessionsExpr 文本（提升为单源后，cards.ts 仅消费）
 //   2. 纯 JS 复现口径 + 标准 case 表（NULL→物理剩余 / 欠款→0 / 部分支付 / used clamp 负值），
 //      作为前端三端 paidUnusedSessions 派生必须遵循的基准：
 //        client treatment-cards.ts、staff customer-detail.ts、staff mgmt-customer-detail.ts
 // ============================================================================
 describe('paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表）', () => {
-  const adminSql = normalizeSql(extractBacktickStringContaining(readFile(FILES.adminCardsTs), 'GREATEST(COALESCE'))
+  const adminSql = normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), 'GREATEST(COALESCE'))
 
-  test('admin cards.ts paidUnused SQL 含 NULL→remaining 兜底 + used clamp（防 #3 #9 回归）', () => {
+  test('admin paid-sessions.ts paidUnused SQL 含 NULL→remaining 兜底 + used clamp（防 #3 #9 回归）', () => {
     expect(adminSql).toContain('CASE WHEN')
     expect(adminSql).toContain('IS NULL THEN')
     expect(adminSql).toContain('GREATEST(COALESCE')
@@ -1542,7 +1539,7 @@ describe('paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS
     expect((adminSql.match(/GREATEST/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 
-  test('admin cards.ts paidUnused SQL 文本快照（任一字符漂移立即可见）', () => {
+  test('admin paid-sessions.ts paidUnused SQL 文本快照（任一字符漂移立即可见）', () => {
     expect(adminSql).toMatchSnapshot()
   })
 
