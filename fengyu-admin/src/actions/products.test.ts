@@ -642,6 +642,52 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
   })
 })
 
+// ── updateSku — 疗程卡 session_count 守卫（与 createSku 对齐） ─────────────────
+
+describe('updateSku — 疗程卡 session_count 守卫（与 createSku 对齐）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  // 守卫位于 products.ts updateSku ~710-716，含非平凡偏序：
+  //   (data.productType ?? before.productType) === '疗程卡'
+  //   finalSessionCount = data.sessionCount !== undefined ? data.sessionCount : before.sessionCount
+  // 简化为 `data.sessionCount ?? before.sessionCount` 会漏掉 null 显式传入（case c）。
+
+  it('疗程卡 sessionCount < 1 → 拒绝', async () => {
+    mockSelectBefore([{ skuId: 'SKU-001', productType: '疗程卡', sessionCount: 10 }])
+    const result = await updateSku('SKU-001', { sessionCount: 0 })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('疗程卡的次数必须 >= 1')
+  })
+
+  it('家居→疗程卡切换 + before.sessionCount=null 脏数据 → 拒绝', async () => {
+    mockSelectBefore([{ skuId: 'SKU-001', productType: '家居产品', sessionCount: null }])
+    const result = await updateSku('SKU-001', { productType: '疗程卡' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('疗程卡的次数必须 >= 1')
+  })
+
+  it('疗程卡 data.sessionCount=null → 拒绝', async () => {
+    mockSelectBefore([{ skuId: 'SKU-001', productType: '疗程卡', sessionCount: 10 }])
+    const result = await updateSku('SKU-001', { sessionCount: null })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('疗程卡的次数必须 >= 1')
+  })
+
+  it('疗程卡 data.sessionCount=5 → 通过（守护不误拦正常更新）', async () => {
+    mockSelectBefore([{ skuId: 'SKU-001', productType: '疗程卡', sessionCount: 10 }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+    const result = await updateSku('SKU-001', { sessionCount: 5 })
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已更新')
+    expect(result.message).not.toContain('疗程卡的次数必须 >= 1')
+  })
+})
+
 // ── deleteSku ─────────────────────────────────────────────────────────────────
 
 describe('deleteSku — 引用校验 + 软删', () => {
