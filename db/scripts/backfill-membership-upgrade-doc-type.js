@@ -17,8 +17,10 @@
  * 选单口径（与 staffApi/admin recalcCustomerType 打标 SQL 同源）：
  *   status IN ('已支付','已完成') AND sale_order_type='销售单' AND total_amount >= threshold
  *   ORDER BY paid_at ASC NULLS LAST, created_at ASC，每个顾客取最早一单。
- *   不含 payNotify 的回款累计超集分支——超集单 total<threshold，document_type 创建时
- *   本就售前，无需修正；其 is_membership_upgrade 由 payNotify 在线打标处理。
+ *   2026-04-26 sale-order-domain-refactor 后，回款单已从 sale_order_type 下沉到
+ *   sale_order_payments.change_type='回款'，sale_orders 不再产生 sale_order_type='回款单' 行；
+ *   payNotify 原回款累计分支已退化为恒为空的死代码，故不存在「超集单」需在线打标的场景。
+ *   本脚本只需覆盖单笔 total_amount >= threshold 的销售单。
  *
  * 幂等：UPDATE WHERE 跳过 (is_membership_upgrade=true AND document_type='售前') 的行，
  *   二次运行无副作用。
@@ -57,7 +59,13 @@ SELECT value::numeric AS v
  LIMIT 1
 `
 
-// 每个会员客顾客 paid_at 最早的达标销售单（与 recalcCustomerType 打标 SQL 同源）
+// 每个会员客顾客 paid_at 最早的达标销售单（与 recalcCustomerType 打标 SQL 同源）。
+// 关键守卫：AND (u.became_member_at IS NULL OR o.paid_at <= u.became_member_at) —— 只选
+// 「跃迁为会员客那一刻或之前」的达标单，对齐 recalcCustomerType 在线打标语义
+// （跃迁瞬间 paid_at 最早的达标单）。若无此守卫，new_member_threshold 历史上调后，
+// 跃迁后的合法「售后」达标单会被误选，进而在 UPDATE_SQL 被静默翻成「售前」+ 误打
+// is_membership_upgrade（review H1）。became_member_at IS NULL 时保守放行（理论上
+// backfill-became-member-at.js 已回填 NULL=0）。
 const BUILD_TARGET_SQL = `
 CREATE TEMP TABLE _mem_upgrade_target ON COMMIT DROP AS
 SELECT DISTINCT ON (o.client_user_id)
@@ -69,6 +77,7 @@ SELECT DISTINCT ON (o.client_user_id)
    AND o.status IN ('已支付', '已完成')
    AND o.sale_order_type = '销售单'
    AND o.total_amount >= $1::numeric
+   AND (u.became_member_at IS NULL OR o.paid_at <= u.became_member_at)
  ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC
 `
 
