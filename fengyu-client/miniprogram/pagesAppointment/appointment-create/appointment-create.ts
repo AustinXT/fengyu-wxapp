@@ -90,10 +90,15 @@ Page({
           if (isCrossStore) continue;
           const total = Number(item.sessionCount ?? 0);
           const remaining = Number(item.remainingSessions ?? 0);
-          const paid = Number(item.paidSessions ?? 0);
+          const paidRaw = item.paidSessions;
+          const paid = Number(paidRaw ?? 0);
           const used = Math.max(0, total - remaining);
           const paidUnused = Math.max(0, paid - used);
-          if (!(paid > 0 && paidUnused > 0)) continue;
+          // NULL 卡（migration 0040 前创建、未被 recalc 回填的历史卡）：
+          //   显示但 disabled 不可核销（灰显 + close icon + Toast 拦截，复用 .item-disabled 基础设施）。
+          //   非 NULL 但 paid=0 / 已用满已付 的卡仍隐藏（continue）。
+          const isNullCard = paidRaw == null;
+          if (!isNullCard && !(paid > 0 && paidUnused > 0)) continue;
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
@@ -101,13 +106,13 @@ Page({
             session_count: total,
             paid_sessions: paid,
             used_sessions: used,
-            paid_unused_sessions: paidUnused,
+            paid_unused_sessions: isNullCard ? 0 : paidUnused,
             product_type: item.productType,
             sale_order_id: order.saleOrderId,
             store_id: itemStoreId,
             store_name: order.storeName,
-            disabled: false,
-            disabled_reason: '',
+            disabled: isNullCard,
+            disabled_reason: isNullCard ? '历史卡未回填,不可核销' : '',
           });
         }
       }

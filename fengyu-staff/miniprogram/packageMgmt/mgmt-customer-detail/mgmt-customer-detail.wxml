@@ -156,7 +156,7 @@
                       <text class="tc-spec">{{item.spec}}</text>
                       <text class="tc-order">{{item.saleOrderId}}</text>
                     </view>
-                    <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} 次</text>
+                    <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} 次</text>
                     <view class="session-bar">
                       <view class="session-bar__seg session-bar__seg--used" style="width:{{item.usedPct}}%"></view>
                       <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>

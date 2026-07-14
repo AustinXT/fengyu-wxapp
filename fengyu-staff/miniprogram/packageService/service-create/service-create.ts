@@ -23,6 +23,9 @@ interface PaidOrderItem {
   consumableSessions: number;
   productType: string;
   storeId?: string;
+  /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 interface PaidOrder {
@@ -235,6 +238,7 @@ Page({
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
       // 过滤掉家居产品行 + paid_sessions=0 / 已用满已付次数 的卡完全锁死（D6=A）
       // 可消费次数 = min(remaining, paid - used)；其中 used = total - remaining
+      // NULL 卡（migration 0040 前未回填的历史卡）：保留但 disabled 灰显不可核销（Toast 拦截）
       const filtered = (orders || []).map(o => ({
         ...o,
         paidAt: formatDateTime(o.paidAt),
@@ -242,21 +246,33 @@ Page({
           .map(i => {
             const total = Number(i.totalSessions || i.sessionCount || 0);
             const remain = Number(i.remainingSessions || 0);
-            const paid = i.paidSessions == null ? 0 : Number(i.paidSessions);
+            const isNullCard = i.paidSessions == null;
+            const paid = isNullCard ? 0 : Number(i.paidSessions);
             const used = Math.max(total - remain, 0);
             const consumable = Math.max(0, Math.min(remain, paid - used));
-            return { ...i, consumableSessions: consumable };
+            return {
+              ...i,
+              consumableSessions: consumable,
+              disabled: isNullCard,
+              disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
+            };
           })
-          .filter(i => i.productType !== '家居产品' && i.consumableSessions > 0),
+          // 家居产品行剔除；NULL 卡（disabled）保留展示，其余 consumable<=0 的卡过滤
+          .filter(i => i.productType !== '家居产品' && (i.consumableSessions > 0 || i.disabled)),
       })).filter(o => o.items.length > 0);
       this.setData({ paidOrders: filtered });
     } catch (_) {}
   },
 
   onToggleItem(e: WechatMiniprogram.TouchEvent) {
-    const { saleItemId, itemName, spec, saleOrderId } = e.currentTarget.dataset as {
-      saleItemId: string; itemName: string; spec: string; saleOrderId: string;
+    const { saleItemId, itemName, spec, saleOrderId, disabled } = e.currentTarget.dataset as {
+      saleItemId: string; itemName: string; spec: string; saleOrderId: string; disabled?: boolean | string;
     };
+    // NULL 历史卡：disabled 灰显，拦截核销并提示
+    if (disabled === true || disabled === 'true') {
+      wx.showToast({ title: '历史卡未回填,不可核销', icon: 'none' });
+      return;
+    }
     const selected = [...this.data.selectedItems];
     const idx = selected.findIndex(s => s.saleItemId === saleItemId);
     if (idx >= 0) {

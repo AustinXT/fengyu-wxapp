@@ -21,6 +21,8 @@ interface OrderDetailItem {
   used_pct?: number;
   paid_unused_pct?: number;
   unpaid_pct?: number;
+  // NULL 卡（paid_sessions 原始为 null）：wxml 据此把「已付 0」改显「已付 —」
+  paid_sessions_null?: boolean;
 }
 
 interface OrderDetailData {
@@ -173,6 +175,7 @@ Page({
       const itemsWithProgress: OrderDetailItem[] = items.map(i => {
         const total = Number(i.session_count ?? 0);
         const remaining = Number(i.remaining_sessions ?? 0);
+        const paidNull = i.paid_sessions == null;
         const paid = Number(i.paid_sessions ?? 0);
         const used = Math.max(0, total - remaining);
         const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
@@ -181,6 +184,8 @@ Page({
           // expire_date 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
           expire_date: i.expire_date ? formatDate(i.expire_date) : i.expire_date,
           paid_sessions: paid,
+          // NULL 卡（0040 前未回填）：wxml 据此把「已付 0」改显「已付 —」
+          paid_sessions_null: paidNull,
           used_sessions: used,
           used_pct: usedPct,
           paid_unused_pct: paidUnusedPct,

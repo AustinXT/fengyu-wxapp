@@ -138,6 +138,9 @@ interface TreatmentCard {
   selected: boolean;
   sessionCount: number;
   storeId?: string;
+  /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 // Tab 4: 服务记录
@@ -420,13 +423,15 @@ Page({
         for (const item of order.items) {
           const total = Number(item.totalSessions || 0);
           const remain = Number(item.remainingSessions || 0);
-          const paid = item.paidSessions == null ? 0 : Number(item.paidSessions);
+          const isNullCard = item.paidSessions == null;
+          const paid = isNullCard ? 0 : Number(item.paidSessions);
           const used = Math.max(total - remain, 0);
           const paidUnused = Math.max(paid - used, 0);
           const unpaid = Math.max(total - paid, 0);
           const consumable = Math.max(0, Math.min(remain, paid - used));
           // D6=A：paid_sessions=0 或 已用满已付 → 整张卡锁死，不显示
-          if (consumable <= 0) continue;
+          // NULL 卡（0040 前未回填的历史卡）：保留但 disabled 灰显不可核销
+          if (!isNullCard && consumable <= 0) continue;
           const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
           cards.push({
             saleItemId: item.saleItemId,
@@ -445,6 +450,8 @@ Page({
             paidAt: order.paidAt,
             selected: false,
             sessionCount: 1,
+            disabled: isNullCard,
+            disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
           });
         }
       }
@@ -455,6 +462,11 @@ Page({
   onToggleCard(e: WechatMiniprogram.TouchEvent) {
     const index = e.currentTarget.dataset.index as number;
     const card = this.data.treatmentCards[index];
+    // NULL 历史卡：disabled 灰显，拦截核销并提示
+    if (card?.disabled) {
+      wx.showToast({ title: card.disabledReason || '历史卡未回填,不可核销', icon: 'none' });
+      return;
+    }
     const newSelected = !card.selected;
     this.setData({
       [`treatmentCards[${index}].selected`]: newSelected,

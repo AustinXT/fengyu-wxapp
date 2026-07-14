@@ -1787,6 +1787,8 @@ async function appointableItems(ctx) {
         OR si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
+      -- M12：历史订单（workfine 拉取）的 NULL 卡不进可预约列表（后端过滤，前端 uniform-disabled 保留给非 legacy NULL 卡）
+      AND NOT (si.paid_sessions IS NULL AND o.legacy_source = 'workfine')
     ORDER BY o.paid_at DESC, si.sale_item_id
   `, [userId])
 
