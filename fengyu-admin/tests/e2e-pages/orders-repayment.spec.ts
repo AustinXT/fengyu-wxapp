@@ -42,18 +42,15 @@ test.describe('订单详情页 — 录入回款入口（ticket 2026-04-24）', (
     await expect(page.getByRole('heading', { name: '录入回款' })).toBeVisible()
     await expect(dialog.getByText('订单剩余欠款')).toBeVisible()
     await expect(dialog.getByText('支付方式')).toBeVisible()
-    // 线下方式下子项金额列头为「现金(¥)」（按子项定向回款表）
-    await expect(dialog.getByText('现金(¥)').first()).toBeVisible()
+    // 子项金额列头为「实付金额(¥)」（按子项定向回款表；2026-06-24 重构后储值卡改独立勾选，列头由「现金(¥)」改为统一「实付金额(¥)」）
+    await expect(dialog.getByText('实付金额(¥)').first()).toBeVisible()
     await expect(page.getByRole('button', { name: /确认录入/ })).toBeVisible()
 
-    // 切换为"储值卡"时，外部交易号字段应消失（仅线下需要）
-    const methodSelect = page.locator('select').last()
-    await methodSelect.selectOption('储值卡')
-    await expect(page.getByText(/银行回执号|交易流水号/)).toHaveCount(0)
-
-    // 切换回"线下"，外部交易号字段重现
+    // 支付方式 select：2026-06-24 重构后选项为 线下/微信/支付宝（储值卡改独立勾选 checkbox，外部交易号字段已移除）
+    const methodSelect = dialog.locator('select').first()
+    await expect(methodSelect).toBeVisible()
+    await methodSelect.selectOption('微信')
     await methodSelect.selectOption('线下')
-    await expect(page.getByText(/银行回执号|交易流水号/)).toBeVisible()
 
     // 关闭 Dialog
     await page.getByRole('button', { name: '取消' }).click()

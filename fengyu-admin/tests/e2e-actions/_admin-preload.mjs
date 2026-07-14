@@ -51,6 +51,7 @@ plugin({
       exports: {
         requirePermission: () => {},
         requireAnyPermission: () => {},
+        requireAdmin: () => {},
         isInScope: () => true,
         scopeCondition: () => undefined,
         hasPermission: () => true,
