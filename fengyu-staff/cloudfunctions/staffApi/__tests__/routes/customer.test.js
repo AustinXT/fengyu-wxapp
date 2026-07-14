@@ -637,8 +637,8 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理' },
-      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理' },
+      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理', unit_real_price: '100.00' },
+      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理', unit_real_price: '50.00' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(2)
@@ -646,6 +646,7 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].items).toHaveLength(1)
     expect(ctx.result[0].items[0].itemName).toBe('面部护理')
     expect(ctx.result[0].items[0].remainingSessions).toBe(8)
+    expect(ctx.result[0].items[0].unitRealPrice).toBe('100.00')
   })
 
   test('无已支付订单时返回空数组', async () => {
@@ -726,7 +727,7 @@ describe('customer.paidOrders', () => {
       {
         sale_order_id: 'SO-PARTIAL', sale_item_id: 'item-partial', store_id: 'store-001',
         session_count: 15, remaining_sessions: 15, paid_sessions: 10,
-        sku_id: 'sku-waist', product_type: '疗程卡', product_name: '温暖SPA·腰腹',
+        sku_id: 'sku-waist', product_type: '疗程卡', product_name: '温暖SPA·腰腹', unit_real_price: '80.00',
       },
     ])
     await customerRoutes.paidOrders(ctx)
