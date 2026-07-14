@@ -3,7 +3,7 @@ import { getRolesByScope, getRoleCountsByScope } from '@/actions/permissions'
 import { getEmployees } from '@/actions/employees'
 import { getOrgNodes } from '@/actions/org'
 import { getSession } from '@/lib/auth'
-import { accessiblePermissionScopeIds } from '@/lib/permissions'
+import { accessiblePermissionScopeIds, hasPermission } from '@/lib/permissions'
 import PermissionsPage from './_components/permissions-page'
 
 export const dynamic = 'force-dynamic'
@@ -18,6 +18,8 @@ export default async function Page() {
 
   
   const accessibleScopeIds = session ? accessiblePermissionScopeIds(session) : null
+  // 撤销角色：持有 permission:revoke 的角色（admin + hr）可见可执行
+  const canDelete = session ? hasPermission(session, 'permission:revoke') : false
 
   
   
@@ -38,6 +40,7 @@ export default async function Page() {
         allEmployees={allEmployees}
         orgNodes={orgNodes}
         accessibleScopeIds={accessibleScopeIds}
+        canDelete={canDelete}
       />
     </Suspense>
   )

@@ -387,10 +387,13 @@ export default function OrderCreatePageClient({
     if (selectedCustomer?.userId) {
       setLoadingCoupons(true)
       try {
+        // 传订单明细，使 getAvailableCoupons 按合格品类行小计（eligibleTotal）判满减门槛（M10：与 client/staff + order.create 一致）
+        const couponItems = cart.map((item, i) => ({ skuId: item.sku.skuId, amount: cartPriceLines[i] }))
         const coupons = await getAvailableCoupons(
           selectedCustomer.userId,
           subtotal,
           selectedStoreId || undefined,
+          couponItems,
         )
         setAvailableCoupons(coupons)
       } catch {

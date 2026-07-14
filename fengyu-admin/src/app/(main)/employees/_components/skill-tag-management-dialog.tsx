@@ -33,10 +33,12 @@ export default function SkillTagManagementDialog({
   open,
   onOpenChange,
   skillTags: allTags,
+  canDelete,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   skillTags: SkillTag[]
+  canDelete: boolean
 }) {
   const router = useRouter()
 
@@ -156,14 +158,16 @@ export default function SkillTagManagementDialog({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
             编辑
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[var(--destructive)]"
-            onClick={() => setDeleteTarget(row)}
-          >
-            删除
-          </Button>
+          {canDelete && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDeleteTarget(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },

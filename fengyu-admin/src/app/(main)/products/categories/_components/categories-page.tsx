@@ -39,9 +39,11 @@ interface CategoryFormData {
 export default function CategoriesPageClient({
   categories,
   productKinds,
+  canDelete,
 }: {
   categories: ProductCategory[]
   productKinds: ProductCategory[]
+  canDelete: boolean
 }) {
   const router = useRouter()
 
@@ -250,7 +252,7 @@ export default function CategoriesPageClient({
             >
               停用
             </Button>
-          ) : (
+          ) : canDelete ? (
             <Button
               variant="link"
               size="sm"
@@ -259,7 +261,7 @@ export default function CategoriesPageClient({
             >
               删除
             </Button>
-          )}
+          ) : null}
         </div>
       ),
     },

@@ -21,7 +21,7 @@ interface StoreMini {
 }
 
 interface ScopeOptionsResp {
-  staffLevel: 'headquarters' | 'market'
+  staffLevel: 'headquarters' | 'market' | 'store_manager'
   markets: Array<{ id: string; name: string; stores: StoreMini[] }>
 }
 

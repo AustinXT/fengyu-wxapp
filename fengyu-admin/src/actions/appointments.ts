@@ -7,7 +7,7 @@ import { eq, desc, and, or, sql, ilike, gte, lt, isNull, inArray } from 'drizzle
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
-import { scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
@@ -308,6 +308,7 @@ export const cancelAppointment = withPermission(
 export const deleteAppointment = withPermission(
   'appointment:delete',
   async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [appt] = await db
       .select({ status: appointments.status, clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
       .from(appointments)

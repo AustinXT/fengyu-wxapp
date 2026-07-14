@@ -270,7 +270,7 @@ export default function OrdersPageClient({
         { header: "品质(二级)", width: 14, accessor: (r) => r.categoryL2 ?? "" },
         { header: "商品明细", width: 28, accessor: (r) => r.productName ?? "" },
         { header: "总次数", width: 8, accessor: (r) => r.sessionCount ?? "—" },
-        { header: "可用次数", width: 10, accessor: (r) => r.remainingSessions ?? "—" },
+        { header: "可用次数", width: 10, accessor: (r) => r.paidUnusedSessions ?? "—" },
         { header: "订单金额", width: 10, accessor: (r) => r.totalAmount },
         { header: "储值卡抵扣", width: 10, accessor: (r) => r.prepaidCardAmount },
         { header: "实付", width: 10, accessor: (r) => r.received },

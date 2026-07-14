@@ -97,7 +97,6 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
-        AND sa.role_type IN ('美容师', '养生师')
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
         AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
@@ -111,7 +110,6 @@ export const getEfficiencyBoard = withPermission(
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sc.is_void = FALSE
-        AND sc.role_type IN ('美容师', '养生师')
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `)
@@ -248,7 +246,6 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
-        AND sa.role_type IN ('美容师', '养生师')
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
         AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
@@ -263,7 +260,6 @@ export const getEfficiencyBoard = withPermission(
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sc.is_void = FALSE
-        AND sc.role_type IN ('美容师', '养生师')
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY so.store_id
@@ -501,7 +497,6 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
         WHERE sa.is_void = FALSE
-          AND sa.role_type IN ('美容师', '养生师')
           AND so.sale_order_type IN ('销售单', '转换单')
           AND so.status = '已支付'
           AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
@@ -513,7 +508,6 @@ export const getEfficiencyBoard = withPermission(
         JOIN service_items sit ON sit.service_item_id = sc.service_item_id
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
         WHERE sc.is_void = FALSE
-          AND sc.role_type IN ('美容师', '养生师')
           AND so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY sc.employee_id

@@ -7,6 +7,7 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SkillTag } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
+import { requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
@@ -119,6 +120,7 @@ export const updateSkillTag = withPermission(
 export const deleteSkillTag = withPermission(
   'employee:update',
   async (session, id: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const result = await db.delete(skillTags).where(eq(skillTags.id, id))
 
     if ((result as any).count === 0) {

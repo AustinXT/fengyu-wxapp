@@ -23,6 +23,7 @@ import {
 } from "@/actions/legacy-orders"
 import { formatDate as fmtDate } from "@/lib/utils"
 import { actionErrorMessage } from "@/lib/action-error"
+import { WORKFINE_CONNECT_ERROR_MSG } from "@/lib/workfine-constants"
 
 interface Props {
   open: boolean
@@ -100,7 +101,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
         pickCandidate(res[0])
       }
     } catch (err) {
-      const msg = actionErrorMessage(err, "搜索失败")
+      const msg = actionErrorMessage(err, WORKFINE_CONNECT_ERROR_MSG)
       setErrorMsg(msg)
       toast.error(msg)
     } finally {
@@ -135,7 +136,7 @@ export default function PullWorkfineDialog({ open, onOpenChange, defaultPhone }:
       )
       setSelectedOrderNos(defaultSel)
     } catch (err) {
-      const msg = actionErrorMessage(err, "预览失败")
+      const msg = actionErrorMessage(err, WORKFINE_CONNECT_ERROR_MSG)
       setErrorMsg(msg)
       toast.error(msg)
       setStep("search")

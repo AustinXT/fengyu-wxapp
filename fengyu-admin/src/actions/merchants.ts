@@ -8,7 +8,7 @@ import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { randomBytes } from 'crypto'
 import { withPermission } from '@/lib/with-permission'
-import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
+import { isAdminScope, expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 
@@ -423,6 +423,7 @@ export const updateMerchant = withPermission(
 export const deleteMerchant = withPermission(
   'merchant:delete',
   async (session, id: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     if (!id) return { success: false, message: '商户不存在' }
     const [before] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, id)).limit(1)
     if (!before) return { success: false, message: '商户不存在' }

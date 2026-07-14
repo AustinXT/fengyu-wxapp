@@ -6,7 +6,7 @@ import {
 } from '@/actions/inventory/transfer'
 import { getStores } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasPermission, isAdminScope } from '@/lib/permissions'
 import InventoryListView from '../_components/inventory-list-view'
 
 export const dynamic = 'force-dynamic'
@@ -34,7 +34,7 @@ export default async function Page({
   ])
 
   const canCreate = session ? hasPermission(session, 'inventory:create') : false
-  const canDelete = session ? hasPermission(session, 'inventory:delete') : false
+  const canDelete = session ? isAdminScope(session) : false
 
   return (
     <div className="p-6">

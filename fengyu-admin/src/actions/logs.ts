@@ -6,6 +6,7 @@ import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
 import { beijingBoundaryTs } from '@/lib/db-time'
 import type { OperationLog } from '@/lib/types'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
+import { requireAdmin } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { revalidatePath } from 'next/cache'
 
@@ -113,6 +114,7 @@ export const getOrderLogs = withAnyPermission(
 export const deleteOperationLog = withPermission(
   'operation_log:delete',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [snapshot] = await db
       .select({ action: operationLogs.action, targetType: operationLogs.targetType, targetId: operationLogs.targetId, operatorName: operationLogs.operatorName, createdAt: operationLogs.createdAt })
       .from(operationLogs)

@@ -1,16 +1,23 @@
-
+/**
+ * 优惠券模块路由（客户端）
+ * coupon.list — 我的优惠券列表
+ * coupon.available — 当前订单可用券
+ */
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 
-
+/**
+ * 我的优惠券列表（按 status 分 tab）
+ * payload: { status?: '未使用' | '已使用' | '已过期' }
+ */
 async function list(ctx) {
   await requirePhone()(ctx, async () => {})
 
   const { userId } = ctx.auth
   const { status } = ctx.event.payload || {}
 
-  
+  // 懒清扫过期券
   await pg.query(
     `UPDATE user_coupons SET status = '已过期'
      WHERE user_id = $1 AND status = '未使用' AND expire_at <= NOW()`,
@@ -45,7 +52,7 @@ async function list(ctx) {
       uc.expire_at ASC
   `, params)
 
-  
+  // 查询适用门店名称（批量）
   const storeIds = new Set()
   for (const c of coupons) {
     if (c.applicable_store_ids) {
@@ -61,7 +68,7 @@ async function list(ctx) {
     for (const r of storeRows) storeNameMap[r.store_id] = r.store_name
   }
 
-  
+  // 查询适用品类名称（批量，复用 storeNameMap 模式）
   const categoryIds = new Set()
   for (const c of coupons) {
     if (c.applicable_category_ids) {
@@ -99,7 +106,11 @@ async function list(ctx) {
   }
 }
 
-
+/**
+ * 当前订单可用券
+ * payload: { storeId?: string, storeName?: string, items: [{ skuId, quantity, amount }] }
+ * amount = 该行小计（已含手动折扣），用于满减门槛判断
+ */
 async function available(ctx) {
   await requirePhone()(ctx, async () => {})
 
@@ -111,7 +122,7 @@ async function available(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 items 参数')
   }
 
-  
+  // 解析门店ID
   let storeId = payload.storeId
   if (!storeId && payload.storeName) {
     const storeRows = await pg.query(
@@ -121,21 +132,31 @@ async function available(ctx) {
     if (storeRows.length > 0) storeId = storeRows[0].store_id
   }
 
-  
+  // 解析门店所属市场（org 树 store 节点 → parent 市场节点），用于市场限定券过滤（M10：与 admin getAvailableCoupons 对齐）
+  let marketId = null
+  if (storeId) {
+    const marketRows = await pg.query(
+      `SELECT son.parent_id AS market_id FROM stores s JOIN org_nodes son ON s.org_node_id = son.id WHERE s.store_id = $1`,
+      [storeId]
+    )
+    if (marketRows.length > 0) marketId = marketRows[0].market_id
+  }
+
+  // 懒清扫过期券
   await pg.query(
     `UPDATE user_coupons SET status = '已过期'
      WHERE user_id = $1 AND status = '未使用' AND expire_at <= NOW()`,
     [userId]
   )
 
-  
+  // 查询用户可用券 + 模板信息（face_value_override 优先于 template.discount_value）
   const coupons = await pg.query(`
     SELECT
       uc.coupon_id, uc.expire_at,
       ct.template_id, ct.name, ct.coupon_type,
       COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
       ct.min_spend, ct.max_discount,
-      ct.applicable_category_ids, ct.applicable_store_ids,
+      ct.applicable_category_ids, ct.applicable_store_ids, ct.applicable_market_ids,
       ct.description
     FROM user_coupons uc
     JOIN coupon_templates ct ON uc.template_id = ct.template_id
@@ -149,7 +170,7 @@ async function available(ctx) {
     return
   }
 
-  
+  // 解析每个 SKU 的 category_id（SKU 直接有 category_id，无需 JOIN products）
   const skuIds = items.map(i => i.skuId)
   const skuCats = await pg.query(
     `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1) AND deleted_at IS NULL`,
@@ -158,15 +179,20 @@ async function available(ctx) {
   const catMap = new Map()
   for (const r of skuCats) catMap.set(r.sku_id, r.category_id)
 
-  
+  // 逐张券评估适用性
   const result = []
   for (const coupon of coupons) {
-    
+    // 门店匹配
     if (coupon.applicable_store_ids && coupon.applicable_store_ids.length > 0) {
       if (!storeId || !coupon.applicable_store_ids.includes(storeId)) continue
     }
 
-    
+    // 市场匹配（M10：与 admin 对齐。applicable_market_ids 为空=不限，否则须含当前门店所属市场）
+    if (coupon.applicable_market_ids && coupon.applicable_market_ids.length > 0) {
+      if (!marketId || !coupon.applicable_market_ids.includes(marketId)) continue
+    }
+
+    // 品项分类匹配 → 找出符合的行
     let eligibleItems
     if (coupon.applicable_category_ids && coupon.applicable_category_ids.length > 0) {
       eligibleItems = items.filter(item => {
@@ -178,16 +204,16 @@ async function available(ctx) {
     }
     if (eligibleItems.length === 0) continue
 
-    
+    // 满减门槛（归一化到分 + 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动）
     const eligibleTotalRaw = eligibleItems.reduce(
       (sum, i) => sum + Number(i.amount || 0), 0
     )
     const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
     const minSpend = Math.round((Number(coupon.min_spend) || 0) * 100) / 100
-    
+    // +0.001 兜底 JS 浮点累计误差（仅用于门槛判断，分摊/显示仍精确到分）
     if (eligibleTotal + 0.001 < minSpend) continue
 
-    
+    // 计算可抵扣金额
     let discount = 0
     if (coupon.coupon_type === '现金券' || coupon.coupon_type === '品项券') {
       discount = Math.min(Number(coupon.discount_value), eligibleTotal)
@@ -212,7 +238,7 @@ async function available(ctx) {
     })
   }
 
-  
+  // 按抵扣金额降序
   result.sort((a, b) => b.discount - a.discount)
 
   ctx.result = { coupons: result }

@@ -35,6 +35,7 @@
           scroll-y
         >
           <view
+            wx:if="{{ staffLevel !== 'store_manager' }}"
             class="scope-row {{ current.scopeType === 'market' ? 'scope-row--active' : '' }}"
             data-store-id=""
             bindtap="onPickStore"

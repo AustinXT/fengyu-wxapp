@@ -8,7 +8,7 @@ import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
-import { scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
+import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
@@ -1235,6 +1235,7 @@ export const mergeClientProfile = withPermission(
 export const deleteCustomer = withPermission(
   'customer:delete',
   async (session, userId: string): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
     const [cust] = await db
       .select({
         name: clientWechatUsers.name,

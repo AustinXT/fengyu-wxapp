@@ -1,7 +1,7 @@
 import { getAppointmentsPaginated } from '@/actions/appointments'
 import { getStores } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { isAdminScope } from '@/lib/permissions'
 import AppointmentsPageClient from './_components/appointments-page'
 
 export const dynamic = 'force-dynamic'
@@ -29,7 +29,7 @@ export default async function Page({
     getSession(),
   ])
 
-  const canDelete = session ? hasPermission(session, 'appointment:delete') : false
+  const canDelete = session ? isAdminScope(session) : false
 
   return (
     <AppointmentsPageClient

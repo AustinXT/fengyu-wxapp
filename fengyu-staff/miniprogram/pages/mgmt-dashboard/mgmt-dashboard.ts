@@ -246,7 +246,7 @@ Page({
       phone,
       position,
       staffLevel: staffLevel || '',
-      staffLevelLabel: staffLevel === 'headquarters' ? '总部' : staffLevel === 'market' ? '市场' : '',
+      staffLevelLabel: staffLevel === 'headquarters' ? '总部' : staffLevel === 'market' ? '市场' : staffLevel === 'store_manager' ? '店长' : '',
     })
 
     this.buildProfileData()
@@ -275,9 +275,20 @@ Page({
   },
 
   computeDefaultScope(): ScopeValue {
-    const { staffLevel, roleBindings } = app.globalData
+    const { staffLevel, roleBindings, managerStores } = app.globalData
     if (staffLevel === 'headquarters') {
       return { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
+    }
+    if (staffLevel === 'store_manager') {
+      // 门店店长：默认锁到管辖门店（managerStores[0]；多店店长可在 picker 切换其它管辖门店）。
+      // 用 managerStores 而非 scopedStores——后者含全角色并集门店（如 manager@A + customer_mgr@B），
+      // 按店名字母序可能默认到非管辖门店 B，触发 validateManagementScope 越权拦。
+      // 后端 validateManagementScope 仅允许 scopeType='store' 且 scopeId ∈ managerStoreIds。
+      const stores = managerStores || []
+      if (stores.length > 0) {
+        return { scopeType: 'store', scopeId: stores[0].storeId, scopeName: stores[0].storeName }
+      }
+      return { scopeType: 'store', scopeId: '', scopeName: '' }
     }
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
@@ -592,7 +603,7 @@ Page({
   buildProfileData() {
     const g = app.globalData
     const staffLevelLabel = g.staffLevel === 'headquarters' ? '总部'
-      : g.staffLevel === 'market' ? '市场' : '--'
+      : g.staffLevel === 'market' ? '市场' : g.staffLevel === 'store_manager' ? '店长' : '--'
 
     this.setData({
       basicInfo: {
@@ -624,10 +635,12 @@ Page({
   },
 
   buildStoreScope(level: StaffLevel, bindings: RoleBinding[], stores: ScopedStore[]) {
-    if (level !== 'headquarters' && level !== 'market') return null
+    if (level !== 'headquarters' && level !== 'market' && level !== 'store_manager') return null
     let title = ''
     if (level === 'headquarters') {
       title = `总部 / 全部门店（共 ${stores.length} 家）`
+    } else if (level === 'store_manager') {
+      title = `门店 · ${stores.map(s => s.storeName).join('、')}（共 ${stores.length} 家）`
     } else {
       const m = bindings.find(b => b.scopeType === '市场')
       title = `市场 · ${m?.scopeName || '--'}（共 ${stores.length} 家）`

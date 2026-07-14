@@ -1,4 +1,12 @@
-
+/**
+ * 服务单模块路由（员工端）
+ * service.create — 创建服务单
+ * service.start — 开始服务（待服务 → 服务中）
+ * service.complete — 员工标记完成（服务中 → 待客户确认，不产生副作用）
+ * service.confirm — 店长代客户确认（待客户确认 → 已完成，扣次数+计提成+关预约）
+ * service.list — 服务单列表
+ * service.detail — 服务单详情
+ */
 
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
@@ -7,8 +15,16 @@ const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
+const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 
-
+/**
+ * 创建服务单
+ * payload: {
+ *   clientUserId, clientPhone, serviceDate, assignedStaffWfId,
+ *   remark, appointmentId,
+ *   items: [{ saleItemId, sessionUsed, employeeId, serviceDuration? }]
+ * }
+ */
 async function create(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -37,12 +53,12 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 服务明细不能为空')
   }
 
-  
+  // 权限：店长可为任何员工创建，美容师只能指定自己
   if (!ctx.auth.roles.includes('manager') && resolvedStaffWfId !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
 
-  
+  // 验证关联预约
   if (appointmentId) {
     const appts = await pg.query(
       "SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2 AND status = '已确认'",
@@ -60,7 +76,7 @@ async function create(ctx) {
     }
   }
 
-  
+  // 验证订单行
   for (const item of normalizedItems) {
     if (!item.saleItemId) {
       throw new Error('INVALID_PARAMS: 服务明细缺少 saleItemId')
@@ -98,12 +114,12 @@ async function create(ctx) {
 
     const si = saleItemRows[0]
 
-    
+    // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 对应订单状态为 ${si.order_status}，不可消费`)
     }
 
-    
+    // 在途退款冻结：原订单存在 '待审批' 退款时，疗程卡不可开单/核销（审批通过后由 paid_sessions 限额继续守护）
     if (si.has_pending_refund) {
       throw new Error(`INVALID_STATE: REFUND_IN_PROGRESS: 订单行 ${item.saleItemId} 对应订单退款审批中，不可开单`)
     }
@@ -112,15 +128,15 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 家居产品不走到店服务流程`)
     }
 
-    
+    // 注：可核销门店不再看卡售出门店（si.store_id），改由下方「顾客绑定门店」统一把关（卡跟顾客走）
 
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 剩余次数不足`)
     }
 
-    
-    
-    
+    // paid_sessions 限额校验（ticket 2026-05-19 D6=A）：paid_sessions=0 时整张卡锁死
+    // session_count != null 同时覆盖 undefined（兼容历史 mock）
+    // paid_sessions IS NULL 视为 session_count（兼容历史数据 / 旧 fixture，不引入回归）
     if (si.session_count != null) {
       const paid = si.paid_sessions == null ? Number(si.session_count) : Number(si.paid_sessions)
       if (paid <= 0) {
@@ -134,7 +150,7 @@ async function create(ctx) {
     }
   }
 
-  
+  // 解析 clientUserId
   let resolvedClientUserId = clientUserId || null
 
   if (!resolvedClientUserId && clientPhone) {
@@ -157,7 +173,7 @@ async function create(ctx) {
     }
   }
 
-  
+  // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
   if (resolvedClientUserId) {
     const activeSo = await pg.query(
       "SELECT service_order_id FROM service_orders WHERE client_user_id = $1 AND status NOT IN ('已完成', '已取消') LIMIT 1",
@@ -168,15 +184,15 @@ async function create(ctx) {
     }
   }
 
-  
-  
+  // 根据顾客成为会员客的时间戳判定服务单类型：
+  // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
       'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
-    
+    // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
     if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
       throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')
     }
@@ -184,8 +200,8 @@ async function create(ctx) {
       serviceOrderType = '售后'
     }
   } else {
-    
-    
+    // 无法解析顾客（legacy client_user_id IS NULL 且未传 clientPhone）：无顾客可绑，退回「sale_item 售出门店 ∈ scope」
+    // 兜底把关，杜绝 A 店凭他店订单行越权核销其剩余次数（卡跟顾客走的前提是有顾客；无顾客时按售出门店校验）。
     const itemStores = await pg.query(
       'SELECT store_id FROM sale_items WHERE sale_item_id = ANY($1)',
       [normalizedItems.map((it) => it.saleItemId)]
@@ -197,20 +213,20 @@ async function create(ctx) {
     }
   }
 
-  
-  
+  // serviceOrderId 在事务内由 generateServiceOrderId(client) 生成，保证 advisory lock
+  // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
   let serviceOrderId
   const now = new Date()
 
   await pg.transaction(async (client) => {
-    
-    
+    // 生成 serviceOrderId（内部独占 advisory_xact_lock(hashtext('service_order_id_gen'))，
+    // 与 admin services.ts 跨端互锁）
     serviceOrderId = await generateServiceOrderId(client)
 
-    
-    
-    
-    
+    // 创建服务单主表
+    // partial unique 兜底 TOCTOU：
+    //   uq_so_appointment(appointment_id) WHERE appointment_id IS NOT NULL — 同预约双 create
+    //   uq_so_client_active(client_user_id) WHERE status NOT IN ('已完成','已取消') — 同顾客双 create（含待客户确认）
     try {
       await client.query(
         `INSERT INTO service_orders (
@@ -243,13 +259,13 @@ async function create(ctx) {
       throw err
     }
 
-    
+    // 创建服务明细
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      
-      
-      
+      // sale_items → product_skus + product_categories fallback：
+      // 历史 sale_items（WorkFine migration 进入）这两列常为 NULL，导致看板"项目数 / 生美实耗"为 0。
+      // 优先取 sale_items 上已快照值；为 NULL 时回退到 product_skus + product_categories。
       const siRows = await client.query(
         `SELECT si.unit_real_price,
                 COALESCE(si.is_shengmei, ps.is_shengmei) AS is_shengmei,
@@ -283,7 +299,25 @@ async function create(ctx) {
       )
     }
 
-    
+    // 寄存单退款打标校验（M8）：service_items 已落库，反查是否含寄存卡。
+    // remark 非必填：空备注按正常消耗计业绩（写提成 + 计消耗业绩，营业额分成按寄存单 sale_order 排除）。
+    // 仅防误标：非寄存卡但误标「寄存单退款专用」预设 → 拒绝。
+    const depositCheck = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM service_items si
+         JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+         JOIN sale_orders o ON o.sale_order_id = sli.sale_order_id
+         WHERE si.service_order_id = $1 AND o.sale_order_type = '寄存单'
+       ) AS has_deposit`,
+      [serviceOrderId]
+    )
+    const hasDeposit = depositCheck.rows[0]?.has_deposit === true
+    const isDepositRefund = remark === DEPOSIT_REFUND_REMARK
+    if (isDepositRefund && !hasDeposit) {
+      throw new Error('INVALID_PARAMS: 非寄存卡不可标记为寄存单退款')
+    }
+
+    // 审计日志
     await logOperation(client, ctx, 'service.create', 'service_order', serviceOrderId, {
       _v: 3,
       serviceOrderType,
@@ -302,7 +336,9 @@ async function create(ctx) {
   }
 }
 
-
+/**
+ * 开始服务（待服务 → 服务中）
+ */
 async function start(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -340,7 +376,7 @@ async function start(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
     }
-    
+    // 审计日志
     await logTransition(client, ctx, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中')
   })
 
@@ -351,7 +387,10 @@ async function start(ctx) {
   }
 }
 
-
+/**
+ * 加载服务单的所有 service_items + 关联 sale_items 快照（含 service_fee、sales_category）+ 员工 skills。
+ * 一次 JOIN 拿全，避免 finalize 循环内 N 次查询。confirm 链路使用。
+ */
 async function loadServiceItems(serviceOrderId) {
   return await pg.query(
     `SELECT sit.service_item_id, sit.sale_item_id, sit.session_used, sit.employee_id,
@@ -366,16 +405,33 @@ async function loadServiceItems(serviceOrderId) {
   )
 }
 
-
+/**
+ * finalize 副作用（待客户确认 → 已完成）—— 顾客确认 / 店长代确认 共用。
+ *
+ * 跨端独立副本：与 clientApi utils/service-finalize.js、fengyu-admin services.ts 字面量一致，
+ * 由 cross-end-sql-snapshot.test.js 守护。改一端必同步其它端。
+ *
+ * 在外层事务内执行：
+ *   1. 原子扣减每条 sale_items 的剩余次数（叠加 paid_sessions 限额 + 门店一致校验）+ 归零关预约
+ *   2. 计算并写入服务提成（service_commissions，双字段模型 + 缺率写 operation_logs）
+ *   3. 状态 待客户确认 → 已完成（WHERE 锁定防并发）+ commission_status='已分配' + 关联预约置已完成
+ *
+ * @param client 外层事务 pg client
+ * @param so     服务单行
+ * @param items  loadServiceItems 结果
+ * @param ctx    用于 operation_logs operator 字段
+ * @param now    时间戳
+ * @returns {boolean} 状态翻转是否成功（rowCount>0）；false 表示已被其它入口确认（幂等）
+ */
 async function finalizeServiceOrder(client, so, items, ctx, now) {
   const serviceOrderId = so.service_order_id
 
-  
-  
+  // 原子扣减每条订单行的剩余次数。
+  // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
-    
-    
-    
+    // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
+    //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
+    //   paid_sessions NULL 视为 session_count（兼容历史数据 / 旧 fixture）
     const updateResult = await client.query(
       `UPDATE sale_items
        SET remaining_sessions = remaining_sessions - $1
@@ -406,7 +462,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 扣减失败`)
     }
 
-    
+    // 查询扣减后剩余次数，若归零则关闭对应预约
     const remainRows = await client.query(
       'SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1',
       [item.sale_item_id]
@@ -423,15 +479,18 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     }
   }
 
-  
-  
-  
-  
-  
-  
-  
-  
+  // ========== 计算并写入服务提成（service_commissions）==========
+  // 双字段模型：fixed_fee = service_fee × session_used
+  //            consume_amount = unit_real_price × session_used × commission_rate
+  //            commission_amount = fixed_fee + consume_amount
+  // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
+  //       直接作为每次消耗基准，无需再 ÷session_count。
+  // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
+  // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞确认
   for (const row of items) {
+    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（仅当显式选「寄存单退款专用」备注打标时；remark 非必填，空备注按正常消耗计提成；此为 finalize 兜底防漏）
+    if (so.remark === DEPOSIT_REFUND_REMARK) continue
+
     const skills = Array.isArray(row.skills) ? row.skills : []
     const roleType = skills[0] || '美容师'
 
@@ -461,7 +520,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     const consumeAmount = Math.round(consumeBase * rate * 100) / 100
     const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
-    
+    // rate=0 且有消耗金额时，提示运维补齐矩阵规则
     if (rate === 0 && consumeBase > 0) {
       await client.query(
         `INSERT INTO operation_logs
@@ -477,9 +536,9 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       )
     }
 
-    
-    
-    
+    // INSERT 提成记录：ON CONFLICT 保证幂等（partial unique index where is_void=false）
+    // 注意：uq_svc_comm_item_emp_role 是 partial unique INDEX 不是 CONSTRAINT，
+    // ON CONFLICT ON CONSTRAINT 形式会报 "constraint does not exist"，必须用列推断 + WHERE
     await client.query(
       `INSERT INTO service_commissions (
          service_item_id, employee_id, role_type, allocation_ratio,
@@ -500,7 +559,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     )
   }
 
-  
+  // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）+ 同步 commission_status
   const soUpdateResult = await client.query(
     "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '待客户确认'",
     [now, serviceOrderId]
@@ -509,7 +568,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     return false
   }
 
-  
+  // 如关联预约，将预约状态更新为已完成
   if (so.appointment_id) {
     await client.query(
       "UPDATE appointments SET status = '已完成', updated_at = $1 WHERE appointment_id = $2 AND status = '已确认'",
@@ -520,7 +579,11 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
   return true
 }
 
-
+/**
+ * 员工标记完成服务（服务中 → 待客户确认）
+ * 仅翻状态 + 记 staff_completed_at，不扣次数 / 不计提成 / 不关预约——这些副作用推迟到顾客确认。
+ * 幂等：待客户确认 / 已完成 直接返回。
+ */
 async function complete(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -545,7 +608,7 @@ async function complete(ctx) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
-  
+  // 幂等：已进入待客户确认或已完成
   if (so.status === '待客户确认' || so.status === '已完成') {
     ctx.result = {
       serviceOrderId,
@@ -568,7 +631,7 @@ async function complete(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
     }
-    
+    // 审计日志
     await logTransition(client, ctx, 'service.complete', 'service_order', serviceOrderId, '服务中', '待客户确认')
   })
 
@@ -579,7 +642,11 @@ async function complete(ctx) {
   }
 }
 
-
+/**
+ * 店长代客户确认（待客户确认 → 已完成）
+ * 兜底入口：顾客不便用小程序时由店长代确认。执行 finalize 副作用（扣次数+计提成+关预约）。
+ * 幂等：已完成 直接返回。
+ */
 async function confirm(ctx) {
   await requireManager()(ctx, async () => {})
 
@@ -600,7 +667,7 @@ async function confirm(ctx) {
 
   const so = serviceOrders[0]
 
-  
+  // 幂等：已完成
   if (so.status === '已完成') {
     ctx.result = { serviceOrderId, status: '已完成', message: '服务已完成（幂等）' }
     return
@@ -610,7 +677,7 @@ async function confirm(ctx) {
     throw new Error(`INVALID_STATE: 服务单当前状态为"${so.status}"，不可确认`)
   }
 
-  
+  // 冻结闭环（Bug I）：关联订单退款审批中禁止确认核销（否则扣次数与退款冲突 → 孤儿服务单/账实错乱）
   await assertNoPendingRefundByServiceOrder(pg, serviceOrderId)
 
   const items = await loadServiceItems(serviceOrderId)
@@ -620,10 +687,10 @@ async function confirm(ctx) {
   await pg.transaction(async (client) => {
     finalized = await finalizeServiceOrder(client, so, items, ctx, now)
     if (!finalized) {
-      
+      // 已被其它入口（顾客本人）确认，事务内无副作用，视为幂等
       return
     }
-    
+    // 审计日志（仅本入口真正完成时记；finalize 共享副本不含日志，归属 handler 层）
     await logTransition(client, ctx, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
       clientUserId: so.client_user_id,
       itemCount: items.length,
@@ -637,7 +704,9 @@ async function confirm(ctx) {
   }
 }
 
-
+/**
+ * 服务单列表
+ */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -678,7 +747,7 @@ async function list(ctx) {
     LIMIT $2 OFFSET $3
   `, params)
 
-  
+  // 批量查询服务明细摘要
   const soIds = serviceOrders.map(s => s.service_order_id)
   let itemsSummary = []
   if (soIds.length > 0) {
@@ -708,7 +777,7 @@ async function list(ctx) {
     })
   }
 
-  
+  // 批量查询员工姓名（从 PG staff_wechat_users）
   const staffWfIds = [...new Set(serviceOrders.map(s => s.assigned_employee_id).filter(Boolean))]
   let staffNameMap = {}
   if (staffWfIds.length > 0) {
@@ -721,7 +790,7 @@ async function list(ctx) {
     }
   }
 
-  
+  // 批量查询顾客姓名
   const clientUserIds = [...new Set(serviceOrders.map(s => s.client_user_id).filter(Boolean))]
   let customerNameMap = {}
   if (clientUserIds.length > 0) {
@@ -732,7 +801,7 @@ async function list(ctx) {
     for (const r of nameRows) {
       if (r.name) customerNameMap[r.user_id] = r.name
     }
-    
+    // 兜底从订单取
     const missingIds = clientUserIds.filter(id => !customerNameMap[id])
     if (missingIds.length > 0) {
       const orderNameRows = await pg.query(`
@@ -767,7 +836,9 @@ async function list(ctx) {
   }))
 }
 
-
+/**
+ * 服务单详情
+ */
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -776,8 +847,8 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 id 参数')
   }
 
-  
-  
+  // 交易数据跟顾客走：先不限门店查服务单，再分层判定可见性
+  // （顾客档案的服务记录可跨门店查看任意服务单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const serviceOrders = await pg.query(`
     SELECT
       so.service_order_id,
@@ -804,23 +875,23 @@ async function detail(ctx) {
 
   const so = serviceOrders[0]
 
-  
-  
-  
-  
-  
-  
+  // 分层可见性（与 order.detail 一致）：
+  //  1) 服务单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
+  //  2) 管理层模式 + 服务单门店在本 scope 内 → 监管只读放行
+  //  3) 服务单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店服务单）
+  //  4) 都不满足 → 无权查看
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 1/3。
   const inStoreScope = isStoreInScope(ctx.auth, so.store_id)
   const isManager = ctx.auth.roles.includes('manager')
   const isMgmt = ctx.auth.loginLevel === 'management'
   let visible = inStoreScope && (isManager || so.assigned_employee_id === ctx.auth.staffWfId)
   if (!visible && isMgmt && inStoreScope) {
-    visible = true 
+    visible = true // 管理层监管本 scope 内服务单（只读）
   }
   if (!visible && so.client_user_id) {
-    
-    
-    
+    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 service_order_id 越权查看本店他人负责顾客的服务单详情。
     const custRows = await pg.query(
       'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
       [so.client_user_id]
@@ -837,7 +908,7 @@ async function detail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 
-  
+  // 查询服务明细
   const items = await pg.query(`
     SELECT
       si.sale_item_id,
@@ -853,7 +924,7 @@ async function detail(ctx) {
     WHERE si.service_order_id = $1
   `, [id])
 
-  
+  // 查询员工姓名
   let staffName = ''
   if (so.assigned_employee_id) {
     const staffRows = await pg.query(
@@ -865,7 +936,7 @@ async function detail(ctx) {
     }
   }
 
-  
+  // 查询顾客姓名
   let customerName = ''
   if (so.client_user_id) {
     const nameRows = await pg.query(
@@ -884,7 +955,7 @@ async function detail(ctx) {
     }
   }
 
-  
+  // 顾客评价：仅店长可见（防普通员工抓包）；评价仅存在于已完成单
   let review
   if (ctx.auth.roles.includes('manager') && so.status === '已完成') {
     const reviewRows = await pg.query(
@@ -922,7 +993,9 @@ async function detail(ctx) {
   }
 }
 
-
+/**
+ * 取消服务单
+ */
 async function cancel(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
@@ -947,7 +1020,7 @@ async function cancel(ctx) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
-  
+  // 确认前（待客户确认）店长可撤；确认后（已完成）不可取消，走退款链路
   if (!['待服务', '服务中', '待客户确认'].includes(so.status)) {
     throw new Error(`INVALID_PARAMS: 服务单当前状态为"${so.status}"，不可取消`)
   }
@@ -961,7 +1034,7 @@ async function cancel(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
     }
-    
+    // 审计日志
     await logTransition(client, ctx, 'service.cancel', 'service_order', serviceOrderId, so.status, '已取消')
   })
 
@@ -972,19 +1045,30 @@ async function cancel(ctx) {
   }
 }
 
+// ========== 辅助函数 ==========
 
-
-
+/**
+ * 生成服务单 ID
+ *
+ * advisory lock 必须与最终 INSERT 在同一事务内才能闭合 TOCTOU 窗口。
+ * 调用方必须传入外层事务的 client，函数内不再自开 pg.transaction。
+ *
+ * lock key 与 admin services.ts 对齐：hashtext('service_order_id_gen')，
+ * 保证 staffApi + admin 跨端互锁（旧的 Buffer 自定义 hash 与 admin 互不相交，
+ * 会导致跨端并发撞号）。
+ *
+ * @param client 外层事务的 pg client（必传）
+ */
 async function generateServiceOrderId(client) {
   if (!client) {
     throw new Error('generateServiceOrderId: client is required (must be called inside an outer transaction)')
   }
-  
+  // dateStr 在事务内计算，避免跨午夜窗口
   const today = new Date()
   const dateStr = shanghaiYYMMDD(today)
   const likePattern = `HLD-WX-${dateStr}%`
 
-  
+  // 与 admin services.ts:522 对齐：hashtext('service_order_id_gen')
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['service_order_id_gen'])
   const rows = await client.query(`
     SELECT service_order_id FROM service_orders
@@ -1002,7 +1086,9 @@ function generateServiceItemId() {
   return 'si_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-
+/**
+ * 服务单各状态计数（轻量级，供前端 Tab badge 使用）
+ */
 async function counts(ctx) {
   await requireStaffBound()(ctx, async () => {})
 

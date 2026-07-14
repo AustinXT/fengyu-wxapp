@@ -56,7 +56,7 @@
           <view class="progress-seg progress-seg--unpaid" style="width: {{item.unpaidPct}}%"></view>
         </view>
         <view class="progress-info">
-          <text class="progress-used">已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
+          <text class="progress-used">已用 {{item.usedSessions}} / 已付 {{item.paidSessionsNull ? '—' : item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
           <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.paidUnusedSessions}}</text> 次</text>
         </view>
       </view>
@@ -74,11 +74,12 @@
           </view>
         </view>
         <view
-          wx:if="{{item.active && item.paidUnusedSessions > 0}}"
+          wx:if="{{item.active && item.paidUnusedSessions > 0 && !item.paidSessionsNull}}"
           class="tc-card__book-btn"
           catchtap="onBookTap"
           data-sale-item-id="{{item.saleItemId}}"
         >预约</view>
+        <view wx:elif="{{item.active && item.paidSessionsNull}}" class="tc-card__status-text">不可预约</view>
         <view wx:else class="tc-card__status-text">已失效</view>
       </view>
     </view>

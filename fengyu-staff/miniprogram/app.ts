@@ -17,6 +17,7 @@ App<IAppOption>({
     roleBindings: [] as RoleBinding[],
     availableLoginLevels: [] as LoginLevel[],
     scopedStores: [] as ScopedStore[],
+    managerStores: [] as ScopedStore[],
     loginLevel: null as LoginLevel | null,
     currentStoreId: '' as string,
   },
@@ -43,6 +44,7 @@ App<IAppOption>({
         ],
         availableLoginLevels: ['store'],
         scopedStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
+        managerStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
       });
       this.setLoginLevel('store');
       this.setCurrentStoreId('store-001');
@@ -67,6 +69,7 @@ App<IAppOption>({
     const roleBindings = wx.getStorageSync('roleBindings');
     const availableLoginLevels = wx.getStorageSync('availableLoginLevels');
     const scopedStores = wx.getStorageSync('scopedStores');
+    const managerStores = wx.getStorageSync('managerStores');
     const loginLevel = wx.getStorageSync('loginLevel');
     const currentStoreId = wx.getStorageSync('currentStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
@@ -82,6 +85,7 @@ App<IAppOption>({
     if (roleBindings) this.globalData.roleBindings = roleBindings;
     if (availableLoginLevels) this.globalData.availableLoginLevels = availableLoginLevels;
     if (scopedStores) this.globalData.scopedStores = scopedStores;
+    if (managerStores) this.globalData.managerStores = managerStores;
     if (loginLevel) this.globalData.loginLevel = loginLevel;
     if (currentStoreId) this.globalData.currentStoreId = currentStoreId;
   },
@@ -99,12 +103,12 @@ App<IAppOption>({
         const {
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores,
         } = res.result.data;
         this.setStaffInfo({
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores,
         });
         
         const existingLogin = this.globalData.loginLevel;
@@ -182,6 +186,10 @@ App<IAppOption>({
       this.globalData.scopedStores = info.scopedStores;
       wx.setStorageSync('scopedStores', info.scopedStores);
     }
+    if (info.managerStores) {
+      this.globalData.managerStores = info.managerStores;
+      wx.setStorageSync('managerStores', info.managerStores);
+    }
   },
 
   setLoginLevel(level) {
@@ -208,6 +216,7 @@ App<IAppOption>({
     this.globalData.roleBindings = [];
     this.globalData.availableLoginLevels = [];
     this.globalData.scopedStores = [];
+    this.globalData.managerStores = [];
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
     

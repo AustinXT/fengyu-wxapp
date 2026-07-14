@@ -31,9 +31,11 @@ interface CategoryFormData {
 export default function MallCategoriesPageClient({
   categories,
   groups,
+  canDelete,
 }: {
   categories: MallCategory[]
   groups: MallCategory[]
+  canDelete: boolean
 }) {
   const router = useRouter()
 
@@ -170,14 +172,16 @@ export default function MallCategoriesPageClient({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[var(--destructive)]"
-            onClick={() => setDeleteTarget(row)}
-          >
-            删除
-          </Button>
+          {canDelete && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDeleteTarget(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },
@@ -291,6 +295,7 @@ export default function MallCategoriesPageClient({
         open={groupDialogOpen}
         onOpenChange={setGroupDialogOpen}
         groups={groups}
+        canDelete={canDelete}
       />
     </div>
   )

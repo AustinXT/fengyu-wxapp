@@ -9,7 +9,7 @@ import { stores } from '@db/org'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -451,6 +451,7 @@ export const confirmTransferReceive = withPermission(
 export const deleteTransferOrder = withPermission(
   'inventory:delete',
   async (session, id: string): Promise<{ success: true }> => {
+    requireAdmin(session)
     const [existing] = await db
       .select({ storeId: inventoryTransferOrders.storeId })
       .from(inventoryTransferOrders)

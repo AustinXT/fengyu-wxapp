@@ -116,7 +116,7 @@ function TreeNode({ node, children, allNodes, depth, selectedId, expandedIds, on
   )
 }
 
-export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[] }) {
+export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes: OrgNode[]; canDelete: boolean }) {
   const router = useRouter()
   const [showInactive, setShowInactive] = useState(false)
 
@@ -319,7 +319,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
                     编辑
                   </Button>
                   <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
-                  {selectedNode.type !== '总部' && (
+                  {canDelete && selectedNode.type !== '总部' && (
                     <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setDeleteTarget(selectedNode)}>
                       删除
                     </Button>

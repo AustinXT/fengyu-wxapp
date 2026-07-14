@@ -129,6 +129,16 @@
   background: #FFF8F0;
 }
 
+/* NULL 历史卡：灰显不可核销（参考 appointment-create .item-disabled） */
+.order-item-wrap.order-item--disabled {
+  opacity: 0.45;
+}
+
+.order-item-wrap.order-item--disabled .order-item-name,
+.order-item-wrap.order-item--disabled .order-item-meta {
+  color: var(--color-text-hint) !important;
+}
+
 .order-item {
   display: flex;
   align-items: center;
