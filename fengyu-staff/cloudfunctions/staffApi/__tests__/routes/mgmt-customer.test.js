@@ -797,6 +797,7 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
           sku_id: 'sku-1',
           product_type: '疗程卡',
           product_name: '深层补水',
+          unit_real_price: '100.00',
         },
       ],
     })
@@ -834,6 +835,7 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
           sku_id: 'sku-1',
           product_type: '疗程卡',
           product_name: '温暖SPA·腰腹',
+          unit_real_price: '80.00',
         },
       ],
     })
@@ -1093,9 +1095,9 @@ describe('mgmtCustomer 出数完整路径', () => {
         { sale_order_id: 'so-2', status: '已支付', paid_at: '2026-04-21T11:00:00Z', store_id: 'store-001', store_name: 'A 店' },
       ],
       paidOrderItems: [
-        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水' },
-        { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', product_name: '基础护理' },
-        { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', product_name: '面部清洁' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水', unit_real_price: '100.00' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', product_name: '基础护理', unit_real_price: '60.00' },
+        { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', product_name: '面部清洁', unit_real_price: '30.00' },
       ],
     })
     const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'all' })
@@ -1106,6 +1108,7 @@ describe('mgmtCustomer 出数完整路径', () => {
     const so1 = ctx.result.orders.find((o) => o.saleOrderId === 'so-1')
     expect(so1.items).toHaveLength(2)
     expect(so1.items[0].itemName).toBe('深层补水')
+    expect(so1.items[0].unitRealPrice).toBe('100.00')
     const so2 = ctx.result.orders.find((o) => o.saleOrderId === 'so-2')
     expect(so2.items).toHaveLength(1)
     expect(so2.items[0].itemName).toBe('面部清洁')
