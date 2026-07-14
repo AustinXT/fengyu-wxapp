@@ -26,7 +26,10 @@ function setupAvailableMocks({ clientRows, coupons, skuCats, storeRows } = {}) {
     pg.query.mockResolvedValueOnce(storeRows)
   }
 
-  // 3. 懒过期清扫
+  // 3. 市场查询（M10：门店所属市场，用于市场限定券过滤）
+  pg.query.mockResolvedValueOnce([{ market_id: 'market-001' }])
+
+  // 4. 懒过期清扫
   pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
 
   // 4. 券查询
@@ -423,6 +426,7 @@ describe('coupon.available', () => {
 
     // 3 行 category 各不相同
     pg.query.mockResolvedValueOnce([{ user_id: 'client-001' }]) // 查找顾客
+    pg.query.mockResolvedValueOnce([{ market_id: 'market-001' }]) // 市场查询（M10：门店所属市场）
     pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })    // 过期清扫
     pg.query.mockResolvedValueOnce([{                            // 券查询
       coupon_id: 'cp-edge', expire_at: '2027-12-31', template_id: 'tpl-1',

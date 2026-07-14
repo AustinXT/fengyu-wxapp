@@ -119,6 +119,12 @@ describe('coupon.list', () => {
 })
 
 describe('coupon.available', () => {
+  beforeEach(() => {
+    pg.query.mockReset()
+    // M10：available 现首个查询是门店所属市场（marketId），mock 默认市场（storeId 直接时为首查；storeName 解析时在 storeName 查询之后）
+    pg.query.mockResolvedValueOnce([{ market_id: 'market-001' }])
+  })
+
   test('返回可用优惠券列表（含折扣金额）', async () => {
     pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([{
