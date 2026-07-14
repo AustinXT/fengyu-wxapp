@@ -143,6 +143,8 @@ interface TreatmentCard {
   /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
   disabled?: boolean;
   disabledReason?: string;
+  /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
+  unitRealPrice?: string;
 }
 
 // Tab 4: 服务记录
@@ -450,6 +452,7 @@ Page({
             unpaidPct: pct(unpaid),
             saleOrderId: order.saleOrderId,
             paidAt: order.paidAt,
+            unitRealPrice: item.unitRealPrice,
             selected: false,
             sessionCount: 1,
             disabled: isNullCard,
