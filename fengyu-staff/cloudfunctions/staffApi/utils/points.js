@@ -116,13 +116,19 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
   }
   // SAVEPOINT 真隔离：积分发放报错只回滚子事务，外层资金事务不受影响
   // （决策：资金正确优先，积分失败仅告警，由 cronTask 兜底重算）。
-  await client.query('SAVEPOINT sp_settle_points')
+  // SAVEPOINT 必须在 try 内创建（外层事务已 abort 时 SAVEPOINT 自身会失败），
+  // catch 里用 savepointCreated 守卫避免 ROLLBACK 不存在的 savepoint 把 op_log 写入也带崩。
+  let savepointCreated = false
   try {
+    await client.query('SAVEPOINT sp_settle_points')
+    savepointCreated = true
     const result = await settlePointsForOrder(client, originalSaleOrderId)
     await client.query('RELEASE SAVEPOINT sp_settle_points')
     return result
   } catch (err) {
-    await client.query('ROLLBACK TO SAVEPOINT sp_settle_points')
+    if (savepointCreated) {
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_settle_points') } catch (_) { /* noop */ }
+    }
     try {
       await client.query(
         `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)

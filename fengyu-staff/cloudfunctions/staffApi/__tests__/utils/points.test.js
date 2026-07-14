@@ -310,8 +310,9 @@ describe('settlePointsSafe — 外层封装', () => {
     const client = {
       query: vi.fn(async (sql, params) => {
         const s = String(sql)
-        // SAVEPOINT / RELEASE / ROLLBACK 是事务控制语句，真实环境不应失败
-        // （settlePointsSafe 在 try 之前执行 SAVEPOINT，mock 对其抛错会逃出 try/catch）
+        // SAVEPOINT / RELEASE / ROLLBACK 是事务控制语句，真实环境不应失败；
+        // mock 兜底返回 ok，避免污染"内部 settle 抛异常"用例的断言
+        // （即使 SAVEPOINT 自身抛错，现在由 try/catch + savepointCreated 守卫兜底）
         if (/^(SAVEPOINT|RELEASE\s+SAVEPOINT|ROLLBACK\s+TO\s+SAVEPOINT)\b/i.test(s.trim())) {
           return { rowCount: 0 }
         }
