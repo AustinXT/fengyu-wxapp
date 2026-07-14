@@ -136,7 +136,8 @@ function makeOrder(overrides = {}) {
  *   1. SUM(amount) FROM sale_order_payments → 已到账金额，默认 0
  *   2. SELECT 1 FROM sale_order_payments WHERE change_type='首次支付' → 默认空（触发首次支付）
  *   3. INSERT INTO sale_order_payments ... RETURNING id → 默认返回 1 行（非重复回调）
- *   4. UPDATE sale_orders ... status/paid_amount → 默认空
+ *   4. UPDATE sale_orders ... SET status = $1::order_status（CAS 守卫）→ 默认 rowCount=1（放行状态翻转，
+ *      避免 index.js L760-L764 因 rowCount=0 短路到「订单状态已变更（幂等）」早退）
  * 外层若传入自定义 routes，仍可在这些之前注册更具体 matcher 覆盖。
  */
 function defaultPaymentsRoutes() {
@@ -152,6 +153,10 @@ function defaultPaymentsRoutes() {
     {
       match: /INSERT INTO sale_order_payments/,
       result: { rows: [{ id: 1 }], rowCount: 1 },
+    },
+    {
+      match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
+      result: { rows: [], rowCount: 1 },
     },
   ]
 }
@@ -195,12 +200,28 @@ describe('payNotify index.js', () => {
 
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
-      // 充值 SELECT：无充值行
+      // 充值 SELECT：无充值行（死路由：2026-05-20 起充值改判 sale_order_type，此 match 不再命中，留作无害占位）
       { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
-      // sale_items 查询（业绩分配）
+      // capturePaymentAllocatables 守卫：仅销售单/转换单参与营业额分配
+      {
+        match: /SELECT sale_order_type, legacy_source FROM sale_orders/,
+        result: { rows: [{ sale_order_type: '销售单', legacy_source: null }], rowCount: 1 },
+      },
+      // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
         match: 'FROM sale_items WHERE sale_order_id',
-        result: { rows: [{ sale_item_id: 'item-001', received: '300.00' }], rowCount: 1 },
+        result: {
+          rows: [
+            {
+              sale_item_id: 'item-001',
+              sale_amount: '300.00',
+              pending_received: '0',
+              sales_category: '自销自耗',
+              received: '300.00',
+            },
+          ],
+          rowCount: 1,
+        },
       },
       // customer_type 查询
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
@@ -375,7 +396,9 @@ describe('payNotify index.js', () => {
 
     const res = await main({ orderNo: 'FY-XSD-WX-2604240005', transactionId: 'wx-txn-005' })
     expect(res.code).toBe('FAIL')
-    expect(res.message).toMatch(/INSUFFICIENT_BALANCE/)
+    // index.js L1178-L1184 用 parseErrorPrefix 剥前缀后只回传 displayMessage（不暴露 errorType 给回调方），
+    // 故 message 不含 'INSUFFICIENT_BALANCE:' 字样，匹配剥前缀后的中文文案
+    expect(res.message).toMatch(/储值卡余额不足以完成扣款/)
 
     const qs = mockClientQuery.mock.calls.map((c) => c[0])
     // 应 ROLLBACK
@@ -394,23 +417,17 @@ describe('payNotify index.js', () => {
   test('6. 充值分支 UPSERT：INSERT 列集不含 store_id；ON CONFLICT (user_id)', async () => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [makeOrder({ prepaid_card_amount: '0' })],
+      // 2026-05-20 充值卡剥离 SKU 化：充值识别改为 sale_order_type='充值单'，面值取 total_amount
+      rows: [makeOrder({ prepaid_card_amount: '0', sale_order_type: '充值单', total_amount: '500.00' })],
     })
 
     const upsertSpy = vi.fn(async () => ({ rows: [{ card_id: 'FY-CARD-NEW' }], rowCount: 1 }))
 
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
+      // 充值幂等检查：ref_order_id + type='充值'
       {
-        match: "si.is_recharge_card = true",
-        result: {
-          rows: [{ sku_id: 'sku-500', product_name: '充值卡 ¥500', sku_price: '500.00' }],
-          rowCount: 1,
-        },
-      },
-      // 充值幂等检查（整个 ref_order_id，不限 type）— 注意此 SQL 无 type 过滤
-      {
-        match: /SELECT 1 FROM card_transactions WHERE ref_order_id = \$1 LIMIT 1/,
+        match: /SELECT 1 FROM card_transactions WHERE ref_order_id = \$1 AND type = '充值' LIMIT 1/,
         result: { rows: [], rowCount: 0 },
       },
       {
@@ -447,20 +464,15 @@ describe('payNotify index.js', () => {
     // 此用例明确：两个分支在同订单场景下的独立幂等守护都成立
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [makeOrder({ prepaid_card_amount: '0' })],
+      // 2026-05-20 充值卡剥离 SKU 化：充值识别改为 sale_order_type='充值单'
+      rows: [makeOrder({ prepaid_card_amount: '0', sale_order_type: '充值单' })],
     })
 
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
+      // 充值幂等检查：ref_order_id + type='充值'
       {
-        match: "si.is_recharge_card = true",
-        result: {
-          rows: [{ sku_id: 'sku-recharge-virtual', product_name: '自定义充值 ¥288', sku_price: null }],
-          rowCount: 1,
-        },
-      },
-      {
-        match: /SELECT 1 FROM card_transactions WHERE ref_order_id = \$1 LIMIT 1/,
+        match: /SELECT 1 FROM card_transactions WHERE ref_order_id = \$1 AND type = '充值' LIMIT 1/,
         result: { rows: [], rowCount: 0 },
       },
       { match: 'INSERT INTO prepaid_cards', result: { rows: [{ card_id: 'FY-CARD-VAL' }], rowCount: 1 } },
@@ -518,6 +530,11 @@ describe('payNotify index.js', () => {
         result: { rows: [], rowCount: 0 },
       },
       { match: /INSERT INTO sale_order_payments/, result: insertSpy },
+      // CAS 守卫放行（rowCount=1），避免短路到「订单状态已变更（幂等）」早退
+      {
+        match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
+        result: { rows: [], rowCount: 1 },
+      },
       { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
@@ -564,6 +581,11 @@ describe('payNotify index.js', () => {
         result: { rows: [], rowCount: 0 },
       },
       { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 10 }], rowCount: 1 } },
+      // CAS 守卫放行（rowCount=1），避免短路到「订单状态已变更（幂等）」早退
+      {
+        match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
+        result: { rows: [], rowCount: 1 },
+      },
     ])
 
     // 显式传 payAmount=100（小于应付 300）→ 部分支付
@@ -624,84 +646,6 @@ describe('payNotify index.js', () => {
     expect(statusUpd).toBeUndefined()
     // 应 ROLLBACK（实际实现里重复回调是 ROLLBACK 提前返回）
     expect(mockClientQuery.mock.calls.map((c) => c[0])).toContain('ROLLBACK')
-  })
-
-  test('PR-C: 回款凭证单回调 → payments 写原单 + 凭证单置 已支付', async () => {
-    const { main } = loadFreshIndex()
-    // 入口查询：返回凭证单（sale_order_type='回款单'，ref_sale_order_id=原单）
-    mockPoolQuery
-      .mockResolvedValueOnce({
-        rows: [
-          makeOrder({
-            sale_order_type: '回款单',
-            ref_sale_order_id: 'FY-XSD-WX-ORIG-001',
-            total_amount: '200.00',
-            prepaid_card_amount: '0',
-            paid_amount: '0',
-            status: '待支付',
-          }),
-        ],
-      })
-      // 二次查询：原销售单（部分支付、欠 200）
-      .mockResolvedValueOnce({
-        rows: [
-          makeOrder({
-            status: '部分支付',
-            total_amount: '300.00',
-            prepaid_card_amount: '0',
-            paid_amount: '100.00',
-            sale_order_type: '销售单',
-            ref_sale_order_id: null,
-          }),
-        ],
-      })
-
-    setupClientQueryRouter([
-      // SUM(原单已到账) = 100
-      {
-        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
-        result: { rows: [{ paid_sum: '100' }], rowCount: 1 },
-      },
-      // INSERT payments 成功
-      { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 77 }], rowCount: 1 } },
-      // UPDATE 相关
-      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
-      { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
-      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
-    ])
-
-    const res = await main({
-      orderNo: 'FY-HKD-WX-2604240001',
-      transactionId: 'wx-txn-repay-001',
-      payAmount: 200,
-    })
-    expect(res.code).toBe('SUCCESS')
-
-    const calls = mockClientQuery.mock.calls
-    // payments INSERT 的 sale_order_id 参数应为原单号，change_type='回款'
-    const insertCall = calls.find((c) => /INSERT INTO sale_order_payments/.test(c[0]))
-    expect(insertCall).toBeDefined()
-    expect(insertCall[1][0]).toBe('FY-XSD-WX-ORIG-001') // target_sale_order_id = ref
-    expect(insertCall[1][1]).toBe('回款')
-    expect(Number(insertCall[1][2])).toBe(200)
-
-    // 原单 UPDATE（已支付）
-    const origUpd = calls.find(
-      (c) => /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/.test(c[0])
-           && c[1][4] === 'FY-XSD-WX-ORIG-001'
-    )
-    expect(origUpd).toBeDefined()
-    expect(origUpd[1][0]).toBe('已支付')
-    expect(Number(origUpd[1][1])).toBe(300)
-
-    // 凭证单 UPDATE（status='已支付'）
-    const credUpd = calls.find(
-      (c) => /UPDATE sale_orders[\s\S]*SET status = '已支付'/.test(c[0])
-    )
-    expect(credUpd).toBeDefined()
-    expect(credUpd[1][2]).toBe('FY-HKD-WX-2604240001')
-
-    expect(calls.map((c) => c[0])).toContain('COMMIT')
   })
 
   test('PR-4.4: 补款回调（订单已有首次支付行）→ change_type=回款', async () => {

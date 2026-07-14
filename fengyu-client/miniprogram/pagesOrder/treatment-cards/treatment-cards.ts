@@ -38,6 +38,8 @@ Page({
           cards.push({
             ...item,
             paidSessions: paid,
+            // NULL 卡（migration 0040 前未回填）：标记用于隐藏「预约」按钮 + 已付显示「—」
+            paidSessionsNull: paidRaw == null,
             saleOrderId: order.saleOrderId,
             storeName: order.storeName,
             usedSessions: used,

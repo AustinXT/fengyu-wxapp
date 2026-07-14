@@ -528,7 +528,7 @@ describe('mgmtDashboard.summary 新会员', () => {
 })
 
 describe('mgmtDashboard.summary 提成（销售/服务）', () => {
-  test('销售提成 SQL 命中 sale_allocations + role_type IN(美容师/养生师) + 已支付销售/转换单 + paid_at；值映射正确', async () => {
+  test('销售提成 SQL 命中 sale_allocations + 已支付销售/转换单 + paid_at；值映射正确（M4：不再按 role_type 过滤）', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
@@ -550,11 +550,10 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     expect(salesSqls.length).toBe(2) // today + month
     for (const s of salesSqls) {
       // 2026-05-26 §3.15：销售提成改用真实提成 commission_amount（≠ staffRankingRevenue 的 total_amount 营业额份额）
+      // M4（2026-07-14）：管理层收入 KPI/排行不再按 role_type 过滤（向 performanceDetail 看齐，含全部角色提成）
       expect(s).toMatch(/SUM\(sa\.commission_amount/)
       expect(s).toContain('sa.is_void = FALSE')
-      expect(s).toMatch(/sa\.role_type\s+IN/)
-      expect(s).toContain('美容师')
-      expect(s).toContain('养生师')
+      expect(s).not.toMatch(/sa\.role_type\s+IN/)
       expect(s).toContain('销售单')
       expect(s).toContain('转换单')
       expect(s).toContain("so.status = '已支付'")
@@ -564,7 +563,7 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     }
   })
 
-  test('服务提成 SQL 命中 service_commissions + role_type IN(美容师/养生师) + 已完成 + service_date；值映射正确', async () => {
+  test('服务提成 SQL 命中 service_commissions + 已完成 + service_date；值映射正确（M4：不再按 role_type 过滤）', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
@@ -587,9 +586,8 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     for (const s of svcSqls) {
       expect(s).toMatch(/SUM\(sc2\.commission_amount/)
       expect(s).toContain('sc2.is_void = FALSE')
-      expect(s).toMatch(/sc2\.role_type\s+IN/)
-      expect(s).toContain('美容师')
-      expect(s).toContain('养生师')
+      // M4（2026-07-14）：管理层服务提成收入 KPI 不再按 role_type 过滤
+      expect(s).not.toMatch(/sc2\.role_type\s+IN/)
       expect(s).toContain("so.status = '已完成'")
       expect(s).toMatch(/so\.service_date/)
       expect(s).toMatch(/JOIN service_items sit/)
@@ -1859,16 +1857,16 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      // sales_comm CTE：与 revenue 公式同构
+      // sales_comm CTE：与 revenue 公式同构（M4：收入维度不再按 role_type 过滤，区别于 revenue 业绩维度仍过滤）
       expect(sql).toMatch(/sales_comm AS/)
       expect(sql).toMatch(/FROM sale_allocations sa/)
-      expect(sql).toMatch(/sa\.role_type\s+IN\s*\('美容师','养生师'\)/)
+      expect(sql).not.toMatch(/sa\.role_type\s+IN/)
       expect(sql).toContain("so.status = '已支付'")
       // service_comm CTE：service_commissions
       expect(sql).toMatch(/service_comm AS/)
       expect(sql).toMatch(/FROM service_commissions sc/)
       expect(sql).toMatch(/sc\.is_void\s*=\s*FALSE/)
-      expect(sql).toMatch(/sc\.role_type\s+IN\s*\('美容师','养生师'\)/)
+      expect(sql).not.toMatch(/sc\.role_type\s+IN/)
       expect(sql).toContain("so2.status = '已完成'")
       // 最终求和
       expect(sql).toMatch(/COALESCE\(sc1\.v,\s*0\)\s*\+\s*COALESCE\(sc2\.v,\s*0\)/)

@@ -64,7 +64,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
-  describe('role_type IN (美容师, 养生师) ∩ is_void = FALSE', () => {
+  describe('业绩维度（total_amount）保留 role_type IN (美容师, 养生师) ∩ is_void = FALSE（M4：收入维度 commission_amount 已移除 role_type 过滤）', () => {
     it('admin efficiency.ts 含 role_type IN (美容师, 养生师)', () => {
       expect(adminSrc).toMatch(/role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/)
       expect(adminBody).toMatch(/is_void\s*=\s*FALSE/i)

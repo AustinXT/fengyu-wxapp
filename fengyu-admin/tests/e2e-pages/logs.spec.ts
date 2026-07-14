@@ -17,7 +17,7 @@ test.describe('操作日志', () => {
     await page.goto('/logs')
     await expect(page.getByRole('columnheader', { name: '时间' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '操作人' })).toBeVisible()
-    await expect(page.getByRole('columnheader', { name: '操作', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '操作', exact: true }).first()).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '目标' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '详情' })).toBeVisible()
   })

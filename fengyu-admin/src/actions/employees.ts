@@ -17,7 +17,8 @@ import { ApiError } from '@/lib/api-error'
 import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
-import { parseEmployeeFilters } from '@/lib/list-filters'
+import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters'
+import { getSkillTags } from '@/actions/skill-tags'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -330,7 +331,16 @@ export const exportEmployees = withPermission(
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportEmployeeRow[]; truncated: boolean }> => {
     const LIMIT = 10000
-    const filters = parseEmployeeFilters(params)
+    const parsed = parseEmployeeFilters(params)
+    // 服务端兜底：剔除 URL ?skill= 中已停用（isValid=false）的标签，防幽灵筛选。
+    // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
+    // 导出也不被静默收窄；与员工列表 getEmployeesPaginated 对称处理）。
+    const skillTags = await getSkillTags()
+    const validSkillNames = new Set(skillTags.filter((t) => t.isValid).map((t) => t.name))
+    const filters = {
+      ...parsed,
+      skills: filterValidSkillValues(parsed.skills, validSkillNames),
+    }
     const whereClause = and(...(await buildEmployeeConditions(session, filters)))
 
     const dataRows = await db

@@ -22,7 +22,7 @@ exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守
 }
 `;
 
-exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > admin cards.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
+exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > admin paid-sessions.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
 
 exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） > 基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端） 1`] = `
 [
@@ -90,7 +90,7 @@ exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > S
 
 exports[`寄存单实际单价重算 SQL 双端字节同义守护 > Snapshot 守护 > 寄存单实际单价重算 SQL 文本快照 1`] = `"UPDATE sale_items SET unit_real_price = CASE WHEN session_count > 0 AND received > 0 THEN ROUND(received::numeric / session_count, 2) ELSE unit_price END, updated_at = NOW() WHERE sale_order_id = ? AND item_direction = '购买' AND product_type = '疗程卡' -- DEPOSIT_REAL_PRICE"`;
 
-exports[`服务单 finalize 跨端 SQL 一致性守护（staff finalizeServiceOrder vs client service-finalize） > Snapshot 守护 > finalize 三条核心 SQL 文本快照 1`] = `
+exports[`服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端） > Snapshot 守护 > finalize 三条核心 SQL 文本快照 1`] = `
 {
   "commInsert": "INSERT INTO service_commissions (service_item_id, employee_id, role_type, allocation_ratio, commission_rate, commission_amount, fixed_fee, consume_amount, is_void) VALUES (?, ?, ?, 1.00, ?, ?, ?, ?, FALSE) ON CONFLICT (service_item_id, employee_id, role_type) WHERE is_void = false DO NOTHING",
   "deduct": "UPDATE sale_items SET remaining_sessions = remaining_sessions - ? WHERE sale_item_id = ? AND remaining_sessions >= ? AND remaining_sessions IS NOT NULL AND (session_count - remaining_sessions + ?) <= COALESCE(paid_sessions, session_count)",

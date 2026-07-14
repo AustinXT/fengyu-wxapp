@@ -30,6 +30,14 @@ async function seedChangePasswordAccount() {
        ON CONFLICT (employee_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, must_change = true, last_changed_at = NULL`,
       [CPW.employeeId, hashSync(CPW.initialPassword, 12)],
     )
+    // 分配 admin 角色（总部 scope，与 FY-TEST-ADM 同范式）—— 无角色则 canAccessAdmin=false，
+    // 登录报「账号权限不足」无法进改密页。
+    await c.query(
+      `INSERT INTO permission_roles (employee_id, role, scope_id)
+       VALUES ($1, 'admin', '16d1184b46db099a')
+       ON CONFLICT (employee_id, role, scope_id) DO NOTHING`,
+      [CPW.employeeId],
+    )
     // 清除可能残留的登录锁定记录
     await c.query(`DELETE FROM login_attempts WHERE phone = $1`, [CPW.phone])
   } finally {
@@ -45,6 +53,7 @@ async function cleanupChangePasswordAccount() {
     await c.query(`DELETE FROM login_attempts WHERE phone = $1`, [CPW.phone])
     // 改密成功会写一条 auth.changePassword 审计日志（operator_employee_id FK 指向 staff），先清
     await c.query(`DELETE FROM operation_logs WHERE operator_employee_id = $1`, [CPW.employeeId])
+    await c.query(`DELETE FROM permission_roles WHERE employee_id = $1`, [CPW.employeeId])
     await c.query(`DELETE FROM staff_wechat_users WHERE employee_id = $1`, [CPW.employeeId])
   } finally {
     await c.end()

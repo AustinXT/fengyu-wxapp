@@ -3,14 +3,17 @@
  *
  * 跨端独立副本：核心 SQL（扣减 UPDATE / commission_rate_matrix SELECT /
  * service_commissions INSERT ON CONFLICT / 状态 UPDATE / 关预约 UPDATE）与
- * staffApi routes/service.js 的 finalizeServiceOrder、fengyu-admin services.ts 字面量一致，
- * 由 fengyu-staff .../cross-end-sql-snapshot.test.js 守护。改一端必同步其它端。
+ * staffApi routes/service.js 的 finalizeServiceOrder 字面一致；
+ * admin confirmServiceOrder（fengyu-admin/src/actions/services.ts）经
+ * lib/service-commission-settle.ts 镜像同口径（Drizzle sql 归一化后等价）。
+ * 由 fengyu-staff .../cross-end-sql-snapshot.test.js「服务单 finalize 跨端 SQL 一致性守护」守护。改一端必同步其它端。
  *
  * 顾客在小程序点「确认服务完成」时调用。operation_logs 的 operator 在客户端为系统级
  * （operator_employee_id=null），source='clientApi'——该 INSERT 不纳入跨端字面量 snapshot。
  */
 
 const pg = require('../db/pg')
+const { DEPOSIT_REFUND_REMARK } = require('./deposit-refund-remark')
 
 /**
  * 加载服务单的所有 service_items + 关联 sale_items 快照 + 员工 skills。
@@ -98,6 +101,9 @@ async function finalizeServiceOrder(client, so, items, now) {
   // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
   // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞确认
   for (const row of items) {
+    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（service.create 已强制 remark 打标；此为 finalize 兜底防漏）
+    if (so.remark === DEPOSIT_REFUND_REMARK) continue
+
     const skills = Array.isArray(row.skills) ? row.skills : []
     const roleType = skills[0] || '美容师'
 

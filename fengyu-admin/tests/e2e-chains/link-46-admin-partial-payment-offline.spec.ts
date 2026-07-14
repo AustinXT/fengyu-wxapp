@@ -338,9 +338,7 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await repayAmountInput.fill('')
   await repayAmountInput.fill(REPAY_1.toFixed(2))
 
-  // 线下回款需填外部交易号
-  await page.getByPlaceholder(/BANK-/).fill(`E2E-LINK46-REPAY1-${Date.now()}`)
-
+  // 2026-06-24 record-payment-dialog 重构移除外部交易号字段（recordPayment externalTxnId 可选，线下不强制）
   await page.getByRole('button', { name: '确认录入' }).click()
   // 等弹窗关闭 + 详情页 refresh
   // 等原生 <dialog> 关闭（项目 Dialog 用 <dialog> 元素，关闭后 DOM 仍在但 [open] 属性移除）
@@ -392,8 +390,6 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
   await repayAmountInput2.click()
   await repayAmountInput2.fill('')
   await repayAmountInput2.fill(REPAY_2.toFixed(2))
-
-  await page.getByPlaceholder(/BANK-/).fill(`E2E-LINK46-REPAY2-${Date.now()}`)
 
   await page.getByRole('button', { name: '确认录入' }).click()
   // 等原生 <dialog> 关闭（项目 Dialog 用 <dialog> 元素，关闭后 DOM 仍在但 [open] 属性移除）

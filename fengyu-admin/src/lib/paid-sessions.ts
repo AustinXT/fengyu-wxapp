@@ -23,6 +23,7 @@
  */
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { saleItems } from '@db/order'
 
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -64,6 +65,15 @@ END,
 updated_at = NOW()
 FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
+
+/**
+ * 已付未用次数（可用次数）派生表达式 —— 查询侧只读派生（与上方 RECALC 写入对照）。
+ * admin 单源：卡包列表/详情（cards.ts）+ 订单导出 + 营业额分配导出（orders.ts）复用。
+ *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
+ *   - 否则 max(paid − used, 0)，used = max(session_count − remaining, 0)（clamp 防脏数据 remaining>session_count 时负值）
+ * 口径须与 client/staff 前端 paidUnusedSessions 派生一致（cross-end-sql-snapshot.test.js 守护 JS 派生口径）。
+ */
+export const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSessions} IS NULL THEN ${saleItems.remainingSessions} ELSE GREATEST(COALESCE(${saleItems.paidSessions}, 0) - GREATEST(${saleItems.sessionCount} - ${saleItems.remainingSessions}, 0), 0) END`.as('paid_unused_sessions')
 
 /**
  * 在 Drizzle 事务内重算指定订单的所有 sale_items.paid_sessions。

@@ -70,7 +70,7 @@
           <text class="order-date">{{item.paidAt}}</text>
         </view>
         <view
-          class="order-item-wrap {{selectedFlowNos[si.saleItemId] ? 'order-item--selected' : ''}}"
+          class="order-item-wrap {{selectedFlowNos[si.saleItemId] ? 'order-item--selected' : ''}} {{si.disabled ? 'order-item--disabled' : ''}}"
           wx:for="{{item.items}}"
           wx:for-item="si"
           wx:key="saleItemId"
@@ -79,17 +79,18 @@
           data-item-name="{{si.itemName}}"
           data-spec="{{si.spec}}"
           data-sale-order-id="{{item.saleOrderId}}"
+          data-disabled="{{si.disabled}}"
         >
           <view class="order-item">
             <view class="order-item-info">
               <text class="order-item-name">{{si.itemName}}</text>
               <view class="order-item-meta">
                 <text class="order-item-spec">{{si.spec}}</text>
-                <text class="order-item-sessions">剩余 {{si.consumableSessions}} / 已付 {{si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} 次</text>
+                <text class="order-item-sessions">剩余 {{si.consumableSessions}} / 已付 {{si.paidSessions == null ? '—' : si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} 次{{si.disabledReason ? ' · ' + si.disabledReason : ''}}</text>
               </view>
             </view>
             <van-icon
-              name="{{selectedFlowNos[si.saleItemId] ? 'success' : 'circle'}}"
+              name="{{si.disabled ? 'close' : (selectedFlowNos[si.saleItemId] ? 'success' : 'circle')}}"
               size="40rpx"
               color="{{selectedFlowNos[si.saleItemId] ? '#C0322A' : '#CCCCCC'}}"
             />

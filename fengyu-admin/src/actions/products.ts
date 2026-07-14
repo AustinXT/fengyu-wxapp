@@ -707,6 +707,14 @@ export const updateSku = withPermission(
     // 获取旧值用于日志 diff（不取已软删 SKU）
     const [before] = await db.select().from(productSkus).where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt))).limit(1)
 
+    // 疗程卡次数校验（与 createSku 对齐）：最终 productType=疗程卡 时 sessionCount 必须 >= 1
+    if (before && (data.productType ?? before.productType) === '疗程卡') {
+      const finalSessionCount = data.sessionCount !== undefined ? data.sessionCount : before.sessionCount
+      if (!finalSessionCount || finalSessionCount < 1) {
+        return { success: false, message: '疗程卡的次数必须 >= 1' }
+      }
+    }
+
     // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验已失去对象，应用层守卫删除。
 
     const whereConditions = expectedUpdatedAt

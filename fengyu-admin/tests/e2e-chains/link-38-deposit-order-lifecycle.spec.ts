@@ -4,7 +4,7 @@
  * 主题：寄存单 sale_order_type='寄存单' 的完整链路：
  *   - 创建：total_amount=0, status='已支付', payment_method='无', document_type='售后'
  *   - service_order：复用正常 service.complete 链路扣 remaining_sessions
- *   - service_commissions：寄存正常消费单可手动分配服务提成（admin confirm 不自动写；退款专用单 remark 标记仍拒）；营业额分配 sale_allocations 仍排除
+ *   - service_commissions：confirm 自动写（settleServiceCommissions，2026-07-13 策略；退款专用单 remark 拦）；营业额分配 sale_allocations 仍排除
  *   - 看板聚合：金额维度排除寄存单；次数维度纳入顾客数
  *
  * 实现：
@@ -14,7 +14,7 @@
  *   4. 走 admin UI 进入 /services/[id]，点击「完成服务」按钮 → 调 completeServiceOrder server action
  *   5. SQL invariant：
  *      a) sale_items.remaining_sessions = original - session_used
- *      b) service_commissions 为空（admin confirm 不自动写提成；放开后正常消费单可手动分配，由 service-commissions 单测守护）
+ *      b) service_commissions confirm 自动写 ≥1 笔（settleServiceCommissions，2026-07-13 策略镜像 staff/client）
  *      c) sale_orders.sale_order_type='寄存单' / total=0 / status='已支付' / payment_method='无'
  *      d) 金额聚合 SUM(received) where sale_order_type IN ('销售单','转换单') 不含本单
  *      e) 顾客次数维度：本单对应顾客被 COUNT
@@ -186,12 +186,12 @@ test('链路38：寄存单完整生命周期', async ({ browser }) => {
     const svcStatus = psql(`SELECT status FROM service_orders WHERE service_order_id='${SVC_ID}'`).trim()
     recordVerdict(verdicts, 'service_completed', svcStatus === '已完成', `status=${svcStatus}`)
 
-    // ── DB invariant: admin confirm 不自动写服务提成 —— service_commissions 为空 ──
-    // admin confirmServiceOrder 对所有服务单（含寄存单）都不自动写服务提成（纯手动分配模式）。
-    // 寄存正常消费单现已可手动分配服务提成（batchSaveServiceCommissions 放开）；退款专用单（remark 标记）仍拒。
-    // 服务提成 action 层策略由 service-commissions.test.ts 单测守护；本 e2e 仅断言 confirm 不自动写。
+    // ── DB invariant: admin confirm 自动写服务提成（settleServiceCommissions，2026-07-13 策略）──
+    // confirmServiceOrder 对正常消费单（含寄存单消费次数）自动写 service_commissions（services.ts:888
+    // settleServiceCommissions，镜像 staff/client finalizeServiceOrder）；退款专用单（remark 标记）由
+    // settleServiceCommissions 内部拦。本服务单 1 员工 → confirm 后 ≥1 笔。
     const commCount = parseInt(psql(`SELECT COUNT(*)::text FROM service_commissions WHERE service_item_id='${SVC_ITEM_ID}'`), 10)
-    recordVerdict(verdicts, 'commissions_not_auto_written', commCount === 0, `count=${commCount}`)
+    recordVerdict(verdicts, 'commissions_auto_written', commCount >= 1, `count=${commCount}`)
   } finally {
     await ctx.close()
   }

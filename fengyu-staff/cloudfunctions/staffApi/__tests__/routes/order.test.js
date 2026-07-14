@@ -1337,6 +1337,104 @@ describe('order.create', () => {
     expect(orderInsertParams[8]).toBe('13800009999')  // clientPhone 来自客户档案
     expect(orderInsertParams[9]).toBe('徐丽珍')        // clientName 来自客户档案（非入参 '13800001111'）
   })
+
+  // PR #55（2026-07-13）：document_type 移除金额达标分支 B，改为仅按下单时会员身份判
+  // （售前=非会员客，售后=会员客）。「成为会员那一单」下单时仍非会员客 → 售前。
+  // order.js:904-915 在事务前单独 SELECT customer_type 决定 documentType（与 clientUsers 首查无关）。
+  // 参数顺序：0:saleOrderId, 1:saleOrderType, 2:documentType, 3:marketName, 4:storeId, 5:now, ...
+  test('document_type 仅按会员身份判：非会员客 + 大额 → 售前', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      // client_wechat_users 首查（决定 buyerIsMember / 档案权威覆写）
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001', bound_store_id: 'store-001',
+        phone: '13800001111', name: '测试顾客',
+        customer_type: '流量客', member_level: null,
+      }])
+      // SKU 查询（大额 5000：验证金额达标不再回退触发售后）
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
+        spec_name: '基础款', price: '5000.00', session_count: 10,
+        service_fee: '0', is_shengmei: false, is_experience: false, is_manager_special: false,
+        sales_category: '自销自耗', product_kind: '护理',
+      }])
+      // document_type 专项查询（order.js:908 SELECT customer_type）：非会员客
+      .mockResolvedValueOnce([{ customer_type: '流量客' }])
+
+    // 捕获 INSERT INTO sale_orders 调用入参
+    let orderInsertParams = null
+    pg.transaction.mockImplementation(async (fn) => {
+      const client = {
+        query: vi.fn().mockImplementation(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('INSERT INTO sale_orders')) {
+            orderInsertParams = params
+          }
+          return { rows: [] }
+        }),
+      }
+      // generateOrderNo inside transaction（首次 client.query = advisory lock，返回值无关键语义）
+      client.query.mockResolvedValueOnce({ rows: [{ id: 'FY-XSD-WX-2607140001' }] })
+      return fn(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(orderInsertParams).not.toBeNull()
+    // params[2] = documentType：非会员客即使大额（5000）也判「售前」
+    expect(orderInsertParams[2]).toBe('售前')
+  })
+
+  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001', bound_store_id: 'store-001',
+        phone: '13800001111', name: '测试顾客',
+        customer_type: '会员客', member_level: '金卡',
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
+        spec_name: '基础款', price: '1000.00', session_count: 10,
+        service_fee: '0', is_shengmei: false, is_experience: false, is_manager_special: false,
+        sales_category: '自销自耗', product_kind: '护理',
+      }])
+      // document_type 专项查询：会员客
+      .mockResolvedValueOnce([{ customer_type: '会员客' }])
+
+    let orderInsertParams = null
+    pg.transaction.mockImplementation(async (fn) => {
+      const client = {
+        query: vi.fn().mockImplementation(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('INSERT INTO sale_orders')) {
+            orderInsertParams = params
+          }
+          return { rows: [] }
+        }),
+      }
+      client.query.mockResolvedValueOnce({ rows: [{ id: 'FY-XSD-WX-2607140002' }] })
+      return fn(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(orderInsertParams).not.toBeNull()
+    // params[2] = documentType：会员客判「售后」
+    expect(orderInsertParams[2]).toBe('售后')
+  })
 })
 
 describe('order.confirmOffline', () => {
@@ -4414,6 +4512,124 @@ describe('order.createConversion', () => {
     expect(updateCall[0]).not.toMatch(/picked_up_quantity = quantity/)
     // 参数 $4 = 折抵数量（剩余 3）
     expect(updateCall[1][3]).toBe(3)
+  })
+
+  // PR #55（2026-07-13）：document_type 移除金额达标分支 B，仅按下单时会员身份判。
+  // createConversion 的 documentType 直接取 client.customer_type（order.js:3045），无金额分支。
+  // INSERT INTO sale_orders 参数顺序：0:convOrderId, 1:orderStatus, 2:documentType, 3:marketName, ...
+  test('document_type 仅按会员身份判：非会员客 → 售前', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-dt-out'],
+      convertInItems: [{ skuId: 'sku-dt-in', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+
+    // 1) 查 client（路由顶层唯一 pg.query）：非会员客
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '王五',
+      customer_type: '流量客', bound_store_id: 'store-001',
+    }])
+
+    // 2) 单一主事务：捕获 INSERT INTO sale_orders 参数（totalOut=1000×1=1000, totalIn=1500×1=1500 → priceDiff=500）
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const tx = {
+        query: vi.fn(async (sql, params) => {
+          txCalls.push({ sql, params })
+          if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+          // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
+          if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+          if (sql.includes('FOR UPDATE OF si')) {
+            return {
+              rows: [{
+                sale_item_id: 'item-dt-out', store_id: 'store-001', item_direction: '购买',
+                sku_id: 'sku-old', product_name: '旧项目',
+                product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+                quantity: 1, picked_up_quantity: 0,
+                unit_price: '1000', unit_real_price: '1000',
+                sales_category: '自销自耗', service_fee: '0',
+                client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+              }], rowCount: 1,
+            }
+          }
+          if (sql.includes('FROM product_skus')) {
+            return {
+              rows: [{
+                sku_id: 'sku-dt-in', product_type: '疗程卡', spec_name: '新款',
+                price: '1500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
+              }], rowCount: 1,
+            }
+          }
+          return defaultQueryResult(sql)
+        }),
+      }
+      return await cb(tx)
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const insertCall = txCalls.find(c => c.sql.includes('INSERT INTO sale_orders'))
+    expect(insertCall).toBeDefined()
+    // params[2] = documentType：非会员客判「售前」
+    expect(insertCall.params[2]).toBe('售前')
+  })
+
+  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-dt-out-mb'],
+      convertInItems: [{ skuId: 'sku-dt-in', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+
+    // 1) 查 client：会员客
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '赵六',
+      customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+
+    // 2) 单一主事务：捕获 INSERT INTO sale_orders 参数
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const tx = {
+        query: vi.fn(async (sql, params) => {
+          txCalls.push({ sql, params })
+          if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+          if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+          if (sql.includes('FOR UPDATE OF si')) {
+            return {
+              rows: [{
+                sale_item_id: 'item-dt-out-mb', store_id: 'store-001', item_direction: '购买',
+                sku_id: 'sku-old', product_name: '旧项目',
+                product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+                quantity: 1, picked_up_quantity: 0,
+                unit_price: '1000', unit_real_price: '1000',
+                sales_category: '自销自耗', service_fee: '0',
+                client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+              }], rowCount: 1,
+            }
+          }
+          if (sql.includes('FROM product_skus')) {
+            return {
+              rows: [{
+                sku_id: 'sku-dt-in', product_type: '疗程卡', spec_name: '新款',
+                price: '1500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
+              }], rowCount: 1,
+            }
+          }
+          return defaultQueryResult(sql)
+        }),
+      }
+      return await cb(tx)
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const insertCall = txCalls.find(c => c.sql.includes('INSERT INTO sale_orders'))
+    expect(insertCall).toBeDefined()
+    // params[2] = documentType：会员客判「售后」
+    expect(insertCall.params[2]).toBe('售后')
   })
 })
 

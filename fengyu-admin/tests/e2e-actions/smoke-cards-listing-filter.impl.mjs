@@ -39,12 +39,14 @@ process.env.TEST_STORE_ID = TEST_STORE_ID
 process.env.TEST_ADMIN_EMP_ID = TEST_MANAGER_EMP_ID
 
 const ORDER_ID = `${NS}_CARDS` // 短前缀；sale_order_id 最多 30 字符
+// 业务口径（cards.ts:buildCardConditions）：基础过滤 paid_sessions > 0 排欠款卡。
+// fixture 必须显式设 paid_sessions：A/B/C/E=10（已付满），D=0（未付款 + remaining NULL 双重过滤）。
 const CASES = [
-  { suffix: 'A', productType: '疗程卡', itemDirection: '购买', remaining: 10, expectVisible: true },
-  { suffix: 'B', productType: '家居产品', itemDirection: '购买', remaining: 10, expectVisible: false },
-  { suffix: 'C', productType: '疗程卡', itemDirection: '转出', remaining: 10, expectVisible: false },
-  { suffix: 'D', productType: '疗程卡', itemDirection: '购买', remaining: null, expectVisible: false },
-  { suffix: 'E', productType: '疗程卡', itemDirection: '购买', remaining: 0,  expectVisible: true },
+  { suffix: 'A', productType: '疗程卡', itemDirection: '购买', remaining: 10, paidSessions: 10, expectVisible: true },
+  { suffix: 'B', productType: '家居产品', itemDirection: '购买', remaining: 10, paidSessions: 10, expectVisible: false },
+  { suffix: 'C', productType: '疗程卡', itemDirection: '转出', remaining: 10, paidSessions: 10, expectVisible: false },
+  { suffix: 'D', productType: '疗程卡', itemDirection: '购买', remaining: null, paidSessions: 0, expectVisible: false },
+  { suffix: 'E', productType: '疗程卡', itemDirection: '购买', remaining: 0,  paidSessions: 10, expectVisible: true },
 ]
 
 let pass = false
@@ -76,16 +78,16 @@ async function seedSaleOrder() {
         `INSERT INTO sale_items (
            sale_item_id, sale_order_id, store_id, item_direction,
            sku_id, product_name, product_type,
-           session_count, remaining_sessions,
+           session_count, remaining_sessions, paid_sessions,
            unit_price, quantity, unit_real_price, sale_amount, received,
            is_experience
          )
          VALUES ($1, $2, $3, $4::item_direction,
                  NULL, $5, $6::product_type,
-                 $7, $8,
+                 $7, $8, $9,
                  100, 1, 100, 100, 100,
                  false)`,
-        [itemId, ORDER_ID, TEST_STORE_ID, c.itemDirection, `${NS}_测试卡_${c.suffix}`, c.productType, 10, c.remaining]
+        [itemId, ORDER_ID, TEST_STORE_ID, c.itemDirection, `${NS}_测试卡_${c.suffix}`, c.productType, 10, c.remaining, c.paidSessions]
       )
     }
     await client.query('COMMIT')

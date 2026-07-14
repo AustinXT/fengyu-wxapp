@@ -5,7 +5,7 @@ import { pgErrorCode } from '@/lib/pg-error'
 import { couponTemplates, userCoupons } from '@db/coupon'
 import { clientWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
-import { productCategories } from '@db/product'
+import { productCategories, productSkus } from '@db/product'
 import { eq, and, desc, gt, lte, or, isNull, isNotNull, sql, asc, ilike, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -142,6 +142,7 @@ export const getAvailableCoupons = withPermission(
     clientUserId: string,
     totalAmount: number,
     storeId?: string,
+    items?: { skuId: string; amount: number }[],
   ): Promise<AvailableCoupon[]> => {
     // 防御性强制数值化：避免外部调用方透传字符串导致 PG 隐式 cast 边界抖动
     // 并归一化到分，与 client/staff coupon.available / order.create 对齐
@@ -199,16 +200,39 @@ export const getAvailableCoupons = withPermission(
         eq(userCoupons.status, '未使用'),
         gt(userCoupons.expireAt, nowTs()),
         eq(couponTemplates.isActive, true),
-        lte(sql`COALESCE(${couponTemplates.minSpend}, '0')::numeric`, total),
+        // minSpend 改 JS 用 eligibleTotal（合格品类行小计）判定，与 client/staff coupon.available + order.create 一致（M10）
         storeCondition,
         marketCondition,
       ))
       // 例外：业务时间优先（即将过期的券靠前显示）
       .orderBy(asc(userCoupons.expireAt))
 
-    return rows.map((r) => {
-      const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, total)
-      return {
+    // 若传入订单明细（items），按 applicableCategoryIds 算合格行小计 eligibleTotal（M10：与 client/staff 对齐）
+    let skuCatMap: Map<string, string | null> | null = null
+    if (items && items.length > 0) {
+      const skuRows = await db
+        .select({ skuId: productSkus.skuId, categoryId: productSkus.categoryId })
+        .from(productSkus)
+        .where(and(inArray(productSkus.skuId, items.map((i) => i.skuId)), isNull(productSkus.deletedAt)))
+      skuCatMap = new Map(skuRows.map((r) => [r.skuId, r.categoryId]))
+    }
+
+    return rows.flatMap((r) => {
+      // eligibleTotal：传 items 时按 applicableCategoryIds 过滤合格行小计；未传则用订单总额（兼容旧调用方）
+      let eligibleTotal = total
+      if (skuCatMap && items) {
+        const cats = r.applicableCategoryIds
+        const eligibleItems =
+          cats && cats.length > 0
+            ? items.filter((it) => cats.includes(skuCatMap!.get(it.skuId) ?? ''))
+            : items
+        if (eligibleItems.length === 0) return [] // 该券无合格行 → 不可用
+        eligibleTotal = Math.round(eligibleItems.reduce((s, it) => s + Number(it.amount || 0), 0) * 100) / 100
+      }
+      const minSpend = Math.round((Number(r.minSpend) || 0) * 100) / 100
+      if (eligibleTotal + 0.001 < minSpend) return [] // 不满足满减门槛
+      const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, eligibleTotal)
+      return [{
         couponId: r.couponId,
         templateId: r.templateId,
         name: r.name,
@@ -220,7 +244,7 @@ export const getAvailableCoupons = withPermission(
         applicableCategoryIds: r.applicableCategoryIds ?? null,
         expireAt: r.expireAt.toISOString(),
         discountAmount: discount.toFixed(2),
-      }
+      }]
     })
   },
 )

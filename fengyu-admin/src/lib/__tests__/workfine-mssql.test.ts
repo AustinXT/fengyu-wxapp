@@ -45,6 +45,7 @@ import {
   WorkfineUnavailableError,
   isTransientMssqlError,
   searchCustomersByPhone,
+  queryOrdersByCustomerId,
 } from '../workfine-mssql'
 import { actionErrorMessage } from '../action-error'
 import { WORKFINE_CONNECT_ERROR_MSG } from '../workfine-constants'
@@ -252,5 +253,61 @@ describe('runQuery 瞬态错误重试（via searchCustomersByPhone）', () => {
       WorkfineUnavailableError,
     )
     expect(queryMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('queryOrdersByCustomerId（销售/转换/回款三表 UNION 结果映射）', () => {
+  it('src_type → sourceType 映射三类，回款单透传 original_order_no，amount ×10 还原', async () => {
+    queryMock.mockResolvedValueOnce({
+      recordset: [
+        {
+          legacy_order_no: 'FY-XSD1',
+          sale_date: new Date('2023-01-01T00:00:00.000Z'),
+          market_name: '南昌市场',
+          store_name: '南昌万科店',
+          legacy_customer_id: 'FYGK-1',
+          customer_name: '汪汪',
+          amount: 100,
+          phone: '13800138000',
+          src_type: '销售单',
+          original_order_no: null,
+        },
+        {
+          legacy_order_no: 'FY-ABZH1',
+          sale_date: new Date('2023-02-01T00:00:00.000Z'),
+          market_name: '南昌市场',
+          store_name: '南昌万科店',
+          legacy_customer_id: 'FYGK-1',
+          customer_name: '汪汪',
+          amount: 10,
+          phone: '13800138000',
+          src_type: '转换单',
+          original_order_no: null,
+        },
+        {
+          legacy_order_no: 'FY-HKD1',
+          sale_date: new Date('2023-03-01T00:00:00.000Z'),
+          market_name: '南昌市场',
+          store_name: '南昌万科店',
+          legacy_customer_id: 'FYGK-1',
+          customer_name: '汪汪',
+          amount: 50,
+          phone: '13800138000',
+          src_type: '回款单',
+          original_order_no: 'FY-XSD1',
+        },
+      ],
+    })
+    const res = await queryOrdersByCustomerId('FYGK-1')
+    expect(res).toHaveLength(3)
+    expect(res.map((o) => o.sourceType).sort()).toEqual(['回款单', '转换单', '销售单'])
+    // amount ×10 还原（100→1000, 10→100, 50→500）
+    expect(res[0].amount).toBe(1000)
+    expect(res[1].amount).toBe(100)
+    expect(res[2].amount).toBe(500)
+    // 回款单透传 original_order_no；销售/转换为 null
+    expect(res.find((o) => o.sourceType === '回款单')!.originalOrderNo).toBe('FY-XSD1')
+    expect(res.find((o) => o.sourceType === '销售单')!.originalOrderNo).toBeNull()
+    expect(res.find((o) => o.sourceType === '转换单')!.originalOrderNo).toBeNull()
   })
 })

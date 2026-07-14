@@ -902,6 +902,7 @@ async function create(ctx) {
   }
 
   // ========== 计算 document_type（售前/售后快照） ==========
+  // 仅按下单时会员身份判：售前=非会员客，售后=会员客。「成为会员那一单」下单时仍非会员客 → 售前。
   let documentType = '售前'
   if (clientUserId) {
     const ctRows = await pg.query(
@@ -909,12 +910,6 @@ async function create(ctx) {
       [clientUserId]
     )
     if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
-      documentType = '售后'
-    }
-  }
-  if (documentType === '售前') {
-    const threshold = await getMemberThreshold()
-    if (totalAmount >= threshold) {
       documentType = '售后'
     }
   }
@@ -3046,12 +3041,8 @@ async function createConversion(ctx) {
     // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
     const effectivePaymentMethod = isFullCardCoverage ? '无' : paymentMethod
 
-    // 3. document_type 快照：会员客 → 售后，否则按 totalIn 与阈值比较
-    let documentType = client.customer_type === '会员客' ? '售后' : '售前'
-    if (documentType === '售前') {
-      const threshold = await getMemberThreshold()
-      if (totalIn >= threshold) documentType = '售后'
-    }
+    // 3. document_type 快照：仅按下单时会员身份判（售前=非会员客，售后=会员客）
+    const documentType = client.customer_type === '会员客' ? '售后' : '售前'
 
     // 4. 插入订单主表
     await tx.query(

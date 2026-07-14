@@ -87,13 +87,17 @@ async function settlePointsSafe(client, originalSaleOrderId, triggerSource) {
   }
   // SAVEPOINT 真隔离：积分发放报错只回滚子事务，外层资金事务不受影响
   // （决策：资金正确优先，积分失败仅告警，由 cronTask 兜底重算）。
-  await client.query('SAVEPOINT sp_settle_points')
+  let savepointCreated = false
   try {
+    await client.query('SAVEPOINT sp_settle_points')
+    savepointCreated = true
     const result = await settlePointsForOrder(client, originalSaleOrderId)
     await client.query('RELEASE SAVEPOINT sp_settle_points')
     return result
   } catch (err) {
-    await client.query('ROLLBACK TO SAVEPOINT sp_settle_points')
+    if (savepointCreated) {
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_settle_points') } catch (_) { /* noop */ }
+    }
     try {
       await client.query(
         `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)

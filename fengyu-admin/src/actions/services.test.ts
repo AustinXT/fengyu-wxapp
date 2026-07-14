@@ -349,12 +349,25 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
 
 // ── confirmServiceOrder — 待客户确认 → 已完成（原子扣减 + paid_sessions 限额）──────
 
-describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额', () => {
+describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务提成写入', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isAdminScope as any).mockReturnValue(false)
   })
+
+  // mock db.transaction：CTE 扣减+置已完成 返回 cteRow；settleServiceCommissions 的后续 execute
+  // （查 service_items/rate、insert operation_logs/service_commissions、update commission_status）
+  // 一律返回空数组（无 service_items → 跳过提成 for 循环，仅置 commission_status）。
+  // 返回 spy holder，供用例断言 settle 是否在事务内被调用（tx.execute 调用次数 > 1 = CTE 之外有 settle 写入）。
+  function mockConfirmTx(cteRow: { status_updated: number; items_deducted: number; items_total: number }) {
+    const spy = { execute: null as any }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      spy.execute = vi.fn().mockResolvedValueOnce([cteRow]).mockResolvedValue([] as any)
+      return fn({ execute: spy.execute })
+    })
+    return spy
+  }
 
   it('非 admin + 服务单 storeId 不在 scope → 拒绝，不执行扣减', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'other-store' }]))
@@ -363,14 +376,12 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额', () => 
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('无权')
-    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('status_updated=0（状态已变更）→ 失败', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
-    ;(db.execute as any).mockResolvedValue([
-      { status_updated: 0, items_deducted: 0, items_total: 1 },
-    ])
+    mockConfirmTx({ status_updated: 0, items_deducted: 0, items_total: 1 })
 
     const result = await confirmServiceOrder('svc-1')
 
@@ -380,9 +391,7 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额', () => 
 
   it('items_deducted < items_total（paid_sessions 限额拦下某行）→ 拒绝', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
-    ;(db.execute as any).mockResolvedValue([
-      { status_updated: 1, items_deducted: 1, items_total: 2 },
-    ])
+    mockConfirmTx({ status_updated: 1, items_deducted: 1, items_total: 2 })
 
     const result = await confirmServiceOrder('svc-1')
 
@@ -390,29 +399,28 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额', () => 
     expect(result.message).toContain('已支付次数不足')
   })
 
-  it('全部行成功扣减（items_deducted = items_total）→ 确认完成', async () => {
+  it('全部行成功扣减（items_deducted = items_total）→ 确认完成 + 事务内写服务提成（M1）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
-    ;(db.execute as any).mockResolvedValue([
-      { status_updated: 1, items_deducted: 2, items_total: 2 },
-    ])
+    const spy = mockConfirmTx({ status_updated: 1, items_deducted: 2, items_total: 2 })
 
     const result = await confirmServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('已确认完成')
+    // M1：成功扣减后须在同一事务内写服务提成（settleServiceCommissions 至少多调一次 tx.execute 置 commission_status）
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(spy.execute.mock.calls.length).toBeGreaterThan(1)
   })
 
-  it('admin 用户：跳过 scope 预检查，仍执行扣减', async () => {
+  it('admin 用户：跳过 scope 预检查，仍执行扣减 + 写提成', async () => {
     mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(isAdminScope as any).mockReturnValue(true)
-    ;(db.execute as any).mockResolvedValue([
-      { status_updated: 1, items_deducted: 1, items_total: 1 },
-    ])
+    mockConfirmTx({ status_updated: 1, items_deducted: 1, items_total: 1 })
 
     const result = await confirmServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
-    expect(db.execute).toHaveBeenCalledOnce()
+    expect(db.transaction).toHaveBeenCalledOnce()
   })
 })
 

@@ -189,6 +189,8 @@ vi.mock('drizzle-orm', () => ({
         : Array.isArray(strings)
           ? strings.join(' ? ')
           : String(strings ?? ''),
+      // paid-sessions.ts 的 paidUnusedSessionsExpr 模块级 sql(...).as(...) 需要链式 .as
+      as: vi.fn().mockReturnValue({ type: 'sql-as' }),
     })),
     { raw: vi.fn(), join: vi.fn() },
   ),
@@ -1107,7 +1109,7 @@ describe('createOrder — 顾客档案权威覆写 clientPhone/customerName（20
   })
 })
 
-describe('createOrder — documentType 使用 getMemberThreshold helper', () => {
+describe('createOrder — documentType 仅按下单时会员身份判（不再用金额阈值）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -1115,8 +1117,7 @@ describe('createOrder — documentType 使用 getMemberThreshold helper', () => 
     ;(db.select as any).mockImplementation(mockSelectEmpty())
   })
 
-  it('金额低于 helper 返回门槛 → documentType 保持售前（即调用 helper）', async () => {
-    mockGetMemberThreshold.mockResolvedValueOnce(2000)
+  it('非会员客 + 小额 → documentType=售前，不调 getMemberThreshold', async () => {
     mockTransactionSuccess('FY-XSD-WX-260410001')
 
     const result = await createOrder({
@@ -1129,11 +1130,11 @@ describe('createOrder — documentType 使用 getMemberThreshold helper', () => 
     })
 
     expect(result.success).toBe(true)
-    expect(mockGetMemberThreshold).toHaveBeenCalled()
+    // 分支 B（金额达标算售后）已移除：document_type 只按下单时会员身份判，不再读门槛
+    expect(mockGetMemberThreshold).not.toHaveBeenCalled()
   })
 
-  it('金额 >= helper 门槛 → documentType = 售后（helper 读到 1980 时 total=2000）', async () => {
-    mockGetMemberThreshold.mockResolvedValueOnce(1980)
+  it('非会员客 + 大额达门槛 → documentType 仍售前（不再因金额升级为售后），不调 getMemberThreshold', async () => {
     mockTransactionSuccess('FY-XSD-WX-260410002')
 
     const result = await createOrder({
@@ -1146,7 +1147,8 @@ describe('createOrder — documentType 使用 getMemberThreshold helper', () => 
     })
 
     expect(result.success).toBe(true)
-    expect(mockGetMemberThreshold).toHaveBeenCalled()
+    // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType
+    expect(mockGetMemberThreshold).not.toHaveBeenCalled()
   })
 })
 
@@ -3864,7 +3866,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     saleOrderType: '销售单', documentType: '售后',
     customerName: '张凯顾客', customerPhone: '13617216903', fallbackName: null, fallbackPhone: null,
     productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
-    productName: '【王牌】疼痛管理', sessionCount: 10, remainingSessions: 10,
+    productName: '【王牌】疼痛管理', sessionCount: 10, paidUnusedSessions: 10,
     saleAmount: '5200.00', prepaidCardAmount: '0.00', received: '3600.00', refundedAmount: '300.00',
     unitRealPrice: '300.00', status: '部分支付',
     payAllocStatus: '已分配', orderAllocStatus: '待分配',
@@ -3882,7 +3884,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     saleOrderType: '销售单', documentType: null,
     customerName: '樊颖', customerPhone: null, fallbackName: null, fallbackPhone: null,
     productType: '家居产品', categoryL1: null, categoryL2: null, productName: '家居B',
-    sessionCount: null, remainingSessions: null,
+    sessionCount: null, paidUnusedSessions: null,
     saleAmount: '211.00', prepaidCardAmount: '0.00', received: '211.00', refundedAmount: '0.00',
     unitRealPrice: '211.00', status: '已支付',
     payAllocStatus: '待分配', orderAllocStatus: '待分配',
@@ -4048,7 +4050,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       salesCategory: '自销自耗',
       productName: '【王牌】疼痛管理',
       sessionCount: 10,
-      remainingSessions: 8,
+      paidUnusedSessions: 8,
       unitRealPrice: '300.00',
       categoryL1: '护理项目',
       categoryL2: '圣源养心',
@@ -4057,7 +4059,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       ...rawA,
       productName: '【王牌】肩颈舒缓',
       sessionCount: 6,
-      remainingSessions: 4,
+      paidUnusedSessions: 4,
       unitRealPrice: '500.00',
       saleItemId: 'item-2',
     }
@@ -4087,7 +4089,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].categoryL1).toBe('护理项目')
     expect(rows[0].categoryL2).toBe('圣源养心')
     expect(rows[0].sessionCount).toBe(10)
-    expect(rows[0].remainingSessions).toBe(8)
+    expect(rows[0].paidUnusedSessions).toBe(8)
     expect(rows[0].unitRealPrice).toBe(300) // number 化
     expect(rows[0].salesCategory).toBe('自销自耗')
     expect(rows[0].customerType).toBe('会员客')
@@ -4107,7 +4109,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       saleOrderDatetime: new Date('2026-06-01T00:00:00.000Z'),
       createdAt: new Date('2026-06-01T00:00:00.000Z'),
       productType: null, salesCategory: null, productName: null,
-      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }
     ;(db.select as any).mockReturnValue(makeChain([rawRow]))
@@ -4121,7 +4123,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].clientPhone).toBe('13800000000')
   })
 
-  it('非次数卡（家居产品）：sessionCount/remainingSessions NULL 透传给前端 → 「—」', async () => {
+  it('非次数卡（家居产品）：sessionCount/paidUnusedSessions NULL 透传给前端 → 「—」', async () => {
     const rawRow = {
       marketName: '九江', storeName: '店', saleOrderId: 'FY-2',
       saleOrderType: '销售单', documentType: null, status: '已支付',
@@ -4134,7 +4136,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       salesCategory: '他销他耗',
       productName: '精华液',
       sessionCount: null, // 非次数卡 → NULL
-      remainingSessions: null,
+      paidUnusedSessions: null,
       unitRealPrice: '580.00',
       categoryL1: '家居产品',
       categoryL2: '精华液',
@@ -4145,7 +4147,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
 
     expect(rows[0].productType).toBe('家居产品')
     expect(rows[0].sessionCount).toBeNull()
-    expect(rows[0].remainingSessions).toBeNull()
+    expect(rows[0].paidUnusedSessions).toBeNull()
   })
 
   it('unitRealPrice 用优惠后价 string → number 化便于 Excel 求和', async () => {
@@ -4158,7 +4160,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       customerType: '会员客', openedByName: null,
       remark: null, saleOrderDatetime: new Date(), createdAt: new Date(),
       productType: '疗程卡', salesCategory: '自销自耗',
-      productName: '套餐', sessionCount: 1, remainingSessions: 1,
+      productName: '套餐', sessionCount: 1, paidUnusedSessions: 1,
       unitRealPrice: '158.50', categoryL1: null, categoryL2: null,
     }
     ;(db.select as any).mockReturnValue(makeChain([rawRow]))
@@ -4179,7 +4181,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       customerType: null, openedByName: null, remark: null,
       saleOrderDatetime: new Date(), createdAt: new Date(),
       productType: null, salesCategory: null, productName: null,
-      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }))
     ;(db.select as any).mockReturnValue(makeChain(many))
@@ -4203,7 +4205,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       customerType: '会员客', openedByName: null, remark: null,
       saleOrderDatetime: new Date(), createdAt: new Date(),
       productType: null, salesCategory: null, productName: null,
-      sessionCount: null, remainingSessions: null, unitRealPrice: null,
+      sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }
     ;(db.select as any).mockReturnValue(makeChain([rawRow]))
@@ -4230,7 +4232,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       saleOrderDatetime: new Date('2026-07-10T01:28:27.000Z'),
       createdAt: new Date('2026-07-10T01:28:27.000Z'),
       productType: '疗程卡', salesCategory: '自销自耗',
-      productName: '水活焕能水光', sessionCount: 10, remainingSessions: 10,
+      productName: '水活焕能水光', sessionCount: 10, paidUnusedSessions: 10,
       unitRealPrice: '390.00', // received / session_count 按实付重算
       categoryL1: '护理项目', categoryL2: '水光',
     }

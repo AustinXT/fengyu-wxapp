@@ -99,7 +99,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
-import { and, isNotNull, isNull } from 'drizzle-orm'
+import { and, isNotNull, isNull, sql } from 'drizzle-orm'
 import {
   searchCustomersByPhone,
   searchCustomerByCustomerId,
@@ -498,6 +498,8 @@ describe('previewWorkfineOrders', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
       {
         legacyOrderNo: 'O-2',
@@ -508,6 +510,8 @@ describe('previewWorkfineOrders', () => {
         amount: 200,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(db.select as any)
@@ -586,6 +590,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // storeMapping 为空 → 无门店存在性校验 select；lookup queries: phone, customerId
@@ -633,6 +639,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(isInScope as any).mockReturnValue(false)
@@ -658,6 +666,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // 存在性校验 select 返回空 → storeId 不存在
@@ -688,6 +698,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 998,
         legacyCustomerId: 'WF-1',
         phone: '13800138000',
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     ;(db.select as any)
@@ -748,6 +760,8 @@ describe('importWorkfineOrdersByCustomer', () => {
         amount: 100,
         legacyCustomerId: 'WF-1',
         phone: null,
+        sourceType: '销售单',
+        originalOrderNo: null,
       },
     ])
     // phone is null → phone query skipped；只剩 门店存在性校验 + customerId 两次 select
@@ -776,5 +790,79 @@ describe('importWorkfineOrdersByCustomer', () => {
       storeMapping: { 门店A: 'STORE-1' },
     })
     expect(res).toMatchObject({ insertedCount: 0, skippedAlreadyExist: 1, skippedNoStore: 0 })
+  })
+
+  it('转换单 + 回款单：sale_order_type=销售单，snapshot 含 source_type / original_order_no', async () => {
+    ;(queryOrdersByCustomerId as any).mockResolvedValue([
+      {
+        legacyOrderNo: 'FY-ABZH1',
+        saleDate: '2023-01-01',
+        marketName: '市场',
+        storeName: '门店A',
+        customerName: '张三',
+        amount: 100,
+        legacyCustomerId: 'WF-1',
+        phone: '13800138000',
+        sourceType: '转换单',
+      },
+      {
+        legacyOrderNo: 'FY-HKD1',
+        saleDate: '2023-02-01',
+        marketName: '市场',
+        storeName: '门店A',
+        customerName: '张三',
+        amount: 200,
+        legacyCustomerId: 'WF-1',
+        phone: '13800138000',
+        sourceType: '回款单',
+        originalOrderNo: 'FY-XSD-ORIG',
+      },
+    ])
+    ;(db.select as any)
+      // first select: 门店存在性校验
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ storeId: 'STORE-1' }]),
+        }),
+      })
+      // second select: phone lookup
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ userId: 'PG-USR-1', phone: '13800138000' }]),
+        }),
+      })
+      // third select: customerId lookup
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      })
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = { execute: vi.fn().mockResolvedValue({ rowCount: 1 }) }
+      return await fn(tx)
+    })
+
+    const res = await importWorkfineOrdersByCustomer({
+      workfineCustomerId: 'WF-1',
+      selectedOrderNos: ['FY-ABZH1', 'FY-HKD1'],
+      storeMapping: { 门店A: 'STORE-1' },
+    })
+    expect(res).toMatchObject({ insertedCount: 2, skippedAlreadyExist: 0, skippedNoStore: 0 })
+
+    // 验证 snapshot 含 source_type / original_order_no：从 sql mock.calls 捕获 INSERT 的 values
+    //（INSERT 的最后一个 value 是 JSON.stringify(snapshot)）
+    const snapshots = (sql as any).mock.calls
+      .flatMap((c: any[]) => c.slice(1))
+      .filter((v: unknown) => typeof v === 'string' && v.includes('"source_type"'))
+    expect(snapshots).toHaveLength(2)
+    expect(snapshots.some((s: string) => s.includes('"source_type":"转换单"'))).toBe(true)
+    expect(
+      snapshots.some(
+        (s: string) =>
+          s.includes('"source_type":"回款单"') &&
+          s.includes('"original_order_no":"FY-XSD-ORIG"'),
+      ),
+    ).toBe(true)
   })
 })

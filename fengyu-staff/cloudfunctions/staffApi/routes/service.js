@@ -15,6 +15,7 @@ const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
+const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 
 /**
  * 创建服务单
@@ -298,6 +299,26 @@ async function create(ctx) {
       )
     }
 
+    // 寄存单退款打标强制校验（M8）：service_items 已落库，反查是否含寄存卡。
+    // 含寄存卡但 remark 空 → 拒绝（防漏选导致假消耗计入业绩）；非寄存卡但误标预设 → 拒绝（防误标）。
+    const depositCheck = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM service_items si
+         JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+         JOIN sale_orders o ON o.sale_order_id = sli.sale_order_id
+         WHERE si.service_order_id = $1 AND o.sale_order_type = '寄存单'
+       ) AS has_deposit`,
+      [serviceOrderId]
+    )
+    const hasDeposit = depositCheck.rows[0]?.has_deposit === true
+    const isDepositRefund = remark === DEPOSIT_REFUND_REMARK
+    if (hasDeposit && !remark) {
+      throw new Error('INVALID_PARAMS: 含寄存疗程卡，请显式选择「寄存单退款专用」或填写正常消耗备注')
+    }
+    if (isDepositRefund && !hasDeposit) {
+      throw new Error('INVALID_PARAMS: 非寄存卡不可标记为寄存单退款')
+    }
+
     // 审计日志
     await logOperation(client, ctx, 'service.create', 'service_order', serviceOrderId, {
       _v: 3,
@@ -469,6 +490,9 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
   // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
   // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞确认
   for (const row of items) {
+    // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（service.create 已强制 remark 打标；此为 finalize 兜底防漏）
+    if (so.remark === DEPOSIT_REFUND_REMARK) continue
+
     const skills = Array.isArray(row.skills) ? row.skills : []
     const roleType = skills[0] || '美容师'
 

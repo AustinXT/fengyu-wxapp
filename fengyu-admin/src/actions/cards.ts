@@ -13,6 +13,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parseCardFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
+import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -88,13 +89,8 @@ export interface PaginatedCards {
  *   - expired:   expire_date IS NOT NULL AND expire_date < CURRENT_DATE
  */
 
-/**
- * 已付未用次数（可用次数）派生表达式（admin 单源，列表 + 详情两处复用）：
- *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
- *   - 否则 max(paid − used, 0)，used = max(session_count − remaining, 0)（clamp 防脏数据 remaining>session_count 时负值）
- * 口径须与 client/staff 前端 paidUnusedSessions 派生一致（cross-end-sql-snapshot.test.js 守护）。
- */
-const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSessions} IS NULL THEN ${saleItems.remainingSessions} ELSE GREATEST(COALESCE(${saleItems.paidSessions}, 0) - GREATEST(${saleItems.sessionCount} - ${saleItems.remainingSessions}, 0), 0) END`.as('paid_unused_sessions')
+// paidUnusedSessionsExpr（已付未用 = 可用次数 派生）已提升为 admin 共享单源（@/lib/paid-sessions），
+// 卡包列表/详情 + 订单/营业额分配导出复用同一表达式；NULL 退回物理剩余、clamp 等口径细节见该文件注释。
 
 /**
  * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。

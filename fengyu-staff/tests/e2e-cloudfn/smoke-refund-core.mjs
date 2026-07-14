@@ -4,11 +4,11 @@
  *
  *   A 重复退款防护（Bug A，用户问题④）：
  *     1. 已支付疗程卡单(total=1000/10次/全付) createRefund 全额 → approveRefund
- *        → refunded_amount=1000、paid_sessions 归 0、sale_allocations 作废(cascade)
+ *        → refunded_amount=1000、paid_sessions 归 0、sale_allocations 负数冲销(cascade)
  *     2. 再次 createRefund 同单 → 被拒（数量门 paid_sessions-consumed=0 / 金额门 received-refunded=0）
  *
  *   I 待审批冻结（Bug I，用户追加需求）：
- *     3. 另一已支付单 createRefund(待审批，不审批) → allocation.save 被拒 REFUND_IN_PROGRESS
+ *     3. 另一已支付单 createRefund(待审批，不审批) → allocation.savePayment 被拒 REFUND_IN_PROGRESS
  *
  *   P 孤儿服务单前置校验（Bug P）：
  *     4. 已支付单 + 关联「待客户确认」服务单 → createRefund 被拒（请先完成或取消服务单）
@@ -94,9 +94,15 @@ async function main() {
     const si = await pgQuery(`SELECT paid_sessions FROM sale_items WHERE sale_item_id = $1`, [itemA])
     if (Number(si[0]?.paid_sessions) !== 0) errors.push(`A paid_sessions 应=0（全退后），实际=${si[0]?.paid_sessions}`)
 
-    const al = await pgQuery(`SELECT is_void FROM sale_allocations WHERE sale_item_id = $1`, [itemA])
-    if (al[0]?.is_void !== true) errors.push(`A 营业额分配应被 cascade 作废 is_void=true，实际=${al[0]?.is_void}`)
-    else rec(`  ✓ A cascade: refunded_amount=1000 / paid_sessions=0 / 分配作废`)
+    // 通道1（2026-06-24 起记负数冲销，非 is_void 软删）：原 +1000 正数行保留 + 新增挂退款流水 payA 的 -1000 镜像行，净额=0
+    const al = await pgQuery(
+      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE total_amount < 0 AND sale_payment_id = $2) AS neg
+         FROM sale_allocations WHERE sale_item_id = $1`,
+      [itemA, payA]
+    )
+    if (Number(al[0]?.net) !== 0 || Number(al[0]?.neg) !== 1) errors.push(`A 营业额分配应被 cascade 负数冲销净额=0(1 条镜像行)，实际 net=${al[0]?.net} neg=${al[0]?.neg}`)
+    else rec(`  ✓ A cascade: refunded_amount=1000 / paid_sessions=0 / 分配负数冲销净额=0`)
   }
 
   // A3：重复退款被拒（数量门 paid_sessions-consumed=0 → 可退 0）
@@ -107,7 +113,9 @@ async function main() {
   if (a3.code === 0) errors.push(`A3 重复退款应被拒，实际成功 paymentId=${a3.data?.paymentId}（资损！）`)
   else rec(`  ✓ A3 重复退款被拒: code=${a3.code} msg=${a3.message}`)
 
-  // ─── H: 混合支付储值卡回冲（Bug H，P0 对客资损）───
+  // ─── H: 混合支付退款全部走现金（2026-06-28 策略，原 Bug H 已退役）───
+  //   splitRefundByOriginalPayment 恒返回 refundByCard=0（不再按储值卡占比拆分）；approveRefund 储值卡回冲通道已退役，
+  //   销售单退款不触碰 prepaid_cards.balance。两端镜像 admin refunds.ts。本用例守护该策略不回归。
   const orderH = `${NS}_RFCORE_H`
   await createTestPrepaidCard({ initialBalance: 0, cardId: `${NS}_RFCORE_CARD_H`, refOrderId: orderH })
   const { saleItemId: itemH } = await makePaidOrder(orderH, { total: 1000, sessionCount: 10, prepaidCard: 300 })
@@ -118,19 +126,27 @@ async function main() {
   if (h1.code !== 0) errors.push(`H createRefund 应成功，code=${h1.code} msg=${h1.message}`)
   const payH = h1.data?.paymentId
   if (payH) {
-    // 储值卡占比 300/1000 → refundByCard = floor(300/1000 × 1000) = 300
-    if (Number(h1.data?.refundByCard) !== 300) errors.push(`H refundByCard 应=300（储值卡占比拆分），实际=${h1.data?.refundByCard}`)
+    // 全部走现金策略：refundByCard 恒为 0（refundByOrigin 承担全额）
+    if (Number(h1.data?.refundByCard) !== 0) errors.push(`H refundByCard 应=0（全部走现金策略），实际=${h1.data?.refundByCard}`)
     const h2 = await invokeStaffApi('order.approveRefund', { _testOpenid: TEST_MANAGER_OPENID, paymentId: payH })
     if (h2.code !== 0) errors.push(`H approveRefund 应成功，code=${h2.code} msg=${h2.message}`)
-    // 修复前：staff 用 payment_method==='储值卡' 判断 → 混合支付退款行 method='线下' → 漏回冲（balance=0）
+    // 销售单退款不回冲储值卡余额（initial 0 → 仍 0）；若 balance 变非 0 说明回冲通道误复活（策略回归）
     const card = await pgQuery(`SELECT balance FROM prepaid_cards WHERE user_id = $1`, [TEST_CLIENT_USER_ID])
-    if (Number(card[0]?.balance) !== 300) errors.push(`H 储值卡回冲 balance 应=300（混合支付不再漏退），实际=${card[0]?.balance}`)
-    else rec(`  ✓ H 混合支付储值卡回冲: refundByCard=300 → balance=300`)
+    if (Number(card[0]?.balance) !== 0) errors.push(`H 储值卡 balance 应保持 0（销售单退款不回冲），实际=${card[0]?.balance}`)
+    else rec(`  ✓ H 全部走现金: refundByCard=0 / 储值卡余额不变(0)`)
   }
 
-  // ─── I: 待审批冻结营业额分配 ───
+  // ─── I: 待审批冻结营业额分配（allocation 模块重构：按回款 savePayment）───
   const orderI = `${NS}_RFCORE_I`
   const { saleItemId: itemI } = await makePaidOrder(orderI, { total: 500, sessionCount: 5 })
+  // 冻结门 assertNoPendingRefund 在 allocation.savePayment 内（savePayment 早于冻结门的 allocation_status 校验需 '待分配'）；
+  // 取本单「首次支付」回款 id 并显式置 '待分配'，使 savePayment 能走到冻结门
+  const payIRows = await pgQuery(
+    `SELECT id FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '首次支付'`,
+    [orderI]
+  )
+  const payI = payIRows[0]?.id
+  await pgQuery(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1`, [payI])
   const i1 = await invokeStaffApi('order.createRefund', {
     _testOpenid: TEST_MANAGER_OPENID,
     refSaleOrderId: orderI, items: [{ saleItemId: itemI }], refundReason: 'e2e_I',
@@ -138,14 +154,14 @@ async function main() {
   if (i1.code !== 0) errors.push(`I createRefund 应成功，code=${i1.code} msg=${i1.message}`)
   else rec(`  ✓ I createRefund(待审批) paymentId=${i1.data?.paymentId}`)
 
-  const iSave = await invokeStaffApi('allocation.save', {
+  const iSave = await invokeStaffApi('allocation.savePayment', {
     _testOpenid: TEST_MANAGER_OPENID,
-    saleOrderId: orderI,
+    salePaymentId: payI,
     allocations: [{ saleItemId: itemI, employeeId: TEST_MANAGER_EMP_ID, roleType: '美容师', allocationRatio: '1.00', totalAmount: '500' }],
   })
-  if (iSave.code === 0) errors.push(`I allocation.save 应被冻结拒绝，实际成功`)
+  if (iSave.code === 0) errors.push(`I allocation.savePayment 应被冻结拒绝，实际成功`)
   else if (!String(iSave.message || '').includes('退款审批中')) errors.push(`I 冻结提示应含"退款审批中"，实际=${iSave.message}`)
-  else rec(`  ✓ I allocation.save 被冻结: ${iSave.message}`)
+  else rec(`  ✓ I allocation.savePayment 被冻结: ${iSave.message}`)
 
   // ─── P: 未完成服务单前置校验 ───
   const orderP = `${NS}_RFCORE_P`

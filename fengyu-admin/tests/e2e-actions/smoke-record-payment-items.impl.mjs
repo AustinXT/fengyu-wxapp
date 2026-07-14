@@ -143,11 +143,12 @@ async function main() {
     if (p.ref_sale_item_id !== null) errors.push(`回款 ref_sale_item_id 应=null, 实际=${p.ref_sale_item_id}`)
     if (p.external_txn_id !== TXN_ID) errors.push(`交易号应=${TXN_ID}, 实际=${p.external_txn_id}`)
   }
-  // 2) received 精确：A=300(补满), B=100(不变), C=50(不变)
-  const recv = Object.fromEntries(itemsAfter.rows.map((r) => [r.sale_item_id, Number(r.received)]))
-  if (recv[ITEM_A] !== 300) errors.push(`A.received 应=300(精确补满), 实际=${recv[ITEM_A]}`)
-  if (recv[ITEM_B] !== 100) errors.push(`B.received 应=100(不变), 实际=${recv[ITEM_B]}`)
-  if (recv[ITEM_C] !== 50) errors.push(`C.received 应=50(不变), 实际=${recv[ITEM_C]}`)
+  // 2) 子项定向：定向补 A 的 200 写入 A.pending_received；B/C 不动（pending_received=0）。
+  //    sale_items.received 由 capture/cost 按 pending_received 派生，不由 recordPayment 步精确改写。
+  const pending = Object.fromEntries(itemsAfter.rows.map((r) => [r.sale_item_id, Number(r.pending)]))
+  if (pending[ITEM_A] !== 200) errors.push(`A.pending_received 应=200(定向补), 实际=${pending[ITEM_A]}`)
+  if (pending[ITEM_B] !== 0) errors.push(`B.pending_received 应=0(未选), 实际=${pending[ITEM_B]}`)
+  if (pending[ITEM_C] !== 0) errors.push(`C.pending_received 应=0(未选), 实际=${pending[ITEM_C]}`)
   // 3) order.received=450
   if (Number(ord.rows[0].received) !== 450) errors.push(`order.received 应=450, 实际=${ord.rows[0].received}`)
 
@@ -159,7 +160,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  console.log('  ✅ PASS — 多子项选择性补卡：款项合并 1 笔现金（ref=null）+ A 精确补满、B/C 不动')
+  console.log('  ✅ PASS — 多子项选择性补卡：款项合并 1 笔现金（ref=null）+ A.pending_received=200 定向承载、B/C pending=0 不动')
 }
 
 try {

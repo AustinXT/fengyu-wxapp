@@ -127,7 +127,7 @@ export default function AllocationsPageClient({
         { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
         { header: "商品名称", width: 24, accessor: (r) => r.productName },
         { header: "总次数", width: 8, accessor: (r) => r.sessionCount },
-        { header: "可用次数", width: 8, accessor: (r) => r.remainingSessions },
+        { header: "可用次数", width: 8, accessor: (r) => r.paidUnusedSessions },
         { header: "订单金额", width: 12, accessor: (r) => r.saleAmount },
         { header: "储值卡抵扣", width: 12, accessor: (r) => r.prepaidCardAmount },
         { header: "实收", width: 12, accessor: (r) => r.received },

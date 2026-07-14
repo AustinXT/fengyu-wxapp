@@ -132,6 +132,16 @@ async function available(ctx) {
     if (storeRows.length > 0) storeId = storeRows[0].store_id
   }
 
+  // 解析门店所属市场（org 树 store 节点 → parent 市场节点），用于市场限定券过滤（M10：与 admin getAvailableCoupons 对齐）
+  let marketId = null
+  if (storeId) {
+    const marketRows = await pg.query(
+      `SELECT son.parent_id AS market_id FROM stores s JOIN org_nodes son ON s.org_node_id = son.id WHERE s.store_id = $1`,
+      [storeId]
+    )
+    if (marketRows.length > 0) marketId = marketRows[0].market_id
+  }
+
   // 懒清扫过期券
   await pg.query(
     `UPDATE user_coupons SET status = '已过期'
@@ -146,7 +156,7 @@ async function available(ctx) {
       ct.template_id, ct.name, ct.coupon_type,
       COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
       ct.min_spend, ct.max_discount,
-      ct.applicable_category_ids, ct.applicable_store_ids,
+      ct.applicable_category_ids, ct.applicable_store_ids, ct.applicable_market_ids,
       ct.description
     FROM user_coupons uc
     JOIN coupon_templates ct ON uc.template_id = ct.template_id
@@ -175,6 +185,11 @@ async function available(ctx) {
     // 门店匹配
     if (coupon.applicable_store_ids && coupon.applicable_store_ids.length > 0) {
       if (!storeId || !coupon.applicable_store_ids.includes(storeId)) continue
+    }
+
+    // 市场匹配（M10：与 admin 对齐。applicable_market_ids 为空=不限，否则须含当前门店所属市场）
+    if (coupon.applicable_market_ids && coupon.applicable_market_ids.length > 0) {
+      if (!marketId || !coupon.applicable_market_ids.includes(marketId)) continue
     }
 
     // 品项分类匹配 → 找出符合的行

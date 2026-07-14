@@ -604,7 +604,10 @@ async function paidOrders(ctx) {
       si.product_type,
       si.product_name
     FROM sale_items si
+    JOIN sale_orders o ON si.sale_order_id = o.sale_order_id
     WHERE si.sale_order_id = ANY($1)
+      -- M12：历史订单（workfine 拉取）的 NULL 卡不下发（后端过滤，前端 uniform-disabled 保留给非 legacy NULL 卡）
+      AND NOT (si.paid_sessions IS NULL AND o.legacy_source = 'workfine')
       -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
       AND NOT EXISTS (
         SELECT 1 FROM sale_order_payments sop
