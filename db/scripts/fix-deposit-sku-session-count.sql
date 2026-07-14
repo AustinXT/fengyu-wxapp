@@ -22,9 +22,13 @@ WHERE sale_order_id = 'FY-XSD-WX-2607120093'
   AND sku_id IN ('sku-1783737644225','sku-1783737200446')
   AND product_type = '疗程卡' AND session_count IS NULL;
 
--- 3) 销售单 sale_items 回填（已关闭 received=0 → paid_sessions=0；未激活 remaining=0）
+-- 3) 销售单 sale_items 回填（已关闭 received=0 → paid_sessions=0；未消费 remaining=session_count=1）
+--    remaining=1（=session_count）而非 0：「未激活/未消费」语义是 remaining=session_count，
+--    且须维持 D3=A 不变量 (session_count - remaining_sessions) <= paid_sessions：(1-1)=0 <= 0 ✓。
+--    若写 remaining=0 会违反不变量 (1-0=1>0) 触发 recalcPaidSessionsForOrder 抛 CONFLICT，
+--    且订单详情页会误显「已用 1 / 已付 0 / 共 1 次」。
 UPDATE sale_items
-SET session_count = 1, remaining_sessions = 0, paid_sessions = 0
+SET session_count = 1, remaining_sessions = 1, paid_sessions = 0
 WHERE sale_order_id = 'FY-XSD-WX-2607120094'
   AND sku_id IN ('sku-1783737644225','sku-1783737200446')
   AND product_type = '疗程卡' AND session_count IS NULL;
