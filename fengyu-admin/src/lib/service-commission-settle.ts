@@ -12,11 +12,16 @@
  * operation_logs 'service.complete.rate_missing'，不阻塞确认（容错口径，区别于手存
  * service-commissions.ts 的 throw 口径）。
  *
+ * 与 staff/client 一致：寄存单退款单（service_orders.remark === DEPOSIT_REFUND_REMARK，
+ * 真扣次数、假消耗）跳过提成写入，仅置 commission_status='已分配'（镜像 staff
+ * finalizeServiceOrder service.js:494 / client service-finalize.js:105 的 per-item continue）。
+ *
  * 调用方须在外层 db.transaction 内、扣减次数 + 置「已完成」成功后调用。
  */
 
 import { sql } from 'drizzle-orm'
 import type { db } from '@/db'
+import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 /** 可执行 SQL 的对象（db 顶层或事务 tx 均可） */
 type SqlExecutor = Pick<typeof db, 'execute'> | Parameters<Parameters<typeof db.transaction>[0]>[0]
@@ -61,6 +66,15 @@ export async function settleServiceCommissions(
     skills: unknown
   }>
 
+  // 寄存单退款单（M8）：真扣次数、假消耗 → 跳过提成写入（镜像 staff service.js:494 /
+  // client service-finalize.js:105 的 `if (so.remark === DEPOSIT_REFUND_REMARK) continue`）。
+  // service.create 已强制 remark 打标，此处为 finalize 兜底防漏。⚠ commission_status='已分配'
+  // 仍在循环后无条件置（与 staff/client 一致——它们也把 commission_status 写进无条件的状态翻转 UPDATE）。
+  const remarkRows = (await executor.execute(sql`
+    SELECT remark FROM service_orders WHERE service_order_id = ${serviceOrderId}
+  `)) as unknown as Array<{ remark: string | null }>
+  const isDepositRefund = remarkRows[0]?.remark === DEPOSIT_REFUND_REMARK
+
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
   //            consume_amount = unit_real_price × session_used × commission_rate
@@ -69,6 +83,8 @@ export async function settleServiceCommissions(
   //       直接作为每次消耗基准，无需再 ÷session_count。
   // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'（与 staff/client 一致）
   for (const row of itemsRows) {
+    if (isDepositRefund) continue
+
     const skills = Array.isArray(row.skills) ? (row.skills as unknown[]) : []
     const roleType = (skills[0] as string) || '美容师'
 

@@ -1414,6 +1414,29 @@ describe('admin confirmServiceOrder 接入服务提成写入守护（M1）', () 
   })
 })
 
+// 寄存单退款单「跳过提成写入」跨端控制流守护（M8 / 2026-07-14 审计 M1 修复）：
+// 寄存退款单 remark === DEPOSIT_REFUND_REMARK 是 JS 控制流的 continue，SQL 字面量 snapshot
+// 看不见——三端 finalize/settle 都必须有此 skip，否则寄存退款（真扣次数、假消耗）会虚写
+// service_commissions 污染提成 KPI（admin settleServiceCommissions 曾漏此 skip，本断言防回归）。
+describe('寄存退款单跳过提成写入 跨端控制流守护（staff / client / admin 三端 finalize 须含 skip）', () => {
+  test('staff finalizeServiceOrder 含寄存退款 skip（so.remark === DEPOSIT_REFUND_REMARK → continue）', () => {
+    const src = readFile(FILES.staffServiceJs)
+    expect(src).toContain('DEPOSIT_REFUND_REMARK')
+    expect(src).toMatch(/DEPOSIT_REFUND_REMARK\)\s*continue/)
+  })
+  test('client finalizeServiceOrder 含寄存退款 skip', () => {
+    const src = readFile(FILES.clientServiceFinalizeJs)
+    expect(src).toContain('DEPOSIT_REFUND_REMARK')
+    expect(src).toMatch(/DEPOSIT_REFUND_REMARK\)\s*continue/)
+  })
+  test('admin settleServiceCommissions 含寄存退款 skip（M1 修复，镜像 staff/client）', () => {
+    const src = readFile(FILES.adminServiceCommissionSettleTs)
+    expect(src).toContain('DEPOSIT_REFUND_REMARK')
+    // admin 用 isDepositRefund 派生 + 循环顶 continue（与 staff/client 的 so.remark 判定等价）
+    expect(src).toMatch(/if\s*\(isDepositRefund\)\s*continue/)
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 寄存单疗程卡「实际单价按实付重算」SQL — staff / admin 双端字节同义
 //   需求：从寄存单产生的疗程卡，unit_real_price = 实付received / 总次数session_count
