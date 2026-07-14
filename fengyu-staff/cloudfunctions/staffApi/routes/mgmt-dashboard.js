@@ -325,7 +325,6 @@ async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       WHERE ${sc.sql}
         AND sa.is_void = FALSE
-        AND sa.role_type IN ('美容师', '养生师')
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
         AND ${timeWindow('so.paid_at', mode, 1, false)}`,
@@ -343,7 +342,6 @@ async function queryServiceCommissionIncome(scopeType, scopeId, date, mode) {
        JOIN service_orders so ON so.service_order_id = sit.service_order_id
       WHERE ${sc.sql}
         AND sc2.is_void = FALSE
-        AND sc2.role_type IN ('美容师', '养生师')
         AND so.status = '已完成'
         AND ${timeWindow('so.service_date', mode, 1, true)}`,
     [date, ...sc.params],
@@ -1153,7 +1151,6 @@ sales_comm AS (
   JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
   WHERE sa.is_void = FALSE
-    AND sa.role_type IN ('美容师','养生师')
     AND so.sale_order_type IN ('销售单','转换单')
     AND so.status = '已支付'
     AND ${timeWindowPeriod('so.paid_at', period, false)}
@@ -1167,7 +1164,6 @@ service_comm AS (
   JOIN service_items sit  ON sit.service_item_id   = sc.service_item_id
   JOIN service_orders so2 ON so2.service_order_id  = sit.service_order_id
   WHERE sc.is_void = FALSE
-    AND sc.role_type IN ('美容师','养生师')
     AND so2.status = '已完成'
     AND ${timeWindowPeriod('so2.service_date', period, true)}
   GROUP BY sc.employee_id
