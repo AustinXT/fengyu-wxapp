@@ -4034,9 +4034,9 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       custPhone: '13617216903',
       fallbackName: null,
       fallbackPhone: null,
-      totalAmount: '5200.00',
+      totalAmount: '3000.00',   // 行应付（商品行口径；行A，与行B 2200 之和=订单总额 5200）
       prepaidCardAmount: '0.00',
-      received: '3600.00',
+      received: '2000.00',      // 行实付（商品行口径；行A，与行B 1600 之和=订单总实付 3600）
       refundedAmount: '300.00',
       paymentMethod: '微信',
       isMembershipUpgrade: true,
@@ -4061,6 +4061,8 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       sessionCount: 6,
       paidUnusedSessions: 4,
       unitRealPrice: '500.00',
+      totalAmount: '2200.00',   // 行应付（行B）
+      received: '1600.00',      // 行实付（行B）
       saleItemId: 'item-2',
     }
     ;(db.select as any).mockReturnValue(makeChain([rawA, rawB]))
@@ -4082,8 +4084,12 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].storeName).toBe('南昌英伦店')
     expect(rows[0].customerName).toBe('张凯顾客')
     expect(rows[0].clientPhone).toBe('13617216903')
-    expect(rows[0].totalAmount).toBe('5200.00')
     expect(rows[0].paymentMethod).toBe('微信')
+    // 金额列走商品行口径：订单金额=sale_items.sale_amount、实付=sale_items.received（同单多行各不同，可正确求和）
+    expect(rows[0].totalAmount).toBe('3000.00')   // 行A应付
+    expect(rows[0].received).toBe('2000.00')      // 行A实付
+    expect(rows[1].totalAmount).toBe('2200.00')   // 行B应付（+行A 3000 = 订单总额 5200）
+    expect(rows[1].received).toBe('1600.00')      // 行B实付（+行A 2000 = 订单总实付 3600）
     // 行级
     expect(rows[0].productType).toBe('疗程卡')
     expect(rows[0].categoryL1).toBe('护理项目')
