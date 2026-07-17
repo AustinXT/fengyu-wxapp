@@ -186,8 +186,11 @@ export const getServiceOrdersPaginated = withPermission(
  * **不再因多员工重复展开**，并移除员工提成维度列（负责美容师/职位/分配占比/分配额/提成比例/
  * 提成金额）——提成分配明细职责交由营业额分配-服务提成导出（exportAllocationServiceOrders）承担。
  *
- * **行为变化**：仅含已产生消耗项目（service_items）的服务单，故比 v1.3.13 多包含「已完成但提成
- * 待分配」的服务单；待服务/服务中/已取消等无消耗项目的服务单不在导出中（符合「按消耗项目展开」粒度）。
+ * **行为变化**：仅含 **status='已完成'** 的服务单（已原子扣减次数；含提成已分配 + 待分配），
+ * 故比 v1.3.13 多包含「已完成但提成待分配」的服务单；待服务/服务中/待客户确认/已取消等未扣减
+ * 次数的服务单不在导出中（service_items 创建时即落库、sessionUsed 为计划值，仅已确认后的单
+ * consumeMoney 才是已实现消耗）。WHERE 强制 status='已完成'，与 selectServiceCommissionExportRows
+ * （service_commissions 仅在确认时产生，天然只含已完成单）对齐。
  * 筛选沿用服务单管理列表口径（parseServiceOrderFilters：status/store/from/to/q）。
  */
 export const exportServiceOrders = withPermission(
@@ -235,15 +238,24 @@ export interface ExportServiceOrderItemRow {
 /**
  * 服务单消耗项目主表导出查询（一行 = 一个 service_item × 其服务单）。
  * 主链 service_items → service_orders，9 表 JOIN（无 service_commissions / 负责美容师）。
- * WHERE 复用 buildServiceOrderConditions（搜索「美容师」走 serviceOrders.assignedEmployeeId
- * EXISTS，不依赖提成链）。LIMIT 10000 防 OOM。
+ * WHERE 强制 status='已完成'（消耗明细只含已扣减次数的服务单）+ 复用 buildServiceOrderConditions
+ * （搜索「美容师」走 serviceOrders.assignedEmployeeId EXISTS，不依赖提成链）。LIMIT 10000 防 OOM。
  */
 async function selectServiceOrderItemExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
   limit = 10000,
 ): Promise<{ rows: ExportServiceOrderItemRow[]; truncated: boolean }> {
-  const whereClause = and(...buildServiceOrderConditions(session, filters))
+  // 导出「消耗明细」强制 status='已完成'：service_items 在服务单创建时即落库、sessionUsed 为
+  // 计划值；只有待客户确认→已完成（原子扣次数 + 计提成 + 关预约）后才是已实现消耗。否则
+  // consumeMoney（= unitRealPrice × sessionUsed）会把待服务/服务中/待客户确认/已取消单的
+  // 计划值计入而虚高。与 selectServiceCommissionExportRows（service_commissions 仅在确认时
+  // 产生）同样只含已完成单；唯退款已完成单分流不同——本导出按物理消耗计入 consumeMoney，
+  // 提成导出则排除已 void 的提成行（消耗=物理事实，提成=退款即作废）。
+  const whereClause = and(
+    eq(serviceOrders.status, '已完成'),
+    ...buildServiceOrderConditions(session, filters),
+  )
 
   // 开单人(=sale_orders.opened_by)；本主表不含负责美容师(=service_commissions.employee_id)
   const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers

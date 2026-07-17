@@ -1099,7 +1099,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
     expect((r as any).commissionAmount).toBeUndefined()
   })
 
-  it('沿用服务单管理列表筛选口径（parseServiceOrderFilters：不锁已完成，解析 from/to）', async () => {
+  it('强制锁 status=已完成 + 沿用列表筛选口径（解析 from/to/search）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     await exportServiceOrders({ status: '已完成', store: 'store-1', from: '2026-01-01', to: '2026-12-31', q: '王' })
     // date 筛选由 parseServiceOrderFilters 的 from/to → buildServiceOrderConditions 的 gte/lte

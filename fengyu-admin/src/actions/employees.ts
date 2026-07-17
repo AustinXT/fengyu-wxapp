@@ -212,12 +212,17 @@ async function buildEmployeeConditions(
       .where(eq(orgNodes.id, filters.marketId))
       .limit(1)
     if (node?.type === '市场') {
-      // 市场：该市场下门店的员工（store_id 路径）+ 挂该市场的部门员工（org_node_id，store_id IS NULL）
+      // 市场：该市场下门店的员工（store_id 路径）+ 挂该市场或其门店下的部门员工（org_node_id）
+      // 部门候选父节点 = 市场本身 + 该市场下门店节点，与 expandScopeDeptNodeIds 市场分支同口径；
+      // 否则「门店级部门」员工（store_id IS NULL、org_node_id 挂在门店节点下）会在按市场筛选时凭空消失。
       const storeSub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
+      const storeNodesUnder = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.parentId, filters.marketId), eq(orgNodes.type, '门店')))
+      const candidateParents = [filters.marketId, ...storeNodesUnder.map(n => n.id)]
       const deptSub = db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, filters.marketId)))
+        .where(and(eq(orgNodes.type, '部门'), inArray(orgNodes.parentId, candidateParents)))
       conditions.push(or(
         inArray(staffWechatUsers.storeId, storeSub),
         inArray(staffWechatUsers.orgNodeId, deptSub),
@@ -226,11 +231,19 @@ async function buildEmployeeConditions(
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
     } else if (node?.type === '门店') {
-      // 门店：按 orgNodeId 查对应 storeId 过滤
+      // 门店：门店员工（store_id 路径）+ 挂该门店下的部门员工（org_node_id，store_id IS NULL）
+      // 与 expandScopeDeptNodeIds 门店分支同口径；否则门店级部门员工按门店筛选会消失。
       const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
         .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
-      if (storeRow) {
-        conditions.push(eq(staffWechatUsers.storeId, storeRow.storeId))
+      const deptsUnderStore = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, filters.marketId)))
+      const conds: (SQL | undefined)[] = []
+      if (storeRow) conds.push(eq(staffWechatUsers.storeId, storeRow.storeId))
+      if (deptsUnderStore.length) {
+        conds.push(inArray(staffWechatUsers.orgNodeId, deptsUnderStore.map(n => n.id)))
+      }
+      if (conds.length) {
+        conditions.push(or(...conds))
       }
     }
     // headquarters：不添加条件，显示全部

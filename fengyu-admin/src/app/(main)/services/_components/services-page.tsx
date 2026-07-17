@@ -116,6 +116,12 @@ export default function ServicesPageClient({
   /** 导出当前筛选命中的服务单消耗项目主表（每行=服务单×一个消耗项目，跨分页） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
+    // 消耗明细仅含「已完成」服务单（已扣减次数）；若当前按其它状态筛选，导出会因 WHERE
+    // status='已完成' AND status=筛选值 恒空，提前提示而非发空请求，避免「列表有数据、导出无数据」困惑。
+    if (raw.status && raw.status !== '已完成') {
+      toast.warning(`消耗明细仅包含「已完成」服务单，当前筛选状态为「${raw.status}」，无已实现消耗可导出`)
+      return
+    }
     const { rows, truncated } = await exportServiceOrders(raw)
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出")
