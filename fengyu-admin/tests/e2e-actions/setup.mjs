@@ -25,13 +25,13 @@ process.env.PG_CONNECTION_STRING =
   process.env.E2E_DATABASE_URL ||
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
 
 // 命名空间常量 — 所有 fixture 数据必须以此为前缀，方便清理
 // 短前缀（受限于 sale_order_id / employee_id / sale_item_id 均为 varchar(30)）。
 // admin 端独占 'TE2A'（= TEST_E2E_Admin），与 staff e2e-cloudfn 的 'TE2L2_' 物理隔离，
-// 避免两端并发跑同一 5434 库时 cleanup 的 LIKE 前缀互删在途夹具（非确定性假红）。
+// 避免两端并发跑同一 5433 库时 cleanup 的 LIKE 前缀互删在途夹具（非确定性假红）。
 export const NS = 'TE2A' // = TEST_E2E_Admin 缩写（与 staff TE2L2_ 隔离）
 
 // 测试店 store_id / org_node_id（与 NS 解耦的稳定 id，跨多次运行幂等）

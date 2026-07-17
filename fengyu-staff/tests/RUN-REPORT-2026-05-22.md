@@ -125,5 +125,5 @@ bs03 onCompleteService 完整跑完 start→complete(remaining 5→4)、bs05 nav
 
 ## 环境说明
 
-- DB：`5434/fengyu`（开发库），L2=`TE2L2_*`、L3=`TEST_E2E_L3_*`、scope=`FY-TEST-*` 命名空间隔离
+- DB：`5433/fengyu_wxapp`（开发库），L2=`TE2L2_*`、L3=`TEST_E2E_L3_*`、scope=`FY-TEST-*` 命名空间隔离
 - 跑 L3 时把微信开发者工具切到了 staff 项目的 automation 模式（端口 9420），跑批结束后 IDE 仍在该状态。

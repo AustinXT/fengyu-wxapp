@@ -52,9 +52,9 @@ export const TEST_MARKET_B_ORG_ID = 'TEST_E2E_L3_MK_B';
 export const TEST_STORE_B1_ID     = 'TEST_E2E_L3_STORE_B1';
 export const TEST_STORE_B1_ORG_ID = 'TEST_E2E_L3_STORE_ORG_B1';
 
-// PG 连接（生产业务库 5434）
+// PG 连接（生产业务库 5433）
 export const PG_CONN = process.env.PG_CONNECTION_STRING
-  || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu';
+  || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp';
 
 // 微信开发者工具 CLI
 export const WX_CLI_PATH = '/Applications/wechatwebdevtools.app/Contents/MacOS/cli';

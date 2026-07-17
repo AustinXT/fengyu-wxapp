@@ -8,7 +8,7 @@
  *            永久 CONFLICT、import inserted 计数恒 0
  *
  * 现有 legacy-orders.test.ts 用 vi.mock('@/db') 完全 mock 掉 db，无法暴露 driver
- * 级行为；本 smoke 连真 PG（与生产同库的 5434），是唯一能拦住这类回归的测试层。
+ * 级行为；本 smoke 连真 PG（与生产同库的 5433），是唯一能拦住这类回归的测试层。
  *
  * 真正实现见 smoke-legacy-orders.impl.mjs；本文件仅 spawn child（bun --preload）。
  */

@@ -101,7 +101,7 @@ bun fengyu-staff/tests/e2e-miniprogram/smoke-staff-confirm-offline.mjs
 | L2 | `TE2L2_*` | 19999099001 / 19999099002 |
 | L3 | `TEST_E2E_L3_*` | 见 `helpers/constants.mjs` |
 
-两层共享同一个生产业务库 `5434/fengyu`。L2 cleanup / L3 cleanup 都用 LIKE 前缀精确匹配，**绝不**触及生产数据。
+两层共享同一个生产业务库 `5433/fengyu_wxapp`。L2 cleanup / L3 cleanup 都用 LIKE 前缀精确匹配，**绝不**触及生产数据。
 
 ---
 

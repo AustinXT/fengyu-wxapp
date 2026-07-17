@@ -15,7 +15,7 @@
 BEGIN;
 
 -- 技能标签查找表（skill_tags）：营业额分配/服务提成 detail 页技能标签 select 的选项来源
--- （actions/skill-tags.ts getActiveSkillTags 查 is_valid=true）。fengyu_e2e 该表为空会导致
+-- （actions/skill-tags.ts getActiveSkillTags 查 is_valid=true）。fengyu_wxapp 该表为空会导致
 -- 技能标签 select 无选项、分配步骤 selectOption('美容师') 超时。
 INSERT INTO skill_tags (id, name, sort_order, is_valid, created_at, updated_at) VALUES
   ('stag-fyfix-mr', '美容师',   1, true, NOW(), NOW()),

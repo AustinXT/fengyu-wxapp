@@ -2,7 +2,7 @@
  * e2e-chains/_helpers/scope-helpers.ts
  *
  * scope 隔离测试的公共助手：
- *   - psql() 同步执行 SQL（5434 fengyu）
+ *   - psql() 同步执行 SQL（5433 fengyu）
  *   - login() 走 /login 表单（admin 密码）
  *   - assertListVisible / assertListEmpty 检查列表页搜索关键字命中情况
  *   - assertSelectOptions 比对下拉框 option 集合
@@ -19,7 +19,7 @@ import type { Page } from '@playwright/test'
 export const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 export const ADMIN_PASS = 'fengyu2026'
 
-/** 测试账号（5434 上已 seed） */
+/** 测试账号（5433 上已 seed） */
 export const TEST_PHONES = {
   ADM: '13900139000', // FY-TEST-ADM, admin, 总部
   MGR: '13900139001', // FY-TEST-MGR, manager, 门店 (store-nc01)
@@ -31,7 +31,7 @@ export const TEST_PHONES = {
   MGR2: '13900139007', // FY-TEST-MGR2, manager, 门店 (store-nc02) ← link-32+
 } as const
 
-/** 测试拓扑（5434 已存在） */
+/** 测试拓扑（5433 已存在） */
 export const TOPOLOGY = {
   HQ_ORG_ID: '16d1184b46db099a',
   MARKET_NC: '6707cc8b88579108', // 南昌市场（含 store-nc01 + store-nc02）
@@ -58,7 +58,7 @@ export function psql(sql: string): string {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       return execSync(
-        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+        `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
         { encoding: 'utf8', timeout: 15000 },
       ).trim()
     } catch (e) {

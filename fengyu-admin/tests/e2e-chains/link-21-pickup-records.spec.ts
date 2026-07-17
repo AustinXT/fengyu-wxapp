@@ -35,7 +35,7 @@ const PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'
 const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
 
-// 已存在的"家居产品"SKU：法米索深层清洁啫喱 ¥280（5434 上已经存在）
+// 已存在的"家居产品"SKU：法米索深层清洁啫喱 ¥280（5433 上已经存在）
 const HOME_SKU_ID = 'cc578d4554aadae9'
 const HOME_SKU_NAME = '法米索深层清洁啫喱'
 const HOME_SKU_CAT_NAME = '歆笙泰妍'
@@ -48,7 +48,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

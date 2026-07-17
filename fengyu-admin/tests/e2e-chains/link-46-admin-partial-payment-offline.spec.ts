@@ -46,7 +46,7 @@ const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -88,7 +88,7 @@ test('链路 46：admin 线下部分支付 + 多次回款 + paid_sessions 进阶
       `AND ps.deleted_at IS NULL AND pc.product_kind = '护理项目' ` +
       `ORDER BY ps.price ASC LIMIT 1`,
   )
-  if (!skuRow) throw new Error('未在 5434 找到 session_count=2 的疗程卡 SKU；请检查 fixture 同步')
+  if (!skuRow) throw new Error('未在 5433 找到 session_count=2 的疗程卡 SKU；请检查 fixture 同步')
   const [SKU_ID, SKU_SPEC_NAME, SKU_PRICE_STR, SKU_CATEGORY_ID, SKU_CATEGORY_NAME] = skuRow.split('|')
   const SKU_PRICE = Number(SKU_PRICE_STR)
   if (!SKU_PRICE || SKU_PRICE < 4) throw new Error(`SKU 单价异常: ${SKU_PRICE_STR}`)

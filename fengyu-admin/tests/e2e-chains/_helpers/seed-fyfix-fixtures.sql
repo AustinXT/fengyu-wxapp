@@ -5,7 +5,7 @@
 --   顾客 FY-FIX-CLIENT-01 + 储值卡 FY-FIX-CARD-01 + 5 张优惠券。
 --
 -- 背景（2026-06-08 E2E 现状排查）：
---   当前 5434/fengyu 库相比 fixtures 创建时已大幅重导——test-fixtures.json 里
+--   当前 5433/fengyu_wxapp 库相比 fixtures 创建时已大幅重导——test-fixtures.json 里
 --   硬编码的真实 SKU（c79157b29c9e974c 等）/ category（d303ac8871eafd97 缦之羽）/
 --   product_kind 枚举（护理项目/体验卡…）在当前库均不存在（现 product_kind 为
 --   明星/王牌/招牌…）。因此体验卡 SKU(FY-FIX-SKU-TRIAL)、套餐(FY-FIX-BUNDLE-01)

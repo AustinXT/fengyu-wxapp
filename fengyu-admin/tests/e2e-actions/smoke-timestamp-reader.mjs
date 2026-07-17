@@ -10,7 +10,7 @@
  * / 1114→1184 存量重解释 / beijingTs 写入）全压在此 TZ 上，一旦失效全线偏移。
  *
  * 运行：cd fengyu-admin && bun tests/e2e-actions/smoke-timestamp-reader.mjs
- * 默认 fengyu_e2e@5434；可用 PG_CONNECTION_STRING / DATABASE_URL 覆盖（空库自动 skip）。
+ * 默认 fengyu_wxapp@5433；可用 PG_CONNECTION_STRING / DATABASE_URL 覆盖（空库自动 skip）。
  */
 import { sql } from 'drizzle-orm'
 
@@ -18,7 +18,7 @@ import { sql } from 'drizzle-orm'
 process.env.DATABASE_URL =
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
 const { db } = await import('../../src/db')
 const { saleOrders } = await import('../../../db/schema/order')

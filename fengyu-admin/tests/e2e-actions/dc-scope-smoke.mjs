@@ -3,7 +3,7 @@
  * 数据中心 scope 冒烟（入口 wrapper）。
  *
  * bun child-process 引导器：用 `bun --preload _dc-smoke-preload.mjs` 在 cwd=fengyu-admin/ 跑 impl。
- * 默认连 5434 开发库；跑 5433 线上库：
+ * 默认连 5433 开发库；跑 5433 线上库：
  *   DATABASE_URL='postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' bun tests/e2e-actions/dc-scope-smoke.mjs
  *
  * 验证：4 板块真实 SQL 跑通 + scope 隔离（admin 全部 / 市场账号只见本市场 / 越权选「全部」被拒）。

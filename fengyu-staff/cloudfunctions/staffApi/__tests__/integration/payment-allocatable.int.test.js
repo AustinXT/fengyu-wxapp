@@ -1,13 +1,13 @@
 /**
  * 「按回款逐笔分配」真实库集成测试（capture 链路）
  *
- * 直连 5434 开发库（postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu）。
+ * 直连测试库（postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp）。
  * 全程 BEGIN ... ROLLBACK 包裹，绝不 COMMIT —— 不在库里留任何痕迹。
  *
  * 直接调用 utils/payment-allocatable 的 capturePaymentAllocatables /
  * refreshOrderAllocationRollup，传入真实 pg Client 事务句柄。
  *
- * ⚠️ 仅对 5434 开发库；绝不碰 5433 生产库。
+ * ⚠️ 仅对测试库（47.113.202.7:5433）；绝不碰生产 IP 118.178.196.26。
  *
  * 运行：
  *   env -u http_proxy -u https_proxy -u all_proxy \
@@ -22,7 +22,7 @@ const {
   refreshOrderAllocationRollup,
 } = require('../../utils/payment-allocatable')
 
-const CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+const CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
 // 唯一后缀，避免与并发数据撞主键（虽然全程 ROLLBACK，仍取唯一值更稳）
 const RUN = String(Date.now()).slice(-10)
@@ -53,10 +53,11 @@ beforeAll(async () => {
   client = new Client({ connectionString: CONN })
   await client.connect()
 
-  // 守护：必须真的连在 5434/fengyu 开发库，绝不在生产库 5433/fengyu_wxapp 上跑
+  // 守护：必须连在测试库 fengyu_wxapp（47.113.202.7），绝不连生产 IP 118.178.196.26
+  // （2026-07-17 起 dev/测试与 prod 均用 fengyu_wxapp 库名，仅靠 CONN 里的 IP 区分）
   const dbRes = await client.query('SELECT current_database() AS db')
-  if (dbRes.rows[0].db !== 'fengyu') {
-    throw new Error(`拒绝运行：期望开发库 fengyu，实连 ${dbRes.rows[0].db}`)
+  if (dbRes.rows[0].db !== 'fengyu_wxapp') {
+    throw new Error(`拒绝运行：期望测试库 fengyu_wxapp，实连 ${dbRes.rows[0].db}`)
   }
 
   await client.query('BEGIN')
@@ -79,7 +80,7 @@ afterAll(async () => {
   }
 })
 
-describe('payment-allocatable capture 链路（real PG 5434, BEGIN...ROLLBACK）', () => {
+describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）', () => {
   it('步骤1：造销售单 + 2 个 sale_item（600 / 400）', async () => {
     await client.query(
       `INSERT INTO sale_orders

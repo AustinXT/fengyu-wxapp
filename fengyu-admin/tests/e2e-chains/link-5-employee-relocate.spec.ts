@@ -27,7 +27,7 @@ const ORG_B_ID = 'org-store-nc02'
 const STORE_A_NAME = '南昌旗舰店'
 const STORE_B_NAME = '青山湖店'
 
-const PSQL = `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A`
+const PSQL = `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A`
 
 function runSQL(sql: string): string {
   return execSync(`${PSQL} -c "${sql.replace(/"/g, '\\"')}"`, { encoding: 'utf8' }).trim()

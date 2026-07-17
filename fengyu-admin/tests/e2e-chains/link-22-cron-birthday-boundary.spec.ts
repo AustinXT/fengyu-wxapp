@@ -12,7 +12,7 @@
  *       user_coupons.coupon_id = 'bday-${year}-${userId}-${templateId}'  自然主键唯一
  *   - 仅当 client_wechat_users.member_level IS NOT NULL 才进入循环
  *   - benefit 配置来自 system_configs['birthday_benefits']（JSON per member_level）
- *     现网（5434）此配置 5 等级 points=0 + 无 coupon + 无 message → 实际不会发放任何东西
+ *     现网（5433）此配置 5 等级 points=0 + 无 coupon + 无 message → 实际不会发放任何东西
  *
  * 为产生可测的发放结果，spec 临时把"初钻"等级的配置改为有意义值：
  *   {"points": 10, "couponTemplateIds": ["FY-FIX-CT-01"], "messageTitle": "测试生日权益"}
@@ -60,7 +60,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

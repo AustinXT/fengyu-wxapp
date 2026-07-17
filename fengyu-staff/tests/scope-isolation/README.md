@@ -40,7 +40,7 @@ bun fengyu-staff/tests/scope-isolation/scope-s1-customer-cross-store.mjs
    注入 `staff-scope-{employee_id}` 前缀的 openid，让 `_testOpenid` 通道可以认领他们。
 3. **环境变量** `ALLOW_TEST_OPENID=true`（继承自 `../e2e-cloudfn/setup.mjs`，
    云函数 auth 中间件读此 flag 决定是否尊重 `_testOpenid`）。
-4. **PG 连接** `47.113.202.7:5434/fengyu`（与 admin e2e 共库，详见 memory `project_db_dual_env`）。
+4. **PG 连接** `47.113.202.7:5433/fengyu_wxapp`（与 admin e2e 共库，详见 memory `project_db_dual_env`）。
 
 ---
 
@@ -183,7 +183,7 @@ headquarters 全量，market 仅自己 scope。
 | `UNAUTHORIZED: 无法获取用户身份` | seed-openids.sql 未跑 / openid 不匹配 | `psql -c "SELECT employee_id, openid FROM staff_wechat_users WHERE openid LIKE 'staff-scope-%'"` |
 | `(S4.2) MKT markets 应仅=南昌市场, 实际=[]` | FY-TEST-MKT 的 permission_roles 未含 (market, 南昌市场 id) | `psql -c "SELECT * FROM permission_roles WHERE employee_id='FY-TEST-MKT'"` |
 | `(1) MGR keyword 不应命中 NC02 顾客` | scope 守卫漏改（如 customer.search 改用 scopeStoreIds 但 fallback 错）| `git log -p -- fengyu-staff/cloudfunctions/staffApi/routes/customer.js` |
-| `NC02 顾客不存在` | admin seed-scope-fixtures.sql 未跑 | `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -f fengyu-admin/tests/e2e-chains/_helpers/seed-scope-fixtures.sql` |
+| `NC02 顾客不存在` | admin seed-scope-fixtures.sql 未跑 | `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -f fengyu-admin/tests/e2e-chains/_helpers/seed-scope-fixtures.sql` |
 
 ---
 

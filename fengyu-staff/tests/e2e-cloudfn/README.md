@@ -27,7 +27,7 @@ tests/e2e-cloudfn/
 ## 前置条件
 
 - bun 已安装（项目根 `bun --version` 应有输出，本仓库基线 1.3.x）
-- 能访问业务主库：`postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu`（默认）
+- 能访问业务主库：`postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp`（默认）
 - 不需要在 cloudbase 远端云函数上设置 `ALLOW_TEST_OPENID=true`：本地 require 模式下，
   脚本进程的 `process.env.ALLOW_TEST_OPENID` 直接被云函数 `auth.js` 读到
 
@@ -106,7 +106,7 @@ SQL_PATCHES 基础设施——那会让本地测试和生产行为偏离，掩�
 ### 为什么用本地 require 而非 tcb fn invoke
 - tcb fn 一次网络往返 5–15 秒，反复迭代体验差
 - 云函数都是纯 Node.js 代码，唯一外部依赖是 `wx-server-sdk`，可在本地 mock
-- 业务 SQL 直连同一个生产业务库（5434/fengyu），数据完全真实
+- 业务 SQL 直连同一个生产业务库（5433/fengyu_wxapp），数据完全真实
 - 唯一不真实的是 `cloud.getWXContext()` 的 OPENID — 通过云函数自带的 `_testOpenid` 测试模式
   绕过（`ALLOW_TEST_OPENID=true` 环境变量门控）
 

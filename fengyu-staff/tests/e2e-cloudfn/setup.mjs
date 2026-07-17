@@ -24,7 +24,7 @@ process.env.POINTS_ACCRUAL_ENABLED = process.env.POINTS_ACCRUAL_ENABLED || 'true
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
 
 // 命名空间常量 — 所有 fixture 数据必须以此为前缀，方便清理
@@ -33,7 +33,7 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION
 //
 // ⚠️ staff 端专用前缀 'TE2LS'（= TEST_E2E_L2_Staff），与 client 端 'TE2L2' **互不为 LIKE 前缀**：
 //    'TE2L2%' 不匹配 'TE2LS*'（第 5 位 S≠2），'TE2LS%' 不匹配 'TE2L2*'。
-//    client/staff L2 并发跑同一 5434 库时，各自 cleanupTestData 的 LIKE 前缀清理不会误删对端夹具。
+//    client/staff L2 并发跑同一 5433 库时，各自 cleanupTestData 的 LIKE 前缀清理不会误删对端夹具。
 //    （切勿改成 'TE2L2S' —— 会被 client 的 'TE2L2%' 命中而误删。）手机号同理：staff=19999098xxx 段。
 export const NS = 'TE2LS' // staff 端 = TEST_E2E_L2_Staff（与 client 'TE2L2' 隔离）
 
