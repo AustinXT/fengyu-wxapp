@@ -151,6 +151,21 @@
   margin-right: 16rpx;
 }
 
+.order-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8rpx;
+  margin-bottom: 8rpx;
+}
+
+.order-item-sub {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin-top: 6rpx;
+  font-family: monospace;
+}
+
 .order-item-name {
   font-size: 28rpx;
   color: #2D2017;
