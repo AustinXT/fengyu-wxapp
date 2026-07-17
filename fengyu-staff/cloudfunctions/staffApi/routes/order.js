@@ -43,7 +43,7 @@ const qrcodeCache = new Map()
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
 // 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
-// 实付=0 的行回落标价单价 unit_price（保持现状，非置 0）；仅 product_type='疗程卡'，家居产品行(session_count NULL)保持标价。
+// 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
 // ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
 //   - 通用 recalc 对所有订单类型生效，普通欠款单 received<sale_amount 是常态，
 //     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在 deposit 函数内调用，勿 DRY 进 helper。
@@ -53,7 +53,7 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
       SET unit_real_price = CASE
             WHEN session_count > 0 AND received > 0
               THEN ROUND(received::numeric / session_count, 2)
-            ELSE unit_price
+            ELSE 0
           END,
           updated_at = NOW()
       WHERE sale_order_id = $1 AND item_direction = '购买' AND product_type = '疗程卡'
@@ -4045,7 +4045,7 @@ async function createDeposit(ctx) {
     // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
     await recalcPaidSessionsForOrder(tx, saleOrderId)
 
-    // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 回落标价）。
+    // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 置 0）。
     // 必须在 recalc 之后（STEP1 落定各行 received 后才能算）。
     await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
 
