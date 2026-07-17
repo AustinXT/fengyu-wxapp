@@ -217,6 +217,8 @@ Page({
       // 静默失败：保留旧 map 或空，不阻塞预约流程
     }
     this._recomputeStaffAvailability();
+    // busyMap 更新后，若已选美容师，其约满时段需重新置灰（覆盖「先选美容师再选日期」时序）
+    this._recomputeSlotDisabled();
   },
 
   async loadDefaultStaff() {
@@ -266,38 +268,85 @@ Page({
     const d = e.detail;
     const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
-    this._updateDisabledSlots(fmt);
+    this._recomputeSlotDisabled();
     this.loadStaffSchedule(fmt);
   },
 
-  /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
-  _updateDisabledSlots(dateStr: string) {
+  /**
+   * 依据「所选美容师 + 当前日期」重算每个时段的可选性（时段维度，与 _recomputeStaffAvailability 互补）：
+   *   - past：今天且当前小时>=时段起点小时（已过）
+   *   - booked：选了美容师且该时段起点 ∈ staffBusyMap[该美容师]（已约满）
+   *   - leave：选了美容师且时段起点 ∈ [leaveStart, leaveEnd]（休息中，墙钟口径同 _recomputeStaffAvailability）
+   * 任一成立即 disabled。若已选时段被新判定置灰，清空选择并按原因 Toast。
+   */
+  _recomputeSlotDisabled() {
+    const { appointmentDate, selectedStaffWfId, staffList, staffBusyMap, appointmentTimeSlot } = this.data;
+    const staffId = selectedStaffWfId as string;
+    const hasStaff = !!staffId;
     const today = formatDate(new Date().toISOString());
-    const isToday = dateStr === today;
+    const isToday = !!appointmentDate && appointmentDate === today;
     const currentHour = new Date().getHours();
+    const selStaff = hasStaff
+      ? (staffList as any[]).find((s) => s.employee_id === staffId)
+      : null;
+    const busySlots = hasStaff ? (staffBusyMap as Record<string, string[]>)[staffId] || [] : [];
+    let leaveStartMs = NaN;
+    let leaveEndMs = NaN;
+    if (selStaff?.leaveStart && selStaff?.leaveEnd) {
+      // leaveStart/leaveEnd 为墙钟串（YYYY-MM-DDTHH:mm:ss），按设备本地解析
+      leaveStartMs = new Date(selStaff.leaveStart).getTime();
+      leaveEndMs = new Date(selStaff.leaveEnd).getTime();
+    }
 
-    const updatedSlots = TIME_SLOTS.map(slot => {
-      // 取时段开始小时：'09:00-11:00' → 9
-      const startHour = parseInt(slot.value.split(':')[0], 10);
-      const disabled = isToday && currentHour >= startHour;
-      return { ...slot, disabled };
+    const updatedSlots = TIME_SLOTS.map((slot) => {
+      const startHour = parseInt(slot.value.split(':')[0], 10); // '09:00-10:00' → 9
+      const slotStart = slot.value.split('-')[0]; // 'HH:MM'，与 busySlots 同口径
+      let disabled = false;
+      let disabledReason = '';
+      if (isToday && currentHour >= startHour) {
+        disabled = true;
+        disabledReason = 'past';
+      } else if (hasStaff && busySlots.includes(slotStart)) {
+        disabled = true;
+        disabledReason = 'booked';
+      } else if (hasStaff && !isNaN(leaveStartMs) && !isNaN(leaveEndMs) && appointmentDate) {
+        const slotMs = new Date(`${appointmentDate}T${slotStart}:00`).getTime();
+        if (!isNaN(slotMs) && slotMs >= leaveStartMs && slotMs <= leaveEndMs) {
+          disabled = true;
+          disabledReason = 'leave';
+        }
+      }
+      return { ...slot, disabled, disabledReason };
     });
-    this.setData({ timeSlots: updatedSlots });
 
-    // 若当前已选时段变为禁用，则清空选择
-    if (this.data.appointmentTimeSlot) {
-      const selected = updatedSlots.find(s => s.value === this.data.appointmentTimeSlot);
+    const patch: Record<string, any> = { timeSlots: updatedSlots };
+    // 若已选时段被置灰（如切换到冲突美容师），清空选择并提示
+    if (appointmentTimeSlot) {
+      const selected = updatedSlots.find((s) => s.value === appointmentTimeSlot);
       if (selected?.disabled) {
-        this.setData({ appointmentTimeSlot: '', _timeSlotDisplay: '' });
+        patch.appointmentTimeSlot = '';
+        patch._timeSlotDisplay = '';
+        const msg = selected.disabledReason === 'booked'
+          ? '该美容师该时段已约满，已取消时段'
+          : selected.disabledReason === 'leave'
+            ? '该美容师该时段休息中，已取消时段'
+            : '所选时段已过，已取消时段';
+        Toast(msg);
       }
     }
+    this.setData(patch);
   },
 
   onTimeSlotTap(e: WechatMiniprogram.TouchEvent) {
-    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean | string };
+    const { value, text, disabled, disabledReason } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean | string; disabledReason?: string };
     const isDisabled = disabled === true || disabled === 'true';
     if (isDisabled) {
-      Toast('该时段已过，请选择其他时段');
+      const msg = disabledReason === 'booked'
+        ? '该美容师该时段已约满'
+        : disabledReason === 'leave'
+          ? '该美容师该时段休息中'
+          : '该时段已过，请选择其他时段';
+      Toast(msg);
       return;
     }
     this.setData({
@@ -325,6 +374,8 @@ Page({
       selectedStaffAvatarUrl: matched?.avatarUrl || '',
       showStaffPopup: false,
     });
+    // 选/换/清空美容师后，重算时段置灰（核心触发点）
+    this._recomputeSlotDisabled();
   },
 
   onGoOrders() {
@@ -343,7 +394,7 @@ Page({
       const startHour = parseInt(appointmentTimeSlot.split(':')[0], 10);
       if (new Date().getHours() >= startHour) {
         Toast.fail('所选时段已过，请重新选择');
-        this._updateDisabledSlots(appointmentDate);
+        this._recomputeSlotDisabled();
         return;
       }
     }

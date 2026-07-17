@@ -71,7 +71,7 @@
   background: var(--color-bg-section);
   color: var(--color-text-hint);
   border-color: var(--color-border);
-  pointer-events: none;
+  /* 不设 pointer-events:none —— 保留点击以走 onTimeSlotTap 弹出「已过/已约满/休息中」原因 Toast */
 }
 
 /* ===== 底部提交 ===== */
