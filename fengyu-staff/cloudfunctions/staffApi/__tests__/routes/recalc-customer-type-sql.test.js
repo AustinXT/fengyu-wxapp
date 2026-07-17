@@ -101,6 +101,23 @@ function extractMembershipUpgradeAttribution(filePath) {
   return match[0]
 }
 
+/**
+ * 提取 became_member_at UPDATE 段（首笔达标单时间口径）。
+ * 正则锚定 UPDATE client_wechat_users SET became_member_at，终止于其选单子查询的 LIMIT 1)。
+ * 旧口径 `SET became_member_at = NOW()` 无 LIMIT 1) → 抛错，强制 5 端全部迁移完毕才通过。
+ * 非贪婪匹配从 became_member_at 起找到最近的 LIMIT 1)（即其自身子查询闭合），不会越过到 is_membership_upgrade 段。
+ * @param {string} filePath
+ * @returns {string}
+ */
+function extractBecameMemberAtUpdate(filePath) {
+  const src = fs.readFileSync(filePath, 'utf8')
+  const match = src.match(/UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)/)
+  if (!match) {
+    throw new Error(`未在 ${filePath} 找到 became_member_at UPDATE（含 LIMIT 1 子查询）；可能仍为旧 NOW() 口径`)
+  }
+  return match[0]
+}
+
 describe('recalcCustomerType SQL 源文件守卫', () => {
   let staffSql
   let paynotifySql
@@ -331,6 +348,77 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(adminAttr).toMatch(re)
       expect(adminRecomputeAttr).toMatch(re)
       expect(clientApiAttr).toMatch(re)
+    })
+  })
+
+  describe('became_member_at 口径 UPDATE（首笔达标单时间）镜像一致性', () => {
+    let staffBma
+    let paynotifyBma
+    let adminBma
+    let adminRecomputeBma
+    let clientApiBma
+
+    beforeAll(() => {
+      staffBma = extractBecameMemberAtUpdate(STAFF_ORDER_JS)
+      paynotifyBma = extractBecameMemberAtUpdate(PAYNOTIFY_JS)
+      adminBma = extractBecameMemberAtUpdate(ADMIN_ORDERS_TS)
+      adminRecomputeBma = extractBecameMemberAtUpdate(ADMIN_RECOMPUTE_TS)
+      clientApiBma = extractBecameMemberAtUpdate(CLIENT_API_ORDER_JS)
+    })
+
+    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = (SELECT COALESCE(o.paid_at, o.created_at) …', () => {
+      const re = /^UPDATE client_wechat_users SET became_member_at = \(\s*SELECT COALESCE\(o\.paid_at, o\.created_at\)/
+      expect(staffBma).toMatch(re)
+      expect(paynotifyBma).toMatch(re)
+      expect(adminBma).toMatch(re)
+      expect(adminRecomputeBma).toMatch(re)
+      expect(clientApiBma).toMatch(re)
+    })
+
+    test('staff / admin orders.ts / admin recompute / clientApi 四端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+      const staffN = normalizeSql(staffBma)
+      expect(normalizeSql(adminBma)).toBe(staffN)
+      expect(normalizeSql(adminRecomputeBma)).toBe(staffN)
+      expect(normalizeSql(clientApiBma)).toBe(staffN)
+    })
+
+    test('五端 became_member_at 段不含 NOW()（旧跃迁时刻口径已下线）', () => {
+      expect(staffBma).not.toMatch(/NOW\(\)/)
+      expect(paynotifyBma).not.toMatch(/NOW\(\)/)
+      expect(adminBma).not.toMatch(/NOW\(\)/)
+      expect(adminRecomputeBma).not.toMatch(/NOW\(\)/)
+      expect(clientApiBma).not.toMatch(/NOW\(\)/)
+    })
+
+    test('四端无回款单累计分支（单笔 total 口径，与四端 is_membership_upgrade 归因段同源）', () => {
+      for (const s of [staffBma, adminBma, adminRecomputeBma, clientApiBma]) {
+        expect(s).not.toContain('ref_sale_order_id')
+        expect(s).not.toContain("'回款单'")
+      }
+    })
+
+    test('payNotify became_member_at 段保留回款单累计死代码文本（与本端 is_membership_upgrade 归因段镜像）', () => {
+      expect(paynotifyBma).toContain('ref_sale_order_id')
+      expect(paynotifyBma).toContain("r.sale_order_type = '回款单'")
+      expect(normalizeSql(paynotifyBma)).toMatch(/o\.total_amount >= \? OR/i)
+    })
+
+    test('五端都按 paid_at ASC NULLS LAST, created_at ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {
+      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC/
+      expect(staffBma).toMatch(re)
+      expect(paynotifyBma).toMatch(re)
+      expect(adminBma).toMatch(re)
+      expect(adminRecomputeBma).toMatch(re)
+      expect(clientApiBma).toMatch(re)
+    })
+
+    test('回归守护：五端源码不再出现旧的 SET became_member_at = NOW() 形态', () => {
+      const re = /SET became_member_at\s*=\s*NOW\(\)/
+      expect(fs.readFileSync(STAFF_ORDER_JS, 'utf8')).not.toMatch(re)
+      expect(fs.readFileSync(PAYNOTIFY_JS, 'utf8')).not.toMatch(re)
+      expect(fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')).not.toMatch(re)
+      expect(fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')).not.toMatch(re)
+      expect(fs.readFileSync(CLIENT_API_ORDER_JS, 'utf8')).not.toMatch(re)
     })
   })
 })

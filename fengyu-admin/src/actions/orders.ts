@@ -207,8 +207,18 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount > 0 && updRows[0]?.customer_type === '会员客') {
+    // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
+    // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
-      UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
+      UPDATE client_wechat_users SET became_member_at = (
+        SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
+        WHERE o.client_user_id = ${clientUserId}
+          AND o.status IN ('已支付', '已完成')
+          AND o.sale_order_type = '销售单'
+          AND o.total_amount >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        LIMIT 1
+      ) WHERE user_id = ${clientUserId}
     `)
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。

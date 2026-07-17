@@ -60,12 +60,13 @@ SELECT value::numeric AS v
 `
 
 // 每个会员客顾客 paid_at 最早的达标销售单（与 recalcCustomerType 打标 SQL 同源）。
-// 关键守卫：AND (u.became_member_at IS NULL OR o.paid_at <= u.became_member_at) —— 只选
-// 「跃迁为会员客那一刻或之前」的达标单，对齐 recalcCustomerType 在线打标语义
-// （跃迁瞬间 paid_at 最早的达标单）。若无此守卫，new_member_threshold 历史上调后，
-// 跃迁后的合法「售后」达标单会被误选，进而在 UPDATE_SQL 被静默翻成「售前」+ 误打
-// is_membership_upgrade（review H1）。became_member_at IS NULL 时保守放行（理论上
-// backfill-became-member-at.js 已回填 NULL=0）。
+// 关键守卫：AND (u.became_member_at IS NULL OR COALESCE(o.paid_at, o.created_at) <= u.became_member_at)
+// —— 只选「成为会员那一刻或之前」的达标单。became_member_at 现口径 = 首笔达标单的
+// COALESCE(paid_at, created_at)（见 recalc-became-member-at.js），故守卫也用 COALESCE
+// 对齐；否则首单 paid_at 为 NULL 时 `NULL <= became_member_at` 求值为 NULL→false，会把
+// 真正的首笔达标单误排除。若无此守卫，new_member_threshold 历史上调后，跃迁后的合法
+// 「售后」达标单会被误选，进而在 UPDATE_SQL 被静默翻成「售前」+ 误打 is_membership_upgrade
+// （review H1）。became_member_at IS NULL 时保守放行。
 const BUILD_TARGET_SQL = `
 CREATE TEMP TABLE _mem_upgrade_target ON COMMIT DROP AS
 SELECT DISTINCT ON (o.client_user_id)
@@ -77,7 +78,7 @@ SELECT DISTINCT ON (o.client_user_id)
    AND o.status IN ('已支付', '已完成')
    AND o.sale_order_type = '销售单'
    AND o.total_amount >= $1::numeric
-   AND (u.became_member_at IS NULL OR o.paid_at <= u.became_member_at)
+   AND (u.became_member_at IS NULL OR COALESCE(o.paid_at, o.created_at) <= u.became_member_at)
  ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC
 `
 

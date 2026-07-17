@@ -177,11 +177,20 @@ async function recalcCustomerType(client, clientUserId) {
     [clientUserId, newType]
   )
 
-  // 若本次 UPDATE 实际将顾客升级为"会员客"，同步写入 became_member_at
+  // 若本次 UPDATE 实际将顾客升级为“会员客”，became_member_at 记为确立会员资格的首笔达标单时间
+  // （COALESCE(paid_at, created_at)；选单子查询与下方 is_membership_upgrade 归因同源、选同一单）。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
-      [clientUserId]
+      `UPDATE client_wechat_users SET became_member_at = (
+         SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '销售单'
+           AND o.total_amount >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         LIMIT 1
+       ) WHERE user_id = $1`,
+      [clientUserId, threshold]
     )
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
