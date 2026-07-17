@@ -698,7 +698,7 @@ async function create(ctx) {
         `SELECT o.parent_id AS market_id
          FROM stores s
          JOIN org_nodes o ON s.org_node_id = o.id
-         WHERE s.store_id = $1 AND o.type = 'store'`,
+         WHERE s.store_id = $1 AND o.type = '门店'`,
         [storeId]
       )
       if (marketRows.length === 0) {
