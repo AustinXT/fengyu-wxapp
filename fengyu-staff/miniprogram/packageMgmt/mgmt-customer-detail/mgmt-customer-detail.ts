@@ -6,7 +6,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatCount } from '../../utils/number';
-import { formatDateTime, formatDate } from '../../utils/formatters';
+import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
 
 // ===== 数据接口 =====
 
@@ -78,6 +78,10 @@ interface PaidOrderItem {
   storeId?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
+  /** 品项标签（product_categories.category_name） */
+  category?: string;
+  /** 品项标签色（display_color） */
+  categoryColor?: string;
 }
 
 interface PaidOrder {
@@ -87,6 +91,8 @@ interface PaidOrder {
   totalReceived: string;
   storeId?: string;
   storeName?: string;
+  /** 单据类型（sale_orders.sale_order_type） */
+  saleOrderType?: string;
   items: PaidOrderItem[];
   // 消费记录列表（mgmtCustomer.orderHistory）扩展字段
   createdAt?: string;
@@ -125,6 +131,12 @@ interface TreatmentCard {
   storeId?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
+  /** 品项标签（product_categories.category_name） */
+  category?: string;
+  /** 品项标签色（display_color） */
+  categoryColor?: string;
+  /** 单据类型展示文案（ORDER_TYPE_LABEL 映射后） */
+  saleOrderTypeLabel?: string;
 }
 
 // Tab 4: 赠送记录
@@ -424,10 +436,11 @@ Page({
   async loadTreatmentCards() {
     if (!this._clientUserId) return;
     try {
-      const orders = await callStaffApi<PaidOrder[]>('mgmtCustomer.paidOrders', {
+      const resp = await callStaffApi<{ scope: unknown; orders: PaidOrder[] }>('mgmtCustomer.paidOrders', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
-      }) || [];
+      }) ?? { orders: [] };
+      const orders = resp.orders || [];
       const cards: TreatmentCard[] = [];
       for (const order of orders) {
         for (const item of order.items) {
@@ -454,10 +467,24 @@ Page({
               saleOrderId: order.saleOrderId,
               paidAt: order.paidAt,
               unitRealPrice: item.unitRealPrice,
+              category: item.category,
+              categoryColor: item.categoryColor,
+              saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
             });
           }
         }
       }
+      // 按品项标签归拢排序：主键 category（空排末尾），次键 paidAt DESC 兜底
+      cards.sort((a, b) => {
+        const ca = a.category || '';
+        const cb = b.category || '';
+        if (ca !== cb) {
+          if (!ca) return 1;
+          if (!cb) return -1;
+          return ca.localeCompare(cb, 'zh');
+        }
+        return (a.paidAt < b.paidAt) ? 1 : (a.paidAt > b.paidAt) ? -1 : 0;
+      });
       this.setData({ treatmentCards: cards, cardsLoaded: true });
     } catch (_) {}
   },

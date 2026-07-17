@@ -138,6 +138,10 @@
                   value="{{item.selected}}" shape="square" checked-color="#C0322A" custom-class="tc-checkbox"
                 />
                 <view class="tc-info">
+                  <view class="tc-tags" wx:if="{{item.category || item.saleOrderTypeLabel}}">
+                    <van-tag wx:if="{{item.category}}" color="{{item.categoryColor || '#C0322A'}}" text-color="#FFFFFF">{{item.category}}</van-tag>
+                    <van-tag wx:if="{{item.saleOrderTypeLabel}}" plain color="#969799">{{item.saleOrderTypeLabel}}</van-tag>
+                  </view>
                   <text class="tc-name">{{item.itemName}}</text>
                   <view class="tc-meta">
                     <text class="tc-spec">{{item.spec}}</text>

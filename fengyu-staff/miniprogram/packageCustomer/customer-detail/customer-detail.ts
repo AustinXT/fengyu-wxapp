@@ -1,7 +1,7 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { formatDateTime, formatDate } from '../../utils/formatters';
+import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -89,6 +89,10 @@ interface PaidOrderItem {
   storeId?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
+  /** 品项标签（product_categories.category_name 二级分类名） */
+  category?: string;
+  /** 品项标签色（product_categories.display_color，取父级一级行） */
+  categoryColor?: string;
 }
 
 interface PaidOrder {
@@ -98,6 +102,8 @@ interface PaidOrder {
   totalReceived: string;
   storeId?: string;
   storeName?: string;
+  /** 单据类型（sale_orders.sale_order_type：销售单/内部单/转换单/寄存单/充值单） */
+  saleOrderType?: string;
   items: PaidOrderItem[];
   // 消费记录列表（customer.orderHistory）扩展字段
   createdAt?: string;
@@ -145,6 +151,12 @@ interface TreatmentCard {
   disabledReason?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
+  /** 品项标签（product_categories.category_name） */
+  category?: string;
+  /** 品项标签色（display_color） */
+  categoryColor?: string;
+  /** 单据类型展示文案（ORDER_TYPE_LABEL 映射后） */
+  saleOrderTypeLabel?: string;
 }
 
 // Tab 4: 服务记录
@@ -453,6 +465,9 @@ Page({
             saleOrderId: order.saleOrderId,
             paidAt: order.paidAt,
             unitRealPrice: item.unitRealPrice,
+            category: item.category,
+            categoryColor: item.categoryColor,
+            saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
             selected: false,
             sessionCount: 1,
             disabled: isNullCard,
@@ -460,6 +475,17 @@ Page({
           });
         }
       }
+      // 按品项标签归拢排序：主键 category（空排末尾），次键 paidAt DESC 兜底
+      cards.sort((a, b) => {
+        const ca = a.category || '';
+        const cb = b.category || '';
+        if (ca !== cb) {
+          if (!ca) return 1;
+          if (!cb) return -1;
+          return ca.localeCompare(cb, 'zh');
+        }
+        return (a.paidAt < b.paidAt) ? 1 : (a.paidAt > b.paidAt) ? -1 : 0;
+      });
       this.setData({ treatmentCards: cards, cardsLoaded: true, selectedCount: 0 });
     } catch (_) {}
   },

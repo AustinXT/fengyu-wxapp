@@ -597,7 +597,7 @@ async function paidOrders(ctx) {
   const whereClause = `o.status IN ('已支付', '部分支付') AND o.client_user_id = $1`
 
   const orders = await pg.query(
-    `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
+    `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name, o.sale_order_type
        FROM sale_orders o
        LEFT JOIN stores s ON s.store_id = o.store_id
       WHERE ${whereClause}
@@ -620,8 +620,13 @@ async function paidOrders(ctx) {
        si.sale_order_id, si.sale_item_id, si.store_id,
        si.session_count, si.remaining_sessions, si.paid_sessions,
        si.sku_id, si.product_type, si.product_name,
-       si.unit_real_price
+       si.unit_real_price,
+       pc.category_name, pc.product_kind,
+       COALESCE(pc_parent.display_color, pc.display_color) AS category_color
      FROM sale_items si
+     LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+     LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+     LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE si.sale_order_id = ANY($1)
      ORDER BY si.sale_item_id`,
     [orderIds],
@@ -641,6 +646,9 @@ async function paidOrders(ctx) {
       paidSessions: item.paid_sessions,
       productType: item.product_type || '',
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
+      category: item.category_name || '',
+      categoryColor: item.category_color || '',
+      productKind: item.product_kind || '',
     })
   }
 
@@ -654,6 +662,7 @@ async function paidOrders(ctx) {
       paidAt: o.paid_at,
       storeId: o.store_id,
       storeName: o.store_name || '',
+      saleOrderType: o.sale_order_type || '',
       items: itemsByOrder[o.sale_order_id] || [],
     })),
   }
