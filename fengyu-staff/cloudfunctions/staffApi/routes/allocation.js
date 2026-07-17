@@ -195,7 +195,7 @@ async function pendingPayments(ctx) {
        JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
       WHERE o.store_id = $1
         AND p.allocation_status = $2
-        AND o.sale_order_type IN ('销售单', '转换单')
+        AND o.sale_order_type = '销售单'  -- 转换单（业绩转移，无 spai）在 admin 整单分配；staff 按回款只处理销售单
         AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
       LIMIT $3 OFFSET $4`,

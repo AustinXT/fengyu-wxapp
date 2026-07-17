@@ -21,7 +21,12 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
     [saleOrderId],
   )
   const items = itemsRes.rows
-  if (items.length === 0) return []
+  if (items.length === 0) {
+    // 转换单（明细仅转出/转入、无『购买』行）：不产生 spai，但仍置回款行『待分配』，
+    // 让其在营业额分配列表可见；业绩转移由 admin 整单分配（batchSaveAllocations）处理。
+    await client.query(\`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1\`, [salePaymentId])
+    return []
+  }
   const catMap = new Map(items.map((i) => [i.sale_item_id, i.sales_category]))
 
   let perItem = []

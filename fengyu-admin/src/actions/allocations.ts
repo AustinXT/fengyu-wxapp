@@ -455,6 +455,16 @@ export const batchSaveAllocations = withPermission(
         .update(saleOrders)
         .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
         .where(eq(saleOrders.saleOrderId, saleOrderId))
+
+      // 整单分配同步该订单回款行 allocation_status（修复转换单等无 spai 单据在「按回款」列表的可见性）；
+      // 仅动已参与分配的非 NULL 回款行，退款/储值卡抵扣从行等 NULL 行不受影响。
+      await tx
+        .update(saleOrderPayments)
+        .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
+        .where(and(
+          eq(saleOrderPayments.saleOrderId, saleOrderId),
+          sql`${saleOrderPayments.allocationStatus} IS NOT NULL`,
+        ))
     })
   } catch (err: any) {
     // PG 外键违反（employeeId 不存在）
@@ -503,6 +513,7 @@ export const getPendingPayments = withPermission(
       paymentMethod: string
       paidAt: string | null
       allocationStatus: string | null
+      saleOrderType: string
       customerName: string | null
       clientPhone: string | null
       storeName: string | null
@@ -553,6 +564,7 @@ export const getPendingPayments = withPermission(
         paymentMethod: saleOrderPayments.paymentMethod,
         paidAt: saleOrderPayments.paidAt,
         allocationStatus: saleOrderPayments.allocationStatus,
+        saleOrderType: saleOrders.saleOrderType,
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
         custName: clientWechatUsers.name,
@@ -583,6 +595,7 @@ export const getPendingPayments = withPermission(
         paymentMethod: r.paymentMethod,
         paidAt: r.paidAt instanceof Date ? r.paidAt.toISOString() : (r.paidAt ?? null),
         allocationStatus: r.allocationStatus ?? null,
+        saleOrderType: r.saleOrderType,
         // 顾客档案权威 > sale_orders 兜底
         customerName: r.custName || r.fallbackName || null,
         clientPhone: r.custPhone || r.fallbackPhone || null,

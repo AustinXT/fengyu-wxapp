@@ -30,6 +30,7 @@ export interface PaymentAllocationRow {
   paymentMethod: string
   paidAt: string | null
   allocationStatus: string | null
+  saleOrderType: string
   customerName: string | null
   clientPhone: string | null
   storeName: string | null
@@ -168,30 +169,30 @@ export default function AllocationsPageClient({
         { header: "市场", width: 12, accessor: (r) => r.market },
         { header: "门店", width: 18, accessor: (r) => r.storeName },
         { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "销售单类型", width: 12, accessor: (r) => r.saleOrderType },
-        { header: "服务单类型", width: 12, accessor: (r) => r.serviceOrderType },
+        { header: "订单类型", width: 12, accessor: (r) => r.saleOrderType },
+        { header: "单据类型", width: 12, accessor: (r) => r.serviceOrderType },
         { header: "顾客", accessor: (r) => r.customerName },
         { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
         { header: "商品类型", width: 12, accessor: (r) => r.productType },
-        { header: "一级分类", width: 14, accessor: (r) => r.categoryL1 },
-        { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
-        { header: "商品名称", width: 24, accessor: (r) => r.productName },
+        { header: "品项（一级）", width: 14, accessor: (r) => r.categoryL1 },
+        { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
+        { header: "商品明细", width: 24, accessor: (r) => r.productName },
         { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
         { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
-        { header: "单次价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
         { header: "状态", width: 12, accessor: (r) => r.status },
-        { header: "美容师", accessor: (r) => r.employeeName },
-        { header: "职位", width: 12, accessor: (r) => r.positionName },
+        { header: "负责美容师", accessor: (r) => r.employeeName },
+        { header: "员工职位", width: 12, accessor: (r) => r.positionName },
         { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
-        { header: "分配金额", width: 12, accessor: (r) => r.allocationAmount },
+        { header: "分配额", width: 12, accessor: (r) => r.allocationAmount },
         { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
         { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
-        { header: "评分", width: 8, accessor: (r) => r.rating },
-        { header: "评价内容", width: 24, accessor: (r) => r.reviewComment },
-        { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
+        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
+        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
+        { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
         { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
         { header: "开单人", accessor: (r) => r.openedByName },
-        { header: "来源销售单", width: 22, accessor: (r) => r.sourceSaleOrderId },
+        { header: "来源订单号", width: 22, accessor: (r) => r.sourceSaleOrderId },
         { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
         { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
         { header: "备注", width: 20, accessor: (r) => r.remark },
@@ -361,7 +362,8 @@ function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] })
                     </td>
                     <td className="px-4 py-3 text-[#999999]">{p.paidAt ? formatTime(p.paidAt) : "-"}</td>
                     <td className="px-4 py-3">
-                      <Link href={`/allocations/payments/${p.salePaymentId}`}>
+                      {/* 转换单走整单分配（业绩转移，无 spai）；销售单走按回款逐笔 */}
+                      <Link href={p.saleOrderType === "转换单" ? `/allocations/${p.saleOrderId}` : `/allocations/payments/${p.salePaymentId}`}>
                         <Button size="sm" variant="outline">
                           {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
                         </Button>
