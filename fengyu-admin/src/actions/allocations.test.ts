@@ -459,6 +459,21 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(true)
   })
 
+  it('负数 received（转换单转出行）比例 < 100% → 通过（金额校验已移除，不再方向反转误报）', async () => {
+    // 复盘 FY-XSD-WX-2607150017：转换单转出行 received=-2400，品项老师 20%（amountSum=-480），
+    // 旧金额校验 amountSum > received+tol：-480 > -2399.98 → true 误报「分配金额合计超过商品金额」。
+    // 移除金额校验后只看比例，20% ≤ 100% 应放行（业务规则：每角色池比例 ≤100% 即允许）。
+    mockScopeAndItems([{ saleItemId: 'item-1', received: '-2400.00' }])
+    mockTx()
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', totalAmount: '-2400.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-002', roleType: '品项老师', allocationRatio: '0.20', totalAmount: '-480.00' },
+    ])
+
+    expect(result.success).toBe(true)
+  })
+
   it('同技能标签重复员工 → 拒绝', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '200.00' }])
 
