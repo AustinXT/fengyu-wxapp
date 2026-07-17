@@ -172,23 +172,27 @@ export default function EmployeesPage({
     {
       key: "skills",
       header: "技能",
-      cell: (row) => (
-        <div className="flex flex-wrap gap-1">
-          {row.skills?.length ? (
-            row.skills.map((s) => (
-              <Badge
-                key={s}
-                variant="outline"
-                className="border-[var(--brand)] text-[var(--brand)] bg-[var(--brand-light)]"
-              >
-                {s}
-              </Badge>
-            ))
-          ) : (
-            <span className="text-[var(--muted-foreground)]">—</span>
-          )}
-        </div>
-      ),
+      cell: (row) => {
+        // 防御：只渲染当前 isValid 的标签名，隐藏已删除/已改名残留的旧副本
+        const visible = row.skills?.filter((s) => validSkillNames.has(s)) ?? []
+        return (
+          <div className="flex flex-wrap gap-1">
+            {visible.length ? (
+              visible.map((s) => (
+                <Badge
+                  key={s}
+                  variant="outline"
+                  className="border-[var(--brand)] text-[var(--brand)] bg-[var(--brand-light)]"
+                >
+                  {s}
+                </Badge>
+              ))
+            ) : (
+              <span className="text-[var(--muted-foreground)]">—</span>
+            )}
+          </div>
+        )
+      },
     },
     {
       key: "isResigned",

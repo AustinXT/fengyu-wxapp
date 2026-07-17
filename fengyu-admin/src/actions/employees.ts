@@ -373,7 +373,7 @@ export const exportEmployees = withPermission(
         storeName: row.stores?.storeName ?? null,
         positionName: e.positionName,
         birthday: e.birthday,
-        skills: e.skills?.join('、') ?? null,
+        skills: e.skills?.filter((s) => validSkillNames.has(s)).join('、') ?? null,
         socialInsurance: e.socialInsurance,
         isResigned: e.isResigned,
         resignationReason: e.resignationReason,
