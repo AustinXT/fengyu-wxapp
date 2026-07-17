@@ -628,6 +628,14 @@ export interface AuthSession {
   permissions: {
     actions: string[]
     scopeStoreIds: string[]
+    /**
+     * 员工专用 scope 维度：当前账号可见的「部门」org_node id 列表。
+     *
+     * 职能部门员工（养生部/推广部/品项公司…）store_id 为 NULL，靠 org_node_id 命中
+     * scope 内部门节点纳入（见 employeeScopeCondition）。可选：缺失时退化为仅按
+     * store_id 过滤（=旧行为，保守不暴露部门员工）。仅 staff_wechat_users 表用。
+     */
+    scopeDeptNodeIds?: string[]
   }
 }
 

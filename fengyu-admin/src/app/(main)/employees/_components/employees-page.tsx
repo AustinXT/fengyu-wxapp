@@ -122,9 +122,6 @@ export default function EmployeesPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
-  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
-
   const columns: Column<Employee>[] = [
     {
       key: "avatarUrl",
@@ -239,7 +236,7 @@ export default function EmployeesPage({
       <div className="flex items-center gap-3">
         <OrgTreeSelect
           className="w-48"
-          orgNodes={filterOrgNodes}
+          orgNodes={orgNodes}
           value={marketFilter}
           onChange={(id) => setMany({ market: id, page: "" })}
           placeholder="全部组织"

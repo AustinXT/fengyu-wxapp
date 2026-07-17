@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -76,7 +76,7 @@ export const getEmployees = withPermission(
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .where(scopeCondition(session, staffWechatUsers.storeId))
+    .where(employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId))
     // 例外：picker 字母序（人眼扫视更友好）
     .orderBy(asc(staffWechatUsers.name))
 
@@ -201,7 +201,7 @@ async function buildEmployeeConditions(
   filters: EmployeeFilters,
 ): Promise<(SQL | undefined)[]> {
   const conditions: (SQL | undefined)[] = [
-    scopeCondition(session, staffWechatUsers.storeId),
+    employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId),
   ]
 
   if (filters.marketId) {
@@ -212,11 +212,16 @@ async function buildEmployeeConditions(
       .where(eq(orgNodes.id, filters.marketId))
       .limit(1)
     if (node?.type === '市场') {
-      // 市场：筛选该市场下所有门店的员工
-      const sub = db.select({ storeId: stores.storeId }).from(stores)
+      // 市场：该市场下门店的员工（store_id 路径）+ 挂该市场的部门员工（org_node_id，store_id IS NULL）
+      const storeSub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
-      conditions.push(inArray(staffWechatUsers.storeId, sub))
+      const deptSub = db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, filters.marketId)))
+      conditions.push(or(
+        inArray(staffWechatUsers.storeId, storeSub),
+        inArray(staffWechatUsers.orgNodeId, deptSub),
+      ))
     } else if (node?.type === '部门') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
@@ -387,7 +392,7 @@ export const getEmployeeById = withPermission(
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+    .where(and(eq(staffWechatUsers.employeeId, employeeId), employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)))
 
   if (rows.length === 0) return null
   return rowToEmployee(rows[0])
@@ -621,7 +626,7 @@ export const updateEmployee = withPermission(
   const oldStoreId = currentEmployee?.storeId ?? null
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
-  const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
+  const scopeCond = employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(staffWechatUsers.employeeId, employeeId),
@@ -757,7 +762,7 @@ export const deleteEmployee = withPermission(
     const [emp] = await db
       .select({ name: staffWechatUsers.name, phone: staffWechatUsers.phone, storeId: staffWechatUsers.storeId, isResigned: staffWechatUsers.isResigned })
       .from(staffWechatUsers)
-      .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+      .where(and(eq(staffWechatUsers.employeeId, employeeId), employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)))
       .limit(1)
 
     if (!emp) {
@@ -780,7 +785,7 @@ export const deleteEmployee = withPermission(
         // 删主表（被任一业务表引用会在此抛 23503，回滚上面的删除）
         const result = await tx
           .delete(staffWechatUsers)
-          .where(and(eq(staffWechatUsers.employeeId, employeeId), scopeCondition(session, staffWechatUsers.storeId)))
+          .where(and(eq(staffWechatUsers.employeeId, employeeId), employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)))
         if ((result as any).count === 0) {
           throw new Error('EMPLOYEE_ROW_GONE')
         }

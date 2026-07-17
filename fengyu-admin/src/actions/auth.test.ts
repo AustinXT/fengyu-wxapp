@@ -98,6 +98,7 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('@/lib/permissions', () => ({
   computeActions: vi.fn(() => ['dashboard:view']),
   expandScopeStoreIds: vi.fn(async () => ['store-1']),
+  expandScopeDeptNodeIds: vi.fn(async () => ['dept-1']),
   // 登录闸 / 会话二次闸用：真实判定（持任一非 staff 角色即可入后台）
   canAccessAdmin: vi.fn((roles: Array<{ role: string }>) => roles.some((r) => r.role !== 'staff')),
   // 2026-05-17 PR-Z2 后：resetEmployeePassword/resetToDefaultPassword 走 withPermission HOF，
@@ -144,7 +145,7 @@ import { db } from '@/db'
 import { loginAttempts } from '@db/login-attempt'
 import { compare, hash } from 'bcryptjs'
 import { jwtVerify, SignJWT } from 'jose'
-import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { computeActions, expandScopeStoreIds, expandScopeDeptNodeIds } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { encryptPassword } from '@/lib/password-encrypt'
 
@@ -432,8 +433,10 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     ])
     expect(computeActions).toHaveBeenCalled()
     expect(expandScopeStoreIds).toHaveBeenCalled()
+    expect(expandScopeDeptNodeIds).toHaveBeenCalled()
     expect(result!.permissions.actions).toEqual(['dashboard:view'])
     expect(result!.permissions.scopeStoreIds).toEqual(['store-1'])
+    expect(result!.permissions.scopeDeptNodeIds).toEqual(['dept-1'])
   })
 
   it('scopeType 为 null → 默认 store', async () => {

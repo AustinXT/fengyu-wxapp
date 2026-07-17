@@ -31,6 +31,7 @@ vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   requireAdmin: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
+  employeeScopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
 }))
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn(), logUpdate: vi.fn() }))

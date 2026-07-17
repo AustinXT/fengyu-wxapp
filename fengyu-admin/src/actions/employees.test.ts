@@ -55,6 +55,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
+  employeeScopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
 }))
 
@@ -820,13 +821,19 @@ describe('getEmployeesPaginated — 服务端分页', () => {
         return { from }
       }
       if (callIndex === 2) {
-        // subquery: select → from → innerJoin → where (返回 subquery 对象)
+        // storeSub: 该市场下门店子查询 select → from → innerJoin → where
         const subWhere = vi.fn().mockReturnValue({ _subquery: true })
         const innerJoin = vi.fn().mockReturnValue({ where: subWhere })
         const from = vi.fn().mockReturnValue({ innerJoin })
         return { from }
       }
       if (callIndex === 3) {
+        // deptSub: 挂该市场的部门子查询 select → from → where（职能部门员工，store_id IS NULL）
+        const subWhere = vi.fn().mockReturnValue({ _subquery: true })
+        const from = vi.fn().mockReturnValue({ where: subWhere })
+        return { from }
+      }
+      if (callIndex === 4) {
         // COUNT query
         const where = vi.fn().mockResolvedValue([{ count: 0 }])
         const from = vi.fn().mockReturnValue({ where })
@@ -847,7 +854,9 @@ describe('getEmployeesPaginated — 服务端分页', () => {
 
     await getEmployeesPaginated({ marketId: 'market-1' })
 
+    // 市场筛选：门店路径（store_id）+ 部门路径（org_node_id，职能部门员工）
     expect(inArray).toHaveBeenCalledWith('store_id', expect.anything())
+    expect(inArray).toHaveBeenCalledWith('org_node_id', expect.anything())
   })
 
   it('marketId 筛选（部门类型） → eq(orgNodeId) 被调用', async () => {
