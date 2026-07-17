@@ -24,7 +24,7 @@
 const { Pool } = require('pg')
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
   max: 5,
 }
 

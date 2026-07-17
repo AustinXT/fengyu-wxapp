@@ -14,7 +14,7 @@
  *
  * 用法：
  *   # 5434 / fengyu（测试库）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-became-member-at.js
  *
  *   # 5433 / fengyu_wxapp（开发库）

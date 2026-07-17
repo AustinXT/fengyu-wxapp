@@ -5,10 +5,10 @@
 
 ## 拓扑
 
-| 端 | dev envId | dev PG | prod envId | prod PG |
-|----|-----------|--------|------------|---------|
-| client | `cloud1-3gpht4b01ff88838` | 5434/fengyu | `fengyu-client-prod-d1cga6909c0ba` | 5433/fengyu_wxapp |
-| staff | `cloud1-9g3ydpg512eecc99` | 5434/fengyu | `fengyu-staff-prod-d4dtv6052992e9` | 5433/fengyu_wxapp |
+| 端 | dev/测试 envId | dev/测试 PG | prod envId | prod PG |
+|----|-----------|-------------|------------|---------|
+| client | `cloud1-3gpht4b01ff88838` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-client-prod-d1cga6909c0ba` | 118.178.196.26:5433/fengyu_wxapp |
+| staff | `cloud1-9g3ydpg512eecc99` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-staff-prod-d4dtv6052992e9` | 118.178.196.26:5433/fengyu_wxapp |
 
 dev 与 prod 由 **两个不同的腾讯云子账号** 管理（账号凭证在 `fengyu-{client,staff}/.env`）。
 
@@ -50,8 +50,8 @@ admin 远程部署用 `docker/docker-compose.prod.yml` override，详见根目�
 小程序代码 `fengyu-{client,staff}/miniprogram/utils/cloud-env.ts` 是 git tracked
 静态文件，通过 `wx.getAccountInfoSync().miniProgram.envVersion` 运行时区分：
 
-- `'release'` / `'trial'` → prod envId（5433）
-- `'develop'` → dev envId（5434）
+- `'release'` / `'trial'` → prod envId（118.178.196.26:5433）
+- `'develop'` → dev envId（47.113.202.7:5433）
 - 异常兜底（取不到 envVersion）→ dev envId，避免误判进 prod
 
 所以**切换 envs/.active 不会影响小程序代码**。仅开发者工具开发版留在 dev，体验版/正式版都走 prod。
@@ -62,11 +62,11 @@ admin 远程部署用 `docker/docker-compose.prod.yml` override，详见根目�
 2. 同步加入 `dev.env` + `prod.env`（真实值）
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
 4. 如果 admin 需要：在 `docker/docker-compose.prod.yml` 的 environment 加 `- NEW_VAR=${NEW_VAR}`
-5. 远程 `docker/.env` 同步追加（ssh ali-demo 后手工改）
+5. 远程 `docker/.env` 同步追加（生产 `ssh fengyu-prod` / 测试 `ssh ali-demo` 后手工改）
 
 ## 安全
 
 - `envs/{dev,prod}.env` 已 `.gitignore`
 - 切到 prod 时 `use-env.sh` 打印 ⚠️ 横幅，避免误部署
 - `deploy-cloudfunctions.sh` 强制 confirm
-- e2e 入口检测 PG_CONNECTION_STRING 含 5433 时拒绝运行（防污染生产）
+- e2e 入口不得连生产 IP `118.178.196.26`（防污染生产；2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境仅靠 IP 区分）

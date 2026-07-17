@@ -2,7 +2,7 @@
 # ============================================================================
 # dump-prod.sh — 导出生产业务库 (5433/fengyu_wxapp) 为 custom-format dump
 #
-# 背景：项目此前无现成导出脚本；生产库 47.113.202.7:5433/fengyu_wxapp (PG 16)。
+# 背景：项目此前无现成导出脚本；生产库 118.178.196.26:5433/fengyu_wxapp (PG 16，fengyu-prod 服务器)。
 # 本脚本封装 pg_dump，连接串从 envs/prod.env 读取（权威来源，不硬编码密码），
 # 产物带时间戳落到 ~/backups/fengyu/（项目外 —— .gitignore 不覆盖 .dump，
 # 放项目外彻底避免顾客/支付等敏感数据误入 git）。
@@ -82,11 +82,12 @@ if [ -z "${PG_CONNECTION_STRING:-}" ]; then
 fi
 [ -n "$PG_CONNECTION_STRING" ] || { echo "✗ 连接串为空"; exit 1; }
 
-# --- 防误连开发库：必须指向 5433/fengyu_wxapp（生产） ---
+# --- 防误连非生产库：必须指向生产 IP 118.178.196.26
+#     （2026-07-17 起 dev/测试与 prod 均为 5433/fengyu_wxapp，端口+库名已无法区分环境，仅靠 IP 兜底） ---
 case "$PG_CONNECTION_STRING" in
-  *":5433/"*fengyu_wxapp*) : ;;
+  *"118.178.196.26"*) : ;;
   *)
-    echo "✗ 连接串未指向生产库 5433/fengyu_wxapp，拒绝执行（防误把开发库当生产导出）"
+    echo "✗ 连接串未指向生产库 118.178.196.26:5433/fengyu_wxapp，拒绝执行（防误把测试库当生产导出）"
     echo "  目标：$(printf '%s' "$PG_CONNECTION_STRING" | sed -E 's#://[^:]+:[^@]+@#://***@#')"
     exit 1 ;;
 esac

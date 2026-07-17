@@ -23,7 +23,7 @@ metadata:
 ./deploy-admin.sh [ssh-host] [remote-dir]
 ```
 
-默认值：`ali-demo`、`/root/fengyu-wxapp`
+默认 SSH host：`ali-demo`（测试环境）；生产部署显式传 `fengyu-prod`。默认远程目录 `/root/fengyu-wxapp`
 
 ## 部署流程
 
@@ -35,7 +35,7 @@ metadata:
 ## 前置条件
 
 - 本地 Docker 已安装并运行
-- 远程服务器 SSH 可达（`ali-demo` 在 ~/.ssh/config 中配置）
+- 远程服务器 SSH 可达（`ali-demo`=测试 / `fengyu-prod`=生产，均在 ~/.ssh/config 中配置）
 - 远程已有 docker-compose.yml 且 admin service 配置正确
 - 远程 .env 中 DATABASE_URL 等环境变量已配置
 

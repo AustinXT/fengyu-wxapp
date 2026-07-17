@@ -28,11 +28,11 @@
  *
  * 用法：
  *   # 默认 dry-run，仅打印将要执行的迁移统计
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js
  *
  *   # 显式提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js --apply
  *
  * 顺序：

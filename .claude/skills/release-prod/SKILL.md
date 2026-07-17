@@ -3,9 +3,9 @@ name: release-prod
 description: |
   Orchestrates a full production code-release for the fengyu-wxapp monorepo:
   runs pre-flight test/type gates, bumps miniprogram APP_VERSION from the latest
-  git tag, cross-compiles the Next.js admin and ships it to the ali-demo host,
+  git tag, cross-compiles the Next.js admin and ships it to the fengyu-prod host,
   then deploys the three CloudBase cloud functions (staffApi / clientApi /
-  payNotify) to production — all targeting prod PG 5433/fengyu_wxapp.
+  payNotify) to production — all targeting prod PG 118.178.196.26:5433/fengyu_wxapp.
   Use when the user says 发版 / 上线 / 发布生产 / release / ship to prod.
   This is an UPDATE release — never runs DB migrations, never wipes the DB.
 argument-hint: '[skip-tests|skip-version|skip-admin|skip-cloudfn]'
@@ -16,7 +16,7 @@ metadata:
   author: NightVoyager
   version: 1.0.0
   title: 生产发版
-  description_zh: 预检门禁 + admin 交叉编译发布 ali-demo + client/staff 云函数发布生产 + 版本号更新
+  description_zh: 预检门禁 + admin 交叉编译发布 fengyu-prod + client/staff 云函数发布生产 + 版本号更新
   license: 42plugin-personal
 ---
 
@@ -26,7 +26,7 @@ metadata:
 
 复用脚本（不要新写、不要改）：
 - `node scripts/gen-version.js` — 版本号写入两端 `miniprogram/utils/version.ts`
-- `.claude/skills/remote-deploy/deploy-admin.sh prod ali-demo` — admin 交叉编译 + 远程部署
+- `.claude/skills/remote-deploy/deploy-admin.sh prod` — admin 交叉编译 + 远程部署
 - `scripts/use-env.sh <dev|prod>` — 切 env + 渲染 cloudbaserc（含 ENV_PROFILE 守卫）
 - `scripts/deploy-cloudfunctions.sh` — 串行双账号部署 staffApi/clientApi/payNotify
 
@@ -44,7 +44,7 @@ metadata:
 - **云函数部署必须串行**：tcb 鉴权是全局单例（`~/.cloudbase-cli/auth.json`），staff 与 client 是**两个不同腾讯子账号**。**绝不**为这步开并行 agent —— 会中途互相踢登录。`deploy-cloudfunctions.sh` 已内部串行处理。
 - **永不用 `--force`**：env 变量会被清空（2026-04-02 事故）。只用 `tcb fn code update`（脚本已遵守）。
 - 技能**完全不碰 git**（不 commit / 不 push）。版本文件改动留给用户用 `/smart-commit`。
-- prod DB 目标硬约束：admin 容器 + 三个云函数的 DB 连接**必须全部指向 `5433/fengyu_wxapp`**（2026-05-21 实测口径：5433=prod 上线前空库，5434=dev/e2e）。部署前后都 assert。
+- prod DB 目标硬约束：admin 容器 + 三个云函数的 DB 连接**必须全部指向 `118.178.196.26:5433/fengyu_wxapp`**（2026-07-17 迁移后口径：prod=118.178.196.26:5433 / dev·测试=47.113.202.7:5433，两者均 5433/fengyu_wxapp，仅靠 IP 区分）。部署前后都 assert。
 - 若本次涉及 schema 变更：迁移到 5433 是**独立人工前置**（见 `db/CLAUDE.md`），不在本技能内 —— 停下来告诉用户。
 
 ---
@@ -68,25 +68,25 @@ metadata:
 
 4. **prod env 安全扫描**（读 `envs/prod.env`，**不要打印 secret 值**，只断言）：
    - `ENV_PROFILE=prod`、`ALLOW_TEST_OPENID=false`、`WXACODE_ENV_VERSION=release`
-   - 【DB assert ①】`PG_CONNECTION_STRING` 含 `5433/fengyu_wxapp`
+   - 【DB assert ①】`PG_CONNECTION_STRING` 含 `118.178.196.26`（dev/测试同库名同端口，按 IP 断言）
    - 扫描 `PLACEHOLDER`（尤其 `CLIENT_SERVICE_URL`）→ 命中则告警并问用户是否继续。
      - 说明：更新发版用 `code update` 不会把 PLACEHOLDER 重烤进函数 env；但若这是首次 provisioning 就会，需先在控制台补真实 URL（见 §7）。
    ```bash
    grep -E '^(ENV_PROFILE|ALLOW_TEST_OPENID|WXACODE_ENV_VERSION)=' envs/prod.env
-   grep -q '5433/fengyu_wxapp' <(grep '^PG_CONNECTION_STRING=' envs/prod.env) && echo 'PG→5433 ✓' || echo 'PG 目标错误 ✗ 停'
+   grep -q '118.178.196.26' <(grep '^PG_CONNECTION_STRING=' envs/prod.env) && echo 'PG→prod(118.178.196.26) ✓' || echo 'PG 目标错误 ✗ 停'
    grep -n 'PLACEHOLDER' envs/prod.env || echo 'no placeholder ✓'
    ```
 
-5. **【DB assert ②】admin 远程库**：admin 的 `ADMIN_DATABASE_URL` 取自 ali-demo 远程 `docker/.env`（被 `docker-compose.prod.yml` 引用），不是本地。
+5. **【DB assert ②】admin 远程库**：admin 的 `ADMIN_DATABASE_URL` 取自 fengyu-prod 远程 `docker/.env`（被 `docker-compose.prod.yml` 引用），不是本地。
    ```bash
-   ssh ali-demo "grep ADMIN_DATABASE_URL /root/proj.xt.com/fengyu-wxapp/docker/.env"
+   ssh fengyu-prod "grep ADMIN_DATABASE_URL /root/proj.xt.com/fengyu-wxapp/docker/.env"
    ```
-   - 必须含 `5433/fengyu_wxapp`。远程 docker 目录默认 `/root/proj.xt.com/fengyu-wxapp/docker`（同 `deploy-admin.sh` 第 3 参数默认值）；首跑前确认实际路径。
+   - 必须含 `118.178.196.26`（按 IP 断言）。远程 docker 目录默认 `/root/proj.xt.com/fengyu-wxapp/docker`（同 `deploy-admin.sh` 第 3 参数默认值）；fengyu-prod 上实际路径首跑前确认。
 
 6. **环境就绪**：
    ```bash
    docker info >/dev/null 2>&1 && echo 'docker ✓' || echo 'docker 未运行 ✗'
-   ssh ali-demo true && echo 'ali-demo 可达 ✓'
+   ssh fengyu-prod true && echo 'fengyu-prod 可达 ✓'
    cat envs/.active   # 记录当前 env，Phase 5 恢复用
    ```
 
@@ -102,10 +102,10 @@ git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/mini
 
 ---
 
-## §3 Phase 2 — admin 交叉编译 + 发布 ali-demo（除非 `skip-admin`）
+## §3 Phase 2 — admin 交叉编译 + 发布 fengyu-prod（除非 `skip-admin`）
 
 ```bash
-.claude/skills/remote-deploy/deploy-admin.sh prod ali-demo
+.claude/skills/remote-deploy/deploy-admin.sh prod
 ```
 - 脚本对 prod 有**交互式二次确认**（需在终端输入 `yes`）—— 提醒用户这是 interactive prompt。
 - 脚本内部：buildx `--platform linux/amd64` 交叉编译 → `docker save | gzip | ssh load` → 同步 compose 文件 → `compose up -d admin cron-worker` → curl 健康检查 + 回显 DATABASE_URL。
@@ -130,12 +130,12 @@ scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code
 
 1. **admin 库终检**【DB assert ③】：
    ```bash
-   ssh ali-demo "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'"
+   ssh fengyu-prod "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'"
    ```
-   必须含 `5433/fengyu_wxapp`；不符 → 报错并提示回滚（见 reference）。
+   必须 host=`118.178.196.26`；不符 → 报错并提示回滚（见 reference）。
 
 2. **云函数 env 终检**【DB assert ④】：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值：
-   - 三端 `PG_CONNECTION_STRING` 都 → `5433/fengyu_wxapp`
+   - 三端 `PG_CONNECTION_STRING` 都 → `118.178.196.26:5433/fengyu_wxapp`
    - staffApi：`ALLOW_TEST_OPENID=false`、`WXACODE_ENV_VERSION=release`、`CLIENT_SECRET` 非空
    - clientApi：`TMAP_KEY` / `TMAP_SECRET` 非空
    - payNotify：`PG_CONNECTION_STRING`（启用支付时还需 `LAKALA_*`）

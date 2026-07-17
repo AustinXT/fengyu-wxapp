@@ -12,8 +12,8 @@
 #     deploy-admin.sh 不同步远程 .env，故必须由本 override 覆盖，否则 admin 上传图
 #     落到 dev 桶 cloud1-…，prod client 取不到（404）。值同 envs/prod.env。
 #
-# 远程 docker/.env 追加：
-#   ADMIN_DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp
+# 远程 docker/.env 追加（生产=fengyu-prod 服务器）：
+#   ADMIN_DATABASE_URL=postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp
 #   ADMIN_JWT_SECRET=<openssl rand -hex 32>
 #   ADMIN_RSA_PRIVATE_KEY=<envs/prod.env 同名值，base64(PEM) 私钥>
 

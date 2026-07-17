@@ -1,13 +1,13 @@
 #!/bin/bash
-# 部署 fengyu-admin 镜像到远程 ali-demo，按 env 选择 compose 文件。
+# 部署 fengyu-admin 镜像到远程服务器（按 env 自动路由：prod→fengyu-prod / dev→ali-demo），按 env 选择 compose 文件。
 #
 # Usage:
 #   .claude/skills/remote-deploy/deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
 #
 # 参数：
 #   $1 (required) — dev / prod
-#   $2 (optional) — SSH host，默认 ali-demo
-#   $3 (optional) — 远程 docker/ 目录绝对路径，默认 /root/proj.xt.com/fengyu-wxapp/docker
+#   $2 (optional) — SSH host，默认按 env 自动选择（prod=fengyu-prod / dev=ali-demo），可被 SSH_HOST 环境变量覆盖
+#   $3 (optional) — 远程 docker/ 目录绝对路径，默认 /root/proj.xt.com/fengyu-wxapp/docker（ali-demo；fengyu-prod 上路径若不同须显式传入）
 
 set -e
 
@@ -18,8 +18,11 @@ if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|prod)$ ]]; then
 fi
 
 ENV="$1"
-SSH_HOST="${2:-ali-demo}"
-REMOTE_DIR="${3:-/root/proj.xt.com/fengyu-wxapp/docker}"
+# SSH host 按环境自动路由（prod→fengyu-prod / dev→ali-demo）；可被第 2 参数或 SSH_HOST 环境变量覆盖
+SSH_HOST_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "fengyu-prod" || echo "ali-demo")
+SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
+# 远程 docker/ 目录；可被第 3 参数或 REMOTE_DIR 环境变量覆盖（fengyu-prod 上路径可能不同，首跑确认）
+REMOTE_DIR="${REMOTE_DIR:-${3:-/root/proj.xt.com/fengyu-wxapp/docker}}"
 
 # 切到项目根：后续 envs/、db/、docker/ 等相对路径均基于此
 cd "$(dirname "$0")/../../.."
@@ -27,7 +30,7 @@ cd "$(dirname "$0")/../../.."
 # prod 强制确认
 if [[ "$ENV" == "prod" ]]; then
   echo "⚠️  About to deploy admin to PROD ($SSH_HOST)"
-  echo "    admin 容器将连接 5433/fengyu_wxapp（生产业务库）"
+  echo "    admin 容器将连接 118.178.196.26:5433/fengyu_wxapp（生产业务库）"
   read -p "Type 'yes' to confirm: " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "Aborted."

@@ -181,7 +181,7 @@ ls -lh "$ZIP"
 - 只跑某阶段（`*-only` / `skip-*`）
 
 **NOT**：
-- 生产发版部署（admin 上 ali-demo + 云函数）→ `/release-prod`
+- 生产发版部署（admin 上 fengyu-prod + 云函数）→ `/release-prod`
 - DB schema 迁移到 5433 → `db/CLAUDE.md`（独立人工前置，不在本 skill）
 - 首次交付基线建立（删测试文件 / 中和凭据 / 删架构资产）—— 一次性，已由历史 commit `71cfc7f4`~`9864792a` 完成；本 skill 只做**增量维护**
 

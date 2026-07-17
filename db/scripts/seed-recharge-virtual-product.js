@@ -15,7 +15,7 @@
  * 幂等：基于固定 product_id / sku_id，重复运行只 SELECT 不写。
  *
  * 使用：
- *   DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu node db/scripts/seed-recharge-virtual-product.js
+ *   DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
  *   DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
  *
  * 双库执行：先后用两个 DATABASE_URL 各跑一次。未指定 DATABASE_URL 时默认 5433。
@@ -23,7 +23,7 @@
 
 const { Client } = require('pg')
 
-const DEFAULT_PG = 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+const DEFAULT_PG = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
 const PRODUCT_ID = 'prod-recharge-virtual'
 const SKU_ID = 'sku-recharge-virtual'

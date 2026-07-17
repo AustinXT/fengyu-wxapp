@@ -17,7 +17,7 @@
  *
  * 用法：
  *   # 5434 / fengyu（生产业务库，admin + 全部云函数共用，必跑）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-service-commissions-roletype.js --commit
  *
  *   # 5433 / fengyu_wxapp（冷备库，可选）

@@ -13,7 +13,7 @@
  *
  * 用法：
  *   # 5434 / fengyu（测试库，admin 用）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-allocations-roletype.js
  *
  *   # 5433 / fengyu_wxapp（开发库，云函数用）
