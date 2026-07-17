@@ -4,7 +4,7 @@
  * 主题：服务单在"待服务"被取消时，已扣减的 session_used 必须正确回退；提成行不写。
  *
  * 关键事实（核对真实 schema + 代码）：
- *   - cancelServiceOrder 只能 '待服务' → '已取消'（services.ts:400 WHERE status='待服务'）
+ *   - cancelServiceOrder 允许 待服务/服务中/待客户确认 → 已取消（确认前三态；口径对齐 staffApi service.cancel，见 services.ts cancelServiceOrder）
  *   - service_orders **没有 cancelled_at 列**（README §1.B 写错）
  *   - cancelServiceOrder 不主动 void service_commissions（待服务期本就无 commission）
  *   - 服务完成（completeServiceOrder）才扣 session_used + 写 service_commissions
