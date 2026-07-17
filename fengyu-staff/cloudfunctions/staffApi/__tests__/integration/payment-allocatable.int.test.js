@@ -225,3 +225,80 @@ describe('payment-allocatable capture 链路（real PG 5434, BEGIN...ROLLBACK）
     expect(String(dupErr.constraint || dupErr.message)).toContain('uq_sale_alloc_item_emp_role_payment')
   })
 })
+
+// 转换单（业绩转移模型）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
+// 修复前：items.length===0 早返回 → 跳过置 allocation_status='待分配' → 回款行永远 NULL →
+//         被营业额分配列表 IS NOT NULL 过滤掉。修复后：仍 return []（不产生 spai），但置回款行『待分配』。
+describe('capture 转换单（无「购买」明细，业绩转移）', () => {
+  const CONV_ORDER = `IT-PA-CONV-${RUN}`
+  const CONV_OUT = `IT-PA-CONV-OUT-${RUN}` // 转出（旧卡剩余价值，负数）
+  const CONV_IN = `IT-PA-CONV-IN-${RUN}` // 转入（新卡价值，正数）
+
+  it('造转换单 + 转出/转入明细（无购买行）', async () => {
+    await client.query(
+      `INSERT INTO sale_orders
+         (sale_order_id, status, sale_order_type, market_name, store_id, store_name,
+          sale_order_datetime, total_amount, payment_method, received)
+       VALUES ($1, '已支付', '转换单', '集成测试市场', $2, '集成测试门店',
+               NOW(), 789, '线下', 789)`,
+      [CONV_ORDER, storeId],
+    )
+    const insDir = (id, direction, unitPrice, saleAmount, sessionCount) =>
+      client.query(
+        `INSERT INTO sale_items
+           (sale_item_id, sale_order_id, store_id, item_direction, product_type, session_count,
+            unit_price, unit_real_price, sale_amount, received, quantity, sales_category)
+         VALUES ($1, $2, $3, $4, '疗程卡', $5, $6, $6, $7, $7, 1, '自销自耗')`,
+        [id, CONV_ORDER, storeId, direction, sessionCount, unitPrice, saleAmount],
+      )
+    // 转出：unit_price=298(≥0 满足 chk_item_unit_price)，sale_amount/received=-211（业绩转出）
+    await insDir(CONV_OUT, '转出', 298, -211, 1)
+    // 转入：unit_price=200，sale_amount/received=1000（新卡价值）
+    await insDir(CONV_IN, '转入', 200, 1000, 5)
+
+    const purchaseCount = await client.query(
+      `SELECT COUNT(*)::int AS n FROM sale_items WHERE sale_order_id=$1 AND item_direction='购买'`,
+      [CONV_ORDER],
+    )
+    expect(purchaseCount.rows[0].n).toBe(0)
+  })
+
+  it('capture 返回 []（无 spai）但回款行置「待分配」让转换单在列表可见', async () => {
+    const pay = await client.query(
+      `INSERT INTO sale_order_payments
+         (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
+       VALUES ($1, '首次支付', 789, '线下', '已支付', 'staff', NOW())
+       RETURNING id`,
+      [CONV_ORDER],
+    )
+    const salePaymentId = Number(pay.rows[0].id)
+
+    const out = await capturePaymentAllocatables(client, {
+      salePaymentId,
+      saleOrderId: CONV_ORDER,
+      eventAmount: 789,
+      directedItems: null,
+    })
+
+    // 转换单无「购买」明细 → 不产生 spai
+    expect(out).toEqual([])
+    const m = await allocatableMap(salePaymentId)
+    expect(Object.keys(m).length).toBe(0)
+
+    // 但回款行被置「待分配」（修复点：不再短路跳过，让转换单在营业额分配列表可见）
+    const ps = await client.query(
+      `SELECT allocation_status FROM sale_order_payments WHERE id = $1`,
+      [salePaymentId],
+    )
+    expect(ps.rows[0].allocation_status).toBe('待分配')
+  })
+
+  it('refreshOrderAllocationRollup → 转换单订单级「待分配」', async () => {
+    await refreshOrderAllocationRollup(client, CONV_ORDER)
+    const o = await client.query(
+      `SELECT allocation_status FROM sale_orders WHERE sale_order_id = $1`,
+      [CONV_ORDER],
+    )
+    expect(o.rows[0].allocation_status).toBe('待分配')
+  })
+})
