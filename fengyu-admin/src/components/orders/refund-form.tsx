@@ -51,6 +51,9 @@ export function RefundForm({
   const [overdraft, setOverdraft] = useState<EstimateOverdraftResult | null>(null)
   const [overdraftLoading, setOverdraftLoading] = useState(false)
   const [applyOverdraft, setApplyOverdraft] = useState(true)
+  /** 多收余数可退额（部分支付单 received 不能被单次价整除时的订单级孤儿零头，0=无） */
+  const [overpayRefundable, setOverpayRefundable] = useState(0)
+  const [includeOverpay, setIncludeOverpay] = useState(true)
 
   useEffect(() => {
     if (!open) return
@@ -60,6 +63,9 @@ export function RefundForm({
       .then((res) => {
         setItems(res.items)
         setClientUserId(res.clientUserId)
+        const ov = Math.max(0, Number(res.overpayRefundable || 0))
+        setOverpayRefundable(ov)
+        setIncludeOverpay(ov > 0)
         const defaults: Record<string, LineState> = {}
         for (const it of res.items) {
           defaults[it.saleItemId] = {
@@ -84,10 +90,13 @@ export function RefundForm({
       if (qty <= 0) continue
       subtotal += Math.round(it.unitRealPrice * qty * 100) / 100
     }
+    // 多收余数（纯现金，不挂品项）并入小计
+    const overpay = includeOverpay ? Math.max(0, overpayRefundable) : 0
+    subtotal = Math.round((subtotal + overpay) * 100) / 100
     const fee = Math.max(0, Number(handlingFee) || 0)
     const final = Math.max(0, Math.round((subtotal - fee) * 100) / 100)
-    return { subtotal: Math.round(subtotal * 100) / 100, fee, final }
-  }, [items, lineStates, handlingFee])
+    return { subtotal: Math.round(subtotal * 100) / 100, fee, final, overpay }
+  }, [items, lineStates, handlingFee, includeOverpay, overpayRefundable])
 
   // 预判等级跌档 + 超额权益扣除（500ms 防抖）
   useEffect(() => {
@@ -136,7 +145,8 @@ export function RefundForm({
       }
       payload.push({ saleItemId: it.saleItemId, refundQuantity: qty })
     }
-    if (payload.length === 0) {
+    const wantOverpay = includeOverpay && overpayRefundable > 0
+    if (payload.length === 0 && !wantOverpay) {
       toast.error("请至少勾选一项退款明细")
       return
     }
@@ -152,6 +162,7 @@ export function RefundForm({
         refundReason: refundReason.trim(),
         handlingFee: previewTotals.fee,
         applyOverdraftDeduction: applyOverdraft,
+        includeOverpay: wantOverpay,
       })
       if (res.success) {
         toast.success(`退款单已创建（流水 #${res.data.refundPaymentId}），等待审批`)
@@ -177,7 +188,7 @@ export function RefundForm({
         <div className="py-10 text-center text-[#999999]">加载可退明细…</div>
       ) : loadError ? (
         <div className="py-6 text-center text-[#C62828]">{loadError}</div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && overpayRefundable <= 0 ? (
         <div className="py-6 text-center text-[#999999]">该订单没有可退明细</div>
       ) : (
         <div className="space-y-4 mt-4">
@@ -253,6 +264,20 @@ export function RefundForm({
               </tbody>
             </table>
           </div>
+
+          {/* 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，纯现金退、不挂品项 */}
+          {overpayRefundable > 0 && (
+            <label className="flex items-center gap-2 rounded-[var(--radius)] border border-[#F3C77E] bg-[#FFF7E6] px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includeOverpay}
+                onChange={(e) => setIncludeOverpay(e.target.checked)}
+              />
+              <span>
+                多收余数退款（实收超出整次合计的零头）：<span className="font-medium">¥{overpayRefundable.toFixed(2)}</span>
+              </span>
+            </label>
+          )}
 
           {/* 手续费 + 原因 */}
           <div className="grid grid-cols-2 gap-4">
@@ -372,7 +397,7 @@ export function RefundForm({
         <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
           取消
         </Button>
-        <Button onClick={handleSubmit} disabled={pending || loading || items.length === 0}>
+        <Button onClick={handleSubmit} disabled={pending || loading || (items.length === 0 && overpayRefundable <= 0)}>
           {pending ? "提交中…" : "提交退款申请"}
         </Button>
       </DialogFooter>

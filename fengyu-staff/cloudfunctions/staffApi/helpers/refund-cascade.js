@@ -46,6 +46,11 @@ async function cascadeRefund(client, params) {
   const now = new Date()
 
   // 兜底：items 为空（老退款行无 note.items / 整单退无明细）→ 查所有购买项视为全退（兼容历史数据）
+  // ⚠️切勿把 OVERPAY 哨兵行（多收余数退款，refSaleItemId='OVERPAY'）从这里过滤掉：
+  //   余数单独退时它是 effItems 唯一元素，过滤会使 effItems 变空 → 触发本兜底 → 误把全品项当全退+wholeOrder=true。
+  //   哨兵行天然安全：下方通道 1/2/5 按 sale_item_id='OVERPAY' 查询无匹配自动跳过；
+  //   通道 3 由 wholeOrder（创建时对余数单为 false）控制不回滚券；通道 4（积分）订单级按 refunded/received 比例冲销（退款本应如此）。
+  //   详见 utils/refund.js computeOverpayRemainder + plan fy-xsd-wx-2607150028。
   let effItems = Array.isArray(items) ? items.filter((it) => it && it.saleItemId) : []
   let wholeOrder = !!isWholeOrderRefund
   if (effItems.length === 0) {

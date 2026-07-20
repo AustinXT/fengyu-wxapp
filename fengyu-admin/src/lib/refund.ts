@@ -9,9 +9,19 @@
  * 未使用数量按 sale_items.product_type 区分（2026-05-21 单品合并后）：
  *   疗程卡（含原单品=1 次卡）：remaining_sessions
  *   家居产品：quantity − picked_up_quantity
+ *
+ * 多收余数（overpay，2026-07-18 ticket FY-XSD-WX-2607150028）：
+ *   部分支付单 received 不能被单次价整除时，差额是订单级孤儿（不落任何品项 received），
+ *   按整次×单价逐项求和永远够不到它。补一条订单级纯现金退款（哨兵行 OVERPAY_SENTINEL）：
+ *     overpayRefundable = max(0, (received − refunded − 已消耗价值) − Σ(未用整次×单价))
+ *   不挂品项、不退次数、不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
+ *   两端镜像 staffApi utils/refund.js。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
  */
 
 import type { PaymentMethod, ProductType, SalesCategory } from './types'
+
+/** 多收余数退款哨兵 refSaleItemId（非空，禁用 null：refund-cascade.ts 空明细兜底会把全品项当全退） */
+export const OVERPAY_SENTINEL = 'OVERPAY'
 
 /** sale_items 行（snake_case 字段，来自 PG） */
 export interface RefundSourceItem {
@@ -51,6 +61,8 @@ export interface RefundDetail {
   serviceFee: number
   /** 本次是否全退该明细（退款数量 >= 当前可退数量）→ 控制 cascade 是否作废其分配/提成（Bug M） */
   isFullItemRefund: boolean
+  /** 多收余数退款哨兵行（不挂品项/不退次数/不触发级联）；真实品项明细恒为 false */
+  isOverpay?: boolean
 }
 
 /**
@@ -70,6 +82,39 @@ export function calculateUnusedQuantity(item: RefundSourceItem | null | undefine
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
   return Math.max(0, quantity - pickedUp)
+}
+
+/**
+ * 计算订单级「多收余数」可退额（overpay）。两端镜像 staff utils/refund.js（JS 无 snapshot 守护，字段按各端约定）。
+ *
+ * 部分支付单 received 不能被单次价整除时，超出 Σ(整次×单价) 的零头是订单级孤儿，逐项整次退款够不到它：
+ *   overpay = max(0, netReceived − 已消耗价值 − Σ(未用整次×单价))
+ * 其中 netReceived = received − refundedAmount（订单仍持有的实收）。
+ */
+export function computeOverpayRemainder(
+  order: { received: string | number; refundedAmount?: string | number } | null | undefined,
+  origItems: RefundSourceItem[],
+): number {
+  const netReceived = Math.max(
+    0,
+    (Number(order?.received) || 0) - (Number(order?.refundedAmount) || 0),
+  )
+  let consumedValue = 0
+  let maxSessionRefundable = 0
+  for (const it of origItems) {
+    const urp = Number(it.unit_real_price) || 0
+    if (it.product_type === '疗程卡') {
+      const sc = Number(it.session_count) || 0
+      const rem = Number(it.remaining_sessions) || 0
+      consumedValue += Math.max(0, sc - rem) * urp
+    } else {
+      consumedValue += (Number(it.picked_up_quantity) || 0) * urp
+    }
+    maxSessionRefundable += calculateUnusedQuantity(it) * urp
+  }
+  consumedValue = Math.round(consumedValue * 100) / 100
+  maxSessionRefundable = Math.round(maxSessionRefundable * 100) / 100
+  return Math.max(0, Math.round((netReceived - consumedValue - maxSessionRefundable) * 100) / 100)
 }
 
 /**
