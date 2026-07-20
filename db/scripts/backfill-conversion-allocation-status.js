@@ -105,6 +105,7 @@ SET allocation_status = CASE
       ELSE '待分配'::allocation_status
     END
 WHERE sop.allocation_status IS NULL
+  AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
   AND sop.sale_order_id IN (
     SELECT sale_order_id FROM sale_orders WHERE ${CONVERSION_ORDERS}
   )
