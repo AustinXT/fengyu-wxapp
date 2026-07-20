@@ -214,7 +214,8 @@ Page({
       }
       this.setData({ staffBusyMap: busyMap });
     } catch {
-      // 静默失败：保留旧 map 或空，不阻塞预约流程
+      // 静默失败：保持空（onDateConfirm 切日期时已清空旧 map），不阻塞预约流程；
+      // 不回填旧日期占用以免新日期被误置灰，冲突由后端 appointment.create 兜底。
     }
     this._recomputeStaffAvailability();
     // busyMap 更新后，若已选美容师，其约满时段需重新置灰（覆盖「先选美容师再选日期」时序）
@@ -267,7 +268,10 @@ Page({
   onDateConfirm(e: WechatMiniprogram.CustomEvent<Date>) {
     const d = e.detail;
     const fmt = formatDate(d.toISOString());
-    this.setData({ appointmentDate: fmt, showCalendar: false });
+    // 切日期时立即清空旧日期的时段占用，避免下方同步 _recomputeSlotDisabled 拿上一日期的
+    // busySlots 把新日期的时段误置灰。真实占用由 loadStaffSchedule 成功后回填，失败则保持空
+    // （宽松口径——冲突仍由后端 appointment.create 权威兜底，不会双订）。
+    this.setData({ appointmentDate: fmt, showCalendar: false, staffBusyMap: {} });
     this._recomputeSlotDisabled();
     this.loadStaffSchedule(fmt);
   },

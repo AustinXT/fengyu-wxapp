@@ -26,6 +26,8 @@ const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('..
 const {
   buildRefundDetails,
   capRefundAmounts,
+  computeOverpayRemainder,
+  OVERPAY_SENTINEL,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
@@ -291,21 +293,25 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
 }
 
 /**
- * 组合套餐校验（staff 独立副本，与 client `_loadAndValidateBundle` / admin 口径对齐）：
+ * 组合套餐校验（staff 独立副本）：
  * - 校验商品是套餐、子项归属、分组配额（全选=种类数 / 选N=数量合计）
  * - 返回 Map<skuId, {listPrice, salePrice}>（mall_product_skus 下沉副本：标价单价/成交价）；
  *   bundleProductId 为空返回 null（普通商品路径）
+ *
+ * 注：开单端（staff/admin）刻意不过滤 is_visible——"客户端展示"开关只应影响 client 商城是否上架，
+ * 开单时所有套餐（含未上架商城的）都应可见可售。client `_loadAndValidateBundle` 仍保留 is_visible 过滤，
+ * 此处是有意分叉，勿强行对齐。
  */
 async function _loadAndValidateBundle(bundleProductId, items) {
   if (!bundleProductId) return null
 
   const productRows = await pg.query(
     `SELECT product_id, is_bundle FROM products
-     WHERE product_id = $1 AND deleted_at IS NULL AND is_visible = true`,
+     WHERE product_id = $1 AND deleted_at IS NULL`,
     [bundleProductId]
   )
   if (productRows.length === 0 || !productRows[0].is_bundle) {
-    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已下架')
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已删除')
   }
 
   const groupRows = await pg.query(
@@ -1893,7 +1899,8 @@ async function detail(ctx) {
       si.paid_sessions,
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
       si.expire_date, si.remark, si.sales_category,
-      si.product_name, si.product_type, si.picked_up_quantity
+      si.product_name, si.product_type, si.picked_up_quantity,
+      si.item_direction
     FROM sale_items si
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
@@ -1957,6 +1964,14 @@ async function detail(ctx) {
     cardBalance = balRows.length > 0 ? Number(balRows[0].balance) : 0
   }
 
+  // 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，可作纯现金退还。
+  // 仅销售单/转换单非历史单有意义（与可退口径一致）；前端退款弹层据此展示「多收可退余数」。
+  const purchaseItems = items.filter((it) => it.item_direction === '购买')
+  const overpayRefundable =
+    ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine'
+      ? computeOverpayRemainder(order, purchaseItems)
+      : 0
+
   ctx.result = {
     order: {
       ...order,
@@ -1968,6 +1983,7 @@ async function detail(ctx) {
     allocations,
     payments,
     cardBalance,
+    overpayRefundable,
   }
 }
 
@@ -2003,10 +2019,14 @@ async function createRefund(ctx) {
   // 与 admin refund_create（全角色）对齐，呼应「员工发起 → 通知店长审批」流程。
   await requireStaffBound()(ctx, async () => {})
 
-  const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
+  const { refSaleOrderId, items, refundReason, handlingFee, includeOverpay } = ctx.event.payload || {}
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
-  if (!items || !Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 退款明细不能为空')
+  // items 允许为空：仅当 includeOverpay=true（多收余数单独退，如部分支付单 7 项已退完只剩零头）。
+  // overpayRefundable>0 的实质性校验在下方算出 origOrder/origItems 之后。
+  if (!items || !Array.isArray(items) || (items.length === 0 && !includeOverpay)) {
+    throw new Error('INVALID_PARAMS: 退款明细不能为空')
+  }
   if (!refundReason) throw new Error('INVALID_PARAMS: 退款原因不能为空')
 
   // scope 守卫
@@ -2064,6 +2084,34 @@ async function createRefund(ctx) {
 
   // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
   let { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
+
+  // 多收余数（overpay，2026-07-18 FY-XSD-WX-2607150028）：部分支付单 received 不能被单次价整除时，
+  // 订单级孤儿零头按整次×单价逐项求和够不到。includeOverpay=true 时把这笔作为哨兵行并入退款：
+  //   refSaleItemId=OVERPAY_SENTINEL（非空！null 会触发 refund-cascade 空明细兜底误全退），
+  //   不挂品项/不退次数/不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
+  // 前端在「整单退」或「仅退余数」场景置 includeOverpay=true。overpayRefundable 已 ≤ 净已收，与 refundCap 自洽。
+  // 两端镜像 admin refunds.ts。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
+  const overpayRefundable = computeOverpayRemainder(origOrder, origItems)
+  let overpayAmount = 0
+  if (includeOverpay && overpayRefundable > 0) {
+    overpayAmount = overpayRefundable
+    refundDetails.push({
+      refSaleItemId: OVERPAY_SENTINEL,
+      skuId: null,
+      productName: '多收余数退款',
+      productType: '多收余数',
+      sessionCount: null,
+      unitPrice: 0,
+      quantity: 0,
+      unitRealPrice: 0,
+      refundAmount: overpayAmount,
+      salesCategory: null,
+      serviceFee: 0,
+      isFullItemRefund: false,
+      isOverpay: true,
+    })
+    totalRefund = Math.round((totalRefund + overpayAmount) * 100) / 100
+  }
 
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
@@ -2147,8 +2195,14 @@ async function createRefund(ctx) {
       refundAmount: d.refundAmount,
       productType: d.productType,
       isFullItemRefund: d.isFullItemRefund,
+      isOverpay: d.isOverpay === true,
     })),
+    overpayAmount,
   })
+
+  // 单项退款判定（方案 D）：排除 overpay 哨兵行后的真实明细仅 1 条 → 存其 refSaleItemId/quantity 供 cascade partial 分支
+  const realDetails = refundDetails.filter((d) => !d.isOverpay)
+  const singleRealItem = realDetails.length === 1 ? realDetails[0] : null
 
   try {
   await pg.transaction(async (client) => {
@@ -2167,8 +2221,9 @@ async function createRefund(ctx) {
         refundReason,
         // 镜像 admin refunds.ts 规则（方案 D）：单项退款 → 存首项 → cascade 走 partial 分支（按 saleItemId 精确回滚）；
         // 多项/整单退款 → 存 null → cascade 走 whole-order 分支（按 sale_order_id 全量回滚），避免欠回滚首项外的分成/提成/提货
-        refundDetails.length === 1 ? (refundDetails[0].refSaleItemId || null) : null,
-        refundDetails.length === 1 ? (refundDetails[0].quantity || null) : null,
+        // overpay 哨兵行不计入「单项」判定（refSaleItemId='OVERPAY' 非真实品项，写入会违反 FK）。
+        singleRealItem ? (singleRealItem.refSaleItemId || null) : null,
+        singleRealItem ? (singleRealItem.quantity || null) : null,
         detailNote,
         now,
       ]

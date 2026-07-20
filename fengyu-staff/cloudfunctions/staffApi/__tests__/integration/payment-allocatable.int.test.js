@@ -227,9 +227,10 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
   })
 })
 
-// 转换单（业绩转移模型）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
-// 修复前：items.length===0 早返回 → 跳过置 allocation_status='待分配' → 回款行永远 NULL →
-//         被营业额分配列表 IS NOT NULL 过滤掉。修复后：仍 return []（不产生 spai），但置回款行『待分配』。
+// 转换单（按回款逐笔分配）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
+// 旧逻辑：items.length===0 早返回，不产 spai、回款行状态靠回填补；新逻辑：按本笔净实收落 1 条 spai
+//         到「转入」行（业绩载体），与销售单一样支持按每笔回款逐笔分配。转出/转入行 received 不受
+//         recalc STEP1 影响（只看『购买』行）。
 describe('capture 转换单（无「购买」明细，业绩转移）', () => {
   const CONV_ORDER = `IT-PA-CONV-${RUN}`
   const CONV_OUT = `IT-PA-CONV-OUT-${RUN}` // 转出（旧卡剩余价值，负数）
@@ -264,7 +265,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(purchaseCount.rows[0].n).toBe(0)
   })
 
-  it('capture 返回 []（无 spai）但回款行置「待分配」让转换单在列表可见', async () => {
+  it('capture 落 1 条 spai 到转入行（amount=本笔净实收），回款行置「待分配」', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -281,12 +282,13 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 转换单无「购买」明细 → 不产生 spai
-    expect(out).toEqual([])
+    // 转换单 → 落 1 条 spai 到转入行 CONV_IN，amount=789（本笔净实收，非转入行 received=1000）
+    expect(out).toEqual([{ saleItemId: CONV_IN, amount: 789, salesCategory: '自销自耗' }])
     const m = await allocatableMap(salePaymentId)
-    expect(Object.keys(m).length).toBe(0)
+    expect(Object.keys(m).length).toBe(1)
+    expect(m[CONV_IN].amount).toBe(789)
+    expect(m[CONV_IN].salesCategory).toBe('自销自耗')
 
-    // 但回款行被置「待分配」（修复点：不再短路跳过，让转换单在营业额分配列表可见）
     const ps = await client.query(
       `SELECT allocation_status FROM sale_order_payments WHERE id = $1`,
       [salePaymentId],
@@ -301,5 +303,48 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       [CONV_ORDER],
     )
     expect(o.rows[0].allocation_status).toBe('待分配')
+  })
+
+  it('无转入行兜底：仅置回款行「待分配」，不产 spai', async () => {
+    const CONV_NOIN = `IT-PA-CONV-NOIN-${RUN}`
+    const CONV_NOIN_OUT = `IT-PA-CONV-NOIN-OUT-${RUN}`
+    await client.query(
+      `INSERT INTO sale_orders
+         (sale_order_id, status, sale_order_type, market_name, store_id, store_name,
+          sale_order_datetime, total_amount, payment_method, received)
+       VALUES ($1, '已支付', '转换单', '集成测试市场', $2, '集成测试门店', NOW(), 500, '线下', 500)`,
+      [CONV_NOIN, storeId],
+    )
+    await client.query(
+      `INSERT INTO sale_items
+         (sale_item_id, sale_order_id, store_id, item_direction, product_type, session_count,
+          unit_price, unit_real_price, sale_amount, received, quantity, sales_category)
+       VALUES ($1, $2, $3, '转出', '疗程卡', 1, 100, 100, -500, -500, 1, '自销自耗')`,
+      [CONV_NOIN_OUT, CONV_NOIN, storeId],
+    )
+    const pay = await client.query(
+      `INSERT INTO sale_order_payments
+         (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
+       VALUES ($1, '首次支付', 500, '线下', '已支付', 'staff', NOW()) RETURNING id`,
+      [CONV_NOIN],
+    )
+    const salePaymentId = Number(pay.rows[0].id)
+
+    const out = await capturePaymentAllocatables(client, {
+      salePaymentId,
+      saleOrderId: CONV_NOIN,
+      eventAmount: 500,
+      directedItems: null,
+    })
+
+    // 异常转换单（无转入行业绩载体）→ 兜底仅置回款行『待分配』，不产 spai
+    expect(out).toEqual([])
+    const m = await allocatableMap(salePaymentId)
+    expect(Object.keys(m).length).toBe(0)
+    const ps = await client.query(
+      `SELECT allocation_status FROM sale_order_payments WHERE id = $1`,
+      [salePaymentId],
+    )
+    expect(ps.rows[0].allocation_status).toBe('待分配')
   })
 })

@@ -9,7 +9,17 @@
  * 未使用数量按 sale_items.product_type 区分（2026-05-21 单品合并后）：
  *   疗程卡（含原单品=1 次卡）：remaining_sessions
  *   家居产品：quantity − picked_up_quantity
+ *
+ * 多收余数（overpay，2026-07-18 ticket FY-XSD-WX-2607150028）：
+ *   部分支付单 received 不能被单次价整除时，差额是订单级孤儿（不落任何品项 received），
+ *   按整次×单价逐项求和永远够不到它。补一条订单级纯现金退款（哨兵行 OVERPAY_SENTINEL）：
+ *     overpayRefundable = max(0, (received − refunded − 已消耗价值) − Σ(未用整次×单价))
+ *   不挂品项、不退次数、不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
+ *   两端镜像 admin lib/refund.ts。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
  */
+
+/** 多收余数退款哨兵 refSaleItemId（非空，禁用 null：refund-cascade.js 空明细兜底会把全品项当全退） */
+const OVERPAY_SENTINEL = 'OVERPAY'
 
 /**
  * 计算单个 sale_item 的可退未使用数量
@@ -31,6 +41,38 @@ function calculateUnusedQuantity(item) {
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
   return Math.max(0, quantity - pickedUp)
+}
+
+/**
+ * 计算订单级「多收余数」可退额（overpay）。
+ *
+ * 部分支付单 received 不能被单次价整除时，超出 Σ(整次×单价) 的零头是订单级孤儿，
+ * 逐项整次退款够不到它。本函数算出这笔可退的纯现金余数：
+ *   overpay = max(0, netReceived − 已消耗价值 − Σ(未用整次×单价))
+ * 其中 netReceived = received − refunded_amount（订单仍持有的实收）。
+ *
+ * @param {object} order sale_orders 行（需 received / refunded_amount）
+ * @param {Array<object>} origItems 原单 sale_items（item_direction='购买'）
+ * @returns {number} 多收余数可退额（≥0，已 round 到分）
+ */
+function computeOverpayRemainder(order, origItems) {
+  const netReceived = Math.max(0, (Number(order && order.received) || 0) - (Number(order && order.refunded_amount) || 0))
+  let consumedValue = 0
+  let maxSessionRefundable = 0
+  for (const it of origItems || []) {
+    const urp = Number(it.unit_real_price) || 0
+    if (it.product_type === '疗程卡') {
+      const sc = Number(it.session_count) || 0
+      const rem = Number(it.remaining_sessions) || 0
+      consumedValue += Math.max(0, sc - rem) * urp
+    } else {
+      consumedValue += (Number(it.picked_up_quantity) || 0) * urp
+    }
+    maxSessionRefundable += calculateUnusedQuantity(it) * urp
+  }
+  consumedValue = Math.round(consumedValue * 100) / 100
+  maxSessionRefundable = Math.round(maxSessionRefundable * 100) / 100
+  return Math.max(0, Math.round((netReceived - consumedValue - maxSessionRefundable) * 100) / 100)
 }
 
 /**
@@ -307,7 +349,9 @@ async function notifyRefundResult(client, { paymentId, saleOrderId, recipientEmp
 }
 
 module.exports = {
+  OVERPAY_SENTINEL,
   calculateUnusedQuantity,
+  computeOverpayRemainder,
   buildRefundDetails,
   capRefundAmounts,
   splitRefundByOriginalPayment,

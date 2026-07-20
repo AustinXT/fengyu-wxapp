@@ -1711,7 +1711,7 @@ export const deleteMallCategory = withPermission(
  *   2026-05-20：'充值卡' 已退出 SKU/商品域，admin 走独立充值单入口（card 模块）。
  *
  * 特殊 '__bundle__'：
- *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
+ *   返回 `products WHERE is_bundle=true AND deleted_at IS NULL` 的套餐（开单页无视 is_visible），
  *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
  *
  * 特殊 '__normal__'（普通商品 = 非体验卡 SKU 的所有二级分类）：
@@ -1823,7 +1823,7 @@ export const getProductsByKind = withPermission(
   'product:list',
   async (_session, kind: ProductKindForOrder): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
-    // 套餐商品：products WHERE is_bundle AND is_visible AND deleted_at IS NULL
+    // 套餐商品：products WHERE is_bundle AND deleted_at IS NULL（开单页无视 is_visible，与普通商品/体验卡口径一致）
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1834,7 +1834,7 @@ export const getProductsByKind = withPermission(
         sortOrder: products.sortOrder,
       })
       .from(products)
-      .where(and(eq(products.isBundle, true), eq(products.isVisible, true), isNull(products.deletedAt)))
+      .where(and(eq(products.isBundle, true), isNull(products.deletedAt)))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
 

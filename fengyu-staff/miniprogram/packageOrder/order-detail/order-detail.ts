@@ -91,6 +91,8 @@ interface OrderDetailResponse {
   payments?: RawPayment[];
   /** 顾客储值卡余额（供回款弹层「使用储值卡抵扣」自动抵满；无账户=0，无顾客=null） */
   cardBalance?: number | null;
+  /** 多收余数可退额（部分支付单 received 不能被单次价整除时的订单级孤儿零头） */
+  overpayRefundable?: number | null;
 }
 
 // ===== 展示层类型（camelCase，用于 WXML 绑定） =====
@@ -160,7 +162,13 @@ interface DisplayOrder {
   remark: string;
   items: DisplayOrderItem[];
   payments: DisplayPayment[];
+  /** 多收余数可退额（0=无）；退款弹层据此展示「多收可退余数」选项 */
+  overpayRefundable: string;
 }
+
+// 多收余数退款选项哨兵 id（与云函数 OVERPAY_SENTINEL 一致）：退款弹层勾选该项 →
+// createRefund 带 includeOverpay=true，云函数把订单级孤儿零头作纯现金并入退款（不挂品项/不退次数/不触发级联）。
+const OVERPAY_OPTION_ID = 'OVERPAY';
 
 Page({
   data: {
@@ -322,6 +330,7 @@ Page({
           remark: o.remark || '',
           items,
           payments,
+          overpayRefundable: Number(res.overpayRefundable || 0).toFixed(2),
         },
         currentRemainingPayable: remainingPayable,
         repayCardBalance: res.cardBalance != null ? Number(res.cardBalance) : 0,
@@ -471,6 +480,15 @@ Page({
             ? it.itemName
             : `${it.itemName}（整卡退 ${it.paidUnusedSessions} 次）`,
       }));
+    // 多收余数（overpay）：部分支付单实收不能被单次价整除时的零头，作为独立可勾选项追加。
+    // 全选品项时一并勾选 → 整单退全额；7 项已退完只剩零头时它是唯一项 → 余数单独退。
+    const overpay = Number(o.overpayRefundable || 0);
+    if (overpay > 0) {
+      options.push({
+        saleItemId: OVERPAY_OPTION_ID,
+        label: `多收余数退款 ¥${overpay.toFixed(2)}`,
+      });
+    }
     this.setData({
       showRefundDialog: true,
       refundReason: '',
@@ -494,18 +512,23 @@ Page({
       wx.showToast({ title: '请填写退款原因', icon: 'none' });
       return;
     }
-    if (!refundSelectedIds.length) {
+    // 拆分：真实品项 vs 多收余数哨兵。余数单独退时 items 可空（云函数 includeOverpay 兜底放行）。
+    const includeOverpay = refundSelectedIds.includes(OVERPAY_OPTION_ID);
+    const items = refundSelectedIds
+      .filter((id) => id !== OVERPAY_OPTION_ID)
+      .map((saleItemId) => ({ saleItemId }));
+    if (!items.length && !includeOverpay) {
       wx.showToast({ title: '请至少选择一个退款项', icon: 'none' });
       return;
     }
     this.setData({ submitting: true });
     try {
       // 仅退选中项；不带 refundQuantity → 后端疗程卡强制整卡全退、家居退全部未提货
-      const items = refundSelectedIds.map((saleItemId) => ({ saleItemId }));
       await callStaffApi('order.createRefund', {
         refSaleOrderId: order.saleOrderId,
         items,
         refundReason: refundReason.trim(),
+        includeOverpay,
       });
       this.setData({ showRefundDialog: false });
       wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });

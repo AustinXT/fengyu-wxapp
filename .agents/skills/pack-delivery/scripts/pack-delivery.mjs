@@ -109,7 +109,7 @@ function allowed(rel, base, isDir) {
   const parts = rel.split(path.sep)
   // 部署 admin 必需文件/目录白名单（覆盖下方 EXCLUDE_TOP .claude / EXCLUDE_FILES lockfile）
   //   目录若是白名单祖先(.claude / .claude/skills)也放行进入遍历，内部再由本规则精确过滤；
-  //   release-prod 等同目录其他 skill 不被命中 → 仍被 EXCLUDE_TOP '.claude' 排除
+  //   release-all 等同目录其他 skill 不被命中 → 仍被 EXCLUDE_TOP '.claude' 排除
   if (DEPLOY_REQUIRED_DIRS.some((d) => rel === d || rel.startsWith(d + '/') || (isDir && d.startsWith(rel + '/')))) return true
   if (!isDir && DEPLOY_REQUIRED_FILES.has(rel)) return true
   // envs/ 下只放行 *.example：排除真值(prod.env/dev.env/.active)与密钥(*.pem/*.cer)

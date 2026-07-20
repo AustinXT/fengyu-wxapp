@@ -31,6 +31,7 @@ import {
   createTestSaleOrder, cleanupTestData,
 } from '../helpers/fixtures.mjs'
 import { cleanupClientExtras, createTestClient2 } from '../helpers/client-fixtures.mjs'
+import { DEPOSIT_REFUND_REMARK } from '../../../cloudfunctions/clientApi/utils/deposit-refund-remark.js'
 
 /**
  * 本地辅助：创建一个测试服务单 + service_items 行
@@ -43,6 +44,7 @@ async function createTestServiceOrder({
   storeId = TEST_STORE_ID,
   employeeId = TEST_MANAGER_EMP_ID,
   status = '待服务',
+  remark = null,
 } = {}) {
   if (!serviceOrderId) throw new Error('createTestServiceOrder: serviceOrderId required')
   if (!saleItemId) throw new Error('createTestServiceOrder: saleItemId required')
@@ -54,11 +56,11 @@ async function createTestServiceOrder({
     await client.query(
       `INSERT INTO service_orders (
          service_order_id, status, service_order_type, market_name, store_id,
-         service_date, assigned_employee_id, client_user_id
+         service_date, assigned_employee_id, client_user_id, remark
        )
        VALUES ($1, $2::service_order_status, '售前'::service_order_type, $3, $4,
-               CURRENT_DATE, $5, $6)`,
-      [serviceOrderId, status, `${NS}_市场`, storeId, employeeId, clientUserId]
+               CURRENT_DATE, $5, $6, $7)`,
+      [serviceOrderId, status, `${NS}_市场`, storeId, employeeId, clientUserId, remark]
     )
     const itemId = `${serviceOrderId}_SI1`
     await client.query(
@@ -146,6 +148,45 @@ async function caseListPagination() {
   }
 }
 
+async function caseListHidesDepositRefund() {
+  await ensureTestStore()
+  await createTestStaff()
+  await createTestClient()
+  // 正常服务单（无 remark，应出现在 list）
+  const { saleItemId: siOk } = await createTestSaleOrder({
+    saleOrderId: `${NS}_ORD_LIST_OK`,
+    clientUserId: TEST_CLIENT_USER_ID,
+    status: '已支付',
+  })
+  await createTestServiceOrder({
+    serviceOrderId: `${NS}_SVC_LIST_OK`,
+    saleItemId: siOk,
+    status: '已完成',
+  })
+  // 寄存单退款专用服务单（remark = DEPOSIT_REFUND_REMARK，应被 client.list 过滤掉）
+  const { saleItemId: siDr } = await createTestSaleOrder({
+    saleOrderId: `${NS}_ORD_LIST_DR`,
+    clientUserId: TEST_CLIENT_USER_ID,
+    status: '已支付',
+  })
+  await createTestServiceOrder({
+    serviceOrderId: `${NS}_SVC_LIST_DR`,
+    saleItemId: siDr,
+    status: '已完成',
+    remark: DEPOSIT_REFUND_REMARK,
+  })
+
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'service.list', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const ids = res.data.records.map(r => r.service_order_id)
+  if (ids.includes(`${NS}_SVC_LIST_DR`)) {
+    throw new Error(`寄存单退款专用单不应出现在 list，got ${JSON.stringify(ids)}`)
+  }
+  if (!ids.includes(`${NS}_SVC_LIST_OK`)) {
+    throw new Error(`正常服务单应出现在 list，got ${JSON.stringify(ids)}`)
+  }
+}
+
 async function caseDetailById() {
   await ensureTestStore()
   await createTestStaff()
@@ -202,6 +243,7 @@ const CASES = [
   ['list empty → []', caseListEmpty],
   ['list 1 service order → returns with items', caseListHappy],
   ['list pagination → pageSize=2 returns 2 of 3', caseListPagination],
+  ['list hides 寄存单退款专用服务单', caseListHidesDepositRefund],
   ['detail by serviceOrderId → serviceOrder + items snapshot', caseDetailById],
   ['detail cross-user → service order not found', caseDetailCrossUserDenied],
 ]

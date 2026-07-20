@@ -6,6 +6,7 @@
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { loadServiceItems, finalizeServiceOrder } = require('../utils/service-finalize')
+const { DEPOSIT_REFUND_REMARK } = require('../utils/deposit-refund-remark')
 const { checkText } = require('../utils/wx-sec-check')
 
 const MAX_COMMENT_LENGTH = 500
@@ -104,9 +105,10 @@ async function list(ctx) {
     LEFT JOIN staff_wechat_users sw ON so.assigned_employee_id = sw.employee_id
     LEFT JOIN service_reviews sr ON so.service_order_id = sr.service_order_id
     WHERE so.client_user_id = $1
+      AND so.remark IS DISTINCT FROM $2
     ORDER BY so.created_at DESC
-    LIMIT $2 OFFSET $3
-  `, [userId, pageSize, offset])
+    LIMIT $3 OFFSET $4
+  `, [userId, DEPOSIT_REFUND_REMARK, pageSize, offset])
 
   // 批量查询服务明细
   if (records.length > 0) {

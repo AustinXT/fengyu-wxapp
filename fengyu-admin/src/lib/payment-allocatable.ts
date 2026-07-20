@@ -70,12 +70,30 @@ export async function capturePaymentAllocatables(
     sales_category: string | null
   }>
   if (items.length === 0) {
-    // 转换单（明细仅转出/转入、无『购买』行）：不产生 spai，但仍置回款行『待分配』，
-    // 让其在营业额分配列表可见；业绩转移由 admin 整单分配（batchSaveAllocations）处理。
+    // 转换单（明细仅转出/转入、无『购买』行）：按本笔净实收额落到「转入」行（业绩载体），
+    // 与销售单一样按每笔回款逐笔分配。取转入行（LIMIT 1，按 sale_item_id 稳定排序）作 SPAI 挂载点；
+    // 多笔回款各自 capture 累加 = 总实收；无转入行兜底：仅置回款行『待分配』，不产 SPAI（保持列表可见）。
+    const convRes = await tx.execute(sql`
+      SELECT sale_item_id, sales_category
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId} AND item_direction = '转入'
+       ORDER BY sale_item_id
+       LIMIT 1
+    `)
     await tx.execute(sql`
       UPDATE sale_order_payments SET allocation_status = '待分配'::allocation_status WHERE id = ${salePaymentId}
     `)
-    return []
+    const convRow = (convRes as unknown as Array<{ sale_item_id: string; sales_category: string | null }>)[0]
+    if (!convRow) return []
+    const convCat = convRow.sales_category || null
+    await tx.execute(sql`
+      INSERT INTO sale_payment_allocatable_items
+        (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+      VALUES (${salePaymentId}, ${saleOrderId}, ${convRow.sale_item_id}, ${evt.toFixed(2)}::numeric, ${convCat}, NOW())
+      ON CONFLICT (sale_payment_id, sale_item_id)
+      DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
+    `)
+    return [{ saleItemId: convRow.sale_item_id, amount: evt, salesCategory: convCat }]
   }
   const catMap = new Map(items.map((i) => [i.sale_item_id, i.sales_category]))
 
