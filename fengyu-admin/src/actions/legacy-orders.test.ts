@@ -91,6 +91,8 @@ vi.mock('next/cache', () => ({
 import {
   listLegacyOrders,
   updateLegacyOrderAmount,
+  approveLegacyOrder,
+  batchApproveLegacyOrders,
   searchWorkfineCustomer,
   previewWorkfineOrders,
   importWorkfineOrdersByCustomer,
@@ -99,6 +101,10 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+import {
+  recomputeCustomerTagsInTx,
+  recomputeMemberLevelOnly,
+} from '@/lib/recompute-customer-tags'
 import { and, isNotNull, isNull, sql } from 'drizzle-orm'
 import {
   searchCustomersByPhone,
@@ -243,6 +249,100 @@ describe('updateLegacyOrderAmount — 事务流程', () => {
         changes: { totalAmount: { from: '200.00', to: '300.00' } },
       }),
     )
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// approveLegacyOrder / batchApproveLegacyOrders — 历史单审核不写 payments
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('approveLegacyOrder — 历史单口径：审核不补登 payments 流水', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('审核通过 → UPDATE received/status，不写 sale_order_payments', async () => {
+    const executeSpy = vi.fn().mockResolvedValueOnce([{ client_user_id: 'U-1' }])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      return await fn({ execute: executeSpy })
+    })
+
+    const res = await approveLegacyOrder('FY-XSD-1', '2026-05-19T00:00:00.000Z')
+
+    expect(res).toEqual({ success: true, clientUserId: 'U-1' })
+
+    // sql 模板被 mock 成 { type:'sql', raw: strings.join('?') }，raw 含 SQL 文本（参数位为 ?）
+    const sqlTexts = executeSpy.mock.calls.map((c) => (c[0] as any).raw as string)
+    // UPDATE received=total_amount / status='已支付' 正常执行
+    expect(sqlTexts.some((s) => /UPDATE\s+sale_orders/i.test(s) && s.includes('已支付'))).toBe(true)
+    // 不写任何 sale_order_payments（历史单无回款结构）
+    expect(sqlTexts.some((s) => /INSERT\s+INTO\s+sale_order_payments/i.test(s))).toBe(false)
+
+    // 会员/标签重算保留（历史单仍作为消费痕迹计入会员等级与消费档位）
+    expect(recomputeCustomerTagsInTx).toHaveBeenCalledWith(expect.anything(), 'U-1')
+    expect(recomputeMemberLevelOnly).toHaveBeenCalledWith('U-1')
+  })
+
+  it('UPDATE 命中 0 行（已被审核/状态变更）→ CONFLICT，不调重算', async () => {
+    const executeSpy = vi.fn().mockResolvedValueOnce([]) // RETURNING 空
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      return await fn({ execute: executeSpy })
+    })
+
+    await expect(
+      approveLegacyOrder('FY-XSD-1', '2026-05-19T00:00:00.000Z'),
+    ).rejects.toThrow(/CONFLICT/)
+
+    expect(recomputeCustomerTagsInTx).not.toHaveBeenCalled()
+    expect(recomputeMemberLevelOnly).not.toHaveBeenCalled()
+  })
+})
+
+describe('batchApproveLegacyOrders — 历史单口径：审核不补登 payments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('批量审核 → 每条 UPDATE，不写 payments；affectedUserIds 去重', async () => {
+    const executeSpy = vi
+      .fn()
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }])
+      .mockResolvedValueOnce([{ client_user_id: 'U-2' }])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      return await fn({ execute: executeSpy })
+    })
+
+    const res = await batchApproveLegacyOrders([
+      { saleOrderId: 'FY-1', expectedUpdatedAt: '2026-05-19T00:00:00.000Z' },
+      { saleOrderId: 'FY-2', expectedUpdatedAt: '2026-05-19T00:00:00.000Z' },
+    ])
+
+    expect(res.success).toBe(true)
+    expect(res.approvedCount).toBe(2)
+    expect([...res.affectedUserIds].sort()).toEqual(['U-1', 'U-2'])
+
+    const sqlTexts = executeSpy.mock.calls.map((c) => (c[0] as any).raw as string)
+    expect(sqlTexts.filter((s) => /UPDATE\s+sale_orders/i.test(s)).length).toBe(2)
+    expect(sqlTexts.some((s) => /INSERT\s+INTO\s+sale_order_payments/i.test(s))).toBe(false)
+  })
+
+  it('任一条 UPDATE 命中 0 行 → 整批 CONFLICT 回滚', async () => {
+    const executeSpy = vi
+      .fn()
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }])
+      .mockResolvedValueOnce([]) // 第二条 RETURNING 空
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      return await fn({ execute: executeSpy })
+    })
+
+    await expect(
+      batchApproveLegacyOrders([
+        { saleOrderId: 'FY-1', expectedUpdatedAt: 't1' },
+        { saleOrderId: 'FY-2', expectedUpdatedAt: 't2' },
+      ]),
+    ).rejects.toThrow(/CONFLICT/)
   })
 })
 

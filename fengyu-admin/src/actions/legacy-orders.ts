@@ -201,21 +201,9 @@ export const approveLegacyOrder = withPermission(
       }
       const uid = rows[0].client_user_id
 
-      // 补一条「首次支付/已支付」流水，维持资金不变量 I1（received = Σ sop[已支付].amount）。
-      // 历史单导入时 received=0、无流水；审核通过视同已结清：金额=total_amount、时间=销售日期。
-      // INSERT…SELECT 全程在 SQL 内取值，避免 JS Date 往返触发无时区 timestamp 时区偏移；
-      // total_amount=0 时 SELECT 0 行不插入，received=0 与空流水仍满足 I1。
-      await tx.execute(sql`
-        INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method,
-          status, source_end, operator_employee_id, paid_at, note
-        )
-        SELECT sale_order_id, '首次支付'::payment_change_type, total_amount, '无'::payment_method,
-               '已支付'::payment_flow_status, 'admin'::payment_source_end, ${session.employeeId},
-               sale_order_datetime, '历史订单核对通过补登'
-          FROM sale_orders
-         WHERE sale_order_id = ${saleOrderId} AND total_amount > 0
-      `)
+      // 历史单口径：只 UPDATE received=total_amount 平移旧系统实收，不补登 sale_order_payments
+      // 流水（历史单无回款结构；资金不变量 I1 对 legacy_source='workfine' 豁免）。
+      // member_level / 标签重算保留——历史单仍作为「消费痕迹」计入会员等级与消费档位。
 
       if (uid) {
         await recomputeCustomerTagsInTx(tx, uid)
@@ -316,18 +304,7 @@ export const batchApproveLegacyOrders = withPermission(
         }
         if (rows[0].client_user_id) affectedUserIds.add(rows[0].client_user_id)
 
-        // 补流水维持资金不变量 I1（同 approveLegacyOrder）
-        await tx.execute(sql`
-          INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method,
-            status, source_end, operator_employee_id, paid_at, note
-          )
-          SELECT sale_order_id, '首次支付'::payment_change_type, total_amount, '无'::payment_method,
-                 '已支付'::payment_flow_status, 'admin'::payment_source_end, ${session.employeeId},
-                 sale_order_datetime, '历史订单核对通过补登'
-            FROM sale_orders
-           WHERE sale_order_id = ${it.saleOrderId} AND total_amount > 0
-        `)
+        // 历史单口径：只 UPDATE received 平移实收，不补登支付流水（同 approveLegacyOrder）
 
         await logOperation(session, 'legacy_order.approve', 'sale_order', it.saleOrderId, {
           _v: 3,

@@ -10,6 +10,7 @@
  *
  * 5 项不变量（详见 ticket §1.2 + audit-CC1 §7）：
  *   I1: sale_orders.received        = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
+ *       （豁免 legacy_source='workfine'：历史单 received 为旧系统平移值、无支付流水）
  *   I2: sale_orders.refunded_amount = -Σ sop[已支付, 退款].amount
  *   I3: client_wechat_users.points_balance = Σ point_transactions.amount
  *   I4: prepaid_cards.balance       = Σ card_transactions.amount
@@ -51,12 +52,14 @@ const SAMPLE_LIMIT = 100
 export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsResult> {
   const details: ViolationSample[] = []
 
-  // ── I1: received = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount ──
+  // ── I1: received = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
+  //        豁免 legacy_source='workfine'（历史单无支付流水，received 为平移值） ──
   const r1 = (await db.execute(sql`
     SELECT so.sale_order_id,
            so.received::numeric                  AS received,
            COALESCE(SUM(sop.amount::numeric), 0) AS computed
     FROM sale_orders so
+    WHERE so.legacy_source IS DISTINCT FROM 'workfine'
     LEFT JOIN sale_order_payments sop
       ON sop.sale_order_id = so.sale_order_id
      AND sop.status = '已支付'
