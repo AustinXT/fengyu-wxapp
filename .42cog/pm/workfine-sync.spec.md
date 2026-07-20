@@ -502,6 +502,8 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 > 三表核心字段（`UDF_S_372` 单号 / `350` 日期 / `348` 市场 / `349` 门店 / `370` 姓名 / `507` 收款合计）**同名同义**，可直接 UNION。回款单额外有 `UDF_S_917`（原销售单/转换单号引用）。`UDF_S_507` 在三表都 = 明细实收聚合 = 顾客实付（销售单收款合计 / 转换单补差价 / 回款单补交欠款）。
 >
 > **admin 历史拉取口径**（仅记录消费痕迹：门店+时间+实付金额）：`queryOrdersByCustomerId` UNION 三表主表，PG 一律标 `sale_order_type='销售单'`，来源类型存 `legacy_raw_snapshot.source_type` 备查，**不拉明细、不关联原单**。下文字段映射表（基于 UDT_S_209）对三表主表均适用（字段编号相同）；转换单/回款单明细表编号不同（`UDT_M_704` / `UDT_M_263`），历史拉取不涉及。
+>
+> **审核口径**（`approveLegacyOrder` / `batchApproveLegacyOrders`）：只 `UPDATE received=total_amount`（= 旧系统实收 `UDF_S_507`）+ `paid_at=sale_order_datetime`，**不补登 `sale_order_payments` 流水**——历史单无回款结构、无支付流水。资金不变量 I1（`received = Σ sop[已支付].amount`）对 `legacy_source='workfine'` 豁免（见 `audit-payment-invariants.ts`）。会员等级 / 消费档位重算保留（历史单仍作为消费痕迹计入）。存量已审核历史单的补登流水由 `db/scripts/backfill-legacy-payments-cleanup.js` 清理。
 
 #### 主表 UDT_S_209 → PG sale_orders 映射
 

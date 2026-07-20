@@ -1,6 +1,6 @@
 # Admin Chrome 手动 E2E 测试流程
 
-**最近一次更新**：2026-05-19（测试库切到 5434/fengyu；ticket 2026-05-18-e2e-chains-test-db-mismatch.md 决策 B）
+**最近一次更新**：2026-05-19（测试库切到 5433/fengyu_wxapp；ticket 2026-05-18-e2e-chains-test-db-mismatch.md 决策 B）
 **目的**：为"用真实浏览器（人工 / Claude in Chrome / Playwright headed）走一遍 admin 业务流程"提供可执行的测试地图。
 **与现有 Playwright E2E 的区别**：现有 25 个 `tests/e2e-pages/*.spec.ts` 中 87% 是页面渲染断言，本套 spec 聚焦**跨页面、跨角色、有状态机、有金额/积分会计恒等式**的端到端业务闭环——这些场景写自动化成本高、肉眼一眼能看出问题。
 
@@ -57,7 +57,7 @@ fengyu-admin/tests/e2e-chains/
 
 - 跑链路前先读 §0.5 的固定夹具，**不要**自己造顾客 / SKU
 - 每条链路结束后**必须**跑清理 SQL 或调用 `_helpers/cleanup.ts`，否则下次跑会数据冲突
-- 跑 SQL 一律加 `PGPASSWORD=fengyu123 ` 前缀连 5434（参见 §0.3）
+- 跑 SQL 一律加 `PGPASSWORD=fengyu123 ` 前缀连 5433（参见 §0.3）
 - 状态枚举值**全部用中文**（`已支付` `待确认` `已完成`），不是英文
 - 链路间上下文（订单号 / 服务单号）通过 `./.last-test-context.json` 传递（§0.6）
 - 写新 spec 之前，**必读** `_helpers/cleanup.ts` 与最近一次成功的相邻链路 spec，复用其 helper 与选择器
@@ -70,13 +70,13 @@ fengyu-admin/tests/e2e-chains/
 | 项 | 命令 / 地址 |
 |----|------------|
 | Admin dev server | `cd fengyu-admin && bun run dev` → `http://localhost:3000` |
-| 数据库 | **测试与开发共库** `47.113.202.7:5434/fengyu`（用户 `fengyu` 密码 `fengyu123`）。FY-FIX-* / FY-TEST-* 命名空间作为测试夹具与日常数据共存；冷备库 5433/fengyu_wxapp 不再用于跑测试 |
-| 切换 admin 连接 | `fengyu-admin/.env.local` 的 `DATABASE_URL` 默认即 5434/fengyu，无需手切 |
+| 数据库 | **测试与开发共库** `47.113.202.7:5433/fengyu_wxapp`（用户 `fengyu` 密码 `fengyu123`）。FY-FIX-* / FY-TEST-* 命名空间作为测试夹具与日常数据共存；冷备库 5433/fengyu_wxapp 不再用于跑测试 |
+| 切换 admin 连接 | `fengyu-admin/.env.local` 的 `DATABASE_URL` 默认即 5433/fengyu_wxapp，无需手切 |
 | Cron worker（按需） | `cd fengyu-admin && bun run cron:once` 手动触发会员/积分日任务 |
 
 ## 0.2 测试账号
 
-> 库：5434/fengyu。密码统一 `fengyu2026`（bcrypt hash 已写入 `admin_passwords`，`must_change=false`）。
+> 库：5433/fengyu_wxapp。密码统一 `fengyu2026`（bcrypt hash 已写入 `admin_passwords`，`must_change=false`）。
 
 | 角色 | employee_id | 手机号 | 姓名 | scope 类型 | scope_id | 用途 |
 |------|------------|--------|------|-----------|----------|------|
@@ -114,8 +114,8 @@ DELETE FROM staff_wechat_users WHERE employee_id LIKE 'FY-TEST-%';
 定义 shell 别名（CC 跑 bash 时直接复制）：
 
 ```bash
-PSQL_TEST="PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu"
-PGDUMP_TEST="PGPASSWORD=fengyu123 pg_dump -h 47.113.202.7 -p 5434 -U fengyu -d fengyu"
+PSQL_TEST="PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp"
+PGDUMP_TEST="PGPASSWORD=fengyu123 pg_dump -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp"
 ```
 
 每条链路开跑前 / 跑完后：
@@ -132,7 +132,7 @@ eval $PGDUMP_TEST \
 eval $PSQL_TEST < /tmp/snap-before-XXXX.sql
 ```
 
-> 5434/fengyu 是测试 + 开发共用库。`FY-FIX-*` / `FY-TEST-*` 命名空间属于测试夹具范围，spec 跑完务必清理；非该前缀的行视为日常开发数据，不要碰。
+> 5433/fengyu_wxapp 是测试 + 开发共用库。`FY-FIX-*` / `FY-TEST-*` 命名空间属于测试夹具范围，spec 跑完务必清理；非该前缀的行视为日常开发数据，不要碰。
 
 ## 0.4 CC 操作浏览器的执行模式
 
@@ -213,7 +213,7 @@ for (const { phone, file } of ROLES) {
 
 ## 0.5 固定测试夹具（fixtures）
 
-**已就绪**：fixture 已写入 [`test-fixtures.json`](./test-fixtures.json)（5434/fengyu 上以 `FY-FIX-` 为前缀创建）。
+**已就绪**：fixture 已写入 [`test-fixtures.json`](./test-fixtures.json)（5433/fengyu_wxapp 上以 `FY-FIX-` 为前缀创建）。
 
 | Fixture | ID | 用途 |
 |---------|-----|------|
@@ -532,12 +532,12 @@ DELETE FROM staff_wechat_users WHERE employee_id='FY-TEST-MOVE';
 > **修正说明**：`member_level_thresholds` 这个 config key 在代码里**从未存在**，4 个高等级阈值
 > （黑钻 ≥100000 / 金钻 ≥60000 / 粉钻 ≥30000 / 星钻 ≥10000）**硬编码**在
 > `fengyu-admin/src/cron/lib/member-level.ts:25-32`，不走 DB。
-> 仅初钻阈值（`new_member_threshold`，默认 1980）走 `system_configs` 配置，5434 已就绪。
+> 仅初钻阈值（`new_member_threshold`，默认 1980）走 `system_configs` 配置，5433 已就绪。
 
 #### 前置
 - 1 个顾客年度消费额接近升级阈值（差几百元，可在 `client_wechat_users` 找已绑店且 member_level 不是顶级"黑钻"的）
-- `system_configs.key='member_level_benefits'`（5 等级权益配置，5434 已就绪）
-- `system_configs.key='new_member_threshold'`（初钻阈值，默认 1980，5434 已就绪）
+- `system_configs.key='member_level_benefits'`（5 等级权益配置，5433 已就绪）
+- `system_configs.key='new_member_threshold'`（初钻阈值，默认 1980，5433 已就绪）
 - **不要写 `member_level_thresholds`**：4 个高等级阈值是硬编码常量（`src/cron/lib/member-level.ts:25-32`），非 DB 配置
 - 注意：`system_configs` 主键列名是 `key`（不是 `config_key`），过去文档误写为 `config_key`，以 `\d system_configs` 为准
 
@@ -881,7 +881,7 @@ sale_orders.points_used  <=  COALESCE(client_wechat_users.points_balance AT 下�
 
 #### 前置
 - fixture 顾客 `FY-FIX-CLIENT-01` 当前 points_balance（先查一次记基线）
-- `system_configs.key='points_earn_rate'`（如：每 ¥1 = 1 积分）已在 5434 配置
+- `system_configs.key='points_earn_rate'`（如：每 ¥1 = 1 积分）已在 5433 配置
 - cron STEP 5（`audit-points-balance`）已就绪
 
 #### 步骤
@@ -1605,7 +1605,7 @@ SELECT cleanup_sale_order(:sale_order_id);
 跑这批新链路前先执行（幂等）：
 
 ```bash
-PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu \
+PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp \
   -f tests/e2e-chains/_helpers/seed-scope-fixtures.sql
 ```
 
@@ -2049,7 +2049,7 @@ SQL
 ## 5. 后续行动建议
 
 1. ~~补 5 个非 admin 测试账号~~ ✅ 已完成（§0.2 7 个 FY-TEST-* 账号已建）
-2. ~~建测试库~~ ✅ 已完成（fixture 已 seed 到 5434/fengyu；旧 5433 路径见 ticket 2026-05-18-e2e-chains-test-db-mismatch.md）
+2. ~~建测试库~~ ✅ 已完成（fixture 已 seed 到 5433/fengyu_wxapp；旧 5433 路径见 ticket 2026-05-18-e2e-chains-test-db-mismatch.md）
 3. ~~建 fixture 文件~~ ✅ 已完成（`test-fixtures.json` 已就绪）
 4. ~~链路 1 / 7 / 9 / 10 优先自动化~~ ✅ 已完成（spec 已写并跑通）
 5. ~~链路 13 / 14 / 15 优先写 spec~~ ✅ 已完成（2026-05-17）

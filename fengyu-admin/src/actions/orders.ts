@@ -47,7 +47,7 @@ const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
 // 寄存单疗程卡「实际单价按实付重算」—— unit_real_price = 实付received / 总次数session_count。
-// 实付=0 的行回落标价单价 unit_price（保持现状，非置 0）；仅 product_type='疗程卡'，家居产品行(session_count NULL)保持标价。
+// 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
 // ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后调用（理由见 staff routes/order.js 同名注释）：
 //   并进通用 recalc 会腰斩所有欠款单 per-session 价（腐蚀提成/退款/转换）；勿 DRY 进 recalcPaidSessionsForOrder。
 // 与 staff routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
@@ -56,7 +56,7 @@ async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Pr
       SET unit_real_price = CASE
             WHEN session_count > 0 AND received > 0
               THEN ROUND(received::numeric / session_count, 2)
-            ELSE unit_price
+            ELSE 0
           END,
           updated_at = NOW()
       WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买' AND product_type = '疗程卡'
@@ -207,8 +207,18 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount > 0 && updRows[0]?.customer_type === '会员客') {
+    // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
+    // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
-      UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = ${clientUserId}
+      UPDATE client_wechat_users SET became_member_at = (
+        SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
+        WHERE o.client_user_id = ${clientUserId}
+          AND o.status IN ('已支付', '已完成')
+          AND o.sale_order_type = '销售单'
+          AND o.total_amount >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        LIMIT 1
+      ) WHERE user_id = ${clientUserId}
     `)
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
@@ -3220,7 +3230,7 @@ export const createDepositOrder = withPermission(
         // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
         await recalcPaidSessionsForOrder(tx, id)
 
-        // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 回落标价）。必须在 recalc 之后。
+        // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 置 0）。必须在 recalc 之后。
         await recomputeDepositRealPrice(tx, id)
 
         return id

@@ -221,29 +221,67 @@ describe('startServiceOrder — scope + 状态推进', () => {
 
 // ── cancelServiceOrder ────────────────────────────────────────────────────────
 
-describe('cancelServiceOrder — scope + 状态推进', () => {
+describe('cancelServiceOrder — scope + 状态守卫', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    mockSelectBefore([{ customerName: '李女士' }])
+    mockSelectBefore([{ status: '待服务', customerName: '李女士' }])
   })
 
-  it('rowCount=0 → 失败', async () => {
-    setupUpdate(0)
-
-    const result = await cancelServiceOrder('svc-1')
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('状态已变更')
-  })
-
-  it('rowCount=1 → 成功', async () => {
+  it('待服务 → 取消成功', async () => {
     setupUpdate(1)
 
     const result = await cancelServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('服务已取消')
+  })
+
+  it('服务中 → 取消成功（口径对齐 staff 三态）', async () => {
+    mockSelectBefore([{ status: '服务中', customerName: '李女士' }])
+    setupUpdate(1)
+
+    const result = await cancelServiceOrder('svc-1')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('服务已取消')
+  })
+
+  it('待客户确认 → 取消成功（口径对齐 staff 三态）', async () => {
+    mockSelectBefore([{ status: '待客户确认', customerName: '李女士' }])
+    setupUpdate(1)
+
+    const result = await cancelServiceOrder('svc-1')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('服务已取消')
+  })
+
+  it('已完成 → 拒绝并提示走退款链路（不触达 update）', async () => {
+    mockSelectBefore([{ status: '已完成', customerName: '李女士' }])
+
+    const result = await cancelServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('退款')
+  })
+
+  it('服务单不存在/无权（select 返回空）→ 失败', async () => {
+    mockSelectBefore([])
+
+    const result = await cancelServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在或无权')
+  })
+
+  it('rowCount=0（并发状态变更）→ 失败', async () => {
+    setupUpdate(0)
+
+    const result = await cancelServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('状态已变更')
   })
 
   it('DB 异常 → 返回友好错误', async () => {
@@ -1009,14 +1047,14 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
   })
 })
 
-// ── exportServiceOrders — 服务单管理页导出（复用 helper，明细展开） ──────────────
-describe('exportServiceOrders — 服务单管理页明细导出（复用提成分配查询）', () => {
+// ── exportServiceOrders — 服务单管理页导出（消耗项目主表，service_items 主链） ──────
+describe('exportServiceOrders — 服务单管理页消耗项目主表导出', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('产出 30 列明细行 + 派生列（与 exportAllocationServiceOrders 同口径）', async () => {
+  it('产出 24 列消耗项目主表行 + 派生列 consumeMoney（无员工提成维度）', async () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([
         {
@@ -1035,11 +1073,6 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
           sessionUsed: 1,
           unitRealPrice: '300.00',
           status: '已完成',
-          employeeName: '王雯馨',
-          positionName: '美容师',
-          allocationRatio: '0.30',
-          commissionRate: '0.1500',
-          commissionAmount: '162.00',
           rating: 5,
           reviewComment: '好评',
           salesCategory: '自销自耗',
@@ -1049,7 +1082,6 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
           serviceDate: '2026-06-08',
           createdAt: new Date('2026-06-08T15:26:32.000Z'),
           remark: null,
-          scId: 1,
         },
       ]),
     )
@@ -1059,13 +1091,15 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
     const r = rows[0]
     expect(r.serviceOrderId).toBe('SO1')
     expect(r.market).toBe('九江')
-    // 派生列：消耗金额 = 单次价 × 次数；分配额 = 消耗金额 × 占比
+    // 派生列：项目消耗金额 = 单次价 × 次数
     expect(r.consumeMoney).toBe(300)
-    expect(r.allocationAmount).toBe(90)
-    expect(r.commissionAmount).toBe(162)
+    // 主表已移除员工提成维度（提成分配明细改由 exportAllocationServiceOrders 承担）
+    expect((r as any).employeeName).toBeUndefined()
+    expect((r as any).allocationAmount).toBeUndefined()
+    expect((r as any).commissionAmount).toBeUndefined()
   })
 
-  it('沿用服务单管理列表筛选口径（parseServiceOrderFilters：不锁已完成，解析 from/to）', async () => {
+  it('强制锁 status=已完成 + 沿用列表筛选口径（解析 from/to/search）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     await exportServiceOrders({ status: '已完成', store: 'store-1', from: '2026-01-01', to: '2026-12-31', q: '王' })
     // date 筛选由 parseServiceOrderFilters 的 from/to → buildServiceOrderConditions 的 gte/lte
@@ -1075,21 +1109,19 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
     expect(ilike).toHaveBeenCalled()
   })
 
-  // 回归守护：v1.3.13 起 exportServiceOrders 改为明细级（service_commissions 主链），
-  // 旧列 itemsSummary 不应再出现。若有人手贱回滚到 serviceOrders 主链，下列断言失败。
-  it('回归守护：v1.3.13 BREAKING — 30 列明细级 shape（无 itemsSummary，有 consumeMoney/allocationAmount）', async () => {
+  // 回归守护：exportServiceOrders 为消耗项目主表（service_items 主链），不含员工提成维度列。
+  // 若有人手贱加回提成列或回滚到 service_commissions 主链，下列断言失败。
+  it('回归守护：24 列消耗项目主表 shape（无员工提成维度，有 consumeMoney）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const { rows } = await exportServiceOrders({})
     expect(rows).toEqual([])
-    // 明细级列集合（30 列，与 services-page.tsx 导出列一一对应）
+    // 主表级列集合（24 列，与 services-page.tsx 导出列一一对应）
     const expectedColumns = [
       'market', 'storeName', 'serviceOrderId', 'saleOrderType', 'serviceOrderType',
       'customerName', 'customerPhone', 'productType', 'categoryL1', 'categoryL2',
       'productName', 'sessionUsed', 'consumeMoney', 'unitRealPrice', 'status',
-      'employeeName', 'positionName', 'allocationRatio', 'allocationAmount',
-      'commissionRate', 'commissionAmount', 'reviewComment', 'rating',
-      'salesCategory', 'customerType', 'openedByName', 'sourceSaleOrderId',
-      'serviceDate', 'createdAt', 'remark',
+      'salesCategory', 'customerType', 'reviewComment', 'rating',
+      'openedByName', 'sourceSaleOrderId', 'serviceDate', 'createdAt', 'remark',
     ]
     // 通过导出空行 + 静态类型对照，断言列集合稳定（防止有人手贱增删列）
     // vitest 无法直接枚举 interface 字段；用「mock 1 行后取 keys」做集合断言
@@ -1100,12 +1132,9 @@ describe('exportServiceOrders — 服务单管理页明细导出（复用提成�
           customerName: null, customerPhone: null, fallbackPhone: null,
           productType: null, categoryL1: null, categoryL2: null, productName: null,
           sessionUsed: null, unitRealPrice: null, status: null,
-          employeeName: null, positionName: null,
-          allocationRatio: null, commissionRate: null, commissionAmount: null,
           rating: null, reviewComment: null,
           salesCategory: null, customerType: null, openedByName: null,
           sourceSaleOrderId: null, serviceDate: null, createdAt: null, remark: null,
-          scId: 1,
         },
       ]),
     )

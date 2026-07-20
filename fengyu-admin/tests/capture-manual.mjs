@@ -4,14 +4,14 @@
 // requirePermission 抛 PERMISSION_DENIED，生产构建脱敏 message 后误显示 500。
 // 现 admin 已全开（DEFAULT_PERMISSION_MATRIX.admin = 全部权限）。
 //
-// 本脚本连本地 admin（应配 DATABASE_URL → 5434 真实业务库），用 admin 账号登录后采集。
+// 本脚本连本地 admin（应配 DATABASE_URL → 5433 真实业务库），用 admin 账号登录后采集。
 //
 // 用法（先起服务，再跑）：
 //   cd fengyu-admin
 //   bun run build && bun run start            # 或 bun run dev（dev 有 React 调试浮层，建议 build+start）
 //   ADMIN_PHONE=13900139000 ADMIN_PASS=<密码> bun tests/capture-manual.mjs
 //
-// 前提：.env.local 的 DATABASE_URL 指向 5434（postgresql://fengyu:***@47.113.202.7:5434/fengyu）。
+// 前提：.env.local 的 DATABASE_URL 指向 5433（postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp）。
 
 import { chromium } from '@playwright/test'
 import { mkdirSync } from 'node:fs'

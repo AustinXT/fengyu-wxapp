@@ -1,6 +1,6 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
@@ -28,6 +28,16 @@ interface PaidOrderItem {
   disabledReason?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
+  /** 品项标签（product_categories.category_name） */
+  category?: string;
+  /** 品项标签色（display_color） */
+  categoryColor?: string;
+  /** 单据类型展示文案（ORDER_TYPE_LABEL 映射后） */
+  saleOrderTypeLabel?: string;
+  /** 拍平后回填：所属销售单号 */
+  saleOrderId?: string;
+  /** 拍平后回填：支付时间（已格式化） */
+  paidAt?: string;
 }
 
 interface PaidOrder {
@@ -36,6 +46,8 @@ interface PaidOrder {
   paidAt: string;
   storeId?: string;
   storeName?: string;
+  /** 单据类型（sale_orders.sale_order_type） */
+  saleOrderType?: string;
   items: PaidOrderItem[];
 }
 
@@ -76,7 +88,7 @@ Page({
     customerResults: [] as Array<{ id: string; name: string; phone: string; phoneMasked?: string; clientUserId?: string }>,
     selectedCustomer: null as null | { id: string; name: string; phone: string; clientUserId?: string },
     // 订单选择
-    paidOrders: [] as PaidOrder[],
+    paidItems: [] as PaidOrderItem[],
     selectedItems: [] as Array<{ saleItemId: string; itemName: string; spec: string; saleOrderId: string; sessionCount: number }>,
     selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 saleItemId 集合，供 WXML 使用
     selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
@@ -228,7 +240,7 @@ Page({
       selectedCustomer: null,
       customerSearch: '',
       customerResults: [],
-      paidOrders: [],
+      paidItems: [],
       selectedItems: [],
       selectedFlowNos: {},
       selectedSessionCounts: {},
@@ -238,31 +250,46 @@ Page({
   async loadPaidOrders(clientUserId: string) {
     try {
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
-      // 过滤掉家居产品行 + paid_sessions=0 / 已用满已付次数 的卡完全锁死（D6=A）
+      // 拍平成一维核销项目（按品项标签排序）：过滤家居产品行 + consumable<=0 的锁死卡（D6=A）
       // 可消费次数 = min(remaining, paid - used)；其中 used = total - remaining
       // NULL 卡（migration 0040 前未回填的历史卡）：保留但 disabled 灰显不可核销（Toast 拦截）
-      const filtered = (orders || []).map(o => ({
-        ...o,
-        paidAt: formatDateTime(o.paidAt),
-        items: o.items
-          .map(i => {
-            const total = Number(i.totalSessions || i.sessionCount || 0);
-            const remain = Number(i.remainingSessions || 0);
-            const isNullCard = i.paidSessions == null;
-            const paid = isNullCard ? 0 : Number(i.paidSessions);
-            const used = Math.max(total - remain, 0);
-            const consumable = Math.max(0, Math.min(remain, paid - used));
-            return {
-              ...i,
-              consumableSessions: consumable,
-              disabled: isNullCard,
-              disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
-            };
-          })
+      const items: PaidOrderItem[] = [];
+      for (const o of orders || []) {
+        for (const i of o.items) {
+          const total = Number(i.totalSessions || i.sessionCount || 0);
+          const remain = Number(i.remainingSessions || 0);
+          const isNullCard = i.paidSessions == null;
+          const paid = isNullCard ? 0 : Number(i.paidSessions);
+          const used = Math.max(total - remain, 0);
+          const consumable = Math.max(0, Math.min(remain, paid - used));
           // 家居产品行剔除；NULL 卡（disabled）保留展示，其余 consumable<=0 的卡过滤
-          .filter(i => i.productType !== '家居产品' && (i.consumableSessions > 0 || i.disabled)),
-      })).filter(o => o.items.length > 0);
-      this.setData({ paidOrders: filtered });
+          if (i.productType === '家居产品') continue;
+          if (consumable <= 0 && !isNullCard) continue;
+          items.push({
+            ...i,
+            saleOrderId: o.saleOrderId,
+            paidAt: formatDateTime(o.paidAt),
+            consumableSessions: consumable,
+            disabled: isNullCard,
+            disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
+            saleOrderTypeLabel: ORDER_TYPE_LABEL[o.saleOrderType || ''] || o.saleOrderType || '',
+          });
+        }
+      }
+      // 按品项标签归拢排序：主键 category（空排末尾），次键 paidAt DESC 兜底
+      items.sort((a, b) => {
+        const ca = a.category || '';
+        const cb = b.category || '';
+        if (ca !== cb) {
+          if (!ca) return 1;
+          if (!cb) return -1;
+          return ca.localeCompare(cb, 'zh');
+        }
+        const pa = a.paidAt || '';
+        const pb = b.paidAt || '';
+        return (pa < pb) ? 1 : (pa > pb) ? -1 : 0;
+      });
+      this.setData({ paidItems: items });
     } catch (_) {}
   },
 

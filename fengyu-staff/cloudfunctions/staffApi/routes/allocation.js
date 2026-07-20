@@ -20,7 +20,6 @@ const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
 const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
 const MAX_PER_POOL = 3
-const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
 
 // 营业额口径白名单：仅「销售单」「转换单」产生营业额、参与销售提成分配。
 // 寄存单/充值单/内部单不计营业额（与 dashboard / staff.js / mgmt-dashboard.js 口径一致）。
@@ -195,7 +194,7 @@ async function pendingPayments(ctx) {
        JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
       WHERE o.store_id = $1
         AND p.allocation_status = $2
-        AND o.sale_order_type IN ('销售单', '转换单')
+        AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 spai，与销售单同流程
         AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
       LIMIT $3 OFFSET $4`,
@@ -477,15 +476,15 @@ async function savePayment(ctx) {
     if (!pools.has(key)) pools.set(key, [])
     pools.get(key).push(a)
   }
-  for (const [key, pool] of pools) {
-    const saleItemId = key.split('|')[0]
+  for (const [, pool] of pools) {
     if (pool.length > MAX_PER_POOL) {
       throw new Error(`INVALID_PARAMS: 每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`)
     }
-    const base = baseMap.get(saleItemId) || 0
-    const sum = pool.reduce((s, a) => s + a.totalAmount, 0)
-    if (sum > base + AMOUNT_TOLERANCE) {
-      throw new Error('INVALID_PARAMS: 分配金额合计超过本次回款该商品可分配额')
+    // 池内分配比例合计 ≤ 100%（容差 0.01）。回款级 base 恒正，比例校验与原金额校验等价；
+    // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与 admin/前端统一「只看比例」。
+    const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
+    if (ratioSum > 1.01) {
+      throw new Error('INVALID_PARAMS: 同技能标签的分配比例合计不能超过 100%')
     }
     const empIds = new Set()
     for (const a of pool) {

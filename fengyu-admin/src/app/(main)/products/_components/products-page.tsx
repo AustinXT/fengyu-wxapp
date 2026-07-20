@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { Select } from "@/components/ui/select"
 import { CategoryCascader } from "@/components/ui/category-cascader"
 import { ExportButton } from "@/components/ui/export-button"
 import { exportToXlsx } from "@/lib/export-xlsx"
@@ -55,6 +56,7 @@ export default function ProductsPageClient({
   const search = get("q")
   const categoryFilter = get("category")
   const kindFilter = get("kind")
+  const statusFilter = get("status", "enabled") // 默认"启用"：URL 无 status 时只显示启用商品
 
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
@@ -78,8 +80,14 @@ export default function ProductsPageClient({
     if (kindFilter) {
       result = result.filter((s) => s.productKind === kindFilter)
     }
+    if (statusFilter === "disabled") {
+      result = result.filter((s) => !s.isEnabled)
+    } else if (statusFilter !== "all") {
+      // 默认 / "enabled"：只显示启用商品
+      result = result.filter((s) => s.isEnabled)
+    }
     return result
-  }, [skus, search, categoryFilter, kindFilter])
+  }, [skus, search, categoryFilter, kindFilter, statusFilter])
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -223,6 +231,15 @@ export default function ProductsPageClient({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
+        <Select
+          value={statusFilter}
+          onChange={(e) => setFilter("status", e.target.value)}
+          className="w-32"
+        >
+          <option value="enabled">启用</option>
+          <option value="disabled">停用</option>
+          <option value="all">全部</option>
+        </Select>
         <ExportButton onExport={handleExport} />
       </div>
 

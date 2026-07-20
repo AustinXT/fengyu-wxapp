@@ -1440,7 +1440,7 @@ describe('寄存退款单跳过提成写入 跨端控制流守护（staff / clie
 // ─────────────────────────────────────────────────────────────────────────────
 // 寄存单疗程卡「实际单价按实付重算」SQL — staff / admin 双端字节同义
 //   需求：从寄存单产生的疗程卡，unit_real_price = 实付received / 总次数session_count
-//        （实付=0 回落标价单价 unit_price）。
+//        （实付=0 置 0，如实反映未收款）。
 //   staff: routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL（pg）
 //   admin: actions/orders.ts recomputeDepositRealPrice 内 sql`...`（Drizzle）
 //   仅这两端有寄存单创建路径（client/payNotify 无），故不纳入四端 paid-sessions 守护。
@@ -1467,9 +1467,9 @@ describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
       expect(depositPriceSqls.staff).toMatch(pattern)
       expect(depositPriceSqls.adminTs).toMatch(pattern)
     })
-    test('两端实付=0 回落标价单价（ELSE unit_price，反向守护防删 fallback）', () => {
-      expect(depositPriceSqls.staff).toContain('ELSE unit_price')
-      expect(depositPriceSqls.adminTs).toContain('ELSE unit_price')
+    test('两端实付=0 置 0（ELSE 0，反向守护防删 fallback）', () => {
+      expect(depositPriceSqls.staff).toContain('ELSE 0')
+      expect(depositPriceSqls.adminTs).toContain('ELSE 0')
     })
     test("两端仅作用于疗程卡购买行（product_type='疗程卡' AND item_direction='购买'）", () => {
       expect(depositPriceSqls.staff).toContain("product_type = '疗程卡'")

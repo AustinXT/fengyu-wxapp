@@ -75,24 +75,26 @@ fi
 echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证 envId 指向正确环境）"
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
-# ── 一致性校验：envId 必须匹配 .active 的 env-id；PG 端口必须匹配环境（prod=5433 / dev=5434）──
-EXPECT_PG_PORT=$([[ "$ACTIVE" == "prod" ]] && echo 5433 || echo 5434)
+# ── 一致性校验：envId 必须匹配 .active 的 env-id；PG host(IP) 必须匹配环境
+#    （2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境改靠 IP 区分：
+#     prod=118.178.196.26 / dev=47.113.202.7）──
+EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
-  local got_env got_pg
+  local got_env got_host
   got_env=$(node -e "console.log(require('$f').envId||'')")
   if [[ "$got_env" != "$2" ]]; then
     echo "ERROR: $1/cloudbaserc.json envId=$got_env ≠ 期望 $2（.active=$ACTIVE 渲染异常）。中止。" >&2; exit 1
   fi
-  got_pg=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const m=fn&&(fn.envVariables.PG_CONNECTION_STRING.match(/:(\d+)\//));console.log(m?m[1]:'')")
-  if [[ -n "$got_pg" && "$got_pg" != "$EXPECT_PG_PORT" ]]; then
-    echo "ERROR: $1 的 PG 端口=$got_pg ≠ ${ACTIVE} 期望 ${EXPECT_PG_PORT}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
+  got_host=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const s=fn&&fn.envVariables.PG_CONNECTION_STRING;const m=s&&s.match(/@([^:]+):\d+\//);console.log(m?m[1]:'')")
+  if [[ -n "$got_host" && "$got_host" != "$EXPECT_PG_HOST" ]]; then
+    echo "ERROR: $1 的 PG host=$got_host ≠ ${ACTIVE} 期望 ${EXPECT_PG_HOST}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
   fi
 }
 [[ "$DO_STAFF"  == "1" ]] && assert_rc fengyu-staff  "$STAFF_ENV_ID"
 [[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"
-echo "  ✓ envId + PG 端口校验通过（${ACTIVE}）"
+echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 SCAN_FILES=()

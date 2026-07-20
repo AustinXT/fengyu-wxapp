@@ -1,7 +1,7 @@
 -- ============================================================================
 -- seed-fyfix-config.sql — e2e system_configs fixture（2026-06-10 从 fengyu 快照）
 --
--- system_configs 在 fengyu_e2e 为空会致：充值卡 picker 无档位（recharge.tiers）→ link-26 失败；
+-- system_configs 在 fengyu_wxapp 为空会致：充值卡 picker 无档位（recharge.tiers）→ link-26 失败；
 -- 会员升级/积分等 cron 缺 new_member_threshold/points_to_yuan_rate；权限矩阵缺失等。
 -- value 列为 text（含 JSON 串与 URL）。幂等 ON CONFLICT DO UPDATE。
 -- ============================================================================

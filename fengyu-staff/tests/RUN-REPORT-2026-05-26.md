@@ -11,7 +11,7 @@
 | L3 | e2e-miniprogram（10 smoke + 12 scenarios） | ⏸ 未跑 | — | 需微信开发者工具 9420 自动化 + 已登录态，本轮环境未就绪（见末尾） |
 
 > 首跑 7 个失败 = **2 个真问题（已直接修复）** + **5 个并发污染假失败**。首跑时
-> `fengyu-admin` 的 Playwright e2e（`tests/e2e-pages/*`）正并发跑同一 5434 库，污染了 staff L2
+> `fengyu-admin` 的 Playwright e2e（`tests/e2e-pages/*`）正并发跑同一 5433 库，污染了 staff L2
 > 共用的夹具（详见「并发污染」一节）。干净独占窗口串行重跑，7 个全部 PASS。
 
 ## 已直接修复（无需决策的明显 bug）
@@ -42,7 +42,7 @@
 
 ## 并发污染（非代码 bug，干净窗口已验证 PASS）
 
-首跑时 admin Playwright e2e 正并发跑同一 5434 库。staff L2 与之共享夹具客 FY-FIX-CLIENT-01 +
+首跑时 admin Playwright e2e 正并发跑同一 5433 库。staff L2 与之共享夹具客 FY-FIX-CLIENT-01 +
 真实开单流水，并发增删导致以下 5 个 smoke 假失败，**干净独占窗口串行重跑全 PASS**：
 
 | smoke | 假失败表现 | 机制 |
@@ -76,7 +76,7 @@
   `TE2LS`（5 字符，第 5 位 S≠2）与 `TE2L2` **互不为 LIKE 前缀**，双向无碰撞，且长度不变（零 varchar(30) 溢出风险）。
 - **改动文件**：`setup.mjs`（NS + 号段常量 + 说明注释）、9 个 smoke 的硬编码手机号、`cleanup.mjs`
   （paynotify event_keys 过滤改用 NS 参数化）、`fixtures.mjs` 文档注释。
-- **效果**：client L2 / staff L2 现可并发跑同一 5434 库而不互删夹具（admin e2e 用 FY-CHAIN/FY-TEST，本就不同前缀）。
+- **效果**：client L2 / staff L2 现可并发跑同一 5433 库而不互删夹具（admin e2e 用 FY-CHAIN/FY-TEST，本就不同前缀）。
 - **验证**：全套 53 smoke 通过。
 
 ### D-3. L2 覆盖盲区补 smoke — ✅ 4 个 Agent 并行新建（待串行实跑确认）
@@ -110,7 +110,7 @@ L3 历史遗留待决策项见 `RUN-REPORT-2026-05-22.md`（bs02 refund-detail �
 
 ## 环境
 
-- DB：`47.113.202.7:5434/fengyu`（开发库），L2=`TE2L2_*`、scope=`FY-TEST-*` 命名空间隔离
+- DB：`47.113.202.7:5433/fengyu_wxapp`（开发库），L2=`TE2L2_*`、scope=`FY-TEST-*` 命名空间隔离
 - 跑批工具：bun；首跑 L2 全套 ~1236s（53 smoke）
 </content>
 </invoke>

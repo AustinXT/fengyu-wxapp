@@ -7,7 +7,7 @@
  *   1. createDepositOrder items[].received>0 → 写 '回款'(线下,note=寄存单初始化实收) 流水
  *   2. sale_items.received = 录入值；paid_sessions = session_count（次数全开）
  *   3. sale_orders.received = Σ录入；total_amount 仍 = 0（统计排除 + 兜底全开的关键）
- *   4. 疗程卡 unit_real_price = 实付received / session_count（实付=0 回落标价单价 unit_price）；建单一次性算定
+ *   4. 疗程卡 unit_real_price = 实付received / session_count（实付=0 置 0）；建单一次性算定
  *   5. recalc 不冲掉：手动再跑一次 recalc 后 received 仍稳定
  *   6. updateDepositReceived 已停用：export 已移除（寄存单建单后实收不可改、不支持回款/退款）
  */
@@ -21,7 +21,7 @@ const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 process.env.ALLOW_TEST_OPENID = 'true'
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 
 const setup = await import('file://' + path.join(TESTS_DIR, 'setup.mjs'))

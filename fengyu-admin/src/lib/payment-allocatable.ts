@@ -69,7 +69,33 @@ export async function capturePaymentAllocatables(
     pending_received: string | number
     sales_category: string | null
   }>
-  if (items.length === 0) return []
+  if (items.length === 0) {
+    // 转换单（明细仅转出/转入、无『购买』行）：按本笔净实收额落到「转入」行（业绩载体），
+    // 与销售单一样按每笔回款逐笔分配。取转入行（LIMIT 1，按 sale_item_id 稳定排序）作 SPAI 挂载点；
+    // 多笔回款各自 capture 累加 = 总实收；无转入行兜底：仅置回款行『待分配』，不产 SPAI（保持列表可见）。
+    const convRes = await tx.execute(sql`
+      SELECT sale_item_id, sales_category
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId} AND item_direction = '转入'
+       ORDER BY sale_item_id
+       LIMIT 1
+    `)
+    // CAS-EXEMPT: 转换单兜底首次置 allocation_status（初始化为『待分配』，非状态迁移，无前置态可守卫）
+    await tx.execute(sql`
+      UPDATE sale_order_payments SET allocation_status = '待分配'::allocation_status WHERE id = ${salePaymentId}
+    `)
+    const convRow = (convRes as unknown as Array<{ sale_item_id: string; sales_category: string | null }>)[0]
+    if (!convRow) return []
+    const convCat = convRow.sales_category || null
+    await tx.execute(sql`
+      INSERT INTO sale_payment_allocatable_items
+        (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+      VALUES (${salePaymentId}, ${saleOrderId}, ${convRow.sale_item_id}, ${evt.toFixed(2)}::numeric, ${convCat}, NOW())
+      ON CONFLICT (sale_payment_id, sale_item_id)
+      DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
+    `)
+    return [{ saleItemId: convRow.sale_item_id, amount: evt, salesCategory: convCat }]
+  }
   const catMap = new Map(items.map((i) => [i.sale_item_id, i.sales_category]))
 
   let perItem: Array<{ saleItemId: string; amount: number }> = []
@@ -160,7 +186,7 @@ export async function capturePaymentAllocatables(
 }
 
 /**
- * 汇总刷新订单分配状态：任一回款待分配 → 订单待分配，否则已分配。
+ * 汇总刷新订单分配状态：有待分配回款→订单待分配；无待分配但有非NULL回款→已分配；无任何回款行→保持原值。
  * 维持 dashboard 待分配计数与订单列表展示（按回款逐笔分配的订单级汇总位）。
  */
 export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: string): Promise<void> {
@@ -170,7 +196,12 @@ export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: str
              WHEN EXISTS (
                SELECT 1 FROM sale_order_payments
                 WHERE sale_order_id = ${saleOrderId} AND allocation_status = '待分配'
-             ) THEN '待分配'::allocation_status ELSE '已分配'::allocation_status END,
+             ) THEN '待分配'::allocation_status
+             WHEN EXISTS (
+               SELECT 1 FROM sale_order_payments
+                WHERE sale_order_id = ${saleOrderId} AND allocation_status IS NOT NULL
+             ) THEN '已分配'::allocation_status
+             ELSE sale_orders.allocation_status END,
            updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
   `)

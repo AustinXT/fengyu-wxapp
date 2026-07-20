@@ -14,7 +14,7 @@
  *     2. 历史 sale_items / service_items 用本脚本一次性回填
  *
  * 用法：
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-shengmei-sales-category.js
  *   # 预览
  *   node db/scripts/backfill-shengmei-sales-category.js --dry-run

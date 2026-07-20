@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { buildRefundDetails, capRefundAmounts, type RefundSourceItem } from '../refund'
+import {
+  buildRefundDetails,
+  capRefundAmounts,
+  computeOverpayRemainder,
+  OVERPAY_SENTINEL,
+  type RefundSourceItem,
+} from '../refund'
 
 describe('capRefundAmounts', () => {
   it('单项缩放：[1000] total=1000 target=200 → 该项=200、返回 200', () => {
@@ -127,5 +133,61 @@ describe('buildRefundDetails', () => {
     expect(refundDetails[0].quantity).toBe(2)
     expect(refundDetails[0].refundAmount).toBe(100) // 2 × 50
     expect(totalRefund).toBe(100)
+  })
+})
+
+describe('computeOverpayRemainder 多收余数（overpay，ticket FY-XSD-WX-2607150028）', () => {
+  /** 单次疗程卡源行（admin 驼峰字段） */
+  function card(overrides: Partial<RefundSourceItem> = {}): RefundSourceItem {
+    return {
+      sale_item_id: 'SI',
+      sku_id: null,
+      product_name: '面部三重维养',
+      product_type: '疗程卡',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_price: '398',
+      quantity: 1,
+      unit_real_price: '398',
+      picked_up_quantity: null,
+      sales_category: null,
+      service_fee: 0,
+      ...overrides,
+    }
+  }
+
+  it('OVERPAY_SENTINEL 非空（null 会触发 refund-cascade 空明细兜底误全退）', () => {
+    expect(OVERPAY_SENTINEL).toBeTruthy()
+    expect(typeof OVERPAY_SENTINEL).toBe('string')
+  })
+
+  it('整除无零头 → 0（7×398=2786 恰等于 received）', () => {
+    const items = Array.from({ length: 7 }, () => card())
+    expect(computeOverpayRemainder({ received: 2786, refundedAmount: 0 }, items)).toBe(0)
+  })
+
+  it('不整除有零头 → 余数（本工单 3000 = 7×398 + 214 → 214）', () => {
+    const items = Array.from({ length: 7 }, () => card())
+    expect(computeOverpayRemainder({ received: 3000, refundedAmount: 0 }, items)).toBe(214)
+  })
+
+  it('余数单独退：7 项已退完（paid_sessions=0），只剩 214 余数', () => {
+    const items = Array.from({ length: 19 }, () => card({ paid_sessions: 0 }))
+    expect(computeOverpayRemainder({ received: 3000, refundedAmount: 2786 }, items)).toBe(214)
+  })
+
+  it('已消耗次数价值先扣 + 多收零头共存', () => {
+    // 10 次卡单价 100，已消费 3 次（remaining=7），received=1050
+    const items = [card({
+      sale_item_id: 'SI', session_count: 10, remaining_sessions: 7,
+      paid_sessions: 10, unit_real_price: '100', unit_price: '100',
+    })]
+    // consumed=300、unused=7×100=700 → 余数 = 1050-300-700 = 50
+    expect(computeOverpayRemainder({ received: 1050, refundedAmount: 0 }, items)).toBe(50)
+  })
+
+  it('空品项 → 余数 = 全部净已收', () => {
+    expect(computeOverpayRemainder({ received: 214, refundedAmount: 0 }, [])).toBe(214)
   })
 })

@@ -6,7 +6,7 @@
  *
  * 注入：
  *   1. ALLOW_TEST_OPENID=true → client+staff 两端 auth 中间件接 _testOpenid
- *   2. PG_CONNECTION_STRING（5434/fengyu 主库）
+ *   2. PG_CONNECTION_STRING（5433/fengyu_wxapp 主库）
  *   3. CLIENT_SECRET（HMAC 桥 spec 用，与 clientApi.handleHttpEntry 校验保持一致）
  *
  * 必须最先 import（任何 require 云函数 / pg 之前）。
@@ -25,7 +25,7 @@ process.env.POINTS_ACCRUAL_ENABLED = process.env.POINTS_ACCRUAL_ENABLED || 'true
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
 // HMAC 桥测试默认密钥（与 invoke-http-bridge.mjs 默认一致）
 process.env.CLIENT_SECRET = process.env.CLIENT_SECRET || 'test_client_secret_for_hmac_bridge'

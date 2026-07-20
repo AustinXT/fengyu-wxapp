@@ -3,7 +3,7 @@
 --
 -- 一次性 seed：补齐 README §0.2 + scope-helpers.TOPOLOGY 期望的拓扑 + 8 个测试账号。
 --
--- 当前 5434 现状：
+-- 当前 5433 现状：
 --   - 实际生产 org 拓扑挂在 'ORG-HQ' / 'org-市场-1779327286268'（南昌市场）下，与 README 不同
 --   - scope-helpers.ts 硬编码的 id 均不存在（16d1184b46db099a / 6707cc8b88579108 等）
 --
@@ -66,7 +66,7 @@ ON CONFLICT (employee_id) DO UPDATE SET
 -- 3b. 员工列表填充行（2026-06-24）
 --   /employees「筛选器完整」「在职状态筛选有 3 项」断言依赖 ≥2 个原生 <select>：1 个是顶部「在职状态」筛选，
 --   另 1 个是 Pagination 的「页大小」<select>——但 Pagination 仅当 total > 默认页大小 20 时才渲染该 <select>
---   （组织筛选是自定义按钮下拉、非原生 select）。fengyu_e2e 员工过少（< 20）时只剩 1 个 select → 断言挂。
+--   （组织筛选是自定义按钮下拉、非原生 select）。fengyu_wxapp 员工过少（< 20）时只剩 1 个 select → 断言挂。
 --   这里补 14 行（13 在职 + 1 离职，phone 走 1370000000x 专属段不与既有账号撞 uq_staff_users_phone），
 --   单本 seed 即保证 8 个 FY-TEST + 14 行 ≥ 21 > 20，跨页 → 页大小 select 必现。仅档案行，无需 role/password。
 --   FK：org_node_id → org_nodes（HQ/门店节点，前面已建）；store_id → stores。

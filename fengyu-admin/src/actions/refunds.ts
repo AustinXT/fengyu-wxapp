@@ -22,6 +22,8 @@ import {
   buildRefundDetails,
   calculateUnusedQuantity,
   capRefundAmounts,
+  computeOverpayRemainder,
+  OVERPAY_SENTINEL,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
   type RefundSourceItem,
@@ -70,6 +72,10 @@ export interface GetRefundableResult {
   origPaymentMethod: PaymentMethod
   /** 原订单顾客 ID；用于退款表单调用 estimateRefundOverdraft */
   clientUserId: string | null
+  /** 订单级多收余数可退额（部分支付单 received 不能被单次价整除时的孤儿零头，可作纯现金退还） */
+  overpayRefundable: number
+  /** 净已收 = received − refundedAmount，前端展示「已收上限」用 */
+  netReceived: number
 }
 
 export type CreateRefundResult =
@@ -201,6 +207,8 @@ export const getRefundable = withAnyPermission(
       prepaidCardAmount: saleOrders.prepaidCardAmount,
       paymentMethod: saleOrders.paymentMethod,
       clientUserId: saleOrders.clientUserId,
+      received: saleOrders.received,
+      refundedAmount: saleOrders.refundedAmount,
     })
     .from(saleOrders)
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
@@ -221,39 +229,48 @@ export const getRefundable = withAnyPermission(
     .from(saleItems)
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
-  const items: RefundableItem[] = rows.map((r) => {
-    const src: RefundSourceItem = {
-      sale_item_id: r.saleItemId,
-      sku_id: r.skuId,
-      product_name: r.productName,
-      product_type: r.productType as ProductType | null,
-      session_count: r.sessionCount,
-      remaining_sessions: r.remainingSessions,
-      paid_sessions: r.paidSessions,
-      unit_price: r.unitPrice,
-      quantity: r.quantity,
-      unit_real_price: r.unitRealPrice,
-      picked_up_quantity: r.pickedUpQuantity,
-      sales_category: r.salesCategory as SalesCategory | null,
-      service_fee: r.serviceFee,
-    }
+  // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
+  const srcItems: RefundSourceItem[] = rows.map((r) => ({
+    sale_item_id: r.saleItemId,
+    sku_id: r.skuId,
+    product_name: r.productName,
+    product_type: r.productType as ProductType | null,
+    session_count: r.sessionCount,
+    remaining_sessions: r.remainingSessions,
+    paid_sessions: r.paidSessions,
+    unit_price: r.unitPrice,
+    quantity: r.quantity,
+    unit_real_price: r.unitRealPrice,
+    picked_up_quantity: r.pickedUpQuantity,
+    sales_category: r.salesCategory as SalesCategory | null,
+    service_fee: r.serviceFee,
+  }))
+
+  const items: RefundableItem[] = srcItems.map((src) => {
     const unused = calculateUnusedQuantity(src)
-    const unitRealPrice = Number(r.unitRealPrice)
+    const unitRealPrice = Number(src.unit_real_price)
     const refundableAmount = Math.round(unitRealPrice * unused * 100) / 100
 
     return {
-      saleItemId: r.saleItemId,
-      productName: r.productName || '-',
-      productType: r.productType as ProductType | null,
+      saleItemId: src.sale_item_id,
+      productName: src.product_name || '-',
+      productType: src.product_type,
       unitRealPrice,
       unusedQuantity: unused,
       refundableAmount,
-      quantity: r.quantity,
-      sessionCount: r.sessionCount,
-      remainingSessions: r.remainingSessions,
-      pickedUpQuantity: r.pickedUpQuantity,
+      quantity: src.quantity,
+      sessionCount: src.session_count,
+      remainingSessions: src.remaining_sessions,
+      pickedUpQuantity: src.picked_up_quantity,
     }
   })
+
+  // 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，前端据此展示「多收可退余数」。
+  const overpayRefundable = computeOverpayRemainder(
+    { received: order.received, refundedAmount: order.refundedAmount },
+    srcItems,
+  )
+  const netReceived = Math.max(0, Number(order.received || 0) - Number(order.refundedAmount || 0))
 
   return {
     items,
@@ -261,6 +278,8 @@ export const getRefundable = withAnyPermission(
     origPrepaidCardAmount: Number(order.prepaidCardAmount),
     origPaymentMethod: order.paymentMethod as PaymentMethod,
     clientUserId: order.clientUserId ?? null,
+    overpayRefundable,
+    netReceived,
   }
   },
 )
@@ -508,13 +527,16 @@ export const createRefund = withPermission(
   handlingFee?: number
   /** 若 true，则按建议扣除超额权益；默认 true */
   applyOverdraftDeduction?: boolean
+  /** 多收余数退款：true 时把订单级孤儿零头（received 不能被单次价整除的部分）作为纯现金并入退款 */
+  includeOverpay?: boolean
     },
   ): Promise<CreateRefundResult> => {
   const refSaleOrderId = String(input.refSaleOrderId || '').trim()
   if (!refSaleOrderId) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少原销售单号' } }
   }
-  if (!Array.isArray(input.items) || input.items.length === 0) {
+  // items 允许为空：仅当 includeOverpay=true（多收余数单独退）。overpayRefundable>0 实质性校验在下方。
+  if (!Array.isArray(input.items) || (input.items.length === 0 && !input.includeOverpay)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '退款明细不能为空' } }
   }
   const refundReason = String(input.refundReason || '').trim()
@@ -623,6 +645,33 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'UNKNOWN', message: msg } }
   }
 
+  // 多收余数（overpay，2026-07-18 FY-XSD-WX-2607150028）：includeOverpay=true 时把订单级孤儿零头
+  // 作为哨兵行（OVERPAY_SENTINEL，不挂品项/不退次数/不触发级联）并入退款。两端镜像 staff order.js。
+  const overpayRefundable = computeOverpayRemainder(
+    { received: origOrder.received, refundedAmount: origOrder.refundedAmount },
+    sourceItems,
+  )
+  let overpayAmount = 0
+  if (input.includeOverpay && overpayRefundable > 0) {
+    overpayAmount = overpayRefundable
+    refundDetails.push({
+      refSaleItemId: OVERPAY_SENTINEL,
+      skuId: null,
+      productName: '多收余数退款',
+      productType: null,
+      sessionCount: null,
+      unitPrice: 0,
+      quantity: 0,
+      unitRealPrice: 0,
+      refundAmount: overpayAmount,
+      salesCategory: null,
+      serviceFee: 0,
+      isFullItemRefund: false,
+      isOverpay: true,
+    })
+    totalRefund = Math.round((totalRefund + overpayAmount) * 100) / 100
+  }
+
   const fee = Math.max(0, Number(input.handlingFee) || 0)
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次。
   // 限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居不受影响。完整任意 fee 支持见 follow-up。两端镜像 staff order.js。
@@ -700,9 +749,11 @@ export const createRefund = withPermission(
   const refundPaymentMethod = resolveRefundPaymentMethod(origOrder.paymentMethod)
 
   // 部分退款时关联具体 sale_item（多行退款时取首行；整单退款保留 null）
-  const primaryRefSaleItemId = refundDetails.length === 1 ? refundDetails[0].refSaleItemId : null
+  // overpay 哨兵行不计入（refSaleItemId='OVERPAY' 非真实品项，写入会违反 FK）。两端镜像 staff order.js。
+  const realDetails = refundDetails.filter((d) => !d.isOverpay)
+  const primaryRefSaleItemId = realDetails.length === 1 ? realDetails[0].refSaleItemId : null
   const primarySessionCount =
-    refundDetails.length === 1 ? refundDetails[0].sessionCount ?? refundDetails[0].quantity : null
+    realDetails.length === 1 ? realDetails[0].sessionCount ?? realDetails[0].quantity : null
 
   // 整单全退判定（Bug Q/M）：所有购买项都在本次退款且全退 → cascade 通道3（券）才回滚
   const isWholeOrderRefund = sourceItems.length > 0 && sourceItems.every((oi) =>
@@ -715,12 +766,14 @@ export const createRefund = withPermission(
     handlingFee: fee,
     overdraftDeduction,
     isWholeOrderRefund,
+    overpayAmount,
     items: refundDetails.map((d) => ({
       refSaleItemId: d.refSaleItemId,
       quantity: d.quantity,
       refundAmount: d.refundAmount,
       productType: d.productType,
       isFullItemRefund: d.isFullItemRefund,
+      isOverpay: d.isOverpay === true,
     })),
   })
 

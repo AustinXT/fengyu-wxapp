@@ -18,7 +18,7 @@
  *
  * 用法：
  *   # 5434 / fengyu（当前唯一生产业务库，必跑）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-allocations-commission.js            # dry-run 预览
  *   PG_CONNECTION_STRING="..." node db/scripts/backfill-allocations-commission.js --commit  # 实际写入
  *

@@ -59,7 +59,7 @@ order.js:3136）+ 跨店 manager deny + 非 manager 仅自己发起过滤。
   本轮**不修**（超出"补测试"范畴），记入 follow-up。
 
 **B6 mgmt-dashboard** — 加入的 3 个 salesData 全 ok（14/15）。唯一 fail 是 `[HQ.summary.all]` 首调 PG
-**pg-pool connection timeout**（5434 服务器瞬时抖动）。本轮无关。
+**pg-pool connection timeout**（5433 服务器瞬时抖动）。本轮无关。
 
 ## L3 修复 3 处
 
@@ -143,6 +143,6 @@ SKIP_FLAKY=bs01,bs04 bun fengyu-staff/tests/e2e-miniprogram/run-scenarios.mjs
 
 - `commission_rate_matrix` 跨 market 命中：要么 routes/service.js 的 SELECT 加 org_id 过滤，要么
   ensureTestCommissionMatrix 把非 NS 的同 (order_type, role_type, sales_category, tier) 规则全清。
-  目前导致 smoke-service-commission CASE 1/2/4 在共享 5434 库被污染时不稳。
-- 5434 PG 连接池偶发 connection timeout（首次 invoke 时）。helpers/invoke.mjs 可加 1 次 retry 兜底；
+  目前导致 smoke-service-commission CASE 1/2/4 在共享 5433 库被污染时不稳。
+- 5433 PG 连接池偶发 connection timeout（首次 invoke 时）。helpers/invoke.mjs 可加 1 次 retry 兜底；
   涉及面较大暂缓。

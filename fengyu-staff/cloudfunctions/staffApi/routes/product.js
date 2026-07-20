@@ -229,7 +229,7 @@ async function _queryMallBundleGroups() {
     FROM products p
     WHERE p.is_bundle = true
       AND p.deleted_at IS NULL
-      AND p.is_visible = true
+      -- 开单页无视 is_visible（客户端展示开关只应影响 client 商城，开单端与普通商品/体验卡口径一致）
     ORDER BY p.sort_order ASC
   `)
 

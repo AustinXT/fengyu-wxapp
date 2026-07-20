@@ -122,9 +122,6 @@ export default function EmployeesPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
-  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
-
   const columns: Column<Employee>[] = [
     {
       key: "avatarUrl",
@@ -175,23 +172,27 @@ export default function EmployeesPage({
     {
       key: "skills",
       header: "技能",
-      cell: (row) => (
-        <div className="flex flex-wrap gap-1">
-          {row.skills?.length ? (
-            row.skills.map((s) => (
-              <Badge
-                key={s}
-                variant="outline"
-                className="border-[var(--brand)] text-[var(--brand)] bg-[var(--brand-light)]"
-              >
-                {s}
-              </Badge>
-            ))
-          ) : (
-            <span className="text-[var(--muted-foreground)]">—</span>
-          )}
-        </div>
-      ),
+      cell: (row) => {
+        // 防御：只渲染当前 isValid 的标签名，隐藏已删除/已改名残留的旧副本
+        const visible = row.skills?.filter((s) => validSkillNames.has(s)) ?? []
+        return (
+          <div className="flex flex-wrap gap-1">
+            {visible.length ? (
+              visible.map((s) => (
+                <Badge
+                  key={s}
+                  variant="outline"
+                  className="border-[var(--brand)] text-[var(--brand)] bg-[var(--brand-light)]"
+                >
+                  {s}
+                </Badge>
+              ))
+            ) : (
+              <span className="text-[var(--muted-foreground)]">—</span>
+            )}
+          </div>
+        )
+      },
     },
     {
       key: "isResigned",
@@ -239,7 +240,7 @@ export default function EmployeesPage({
       <div className="flex items-center gap-3">
         <OrgTreeSelect
           className="w-48"
-          orgNodes={filterOrgNodes}
+          orgNodes={orgNodes}
           value={marketFilter}
           onChange={(id) => setMany({ market: id, page: "" })}
           placeholder="全部组织"

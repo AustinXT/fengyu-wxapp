@@ -27,7 +27,7 @@
    cd fengyu-staff/cloudfunctions/staffApi && npm install
    cd fengyu-client/cloudfunctions/payNotify && npm install
    ```
-2. **PG_CONNECTION_STRING** 指向 5434/fengyu 生产业务库（默认值见 setup.mjs）
+2. **PG_CONNECTION_STRING** 指向 5433/fengyu_wxapp 生产业务库（默认值见 setup.mjs）
 3. `bun` 已装（用作 spec runner）
 
 ## Spec 列表（5 个）

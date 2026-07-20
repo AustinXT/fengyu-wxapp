@@ -5,7 +5,7 @@
  *   - 有欠款订单（received < payable，status='部分支付'）→ 触发 orders 详情页「录入回款」按钮
  *   - 待审批退款单（sale_order_payments change_type='退款' status='待审批'）→ refunds 详情页审批按钮
  *
- * 复用 e2e-actions/helpers/fixtures.mjs 的组织/门店/员工/顾客建夹具逻辑（同一 5434 库、同 NS）。
+ * 复用 e2e-actions/helpers/fixtures.mjs 的组织/门店/员工/顾客建夹具逻辑（同一 5433 库、同 NS）。
  * 登录态使用 admin（FY-TEST-ADM，无 scope 限制），故 TE2A_ 测试门店订单对其可见。
  */
 import fs from 'node:fs'
@@ -39,7 +39,7 @@ function connString(): string {
     process.env.E2E_DATABASE_URL ||
     process.env.PG_CONNECTION_STRING ||
     process.env.DATABASE_URL ||
-    'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+    'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
   )
 }
 

@@ -20,10 +20,10 @@ metadata:
 运行部署脚本：
 
 ```bash
-./deploy-admin.sh [ssh-host] [remote-dir]
+./deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
 ```
 
-默认值：`ali-demo`、`/root/fengyu-wxapp`
+第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 容器连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 `/root/proj.xt.com/fengyu-wxapp/docker`）。prod 有二次确认 + 生产库迁移预检，dev 无。
 
 ## 部署流程
 
@@ -35,7 +35,7 @@ metadata:
 ## 前置条件
 
 - 本地 Docker 已安装并运行
-- 远程服务器 SSH 可达（`ali-demo` 在 ~/.ssh/config 中配置）
+- 远程服务器 SSH 可达（`ali-demo`=测试 / `fengyu-prod`=生产，均在 ~/.ssh/config 中配置）
 - 远程已有 docker-compose.yml 且 admin service 配置正确
 - 远程 .env 中 DATABASE_URL 等环境变量已配置
 

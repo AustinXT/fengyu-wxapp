@@ -19,7 +19,7 @@
  *   X2  store 维度分布（辅助 scope 决策）
  *
  * 用法：
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/audit-treatment-card-listing.js
  *
  *   # 自定义 store_id 看转换器差集（默认空 = 跳过 X1）

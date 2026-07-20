@@ -1415,6 +1415,26 @@ describe('order.appointableItems', () => {
     expect(ctx.result.orders[0].items).toHaveLength(1)
     expect(ctx.result.orders[0].items[0].active).toBe(true)
   })
+
+  test('包含部分支付订单中已解锁的疗程卡', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-PARTIAL', order_status: '部分支付',
+      store_id: 's1', store_name: '测试店', market_name: '华东',
+      preferred_employee_id: null, sale_item_id: 'SI-PARTIAL',
+      sku_id: 'sku-1', product_name: '护理A',
+      product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
+      paid_sessions: 2, unit_price: 100, unit_real_price: 100,
+      sale_amount: 500, expire_date: null,
+    }])
+
+    const ctx = createBoundCtx({ includeInactive: true })
+    await routes.appointableItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("o.status IN ('已支付', '部分支付')")
+    expect(ctx.result.orders[0].orderStatus).toBe('部分支付')
+    expect(ctx.result.orders[0].items[0].paidSessions).toBe(2)
+  })
 })
 
 // ================================================================

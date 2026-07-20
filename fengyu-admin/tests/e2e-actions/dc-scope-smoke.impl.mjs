@@ -16,13 +16,13 @@ const TESTS_DIR = path.dirname(__filename)
 const REPO_ROOT = path.resolve(TESTS_DIR, '..', '..', '..')
 const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 
-// 连接串可配置（默认 5434 开发库，与同目录 smoke 一致）；跑 5433 线上库：
+// 连接串可配置（默认 5433 开发库，与同目录 smoke 一致）；跑 5433 线上库：
 //   DATABASE_URL='postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' bun tests/e2e-actions/dc-scope-smoke.mjs
 // 必须在 import '@/db' 前设置（db 单例 module-load 期读 DATABASE_URL）。
 const CONN =
   process.env.DATABASE_URL ||
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 process.env.DATABASE_URL = CONN
 process.env.PG_CONNECTION_STRING = CONN
 

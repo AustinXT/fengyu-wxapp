@@ -47,7 +47,7 @@ export function ensureOpenidsSeeded() {
   if (_seeded) return
   try {
     execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -f ${SEED_SQL}`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -f ${SEED_SQL}`,
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 },
     )
     _seeded = true

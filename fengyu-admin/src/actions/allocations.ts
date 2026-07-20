@@ -287,9 +287,6 @@ function getPoolKey(roleType: string): string {
 /** 合法的分配比例（整十百分比） */
 const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
 
-/** 池金额合计与 received 比较的容差（整十档 × 浮点舍入） */
-const AMOUNT_TOLERANCE = 0.02
-
 /** 批量保存分配（先作废旧的，再插入新的） */
 export const batchSaveAllocations = withPermission(
   'allocation:save',
@@ -386,13 +383,6 @@ export const batchSaveAllocations = withPermission(
         return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
-      // 池内总金额合计 ≤ received（容差 AMOUNT_TOLERANCE，P2-14 Q5）
-      const itemReceived = itemReceivedMap.get(pool[0].saleItemId) || 0
-      const amountSum = pool.reduce((s, a) => s + Number(a.totalAmount), 0)
-      if (amountSum > itemReceived + AMOUNT_TOLERANCE) {
-        return { success: false, message: '分配金额合计超过商品金额' }
-      }
-
       // 同池内不能重复分配同一员工
       const empIds = new Set<string>()
       for (const a of pool) {
@@ -455,6 +445,16 @@ export const batchSaveAllocations = withPermission(
         .update(saleOrders)
         .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
         .where(eq(saleOrders.saleOrderId, saleOrderId))
+
+      // 整单分配同步该订单回款行 allocation_status（修复转换单等无 spai 单据在「按回款」列表的可见性）；
+      // 仅动已参与分配的非 NULL 回款行，退款/储值卡抵扣从行等 NULL 行不受影响。
+      await tx
+        .update(saleOrderPayments)
+        .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
+        .where(and(
+          eq(saleOrderPayments.saleOrderId, saleOrderId),
+          sql`${saleOrderPayments.allocationStatus} IS NOT NULL`,
+        ))
     })
   } catch (err: any) {
     // PG 外键违反（employeeId 不存在）
@@ -503,6 +503,7 @@ export const getPendingPayments = withPermission(
       paymentMethod: string
       paidAt: string | null
       allocationStatus: string | null
+      saleOrderType: string
       customerName: string | null
       clientPhone: string | null
       storeName: string | null
@@ -553,6 +554,7 @@ export const getPendingPayments = withPermission(
         paymentMethod: saleOrderPayments.paymentMethod,
         paidAt: saleOrderPayments.paidAt,
         allocationStatus: saleOrderPayments.allocationStatus,
+        saleOrderType: saleOrders.saleOrderType,
         fallbackName: saleOrders.customerName,
         fallbackPhone: saleOrders.clientPhone,
         custName: clientWechatUsers.name,
@@ -583,6 +585,7 @@ export const getPendingPayments = withPermission(
         paymentMethod: r.paymentMethod,
         paidAt: r.paidAt instanceof Date ? r.paidAt.toISOString() : (r.paidAt ?? null),
         allocationStatus: r.allocationStatus ?? null,
+        saleOrderType: r.saleOrderType,
         // 顾客档案权威 > sale_orders 兜底
         customerName: r.custName || r.fallbackName || null,
         clientPhone: r.custPhone || r.fallbackPhone || null,
@@ -800,10 +803,11 @@ export const savePaymentAllocations = withPermission(
       if (pool.length > 3) {
         return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
       }
-      const base = baseMap.get(pool[0].saleItemId) || 0
-      const amountSum = pool.reduce((s, a) => s + Number(a.totalAmount), 0)
-      if (amountSum > base + AMOUNT_TOLERANCE) {
-        return { success: false, message: '分配金额合计超过本次回款该商品可分配额' }
+      // 池内分配比例合计 ≤ 100%（容差 0.01）。回款级 base 恒正，比例校验与原金额校验等价；
+      // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与订单级/前端统一「只看比例」。
+      const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
+      if (ratioSum > 1.01) {
+        return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
       const empIds = new Set<string>()
       for (const a of pool) {

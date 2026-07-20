@@ -22,17 +22,19 @@
  * 同事务额外维护：
  *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月销售额 (paid_amount) 写入
  *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
- *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首单达阈值的 paid_at）。
+ *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
+ *     COALESCE(paid_at, created_at)；选单口径 DISTINCT ON + ORDER BY paid_at
+ *     ASC NULLS LAST，与 recalc-became-member-at.js 同源）。
  *   - 不发消息 / 积分 / 优惠券（与 cron-worker.processUpgrade 区别在此；理由：历史存量发"恭喜
  *     升级"会失真，且优惠券有效期会从今天起算）。
  *
  * 用法：
  *   # 默认 dry-run，仅打印将要执行的迁移统计
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js
  *
  *   # 显式提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js --apply
  *
  * 顺序：
@@ -74,11 +76,14 @@ WITH threshold AS (
   SELECT $1::numeric AS v
 ),
 qualified_orders AS (
-  -- 单订单或订单+回款链达阈值的订单。WorkFine 同步的历史已完成单 paid_at 全为 NULL，
-  -- COALESCE fallback 到 created_at，保证 became_member_at 不丢失时间戳。
-  SELECT o.client_user_id, o.sale_order_id,
-         COALESCE(o.paid_at, o.created_at) AS first_at
+  -- 单订单或订单+回款链达阈值的订单。保留 paid_at / created_at 原始列供 member_first
+  -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
+  SELECT o.client_user_id, o.sale_order_id, o.paid_at, o.created_at
     FROM sale_orders o
+    -- 回款单累计 LATERAL：2026-04-26 createRepayment 重构后回款不再建 sale_orders[type='回款单']
+    -- 行（migration 未清理重构前历史行），故 sum_repay 当前恒 0。保留此 OR 右支仅为维持与在线端
+    -- recalcCustomerType「会员客判定」结构一致；became_member_at 选单已在 member_first 用
+    -- DISTINCT ON 对齐权威脚本 recalc-became-member-at.js，不受此 LATERAL 影响。
     LEFT JOIN LATERAL (
       SELECT COALESCE(SUM(r.total_amount), 0) AS sum_repay
         FROM sale_orders r
@@ -93,9 +98,16 @@ qualified_orders AS (
           OR (o.total_amount + rr.sum_repay) >= (SELECT v FROM threshold))
 ),
 member_first AS (
-  SELECT client_user_id AS user_id, MIN(first_at) AS first_qualified_at
+  -- 选单口径与 recalc-became-member-at.js 的 BUILD_TARGET_SQL 同源：
+  -- DISTINCT ON + ORDER BY paid_at ASC NULLS LAST, created_at ASC。
+  -- 不用 MIN(COALESCE(paid_at, created_at))：当某顾客有多张达标单、其中一张
+  -- paid_at IS NULL 但 created_at 早于另一张 paid_at 非空单时，MIN 会选前者、
+  -- ORDER BY paid_at NULLS LAST 选后者，两脚本会给不同的 became_member_at。
+  SELECT DISTINCT ON (client_user_id)
+         client_user_id AS user_id,
+         COALESCE(paid_at, created_at) AS first_qualified_at
     FROM qualified_orders
-   GROUP BY client_user_id
+   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC
 ),
 -- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
 -- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）

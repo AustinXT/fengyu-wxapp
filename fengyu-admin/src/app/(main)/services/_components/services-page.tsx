@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
 import { ExportButton } from "@/components/ui/export-button"
-import { exportToXlsx, fmtDate as xlsxDate, fmtDateTime as xlsxDateTime, fmtPercent } from "@/lib/export-xlsx"
+import { exportToXlsx, fmtDate as xlsxDate, fmtDateTime as xlsxDateTime } from "@/lib/export-xlsx"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
@@ -52,16 +52,16 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
     <>
       <div className="flex gap-1">
         {so.status === "待服务" && (
-          <>
-            <Button size="sm" variant="outline" onClick={() => handleAction(startServiceOrder)} disabled={pending}>开始服务</Button>
-            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setConfirmDialog('cancel')} disabled={pending}>取消</Button>
-          </>
+          <Button size="sm" variant="outline" onClick={() => handleAction(startServiceOrder)} disabled={pending}>开始服务</Button>
         )}
         {so.status === "服务中" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog('complete')} disabled={pending}>完成服务</Button>
         )}
         {so.status === "待客户确认" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog('confirm')} disabled={pending}>代客户确认</Button>
+        )}
+        {(so.status === "待服务" || so.status === "服务中" || so.status === "待客户确认") && (
+          <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setConfirmDialog('cancel')} disabled={pending}>取消</Button>
         )}
       </div>
 
@@ -113,17 +113,23 @@ export default function ServicesPageClient({
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
 
-  /** 导出当前筛选命中的服务单提成分配明细（按被分配员工×服务项展开，跨分页） */
+  /** 导出当前筛选命中的服务单消耗项目主表（每行=服务单×一个消耗项目，跨分页） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
+    // 消耗明细仅含「已完成」服务单（已扣减次数）；若当前按其它状态筛选，导出会因 WHERE
+    // status='已完成' AND status=筛选值 恒空，提前提示而非发空请求，避免「列表有数据、导出无数据」困惑。
+    if (raw.status && raw.status !== '已完成') {
+      toast.warning(`消耗明细仅包含「已完成」服务单，当前筛选状态为「${raw.status}」，无已实现消耗可导出`)
+      return
+    }
     const { rows, truncated } = await exportServiceOrders(raw)
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出")
       return
     }
     await exportToXlsx({
-      filename: "服务单-提成明细",
-      sheetName: "服务单提成",
+      filename: "服务单-消耗明细",
+      sheetName: "服务单消耗",
       columns: [
         { header: "市场", width: 12, accessor: (r) => r.market },
         { header: "门店", width: 18, accessor: (r) => r.storeName },
@@ -137,19 +143,13 @@ export default function ServicesPageClient({
         { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
         { header: "商品明细", width: 24, accessor: (r) => r.productName },
         { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
-        { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
+        { header: "项目消耗金额", width: 12, accessor: (r) => r.consumeMoney },
         { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
         { header: "状态", width: 12, accessor: (r) => r.status },
-        { header: "负责美容师", accessor: (r) => r.employeeName },
-        { header: "员工职位", width: 12, accessor: (r) => r.positionName },
-        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
-        { header: "分配额", width: 12, accessor: (r) => r.allocationAmount },
-        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
-        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
-        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
-        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
         { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
         { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
+        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
+        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
         { header: "开单人", accessor: (r) => r.openedByName },
         { header: "来源订单号", width: 22, accessor: (r) => r.sourceSaleOrderId },
         { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },

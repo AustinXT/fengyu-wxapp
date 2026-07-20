@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
-import { eq, and, sql, inArray } from 'drizzle-orm'
+import { eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
@@ -298,6 +298,52 @@ export async function expandScopeStoreIds(
 }
 
 /**
+ * 根据角色的 scope 展开为「可见部门节点 id」列表（员工专用 scope 维度）。
+ *
+ * 部门节点（org_nodes.type='部门'）可挂 总部/市场/门店 下（不可嵌套，db/schema/org.ts
+ * 层级约束）。职能部门员工 store_id IS NULL，靠本列表命中 scope 内部门节点纳入可见范围。
+ *
+ * - 总部 scope → 全部 type='部门' 节点
+ * - 市场 scope → 挂该市场下的部门（市场级）+ 挂该市场下门店的部门（门店级）
+ * - 门店 scope → 挂该门店下的部门（scopeId 即门店 org_node id）
+ * - 部门 scope → 忽略（与 expandScopeStoreIds 一致；permission_roles 生产无部门级 scope 角色）
+ *
+ * 仅员工表（staff_wechat_users.org_node_id）用到；orders/customers 等无此维度。
+ */
+export async function expandScopeDeptNodeIds(
+  roles: AuthSession['roles'],
+): Promise<string[]> {
+  const deptIds = new Set<string>()
+
+  for (const r of roles) {
+    if (r.scopeType === '总部') {
+      const all = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(eq(orgNodes.type, '部门'))
+      for (const n of all) deptIds.add(n.id)
+      return Array.from(deptIds) // 总部已含全部
+    }
+
+    if (r.scopeType === '市场') {
+      // 该市场下的门店节点 id（覆盖「门店级部门」）
+      const storeNodesUnder = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, '门店')))
+      const candidateParents = [r.scopeId, ...storeNodesUnder.map(n => n.id)]
+      const depts = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.type, '部门'), inArray(orgNodes.parentId, candidateParents)))
+      for (const n of depts) deptIds.add(n.id)
+    }
+
+    if (r.scopeType === '门店') {
+      const depts = await db.select({ id: orgNodes.id }).from(orgNodes)
+        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, r.scopeId)))
+      for (const n of depts) deptIds.add(n.id)
+    }
+  }
+
+  return Array.from(deptIds)
+}
+
+/**
  * 根据 session.roles 展开当前账号可见的市场（org_nodes.type='市场'）ID 集合
  *
  * - 总部角色（任意一个）→ 返回 null，调用方按 null 解释为"不过滤，可见所有市场"
@@ -409,6 +455,35 @@ export function scopeCondition(
     return sql`FALSE`
   }
   return inArray(storeIdColumn, ids) as SQL
+}
+
+/**
+ * 员工专用 scope 条件（store_id ∪ org_node_id 双维度）。
+ *
+ * - admin → undefined（不过滤）
+ * - 非 admin → or(inArray(store_id, scopeStoreIds), inArray(org_node_id, scopeDeptNodeIds))
+ *
+ * 职能部门员工（养生部/推广部/品项公司…）store_id IS NULL，靠 org_node_id 命中 scope
+ * 子树内的部门节点纳入；scopeDeptNodeIds 缺失/为空时退化为仅按 store_id 过滤（=旧行为，
+ * 保守不暴露部门员工）。严格不越权：仅命中 scope 子树内的部门节点。
+ *
+ * 仅 staff_wechat_users 表用（唯一带 org_node_id 维度的业务表）；
+ * orders/customers/services 继续用 scopeCondition(store_id)。
+ */
+export function employeeScopeCondition(
+  session: AuthSession,
+  storeIdColumn: PgColumn,
+  orgNodeIdColumn: PgColumn,
+): SQL | undefined {
+  if (isAdminScope(session)) return undefined
+  const storeIds = session.permissions.scopeStoreIds
+  const deptIds = session.permissions.scopeDeptNodeIds ?? []
+  const parts: SQL[] = []
+  if (storeIds.length > 0) parts.push(inArray(storeIdColumn, storeIds) as SQL)
+  if (deptIds.length > 0) parts.push(inArray(orgNodeIdColumn, deptIds) as SQL)
+  if (parts.length === 0) return sql`FALSE`
+  if (parts.length === 1) return parts[0]
+  return or(...parts)
 }
 
 /**

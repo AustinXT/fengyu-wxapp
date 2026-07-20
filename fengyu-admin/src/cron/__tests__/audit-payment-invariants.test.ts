@@ -111,6 +111,9 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
     // I1 received  / I2 refunded_amount / I3 points_balance / I4 prepaid balance / I5 payable
     expect(sqlTexts.some((s) => s.includes('so.received') && s.includes('change_type IN'))).toBe(true)
+    // I1 必须豁免历史单（legacy_source='workfine'）：历史单 received 为旧系统平移值、无支付流水
+    const i1 = sqlTexts.find((s) => s.includes('so.received') && s.includes('change_type IN'))!
+    expect(i1).toContain("legacy_source IS DISTINCT FROM 'workfine'")
     expect(sqlTexts.some((s) => s.includes('refunded_amount') && s.includes("change_type = '退款'"))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('refunded_amount::numeric > so.received'))).toBe(true) // I2b refunded_le_received
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_transactions'))).toBe(true)

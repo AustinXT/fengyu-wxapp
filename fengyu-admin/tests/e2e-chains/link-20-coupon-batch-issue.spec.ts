@@ -28,9 +28,9 @@ const TEMPLATE_ID = 'FY-FIX-CT-01'
 const FIXTURE_PHONE = '13800138000'
 const FIXTURE_USER_ID = 'FY-FIX-CLIENT-01'
 
-// 真实存在的额外测试顾客（已确认 5434 上有）
+// 真实存在的额外测试顾客（已确认 5433 上有）
 const OTHER_PHONES = [
-  '13800138002', // FY-TEST-CLIENT-NC02（fengyu_e2e seed-scope 真实顾客）
+  '13800138002', // FY-TEST-CLIENT-NC02（fengyu_wxapp seed-scope 真实顾客）
   '13800138003', // FY-TEST-CLIENT-OM
 ]
 
@@ -42,7 +42,7 @@ function ensureDir(d: string) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursi
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

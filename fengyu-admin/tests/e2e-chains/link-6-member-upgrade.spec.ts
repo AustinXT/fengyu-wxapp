@@ -17,7 +17,7 @@
  *   6. 清理：删除测试销售单、删除 cron 产出的 messages/point_transactions，
  *      恢复 fixture 顾客等级为 NULL（与 beforeAll 起点一致）
  *
- * Schema 注（已与 5434 实际表结构核对，2026-05-17）：
+ * Schema 注（已与 5433 实际表结构核对，2026-05-17）：
  *   - messages 表使用 (recipient_type, recipient_id)，不是 recipient_user_id
  *   - point_transactions.external_ref = `member-upgrade-${userId}-${toLevel}`
  *     （uq_point_txns_external_ref 是幂等键；本目录 README.md 写的
@@ -75,7 +75,7 @@ const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {

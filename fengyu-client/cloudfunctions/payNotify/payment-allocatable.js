@@ -41,7 +41,33 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     [saleOrderId],
   )
   const items = itemsRes.rows
-  if (items.length === 0) return []
+  if (items.length === 0) {
+    // 转换单（明细仅转出/转入、无『购买』行）：按本笔净实收额落到「转入」行（业绩载体），
+    // 与销售单一样按每笔回款逐笔分配。取转入行（LIMIT 1，按 sale_item_id 稳定排序）作 SPAI 挂载点；
+    // 多笔回款各自 capture 累加 = 总实收；无转入行兜底：仅置回款行『待分配』，不产 SPAI（保持列表可见）。
+    const convRes = await client.query(
+      `SELECT sale_item_id, sales_category
+         FROM sale_items
+        WHERE sale_order_id = $1 AND item_direction = '转入'
+        ORDER BY sale_item_id
+        LIMIT 1`,
+      [saleOrderId],
+    )
+    // CAS-EXEMPT: 转换单兜底首次置 allocation_status（初始化为『待分配』，非状态迁移，无前置态可守卫）
+    await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1`, [salePaymentId])
+    const convRow = convRes.rows[0]
+    if (!convRow) return []
+    const convCat = convRow.sales_category || null
+    await client.query(
+      `INSERT INTO sale_payment_allocatable_items
+         (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (sale_payment_id, sale_item_id)
+       DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category`,
+      [salePaymentId, saleOrderId, convRow.sale_item_id, evt.toFixed(2), convCat],
+    )
+    return [{ saleItemId: convRow.sale_item_id, amount: evt, salesCategory: convCat }]
+  }
   const catMap = new Map(items.map((i) => [i.sale_item_id, i.sales_category]))
 
   let perItem = []
@@ -137,7 +163,7 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
 }
 
 /**
- * 汇总刷新订单分配状态：任一回款待分配 → 订单待分配，否则已分配。
+ * 汇总刷新订单分配状态：有待分配回款→订单待分配；无待分配但有非NULL回款→已分配；无任何回款行→保持原值。
  * 维持 dashboard 待分配计数与订单列表展示（按回款逐笔分配的订单级汇总位）。
  */
 async function refreshOrderAllocationRollup(client, saleOrderId) {
@@ -147,7 +173,12 @@ async function refreshOrderAllocationRollup(client, saleOrderId) {
               WHEN EXISTS (
                 SELECT 1 FROM sale_order_payments
                  WHERE sale_order_id = $1 AND allocation_status = '待分配'
-              ) THEN '待分配'::allocation_status ELSE '已分配'::allocation_status END,
+              ) THEN '待分配'::allocation_status
+              WHEN EXISTS (
+                SELECT 1 FROM sale_order_payments
+                 WHERE sale_order_id = $1 AND allocation_status IS NOT NULL
+              ) THEN '已分配'::allocation_status
+              ELSE sale_orders.allocation_status END,
             updated_at = NOW()
       WHERE sale_order_id = $1`,
     [saleOrderId],

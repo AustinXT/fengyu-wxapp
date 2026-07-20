@@ -255,7 +255,7 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
    * 注入一条带真实卡数据的 pricing 行；rate 矩阵返回 0.30。
    * 捕获最终 INSERT 的 values 数组以验证 consume/commission 金额。
    */
-  function setupCardScenario(pricingRow: any, rate: string = '0.3000') {
+  function setupCardScenario(pricingRow: any, rate: string | null = '0.3000') {
     // 4 步调用序对齐 mockScopeAndItems：scope → remark(null) → items → pricing
     const items = [{ serviceItemId: pricingRow.serviceItemId }]
     let selectCalls = 0
@@ -280,8 +280,8 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
         }),
-        // commission_rate_matrix 查档：返回非零 rate，避免 INVALID_STATE
-        select: makeSelectChain([{ commissionRate: rate }]),
+        // commission_rate_matrix 查档：rate=null 表示查无匹配行（真缺失）
+        select: makeSelectChain(rate === null ? [] : [{ commissionRate: rate }]),
       }
       return fn(tx)
     })
@@ -417,5 +417,44 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
     expect(Number(inserted[0].fixedFee)).toBeCloseTo(20, 2) // 20 × 2 × 0.50
     expect(Number(inserted[0].consumeAmount)).toBeCloseTo(30, 2) // 200 × 0.50 × 0.30
     expect(Number(inserted[0].commissionAmount)).toBeCloseTo(50, 2) // 20 + 30
+  })
+
+  it('consumeBase>0 命中 0% 行（合法 0% 提成）→ 放行，提成金额=0', async () => {
+    // 矩阵显式配 0%：命中行 commissionRate=0，consumeBase=700>0 → 不报错；consumeAmount=700×0=0
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-zero',
+      unitRealPrice: '700',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 10,
+      quantity: 2,
+    }, '0.0000')
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-zero', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', commissionRate: '0', commissionAmount: '0.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(inserted).toHaveLength(1)
+    expect(Number(inserted[0].consumeAmount)).toBe(0)
+    expect(Number(inserted[0].commissionAmount)).toBe(0)
+  })
+
+  it('consumeBase>0 查无匹配行（真缺失）→ 报错 COMMISSION_RATE_MISSING', async () => {
+    // 矩阵无该角色/分类规则：tx.select 返回 [] + consumeBase=700>0 → INVALID_STATE
+    setupCardScenario({
+      serviceItemId: 'si-missing',
+      unitRealPrice: '700',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 10,
+      quantity: 2,
+    }, null)
+
+    await expect(batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-missing', employeeId: 'EMP-001', roleType: '品质老师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '210.00' },
+    ])).rejects.toThrow(/INVALID_STATE.*COMMISSION_RATE_MISSING/)
   })
 })

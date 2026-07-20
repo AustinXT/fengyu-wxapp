@@ -3,7 +3,7 @@
  * 用一次性事务 ROLLBACK，不留任何数据。
  */
 import { Client } from 'pg';
-const c = new Client({ connectionString: 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu' });
+const c = new Client({ connectionString: 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' });
 await c.connect();
 
 // 找一个真实存在的 sale_order_id 用于测试（避免 FK 失败）

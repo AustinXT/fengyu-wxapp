@@ -1,9 +1,9 @@
 // CloudBase env 自适应：运行时根据小程序版本（release/trial/develop）选 envId。
 //
 // 设计目的：
-//   - 开发者工具开发版（develop）→ dev envId → 47.113.202.7:5434/fengyu
-//   - 体验版（trial）→ prod envId → 5433/fengyu_wxapp（运营自测改在 prod 数据）
-//   - 正式版（release，已发布）→ prod envId → 5433/fengyu_wxapp
+//   - 开发者工具开发版（develop）→ dev envId → 47.113.202.7:5433/fengyu_wxapp（开发/测试库）
+//   - 体验版（trial）→ prod envId → 118.178.196.26:5433/fengyu_wxapp（运营自测改在 prod 数据）
+//   - 正式版（release，已发布）→ prod envId → 118.178.196.26:5433/fengyu_wxapp
 //
 // 这样：
 //   1. 一次代码改动 + 一次发版即可双环境分离

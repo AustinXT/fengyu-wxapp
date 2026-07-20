@@ -3,7 +3,7 @@
  *
  * 不变量：prepaid_cards.balance == SUM(card_transactions.amount * sign(type))
  *
- * 执行环境（生产库 5434，fixture 数据）：
+ * 执行环境（生产库 5433，fixture 数据）：
  *   fixture 顾客  : 13800138000 / FY-FIX-CLIENT-01
  *   fixture 储值卡: FY-FIX-CARD-01（初始余额 1000.00）
  *
@@ -45,11 +45,11 @@ const SKU_ORDINARY_PRICE = 100
 const RECHARGE_FACE_VALUE = 500
 const RECHARGE_PAY_AMOUNT = 495 // 500 * 0.99
 
-// DB helper: run psql against production 5434
+// DB helper: run psql against production 5433
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e -t -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e: any) {

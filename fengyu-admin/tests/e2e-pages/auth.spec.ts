@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 import { Client } from 'pg'
 import { hashSync } from 'bcryptjs'
 
-const PG_URL = process.env.E2E_DATABASE_URL || process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e'
+const PG_URL = process.env.E2E_DATABASE_URL || process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
 // 改密成功用例专用一次性账号：避免改写共享测试账号 FY-TEST-ADM(13900139000) 的密码，
 // 否则失败/中断会把共享账号密码改成 abc12345 → 后续所有登录用例连环挂。

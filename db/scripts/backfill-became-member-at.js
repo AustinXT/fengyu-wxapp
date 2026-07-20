@@ -14,7 +14,7 @@
  *
  * 用法：
  *   # 5434 / fengyu（测试库）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-became-member-at.js
  *
  *   # 5433 / fengyu_wxapp（开发库）
@@ -41,7 +41,17 @@
  * 后续无需重跑。仅当出现下列情况之一时才需要再执行：
  *   1. 新增了一批历史会员客（如手工 INSERT、新一轮 WorkFine 同步 backfill）→ 跑一次补全 became_member_at
  *   2. 自检 SQL（SELECTCHECK_SQL）查到 NULL > 0
+ *
+ * ⚠ DEPRECATED（2026-07-17）：本脚本的 COALESCE(member_level_upgraded_at, updated_at,
+ *   created_at, NOW()) 兜底口径已过时。became_member_at 现口径 = 首笔达标单时间
+ *   （COALESCE(paid_at, created_at)，见 recalc-became-member-at.js，在线五端镜像同口径）。
+ *   继续跑本脚本会把已是新口径的值（在 became_member_at IS NULL 残留场景）错误覆盖回
+ *   member_level_upgraded_at。已禁用，运行即退出。重算请用 recalc-became-member-at.js。
  */
+
+// DEPRECATED 守卫：禁用本脚本，指向继任者。
+console.error('[BACKFILL-BECAME-MEMBER-AT] DEPRECATED: 本脚本口径已过时；became_member_at 重算请改用 db/scripts/recalc-became-member-at.js（支持 dry-run / --apply）')
+process.exit(1)
 
 const { Pool } = require('pg')
 

@@ -321,8 +321,23 @@ describe('serviceCommission.save', () => {
     mockOrderAndItems(COMPLETED_ORDER, [
       { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
     ])
-    mockTxnCapture(null) // rate 查询返回空 → rate=0 且 consumeBase>0
+    mockTxnCapture(null) // rate 查询返回空（查无行）→ 真缺失 → 报错
     await expect(routes.save(ctx)).rejects.toThrow(/INVALID_STATE.*COMMISSION_RATE_MISSING/)
+  })
+
+  test('命中 0% 行放行（合法 0% 提成不报错）', async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    mockOrderAndItems(COMPLETED_ORDER, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const captured = mockTxnCapture('0.0000') // 命中行 rate=0（合法 0%）
+    await routes.save(ctx)
+    expect(ctx.result.commissionCount).toBe(1)
+    expect(captured).toHaveLength(1)
+    expect(Number(captured[0][4])).toBe(0) // 落库 rate=0（consumeBase=700>0 但命中行 rate=0→放行）
   })
 
   test('缺少 serviceOrderId 拒绝', async () => {

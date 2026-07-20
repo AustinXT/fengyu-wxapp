@@ -230,7 +230,7 @@ export default function SkillTagManagementDialog({
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
-          确定要删除标签「{deleteTarget?.name}」吗？删除后不可恢复。
+          确定要删除标签「{deleteTarget?.name}」吗？删除后不可恢复，且将同时从所有已关联的员工身上移除该标签。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDeleteTarget(null)} disabled={deleting}>

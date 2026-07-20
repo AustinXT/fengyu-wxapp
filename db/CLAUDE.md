@@ -51,9 +51,9 @@ npm run db:studio     # Drizzle Studio 可视化管理
 3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
 4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
 5. **部署**：PR merge 后，**两个库都要迁**（双活，不是生产 + 冷备）：
-   - 开发期：`npm run db:migrate` 默认打 **5434/fengyu**（开发库，`db/.env` 里的 URL）
-   - 生产变更：显式传 URL 再对 **5433/fengyu_wxapp**（生产库）迁一次：`DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate`
-   - 详见下文「生产库与开发库（双活）」小节
+   - 开发期：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（开发/测试库，`db/.env` 里的 URL）
+   - 生产变更：显式传 URL 再对 **118.178.196.26:5433/fengyu_wxapp**（生产库）迁一次：`DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" npm run db:migrate`
+   - 详见下文「生产库与开发/测试库（双机）」小节
 
 ### 严格禁止
 
@@ -71,25 +71,27 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
 - **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
 
-## 生产库与开发库（双活，2026-06-06 修订）
+## 生产库与开发/测试库（2026-07-17 双机迁移）
 
-项目有两个独立 PG 实例，**自 2026-05-20 起按「开发库 / 生产库」双活划分**（取代 2026-04-24 的旧「生产 / 冷备」拓扑，旧拓扑已作废；详见 `project_db_dual_env.md` memory）。**两个库都在使用，schema 必须同时维护——不是生产 + 冷备的关系。**
+项目有两个独立 PG 实例，分处两台服务器。**自 2026-07-17 起按「生产 / 开发+测试」双机划分**（取代此前 ali-demo 单机双端口拓扑；旧拓扑见 `project_env_topology_202607` memory）。**两个库都在使用，schema 必须同时维护——不是生产 + 冷备的关系。**
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| **生产业务库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | 线上 admin（`docker-compose.prod.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序**。2026-06-05 实测仍在活跃写入（顾客/订单当日更新） |
-| **开发库** | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | 本地 admin（`.env.local`）、dev CloudBase env 的云函数、**仅 develop 版小程序**、**全部 e2e**、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标） |
+| **生产业务库** | `postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod 服务器） | 线上 admin（`docker-compose.prod.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
+| **开发/测试库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp`（ali-demo 服务器） | 本地 admin（`.env.local`）、dev CloudBase env 的云函数、**仅 develop 版小程序**、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标）。**5434/fengyu 已删除，dev 与 test 合并共用此库** |
+
+⚠ 两个库**均用 5433 端口 + fengyu_wxapp 库名**，仅靠 **IP** 区分（prod=118.178.196.26 / dev·测试=47.113.202.7）。`deploy-cloudfunctions.sh` 与 `dump-prod.sh` 已改为按 IP 校验环境（旧的端口约定 5434=dev/5433=prod 作废）。
 
 **schema 变更两个库都要迁**：
 
-- 开发期：`npm run db:migrate` 默认打 **5434/fengyu**（开发库，`db/.env` 里的 URL）。
-- 生产变更：显式传 URL 再对 **5433/fengyu_wxapp**（生产库）迁一次：
+- 开发期：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（开发/测试库，`db/.env` 里的 URL）。
+- 生产变更：显式传 URL 再对 **118.178.196.26:5433/fengyu_wxapp**（生产库）迁一次：
 
 ```bash
-DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate
+DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" npm run db:migrate
 ```
 
-**数据修复 / backfill**：先分清目标库——开发 / 测试改 5434、生产改 5433，**永远显式传 `DATABASE_URL`**。**e2e 全部打 5434，绝不碰 5433 生产库。**
+**数据修复 / backfill**：先分清目标库——开发/测试改 47.113.202.7:5433、生产改 118.178.196.26:5433，**永远显式传 `DATABASE_URL`**。**e2e 绝不碰生产 IP 118.178.196.26。**
 
 ## Baseline reset 历史
 
@@ -150,7 +152,7 @@ docker rm -f pg-from-zero
 - 幂等：再跑一次会全 SKIP
 - 与后续 `npm run db:migrate` 完全兼容
 
-**生产 5433 / 开发 5434 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
+**生产 118.178.196.26:5433 / 开发·测试 47.113.202.7:5433 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
 
 ## 同步脚本
 
@@ -163,7 +165,7 @@ docker rm -f pg-from-zero
 
 ## 导出/备份
 
-`scripts/dump-prod.sh` — 导出生产业务库（5433/fengyu_wxapp）为 custom-format dump（只读，AccessShareLock 不阻塞业务，但执行期间避免跑 db:migrate）：
+`scripts/dump-prod.sh` — 导出生产业务库（118.178.196.26:5433/fengyu_wxapp）为 custom-format dump（只读，AccessShareLock 不阻塞业务，但执行期间避免跑 db:migrate）：
 
 ```bash
 bash db/scripts/dump-prod.sh                       # 全库导出（默认 ~/backups/fengyu/，custom format）
@@ -172,7 +174,7 @@ bash db/scripts/dump-prod.sh -F plain              # 纯 SQL 文本
 ```
 
 连接串从 `envs/prod.env` 读取（不硬编码密码）；需本地 `postgresql@16`（pg_dump major 须 ≥ 服务端 16）；
-内置防误连开发库校验（必须 5433/fengyu_wxapp，否则拒绝）；产物落项目外，避免敏感数据误入 git。
+内置防误连校验（必须含生产 IP 118.178.196.26，否则拒绝）；产物落项目外，避免敏感数据误入 git。
 
 ## 与云函数的关系
 

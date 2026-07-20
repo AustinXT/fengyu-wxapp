@@ -17,7 +17,7 @@ import { execSync } from 'child_process'
 import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
-const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu_e2e'
+const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp'
 
 const APPT_ID = 'TEST-APT-001'
 const FIX_CLIENT_ID = 'FY-FIX-CLIENT-01'

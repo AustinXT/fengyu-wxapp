@@ -98,6 +98,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     })
   }, [form.orgNodeId, orgNodes, stores])
 
+  // 当前有效的技能标签名集合（详情页 skillTags 来自 getActiveSkillTags，即 isValid 子集）。
+  // 保存前按此清洗 form.skills，防止把已删除/已改名残留的旧名写回 DB。
+  const validSkillNames = useMemo(() => new Set(skillTags.map((t) => t.name)), [skillTags])
+
   function maskIdCard(value: string | null): string {
     if (!value || value.length < 8) return value ?? ""
     return value.slice(0, 4) + "****" + value.slice(-4)
@@ -153,6 +157,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     }
     setSaving(true)
     try {
+      // 保存前清洗技能标签：只保留当前有效名，丢弃已删除/已改名的残留旧名
+      const sanitizedSkills = form.skills.filter((s) => validSkillNames.has(s))
       const result = await updateEmployee(employee.employeeId, {
         name: form.name || null,
         gender: form.gender || null,
@@ -167,7 +173,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         leaveStart: form.leaveStart || null,
         leaveEnd: form.leaveEnd || null,
         isOnBusinessTrip: form.isOnBusinessTrip,
-        skills: form.skills.length > 0 ? form.skills : null,
+        skills: sanitizedSkills.length > 0 ? sanitizedSkills : null,
         socialInsurance: form.socialInsurance,
       }, employee.updatedAt)
       if (!result.success) {

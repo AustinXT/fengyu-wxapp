@@ -29,12 +29,12 @@ function loadDatabaseUrlFromEnvLocal(): void {
       }
     }
   } catch {
-    /* .env.local 缺失则退回 fixtures.mjs 内置默认 5434 串 */
+    /* .env.local 缺失则退回 fixtures.mjs 内置默认 5433 串 */
   }
 }
 
 export default async function globalSetup() {
-  // E2E_DATABASE_URL 优先（独立测试库 fengyu_e2e，与开发/staff 共用库隔离）；未设才回落 .env.local
+  // E2E_DATABASE_URL 优先（独立测试库 fengyu_wxapp，与开发/staff 共用库隔离）；未设才回落 .env.local
   if (process.env.E2E_DATABASE_URL) {
     process.env.DATABASE_URL = process.env.E2E_DATABASE_URL
   }
