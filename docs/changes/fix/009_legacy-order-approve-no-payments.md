@@ -52,8 +52,8 @@ related: ["arch/001"]
 - 回填脚本 dev 库 dry-run 902 行，样本全部 `FY-ABZH/FY-XSD` + `legacy_source=workfine` + `received/total` 一致，确认是补登流水无疑。
 
 ## 后续 TODO
-- [ ] 提交 PR → merge main → 部署 admin（含 cron-worker，使 I1 豁免生效）。
-- [ ] 部署后回填：dev(47.113.202.7:5433) `--apply`，再 prod(118.178.196.26:5433) `--apply`。**顺序**：必须先部署 admin 再回填，否则 cron STEP 11 在 03:00 会对 902 行刷 I1 告警。
+- [x] 提交 PR → merge main → 部署 admin（含 cron-worker，使 I1 豁免生效）。
+- [x] 部署后回填：dev(47.113.202.7:5433) `--apply`，再 prod(118.178.196.26:5433) `--apply`（2026-07-20 完成：双库各删 1987 行；两库同源 baseline，fix/009 写作时的 902 为早期快照）。
 - [ ] 部署后跑一次 `docker exec fengyu-cron-worker node cron-worker.js --once`，确认 STEP 11 无 legacy 单 I1 违规。
 
 ## 预防措施
