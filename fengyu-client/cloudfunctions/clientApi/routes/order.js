@@ -1744,7 +1744,7 @@ async function cancel(ctx) {
 
 /**
  * 获取可预约项目列表
- * 查询已支付订单中有剩余次数的项目(疗程卡)
+ * 查询已支付/部分支付订单中有剩余次数的项目(疗程卡)
  */
 async function appointableItems(ctx) {
   const { userId } = ctx.auth
@@ -1777,7 +1777,7 @@ async function appointableItems(ctx) {
     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
-      AND o.status = '已支付'
+      AND o.status IN ('已支付', '部分支付')
       ${activeFilter}
       AND si.product_type = '疗程卡'
       -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
