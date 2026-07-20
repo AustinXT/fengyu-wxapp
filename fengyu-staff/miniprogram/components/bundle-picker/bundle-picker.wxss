@@ -8,7 +8,6 @@
   width: 100%;
   min-width: 0;
   min-height: 0;
-  --native-tabbar-space: 120rpx;
 }
 
 .bundle-picker {
@@ -32,7 +31,7 @@
 .bundle-list {
   flex: 1;
   min-height: 0;
-  padding: 16rpx 16rpx calc(16rpx + var(--native-tabbar-space) + env(safe-area-inset-bottom));
+  padding: 16rpx 16rpx calc(16rpx + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -255,7 +254,7 @@
   justify-content: space-between;
   flex-shrink: 0;
   padding: 16rpx 24rpx;
-  padding-bottom: calc(16rpx + var(--native-tabbar-space) + env(safe-area-inset-bottom));
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #FFFFFF;
   border-top: 1rpx solid var(--color-border, #E5E0D8);
 }
