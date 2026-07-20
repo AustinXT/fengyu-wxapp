@@ -3,6 +3,8 @@
     "urlCheck": true,
     "es6": true,
     "enhance": true,
+    "disableSWC": true,
+    "swc": false,
     "postcss": true,
     "preloadBackgroundData": false,
     "minified": true,
@@ -33,7 +35,7 @@
     "packNpmRelationList": [
       {
         "packageJsonPath": "./package.json",
-        "miniprogramNpmDistDir": "./miniprogram_npm"
+        "miniprogramNpmDistDir": "./"
       }
     ],
     "minifyWXSS": true,

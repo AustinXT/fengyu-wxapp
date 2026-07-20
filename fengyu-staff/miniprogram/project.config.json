@@ -5,6 +5,8 @@
     "minified": true,
     "uglifyFileName": false,
     "enhance": true,
+    "disableSWC": true,
+    "swc": false,
     "minifyWXML": true,
     "minifyWXSS": true,
     "useCompilerPlugins": ["typescript"],
@@ -12,7 +14,7 @@
     "packNpmRelationList": [
       {
         "packageJsonPath": "./package.json",
-        "miniprogramNpmDistDir": "./miniprogram_npm"
+        "miniprogramNpmDistDir": "./"
       }
     ],
     "babelSetting": {
