@@ -6,7 +6,7 @@ description: |
   pack-delivery.mjs 加固打包成客户交付 zip。三阶段流水线：合并 → 清洗 → 打包。
   Use when 用户说 打包交付 / 客户交付 / pack delivery / 合并 main 到 prod 做交付 /
   清洗注释重新打包。产出 fengyu-delivery-<ver>.zip，不给客户 git 仓库。
-  与 release-prod 互补：release-prod 部署到生产服务器，本 skill 产出给客户的源码 zip。
+  与 release-all 互补：release-all 把代码部署到 dev/prod 服务器，本 skill 产出给客户的源码 zip。
 argument-hint: '[merge-only|clean-only|pack-only|skip-merge|skip-clean]'
 disable-model-invocation: true
 user-invocable: true
@@ -156,7 +156,7 @@ metadata:
 
 ```bash
 ZIP=$(ls -t fengyu-delivery-*.zip | head -1)
-unzip -l "$ZIP" | grep -E '\.git/|node_modules|envs/(prod|dev)\.env|release-prod/'   # 应无输出
+unzip -l "$ZIP" | grep -E '\.git/|node_modules|envs/(prod|dev)\.env|release-all/'   # 应无输出
 unzip -l "$ZIP" | grep -E 'db/schema/|_journal.json|remote-deploy/deploy-admin.sh|fengyu-admin/bun.lock|db/bun.lock'  # 应都存在
 ls -lh "$ZIP"
 ```
@@ -181,7 +181,7 @@ ls -lh "$ZIP"
 - 只跑某阶段（`*-only` / `skip-*`）
 
 **NOT**：
-- 生产发版部署（admin 上 fengyu-prod + 云函数）→ `/release-prod`
+- 代码发版部署（admin + 云函数，dev/prod）→ `/release-all`
 - DB schema 迁移到 5433 → `db/CLAUDE.md`（独立人工前置，不在本 skill）
 - 首次交付基线建立（删测试文件 / 中和凭据 / 删架构资产）—— 一次性，已由历史 commit `71cfc7f4`~`9864792a` 完成；本 skill 只做**增量维护**
 
