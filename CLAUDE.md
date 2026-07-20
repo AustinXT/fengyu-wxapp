@@ -1,8 +1,8 @@
-# CLAUDE.md
+# fengyu-wxapp 项目协作规范
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance for AI coding agents (Claude Code / Codex) working in this repository. Claude Code 读 CLAUDE.md，Codex 读同目录 AGENTS.md（符号链接，内容相同）。
 
-凤御双美容院微信小程序生态系统（monorepo）。各子项目详见其目录下的 CLAUDE.md。
+凤御双美容院微信小程序生态系统（monorepo）。各子项目详见其目录下的 CLAUDE.md（Codex 读同名 AGENTS.md 符号链接）。
 
 ## 技术栈
 
