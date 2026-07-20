@@ -80,6 +80,7 @@ export async function capturePaymentAllocatables(
        ORDER BY sale_item_id
        LIMIT 1
     `)
+    // CAS-EXEMPT: 转换单兜底首次置 allocation_status（初始化为『待分配』，非状态迁移，无前置态可守卫）
     await tx.execute(sql`
       UPDATE sale_order_payments SET allocation_status = '待分配'::allocation_status WHERE id = ${salePaymentId}
     `)

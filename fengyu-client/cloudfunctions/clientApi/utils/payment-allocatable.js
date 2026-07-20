@@ -53,6 +53,7 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
         LIMIT 1`,
       [saleOrderId],
     )
+    // CAS-EXEMPT: 转换单兜底首次置 allocation_status（初始化为『待分配』，非状态迁移，无前置态可守卫）
     await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1`, [salePaymentId])
     const convRow = convRes.rows[0]
     if (!convRow) return []
