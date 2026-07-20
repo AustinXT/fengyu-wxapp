@@ -169,12 +169,24 @@ echo "  DATABASE_URL: ${DB_REDACTED:-（无法读取，admin 容器可能未就�
 GOT_HOST=$(node -e "const s=process.argv[1]||'';const m=s.match(/@([^:]+):\d+\//);process.stdout.write(m?m[1]:'')" "$DB_URL" 2>/dev/null || echo "")
 if [[ -z "$GOT_HOST" ]]; then
   echo "  ⚠️  无法提取 DB host（容器未就绪？），跳过 IP 断言——请手动核对 DATABASE_URL。" >&2
-elif [[ "$GOT_HOST" != "$EXPECT_PG_HOST" ]]; then
+elif [[ "$GOT_HOST" == "$EXPECT_PG_HOST" ]]; then
+  echo "  ✓ admin DB host=$GOT_HOST 与 $ENV 一致"
+elif [[ "$GOT_HOST" =~ ^(172\.(1[6-9]|2[0-9]|3[01])\.|10\.|192\.168\.) ]]; then
+  # GOT_HOST 是私网/Docker 网桥地址（prod 同机架构：admin 容器经网桥回连同机宿主裸机 PG）。
+  # 验证网桥确实回连到 EXPECT_PG_HOST 对应宿主：宿主公网 IP 匹配 + PG 在宿主 5433 监听。
+  HOST_PUBLIC_IP=$(ssh "$SSH_HOST" "curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 ip.sb 2>/dev/null" 2>/dev/null | head -1 || true)
+  PG_LISTENING=$(ssh "$SSH_HOST" "ss -tlnp 2>/dev/null | grep -q ':5433' && echo yes || echo no" 2>/dev/null || echo "")
+  if [[ "$HOST_PUBLIC_IP" == "$EXPECT_PG_HOST" && "$PG_LISTENING" == "yes" ]]; then
+    echo "  ✓ admin DB host=$GOT_HOST（Docker 网桥回连同机宿主裸机 PG；宿主公网=$HOST_PUBLIC_IP==$EXPECT_PG_HOST，PG 监听 5433）"
+  else
+    echo "✗ 远程 admin DB host=$GOT_HOST（私网网桥）但宿主公网=$HOST_PUBLIC_IP、PG 监听 5433=$PG_LISTENING，与 $ENV 期望 $EXPECT_PG_HOST 不符（疑似跨环境污染）。" >&2
+    echo "  回滚：docker tag fengyu-admin:<old-tag> fengyu-admin:latest 后重新部署" >&2
+    exit 1
+  fi
+else
   echo "✗ 远程 admin DB host=$GOT_HOST ≠ $ENV 期望 $EXPECT_PG_HOST（疑似跨环境污染）。" >&2
   echo "  回滚：docker tag fengyu-admin:<old-tag> fengyu-admin:latest 后重新部署" >&2
   exit 1
-else
-  echo "  ✓ admin DB host=$GOT_HOST 与 $ENV 一致"
 fi
 
 echo ""

@@ -179,14 +179,6 @@
   gap: 12rpx;
 }
 
-.order-item-spec {
-  font-size: 24rpx;
-  color: var(--color-text-secondary);
-  background: #F5F2EE;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
-}
-
 .order-item-sessions {
   font-size: 24rpx;
   color: var(--color-primary);

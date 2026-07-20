@@ -203,13 +203,6 @@
   font-size: 26rpx;
   color: var(--color-text-primary);
 }
-.purchase-item-spec {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
-  background: #F5F2EE;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
-}
 .purchase-footer {
   display: flex;
   align-items: center;
@@ -317,13 +310,6 @@
   align-items: center;
   gap: 12rpx;
   margin-bottom: 6rpx;
-}
-.tc-spec {
-  font-size: 22rpx;
-  color: var(--color-text-secondary);
-  background: #F5F5F5;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
 }
 .tc-order {
   font-size: 20rpx;

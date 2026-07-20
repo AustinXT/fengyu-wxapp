@@ -84,7 +84,6 @@
             </view>
             <text class="order-item-name">{{si.itemName}}</text>
             <view class="order-item-meta">
-              <text class="order-item-spec">{{si.spec}}</text>
               <text class="order-item-sessions">剩余 {{si.consumableSessions}} / 已付 {{si.paidSessions == null ? '—' : si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} 次{{si.unitRealPrice ? ' · 单次实付 ¥' + si.unitRealPrice : ''}}{{si.disabledReason ? ' · ' + si.disabledReason : ''}}</text>
             </view>
             <view class="order-item-sub" wx:if="{{si.saleOrderId}}">{{si.saleOrderId}} · {{si.paidAt}}</view>

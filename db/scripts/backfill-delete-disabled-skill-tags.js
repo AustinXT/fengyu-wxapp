@@ -57,7 +57,7 @@ WHERE s.skills IS NOT NULL
 const UPDATE_STAFF_SQL = `
 UPDATE staff_wechat_users s
 SET skills = NULLIF(
-      ARRAY(SELECT unnest(s.skills) x
+      ARRAY(SELECT x FROM unnest(s.skills) AS u(x)
             WHERE x NOT IN (SELECT name FROM skill_tags WHERE is_valid = false)),
       ARRAY[]::text[]),
     updated_at = NOW()
