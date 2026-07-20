@@ -93,7 +93,6 @@ vi.mock('drizzle-orm/pg-core', () => ({
 
 vi.mock('@/actions/skill-tags', () => ({
   getSkillTags: vi.fn(),
-  getActiveSkillTags: vi.fn(),
   createSkillTag: vi.fn(),
   updateSkillTag: vi.fn(),
   deleteSkillTag: vi.fn(),

@@ -350,11 +350,11 @@ export const exportEmployees = withPermission(
   ): Promise<{ rows: ExportEmployeeRow[]; truncated: boolean }> => {
     const LIMIT = 10000
     const parsed = parseEmployeeFilters(params)
-    // 服务端兜底：剔除 URL ?skill= 中已停用（isValid=false）的标签，防幽灵筛选。
+    // 服务端兜底：剔除 URL ?skill= 中字典外（已删除）的标签名，防幽灵筛选。
     // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
     // 导出也不被静默收窄；与员工列表 getEmployeesPaginated 对称处理）。
     const skillTags = await getSkillTags()
-    const validSkillNames = new Set(skillTags.filter((t) => t.isValid).map((t) => t.name))
+    const validSkillNames = new Set(skillTags.map((t) => t.name))
     const filters = {
       ...parsed,
       skills: filterValidSkillValues(parsed.skills, validSkillNames),

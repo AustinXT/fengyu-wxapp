@@ -183,7 +183,6 @@ export interface SkillTag {
   id: string
   name: string
   sortOrder: number
-  isValid: boolean
   createdAt: string
   updatedAt: string
 }

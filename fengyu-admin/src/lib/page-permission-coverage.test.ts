@@ -54,7 +54,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
   '/products': ['product:list'],
   '/mall': ['product:list'],
-  '/commission': ['commission:list', 'employee:list'], // getRates/getMarkets(commission:list)+getActiveSkillTags(employee:list)
+  '/commission': ['commission:list', 'employee:list'], // getRates/getMarkets(commission:list)+getSkillTags(employee:list)
   '/customers': ['customer:list', 'store:list', 'org:list'],
   '/cards': ['sale_item:list', 'store:list', 'org:list'],
   '/coupons': ['coupon:list'], // getTemplates/getMarkets 均 coupon:list

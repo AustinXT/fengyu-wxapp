@@ -3,7 +3,7 @@ import { getPaymentAllocatables } from '@/actions/allocations'
 import { getOrderById } from '@/actions/orders'
 import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
-import { getActiveSkillTags } from '@/actions/skill-tags'
+import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import PaymentAllocationDetailPageClient from '../../_components/payment-allocation-detail-page'
 
@@ -18,7 +18,7 @@ export default async function Page({ params }: { params: Promise<{ paymentId: st
     getEmployees(),
     getEmployeesOnBusinessTrip(),
     getRates().catch(() => []),
-    getActiveSkillTags(),
+    getSkillTags(),
   ])
 
   if (!payment) notFound()

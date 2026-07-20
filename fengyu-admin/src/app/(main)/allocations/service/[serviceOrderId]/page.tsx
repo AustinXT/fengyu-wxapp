@@ -3,7 +3,7 @@ import { getServiceOrderById, getServiceItems } from '@/actions/services'
 import { getServiceOrderCommissions } from '@/actions/service-commissions'
 import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
-import { getActiveSkillTags } from '@/actions/skill-tags'
+import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import ServiceCommissionDetailPageClient from '../../_components/service-commission-detail-page'
 
@@ -18,7 +18,7 @@ export default async function Page({ params }: { params: Promise<{ serviceOrderI
     getEmployees(),
     getEmployeesOnBusinessTrip(),
     getRates().catch(() => []),
-    getActiveSkillTags(),
+    getSkillTags(),
   ])
 
   if (!serviceOrder) notFound()
