@@ -346,10 +346,12 @@ async function save(ctx) {
          LIMIT 1`,
         [c.roleType, p.sales_category, consumeBase, serviceOrderId]
       )
-      const rate = Number(rateRows.rows[0]?.commission_rate || 0)
-      if (rate === 0 && consumeBase > 0) {
+      // 按「有无命中行」区分（仅在 consumeBase>0 时校验）：查无匹配规则=真缺失→报错；命中行 rate=0（合法 0%）→放行（与 admin 镜像）
+      const hit = rateRows.rows[0]
+      if (!hit && consumeBase > 0) {
         throw new Error(`INVALID_STATE: COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${p.sales_category}, consumeBase=${consumeBase}`)
       }
+      const rate = Number(hit?.commission_rate || 0)
 
       // 按 ratio 拆分
       const consumeAmount = round2(consumeBase * ratio * rate)

@@ -244,13 +244,14 @@ export const batchSaveServiceCommissions = withPermission(
             .orderBy(desc(commissionRateMatrix.amountTierMin))
             .limit(1)
 
-          const rate = Number(rateRows[0]?.commissionRate || 0)
-          if (rate === 0 && consumeBase > 0) {
+          // 按「有无命中行」区分（仅在 consumeBase>0 时校验）：查无匹配规则=真缺失→报错；命中行 rate=0（合法 0%）→放行（与 staffApi 镜像）
+          if (rateRows.length === 0 && consumeBase > 0) {
             throw new ApiError(
               'INVALID_STATE',
               `COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${salesCategory}, consumeBase=${consumeBase}`
             )
           }
+          const rate = Number(rateRows[0]?.commissionRate || 0)
 
           const consumeAmount = Math.round(consumeBase * ratio * rate * 100) / 100
           const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
