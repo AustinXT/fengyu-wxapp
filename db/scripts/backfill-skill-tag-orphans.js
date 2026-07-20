@@ -14,8 +14,9 @@
  *
  * 选行口径（保守）：
  *   staff_wechat_users.skills 含任意不在 skill_tags.name 集合中的名字。
- *   清洗后只保留字典里存在的名字；保留 isValid=false 的停用标签（停用可逆，
- *   仅 UI 隐藏，不算孤儿）。全清空的行 skills 置 NULL。
+ *   清洗后只保留字典里存在的名字（isValid 已废弃，停用=删除：isValid=false 的标签行
+ *   及其员工关联由 backfill-delete-disabled-skill-tags.js 清理；本脚本只清字典外孤儿）。
+ *   全清空的行 skills 置 NULL。
  *
  * 幂等：EXISTS 守护，二次运行 0 行。
  *

@@ -11,6 +11,7 @@ export const skillTags = pgTable('skill_tags', {
   id: text('id').primaryKey(),
   name: text('name').notNull().unique(),
   sortOrder: integer('sort_order').notNull().default(0),
+  // 已废弃（2026-07-20 停用功能移除，停用=删除）：恒 true，代码不再读写；保留字段避免 migration
   isValid: boolean('is_valid').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
