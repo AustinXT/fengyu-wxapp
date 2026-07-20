@@ -98,8 +98,9 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     })
   }, [form.orgNodeId, orgNodes, stores])
 
-  // 当前有效的技能标签名集合（详情页 skillTags 来自 getActiveSkillTags，即 isValid 子集）。
-  // 保存前按此清洗 form.skills，防止把已删除/已改名残留的旧名写回 DB。
+  // 技能标签全量名字集合（详情页 skillTags 来自 getSkillTags，含停用项）。
+  // 保存前按此清洗 form.skills：只保留字典内名字（含停用——停用可逆，员工身上保留），
+  // 清掉字典外孤儿。停用标签不在编辑下拉（SkillSelect options 过滤 isValid）但 value 保留。
   const validSkillNames = useMemo(() => new Set(skillTags.map((t) => t.name)), [skillTags])
 
   function maskIdCard(value: string | null): string {
@@ -539,7 +540,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 <div className="space-y-2">
                   <label className="text-sm font-medium">技能标签</label>
                   <SkillSelect
-                    options={skillTags.map((t) => t.name)}
+                    options={skillTags.filter((t) => t.isValid).map((t) => t.name)}
                     value={isEditing ? form.skills : (employee.skills ?? [])}
                     onChange={(skills) => handleFormChange("skills", skills)}
                     disabled={!isEditing}

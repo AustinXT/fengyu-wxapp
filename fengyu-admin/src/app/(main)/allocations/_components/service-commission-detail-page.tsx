@@ -10,12 +10,11 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
-import type { ServiceOrder, ServiceCommission, Employee, CommissionRate } from "@/lib/types"
+import type { ServiceOrder, ServiceCommission, Employee, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
 
 // --------------- 常量 ---------------
 
-const SKILL_TAGS = ['美容师', '养生师', '推广师', '品项老师'] as const
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 const MAX_PER_GROUP = 3
 
@@ -165,17 +164,22 @@ export default function ServiceCommissionDetailPageClient({
   commissions,
   employees,
   commissionRates = [],
+  skillTags = [],
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
   commissions: ServiceCommission[]
   employees: Employee[]
   commissionRates?: CommissionRate[]
+  skillTags?: SkillTag[]
 }) {
   const allActiveEmployees = useMemo(
     () => sortByPosition(employees.filter((e) => !e.isResigned)),
     [employees],
   )
+  // 技能标签下拉选项：严格来自数据库 skill_tags（与 allocation-detail-page / payment-allocation-detail-page 一致，
+  // 不再硬编码白名单——字典加新标签后此页立即可选）
+  const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
 
   // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
   // 「服务单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
@@ -303,6 +307,7 @@ export default function ServiceCommissionDetailPageClient({
           key={item.serviceItemId}
           item={item}
           entries={itemComms[item.serviceItemId] || []}
+          skillTagOptions={skillTagNames}
           getFilteredEmployees={getFilteredEmployees}
           onAdd={addEntry}
           onUpdate={updateEntry}
@@ -329,6 +334,7 @@ export default function ServiceCommissionDetailPageClient({
 function ServiceItemCard({
   item,
   entries,
+  skillTagOptions,
   getFilteredEmployees,
   onAdd,
   onUpdate,
@@ -336,6 +342,7 @@ function ServiceItemCard({
 }: {
   item: ServiceItemDetail
   entries: CommissionEntry[]
+  skillTagOptions: string[]
   getFilteredEmployees: (skillTag: string) => Employee[]
   onAdd: (serviceItemId: string) => void
   onUpdate: (serviceItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
@@ -386,7 +393,7 @@ function ServiceItemCard({
                     onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'skillTag', e.target.value)}
                   >
                     <option value="">选择</option>
-                    {SKILL_TAGS.map((tag) => (
+                    {skillTagOptions.map((tag) => (
                       <option key={tag} value={tag}>{tag}</option>
                     ))}
                   </Select>

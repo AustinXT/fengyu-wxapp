@@ -3,7 +3,7 @@ import { getEmployeeById } from '@/actions/employees'
 import { getEmployeeRoles } from '@/actions/permissions'
 import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
-import { getActiveSkillTags } from '@/actions/skill-tags'
+import { getSkillTags } from '@/actions/skill-tags'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
 import EmployeeDetailPage from './_components/employee-detail-page'
@@ -18,7 +18,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     getEmployeeRoles(id),
     getStores(),
     getOrgNodes(),
-    getActiveSkillTags(),
+    getSkillTags(),
   ])
   if (!employee) notFound()
   // 物理删除员工：仅系统管理员（employee:delete）
