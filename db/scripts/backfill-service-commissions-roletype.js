@@ -96,7 +96,7 @@ async function main() {
 
   log(`目标库: ${PG_CONFIG.connectionString.replace(/:[^:@]+@/, ':***@')}`)
   log(`模式: ${commit ? 'COMMIT（实际写入）' : 'DRY-RUN（仅预览，不写入；加 --commit 才执行 UPDATE）'}`)
-  log('提醒: 5434/fengyu 是生产业务库（必跑）；5433/fengyu_wxapp 已转冷备（可选）')
+  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 47.113.202.7:5433/fengyu_wxapp 先验证（两端均 5433/fengyu_wxapp，仅 IP 区分）')
 
   const pool = new Pool(PG_CONFIG)
   try {

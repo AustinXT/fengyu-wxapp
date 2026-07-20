@@ -128,7 +128,7 @@ export const staffWechatUsers = pgTable(
     leaveEnd: timestamp('leave_end', { mode: 'string', withTimezone: true }),
     /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；长期保留直至 admin 手动改回 false（2026-07-13 起不再每日重置） */
     isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
-    /** 技能标签数组，由员工端手动维护 */
+    /** 技能标签数组（由 admin 后台维护；staff/client 端只读，用于员工选择器过滤、skills[0] 推断角色等）*/
     skills: text('skills').array(),
     /** 是否缴纳社保；默认否 */
     socialInsurance: boolean('social_insurance').notNull().default(false),

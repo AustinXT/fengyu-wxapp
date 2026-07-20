@@ -151,6 +151,8 @@ Page({
       }));
       this.setData({ staffList });
       this._recomputeStaffAvailability();
+      // staffList 异步到达（含 leaveStart/leaveEnd）后刷新时段行置灰（leave 维度依赖 staffList）
+      this._recomputeSlotDisabled();
     } catch {
       // 静默失败，美容师列表不影响预约
     }
@@ -212,6 +214,8 @@ Page({
       for (const item of data?.staffSchedule || []) {
         busyMap[item.employeeId] = item.busySlots || [];
       }
+      // 日期守卫：await 期间用户若已改选其它日期，丢弃本次 stale 响应（避免旧日期 busyMap 覆盖新日期致误置灰）
+      if (this.data.appointmentDate !== date) return;
       this.setData({ staffBusyMap: busyMap });
     } catch {
       // 静默失败：保持空（onDateConfirm 切日期时已清空旧 map），不阻塞预约流程；
@@ -235,6 +239,8 @@ Page({
           selectedStaffName: data.mainStaffName || '',
           selectedStaffAvatarUrl: data.mainStaffAvatarUrl || '',
         });
+        // 默认美容师异步回填后刷新时段行置灰（booked 维度依赖 selectedStaffWfId）
+        this._recomputeSlotDisabled();
       }
     } catch {
       // 获取默认美容师失败不影响预约流程

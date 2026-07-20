@@ -45,10 +45,10 @@ export default function EmployeesPage({
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
 
-  // 当前有效的技能标签名集合（isValid）：清洗 URL 残留的已停用标签，防幽灵筛选。
+  // 技能标签全量名字集合：清洗 URL 残留的已删除标签（字典外孤儿），防幽灵筛选。
   // 三处同源清洗：列表 page.tsx（后端查询前）+ selectedSkills（前端展示）+ handleExport（导出）。
   const validSkillNames = useMemo(
-    () => new Set(skillTags.filter((t) => t.isValid).map((t) => t.name)),
+    () => new Set(skillTags.map((t) => t.name)),
     [skillTags],
   );
   const searchParams = useSearchParams();
@@ -173,7 +173,7 @@ export default function EmployeesPage({
       key: "skills",
       header: "技能",
       cell: (row) => {
-        // 防御：只渲染当前 isValid 的标签名，隐藏已删除/已改名残留的旧副本
+        // 防御：只渲染字典内标签名，隐藏已删除/改名残留的旧副本
         const visible = row.skills?.filter((s) => validSkillNames.has(s)) ?? []
         return (
           <div className="flex flex-wrap gap-1">
@@ -251,9 +251,7 @@ export default function EmployeesPage({
           <option value="resigned">已离职</option>
         </Select>
         <MultiSelect
-          options={skillTags
-            .filter((t) => t.isValid)
-            .map((t) => ({ value: t.name, label: t.name }))}
+          options={skillTags.map((t) => ({ value: t.name, label: t.name }))}
           value={selectedSkills}
           onChange={(arr) => setFilter("skill", arr.join(","))}
           placeholder="技能标签"

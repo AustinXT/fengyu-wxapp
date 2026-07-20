@@ -380,7 +380,7 @@ async function queryNewMembers(scopeType, scopeId, date, mode) {
  * 改为用 c.became_member_at 时间戳，任意 $date 都可还原"那一天的会员数"。
  *
  * 跃迁路径在 `staffApi/routes/order.js`（recalcCustomerType）和
- * `payNotify/index.js`（重算路径）中已与 customer_type 跃迁同步写入 became_member_at = NOW()。
+ * `payNotify/index.js`（重算路径）中已与 customer_type 跃迁同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)。
  * 历史数据由 `db/scripts/backfill-became-member-at.js` 一次性回填。
  */
 async function queryMemberCount(scopeType, scopeId, date) {

@@ -28,6 +28,17 @@ REMOTE_DIR="${REMOTE_DIR:-${3:-/root/proj.xt.com/fengyu-wxapp/docker}}"
 # 期望的远程 admin DB host（部署后断言用）：prod=118.178.196.26 / dev=47.113.202.7（两端均 5433/fengyu_wxapp，仅 IP 区分）
 EXPECT_PG_HOST=$([[ "$ENV" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
 
+# [预检] SSH_HOST 与 ENV 绑定默认 host 一致性：env/arg 把部署目标覆盖成异环境 host 时
+# （典型：shell 残留 export SSH_HOST=fengyu-prod，随后跑 deploy-admin.sh dev），会绕过下方仅看 ENV
+# 的 prod confirm 门把镜像推到错环境，且 DB IP 断言在 compose up 之后才跑。此处把"事后补救"提到
+# "事前拦截"。显式跨环境部署（如 fengyu-prod 上 remote-dir 不同）时，操作员看清警告后输入 yes 放行。
+if [[ "$SSH_HOST" != "$SSH_HOST_DEFAULT" ]]; then
+  echo "⚠️  SSH_HOST ($SSH_HOST) ≠ ENV=$ENV 绑定默认 ($SSH_HOST_DEFAULT)。" >&2
+  echo "    疑似 shell 残留污染或显式跨环境部署；DB IP 断言仍会在部署后兜底。" >&2
+  read -p "Type 'yes' to confirm this target is intentional: " ssh_confirm
+  if [[ "$ssh_confirm" != "yes" ]]; then echo "Aborted."; exit 1; fi
+fi
+
 # 切到项目根：后续 envs/、db/、docker/ 等相对路径均基于此
 cd "$(dirname "$0")/../../.."
 

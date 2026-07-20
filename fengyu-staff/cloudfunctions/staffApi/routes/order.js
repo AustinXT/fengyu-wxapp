@@ -103,7 +103,7 @@ async function refreshSpendingTier(client, clientUserId) {
 /**
  * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
  * 阈值从 system_configs.new_member_threshold 读取
- * 跃迁为"会员客"时同步写入 became_member_at = NOW()。
+ * 跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  * TODO: 将来若开放"会员客→非会员客"降级路径，需同步 UPDATE became_member_at = NULL。
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id

@@ -93,7 +93,6 @@ vi.mock('drizzle-orm/pg-core', () => ({
 
 vi.mock('@/actions/skill-tags', () => ({
   getSkillTags: vi.fn(),
-  getActiveSkillTags: vi.fn(),
   createSkillTag: vi.fn(),
   updateSkillTag: vi.fn(),
   deleteSkillTag: vi.fn(),
@@ -1146,10 +1145,8 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(listSession)
     ;(getSkillTags as any).mockResolvedValue([
-      { id: 'tag-1', name: '护理', isValid: true },
-      { id: 'tag-2', name: '美容师', isValid: true },
-      // 已停用的幽灵标签（admin 已停用，但 URL ?skill= 可能残留）
-      { id: 'tag-3', name: '旧标签', isValid: false },
+      { id: 'tag-1', name: '护理' },
+      { id: 'tag-2', name: '美容师' },
     ])
   })
 
@@ -1165,7 +1162,7 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     expect((sql as any).join).not.toHaveBeenCalled()
   })
 
-  it('skills 全有效 → 原样传入 buildEmployeeConditions（sql.join 含全部有效标签）', async () => {
+  it('skills 全字典内 → 原样传入 buildEmployeeConditions（sql.join 含全部标签）', async () => {
     mockExportChain([])
 
     await exportEmployees({ skill: '护理,美容师' })
@@ -1179,13 +1176,13 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     )
   })
 
-  it('skills 含失效标签 → 服务端兜底剔除失效项（防幽灵筛选，对称列表 page.tsx）', async () => {
+  it('skills 含字典外标签 → 服务端兜底剔除（防幽灵筛选，对称列表 page.tsx）', async () => {
     mockExportChain([])
 
-    // URL 残留已停用的"旧标签"（前端 handleExport 漏清洗场景）
+    // URL 残留字典外的"旧标签"（已删除，前端 handleExport 漏清洗场景）
     await exportEmployees({ skill: '护理,旧标签,美容师' })
 
-    // sql.join 仅含有效标签（护理、美容师），失效"旧标签"被剔除
+    // sql.join 仅含字典内标签（护理、美容师），字典外"旧标签"被剔除
     expect((sql as any).join).toHaveBeenCalledWith(
       [
         { type: 'sql', args: [expect.anything(), '护理'] },
@@ -1195,12 +1192,12 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     )
   })
 
-  it('skills 全失效 → sql.join 不被调用（清洗后为 undefined → no-op，列表不被静默收窄）', async () => {
+  it('skills 全字典外 → sql.join 不被调用（清洗后为 undefined → no-op，列表不被静默收窄）', async () => {
     mockExportChain([])
 
     await exportEmployees({ skill: '旧标签' })
 
-    // 全失效 → filterValidSkillValues 返回 undefined → buildEmployeeConditions 跳过 skills 条件
+    // 全字典外 → filterValidSkillValues 返回 undefined → buildEmployeeConditions 跳过 skills 条件
     expect((sql as any).join).not.toHaveBeenCalled()
   })
 

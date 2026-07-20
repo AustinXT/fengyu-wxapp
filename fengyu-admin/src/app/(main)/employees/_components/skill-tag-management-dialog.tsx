@@ -6,9 +6,7 @@ import { toast } from "sonner"
 import type { SkillTag } from "@/lib/types"
 import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import {
@@ -24,10 +22,9 @@ import { createSkillTag, updateSkillTag, deleteSkillTag } from "@/actions/skill-
 interface FormData {
   name: string
   sortOrder: number
-  isValid: boolean
 }
 
-const emptyForm: FormData = { name: "", sortOrder: 0, isValid: true }
+const emptyForm: FormData = { name: "", sortOrder: 0 }
 
 export default function SkillTagManagementDialog({
   open,
@@ -62,7 +59,7 @@ export default function SkillTagManagementDialog({
 
   function openEdit(row: SkillTag) {
     setEditing(row)
-    setForm({ name: row.name, sortOrder: row.sortOrder, isValid: row.isValid })
+    setForm({ name: row.name, sortOrder: row.sortOrder })
     setFormOpen(true)
   }
 
@@ -76,7 +73,7 @@ export default function SkillTagManagementDialog({
       if (editing) {
         const res = await updateSkillTag(
           editing.id,
-          { name: form.name.trim(), sortOrder: form.sortOrder, isValid: form.isValid },
+          { name: form.name.trim(), sortOrder: form.sortOrder },
           editing.updatedAt,
         )
         if (!res.success) {
@@ -91,7 +88,6 @@ export default function SkillTagManagementDialog({
           id,
           name: form.name.trim(),
           sortOrder: form.sortOrder,
-          isValid: form.isValid,
         })
         if (!res.success) {
           toast.error(res.message)
@@ -134,22 +130,6 @@ export default function SkillTagManagementDialog({
       cell: (row) => <span className="font-medium">{row.name}</span>,
     },
     { key: "sortOrder", header: "排序" },
-    {
-      key: "isValid",
-      header: "状态",
-      cell: (row) => (
-        <Badge
-          variant="outline"
-          className={
-            row.isValid
-              ? "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]"
-              : "border-[#888888] text-[#888888] bg-[#F5F5F5]"
-          }
-        >
-          {row.isValid ? "启用" : "停用"}
-        </Badge>
-      ),
-    },
     {
       key: "actions",
       header: "操作",
@@ -210,10 +190,6 @@ export default function SkillTagManagementDialog({
               value={form.sortOrder}
               onChange={(e) => setForm({ ...form, sortOrder: parseInt(e.target.value) || 0 })}
             />
-          </div>
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">启用状态</label>
-            <Switch checked={form.isValid} onCheckedChange={(checked) => setForm({ ...form, isValid: checked })} />
           </div>
         </div>
         <DialogFooter>

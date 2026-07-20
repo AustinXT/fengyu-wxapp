@@ -98,8 +98,8 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     })
   }, [form.orgNodeId, orgNodes, stores])
 
-  // 当前有效的技能标签名集合（详情页 skillTags 来自 getActiveSkillTags，即 isValid 子集）。
-  // 保存前按此清洗 form.skills，防止把已删除/已改名残留的旧名写回 DB。
+  // 技能标签全量名字集合（详情页 skillTags 来自 getSkillTags）。
+  // 保存前按此清洗 form.skills：只保留字典内名字，清掉字典外孤儿（已删除/改名残留）。
   const validSkillNames = useMemo(() => new Set(skillTags.map((t) => t.name)), [skillTags])
 
   function maskIdCard(value: string | null): string {

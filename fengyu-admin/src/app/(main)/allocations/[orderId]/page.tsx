@@ -3,7 +3,7 @@ import { getOrderById } from '@/actions/orders'
 import { getOrderAllocations } from '@/actions/allocations'
 import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
-import { getActiveSkillTags } from '@/actions/skill-tags'
+import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import AllocationDetailPageClient from '../_components/allocation-detail-page'
 
@@ -17,7 +17,7 @@ export default async function Page({ params }: { params: Promise<{ orderId: stri
     getEmployees(),
     getEmployeesOnBusinessTrip(),
     getRates().catch(() => []),
-    getActiveSkillTags(),
+    getSkillTags(),
   ])
 
   if (!order) notFound()

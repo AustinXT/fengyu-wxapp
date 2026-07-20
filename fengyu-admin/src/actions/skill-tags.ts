@@ -16,7 +16,6 @@ function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
     id: row.id,
     name: row.name,
     sortOrder: row.sortOrder,
-    isValid: row.isValid,
     createdAt: row.createdAt?.toISOString() ?? '',
     updatedAt: row.updatedAt?.toISOString() ?? '',
   }
@@ -33,18 +32,6 @@ export const getSkillTags = withPermission('employee:list', async (): Promise<Sk
   return rows.map(rowToSkillTag)
 })
 
-/** 查询启用中的技能标签（用于选项） */
-export const getActiveSkillTags = withPermission('employee:list', async (): Promise<SkillTag[]> => {
-  const rows = await db
-    .select()
-    .from(skillTags)
-    .where(eq(skillTags.isValid, true))
-    // 例外：sortOrder 手工排序权重
-    .orderBy(asc(skillTags.sortOrder))
-
-  return rows.map(rowToSkillTag)
-})
-
 export const createSkillTag = withPermission(
   'employee:update',
   async (
@@ -53,7 +40,6 @@ export const createSkillTag = withPermission(
       id: string
       name: string
       sortOrder?: number
-      isValid?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
     if (!data.name?.trim()) {
@@ -65,7 +51,6 @@ export const createSkillTag = withPermission(
         id: data.id,
         name: data.name.trim(),
         sortOrder: data.sortOrder ?? 0,
-        isValid: data.isValid ?? true,
       })
     } catch (err: any) {
       if (pgErrorCode(err) === '23505') return { success: false, message: '该标签名称已存在' }
@@ -86,7 +71,6 @@ export const updateSkillTag = withPermission(
     data: Partial<{
       name: string
       sortOrder: number
-      isValid: boolean
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
@@ -102,11 +86,11 @@ export const updateSkillTag = withPermission(
     }
     const oldName = before.name
     const trimmedName = data.name === undefined ? undefined : data.name.trim()
-    // 仅当显式传名、且与旧名不同时才视为改名（sortOrder/isValid 变更不触发员工级联）
+    // 仅当显式传名、且与旧名不同时才视为改名（sortOrder 变更不触发员工级联）
     const nameChanged = trimmedName !== undefined && trimmedName !== oldName
 
     // 透传 payload（name 归一为 trim 值）
-    const setData: Partial<{ name: string; sortOrder: number; isValid: boolean }> = { ...data }
+    const setData: Partial<{ name: string; sortOrder: number }> = { ...data }
     if (trimmedName !== undefined) setData.name = trimmedName
 
     const whereConditions = expectedUpdatedAt

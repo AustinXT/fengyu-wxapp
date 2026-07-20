@@ -52,7 +52,7 @@ async function refreshSpendingTier(client, clientUserId) {
 
 /**
  * 重算顾客类型（customer_type，只升不降）。clientApi 独立副本，镜像 staffApi routes/order.js:109-202。
- * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = NOW()，
+ * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()），
  * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
  *
  * 四端 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts），

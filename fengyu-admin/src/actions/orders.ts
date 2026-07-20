@@ -134,7 +134,7 @@ async function applyRechargeOnOrderPaid(
  *   - 体验客：销售单中存在体验卡明细行（si.is_experience = true）
  *   - 流量客：兜底
  *
- * 只升不降；跃迁为"会员客"时同步写入 became_member_at = NOW()。
+ * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
  * SQL 关键字段（is_experience capability 列、不再 JOIN product_categories）必须与
  * staffApi/routes/order.js + payNotify/index.js 字面一致 —— 守卫测试

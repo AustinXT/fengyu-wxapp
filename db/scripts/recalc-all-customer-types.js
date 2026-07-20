@@ -38,7 +38,7 @@
  *     node db/scripts/recalc-all-customer-types.js --apply
  *
  * 顺序：
- *   先在 5434/fengyu（生产业务库，admin + 全部云函数共用）跑 --apply 验证；如需镜像到冷备库，再对 5433/fengyu_wxapp 跑（可选）。
+ *   先在开发/测试库 47.113.202.7:5433/fengyu_wxapp 跑 --apply 验证；生产库 118.178.196.26:5433/fengyu_wxapp 再跑一次（必跑）。两端均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 幂等：
  *   - customer_type 仅向上跃迁；二次运行时已是目标态的不再 UPDATE。

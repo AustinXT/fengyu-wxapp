@@ -348,3 +348,68 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(ps.rows[0].allocation_status).toBe('待分配')
   })
 })
+
+// 转换单多转入行（异品类）：2026-07-20 修 #2 —— 旧码 LIMIT 1 把整笔 evt 全挂首转入行，致其余转入行
+// 得 0、提成全按首行品类率归因（异品类提成错）。新码按 sale_amount 比例摊 evt 到全部转入行，各行得
+// 对应品类 SPAI，下游提成按行品类率归因正确。
+describe('capture 转换单多转入行（异品类按 sale_amount 比例摊，修 #2）', () => {
+  const CONV_MULTI = `IT-PA-CM-${RUN}` // sale_order_id
+  const CONV_MULTI_OUT = `IT-PA-CM-O-${RUN}` // 转出 -100
+  const CONV_IN1 = `IT-PA-CM-A-${RUN}` // 转入 自销自耗 sale_amount=300
+  const CONV_IN2 = `IT-PA-CM-B-${RUN}` // 转入 他销自耗 sale_amount=300
+
+  it('造转换单 + 1 转出(-100) + 2 异品类转入(自销自耗 300 / 他销自耗 300)', async () => {
+    await client.query(
+      `INSERT INTO sale_orders
+         (sale_order_id, status, sale_order_type, market_name, store_id, store_name,
+          sale_order_datetime, total_amount, payment_method, received)
+       VALUES ($1, '已支付', '转换单', '集成测试市场', $2, '集成测试门店',
+               NOW(), 500, '线下', 500)`,
+      [CONV_MULTI, storeId],
+    )
+    const insDir = (id, direction, cat, unitPrice, saleAmount, sessionCount) =>
+      client.query(
+        `INSERT INTO sale_items
+           (sale_item_id, sale_order_id, store_id, item_direction, product_type, session_count,
+            unit_price, unit_real_price, sale_amount, received, quantity, sales_category)
+         VALUES ($1, $2, $3, $4, '疗程卡', $5, $6, $6, $7, $7, 1, $8)`,
+        [id, CONV_MULTI, storeId, direction, sessionCount, unitPrice, saleAmount, cat],
+      )
+    await insDir(CONV_MULTI_OUT, '转出', '自销自耗', 100, -100, 1)
+    await insDir(CONV_IN1, '转入', '自销自耗', 300, 300, 5)
+    await insDir(CONV_IN2, '转入', '他销自耗', 300, 300, 5)
+  })
+
+  it('capture 按比例摊 evt=500 → 自销自耗 250 / 他销自耗 250（旧码 LIMIT 1 会全挂首行 500/0）', async () => {
+    const pay = await client.query(
+      `INSERT INTO sale_order_payments
+         (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
+       VALUES ($1, '首次支付', 500, '线下', '已支付', 'staff', NOW())
+       RETURNING id`,
+      [CONV_MULTI],
+    )
+    const salePaymentId = Number(pay.rows[0].id)
+
+    const out = await capturePaymentAllocatables(client, {
+      salePaymentId,
+      saleOrderId: CONV_MULTI,
+      eventAmount: 500,
+      directedItems: null,
+    })
+
+    const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
+    // 两行各 250（按 sale_amount 300:300 等比例摊 evt=500），Σ=500，各 ≤ sale_amount(300)；
+    // 旧码会 CONV_IN1=500（超其 sale_amount 300）、CONV_IN2=0（他销自耗品类率被忽略）。
+    expect(num(retById[CONV_IN1].amount)).toBe(250)
+    expect(num(retById[CONV_IN2].amount)).toBe(250)
+    expect(retById[CONV_IN1].salesCategory).toBe('自销自耗')
+    expect(retById[CONV_IN2].salesCategory).toBe('他销自耗')
+    expect(num(retById[CONV_IN1].amount) + num(retById[CONV_IN2].amount)).toBe(500)
+
+    const m = await allocatableMap(salePaymentId)
+    expect(m[CONV_IN1].amount).toBe(250)
+    expect(m[CONV_IN2].amount).toBe(250)
+    expect(m[CONV_IN1].salesCategory).toBe('自销自耗')
+    expect(m[CONV_IN2].salesCategory).toBe('他销自耗')
+  })
+})

@@ -3,6 +3,7 @@ import { getServiceOrderById, getServiceItems } from '@/actions/services'
 import { getServiceOrderCommissions } from '@/actions/service-commissions'
 import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
+import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
 import ServiceCommissionDetailPageClient from '../../_components/service-commission-detail-page'
 
@@ -10,13 +11,14 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ serviceOrderId: string }> }) {
   const { serviceOrderId } = await params
-  const [serviceOrder, items, commissions, scopedEmployees, tripEmployees, commissionRates] = await Promise.all([
+  const [serviceOrder, items, commissions, scopedEmployees, tripEmployees, commissionRates, skillTags] = await Promise.all([
     getServiceOrderById(serviceOrderId),
     getServiceItems(serviceOrderId),
     getServiceOrderCommissions(serviceOrderId),
     getEmployees(),
     getEmployeesOnBusinessTrip(),
     getRates().catch(() => []),
+    getSkillTags(),
   ])
 
   if (!serviceOrder) notFound()
@@ -32,6 +34,7 @@ export default async function Page({ params }: { params: Promise<{ serviceOrderI
       commissions={commissions}
       employees={employees}
       commissionRates={commissionRates}
+      skillTags={skillTags}
     />
   )
 }

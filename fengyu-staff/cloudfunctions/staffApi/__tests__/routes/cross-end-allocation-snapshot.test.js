@@ -166,6 +166,17 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
     }
   })
 
+  test('四端转换单兜底一致：无「购买」行时取全部「转入」行按 sale_amount 比例摊 SPAI（含 admin TS 版，修多转入行异品类提成归因）', () => {
+    for (const [end, src] of ENDS()) {
+      expect(src, `${end} 缺转换单 items.length === 0 兜底分支`).toMatch(/items\.length === 0/)
+      expect(src, `${end} 缺转换单 item_direction='转入' 兜底`).toMatch(/item_direction = '转入'/)
+      // 2026-07-20 修 #2：转换单多转入行不再 LIMIT 1 全挂首行（致异品类提成归因错），改为取全部转入行按 sale_amount 比例摊
+      expect(src, `${end} 转换单兜底仍残留 LIMIT 1`).not.toMatch(/item_direction = '转入'[\s\S]{0,120}LIMIT 1/)
+      expect(src, `${end} 缺转换单 SELECT sale_amount（按比例摊需取 sale_amount）`).toMatch(/SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category[\s\S]{0,80}item_direction = '转入'/)
+      expect(src, `${end} 缺转换单按 sale_amount 比例摊（最大余数法 convCaps + exact = evtCents*c.cap/totalW）`).toMatch(/convCaps[\s\S]{0,400}exact = \(evtCents \* c\.cap\) \/ totalW/)
+    }
+  })
+
   test('四端 guard 一致：仅「销售单/转换单」+ 排除 legacy（workfine）', () => {
     for (const [end, src] of ENDS()) {
       expect(src, `${end} 缺销售单/转换单白名单`).toMatch(/ALLOCATABLE_ORDER_TYPES = \['销售单', '转换单'\]/)
