@@ -5,6 +5,7 @@
 
 const pg = globalThis.__mocks__.pg
 const { createBoundCtx } = require('../helpers')
+const { DEPOSIT_REFUND_REMARK } = require('../../utils/deposit-refund-remark')
 
 let routes
 beforeEach(() => {
@@ -137,9 +138,10 @@ describe('service.list', () => {
     await routes.list(ctx)
 
     const [sql, params] = pg.query.mock.calls[0]
-    expect(sql).toMatch(/LIMIT \$2 OFFSET \$3/)
-    expect(params[1]).toBe(5)   // pageSize
-    expect(params[2]).toBe(5)   // offset = (2-1)*5
+    expect(sql).toMatch(/LIMIT \$3 OFFSET \$4/)
+    expect(params[1]).toBe(DEPOSIT_REFUND_REMARK) // 退款专用单过滤常量
+    expect(params[2]).toBe(5)   // pageSize
+    expect(params[3]).toBe(5)   // offset = (2-1)*5
   })
 
   test('默认分页：page=1, pageSize=20', async () => {
@@ -149,8 +151,20 @@ describe('service.list', () => {
     await routes.list(ctx)
 
     const [, params] = pg.query.mock.calls[0]
-    expect(params[1]).toBe(20)
-    expect(params[2]).toBe(0)
+    expect(params[1]).toBe(DEPOSIT_REFUND_REMARK)
+    expect(params[2]).toBe(20)
+    expect(params[3]).toBe(0)
+  })
+
+  test('过滤寄存单退款专用服务单：SQL 含 remark IS DISTINCT FROM 且参数含常量', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/so\.remark IS DISTINCT FROM \$2/)
+    expect(params[1]).toBe(DEPOSIT_REFUND_REMARK)
   })
 })
 
