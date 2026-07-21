@@ -4065,7 +4065,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       received: '1600.00',      // 行实付（行B）
       saleItemId: 'item-2',
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawA, rawB]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawA, rawB])).mockReturnValueOnce(makeChain([]))
 
     const { rows, truncated } = await exportOrders({})
 
@@ -4118,7 +4118,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawRow])).mockReturnValueOnce(makeChain([]))
 
     const { rows } = await exportOrders({})
 
@@ -4147,7 +4147,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       categoryL1: '家居产品',
       categoryL2: '精华液',
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawRow])).mockReturnValueOnce(makeChain([]))
 
     const { rows } = await exportOrders({})
 
@@ -4169,7 +4169,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       productName: '套餐', sessionCount: 1, paidUnusedSessions: 1,
       unitRealPrice: '158.50', categoryL1: null, categoryL2: null,
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawRow])).mockReturnValueOnce(makeChain([]))
 
     const { rows } = await exportOrders({})
 
@@ -4190,7 +4190,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }))
-    ;(db.select as any).mockReturnValue(makeChain(many))
+    ;(db.select as any).mockReturnValueOnce(makeChain(many)).mockReturnValueOnce(makeChain([]))
 
     const { rows, truncated } = await exportOrders({})
 
@@ -4214,7 +4214,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawRow])).mockReturnValueOnce(makeChain([]))
 
     const { rows } = await exportOrders({})
 
@@ -4242,7 +4242,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       unitRealPrice: '390.00', // received / session_count 按实付重算
       categoryL1: '护理项目', categoryL2: '水光',
     }
-    ;(db.select as any).mockReturnValue(makeChain([rawRow]))
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawRow])).mockReturnValueOnce(makeChain([]))
 
     const { rows } = await exportOrders({})
 
@@ -4256,5 +4256,130 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].productName).toBe('水活焕能水光')
     expect(rows[0].sessionCount).toBe(10)
     expect(rows[0].unitRealPrice).toBe(390)
+  })
+
+  it('转换单：转出+转入两行都纳入导出，金额照实（转出负/转入正），非寄存单不留空', async () => {
+    const rawOut = {
+      marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-XSD-WX-2607010001',
+      saleOrderType: '转换单', documentType: '售后', status: '已支付',
+      custName: '李女士', custPhone: '13800000000', fallbackName: null, fallbackPhone: null,
+      totalAmount: '-3000.00', // 转出行 saleAmount（负，旧卡消耗）
+      prepaidCardAmount: '3000.00', // 订单级储值卡抵扣（两行重复）
+      received: '-3000.00', // 转出行 received（负）
+      refundedAmount: '0.00',
+      paymentMethod: '无', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: '员工', remark: '卡转换',
+      saleOrderDatetime: new Date('2026-07-01T00:00:00.000Z'),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      productType: '疗程卡', salesCategory: '自销自耗',
+      productName: '【旧】水活焕能水光', // 转出旧卡
+      sessionCount: 10, paidUnusedSessions: 0, // 转出后余 0
+      unitRealPrice: '300.00',
+      categoryL1: '护理项目', categoryL2: '水光',
+    }
+    const rawIn = {
+      ...rawOut,
+      totalAmount: '3000.00', // 转入行 saleAmount（正，获得新权益）
+      received: '3000.00', // 转入行 received（正）
+      productName: '【新】疼痛管理', // 转入新卡
+      paidUnusedSessions: 10, // 新卡未用
+    }
+    ;(db.select as any).mockReturnValueOnce(makeChain([rawOut, rawIn])).mockReturnValueOnce(makeChain([]))
+
+    const { rows } = await exportOrders({})
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0].saleOrderId).toBe('FY-XSD-WX-2607010001')
+    expect(rows[1].saleOrderId).toBe('FY-XSD-WX-2607010001')
+    expect(rows[0].saleOrderType).toBe('转换单')
+    // 转出旧卡 / 转入新卡 各自透传
+    expect(rows[0].productName).toBe('【旧】水活焕能水光')
+    expect(rows[1].productName).toBe('【新】疼痛管理')
+    // 金额照实：转出负、转入正（区别于寄存单 4 列留空）
+    expect(rows[0].totalAmount).toBe('-3000.00')
+    expect(rows[0].received).toBe('-3000.00')
+    expect(rows[1].totalAmount).toBe('3000.00')
+    expect(rows[1].received).toBe('3000.00')
+    // 订单级储值卡抵扣两行重复（与销售单多行口径一致）
+    expect(rows[0].prepaidCardAmount).toBe('3000.00')
+    expect(rows[1].prepaidCardAmount).toBe('3000.00')
+  })
+
+  it('充值单：无 sale_items，按订单级造一行（储值卡充值），金额=面额/实付，item 级列 null', async () => {
+    const rechargeRow = {
+      marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-XSD-WX-2607010002',
+      saleOrderType: '充值单', documentType: null, status: '已支付',
+      custName: '王女士', custPhone: '13900000000', fallbackName: null, fallbackPhone: null,
+      totalAmount: '3500.00', // 面额（充 3000 送 500）
+      prepaidCardAmount: '0.00',
+      received: '3000.00', // 实付
+      refundedAmount: '0.00',
+      paymentMethod: '微信', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: '员工', remark: null,
+      saleOrderDatetime: new Date('2026-07-01T00:00:00.000Z'),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    }
+    ;(db.select as any).mockReturnValueOnce(makeChain([])).mockReturnValueOnce(makeChain([rechargeRow]))
+
+    const { rows } = await exportOrders({})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].saleOrderType).toBe('充值单')
+    expect(rows[0].productName).toBe('储值卡充值')
+    // 金额取订单级：面额 / 实付
+    expect(rows[0].totalAmount).toBe('3500.00')
+    expect(rows[0].received).toBe('3000.00')
+    // item 级列全 null（充值单无商品明细）
+    expect(rows[0].productType).toBeNull()
+    expect(rows[0].sessionCount).toBeNull()
+    expect(rows[0].paidUnusedSessions).toBeNull()
+    expect(rows[0].unitRealPrice).toBeNull()
+    expect(rows[0].categoryL1).toBeNull()
+    expect(rows[0].categoryL2).toBeNull()
+    expect(rows[0].salesCategory).toBeNull()
+  })
+
+  it('混合：item 行（销售/转换）+ 充值单造行，合并后按订单时间 desc 排序', async () => {
+    const sale = {
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-SALE', saleOrderType: '销售单',
+      documentType: null, status: '已支付', custName: '甲', custPhone: null,
+      fallbackName: null, fallbackPhone: null,
+      totalAmount: '100.00', prepaidCardAmount: '0.00', received: '100.00', refundedAmount: '0.00',
+      paymentMethod: '微信', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: null, remark: null,
+      saleOrderDatetime: new Date('2026-07-03T00:00:00.000Z'),
+      createdAt: new Date('2026-07-03T00:00:00.000Z'),
+      productType: '家居产品', salesCategory: '他销他耗', productName: '精华液',
+      sessionCount: null, paidUnusedSessions: null, unitRealPrice: '100.00',
+      categoryL1: '家居产品', categoryL2: '精华液',
+    }
+    const conv = {
+      ...sale, saleOrderId: 'FY-CONV', saleOrderType: '转换单',
+      totalAmount: '500.00', received: '500.00', productName: '【新】疼痛管理',
+      productType: '疗程卡', sessionCount: 10, paidUnusedSessions: 10, unitRealPrice: '50.00',
+      saleOrderDatetime: new Date('2026-07-02T00:00:00.000Z'),
+      createdAt: new Date('2026-07-02T00:00:00.000Z'),
+    }
+    const recharge = {
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-RECHARGE', saleOrderType: '充值单',
+      documentType: null, status: '已支付', custName: '乙', custPhone: null,
+      fallbackName: null, fallbackPhone: null,
+      totalAmount: '3000.00', prepaidCardAmount: '0.00', received: '3000.00', refundedAmount: '0.00',
+      paymentMethod: '微信', isMembershipUpgrade: false, isActivity: false,
+      customerType: '会员客', openedByName: null, remark: null,
+      saleOrderDatetime: new Date('2026-07-01T00:00:00.000Z'),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    }
+    ;(db.select as any).mockReturnValueOnce(makeChain([sale, conv])).mockReturnValueOnce(makeChain([recharge]))
+
+    const { rows, truncated } = await exportOrders({})
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(3)
+    // 按订单时间 desc：销售(07-03) → 转换(07-02) → 充值(07-01)
+    expect(rows[0].saleOrderId).toBe('FY-SALE')
+    expect(rows[1].saleOrderId).toBe('FY-CONV')
+    expect(rows[2].saleOrderId).toBe('FY-RECHARGE')
+    expect(rows[2].productName).toBe('储值卡充值')
   })
 })
