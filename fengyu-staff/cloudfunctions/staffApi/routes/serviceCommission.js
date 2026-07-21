@@ -21,7 +21,7 @@ const { resolveMarketNameByStore } = require('../utils/market')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
-const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
+// 分配比例校验：0~1 之间（精度 0.001，支持自定义小数比例）
 const MAX_PER_POOL = 3
 
 // 分配冻结窗口：服务单完成（completed_at）超过 N 天后，店长端禁止再修改提成分配（admin 后台不受限）
@@ -278,9 +278,9 @@ async function save(ctx) {
     }
     if (!c.employeeId) throw new Error('INVALID_PARAMS: 分配记录缺少 employeeId')
     if (!c.roleType) throw new Error('INVALID_PARAMS: 分配记录缺少 roleType')
-    const ratioStr = Number(c.allocationRatio).toFixed(2)
-    if (!VALID_RATIOS.has(ratioStr)) {
-      throw new Error('INVALID_PARAMS: 分配比例必须为整十百分比（10%~100%）')
+    const ratioStr = Number(c.allocationRatio).toFixed(3)
+    if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
+      throw new Error('INVALID_PARAMS: 分配比例必须为 0~1 之间（精度 0.001）')
     }
   }
 
@@ -296,7 +296,7 @@ async function save(ctx) {
       throw new Error(`INVALID_PARAMS: 每个服务明细每个技能标签最多分配 ${MAX_PER_POOL} 人`)
     }
     const ratioSum = pool.reduce((s, c) => s + Number(c.allocationRatio), 0)
-    if (ratioSum > 1.01) {
+    if (ratioSum > 1.001) {
       throw new Error('INVALID_PARAMS: 同技能标签的分配比例合计不能超过 100%')
     }
     const empIds = new Set()
@@ -321,7 +321,7 @@ async function save(ctx) {
 
     for (const c of commissions) {
       const p = pricingMap.get(c.serviceItemId)
-      const ratio = Number(Number(c.allocationRatio).toFixed(2))
+      const ratio = Number(Number(c.allocationRatio).toFixed(3))
       const sessionUsed = Number(p.session_used) || 0
 
       // consumeBase = unit_real_price × session_used（unit_real_price 已是 per-session）
@@ -346,12 +346,9 @@ async function save(ctx) {
          LIMIT 1`,
         [c.roleType, p.sales_category, consumeBase, serviceOrderId]
       )
-      // 按「有无命中行」区分（仅在 consumeBase>0 时校验）：查无匹配规则=真缺失→报错；命中行 rate=0（合法 0%）→放行（与 admin 镜像）
-      const hit = rateRows.rows[0]
-      if (!hit && consumeBase > 0) {
-        throw new Error(`INVALID_STATE: COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${p.sales_category}, consumeBase=${consumeBase}`)
-      }
-      const rate = Number(hit?.commission_rate || 0)
+      // 容错口径（对齐 finalize：routes/service.js:519）：查无匹配行 / 命中行 rate=0
+      // 统一按 rate=0 落库，不阻塞保存（与 admin 镜像）。
+      const rate = Number(rateRows.rows[0]?.commission_rate || 0)
 
       // 按 ratio 拆分
       const consumeAmount = round2(consumeBase * ratio * rate)

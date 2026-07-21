@@ -18,7 +18,7 @@ const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
-const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
+// 分配比例校验：0~1 之间（精度 0.001，支持自定义小数比例），与 serviceCommission.js / admin actions 同源
 const MAX_PER_POOL = 3
 
 // 营业额口径白名单：仅「销售单」「转换单」产生营业额、参与销售提成分配。
@@ -448,9 +448,9 @@ async function savePayment(ctx) {
     }
     if (!alloc.employeeId) throw new Error('INVALID_PARAMS: 分配记录缺少 employeeId')
     if (!alloc.roleType) throw new Error('INVALID_PARAMS: 分配记录缺少 roleType')
-    const ratioStr = Number(alloc.allocationRatio).toFixed(2)
-    if (!VALID_RATIOS.has(ratioStr)) {
-      throw new Error('INVALID_PARAMS: allocationRatio 必须为整十百分比（0.10~1.00）')
+    const ratioStr = Number(alloc.allocationRatio).toFixed(3)
+    if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
+      throw new Error('INVALID_PARAMS: allocationRatio 必须为 0~1 之间（精度 0.001）')
     }
     const base = baseMap.get(alloc.saleItemId) || 0
     const totalAmount = Math.round(base * Number(ratioStr) * 100) / 100
@@ -480,10 +480,10 @@ async function savePayment(ctx) {
     if (pool.length > MAX_PER_POOL) {
       throw new Error(`INVALID_PARAMS: 每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`)
     }
-    // 池内分配比例合计 ≤ 100%（容差 0.01）。回款级 base 恒正，比例校验与原金额校验等价；
+    // 池内分配比例合计 ≤ 100%（容差 0.001，自定义小数比例浮点兜底）。回款级 base 恒正，比例校验与原金额校验等价；
     // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与 admin/前端统一「只看比例」。
     const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
-    if (ratioSum > 1.01) {
+    if (ratioSum > 1.001) {
       throw new Error('INVALID_PARAMS: 同技能标签的分配比例合计不能超过 100%')
     }
     const empIds = new Set()

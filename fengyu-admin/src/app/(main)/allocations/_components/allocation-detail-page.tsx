@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
@@ -95,7 +96,7 @@ function initAllocations(
     }
     skillTag = skillTag || '美容师'
 
-    const ratioPercent = (Number(alloc.allocationRatio) * 100).toFixed(0)
+    const ratioPercent = String(Number((Number(alloc.allocationRatio) * 100).toFixed(1)))
     const amount = alloc.totalAmount
     const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, received)
     const commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
@@ -341,6 +342,10 @@ function ItemAllocationCard({
         {entries.length > 0 ? (
           entries.map((entry) => {
             const filteredEmployees = getFilteredEmployees(entry.skillTag)
+            // 自定义比例：当前值非空且非档位时进入自定义模式（__custom 为刚选「自定义」尚未输入的哨兵）
+            const isCustomRatio = entry.ratioPercent !== '' && entry.ratioPercent !== '__custom' && !(PERCENTAGE_OPTIONS as readonly number[]).includes(Number(entry.ratioPercent))
+            const showCustomRatioInput = entry.ratioPercent === '__custom' || isCustomRatio
+            const ratioSelectValue = entry.ratioPercent === '' ? '' : (showCustomRatioInput ? '__custom' : entry.ratioPercent)
 
             return (
               <div key={entry.id} className="bg-[#FAFAFA] rounded-lg px-4 py-2.5 flex items-end gap-2 flex-wrap">
@@ -387,18 +392,35 @@ function ItemAllocationCard({
                   </p>
                 </div>
 
-                {/* 分配比例 */}
-                <div className="w-20 shrink-0">
+                {/* 分配比例（档位快选 + 自定义） */}
+                <div className="shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
-                  <Select
-                    value={entry.ratioPercent}
-                    onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
-                  >
-                    <option value="">-</option>
-                    {PERCENTAGE_OPTIONS.map((p) => (
-                      <option key={p} value={String(p)}>{p}%</option>
-                    ))}
-                  </Select>
+                  <div className="flex items-center gap-1">
+                    <Select
+                      value={ratioSelectValue}
+                      onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
+                      className="w-[68px]"
+                    >
+                      <option value="">-</option>
+                      {PERCENTAGE_OPTIONS.map((p) => (
+                        <option key={p} value={String(p)}>{p}%</option>
+                      ))}
+                      <option value="__custom">✎ 自定义</option>
+                    </Select>
+                    {showCustomRatioInput && (
+                      <Input
+                        type="number"
+                        step={0.1}
+                        min={0.1}
+                        max={100}
+                        inputMode="decimal"
+                        value={entry.ratioPercent === '__custom' ? '' : entry.ratioPercent}
+                        onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
+                        className="w-[60px]"
+                        placeholder="%"
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {/* 分配金额（只读） */}
@@ -473,7 +495,7 @@ function SaveButton({
       const entries = (itemAllocs[item.saleItemId] || []).filter((e) => e.skillTag || e.employeeId || e.ratioPercent)
 
       for (const e of entries) {
-        if (!e.skillTag || !e.employeeId || !e.ratioPercent) {
+        if (!e.skillTag || !e.employeeId || !e.ratioPercent || e.ratioPercent === '__custom') {
           toast.error('请填写完整的分配信息（技能标签、员工、分配比例）')
           return
         }
@@ -513,7 +535,7 @@ function SaveButton({
           saleItemId: item.saleItemId,
           employeeId: e.employeeId,
           roleType: e.skillTag,
-          allocationRatio: (Number(e.ratioPercent) / 100).toFixed(2),
+          allocationRatio: (Number(e.ratioPercent) / 100).toFixed(3),
           totalAmount: e.amount,
         })
       }

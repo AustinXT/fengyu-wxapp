@@ -26,8 +26,8 @@ export const serviceCommissions = pgTable(
       .references(() => staffWechatUsers.employeeId),
     /** 员工角色类型（美容师/养生师/推广师） */
     roleType: varchar('role_type', { length: 20 }).notNull(),
-    /** 分配比例（0.10~1.00，整十百分比） */
-    allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 2 }),
+    /** 分配比例（0~1，支持自定义小数比例，精度 0.001） */
+    allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 3 }),
     /** 提成比例（从提成矩阵 order_type='服务单' 获取，无匹配规则时为 0） */
     commissionRate: numeric('commission_rate', { precision: 5, scale: 4 }).notNull(),
     /** 固定手工费部分 = sale_items.service_fee × session_used（不随 commission_rate 变化） */
@@ -61,7 +61,7 @@ export const serviceCommissions = pgTable(
     check('chk_svc_comm_consume_amount', sql`${table.consumeAmount} >= 0`),
     check('chk_svc_comm_commission_amount', sql`${table.commissionAmount} >= 0`),
     check('chk_svc_comm_commission_rate', sql`${table.commissionRate} >= 0 AND ${table.commissionRate} <= 1`),
-    check('chk_svc_comm_alloc_ratio', sql`${table.allocationRatio} IS NULL OR ${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
+    check('chk_svc_comm_alloc_ratio', sql`${table.allocationRatio} IS NULL OR (${table.allocationRatio} >= 0 AND ${table.allocationRatio} <= 1)`),
   ],
 )
 

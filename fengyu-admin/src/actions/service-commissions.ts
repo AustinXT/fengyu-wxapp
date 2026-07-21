@@ -12,7 +12,6 @@ import type { ServiceCommission, AuthSession } from '@/lib/types'
 import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
-import { ApiError } from '@/lib/api-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
@@ -71,9 +70,6 @@ function getPoolKey(roleType: string): string {
   return roleType
 }
 
-/** 合法的分配比例（整十百分比） */
-const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
-
 /** 批量保存服务提成（先作废旧的，再插入新的） */
 export const batchSaveServiceCommissions = withPermission(
   'allocation:save',
@@ -126,10 +122,11 @@ export const batchSaveServiceCommissions = withPermission(
       return { success: false, message: '服务明细不属于该服务单，请刷新后重试' }
     }
 
-    // 校验分配比例为整十
+    // 校验分配比例为 0~1（精度 0.001，支持自定义小数比例）
     for (const c of commissions) {
-      if (!VALID_RATIOS.has(c.allocationRatio)) {
-        return { success: false, message: '分配比例必须为整十百分比（10%~100%）' }
+      const r = Number(Number(c.allocationRatio).toFixed(3))
+      if (!(r > 0 && r <= 1)) {
+        return { success: false, message: '分配比例必须为 0~1 之间（精度 0.001）' }
       }
     }
 
@@ -148,7 +145,7 @@ export const batchSaveServiceCommissions = withPermission(
       }
 
       const ratioSum = pool.reduce((s, c) => s + Number(c.allocationRatio), 0)
-      if (ratioSum > 1.01) {
+      if (ratioSum > 1.001) {
         return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
@@ -244,13 +241,8 @@ export const batchSaveServiceCommissions = withPermission(
             .orderBy(desc(commissionRateMatrix.amountTierMin))
             .limit(1)
 
-          // 按「有无命中行」区分（仅在 consumeBase>0 时校验）：查无匹配规则=真缺失→报错；命中行 rate=0（合法 0%）→放行（与 staffApi 镜像）
-          if (rateRows.length === 0 && consumeBase > 0) {
-            throw new ApiError(
-              'INVALID_STATE',
-              `COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${salesCategory}, consumeBase=${consumeBase}`
-            )
-          }
+          // 容错口径（对齐 finalize：lib/service-commission-settle.ts:114）：
+          // 查无匹配行 / 命中行 rate=0 统一按 rate=0 落库，不阻塞保存（与 staffApi 镜像）。
           const rate = Number(rateRows[0]?.commissionRate || 0)
 
           const consumeAmount = Math.round(consumeBase * ratio * rate * 100) / 100
