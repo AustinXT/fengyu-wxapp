@@ -4,6 +4,36 @@ import { JWT_SECRET } from '@/lib/jwt-secret'
 
 const COOKIE_NAME = 'fy-admin-token'
 
+function deleteSessionCookie(response: NextResponse) {
+  const domain = process.env.COOKIE_DOMAIN?.trim()
+  if (domain) {
+    response.cookies.set(COOKIE_NAME, '', {
+      domain,
+      path: '/',
+      expires: new Date(0),
+    })
+    return
+  }
+  response.cookies.delete(COOKIE_NAME)
+}
+
+function safeReturnTo(request: NextRequest): string | null {
+  const raw = request.nextUrl.searchParams.get('returnTo')
+  if (!raw) return null
+
+  try {
+    const target = new URL(raw, request.nextUrl.origin)
+    const allowedOrigins = new Set([request.nextUrl.origin])
+    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN || 'http://localhost:3100'
+    allowedOrigins.add(new URL(analystOrigin).origin)
+
+    if (!allowedOrigins.has(target.origin)) return null
+    return target.toString()
+  } catch {
+    return null
+  }
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
@@ -12,7 +42,7 @@ export async function middleware(request: NextRequest) {
     // Session expired: clear stale cookie and stay on login
     if (pathname === '/login' && request.nextUrl.searchParams.has('expired')) {
       const response = NextResponse.redirect(new URL('/login', request.url))
-      response.cookies.delete(COOKIE_NAME)
+      deleteSessionCookie(response)
       return response
     }
 
@@ -24,6 +54,10 @@ export async function middleware(request: NextRequest) {
         // AC-03: 首次登录或重置后必须先改密码
         if (payload.mustChange === true) {
           return NextResponse.redirect(new URL('/change-password', request.url))
+        }
+        const returnTo = safeReturnTo(request)
+        if (returnTo) {
+          return NextResponse.redirect(returnTo)
         }
         return NextResponse.redirect(new URL('/dashboard', request.url))
       } catch {
@@ -51,7 +85,7 @@ export async function middleware(request: NextRequest) {
   } catch {
     // Expired or invalid token
     const response = NextResponse.redirect(new URL('/login', request.url))
-    response.cookies.delete(COOKIE_NAME)
+    deleteSessionCookie(response)
     return response
   }
 }

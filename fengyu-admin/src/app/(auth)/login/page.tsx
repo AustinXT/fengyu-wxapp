@@ -9,6 +9,23 @@ import { login } from "@/actions/auth"
 import { encryptPassword } from "@/lib/password-encrypt"
 import logoFull from "../../../../public/logo.png"
 
+function getSafeReturnTo(): string | null {
+  const raw = new URLSearchParams(window.location.search).get("returnTo")
+  if (!raw) return null
+
+  try {
+    const target = new URL(raw, window.location.origin)
+    const allowedOrigins = new Set([window.location.origin])
+    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN || "http://localhost:3100"
+    allowedOrigins.add(new URL(analystOrigin).origin)
+
+    if (!allowedOrigins.has(target.origin)) return null
+    return target.toString()
+  } catch {
+    return null
+  }
+}
+
 export default function LoginPage() {
   const [phone, setPhone] = useState("")
   const [password, setPassword] = useState("")
@@ -47,7 +64,7 @@ export default function LoginPage() {
       if (result.mustChange) {
         window.location.href = "/change-password"
       } else {
-        window.location.href = "/dashboard"
+        window.location.href = getSafeReturnTo() ?? "/dashboard"
       }
     } catch {
       setError("网络异常，请稍后重试")
