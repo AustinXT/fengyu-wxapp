@@ -295,8 +295,9 @@ async function save(ctx) {
     if (pool.length > MAX_PER_POOL) {
       throw new Error(`INVALID_PARAMS: 每个服务明细每个技能标签最多分配 ${MAX_PER_POOL} 人`)
     }
+    // 容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额（与 allocation/admin 同口径）
     const ratioSum = pool.reduce((s, c) => s + Number(c.allocationRatio), 0)
-    if (ratioSum > 1.001) {
+    if (ratioSum > 1.0001) {
       throw new Error('INVALID_PARAMS: 同技能标签的分配比例合计不能超过 100%')
     }
     const empIds = new Set()

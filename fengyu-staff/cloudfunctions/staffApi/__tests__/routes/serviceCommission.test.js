@@ -247,15 +247,15 @@ describe('serviceCommission.save', () => {
     await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*不属于该服务单/)
   })
 
-  test('非整十 ratio 拒绝', async () => {
+  test('ratio 超出 0~1 范围拒绝（支持自定义小数比例）', async () => {
     const ctx = createManagerCtx({
       serviceOrderId: 'SO-1',
-      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.15 }],
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.5 }],
     })
     mockOrderAndItems(COMPLETED_ORDER, [
       { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
     ])
-    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*整十/)
+    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*0~1/)
   })
 
   test('同池 > 3 人拒绝', async () => {

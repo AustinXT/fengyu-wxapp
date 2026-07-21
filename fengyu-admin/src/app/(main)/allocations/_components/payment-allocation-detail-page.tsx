@@ -513,10 +513,10 @@ function ItemAllocationCard({
             {Object.entries(groupSums).map(([role, sum]) => (
               <span
                 key={role}
-                className={sum > 100 ? 'text-[#D94040] font-medium' : 'text-[#999999]'}
+                className={sum > 100.01 ? 'text-[#D94040] font-medium' : 'text-[#999999]'}
               >
                 {role}: {sum}% / 100%
-                {sum > 100 && ' (超出)'}
+                {sum > 100.01 && ' (超出)'}
               </span>
             ))}
           </div>
@@ -585,7 +585,8 @@ function SaveButton({
         }
 
         const ratioSum = poolEntries.reduce((s, e) => s + Number(e.ratioPercent), 0)
-        if (ratioSum > 100) {
+        // 容差 0.01%：仅吸收浮点漂移，不放过 ≥0.1% 真实超额（与后端 ratioSum>1.0001 同口径）
+        if (ratioSum > 100.01) {
           toast.error(`${item.productName || '商品'} 的${roleType}分配比例合计超过 100%`)
           return
         }

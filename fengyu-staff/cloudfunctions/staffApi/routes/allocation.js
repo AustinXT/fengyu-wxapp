@@ -480,10 +480,10 @@ async function savePayment(ctx) {
     if (pool.length > MAX_PER_POOL) {
       throw new Error(`INVALID_PARAMS: 每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`)
     }
-    // 池内分配比例合计 ≤ 100%（容差 0.001，自定义小数比例浮点兜底）。回款级 base 恒正，比例校验与原金额校验等价；
+    // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）。回款级 base 恒正，比例校验与原金额校验等价；
     // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与 admin/前端统一「只看比例」。
     const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
-    if (ratioSum > 1.001) {
+    if (ratioSum > 1.0001) {
       throw new Error('INVALID_PARAMS: 同技能标签的分配比例合计不能超过 100%')
     }
     const empIds = new Set()

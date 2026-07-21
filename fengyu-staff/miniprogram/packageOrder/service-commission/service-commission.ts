@@ -455,8 +455,9 @@ Page({
         wx.showToast({ title: `每个服务明细每个技能标签最多分配 ${MAX_PER_POOL} 人`, icon: 'none' });
         return;
       }
+      // 容差 0.01%：仅吸收浮点漂移，不放过 ≥0.1% 真实超额（与后端 ratioSum>1.0001 同口径）
       const pct = pool.reduce((s, c) => s + c.allocationRatio * 100, 0);
-      if (pct > 100) {
+      if (pct > 100.01) {
         wx.showToast({ title: '同技能标签分配比例合计不能超过 100%', icon: 'none' });
         return;
       }
