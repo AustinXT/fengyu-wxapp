@@ -1,0 +1,43 @@
+import { NextRequest, NextResponse } from "next/server"
+import { jwtVerify } from "jose"
+
+const COOKIE_NAME = "fy-admin-token"
+const DEV_ONLY_FALLBACK = "fengyu-admin-jwt-secret-dev-only"
+
+function jwtSecret(): Uint8Array | null {
+  const secret = process.env.JWT_SECRET
+  if (secret && secret.length > 0) {
+    return new TextEncoder().encode(secret)
+  }
+  if (process.env.NODE_ENV === "production") {
+    return null
+  }
+  return new TextEncoder().encode(DEV_ONLY_FALLBACK)
+}
+
+function redirectToAdminLogin(request: NextRequest) {
+  const loginUrl = new URL(process.env.ADMIN_LOGIN_URL || "http://localhost:3000/login")
+  loginUrl.searchParams.set("returnTo", request.nextUrl.href)
+  return NextResponse.redirect(loginUrl)
+}
+
+export async function middleware(request: NextRequest) {
+  const secret = jwtSecret()
+  if (!secret) return redirectToAdminLogin(request)
+
+  const token = request.cookies.get(COOKIE_NAME)?.value
+  if (!token) return redirectToAdminLogin(request)
+
+  try {
+    await jwtVerify(token, secret)
+    return NextResponse.next()
+  } catch {
+    const response = redirectToAdminLogin(request)
+    response.cookies.delete(COOKIE_NAME)
+    return response
+  }
+}
+
+export const config = {
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|forbidden).*)"],
+}
