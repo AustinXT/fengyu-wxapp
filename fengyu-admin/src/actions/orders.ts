@@ -26,6 +26,7 @@ import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
+import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
@@ -3460,7 +3461,7 @@ export const getRepayable = withPermission(
     session,
     saleOrderId: string,
   ): Promise<{
-    items: Array<{ saleItemId: string; productName: string; saleAmount: string; received: string; remaining: string }>
+    items: Array<{ saleItemId: string; productName: string; saleAmount: string; received: string; refundedAmount: string; isRefunded: boolean; remaining: string }>
     remainingPayable: number
     cardBalance: number | null
     clientUserId: string | null
@@ -3487,13 +3488,18 @@ export const getRepayable = withPermission(
       .select()
       .from(saleItems)
       .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
+    const refundMap = await getPerItemRefundedMap(saleOrderId)
     const items = rows.map((r) => {
-      const remaining = Math.round((Number(r.saleAmount) - Number(r.received)) * 100) / 100
+      const refunded = refundMap.get(r.saleItemId) || 0
+      // 已退行可回款额=0（行级口径，与 client/staff 一致）；received 为净额
+      const remaining = refunded > 0 ? 0 : Math.round((Number(r.saleAmount) - Number(r.received)) * 100) / 100
       return {
         saleItemId: r.saleItemId,
         productName: r.productName || '-',
         saleAmount: r.saleAmount,
         received: r.received,
+        refundedAmount: refunded.toFixed(2),
+        isRefunded: refunded > 0,
         remaining: Math.max(0, remaining).toFixed(2),
       }
     })
@@ -3558,6 +3564,20 @@ export const recordPayment = withPermission(
         .filter((it) => it.saleItemId && (it.repayAmount > 0 || it.prepaidCardAmount > 0))
     : null
   const hasItems = !!(repayItems && repayItems.length > 0)
+
+  // 已退行不可回款（行级口径，与 client/staff 一致）：按子项回款校验所选行未退款；
+  // 整单回款遇订单有退款则要求按子项（避免非定向分摊误充已退行）
+  const recordRefundMap = await getPerItemRefundedMap(saleOrderId)
+  const orderHasRefund = [...recordRefundMap.values()].some((v) => Number(v) > 0)
+  if (hasItems) {
+    for (const it of repayItems!) {
+      if ((recordRefundMap.get(it.saleItemId) || 0) > 0) {
+        return { success: false, error: { code: 'INVALID_STATE', message: `子项 ${it.saleItemId} 已退款，不可再回款` } }
+      }
+    }
+  } else if (orderHasRefund) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '本单存在已退款项目，请按子项回款未退款的项目' } }
+  }
 
   const repayAmount = hasItems
     ? Math.round(repayItems!.reduce((s, it) => s + it.repayAmount, 0) * 100) / 100

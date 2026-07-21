@@ -18,6 +18,7 @@ const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
+const { getPerItemRefundedMap, computeRefundAwareDirectedItems } = require('./per-item-refund')
 
 /**
  * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
@@ -967,11 +968,21 @@ exports.main = async (event) => {
       // 3. 按回款逐笔分配：捕获本次回款（线上付款 + 本次储值卡消费）逐项可分配额，
       //    线上单自动 100% 分给开单销售员（提成率按本次回款额定档）；无 preferred 留待分配走手动。
       const fullEventAmount = Math.round((thisPayAmount + prepaidConsumedThisCallback) * 100) / 100
+      // 退款感知定向（本次到账付清，fullEventAmount === remaining）：有退款时只分摊到未退行，
+      // 避免非定向瀑布流把回款误充已退行；无退款 null 走原瀑布流，首次付清零变化。
+      // （部分到额分支上方 directedItems:null 不动 —— 部分到账金额不定，定向 Σ 无法对齐 eventAmount）
+      const notifyItemRows = await client.query(
+        `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
+           FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
+        [targetOrderNo]
+      )
+      const notifyRefundMap = await getPerItemRefundedMap(client, targetOrderNo)
+      const notifyDirectedItems = computeRefundAwareDirectedItems(notifyItemRows.rows, notifyRefundMap)
       const perItemFull = await capturePaymentAllocatables(client, {
         salePaymentId: onlinePaymentId,
         saleOrderId: targetOrderNo,
         eventAmount: fullEventAmount,
-        directedItems: null,
+        directedItems: notifyDirectedItems,
       })
       await autoAllocateOnlinePayment(client, {
         salePaymentId: onlinePaymentId,

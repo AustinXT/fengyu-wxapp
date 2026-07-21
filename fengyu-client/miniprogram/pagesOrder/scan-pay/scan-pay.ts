@@ -121,8 +121,22 @@ Page({
       const payable = Number(orderData.payableAmount) > 0
         ? Number(orderData.payableAmount)
         : Math.round((totalAmount - prepaid) * 100) / 100;
-      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
+      // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
+      const isRepayment = orderData.status === '部分支付';
+      let remaining;
+      if (isRepayment) {
+        const scanItems: any[] = Array.isArray(orderData.items) ? orderData.items : [];
+        let sum = 0;
+        for (const i of scanItems) {
+          if (Number(i.refundedAmount || 0) > 0) continue;
+          sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+        }
+        remaining = Math.round(sum * 100) / 100;
+      } else {
+        const netReceived = Math.round((received - refundedAmount) * 100) / 100;
+        remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      }
       const firstPaymentAmount = Number(orderData.firstPaymentAmount || 0);
       // 首次扫码（received === 0）且 admin 设置了 firstPaymentAmount：本次只收首付
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
@@ -135,7 +149,7 @@ Page({
         ? (orderData.paymentMethod as PayMethod)
         : '微信';
       // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）。储值卡由店员先扣，顾客侧不再自选储值卡；方式限微信/支付宝
-      const isRepayment = orderData.status === '部分支付';
+      // （isRepayment 已在上方 remaining 计算前定义）
       const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
 
       this.setData({

@@ -146,7 +146,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
   <!-- 欠款提示（部分支付时） -->
   <view
     class="outstanding-wrap"
-    wx:if="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
+    wx:if="{{continuePayEnabled && canContinuePay}}"
   >
     <view class="outstanding-row">
       <text class="outstanding-label">待付金额</text>
@@ -180,7 +180,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     <!-- 部分支付：继续支付（灰度开关开启时显示） -->
     <view
       class="actions-row"
-      wx:elif="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
+      wx:elif="{{continuePayEnabled && canContinuePay}}"
     >
       <van-button
         type="primary"

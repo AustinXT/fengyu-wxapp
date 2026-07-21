@@ -111,8 +111,8 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         </view>
       </view>
 
-      <!-- 部分支付：待付金额提示 -->
-      <view wx:if="{{item.isPartialPay}}" class="order-outstanding-row">
+      <!-- 部分支付且有可付行：待付金额提示（已全退的单不显示） -->
+      <view wx:if="{{item.canContinuePay}}" class="order-outstanding-row">
         <text class="order-outstanding-label">待付</text>
         <text class="order-outstanding-value">¥{{item.outstanding_fmt}}</text>
       </view>
@@ -122,7 +122,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <van-button size="small" plain round catch:tap="onCancelTap" data-sale-order-id="{{item.sale_order_id}}">取消订单</van-button>
         <van-button size="small" type="primary" round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
       </view>
-      <view class="order-card__actions" wx:elif="{{item.status === '部分支付'}}">
+      <view class="order-card__actions" wx:elif="{{item.canContinuePay}}">
         <van-button size="small" type="primary" round catch:tap="onContinuePayTap" data-sale-order-id="{{item.sale_order_id}}">继续支付 ¥{{item.outstanding_fmt}}</van-button>
       </view>
       <view class="order-card__actions" wx:elif="{{item.status === '已支付' && item.hasAppointable}}">
