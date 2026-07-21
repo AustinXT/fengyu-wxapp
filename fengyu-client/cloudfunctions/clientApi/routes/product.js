@@ -15,6 +15,31 @@ const PRODUCT_VALID_FILTER = `p.deleted_at IS NULL AND p.is_visible = true`
 const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT sk.is_experience`
 
 /**
+ * 计算 SPU 列表展示价（priceFrom / listPriceFrom）
+ *
+ * 组合套餐（is_bundle）展示套餐总价（SPU 的 special_price / price），
+ * 而非单次套餐价（SKU bundle_price）——例如「599 体验福利」应展示总价 599，
+ * 而非单次套餐价 199.67（≈ 599 ÷ 招牌任选 3 次）。
+ * 普通单品维持各 SKU 最低起价（bundle_price 优先，含 special_price 会员视图）。
+ */
+function computeListPriceFrom(product, skus) {
+  if (product.is_bundle) {
+    const listPrice = Number(product.price)
+    const specialPrice = product.special_price != null ? Number(product.special_price) : listPrice
+    return {
+      priceFrom: specialPrice,
+      listPriceFrom: listPrice,
+    }
+  }
+  const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+  const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
+  return {
+    priceFrom: prices.length > 0 ? Math.min(...prices) : null,
+    listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null,
+  }
+}
+
+/**
  * 内部函数：获取商品分类列表（mall_categories）
  * 仅返回含有效商品的分类
  */
@@ -184,14 +209,12 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
 
   return productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
-    // priceFrom=会员/特价起价（含 special_price，会员视图）；listPriceFrom=标价起价（非会员视图）
-    const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
-    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
+    const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
       ...product,
       skuList: skus,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
-      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
+      priceFrom,
+      listPriceFrom
     }
   })
 }
@@ -310,7 +333,7 @@ async function hotList(ctx) {
       p.product_id, p.name, p.category_id,
       mc.category_name,
       p.cover_image, p.sort_order,
-      p.price, p.special_price
+      p.price, p.special_price, p.is_bundle
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
     WHERE ${PRODUCT_VALID_FILTER}
@@ -345,12 +368,11 @@ async function hotList(ctx) {
 
   const result = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
-    const prices = skus.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
-    const listPrices = skus.map(s => Number(s.bundle_price || s.price || 0))
+    const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
       ...product,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
-      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
+      priceFrom,
+      listPriceFrom
     }
   })
 
@@ -418,9 +440,6 @@ async function spuDetail(ctx) {
     ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [productId])
 
-  const prices = skuList.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
-  const listPrices = skuList.map(s => Number(s.bundle_price || s.price || 0))
-
   // 构建分组信息（套餐商品）
   let bundleGroups = null
   if (product.is_bundle) {
@@ -439,13 +458,15 @@ async function spuDetail(ctx) {
     }))
   }
 
+  const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skuList)
+
   ctx.result = {
     spu: {
       ...product,
       skuList,
       bundleGroups,
-      priceFrom: prices.length > 0 ? Math.min(...prices) : null,
-      listPriceFrom: listPrices.length > 0 ? Math.min(...listPrices) : null
+      priceFrom,
+      listPriceFrom
     }
   }
 }

@@ -130,7 +130,7 @@ module.exports.min = function(n) {
                 <view class="price-group">
                   <text class="price-symbol">¥</text>
                   <text class="price-integer">{{price.min(item.min_price)}}</text>
-                  <text class="price-start">起</text>
+                  <text class="price-start" wx:if="{{!item.is_bundle}}">起</text>
                   <text wx:if="{{item.strike_min_price}}" class="price-origin">¥{{price.min(item.strike_min_price)}}</text>
                 </view>
                 <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
@@ -221,7 +221,7 @@ module.exports.min = function(n) {
                 <view class="price-group">
                   <text class="price-symbol">¥</text>
                   <text class="price-integer">{{price.min(item.min_price)}}</text>
-                  <text class="price-start">起</text>
+                  <text class="price-start" wx:if="{{!item.is_bundle}}">起</text>
                   <text wx:if="{{item.strike_min_price}}" class="price-origin">¥{{price.min(item.strike_min_price)}}</text>
                 </view>
                 <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
