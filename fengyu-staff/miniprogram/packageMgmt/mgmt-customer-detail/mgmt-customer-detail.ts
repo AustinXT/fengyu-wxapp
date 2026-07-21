@@ -5,7 +5,7 @@
 //   - 保留：订单详情跳转（只读浏览）
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
-import { formatCount } from '../../utils/number';
+import { formatAmount, formatCount } from '../../utils/number';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
 
 // ===== 数据接口 =====
@@ -276,10 +276,17 @@ Page({
     if (!this._clientUserId) return;
     this.setData({ loading: true, customerError: false });
     try {
-      const customer = await callStaffApi<CustomerDetail>('mgmtCustomer.detail', {
+      const raw = await callStaffApi<CustomerDetail>('mgmtCustomer.detail', {
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
       });
+      // 金额字段就地格式化为「千分位 + 2 位小数」展示串
+      // （wxml 直接 ¥{{customer.totalConsumption}} / ¥{{customer.yearConsumption}}）
+      const customer = {
+        ...raw,
+        totalConsumption: formatAmount(raw.totalConsumption),
+        yearConsumption: formatAmount(raw.yearConsumption),
+      } as unknown as CustomerDetail;
       this.setData({ customer });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -352,10 +359,15 @@ Page({
         ...this._scopePayload(),
       });
       const days = this.buildCalendarDays(this.data.calendarYear, this.data.calendarMonth, data.dailySummary || []);
+      // 选中日订单金额格式化为「千分位 + 2 位小数」（wxml ¥{{item.totalReceived}}）
+      const orders = (data.orders || []).map(o => ({
+        ...o,
+        totalReceived: formatAmount(Number(o.totalReceived) || 0),
+      }));
       this.setData({
         calendarDays: days,
         calendarSummary: data.dailySummary || [],
-        calendarOrders: data.orders || [],
+        calendarOrders: orders,
         calendarLoaded: true,
       });
     } catch (_) {}
@@ -420,7 +432,7 @@ Page({
       }) || []).map(o => ({
         ...o,
         statusClass: ORDER_STATUS_CLASS[o.status] || 'done',
-        amountText: `¥${Number(o.payableAmount || 0).toFixed(2)}`,
+        amountText: `¥${formatAmount(Number(o.payableAmount) || 0)}`,
         timeText: formatDateTime(o.paidAt || o.createdAt),
       }));
       this.setData({ purchaseOrders: orders, purchaseLoaded: true });
@@ -466,7 +478,7 @@ Page({
               unpaidPct: pct(unpaid),
               saleOrderId: order.saleOrderId,
               paidAt: order.paidAt,
-              unitRealPrice: item.unitRealPrice,
+              unitRealPrice: item.unitRealPrice ? formatAmount(Number(item.unitRealPrice)) : undefined,
               category: item.category,
               categoryColor: item.categoryColor,
               saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
