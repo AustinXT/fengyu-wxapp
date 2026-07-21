@@ -807,9 +807,12 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(result.data[0].marketName).toBeUndefined()
   })
 
-  it('marketId 筛选（市场类型） → 部门候选父节点含市场本身 + 其下门店节点（门店级部门纳入）', async () => {
+  it('marketId 筛选（市场类型） → 部门候选父节点含市场本身 + 其下门店节点，且直挂市场节点的员工也纳入', async () => {
     // 修复 M2：市场筛选的部门候选父节点须与 expandScopeDeptNodeIds 市场分支同口径，
     // 即 [市场, ...该市场下门店节点]，否则门店级部门员工（store_id IS NULL）会凭空消失。
+    // 修复（同源）：or 条件须补 eq(org_node_id, marketId)，覆盖 org_node_id 直接 = 市场节点
+    // 本身的员工（品项公司等无子节点市场 / 市场级岗位，store_id IS NULL），否则 storeSub 与
+    // deptSub 均空时条件永假 → 「品项公司」筛选列表全空。与「部门」分支 eq(orgNodeId, marketId) 对等。
     // 调用顺序：node 类型 → storeSub 子查询 → storeNodesUnder 实查 → deptSub 子查询 → COUNT → DATA
     let callIndex = 0
     ;(db.select as any).mockImplementation(() => {
@@ -869,6 +872,8 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       'parent_id',
       expect.arrayContaining(['market-1', 'store-node-under-market']),
     )
+    // 同源修复：直挂市场节点的员工须纳入（eq org_node_id = marketId）。
+    expect(eq).toHaveBeenCalledWith('org_node_id', 'market-1')
   })
 
   it('marketId 筛选（门店类型） → 门店员工 + 该门店下部门员工均纳入', async () => {

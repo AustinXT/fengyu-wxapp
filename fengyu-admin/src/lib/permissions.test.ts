@@ -707,7 +707,7 @@ describe('expandScopeDeptNodeIds — 员工部门 scope 展开', () => {
     expect(result).toContain('dept-B')
   })
 
-  it('市场 scope 含市场级 + 门店级部门', async () => {
+  it('市场 scope 含市场级 + 门店级部门 + 市场节点本身', async () => {
     const { db } = await import('@/db')
     let callCount = 0
     ;(db.select as any).mockImplementation(() => ({
@@ -724,6 +724,10 @@ describe('expandScopeDeptNodeIds — 员工部门 scope 展开', () => {
     ])
     expect(result).toContain('dept-market')
     expect(result).toContain('dept-store1')
+    // 修复（同源）：市场节点本身也纳入，覆盖 org_node_id 直接 = 市场节点的员工
+    // （品项公司等职能部门 / 市场级岗位，store_id IS NULL），与 buildEmployeeConditions
+    // 市场分支末项 eq(orgNodeId, marketId) 同口径。
+    expect(result).toContain('market-1')
   })
 
   it('门店 scope 查询挂该门店的部门', async () => {

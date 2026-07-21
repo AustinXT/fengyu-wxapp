@@ -213,8 +213,10 @@ async function buildEmployeeConditions(
       .limit(1)
     if (node?.type === '市场') {
       // 市场：该市场下门店的员工（store_id 路径）+ 挂该市场或其门店下的部门员工（org_node_id）
+      //   + org_node_id 直接 = 该市场节点的员工（品项公司等职能部门 / 市场级岗位，store_id IS NULL）。
       // 部门候选父节点 = 市场本身 + 该市场下门店节点，与 expandScopeDeptNodeIds 市场分支同口径；
       // 否则「门店级部门」员工（store_id IS NULL、org_node_id 挂在门店节点下）会在按市场筛选时凭空消失。
+      // 末项 eq(orgNodeId, marketId) 与下方「部门」分支对等，覆盖 org_node_id 直挂市场节点本身的员工。
       const storeSub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
@@ -226,6 +228,7 @@ async function buildEmployeeConditions(
       conditions.push(or(
         inArray(staffWechatUsers.storeId, storeSub),
         inArray(staffWechatUsers.orgNodeId, deptSub),
+        eq(staffWechatUsers.orgNodeId, filters.marketId),
       ))
     } else if (node?.type === '部门') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
