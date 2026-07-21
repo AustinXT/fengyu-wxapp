@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee } from "@/lib/types"
+import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee, CustomerCoupon, CouponStatus } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -39,6 +39,7 @@ interface CustomerDetailPageProps {
   employees: Employee[]
   phoneChangeLogs: PhoneChangeLog[]
   serviceOrders: CustomerServiceRecord[]
+  coupons: CustomerCoupon[]
   orphanProfiles: OrphanProfile[]
   prepaidBalance?: string
   canEditPhone?: boolean
@@ -55,6 +56,7 @@ export default function CustomerDetailPage({
   employees,
   phoneChangeLogs,
   serviceOrders,
+  coupons,
   orphanProfiles,
   prepaidBalance,
   canEditPhone = false,
@@ -64,6 +66,7 @@ export default function CustomerDetailPage({
   const router = useRouter()
   const [merging, setMerging] = useState<string | null>(null)
   const [pullLegacyOpen, setPullLegacyOpen] = useState(false)
+  const [couponStatus, setCouponStatus] = useState<"" | CouponStatus>("")
 
   // 手机号编辑（独立于"基本档案 编辑/保存"，因为手机号修改影响登录/会员识别，需要单独的二次确认流程）
   const [phoneEditing, setPhoneEditing] = useState(false)
@@ -274,6 +277,12 @@ export default function CustomerDetailPage({
     )
   }, [orders])
 
+  // 顾客优惠券状态筛选（组件内 state 过滤，与详情页「全量预加载」模式一致）
+  const filteredCoupons = useMemo(
+    () => (couponStatus ? coupons.filter((c) => c.status === couponStatus) : coupons),
+    [coupons, couponStatus],
+  )
+
   const orderColumns: Column<SaleOrder>[] = [
     {
       key: "saleOrderId",
@@ -298,6 +307,54 @@ export default function CustomerDetailPage({
       cell: (row) => <span>{formatDateTime(row.saleOrderDatetime) || "—"}</span>,
     },
     { key: "storeName", header: "门店" },
+  ]
+
+  function couponStatusClassName(status: CouponStatus): string {
+    if (status === "未使用") return "border-[#3D8A5A] text-[#3D8A5A] bg-[#E8F5EE]"
+    if (status === "已使用") return "border-[#888888] text-[#888888] bg-[#F4F4F4]"
+    return "border-[#D94040] text-[#D94040] bg-[#FFEBEE]"
+  }
+
+  const couponColumns: Column<CustomerCoupon>[] = [
+    { key: "name", header: "券名称", cell: (row) => <span className="font-medium">{row.name}</span> },
+    { key: "couponType", header: "类型", cell: (row) => <Badge variant="outline">{row.couponType}</Badge> },
+    {
+      key: "discountValue",
+      header: "面值",
+      cell: (row) => (
+        <span className="font-medium text-[#C0322A]">
+          {row.couponType === "折扣券"
+            ? `${Math.round(Number(row.discountValue) * 10)}折`
+            : `¥${Number(row.discountValue).toFixed(0)}`}
+        </span>
+      ),
+    },
+    {
+      key: "minSpend",
+      header: "门槛",
+      cell: (row) => (
+        <span>{Number(row.minSpend) > 0 ? `满¥${Number(row.minSpend).toFixed(0)}` : "无"}</span>
+      ),
+    },
+    {
+      key: "status",
+      header: "状态",
+      cell: (row) => (
+        <Badge variant="outline" className={couponStatusClassName(row.status)}>
+          {row.status}
+        </Badge>
+      ),
+    },
+    {
+      key: "expireAt",
+      header: "到期",
+      cell: (row) => <span>{formatDate(row.expireAt) || "—"}</span>,
+    },
+    {
+      key: "usedAt",
+      header: "使用时间",
+      cell: (row) => <span>{row.usedAt ? formatDateTime(row.usedAt) : "—"}</span>,
+    },
   ]
 
   const itemColumns: Column<SaleItem>[] = [
@@ -430,6 +487,7 @@ export default function CustomerDetailPage({
           <TabsTrigger value="sessions">疗程卡（{activeSaleItems.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
           <TabsTrigger value="services">服务记录（{serviceOrders.length}）</TabsTrigger>
+          <TabsTrigger value="coupons">顾客优惠券（{coupons.length}）</TabsTrigger>
           <TabsTrigger value="phone-history">手机号变更（{phoneChangeLogs.length}）</TabsTrigger>
         </TabsList>
 
@@ -883,6 +941,31 @@ export default function CustomerDetailPage({
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="coupons">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-base">顾客优惠券</CardTitle>
+              <Select
+                className="w-32"
+                value={couponStatus}
+                onChange={(e) => setCouponStatus(e.target.value as "" | CouponStatus)}
+              >
+                <option value="">全部状态</option>
+                <option value="未使用">未使用</option>
+                <option value="已使用">已使用</option>
+                <option value="已过期">已过期</option>
+              </Select>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                columns={couponColumns}
+                data={filteredCoupons}
+                emptyText="暂无优惠券"
+              />
             </CardContent>
           </Card>
         </TabsContent>

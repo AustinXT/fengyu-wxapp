@@ -1,7 +1,7 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
+import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -195,6 +195,28 @@ interface PhoneChangeRecord {
   sourceText: string;
 }
 
+// 顾客优惠券（customer.coupons 返回 + 前端预算展示字段）
+interface CouponView {
+  couponId: string;
+  name: string;
+  couponType: string;
+  discountValue: number | string;
+  minSpend: number | string | null;
+  status: string;
+  expireAt: string;
+  usedAt: string | null;
+  description: string | null;
+  applicableStoreNames: string[] | null;
+  applicableCategoryNames: string[] | null;
+  // 前端预算展示字段
+  applicableStoreNamesText: string;
+  discountLabel: string;
+  expireAtFmt: string;
+  usedAtFmt: string;
+  minSpendNum: number;
+  minSpendHint: string;
+}
+
 // ===== 页面逻辑 =====
 
 Page({
@@ -231,6 +253,17 @@ Page({
     // 手机号变更
     phoneChangeRecords: [] as PhoneChangeRecord[],
     phoneLoaded: false,
+    // 顾客优惠券
+    coupons: [] as CouponView[],
+    filteredCoupons: [] as CouponView[],
+    couponsLoaded: false,
+    couponStatus: '' as string,
+    couponStatusOptions: [
+      { value: '', label: '全部' },
+      { value: '未使用', label: '未使用' },
+      { value: '已使用', label: '已使用' },
+      { value: '已过期', label: '已过期' },
+    ],
     // Wave 3G — 储值卡余额（跨店统一，仅店长视角）
     cardBalance: 0 as number,
     cardBalanceLoaded: false as boolean,
@@ -312,8 +345,8 @@ Page({
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    // 7-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
-    //         5 手机号变更 / 6 日历
+    // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
+    //         5 手机号变更 / 6 顾客优惠券 / 7 日历
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
@@ -324,7 +357,9 @@ Page({
       this.loadServiceHistory();
     } else if (index === 5 && !this.data.phoneLoaded) {
       this.loadPhoneChangeLogs();
-    } else if (index === 6 && !this.data.calendarLoaded) {
+    } else if (index === 6 && !this.data.couponsLoaded) {
+      this.loadCoupons();
+    } else if (index === 7 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }
   },
@@ -610,6 +645,58 @@ Page({
     } catch (_) {
       this.setData({ phoneChangeRecords: [], phoneLoaded: true });
     }
+  },
+
+  // ===== 顾客优惠券 =====
+  async loadCoupons() {
+    const id = this._clientId();
+    if (!id) return;
+    try {
+      const res = await callStaffApi<{ coupons: CouponView[] }>('customer.coupons', id);
+      const coupons = this._decorateCoupons(res?.coupons || []);
+      this.setData({
+        coupons,
+        filteredCoupons: this._filterCoupons(coupons, this.data.couponStatus),
+        couponsLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ coupons: [], filteredCoupons: [], couponsLoaded: true });
+    }
+  },
+
+  onCouponStatusTap(e: WechatMiniprogram.TouchEvent) {
+    const value = (e.currentTarget.dataset.value as string) ?? '';
+    this.setData({
+      couponStatus: value,
+      filteredCoupons: this._filterCoupons(this.data.coupons, value),
+    });
+  },
+
+  /** 按 couponStatus 客户端过滤（'' = 全部），一次加载全量、切状态不重新请求 */
+  _filterCoupons(list: CouponView[], status: string): CouponView[] {
+    return status ? list.filter((c) => c.status === status) : list;
+  },
+
+  /** 预算展示字段（discountLabel/expireAtFmt/usedAtFmt/minSpendHint），镜像 client my-coupons.ts */
+  _decorateCoupons(list: CouponView[]): CouponView[] {
+    return list.map((c) => {
+      const minSpendNum = Number(c.minSpend) || 0;
+      const hasCategory = Array.isArray(c.applicableCategoryNames) && c.applicableCategoryNames.length > 0;
+      const minSpendHint = minSpendNum > 0
+        ? (hasCategory
+            ? `仅限 ${(c.applicableCategoryNames || []).join('/')} 品类小计满 ${minSpendNum} 元可用`
+            : `满 ${minSpendNum} 元可用`)
+        : '';
+      return {
+        ...c,
+        applicableStoreNamesText: (c.applicableStoreNames || []).join('、'),
+        expireAtFmt: formatDate(c.expireAt),
+        usedAtFmt: c.usedAt ? formatDate(c.usedAt) : '',
+        discountLabel: formatDiscount(c),
+        minSpendNum,
+        minSpendHint,
+      };
+    });
   },
 
   // ===== 备注编辑 =====

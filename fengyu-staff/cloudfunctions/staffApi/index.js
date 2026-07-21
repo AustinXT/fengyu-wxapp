@@ -53,6 +53,7 @@ const routes = {
   'customer.customerBalance': () => require('./routes/customer').customerBalance,
   'customer.appointments': () => require('./routes/customer').appointments,
   'customer.phoneChangeLogs': () => require('./routes/customer').phoneChangeLogs,
+  'customer.coupons':       () => require('./routes/customer').coupons,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,

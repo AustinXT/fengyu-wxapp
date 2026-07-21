@@ -87,3 +87,11 @@ export function getElapsedTime(startTime: string | null, now?: Date): string {
   const min = diffMin % 60
   return `进行中 ${h}小时${min > 0 ? min + '分钟' : ''}`
 }
+
+/** 优惠券折扣展示：折扣券→"8折"，现金券/品项券→"¥10"（镜像 client utils/format.ts） */
+export function formatDiscount(coupon: { couponType: string; discountValue: number | string }): string {
+  if (coupon.couponType === '折扣券') {
+    return `${Math.round(Number(coupon.discountValue) * 10)}折`
+  }
+  return `¥${Number(coupon.discountValue).toFixed(0)}`
+}
