@@ -28,6 +28,7 @@ const {
   buildRefundDetails,
   capRefundAmounts,
   computeOverpayRemainder,
+  isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
@@ -2125,9 +2126,8 @@ async function createRefund(ctx) {
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
   // 顾客退钱后仍能消费）。限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居无 session_count 不受影响。
-  // 完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
-  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
-  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+  // 0 元赠送项不参与最小价；完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
+  if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
