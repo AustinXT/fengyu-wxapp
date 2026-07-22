@@ -1017,6 +1017,18 @@ export async function cleanupTestData(prefix = NS) {
          WHERE operator_employee_id IN (SELECT employee_id FROM staff_wechat_users WHERE employee_id LIKE $1)`,
       [like],
     ],
+    [
+      `DELETE FROM messages
+         WHERE recipient_id LIKE $1
+            OR ref_entity_id IN (
+              SELECT id::text FROM sale_order_payments
+               WHERE sale_order_id IN (
+                 SELECT sale_order_id FROM sale_orders WHERE sale_order_id LIKE $1
+                    OR client_user_id LIKE $1 OR opened_by LIKE $1
+               )
+            )`,
+      [like],
+    ],
 
     // ─── 3) card_transactions（必须先于 prepaid_cards 和 sale_orders）───
     [`DELETE FROM card_transactions WHERE ref_order_id LIKE $1`, [like]],
