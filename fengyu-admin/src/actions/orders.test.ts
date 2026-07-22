@@ -4177,8 +4177,8 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].unitRealPrice).toBe(158.5)
   })
 
-  it('超过 LIMIT 10000 → truncated=true 且按 item 截断到 10000', async () => {
-    const many = Array.from({ length: 10001 }, () => ({
+  it('超过 LIMIT 100000 → truncated=true 且按 item 截断到 100000', async () => {
+    const row = {
       marketName: 'M', storeName: 'S', saleOrderId: 'FY-X', saleOrderType: '销售单',
       documentType: null, status: '已支付', custName: null, custPhone: null,
       fallbackName: null, fallbackPhone: null,
@@ -4189,13 +4189,48 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       productType: null, salesCategory: null, productName: null,
       sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
       categoryL1: null, categoryL2: null,
-    }))
+    }
+    const many = new Array(100001).fill(row)
     ;(db.select as any).mockReturnValueOnce(makeChain(many)).mockReturnValueOnce(makeChain([]))
 
     const { rows, truncated } = await exportOrders({})
 
     expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(rows).toHaveLength(100000)
+  })
+
+  it('混合来源合并后超过 LIMIT 100000 → truncated=true 且截断到 100000', async () => {
+    const item = {
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-ITEM', saleOrderType: '销售单',
+      documentType: null, status: '已支付', custName: null, custPhone: null,
+      fallbackName: null, fallbackPhone: null,
+      totalAmount: '0', prepaidCardAmount: '0', received: '0', refundedAmount: '0',
+      paymentMethod: null, isMembershipUpgrade: false, isActivity: false,
+      customerType: null, openedByName: null, remark: null,
+      saleOrderDatetime: new Date('2026-07-02T00:00:00.000Z'),
+      createdAt: new Date('2026-07-02T00:00:00.000Z'),
+      productType: null, salesCategory: null, productName: null,
+      sessionCount: null, paidUnusedSessions: null, unitRealPrice: null,
+      categoryL1: null, categoryL2: null,
+    }
+    const recharge = {
+      marketName: 'M', storeName: 'S', saleOrderId: 'FY-RECHARGE', saleOrderType: '充值单',
+      documentType: null, status: '已支付', custName: null, custPhone: null,
+      fallbackName: null, fallbackPhone: null,
+      totalAmount: '0', prepaidCardAmount: '0', received: '0', refundedAmount: '0',
+      paymentMethod: null, isMembershipUpgrade: false, isActivity: false,
+      customerType: null, openedByName: null, remark: null,
+      saleOrderDatetime: new Date('2026-07-01T00:00:00.000Z'),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain(new Array(50000).fill(item)))
+      .mockReturnValueOnce(makeChain(new Array(50001).fill(recharge)))
+
+    const { rows, truncated } = await exportOrders({})
+
+    expect(truncated).toBe(true)
+    expect(rows).toHaveLength(100000)
   })
 
   it('费用列（totalAmount/received/refundedAmount）：prepaidCardAmount 等缺失 fallback 0', async () => {

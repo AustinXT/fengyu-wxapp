@@ -603,9 +603,25 @@ export const exportOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
+    const LIMIT = 100000
+    const PAGE_SIZE = 5000
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
+    const fetchPaged = async <T>(
+      fetchPage: (pageSize: number, offset: number) => Promise<T[]>,
+    ): Promise<T[]> => {
+      const maxRows = LIMIT + 1
+      const rows: T[] = []
+      for (let offset = 0; rows.length < maxRows; offset += PAGE_SIZE) {
+        const remaining = maxRows - rows.length
+        const pageSize = Math.min(PAGE_SIZE, remaining)
+        const page = await fetchPage(pageSize, offset)
+        if (page.length === 0) break
+        rows.push(...page.slice(0, remaining))
+        if (page.length !== pageSize || page.length >= remaining) break
+      }
+      return rows
+    }
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
@@ -614,101 +630,106 @@ export const exportOrders = withPermission(
     //   两行一并纳入，完整展示「从哪转出 → 转入什么」。转出负/转入正照实行级口径展示，金额列不留空
     //   （转换单 totalAmount 为真实转换额，非寄存单 total=0 那种特例）。
     //   充值单不写 sale_items，由下方 rechargeOrders 单独查订单级再造一行。
-    const itemRows = await db
-      .select({
-        // 订单级
-        marketName: saleOrders.marketName,
-        storeName: saleOrders.storeName,
-        saleOrderId: saleOrders.saleOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        documentType: saleOrders.documentType,
-        status: saleOrders.status,
-        custName: clientWechatUsers.name,
-        custPhone: clientWechatUsers.phone,
-        fallbackName: saleOrders.customerName,
-        fallbackPhone: saleOrders.clientPhone,
-        totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
-        prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleItems.received,             // 行级净实收（商品行口径）
-        refundedAmount: saleOrders.refundedAmount,
-        paymentMethod: saleOrders.paymentMethod,
-        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
-        isActivity: saleOrders.isActivity,
-        customerType: clientWechatUsers.customerType,
-        openedByName: opener.name,
-        saleOrderDatetime: saleOrders.saleOrderDatetime,
-        createdAt: saleOrders.createdAt,
-        remark: saleOrders.remark,
-        // item 级
-        productType: saleItems.productType,
-        salesCategory: saleItems.salesCategory,
-        productName: saleItems.productName,
-        sessionCount: saleItems.sessionCount,
-        paidUnusedSessions: paidUnusedSessionsExpr,
-        unitRealPrice: saleItems.unitRealPrice,
-        categoryL1: productCategories.productKind,
-        categoryL2: productCategories.categoryName,
-      })
-      .from(saleItems)
-      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(and(
-        whereClause,
-        or(
-          eq(saleItems.itemDirection, '购买'),
-          and(
-            eq(saleOrders.saleOrderType, '转换单'),
-            inArray(saleItems.itemDirection, ['转出', '转入']),
+    const itemRows = await fetchPaged(async (pageSize, offset) => (
+      db
+        .select({
+          // 订单级
+          marketName: saleOrders.marketName,
+          storeName: saleOrders.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          status: saleOrders.status,
+          custName: clientWechatUsers.name,
+          custPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleItems.received,             // 行级净实收（商品行口径）
+          refundedAmount: saleOrders.refundedAmount,
+          paymentMethod: saleOrders.paymentMethod,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          isActivity: saleOrders.isActivity,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          saleOrderDatetime: saleOrders.saleOrderDatetime,
+          createdAt: saleOrders.createdAt,
+          remark: saleOrders.remark,
+          // item 级
+          productType: saleItems.productType,
+          salesCategory: saleItems.salesCategory,
+          productName: saleItems.productName,
+          sessionCount: saleItems.sessionCount,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          unitRealPrice: saleItems.unitRealPrice,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+        })
+        .from(saleItems)
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(and(
+          whereClause,
+          or(
+            eq(saleItems.itemDirection, '购买'),
+            and(
+              eq(saleOrders.saleOrderType, '转换单'),
+              inArray(saleItems.itemDirection, ['转出', '转入']),
+            ),
           ),
-        ),
-      ))
-      .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
-      .limit(LIMIT + 1)
+        ))
+        .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
+        .offset(offset)
+        .limit(pageSize)
+    ))
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
     // 充值单不写 sale_items，无法走上面的明细 JOIN；按订单级单独查后造一行纳入导出。
     // 金额取订单级：total_amount=面额、received=实付（反映充值档位）；item 级列留空，productName 标「储值卡充值」。
-    const rechargeOrders = await db
-      .select({
-        marketName: saleOrders.marketName,
-        storeName: saleOrders.storeName,
-        saleOrderId: saleOrders.saleOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        documentType: saleOrders.documentType,
-        status: saleOrders.status,
-        custName: clientWechatUsers.name,
-        custPhone: clientWechatUsers.phone,
-        fallbackName: saleOrders.customerName,
-        fallbackPhone: saleOrders.clientPhone,
-        totalAmount: saleOrders.totalAmount,
-        prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleOrders.received,
-        refundedAmount: saleOrders.refundedAmount,
-        paymentMethod: saleOrders.paymentMethod,
-        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
-        isActivity: saleOrders.isActivity,
-        customerType: clientWechatUsers.customerType,
-        openedByName: opener.name,
-        saleOrderDatetime: saleOrders.saleOrderDatetime,
-        createdAt: saleOrders.createdAt,
-        remark: saleOrders.remark,
-      })
-      .from(saleOrders)
-      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
-      .orderBy(desc(saleOrders.saleOrderDatetime))
-      .limit(LIMIT + 1)
+    const rechargeOrders = await fetchPaged(async (pageSize, offset) => (
+      db
+        .select({
+          marketName: saleOrders.marketName,
+          storeName: saleOrders.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          status: saleOrders.status,
+          custName: clientWechatUsers.name,
+          custPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          totalAmount: saleOrders.totalAmount,
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleOrders.received,
+          refundedAmount: saleOrders.refundedAmount,
+          paymentMethod: saleOrders.paymentMethod,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          isActivity: saleOrders.isActivity,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          saleOrderDatetime: saleOrders.saleOrderDatetime,
+          createdAt: saleOrders.createdAt,
+          remark: saleOrders.remark,
+        })
+        .from(saleOrders)
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
+        .orderBy(desc(saleOrders.saleOrderDatetime))
+        .offset(offset)
+        .limit(pageSize)
+    ))
 
     // 合并 item 行（销售/内部/寄存购买行 + 转换单转出/转入行）与充值单造行；
-    // 两侧各自已按订单时间 desc，合并后再整体排序（ISO 串字典序=时间序），按明细行计数截断 LIMIT
-    const truncated = itemRows.length > LIMIT || rechargeOrders.length > LIMIT
+    // 两侧各自分页按订单时间 desc 拉到 LIMIT+1，合并后再整体排序，按明细行总数截断 LIMIT。
     const combined: ExportOrderRow[] = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
@@ -784,6 +805,7 @@ export const exportOrders = withPermission(
       a.saleOrderDatetime < b.saleOrderDatetime ? 1 : a.saleOrderDatetime > b.saleOrderDatetime ? -1 : 0,
     )
 
+    const truncated = combined.length > LIMIT
     const rows = combined.slice(0, LIMIT)
 
     return { rows, truncated }
