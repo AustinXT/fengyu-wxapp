@@ -27,9 +27,7 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
     startTransition(async () => {
       const res = await approveRefund(refundPaymentId);
       if (res.success) {
-        toast.success(
-          `退款已通过 — 储值卡回冲 ¥${res.data.refundByCard.toFixed(2)} + 原路径 ¥${res.data.refundByOrigin.toFixed(2)}`,
-        );
+        toast.success(`退款已通过，线下退款金额 ¥${res.data.refundByOrigin.toFixed(2)}`);
         setApproveOpen(false);
         router.refresh();
       } else {

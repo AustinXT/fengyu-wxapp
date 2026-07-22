@@ -449,7 +449,7 @@ Page({
     if (!o) return;
     wx.showModal({
       title: '充值卡退款',
-      content: '确认发起充值卡退款？将退还卡内剩余余额（按该充值单实付比例原路退款），提交后需店长审批。',
+      content: '确认发起充值卡退款？将退还卡内剩余余额（按该充值单实付比例线下退款），提交后需店长审批。',
       confirmText: '发起退款',
       confirmColor: '#C0322A',
       success: async (res) => {
