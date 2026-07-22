@@ -346,7 +346,7 @@ Page({
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
     // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
-    //         5 手机号变更 / 6 顾客优惠券 / 7 日历
+    //         5 顾客优惠券 / 6 手机号变更 / 7 日历
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
@@ -355,10 +355,10 @@ Page({
       this.loadAppointments();
     } else if (index === 4 && !this.data.serviceLoaded) {
       this.loadServiceHistory();
-    } else if (index === 5 && !this.data.phoneLoaded) {
-      this.loadPhoneChangeLogs();
-    } else if (index === 6 && !this.data.couponsLoaded) {
+    } else if (index === 5 && !this.data.couponsLoaded) {
       this.loadCoupons();
+    } else if (index === 6 && !this.data.phoneLoaded) {
+      this.loadPhoneChangeLogs();
     } else if (index === 7 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }

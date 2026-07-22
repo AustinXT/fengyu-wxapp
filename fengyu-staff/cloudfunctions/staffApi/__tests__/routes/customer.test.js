@@ -1,6 +1,6 @@
 /**
  * 顾客档案路由测试
- * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs
+ * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs / coupons
  * PG 单源架构，非店长脱敏
  */
 
@@ -1615,5 +1615,20 @@ describe('customer.phoneChangeLogs', () => {
     pg.query.mockResolvedValueOnce([])  // 解析 user_id 无行
     await customerRoutes.phoneChangeLogs(ctx)
     expect(ctx.result).toEqual([])
+  })
+})
+
+// ============================================================
+// customer.coupons
+// ============================================================
+describe('customer.coupons', () => {
+  test('店员越权（顾客未绑定本人）→ PERMISSION_DENIED，且不查询优惠券', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-other-999' }])
+
+    await expect(customerRoutes.coupons(ctx)).rejects.toThrow(/PERMISSION_DENIED.*未分配/)
+
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query.mock.calls[0][0]).toContain('bound_employee_id')
   })
 })

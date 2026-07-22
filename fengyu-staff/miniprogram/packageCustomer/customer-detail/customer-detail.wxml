@@ -1,4 +1,4 @@
-<!-- packageCustomer/customer-detail/customer-detail.wxml — 7-Tab 顾客详情 -->
+<!-- packageCustomer/customer-detail/customer-detail.wxml — 8-Tab 顾客详情 -->
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -43,8 +43,8 @@
       </view>
     </view>
 
-    <!-- 7-Tab 导航：6 核心（与 admin 一致）+ 日历（员工端特有） -->
-    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable line-width="40rpx">
+    <!-- 8-Tab 导航：7 核心（与 admin 一致）+ 日历（员工端特有） -->
+    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable ellipsis="{{false}}" line-width="40rpx">
       <van-tab title="基本档案">
         <view class="tab-content">
           <van-cell-group class="card-group">
@@ -221,29 +221,6 @@
         </view>
       </van-tab>
 
-      <van-tab title="手机号变更">
-        <view class="tab-content">
-          <view wx:if="{{!phoneLoaded}}" class="loading-wrap">
-            <van-loading type="spinner" color="#C0322A" />
-          </view>
-          <van-empty wx:elif="{{phoneChangeRecords.length === 0}}" description="暂无手机号变更记录" />
-          <view wx:else>
-            <view class="phone-log-card" wx:for="{{phoneChangeRecords}}" wx:key="id">
-              <view class="phone-log-row">
-                <text class="phone-log-phone">{{item.oldPhone || '—'}}</text>
-                <van-icon name="arrow" size="28rpx" color="#999" />
-                <text class="phone-log-phone phone-log-new">{{item.newPhone || '—'}}</text>
-              </view>
-              <view class="phone-log-meta">
-                <text class="phone-log-source">{{item.sourceText}}</text>
-                <text class="phone-log-time">{{item.createdAt}}</text>
-              </view>
-              <text wx:if="{{item.operatorLabel}}" class="phone-log-op">操作人：{{item.operatorLabel}}</text>
-            </view>
-          </view>
-        </view>
-      </van-tab>
-
       <van-tab title="顾客优惠券">
         <view class="tab-content">
           <!-- 状态筛选按钮组（客户端过滤，切状态不重新请求） -->
@@ -285,6 +262,29 @@
               </view>
               <view class="coupon-card__stamp" wx:if="{{item.status === '已使用'}}">已使用</view>
               <view class="coupon-card__stamp coupon-card__stamp--expired" wx:elif="{{item.status === '已过期'}}">已过期</view>
+            </view>
+          </view>
+        </view>
+      </van-tab>
+
+      <van-tab title="手机号变更">
+        <view class="tab-content">
+          <view wx:if="{{!phoneLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{phoneChangeRecords.length === 0}}" description="暂无手机号变更记录" />
+          <view wx:else>
+            <view class="phone-log-card" wx:for="{{phoneChangeRecords}}" wx:key="id">
+              <view class="phone-log-row">
+                <text class="phone-log-phone">{{item.oldPhone || '—'}}</text>
+                <van-icon name="arrow" size="28rpx" color="#999" />
+                <text class="phone-log-phone phone-log-new">{{item.newPhone || '—'}}</text>
+              </view>
+              <view class="phone-log-meta">
+                <text class="phone-log-source">{{item.sourceText}}</text>
+                <text class="phone-log-time">{{item.createdAt}}</text>
+              </view>
+              <text wx:if="{{item.operatorLabel}}" class="phone-log-op">操作人：{{item.operatorLabel}}</text>
             </view>
           </view>
         </view>

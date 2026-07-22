@@ -1433,7 +1433,7 @@ async function phoneChangeLogs(ctx) {
  * 顾客优惠券（顾客档案「顾客优惠券」Tab）
  *
  * 交易/权益数据跟顾客走：按 client_user_id 查全量 user_coupons（含跨门店、各状态）。
- * 可见性由 assertCustomerInScope（bound_store_id ∈ scope）守护，与 orderHistory 同口径。
+ * 可见性由 assertCustomerProfileVisible 守护：门店 scope + 普通员工仅可见绑定本人的顾客。
  * SQL 镜像 clientApi coupon.list：懒清扫过期 → JOIN 模板 → COALESCE 面值 → 按状态固定序 + 到期升序，
  * 批量解析适用门店/品类名。返回 shape 与 client coupon.list 对齐。
  */
@@ -1456,13 +1456,13 @@ async function coupons(ctx) {
     clientUserId = r[0]?.user_id || null;
   }
 
-  // scope 守卫：顾客 bound_store_id ∈ 当前 scope（与 orderHistory 一致）。
+  // 档案闸门：门店 scope + 普通员工 bound_employee_id。
   // 极端：手机号无对应顾客——无可查之券，直接返回空（杜绝凭手机号越权枚举）。
   if (!clientUserId) {
     ctx.result = { coupons: [] };
     return;
   }
-  await assertCustomerInScope(pg, ctx.auth, clientUserId);
+  await assertCustomerProfileVisible(pg, ctx.auth, clientUserId);
 
   // 懒清扫过期券（系统无 cron 批量置过期，查询前顺手扫，保证「已过期」准确）
   await pg.query(
