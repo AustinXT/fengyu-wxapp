@@ -4,6 +4,12 @@ This file provides guidance for AI coding agents (Claude Code / Codex) working i
 
 凤御双美容院微信小程序生态系统（monorepo）。各子项目详见其目录下的 CLAUDE.md（Codex 读同名 AGENTS.md 符号链接）。
 
+## 沟通语言
+
+- 默认且始终使用中文回复，包括进度更新、计划、代码审查、问题说明和最终总结。
+- 除非用户明确要求使用其他语言，不要因为任务复杂、工具输出为英文、代码上下文为英文而切换到英文。
+- 代码标识符、命令、日志、错误信息、API 名称、文件路径和引用原文可以保留原始语言；解释这些内容时仍使用中文。
+
 ## 技术栈
 
 | 层级 | 技术 |
