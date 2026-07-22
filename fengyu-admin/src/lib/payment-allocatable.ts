@@ -230,3 +230,55 @@ export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: str
      WHERE sale_order_id = ${saleOrderId}
   `)
 }
+
+/**
+ * 退款审批后收敛回款分配状态。
+ *
+ * 退款不删除原正向分配；已分配明细由 refund-cascade 追加负数冲销。
+ * 本函数只处理仍为「待分配」的回款：如果退款后已没有净可分配明细，或剩余净额明细已存在正向分配，
+ * 则把该回款收敛为「已分配」（语义为无需继续分配），再刷新订单级汇总状态。
+ */
+export async function reconcileAllocationStatusAfterRefund(tx: AdminTx, saleOrderId: string): Promise<void> {
+  await tx.execute(sql`
+    WITH needs_allocation AS (
+      SELECT p.id
+        FROM sale_order_payments p
+       WHERE p.sale_order_id = ${saleOrderId}
+         AND p.allocation_status = '待分配'
+         AND (
+           EXISTS (
+             SELECT 1
+               FROM sale_payment_allocatable_items spai
+               JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
+              WHERE spai.sale_payment_id = p.id
+                AND GREATEST(COALESCE(si.received::numeric, 0), 0) > 0
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM sale_allocations sa
+                   WHERE sa.sale_payment_id = p.id
+                     AND sa.sale_item_id = spai.sale_item_id
+                     AND sa.is_void = false
+                     AND sa.total_amount::numeric > 0
+                )
+           )
+           OR (
+             NOT EXISTS (
+               SELECT 1 FROM sale_payment_allocatable_items spai WHERE spai.sale_payment_id = p.id
+             )
+             AND EXISTS (
+               SELECT 1
+                 FROM sale_orders so
+                WHERE so.sale_order_id = p.sale_order_id
+                  AND GREATEST(COALESCE(so.received::numeric, 0) - COALESCE(so.refunded_amount::numeric, 0), 0) > 0
+             )
+           )
+         )
+    )
+    UPDATE sale_order_payments p
+       SET allocation_status = '已分配'::allocation_status
+     WHERE p.sale_order_id = ${saleOrderId}
+       AND p.allocation_status = '待分配'
+       AND NOT EXISTS (SELECT 1 FROM needs_allocation n WHERE n.id = p.id)
+  `)
+  await refreshOrderAllocationRollup(tx, saleOrderId)
+}

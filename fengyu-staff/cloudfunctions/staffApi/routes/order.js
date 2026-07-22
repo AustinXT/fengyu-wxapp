@@ -22,7 +22,11 @@ const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
-const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const {
+  capturePaymentAllocatables,
+  refreshOrderAllocationRollup,
+  reconcileAllocationStatusAfterRefund,
+} = require('../utils/payment-allocatable')
 const { getPerItemRefundedMap } = require('../utils/per-item-refund')
 const {
   buildRefundDetails,
@@ -2401,6 +2405,7 @@ async function approveRefund(ctx) {
     // 4.1 paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
+    await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
 
     // 5. 重算顾客消费档位 + 顾客类型
     if (sopRow.client_user_id) {

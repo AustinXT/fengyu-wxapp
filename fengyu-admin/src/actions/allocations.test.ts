@@ -37,6 +37,8 @@ vi.mock('@db/order', () => ({
     allocationStatus: 'allocation_status',
     saleOrderType: 'sale_order_type',
     saleOrderDatetime: 'sale_order_datetime',
+    received: 'received',
+    refundedAmount: 'refunded_amount',
   },
   saleItems: {
     saleOrderId: 'sale_order_id',

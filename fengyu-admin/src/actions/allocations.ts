@@ -520,6 +520,31 @@ export const getPendingPayments = withPermission(
       params.allocationStatus
         ? eq(saleOrderPayments.allocationStatus, params.allocationStatus)
         : sql`${saleOrderPayments.allocationStatus} IS NOT NULL`,
+      params.allocationStatus === '待分配'
+        ? sql`(
+            EXISTS (
+              SELECT 1
+                FROM sale_payment_allocatable_items spai
+                JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
+               WHERE spai.sale_payment_id = ${saleOrderPayments.id}
+                 AND GREATEST(COALESCE(si.received::numeric, 0), 0) > 0
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM sale_allocations sa
+                    WHERE sa.sale_payment_id = ${saleOrderPayments.id}
+                      AND sa.sale_item_id = spai.sale_item_id
+                      AND sa.is_void = false
+                      AND sa.total_amount::numeric > 0
+                 )
+            )
+            OR (
+              NOT EXISTS (
+                SELECT 1 FROM sale_payment_allocatable_items spai WHERE spai.sale_payment_id = ${saleOrderPayments.id}
+              )
+              AND GREATEST(COALESCE(${saleOrders.received}::numeric, 0) - COALESCE(${saleOrders.refundedAmount}::numeric, 0), 0) > 0
+            )
+          )`
+        : undefined,
       inArray(saleOrders.saleOrderType, ['销售单', '转换单'] as any),
       sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`,
       isAdminScope(session)

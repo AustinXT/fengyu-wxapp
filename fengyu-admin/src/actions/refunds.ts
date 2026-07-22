@@ -32,6 +32,7 @@ import {
 import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import { reconcileAllocationStatusAfterRefund } from '@/lib/payment-allocatable'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -1025,6 +1026,7 @@ export const approveRefund = withPermission(
       // 5.1) paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
       // 若新 paid_sessions < 已消费次数，抛 CONFLICT 阻止退款
       await recalcPaidSessionsForOrder(tx, refSaleOrderId)
+      await reconcileAllocationStatusAfterRefund(tx, refSaleOrderId)
 
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {
@@ -1075,6 +1077,7 @@ export const approveRefund = withPermission(
   revalidatePath('/refunds')
   revalidatePath(`/refunds/${idNum}`)
   if (refSaleOrderId) revalidatePath(`/orders/${refSaleOrderId}`)
+  revalidatePath('/allocations')
   return { success: true, data: { refundByCard, refundByOrigin, cascade } }
   },
 )

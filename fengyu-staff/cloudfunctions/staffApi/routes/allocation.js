@@ -190,10 +190,34 @@ async function pendingPayments(ctx) {
     `SELECT p.id AS sale_payment_id, p.sale_order_id, p.change_type, p.amount, p.payment_method,
             p.paid_at, p.created_at, p.allocation_status,
             o.customer_name, o.client_phone, o.sale_order_type, o.preferred_employee_id, o.total_amount
-       FROM sale_order_payments p
-       JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
-      WHERE o.store_id = $1
+      FROM sale_order_payments p
+      JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
+     WHERE o.store_id = $1
         AND p.allocation_status = $2
+        AND (
+          $2 <> '待分配'
+          OR EXISTS (
+            SELECT 1
+              FROM sale_payment_allocatable_items spai
+              JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
+             WHERE spai.sale_payment_id = p.id
+               AND GREATEST(COALESCE(si.received::numeric, 0), 0) > 0
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM sale_allocations sa
+                  WHERE sa.sale_payment_id = p.id
+                    AND sa.sale_item_id = spai.sale_item_id
+                    AND sa.is_void = false
+                    AND sa.total_amount::numeric > 0
+               )
+          )
+          OR (
+            NOT EXISTS (
+              SELECT 1 FROM sale_payment_allocatable_items spai WHERE spai.sale_payment_id = p.id
+            )
+            AND GREATEST(COALESCE(o.received::numeric, 0) - COALESCE(o.refunded_amount::numeric, 0), 0) > 0
+          )
+        )
         AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 spai，与销售单同流程
         AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC

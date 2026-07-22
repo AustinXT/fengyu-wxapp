@@ -36,6 +36,8 @@ const FILES = {
   adminCaptureTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
+  staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
+  adminRefundsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts'),
 }
 
 function readFile(p) {
@@ -218,5 +220,36 @@ describe('断言4：payNotify index.js 不再出现旧约束名 uq_sale_alloc_it
     expect(src).not.toMatch(/uq_sale_alloc_item_emp_role(?!_payment)/)
     // 正向：新约束名仍在
     expect(src).toMatch(/uq_sale_alloc_item_emp_role_payment/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 断言 5：退款审批后按 paid_sessions 净额收敛待分配状态
+// ─────────────────────────────────────────────────────────────────────────────
+describe('断言5：退款审批后重算 paid_sessions，再收敛营业额分配状态', () => {
+  test('staff/admin payment-allocatable 均实现 reconcileAllocationStatusAfterRefund', () => {
+    for (const [end, src] of [
+      ['staff', readFile(FILES.staffCaptureJs)],
+      ['admin', readFile(FILES.adminCaptureTs)],
+    ]) {
+      expect(src, `${end} 缺 reconcileAllocationStatusAfterRefund`).toMatch(/reconcileAllocationStatusAfterRefund/)
+      expect(src, `${end} 缺按 sale_items.received 净额判断`).toMatch(/GREATEST\(COALESCE\(si\.received::numeric, 0\), 0\) > 0/)
+      expect(src, `${end} 缺正向分配存在性判断`).toMatch(/sa\.total_amount::numeric > 0/)
+      expect(src, `${end} 缺待分配收敛为已分配`).toMatch(/SET allocation_status = '已分配'/)
+    }
+  })
+
+  test('staff/admin approveRefund 均在 recalcPaidSessionsForOrder 后调用 reconcileAllocationStatusAfterRefund', () => {
+    const cases = [
+      ['staff', readFile(FILES.staffOrderJs), 'await recalcPaidSessionsForOrder(client, refSaleOrderId)', 'await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)'],
+      ['admin', readFile(FILES.adminRefundsTs), 'await recalcPaidSessionsForOrder(tx, refSaleOrderId)', 'await reconcileAllocationStatusAfterRefund(tx, refSaleOrderId)'],
+    ]
+    for (const [end, src, recalc, reconcile] of cases) {
+      const recalcIdx = src.indexOf(recalc)
+      const reconcileIdx = src.indexOf(reconcile)
+      expect(recalcIdx, `${end} 缺退款后 paid_sessions 重算`).toBeGreaterThan(-1)
+      expect(reconcileIdx, `${end} 缺退款后分配状态收敛`).toBeGreaterThan(-1)
+      expect(reconcileIdx, `${end} 必须先重算 paid_sessions 再收敛分配状态`).toBeGreaterThan(recalcIdx)
+    }
   })
 })
