@@ -37,6 +37,32 @@ cp .env.example .env.local
 ANALYST_VIEW_ACTION=analyst:view
 ```
 
+问答接口优先使用 Minimax OpenAI-compatible API。把 key 填到 `.env.local`：
+
+```text
+MINIMAX_API_KEY=你的 Minimax API Key
+MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+MINIMAX_MODEL=MiniMax-M3
+```
+
+未配置 `MINIMAX_API_KEY` 时会兼容读取旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`；完全未配置 key 时使用本地规则解析兜底，仍可回答常见复购率、趋势和排名问题。
+
+助手会话历史保存在浏览器本地存储中，单浏览器最多保留 30 个会话。问答接口返回结构化 JSON：
+
+```ts
+{
+  content: string
+  visualizations: Array<{
+    kind: "metrics" | "line" | "bar" | "table"
+    title: string
+    rows?: Array<Record<string, string | number | null>>
+    metrics?: Array<{ label: string; value: string; helper?: string }>
+  }>
+}
+```
+
+看板指标目录由 `src/lib/metric-catalog.ts` 统一维护。当前仅 `repurchase` 已接入查询，其他 9 个指标位先以预留状态进入二级目录。
+
 ## SSO
 
 `fengyu-analyst` 读取 `fy-admin-token` Cookie，并使用共享 `JWT_SECRET` 校验。未登录时跳转到 `ADMIN_LOGIN_URL`。
@@ -49,4 +75,3 @@ secure=true
 sameSite=lax
 path=/
 ```
-
