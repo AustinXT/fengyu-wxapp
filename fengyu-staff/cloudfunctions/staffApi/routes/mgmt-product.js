@@ -4,7 +4,7 @@
  * 入口：mgmt-dashboard 首页"品项数据"卡片（entry === 'products'）
  *
  * mgmtProduct.cardHolders — 持卡人数（截面快照，不随 period 变化）
- *   持卡 = 未使用完的疗程卡（含原单品=1 次卡）（product_type = '疗程卡' AND remaining_sessions > 0）
+ *   持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤
  *   按 product_kind 分组 + memberCount（分母）
  *
  * mgmtProduct.cycleStats — 体验/新增/复购（区间维度）
@@ -108,7 +108,7 @@ async function resolveScopeName(scopeType, scopeId) {
  *
  * SQL：
  *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
- *     WHERE product_type = '疗程卡' AND remaining_sessions > 0
+ *     WHERE paid_sessions > 0
  *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
  *     （寄存单为 WorkFine 剩余次数初始化，按次数维度纳入持卡人数）
  *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
@@ -140,8 +140,7 @@ async function cardHolders(ctx) {
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
      WHERE ${sc.sql}
-       AND si.product_type = '疗程卡'
-       AND si.remaining_sessions > 0
+       AND si.paid_sessions > 0
        AND so.sale_order_type IN ('销售单','转换单','寄存单')
        AND so.status = '已支付'
        AND so.client_user_id IS NOT NULL

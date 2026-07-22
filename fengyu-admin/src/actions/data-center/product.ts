@@ -15,8 +15,7 @@
  *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴 paid_at）
  *
  * ★ 口径红线（consistency.product.test.ts 字面量守护，禁止偏离）：
- *   - 持卡 = si.product_type = '疗程卡'（product_type enum 2026-05-21 已 3→2 值，单品并入疗程卡，
- *     无 '单品' 字面量，与 mgmt-product.js 实际实现一致）∩ si.remaining_sessions > 0；DISTINCT client。
+ *   - 持卡 = si.paid_sessions > 0；DISTINCT client。不再按 product_type 过滤。
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
@@ -118,7 +117,7 @@ async function queryFilterOptions(): Promise<Array<{ kind: string; categories: s
 // =====================================================================
 
 /**
- * 持卡人数（DISTINCT client）：si.product_type = '疗程卡' ∩ remaining_sessions > 0
+ * 持卡人数（DISTINCT client）：si.paid_sessions > 0，不按 product_type 过滤
  *   ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
  *   ∩ 品项过滤（一级/二级）。截面快照，无时间区间。
  */
@@ -135,8 +134,7 @@ async function queryCardHolders(
     JOIN product_skus sk ON sk.sku_id = si.sku_id
     JOIN product_categories pc ON pc.category_id = sk.category_id
     WHERE ${sc}
-      AND si.product_type = '疗程卡'
-      AND si.remaining_sessions > 0
+      AND si.paid_sessions > 0
       AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
       AND so.status = '已支付'
       AND so.client_user_id IS NOT NULL
@@ -282,8 +280,7 @@ async function queryCardHoldersByStore(
     JOIN product_skus sk ON sk.sku_id = si.sku_id
     JOIN product_categories pc ON pc.category_id = sk.category_id
     WHERE ${sc}
-      AND si.product_type = '疗程卡'
-      AND si.remaining_sessions > 0
+      AND si.paid_sessions > 0
       AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
       AND so.status = '已支付'
       AND so.client_user_id IS NOT NULL

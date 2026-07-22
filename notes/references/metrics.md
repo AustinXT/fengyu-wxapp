@@ -430,7 +430,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | T3 — 员工数切按 `selectedDate` 历史化：`COUNT(*) WHERE s.hired_at IS NOT NULL AND s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date)`，不再依赖 `is_resigned=FALSE` 实时快照。`staff_wechat_users` 新增 `hired_at` / `resigned_at` 列（migration 0012 双库部署），admin 员工管理表单已支持编辑；当前由 `created_at::date` / `updated_at::date` 兜底回填 |
 | 2026-04-25 | T4 — 门店数切按 `selectedDate` 历史化：`COUNT(*) FROM stores s JOIN org_nodes o ON s.org_node_id=o.id WHERE o.type='门店' AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，不再裸数 `org_nodes WHERE type='门店'`。`stores` 新增 `closed_at` 列（migration 0012），`opening_date` 已存在；admin 门店管理表单已支持编辑；`scopeType=store` 短路返回 1 |
 | 2026-04-25 | T6 完成：C 类派生指标分母切换为 selectedDate 历史化（日/月双口径），移除阶段 1 过渡角标 |
-| 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 决策点已全部拍板：持卡=截面快照（疗程卡+单品，remaining_sessions>0）/ 不限 item_direction / 复购业绩=客群全期收入 / entry_date 跨店合并 / 分包 packageMgmt；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
+| 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 决策点已全部拍板：持卡=截面快照（paid_sessions>0）/ 不限 item_direction / 复购业绩=客群全期收入 / entry_date 跨店合并 / 分包 packageMgmt；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
 | 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
@@ -509,12 +509,12 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 ### 1. 持卡人数（截面快照，不随 period 变化）
 
 > 以查询时刻（NOW()）为准；切换 period chip 不影响此数据，UI 加角标"截面"提示。
-> **持卡 = 未使用完的疗程卡 或 单次卡**（`product_type IN ('疗程卡','单品')`，`remaining_sessions > 0`）。院装产品（提货物品）不计入。
+> **持卡 = 已解锁次数大于 0**（`paid_sessions > 0`），不按 `product_type` 过滤。
 > 分母「总会员人数」同 `memberCount`（`client_wechat_users.became_member_at IS NOT NULL` ∩ scope by `bound_store_id`，T2 历史化口径；持卡为截面，本子页不带 `$date` 守卫）。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.product_type IN ('疗程卡','单品')` ∩ `si.remaining_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
+| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.paid_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单','寄存单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
 | 占比（cardHolderRate）per product_kind | `cardHolderCount / memberCount × 100%` | 派生；`memberCount=0` → `--` | — |
 
 ### 2. 体验 / 新增 / 复购（区间维度，时间轴 `paid_at`）
@@ -621,7 +621,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **均不变**，唯一差异是把分组键 `pc.product_kind` 整体替换为 `pc.category_name`（达标日聚合的 GROUP BY 维度
 > 与 `first_entry` 跨店合并键同步替换）。即：
 >
-> - 持卡人数 / 占比：`COUNT(DISTINCT so.client_user_id)` GROUP BY 分组键，`si.product_type = '疗程卡'` ∩ `si.remaining_sessions > 0`；占比分母仍为 `memberCount`（不随分组键变化）。
+> - 持卡人数 / 占比：`COUNT(DISTINCT so.client_user_id)` GROUP BY 分组键，`si.paid_sessions > 0`；占比分母仍为 `memberCount`（不随分组键变化）。
 > - 体验 / 新增 / 复购：`daily_agg` 与 `first_entry` 的 `(client_user_id [, store_id], 分组键, purchase_date)` 中的 `product_kind` 替换为 `category_name`。
 >
 > **达标日的分组维度语义**：一级筛选时「同一顾客 + 同门店 + 同一**一级品项** + 同日」≥ threshold 算达标；

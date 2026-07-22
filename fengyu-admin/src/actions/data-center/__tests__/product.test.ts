@@ -16,10 +16,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
  * mock @/db.execute —— 按 SQL 文本内容路由：
  *   - filterOptions（含 'DISTINCT pc.product_kind' 特征）→ filterRows
  *   - 骨架（含 o_store + market_id，无 group/CTE）→ skeletonRows
- *   - 持卡按店（含 product_type '疗程卡' + GROUP BY so.store_id）→ cardByStoreRows
+ *   - 持卡按店（含 paid_sessions > 0 + GROUP BY so.store_id）→ cardByStoreRows
  *   - 会员按店（含 bound_store_id + GROUP BY）→ memberByStoreRows
  *   - cycle 按店（含 store_ids 并集 + trial_store/new_store/repurchase_store）→ cycleByStoreRows
- *   - 持卡总量（含 product_type '疗程卡'，无 GROUP BY store）→ scalarCard
+ *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY store）→ scalarCard
  *   - 会员总量（含 became_member_at，无 GROUP BY）→ scalarMember
  *   - cycle 标量（含 WITH daily_agg + cohort）→ scalarCycle
  */
@@ -72,8 +72,8 @@ vi.mock('@/db', () => ({
       if (/store_ids/.test(t) && /trial_store/.test(t)) {
         return responder.cycleByStoreRows
       }
-      // 持卡按店（product_type 疗程卡 + GROUP BY store_id）
-      if (/疗程卡/.test(t) && /GROUP BY so\.store_id/.test(t)) {
+      // 持卡按店（paid_sessions > 0 + GROUP BY store_id）
+      if (/paid_sessions/.test(t) && /GROUP BY so\.store_id/.test(t)) {
         return responder.cardByStoreRows
       }
       // 会员按店（bound_store_id + GROUP BY）
@@ -84,8 +84,8 @@ vi.mock('@/db', () => ({
       if (/WITH daily_agg/.test(t) && /cohort/.test(t)) {
         return [responder.scalarCycle]
       }
-      // 持卡总量（疗程卡，无 GROUP BY store）
-      if (/疗程卡/.test(t)) {
+      // 持卡总量（paid_sessions > 0，无 GROUP BY store）
+      if (/paid_sessions/.test(t)) {
         return [responder.scalarCard]
       }
       // 会员总量

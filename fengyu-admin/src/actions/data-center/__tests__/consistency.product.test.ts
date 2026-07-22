@@ -7,7 +7,7 @@
  *
  * 两端 ORM 不同 + admin 额外支持二级品项(category_name)下钻 + byMarket/byStore 明细 →
  * 完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"：
- *   1. 持卡 = product_type = '疗程卡'（enum 已 3→2 值，无 '单品'）∩ remaining_sessions > 0
+ *   1. 持卡 = paid_sessions > 0，不按 product_type 过滤
  *   2. 持卡 sale_order_type IN ('销售单','转换单','寄存单')
  *   3. cycle CTE 链：daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan
  *   4. 达标日阈值（day_received >= threshold；getMemberThreshold）
@@ -51,16 +51,18 @@ describe('品项板块两端口径一致性守护', () => {
     staffCode = normalize(stripComments(staffSrc))
   })
 
-  describe('持卡 = product_type = 疗程卡 ∩ remaining_sessions > 0（DISTINCT client）', () => {
-    it('admin 含 product_type = 疗程卡', () => {
-      expect(adminCode).toMatch(/product_type\s*=\s*'疗程卡'/)
+  describe('持卡 = paid_sessions > 0，不按 product_type 过滤（DISTINCT client）', () => {
+    it('两端含 paid_sessions > 0', () => {
+      expect(adminCode).toMatch(/paid_sessions\s*>\s*0/)
+      expect(staffCode).toMatch(/paid_sessions\s*>\s*0/)
     })
-    it('staff 含 product_type = 疗程卡', () => {
-      expect(staffCode).toMatch(/product_type\s*=\s*'疗程卡'/)
+    it('两端持卡查询不再按 product_type = 疗程卡过滤', () => {
+      expect(adminCode).not.toMatch(/product_type\s*=\s*'疗程卡'/)
+      expect(staffCode).not.toMatch(/product_type\s*=\s*'疗程卡'/)
     })
-    it('两端含 remaining_sessions > 0', () => {
-      expect(adminCode).toMatch(/remaining_sessions\s*>\s*0/)
-      expect(staffCode).toMatch(/remaining_sessions\s*>\s*0/)
+    it('两端持卡查询不再按 remaining_sessions > 0 过滤', () => {
+      expect(adminCode).not.toMatch(/remaining_sessions\s*>\s*0/)
+      expect(staffCode).not.toMatch(/remaining_sessions\s*>\s*0/)
     })
     it('两端禁用已废弃的 单品 字面量（product_type enum 已 3→2 值）', () => {
       expect(adminCode).not.toMatch(/'单品'/)

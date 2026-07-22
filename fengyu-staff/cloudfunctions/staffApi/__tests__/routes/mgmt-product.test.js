@@ -137,7 +137,7 @@ describe('mgmtProduct.cardHolders 参数与权限校验', () => {
 // ===================================================================
 
 describe('mgmtProduct.cardHolders SQL 形态', () => {
-  test('SQL 含 product_type = "疗程卡" + remaining_sessions > 0 + 双 JOIN', async () => {
+  test('SQL 含 paid_sessions > 0，不含 product_type/remaining_sessions 持卡过滤 + 双 JOIN', async () => {
     setupCardMocks({ cardRows: [], memberCount: 0 })
     const ctx = makeHqCtx({ scopeType: 'all' })
     await cardHolders(ctx)
@@ -147,8 +147,9 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
       (s) => /JOIN\s+product_categories\s+pc/.test(s) && /pc\.product_kind/.test(s),
     )
     expect(cardSql).toBeTruthy()
-    expect(cardSql).toMatch(/si\.product_type\s*=\s*'疗程卡'/)
-    expect(cardSql).toMatch(/si\.remaining_sessions\s*>\s*0/)
+    expect(cardSql).toMatch(/si\.paid_sessions\s*>\s*0/)
+    expect(cardSql).not.toMatch(/si\.product_type\s*=\s*'疗程卡'/)
+    expect(cardSql).not.toMatch(/si\.remaining_sessions\s*>\s*0/)
     expect(cardSql).toMatch(/JOIN\s+product_skus\s+sk/)
     expect(cardSql).toMatch(/JOIN\s+product_categories\s+pc/)
     expect(cardSql).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
