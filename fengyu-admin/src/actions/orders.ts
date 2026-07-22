@@ -26,6 +26,7 @@ import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
+import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
@@ -535,12 +536,15 @@ export const getOrdersPaginated = withPermission(
 )
 
 /**
- * 导出行（明细级，一行 = 一条 sale_items[item_direction='购买']）。
- * 订单号/状态/顾客/支付方式等订单级字段在每条 item 行内重复；
+ * 导出行（明细级）。一行 = 一条纳入导出的明细：
+ *   - 销售/内部/寄存单：sale_items[item_direction='购买']
+ *   - 转换单：sale_items[item_direction='转出'|'转入']，两行都导出（转出负/转入正，照实展示）
+ *   - 充值单：不写 sale_items，按订单级造一行（productName='储值卡充值'，item 级列 null）
+ * 订单号/状态/顾客/支付方式等订单级字段在每条明细行内重复；
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
  *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/已退因库内无行级字段，取整单
- *   sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。
- * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示。
+ *   sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。充值单取订单级 total_amount(面额)/received(实付)。
+ * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
  * 寄存单 4 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
  */
@@ -599,71 +603,173 @@ export const exportOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
+    const LIMIT = 100000
+    const PAGE_SIZE = 5000
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
+    const fetchPaged = async <T>(
+      fetchPage: (pageSize: number, offset: number) => Promise<T[]>,
+    ): Promise<T[]> => {
+      const maxRows = LIMIT + 1
+      const rows: T[] = []
+      for (let offset = 0; rows.length < maxRows; offset += PAGE_SIZE) {
+        const remaining = maxRows - rows.length
+        const pageSize = Math.min(PAGE_SIZE, remaining)
+        const page = await fetchPage(pageSize, offset)
+        if (page.length === 0) break
+        rows.push(...page.slice(0, remaining))
+        if (page.length !== pageSize || page.length >= remaining) break
+      }
+      return rows
+    }
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
-    // WHERE 追加 item_direction='购买'：sale_items 同时承载 4 种单据方向的明细行
-    //   （schema order.ts line 168-172），明细级导出仅保留购买行避免双倍行
-    const itemRows = await db
-      .select({
-        // 订单级
-        marketName: saleOrders.marketName,
-        storeName: saleOrders.storeName,
-        saleOrderId: saleOrders.saleOrderId,
-        saleOrderType: saleOrders.saleOrderType,
-        documentType: saleOrders.documentType,
-        status: saleOrders.status,
-        custName: clientWechatUsers.name,
-        custPhone: clientWechatUsers.phone,
-        fallbackName: saleOrders.customerName,
-        fallbackPhone: saleOrders.clientPhone,
-        totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
-        prepaidCardAmount: saleOrders.prepaidCardAmount,
-        received: saleItems.received,             // 行级净实收（商品行口径）
-        refundedAmount: saleOrders.refundedAmount,
-        paymentMethod: saleOrders.paymentMethod,
-        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
-        isActivity: saleOrders.isActivity,
-        customerType: clientWechatUsers.customerType,
-        openedByName: opener.name,
-        saleOrderDatetime: saleOrders.saleOrderDatetime,
-        createdAt: saleOrders.createdAt,
-        remark: saleOrders.remark,
-        // item 级
-        productType: saleItems.productType,
-        salesCategory: saleItems.salesCategory,
-        productName: saleItems.productName,
-        sessionCount: saleItems.sessionCount,
-        paidUnusedSessions: paidUnusedSessionsExpr,
-        unitRealPrice: saleItems.unitRealPrice,
-        categoryL1: productCategories.productKind,
-        categoryL2: productCategories.categoryName,
-      })
-      .from(saleItems)
-      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(and(whereClause, eq(saleItems.itemDirection, '购买')))
-      .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
-      .limit(LIMIT + 1)
-
-    const truncated = itemRows.length > LIMIT
-    const page = truncated ? itemRows.slice(0, LIMIT) : itemRows
+    // WHERE：购买行（销售/内部/寄存单）∪ 转换单的转出+转入两行。
+    //   转换单无「购买」行（明细仅 转出/转入），若只取购买行会整单漏导；这里把转换单的转出+转入
+    //   两行一并纳入，完整展示「从哪转出 → 转入什么」。转出负/转入正照实行级口径展示，金额列不留空
+    //   （转换单 totalAmount 为真实转换额，非寄存单 total=0 那种特例）。
+    //   充值单不写 sale_items，由下方 rechargeOrders 单独查订单级再造一行。
+    const itemRows = await fetchPaged(async (pageSize, offset) => (
+      db
+        .select({
+          // 订单级
+          marketName: saleOrders.marketName,
+          storeName: saleOrders.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          status: saleOrders.status,
+          custName: clientWechatUsers.name,
+          custPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleItems.received,             // 行级净实收（商品行口径）
+          refundedAmount: saleOrders.refundedAmount,
+          paymentMethod: saleOrders.paymentMethod,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          isActivity: saleOrders.isActivity,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          saleOrderDatetime: saleOrders.saleOrderDatetime,
+          createdAt: saleOrders.createdAt,
+          remark: saleOrders.remark,
+          // item 级
+          productType: saleItems.productType,
+          salesCategory: saleItems.salesCategory,
+          productName: saleItems.productName,
+          sessionCount: saleItems.sessionCount,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          unitRealPrice: saleItems.unitRealPrice,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+        })
+        .from(saleItems)
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(and(
+          whereClause,
+          or(
+            eq(saleItems.itemDirection, '购买'),
+            and(
+              eq(saleOrders.saleOrderType, '转换单'),
+              inArray(saleItems.itemDirection, ['转出', '转入']),
+            ),
+          ),
+        ))
+        .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
+        .offset(offset)
+        .limit(pageSize)
+    ))
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
-    const rows: ExportOrderRow[] = page.map((r) => {
-      // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
-      // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 4 列对寄存单留空；
-      // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
-      const isDeposit = r.saleOrderType === '寄存单'
-      return {
+    // 充值单不写 sale_items，无法走上面的明细 JOIN；按订单级单独查后造一行纳入导出。
+    // 金额取订单级：total_amount=面额、received=实付（反映充值档位）；item 级列留空，productName 标「储值卡充值」。
+    const rechargeOrders = await fetchPaged(async (pageSize, offset) => (
+      db
+        .select({
+          marketName: saleOrders.marketName,
+          storeName: saleOrders.storeName,
+          saleOrderId: saleOrders.saleOrderId,
+          saleOrderType: saleOrders.saleOrderType,
+          documentType: saleOrders.documentType,
+          status: saleOrders.status,
+          custName: clientWechatUsers.name,
+          custPhone: clientWechatUsers.phone,
+          fallbackName: saleOrders.customerName,
+          fallbackPhone: saleOrders.clientPhone,
+          totalAmount: saleOrders.totalAmount,
+          prepaidCardAmount: saleOrders.prepaidCardAmount,
+          received: saleOrders.received,
+          refundedAmount: saleOrders.refundedAmount,
+          paymentMethod: saleOrders.paymentMethod,
+          isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+          isActivity: saleOrders.isActivity,
+          customerType: clientWechatUsers.customerType,
+          openedByName: opener.name,
+          saleOrderDatetime: saleOrders.saleOrderDatetime,
+          createdAt: saleOrders.createdAt,
+          remark: saleOrders.remark,
+        })
+        .from(saleOrders)
+        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+        .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
+        .orderBy(desc(saleOrders.saleOrderDatetime))
+        .offset(offset)
+        .limit(pageSize)
+    ))
+
+    // 合并 item 行（销售/内部/寄存购买行 + 转换单转出/转入行）与充值单造行；
+    // 两侧各自分页按订单时间 desc 拉到 LIMIT+1，合并后再整体排序，按明细行总数截断 LIMIT。
+    const combined: ExportOrderRow[] = [
+      ...itemRows.map((r) => {
+        // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
+        // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 4 列对寄存单留空；
+        // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
+        const isDeposit = r.saleOrderType === '寄存单'
+        return {
+          // 订单级
+          marketName: r.marketName,
+          storeName: r.storeName,
+          saleOrderId: r.saleOrderId,
+          saleOrderType: r.saleOrderType,
+          documentType: r.documentType,
+          status: r.status,
+          customerName: r.custName || r.fallbackName || null,
+          clientPhone: r.custPhone || r.fallbackPhone || null,
+          totalAmount: isDeposit ? '' : r.totalAmount,
+          prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0'),
+          received: isDeposit ? '' : (r.received ?? '0'),
+          refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
+          paymentMethod: r.paymentMethod,
+          isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+          isActivity: r.isActivity ?? false,
+          salesCategory: r.salesCategory,
+          customerType: r.customerType,
+          openedByName: r.openedByName,
+          saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+          createdAt: r.createdAt.toISOString(),
+          // item 级
+          productType: r.productType,
+          categoryL1: r.categoryL1,
+          categoryL2: r.categoryL2,
+          productName: r.productName,
+          sessionCount: r.sessionCount ?? null,
+          paidUnusedSessions: r.paidUnusedSessions ?? null,
+          unitRealPrice: num(r.unitRealPrice),
+          remark: r.remark,
+        }
+      }),
+      ...rechargeOrders.map((r) => ({
         // 订单级
         marketName: r.marketName,
         storeName: r.storeName,
@@ -673,29 +779,34 @@ export const exportOrders = withPermission(
         status: r.status,
         customerName: r.custName || r.fallbackName || null,
         clientPhone: r.custPhone || r.fallbackPhone || null,
-        totalAmount: isDeposit ? '' : r.totalAmount,
-        prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0'),
-        received: isDeposit ? '' : (r.received ?? '0'),
-        refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
+        totalAmount: r.totalAmount,
+        prepaidCardAmount: r.prepaidCardAmount ?? '0',
+        received: r.received ?? '0',
+        refundedAmount: r.refundedAmount ?? '0',
         paymentMethod: r.paymentMethod,
         isMembershipUpgrade: r.isMembershipUpgrade ?? false,
         isActivity: r.isActivity ?? false,
-        salesCategory: r.salesCategory,
+        salesCategory: null,
         customerType: r.customerType,
         openedByName: r.openedByName,
         saleOrderDatetime: r.saleOrderDatetime.toISOString(),
         createdAt: r.createdAt.toISOString(),
-        // item 级
-        productType: r.productType,
-        categoryL1: r.categoryL1,
-        categoryL2: r.categoryL2,
-        productName: r.productName,
-        sessionCount: r.sessionCount ?? null,
-        paidUnusedSessions: r.paidUnusedSessions ?? null,
-        unitRealPrice: num(r.unitRealPrice),
+        // item 级：充值单无商品明细
+        productType: null,
+        categoryL1: null,
+        categoryL2: null,
+        productName: '储值卡充值',
+        sessionCount: null,
+        paidUnusedSessions: null,
+        unitRealPrice: null,
         remark: r.remark,
-      }
-    })
+      })),
+    ].sort((a, b) =>
+      a.saleOrderDatetime < b.saleOrderDatetime ? 1 : a.saleOrderDatetime > b.saleOrderDatetime ? -1 : 0,
+    )
+
+    const truncated = combined.length > LIMIT
+    const rows = combined.slice(0, LIMIT)
 
     return { rows, truncated }
   },
@@ -3460,7 +3571,7 @@ export const getRepayable = withPermission(
     session,
     saleOrderId: string,
   ): Promise<{
-    items: Array<{ saleItemId: string; productName: string; saleAmount: string; received: string; remaining: string }>
+    items: Array<{ saleItemId: string; productName: string; saleAmount: string; received: string; refundedAmount: string; isRefunded: boolean; remaining: string }>
     remainingPayable: number
     cardBalance: number | null
     clientUserId: string | null
@@ -3487,13 +3598,18 @@ export const getRepayable = withPermission(
       .select()
       .from(saleItems)
       .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
+    const refundMap = await getPerItemRefundedMap(saleOrderId)
     const items = rows.map((r) => {
-      const remaining = Math.round((Number(r.saleAmount) - Number(r.received)) * 100) / 100
+      const refunded = refundMap.get(r.saleItemId) || 0
+      // 已退行可回款额=0（行级口径，与 client/staff 一致）；received 为净额
+      const remaining = refunded > 0 ? 0 : Math.round((Number(r.saleAmount) - Number(r.received)) * 100) / 100
       return {
         saleItemId: r.saleItemId,
         productName: r.productName || '-',
         saleAmount: r.saleAmount,
         received: r.received,
+        refundedAmount: refunded.toFixed(2),
+        isRefunded: refunded > 0,
         remaining: Math.max(0, remaining).toFixed(2),
       }
     })
@@ -3558,6 +3674,20 @@ export const recordPayment = withPermission(
         .filter((it) => it.saleItemId && (it.repayAmount > 0 || it.prepaidCardAmount > 0))
     : null
   const hasItems = !!(repayItems && repayItems.length > 0)
+
+  // 已退行不可回款（行级口径，与 client/staff 一致）：按子项回款校验所选行未退款；
+  // 整单回款遇订单有退款则要求按子项（避免非定向分摊误充已退行）
+  const recordRefundMap = await getPerItemRefundedMap(saleOrderId)
+  const orderHasRefund = [...recordRefundMap.values()].some((v) => Number(v) > 0)
+  if (hasItems) {
+    for (const it of repayItems!) {
+      if ((recordRefundMap.get(it.saleItemId) || 0) > 0) {
+        return { success: false, error: { code: 'INVALID_STATE', message: `子项 ${it.saleItemId} 已退款，不可再回款` } }
+      }
+    }
+  } else if (orderHasRefund) {
+    return { success: false, error: { code: 'INVALID_STATE', message: '本单存在已退款项目，请按子项回款未退款的项目' } }
+  }
 
   const repayAmount = hasItems
     ? Math.round(repayItems!.reduce((s, it) => s + it.repayAmount, 0) * 100) / 100

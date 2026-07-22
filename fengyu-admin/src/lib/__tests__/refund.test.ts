@@ -3,6 +3,7 @@ import {
   buildRefundDetails,
   capRefundAmounts,
   computeOverpayRemainder,
+  isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
   type RefundSourceItem,
 } from '../refund'
@@ -133,6 +134,26 @@ describe('buildRefundDetails', () => {
     expect(refundDetails[0].quantity).toBe(2)
     expect(refundDetails[0].refundAmount).toBe(100) // 2 × 50
     expect(totalRefund).toBe(100)
+  })
+})
+
+describe('isHandlingFeeInvalidForRefund', () => {
+  it('0 元赠送疗程不参与手续费上限，0 手续费不会被误判超限', () => {
+    const details = [
+      { productType: '疗程卡' as const, unitRealPrice: 199 },
+      { productType: '疗程卡' as const, unitRealPrice: 0 },
+      { productType: '疗程卡' as const, unitRealPrice: 0 },
+    ]
+
+    expect(isHandlingFeeInvalidForRefund(details, 0)).toBe(false)
+    expect(isHandlingFeeInvalidForRefund(details, 1)).toBe(false)
+    expect(isHandlingFeeInvalidForRefund(details, 199)).toBe(true)
+  })
+
+  it('只有 0 元疗程时不使用 0 作为手续费上限', () => {
+    expect(isHandlingFeeInvalidForRefund([
+      { productType: '疗程卡' as const, unitRealPrice: 0 },
+    ], 1)).toBe(false)
   })
 })
 

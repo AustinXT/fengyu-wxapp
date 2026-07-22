@@ -23,6 +23,7 @@ import {
   calculateUnusedQuantity,
   capRefundAmounts,
   computeOverpayRemainder,
+  isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
@@ -674,9 +675,8 @@ export const createRefund = withPermission(
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次。
-  // 限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居不受影响。完整任意 fee 支持见 follow-up。两端镜像 staff order.js。
-  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
-  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+  // 限制 fee < 最小正价疗程卡单次价，保证 paid_sessions 推导无偏；0 元赠送项/家居不受影响。两端镜像 staff order.js。
+  if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)

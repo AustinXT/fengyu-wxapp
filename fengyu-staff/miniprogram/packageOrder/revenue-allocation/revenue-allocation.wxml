@@ -203,5 +203,32 @@ module.exports.pct = function(rate) {
     </scroll-view>
   </van-popup>
 
+  <!-- 自定义分配比例输入 -->
+  <van-popup show="{{customRatioVisible}}" position="bottom" round bind:close="closeCustomRatio">
+    <view class="picker-header">
+      <text class="picker-title">自定义分配比例</text>
+      <view bindtap="closeCustomRatio">
+        <van-icon name="cross" size="36rpx" color="#999" />
+      </view>
+    </view>
+    <view style="padding: 24rpx;">
+      <van-field
+        value="{{customRatioInput}}"
+        type="digit"
+        placeholder="输入 0.1~100（如 12.5）"
+        border="{{ false }}"
+        bind:input="onCustomRatioInput"
+      />
+      <text style="display:block;font-size:22rpx;color:#999;margin-top:12rpx;">支持小数，精度 0.1%</text>
+      <van-button
+        type="primary"
+        block
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onConfirmCustomRatio"
+      >确定</van-button>
+    </view>
+  </van-popup>
+
   <view class="safe-area-bottom" />
 </view>

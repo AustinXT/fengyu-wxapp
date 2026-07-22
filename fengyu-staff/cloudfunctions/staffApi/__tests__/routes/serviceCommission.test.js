@@ -8,7 +8,7 @@
  *   - 分池 (serviceItemId, roleType)：≤3 人 / 合计 ≤100% / 不重复
  *   - 服务端按 ratio 拆分重算：consumeBase=unit_real_price×session_used,
  *     consumeAmount=consumeBase×ratio×rate, fixedFee=service_fee×session_used×ratio
- *   - rate 缺失抛 COMMISSION_RATE_MISSING
+ *   - rate 缺失容错（查无行/命中 0% 行 → rate=0 落库，不阻塞保存）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -247,15 +247,15 @@ describe('serviceCommission.save', () => {
     await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*不属于该服务单/)
   })
 
-  test('非整十 ratio 拒绝', async () => {
+  test('ratio 超出 0~1 范围拒绝（支持自定义小数比例）', async () => {
     const ctx = createManagerCtx({
       serviceOrderId: 'SO-1',
-      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.15 }],
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.5 }],
     })
     mockOrderAndItems(COMPLETED_ORDER, [
       { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
     ])
-    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*整十/)
+    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS.*0~1/)
   })
 
   test('同池 > 3 人拒绝', async () => {
@@ -313,7 +313,7 @@ describe('serviceCommission.save', () => {
     expect(captured).toHaveLength(3)
   })
 
-  test('rate 缺失抛 COMMISSION_RATE_MISSING', async () => {
+  test('rate 缺失（查无行）→ 容错 rate=0 落库', async () => {
     const ctx = createManagerCtx({
       serviceOrderId: 'SO-1',
       commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
@@ -321,8 +321,11 @@ describe('serviceCommission.save', () => {
     mockOrderAndItems(COMPLETED_ORDER, [
       { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
     ])
-    mockTxnCapture(null) // rate 查询返回空（查无行）→ 真缺失 → 报错
-    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_STATE.*COMMISSION_RATE_MISSING/)
+    const captured = mockTxnCapture(null) // rate 查询返回空（查无行）→ 容错 rate=0 落库
+    await routes.save(ctx)
+    expect(ctx.result.commissionCount).toBe(1)
+    expect(captured).toHaveLength(1)
+    expect(Number(captured[0][4])).toBe(0) // rate=0 落库（consumeBase=700>0 但查无行→容错，对齐 finalize）
   })
 
   test('命中 0% 行放行（合法 0% 提成不报错）', async () => {

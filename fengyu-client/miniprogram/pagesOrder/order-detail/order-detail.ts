@@ -15,6 +15,7 @@ interface OrderDetailItem {
   quantity: number;
   received: number;
   sale_amount: number;
+  refunded_amount?: number;
   expire_date: string | null;
   // 视图字段（前端计算注入）
   used_sessions?: number;
@@ -100,6 +101,8 @@ Page({
     countdown: '',
     payments: [] as OrderPaymentView[],
     outstandingAmount: 0,
+    // 是否可继续支付（回款）：部分支付 且 存在未退未付清的行（行级口径，已退行不计入）
+    canContinuePay: false,
     // Ticket 2026-04-24 PR-C：继续支付灰度开关（由 app.globalData.continuePayEnabled 控制）
     continuePayEnabled: false,
     // 回款弹层
@@ -223,19 +226,21 @@ Page({
         };
       });
 
-      // 欠款额 = payable_amount - 净到账（received - refunded_amount）
-      // 2026-04-26 sale-order-domain-refactor:
-      //   - paid_amount 列已 DROP；接口现返回 received / refunded_amount
-      //   - 净到账 = received - refunded_amount（与 backend invariant 对齐）
-      const payable = Number(order.payable_amount ?? 0) > 0
-        ? Number(order.payable_amount)
-        : Math.round((Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0)) * 100) / 100;
-      const received = Number(order.received ?? 0);
+      // 行级口径待付额：已退行不计入（已退款不可再支付），只有「未退且未付清」的行可继续支付。
+      // sale_items.received 为行净额（STEP 1.5 已扣该行退款）；未退行 received净 = received毛。
+      // 2026-04-26 sale-order-domain-refactor: received/refunded_amount 替代已 DROP 的 paid_amount。
+      let outstandingSum = 0;
+      for (const it of itemsWithProgress) {
+        const refunded = Number(it.refunded_amount ?? 0);
+        if (refunded > 0) continue;
+        outstandingSum += Math.max(0, Number(it.sale_amount || 0) - Number(it.received || 0));
+      }
+      const outstanding = Math.round(outstandingSum * 100) / 100;
       const refundedAmount = Number(order.refunded_amount ?? 0);
-      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const outstanding = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
       const refundedFmt = refundedAmount.toFixed(2);
       const hasRefund = refundedAmount > 0;
+      // 可继续支付（回款）：部分支付 且 存在未退未付清的行
+      const canContinuePay = order.status === '部分支付' && outstanding > 0;
 
       this.setData({
         order: {
@@ -252,6 +257,7 @@ Page({
         hasAppointableItems,
         payments,
         outstandingAmount: outstanding,
+        canContinuePay,
       });
 
       // 启动倒计时
@@ -260,7 +266,7 @@ Page({
       // 从列表「继续支付」跳入：自动唤起回款弹层（仅触发一次）
       if (this._autoRepay) {
         this._autoRepay = false;
-        if (order.status === '部分支付' && this.data.continuePayEnabled && outstanding > 0) {
+        if (canContinuePay && this.data.continuePayEnabled) {
           this.onContinuePayTap();
         }
       }

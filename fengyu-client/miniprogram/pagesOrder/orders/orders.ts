@@ -99,17 +99,20 @@ Page({
           used_sessions: Math.max(0, total - remaining),
         };
       });
-      // 部分支付订单：计算待付额（口径与 order-detail.ts 一致）
-      // 待付 = payable_amount - 净到账（received - refunded_amount）
+      // 行级口径待付额（与 order-detail.ts 一致）：已退行不计入，只有「未退且未付清」的行可继续支付。
+      // sale_items.received 为行净额；未退行 received净 = received毛。
       const isPartialPay = item.status === '部分支付';
       let outstanding = 0;
       if (isPartialPay) {
-        const payable = Number(item.payable_amount ?? 0) > 0
-          ? Number(item.payable_amount)
-          : Math.round((Number(item.total_amount || 0) - Number(item.prepaid_card_amount || 0)) * 100) / 100;
-        const net = Math.round((Number(item.received ?? 0) - Number(item.refunded_amount ?? 0)) * 100) / 100;
-        outstanding = Math.max(0, Math.round((payable - net) * 100) / 100);
+        let sum = 0;
+        for (const i of mappedItems) {
+          const refunded = Number(i.refunded_amount || 0);
+          if (refunded > 0) continue;
+          sum += Math.max(0, Number(i.sale_amount || 0) - Number(i.received || 0));
+        }
+        outstanding = Math.round(sum * 100) / 100;
       }
+      const canContinuePay = isPartialPay && outstanding > 0;
       return {
         ...item,
         items: mappedItems,
@@ -120,6 +123,7 @@ Page({
         has_refund: hasRefund,
         isRecharge: item.sale_order_type === '充值单',
         isPartialPay,
+        canContinuePay,
         outstanding_fmt: outstanding.toFixed(2),
       };
     });

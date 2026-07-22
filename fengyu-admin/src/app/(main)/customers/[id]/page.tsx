@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import {
   getCustomerById,
   getCustomerOrders,
+  getCustomerCoupons,
   getCustomerAppointments,
   getCustomerPhoneChangeLogs,
   getCustomerServiceOrders,
@@ -23,7 +24,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canListEmployees = session ? hasPermission(session, 'employee:list') : false
   const canListStores = session ? hasPermission(session, 'store:list') : false
 
-  const [customer, orders, appointments, stores, employees, phoneChangeLogs, serviceOrders, orphanProfiles, prepaidBalance] = await Promise.all([
+  const [customer, orders, appointments, stores, employees, phoneChangeLogs, serviceOrders, orphanProfiles, prepaidBalance, coupons] = await Promise.all([
     getCustomerById(id),
     getCustomerOrders(id),
     getCustomerAppointments(id),
@@ -33,6 +34,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     getCustomerServiceOrders(id),
     getOrphanProfilesByUserId(id),
     getCustomerPrepaidBalance(id),
+    getCustomerCoupons(id),
   ])
 
   if (!customer) notFound()
@@ -56,6 +58,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       phoneChangeLogs={phoneChangeLogs}
       serviceOrders={serviceOrders}
       orphanProfiles={orphanProfiles}
+      coupons={coupons}
       prepaidBalance={prepaidBalance.balance}
       canEditPhone={canEditPhone}
       canPullLegacy={canPullLegacy}

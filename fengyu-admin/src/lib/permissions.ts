@@ -304,7 +304,8 @@ export async function expandScopeStoreIds(
  * 层级约束）。职能部门员工 store_id IS NULL，靠本列表命中 scope 内部门节点纳入可见范围。
  *
  * - 总部 scope → 全部 type='部门' 节点
- * - 市场 scope → 挂该市场下的部门（市场级）+ 挂该市场下门店的部门（门店级）
+ * - 市场 scope → 挂该市场下的部门（市场级）+ 挂该市场下门店的部门（门店级）+ 该市场节点本身
+ *   （覆盖 org_node_id 直接 = 市场节点的员工，如「品项公司」职能部门 / 市场级岗位，store_id IS NULL）
  * - 门店 scope → 挂该门店下的部门（scopeId 即门店 org_node id）
  * - 部门 scope → 忽略（与 expandScopeStoreIds 一致；permission_roles 生产无部门级 scope 角色）
  *
@@ -331,6 +332,9 @@ export async function expandScopeDeptNodeIds(
       const depts = await db.select({ id: orgNodes.id }).from(orgNodes)
         .where(and(eq(orgNodes.type, '部门'), inArray(orgNodes.parentId, candidateParents)))
       for (const n of depts) deptIds.add(n.id)
+      // 市场节点本身：org_node_id 直挂该市场的员工（品项公司/市场级岗位）纳入可见。
+      // 与 buildEmployeeConditions 市场分支末项 eq(orgNodeId, marketId) 同口径。
+      deptIds.add(r.scopeId)
     }
 
     if (r.scopeType === '门店') {
@@ -465,7 +469,8 @@ export function scopeCondition(
  *
  * 职能部门员工（养生部/推广部/品项公司…）store_id IS NULL，靠 org_node_id 命中 scope
  * 子树内的部门节点纳入；scopeDeptNodeIds 缺失/为空时退化为仅按 store_id 过滤（=旧行为，
- * 保守不暴露部门员工）。严格不越权：仅命中 scope 子树内的部门节点。
+ * 保守不暴露部门员工）。严格不越权：仅命中 scope 子树内的部门节点 + 该账号直属市场节点本身
+ * （后者覆盖 org_node_id 直接挂市场的员工，见 expandScopeDeptNodeIds 市场分支）。
  *
  * 仅 staff_wechat_users 表用（唯一带 org_node_id 维度的业务表）；
  * orders/customers/services 继续用 scopeCondition(store_id)。

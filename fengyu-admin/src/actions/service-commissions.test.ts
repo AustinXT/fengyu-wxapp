@@ -147,15 +147,15 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     })
   }
 
-  it('分配比例非整十 → 拒绝', async () => {
+  it('分配比例超出 0~1 范围 → 拒绝（支持自定义小数比例）', async () => {
     mockScopeAndItems([{ serviceItemId: 'si-1' }])
 
     const result = await batchSaveServiceCommissions('so-1', [
-      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.15', commissionRate: '0.30', commissionAmount: '30.00' },
+      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.5', commissionRate: '0.30', commissionAmount: '30.00' },
     ])
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('整十')
+    expect(result.message).toContain('0~1')
   })
 
   it('寄存单正常消费服务单（remark 非退款标记）→ 允许分配', async () => {
@@ -441,9 +441,9 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
     expect(Number(inserted[0].commissionAmount)).toBe(0)
   })
 
-  it('consumeBase>0 查无匹配行（真缺失）→ 报错 COMMISSION_RATE_MISSING', async () => {
-    // 矩阵无该角色/分类规则：tx.select 返回 [] + consumeBase=700>0 → INVALID_STATE
-    setupCardScenario({
+  it('consumeBase>0 查无匹配行（真缺失）→ 容错 rate=0 落库', async () => {
+    // 矩阵无该角色/分类规则：tx.select 返回 [] + consumeBase=700>0 → 容错 rate=0 落库（对齐 finalize，不报错）
+    const inserted = setupCardScenario({
       serviceItemId: 'si-missing',
       unitRealPrice: '700',
       sessionUsed: 1,
@@ -453,8 +453,14 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
       quantity: 2,
     }, null)
 
-    await expect(batchSaveServiceCommissions('so-1', [
+    const result = await batchSaveServiceCommissions('so-1', [
       { serviceItemId: 'si-missing', employeeId: 'EMP-001', roleType: '品质老师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '210.00' },
-    ])).rejects.toThrow(/INVALID_STATE.*COMMISSION_RATE_MISSING/)
+    ])
+
+    expect(result.success).toBe(true)
+    expect(inserted).toHaveLength(1)
+    expect(Number(inserted[0].commissionRate)).toBe(0) // 查无行 → 容错 rate=0
+    expect(Number(inserted[0].consumeAmount)).toBe(0) // consumeBase × ratio × 0
+    expect(Number(inserted[0].commissionAmount)).toBe(0) // fixedFee(0) + 0
   })
 })

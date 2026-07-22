@@ -305,7 +305,7 @@ export const saleAllocations = pgTable(
     employeeId: varchar("employee_id", { length: 30 })
       .notNull()
       .references(() => staffWechatUsers.employeeId),
-    allocationRatio: numeric("allocation_ratio", { precision: 5, scale: 2 }).notNull(),
+    allocationRatio: numeric("allocation_ratio", { precision: 5, scale: 3 }).notNull(),
     /** 员工角色类型（美容师/养生师/推广师） */
     roleType: varchar("role_type", { length: 20 }).notNull(),
     /** 部门名称快照（用于按部门分组展示） */
@@ -346,7 +346,7 @@ export const saleAllocations = pgTable(
     index("idx_sale_alloc_payment").on(table.salePaymentId),
     check(
       "chk_sale_alloc_ratio",
-      sql`${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`,
+      sql`${table.allocationRatio} >= 0 AND ${table.allocationRatio} <= 1`,
     ),
   ],
 );

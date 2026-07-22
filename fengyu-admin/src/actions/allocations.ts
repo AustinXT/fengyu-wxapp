@@ -284,9 +284,6 @@ function getPoolKey(roleType: string): string {
   return roleType
 }
 
-/** 合法的分配比例（整十百分比） */
-const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
-
 /** 批量保存分配（先作废旧的，再插入新的） */
 export const batchSaveAllocations = withPermission(
   'allocation:save',
@@ -348,14 +345,15 @@ export const batchSaveAllocations = withPermission(
       return { success: false, message: '明细项不属于该订单，请刷新后重试' }
     }
 
-    // 校验分配比例为整十 + 服务端重算 totalAmount（P2-14：忽略前端传入值防篡改）
+    // 校验分配比例为 0~1 + 服务端重算 totalAmount（P2-14：忽略前端传入值防篡改）
     const enriched = allocations.map((a) => {
-      if (!VALID_RATIOS.has(a.allocationRatio)) {
-        return { ...a, totalAmount: '', _error: '分配比例必须为整十百分比（10%~100%）' }
+      const ratioStr = Number(a.allocationRatio).toFixed(3)
+      if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
+        return { ...a, totalAmount: '', _error: '分配比例必须为 0~1 之间（精度 0.001）' }
       }
       const received = itemReceivedMap.get(a.saleItemId) || 0
-      const totalAmount = (received * Number(a.allocationRatio)).toFixed(2)
-      return { ...a, totalAmount }
+      const totalAmount = (received * Number(ratioStr)).toFixed(2)
+      return { ...a, allocationRatio: ratioStr, totalAmount }
     })
     const ratioError = enriched.find((e) => (e as any)._error)
     if (ratioError) {
@@ -377,9 +375,9 @@ export const batchSaveAllocations = withPermission(
         return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
       }
 
-      // 池内分配比例合计 ≤ 100%（1.00，容差 0.01）
+      // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）
       const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
-      if (ratioSum > 1.01) {
+      if (ratioSum > 1.0001) {
         return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
@@ -769,10 +767,10 @@ export const savePaymentAllocations = withPermission(
       if (!a.employeeId || !a.roleType) {
         return { success: false, message: '分配记录缺少员工或技能标签' }
       }
-      // 规范化为整十档字符串（与 staff savePayment 一致，避免前端传 "0.1" 被误拒）
-      const ratioStr = Number(a.allocationRatio).toFixed(2)
-      if (!VALID_RATIOS.has(ratioStr)) {
-        return { success: false, message: '分配比例必须为整十百分比（10%~100%）' }
+      // 规范化为 3 位小数字符串（与 staff savePayment 一致，支持自定义小数比例）
+      const ratioStr = Number(a.allocationRatio).toFixed(3)
+      if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
+        return { success: false, message: '分配比例必须为 0~1 之间（精度 0.001）' }
       }
       const base = baseMap.get(a.saleItemId) || 0
       const totalAmount = Math.round(base * Number(ratioStr) * 100) / 100
@@ -803,10 +801,10 @@ export const savePaymentAllocations = withPermission(
       if (pool.length > 3) {
         return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
       }
-      // 池内分配比例合计 ≤ 100%（容差 0.01）。回款级 base 恒正，比例校验与原金额校验等价；
+      // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）。回款级 base 恒正，比例校验与原金额校验等价；
       // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与订单级/前端统一「只看比例」。
       const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
-      if (ratioSum > 1.01) {
+      if (ratioSum > 1.0001) {
         return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
       const empIds = new Set<string>()

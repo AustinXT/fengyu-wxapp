@@ -14,6 +14,7 @@
 const {
   computeOverpayRemainder,
   calculateUnusedQuantity,
+  isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
 } = require('../../utils/refund')
 
@@ -121,5 +122,25 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const order = { received: 3000, refunded_amount: 0 }
     const items = [...Array.from({ length: 7 }, () => card()), partialItem]
     expect(computeOverpayRemainder(order, items)).toBe(214)
+  })
+})
+
+describe('isHandlingFeeInvalidForRefund', () => {
+  test('0 元赠送疗程不参与手续费上限，0 手续费不会被误判超限', () => {
+    const details = [
+      { productType: '疗程卡', unitRealPrice: 199 },
+      { productType: '疗程卡', unitRealPrice: 0 },
+      { productType: '疗程卡', unitRealPrice: 0 },
+    ]
+
+    expect(isHandlingFeeInvalidForRefund(details, 0)).toBe(false)
+    expect(isHandlingFeeInvalidForRefund(details, 1)).toBe(false)
+    expect(isHandlingFeeInvalidForRefund(details, 199)).toBe(true)
+  })
+
+  test('只有 0 元疗程时不使用 0 作为手续费上限', () => {
+    expect(isHandlingFeeInvalidForRefund([
+      { productType: '疗程卡', unitRealPrice: 0 },
+    ], 1)).toBe(false)
   })
 })

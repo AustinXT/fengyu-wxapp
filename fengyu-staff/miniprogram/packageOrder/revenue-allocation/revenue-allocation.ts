@@ -168,11 +168,14 @@ Page({
     skillSheetActions: [] as Array<{ name: string }>,
     // 分配比例 action-sheet
     ratioSheetVisible: false,
-    ratioSheetActions: RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })),
+    ratioSheetActions: [...RATIO_OPTIONS.map(p => ({ name: `${p}%`, value: p })), { name: '✎ 自定义比例', value: '__custom' }],
     // 员工选择 popup
     empPopupVisible: false,
     empPopupList: [] as CandidateEmployee[],
     empPopupTitle: '选择员工',
+    // 自定义分配比例输入弹层
+    customRatioVisible: false,
+    customRatioInput: '',
   },
 
   onLoad(options: Record<string, string>) {
@@ -285,7 +288,7 @@ Page({
           staffWfId: l.staffWfId || '',
           staffName: l.staffName || '',
           salesCategory: salesCat,
-          ratioPercent: Math.round((l.allocationRatio || 0) * 100),
+          ratioPercent: Number(((l.allocationRatio || 0) * 100).toFixed(1)),
           commissionRate: l.commissionRate || 0,
           allocAmount: '0.00',
           commissionAmount: '0.00',
@@ -315,7 +318,7 @@ Page({
       const received = item ? Number(item.received) || 0 : 0;
       const salesCat = alloc.sales_category || item?.sales_category || '自销自耗';
       const roleType = alloc.role_type || '';
-      const ratioPercent = Math.round((Number(alloc.allocation_ratio) || 0) * 100);
+      const ratioPercent = Number(((Number(alloc.allocation_ratio) || 0) * 100).toFixed(1));
       const commissionRate = roleType ? this.lookupRate(roleType, salesCat, received) : 0;
       const employeeId = alloc.employee_id || '';
       const line = this.computeLine({
@@ -470,7 +473,13 @@ Page({
   },
 
   onRatioSelect(e: WechatMiniprogram.CustomEvent) {
-    const percent = e.detail.value as number;
+    const detail = e.detail as { value: number | string };
+    // 「自定义比例」→ 关闭档位面板，打开数字输入弹层（保留 pickerItemIdx/LineIdx）
+    if (detail.value === '__custom') {
+      this.setData({ ratioSheetVisible: false, customRatioVisible: true, customRatioInput: '' });
+      return;
+    }
+    const percent = detail.value as number;
     const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
     const di = displayItems[itemIdx];
     if (!di) { this.closeRatioSheet(); return; }
@@ -481,6 +490,36 @@ Page({
       ratioSheetVisible: false,
     });
     this.computeSummary();
+  },
+
+  onCustomRatioInput(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ customRatioInput: String(e.detail ?? '') });
+  },
+
+  /** 自定义比例确认：校验 0 < x ≤ 100，精度对齐 DB scale 3（0.1% 粒度，保留 1 位小数） */
+  onConfirmCustomRatio() {
+    const raw = String(this.data.customRatioInput ?? '').trim();
+    const val = Number(raw);
+    if (!raw || isNaN(val) || val <= 0 || val > 100) {
+      wx.showToast({ title: '请输入 0~100 之间的比例', icon: 'none' });
+      return;
+    }
+    const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
+    const di = displayItems[itemIdx];
+    if (!di) { this.setData({ customRatioVisible: false, customRatioInput: '' }); return; }
+    const received = Number(di.received) || 0;
+    const percent = Number(val.toFixed(1));
+    const updated = this.computeLine({ ...di.allocLines[lineIdx], ratioPercent: percent }, received);
+    this.setData({
+      [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
+      customRatioVisible: false,
+      customRatioInput: '',
+    });
+    this.computeSummary();
+  },
+
+  closeCustomRatio() {
+    this.setData({ customRatioVisible: false, customRatioInput: '' });
   },
 
   closeRatioSheet() {
@@ -567,8 +606,9 @@ Page({
         wx.showToast({ title: `每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`, icon: 'none' });
         return;
       }
+      // 容差 0.01%：仅吸收浮点漂移，不放过 ≥0.1% 真实超额（与后端 ratioSum>1.0001 同口径）
       const sum = pool.reduce((s, l) => s + l.ratioPercent, 0);
-      if (sum > 100) {
+      if (sum > 100.01) {
         wx.showToast({ title: '同技能标签分配比例合计超过 100%', icon: 'none' });
         return;
       }

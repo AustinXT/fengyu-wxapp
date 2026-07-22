@@ -1429,4 +1429,120 @@ async function phoneChangeLogs(ctx) {
   })
 }
 
-module.exports = { search, calendar, detail, paidOrders, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs };
+/**
+ * 顾客优惠券（顾客档案「顾客优惠券」Tab）
+ *
+ * 交易/权益数据跟顾客走：按 client_user_id 查全量 user_coupons（含跨门店、各状态）。
+ * 可见性由 assertCustomerProfileVisible 守护：门店 scope + 普通员工仅可见绑定本人的顾客。
+ * SQL 镜像 clientApi coupon.list：懒清扫过期 → JOIN 模板 → COALESCE 面值 → 按状态固定序 + 到期升序，
+ * 批量解析适用门店/品类名。返回 shape 与 client coupon.list 对齐。
+ */
+async function coupons(ctx) {
+  await requireStaffBound()(ctx, async () => {});
+
+  const payload = ctx.event.payload || {};
+  let clientUserId = payload.clientUserId;
+  const clientPhone = payload.clientPhone;
+  if (!clientUserId && !clientPhone) {
+    throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
+  }
+
+  // 手机号 → clientUserId
+  if (!clientUserId && clientPhone) {
+    const r = await pg.query(
+      "SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
+      [clientPhone],
+    );
+    clientUserId = r[0]?.user_id || null;
+  }
+
+  // 档案闸门：门店 scope + 普通员工 bound_employee_id。
+  // 极端：手机号无对应顾客——无可查之券，直接返回空（杜绝凭手机号越权枚举）。
+  if (!clientUserId) {
+    ctx.result = { coupons: [] };
+    return;
+  }
+  await assertCustomerProfileVisible(pg, ctx.auth, clientUserId);
+
+  // 懒清扫过期券（系统无 cron 批量置过期，查询前顺手扫，保证「已过期」准确）
+  await pg.query(
+    `UPDATE user_coupons SET status = '已过期'
+     WHERE user_id = $1 AND status = '未使用' AND expire_at <= NOW()`,
+    [clientUserId],
+  );
+
+  const coupons = await pg.query(
+    `SELECT
+       uc.coupon_id, uc.status, uc.expire_at, uc.used_at, uc.created_at,
+       uc.used_sale_order_id, uc.template_id,
+       ct.name, ct.coupon_type,
+       COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
+       ct.min_spend,
+       ct.applicable_category_ids, ct.applicable_store_ids,
+       ct.description
+     FROM user_coupons uc
+     JOIN coupon_templates ct ON uc.template_id = ct.template_id
+     WHERE uc.user_id = $1
+     ORDER BY
+       CASE uc.status
+         WHEN '未使用' THEN 0
+         WHEN '已使用' THEN 1
+         WHEN '已过期' THEN 2
+       END,
+       uc.expire_at ASC`,
+    [clientUserId],
+  );
+
+  // 批量解析适用门店名
+  const storeIds = new Set();
+  for (const c of coupons) {
+    if (c.applicable_store_ids) for (const id of c.applicable_store_ids) storeIds.add(id);
+  }
+  const storeNameMap = {};
+  if (storeIds.size > 0) {
+    const storeRows = await pg.query(
+      "SELECT store_id, store_name FROM stores WHERE store_id = ANY($1)",
+      [Array.from(storeIds)],
+    );
+    for (const r of storeRows) storeNameMap[r.store_id] = r.store_name;
+  }
+
+  // 批量解析适用品类名
+  const categoryIds = new Set();
+  for (const c of coupons) {
+    if (c.applicable_category_ids) for (const id of c.applicable_category_ids) categoryIds.add(id);
+  }
+  const categoryNameMap = {};
+  if (categoryIds.size > 0) {
+    const catRows = await pg.query(
+      "SELECT category_id, category_name FROM product_categories WHERE category_id = ANY($1)",
+      [Array.from(categoryIds)],
+    );
+    for (const r of catRows) categoryNameMap[r.category_id] = r.category_name;
+  }
+
+  ctx.result = {
+    coupons: coupons.map((c) => ({
+      couponId: c.coupon_id,
+      templateId: c.template_id,
+      name: c.name,
+      couponType: c.coupon_type,
+      discountValue: c.discount_value,
+      minSpend: c.min_spend,
+      status: c.status,
+      expireAt: c.expire_at,
+      usedAt: c.used_at,
+      usedSaleOrderId: c.used_sale_order_id,
+      createdAt: c.created_at,
+      description: c.description,
+      applicableStoreNames: c.applicable_store_ids
+        ? c.applicable_store_ids.map((id) => storeNameMap[id] || id)
+        : null,
+      applicableCategoryNames: c.applicable_category_ids
+        ? c.applicable_category_ids.map((id) => categoryNameMap[id] || id)
+        : null,
+    })),
+  };
+}
+
+module.exports = { search, calendar, detail, paidOrders, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };

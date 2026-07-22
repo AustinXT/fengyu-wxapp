@@ -384,15 +384,15 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     })
   }
 
-  it('分配比例非整十 → 拒绝', async () => {
+  it('分配比例超出 0~1 范围 → 拒绝（支持自定义小数比例）', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
 
     const result = await batchSaveAllocations('order-1', [
-      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.15', totalAmount: '15.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.5', totalAmount: '150.00' },
     ])
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('整十')
+    expect(result.message).toContain('0~1')
   })
 
   it('同技能标签超过 3 人 → 拒绝（P2-14 Q5）', async () => {

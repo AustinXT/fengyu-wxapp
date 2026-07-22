@@ -226,6 +226,27 @@ export function capRefundAmounts(
 }
 
 /**
+ * 手续费上限校验（疗程卡）：仅正手续费需要校验，且 0 元赠送疗程不参与最小单次价。
+ *
+ * fee >= 最小正价疗程单次价时，paid_sessions 反推会多留 floor(fee / price) 次；
+ * 但赠送项 unit_real_price=0 不是可扣手续费的价格基准。
+ */
+export function isHandlingFeeInvalidForRefund(
+  refundDetails: Array<{ productType: ProductType | null; unitRealPrice: number }>,
+  handlingFee: number,
+): boolean {
+  const fee = Math.max(0, Number(handlingFee) || 0)
+  if (fee <= 0) return false
+
+  const positiveCardUnitPrices = refundDetails
+    .filter((d) => d.productType === '疗程卡')
+    .map((d) => Number(d.unitRealPrice))
+    .filter((price) => Number.isFinite(price) && price > 0)
+
+  return positiveCardUnitPrices.length > 0 && fee >= Math.min(...positiveCardUnitPrices)
+}
+
+/**
  * 拆分退款现金 vs 储值卡
  *
  * 2026-06-28 改为「全部走现金」：退款不再按储值卡占比拆分，refundByCard 始终为 0。

@@ -23,10 +23,12 @@ const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const { getPerItemRefundedMap } = require('../utils/per-item-refund')
 const {
   buildRefundDetails,
   capRefundAmounts,
   computeOverpayRemainder,
+  isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
@@ -1906,6 +1908,14 @@ async function detail(ctx) {
     ORDER BY si.sale_item_id
   `, [saleOrderId])
 
+  // 行级退款额（已退行不可回款；与 client/admin 一致）。退款只挂「购买」行。
+  const staffDetailRefundMap = await getPerItemRefundedMap(pg, saleOrderId)
+  for (const it of items) {
+    if (it.item_direction === '购买') {
+      it.refunded_amount = Number(staffDetailRefundMap.get(it.sale_item_id) || 0)
+    }
+  }
+
   // 营业额分配（sale_allocations 为扁平结构，每行一条分配）
   const allocations = await pg.query(`
     SELECT
@@ -2116,9 +2126,8 @@ async function createRefund(ctx) {
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
   // 顾客退钱后仍能消费）。限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居无 session_count 不受影响。
-  // 完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
-  const cardUnitPrices = refundDetails.filter((d) => d.productType === '疗程卡').map((d) => Number(d.unitRealPrice))
-  if (cardUnitPrices.length > 0 && fee >= Math.min(...cardUnitPrices)) {
+  // 0 元赠送项不参与最小价；完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
+  if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
@@ -2676,7 +2685,10 @@ async function createRepayment(ctx) {
       throw new Error('INVALID_PARAMS: 本次回款金额超过订单欠款')
     }
 
-    // 3b) 按子项校验：逐项 (现金+储值卡) ≤ 该行可回款额(sale_amount - received)
+    // 3b) 按子项校验 + 已退行不可回款（行级口径，与 client/admin 一致）
+    //     sale_items 无 refunded_amount 列，行级退款权威源 = note.items[].refundAmount
+    const staffRefundMap = await getPerItemRefundedMap(client, refSaleOrderId)
+    const orderHasRefund = [...staffRefundMap.values()].some((v) => Number(v) > 0)
     if (repayItems) {
       const itemRows = await client.query(
         `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
@@ -2687,12 +2699,20 @@ async function createRepayment(ctx) {
       for (const it of repayItems) {
         const row = itemMap.get(it.saleItemId)
         if (!row) throw new Error(`INVALID_PARAMS: 子项 ${it.saleItemId} 不属于本订单`)
+        // 已退行不可回款（已退款作废，不可再支付；四端口径一致）
+        if (Number(staffRefundMap.get(it.saleItemId) || 0) > 0) {
+          throw new Error(`INVALID_STATE: 子项 ${it.saleItemId} 已退款，不可再回款`)
+        }
         const itemRemaining = Math.round((Number(row.sale_amount) - Number(row.received)) * 100) / 100
         const itemThis = Math.round((it.repayAmount + it.prepaidCardAmount) * 100) / 100
         if (itemThis > itemRemaining + 0.001) {
           throw new Error(`INVALID_PARAMS: 子项 ${it.saleItemId} 回款额超过该行可回款额`)
         }
       }
+    } else if (orderHasRefund) {
+      // 整单回款（无 items[]）且订单有退款：非定向瀑布流会误充已退行（received 靠 STEP1.5 兜底，
+      // 但 spai/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
+      throw new Error('INVALID_STATE: 本单存在已退款项目，请按子项回款未退款的项目')
     }
 
     // 4) 储值卡抵扣：锁余额 → 扣减 → 写流水

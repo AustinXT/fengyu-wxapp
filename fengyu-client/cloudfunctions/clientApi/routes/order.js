@@ -12,6 +12,7 @@ const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDirectedItems, itemRepayableAmount } = require('../utils/per-item-refund')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
@@ -529,6 +530,9 @@ async function scanDetail(ctx) {
     ORDER BY si.sale_item_id
   `, [targetOrderId])
 
+  // 行级退款额（已退行不可继续支付/回款）
+  const itemRefundMap = await getPerItemRefundedMap(pg, targetOrderId)
+
   // 应付实金 = total - prepaid_card_amount（payable_amount 列冗余，兜底现算）
   const totalAmount = Number(order.total_amount || 0)
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
@@ -568,6 +572,7 @@ async function scanDetail(ctx) {
       saleAmount: i.sale_amount,
       sessionCount: i.session_count,
       received: i.received,
+      refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
       coverImage: i.cover_image || ''
     }))
   }
@@ -1498,8 +1503,18 @@ async function list(ctx) {
       itemsMap.get(item.sale_order_id).push(item)
     }
 
+    // 行级退款额（已退行不可继续支付/回款）：批量聚合避免 N+1
+    const refundMapBatch = await getPerItemRefundedMapBatch(pg, orderIds)
+
     for (const order of orders) {
-      order.items = itemsMap.get(order.sale_order_id) || []
+      const orderItems = itemsMap.get(order.sale_order_id) || []
+      const orderRefundMap = refundMapBatch.get(order.sale_order_id)
+      if (orderRefundMap) {
+        for (const it of orderItems) {
+          it.refunded_amount = Number(orderRefundMap.get(it.sale_item_id) || 0)
+        }
+      }
+      order.items = orderItems
     }
   }
 
@@ -1565,6 +1580,12 @@ async function detail(ctx) {
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])
+
+  // 行级退款额（已退行不可继续支付/回款）
+  const itemRefundMap = await getPerItemRefundedMap(pg, orderNo)
+  for (const it of items) {
+    it.refunded_amount = Number(itemRefundMap.get(it.sale_item_id) || 0)
+  }
 
   // 待支付订单返回过期时间
   let expireAt = null
@@ -2367,14 +2388,32 @@ async function repay(ctx) {
     }
     currentStatus = origOrder.status
 
-    // 2. 计算欠款 = payable_amount - 净到账（received - refunded_amount）
+    // 2. 计算欠款 + 定向分摊项。
+    //    有退款 → 行级口径（已退行不计入，只有「未退且未付清」的行可继续支付），capture 定向到未退行
+    //    避免非定向瀑布流把回款误充到已退行（received/paid_sessions 复活）；
+    //    无退款 → 沿用订单级口径（正常回款，与首次支付/原逻辑一致）。
     const payableAmount = Number(origOrder.payable_amount || 0) > 0
       ? Number(origOrder.payable_amount)
       : Math.round((Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)) * 100) / 100
-    const received = Number(origOrder.received || 0)
-    const refundedAmount = Number(origOrder.refunded_amount || 0)
-    const netReceived = Math.round((received - refundedAmount) * 100) / 100
-    const remaining = Math.round((payableAmount - netReceived) * 100) / 100
+    let directedItems = null
+    let remaining
+    if (Number(origOrder.refunded_amount || 0) > 0) {
+      const repayItemRows = await client.query(
+        `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
+           FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
+        [saleOrderId]
+      )
+      const repayRefundMap = await getPerItemRefundedMap(client, saleOrderId)
+      directedItems = computeRefundAwareDirectedItems(repayItemRows.rows, repayRefundMap)
+      remaining = directedItems
+        ? Math.round(directedItems.reduce((s, d) => s + Number(d.amount), 0) * 100) / 100
+        : 0
+    } else {
+      const received = Number(origOrder.received || 0)
+      const refundedAmount = Number(origOrder.refunded_amount || 0)
+      const netReceived = Math.round((received - refundedAmount) * 100) / 100
+      remaining = Math.round((payableAmount - netReceived) * 100) / 100
+    }
     if (remaining <= 0) {
       throw new Error('INVALID_STATE: 订单无欠款')
     }
@@ -2500,14 +2539,15 @@ async function repay(ctx) {
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)
       }
-      // 按回款逐笔分配：捕获本次储值卡回款逐项可分配额 + 置回款待分配 + 汇总刷新
-      // （client 一律全额、无子项定向、待分配；线上回款由 payNotify 捕获）
+      // 按回款逐笔分配：捕获本次储值卡回款逐项可分配额 + 置回款待分配 + 汇总刷新。
+      // directedItems：有退款时定向到未退行（上方 STEP 2 算出），无退款时 null 走原瀑布流。
+      // （线上回款由 payNotify 捕获，同样按退款感知定向）
       if (cardPaymentId && prepaidCardAmountInput > 0) {
         await capturePaymentAllocatables(client, {
           salePaymentId: cardPaymentId,
           saleOrderId,
           eventAmount: prepaidCardAmountInput,
-          directedItems: null,
+          directedItems,
         })
         await refreshOrderAllocationRollup(client, saleOrderId)
       }

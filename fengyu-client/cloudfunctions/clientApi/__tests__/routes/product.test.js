@@ -64,6 +64,24 @@ describe('product.spuList', () => {
     expect(ctx.result.spuList[0].priceFrom).toBe(80)
   })
 
+  test('组合套餐展示套餐总价（SPU price），而非单次套餐价（SKU bundle_price）', async () => {
+    // 599 体验福利：SPU 总价 599，含多个 SKU（招牌任选 3 次），单次套餐价 199.67
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-bundle', name: '599体验福利', category_id: 'cat-1', category_name: '体验', cover_image: '', sort_order: 1, price: 599, special_price: 599, is_bundle: true },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-bundle', sku_id: 's1', price: 199.67, special_price: 199.67, bundle_price: 199.67, sort_order: 1 },
+      { product_id: 'p-bundle', sku_id: 's2', price: 199.67, special_price: 199.67, bundle_price: 199.67, sort_order: 2 },
+    ])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    // 列表应展示套餐总价 599，而非单次套餐价 199.67
+    expect(ctx.result.spuList[0].priceFrom).toBe(599)
+    expect(ctx.result.spuList[0].listPriceFrom).toBe(599)
+  })
+
   test('无商品时返回空列表', async () => {
     pg.query.mockResolvedValueOnce([])
 
@@ -141,7 +159,7 @@ describe('product.spuDetail', () => {
 describe('product.hotList', () => {
   test('返回热门推荐列表', async () => {
     pg.query.mockResolvedValueOnce([
-      { product_id: 'p1', name: '热门A', category_id: 'c1', category_name: '护理', product_kind: '护理项目', cover_image: '', sort_order: 1, price: 100, special_price: 80 },
+      { product_id: 'p1', name: '热门A', category_id: 'c1', category_name: '护理', product_kind: '护理项目', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
     ])
     pg.query.mockResolvedValueOnce([
       { product_id: 'p1', sku_id: 'sku-1', price: 100, special_price: 80, sort_order: 1 },

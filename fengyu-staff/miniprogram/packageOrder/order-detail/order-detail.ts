@@ -230,7 +230,9 @@ Page({
         const pct = (n: number) => (sc > 0 ? Math.round((n / sc) * 1000) / 10 : 0);
         const saleAmt = Number(it.sale_amount || 0);
         const recv = Number(it.received || 0);
-        const repayable = Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
+        const refunded = Number(it.refunded_amount || 0);
+        // 已退行不可回款（行级口径，与 client/admin 一致）；received 为净额
+        const repayable = refunded > 0 ? 0 : Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
           itemName: it.product_name || '—',
@@ -238,6 +240,8 @@ Page({
           totalPrice: it.received || '0',
           saleAmount: saleAmt.toFixed(2),
           received: recv.toFixed(2),
+          refundedAmount: refunded.toFixed(2),
+          isRefunded: refunded > 0,
           repayable: repayable.toFixed(2),
           sessionCount: it.session_count,
           remainingSessions: it.remaining_sessions,

@@ -571,3 +571,111 @@
   font-size: 22rpx;
   color: var(--color-text-hint);
 }
+
+/* ===== 顾客优惠券 ===== */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  padding: 8rpx 24rpx 24rpx;
+}
+.filter-chip {
+  padding: 10rpx 28rpx;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  background: #FFFFFF;
+  border: 1rpx solid #E8E8E8;
+  border-radius: 32rpx;
+}
+.filter-chip--active {
+  color: #FFFFFF;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.coupon-list {
+  padding: 0 24rpx 24rpx;
+}
+.coupon-card {
+  display: flex;
+  background: #fff;
+  border-radius: 16rpx;
+  margin-bottom: 20rpx;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+.coupon-card--disabled {
+  opacity: 0.6;
+}
+.coupon-card__left {
+  width: 200rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  padding: 32rpx 16rpx;
+}
+.coupon-card--disabled .coupon-card__left {
+  background: linear-gradient(135deg, #999 0%, #bbb 100%);
+}
+.coupon-card__amount {
+  font-size: 48rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.coupon-card__type {
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.85;
+}
+.coupon-card__right {
+  flex: 1;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+.coupon-card__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.coupon-card__scope {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+.coupon-card__expire {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+.coupon-card__desc {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-top: 4rpx;
+}
+.coupon-card__hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  margin-top: 4rpx;
+}
+.coupon-card__stamp {
+  position: absolute;
+  right: 20rpx;
+  top: 20rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  transform: rotate(15deg);
+  opacity: 0.6;
+}
+.coupon-card__stamp--expired {
+  color: var(--color-text-hint);
+  border-color: var(--color-text-hint);
+}

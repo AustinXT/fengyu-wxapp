@@ -6,7 +6,7 @@ import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
-import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession } from '@/lib/types'
+import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
@@ -373,6 +373,79 @@ export const getCustomerById = withPermission(
 
   if (rows.length === 0) return null
   return serializeCustomer(rows[0])
+  },
+)
+
+export const getCustomerCoupons = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<CustomerCoupon[]> => {
+    // scope 守卫：与 getCustomerOrders 同口径，顾客不在当前 scope 返回空
+    const customer = await getCustomerById(userId)
+    if (!customer) return []
+
+    const { userCoupons, couponTemplates } = await import('@db/coupon')
+    const { productCategories } = await import('@db/product')
+
+    // 懒清扫过期券（系统无 cron 批量置过期，查询前顺手扫，保证「已过期」准确）
+    await db.execute(sql`UPDATE user_coupons SET status = '已过期' WHERE user_id = ${userId} AND status = '未使用' AND expire_at <= NOW()`)
+
+    const rows = await db
+      .select({
+        couponId: userCoupons.couponId,
+        templateId: couponTemplates.templateId,
+        name: couponTemplates.name,
+        couponType: couponTemplates.couponType,
+        discountValue: sql<string>`COALESCE(${userCoupons.faceValueOverride}, ${couponTemplates.discountValue})`,
+        minSpend: couponTemplates.minSpend,
+        status: userCoupons.status,
+        expireAt: userCoupons.expireAt,
+        usedAt: userCoupons.usedAt,
+        usedSaleOrderId: userCoupons.usedSaleOrderId,
+        createdAt: userCoupons.createdAt,
+        description: couponTemplates.description,
+        applicableStoreIds: couponTemplates.applicableStoreIds,
+        applicableCategoryIds: couponTemplates.applicableCategoryIds,
+      })
+      .from(userCoupons)
+      .innerJoin(couponTemplates, eq(userCoupons.templateId, couponTemplates.templateId))
+      .where(eq(userCoupons.userId, userId))
+      // 例外：详情页子列表，按状态固定序（未使用→已使用→已过期）+ 到期升序
+      .orderBy(sql`CASE ${userCoupons.status} WHEN '未使用' THEN 0 WHEN '已使用' THEN 1 ELSE 2 END`, asc(userCoupons.expireAt))
+
+    // 批量解析适用门店 / 品类名（text[] → 名称，对齐 client coupon.list 返回 shape）
+    const storeIdSet = new Set<string>()
+    const categoryIdSet = new Set<string>()
+    for (const r of rows) {
+      for (const id of r.applicableStoreIds ?? []) storeIdSet.add(id)
+      for (const id of r.applicableCategoryIds ?? []) categoryIdSet.add(id)
+    }
+    const [storeRows, categoryRows] = await Promise.all([
+      storeIdSet.size > 0
+        ? db.select({ id: stores.storeId, name: stores.storeName }).from(stores).where(inArray(stores.storeId, [...storeIdSet]))
+        : Promise.resolve([]),
+      categoryIdSet.size > 0
+        ? db.select({ id: productCategories.categoryId, name: productCategories.categoryName }).from(productCategories).where(inArray(productCategories.categoryId, [...categoryIdSet]))
+        : Promise.resolve([]),
+    ])
+    const storeNameMap = new Map(storeRows.map((r) => [r.id, r.name]))
+    const categoryNameMap = new Map(categoryRows.map((r) => [r.id, r.name]))
+
+    return rows.map((r) => ({
+      couponId: r.couponId,
+      templateId: r.templateId,
+      name: r.name,
+      couponType: r.couponType as CouponType,
+      discountValue: r.discountValue,
+      minSpend: r.minSpend,
+      status: r.status as CouponStatus,
+      expireAt: r.expireAt.toISOString(),
+      usedAt: r.usedAt?.toISOString() ?? null,
+      usedSaleOrderId: r.usedSaleOrderId,
+      createdAt: r.createdAt.toISOString(),
+      description: r.description,
+      applicableStoreNames: r.applicableStoreIds ? r.applicableStoreIds.map((id) => storeNameMap.get(id) ?? id) : null,
+      applicableCategoryNames: r.applicableCategoryIds ? r.applicableCategoryIds.map((id) => categoryNameMap.get(id) ?? id) : null,
+    }))
   },
 )
 

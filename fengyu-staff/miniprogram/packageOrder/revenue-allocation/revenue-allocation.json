@@ -6,6 +6,7 @@
     "van-loading": "@vant/weapp/loading/index",
     "van-popup": "@vant/weapp/popup/index",
     "van-action-sheet": "@vant/weapp/action-sheet/index",
+    "van-field": "@vant/weapp/field/index",
     "van-tag": "@vant/weapp/tag/index"
   }
 }

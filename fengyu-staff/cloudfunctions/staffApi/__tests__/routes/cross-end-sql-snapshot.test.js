@@ -90,6 +90,12 @@ const FILES = {
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
   adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
+
+  // 2026-07-21 行级退款额聚合 per-item-refund — 四端字面同义（与 paid-sessions RECEIVED_REFUNDED_DEDUCT_SQL 同源 CTE）
+  staffPerItemRefundJs: path.resolve(__dirname, '../../utils/per-item-refund.js'),
+  clientPerItemRefundJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/per-item-refund.js'),
+  payNotifyPerItemRefundJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/per-item-refund.js'),
+  adminPerItemRefundTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/per-item-refund.ts'),
 }
 
 function readFile(p) {
@@ -1625,5 +1631,36 @@ describe('paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS
 
   test('基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端）', () => {
     expect(PAID_UNUSED_CASES).toMatchSnapshot()
+  })
+})
+
+// 2026-07-21 行级退款额聚合 per-item-refund — 四端 CTE 字面同义守护
+// （ticket 2026-07-21 已退款行不可继续支付；与 paid-sessions RECEIVED_REFUNDED_DEDUCT_SQL 同源 CTE）
+describe('2026-07-21 per-item-refund 行级退款聚合 SQL 四端一致性', () => {
+  const MARKER_REFUND_AMOUNT = 'AS refund_amount'
+  let refundSqls
+  beforeAll(() => {
+    refundSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPerItemRefundJs), MARKER_REFUND_AMOUNT)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPerItemRefundJs), MARKER_REFUND_AMOUNT)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPerItemRefundJs), MARKER_REFUND_AMOUNT)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPerItemRefundTs), MARKER_REFUND_AMOUNT)),
+    }
+  })
+  test('staff vs client（pg $1 占位符归一后一致）', () => {
+    expect(refundSqls.client).toBe(refundSqls.staff)
+  })
+  test('staff vs payNotify（pg 副本一致）', () => {
+    expect(refundSqls.payNotify).toBe(refundSqls.staff)
+  })
+  test('staff vs admin（pg $1 与 Drizzle ${saleOrderId} 归一为 ? 后一致）', () => {
+    expect(refundSqls.adminTs).toBe(refundSqls.staff)
+  })
+  test('CTE 必须排除 OVERPAY 哨兵行', () => {
+    expect(refundSqls.staff).toContain("<> 'OVERPAY'")
+  })
+  test('CTE 必须只取已支付退款', () => {
+    expect(refundSqls.staff).toContain("change_type = '退款'")
+    expect(refundSqls.staff).toContain("status = '已支付'")
   })
 })

@@ -40,6 +40,8 @@ interface SpuItem {
   min_price: string;
   /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
   strike_min_price?: string;
+  /** 组合套餐标记：列表展示套餐总价，不带「起」字（普通单品多 SKU 起价才显示） */
+  is_bundle?: boolean;
   is_recommend: boolean;
   skuList?: any[];
 }

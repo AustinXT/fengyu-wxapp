@@ -600,6 +600,24 @@ export interface IssuedCoupon {
   usedAt: string | null
 }
 
+/** 顾客持有的优惠券（顾客档案「顾客优惠券」Tab 展示用，字段对齐 client coupon.list 返回） */
+export interface CustomerCoupon {
+  couponId: string
+  templateId: string
+  name: string
+  couponType: CouponType
+  discountValue: string
+  minSpend: string | null
+  status: CouponStatus
+  expireAt: string
+  usedAt: string | null
+  usedSaleOrderId: string | null
+  createdAt: string
+  description: string | null
+  applicableStoreNames: string[] | null
+  applicableCategoryNames: string[] | null
+}
+
 export interface OperationLog {
   id: number
   operatorEmployeeId: string | null
