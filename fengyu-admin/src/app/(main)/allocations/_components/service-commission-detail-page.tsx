@@ -434,13 +434,13 @@ function ServiceItemCard({
                 </div>
 
                 {/* 分配比例（档位快选 + 自定义） */}
-                <div className="shrink-0">
+                <div className="w-[204px] shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
                   <div className="flex items-center gap-1">
                     <Select
                       value={ratioSelectValue}
                       onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'ratioPercent', e.target.value)}
-                      className="w-[68px]"
+                      className="w-[104px]"
                     >
                       <option value="">-</option>
                       {PERCENTAGE_OPTIONS.map((p) => (
@@ -457,7 +457,7 @@ function ServiceItemCard({
                         inputMode="decimal"
                         value={entry.ratioPercent === '__custom' ? '' : entry.ratioPercent}
                         onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'ratioPercent', e.target.value)}
-                        className="w-[60px]"
+                        className="w-[88px]"
                         placeholder="%"
                       />
                     )}
