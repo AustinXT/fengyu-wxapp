@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { searchCustomers } from "@/actions/customers"
 import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
 import type { AvailableSaleItem } from "@/actions/services"
@@ -246,7 +247,9 @@ export default function ServiceCreatePageClient({
                     </div>
                     <div>
                       <span className="text-[#999999]">会员等级</span>
-                      <p className="font-medium">{selectedCustomer.memberLevel || "—"}</p>
+                      <div className="mt-1">
+                        <MemberLevelBadge level={selectedCustomer.memberLevel} fallback="—" />
+                      </div>
                     </div>
                     <div>
                       <span className="text-[#999999]">绑定门店</span>

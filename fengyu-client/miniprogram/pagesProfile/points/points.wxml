@@ -7,7 +7,9 @@
   <view class="vip-card brand-gradient">
     <view class="vip-level-row">
       <van-icon name="gem-o" size="36rpx" color="#FFFFFF" />
-      <text class="vip-level-text">会员等级: {{levelName || '普通会员'}}</text>
+      <text class="vip-level-label">会员等级</text>
+      <text wx:if="{{levelName}}" class="member-level-badge {{levelBadgeClass}}">{{levelName}}</text>
+      <text wx:else class="vip-level-text">普通会员</text>
     </view>
     <view class="vip-balance-row">
       <text class="vip-balance-label">积分余额</text>

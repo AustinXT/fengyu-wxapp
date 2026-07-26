@@ -1,7 +1,8 @@
 // packageMy/pickup/pickup-by-customer.ts — 提货：顾客视角 + 录入
 import { callStaffApi } from '../../utils/cloud'
+import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge'
 
-interface Customer {
+interface Customer extends MemberLevelBadgeData {
   clientUserId: string
   name: string
   phone: string
@@ -57,7 +58,7 @@ Page({
         keyword: keyword.match(/^\d/) ? undefined : keyword,
         phone: keyword.match(/^\d{6,}$/) ? keyword : undefined,
       })
-      this.setData({ customers: res || [] })
+      this.setData({ customers: withMemberLevelBadgeClasses(res || []) })
     } catch (err: any) {
       wx.showToast({ title: err?.message || '搜索失败', icon: 'none' })
     }

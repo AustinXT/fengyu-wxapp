@@ -7,12 +7,13 @@ import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatAmount, formatCount } from '../../utils/number';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
+import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 // ===== 数据接口 =====
 
 type ScopeType = 'all' | 'market' | 'store';
 
-interface CustomerDetail {
+interface CustomerDetail extends MemberLevelBadgeData {
   id: string | null;
   clientUserId: string | null;
   name: string;
@@ -287,7 +288,7 @@ Page({
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
       } as unknown as CustomerDetail;
-      this.setData({ customer });
+      this.setData({ customer: withMemberLevelBadgeClass(customer) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       // 优先按 errorType 路由（callStaffApi 已把 errorType 挂到 Error 实例），

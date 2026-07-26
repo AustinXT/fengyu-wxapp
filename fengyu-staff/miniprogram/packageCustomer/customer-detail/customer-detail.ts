@@ -2,12 +2,13 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
+import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 const app = getApp<IAppOption>();
 
 // ===== 数据接口 =====
 
-interface CustomerDetail {
+interface CustomerDetail extends MemberLevelBadgeData {
   id: string | null;
   clientUserId: string | null;
   name: string;
@@ -307,7 +308,7 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
-      this.setData({ customer, notesValue: customer.notes || '', notesDirty: false });
+      this.setData({ customer: withMemberLevelBadgeClass(customer), notesValue: customer.notes || '', notesDirty: false });
       // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
       void this.loadCardBalance();
     } catch (err: unknown) {

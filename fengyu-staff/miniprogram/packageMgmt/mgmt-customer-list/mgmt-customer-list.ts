@@ -3,10 +3,11 @@
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
+import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
 type ScopeType = 'all' | 'market' | 'store';
 
-interface CustomerListItem {
+interface CustomerListItem extends MemberLevelBadgeData {
   id: string | null;
   clientUserId: string | null;
   name: string;
@@ -104,9 +105,10 @@ Page({
       };
       if (keyword) payload.keyword = keyword;
       const data = await callStaffApi<CustomerSearchResponse>('mgmtCustomer.search', payload);
+      const customers = withMemberLevelBadgeClasses(data.customers || []);
       const newResults = reset
-        ? (data.customers || [])
-        : [...this.data.results, ...(data.customers || [])];
+        ? customers
+        : [...this.data.results, ...customers];
       this.setData({
         results: newResults,
         page: data.page,

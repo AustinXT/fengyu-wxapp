@@ -3,6 +3,7 @@ import { maskPhone } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
 import { APP_VERSION } from '../../utils/version';
 import { ORDERS_ENTRY_ENABLED } from '../../utils/feature-flags';
+import { getMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 const app = getApp<IAppOption>();
 
@@ -11,6 +12,7 @@ Page({
     userName: '',
     maskedPhone: '',
     memberLevel: '',
+    memberLevelBadgeClass: 'member-level-badge--default',
     boundStoreName: '',
     avatarUrl: '',
     unreadCount: 0,
@@ -41,6 +43,7 @@ Page({
       userName,
       maskedPhone: maskPhone(phone),
       memberLevel,
+      memberLevelBadgeClass: getMemberLevelBadgeClass(memberLevel),
       boundStoreName: app.globalData.boundStoreName,
       avatarUrl,
     });

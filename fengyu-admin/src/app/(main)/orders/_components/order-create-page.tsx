@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { searchCustomers } from "@/actions/customers"
 import {
   createOrder,
@@ -713,9 +714,7 @@ export default function OrderCreatePageClient({
                         <div className="flex items-center gap-4">
                           <span className="font-medium min-w-[4em]">{c.name || "—"}</span>
                           <span className="text-[#999999]">{formatPhoneSafe(c.phone)}</span>
-                          {c.memberLevel && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-[#FFF8E6] text-[#D4820A]">{c.memberLevel}</span>
-                          )}
+                          <MemberLevelBadge level={c.memberLevel} />
                           {c.storeName && (
                             <span className="text-xs text-[#999999]">{c.storeName}</span>
                           )}
@@ -750,7 +749,9 @@ export default function OrderCreatePageClient({
                       </div>
                       <div>
                         <span className="text-[#999999]">会员等级</span>
-                        <p className="font-medium">{selectedCustomer.memberLevel || "—"}</p>
+                        <div className="mt-1">
+                          <MemberLevelBadge level={selectedCustomer.memberLevel} fallback="—" />
+                        </div>
                       </div>
                       <div>
                         <span className="text-[#999999]">绑定门店</span>

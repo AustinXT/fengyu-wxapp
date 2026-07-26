@@ -44,7 +44,7 @@
         <view class="customer-info">
           <view class="customer-name-row">
             <text class="customer-name">{{item.name || '未知'}}</text>
-            <text wx:if="{{item.memberLevel}}" class="vip-badge">{{item.memberLevel}}</text>
+            <text wx:if="{{item.memberLevel}}" class="member-level-badge {{item.memberLevelBadgeClass}}">{{item.memberLevel}}</text>
             <text wx:if="{{item.tier === 'diamond'}}" class="tier-badge tier-badge--diamond">黑钻</text>
             <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
             <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>

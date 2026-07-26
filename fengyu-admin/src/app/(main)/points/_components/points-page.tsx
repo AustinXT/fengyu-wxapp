@@ -13,6 +13,7 @@ import type {
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
@@ -22,14 +23,6 @@ import { exportPointTransactions } from "@/actions/points"
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
-
-const MEMBER_LEVEL_COLORS: Record<string, string> = {
-  "黑钻": "border-[#333333] text-[#333333] bg-[#F0F0F0]",
-  "金钻": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "粉钻": "border-[#C06088] text-[#C06088] bg-[#FDF0F5]",
-  "星钻": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
-  "初钻": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
-}
 
 function StatCard({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
   return (
@@ -153,9 +146,7 @@ export default function PointsPage({
       header: "会员等级",
       cell: (row) =>
         row.memberLevel ? (
-          <Badge variant="outline" className={MEMBER_LEVEL_COLORS[row.memberLevel] ?? ""}>
-            {row.memberLevel}
-          </Badge>
+          <MemberLevelBadge level={row.memberLevel} />
         ) : (
           "—"
         ),

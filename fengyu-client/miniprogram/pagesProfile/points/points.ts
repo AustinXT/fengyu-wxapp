@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatDateTimeShort } from '../../utils/format';
+import { getMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 const PAGE_SIZE = 20;
 
@@ -9,6 +10,7 @@ Page({
   data: {
     balance: 0,
     levelName: '',
+    levelBadgeClass: 'member-level-badge--default',
     nextLevel: null as { name: string; minPoints: number } | null,
     records: [] as any[],
     isLoading: false,
@@ -44,6 +46,7 @@ Page({
       this.setData({
         balance: data.balance || 0,
         levelName: data.levelName || '',
+        levelBadgeClass: getMemberLevelBadgeClass(data.levelName || ''),
         nextLevel: data.nextLevel || null,
       });
     } catch (err: any) {

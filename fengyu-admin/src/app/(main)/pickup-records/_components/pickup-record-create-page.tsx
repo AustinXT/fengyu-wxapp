@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { MemberLevelBadge } from '@/components/ui/member-level-badge'
 import { searchCustomerByPhone } from '@/actions/customers'
 import {
   createPickupRecord,
@@ -182,7 +183,9 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                   </div>
                   <div>
                     <span className="text-[#999999]">会员等级</span>
-                    <p className="font-medium">{customer.memberLevel || '—'}</p>
+                    <div className="mt-1">
+                      <MemberLevelBadge level={customer.memberLevel} fallback="—" />
+                    </div>
                   </div>
                   <div>
                     <span className="text-[#999999]">绑定门店</span>

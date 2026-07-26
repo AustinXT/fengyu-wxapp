@@ -11,7 +11,7 @@
       <text class="user-name">{{userName || '点击设置昵称'}}</text>
       <view class="user-phone-row" wx:if="{{maskedPhone || memberLevel}}">
         <text class="user-phone" wx:if="{{maskedPhone}}">{{maskedPhone}}</text>
-        <text wx:if="{{memberLevel}}" class="member-level-tag">{{memberLevel}}</text>
+        <text wx:if="{{memberLevel}}" class="member-level-badge {{memberLevelBadgeClass}}">{{memberLevel}}</text>
       </view>
       <view class="user-store-row" wx:if="{{boundStoreName}}">
         <van-icon name="location-o" size="22rpx" color="rgba(255,255,255,0.8)" />

@@ -102,6 +102,59 @@ page {
 .status-tag--done     { background: var(--color-badge-done);      color: #888888; }
 .status-tag--error    { background: var(--color-badge-error);     color: #D94040; }
 
+/* ===== 会员等级标签（与 admin 端色板一致） ===== */
+.member-level-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: 4rpx 12rpx;
+  border-radius: var(--radius-lg);
+  border: 1rpx solid rgba(192, 50, 42, 0.3);
+  font-size: 20rpx;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.member-level-badge--black {
+  background: #1A1A1A;
+  color: #FFD700;
+  border-color: #1A1A1A;
+}
+
+.member-level-badge--gold {
+  background: #FFF8E6;
+  color: #D4820A;
+  border-color: #D4820A;
+}
+
+.member-level-badge--pink {
+  background: #FDF0F5;
+  color: #C06088;
+  border-color: #C06088;
+}
+
+.member-level-badge--blue {
+  background: #F0F5FA;
+  color: #5E8BB3;
+  border-color: #5E8BB3;
+}
+
+.member-level-badge--green {
+  background: #F0F9F2;
+  color: #3D8A5A;
+  border-color: #3D8A5A;
+}
+
+.member-level-badge--default {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: rgba(192, 50, 42, 0.3);
+}
+
 /* ===== 旧版状态色（兼容） ===== */
 .status-pending    { color: #D48806; }
 .status-confirm    { color: #C0322A; }
