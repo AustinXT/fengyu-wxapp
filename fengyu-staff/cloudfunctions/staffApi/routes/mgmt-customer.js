@@ -624,10 +624,15 @@ async function paidOrders(ctx) {
        pc.category_name, pc.product_kind,
        COALESCE(pc_parent.display_color, pc.display_color) AS category_color
      FROM sale_items si
+     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
      LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
      LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE si.sale_order_id = ANY($1)
+       AND (
+         si.item_direction = '购买'
+         OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+       )
      ORDER BY si.sale_item_id`,
     [orderIds],
   )

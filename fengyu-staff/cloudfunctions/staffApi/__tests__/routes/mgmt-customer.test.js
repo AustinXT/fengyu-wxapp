@@ -851,6 +851,30 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     expect(ctx.result.orders[0].items[0].paidSessions).toBe(10)
   })
 
+  test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {
+    setupCommonMocks({
+      paidOrderRows: [
+        { sale_order_id: 'so-conv', status: '已支付', paid_at: '2026-07-25', store_id: 'store-001', store_name: 'A 店' },
+      ],
+      paidOrderItems: [],
+    })
+    const ctx = makeHqCtx({
+      clientUserId: 'u1',
+      scopeType: 'store',
+      scopeId: 'store-001',
+    })
+
+    await paidOrders(ctx)
+
+    const itemSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
+    )
+    expect(itemSql).toContain("si.item_direction = '购买'")
+    expect(itemSql).toContain("o.sale_order_type = '转换单'")
+    expect(itemSql).toContain("si.item_direction = '转入'")
+    expect(itemSql).not.toContain("si.item_direction = '转出'")
+  })
+
   test('giftHistory scope=market：赠品 SQL 不含 o.store_id 过滤', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({

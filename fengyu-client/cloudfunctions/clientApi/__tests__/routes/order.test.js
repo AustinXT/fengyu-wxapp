@@ -1110,6 +1110,7 @@ describe('order.detail', () => {
     pg.query.mockResolvedValueOnce([{
       sale_item_id: 'SI-001', product_name: 'A', cover_image: '',
     }])
+    pg.query.mockResolvedValueOnce([]) // item refunded map 查询
     // payments 查询
     pg.query.mockResolvedValueOnce([
       {
@@ -1135,7 +1136,7 @@ describe('order.detail', () => {
 
     // 验证 SQL 查了 sale_order_payments 表（合并后无需 JOIN，note/refund_reason 直接在主表）
     const paymentsQueryCall = pg.query.mock.calls.find(
-      ([sql]) => /FROM sale_order_payments/.test(sql)
+      ([sql]) => /SELECT id, change_type, amount, payment_method, status/.test(sql)
     )
     expect(paymentsQueryCall).toBeDefined()
     expect(paymentsQueryCall[0]).toMatch(/ORDER BY created_at ASC/)
@@ -1434,6 +1435,19 @@ describe('order.appointableItems', () => {
     expect(sql).toContain("o.status IN ('已支付', '部分支付')")
     expect(ctx.result.orders[0].orderStatus).toBe('部分支付')
     expect(ctx.result.orders[0].items[0].paidSessions).toBe(2)
+  })
+
+  test('SQL 守卫：可预约权益包含购买行和转换单转入行，排除转出行', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("si.item_direction = '购买'")
+    expect(sql).toContain("o.sale_order_type = '转换单'")
+    expect(sql).toContain("si.item_direction = '转入'")
+    expect(sql).not.toContain("si.item_direction = '转出'")
   })
 })
 

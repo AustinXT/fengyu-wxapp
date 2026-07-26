@@ -1801,6 +1801,10 @@ async function appointableItems(ctx) {
       AND o.status IN ('已支付', '部分支付')
       ${activeFilter}
       AND si.product_type = '疗程卡'
+      AND (
+        si.item_direction = '购买'
+        OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+      )
       -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
       AND NOT EXISTS (
         SELECT 1 FROM sale_order_payments sop

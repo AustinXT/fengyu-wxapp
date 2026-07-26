@@ -114,6 +114,7 @@ import {
   confirmServiceOrder,
   cancelServiceOrder,
   createServiceOrder,
+  getAvailableSaleItems,
   getServiceOrdersPaginated,
   deleteServiceOrder,
   getServiceOrderById,
@@ -463,6 +464,34 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
 })
 
 // ── createServiceOrder ────────────────────────────────────────────────────────
+
+describe('getAvailableSaleItems — 疗程卡权益列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('转换单转入卡作为可用权益返回，已付未用按 paid_sessions 派生', async () => {
+    ;(db.execute as any).mockResolvedValue([{
+      sale_item_id: 'FY-XSD-WX-2607250060-02',
+      sale_order_id: 'FY-XSD-WX-2607250060',
+      product_name: '面部三重维养',
+      product_type: '疗程卡',
+      session_count: 10,
+      remaining_sessions: 10,
+      paid_sessions: 10,
+      unit_real_price: '200.00',
+      expire_date: null,
+    }])
+
+    const rows = await getAvailableSaleItems('FYGK-20260711-00026')
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].saleItemId).toBe('FY-XSD-WX-2607250060-02')
+    expect(rows[0].productName).toBe('面部三重维养')
+    expect(rows[0].paidUnusedSessions).toBe(10)
+  })
+})
 
 describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () => {
   beforeEach(() => {

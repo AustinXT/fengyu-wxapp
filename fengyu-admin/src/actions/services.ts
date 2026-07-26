@@ -759,7 +759,7 @@ export const getServiceReview = withPermission(
   },
 )
 
-/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡） */
+/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡权益：购买行 + 转换单转入行） */
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
@@ -792,7 +792,10 @@ export const getAvailableSaleItems = withPermission(
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE o.client_user_id = ${clientUserId}
       AND o.status IN ('已支付', '部分支付')
-      AND si.item_direction = '购买'
+      AND (
+        si.item_direction = '购买'
+        OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+      )
       AND si.product_type = '疗程卡'
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0

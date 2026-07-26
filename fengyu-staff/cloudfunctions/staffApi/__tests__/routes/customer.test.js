@@ -738,6 +738,25 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].items[0].paidSessions).toBe(10)
     expect(ctx.result[0].items[0].remainingSessions).toBe(15)
   })
+
+  test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-conv' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-CONV', status: '已支付', paid_at: '2026-07-25T09:12:02Z' },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const itemSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
+    )
+    expect(itemSql).toContain("si.item_direction = '购买'")
+    expect(itemSql).toContain("o.sale_order_type = '转换单'")
+    expect(itemSql).toContain("si.item_direction = '转入'")
+    expect(itemSql).not.toContain("si.item_direction = '转出'")
+  })
 })
 
 // ============================================================
