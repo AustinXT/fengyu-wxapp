@@ -30,7 +30,7 @@
  *
  * ★ 口径红线（consistency.efficiency.test.ts 字面量守护，禁止偏离）：
  *   - 业绩(员工) = SUM(sale_allocations.total_amount) 归 employee_id ∩
- *     role_type IN ('美容师','养生师') ∩ is_void=FALSE ∩ 销售单/转换单 ∩ status='已支付'
+ *     role_type IN ('美容师','养生师') ∩ is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配
  *   - 实耗(员工) = SUM(service_items.unit_real_price * session_used) 归 employee_id ∩ 已完成
  *   - 收入 = 销售提成 SUM(sale_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
  *   - 新会员 = became_member_at 归 bound_employee_id；项目数 sales_category IN ('自销自耗','他销自耗')
@@ -81,6 +81,23 @@ function ratio(num: number | null, den: number | null): number | null {
   return num / den
 }
 
+function paidAllocationDateBetween(
+  paymentAlias: string,
+  orderAlias: string,
+  start: string,
+  end: string,
+) {
+  return sql`(
+    (${sql.raw(`${paymentAlias}.id`)} IS NOT NULL
+      AND ${sql.raw(`${paymentAlias}.status`)} = '已支付'
+      AND ${sql.raw(`${paymentAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
+    OR
+    (${sql.raw(`${paymentAlias}.id`)} IS NULL
+      AND ${sql.raw(`${orderAlias}.status`)} = '已支付'
+      AND ${sql.raw(`${orderAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
+  )`
+}
+
 /** 行表 → store_id → value 映射 */
 function toMap(rows: unknown): Map<string, number> {
   const m = new Map<string, number>()
@@ -123,12 +140,12 @@ export const getEfficiencyBoard = withPermission(
       FROM sale_allocations sa
       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
         AND sa.role_type IN ('美容师', '养生师')
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
     `)
 
     /** 实耗（员工归属，全局合计）= SUM(unit_real_price * session_used) ∩ 已完成 */
@@ -148,11 +165,11 @@ export const getEfficiencyBoard = withPermission(
       FROM sale_allocations sa
       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
     `)
 
     /** 服务提成（全局合计）= SUM(service_commissions.commission_amount) */
@@ -267,12 +284,12 @@ export const getEfficiencyBoard = withPermission(
       FROM sale_allocations sa
       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
         AND sa.role_type IN ('美容师', '养生师')
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -307,11 +324,11 @@ export const getEfficiencyBoard = withPermission(
       FROM sale_allocations sa
       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND sa.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -483,11 +500,11 @@ export const getEfficiencyBoard = withPermission(
         FROM sale_allocations sa
         JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
         WHERE sa.is_void = FALSE
           AND sa.role_type IN ('美容师', '养生师')
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
         GROUP BY sa.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
@@ -562,10 +579,10 @@ export const getEfficiencyBoard = withPermission(
         FROM sale_allocations sa
         JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
         WHERE sa.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
         GROUP BY sa.employee_id
       ),
       service_comm AS (
@@ -609,11 +626,11 @@ export const getEfficiencyBoard = withPermission(
         FROM sale_allocations sa
         JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
         WHERE sa.is_void = FALSE
           AND sa.role_type IN ('美容师', '养生师')
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
         GROUP BY sa.employee_id
       ),
       consume_by_emp_cat AS (

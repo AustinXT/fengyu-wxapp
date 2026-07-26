@@ -323,11 +323,19 @@ async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
        FROM sale_allocations sa
        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+       LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
       WHERE ${sc.sql}
         AND sa.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND ${timeWindow('so.paid_at', mode, 1, false)}`,
+        AND (
+          (sop.id IS NOT NULL
+            AND sop.status = '已支付'
+            AND ${timeWindow('sop.paid_at', mode, 1, false)})
+          OR
+          (sop.id IS NULL
+            AND so.status = '已支付'
+            AND ${timeWindow('so.paid_at', mode, 1, false)})
+        )`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -646,6 +654,18 @@ function timeWindowPeriod(col, period, _isDateColumn) {
   }
   // year
   return `date_trunc('year', ${col}) = date_trunc('year', NOW()::date)`
+}
+
+function paidAllocationPeriodWindow(paymentAlias, orderAlias, period) {
+  return `(
+    (${paymentAlias}.id IS NOT NULL
+      AND ${paymentAlias}.status = '已支付'
+      AND ${timeWindowPeriod(`${paymentAlias}.paid_at`, period, false)})
+    OR
+    (${paymentAlias}.id IS NULL
+      AND ${orderAlias}.status = '已支付'
+      AND ${timeWindowPeriod(`${orderAlias}.paid_at`, period, false)})
+  )`
 }
 
 /**
@@ -992,11 +1012,11 @@ revenue_by_emp AS (
   FROM sale_allocations sa
   JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+  LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
   WHERE sa.is_void = FALSE
     AND sa.role_type IN ('美容师','养生师')
     AND so.sale_order_type IN ('销售单','转换单')
-    AND so.status = '已支付'
-    AND ${timeWindowPeriod('so.paid_at', period, false)}
+    AND ${paidAllocationPeriodWindow('sop', 'so', period)}
   GROUP BY sa.employee_id
 )
 SELECT
@@ -1150,10 +1170,10 @@ sales_comm AS (
   FROM sale_allocations sa
   JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+  LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
   WHERE sa.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
-    AND so.status = '已支付'
-    AND ${timeWindowPeriod('so.paid_at', period, false)}
+    AND ${paidAllocationPeriodWindow('sop', 'so', period)}
   GROUP BY sa.employee_id
 ),
 service_comm AS (

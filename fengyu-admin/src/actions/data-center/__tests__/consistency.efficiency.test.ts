@@ -15,6 +15,7 @@
  *   5. 新会员 = became_member_at 归 bound_employee_id
  *   6. 项目数 = session_used ∩ sales_category IN ('自销自耗','他销自耗')
  *   7. 产能员工 producer_employees：hired_at/resigned_at 历史化
+ *   8. sale_allocations 统计按回款级 paid_at/status 优先，旧 paymentId=NULL 行才回退订单级
  *
  * ★ 额外守护（本板块改造）：efficiency.ts 的 ranking 必须用 BETWEEN 区间，
  *   而非 staff 的 date_trunc period（timeWindowPeriod）。任一端漂移则数字对不上。
@@ -75,14 +76,22 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
-  describe('销售单/转换单 + 已支付（业绩/销售提成口径）', () => {
-    it('admin efficiency.ts 含 IN (销售单, 转换单) + status = 已支付', () => {
+  describe('销售单/转换单 + 已支付回款分配（业绩/销售提成口径）', () => {
+    it('admin efficiency.ts 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(adminSrc).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(adminSrc).toMatch(/LEFT JOIN sale_order_payments sop ON sop\.id = sa\.sale_payment_id/)
+      expect(adminSrc).toMatch(/function paidAllocationDateBetween/)
+      expect(adminSrc).toMatch(/paymentAlias}\.status/)
+      expect(adminSrc).toMatch(/paymentAlias}\.paid_at/)
+      expect(adminSrc).toMatch(/paymentAlias}\.id/)
+      expect(adminSrc).toMatch(/paidAllocationDateBetween\('sop', 'so', cur\.start, cur\.end\)/)
     })
-    it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + status = 已支付', () => {
+    it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
       expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(staffSrc).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(staffSrc).toMatch(/LEFT JOIN sale_order_payments sop ON sop\.id = sa\.sale_payment_id/)
+      expect(staffSrc).toMatch(/sop\.status = '已支付'/)
+      expect(staffSrc).toMatch(/sop\.paid_at/)
+      expect(staffSrc).toMatch(/sop\.id IS NULL/)
     })
   })
 

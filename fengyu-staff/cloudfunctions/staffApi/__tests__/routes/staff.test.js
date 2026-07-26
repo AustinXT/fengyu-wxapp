@@ -337,6 +337,46 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.categorySummary['自销自耗'].service).toBe(200)
   })
 
+  test('部分支付订单的已支付回款分配计入销售提成', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2026-07-01',
+      endDate: '2026-07-31',
+    })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '200.00',
+        commission_amount: '26.00',
+        commission_rate: '0.1300',
+        allocation_ratio: '1.000',
+        department_name: '美容部',
+        product_name: '温暖SPA·腰腹',
+        sales_category: '自销自耗',
+        unit_real_price: '200.00',
+        received: '200.00',
+        sale_order_id: 'FY-XSD-WX-2607190047',
+        customer_name: '陆梦雅',
+        client_phone: '138',
+        paid_at: new Date('2026-07-19T19:00:54+08:00'),
+        store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    const allocSql = pg.query.mock.calls[0][0]
+    expect(allocSql).toContain('LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id')
+    expect(allocSql).toContain("sop.status = '已支付'")
+    expect(allocSql).toContain('sop.paid_at >= $2')
+    expect(allocSql).toContain('sop.id IS NULL')
+    expect(allocSql).toContain("o.status = '已支付'")
+    expect(ctx.result.totalSalesAlloc).toBe(26)
+    expect(ctx.result.totalCommission).toBe(26)
+    expect(ctx.result.items[0].orderId).toBe('FY-XSD-WX-2607190047')
+    expect(ctx.result.items[0].amount).toBe(26)
+  })
+
   test('filterType=sale 只返回销售明细', async () => {
     const ctx = createManagerCtx({
       startDate: '2024-06-01',

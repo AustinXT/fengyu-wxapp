@@ -59,6 +59,20 @@ function postJson(urlStr, body, headers) {
   })
 }
 
+function paidAllocationWindow(paymentAlias, orderAlias, startIdx, endIdx) {
+  return `(
+    (${paymentAlias}.id IS NOT NULL
+      AND ${paymentAlias}.status = '已支付'
+      AND ${paymentAlias}.paid_at >= $${startIdx}
+      AND ${paymentAlias}.paid_at < $${endIdx})
+    OR
+    (${paymentAlias}.id IS NULL
+      AND ${orderAlias}.status = '已支付'
+      AND ${orderAlias}.paid_at >= $${startIdx}
+      AND ${orderAlias}.paid_at < $${endIdx})
+  )`
+}
+
 /**
  * 员工列表
  */
@@ -253,11 +267,10 @@ async function todayCommission(ctx) {
     FROM sale_allocations sa
     JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
     WHERE sa.employee_id = $1
       AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, todayStart, todayEnd])
 
   // 今日服务单数
@@ -280,11 +293,10 @@ async function todayCommission(ctx) {
     FROM sale_allocations sa
     JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
     WHERE sa.employee_id = $1
       AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, thisMonthStart, thisMonthEnd])
 
   // 本月服务单数（个人口径）
@@ -308,11 +320,10 @@ async function todayCommission(ctx) {
     FROM sale_allocations sa
     JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
     WHERE sa.employee_id = $1
       AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, lastMonthStart, lastMonthEnd])
 
   // 上月服务单数
@@ -622,18 +633,17 @@ async function performanceDetail(ctx) {
       o.sale_order_id,
       o.customer_name,
       o.client_phone,
-      o.paid_at,
+      COALESCE(sop.paid_at, o.paid_at) AS paid_at,
       o.store_id
     FROM sale_allocations sa
     JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
     WHERE sa.employee_id = $1
       AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
       ${allocWhere}
-    ORDER BY o.paid_at DESC
+    ORDER BY COALESCE(sop.paid_at, o.paid_at) DESC
   `, allocParams)
 
   // 服务提成明细（基于 service_commissions 表）
