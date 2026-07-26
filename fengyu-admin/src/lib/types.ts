@@ -282,6 +282,7 @@ export interface ProductSku {
   price: string
   specialPrice: string | null
   sessionCount: number | null
+  purchaseLimit: number | null
   sortOrder: number
   serviceFee: string
   isShengmei: boolean | null

@@ -51,6 +51,7 @@ interface RawOrderItem {
   product_name?: string;
   sale_amount?: string;
   received?: string;
+  refunded_amount?: string;
   session_count?: number;
   remaining_sessions?: number;
   paid_sessions?: number | null;
@@ -105,6 +106,8 @@ interface DisplayOrderItem {
   /** 行应付（sale_amount）/ 已收（received）/ 可回款（应付-已收），按子项回款用 */
   saleAmount: string;
   received: string;
+  refundedAmount: string;
+  isRefunded: boolean;
   repayable: string;
   sessionCount: number | undefined;
   remainingSessions: number | undefined;

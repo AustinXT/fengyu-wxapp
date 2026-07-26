@@ -155,7 +155,7 @@ vi.mock('@db/system-config', () => ({
 }))
 
 vi.mock('@db/product', () => ({
-  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
+  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', purchaseLimit: 'purchase_limit', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
   products: { productId: 'product_id', name: 'name' },
   productCategories: { categoryId: 'category_id', productKind: 'product_kind', categoryName: 'category_name', salesCategory: 'sales_category' },
   // 2026-04-27 dfa4847: orders.ts createOrder 优惠券范围校验需查 mall_product_skus → product 的映射
@@ -381,6 +381,28 @@ describe('createOrder — 权限与 scope 校验', () => {
 
     expect(result.success).toBe(true)
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('SKU 超过限购次数 → 拒绝且不进入事务', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      skuId: 'sku-001',
+      specName: '10次卡',
+      price: '200.00',
+      specialPrice: null,
+      isExperience: false,
+      isManagerSpecial: false,
+      purchaseLimit: 1,
+    }))
+
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{ ...baseOrderData.items[0], quantity: 2 }],
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('每单最多可购买 1 件')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 })
 
@@ -1488,6 +1510,7 @@ describe('P0-15-01 修复：admin 两触发点必须调用 settlePointsSafe', ()
   })
 
   it('recordPayment 成功路径 → settlePointsSafe 以 admin.recordPayment 调用', async () => {
+    ;(db.execute as any).mockResolvedValue([])
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       let executeCall = 0
       const tx = {
@@ -3113,6 +3136,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     // recordPayment 用 scopeCondition/isInScope 做门店校验；显式置 true 避免依赖前序 describe
     // 的 mockReturnValue 残留（clearAllMocks 不清返回值）导致 flaky OUT_OF_SCOPE。
     ;(isInScope as any).mockReturnValue(true)
+    ;(db.execute as any).mockResolvedValue([])
     mockSelectBefore([]) // logOperation orgNode 查询
   })
 

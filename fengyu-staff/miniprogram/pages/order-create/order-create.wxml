@@ -223,7 +223,7 @@
               wx:if="{{!item.refBundleId}}"
               value="{{item.quantity}}"
               min="1"
-              max="99"
+              max="{{item.purchaseLimit || 99}}"
               data-sku-id="{{item.skuId}}"
               bind:change="onCartQtyChange"
             />

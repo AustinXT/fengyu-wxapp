@@ -112,6 +112,27 @@ function getItemAmounts(
   return { defaultUnitPrice, defaultSaleAmount, saleAmount, received }
 }
 
+function purchaseLimitMessage(sku: Pick<ProductSku, 'specName' | 'purchaseLimit'>): string {
+  return `${sku.specName} 每单最多可购买 ${sku.purchaseLimit} 件`
+}
+
+function findCartPurchaseLimitViolation(
+  items: Array<{ sku: Pick<ProductSku, 'skuId' | 'specName' | 'purchaseLimit'>; quantity: number }>,
+): { sku: Pick<ProductSku, 'specName' | 'purchaseLimit'>; quantity: number } | null {
+  const totals = new Map<string, { sku: Pick<ProductSku, 'specName' | 'purchaseLimit'>; quantity: number }>()
+  for (const item of items) {
+    const current = totals.get(item.sku.skuId)
+    totals.set(item.sku.skuId, {
+      sku: item.sku,
+      quantity: (current?.quantity ?? 0) + item.quantity,
+    })
+  }
+  for (const row of totals.values()) {
+    if (row.sku.purchaseLimit != null && row.quantity > row.sku.purchaseLimit) return row
+  }
+  return null
+}
+
 /**
  * 按行应付比例分摊订单级优惠券折扣（与 staff utils/cart-calc.ts:allocateCouponPerLine 同算法）
  * - priceLines = 各行 价格×数量（已含内部单半价处理）
@@ -383,6 +404,11 @@ export default function OrderCreatePageClient({
   const addToCart = (product: Product, sku: ProductSku) => {
     setCart((prev) => {
       const existing = prev.find((i) => i.sku.skuId === sku.skuId)
+      const nextQty = (existing?.quantity ?? 0) + 1
+      if (sku.purchaseLimit != null && nextQty > sku.purchaseLimit) {
+        toast.error(purchaseLimitMessage(sku))
+        return prev
+      }
       if (existing) {
         return prev.map((i) =>
           i.sku.skuId === sku.skuId ? { ...i, quantity: i.quantity + 1 } : i
@@ -403,6 +429,11 @@ export default function OrderCreatePageClient({
           acc.push(item)
         } else {
           const newQty = item.quantity + delta
+          if (item.sku.purchaseLimit != null && newQty > item.sku.purchaseLimit) {
+            toast.error(purchaseLimitMessage(item.sku))
+            acc.push(item)
+            return acc
+          }
           if (newQty > 0) acc.push({ ...item, quantity: newQty })
           // newQty <= 0 时自动移除
         }
@@ -447,6 +478,11 @@ export default function OrderCreatePageClient({
    * 预算子总额用 sku.specialPrice（= bundlePrice）逐项累加，用于优惠券匹配。
    */
   const handleBundleAdded = (payload: BundleAddPayload) => {
+    const violation = findCartPurchaseLimitViolation(payload.items)
+    if (violation) {
+      toast.error(purchaseLimitMessage(violation.sku))
+      return
+    }
     const newCart: CartItem[] = payload.items.map(({ sku, quantity }) => ({
       sku,
       product: payload.product,

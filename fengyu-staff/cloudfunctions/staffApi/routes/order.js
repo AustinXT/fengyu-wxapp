@@ -41,7 +41,7 @@ const {
   notifyRefundResult,
 } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
-const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -66,6 +66,95 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
           updated_at = NOW()
       WHERE sale_order_id = $1 AND item_direction = '购买' AND product_type = '疗程卡'
       -- DEPOSIT_REAL_PRICE`
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+function findPurchaseLimitViolation(items, skuRows) {
+  const rowMap = new Map((skuRows || []).map(row => [row.skuId || row.sku_id, row]))
+  const totals = new Map()
+  for (const item of items || []) {
+    if (!item || !item.skuId) continue
+    totals.set(item.skuId, (totals.get(item.skuId) || 0) + Number(item.quantity || 0))
+  }
+  for (const [skuId, quantity] of totals.entries()) {
+    const row = rowMap.get(skuId)
+    const limit = row && row.purchaseLimit != null ? row.purchaseLimit : row?.purchase_limit
+    if (limit != null && quantity > Number(limit)) return row
+  }
+  return null
+}
+
+function purchaseLimitExceededMessage(row) {
+  const name = row.specName || row.spec_name || row.productName || row.skuId || row.sku_id
+  const limit = row.purchaseLimit != null ? row.purchaseLimit : row.purchase_limit
+  return `商品「${name}」每单最多可购买 ${limit} 件`
+}
+
+function treatmentTierGroupKey(row) {
+  if (!row || !row.categoryId || !row.productName) return null
+  return `${row.categoryId}::${row.productName}`
+}
+
+function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrderType) {
+  if (saleOrderType !== '销售单') return
+
+  const groups = new Map()
+  for (const item of rawItems || []) {
+    const key = treatmentTierGroupKey(item)
+    if (
+      !key ||
+      item.productType !== '疗程卡' ||
+      item.isExperience ||
+      item.manualSaleAmountOverride ||
+      item.isManagerSpecial ||
+      item.isBundleLine ||
+      !item.sessionCount ||
+      item.sessionCount <= 0
+    ) {
+      continue
+    }
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(item)
+  }
+
+  for (const [key, groupedItems] of groups.entries()) {
+    const [categoryId, productName] = key.split('::')
+    const totalSessions = groupedItems.reduce((sum, item) => sum + (Number(item.sessionCount) || 0), 0)
+    if (totalSessions <= 1) continue
+
+    const candidates = (tierSkuRows || [])
+      .filter(s =>
+        s.category_id === categoryId &&
+        s.spec_name === productName &&
+        s.product_type === '疗程卡' &&
+        s.is_manager_special !== true &&
+        s.session_count != null &&
+        Number(s.session_count) > 1 &&
+        Number(s.session_count) <= totalSessions
+      )
+      .sort((a, b) => {
+        const sessionDelta = Number(b.session_count) - Number(a.session_count)
+        if (sessionDelta !== 0) return sessionDelta
+        const aUnit = resolveUnitPrice(a, buyerIsMember).realUnit / (Number(a.session_count) || 1)
+        const bUnit = resolveUnitPrice(b, buyerIsMember).realUnit / (Number(b.session_count) || 1)
+        return aUnit - bUnit
+      })
+
+    const tier = candidates[0]
+    if (!tier || !tier.session_count || Number(tier.session_count) <= 1) continue
+
+    const tierUnit = roundMoney(resolveUnitPrice(tier, buyerIsMember).realUnit / Number(tier.session_count))
+    for (const item of groupedItems) {
+      const lineAmount = roundMoney(tierUnit * (Number(item.sessionCount) || 0))
+      item.unitRealPrice = tierUnit
+      item.saleAmount = lineAmount
+      item.priceLine = lineAmount
+      item.received = lineAmount
+    }
+  }
+}
 
 /**
  * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位
@@ -501,8 +590,9 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+                s.category_id,
                 s.service_fee, s.is_shengmei, s.is_experience, s.is_manager_special,
-                pc.sales_category, pc.product_kind
+                s.purchase_limit, pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -519,6 +609,7 @@ async function create(ctx) {
       const skuPriceCeil = Number(sku.price)
       // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡同口径，#6=B 不再豁免）
       const applicableUnit = resolveUnitPrice(sku, buyerIsMember).realUnit
+      const bundlePricing = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
 
       // 入参价格三件套
       let inputListUnit, inputRealUnit, useFrontendPrice
@@ -528,11 +619,10 @@ async function create(ctx) {
         inputRealUnit = Math.round(skuPriceCeil * 50) / 100
         useFrontendPrice = false
       } else {
-        const bp = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
-        if (bp) {
+        if (bundlePricing) {
           // 套餐子项：套餐价独立机制（本次不做会员分流）；上界/缺省用套餐下沉单价（标价/成交）
-          const bundleListUnit = bp.listPrice != null ? Number(bp.listPrice) : skuPriceCeil
-          const bundleSaleUnit = bp.salePrice != null ? Number(bp.salePrice) : bundleListUnit
+          const bundleListUnit = bundlePricing.listPrice != null ? Number(bundlePricing.listPrice) : skuPriceCeil
+          const bundleSaleUnit = bundlePricing.salePrice != null ? Number(bundlePricing.salePrice) : bundleListUnit
           inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : bundleListUnit
           inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : bundleSaleUnit
           if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
@@ -600,6 +690,7 @@ async function create(ctx) {
       return {
         skuId: item.skuId,
         productName: sku.spec_name,
+        categoryId: sku.category_id,
         productType: sku.product_type,
         productKind: sku.product_kind,
         sessionCount,
@@ -619,11 +710,49 @@ async function create(ctx) {
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
+        manualSaleAmountOverride: item.manualSaleAmountOverride === true,
+        isBundleLine: !!bundlePricing,
         // 店长特别优惠行级快照（权威 = DB，不信前端）
         isManagerSpecial: sku.is_manager_special === true,
       }
     })
   )
+
+  const purchaseLimitViolation = findPurchaseLimitViolation(items, rawItemDataList)
+  if (purchaseLimitViolation) {
+    throw new Error(`INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
+  }
+
+  const tierBaseItems = rawItemDataList.filter(d =>
+    saleOrderType === '销售单' &&
+    d.productType === '疗程卡' &&
+    !d.isExperience &&
+    !d.manualSaleAmountOverride &&
+    !d.isManagerSpecial &&
+    !d.isBundleLine &&
+    d.categoryId &&
+    d.productName
+  )
+  if (tierBaseItems.length > 0) {
+    const categoryIds = [...new Set(tierBaseItems.map(d => d.categoryId))]
+    const productNames = [...new Set(tierBaseItems.map(d => d.productName))]
+    const tierSkuRows = await pg.query(
+      `SELECT sku_id, category_id, product_type, spec_name, price, special_price, session_count,
+              is_manager_special
+       FROM product_skus
+       WHERE deleted_at IS NULL
+         AND is_enabled = true
+         AND product_type = '疗程卡'
+         AND COALESCE(is_experience, false) = false
+         AND COALESCE(is_manager_special, false) = false
+         AND category_id = ANY($1)
+         AND spec_name = ANY($2)
+         AND session_count IS NOT NULL`,
+      [categoryIds, productNames]
+    )
+    applyTreatmentTierPricing(rawItemDataList, tierSkuRows, buyerIsMember, saleOrderType)
+  }
 
   // ========== B2 拆行：疗程卡 quantity>1 → N 行 quantity=1 ==========
   // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
@@ -3078,7 +3207,7 @@ async function createConversion(ctx) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
-                s.is_shengmei, s.is_experience, pc.sales_category
+                s.is_shengmei, s.is_experience, s.purchase_limit, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -3107,7 +3236,13 @@ async function createConversion(ctx) {
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
+    }
+
+    const purchaseLimitViolation = findPurchaseLimitViolation(convertInItems, inItems)
+    if (purchaseLimitViolation) {
+      throw new Error(`INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
     }
 
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
@@ -3410,6 +3545,129 @@ async function customerHeldCards(ctx) {
 
 // ========== P2: 取货单 ==========
 
+async function generatePickupInventoryDocNo(client) {
+  const prefix = 'GCK'
+  const ymd = shanghaiYMD()
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+    `store_inventory_docs:${prefix}:${ymd}`,
+  ])
+  const rows = await client.query(
+    `SELECT id
+       FROM store_inventory_docs
+      WHERE id LIKE $1
+   ORDER BY id DESC
+      LIMIT 1`,
+    [`${prefix}-${ymd}-%`],
+  )
+  const latest = rows.rows[0]?.id
+  const seq = latest ? Number(String(latest).slice(-4)) + 1 : 1
+  return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
+}
+
+async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, customerName, pickupQuantity, remark, idempotencyKey) {
+  const stockRows = await client.query(
+    `SELECT id, store_id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
+       FROM store_inventory_stocks
+      WHERE store_id = $1
+        AND sku_id = $2
+        AND quantity_on_hand > 0
+   ORDER BY expiry_date NULLS LAST, id
+      FOR UPDATE`,
+    [ctx.auth.effectiveStoreId, updatedItem.sku_id],
+  )
+
+  let available = 0
+  for (const row of stockRows.rows) available += Number(row.quantity_on_hand)
+  if (available < Number(pickupQuantity)) {
+    throw new Error(`INVALID_STATE: 门店库存不足，当前可用 ${available}`)
+  }
+
+  const docId = await generatePickupInventoryDocNo(client)
+  await client.query(
+    `INSERT INTO store_inventory_docs (
+       id, doc_type, status, store_id, doc_date, total_quantity,
+       related_sale_order_id, client_user_id, customer_name,
+       remark, created_by, confirmed_by, confirmed_at
+     )
+     VALUES ($1, '院顾客产品出库', '已完成', $2, $3, $4,
+             $5, $6, $7, $8, $9, $9, NOW())`,
+    [
+      docId,
+      ctx.auth.effectiveStoreId,
+      shanghaiDateStr(),
+      pickupQuantity,
+      updatedItem.sale_order_id,
+      clientUserId,
+      customerName || null,
+      remark || null,
+      ctx.auth.staffWfId,
+    ],
+  )
+
+  let remaining = Number(pickupQuantity)
+  let itemSeq = 0
+  for (const stock of stockRows.rows) {
+    if (remaining <= 0) break
+    const before = Number(stock.quantity_on_hand)
+    const deduct = Math.min(before, remaining)
+    const after = before - deduct
+    const inserted = await client.query(
+      `INSERT INTO store_inventory_doc_items (
+         doc_id, stock_id, sku_id, sale_item_id, sku_name, batch_no, expiry_date,
+         quantity, stock_snapshot, remark
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id`,
+      [
+        docId,
+        stock.id,
+        stock.sku_id,
+        updatedItem.sale_item_id,
+        stock.sku_name || updatedItem.product_name || updatedItem.sku_id,
+        stock.batch_no || '',
+        stock.expiry_date || null,
+        deduct,
+        before,
+        remark || null,
+      ],
+    )
+    const docItemId = inserted.rows[0].id
+    await client.query(
+      `UPDATE store_inventory_stocks
+          SET quantity_on_hand = $1,
+              updated_at = NOW()
+        WHERE id = $2`,
+      [after, stock.id],
+    )
+    await client.query(
+      `INSERT INTO store_inventory_movements (
+         movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
+         sale_order_id, sale_item_id, direction, quantity_delta,
+         quantity_before, quantity_after, created_by, remark
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'出库',$9,$10,$11,$12,$13)`,
+      [
+        `pickup:${updatedItem.sale_item_id}:${idempotencyKey || docId}:${itemSeq++}`,
+        stock.id,
+        ctx.auth.effectiveStoreId,
+        stock.sku_id,
+        docId,
+        docItemId,
+        updatedItem.sale_order_id,
+        updatedItem.sale_item_id,
+        -deduct,
+        before,
+        after,
+        ctx.auth.staffWfId,
+        remark || null,
+      ],
+    )
+    remaining -= deduct
+  }
+
+  return docId
+}
+
 /**
  * 创建取货记录（家居产品提货）
  * payload: { saleItemId, pickupQuantity, remark? }
@@ -3460,7 +3718,7 @@ async function createPickup(ctx) {
          AND store_id = $3
          AND product_type = '家居产品'
          AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-       RETURNING sale_item_id, quantity, picked_up_quantity`,
+       RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity`,
       [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
     )
 
@@ -3484,14 +3742,29 @@ async function createPickup(ctx) {
 
     // 2) 查顾客信息
     const itemRows = await client.query(
-      `SELECT si.sale_order_id, o.client_user_id
+      `SELECT si.sale_order_id, o.client_user_id, o.customer_name
        FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        WHERE si.sale_item_id = $1`,
       [saleItemId]
     )
     const clientUserId = itemRows.rows.length > 0 ? itemRows.rows[0].client_user_id : null
+    const customerName = itemRows.rows.length > 0 ? itemRows.rows[0].customer_name : null
 
-    // 3) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE 重复累加）
+    updated = result.rows[0]
+
+    // 3) 写入统一库存单据 + 库存扣减流水。库存不足时回滚 picked_up_quantity。
+    const inventoryDocId = await createPickupInventoryDoc(
+      client,
+      ctx,
+      updated,
+      clientUserId,
+      customerName,
+      pickupQuantity,
+      remark,
+      idempotencyKey,
+    )
+
+    // 4) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE/库存重复扣减）
     try {
       await client.query(
         `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
@@ -3505,16 +3778,15 @@ async function createPickup(ctx) {
       throw err
     }
 
-    updated = result.rows[0]
-
     // 审计日志
     await logOperation(client, ctx, 'order.createPickup', 'sale_item', saleItemId, {
-      _v: 3,
+      _v: 4,
       pickupQuantity,
       clientUserId,
       storeId: ctx.auth.effectiveStoreId,
       pickedUp: updated.picked_up_quantity,
       total: updated.quantity,
+      inventoryDocId,
     })
   })
 

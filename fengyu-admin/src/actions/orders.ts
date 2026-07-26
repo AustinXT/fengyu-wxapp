@@ -47,6 +47,39 @@ const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
 type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
+type SkuPurchaseLimitRow = {
+  skuId: string
+  specName?: string | null
+  purchaseLimit: number | null
+}
+
+type SkuQuantityInput = {
+  skuId?: string | null
+  quantity?: number | null
+}
+
+function findPurchaseLimitViolation(
+  items: SkuQuantityInput[],
+  skuRows: SkuPurchaseLimitRow[],
+): SkuPurchaseLimitRow | null {
+  const rowMap = new Map(skuRows.map((row) => [row.skuId, row]))
+  const totals = new Map<string, number>()
+  for (const item of items) {
+    if (!item.skuId) continue
+    totals.set(item.skuId, (totals.get(item.skuId) ?? 0) + Number(item.quantity ?? 0))
+  }
+  for (const [skuId, quantity] of totals.entries()) {
+    const row = rowMap.get(skuId)
+    if (row?.purchaseLimit != null && quantity > row.purchaseLimit) return row
+  }
+  return null
+}
+
+function purchaseLimitExceededMessage(row: SkuPurchaseLimitRow): string {
+  const name = row.specName || row.skuId
+  return `商品「${name}」每单最多可购买 ${row.purchaseLimit} 件`
+}
+
 // 寄存单疗程卡「实际单价按实付重算」—— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
 // ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后调用（理由见 staff routes/order.js 同名注释）：
@@ -1905,26 +1938,36 @@ export const createOrder = withPermission(
 
   // 取每个下单 SKU 的标价/会员价/体验卡/店长特价（权威 = DB，不信前端单价）
   const repriceSkuIds = data.items.map((i) => i.skuId).filter((s): s is string => !!s)
-  const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean }>()
+  const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean; purchaseLimit: number | null }>()
+  let purchaseLimitRows: SkuPurchaseLimitRow[] = []
   if (repriceSkuIds.length > 0) {
     const pricingRows = await db
       .select({
         skuId: productSkus.skuId,
+        specName: productSkus.specName,
         price: productSkus.price,
         specialPrice: productSkus.specialPrice,
         isExperience: productSkus.isExperience,
         isManagerSpecial: productSkus.isManagerSpecial,
+        purchaseLimit: productSkus.purchaseLimit,
       })
       .from(productSkus)
       .where(and(inArray(productSkus.skuId, repriceSkuIds), isNull(productSkus.deletedAt)))
+    purchaseLimitRows = pricingRows
     for (const r of pricingRows) {
       skuPricingMap.set(r.skuId, {
         price: r.price,
         specialPrice: r.specialPrice,
         isExperience: r.isExperience === true,
         isManagerSpecial: r.isManagerSpecial === true,
+        purchaseLimit: r.purchaseLimit,
       })
     }
+  }
+
+  const purchaseLimitViolation = findPurchaseLimitViolation(data.items, purchaseLimitRows)
+  if (purchaseLimitViolation) {
+    return { success: false, message: purchaseLimitExceededMessage(purchaseLimitViolation) }
   }
 
   // 内部单引用了已下架/不存在的 SKU：fail-closed 拒绝建单（与 staff order.js / client order.js「商品 X 不存在」同口径）。
@@ -2796,6 +2839,7 @@ export const createConversionOrder = withPermission(
       const skuRows = await tx
         .select({
           skuId: productSkus.skuId,
+          specName: productSkus.specName,
           price: productSkus.price,
           serviceFee: productSkus.serviceFee,
           sessionCount: productSkus.sessionCount,
@@ -2803,11 +2847,16 @@ export const createConversionOrder = withPermission(
           isExperience: productSkus.isExperience,
           isShengmei: productSkus.isShengmei,
           salesCategory: productCategories.salesCategory,
+          purchaseLimit: productSkus.purchaseLimit,
         })
         .from(productSkus)
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(and(inArray(productSkus.skuId, inSkuIds), isNull(productSkus.deletedAt)))
       const skuMap = new Map(skuRows.map((r) => [r.skuId, r]))
+      const purchaseLimitViolation = findPurchaseLimitViolation(data.convertInItems, skuRows)
+      if (purchaseLimitViolation) {
+        throw new ApiError('INVALID_PARAMS', `PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
+      }
 
       let totalIn = 0
       const inItems: Array<{
@@ -3058,6 +3107,12 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
     if (m?.includes('PREPAID_CARD_UPSERT_FAILED')) return { success: false, message: '储值卡入账失败，请稍后重试' }
+    if (m?.includes('PURCHASE_LIMIT_EXCEEDED:')) {
+      return {
+        success: false,
+        message: m.replace(/^INVALID_PARAMS:\s*PURCHASE_LIMIT_EXCEEDED:\s*/, '').replace(/^PURCHASE_LIMIT_EXCEEDED:\s*/, ''),
+      }
+    }
     // 全额抵扣即时扣卡失败（余额不足 / 无卡）
     if (m?.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = m.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')

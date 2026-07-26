@@ -29,6 +29,27 @@ interface BundleRowProps {
   onBundleAdded?: (payload: BundleAddPayload) => void
 }
 
+function purchaseLimitMessage(ref: Pick<OrderPickerBundleSkuRef, 'specName' | 'purchaseLimit'>): string {
+  return `${ref.specName} 每单最多可购买 ${ref.purchaseLimit} 件`
+}
+
+function findBundlePurchaseLimitViolation(
+  items: Array<{ ref: OrderPickerBundleSkuRef; quantity: number }>,
+): OrderPickerBundleSkuRef | null {
+  const totals = new Map<string, { ref: OrderPickerBundleSkuRef; quantity: number }>()
+  for (const item of items) {
+    const current = totals.get(item.ref.skuId)
+    totals.set(item.ref.skuId, {
+      ref: item.ref,
+      quantity: (current?.quantity ?? 0) + item.quantity,
+    })
+  }
+  for (const row of totals.values()) {
+    if (row.ref.purchaseLimit != null && row.quantity > row.ref.purchaseLimit) return row.ref
+  }
+  return null
+}
+
 function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
   // 各「选N项」分组的当前选择状态：groupId → { skuId → 数量 }
   const pickGroups = useMemo(
@@ -46,14 +67,19 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
   const groupTotal = (groupId: number): number =>
     Object.values(selections[groupId] ?? {}).reduce((s, q) => s + q, 0)
 
-  const incSku = (groupId: number, skuId: string, pickCount: number) => {
+  const incSku = (groupId: number, sku: OrderPickerBundleSkuRef, pickCount: number) => {
     if (groupTotal(groupId) >= pickCount) {
       toast.error(`该分组共选 ${pickCount} 项`)
       return
     }
+    const currentQty = selections[groupId]?.[sku.skuId] ?? 0
+    if (sku.purchaseLimit != null && currentQty + 1 > sku.purchaseLimit) {
+      toast.error(purchaseLimitMessage(sku))
+      return
+    }
     setSelections((prev) => {
       const cur = { ...(prev[groupId] ?? {}) }
-      cur[skuId] = (cur[skuId] ?? 0) + 1
+      cur[sku.skuId] = (cur[sku.skuId] ?? 0) + 1
       return { ...prev, [groupId]: cur }
     })
   }
@@ -91,6 +117,11 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
 
     if (toAdd.length === 0) {
       toast.error("该套餐暂无可加购规格")
+      return
+    }
+    const violation = findBundlePurchaseLimitViolation(toAdd)
+    if (violation) {
+      toast.error(purchaseLimitMessage(violation))
       return
     }
 
@@ -187,6 +218,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
               <div className="space-y-1">
                 {g.skus.map((s) => {
                   const qty = selections[g.id]?.[s.skuId] ?? 0
+                  const limitReached = s.purchaseLimit != null && qty >= s.purchaseLimit
                   return (
                     <div
                       key={s.skuId}
@@ -208,8 +240,8 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
                         <span className="w-7 text-center font-medium">{qty}</span>
                         <button
                           type="button"
-                          disabled={full}
-                          onClick={() => incSku(g.id, s.skuId, pickCount)}
+                          disabled={full || limitReached}
+                          onClick={() => incSku(g.id, s, pickCount)}
                           className="w-6 h-6 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
                         >
                           +
