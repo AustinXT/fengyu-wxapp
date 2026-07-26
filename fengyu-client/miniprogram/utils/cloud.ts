@@ -1,6 +1,41 @@
 // utils/cloud.ts — clientApi 调用封装
 import { APP_VERSION } from './version'
 
+const LOGGED_OUT_KEY = 'clientLoggedOut'
+
+const ACTIONS_ALLOWED_WHEN_LOGGED_OUT = new Set([
+  'auth.bindPhone',
+  'store.list',
+  'store.detail',
+  'store.geocode',
+  'staff.list',
+  'staff.detail',
+  'appointment.staffSchedule',
+  'card.rechargeConfig',
+])
+
+const ACTION_PREFIXES_ALLOWED_WHEN_LOGGED_OUT = [
+  'config.',
+  'product.',
+]
+
+function isLoggedOutLocally(): boolean {
+  return typeof wx.getStorageSync === 'function' && wx.getStorageSync(LOGGED_OUT_KEY) === true
+}
+
+function isActionAllowedWhenLoggedOut(action: string): boolean {
+  return ACTIONS_ALLOWED_WHEN_LOGGED_OUT.has(action)
+    || ACTION_PREFIXES_ALLOWED_WHEN_LOGGED_OUT.some((prefix) => action.startsWith(prefix))
+}
+
+function createPhoneRequiredError(): ClientApiError {
+  const err: ClientApiError = new Error('请先授权手机号登录')
+  err.code = -403
+  err.errorType = 'PHONE_REQUIRED'
+  err.data = null
+  return err
+}
+
 /**
  * 自动附加小程序前端版本号 `_appVersion`，供云函数按前端版本做向后兼容分流
  * （上线版/测试版共用 CloudBase 环境，云函数部署即生效但前端上线有审批延迟，新旧版并存）。
@@ -33,6 +68,10 @@ export async function callClientApi<T = any>(
   action: string,
   payload: Record<string, any> = {}
 ): Promise<T> {
+  if (isLoggedOutLocally() && !isActionAllowedWhenLoggedOut(action)) {
+    throw createPhoneRequiredError()
+  }
+
   let res: any
   try {
     res = await wx.cloud.callFunction({
@@ -64,12 +103,13 @@ export async function callClientApi<T = any>(
 }
 
 interface BindPhoneResult {
+  userId: string
   phone: string
   updatedOrdersCount: number
 }
 
 /**
- * CloudID 方式绑定手机号（首次绑定）
+ * CloudID 方式手机号授权登录（首次绑定或退出后重新授权）
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
  * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */
@@ -100,10 +140,19 @@ export async function bindPhoneWithCloudID(
       throw err
     }
 
-    const { phone, updatedOrdersCount = 0 } = res.result.data
+    const { userId, phone, updatedOrdersCount = 0 } = res.result.data
+    wx.removeStorageSync(LOGGED_OUT_KEY)
     wx.setStorageSync('phone', phone)
+    if (userId) {
+      const app = typeof getApp === 'function' ? getApp<IAppOption>() : null
+      if (app?.setUserInfo) {
+        app.setUserInfo({ userId })
+      } else {
+        wx.setStorageSync('userId', userId)
+      }
+    }
 
-    return { phone, updatedOrdersCount }
+    return { userId, phone, updatedOrdersCount }
   } finally {
     wx.hideLoading()
   }
