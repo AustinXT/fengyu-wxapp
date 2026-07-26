@@ -7,7 +7,7 @@
 export interface ShareGiftConfig {
   /** 总开关；false 时 grantShareGift 直接 return */
   enabled: boolean
-  /** 新客首单 paid_amount × percent 为券面值；clamp 到 [0.01, 0.5] */
+  /** 新客首单首笔「首次支付」金额 × percent 为券面值；clamp 到 [0.01, 0.5] */
   percent: number
   /** 面值下限（元，含）；计算结果 < min 时取 min */
   minFaceValue: number

@@ -73,14 +73,17 @@ interface BindPhoneResult {
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
  * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */
-export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneResult> {
+export async function bindPhoneWithCloudID(
+  cloudID: string,
+  payload: Record<string, any> = {}
+): Promise<BindPhoneResult> {
   wx.showLoading({ title: '绑定中...', mask: true })
   try {
     const res = await wx.cloud.callFunction({
       name: 'clientApi',
       data: {
         action: 'auth.bindPhone',
-        payload: withClientContext({}),
+        payload: withClientContext(payload),
         phoneData: wx.cloud.CloudID(cloudID)
       }
     }) as any

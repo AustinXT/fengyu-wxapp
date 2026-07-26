@@ -159,6 +159,7 @@ export interface CascadeRefundResult {
   voidedAllocations: number
   voidedCommissions: number
   refundedCoupons: number
+  revokedShareGiftCoupons: number
   reversedPoints: number
   rolledBackPickups: number
 }
@@ -267,6 +268,7 @@ export async function cascadeRefund(
 
   // ── 3) user_coupons 已用且未过期券恢复（仅整单全退） ──────────────
   let refundedCoupons = 0
+  let revokedShareGiftCoupons = 0
   if (wholeOrder) {
     const res = await tx.execute(sql`
       UPDATE user_coupons
@@ -279,6 +281,16 @@ export async function cascadeRefund(
          AND (expire_at IS NULL OR expire_at > NOW())
     `)
     refundedCoupons = rowsAffected(res)
+
+    const shareGiftRes = await tx.execute(sql`
+      UPDATE user_coupons
+         SET status = '已过期',
+             expire_at = NOW() - INTERVAL '1 second',
+             updated_at = NOW()
+       WHERE coupon_id IN (${`sg-inviter-${saleOrderId}`}, ${`sg-invitee-${saleOrderId}`})
+         AND status = '未使用'
+    `)
+    revokedShareGiftCoupons = rowsAffected(shareGiftRes)
   }
 
   // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算（订单级） ──
@@ -352,6 +364,7 @@ export async function cascadeRefund(
     voidedAllocations,
     voidedCommissions,
     refundedCoupons,
+    revokedShareGiftCoupons,
     reversedPoints,
     rolledBackPickups,
   }

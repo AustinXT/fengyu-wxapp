@@ -947,6 +947,7 @@ export const approveRefund = withPermission(
     voidedAllocations: 0,
     voidedCommissions: 0,
     refundedCoupons: 0,
+    revokedShareGiftCoupons: 0,
     reversedPoints: 0,
     rolledBackPickups: 0,
   }

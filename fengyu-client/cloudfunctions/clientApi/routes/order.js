@@ -164,7 +164,7 @@ async function recalcCustomerType(client, clientUserId) {
  *      → recalcMemberLevel → settlePointsSafe → grantShareGift（SAVEPOINT 隔离，非致命）。
  * clientApi 三处支付完成点（zeroPayable / confirmPrepaidFull / repay 纯卡）共用此入口，
  * 与 staffApi / payNotify / admin recordPayment 同口径。paid_sessions 由各调用点的
- * recalcPaidSessionsForOrder 负责，此处不重复。paidAmount=0 时 grantShareGift 内部早退。
+ * recalcPaidSessionsForOrder 负责，此处不重复。无首笔「首次支付」流水时 grantShareGift 内部早退。
  * @param {object} client - pg 事务客户端
  * @param {{saleOrderId:string, clientUserId:string, paidAmount:number, source:string}} args
  */

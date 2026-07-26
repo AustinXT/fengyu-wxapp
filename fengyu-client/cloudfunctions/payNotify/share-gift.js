@@ -1,7 +1,7 @@
 /**
  * 分享礼发放（跨云函数共享）
  *
- * 新客首单结清时，按 `paid_amount × percent`（clamp 到 [min,max]）向邀请人和新客
+ * 新客首单结清时，按首笔 `首次支付` 实付金额 × percent（clamp 到 [min,max]）向邀请人和新客
  * 各发一张动态面值代金券 + 一条站内消息；以 sale_order_id 为幂等根键。
  *
  * 以下三份副本必须保持字节级一致：
@@ -14,13 +14,27 @@
 
 /**
  * @param {import('pg').PoolClient} client  事务内 client（由调用方负责 BEGIN/COMMIT）
- * @param {{saleOrderId:string, clientUserId:string, paidAmount:number|string, source?:string}} order
+ * @param {{saleOrderId:string, clientUserId:string, paidAmount?:number|string, source?:string}} order
  * @returns {Promise<{granted:boolean, reason?:string, value?:number, inviter?:string}>}
  */
 async function grantShareGift(client, order) {
-  // 0. paid_amount 必须 > 0（储值卡全额抵扣场景 paid_amount=0 → 跳过）
-  const paid = Number(order && order.paidAmount)
-  if (!order || !order.clientUserId || !order.saleOrderId || !(paid > 0)) {
+  // 0. 基础参数 + 首笔首次支付实付金额必须 > 0
+  if (!order || !order.clientUserId || !order.saleOrderId) {
+    return { granted: false, reason: 'no_paid_amount' }
+  }
+  const firstPaymentRow = (await client.query(
+    `SELECT amount
+       FROM sale_order_payments
+      WHERE sale_order_id = $1
+        AND status = '已支付'
+        AND change_type = '首次支付'
+        AND amount > 0
+      ORDER BY paid_at ASC NULLS LAST, created_at ASC, id ASC
+      LIMIT 1`,
+    [order.saleOrderId]
+  )).rows[0]
+  const paid = Number(firstPaymentRow && firstPaymentRow.amount)
+  if (!(paid > 0)) {
     return { granted: false, reason: 'no_paid_amount' }
   }
 

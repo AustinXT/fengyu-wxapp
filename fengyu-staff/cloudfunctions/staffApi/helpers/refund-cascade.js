@@ -20,7 +20,7 @@
  * 通道：
  *   1. sale_allocations:    INSERT 负数镜像行（记负数冲销销售提成，对所有被退 item 按 refundAmount，挂退款流水 id）
  *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$（仅全退 item）
- *   3. user_coupons:        UPDATE SET status='未使用'（仅整单全退）
+ *   3. user_coupons:        UPDATE SET status='未使用'（仅整单全退）+ 未使用分享礼券置为已过期
  *   4. point_transactions:  INSERT 反向流水（type='消费冲销'）+ client_wechat_users.points_balance 重算（订单级比例）
  *   5. pickup_records:      UPDATE sale_items.picked_up_quantity 反向恢复（逐被退家居 item，按 sessionCount）
  *
@@ -137,6 +137,7 @@ async function cascadeRefund(client, params) {
 
   // ========== 通道 3: user_coupons 回滚（仅整单全退；部分退款不退券）==========
   let refundedCoupons = 0
+  let revokedShareGiftCoupons = 0
   if (wholeOrder) {
     const couponRes = await client.query(
       `UPDATE user_coupons
@@ -147,6 +148,17 @@ async function cascadeRefund(client, params) {
       [saleOrderId],
     )
     refundedCoupons = couponRes.rowCount || 0
+
+    const shareGiftRes = await client.query(
+      `UPDATE user_coupons
+          SET status = '已过期',
+              expire_at = NOW() - INTERVAL '1 second',
+              updated_at = NOW()
+        WHERE coupon_id = ANY($1::text[])
+          AND status = '未使用'`,
+      [[`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`]],
+    )
+    revokedShareGiftCoupons = shareGiftRes.rowCount || 0
   }
 
   // ========== 通道 4: point_transactions 比例冲销（订单级，按 refunded/received 比例）==========
@@ -221,6 +233,7 @@ async function cascadeRefund(client, params) {
     voidedAllocations,
     voidedCommissions,
     refundedCoupons,
+    revokedShareGiftCoupons,
     reversedPoints,
     pointsBalanceUpdated,
     rolledBackPickups,

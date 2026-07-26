@@ -617,6 +617,14 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/if\s*\(\s*wholeOrder\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
       expect(adminSrc).toMatch(/if\s*\(\s*wholeOrder\s*\)[\s\S]*?UPDATE\s+user_coupons/i)
     })
+    test('两端整单全退必须撤销未使用分享礼 sg-* 券', () => {
+      for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {
+        expect(src, `${name} 缺 sg-inviter 撤销`).toContain('sg-inviter-')
+        expect(src, `${name} 缺 sg-invitee 撤销`).toContain('sg-invitee-')
+        expect(src, `${name} 缺分享礼已过期状态`).toMatch(/status\s*=\s*'已过期'/)
+        expect(src, `${name} 缺未使用门控`).toMatch(/status\s*=\s*'未使用'/)
+      }
+    })
   })
 
   // 通道 4：point_transactions 比例冲销（INSERT '消费冲销' 行 + 重算 points_balance）
@@ -673,6 +681,7 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         'voidedAllocations',
         'voidedCommissions',
         'refundedCoupons',
+        'revokedShareGiftCoupons',
         'reversedPoints',
         'rolledBackPickups',
       ]
@@ -895,6 +904,14 @@ describe('TOCTOU partial unique 三端 INSERT 配套守护', () => {
         expect(m[0], `${p} 的 user_coupons INSERT 未带 external_ref`).toMatch(/external_ref/)
       }
     }
+  })
+
+  test('三份 share-gift.js 副本必须字节一致', () => {
+    const payNotify = readFile(path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/share-gift.js'))
+    const clientApi = readFile(path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/share-gift.js'))
+    const staffApi = readFile(path.resolve(__dirname, '../../share-gift.js'))
+    expect(clientApi).toBe(payNotify)
+    expect(staffApi).toBe(payNotify)
   })
 
   test('staff service.create / client appointment.create / client store.requestUnbind INSERT 必须有 23505 / ON CONFLICT 守护', () => {

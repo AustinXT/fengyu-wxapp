@@ -47,6 +47,12 @@ const BASE_ORDER = {
 
 const INVITER_ID = 'FYGK-20260424-00001'
 
+function firstPayment(amount = 100) {
+  return { rows: [{ amount }] }
+}
+function noFirstPayment() {
+  return { rows: [] }
+}
 /** 辅助：产生 system_configs 行（JSON 字符串） */
 function cfgRow(overrides = {}) {
   return { rows: [{ value: JSON.stringify({ ...BASE_CFG, ...overrides }) }] }
@@ -78,8 +84,9 @@ function tplRow(overrides = {}) {
 }
 
 // 标准 happy path 从第 1 步到第 10 步所需的 mock 序列
-function happyPathClient(cfgOverride = {}, tplOverride = {}) {
+function happyPathClient(cfgOverride = {}, tplOverride = {}, paymentAmount = 100) {
   return makeClient(
+    firstPayment(paymentAmount), // 0. SELECT 首笔首次支付
     cfgRow(cfgOverride),      // 1. SELECT system_configs
     firstOrder(0),            // 2. COUNT(*) = 0 → 首单
     inviterResult(),          // 3. SELECT inviter_user_id
@@ -98,16 +105,16 @@ function happyPathClient(cfgOverride = {}, tplOverride = {}) {
 // ──────────────────────────────────────────────────────────
 
 describe('grantShareGift — no_paid_amount', () => {
-  test('paidAmount = 0 → granted:false', async () => {
-    const c = makeClient()
-    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 0 })
+  test('无首笔首次支付流水 → granted:false', async () => {
+    const c = makeClient(noFirstPayment())
+    const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'no_paid_amount' })
-    expect(c.query).not.toHaveBeenCalled()
+    expect(c.query).toHaveBeenCalledTimes(1)
   })
 
-  test('paidAmount 负数 → granted:false', async () => {
-    const c = makeClient()
-    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: -10 })
+  test('首笔首次支付金额非正数 → granted:false', async () => {
+    const c = makeClient(firstPayment(0))
+    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
     expect(r).toEqual({ granted: false, reason: 'no_paid_amount' })
   })
 
@@ -128,17 +135,28 @@ describe('grantShareGift — no_paid_amount', () => {
     const r = await grantShareGift(c, null)
     expect(r).toEqual({ granted: false, reason: 'no_paid_amount' })
   })
+
+  test('首付查询只限定首次支付，不限制 payment_method', async () => {
+    const c = makeClient(firstPayment(), cfgRow({ enabled: false }))
+    await grantShareGift(c, BASE_ORDER)
+    const sql = c.query.mock.calls[0][0]
+    expect(sql).toContain("change_type = '首次支付'")
+    expect(sql).toContain("status = '已支付'")
+    expect(sql).toContain('ORDER BY paid_at ASC NULLS LAST, created_at ASC, id ASC')
+    expect(sql).not.toContain('payment_method')
+    expect(c.query.mock.calls[0][1]).toEqual([BASE_ORDER.saleOrderId])
+  })
 })
 
 describe('grantShareGift — no_config', () => {
   test('system_configs 无 share_gift_config 行 → granted:false', async () => {
-    const c = makeClient({ rows: [] })
+    const c = makeClient(firstPayment(), { rows: [] })
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'no_config' })
   })
 
   test('rows[0].value 为空字符串 → granted:false', async () => {
-    const c = makeClient({ rows: [{ value: '' }] })
+    const c = makeClient(firstPayment(), { rows: [{ value: '' }] })
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'no_config' })
   })
@@ -146,7 +164,7 @@ describe('grantShareGift — no_config', () => {
 
 describe('grantShareGift — bad_config', () => {
   test('value 为非法 JSON → granted:false', async () => {
-    const c = makeClient({ rows: [{ value: '{broken' }] })
+    const c = makeClient(firstPayment(), { rows: [{ value: '{broken' }] })
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'bad_config' })
   })
@@ -154,20 +172,20 @@ describe('grantShareGift — bad_config', () => {
 
 describe('grantShareGift — disabled', () => {
   test('cfg.enabled = false → granted:false', async () => {
-    const c = makeClient(cfgRow({ enabled: false }))
+    const c = makeClient(firstPayment(), cfgRow({ enabled: false }))
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'disabled' })
-    expect(c.query).toHaveBeenCalledTimes(1)
+    expect(c.query).toHaveBeenCalledTimes(2)
   })
 
   test('cfg.couponTemplateId 为空 → granted:false', async () => {
-    const c = makeClient(cfgRow({ couponTemplateId: '' }))
+    const c = makeClient(firstPayment(), cfgRow({ couponTemplateId: '' }))
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'disabled' })
   })
 
   test('config.value 为对象（非字符串）且 enabled=false → granted:false', async () => {
-    const c = makeClient(cfgRowObj({ enabled: false }))
+    const c = makeClient(firstPayment(), cfgRowObj({ enabled: false }))
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'disabled' })
   })
@@ -175,36 +193,36 @@ describe('grantShareGift — disabled', () => {
 
 describe('grantShareGift — not_first_order', () => {
   test('COUNT(*)=1（已有其他结清订单）→ granted:false', async () => {
-    const c = makeClient(cfgRow(), firstOrder(1))
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(1))
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'not_first_order' })
   })
 
   test('COUNT(*)=5 → granted:false', async () => {
-    const c = makeClient(cfgRow(), firstOrder(5))
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(5))
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'not_first_order' })
   })
 
   test('首单判定 SQL 包含 sale_order_id <> $2', async () => {
-    const c = makeClient(cfgRow(), firstOrder(1))
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(1))
     await grantShareGift(c, BASE_ORDER)
-    const sql = c.query.mock.calls[1][0]
+    const sql = c.query.mock.calls[2][0]
     expect(sql).toContain('sale_order_id <> $2')
-    const params = c.query.mock.calls[1][1]
+    const params = c.query.mock.calls[2][1]
     expect(params).toEqual([BASE_ORDER.clientUserId, BASE_ORDER.saleOrderId])
   })
 })
 
 describe('grantShareGift — no_inviter', () => {
   test('inviter_user_id = null → granted:false', async () => {
-    const c = makeClient(cfgRow(), firstOrder(0), noInviter())
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(0), noInviter())
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'no_inviter' })
   })
 
   test('client_wechat_users 无该用户行 → granted:false', async () => {
-    const c = makeClient(cfgRow(), firstOrder(0), { rows: [] })
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(0), { rows: [] })
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'no_inviter' })
   })
@@ -213,6 +231,7 @@ describe('grantShareGift — no_inviter', () => {
 describe('grantShareGift — inviter_not_qualified', () => {
   test('inviterMustHavePaidOrder=true 且邀请人无结清订单 → granted:false', async () => {
     const c = makeClient(
+      firstPayment(),
       cfgRow({ inviterMustHavePaidOrder: true }),
       firstOrder(0),
       inviterResult(),
@@ -224,6 +243,7 @@ describe('grantShareGift — inviter_not_qualified', () => {
 
   test('inviterMustHavePaidOrder=true 且邀请人有结清订单 → 继续发放', async () => {
     const c = makeClient(
+      firstPayment(),
       cfgRow({ inviterMustHavePaidOrder: true }),
       firstOrder(0),
       inviterResult(),
@@ -238,14 +258,14 @@ describe('grantShareGift — inviter_not_qualified', () => {
 
 describe('grantShareGift — template_unavailable', () => {
   test('模板不存在 → granted:false', async () => {
-    const c = makeClient(cfgRow(), firstOrder(0), inviterResult(), { rows: [] })
+    const c = makeClient(firstPayment(), cfgRow(), firstOrder(0), inviterResult(), { rows: [] })
     const r = await grantShareGift(c, BASE_ORDER)
     expect(r).toEqual({ granted: false, reason: 'template_unavailable' })
   })
 
   test('模板存在但 is_active=false → granted:false', async () => {
     const c = makeClient(
-      cfgRow(), firstOrder(0), inviterResult(),
+      firstPayment(), cfgRow(), firstOrder(0), inviterResult(),
       tplRow({ is_active: false }),
     )
     const r = await grantShareGift(c, BASE_ORDER)
@@ -263,10 +283,10 @@ describe('grantShareGift — granted (happy path)', () => {
     expect(r.value).toBeGreaterThan(0)
   })
 
-  test('发起 9 次 DB 查询（config+首单+inviter+模板+券×2+消息×2+log；inviterMustHavePaidOrder=false 时资格查询跳过）', async () => {
+  test('发起 10 次 DB 查询（首付+config+首单+inviter+模板+券×2+消息×2+log；inviterMustHavePaidOrder=false 时资格查询跳过）', async () => {
     const c = happyPathClient()
     await grantShareGift(c, BASE_ORDER)
-    expect(c.query).toHaveBeenCalledTimes(9)
+    expect(c.query).toHaveBeenCalledTimes(10)
   })
 
   test('user_coupons INSERT 使用 sg-inviter-<orderId> / sg-invitee-<orderId>', async () => {
@@ -307,7 +327,7 @@ describe('grantShareGift — granted (happy path)', () => {
 
   test('face_value_override = paid×percent（100×0.15=15）', async () => {
     const c = happyPathClient()
-    const r = await grantShareGift(c, BASE_ORDER)
+    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
     expect(r.value).toBe(15)
     // 检查 INSERT user_coupons 第 5 个参数（face_value_override）
     const couponCall = c.query.mock.calls.find(
@@ -326,7 +346,7 @@ describe('grantShareGift — 幂等', () => {
 
     // 第二次（rowCount=0 模拟冲突跳过）
     const c2 = makeClient(
-      cfgRow(), firstOrder(0), inviterResult(), tplRow(),
+      firstPayment(), cfgRow(), firstOrder(0), inviterResult(), tplRow(),
       { rowCount: 0 }, { rowCount: 0 },   // 券冲突
       { rowCount: 0 }, { rowCount: 0 },   // 消息冲突
       { rowCount: 0 },                     // log 冲突（如有唯一索引）
@@ -340,23 +360,23 @@ describe('grantShareGift — 幂等', () => {
 
 describe('grantShareGift — clamp', () => {
   test('计算值 < minFaceValue → face_value_override = minFaceValue', async () => {
-    // paidAmount=5, percent=0.15 → 0.75 < min=1 → value=1
-    const c = happyPathClient({ minFaceValue: 1, maxFaceValue: 500 })
-    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 5 })
+    // 首次支付=5, percent=0.15 → 0.75 < min=1 → value=1
+    const c = happyPathClient({ minFaceValue: 1, maxFaceValue: 500 }, {}, 5)
+    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
     expect(r.value).toBe(1)
   })
 
   test('计算值 > maxFaceValue → face_value_override = maxFaceValue', async () => {
-    // paidAmount=10000, percent=0.15 → 1500 > max=500 → value=500
-    const c = happyPathClient({ minFaceValue: 1, maxFaceValue: 500 })
-    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
+    // 首次支付=10000, percent=0.15 → 1500 > max=500 → value=500
+    const c = happyPathClient({ minFaceValue: 1, maxFaceValue: 500 }, {}, 10000)
+    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 5 })
     expect(r.value).toBe(500)
   })
 
   test('计算值在区间内 → 精确保留 2 位小数', async () => {
-    // paidAmount=99, percent=0.15 → 14.85
-    const c = happyPathClient()
-    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 99 })
+    // 首次支付=99, percent=0.15 → 14.85
+    const c = happyPathClient({}, {}, 99)
+    const r = await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
     expect(r.value).toBe(14.85)
   })
 })
@@ -364,6 +384,7 @@ describe('grantShareGift — clamp', () => {
 describe('grantShareGift — 消息文案', () => {
   test('messageInviterTitle 为空 → 跳过邀请人消息，仅 1 条消息 INSERT', async () => {
     const c = makeClient(
+      firstPayment(),
       cfgRow({ messageInviterTitle: '' }),
       firstOrder(0), inviterResult(), tplRow(),
       { rowCount: 1 }, { rowCount: 1 },   // 券 ×2
@@ -381,6 +402,7 @@ describe('grantShareGift — 消息文案', () => {
 
   test('messageInviteeTitle 为空 → 跳过新客消息，仅 1 条消息 INSERT', async () => {
     const c = makeClient(
+      firstPayment(),
       cfgRow({ messageInviteeTitle: '' }),
       firstOrder(0), inviterResult(), tplRow(),
       { rowCount: 1 }, { rowCount: 1 },
@@ -397,8 +419,8 @@ describe('grantShareGift — 消息文案', () => {
   })
 
   test('占位符 {paidAmount}/{couponValue}/{validityDays} 被替换', async () => {
-    const c = happyPathClient()
-    await grantShareGift(c, { ...BASE_ORDER, paidAmount: 99 })
+    const c = happyPathClient({}, {}, 99)
+    await grantShareGift(c, { ...BASE_ORDER, paidAmount: 10000 })
     const msgCalls = c.query.mock.calls.filter(
       ([sql]) => sql && sql.includes('messages'),
     )

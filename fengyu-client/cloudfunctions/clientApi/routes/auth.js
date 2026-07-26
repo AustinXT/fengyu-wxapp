@@ -78,7 +78,7 @@ async function login(ctx) {
  */
 async function bindPhone(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { phoneNumber: directPhone } = ctx.event.payload
+  const { phoneNumber: directPhone, inviterUserId } = ctx.event.payload || {}
   // CloudID 必须在 event 顶层才能被微信平台自动解密
   const phoneData = ctx.event.phoneData
 
@@ -163,6 +163,27 @@ async function bindPhone(ctx) {
        VALUES ($1, $2, $3, $4, $4, $4)`,
       [userId, OPENID, phoneNumber, now]
     )
+    // 分享礼：仅新建顾客时写入邀请关系。老顾客（已有 openid / phone / WorkFine 档案合并）
+    // 不在这里补写，bindStore 也不再兜底写入，避免事后补绑邀请人。
+    if (
+      inviterUserId &&
+      typeof inviterUserId === 'string' &&
+      inviterUserId.startsWith('FYGK-') &&
+      inviterUserId !== userId
+    ) {
+      try {
+        await pg.query(
+          `UPDATE client_wechat_users
+              SET inviter_user_id = $1, invited_at = $2, updated_at = $2
+            WHERE user_id = $3
+              AND inviter_user_id IS NULL
+              AND EXISTS (SELECT 1 FROM client_wechat_users WHERE user_id = $1)`,
+          [inviterUserId, now, userId]
+        )
+      } catch (err) {
+        console.warn('[auth.bindPhone] bind inviter failed (non-fatal):', err.message)
+      }
+    }
   }
 
   // 清除认证缓存，避免 requirePhone 仍读到旧的 phone: null
@@ -239,7 +260,7 @@ async function generateUserId() {
  */
 async function bindStore(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { storeId, sourceChannel, promoterEmployeeId, inviterUserId } = ctx.event.payload
+  const { storeId, sourceChannel, promoterEmployeeId } = ctx.event.payload
 
   // 参数校验
   if (!storeId) {
@@ -292,31 +313,6 @@ async function bindStore(ctx) {
     `UPDATE client_wechat_users SET ${setClauses.join(', ')} WHERE user_id = $${params.length}`,
     params
   )
-
-  // 分享礼：邀请人一次性绑定
-  // - 仅当当前用户 inviter_user_id IS NULL 时写入（业务规则：只绑一次，防事后改邀请人套利）
-  // - 仅当 inviter 存在（EXISTS 子查询兜底：不存在时影响 0 行）
-  // - 前缀校验 + 防自邀（DB 也有 CHECK 约束兜底）
-  // - try/catch 包裹：失败不影响主绑店流程
-  if (
-    inviterUserId &&
-    typeof inviterUserId === 'string' &&
-    inviterUserId.startsWith('FYGK-') &&
-    inviterUserId !== users[0].user_id
-  ) {
-    try {
-      await pg.query(
-        `UPDATE client_wechat_users
-            SET inviter_user_id = $1, invited_at = NOW(), updated_at = NOW()
-          WHERE user_id = $2
-            AND inviter_user_id IS NULL
-            AND EXISTS (SELECT 1 FROM client_wechat_users WHERE user_id = $1)`,
-        [inviterUserId, users[0].user_id]
-      )
-    } catch (err) {
-      console.warn('[auth.bindStore] bind inviter failed (non-fatal):', err.message)
-    }
-  }
 
   // 清除认证缓存，确保后续请求读到最新的 boundStoreId
   invalidateAuthCache(OPENID)
