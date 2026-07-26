@@ -69,9 +69,10 @@ Page({
 
   _mapOrders(orders: any[]) {
     return orders.map(item => {
-      // 可预约判定：已支付 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
+      // 可预约判定：有效收款状态 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
       // ticket 2026-05-19 paid_sessions：可消费门槛由 remaining > 0 升级为"还有已付未用的次数"
-      const hasAppointable = item.status === '已支付'
+      const appointableStatus = ['已支付', '部分支付', '已完成'].includes(item.status);
+      const hasAppointable = appointableStatus
         && (item.items || []).some((i: any) => {
           if (i.product_type === '家居产品') return false;
           const total = Number(i.session_count ?? 0);

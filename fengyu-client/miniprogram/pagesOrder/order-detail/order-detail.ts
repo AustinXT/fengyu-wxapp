@@ -162,9 +162,10 @@ Page({
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
-      // 是否有可预约项目（已支付 + 至少一项"已付未用" > 0 + 非家居产品）
+      // 是否有可预约项目（有效收款状态 + 至少一项"已付未用" > 0 + 非家居产品）
       // ticket 2026-05-19 paid_sessions：可消费门槛升级为"还有已付未用的次数"
-      const hasAppointableItems = order.status === '已支付'
+      const appointableStatus = ['已支付', '部分支付', '已完成'].includes(order.status);
+      const hasAppointableItems = appointableStatus
         && items.some(i => {
             if (i.product_type === '家居产品') return false;
             const total = Number(i.session_count ?? 0);

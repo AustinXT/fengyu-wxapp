@@ -17,6 +17,7 @@ Page({
     avatarUrl: '',
     unreadCount: 0,
     appVersion: APP_VERSION,
+    isLoggedOut: false,
     // 临时开关：订单主动查看入口（业务平稳后恢复）。见 utils/feature-flags.ts
     ordersEntryEnabled: ORDERS_ENTRY_ENABLED,
   },
@@ -31,26 +32,48 @@ Page({
     // （开通会员后立即生效，不必杀进程重启小程序）。
     await app.syncLoginState();
     this.refreshData();
+    if (app.isLoggedOut()) {
+      this.setData({ unreadCount: 0 });
+      return;
+    }
     this.loadUnreadCount();
   },
 
   refreshData() {
-    const phone = wx.getStorageSync('phone') as string || '';
-    const userName = wx.getStorageSync('userName') as string || '';
-    const avatarUrl = wx.getStorageSync('avatarUrl') as string || '';
-    const memberLevel = wx.getStorageSync('memberLevel') as string || '';
+    const isLoggedOut = app.isLoggedOut();
+    const phone = isLoggedOut ? '' : (wx.getStorageSync('phone') as string || '');
+    const userName = isLoggedOut ? '' : (wx.getStorageSync('userName') as string || '');
+    const avatarUrl = isLoggedOut ? '' : (wx.getStorageSync('avatarUrl') as string || '');
+    const memberLevel = isLoggedOut ? '' : (wx.getStorageSync('memberLevel') as string || '');
     this.setData({
       userName,
       maskedPhone: maskPhone(phone),
       memberLevel,
       memberLevelBadgeClass: getMemberLevelBadgeClass(memberLevel),
-      boundStoreName: app.globalData.boundStoreName,
+      boundStoreName: isLoggedOut ? '' : app.globalData.boundStoreName,
       avatarUrl,
+      isLoggedOut,
     });
   },
 
   onEditProfile() {
     wx.navigateTo({ url: '/pagesProfile/profile-edit/profile-edit' });
+  },
+
+  async onLogout() {
+    const res = await wx.showModal({
+      title: '退出登录',
+      content: '退出后将清除本机的手机号、昵称、头像、会员与门店信息，需要时可重新登录。',
+      cancelText: '取消',
+      confirmText: '退出',
+      confirmColor: '#C0322A',
+    });
+    if (!res.confirm) return;
+
+    app.clearLoginState();
+    this.refreshData();
+    this.setData({ unreadCount: 0 });
+    wx.showToast({ title: '已退出', icon: 'success' });
   },
 
   onOrders() {

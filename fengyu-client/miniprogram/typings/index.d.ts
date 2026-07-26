@@ -16,7 +16,9 @@ interface IAppOption {
   };
   initNavBarInfo(): void;
   restoreFromCache(): void;
-  syncLoginState(): Promise<void>;
+  syncLoginState(force?: boolean): Promise<void>;
+  isLoggedOut(): boolean;
+  clearLoginState(): void;
   setMemberFlag(profile: { isMember?: boolean; customerType?: string | null; memberLevel?: string | null }): void;
   clearMemberFlag(): void;
   setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }): void;

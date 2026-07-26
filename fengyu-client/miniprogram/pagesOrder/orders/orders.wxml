@@ -125,7 +125,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       <view class="order-card__actions" wx:elif="{{item.canContinuePay}}">
         <van-button size="small" type="primary" round catch:tap="onContinuePayTap" data-sale-order-id="{{item.sale_order_id}}">继续支付 ¥{{item.outstanding_fmt}}</van-button>
       </view>
-      <view class="order-card__actions" wx:elif="{{item.status === '已支付' && item.hasAppointable}}">
+      <view class="order-card__actions" wx:elif="{{item.hasAppointable}}">
         <van-button size="small" type="primary" round catch:tap="onAppointmentTap" data-sale-order-id="{{item.sale_order_id}}">发起预约</van-button>
       </view>
       <view class="order-card__actions" wx:elif="{{item.status === '已完成' || item.status === '已关闭'}}">

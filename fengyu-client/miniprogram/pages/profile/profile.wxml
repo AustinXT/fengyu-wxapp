@@ -8,12 +8,12 @@
       <van-icon wx:else name="contact" size="88rpx" color="#FFFFFF" />
     </view>
     <view class="user-info">
-      <text class="user-name">{{userName || '点击设置昵称'}}</text>
-      <view class="user-phone-row" wx:if="{{maskedPhone || memberLevel}}">
+      <text class="user-name">{{isLoggedOut ? '点击登录' : (userName || '点击设置昵称')}}</text>
+      <view class="user-phone-row" wx:if="{{!isLoggedOut && (maskedPhone || memberLevel)}}">
         <text class="user-phone" wx:if="{{maskedPhone}}">{{maskedPhone}}</text>
         <text wx:if="{{memberLevel}}" class="member-level-badge {{memberLevelBadgeClass}}">{{memberLevel}}</text>
       </view>
-      <view class="user-store-row" wx:if="{{boundStoreName}}">
+      <view class="user-store-row" wx:if="{{!isLoggedOut && boundStoreName}}">
         <van-icon name="location-o" size="22rpx" color="rgba(255,255,255,0.8)" />
         <text class="user-store">{{boundStoreName}}</text>
       </view>
@@ -22,7 +22,7 @@
   </view>
 
   <!-- 四宫格快捷入口 -->
-  <view class="grid-section">
+  <view class="grid-section" wx:if="{{!isLoggedOut}}">
     <view class="grid-item" bindtap="onCoupons">
       <van-icon name="coupon-o" size="48rpx" color="#C0322A" />
       <text class="grid-label">优惠券</text>
@@ -45,8 +45,8 @@
   </view>
 
   <!-- 我的服务 -->
-  <view class="section-title">我的服务</view>
-  <van-cell-group inset>
+  <view class="section-title" wx:if="{{!isLoggedOut}}">我的服务</view>
+  <van-cell-group inset wx:if="{{!isLoggedOut}}">
     <van-cell
       wx:if="{{ordersEntryEnabled}}"
       title="我的订单"
@@ -103,6 +103,17 @@
       bindtap="onCallService"
     />
     <van-cell title="版本" icon="setting-o" value="{{appVersion}}" />
+  </van-cell-group>
+
+  <!-- 账号 -->
+  <view class="section-title" style="margin-top:32rpx" wx:if="{{!isLoggedOut}}">账号</view>
+  <van-cell-group inset wx:if="{{!isLoggedOut}}">
+    <van-cell
+      title="退出登录"
+      icon="close"
+      clickable
+      bindtap="onLogout"
+    />
   </van-cell-group>
 
   <view class="bottom-space" />
