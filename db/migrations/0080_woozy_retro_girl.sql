@@ -1,0 +1,2 @@
+ALTER TABLE "product_skus" ADD COLUMN "purchase_limit" integer;--> statement-breakpoint
+ALTER TABLE "product_skus" ADD CONSTRAINT "chk_sku_purchase_limit" CHECK ("product_skus"."purchase_limit" IS NULL OR "product_skus"."purchase_limit" >= 1);

@@ -84,6 +84,8 @@ export const productSkus = pgTable(
      * 快照保留，开单时拷贝（权威来源为 DB，不信前端）。
      */
     isManagerSpecial: boolean("is_manager_special").notNull().default(false),
+    /** 每单限购次数；NULL=不限购，非空时一个订单内该 SKU 最多购买 N 件 */
+    purchaseLimit: integer("purchase_limit"),
     /** 项目系列（lookup 表外键，NULL=未设置） */
     projectSeriesId: bigint("project_series_id", { mode: "number" }).references(
       () => projectSeriesLookup.id,
@@ -112,6 +114,7 @@ export const productSkus = pgTable(
     check("chk_sku_price", sql`${table.price} >= 0`),
     check("chk_sku_service_fee", sql`${table.serviceFee} >= 0`),
     check("chk_sku_session_count", sql`${table.sessionCount} IS NULL OR ${table.sessionCount} >= 1`),
+    check("chk_sku_purchase_limit", sql`${table.purchaseLimit} IS NULL OR ${table.purchaseLimit} >= 1`),
   ],
 );
 

@@ -189,3 +189,34 @@ export const inventoryTransferSubtypeEnum = pgEnum(
   ["调拨出库", "调拨入库"],
 );
 
+/**
+ * 门店库存 v2 统一单据类型。
+ *
+ * 会议确认的 8 个业务流程在 UI 上保留，但底层不再拆 4 组主从表；
+ * 所有库存填报都围绕 store_inventory_stocks（门店库存表）生成统一单据和库存流水。
+ */
+export const storeInventoryDocTypeEnum = pgEnum("store_inventory_doc_type", [
+  "院报货",
+  "院入库",
+  "院顾客退货",
+  "院顾客产品出库",
+  "院退货",
+  "院产品报损",
+  "分院调货出库",
+  "分院调货入库",
+  "期初库存",
+]);
+
+export const storeInventoryDocStatusEnum = pgEnum("store_inventory_doc_status", [
+  "草稿",
+  "待审批",
+  "待收货",
+  "已完成",
+  "已驳回",
+  "已取消",
+]);
+
+export const storeInventoryMovementDirectionEnum = pgEnum(
+  "store_inventory_movement_direction",
+  ["入库", "出库", "调整"],
+);
