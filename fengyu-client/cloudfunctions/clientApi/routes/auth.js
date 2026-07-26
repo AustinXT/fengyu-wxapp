@@ -122,7 +122,22 @@ async function bindPhone(ctx) {
     [OPENID]
   )
   if (byOpenid.length > 0 && byOpenid[0].phone) {
-    // 已绑定手机号 → 首绑守卫（phone 相同也视为已绑，换绑走后台）
+    if (byOpenid[0].phone === phoneNumber) {
+      const userId = byOpenid[0].user_id
+      await pg.query(
+        'UPDATE client_wechat_users SET last_login_at = $1, updated_at = $1 WHERE user_id = $2',
+        [now, userId]
+      )
+      invalidateAuthCache(OPENID)
+      ctx.result = {
+        success: true,
+        userId,
+        phone: phoneNumber,
+        updatedOrdersCount: 0
+      }
+      return
+    }
+    // 已绑定其他手机号 → 首绑守卫（换绑走后台）
     throw new Error('INVALID_PARAMS: 已绑定手机号，如需修改请联系门店')
   }
   // byOpenid.length === 0 → 继续按 phone 查 / INSERT

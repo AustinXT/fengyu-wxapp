@@ -1,6 +1,6 @@
 /**
  * 认证路由测试
- * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全/首绑守卫）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
+ * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/重复授权幂等/历史补全/首绑守卫）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -199,7 +199,26 @@ describe('auth.bindPhone', () => {
       .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
   })
 
-  test('首绑守卫：openid 已绑定手机号 → INVALID_PARAMS（提示联系门店）', async () => {
+  test('手机号授权登录：openid 已绑定同一手机号 → 幂等成功', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { phoneNumber: '13800001111' } })
+    await routes.bindPhone(ctx)
+
+    expect(ctx.result).toEqual({
+      success: true,
+      userId: 'user-001',
+      phone: '13800001111',
+      updatedOrdersCount: 0,
+    })
+    expect(pg.query).toHaveBeenCalledTimes(2)
+    expect(pg.query.mock.calls[1][0]).toContain('UPDATE client_wechat_users')
+    expect(pg.query.mock.calls[1][1][1]).toBe('user-001')
+  })
+
+  test('首绑守卫：openid 已绑定其他手机号 → INVALID_PARAMS（提示联系门店）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
     // byOpenid 返回 phone 已有值
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
