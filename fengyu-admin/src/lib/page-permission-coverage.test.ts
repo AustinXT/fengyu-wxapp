@@ -114,6 +114,7 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
   // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
+  { href: '/inventory/stocks', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
   { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
   { href: '/inventory/transfer', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },

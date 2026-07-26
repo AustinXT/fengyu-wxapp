@@ -41,8 +41,6 @@
         <text wx:if="{{item.batchNo}}" class="item-batch">批号：{{item.batchNo}}</text>
       </view>
       <view class="item-extra">
-        <text wx:if="{{item.unitPrice}}" class="item-price">单价：¥{{item.unitPrice}}</text>
-        <text wx:if="{{item.amount}}" class="item-amount">金额：¥{{item.amount}}</text>
         <text wx:if="{{item.scrapReason}}" class="item-reason">{{item.scrapReason}}</text>
         <text wx:if="{{item.saleFlowNo}}" class="item-flow">流水：{{item.saleFlowNo}}</text>
       </view>

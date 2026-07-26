@@ -17,8 +17,6 @@ interface ItemRow {
   specName: string | null
   batchNo: string | null
   quantity: number
-  unitPrice: number | null
-  amount: number | null
   scrapReason?: string | null
   saleFlowNo?: string | null
   customerRemaining?: number | null

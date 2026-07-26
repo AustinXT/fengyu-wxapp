@@ -87,6 +87,14 @@ const routes = {
   // 库存（只读）
   'inventory.list':       () => require('./routes/inventory').list,
   'inventory.detail':     () => require('./routes/inventory').detail,
+  'inventory.stockList':  () => require('./routes/inventory').stockList,
+  'inventory.docList':    () => require('./routes/inventory').docList,
+  'inventory.docDetail':  () => require('./routes/inventory').docDetail,
+  'inventory.createDoc':  () => require('./routes/inventory').createDoc,
+  'inventory.confirmReceive': () => require('./routes/inventory').confirmReceive,
+  'inventory.approveDoc': () => require('./routes/inventory').approveDoc,
+  'inventory.rejectDoc':  () => require('./routes/inventory').rejectDoc,
+  'inventory.uploadReceipt': () => require('./routes/inventory').uploadReceipt,
 
   // 营业额分配（按回款逐笔分配，当前口径）
   'allocation.pendingPayments':         () => require('./routes/allocation').pendingPayments,

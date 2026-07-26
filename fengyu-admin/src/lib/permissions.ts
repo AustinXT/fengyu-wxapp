@@ -62,6 +62,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
     // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
     'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
+    // 门店库存 v2（中心库存表 + 统一单据；2026-07-24 会议）
+    'inventory:stock_list', 'inventory:create_doc', 'inventory:approve', 'inventory:price_view', 'inventory:export',
     // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
     'store:lakala_config',
     // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
@@ -80,7 +82,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:create', 'employee:delete', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:list', 'inventory:update',
+    'inventory:create', 'inventory:create_doc', 'inventory:list', 'inventory:stock_list', 'inventory:update',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
@@ -107,7 +109,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:list',
+    'inventory:approve', 'inventory:export', 'inventory:list', 'inventory:price_view', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:delete', 'merchant:list', 'merchant:update',
     'operation_log:list',
@@ -139,7 +141,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:delete', 'inventory:list', 'inventory:update',
+    'inventory:create', 'inventory:create_doc', 'inventory:delete', 'inventory:export', 'inventory:list', 'inventory:stock_list', 'inventory:update',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
@@ -153,7 +155,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'customer:create', 'customer:delete', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
-    'inventory:list',
+    'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'operation_log:list',
     'org:list',

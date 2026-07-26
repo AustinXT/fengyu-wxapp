@@ -1,10 +1,17 @@
 import Link from 'next/link'
-import { Boxes, PackagePlus, ShoppingBag, Repeat, AlertTriangle } from 'lucide-react'
+import { Boxes, PackageCheck, PackagePlus, ShoppingBag, Repeat, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 
 export const dynamic = 'force-dynamic'
 
 const MODULES = [
+  {
+    href: '/inventory/stocks',
+    title: '门店库存表',
+    desc: '实时余额 / 批号 / 库存流水基准',
+    icon: PackageCheck,
+    color: 'text-red-700 bg-red-50',
+  },
   {
     href: '/inventory/procurement',
     title: '采购入库',
@@ -43,7 +50,7 @@ export default function InventoryHubPage() {
         <h1 className="text-xl font-medium">门店库存管理</h1>
       </div>
       <p className="text-sm text-[#666666]">
-        4 类库存单据：按业务方向归类。所有数据存于 PostgreSQL，WorkFine 桌面端已弃用。
+        新库存业务以门店库存表为中心，报货、入库、退货、调拨、提货、报损都围绕库存余额和流水展开。
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
