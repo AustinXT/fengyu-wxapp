@@ -159,8 +159,32 @@ END,
 updated_at = NOW()
 FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
+      const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items AS (
+      SELECT elem ->> 'refSaleItemId' AS sale_item_id
+      FROM sale_order_payments sop
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN sop.note LIKE '{%'
+             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                       THEN (sop.note)::jsonb -> 'items'
+                       ELSE '[]'::jsonb END
+             ELSE '[]'::jsonb END
+      ) AS elem
+      WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+        AND LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true'
+    )
+    UPDATE sale_items si
+    SET paid_sessions = 0,
+        updated_at = NOW()
+    WHERE si.sale_order_id = $1
+      AND si.item_direction = '购买'
+      AND si.session_count IS NOT NULL
+      AND si.sale_amount <= 0
+      AND EXISTS (
+        SELECT 1 FROM full_refund_zero_items fri WHERE fri.sale_item_id = si.sale_item_id
+      )`
       for (const orderId of affectedOrderIds) {
         await client.query(RECALC_SQL, [orderId])
+        await client.query(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL, [orderId])
       }
 
       await client.query('COMMIT')

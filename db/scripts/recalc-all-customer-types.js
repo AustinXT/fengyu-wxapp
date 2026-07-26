@@ -76,26 +76,17 @@ WITH threshold AS (
   SELECT $1::numeric AS v
 ),
 qualified_orders AS (
-  -- 单订单或订单+回款链达阈值的订单。保留 paid_at / created_at 原始列供 member_first
+  -- 单笔销售单达阈值的订单。保留 paid_at / created_at 原始列供 member_first
   -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
   SELECT o.client_user_id, o.sale_order_id, o.paid_at, o.created_at
     FROM sale_orders o
-    -- 回款单累计 LATERAL：2026-04-26 createRepayment 重构后回款不再建 sale_orders[type='回款单']
-    -- 行（migration 未清理重构前历史行），故 sum_repay 当前恒 0。保留此 OR 右支仅为维持与在线端
-    -- recalcCustomerType「会员客判定」结构一致；became_member_at 选单已在 member_first 用
-    -- DISTINCT ON 对齐权威脚本 recalc-became-member-at.js，不受此 LATERAL 影响。
-    LEFT JOIN LATERAL (
-      SELECT COALESCE(SUM(r.total_amount), 0) AS sum_repay
-        FROM sale_orders r
-       WHERE r.ref_sale_order_id = o.sale_order_id
-         AND r.sale_order_type = '回款单'
-         AND r.status IN ('已支付', '已完成')
-    ) rr ON TRUE
+    -- 2026-04-26 sale-order-domain-refactor 后，回款下沉到
+    -- sale_order_payments.change_type='回款'，sale_order_type 枚举已不含“回款单”。
+    -- 会员客判定与在线端保持单笔销售单 total_amount 达阈值口径。
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND (o.total_amount >= (SELECT v FROM threshold)
-          OR (o.total_amount + rr.sum_repay) >= (SELECT v FROM threshold))
+     AND o.total_amount >= (SELECT v FROM threshold)
 ),
 member_first AS (
   -- 选单口径与 recalc-became-member-at.js 的 BUILD_TARGET_SQL 同源：
