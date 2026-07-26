@@ -16,6 +16,7 @@
         "CLIENT_API_HTTP_URL": "${CLIENT_API_HTTP_URL}",
         "WXACODE_ENV_VERSION": "${WXACODE_ENV_VERSION}",
         "ALLOW_TEST_OPENID": "${ALLOW_TEST_OPENID}",
+        "ALLOW_DIRECT_PHONE": "${ALLOW_DIRECT_PHONE}",
         "TZ": "Asia/Shanghai"
       },
       "runtime": "Nodejs18.15",
