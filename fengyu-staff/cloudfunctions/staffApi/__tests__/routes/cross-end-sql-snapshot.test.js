@@ -573,6 +573,20 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(adminSrc).toMatch(/refundPaymentId/)
       expect(adminSrc).toMatch(/refundAmount/)
     })
+    test('两端没有原正向分配时跳过赤字分配', () => {
+      expect(staffSrc).toMatch(/total_amount > 0[\s\S]{0,120}GROUP BY employee_id, role_type/)
+      expect(staffSrc).toMatch(/if \(allocRows\.length === 0\) continue/)
+      expect(adminSrc).toMatch(/total_amount > 0[\s\S]{0,120}GROUP BY employee_id, role_type/)
+      expect(adminSrc).toMatch(/if \(allocRows\.length === 0\) continue/)
+    })
+    test('两端赤字分配生成后补退款流水 SPAI 并置已分配，供营业额分配列表查看', () => {
+      expect(staffSrc).toMatch(/INSERT INTO sale_payment_allocatable_items/)
+      expect(staffSrc).toMatch(/change_type = '退款'/)
+      expect(staffSrc).toMatch(/allocation_status = '已分配'/)
+      expect(adminSrc).toMatch(/INSERT INTO sale_payment_allocatable_items/)
+      expect(adminSrc).toMatch(/change_type = '退款'/)
+      expect(adminSrc).toMatch(/allocation_status = '已分配'/)
+    })
     test('两端 ON CONFLICT (...sale_payment_id) WHERE is_void = false DO NOTHING（幂等兜底）', () => {
       expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
       expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
@@ -1161,10 +1175,17 @@ describe("STEP 1 分支 A received=Σspai SQL 四端字节同义守护", () => {
   })
 
   describe("特征守护", () => {
-    test("四端 received = COALESCE(GREATEST(0, Σ spai.amount), 0)（无 spai 行归零，行级 clamp）", () => {
-      const pattern = /received\s*=\s*COALESCE\(\s*GREATEST\(\s*0\s*,\s*\(\s*SELECT\s+SUM\(\s*amount::numeric\s*\)\s+FROM\s+sale_payment_allocatable_items\s+spai/i
+    test("四端 received = COALESCE(GREATEST(0, Σ 正向 spai.amount), 0)（无 spai 行归零，行级 clamp）", () => {
+      const pattern = /received\s*=\s*COALESCE\(\s*GREATEST\(\s*0\s*,\s*\(\s*SELECT\s+SUM\(\s*spai\.amount::numeric\s*\)\s+FROM\s+sale_payment_allocatable_items\s+spai/i
       for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
         expect(sql).toMatch(pattern)
+      }
+    })
+    test("四端分支 A 只统计正向已支付流水，退款 SPAI 不进入 received", () => {
+      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+        expect(sql).toMatch(/JOIN sale_order_payments sop ON sop\.id = spai\.sale_payment_id/i)
+        expect(sql).toMatch(/sop\.status\s*=\s*'已支付'/i)
+        expect(sql).toMatch(/sop\.change_type IN\s*\('首次支付','回款','储值卡抵扣'\)/i)
       }
     })
     test("四端子查询按 (sale_order_id, sale_item_id) 定位行", () => {
@@ -1191,6 +1212,50 @@ describe("STEP 1 分支 A received=Σspai SQL 四端字节同义守护", () => {
     test("STEP 1 分支 A received=Σspai SQL 文本快照", () => {
       expect(spaiReceivedSqls.staff).toMatchSnapshot()
     })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Block 7b'': STEP 2.5 0 元 item 全退 paid_sessions 覆盖
+//   0 元赠送/寄存 item 的公式兜底会给满 paid_sessions；退款 note.items[] 明确标记
+//   isFullItemRefund=true 时必须覆盖为 0，避免已退赠送卡继续在卡包出现。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STEP 2.5 0 元全退 item paid_sessions 覆盖 SQL 五端同义守护", () => {
+  const MARKER_FULL_REFUND_ZERO = "WITH full_refund_zero_items AS"
+  let fullRefundZeroSqls
+
+  beforeAll(() => {
+    fullRefundZeroSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_FULL_REFUND_ZERO)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_FULL_REFUND_ZERO)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_FULL_REFUND_ZERO)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_FULL_REFUND_ZERO)),
+      scriptFix: normalizeSql(extractBacktickStringContaining(readFile(FILES.scriptPaidSessionsFix), MARKER_FULL_REFUND_ZERO)),
+    }
+  })
+
+  describe("特征守护", () => {
+    test("五端按退款 note.items[].isFullItemRefund 定位被全退 item", () => {
+      for (const sql of Object.values(fullRefundZeroSqls)) {
+        expect(sql).toMatch(/LOWER\(COALESCE\(elem ->> 'isFullItemRefund', 'false'\)\) = 'true'/)
+        expect(sql).toMatch(/elem ->> 'refSaleItemId' AS sale_item_id/)
+      }
+    })
+    test("五端只覆盖购买方向、次数型、0 元 item，且 paid_sessions=0", () => {
+      for (const sql of Object.values(fullRefundZeroSqls)) {
+        expect(sql).toMatch(/si\.item_direction\s*=\s*'购买'/)
+        expect(sql).toMatch(/si\.session_count IS NOT NULL/)
+        expect(sql).toMatch(/si\.sale_amount <= 0/)
+        expect(sql).toMatch(/SET paid_sessions = 0/)
+      }
+    })
+  })
+
+  describe("五端镜像比对", () => {
+    test("staff vs client", () => { expect(fullRefundZeroSqls.client).toBe(fullRefundZeroSqls.staff) })
+    test("staff vs payNotify", () => { expect(fullRefundZeroSqls.payNotify).toBe(fullRefundZeroSqls.staff) })
+    test("staff vs admin（归一化后等价）", () => { expect(fullRefundZeroSqls.adminTs).toBe(fullRefundZeroSqls.staff) })
+    test("staff vs db/scripts/fix-sale-items-session-count", () => { expect(fullRefundZeroSqls.scriptFix).toBe(fullRefundZeroSqls.staff) })
   })
 })
 

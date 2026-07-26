@@ -154,9 +154,12 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
       // 两段式分摊：phase1 按 pendCap、phase2 按 saleCap
       expect(src, `${end} 缺 phase1 按 pendCap 铺`).toMatch(/cap:\s*c\.pendCap/)
       expect(src, `${end} 缺 phase2 按 saleCap 铺`).toMatch(/cap:\s*c\.saleCap/)
-      // 剩余实付来源：sale_payment_allocatable_items 已记可分配额合计
-      expect(src, `${end} 缺已记可分配额合计查询`).toMatch(
-        /COALESCE\(SUM\(amount::numeric\), 0\) AS allocated[\s\S]{0,80}FROM sale_payment_allocatable_items/,
+      // 剩余实付来源：sale_payment_allocatable_items 已记正向可分配额合计（退款 SPAI 不进入后续回款捕获）
+      expect(src, `${end} 缺已记正向可分配额合计查询`).toMatch(
+        /COALESCE\(SUM\(spai\.amount::numeric\), 0\) AS allocated[\s\S]{0,140}FROM sale_payment_allocatable_items spai/,
+      )
+      expect(src, `${end} 缺正向已支付流水过滤`).toMatch(
+        /sop\.status = '已支付'[\s\S]{0,80}sop\.change_type IN \('首次支付','回款','储值卡抵扣'\)/,
       )
     }
   })

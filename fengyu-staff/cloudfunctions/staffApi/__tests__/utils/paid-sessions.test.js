@@ -8,7 +8,11 @@
  *   - 全付 / 部分付 / 零付 / 退款扣减 / 免单兜底 / 非次数卡 / 越界保护
  */
 
-const { computePaidSessionsForItem, PAID_SESSIONS_RECALC_SQL } = require('../../utils/paid-sessions')
+const {
+  computePaidSessionsForItem,
+  PAID_SESSIONS_RECALC_SQL,
+  FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,
+} = require('../../utils/paid-sessions')
 
 describe('computePaidSessionsForItem 公式边界（行级）', () => {
   test('全额支付：paid_sessions = session_count', () => {
@@ -172,5 +176,11 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/op\.total_amount\s*<=\s*0\s+THEN\s+sale_items\.session_count/i)
     // 旧 NULLIF 形态不应残留
     expect(PAID_SESSIONS_RECALC_SQL).not.toMatch(/NULLIF\(op\.total_amount::numeric,\s*0\)/i)
+  })
+
+  test('0 元 item 若退款明细标记全退，必须后置覆盖 paid_sessions=0', () => {
+    expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/sale_amount\s*<=\s*0/i)
+    expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/LOWER\(COALESCE\(elem ->> 'isFullItemRefund', 'false'\)\) = 'true'/)
+    expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/SET paid_sessions = 0/i)
   })
 })

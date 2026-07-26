@@ -193,58 +193,106 @@ export async function cascadeRefund(
 
   // ── 1) sale_allocations 记负数冲销（销售提成）：对所有被退 item 按实退额冲销 ───────────
   // 业务口径（2026-06-24）：退款撤销营业额分配 = 记负数（保留原正数行 + 新增负数镜像行，报表 SUM 自动净额化）。
-  // item 级目标冲销额 = min(本次该 item 退款额, 该 item 活跃正数分配 Σtotal_amount)，按各 (emp,role) 行
+  // item 级目标冲销额 = min(本次该 item 退款额, 该 item 未被其它退款冲销的活跃正数分配余额)，按各 (emp,role) 行
   // total_amount 权重最大余数法分摊到分；负数行挂退款流水 id（新维度，不撞 uq_sale_alloc_item_emp_role_payment）。
+  // 若原 item 没有正向 sale_allocations，则不生成赤字分配。
   // 消费过的卡退剩余次数 → 退额 < 已分配额 → 等比部分冲销，已消费部分业绩保留。两端镜像 staff helpers/refund-cascade.js。
   let voidedAllocations = 0
+  let refundAllocatableCents = 0
   for (const it of effItems) {
     const refundAmt = Number(it.refundAmount || 0)
     if (refundAmt <= 0) continue
     const allocRows = (await tx.execute(sql`
-      SELECT employee_id, role_type,
-             MAX(allocation_ratio) AS ratio,
-             MAX(department_name) AS dept,
-             SUM(total_amount::numeric) AS sum_total,
-             MAX(commission_rate) AS rate,
-             COALESCE(SUM(commission_amount::numeric), 0) AS sum_comm
-      FROM sale_allocations
-      WHERE sale_item_id = ${it.saleItemId} AND is_void = false AND total_amount > 0
-      GROUP BY employee_id, role_type
+      WITH grouped AS (
+        SELECT employee_id, role_type,
+               MAX(allocation_ratio) AS ratio,
+               MAX(department_name) AS dept,
+               SUM(total_amount::numeric) AS sum_total,
+               MAX(commission_rate) AS rate,
+               COALESCE(SUM(commission_amount::numeric), 0) AS sum_comm
+        FROM sale_allocations
+        WHERE sale_item_id = ${it.saleItemId} AND is_void = false AND total_amount > 0
+        GROUP BY employee_id, role_type
+      ),
+      totals AS (
+        SELECT COALESCE(SUM(total_amount::numeric) FILTER (WHERE total_amount > 0), 0) AS positive_total,
+               COALESCE(ABS(SUM(total_amount::numeric) FILTER (WHERE total_amount < 0 AND sale_payment_id IS DISTINCT FROM ${refundPaymentId})), 0) AS other_negative_total
+        FROM sale_allocations
+        WHERE sale_item_id = ${it.saleItemId} AND is_void = false
+      )
+      SELECT grouped.*, totals.positive_total, totals.other_negative_total
+      FROM grouped CROSS JOIN totals
     `)) as unknown as Array<{
       employee_id: string; role_type: string; ratio: string
       dept: string | null; sum_total: string; rate: string | null; sum_comm: string
+      positive_total: string; other_negative_total: string
     }>
     if (allocRows.length === 0) continue
     const baseCents = allocRows.reduce((s, r) => s + Math.round(Number(r.sum_total) * 100), 0)
     if (baseCents <= 0) continue
-    const targetCents = Math.min(Math.round(refundAmt * 100), baseCents)
+    const positiveCents = Math.round(Number(allocRows[0].positive_total || 0) * 100)
+    const otherNegativeCents = Math.round(Number(allocRows[0].other_negative_total || 0) * 100)
+    const remainingCents = Math.max(0, positiveCents - otherNegativeCents)
+    const targetCents = Math.min(Math.round(refundAmt * 100), remainingCents)
     // 最大余数法：按各组 total_amount 权重分摊 targetCents，余数逐分补给小数部分最大者（精确到分）
-    const parts = allocRows.map((r) => {
-      const wCents = Math.round(Number(r.sum_total) * 100)
-      const exact = (targetCents * wCents) / baseCents
-      const floorC = Math.floor(exact)
-      return { r, cents: floorC, frac: exact - floorC }
-    })
-    const rem = targetCents - parts.reduce((s, p) => s + p.cents, 0)
-    parts.sort((a, b) => b.frac - a.frac)
-    for (let i = 0; i < rem; i++) parts[i].cents += 1
-    for (const p of parts) {
-      if (p.cents <= 0) continue
-      const voidTotal = p.cents / 100
-      const sumTotal = Number(p.r.sum_total)
-      const sumComm = Number(p.r.sum_comm || 0)
-      // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
-      const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
-      await tx.execute(sql`
-        INSERT INTO sale_allocations
-          (sale_item_id, employee_id, role_type, department_name, allocation_ratio,
-           total_amount, commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
-        VALUES (${it.saleItemId}, ${p.r.employee_id}, ${p.r.role_type}, ${p.r.dept ?? null}, ${p.r.ratio},
-                ${(-voidTotal).toFixed(2)}, ${p.r.rate ?? null}, ${(-voidComm).toFixed(2)}, ${refundPaymentId}, false, NOW(), NOW())
-        ON CONFLICT (sale_item_id, employee_id, role_type, sale_payment_id) WHERE is_void = false DO NOTHING
-      `)
-      voidedAllocations += 1
+    if (targetCents > 0) {
+      const parts = allocRows.map((r) => {
+        const wCents = Math.round(Number(r.sum_total) * 100)
+        const exact = (targetCents * wCents) / baseCents
+        const floorC = Math.floor(exact)
+        return { r, cents: floorC, frac: exact - floorC }
+      })
+      const rem = targetCents - parts.reduce((s, p) => s + p.cents, 0)
+      parts.sort((a, b) => b.frac - a.frac)
+      for (let i = 0; i < rem; i++) parts[i].cents += 1
+      for (const p of parts) {
+        if (p.cents <= 0) continue
+        const voidTotal = p.cents / 100
+        const sumTotal = Number(p.r.sum_total)
+        const sumComm = Number(p.r.sum_comm || 0)
+        // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
+        const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
+        const insertRes = await tx.execute(sql`
+          INSERT INTO sale_allocations
+            (sale_item_id, employee_id, role_type, department_name, allocation_ratio,
+             total_amount, commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
+          VALUES (${it.saleItemId}, ${p.r.employee_id}, ${p.r.role_type}, ${p.r.dept ?? null}, ${p.r.ratio},
+                  ${(-voidTotal).toFixed(2)}, ${p.r.rate ?? null}, ${(-voidComm).toFixed(2)}, ${refundPaymentId}, false, NOW(), NOW())
+          ON CONFLICT (sale_item_id, employee_id, role_type, sale_payment_id) WHERE is_void = false DO NOTHING
+        `)
+        voidedAllocations += rowsAffected(insertRes)
+      }
     }
+    const currentRefundAlloc = (await tx.execute(sql`
+      SELECT COALESCE(ABS(SUM(sa.total_amount::numeric)), 0) AS refund_allocated,
+             MAX(si.sales_category) AS sales_category
+      FROM sale_allocations sa
+      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      WHERE sa.sale_payment_id = ${refundPaymentId}
+        AND sa.sale_item_id = ${it.saleItemId}
+        AND sa.is_void = false
+        AND sa.total_amount < 0
+    `)) as unknown as Array<{ refund_allocated: string; sales_category: string | null }>
+    const allocatedCents = Math.round(Number(currentRefundAlloc[0]?.refund_allocated || 0) * 100)
+    if (allocatedCents > 0) {
+      await tx.execute(sql`
+        INSERT INTO sale_payment_allocatable_items
+          (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+        VALUES (${refundPaymentId}, ${saleOrderId}, ${it.saleItemId}, ${(allocatedCents / 100).toFixed(2)}::numeric, ${currentRefundAlloc[0]?.sales_category ?? null}, NOW())
+        ON CONFLICT (sale_payment_id, sale_item_id)
+        DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
+      `)
+      refundAllocatableCents += allocatedCents
+    }
+  }
+  if (refundAllocatableCents > 0) {
+    await tx.execute(sql`
+      UPDATE sale_order_payments
+         SET allocation_status = '已分配'::allocation_status
+       WHERE id = ${refundPaymentId}
+         AND change_type = '退款'
+         AND allocation_status IS DISTINCT FROM '已分配'
+    `)
   }
 
   // ── 2) service_commissions 软删（仅全退 item） ──────────────────────

@@ -406,7 +406,7 @@ async function savePayment(ctx) {
   if (!Array.isArray(allocations)) throw new Error('INVALID_PARAMS: allocations 必须为数组')
 
   const payRows = await pg.query(
-    `SELECT p.id, p.sale_order_id, p.allocation_status, p.paid_at,
+    `SELECT p.id, p.sale_order_id, p.allocation_status, p.paid_at, p.change_type,
             o.store_id, o.market_name, o.sale_order_type, o.legacy_source
        FROM sale_order_payments p
        JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
@@ -424,6 +424,9 @@ async function savePayment(ctx) {
   }
   if (!['待分配', '已分配'].includes(pay.allocation_status)) {
     throw new Error('PERMISSION_DENIED: 该回款不可分配（状态异常）')
+  }
+  if (pay.change_type === '退款') {
+    throw new Error('INVALID_STATE: REFUND_ALLOCATION_READONLY: 退款赤字分配由系统自动生成，不可手动修改')
   }
   if (isFrozen(pay.paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
@@ -559,13 +562,16 @@ async function deletePaymentAllocation(ctx) {
   if (!salePaymentId) throw new Error('INVALID_PARAMS: 缺少 salePaymentId')
 
   const payRows = await pg.query(
-    `SELECT p.id, p.sale_order_id, p.paid_at FROM sale_order_payments p
+    `SELECT p.id, p.sale_order_id, p.paid_at, p.change_type FROM sale_order_payments p
        JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
       WHERE p.id = $1 AND o.store_id = $2`,
     [salePaymentId, ctx.auth.effectiveStoreId]
   )
   if (payRows.length === 0) throw new Error('INVALID_PARAMS: 回款不存在或不属于本门店')
   const pay = payRows[0]
+  if (pay.change_type === '退款') {
+    throw new Error('INVALID_STATE: REFUND_ALLOCATION_READONLY: 退款赤字分配由系统自动生成，不可手动清除')
+  }
   if (isFrozen(pay.paid_at)) {
     throw new Error(`INVALID_STATE: ALLOCATION_FROZEN: 分配结果已冻结，回款到账超过 ${FREEZE_DAYS} 天不可修改`)
   }

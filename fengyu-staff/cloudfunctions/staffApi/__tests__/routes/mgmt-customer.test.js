@@ -845,6 +845,11 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
       scopeId: 'store-001',
     })
     await paidOrders(ctx)
+    const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /SELECT\s+o\.sale_order_id,\s+o\.status,\s+o\.paid_at,\s+o\.store_id/.test(sql) &&
+      /FROM\s+sale_orders\s+o/.test(sql)
+    )
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result.orders).toHaveLength(1)
     expect(ctx.result.orders[0].status).toBe('部分支付')
     expect(ctx.result.orders[0].items[0].totalSessions).toBe(15)
@@ -873,6 +878,8 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     expect(itemSql).toContain("o.sale_order_type = '转换单'")
     expect(itemSql).toContain("si.item_direction = '转入'")
     expect(itemSql).not.toContain("si.item_direction = '转出'")
+    expect(itemSql).toContain('si.paid_sessions IS NULL')
+    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 
   test('giftHistory scope=market：赠品 SQL 不含 o.store_id 过滤', async () => {

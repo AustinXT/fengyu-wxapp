@@ -8,7 +8,7 @@
  *     逐项扣退款（2026-06-08 退款侧），不再按订单级 order.refunded × sale_amount / total 均摊（退一项不连累其它行）
  *   - sale_items.received 已含 '储值卡抵扣' change_type 行
  *     （admin confirmOfflinePayment / recordPayment SUM 公式跨端对齐 staff/order.js），不重复计 prepaid_card_amount
- *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
+ *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）；若退款 note 标记该 0 元 item 全退，后置覆盖为 0
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
  *
  * D3=A 退款扣减：退款审批通过 → STEP 1.5 把该行 received 扣减（净额下降）→ paid_sessions 自动倒退；
@@ -66,6 +66,30 @@ updated_at = NOW()
 FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
 WHERE sale_items.sale_order_id = $1`
 
+export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items AS (
+      SELECT elem ->> 'refSaleItemId' AS sale_item_id
+      FROM sale_order_payments sop
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN sop.note LIKE '{%'
+             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                       THEN (sop.note)::jsonb -> 'items'
+                       ELSE '[]'::jsonb END
+             ELSE '[]'::jsonb END
+      ) AS elem
+      WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+        AND LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true'
+    )
+    UPDATE sale_items si
+    SET paid_sessions = 0,
+        updated_at = NOW()
+    WHERE si.sale_order_id = $1
+      AND si.item_direction = '购买'
+      AND si.session_count IS NOT NULL
+      AND si.sale_amount <= 0
+      AND EXISTS (
+        SELECT 1 FROM full_refund_zero_items fri WHERE fri.sale_item_id = si.sale_item_id
+      )`
+
 /**
  * 已付未用次数（可用次数）派生表达式 —— 查询侧只读派生（与上方 RECALC 写入对照）。
  * admin 单源：卡包列表/详情（cards.ts）+ 订单导出 + 营业额分配导出（orders.ts）复用。
@@ -82,13 +106,20 @@ export const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSess
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
   // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
-  //   A. 有 spai 数据 → received = Σ sale_payment_allocatable_items.amount per item
+  //   A. 有 spai 数据 → received = Σ 正向已支付 sale_payment_allocatable_items.amount per item
   //      （spai 由 capturePaymentAllocatables 在同事务内写入；定向写精确逐项，非定向写两段式瀑布摊分额；
   //       故 Σ spai = 该行累计毛 received，天然精确，瀑布退役）
   //   B. 无 spai（历史订单 / 退款路径 / 数据修复）→ 回退旧瀑布，避免 received 被置零
   // STEP1 后 sum(sale_items.received) 毛额；STEP 1.5 扣退款后转净额。与三端 cloudfunction 副本字节同义。
   const covRes = await tx.execute(sql`
-    SELECT COALESCE((SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items WHERE sale_order_id = ${saleOrderId}), 0) AS spai_total,
+    SELECT COALESCE((
+             SELECT SUM(cov_spai.amount::numeric)
+               FROM sale_payment_allocatable_items cov_spai
+               JOIN sale_order_payments sop ON sop.id = cov_spai.sale_payment_id
+              WHERE cov_spai.sale_order_id = ${saleOrderId}
+                AND sop.status = '已支付'
+                AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+           ), 0) AS spai_total,
            (SELECT received::numeric FROM sale_orders WHERE sale_order_id = ${saleOrderId}) AS order_received
   `)
   // tx.execute() 走 drizzle-orm/postgres-js，返回 postgres.js RowList（array-like，带 .count，无 .rows）。
@@ -104,8 +135,11 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     await tx.execute(sql`
       UPDATE sale_items si
       SET received = COALESCE(GREATEST(0, (
-        SELECT SUM(amount::numeric) FROM sale_payment_allocatable_items spai
+        SELECT SUM(spai.amount::numeric) FROM sale_payment_allocatable_items spai
+        JOIN sale_order_payments sop ON sop.id = spai.sale_payment_id
          WHERE spai.sale_order_id = ${saleOrderId} AND spai.sale_item_id = si.sale_item_id
+           AND sop.status = '已支付'
+           AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
       )), 0),
       updated_at = NOW()
       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
@@ -195,6 +229,32 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     updated_at = NOW()
     FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
     WHERE sale_items.sale_order_id = ${saleOrderId}
+  `)
+  // STEP 2.5：0 元 item 若已随退款全退，覆盖 paid_sessions=0（否则 sale_amount<=0 兜底会保留满次数）
+  await tx.execute(sql`
+    WITH full_refund_zero_items AS (
+      SELECT elem ->> 'refSaleItemId' AS sale_item_id
+      FROM sale_order_payments sop
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN sop.note LIKE '{%'
+             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                       THEN (sop.note)::jsonb -> 'items'
+                       ELSE '[]'::jsonb END
+             ELSE '[]'::jsonb END
+      ) AS elem
+      WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
+        AND LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true'
+    )
+    UPDATE sale_items si
+    SET paid_sessions = 0,
+        updated_at = NOW()
+    WHERE si.sale_order_id = ${saleOrderId}
+      AND si.item_direction = '购买'
+      AND si.session_count IS NOT NULL
+      AND si.sale_amount <= 0
+      AND EXISTS (
+        SELECT 1 FROM full_refund_zero_items fri WHERE fri.sale_item_id = si.sale_item_id
+      )
   `)
   const violation = await tx.execute(sql`
     SELECT sale_item_id, session_count, remaining_sessions, paid_sessions

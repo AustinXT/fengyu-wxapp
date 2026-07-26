@@ -13,6 +13,15 @@ function isCardEntitlementItem(order: SaleOrder, item: SaleItem) {
   )
 }
 
+function hasPaidUnusedSessions(item: SaleItem) {
+  if (item.sessionCount === null || item.remainingSessions === null) return false
+  if (item.remainingSessions <= 0) return false
+  if (item.paidSessions === null) return true
+
+  const usedSessions = Math.max(item.sessionCount - item.remainingSessions, 0)
+  return item.paidSessions > usedSessions
+}
+
 export function getCustomerVisibleSaleItems(orders: SaleOrder[]): SaleItem[] {
   const items: SaleItem[] = []
 
@@ -21,9 +30,7 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): SaleItem[] {
     for (const item of order.items ?? []) {
       if (
         isCardEntitlementItem(order, item) &&
-        item.sessionCount !== null &&
-        (item.remainingSessions ?? 0) > 0 &&
-        (item.paidSessions ?? 0) > 0
+        hasPaidUnusedSessions(item)
       ) {
         items.push(item)
       }

@@ -730,7 +730,7 @@ export const savePaymentAllocations = withPermission(
     }>,
   ): Promise<{ success: boolean; message: string }> => {
     const [pay] = (await db.execute(sql`
-      SELECT sop.id, sop.sale_order_id, sop.allocation_status, so.store_id, so.market_name,
+      SELECT sop.id, sop.sale_order_id, sop.allocation_status, sop.change_type, so.store_id, so.market_name,
              so.sale_order_type, so.legacy_source
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -750,6 +750,9 @@ export const savePaymentAllocations = withPermission(
     // NULL（capture 未跑的非营业额事件行）等异常状态不应被无条件翻成「已分配」。
     if (!['待分配', '已分配'].includes(pay.allocation_status as string)) {
       return { success: false, message: '该回款不可分配（状态异常）' }
+    }
+    if (pay.change_type === '退款') {
+      return { success: false, message: '退款赤字分配由系统自动生成，不可手动修改' }
     }
     // 冻结闭环（Bug I）：退款审批中禁止改分配
     if (await hasPendingRefund(db, pay.sale_order_id as string)) {

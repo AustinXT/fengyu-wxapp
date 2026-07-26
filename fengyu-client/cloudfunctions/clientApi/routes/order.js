@@ -1773,7 +1773,12 @@ async function appointableItems(ctx) {
 
   const activeFilter = includeInactive
     ? ''
-    : 'AND si.remaining_sessions > 0 AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)'
+    : `AND si.remaining_sessions > 0
+      AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+      AND (
+        si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )`
 
   const items = await pg.query(`
     SELECT
@@ -1798,7 +1803,7 @@ async function appointableItems(ctx) {
     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
-      AND o.status IN ('已支付', '部分支付')
+      AND o.status IN ('已支付', '部分支付', '已完成')
       ${activeFilter}
       AND si.product_type = '疗程卡'
       AND (
@@ -1811,7 +1816,7 @@ async function appointableItems(ctx) {
         WHERE sop.sale_order_id = o.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      -- includeInactive=true 的疗程卡历史列表保留已用完/已失效卡；存在已审批退款时仍隐藏已退完的卡。
       AND (
         NOT EXISTS (
           SELECT 1 FROM sale_order_payments sop

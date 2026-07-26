@@ -8,10 +8,9 @@
  * Round 2 修复（audit-15 P0-15-02 预备）：
  * 小美客 / 体验客两分支从 product_categories JOIN 链 + is_card_kind 迁移到
  * sale_items.is_experience capability 列，去掉对 product_categories 的依赖。
- * staffApi order.js recalcCustomerType 与 payNotify/index.js CASE 段的
- * 小美客/体验客分支保持字符级一致（会员客分支历史差异：payNotify CASE 段保留
- * 回款单累计 WHEN EXISTS 子句，但 2026-04-26 sale-order-domain-refactor 后
- * sale_order_type='回款单' 不再产生，该子句已退化为恒为空的死代码，参见下方归因段注释）。
+ * staffApi order.js recalcCustomerType 与 payNotify/index.js CASE 段保持字符级一致。
+ * 2026-04-26 sale-order-domain-refactor 后，回款下沉到 sale_order_payments.change_type='回款'，
+ * sale_order_type 枚举已不含“回款单”，运行时 SQL 禁止再引用该枚举字面量。
  *
  * 本测试做**源文件文本结构守卫**：
  *   1. is_experience 守卫——两处 CASE SQL 必须同时存在 `si.is_experience = false`
@@ -75,7 +74,7 @@ function normalizeSql(sql) {
 
 /**
  * 提取小美客和体验客两个 WHEN EXISTS 分支（不含会员客分支）
- * 用于跨文件镜像对比（会员客分支有历史文本差异；payNotify 多出的回款累计子句已是死代码）
+ * 用于跨文件镜像对比。
  */
 function extractNonMemberBranches(sql) {
   // 从 THEN '会员客' 之后开始，匹配小美客和体验客两个分支到 ELSE 之前
@@ -85,10 +84,7 @@ function extractNonMemberBranches(sql) {
 
 /**
  * 提取会员升级归因 UPDATE 段（首次跃迁为会员客时给触发单打 is_membership_upgrade 标记）
- * 用于跨端镜像对比：staff / admin orders.ts / admin recompute-customer-tags 三端逐字一致；
- * payNotify CASE 段含回款单累计子句，但 2026-04-26 sale-order-domain-refactor 后
- * sale_order_type='回款单' 不再产生，该子句已退化为恒为空的死代码（已不实际触发），
- * 此处仅做文本存在性守护，不代表该历史分支仍在使用。
+ * 用于跨端镜像对比：staff / payNotify / admin orders.ts / admin recompute-customer-tags / clientApi 五端逐字一致。
  * @param {string} filePath
  * @returns {string}
  */
@@ -168,9 +164,9 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(paynotifySql).toContain('si.is_experience = true')
     })
 
-    test('会员客分支保留回款单累计死代码文本（refactor 后恒为空，仅守护历史 SQL）', () => {
-      expect(paynotifySql).toContain('ref_sale_order_id')
-      expect(paynotifySql).toContain("r.sale_order_type = '回款单'")
+    test('会员客分支不含已删除的回款单枚举字面量', () => {
+      expect(paynotifySql).not.toContain('ref_sale_order_id')
+      expect(paynotifySql).not.toContain("'回款单'")
     })
 
     test('ELSE 兜底必须是流量客', () => {
@@ -303,42 +299,25 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(clientApiAttr).toMatch(re)
     })
 
-    test('staff / admin orders.ts / admin recompute / clientApi 四端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+    test('五端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
       const staffN = normalizeSql(staffAttr)
+      expect(normalizeSql(paynotifyAttr)).toBe(staffN)
       expect(normalizeSql(adminAttr)).toBe(staffN)
       expect(normalizeSql(adminRecomputeAttr)).toBe(staffN)
       expect(normalizeSql(clientApiAttr)).toBe(staffN)
-    })
-
-    test('payNotify 归因段保留回款单累计死代码文本（refactor 后恒为空，仅守护历史 SQL）', () => {
-      expect(paynotifyAttr).toContain('ref_sale_order_id')
-      expect(paynotifyAttr).toContain("r.sale_order_type = '回款单'")
     })
 
     test('payNotify 归因条件仍含有效的单笔 total_amount >= 阈值分支', () => {
       expect(normalizeSql(paynotifyAttr)).toContain('o.total_amount >= ?')
     })
 
-    test('staff / admin orders.ts / admin recompute / clientApi 四端无回款单累计分支（仅看单笔 total）', () => {
+    test('五端无回款单累计分支（仅看单笔 total）', () => {
       // 2026-04-26 sale-order-domain-refactor 后，回款记录下沉到
-      // sale_order_payments.change_type='回款'，sale_orders 不再产生 sale_order_type='回款单' 行。
-      // 因此 payNotify 文本中保留的累计子句恒为空，已不触发「单笔未达标、回款后累计达标」场景；
-      // 实际生效口径与 staff/admin 相同，均只看单笔 total >= 阈值。
-      expect(staffAttr).not.toContain('ref_sale_order_id')
-      expect(staffAttr).not.toContain("'回款单'")
-      expect(adminAttr).not.toContain('ref_sale_order_id')
-      expect(adminAttr).not.toContain("'回款单'")
-      expect(adminRecomputeAttr).not.toContain('ref_sale_order_id')
-      expect(adminRecomputeAttr).not.toContain("'回款单'")
-      expect(clientApiAttr).not.toContain('ref_sale_order_id')
-      expect(clientApiAttr).not.toContain("'回款单'")
-    })
-
-    test('payNotify 归因段仍保留历史 OR 拼接文本（回款累计右支为恒空死代码）', () => {
-      // 字面量断言仅守护现存 SQL 结构；右侧回款累计分支在 refactor 后恒为空、已不触发。
-      // 允许跨行空白（SQL 模板字符串里 $2 周围有换行/缩进）；$ 字面量匹配。
-      const orBranch = /o\.total_amount\s*>=\s*\$2\s*OR\s*\(\s*o\.total_amount\s*\+\s*COALESCE/s
-      expect(paynotifyAttr).toMatch(orBranch)
+      // sale_order_payments.change_type='回款'，sale_orders 不再产生旧“回款单”类型行。
+      for (const s of [staffAttr, paynotifyAttr, adminAttr, adminRecomputeAttr, clientApiAttr]) {
+        expect(s).not.toContain('ref_sale_order_id')
+        expect(s).not.toContain("'回款单'")
+      }
     })
 
     test('五端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
@@ -375,8 +354,9 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(clientApiBma).toMatch(re)
     })
 
-    test('staff / admin orders.ts / admin recompute / clientApi 四端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+    test('五端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
       const staffN = normalizeSql(staffBma)
+      expect(normalizeSql(paynotifyBma)).toBe(staffN)
       expect(normalizeSql(adminBma)).toBe(staffN)
       expect(normalizeSql(adminRecomputeBma)).toBe(staffN)
       expect(normalizeSql(clientApiBma)).toBe(staffN)
@@ -390,17 +370,15 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(clientApiBma).not.toMatch(/NOW\(\)/)
     })
 
-    test('四端无回款单累计分支（单笔 total 口径，与四端 is_membership_upgrade 归因段同源）', () => {
-      for (const s of [staffBma, adminBma, adminRecomputeBma, clientApiBma]) {
+    test('五端无回款单累计分支（单笔 total 口径，与五端 is_membership_upgrade 归因段同源）', () => {
+      for (const s of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
         expect(s).not.toContain('ref_sale_order_id')
         expect(s).not.toContain("'回款单'")
       }
     })
 
-    test('payNotify became_member_at 段保留回款单累计死代码文本（与本端 is_membership_upgrade 归因段镜像）', () => {
-      expect(paynotifyBma).toContain('ref_sale_order_id')
-      expect(paynotifyBma).toContain("r.sale_order_type = '回款单'")
-      expect(normalizeSql(paynotifyBma)).toMatch(/o\.total_amount >= \? OR/i)
+    test('payNotify became_member_at 段使用单笔 total_amount 达标口径', () => {
+      expect(normalizeSql(paynotifyBma)).toContain('o.total_amount >= ?')
     })
 
     test('五端都按 paid_at ASC NULLS LAST, created_at ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {

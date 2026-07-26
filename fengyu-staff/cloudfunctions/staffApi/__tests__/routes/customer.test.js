@@ -731,6 +731,10 @@ describe('customer.paidOrders', () => {
       },
     ])
     await customerRoutes.paidOrders(ctx)
+    const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /FROM\s+sale_orders\s+o/.test(sql) && /ORDER BY\s+o\.paid_at\s+DESC/.test(sql)
+    )
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-PARTIAL')
     expect(ctx.result[0].status).toBe('部分支付')
@@ -756,6 +760,8 @@ describe('customer.paidOrders', () => {
     expect(itemSql).toContain("o.sale_order_type = '转换单'")
     expect(itemSql).toContain("si.item_direction = '转入'")
     expect(itemSql).not.toContain("si.item_direction = '转出'")
+    expect(itemSql).toContain('si.paid_sessions IS NULL')
+    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 })
 

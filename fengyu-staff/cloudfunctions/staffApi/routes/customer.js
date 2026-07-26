@@ -563,17 +563,17 @@ async function paidOrders(ctx) {
   }
 
   // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
-  // 状态口径：已支付 + 部分支付。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
-  //   admin getCustomerAvailableServices 一致）；待支付单 paid_sessions=0，前端 consumable<=0 兜底自动隐藏。
+  // 状态口径：有效收款订单（已支付 + 部分支付 + 已完成）。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
+  //   admin getAvailableSaleItems 一致）；待支付单 paid_sessions=0，不进入可核销卡数据源。
   let whereClause, params;
   if (clientUserId) {
-    whereClause = "o.status IN ('已支付', '部分支付') AND o.client_user_id = $1";
+    whereClause = "o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
     // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
     // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
     const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
-    whereClause = `o.status IN ('已支付', '部分支付') AND o.client_phone = $1 AND ${scope.sql}`;
+    whereClause = `o.status IN ('已支付', '部分支付', '已完成') AND o.client_phone = $1 AND ${scope.sql}`;
     params = [clientPhone, ...scope.params];
   }
 
@@ -625,14 +625,9 @@ async function paidOrders(ctx) {
         WHERE sop.sale_order_id = si.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      -- 只下发还有已付未用次数的卡；历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
       AND (
-        NOT EXISTS (
-          SELECT 1 FROM sale_order_payments sop
-          WHERE sop.sale_order_id = si.sale_order_id
-            AND sop.change_type = '退款' AND sop.status = '已支付'
-        )
-        OR si.paid_sessions IS NULL
+        si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
     ORDER BY si.sale_item_id`,

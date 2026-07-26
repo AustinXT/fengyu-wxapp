@@ -577,7 +577,7 @@ async function calendar(ctx) {
 }
 
 // ====================================================================
-// paidOrders — 已支付/部分支付订单含明细（疗程卡 Tab 可核销卡数据源；按 sale_orders.store_id ∈ scope）
+// paidOrders — 有效收款订单含明细（疗程卡 Tab 可核销卡数据源；交易数据跟顾客走）
 // ====================================================================
 
 async function paidOrders(ctx) {
@@ -591,10 +591,10 @@ async function paidOrders(ctx) {
   validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
-  // 状态口径：已支付 + 部分支付（部分支付疗程卡按 paid_sessions 限额核销，与 service.create / customer.paidOrders 一致）
+  // 状态口径：有效收款订单（已支付 + 部分支付 + 已完成），部分支付疗程卡按 paid_sessions 限额核销。
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
   const params = [resolvedUserId]
-  const whereClause = `o.status IN ('已支付', '部分支付') AND o.client_user_id = $1`
+  const whereClause = `o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1`
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name, o.sale_order_type
@@ -632,6 +632,10 @@ async function paidOrders(ctx) {
        AND (
          si.item_direction = '购买'
          OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+       )
+       AND (
+         si.paid_sessions IS NULL
+         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
        )
      ORDER BY si.sale_item_id`,
     [orderIds],

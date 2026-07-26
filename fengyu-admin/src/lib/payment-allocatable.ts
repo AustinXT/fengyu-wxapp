@@ -134,10 +134,15 @@ export async function capturePaymentAllocatables(
     //   第二段产能 sale_cap_i = max(0, sale_amount_i − max(pending_received_i, prior_allocated_i))（实付→应付余量）
     // eventAmount 先按 pend_cap 比例铺满（LEAST(evt, Σpend_cap)），溢出再按 sale_cap 比例铺开。
     // 补全款时 pend_cap 已耗尽 → 自动回落到 sale_cap，实现"回升到应付不冻结"。
-    // 最大余数法保证 Σ = evt 且每项非负（与 staff/payNotify/clientApi 同语义）。
+    // 最大余数法保证 Σ = evt 且每项非负（与 staff/payNotify/clientApi 同语义）。退款流水也会写 SPAI 供赤字分配展示，因此 prior 只统计正向已支付流水。
     const priorRes = await tx.execute(sql`
-      SELECT sale_item_id, COALESCE(SUM(amount::numeric), 0) AS allocated
-        FROM sale_payment_allocatable_items WHERE sale_order_id = ${saleOrderId} GROUP BY sale_item_id
+      SELECT spai.sale_item_id, COALESCE(SUM(spai.amount::numeric), 0) AS allocated
+        FROM sale_payment_allocatable_items spai
+        JOIN sale_order_payments sop ON sop.id = spai.sale_payment_id
+       WHERE spai.sale_order_id = ${saleOrderId}
+         AND sop.status = '已支付'
+         AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+       GROUP BY spai.sale_item_id
     `)
     const priorRows = priorRes as unknown as Array<{ sale_item_id: string; allocated: string | number }>
     const priorMap = new Map(priorRows.map((r) => [r.sale_item_id, Number(r.allocated)]))

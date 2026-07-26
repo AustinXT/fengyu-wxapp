@@ -77,12 +77,39 @@ describe("getCustomerVisibleSaleItems", () => {
   it("只展示有已付未用次数的权益卡", () => {
     const unpaidItem = makeItem({ saleItemId: "SI-UNPAID", paidSessions: 0 })
     const exhaustedItem = makeItem({ saleItemId: "SI-EXHAUSTED", remainingSessions: 0 })
+    const paidUsedUpItem = makeItem({
+      saleItemId: "SI-PAID-USED-UP",
+      sessionCount: 10,
+      remainingSessions: 5,
+      paidSessions: 5,
+    })
+    const paidUnusedItem = makeItem({
+      saleItemId: "SI-PAID-UNUSED",
+      sessionCount: 10,
+      remainingSessions: 5,
+      paidSessions: 6,
+    })
 
     const result = getCustomerVisibleSaleItems([
-      makeOrder({ items: [unpaidItem, exhaustedItem] }),
+      makeOrder({ items: [unpaidItem, exhaustedItem, paidUsedUpItem, paidUnusedItem] }),
     ])
 
-    expect(result).toEqual([])
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID-UNUSED"])
+  })
+
+  it("兼容 paidSessions 为 NULL 的历史行，按物理剩余显示", () => {
+    const legacyNullItem = makeItem({
+      saleItemId: "SI-LEGACY-NULL",
+      sessionCount: 10,
+      remainingSessions: 3,
+      paidSessions: null,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [legacyNullItem] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-LEGACY-NULL"])
   })
 
   it("保留有效转换单的转入疗程卡", () => {
