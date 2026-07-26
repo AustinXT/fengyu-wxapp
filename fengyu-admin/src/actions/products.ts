@@ -499,6 +499,7 @@ export const getAllSkus = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
@@ -546,6 +547,7 @@ export const getSkuById = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
@@ -592,6 +594,7 @@ export const getSkusByProductId = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
@@ -612,6 +615,14 @@ export const getSkusByProductId = withPermission(
 
 const VALID_PRODUCT_TYPES = ['疗程卡', '家居产品'] as const
 
+function validatePurchaseLimit(purchaseLimit: number | null | undefined): string | null {
+  if (purchaseLimit == null) return null
+  if (!Number.isInteger(purchaseLimit) || purchaseLimit < 1) {
+    return '限购次数必须为正整数'
+  }
+  return null
+}
+
 export const createSku = withPermission(
   'product:create',
   async (
@@ -624,6 +635,7 @@ export const createSku = withPermission(
       price: string
       specialPrice?: string | null
       sessionCount?: number | null
+      purchaseLimit?: number | null
       sortOrder?: number
       serviceFee?: string
       isShengmei?: boolean | null
@@ -657,6 +669,8 @@ export const createSku = withPermission(
         return { success: false, message: '疗程卡的次数必须 >= 1' }
       }
     }
+    const purchaseLimitError = validatePurchaseLimit(data.purchaseLimit)
+    if (purchaseLimitError) return { success: false, message: purchaseLimitError }
 
     // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验仅剩 isExperience 单值，
     // 无需互斥防护；chk_sku_not_both_capabilities CHECK 同 migration 0043 已 DROP。
@@ -690,6 +704,7 @@ export const updateSku = withPermission(
       price: string
       specialPrice: string | null
       sessionCount: number | null
+      purchaseLimit: number | null
       sortOrder: number
       serviceFee: string
       isShengmei: boolean | null
@@ -714,6 +729,8 @@ export const updateSku = withPermission(
         return { success: false, message: '疗程卡的次数必须 >= 1' }
       }
     }
+    const purchaseLimitError = validatePurchaseLimit(data.purchaseLimit)
+    if (purchaseLimitError) return { success: false, message: purchaseLimitError }
 
     // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验已失去对象，应用层守卫删除。
 
@@ -1733,6 +1750,7 @@ export interface OrderPickerSku {
   price: string
   specialPrice: string | null
   sessionCount: number | null
+  purchaseLimit: number | null
   serviceFee: string
   sortOrder: number
   /** 店长特别优惠：true 时开单（销售单 + 普通商品）允许店长改应付金额 */
@@ -1755,6 +1773,7 @@ export interface OrderPickerBundleSkuRef {
   productType: '疗程卡' | '家居产品'
   /** 疗程卡次数（非疗程卡为 null），开单时需快照到 sale_items.session_count */
   sessionCount: number | null
+  purchaseLimit: number | null
   price: string
   bundlePrice: string | null
   bundleGroupId: number | null
@@ -1884,6 +1903,7 @@ export const getProductsByKind = withPermission(
             specName: m.sku.specName,
             productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
             sessionCount: m.sku.sessionCount,
+            purchaseLimit: m.sku.purchaseLimit,
             price: m.bundleListPrice ?? m.sku.price,
             bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
             bundleGroupId: m.bundleGroupId,
@@ -1897,6 +1917,7 @@ export const getProductsByKind = withPermission(
           specName: m.sku.specName,
           productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
           sessionCount: m.sku.sessionCount,
+          purchaseLimit: m.sku.purchaseLimit,
           price: m.bundleListPrice ?? m.sku.price,
           bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
           bundleGroupId: m.bundleGroupId,
@@ -1992,6 +2013,7 @@ export const getProductsByKind = withPermission(
         price: r.sku.price,
         specialPrice: r.sku.specialPrice,
         sessionCount: r.sku.sessionCount,
+        purchaseLimit: r.sku.purchaseLimit,
         serviceFee: r.sku.serviceFee,
         sortOrder: r.sku.sortOrder,
         isManagerSpecial: r.sku.isManagerSpecial,
@@ -2052,6 +2074,7 @@ export const getProductsByKind = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      purchaseLimit: r.sku.purchaseLimit,
       serviceFee: r.sku.serviceFee,
       sortOrder: r.sku.sortOrder,
       isManagerSpecial: r.sku.isManagerSpecial,

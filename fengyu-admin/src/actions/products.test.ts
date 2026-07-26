@@ -36,6 +36,7 @@ vi.mock('@db/product', () => ({
     skuId: 'sku_id',
     categoryId: 'category_id',
     productType: 'product_type',
+    purchaseLimit: 'purchase_limit',
     updatedAt: 'updated_at',
     sortOrder: 'sort_order',
   },
@@ -576,6 +577,12 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('疗程卡的次数必须 >= 1')
   })
 
+  it('purchaseLimit < 1 → 拒绝', async () => {
+    const result = await createSku({ ...baseSkuData, purchaseLimit: 0 })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('限购次数必须为正整数')
+  })
+
   it('商品编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
@@ -639,6 +646,12 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
     const result = await updateSku('SKU-001', { specName: '新规格' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('已更新')
+  })
+
+  it('purchaseLimit < 1 → 拒绝', async () => {
+    const result = await updateSku('SKU-001', { purchaseLimit: 0 })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('限购次数必须为正整数')
   })
 })
 

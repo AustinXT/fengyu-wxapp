@@ -81,6 +81,8 @@ export default function SkuCreatePageClient({
     const sessionCount = sessionCountRaw
       ? parseInt(sessionCountRaw)
       : productType === '疗程卡' ? 1 : null
+    const purchaseLimitRaw = (fd.get("purchaseLimit") as string).trim()
+    const purchaseLimit = purchaseLimitRaw ? Number(purchaseLimitRaw) : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const isEnabled = fd.get("isEnabled") === "on"
 
@@ -96,6 +98,7 @@ export default function SkuCreatePageClient({
         price,
         specialPrice,
         sessionCount,
+        purchaseLimit,
         sortOrder,
         serviceFee,
         isShengmei,
@@ -223,6 +226,10 @@ export default function SkuCreatePageClient({
             <div className="space-y-2">
               <label className="text-sm font-medium">次数</label>
               <Input name="sessionCount" type="number" min={1} placeholder="疗程卡不填默认 1 次" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">限购次数</label>
+              <Input name="purchaseLimit" type="number" min={1} step={1} placeholder="不填则不限购" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">排序</label>

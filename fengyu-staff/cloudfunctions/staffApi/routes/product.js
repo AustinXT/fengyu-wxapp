@@ -114,6 +114,7 @@ function _formatSkuRow(sk) {
     price: Number(sk.price) || 0,
     specialPrice: sk.special_price ? Number(sk.special_price) : null,
     sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
+    purchaseLimit: sk.purchase_limit != null ? Number(sk.purchase_limit) : null,
     productType: sk.product_type,
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
@@ -164,7 +165,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
   const skuRows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
-           sk.service_fee, sk.is_shengmei,
+           sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
            pc.category_name, pc.product_kind, pc.sales_category,
            COALESCE((
@@ -195,7 +196,7 @@ async function _queryExperienceSkus() {
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
-           sk.service_fee, sk.is_shengmei,
+           sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
            pc.category_name, pc.product_kind, pc.sales_category,
            false AS is_bundle
@@ -246,7 +247,7 @@ async function _queryMallBundleGroups() {
   const skuLinkRows = await pg.query(`
     SELECT mps.product_id, mps.sku_id, mps.bundle_group_id,
            mps.bundle_price, mps.bundle_list_price, mps.sort_order,
-           sk.spec_name, sk.session_count,
+           sk.spec_name, sk.session_count, sk.purchase_limit,
            sk.product_type, sk.is_shengmei,
            sk.price AS list_price, sk.special_price AS list_special_price
     FROM mall_product_skus mps
@@ -270,6 +271,7 @@ async function _queryMallBundleGroups() {
             skuId: s.sku_id,
             specName: s.spec_name,
             sessionCount: s.session_count,
+            purchaseLimit: s.purchase_limit != null ? Number(s.purchase_limit) : null,
             productType: s.product_type,
             isShengmei: !!s.is_shengmei,
             // 成交价（组会员价 ?? 标价）/ 标价单价（划线）：套餐下沉副本优先，缺失回退 SKU 原价
@@ -408,7 +410,7 @@ async function skuDetail(ctx) {
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count, sk.sort_order,
-      sk.service_fee, sk.is_shengmei, sk.market_scope,
+      sk.service_fee, sk.is_shengmei, sk.market_scope, sk.purchase_limit,
       pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
