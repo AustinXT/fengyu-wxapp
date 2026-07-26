@@ -5,6 +5,7 @@ import { callClientApi } from '../../utils/cloud';
 import { formatAppointmentTime } from '../../utils/format';
 
 const PAGE_SIZE = 20;
+const app = getApp<IAppOption>();
 
 const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
   '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
@@ -29,15 +30,26 @@ Page({
     loadingMore: false,
     loadError: false,
     hasMore: true,
+    isLoggedOut: false,
   },
 
   _page: 1,
 
   onShow() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
+    this.setData({ isLoggedOut: false });
     this.loadList();
   },
 
   onPullDownRefresh() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      wx.stopPullDownRefresh();
+      return;
+    }
     this.loadList().finally(() => wx.stopPullDownRefresh());
   },
 
@@ -67,7 +79,23 @@ Page({
     });
   },
 
+  clearPrivateData() {
+    this._page = 1;
+    this.setData({
+      list: [],
+      isLoading: false,
+      loadingMore: false,
+      loadError: false,
+      hasMore: false,
+      isLoggedOut: true,
+    });
+  },
+
   async loadList() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
@@ -89,6 +117,10 @@ Page({
   },
 
   async loadMore() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
     this._page += 1;
     this.setData({ loadingMore: true });
     try {
@@ -110,6 +142,10 @@ Page({
   },
 
   onCreateAppointment() {
+    if (app.isLoggedOut()) {
+      wx.navigateTo({ url: '/pagesProfile/profile-edit/profile-edit' });
+      return;
+    }
     wx.navigateTo({ url: '/pagesAppointment/appointment-create/appointment-create' });
   },
 

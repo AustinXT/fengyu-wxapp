@@ -4,7 +4,7 @@
 <view class="container">
 
   <!-- 头像区域 -->
-  <view class="avatar-section" bindtap="onChooseAvatar">
+  <view class="avatar-section" wx:if="{{!isLoggedOut}}" bindtap="onChooseAvatar">
     <view class="avatar-circle">
       <image wx:if="{{avatarUrl}}" src="{{avatarUrl}}" class="avatar-image" mode="aspectFill" />
       <van-icon wx:else name="contact" size="96rpx" color="#C0322A" />
@@ -15,7 +15,7 @@
   <!-- 基本信息 -->
   <van-cell-group inset custom-class="info-group">
     <!-- 昵称（可编辑） -->
-    <view wx:if="{{!isEditing}}">
+    <view wx:if="{{!isLoggedOut && !isEditing}}">
       <van-cell
         title="昵称"
         value="{{userName || '未设置'}}"
@@ -23,7 +23,7 @@
         bindtap="onEditName"
       />
     </view>
-    <view wx:else class="edit-name-row">
+    <view wx:elif="{{!isLoggedOut}}" class="edit-name-row">
       <view class="edit-name-label">昵称</view>
       <input
         class="edit-name-input"
@@ -43,14 +43,14 @@
     <!-- 手机号 -->
     <!-- 首绑场景：直接触发 open-type=getPhoneNumber -->
     <button
-      wx:if="{{!maskedPhone}}"
+      wx:if="{{isLoggedOut || !maskedPhone}}"
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
     >
       <van-cell
         title="手机号"
-        value="立即绑定"
+        value="{{isLoggedOut ? '授权登录' : '立即绑定'}}"
         is-link
       />
     </button>
@@ -65,8 +65,8 @@
   </van-cell-group>
 
   <!-- 只读信息 -->
-  <view class="section-title">账户信息</view>
-  <van-cell-group inset custom-class="info-group">
+  <view class="section-title" wx:if="{{!isLoggedOut}}">账户信息</view>
+  <van-cell-group inset custom-class="info-group" wx:if="{{!isLoggedOut}}">
     <van-cell
       title="用户编号"
       value="{{userId}}"
