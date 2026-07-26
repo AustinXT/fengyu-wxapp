@@ -15,6 +15,7 @@
         "TMAP_SECRET": "${TMAP_SECRET}",
         "CLIENT_SECRET": "${CLIENT_SECRET}",
         "ALLOW_TEST_OPENID": "${ALLOW_TEST_OPENID}",
+        "ALLOW_DIRECT_PHONE": "${ALLOW_DIRECT_PHONE}",
         "TZ": "Asia/Shanghai",
         "LAKALA_API_BASE": "${LAKALA_API_BASE}",
         "LAKALA_APPID": "${LAKALA_APPID}",
