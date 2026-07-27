@@ -16,7 +16,7 @@ export interface AssistantMetricValue {
   helper?: string
 }
 
-export type AssistantVisualizationKind = "metrics" | "line" | "bar" | "table"
+export type AssistantVisualizationKind = "metrics" | "line" | "bar" | "funnel" | "table"
 
 export interface AssistantVisualization {
   id: string

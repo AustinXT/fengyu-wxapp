@@ -8,6 +8,8 @@ import {
   Bar,
   BarChart as RechartsBarChart,
   CartesianGrid,
+  Funnel,
+  FunnelChart,
   LabelList,
   Line,
   LineChart,
@@ -59,8 +61,8 @@ const MAX_SESSIONS = 30
 const suggestions = [
   "今年科颜美复购率是多少？",
   "今年各品项复购率对比",
-  "南昌市场门店复购率排名",
-  "最近半年复购率趋势",
+  "科颜美普及率是多少？",
+  "今年新客漏斗表现怎么样？",
 ]
 
 const markdownComponents: Components = {
@@ -227,7 +229,10 @@ function formatDate(value: string): string {
 function formatChartValue(value: unknown, format: AssistantVisualization["valueFormat"] = "number"): string {
   if (value === null || value === undefined || value === "") return "--"
   if (format === "rate") return `${(Number(value) * 100).toFixed(1)}%`
-  if (format === "number") return Number(value).toLocaleString("zh-CN")
+  if (format === "number") {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? numeric.toLocaleString("zh-CN") : String(value)
+  }
   return String(value)
 }
 
@@ -250,8 +255,19 @@ function TooltipContent({
       {"repurchaseRate" in row ? (
         <div className="mt-1 text-neutral-600">复购率：{formatChartValue(row.repurchaseRate, valueFormat)}</div>
       ) : null}
+      {"penetrationRate" in row ? (
+        <div className="mt-1 text-neutral-600">普及率：{formatChartValue(row.penetrationRate, valueFormat)}</div>
+      ) : null}
       {"entryCount" in row ? <div className="text-neutral-500">进入人数：{formatChartValue(row.entryCount)}</div> : null}
       {"repurchaseCount" in row ? <div className="text-neutral-500">复购人数：{formatChartValue(row.repurchaseCount)}</div> : null}
+      {"cardHolderCount" in row ? <div className="text-neutral-500">持卡会员：{formatChartValue(row.cardHolderCount)}</div> : null}
+      {"memberCount" in row ? <div className="text-neutral-500">总会员：{formatChartValue(row.memberCount)}</div> : null}
+      {"remainingSessions" in row ? <div className="text-neutral-500">剩余次数：{formatChartValue(row.remainingSessions)}</div> : null}
+      {"newCustomerCount" in row ? <div className="text-neutral-500">新客人数：{formatChartValue(row.newCustomerCount)}</div> : null}
+      {"arrivedCount" in row ? <div className="text-neutral-500">到店人数：{formatChartValue(row.arrivedCount)}</div> : null}
+      {"arrivalRate" in row ? <div className="text-neutral-500">到店率：{formatChartValue(row.arrivalRate, "rate")}</div> : null}
+      {"memberCustomerCount" in row ? <div className="text-neutral-500">会员客户：{formatChartValue(row.memberCustomerCount)}</div> : null}
+      {"memberConversionRate" in row ? <div className="text-neutral-500">会员成交率：{formatChartValue(row.memberConversionRate, "rate")}</div> : null}
     </div>
   )
 }
@@ -354,6 +370,37 @@ function BarVisualization({ visualization }: { visualization: AssistantVisualiza
   )
 }
 
+function FunnelVisualization({ visualization }: { visualization: AssistantVisualization }) {
+  const rows = visualization.rows ?? []
+  const labelKey = visualization.labelKey ?? "name"
+  const valueKey = visualization.valueKey ?? "value"
+  const visible = rows.filter((row) => Number(row[valueKey] ?? 0) > 0)
+  if (visible.length === 0) return <EmptyVisualization />
+  return (
+    <div className="h-[240px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <FunnelChart margin={{ top: 12, right: 24, bottom: 12, left: 24 }}>
+          <Tooltip content={<TooltipContent valueFormat={visualization.valueFormat} />} />
+          <Funnel dataKey={valueKey} data={visible} fill="#C0322A" isAnimationActive={false}>
+            <LabelList
+              dataKey={labelKey}
+              position="right"
+              fill="#262626"
+              formatter={(value) => String(value)}
+            />
+            <LabelList
+              dataKey={valueKey}
+              position="center"
+              fill="#ffffff"
+              formatter={(value) => formatChartValue(value, visualization.valueFormat)}
+            />
+          </Funnel>
+        </FunnelChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
 function TableVisualization({ visualization }: { visualization: AssistantVisualization }) {
   const columns = visualization.columns ?? []
   const rows = visualization.rows ?? []
@@ -393,6 +440,7 @@ function AssistantVisualizationPanel({ visualization }: { visualization: Assista
       {visualization.kind === "metrics" ? <MetricsVisualization visualization={visualization} /> : null}
       {visualization.kind === "line" ? <LineVisualization visualization={visualization} /> : null}
       {visualization.kind === "bar" ? <BarVisualization visualization={visualization} /> : null}
+      {visualization.kind === "funnel" ? <FunnelVisualization visualization={visualization} /> : null}
       {visualization.kind === "table" ? <TableVisualization visualization={visualization} /> : null}
     </div>
   )

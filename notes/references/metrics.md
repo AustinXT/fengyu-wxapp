@@ -434,6 +434,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
 | 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
+| 2026-07-23 | 复购口径二次修订：周期统计以 `sale_items.received` 累计净实收达标为准，不要求订单 `status='已支付'`；时间轴改为 `COALESCE(sale_order_datetime, paid_at)::date`；复购必须来自本期进入 cohort 且在 entry_date 后再次达标，复购率分母改为品项进入人数（`repurchaseCount / newCount`）。 |
 | 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 
@@ -503,7 +504,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 ## 品项顾客周期子页（mgmt-product-cycle）
 
 > 入口：mgmt-dashboard 首页"品项数据"卡片（`entry === 'products'`）；
-> 时间筛选本月/上月/本年，口径与 sales-data 页相同（见下方"时间窗口补充"）。
+> 时间筛选本月/上月/本年/自定义日期区间，口径与 sales-data 页相同（见下方"时间窗口补充"）。
 > scope 过滤通过 `so.store_id` 命中；持卡人数例外（截面快照）。
 
 ### 1. 持卡人数（截面快照，不随 period 变化）
@@ -517,40 +518,42 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.paid_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单','寄存单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
 | 占比（cardHolderRate）per product_kind | `cardHolderCount / memberCount × 100%` | 派生；`memberCount=0` → `--` | — |
 
-### 2. 体验 / 新增 / 复购（区间维度，时间轴 `paid_at`）
+### 2. 体验 / 品项进入 / 复购（区间维度，时间轴 `purchase_date`）
 
 **核心术语**：
 
 | 术语 | 定义 |
 |------|------|
-| **qualifying day（达标日）** | `SUM(si.received)` 在 `(client_user_id, store_id, product_kind, paid_at::date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，工具函数 `getMemberThreshold()`，默认 1990）|
+| **purchase_date（消费日期）** | `COALESCE(so.sale_order_datetime, so.paid_at)::date`；优先订单消费时间，缺失时回退付款时间 |
+| **qualifying day（达标日）** | `SUM(si.received)` 在 `(client_user_id, store_id, product_kind, purchase_date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，工具函数 `getMemberThreshold()`，默认 1980）|
 | **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的达标日（跨门店合并） |
-| **新增（xinzeng）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
-| **复购（fugou）** | 在 `[startDate, endDate]` 内有达标日的顾客（threshold 与新增共用） |
+| **品项进入（xinzeng/newEntry）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
+| **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有达标日的顾客（threshold 与进入共用） |
 | **体验（tiyan）** | 在 `[startDate, endDate]` 内有购买，但全历史（截至 endDate）从未有达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并再对比 threshold。
-> **三类关系**：体验 ∩ 新增 = ∅，体验 ∩ 复购 = ∅；**新增 ⊆ 复购**
->   （凡 entry_date 落在 period 内的顾客，其 entry_date 当日即满足"period 内有达标日"，因此必然也在 fugou 集合中；
->   xinzeng 视为 fugou 的"首次达标"子集，UI 表格分别展示总量供业务对照）。
+> **金额口径**：直接使用 `sale_items.received` 累计净实收，回款已累计在该字段内；不再另查回款流水。
+> **订单状态口径**：周期统计不要求 `so.status='已支付'`；排除 `已关闭/已作废/未审核/待审批/支付失败` 后，`received` 达标即计入，部分支付订单也可能达标。
+> **三类关系**：体验 ∩ 品项进入 = ∅，体验 ∩ 复购 = ∅；品项进入当天本身不算复购，必须存在 entry_date 之后的达标日。
 
 **底层 CTE（三类指标共用）**：
 
 ```sql
 WITH daily_agg AS (
   SELECT so.client_user_id, so.store_id,
-         pc.product_kind,    so.paid_at::date AS purchase_date,
+         pc.product_kind,    COALESCE(so.sale_order_datetime, so.paid_at)::date AS purchase_date,
          SUM(si.received)                     AS day_received
   FROM sale_items si
   JOIN sale_orders so ON si.sale_order_id  = so.sale_order_id
   JOIN product_skus sk ON si.sku_id        = sk.sku_id
   JOIN product_categories pc ON sk.category_id = pc.category_id
   WHERE so.sale_order_type IN ('销售单','转换单')
-    AND so.status = '已支付'
+    AND so.status NOT IN ('已关闭','已作废','未审核','待审批','支付失败')
     AND so.client_user_id IS NOT NULL
-    AND so.paid_at::date <= $endDate          -- 全历史截至 endDate
+    AND COALESCE(so.sale_order_datetime, so.paid_at)::date <= $endDate
     AND <scope on so.store_id>
-  GROUP BY so.client_user_id, so.store_id, pc.product_kind, so.paid_at::date
+  GROUP BY so.client_user_id, so.store_id, pc.product_kind, COALESCE(so.sale_order_datetime, so.paid_at)::date
+  HAVING SUM(si.received) > 0
 ),
 qualifying_days AS (
   SELECT client_user_id, store_id, product_kind, purchase_date
@@ -566,15 +569,16 @@ period_agg AS (                               -- 期内每日聚合
   FROM daily_agg WHERE purchase_date BETWEEN $startDate AND $endDate
 ),
 xinzeng AS (                                  -- 新增：entry_date 在期内
-  SELECT client_user_id, product_kind FROM first_entry
+  SELECT client_user_id, product_kind, entry_date FROM first_entry
   WHERE entry_date BETWEEN $startDate AND $endDate
 ),
-fugou AS (                                    -- 复购：期内任一达标日（不再要求 ≠ entry_date）
+fugou AS (                                    -- 复购：本期进入 cohort，entry_date 后期内再次达标
   SELECT DISTINCT q.client_user_id, q.product_kind
   FROM qualifying_days q
-  JOIN first_entry f ON f.client_user_id = q.client_user_id
-                     AND f.product_kind  = q.product_kind
+  JOIN xinzeng x ON x.client_user_id = q.client_user_id
+                AND x.product_kind   = q.product_kind
   WHERE q.purchase_date BETWEEN $startDate AND $endDate
+    AND q.purchase_date > x.entry_date
 ),
 tiyan AS (                                    -- 体验：期内有购买但全历史无达标日
   SELECT DISTINCT pa.client_user_id, pa.product_kind
@@ -592,18 +596,19 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 体验人数（trialCount）per product_kind | `COUNT(DISTINCT tiyan.client_user_id)` | CTE `tiyan` |
 | 体验业绩（trialRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ tiyan | `tiyan` JOIN `period_agg` ON (client_user_id, product_kind) |
 | 体验客单价（trialAvgTicket） | `trialRevenue / trialCount` | 派生；防除零 → `--` |
-| 新增人数（newCount）per product_kind | `COUNT(DISTINCT xinzeng.client_user_id)` | CTE `xinzeng` |
-| 新增业绩（newRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ xinzeng | `xinzeng` JOIN `period_agg` |
-| 新增客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--` |
+| 品项进入人数（newCount）per product_kind | `COUNT(DISTINCT xinzeng.client_user_id)` | CTE `xinzeng` |
+| 进入业绩（newRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ xinzeng | `xinzeng` JOIN `period_agg` |
+| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--` |
 | 复购人数（repurchaseCount）per product_kind | `COUNT(DISTINCT fugou.client_user_id)` | CTE `fugou` |
 | 复购业绩（repurchaseRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ fugou | `fugou` JOIN `period_agg` |
 | 复购客单价（repurchaseAvgTicket） | `repurchaseRevenue / repurchaseCount` | 派生；防除零 → `--` |
+| 复购率（repurchaseRate） | `repurchaseCount / newCount` | 派生；防除零 → `--` |
 
 > **新增人数 = 品项进入总人数**：对应原始需求"首次在该品项消费达标 | 首笔消费实收累计 ≥ new_member_threshold"。
 > **各类业绩口径**：为该客群在 period 内该 product_kind 的全部购买 `SUM(received)`（非仅达标当日），
 > 体现"该客群对期内收入的贡献"。
-> **性能注意**：`daily_agg` 全历史扫描（`paid_at <= $endDate`，无下界），随运营时长增长。
-> 建议追加索引 `idx_so_client_paid(client_user_id, paid_at, status)`；800ms slow warn 阈值。
+> **性能注意**：`daily_agg` 全历史扫描（`purchase_date <= $endDate`，无下界），随运营时长增长。
+> 建议追加面向 `sale_order_datetime/paid_at` 与 `client_user_id/status` 的复合索引；800ms slow warn 阈值。
 
 ### 3. 二级品项（category_name）粒度（admin 数据中心品项板块专用）
 
@@ -617,7 +622,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > | 选到二级（`categoryName`，附带其一级） | `pc.category_name` | WHERE `pc.product_kind = $productKind AND pc.category_name = $categoryName` 过滤后按二级聚合（单组）|
 >
 > **口径与一级完全同构**——所有 CTE（`daily_agg` / `qualifying_days` / `first_entry` / `period_agg` / `xinzeng` / `fugou` / `tiyan`）
-> 与持卡截面查询的逻辑、阈值（`getMemberThreshold`，默认 1980/1990）、达标日规则、`新增 ⊆ 复购` 关系
+> 与持卡截面查询的逻辑、阈值（`getMemberThreshold`，默认 1980）、达标日规则、复购必须晚于进入日的规则
 > **均不变**，唯一差异是把分组键 `pc.product_kind` 整体替换为 `pc.category_name`（达标日聚合的 GROUP BY 维度
 > 与 `first_entry` 跨店合并键同步替换）。即：
 >

@@ -11,6 +11,8 @@ const ANOMALY_Z_THRESHOLD = 1.5
 
 export interface RepurchaseFilters {
   year?: number
+  startDate?: string
+  endDate?: string
   productKind?: string
   categoryName?: string
   market?: string
@@ -130,12 +132,21 @@ function normalizeFilterText(value: string | undefined): string | undefined {
   return normalized ? normalized : undefined
 }
 
+function normalizeDateFilter(value: unknown): string | undefined {
+  const text = cleanText(Array.isArray(value) ? value[0] : value)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined
+  const date = new Date(`${text}T00:00:00.000Z`)
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text ? undefined : text
+}
+
 function formatCategory(productKind: string, categoryName: string): string {
   return [productKind, categoryName].filter(Boolean).join(" / ")
 }
 
 export function normalizeRepurchaseFilters(input: {
   year?: string | string[] | number
+  startDate?: string | string[]
+  endDate?: string | string[]
   category?: string | string[]
   productKind?: string | string[]
   categoryName?: string | string[]
@@ -152,9 +163,16 @@ export function normalizeRepurchaseFilters(input: {
   const [legacyProductKind, legacyCategoryName] = legacyCategory?.includes(" / ")
     ? legacyCategory.split(" / ", 2)
     : [legacyCategory, undefined]
+  let startDate = normalizeDateFilter(input.startDate)
+  let endDate = normalizeDateFilter(input.endDate)
+  if (startDate && endDate && startDate > endDate) {
+    ;[startDate, endDate] = [endDate, startDate]
+  }
 
   return {
     year: Number.isInteger(year) && year >= 2000 && year <= 2100 ? year : undefined,
+    startDate,
+    endDate,
     productKind: normalizeFilterText(productKind) ?? normalizeFilterText(legacyProductKind),
     categoryName: normalizeFilterText(categoryName) ?? normalizeFilterText(legacyCategoryName),
     market: normalizeFilterText(market),
@@ -165,11 +183,43 @@ export function normalizeRepurchaseFilters(input: {
 function normalizeDashboardFilters(filters: RepurchaseFilters): Required<RepurchaseFilters> {
   return {
     year: filters.year ?? 0,
+    startDate: filters.startDate ?? "",
+    endDate: filters.endDate ?? "",
     productKind: filters.productKind ?? "",
     categoryName: filters.categoryName ?? "",
     market: filters.market ?? "",
     store: filters.store ?? "",
   }
+}
+
+function resolveFilterDateRange(filters: RepurchaseFilters): { startDate?: string; endDate?: string } {
+  if (filters.startDate || filters.endDate) {
+    return { startDate: filters.startDate, endDate: filters.endDate }
+  }
+  if (!filters.year) return {}
+  return {
+    startDate: `${filters.year}-01-01`,
+    endDate: `${filters.year}-12-31`,
+  }
+}
+
+function shiftDateYear(date: string, delta: number): string {
+  const [year, month, day] = date.split("-").map(Number)
+  const shiftedYear = year + delta
+  const lastDay = new Date(Date.UTC(shiftedYear, month, 0)).getUTCDate()
+  return `${shiftedYear}-${String(month).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`
+}
+
+function previousYearFilters(filters: RepurchaseFilters): RepurchaseFilters | null {
+  if (filters.startDate || filters.endDate) {
+    return {
+      ...filters,
+      year: undefined,
+      startDate: filters.startDate ? shiftDateYear(filters.startDate, -1) : undefined,
+      endDate: filters.endDate ? shiftDateYear(filters.endDate, -1) : undefined,
+    }
+  }
+  return filters.year ? { ...filters, year: filters.year - 1 } : null
 }
 
 function scopeCacheKey(session: AuthSession): string {
@@ -190,12 +240,12 @@ function buildBaseConditions(session: AuthSession, filters: RepurchaseFilters): 
   const categoryNameExpr = sql`pc.category_name`
   const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
   const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
-  const paidAtExpr = sql`COALESCE(so.paid_at, so.sale_order_datetime)`
+  const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
 
   const conditions: SQL[] = [
     scopeCondition(session),
     sql`so.sale_order_type IN ('销售单', '转换单')`,
-    sql`so.status = '已支付'`,
+    sql`so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')`,
     sql`so.client_user_id IS NOT NULL`,
     sql`si.item_direction = '购买'`,
     sql`si.sku_id IS NOT NULL`,
@@ -203,14 +253,9 @@ function buildBaseConditions(session: AuthSession, filters: RepurchaseFilters): 
     sql`${productKindExpr} <> ''`,
     sql`${categoryNameExpr} IS NOT NULL`,
     sql`${categoryNameExpr} <> ''`,
-    sql`${paidAtExpr} IS NOT NULL`,
+    sql`${purchaseAtExpr} IS NOT NULL`,
   ]
 
-  if (filters.year) {
-    conditions.push(sql`
-      EXTRACT(YEAR FROM (${paidAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int = ${filters.year}
-    `)
-  }
   if (filters.productKind) conditions.push(sql`${productKindExpr} = ${filters.productKind}`)
   if (filters.categoryName) conditions.push(sql`${categoryNameExpr} = ${filters.categoryName}`)
   if (filters.market) conditions.push(sql`${marketExpr} = ${filters.market}`)
@@ -252,7 +297,21 @@ async function queryRepurchaseEntries(
   const categoryNameExpr = sql`pc.category_name`
   const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
   const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
-  const paidAtExpr = sql`COALESCE(so.paid_at, so.sale_order_datetime)`
+  const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
+  const purchaseDateExpr = sql`(${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai')::date`
+  const range = resolveFilterDateRange(filters)
+  const firstEntryConditions: SQL[] = [sql`TRUE`]
+  const repurchaseConditions: SQL[] = [sql`q.sale_date > f.first_date`]
+  if (range.startDate) {
+    firstEntryConditions.push(sql`first_date >= ${range.startDate}::date`)
+    repurchaseConditions.push(sql`q.sale_date >= ${range.startDate}::date`)
+  }
+  if (range.endDate) {
+    firstEntryConditions.push(sql`first_date <= ${range.endDate}::date`)
+    repurchaseConditions.push(sql`q.sale_date <= ${range.endDate}::date`)
+  }
+  const firstEntrySql = sql.join(firstEntryConditions, sql` AND `)
+  const repurchaseSql = sql.join(repurchaseConditions, sql` AND `)
 
   const rows = await db.execute<RawRepurchaseEntryRow>(sql`
     WITH order_item_flows AS (
@@ -263,8 +322,8 @@ async function queryRepurchaseEntries(
         ${productKindExpr} AS product_kind,
         ${categoryNameExpr} AS category_name,
         so.sale_order_id,
-        ${paidAtExpr} AS min_date,
-        (${paidAtExpr} AT TIME ZONE 'Asia/Shanghai')::date AS sale_date,
+        ${purchaseAtExpr} AS min_date,
+        ${purchaseDateExpr} AS sale_date,
         so.store_id,
         ${storeExpr} AS store,
         ${marketExpr} AS market,
@@ -278,6 +337,7 @@ async function queryRepurchaseEntries(
       LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
       LEFT JOIN client_wechat_users c ON c.user_id = so.client_user_id
       WHERE ${whereSql}
+        ${range.endDate ? sql`AND ${purchaseDateExpr} <= ${range.endDate}::date` : sql``}
       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
       HAVING SUM(si.received::numeric) > 0
     ),
@@ -310,6 +370,11 @@ async function queryRepurchaseEntries(
         MIN(sale_date) AS first_date
       FROM qualified_days
       GROUP BY client_user_id, product_kind, category_name
+    ),
+    entry_cohort AS (
+      SELECT *
+      FROM first_entry
+      WHERE ${firstEntrySql}
     )
     SELECT
       q.customer_code AS "customerId",
@@ -320,9 +385,9 @@ async function queryRepurchaseEntries(
       f.first_date AS "firstDate",
       (ARRAY_AGG(q.store ORDER BY q.sale_date, q.min_date))[1] AS "store",
       (ARRAY_AGG(q.market ORDER BY q.sale_date, q.min_date))[1] AS "market",
-      BOOL_OR(q.sale_date <> f.first_date) AS "repurchased"
+      BOOL_OR(${repurchaseSql}) AS "repurchased"
     FROM qualified_days q
-    JOIN first_entry f
+    JOIN entry_cohort f
       ON f.client_user_id = q.client_user_id
      AND f.product_kind = q.product_kind
      AND f.category_name = q.category_name
@@ -450,7 +515,7 @@ export async function getRepurchaseDashboard(
   filters: RepurchaseFilters,
 ): Promise<RepurchaseDashboardData> {
   const threshold = await getMemberThreshold()
-  const kpiPrevFilters = filters.year ? { ...filters, year: filters.year - 1 } : null
+  const kpiPrevFilters = previousYearFilters(filters)
   const categoryFilters = { ...filters, categoryName: undefined }
   const marketFilters = { ...filters, market: undefined, store: undefined }
   const storeFilters = { ...filters, store: undefined }
@@ -513,9 +578,9 @@ async function queryDistinctStrings(session: AuthSession, expression: SQL, extra
 
 async function queryAvailableYears(session: AuthSession): Promise<number[]> {
   const whereSql = buildBaseConditions(session, {})
-  const paidAtExpr = sql`COALESCE(so.paid_at, so.sale_order_datetime)`
+  const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
   const rows = await db.execute<{ value: number }>(sql`
-    SELECT DISTINCT EXTRACT(YEAR FROM (${paidAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int AS value
+    SELECT DISTINCT EXTRACT(YEAR FROM (${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int AS value
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
     JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -563,9 +628,10 @@ export async function getRepurchaseKpi(
   filters: RepurchaseFilters,
 ): Promise<{ threshold: number; kpi: RepurchaseKpi }> {
   const threshold = await getMemberThreshold()
+  const prevFilters = previousYearFilters(filters)
   const [entries, prevEntries] = await Promise.all([
     queryRepurchaseEntries(session, filters, threshold),
-    filters.year ? queryRepurchaseEntries(session, { ...filters, year: filters.year - 1 }, threshold) : Promise.resolve(null),
+    prevFilters ? queryRepurchaseEntries(session, prevFilters, threshold) : Promise.resolve(null),
   ])
   const prevYearRate = prevEntries ? aggregateKpi(prevEntries, null).repurchaseRate : null
   return { threshold, kpi: aggregateKpi(entries, prevYearRate) }
@@ -596,7 +662,7 @@ export async function getCategoryComparison(
 
 export async function getMarketComparison(
   session: AuthSession,
-  filters: Pick<RepurchaseFilters, "year" | "productKind" | "categoryName">,
+  filters: Pick<RepurchaseFilters, "year" | "startDate" | "endDate" | "productKind" | "categoryName">,
 ): Promise<RepurchaseRankingRow[]> {
   const threshold = await getMemberThreshold()
   const entries = await queryRepurchaseEntries(session, filters, threshold)

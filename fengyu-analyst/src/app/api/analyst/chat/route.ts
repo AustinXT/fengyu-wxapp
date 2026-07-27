@@ -119,7 +119,7 @@ export async function POST(request: Request) {
       model: openai(aiConfig.model),
       system: createAssistantSystemPrompt(),
       messages: toModelMessages(messages),
-      tools: createRepurchaseTools(session),
+      tools: createRepurchaseTools(session, lastUserMessage.content),
       stopWhen: stepCountIs(4),
       temperature: 0.2,
     })
