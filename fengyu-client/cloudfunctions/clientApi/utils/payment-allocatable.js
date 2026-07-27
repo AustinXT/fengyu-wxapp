@@ -200,7 +200,7 @@ async function refreshOrderAllocationRollup(client, saleOrderId) {
                 SELECT 1 FROM sale_order_payments
                  WHERE sale_order_id = $1 AND allocation_status IS NOT NULL
               ) THEN '已分配'::allocation_status
-              ELSE sale_orders.allocation_status END,
+              ELSE NULL::allocation_status END,
             updated_at = NOW()
       WHERE sale_order_id = $1`,
     [saleOrderId],
@@ -208,6 +208,28 @@ async function refreshOrderAllocationRollup(client, saleOrderId) {
 }
 
 async function reconcileAllocationStatusAfterRefund(client, saleOrderId) {
+  await client.query(
+    `WITH full_refund_without_alloc AS (
+       SELECT so.sale_order_id
+         FROM sale_orders so
+        WHERE so.sale_order_id = $1
+          AND GREATEST(COALESCE(so.received::numeric, 0) - COALESCE(so.refunded_amount::numeric, 0), 0) <= 0.01
+          AND NOT EXISTS (
+            SELECT 1
+              FROM sale_payment_item_receipts spir
+              JOIN sale_payment_item_allocations spia
+                ON spia.sale_payment_item_receipt_id = spir.id
+               AND spia.is_void = false
+             WHERE spir.sale_order_id = so.sale_order_id
+          )
+     )
+     UPDATE sale_order_payments p
+        SET allocation_status = NULL
+      WHERE p.sale_order_id = $1
+        AND p.allocation_status IS NOT NULL
+        AND EXISTS (SELECT 1 FROM full_refund_without_alloc)`,
+    [saleOrderId],
+  )
   await client.query(
     `WITH needs_allocation AS (
        SELECT p.id

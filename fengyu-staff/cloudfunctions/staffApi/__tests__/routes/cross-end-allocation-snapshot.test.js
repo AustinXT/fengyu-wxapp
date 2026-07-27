@@ -35,6 +35,14 @@ const FILES = {
   ),
   adminCaptureTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
   receiptMigration0082Sql: path.resolve(__dirname, '../../../../../db/migrations/0082_harsh_firebird.sql'),
+  positiveReceiptRebuild0083Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0083_positive_receipt_rebuild.sql',
+  ),
+  clearFullRefundStatus0084Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0084_clear_full_refund_allocation_status.sql',
+  ),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
@@ -229,9 +237,11 @@ describe('断言4：payNotify index.js 不再写旧 sale_allocations / 旧约束
 // 断言 5：退款审批后按 paid_sessions 净额收敛待分配状态
 // ─────────────────────────────────────────────────────────────────────────────
 describe('断言5：退款审批后重算 paid_sessions，再收敛营业额分配状态', () => {
-  test('staff/admin payment-allocatable 均实现 reconcileAllocationStatusAfterRefund', () => {
+  test('四端 payment-allocatable 均实现 reconcileAllocationStatusAfterRefund', () => {
     for (const [end, src] of [
       ['staff', readFile(FILES.staffCaptureJs)],
+      ['clientApi', readFile(FILES.clientCaptureJs)],
+      ['payNotify', readFile(FILES.payNotifyCaptureJs)],
       ['admin', readFile(FILES.adminCaptureTs)],
     ]) {
       expect(src, `${end} 缺 reconcileAllocationStatusAfterRefund`).toMatch(/reconcileAllocationStatusAfterRefund/)
@@ -239,6 +249,9 @@ describe('断言5：退款审批后重算 paid_sessions，再收敛营业额分�
       expect(src, `${end} 缺子分配存在性判断`).toMatch(/FROM sale_payment_item_allocations spia/)
       expect(src, `${end} 缺非零 receipt 门控`).toMatch(/spir\.amount::numeric <> 0/)
       expect(src, `${end} 缺待分配收敛为已分配`).toMatch(/SET allocation_status = '已分配'/)
+      expect(src, `${end} 缺全额退款无分配明细时清空 payment allocation_status`).toMatch(/full_refund_without_alloc[\s\S]{0,760}SET allocation_status = NULL/)
+      expect(src, `${end} 缺全额退款净实收判断`).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) <= 0\.01/)
+      expect(src, `${end} 缺订单 rollup 无回款状态时归 NULL`).toMatch(/ELSE NULL::allocation_status END/)
     }
   })
 
@@ -295,5 +308,59 @@ describe('断言6：0082 退款 receipt backfill 使用 note.items[].refundAmoun
   test('退款 receipt upsert 必须用实际退款额覆盖旧值', () => {
     expect(src).toMatch(/refund_receipts AS \([\s\S]{0,900}-ABS\(SUM\(ri\.refund_amount\)\) AS amount/)
     expect(src).toMatch(/INSERT INTO sale_payment_item_receipts[\s\S]{0,520}FROM refund_receipts[\s\S]{0,220}ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 断言 7：0082 正向 receipt 按实际 payment.amount 重建逐笔归属
+// ─────────────────────────────────────────────────────────────────────────────
+describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () => {
+  let src, incrementalSrc, clearFullRefundSrc
+
+  beforeAll(() => {
+    src = readFile(FILES.receiptMigration0082Sql)
+    incrementalSrc = readFile(FILES.positiveReceiptRebuild0083Sql)
+    clearFullRefundSrc = readFile(FILES.clearFullRefundStatus0084Sql)
+  })
+
+  test('仅重建无旧分配/无新子分配且逐笔金额不一致的原生销售/转换单', () => {
+    expect(src).toMatch(/_0082_positive_receipt_rebuild_orders/)
+    expect(src).toMatch(/so\.sale_order_type IN \('销售单','转换单'\)/)
+    expect(src).toMatch(/so\.legacy_source IS DISTINCT FROM 'workfine'/)
+    expect(src).toMatch(/NOT EXISTS \([\s\S]{0,220}FROM sale_allocations sa[\s\S]{0,260}COALESCE\(sa\.is_void, false\) = false/)
+    expect(src).toMatch(/JOIN sale_payment_item_allocations spia ON spia\.sale_payment_item_receipt_id = spir\.id/)
+    expect(src).toMatch(/HAVING ABS\(p\.amount::numeric - COALESCE\(SUM\(r\.amount::numeric\), 0\)\) > 0\.01/)
+  })
+
+  test('重建逻辑沿用运行态两段式瀑布，并把有 receipt 的正向款项置为待分配', () => {
+    expect(src).toMatch(/GREATEST\(0, pending_cents - prior_cents\)/)
+    expect(src).toMatch(/GREATEST\(0, sale_amount_cents - GREATEST\(pending_cents, prior_cents\)\)/)
+    expect(src).toMatch(/ORDER BY paid_at NULLS LAST, id/)
+    expect(src).toMatch(/DELETE FROM sale_payment_item_receipts spir[\s\S]{0,260}sop\.change_type IN \('首次支付','回款','储值卡抵扣'\)/)
+    expect(src).toMatch(/UPDATE sale_order_payments[\s\S]{0,120}SET allocation_status = '待分配'/)
+  })
+
+  test('0083 增量迁移保留同源修复块，覆盖已执行旧 0082 的数据库', () => {
+    expect(incrementalSrc).toMatch(/_0082_positive_receipt_rebuild_orders/)
+    expect(incrementalSrc).toMatch(/HAVING ABS\(p\.amount::numeric - COALESCE\(SUM\(r\.amount::numeric\), 0\)\) > 0\.01/)
+    expect(incrementalSrc).toMatch(/ORDER BY paid_at NULLS LAST, id/)
+    expect(incrementalSrc).toMatch(/UPDATE sale_order_payments[\s\S]{0,120}SET allocation_status = '待分配'/)
+  })
+
+  test('0083 同时收敛有净实收且无分配子行的误标已分配状态', () => {
+    expect(incrementalSrc).toMatch(/stale_positive_payment_status AS \(/)
+    expect(incrementalSrc).toMatch(/sop\.allocation_status = '已分配'/)
+    expect(incrementalSrc).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) > 0\.01/)
+    expect(incrementalSrc).toMatch(/SET allocation_status = '待分配'/)
+    expect(incrementalSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = '待分配'/)
+  })
+
+  test('0084 清空全额退款且无有效分配明细的 payment/order 分配状态', () => {
+    expect(clearFullRefundSrc).toMatch(/WITH full_refund_without_alloc AS \(/)
+    expect(clearFullRefundSrc).toMatch(/so\.sale_order_type IN \('销售单','转换单'\)/)
+    expect(clearFullRefundSrc).toMatch(/so\.legacy_source IS DISTINCT FROM 'workfine'/)
+    expect(clearFullRefundSrc).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) <= 0\.01/)
+    expect(clearFullRefundSrc).toMatch(/UPDATE sale_order_payments sop[\s\S]{0,140}SET allocation_status = NULL/)
+    expect(clearFullRefundSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = NULL/)
   })
 })
