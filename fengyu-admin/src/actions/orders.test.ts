@@ -96,26 +96,26 @@ vi.mock('@db/order', () => ({
     allocationStatus: 'allocation_status',
     $inferInsert: {} as any,
   },
-  saleAllocations: {
-    id: 'id',
-    saleItemId: 'sale_item_id',
-    employeeId: 'employee_id',
-    allocationRatio: 'allocation_ratio',
-    roleType: 'role_type',
-    totalAmount: 'total_amount',
-    commissionRate: 'commission_rate',
-    commissionAmount: 'commission_amount',
-    salePaymentId: 'sale_payment_id',
-    isVoid: 'is_void',
-  },
-  // 营业额分配「待分配占位段」锚点表（payment × 可分配 item）
-  salePaymentAllocatableItems: {
+  salePaymentItemReceipts: {
     id: 'id',
     salePaymentId: 'sale_payment_id',
     saleOrderId: 'sale_order_id',
     saleItemId: 'sale_item_id',
     amount: 'amount',
     salesCategory: 'sales_category',
+  },
+  salePaymentItemAllocations: {
+    id: 'id',
+    salePaymentItemReceiptId: 'sale_payment_item_receipt_id',
+    employeeId: 'employee_id',
+    allocationRatio: 'allocation_ratio',
+    roleType: 'role_type',
+    departmentName: 'department_name',
+    allocatedAmount: 'allocated_amount',
+    commissionRate: 'commission_rate',
+    commissionAmount: 'commission_amount',
+    isVoid: 'is_void',
+    voidedAt: 'voided_at',
   },
 }))
 
@@ -1602,7 +1602,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       }
       const result = await fn(tx)
       // 2026-04 closeOrder: tx.update 调用两次（saleOrders 关单 + userCoupons 归还核销券），
-      // tx.execute 调用一次（作废 sale_allocations）
+      // tx.execute 调用一次（作废营业额子分配）
       expect(tx.update).toHaveBeenCalledTimes(2)
       expect(tx.execute).toHaveBeenCalledOnce() // 作废分配
       return result
@@ -3884,7 +3884,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     ;(scopeCondition as any).mockReturnValue(undefined)
   })
 
-  // 已分配段 raw：含分配明细列（sale_allocations 来源）
+  // 已分配段 raw：含分配明细列（sale_payment_item_allocations 来源）
   const allocatedRaw = {
     market: '九江', storeName: '南昌英伦店', saleOrderId: 'FY-XSD-WX-2606080027',
     saleOrderType: '销售单', documentType: '售后',
@@ -4018,7 +4018,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
 /**
  * exportOrders（订单管理列表导出，明细级一行一 sale_items，迁移 0077 后）
  *
- * 与 exportAllocationOrders 区别：以 sale_items 为起点（不是 sale_allocations），
+ * 与 exportAllocationOrders 区别：以 sale_items 为起点（不是 sale_payment_item_allocations），
  * 不分摊 sale_allations；订单基础字段在每条 item 行重复，行级字段（商品类型/品质/次数/单价）按 item 各填。
  */
 describe('exportOrders — 订单明细导出（migration 0077 后）', () => {

@@ -277,7 +277,7 @@ export default function PaymentAllocationDetailPageClient({
         <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
         </Link>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">{isRefundAllocation ? '营业额分配（退款赤字）' : '营业额分配（回款）'}</h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">{isRefundAllocation ? '营业额分配（退款赤字）' : '营业额分配'}</h1>
       </div>
 
       {/* 回款/退款摘要 */}

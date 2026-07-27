@@ -1104,7 +1104,7 @@ async function create(ctx) {
 
     // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
     // 客户端 create 通常 received=0（待支付，等微信回调），paid_sessions=0 → service.create 时受 D6 限额阻塞
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, orderNo)
 
     // 零应付单（券/卡全额抵扣）补结算：积分链净额差值法（幂等）+ 会员等级即时重算。
@@ -2277,7 +2277,7 @@ async function confirmPrepaidFull(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
     // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
@@ -2562,7 +2562,7 @@ async function repay(ctx) {
       }
       // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
       // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(client, saleOrderId)
       // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
       // 纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发

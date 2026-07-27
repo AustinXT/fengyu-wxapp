@@ -362,7 +362,7 @@ function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] })
                     </td>
                     <td className="px-4 py-3 text-[#999999]">{p.paidAt ? formatTime(p.paidAt) : "-"}</td>
                     <td className="px-4 py-3">
-                      {/* 转换单现已按回款逐笔产 spai，与销售单统一走按回款分配页 */}
+                      {/* 转换单现已按回款逐笔产 receipt，与销售单统一走按回款分配页 */}
                       <Link href={`/allocations/payments/${p.salePaymentId}`}>
                         <Button size="sm" variant="outline">
                           {p.allocationStatus === "已分配" ? "查看分配" : "分配"}

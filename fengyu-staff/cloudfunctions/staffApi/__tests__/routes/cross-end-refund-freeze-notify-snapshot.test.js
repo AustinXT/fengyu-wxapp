@@ -27,26 +27,31 @@ describe('退款级联守护（2026-06-24：通道1 记负数冲销逐被退 ite
     // 仅「全退」item 进入 fullItemIds（通道2/3 门控）
     expect(staffCascade).toMatch(/fullItemIds\s*=\s*effItems\.filter\(\(it\)\s*=>\s*it\.isFullItemRefund\)/)
     expect(staffCascade).toMatch(/if\s*\(fullItemIds\.length\s*>\s*0\)/)
-    // 通道1（2026-06-24 重构）：sale_allocations 由软删改「记负数冲销」——逐被退 item（effItems）INSERT 负数行，
-    // 挂退款流水 sale_payment_id，幂等键含 sale_payment_id；不再整单/子集软删。
+    // 通道1：逐被退 item（effItems）写负数 receipt；若有原正向分配，再 INSERT 负数子分配。
     expect(staffCascade).toMatch(/for \(const it of effItems\)/)
-    expect(staffCascade).toMatch(/INSERT INTO sale_allocations[\s\S]{0,500}ON CONFLICT \(sale_item_id, employee_id, role_type, sale_payment_id\) WHERE is_void = false DO NOTHING/)
-    expect(staffCascade).toMatch(/\(-voidTotal\)\.toFixed\(2\)[\s\S]{0,80}refundPaymentId/)
+    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
+    expect(staffCascade).toMatch(/\(-refundAmt\)\.toFixed\(2\)/)
+    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(staffCascade).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
+    expect(staffCascade).toMatch(/refundPaymentId/)
     // 通道2 提成：经 service_items 子查询按 sale_item_id = ANY($3)（仅全退 item，保持软删）
     expect(staffCascade).toMatch(/service_commissions[\s\S]{0,260}sale_item_id = ANY\(\$3\)/)
     // 防回归：通道1 不得回退为整单作废（WHERE sale_order_id 直接清分配）
-    expect(staffCascade).not.toMatch(/UPDATE sale_allocations[\s\S]{0,200}WHERE sale_order_id/)
+    expect(staffCascade).not.toMatch(/UPDATE sale_payment_item_allocations[\s\S]{0,200}WHERE sale_order_id/)
   })
 
   test('admin cascade：通道1 逐被退 item INSERT 负数冲销 + 通道2 IN(fullItemIds) 仅全退 item', () => {
     expect(adminCascade).toMatch(/fullItemIds\s*=\s*effItems\.filter\(\(it\)\s*=>\s*it\.isFullItemRefund\)/)
     expect(adminCascade).toMatch(/if\s*\(fullItemIds\.length\s*>\s*0\)/)
     expect(adminCascade).toMatch(/for \(const it of effItems\)/)
-    expect(adminCascade).toMatch(/INSERT INTO sale_allocations[\s\S]{0,500}ON CONFLICT \(sale_item_id, employee_id, role_type, sale_payment_id\) WHERE is_void = false DO NOTHING/)
-    expect(adminCascade).toMatch(/\$\{\(-voidTotal\)\.toFixed\(2\)\}[\s\S]{0,120}\$\{refundPaymentId\}/)
+    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
+    expect(adminCascade).toMatch(/\$\{\(-refundAmt\)\.toFixed\(2\)\}/)
+    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(adminCascade).toMatch(/\$\{\(-voidTotal\)\.toFixed\(2\)\}/)
+    expect(adminCascade).toMatch(/refundPaymentId/)
     // 通道2：service_commissions 软删按 fullItemIds——admin 用 IN(sql.join) 规避 drizzle ANY(array) 42809
     expect(adminCascade).toMatch(/service_commissions[\s\S]{0,400}sale_item_id IN \(\$\{sql\.join\(fullItemIds/)
-    expect(adminCascade).not.toMatch(/UPDATE sale_allocations[\s\S]{0,200}WHERE sale_order_id/)
+    expect(adminCascade).not.toMatch(/UPDATE sale_payment_item_allocations[\s\S]{0,200}WHERE sale_order_id/)
   })
 })
 

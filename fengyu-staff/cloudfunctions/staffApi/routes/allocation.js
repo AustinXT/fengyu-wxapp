@@ -6,7 +6,9 @@
  * allocation.deletePaymentAllocation — 删除某笔回款的营业额分配（店长专用）
  * allocation.getCommissionRates — 获取提成比例矩阵
  *
- * sale_allocations 为扁平结构：每行 = 一条 sale_item + 一个员工的分配记录。
+ * 新结构：
+ *   sale_payment_item_receipts 为父表，每行 = 一笔款项 × 一个商品子项的有符号实收。
+ *   sale_payment_item_allocations 为子表，每行 = 一条 receipt × 一个员工 × 一个角色。
  */
 
 const pg = require('../db/pg')
@@ -198,27 +200,24 @@ async function pendingPayments(ctx) {
           $2 <> '待分配'
           OR EXISTS (
             SELECT 1
-              FROM sale_payment_allocatable_items spai
-              JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
-             WHERE spai.sale_payment_id = p.id
-               AND GREATEST(COALESCE(si.received::numeric, 0), 0) > 0
+              FROM sale_payment_item_receipts spir
+             WHERE spir.sale_payment_id = p.id
+               AND spir.amount::numeric <> 0
                AND NOT EXISTS (
                  SELECT 1
-                   FROM sale_allocations sa
-                  WHERE sa.sale_payment_id = p.id
-                    AND sa.sale_item_id = spai.sale_item_id
-                    AND sa.is_void = false
-                    AND sa.total_amount::numeric > 0
+                   FROM sale_payment_item_allocations spia
+                  WHERE spia.sale_payment_item_receipt_id = spir.id
+                    AND spia.is_void = false
                )
           )
           OR (
             NOT EXISTS (
-              SELECT 1 FROM sale_payment_allocatable_items spai WHERE spai.sale_payment_id = p.id
+              SELECT 1 FROM sale_payment_item_receipts spir WHERE spir.sale_payment_id = p.id
             )
             AND GREATEST(COALESCE(o.received::numeric, 0) - COALESCE(o.refunded_amount::numeric, 0), 0) > 0
           )
         )
-        AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 spai，与销售单同流程
+        AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 receipt，与销售单同流程
         AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
       LIMIT $3 OFFSET $4`,
@@ -229,7 +228,7 @@ async function pendingPayments(ctx) {
 
 /**
  * 某笔回款的分配建议（店长专用）
- * 可分配项 = sale_payment_allocatable_items（基数 amount）；提成率按【本次回款额】查档。
+ * 可分配项 = sale_payment_item_receipts（基数 amount）；提成率按【本次回款额】查档。
  */
 async function suggestPayment(ctx) {
   await requireManager()(ctx, async () => {})
@@ -267,9 +266,9 @@ async function suggestPayment(ctx) {
 
   // 该回款的可分配项（基数 amount；同时以 received 别名下发，复用前端「实收×比例」算法）
   const items = await pg.query(
-    `SELECT a.sale_item_id, a.amount::numeric AS amount, a.amount::numeric AS received,
+    `SELECT a.id AS receipt_id, a.sale_item_id, a.amount::numeric AS amount, a.amount::numeric AS received,
             a.sales_category, si.product_name, si.product_type
-       FROM sale_payment_allocatable_items a
+       FROM sale_payment_item_receipts a
        JOIN sale_items si ON si.sale_item_id = a.sale_item_id
       WHERE a.sale_payment_id = $1
       ORDER BY a.sale_item_id`,
@@ -279,13 +278,14 @@ async function suggestPayment(ctx) {
 
   // 该回款已有分配（供前端恢复编辑态）
   const existingAllocations = await pg.query(
-    `SELECT sa.sale_item_id, sa.employee_id, sa.role_type, sa.department_name,
-            sa.allocation_ratio, sa.total_amount, sa.is_void,
+    `SELECT spir.sale_item_id, spia.employee_id, spia.role_type, spia.department_name,
+            spia.allocation_ratio, spia.allocated_amount AS total_amount, spia.is_void,
             swu.name AS employee_name
-       FROM sale_allocations sa
-       LEFT JOIN staff_wechat_users swu ON swu.employee_id = sa.employee_id
-      WHERE sa.sale_payment_id = $1 AND sa.is_void = false
-      ORDER BY sa.sale_item_id`,
+       FROM sale_payment_item_allocations spia
+       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+       LEFT JOIN staff_wechat_users swu ON swu.employee_id = spia.employee_id
+      WHERE spir.sale_payment_id = $1 AND spia.is_void = false
+      ORDER BY spir.sale_item_id`,
     [salePaymentId]
   )
 
@@ -437,10 +437,10 @@ async function savePayment(ctx) {
   await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   const allocItems = await pg.query(
-    'SELECT sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_allocatable_items WHERE sale_payment_id = $1',
+    'SELECT id AS receipt_id, sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_item_receipts WHERE sale_payment_id = $1',
     [salePaymentId]
   )
-  const baseMap = new Map(allocItems.map(i => [i.sale_item_id, Number(i.amount) || 0]))
+  const baseMap = new Map(allocItems.map(i => [i.sale_item_id, { receiptId: Number(i.receipt_id), amount: Number(i.amount) || 0 }]))
   const catMap = new Map(allocItems.map(i => [i.sale_item_id, i.sales_category || '自销自耗']))
   const validItemIds = new Set(allocItems.map(i => i.sale_item_id))
   const eventAmount = Math.round(allocItems.reduce((s, i) => s + (Number(i.amount) || 0), 0) * 100) / 100
@@ -451,8 +451,12 @@ async function savePayment(ctx) {
   if (allocations.length === 0) {
     await pg.transaction(async (client) => {
       await client.query(
-        `UPDATE sale_allocations SET is_void = true, voided_at = NOW(), updated_at = NOW()
-          WHERE sale_payment_id = $1 AND is_void = false`,
+        `UPDATE sale_payment_item_allocations
+            SET is_void = true, voided_at = NOW(), updated_at = NOW()
+          WHERE sale_payment_item_receipt_id IN (
+            SELECT id FROM sale_payment_item_receipts WHERE sale_payment_id = $1
+          )
+            AND is_void = false`,
         [salePaymentId]
       )
       // CAS 守卫：allocation_status 仅 2 值轻量级状态机；IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
@@ -479,8 +483,9 @@ async function savePayment(ctx) {
     if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
       throw new Error('INVALID_PARAMS: allocationRatio 必须为 0~1 之间（精度 0.001）')
     }
-    const base = baseMap.get(alloc.saleItemId) || 0
-    const totalAmount = Math.round(base * Number(ratioStr) * 100) / 100
+    const base = baseMap.get(alloc.saleItemId)
+    if (!base) throw new Error(`INVALID_PARAMS: saleItemId ${alloc.saleItemId} 不属于该回款`)
+    const totalAmount = Math.round(base.amount * Number(ratioStr) * 100) / 100
     const salesCategory = catMap.get(alloc.saleItemId) || '自销自耗'
     const commissionRate = rateLookup(alloc.roleType, salesCategory, eventAmount)
     const commissionAmount = Math.round(totalAmount * commissionRate * 100) / 100
@@ -488,6 +493,7 @@ async function savePayment(ctx) {
       saleItemId: alloc.saleItemId,
       employeeId: alloc.employeeId,
       roleType: alloc.roleType,
+      receiptId: base.receiptId,
       departmentName: alloc.departmentName || null,
       allocationRatio: ratioStr,
       totalAmount,
@@ -524,18 +530,22 @@ async function savePayment(ctx) {
 
   await pg.transaction(async (client) => {
     await client.query(
-      `UPDATE sale_allocations SET is_void = true, voided_at = NOW(), updated_at = NOW()
-        WHERE sale_payment_id = $1 AND is_void = false`,
+      `UPDATE sale_payment_item_allocations
+          SET is_void = true, voided_at = NOW(), updated_at = NOW()
+        WHERE sale_payment_item_receipt_id IN (
+          SELECT id FROM sale_payment_item_receipts WHERE sale_payment_id = $1
+        )
+          AND is_void = false`,
       [salePaymentId]
     )
     for (const a of enriched) {
       await client.query(
-        `INSERT INTO sale_allocations
-           (sale_item_id, employee_id, role_type, department_name, allocation_ratio, total_amount,
-            commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10, $10)`,
-        [a.saleItemId, a.employeeId, a.roleType, a.departmentName, a.allocationRatio,
-         a.totalAmount, a.commissionRate, a.commissionAmount, salePaymentId, now]
+        `INSERT INTO sale_payment_item_allocations
+           (sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio, allocated_amount,
+            commission_rate, commission_amount, is_void, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $9)`,
+        [a.receiptId, a.employeeId, a.roleType, a.departmentName, a.allocationRatio,
+         a.totalAmount, a.commissionRate, a.commissionAmount, now]
       )
     }
     // CAS 守卫：同上，IN ('待分配','已分配') 幂等允许重分配 + 挡 NULL/脏态
@@ -581,8 +591,12 @@ async function deletePaymentAllocation(ctx) {
 
   await pg.transaction(async (client) => {
     await client.query(
-      `UPDATE sale_allocations SET is_void = true, voided_at = NOW(), updated_at = NOW()
-        WHERE sale_payment_id = $1 AND is_void = false`,
+      `UPDATE sale_payment_item_allocations
+          SET is_void = true, voided_at = NOW(), updated_at = NOW()
+        WHERE sale_payment_item_receipt_id IN (
+          SELECT id FROM sale_payment_item_receipts WHERE sale_payment_id = $1
+        )
+          AND is_void = false`,
       [salePaymentId]
     )
     // CAS 守卫：删除分配只允许 '已分配'→'待分配'，挡并发双删（脏 voided_at 时间戳）

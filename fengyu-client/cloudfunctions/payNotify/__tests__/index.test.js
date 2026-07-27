@@ -209,7 +209,7 @@ describe('payNotify index.js', () => {
       },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
-        match: 'FROM sale_items WHERE sale_order_id',
+        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received, sales_category[\s\S]*FROM sale_items/,
         result: {
           rows: [
             {
@@ -222,6 +222,18 @@ describe('payNotify index.js', () => {
           ],
           rowCount: 1,
         },
+      },
+      {
+        match: /INSERT INTO sale_payment_item_receipts/,
+        result: { rows: [{ id: 11 }], rowCount: 1 },
+      },
+      {
+        match: /AS receipt_positive_total/,
+        result: { rows: [{ receipt_positive_total: '300.00', order_received: '300.00' }], rowCount: 1 },
+      },
+      {
+        match: /UPDATE sale_order_payments SET allocation_status = '已分配'/,
+        result: { rows: [], rowCount: 1 },
       },
       // customer_type 查询
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
@@ -237,9 +249,10 @@ describe('payNotify index.js', () => {
     const hasDeductInsert = qs.some((s) => s.includes("'扣款'") && s.includes('INSERT INTO card_transactions'))
     expect(hasDeductInsert).toBe(false)
 
-    // 业绩分配应插入
-    const hasAllocation = qs.some((s) => s.includes('INSERT INTO sale_allocations'))
+    // 业绩子分配应插入
+    const hasAllocation = qs.some((s) => s.includes('INSERT INTO sale_payment_item_allocations'))
     expect(hasAllocation).toBe(true)
+    expect(qs.some((s) => s.includes('INSERT INTO sale_allocations'))).toBe(false)
 
     // 事务闭环
     expect(qs[0]).toBe('BEGIN')
@@ -604,16 +617,16 @@ describe('payNotify index.js', () => {
     expect(statusUpd[1][0]).toBe('部分支付')
     expect(Number(statusUpd[1][1])).toBe(100)
 
-    // 不应走到到期日 / 业绩分配（fullyPaid=false 提前 COMMIT）
+    // 不应走到到期日；部分到账也会进入 receipt 捕获/自动分配链路，但不得再写旧表
     // 注：2026-05-21 单品合并后 expire_date 自动赋值整体移除，此守卫恒成立
     const expireUpd = mockClientQuery.mock.calls.find(
       (c) => /UPDATE sale_items[\s\S]*SET expire_date/.test(c[0])
     )
     expect(expireUpd).toBeUndefined()
-    const allocIns = mockClientQuery.mock.calls.find(
+    const oldAllocIns = mockClientQuery.mock.calls.find(
       (c) => /INSERT INTO sale_allocations/.test(c[0])
     )
-    expect(allocIns).toBeUndefined()
+    expect(oldAllocIns).toBeUndefined()
   })
 
   test('PR-4.3: 重复回调（uq_sop_txn 命中）→ payments 不重复，sale_orders 不修改', async () => {

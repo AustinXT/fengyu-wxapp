@@ -1220,7 +1220,7 @@ async function create(ctx) {
     }
 
     // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     if (fullCardPaymentId && prepaidCardAmount > 0) {
       await capturePaymentAllocatables(client, {
         salePaymentId: fullCardPaymentId,
@@ -1231,7 +1231,7 @@ async function create(ctx) {
       await refreshOrderAllocationRollup(client, saleOrderId)
     }
 
-    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
+    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 receipt 聚合 received → STEP2 floor）：
     // - zeroPayable（券/卡全额抵扣）：received=prepaid 或 sale_amount<=0 兜底 → paid_sessions=session_count（创建即结清）
     // - 非 zeroPayable（待支付，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
     // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
@@ -1663,7 +1663,7 @@ async function confirmOffline(ctx) {
     }
 
     // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     const cashThis = cashPaymentId ? confirmAmount : 0
     const cardThis = cardPaymentId ? prepaidAmount : 0
     const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1679,7 +1679,7 @@ async function confirmOffline(ctx) {
     }
 
     // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 重算顾客历史消费档位
@@ -1790,18 +1790,16 @@ async function close(ctx) {
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
-    // 作废营业额分配
-    const saleItemIds = await client.query(
-      'SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1',
-      [saleOrderId]
+    // 作废营业额子分配
+    await client.query(
+      `UPDATE sale_payment_item_allocations
+          SET is_void = true, voided_at = $1, updated_at = $1
+        WHERE sale_payment_item_receipt_id IN (
+          SELECT id FROM sale_payment_item_receipts WHERE sale_order_id = $2
+        )
+          AND is_void = false`,
+      [now, saleOrderId],
     )
-    if (saleItemIds.rows.length > 0) {
-      const ids = saleItemIds.rows.map(r => r.sale_item_id)
-      await client.query(
-        "UPDATE sale_allocations SET is_void = true, voided_at = $1, updated_at = $1 WHERE sale_item_id = ANY($2) AND is_void = false",
-        [now, ids]
-      )
-    }
     // 释放关联的优惠券
     await client.query(
       `UPDATE user_coupons
@@ -2049,19 +2047,22 @@ async function detail(ctx) {
     }
   }
 
-  // 营业额分配（sale_allocations 为扁平结构，每行一条分配）
+  // 营业额分配（receipt 子分配结构，每行一条员工/角色分配）
   const allocations = await pg.query(`
     SELECT
-      sa.id, sa.sale_item_id, sa.employee_id, sa.department_name,
-      sa.allocation_ratio, sa.total_amount, sa.is_void,
-      sa.role_type, sa.commission_rate, sa.commission_amount,
+      spia.id, spir.sale_item_id, spia.employee_id, spia.department_name,
+      spia.allocation_ratio, spia.allocated_amount AS total_amount, spia.is_void,
+      spia.role_type, spia.commission_rate, spia.commission_amount,
+      spir.sale_payment_id,
       si.product_name AS sale_item_name,
       sw.name AS employee_name
-    FROM sale_allocations sa
-    JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
-    LEFT JOIN staff_wechat_users sw ON sa.employee_id = sw.employee_id
-    WHERE si.sale_order_id = $1
-    ORDER BY sa.id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON spir.sale_item_id = si.sale_item_id
+    LEFT JOIN staff_wechat_users sw ON spia.employee_id = sw.employee_id
+    WHERE spir.sale_order_id = $1
+      AND spia.is_void = false
+    ORDER BY spir.sale_payment_id DESC, spia.id
   `, [saleOrderId])
 
   // 查询券名称
@@ -2845,7 +2846,7 @@ async function createRepayment(ctx) {
       }
     } else if (orderHasRefund) {
       // 整单回款（无 items[]）且订单有退款：非定向瀑布流会误充已退行（received 靠 STEP1.5 兜底，
-      // 但 spai/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
+      // 但 receipt/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
       throw new Error('INVALID_STATE: 本单存在已退款项目，请按子项回款未退款的项目')
     }
 
@@ -2975,7 +2976,7 @@ async function createRepayment(ctx) {
     }
 
     // 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     const directedForCapture = repayItems
       ? repayItems.map((it) => ({
           saleItemId: it.saleItemId,
@@ -2991,7 +2992,7 @@ async function createRepayment(ctx) {
     await refreshOrderAllocationRollup(client, refSaleOrderId)
 
     // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
@@ -3411,7 +3412,7 @@ async function createConversion(ctx) {
     }
 
     // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额（非定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     if (convFullCardPaymentId && card > 0) {
       await capturePaymentAllocatables(tx, {
         salePaymentId: convFullCardPaymentId,
@@ -3424,7 +3425,7 @@ async function createConversion(ctx) {
 
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(tx, convOrderId)
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。

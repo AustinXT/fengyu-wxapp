@@ -2,7 +2,13 @@
 
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
-import { saleOrders, saleItems, saleOrderPayments, saleAllocations, salePaymentAllocatableItems } from '@db/order'
+import {
+  saleOrders,
+  saleItems,
+  saleOrderPayments,
+  salePaymentItemReceipts,
+  salePaymentItemAllocations,
+} from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -846,8 +852,8 @@ export const exportOrders = withPermission(
 )
 
 /**
- * 导出营业额分配「销售提成」导出行。已分配段一行 = 一条 sale_allocations（每被分配员工一行）；
- * 待分配占位段一行 = 一笔回款 × 一个可分配 item（分配/提成列空）。与服务提成导出（ExportAllocationServiceRow）对称。
+ * 导出营业额分配「销售提成」导出行。已分配段一行 = 一条 receipt 子分配（每被分配员工一行）；
+ * 待分配占位段一行 = 一笔回款 × 一个 receipt item（分配/提成列空）。与服务提成导出（ExportAllocationServiceRow）对称。
  * 金额列为 number 便于 Excel 求和；占比/比例保留 string 原值交前端 fmtPercent；
  * isActivity / isMembershipUpgrade 为 boolean 交前端转「是/否」。
  */
@@ -890,10 +896,10 @@ export interface ExportAllocationOrderRow {
 
 /**
  * 导出营业额分配「销售提成」（allocStatus 三态分流，合并后按下单时间 desc 截断 LIMIT 10000）：
- * - 全部：已分配明细（sale_allocations 主链，每被分配员工一行）∪ 待分配占位行（回款 × 可分配 item）；
+ * - 全部：已分配明细（sale_payment_item_allocations 主链，每被分配员工一行）∪ 待分配占位行（回款 × receipt item）；
  * - 已分配：仅明细段；待分配：仅占位段（分配/提成列留空，allocation_status=待分配）。
- * 已分配段 sale_allocations → sale_items → sale_orders；待分配段 sale_order_payments(待分配) →
- * sale_payment_allocatable_items → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
+ * 已分配段 allocation → receipt → sale_items → sale_orders；待分配段 sale_order_payments(待分配) →
+ * sale_payment_item_receipts → sale_items → sale_orders，粒度对齐服务提成导出（exportAllocationServiceOrders）。
  *
  * 口径：
  * - 金额走「商品行口径」：订单金额=sale_items.sale_amount、实付=sale_items.received（行级净实收）；
@@ -922,9 +928,9 @@ export const exportAllocationOrders = withPermission(
     const toMs = (d: unknown) => (d instanceof Date ? d.getTime() : d ? Date.parse(String(d)) : 0)
     const merged: Array<{ row: ExportAllocationOrderRow; sort: number }> = []
 
-    // 已分配明细段（一行 = 一条有效 sale_allocations，每被分配员工一行）
+    // 已分配明细段（一行 = 一条有效 sale_payment_item_allocations，每被分配员工一行）
     if (allocStatus !== '待分配') {
-      const whereClause = and(eq(saleAllocations.isVoid, false), ...buildOrderConditions(session, filters))
+      const whereClause = and(eq(salePaymentItemAllocations.isVoid, false), ...buildOrderConditions(session, filters))
       const raw = await db
         .select({
           market: saleOrders.marketName,
@@ -952,10 +958,10 @@ export const exportAllocationOrders = withPermission(
           orderAllocStatus: saleOrders.allocationStatus,
           employeeName: staffWechatUsers.name,
           positionName: staffWechatUsers.positionName,
-          allocationRatio: saleAllocations.allocationRatio,
-          allocationAmount: saleAllocations.totalAmount,
-          commissionRate: saleAllocations.commissionRate,
-          commissionAmount: saleAllocations.commissionAmount,
+          allocationRatio: salePaymentItemAllocations.allocationRatio,
+          allocationAmount: salePaymentItemAllocations.allocatedAmount,
+          commissionRate: salePaymentItemAllocations.commissionRate,
+          commissionAmount: salePaymentItemAllocations.commissionAmount,
           isActivity: saleOrders.isActivity,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
           salesCategory: saleItems.salesCategory,
@@ -966,18 +972,22 @@ export const exportAllocationOrders = withPermission(
           remark: saleOrders.remark,
           sortDatetime: saleOrders.saleOrderDatetime,
         })
-        .from(saleAllocations)
-        .innerJoin(saleItems, eq(saleAllocations.saleItemId, saleItems.saleItemId))
+        .from(salePaymentItemAllocations)
+        .innerJoin(
+          salePaymentItemReceipts,
+          eq(salePaymentItemReceipts.id, salePaymentItemAllocations.salePaymentItemReceiptId),
+        )
+        .innerJoin(saleItems, eq(salePaymentItemReceipts.saleItemId, saleItems.saleItemId))
         .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
         .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
         .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-        .leftJoin(staffWechatUsers, eq(saleAllocations.employeeId, staffWechatUsers.employeeId))
+        .leftJoin(staffWechatUsers, eq(salePaymentItemAllocations.employeeId, staffWechatUsers.employeeId))
         .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-        .leftJoin(saleOrderPayments, eq(saleAllocations.salePaymentId, saleOrderPayments.id))
+        .leftJoin(saleOrderPayments, eq(salePaymentItemReceipts.salePaymentId, saleOrderPayments.id))
         .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(whereClause)
-        .orderBy(desc(saleOrders.saleOrderDatetime), saleAllocations.id)
+        .orderBy(desc(saleOrders.saleOrderDatetime), salePaymentItemAllocations.id)
         .limit(LIMIT + 1)
 
       for (const r of raw as any[]) {
@@ -1022,7 +1032,7 @@ export const exportAllocationOrders = withPermission(
       }
     }
 
-    // 待分配占位段（一行 = 一笔回款 × 一个可分配 item；无 sale_allocations，分配/提成列留空）
+    // 待分配占位段（一行 = 一笔回款 × 一个 receipt item；无员工子分配，分配/提成列留空）
     if (allocStatus !== '已分配') {
       const whereClause = and(
         eq(saleOrderPayments.allocationStatus, '待分配'),
@@ -1066,10 +1076,10 @@ export const exportAllocationOrders = withPermission(
         })
         .from(saleOrderPayments)
         .innerJoin(
-          salePaymentAllocatableItems,
-          eq(salePaymentAllocatableItems.salePaymentId, saleOrderPayments.id),
+          salePaymentItemReceipts,
+          eq(salePaymentItemReceipts.salePaymentId, saleOrderPayments.id),
         )
-        .innerJoin(saleItems, eq(salePaymentAllocatableItems.saleItemId, saleItems.saleItemId))
+        .innerJoin(saleItems, eq(salePaymentItemReceipts.saleItemId, saleItems.saleItemId))
         .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
         .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
         .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
@@ -1103,7 +1113,7 @@ export const exportAllocationOrders = withPermission(
             unitRealPrice: num(r.unitRealPrice),
             status: r.status,
             allocationStatus: r.payAllocStatus ?? r.orderAllocStatus ?? null,
-            // 待分配：无 sale_allocations，分配/提成列留空
+            // 待分配：无员工子分配，分配/提成列留空
             employeeName: null,
             positionName: null,
             allocationRatio: null,
@@ -1489,7 +1499,7 @@ export const confirmOfflinePayment = withPermission(
         await applyRechargeOnOrderPaid(tx, saleOrderId)
       }
       // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
       const cashThis = cashPaymentId ? cashAmount : 0
       const cardThis = cardPaymentId ? orderPrepaid : 0
       const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1505,7 +1515,7 @@ export const confirmOfflinePayment = withPermission(
       }
 
       // 积分发放 + paid_sessions 重算：始终执行（净额/幂等；部分支付也要按比例推进 paid_sessions）
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
       await recalcPaidSessionsForOrder(tx, saleOrderId)
       if (targetStatus === '已支付' && clientUserId) {
@@ -1579,12 +1589,14 @@ export const closeOrder = withPermission(
         return { matched: false }
       }
 
-      // 作废关联的分配记录（规范：订单关闭时作废分配）
+      // 作废关联的营业额子分配（规范：订单关闭时作废分配）
       await tx.execute(sql`
-        UPDATE sale_allocations SET is_void = true, voided_at = NOW()
-        WHERE sale_item_id IN (
-          SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
-        ) AND is_void = false
+        UPDATE sale_payment_item_allocations
+           SET is_void = true, voided_at = NOW(), updated_at = NOW()
+         WHERE sale_payment_item_receipt_id IN (
+           SELECT id FROM sale_payment_item_receipts WHERE sale_order_id = ${saleOrderId}
+         )
+           AND is_void = false
       `)
 
       // 归还优惠券（订单关闭时释放已核销的券）
@@ -1657,7 +1669,7 @@ export const resetOrderFailed = withPermission(
  * 强守卫：有实收 / 已支付状态 / 有已支付款项流水 / 关联积分·储值卡流水 /
  *         明细被服务·提货·预约引用 / 存在引用本单的回款·退款·转换子单 → 一律禁删。
  * 财务/资产流水（point_transactions / card_transactions / 已支付 payment）绝不级联删除，只做守卫拦截。
- * 可删时事务内：释放优惠券 → 删 sale_allocations → 删（仅剩的待支付）payment → 删 sale_items → 删主单。
+ * 可删时事务内：释放优惠券 → 删营业额子分配/receipt → 删（仅剩的待支付）payment → 删 sale_items → 删主单。
  * 任何残留外键引用由 pgErrorCode 23503 兜底回滚，安全失败而非误删。
  */
 export const deleteOrder = withPermission(
@@ -1753,9 +1765,12 @@ export const deleteOrder = withPermission(
           .where(eq(userCoupons.usedSaleOrderId, saleOrderId))
 
         await tx.execute(sql`
-          DELETE FROM sale_allocations
-          WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId})
+          DELETE FROM sale_payment_item_allocations
+          WHERE sale_payment_item_receipt_id IN (
+            SELECT id FROM sale_payment_item_receipts WHERE sale_order_id = ${saleOrderId}
+          )
         `)
+        await tx.execute(sql`DELETE FROM sale_payment_item_receipts WHERE sale_order_id = ${saleOrderId}`)
         // 仅剩待支付/已作废流水（已支付已被守卫拦截）
         await tx.execute(sql`DELETE FROM sale_order_payments WHERE sale_order_id = ${saleOrderId}`)
         await tx.execute(sql`DELETE FROM sale_items WHERE sale_order_id = ${saleOrderId}`)
@@ -2556,7 +2571,7 @@ export const createOrder = withPermission(
       }
 
       // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
       if (fullCardPaymentId && prepaidCardAmount > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: fullCardPaymentId,
@@ -2567,7 +2582,7 @@ export const createOrder = withPermission(
         await refreshOrderAllocationRollup(tx, id)
       }
 
-      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
+      // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 receipt 聚合 received → STEP2 floor）：
       // - 全额储值卡抵扣：received=prepaid_card_amount → paid_sessions=session_count（创建即结清）
       // - 待支付（线下/线上，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
       // 不再按行级实付草稿直算 paid_sessions（旧 else 分支是"待支付可消费疗程卡" P0 资金漏洞根因：
@@ -3065,7 +3080,7 @@ export const createConversionOrder = withPermission(
       }
 
       // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额 + 置待分配 + 汇总刷新（非定向）
-      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
       if (convFullCardPaymentId && card > 0) {
         await capturePaymentAllocatables(tx, {
           salePaymentId: convFullCardPaymentId,
@@ -3077,7 +3092,7 @@ export const createConversionOrder = withPermission(
       }
 
       // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
@@ -4058,7 +4073,7 @@ export const recordPayment = withPermission(
 
       // 12) 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态。
       //     items[] 定向回款 → 逐项金额（现金+储值卡）即可分配额；否则非定向按剩余应付比例摊。
-      //     必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+      //     必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
       const directedForCapture = repayItems
         ? repayItems.map((it) => ({
             saleItemId: it.saleItemId,
@@ -4074,7 +4089,7 @@ export const recordPayment = withPermission(
       await refreshOrderAllocationRollup(tx, saleOrderId)
 
       // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-      //     必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       return {

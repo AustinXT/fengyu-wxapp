@@ -144,16 +144,16 @@ async function snapshot(client, orderId) {
     [orderId],
   )
   const allocations = await client.query(
-    `SELECT sa.sale_payment_id, sa.sale_item_id,
-            SUM(sa.total_amount::numeric) FILTER (WHERE sa.total_amount::numeric > 0 AND sa.is_void = false) AS positive_total,
-            SUM(sa.total_amount::numeric) FILTER (WHERE sa.total_amount::numeric < 0 AND sa.is_void = false) AS negative_total,
-            SUM(sa.total_amount::numeric) FILTER (WHERE sa.is_void = false) AS net_total,
-            COUNT(*) FILTER (WHERE sa.total_amount::numeric < 0 AND sa.is_void = false) AS negative_rows
-       FROM sale_allocations sa
-       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-      WHERE si.sale_order_id = $1
-      GROUP BY sa.sale_payment_id, sa.sale_item_id
-      ORDER BY sa.sale_payment_id NULLS LAST, sa.sale_item_id`,
+    `SELECT spir.sale_payment_id, spir.sale_item_id,
+            SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount::numeric > 0 AND spia.is_void = false) AS positive_total,
+            SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount::numeric < 0 AND spia.is_void = false) AS negative_total,
+            SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.is_void = false) AS net_total,
+            COUNT(*) FILTER (WHERE spia.allocated_amount::numeric < 0 AND spia.is_void = false) AS negative_rows
+       FROM sale_payment_item_allocations spia
+       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      WHERE spir.sale_order_id = $1
+      GROUP BY spir.sale_payment_id, spir.sale_item_id
+      ORDER BY spir.sale_payment_id NULLS LAST, spir.sale_item_id`,
     [orderId],
   )
   return {
@@ -177,35 +177,68 @@ async function backfillNegativeAllocations(client, orderId) {
 
   const stats = {
     insertedNegativeAllocations: 0,
-    touchedRefundSpaiItems: 0,
+    touchedRefundReceiptItems: 0,
     refundPaymentsMarkedAllocated: 0,
     skippedNoPositiveAllocation: 0,
     skippedNoRemainingAllocation: 0,
   }
   for (const refund of refunds.rows) {
-    let refundAllocatableCents = 0
+    let refundAllocatedCents = 0
     for (const item of normalizeRefundItems(refund)) {
+      const itemRows = await client.query(
+        `SELECT sales_category FROM sale_items
+          WHERE sale_order_id = $1
+            AND sale_item_id = $2
+          LIMIT 1`,
+        [orderId, item.saleItemId],
+      )
+      if (itemRows.rows.length === 0) continue
+      const receiptRows = await client.query(
+        `INSERT INTO sale_payment_item_receipts
+           (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (sale_payment_id, sale_item_id)
+         DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
+         RETURNING id`,
+        [refund.id, orderId, item.saleItemId, (-item.refundAmount).toFixed(2), itemRows.rows[0].sales_category || null],
+      )
+      const refundReceiptId = receiptRows.rows[0] && receiptRows.rows[0].id
+      if (!refundReceiptId) continue
+      stats.touchedRefundReceiptItems += 1
+
       const allocRows = await client.query(
         `WITH grouped AS (
-           SELECT employee_id, role_type,
-                  MAX(allocation_ratio) AS ratio,
-                  MAX(department_name) AS dept,
-                  SUM(total_amount::numeric) AS sum_total,
-                  MAX(commission_rate) AS rate,
-                  COALESCE(SUM(commission_amount::numeric), 0) AS sum_comm
-             FROM sale_allocations
-            WHERE sale_item_id = $1 AND is_void = false AND total_amount > 0
-            GROUP BY employee_id, role_type
+           SELECT spia.employee_id, spia.role_type,
+                  MAX(spia.allocation_ratio) AS ratio,
+                  MAX(spia.department_name) AS dept,
+                  SUM(spia.allocated_amount::numeric) AS sum_total,
+                  MAX(spia.commission_rate) AS rate,
+                  COALESCE(SUM(spia.commission_amount::numeric), 0) AS sum_comm
+             FROM sale_payment_item_allocations spia
+             JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+             JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+            WHERE spir.sale_order_id = $1
+              AND spir.sale_item_id = $2
+              AND spia.is_void = false
+              AND spia.allocated_amount > 0
+              AND sop.status = '已支付'
+              AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+            GROUP BY spia.employee_id, spia.role_type
          ),
          totals AS (
-           SELECT COALESCE(SUM(total_amount::numeric) FILTER (WHERE total_amount > 0), 0) AS positive_total,
-                  COALESCE(ABS(SUM(total_amount::numeric) FILTER (WHERE total_amount < 0 AND sale_payment_id IS DISTINCT FROM $2)), 0) AS other_negative_total
-             FROM sale_allocations
-            WHERE sale_item_id = $1 AND is_void = false
+           SELECT COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount > 0), 0) AS positive_total,
+                  COALESCE(ABS(SUM(spia.allocated_amount::numeric) FILTER (
+                    WHERE spia.allocated_amount < 0 AND spir.sale_payment_id IS DISTINCT FROM $3
+                  )), 0) AS other_negative_total
+             FROM sale_payment_item_allocations spia
+             JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+            WHERE spir.sale_order_id = $1
+              AND spir.sale_item_id = $2
+              AND spia.is_void = false
          )
          SELECT grouped.*, totals.positive_total, totals.other_negative_total
            FROM grouped CROSS JOIN totals`,
-        [item.saleItemId, refund.id],
+        [orderId, item.saleItemId, refund.id],
       )
       if (allocRows.rows.length === 0) {
         stats.skippedNoPositiveAllocation += 1
@@ -225,14 +258,14 @@ async function backfillNegativeAllocations(client, orderId) {
           const sumComm = Number(p.r.sum_comm || 0)
           const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
           const res = await client.query(
-            `INSERT INTO sale_allocations
-               (sale_item_id, employee_id, role_type, department_name, allocation_ratio,
-                total_amount, commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, NOW(), NOW())
-             ON CONFLICT (sale_item_id, employee_id, role_type, sale_payment_id) WHERE is_void = false DO NOTHING
+            `INSERT INTO sale_payment_item_allocations
+               (sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio,
+                allocated_amount, commission_rate, commission_amount, is_void, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NOW(), NOW())
+             ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false DO NOTHING
              RETURNING id`,
             [
-              item.saleItemId,
+              refundReceiptId,
               p.r.employee_id,
               p.r.role_type,
               p.r.dept,
@@ -240,38 +273,25 @@ async function backfillNegativeAllocations(client, orderId) {
               (-voidTotal).toFixed(2),
               p.r.rate,
               (-voidComm).toFixed(2),
-              refund.id,
             ],
           )
           stats.insertedNegativeAllocations += res.rowCount || 0
         }
       }
       const currentRefundAlloc = await client.query(
-        `SELECT COALESCE(ABS(SUM(sa.total_amount::numeric)), 0) AS refund_allocated,
-                MAX(si.sales_category) AS sales_category
-           FROM sale_allocations sa
-           JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-          WHERE sa.sale_payment_id = $1
-            AND sa.sale_item_id = $2
-            AND sa.is_void = false
-            AND sa.total_amount < 0`,
-        [refund.id, item.saleItemId],
+        `SELECT COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS refund_allocated
+           FROM sale_payment_item_allocations spia
+          WHERE spia.sale_payment_item_receipt_id = $1
+            AND spia.is_void = false
+            AND spia.allocated_amount < 0`,
+        [refundReceiptId],
       )
       const allocatedCents = Math.round(Number(currentRefundAlloc.rows[0]?.refund_allocated || 0) * 100)
       if (allocatedCents > 0) {
-        await client.query(
-          `INSERT INTO sale_payment_allocatable_items
-             (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
-           ON CONFLICT (sale_payment_id, sale_item_id)
-           DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category`,
-          [refund.id, orderId, item.saleItemId, (allocatedCents / 100).toFixed(2), currentRefundAlloc.rows[0]?.sales_category || null],
-        )
-        refundAllocatableCents += allocatedCents
-        stats.touchedRefundSpaiItems += 1
+        refundAllocatedCents += allocatedCents
       }
     }
-    if (refundAllocatableCents > 0) {
+    if (refundAllocatedCents > 0) {
       const statusRes = await client.query(
         `UPDATE sale_order_payments
             SET allocation_status = '已分配'
@@ -421,14 +441,14 @@ async function main() {
             const s = r.allocationRepair
             if (!s) return acc
             acc.insertedNegativeAllocations += s.insertedNegativeAllocations || 0
-            acc.touchedRefundSpaiItems += s.touchedRefundSpaiItems || 0
+            acc.touchedRefundReceiptItems += s.touchedRefundReceiptItems || 0
             acc.refundPaymentsMarkedAllocated += s.refundPaymentsMarkedAllocated || 0
             acc.skippedNoPositiveAllocation += s.skippedNoPositiveAllocation || 0
             acc.skippedNoRemainingAllocation += s.skippedNoRemainingAllocation || 0
             return acc
           }, {
             insertedNegativeAllocations: 0,
-            touchedRefundSpaiItems: 0,
+            touchedRefundReceiptItems: 0,
             refundPaymentsMarkedAllocated: 0,
             skippedNoPositiveAllocation: 0,
             skippedNoRemainingAllocation: 0,

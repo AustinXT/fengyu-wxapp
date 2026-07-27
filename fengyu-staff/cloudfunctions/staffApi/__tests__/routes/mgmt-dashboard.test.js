@@ -528,12 +528,12 @@ describe('mgmtDashboard.summary 新会员', () => {
 })
 
 describe('mgmtDashboard.summary 提成（销售/服务）', () => {
-  test('销售提成 SQL 命中 sale_allocations + 已支付销售/转换单 + paid_at；值映射正确（M4：不再按 role_type 过滤）', async () => {
+  test('销售提成 SQL 命中 sale_payment_item_allocations + 已支付销售/转换单 + paid_at；值映射正确（M4：不再按 role_type 过滤）', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
-      if (/FROM sale_allocations\b/.test(sql)) {
+      if (/FROM sale_payment_item_allocations\b/.test(sql)) {
         const isMonth = /date_trunc\('month',/.test(sql)
         return [{ v: isMonth ? 12345.67 : 234.5 }]
       }
@@ -546,18 +546,20 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
 
     const salesSqls = pg.query.mock.calls
       .map((c) => c[0])
-      .filter((s) => /FROM sale_allocations\b/.test(s))
+      .filter((s) => /FROM sale_payment_item_allocations\b/.test(s))
     expect(salesSqls.length).toBe(2) // today + month
     for (const s of salesSqls) {
       // 2026-05-26 §3.15：销售提成改用真实提成 commission_amount（≠ staffRankingRevenue 的 total_amount 营业额份额）
       // M4（2026-07-14）：管理层收入 KPI/排行不再按 role_type 过滤（向 performanceDetail 看齐，含全部角色提成）
-      expect(s).toMatch(/SUM\(sa\.commission_amount/)
-      expect(s).toContain('sa.is_void = FALSE')
-      expect(s).not.toMatch(/sa\.role_type\s+IN/)
+      expect(s).toMatch(/SUM\(spia\.commission_amount/)
+      expect(s).toContain('spia.is_void = FALSE')
+      expect(s).not.toMatch(/spia\.role_type\s+IN/)
       expect(s).toContain('销售单')
       expect(s).toContain('转换单')
-      expect(s).toContain("so.status = '已支付'")
-      expect(s).toMatch(/so\.paid_at/)
+      expect(s).toContain("sop.status = '已支付'")
+      expect(s).toMatch(/sop\.paid_at/)
+      expect(s).toMatch(/JOIN sale_payment_item_receipts spir/)
+      expect(s).toMatch(/JOIN sale_order_payments sop/)
       expect(s).toMatch(/JOIN sale_items si/)
       expect(s).toMatch(/JOIN sale_orders so/)
     }
@@ -601,7 +603,7 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     await summary(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
-    const salesSqls = sqlList.filter((s) => /FROM sale_allocations\b/.test(s))
+    const salesSqls = sqlList.filter((s) => /FROM sale_payment_item_allocations\b/.test(s))
     const svcSqls = sqlList.filter((s) => /FROM service_commissions\b/.test(s))
     expect(salesSqls.length).toBe(2)
     expect(svcSqls.length).toBe(2)
@@ -1744,22 +1746,23 @@ describe('mgmtDashboard.staffRanking', () => {
   // ---- SQL 形态断言（按 metric） ----
 
   describe('SQL 形态断言：revenue（业绩）', () => {
-    test('LEFT JOIN sale_allocations + sale_items + sale_orders；过滤 is_void=FALSE + 美容师/养生师 + 销售单/转换单 + 已支付', async () => {
+    test('LEFT JOIN sale_payment_item_allocations + receipts + sale_items + sale_orders；过滤 is_void=FALSE + 销售单/转换单 + 已支付，不按 role_type 白名单截断', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM sale_allocations sa/)
+      expect(sql).toMatch(/FROM sale_payment_item_allocations spia/)
+      expect(sql).toMatch(/JOIN sale_payment_item_receipts spir/)
       expect(sql).toMatch(/JOIN sale_items si/)
       expect(sql).toMatch(/JOIN sale_orders so/)
-      expect(sql).toMatch(/sa\.is_void\s*=\s*FALSE/)
-      expect(sql).toMatch(/sa\.role_type\s+IN\s*\('美容师','养生师'\)/)
+      expect(sql).toMatch(/spia\.is_void\s*=\s*FALSE/)
+      expect(sql).not.toMatch(/spia\.role_type\s+IN\s*\('美容师','养生师'\)/)
       expect(sql).toContain('销售单')
       expect(sql).toContain('转换单')
-      expect(sql).toContain("so.status = '已支付'")
-      expect(sql).toMatch(/SUM\(sa\.total_amount/)
-      expect(sql).toMatch(/date_trunc\('month',\s*so\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
+      expect(sql).toContain("sop.status = '已支付'")
+      expect(sql).toMatch(/SUM\(spia\.allocated_amount/)
+      expect(sql).toMatch(/date_trunc\('month',\s*sop\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
     })
 
     test('period=lastMonth → NOW()::date - INTERVAL \'1 month\'', async () => {
@@ -1771,13 +1774,13 @@ describe('mgmtDashboard.staffRanking', () => {
       expect(sql).toMatch(/date_trunc\('month',\s*NOW\(\)::date\s*-\s*INTERVAL\s+'1 month'\)/)
     })
 
-    test('period=year → date_trunc(\'year\', so.paid_at)', async () => {
+    test('period=year → date_trunc(\'year\', sop.paid_at)', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'year', metric: 'revenue' })
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/date_trunc\('year',\s*so\.paid_at\)/)
+      expect(sql).toMatch(/date_trunc\('year',\s*sop\.paid_at\)/)
     })
   })
 
@@ -1859,9 +1862,9 @@ describe('mgmtDashboard.staffRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       // sales_comm CTE：与 revenue 公式同构（M4：收入维度不再按 role_type 过滤，区别于 revenue 业绩维度仍过滤）
       expect(sql).toMatch(/sales_comm AS/)
-      expect(sql).toMatch(/FROM sale_allocations sa/)
-      expect(sql).not.toMatch(/sa\.role_type\s+IN/)
-      expect(sql).toContain("so.status = '已支付'")
+      expect(sql).toMatch(/FROM sale_payment_item_allocations spia/)
+      expect(sql).not.toMatch(/spia\.role_type\s+IN/)
+      expect(sql).toContain("sop.status = '已支付'")
       // service_comm CTE：service_commissions
       expect(sql).toMatch(/service_comm AS/)
       expect(sql).toMatch(/FROM service_commissions sc/)

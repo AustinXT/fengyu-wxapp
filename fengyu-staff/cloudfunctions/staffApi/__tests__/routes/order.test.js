@@ -47,11 +47,11 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /new_received/.test(sql) && /new_prepaid/.test(sql)) {
     return { rows: [{ new_received: '0', new_prepaid: '0' }], rowCount: 1 }
   }
-  // recalcPaidSessionsForOrder spai 覆盖率探测（paid-sessions.js STEP1）：
-  // 默认 spai_total=0 < order_received → 走 Branch B 瀑布回退（与旧 spaiCheck.rows.length===0 行为一致）。
-  // 需要 Branch A（Σspai）路径的用例在自家 mock 覆盖此分支返回 spai_total >= order_received。
-  if (typeof sql === 'string' && /spai_total/.test(sql) && /order_received/.test(sql)) {
-    return { rows: [{ spai_total: '0', order_received: '0' }], rowCount: 1 }
+  // recalcPaidSessionsForOrder receipt 覆盖率探测（paid-sessions.js STEP1）：
+  // 默认 receipt_positive_total=0 < order_received → 走 Branch B 瀑布回退。
+  // 需要 Branch A（Σreceipt）路径的用例在自家 mock 覆盖此分支返回 receipt_positive_total >= order_received。
+  if (typeof sql === 'string' && /receipt_positive_total/.test(sql) && /order_received/.test(sql)) {
+    return { rows: [{ receipt_positive_total: '0', order_received: '0' }], rowCount: 1 }
   }
   // mixed-recharge / mixed-experience 守卫（D4/D5）：order.create 写完明细后 SELECT bool_and(...)
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_recharge_card/i.test(sql)) {
@@ -2134,8 +2134,7 @@ describe('order.close', () => {
 
     const clientQueryMock = vi.fn()
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE sale_orders
-      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-1' }, { sale_item_id: 'item-2' }] }) // SELECT sale_items
-      .mockResolvedValueOnce({ rows: [], rowCount: 2 }) // UPDATE sale_allocations
+      .mockResolvedValueOnce({ rows: [], rowCount: 2 }) // UPDATE sale_payment_item_allocations
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE user_coupons
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -2144,10 +2143,10 @@ describe('order.close', () => {
 
     await orderRoutes.close(ctx)
 
-    // 验证 sale_allocations 被作废
+    // 验证营业额子分配被作废
     expect(clientQueryMock).toHaveBeenCalledWith(
-      expect.stringContaining('sale_allocations'),
-      expect.arrayContaining([['item-1', 'item-2']])
+      expect.stringContaining('sale_payment_item_allocations'),
+      expect.arrayContaining(['FY-001'])
     )
     // 验证 user_coupons 被释放
     expect(clientQueryMock).toHaveBeenCalledWith(
@@ -2474,6 +2473,8 @@ describe('order.detail', () => {
       }])
       // items
       .mockResolvedValueOnce([])
+      // per-item refunded map
+      .mockResolvedValueOnce([])
       // allocations
       .mockResolvedValueOnce([])
       // coupon → 找到
@@ -2516,6 +2517,8 @@ describe('order.detail', () => {
       }])
       // items（直接跳到 items，不查 client_wechat_users 和 name）
       .mockResolvedValueOnce([])
+      // per-item refunded map
+      .mockResolvedValueOnce([])
       // allocations
       .mockResolvedValueOnce([])
       // payments（Ticket 2 PR-A 新增）
@@ -2524,8 +2527,8 @@ describe('order.detail', () => {
     await orderRoutes.detail(ctx)
 
     expect(ctx.result.order.customer_name).toBe('已有姓名')
-    // 4 次 pg.query（order + items + allocations + payments），无姓名/手机补全查询
-    expect(pg.query).toHaveBeenCalledTimes(4)
+    // 5 次 pg.query（order + items + per-item refund map + allocations + payments），无姓名/手机补全查询
+    expect(pg.query).toHaveBeenCalledTimes(5)
   })
 
   test('detail 返回 payments 流水（Ticket 2 PR-A）', async () => {
@@ -2537,6 +2540,7 @@ describe('order.detail', () => {
         coupon_id: null,
       }])
       .mockResolvedValueOnce([]) // items
+      .mockResolvedValueOnce([]) // per-item refunded map
       .mockResolvedValueOnce([]) // allocations
       .mockResolvedValueOnce([   // payments
         { change_type: '首次支付', amount: '100.00', payment_method: '线下', status: '已支付', paid_at: '2026-04-24', created_at: '2026-04-24', note: null },
@@ -3215,7 +3219,7 @@ describe.skip('order.approveRefund', () => {
    *   - SELECT 1 FROM card_transactions ... type='充值' → 储值卡幂等检查
    *   - INSERT INTO prepaid_cards ... RETURNING card_id → 储值卡回冲
    *   - INSERT INTO card_transactions ... → 流水
-   *   - cascadeRefund 通道 1（SELECT 聚合分配 + INSERT 负数冲销行）/ 通道 2-5
+   *   - cascadeRefund 通道 1（写负数 receipt + SELECT 聚合分配 + INSERT 负数子分配）/ 通道 2-5
    *   - SELECT customer_type FROM client_wechat_users → recalcCustomerType
    *   - INSERT INTO operation_logs → 审计
    */
@@ -3224,7 +3228,7 @@ describe.skip('order.approveRefund', () => {
     cardDupExists = false,  // 储值卡幂等检查是否命中已有记录
     customerType = '会员客',
     cascadeItems = [],      // cascadeRefund 内部 SELECT sale_items 时返回
-    cascadeAllocs = [],     // cascadeRefund 通道1 SELECT 聚合活跃正数分配（记负数冲销基数；空=无可冲销）
+    cascadeAllocs = [],     // cascadeRefund 通道1 SELECT 聚合活跃正数子分配（记负数冲销基数；空=无可冲销）
     cascadeGifts = [],      // cascadeRefund 通道4 原赠送流水（用于算 G=Σamount + user_id）
     orderReceived = 500,    // cascadeRefund 通道4 SELECT sale_orders.received（比例分母）
     orderRefunded = 500,    // cascadeRefund 通道4 累计 refunded_amount（默认=received=整单退）
@@ -3259,12 +3263,28 @@ describe.skip('order.approveRefund', () => {
       if (sql.includes('SELECT sale_item_id FROM sale_items')) {
         return { rows: cascadeItems, rowCount: cascadeItems.length }
       }
-      // 通道 1（记负数冲销）: SELECT 聚合活跃正数分配 → INSERT 负数冲销行
-      if (sql.includes('FROM sale_allocations') && sql.includes('GROUP BY')) {
-        return { rows: cascadeAllocs, rowCount: cascadeAllocs.length }
+      // 通道 1（记负数冲销）: item 品类 → 写负数 receipt → SELECT 聚合活跃正数子分配 → INSERT 负数子分配
+      if (sql.includes('SELECT sales_category FROM sale_items')) {
+        return { rows: [{ sales_category: '自销自耗' }], rowCount: 1 }
       }
-      if (sql.includes('INSERT INTO sale_allocations')) {
+      if (sql.includes('INSERT INTO sale_payment_item_receipts')) {
+        return { rows: [{ id: 9001 }], rowCount: 1 }
+      }
+      if (sql.includes('FROM sale_payment_item_allocations') && sql.includes('GROUP BY')) {
+        const positiveTotal = cascadeAllocs.reduce((s, r) => s + Number(r.sum_total || 0), 0)
+        const rows = cascadeAllocs.map((r) => ({
+          positive_total: positiveTotal.toFixed(2),
+          other_negative_total: '0',
+          ...r,
+        }))
+        return { rows, rowCount: rows.length }
+      }
+      if (sql.includes('INSERT INTO sale_payment_item_allocations')) {
         return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('AS refund_allocated') && sql.includes('FROM sale_payment_item_allocations')) {
+        const refundAllocated = cascadeAllocs.reduce((s, r) => s + Number(r.sum_total || 0), 0)
+        return { rows: [{ refund_allocated: refundAllocated.toFixed(2) }], rowCount: 1 }
       }
       // 通道 2: UPDATE service_commissions（保持软删）
       if (sql.includes('UPDATE service_commissions')) {
@@ -3449,35 +3469,42 @@ describe.skip('order.approveRefund', () => {
     expect(calls.find(c => c.sql.includes('INSERT INTO card_transactions'))).toBeUndefined()
   })
 
-  test('5 通道 cascade — 通道 1（sale_allocations 记负数冲销）INSERT 负数行', async () => {
+  test('5 通道 cascade — 通道 1（receipt 子分配记负数冲销）INSERT 负数行', async () => {
     const ctx = createManagerCtx({ paymentId: 1004 })
     pg.query.mockResolvedValueOnce([makeSopRow({ id: 1004 })])
 
-    // 该 item（orig-item-1）有一条活跃正数分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
+    // 该 item（orig-item-1）有一条活跃正数子分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
     const { calls } = makeApproveTxnSpy({
       cascadeAllocs: [{
         employee_id: 'emp-1', role_type: '美容师', ratio: '1.00',
         dept: null, sum_total: '500.00', rate: '0.1000', sum_comm: '50.00',
+        positive_total: '500.00', other_negative_total: '0',
       }],
     })
 
     await orderRoutes.approveRefund(ctx)
 
-    // 通道 1: 先 SELECT 聚合活跃正数分配（按实退额冲销基数）
+    // 通道 1: 先写 refund receipt（用于 paid_sessions 净额扣减）
+    const receiptInsert = calls.find(c => c.sql.includes('INSERT INTO sale_payment_item_receipts'))
+    expect(receiptInsert).toBeDefined()
+    expect(receiptInsert.params).toEqual(
+      expect.arrayContaining([1004, 'FY-ORIG-001', 'orig-item-1', '-500.00'])
+    )
+    // 再 SELECT 聚合活跃正数子分配（按实退额冲销基数）
     const allocSelect = calls.find(c =>
-      c.sql.includes('FROM sale_allocations') && c.sql.includes('GROUP BY')
+      c.sql.includes('FROM sale_payment_item_allocations') && c.sql.includes('GROUP BY')
     )
     expect(allocSelect).toBeDefined()
-    expect(allocSelect.params).toEqual(['orig-item-1'])
-    // 再 INSERT 负数冲销行（total_amount/commission_amount 取负，挂退款流水 id=paymentId）
-    const allocInsert = calls.find(c => c.sql.includes('INSERT INTO sale_allocations'))
+    expect(allocSelect.params).toEqual(['FY-ORIG-001', 'orig-item-1', 1004])
+    // 再 INSERT 负数子分配（allocated_amount/commission_amount 取负，挂 refund receipt）
+    const allocInsert = calls.find(c => c.sql.includes('INSERT INTO sale_payment_item_allocations'))
     expect(allocInsert).toBeDefined()
     expect(allocInsert.params).toEqual(
-      expect.arrayContaining(['orig-item-1', 'emp-1', '美容师', '-500.00', '-50.00', 1004])
+      expect.arrayContaining([9001, 'emp-1', '美容师', '-500.00', '-50.00'])
     )
     // 不再软删原分配行（保留正数行，报表 SUM 自动净额化）
     expect(calls.find(c =>
-      c.sql.includes('UPDATE sale_allocations') && c.sql.includes('is_void = true')
+      c.sql.includes('UPDATE sale_payment_item_allocations') && c.sql.includes('is_void = true')
     )).toBeUndefined()
   })
 
@@ -3765,7 +3792,7 @@ describe.skip('order.rejectRefund', () => {
     await orderRoutes.rejectRefund(ctx)
 
     // 不应触发 cascade 任意通道
-    expect(calls.find(c => c.sql.includes('INSERT INTO sale_allocations'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('INSERT INTO sale_payment_item_allocations'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('UPDATE service_commissions'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('UPDATE user_coupons'))).toBeUndefined()
     expect(calls.find(c => c.sql.includes('INSERT INTO point_transactions'))).toBeUndefined()
@@ -4774,14 +4801,38 @@ describe('order.createPickup', () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
 
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
-    const clientResults = [
-      { rows: [{ sale_item_id: 'item-001', quantity: 5, picked_up_quantity: 2 }], rowCount: 1 }, // UPDATE sale_items
-      { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001' }], rowCount: 1 },             // SELECT itemRows
-      { rows: [], rowCount: 1 },                                                                    // INSERT pickup_records
-    ]
-    let idx = 0
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn(async () => clientResults[idx++] || { rows: [], rowCount: 0 }) }
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (/UPDATE sale_items[\s\S]*RETURNING sale_item_id/.test(sql)) {
+            return {
+              rows: [{
+                sale_item_id: 'item-001',
+                sale_order_id: 'FY-001',
+                store_id: 'store-001',
+                sku_id: 'sku-001',
+                product_name: '家居产品A',
+                quantity: 5,
+                picked_up_quantity: 2,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (/SELECT si\.sale_order_id/.test(sql)) {
+            return { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001', customer_name: '顾客A' }], rowCount: 1 }
+          }
+          if (/FROM store_inventory_stocks/.test(sql)) {
+            return { rows: [{ id: 1, store_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A', batch_no: 'B1', expiry_date: null, quantity_on_hand: 5 }], rowCount: 1 }
+          }
+          if (/SELECT id FROM store_inventory_docs/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (/INSERT INTO store_inventory_doc_items/.test(sql)) {
+            return { rows: [{ id: 10 }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
       return await cb(client)
     })
 
@@ -5570,4 +5621,3 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     expect(hasDeduct).toBe(false)
   })
 })
-

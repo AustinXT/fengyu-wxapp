@@ -311,7 +311,7 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
 }
 
 // 「员工收入」口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
-//   销售部分 = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
+//   销售部分 = SUM(sale_payment_item_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
 //   服务部分 = SUM(service_commissions.commission_amount) — 真实【服务提成】
 //   收入 = 两者相加（见 staffRankingIncome）。销售/服务两侧均为真实提成收入，
 //   与 staffApi/routes/staff.js performanceDetail 三处自洽。
@@ -319,13 +319,14 @@ async function queryProjectCount(scopeType, scopeId, date, mode) {
 async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
-       FROM sale_allocations sa
-       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    `SELECT COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
+       FROM sale_payment_item_allocations spia
+       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-       LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
+       LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
       WHERE ${sc.sql}
-        AND sa.is_void = FALSE
+        AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
         AND (
           (sop.id IS NOT NULL
@@ -974,7 +975,7 @@ async function storeRanking(ctx) {
 //   hired_at/resigned_at + NOW() 锚点 ∩ scope（store_id 可见列表）
 // 不再用 skills 字段门控 — staff_wechat_users.skills 在历史员工档案中 1174/2020 为 NULL/空（如刘恋
 // FY-240804002 hired_at=2026-03-13、skills 空但有 888 元 allocation），导致 ranking 漏算 33% 业绩。
-// 角色过滤由各 metric 子查询通过 sale_allocations.role_type 等字段自然完成；
+// 各 metric 子查询按真实归属事实聚合，不再按 role_type 白名单截断；
 // 末尾再用 WHERE COALESCE(value,0) > 0 把零值员工排除（无业绩不入榜）。
 // metrics.md employeeCount 指标仍保留 skills 过滤（语义是"产能技师在职数"，与 ranking 候选池语义不同）。
 
@@ -1007,17 +1008,17 @@ async function staffRankingRevenue(period, storeFilter) {
     `${producerEmployeesCte(storeFilter)},
 revenue_by_emp AS (
   SELECT
-    sa.employee_id,
-    COALESCE(SUM(sa.total_amount::numeric), 0) AS v
-  FROM sale_allocations sa
-  JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
+    spia.employee_id,
+    COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+  FROM sale_payment_item_allocations spia
+  JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+  JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-  LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
-  WHERE sa.is_void = FALSE
-    AND sa.role_type IN ('美容师','养生师')
+  LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+  WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
     AND ${paidAllocationPeriodWindow('sop', 'so', period)}
-  GROUP BY sa.employee_id
+  GROUP BY spia.employee_id
 )
 SELECT
   pe.employee_id,
@@ -1155,26 +1156,27 @@ ${STAFF_ORDER_BY}`,
 
 /**
  * 收入排名 = 销售提成 + 服务提成（2026-05-26 §3.15：销售部分改用真实提成 commission_amount）
- *   - 销售部分 = SUM(sale_allocations.commission_amount)（≠ staffRankingRevenue 的 total_amount 营业额份额）
+ *   - 销售部分 = SUM(sale_payment_item_allocations.commission_amount)（≠ staffRankingRevenue 的 allocated_amount 营业额份额）
  *   - 服务部分来自 service_commissions.commission_amount（已是计算后的实拿提成）
  *   - 与 querySalesCommissionIncome / staff.js performanceDetail 三处自洽
- * role_type IN ('美容师','养生师') ∩ is_void=FALSE
+ * is_void=FALSE，不按 role_type 白名单截断
  */
 async function staffRankingIncome(period, storeFilter) {
   return pg.query(
     `${producerEmployeesCte(storeFilter)},
 sales_comm AS (
   SELECT
-    sa.employee_id,
-    COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
-  FROM sale_allocations sa
-  JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
+    spia.employee_id,
+    COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
+  FROM sale_payment_item_allocations spia
+  JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+  JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-  LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id
-  WHERE sa.is_void = FALSE
+  LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+  WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
     AND ${paidAllocationPeriodWindow('sop', 'so', period)}
-  GROUP BY sa.employee_id
+  GROUP BY spia.employee_id
 ),
 service_comm AS (
   SELECT

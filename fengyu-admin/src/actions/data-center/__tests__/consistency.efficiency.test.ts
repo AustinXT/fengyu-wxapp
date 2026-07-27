@@ -8,14 +8,14 @@
  * 因两端 ORM 不同（Drizzle sql`` vs 原生 pg）+ 时间窗口口径不同（本板块吃 TimeRange 区间，
  * staff 用 period 锚 NOW），完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"
  * （stripComments 后，排除注释里的反例引用）：
- *   1. 业绩(员工) = SUM(sale_allocations.total_amount) 归 employee_id
- *   2. role_type IN ('美容师','养生师') ∩ is_void = FALSE
+ *   1. 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id
+ *   2. 不按 role_type 白名单截断 ∩ is_void = FALSE
  *   3. 实耗 = unit_real_price * session_used ∩ status='已完成'
  *   4. 收入 服务部分 = service_commissions.commission_amount
  *   5. 新会员 = became_member_at 归 bound_employee_id
  *   6. 项目数 = session_used ∩ sales_category IN ('自销自耗','他销自耗')
  *   7. 产能员工 producer_employees：hired_at/resigned_at 历史化
- *   8. sale_allocations 统计按回款级 paid_at/status 优先，旧 paymentId=NULL 行才回退订单级
+ *   8. sale_payment_item_allocations 统计按回款级 paid_at/status 优先，旧 paymentId=NULL 行才回退订单级
  *
  * ★ 额外守护（本板块改造）：efficiency.ts 的 ranking 必须用 BETWEEN 区间，
  *   而非 staff 的 date_trunc period（timeWindowPeriod）。任一端漂移则数字对不上。
@@ -54,24 +54,24 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     staffBody = normalize(stripComments(staffSrc))
   })
 
-  describe('业绩(员工) = SUM(sale_allocations.total_amount) 归 employee_id', () => {
-    it('admin efficiency.ts 含 SUM(sa.total_amount) 归 sa.employee_id', () => {
-      expect(adminBody).toMatch(/SUM\(\s*sa\.total_amount::numeric\s*\)/i)
-      expect(adminBody).toMatch(/sa\.employee_id/i)
+  describe('业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id', () => {
+    it('admin efficiency.ts 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
+      expect(adminBody).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(adminBody).toMatch(/spia\.employee_id/i)
     })
-    it('staff mgmt-dashboard.js 含 SUM(sa.total_amount) 归 sa.employee_id', () => {
-      expect(staffBody).toMatch(/SUM\(\s*sa\.total_amount::numeric\s*\)/i)
-      expect(staffBody).toMatch(/sa\.employee_id/i)
+    it('staff mgmt-dashboard.js 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
+      expect(staffBody).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(staffBody).toMatch(/spia\.employee_id/i)
     })
   })
 
-  describe('业绩维度（total_amount）保留 role_type IN (美容师, 养生师) ∩ is_void = FALSE（M4：收入维度 commission_amount 已移除 role_type 过滤）', () => {
-    it('admin efficiency.ts 含 role_type IN (美容师, 养生师)', () => {
-      expect(adminSrc).toMatch(/role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/)
+  describe('业绩维度不按 role_type 白名单截断 ∩ is_void = FALSE', () => {
+    it('admin efficiency.ts 不含 spia.role_type IN (美容师, 养生师)', () => {
+      expect(adminBody).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
       expect(adminBody).toMatch(/is_void\s*=\s*FALSE/i)
     })
-    it('staff mgmt-dashboard.js 含 role_type IN (美容师, 养生师)', () => {
-      expect(staffSrc).toMatch(/role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/)
+    it('staff mgmt-dashboard.js 不含 spia.role_type IN (美容师, 养生师)', () => {
+      expect(staffBody).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
       expect(staffBody).toMatch(/is_void\s*=\s*FALSE/i)
     })
   })
@@ -79,7 +79,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   describe('销售单/转换单 + 已支付回款分配（业绩/销售提成口径）', () => {
     it('admin efficiency.ts 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(adminSrc).toMatch(/LEFT JOIN sale_order_payments sop ON sop\.id = sa\.sale_payment_id/)
+      expect(adminSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
+      expect(adminSrc).toMatch(/JOIN sale_order_payments sop ON sop\.id = spir\.sale_payment_id/)
       expect(adminSrc).toMatch(/function paidAllocationDateBetween/)
       expect(adminSrc).toMatch(/paymentAlias}\.status/)
       expect(adminSrc).toMatch(/paymentAlias}\.paid_at/)
@@ -88,7 +89,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
     it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
       expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(staffSrc).toMatch(/LEFT JOIN sale_order_payments sop ON sop\.id = sa\.sale_payment_id/)
+      expect(staffSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
+      expect(staffSrc).toMatch(/JOIN sale_order_payments sop ON sop\.id = spir\.sale_payment_id/)
       expect(staffSrc).toMatch(/sop\.status = '已支付'/)
       expect(staffSrc).toMatch(/sop\.paid_at/)
       expect(staffSrc).toMatch(/sop\.id IS NULL/)
@@ -115,8 +117,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(staffBody).toMatch(/SUM\(\s*sc\.commission_amount::numeric\s*\)/i)
       expect(staffBody).toMatch(/FROM\s+service_commissions\s+sc/i)
     })
-    it('admin efficiency.ts 销售提成部分用 SUM(sa.commission_amount)', () => {
-      expect(adminBody).toMatch(/SUM\(\s*sa\.commission_amount::numeric\s*\)/i)
+    it('admin efficiency.ts 销售提成部分用 SUM(spia.commission_amount)', () => {
+      expect(adminBody).toMatch(/SUM\(\s*spia\.commission_amount::numeric\s*\)/i)
     })
   })
 
@@ -213,9 +215,9 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'他销他耗'\s*\)/)
       expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+si\.sales_category\s*=\s*'生态合作'\s*\)/)
     })
-    it('销售额与当月业绩同源（revenue_by_emp_cat 含 SUM(sa.total_amount) AS total）', () => {
+    it('销售额与当月业绩同源（revenue_by_emp_cat 含 SUM(spia.allocated_amount) AS total）', () => {
       expect(adminBody).toMatch(/revenue_by_emp_cat\s+AS\s*\(/i)
-      expect(adminBody).toMatch(/COALESCE\(\s*SUM\(sa\.total_amount::numeric\)\s*,\s*0\)\s+AS\s+total/i)
+      expect(adminBody).toMatch(/COALESCE\(\s*SUM\(spia\.allocated_amount::numeric\)\s*,\s*0\)\s+AS\s+total/i)
     })
     it('实耗端纳入 他销他耗/生态合作（员工维度放开，区别于门店口径排除）', () => {
       expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+sit\.sales_category\s*=\s*'他销他耗'\s*\)/)

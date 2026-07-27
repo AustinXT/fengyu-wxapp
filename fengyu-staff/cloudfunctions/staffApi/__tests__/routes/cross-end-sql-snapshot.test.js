@@ -555,41 +555,49 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
     adminSrc = readFile(FILES.adminRefundCascadeTs)
   })
 
-  // 通道 1：sale_allocations 记负数冲销（2026-06-24：由「软删 is_void」改为「INSERT 负数镜像行」）
-  describe('通道 1：sale_allocations 记负数冲销', () => {
-    test('staff 必须 INSERT INTO sale_allocations（负数冲销 total/commission）', () => {
-      expect(staffSrc).toMatch(/INSERT\s+INTO\s+sale_allocations/i)
+  // 通道 1：sale_payment_item_receipts + sale_payment_item_allocations 记负数冲销
+  describe('通道 1：receipt 子分配记负数冲销', () => {
+    test('staff 必须写负数 receipt + 负数 sale_payment_item_allocations（冲销 amount/commission）', () => {
+      expect(staffSrc).toMatch(/INSERT\s+INTO\s+sale_payment_item_receipts/i)
+      expect(staffSrc).toMatch(/INSERT\s+INTO\s+sale_payment_item_allocations/i)
+      expect(staffSrc).toMatch(/\(-refundAmt\)\.toFixed\(2\)/)
       expect(staffSrc).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
       expect(staffSrc).toMatch(/\(-voidComm\)\.toFixed\(2\)/)
     })
-    test('admin 必须 INSERT INTO sale_allocations（负数冲销 total/commission）', () => {
-      expect(adminSrc).toMatch(/INSERT\s+INTO\s+sale_allocations/i)
+    test('admin 必须写负数 receipt + 负数 sale_payment_item_allocations（冲销 amount/commission）', () => {
+      expect(adminSrc).toMatch(/INSERT\s+INTO\s+sale_payment_item_receipts/i)
+      expect(adminSrc).toMatch(/INSERT\s+INTO\s+sale_payment_item_allocations/i)
+      expect(adminSrc).toMatch(/\(-refundAmt\)\.toFixed\(2\)/)
       expect(adminSrc).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
       expect(adminSrc).toMatch(/\(-voidComm\)\.toFixed\(2\)/)
     })
-    test('两端负数行挂退款流水 id（refundPaymentId）+ 按实退额（refundAmount）冲销', () => {
+    test('两端负数 receipt 挂退款流水 id（refundPaymentId）+ 按实退额（refundAmount）冲销', () => {
       expect(staffSrc).toMatch(/refundPaymentId/)
       expect(staffSrc).toMatch(/refundAmount/)
       expect(adminSrc).toMatch(/refundPaymentId/)
       expect(adminSrc).toMatch(/refundAmount/)
     })
     test('两端没有原正向分配时跳过赤字分配', () => {
-      expect(staffSrc).toMatch(/total_amount > 0[\s\S]{0,120}GROUP BY employee_id, role_type/)
+      expect(staffSrc).toMatch(/spia\.allocated_amount > 0[\s\S]{0,180}GROUP BY spia\.employee_id, spia\.role_type/)
       expect(staffSrc).toMatch(/if \(allocRows\.length === 0\) continue/)
-      expect(adminSrc).toMatch(/total_amount > 0[\s\S]{0,120}GROUP BY employee_id, role_type/)
+      expect(adminSrc).toMatch(/spia\.allocated_amount > 0[\s\S]{0,180}GROUP BY spia\.employee_id, spia\.role_type/)
       expect(adminSrc).toMatch(/if \(allocRows\.length === 0\) continue/)
     })
-    test('两端赤字分配生成后补退款流水 SPAI 并置已分配，供营业额分配列表查看', () => {
-      expect(staffSrc).toMatch(/INSERT INTO sale_payment_allocatable_items/)
+    test('两端赤字分配生成后置退款流水已分配，供营业额分配列表查看', () => {
+      expect(staffSrc).toMatch(/INSERT INTO sale_payment_item_receipts/)
+      expect(staffSrc).toMatch(/INSERT INTO sale_payment_item_allocations/)
       expect(staffSrc).toMatch(/change_type = '退款'/)
       expect(staffSrc).toMatch(/allocation_status = '已分配'/)
-      expect(adminSrc).toMatch(/INSERT INTO sale_payment_allocatable_items/)
+      expect(adminSrc).toMatch(/INSERT INTO sale_payment_item_receipts/)
+      expect(adminSrc).toMatch(/INSERT INTO sale_payment_item_allocations/)
       expect(adminSrc).toMatch(/change_type = '退款'/)
       expect(adminSrc).toMatch(/allocation_status = '已分配'/)
     })
-    test('两端 ON CONFLICT (...sale_payment_id) WHERE is_void = false DO NOTHING（幂等兜底）', () => {
-      expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
-      expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\([^)]*sale_payment_id[^)]*\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
+    test('两端 receipt upsert + 子分配 ON CONFLICT receipt_id/employee/role（幂等兜底）', () => {
+      expect(staffSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/i)
+      expect(adminSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/i)
+      expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
+      expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
     })
     test('两端通道 1 不再软删原分配行（保留正数行，报表 SUM 自动净额化）', () => {
       expect(staffSrc).not.toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
@@ -1153,64 +1161,63 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Block 7b': STEP 1 分支 A received = Σ spai SQL 四端字节同义（2026-06-28 营业额分配重构）
-//   recalcPaidSessionsForOrder STEP1 两路分流：订单有 spai 行 → received = Σ spai.amount per item
-//   （分支 A，主路径，精确）；无 spai → 回退分支 B 瀑布（见下一块）。spai 由 capturePaymentAllocatables
-//   同事务写入，故 Σ spai = 该行累计毛 received。admin（Drizzle ${id} 内联 sql）+ staff/client/payNotify
-//   （pg $1 导出常量 SALE_ITEMS_RECEIVED_FROM_SPAI_SQL）四端归一化后字节同义。
+// Block 7b': STEP 1 分支 A received = Σ receipt SQL 四端字节同义
+//   recalcPaidSessionsForOrder STEP1 两路分流：订单有完整 receipt 覆盖 → received = Σ 有符号 receipt.amount per item
+//   （分支 A，主路径，精确，退款 receipt 为负数）；无完整 receipt → 回退分支 B 瀑布（见下一块）。
+//   receipt 由 capturePaymentAllocatables / cascadeRefund 同事务写入，故 Σ receipt = 该行累计净 received。
+//   admin（Drizzle ${id} 内联 sql）+ staff/client/payNotify（pg $1）四端归一化后字节同义。
 // ─────────────────────────────────────────────────────────────────────────────
-describe("STEP 1 分支 A received=Σspai SQL 四端字节同义守护", () => {
-  // `spai` 别名是分支 A 独有指纹：spaiCheck 探测查询、分支 B 瀑布、STEP1.5/STEP2 均不引用 `spai` 别名，
-  // 故 extractBacktickStringContaining 首匹配必落分支 A。
-  const MARKER_SPAI_RECEIVED = "FROM sale_payment_allocatable_items spai"
-  let spaiReceivedSqls
+describe("STEP 1 分支 A received=Σreceipt SQL 四端字节同义守护", () => {
+  // `spir` 别名是分支 A 独有指纹；覆盖探测查询使用 cov_spir，分支 B 瀑布、STEP1.5/STEP2 均不引用该片段。
+  const MARKER_RECEIPT_RECEIVED = "FROM sale_payment_item_receipts spir"
+  let receiptReceivedSqls
 
   beforeAll(() => {
-    spaiReceivedSqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_SPAI_RECEIVED)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_SPAI_RECEIVED)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_SPAI_RECEIVED)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_SPAI_RECEIVED)),
+    receiptReceivedSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_RECEIPT_RECEIVED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_RECEIPT_RECEIVED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_RECEIPT_RECEIVED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_RECEIPT_RECEIVED)),
     }
   })
 
   describe("特征守护", () => {
-    test("四端 received = COALESCE(GREATEST(0, Σ 正向 spai.amount), 0)（无 spai 行归零，行级 clamp）", () => {
-      const pattern = /received\s*=\s*COALESCE\(\s*GREATEST\(\s*0\s*,\s*\(\s*SELECT\s+SUM\(\s*spai\.amount::numeric\s*\)\s+FROM\s+sale_payment_allocatable_items\s+spai/i
-      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+    test("四端 received = COALESCE(GREATEST(0, Σ 有符号 receipt.amount), 0)（行级 clamp）", () => {
+      const pattern = /received\s*=\s*COALESCE\(\s*GREATEST\(\s*0\s*,\s*\(\s*SELECT\s+SUM\(\s*spir\.amount::numeric\s*\)\s+FROM\s+sale_payment_item_receipts\s+spir/i
+      for (const sql of [receiptReceivedSqls.staff, receiptReceivedSqls.client, receiptReceivedSqls.payNotify, receiptReceivedSqls.adminTs]) {
         expect(sql).toMatch(pattern)
       }
     })
-    test("四端分支 A 只统计正向已支付流水，退款 SPAI 不进入 received", () => {
-      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
-        expect(sql).toMatch(/JOIN sale_order_payments sop ON sop\.id = spai\.sale_payment_id/i)
+    test("四端分支 A 统计已支付正向流水和退款流水，退款负数 receipt 进入 received", () => {
+      for (const sql of [receiptReceivedSqls.staff, receiptReceivedSqls.client, receiptReceivedSqls.payNotify, receiptReceivedSqls.adminTs]) {
+        expect(sql).toMatch(/JOIN sale_order_payments sop ON sop\.id = spir\.sale_payment_id/i)
         expect(sql).toMatch(/sop\.status\s*=\s*'已支付'/i)
-        expect(sql).toMatch(/sop\.change_type IN\s*\('首次支付','回款','储值卡抵扣'\)/i)
+        expect(sql).toMatch(/sop\.change_type IN\s*\('首次支付','回款','储值卡抵扣','退款'\)/i)
       }
     })
     test("四端子查询按 (sale_order_id, sale_item_id) 定位行", () => {
-      const pattern = /spai\.sale_order_id\s*=\s*\?\s*AND\s*spai\.sale_item_id\s*=\s*si\.sale_item_id/i
-      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+      const pattern = /spir\.sale_order_id\s*=\s*\?\s*AND\s*spir\.sale_item_id\s*=\s*si\.sale_item_id/i
+      for (const sql of [receiptReceivedSqls.staff, receiptReceivedSqls.client, receiptReceivedSqls.payNotify, receiptReceivedSqls.adminTs]) {
         expect(sql).toMatch(pattern)
       }
     })
     test("四端仅重算 item_direction='购买' 行（转出/转入 received 不被动，防分支 A 误清零）", () => {
       const pattern = /si\.item_direction\s*=\s*'购买'/
-      for (const sql of [spaiReceivedSqls.staff, spaiReceivedSqls.client, spaiReceivedSqls.payNotify, spaiReceivedSqls.adminTs]) {
+      for (const sql of [receiptReceivedSqls.staff, receiptReceivedSqls.client, receiptReceivedSqls.payNotify, receiptReceivedSqls.adminTs]) {
         expect(sql).toMatch(pattern)
       }
     })
   })
 
   describe("四端镜像比对", () => {
-    test("staff vs client", () => { expect(spaiReceivedSqls.client).toBe(spaiReceivedSqls.staff) })
-    test("staff vs payNotify", () => { expect(spaiReceivedSqls.payNotify).toBe(spaiReceivedSqls.staff) })
-    test("staff vs admin（归一化后等价）", () => { expect(spaiReceivedSqls.adminTs).toBe(spaiReceivedSqls.staff) })
+    test("staff vs client", () => { expect(receiptReceivedSqls.client).toBe(receiptReceivedSqls.staff) })
+    test("staff vs payNotify", () => { expect(receiptReceivedSqls.payNotify).toBe(receiptReceivedSqls.staff) })
+    test("staff vs admin（归一化后等价）", () => { expect(receiptReceivedSqls.adminTs).toBe(receiptReceivedSqls.staff) })
   })
 
   describe("Snapshot 守护", () => {
-    test("STEP 1 分支 A received=Σspai SQL 文本快照", () => {
-      expect(spaiReceivedSqls.staff).toMatchSnapshot()
+    test("STEP 1 分支 A received=Σreceipt SQL 文本快照", () => {
+      expect(receiptReceivedSqls.staff).toMatchSnapshot()
     })
   })
 })

@@ -7,9 +7,8 @@
  *   - 通道 3（券）仅整单全退（isWholeOrderRefund）才回滚。
  *
  * 2026-06-24 退款联级重构（记负数冲销）：
- *   - 通道 1（销售提成 sale_allocations）：由「软删 is_void」改为「记负数冲销」——对所有被退 item
- *     按本次实退额（params.items[].refundAmount）记负数镜像行（保留原正数行，报表 SUM 自动净额化），
- *     负数行挂退款流水 id（params.refundPaymentId）。消费过的卡退剩余次数 → 等比部分冲销，已消费业绩保留。
+ *   - 通道 1（销售提成 receipt 子分配）：对所有被退 item 写负数 receipt；若原 item 有正向子分配，
+ *     再按本次实退额（params.items[].refundAmount）记负数镜像子分配（保留原正数行，报表 SUM 自动净额化）。
  *   - 通道 2（服务提成 service_commissions）：保持软删（仅零消费 isFullItemRefund item，恒 no-op）——
  *     已消费次数的服务提成保留（退的是未消费次数，本无服务提成）。
  *
@@ -54,9 +53,9 @@ export async function hasSettledRefund(executor: SqlExecutor, saleOrderId: strin
   return (r as unknown as unknown[]).length > 0
 }
 
-/** 已结算退款守卫·回款级（2026-06-24）：仅当本回款 salePaymentId 的可分配 item 中存在「已被结算退款冲销」的 item 时返回 true。
+/** 已结算退款守卫·回款级：仅当本回款 salePaymentId 的 receipt item 中存在「已被结算退款冲销」的 item 时返回 true。
  *  收窄订单级守卫——使同单其它无关 item 的后续回款仍可正常分配，不被同单一笔无关退款误锁。
- *  判定：本回款的 sale_payment_allocatable_items ∩ 挂在「已支付退款流水」上的负数 sale_allocations 冲销行（sale_item 维度）≠ ∅。
+ *  判定：本回款的 sale_payment_item_receipts ∩ 挂在「已支付退款流水」上的负数子分配冲销行（sale_item 维度）≠ ∅。
  *  SQL 谓词镜像 staff utils/refund.js assertNoSettledRefundForPayment。 */
 export async function hasSettledRefundForPayment(
   executor: SqlExecutor,
@@ -65,13 +64,14 @@ export async function hasSettledRefundForPayment(
   if (!salePaymentId) return false
   const r = await executor.execute(sql`
     SELECT 1
-    FROM sale_allocations sa
-    JOIN sale_order_payments rsop ON rsop.id = sa.sale_payment_id
-    WHERE sa.is_void = false
-      AND sa.total_amount < 0
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts refund_spir ON refund_spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_order_payments rsop ON rsop.id = refund_spir.sale_payment_id
+    WHERE spia.is_void = false
+      AND spia.allocated_amount < 0
       AND rsop.change_type = '退款' AND rsop.status = '已支付'
-      AND sa.sale_item_id IN (
-        SELECT sale_item_id FROM sale_payment_allocatable_items WHERE sale_payment_id = ${salePaymentId}
+      AND refund_spir.sale_item_id IN (
+        SELECT sale_item_id FROM sale_payment_item_receipts WHERE sale_payment_id = ${salePaymentId}
       )
     LIMIT 1
   `)
@@ -191,34 +191,61 @@ export async function cascadeRefund(
   // 仅「零消费全退」item 才作废服务提成（通道 2）+ 参与整单券判定（通道 3）；通道 1 不再依赖（Bug M 语义收敛）
   const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
 
-  // ── 1) sale_allocations 记负数冲销（销售提成）：对所有被退 item 按实退额冲销 ───────────
-  // 业务口径（2026-06-24）：退款撤销营业额分配 = 记负数（保留原正数行 + 新增负数镜像行，报表 SUM 自动净额化）。
-  // item 级目标冲销额 = min(本次该 item 退款额, 该 item 未被其它退款冲销的活跃正数分配余额)，按各 (emp,role) 行
-  // total_amount 权重最大余数法分摊到分；负数行挂退款流水 id（新维度，不撞 uq_sale_alloc_item_emp_role_payment）。
-  // 若原 item 没有正向 sale_allocations，则不生成赤字分配。
-  // 消费过的卡退剩余次数 → 退额 < 已分配额 → 等比部分冲销，已消费部分业绩保留。两端镜像 staff helpers/refund-cascade.js。
+  // ── 1) receipt + sale_payment_item_allocations 记负数冲销（销售提成）───────────
+  // 先为被退 item 写负数 receipt，确保 sale_items.received / paid_sessions 可按净额重算。
+  // 仅当该 item 有原正向子分配时，才按原 (employee, role) 权重生成负数子分配；无原正向则不生成赤字分配。
   let voidedAllocations = 0
-  let refundAllocatableCents = 0
+  let refundAllocatedCents = 0
   for (const it of effItems) {
     const refundAmt = Number(it.refundAmount || 0)
     if (refundAmt <= 0) continue
+    const itemRows = (await tx.execute(sql`
+      SELECT sales_category FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND sale_item_id = ${it.saleItemId}
+       LIMIT 1
+    `)) as unknown as Array<{ sales_category: string | null }>
+    if (itemRows.length === 0) continue
+    const refundReceiptRows = (await tx.execute(sql`
+      INSERT INTO sale_payment_item_receipts
+        (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+      VALUES (${refundPaymentId}, ${saleOrderId}, ${it.saleItemId}, ${(-refundAmt).toFixed(2)}::numeric, ${itemRows[0].sales_category ?? null}, NOW())
+      ON CONFLICT (sale_payment_id, sale_item_id)
+      DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
+      RETURNING id
+    `)) as unknown as Array<{ id: number }>
+    const refundReceiptId = refundReceiptRows[0]?.id
+    if (!refundReceiptId) continue
+
     const allocRows = (await tx.execute(sql`
       WITH grouped AS (
-        SELECT employee_id, role_type,
-               MAX(allocation_ratio) AS ratio,
-               MAX(department_name) AS dept,
-               SUM(total_amount::numeric) AS sum_total,
-               MAX(commission_rate) AS rate,
-               COALESCE(SUM(commission_amount::numeric), 0) AS sum_comm
-        FROM sale_allocations
-        WHERE sale_item_id = ${it.saleItemId} AND is_void = false AND total_amount > 0
-        GROUP BY employee_id, role_type
+        SELECT spia.employee_id, spia.role_type,
+               MAX(spia.allocation_ratio) AS ratio,
+               MAX(spia.department_name) AS dept,
+               SUM(spia.allocated_amount::numeric) AS sum_total,
+               MAX(spia.commission_rate) AS rate,
+               COALESCE(SUM(spia.commission_amount::numeric), 0) AS sum_comm
+          FROM sale_payment_item_allocations spia
+          JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+          JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+         WHERE spir.sale_order_id = ${saleOrderId}
+           AND spir.sale_item_id = ${it.saleItemId}
+           AND spia.is_void = false
+           AND spia.allocated_amount > 0
+           AND sop.status = '已支付'
+           AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+         GROUP BY spia.employee_id, spia.role_type
       ),
       totals AS (
-        SELECT COALESCE(SUM(total_amount::numeric) FILTER (WHERE total_amount > 0), 0) AS positive_total,
-               COALESCE(ABS(SUM(total_amount::numeric) FILTER (WHERE total_amount < 0 AND sale_payment_id IS DISTINCT FROM ${refundPaymentId})), 0) AS other_negative_total
-        FROM sale_allocations
-        WHERE sale_item_id = ${it.saleItemId} AND is_void = false
+        SELECT COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount > 0), 0) AS positive_total,
+               COALESCE(ABS(SUM(spia.allocated_amount::numeric) FILTER (
+                 WHERE spia.allocated_amount < 0 AND spir.sale_payment_id IS DISTINCT FROM ${refundPaymentId}
+               )), 0) AS other_negative_total
+          FROM sale_payment_item_allocations spia
+          JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+         WHERE spir.sale_order_id = ${saleOrderId}
+           AND spir.sale_item_id = ${it.saleItemId}
+           AND spia.is_void = false
       )
       SELECT grouped.*, totals.positive_total, totals.other_negative_total
       FROM grouped CROSS JOIN totals
@@ -253,39 +280,29 @@ export async function cascadeRefund(
         // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
         const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
         const insertRes = await tx.execute(sql`
-          INSERT INTO sale_allocations
-            (sale_item_id, employee_id, role_type, department_name, allocation_ratio,
-             total_amount, commission_rate, commission_amount, sale_payment_id, is_void, created_at, updated_at)
-          VALUES (${it.saleItemId}, ${p.r.employee_id}, ${p.r.role_type}, ${p.r.dept ?? null}, ${p.r.ratio},
-                  ${(-voidTotal).toFixed(2)}, ${p.r.rate ?? null}, ${(-voidComm).toFixed(2)}, ${refundPaymentId}, false, NOW(), NOW())
-          ON CONFLICT (sale_item_id, employee_id, role_type, sale_payment_id) WHERE is_void = false DO NOTHING
+          INSERT INTO sale_payment_item_allocations
+            (sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio,
+             allocated_amount, commission_rate, commission_amount, is_void, created_at, updated_at)
+          VALUES (${refundReceiptId}, ${p.r.employee_id}, ${p.r.role_type}, ${p.r.dept ?? null}, ${p.r.ratio},
+                  ${(-voidTotal).toFixed(2)}, ${p.r.rate ?? null}, ${(-voidComm).toFixed(2)}, false, NOW(), NOW())
+          ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false DO NOTHING
         `)
         voidedAllocations += rowsAffected(insertRes)
       }
     }
     const currentRefundAlloc = (await tx.execute(sql`
-      SELECT COALESCE(ABS(SUM(sa.total_amount::numeric)), 0) AS refund_allocated,
-             MAX(si.sales_category) AS sales_category
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-      WHERE sa.sale_payment_id = ${refundPaymentId}
-        AND sa.sale_item_id = ${it.saleItemId}
-        AND sa.is_void = false
-        AND sa.total_amount < 0
-    `)) as unknown as Array<{ refund_allocated: string; sales_category: string | null }>
+      SELECT COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS refund_allocated
+        FROM sale_payment_item_allocations spia
+       WHERE spia.sale_payment_item_receipt_id = ${refundReceiptId}
+         AND spia.is_void = false
+         AND spia.allocated_amount < 0
+    `)) as unknown as Array<{ refund_allocated: string }>
     const allocatedCents = Math.round(Number(currentRefundAlloc[0]?.refund_allocated || 0) * 100)
     if (allocatedCents > 0) {
-      await tx.execute(sql`
-        INSERT INTO sale_payment_allocatable_items
-          (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
-        VALUES (${refundPaymentId}, ${saleOrderId}, ${it.saleItemId}, ${(allocatedCents / 100).toFixed(2)}::numeric, ${currentRefundAlloc[0]?.sales_category ?? null}, NOW())
-        ON CONFLICT (sale_payment_id, sale_item_id)
-        DO UPDATE SET amount = EXCLUDED.amount, sales_category = EXCLUDED.sales_category
-      `)
-      refundAllocatableCents += allocatedCents
+      refundAllocatedCents += allocatedCents
     }
   }
-  if (refundAllocatableCents > 0) {
+  if (refundAllocatedCents > 0) {
     await tx.execute(sql`
       UPDATE sale_order_payments
          SET allocation_status = '已分配'::allocation_status

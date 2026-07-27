@@ -12,7 +12,7 @@
  *   的镜像守护，反向检查 "已支付的退款行" 是否产生了对应的 5 通道效果。
  *
  * 5 通道（与 lib/refund-cascade.ts 1:1 对齐）：
- *   C1 sa_not_reversed        — 退款负数冲销行（sale_allocations.total_amount<0 挂退款 sop_id）应已写入
+ *   C1 sa_not_reversed        — 退款负数冲销行（sale_payment_item_allocations.allocated_amount<0 挂退款 receipt）应已写入
  *   C2 sc_not_voided          — service_commissions.voided_at IS NOT NULL 应已写入
  *   C3 coupon_not_returned    — user_coupons 退款生效时仍未过期的 → 应已恢复 '未使用'
  *                                 （用 sop.paid_at 对齐 cascade 的 NOW() 快照）
@@ -58,8 +58,8 @@ export interface RefundCascadeCoverageResult {
 export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeCoverageResult> {
   const details: CascadeViolation[] = []
 
-  // ── C1: sale_allocations 记负数冲销（2026-06-24 改）──
-  // 退款审批后通道 1 不再软删原行，而是 INSERT 负数镜像行（total_amount<0，挂退款 sop_id）。
+  // ── C1: receipt 子分配记负数冲销 ──
+  // 退款审批后通道 1 会写负数 receipt，并在原正向子分配存在时 INSERT 负数镜像子分配。
   // 反向检查：退款 scope 内有活跃正数分配（有可冲销目标）但不存在挂该退款 sop_id 的负数冲销行 → mismatch。
   const c1 = (await db.execute(sql`
     WITH refunds AS (
@@ -71,16 +71,22 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     FROM refunds r
     WHERE EXISTS (
             SELECT 1 FROM sale_items si
-            JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id
+            JOIN sale_payment_item_receipts spir ON spir.sale_item_id = si.sale_item_id
+            JOIN sale_payment_item_allocations spia ON spia.sale_payment_item_receipt_id = spir.id
             WHERE (
                     (r.ref_sale_item_id IS NOT NULL AND si.sale_item_id = r.ref_sale_item_id)
                  OR (r.ref_sale_item_id IS NULL     AND si.sale_order_id = r.sale_order_id)
                   )
-              AND sa.is_void = false AND sa.total_amount > 0
+              AND spia.is_void = false AND spia.allocated_amount > 0
           )
       AND NOT EXISTS (
-            SELECT 1 FROM sale_allocations sa
-            WHERE sa.sale_payment_id = r.sop_id AND sa.total_amount < 0
+            SELECT 1
+              FROM sale_payment_item_receipts refund_spir
+              JOIN sale_payment_item_allocations refund_spia
+                ON refund_spia.sale_payment_item_receipt_id = refund_spir.id
+             WHERE refund_spir.sale_payment_id = r.sop_id
+               AND refund_spia.is_void = false
+               AND refund_spia.allocated_amount < 0
           )
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>

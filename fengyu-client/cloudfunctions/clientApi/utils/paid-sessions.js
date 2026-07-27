@@ -4,8 +4,8 @@
  * 语义：行级**净实收**按比例可换到的次数，**行级**比例 floor。
  * 公式：paid_sessions = min( session_count, floor( item.received × session_count / item.sale_amount ) )
  *   先乘后除（D9=A 整数精度）：避免先除产生 0.13333…×15=1.9999… 被 FLOOR 误舍成 1（应为 2）；封顶交给外层 LEAST(session_count)
- *   - item.received 已是**净额**：STEP1 分摊毛额 → STEP 1.5（RECEIVED_REFUNDED_DEDUCT_SQL）按 note.items[].refundAmount
- *     逐项扣退款（2026-06-08 退款侧），不再按订单级 order.refunded × sale_amount / total 均摊（退一项不连累其它行）
+ *   - item.received 已是**净额**：新 receipt 覆盖订单优先按 sale_payment_item_receipts 有符号金额重建；
+ *     旧数据无完整 receipt 时回退瀑布 + note.items[].refundAmount 扣减。
  *   - sale_items.received 已含 '储值卡抵扣' change_type 行（跨端同义），不重复计 prepaid_card_amount
  *   - sale_items.sale_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）；若退款 note 标记该 0 元 item 全退，后置覆盖为 0
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
@@ -50,29 +50,29 @@ function computePaidSessionsForItem({ itemReceived, itemSaleAmount, itemSessionC
  * 各行 floor 独立（D8=A 各行独立 floor，尾差最多每行 1 次）。
  */
 /**
- * STEP 1 received 重建（pg 风格 $1 = saleOrderId）。两路分流（2026-06-28 received = Σ spai，瀑布作回退）：
- *   A. 有 spai → received = Σ 正向已支付 sale_payment_allocatable_items.amount per item（spai 由 capture 写入，定向精确/非定向两段式摊）
- *   B. 无 spai（历史/退款/修复）→ 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL，零回归
- * recalcPaidSessionsForOrder() 先查 spai 是否存在，再选 A 或 B。
+ * STEP 1 received 重建（pg 风格 $1 = saleOrderId）。两路分流：
+ *   A. 正向 receipt 覆盖订单毛实收 → received = Σ 有符号 sale_payment_item_receipts.amount per item
+ *   B. 无完整 receipt（历史/修复）→ 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL + 退款 note 扣减，零回归
+ * recalcPaidSessionsForOrder() 先查 receipt 是否完整覆盖，再选 A 或 B。
  * 必须在 PAID_SESSIONS_RECALC_SQL 之前执行（公式以 sale_items.received 为分子）。
  * 与 admin paid-sessions.ts STEP 1 跨端字节同义（normalize 后），cross-end-sql-snapshot 守护。
  */
 /**
- * 分支 A：received = Σ spai.amount per item
+ * 分支 A：received = Σ receipt.amount per item（包含退款负数）
  */
-const SALE_ITEMS_RECEIVED_FROM_SPAI_SQL = `UPDATE sale_items si
+const SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL = `UPDATE sale_items si
     SET received = COALESCE(GREATEST(0, (
-      SELECT SUM(spai.amount::numeric) FROM sale_payment_allocatable_items spai
-      JOIN sale_order_payments sop ON sop.id = spai.sale_payment_id
-       WHERE spai.sale_order_id = $1 AND spai.sale_item_id = si.sale_item_id
+      SELECT SUM(spir.amount::numeric) FROM sale_payment_item_receipts spir
+      JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+       WHERE spir.sale_order_id = $1 AND spir.sale_item_id = si.sale_item_id
          AND sop.status = '已支付'
-         AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+         AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款')
     )), 0),
     updated_at = NOW()
     WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`
 
 /**
- * 分支 B（回退）：旧「定向 + 两段式瀑布」（无 spai 的历史/异常单，零回归）
+ * 分支 B（回退）：旧「定向 + 两段式瀑布」（无完整 receipt 的历史/异常单，零回归）
  *   targeted_i = Σ(已支付 payments WHERE ref_sale_item_id=i AND change_type∈首次支付/回款/储值卡抵扣)（退款排除）；
  *   untargeted = order.received - Σtargeted；
  *   pend_cap_i = pending_received_i - targeted_i（第一段产能：朝逐行实付草稿铺）；
@@ -201,32 +201,32 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
  * @param {string} saleOrderId
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
-  // STEP 1：两路分流（2026-06-28 received = Σ spai，瀑布作无 spai 回退）
-  //   A. spai 覆盖全额 received → received = Σ spai.amount per item（精确，瀑布退役）
-  //   B. spai 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单，
-  //      仅新付款写了 spai 而旧付款无 spai 时 Σ(spai) < received，A 会清零旧 received）
+  // STEP 1：两路分流
+  //   A. 正向 receipt 覆盖全额 received → received = Σ 有符号 receipt.amount per item（退款为负数）
+  //   B. receipt 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单）
   const covRes = await client.query(
     `SELECT COALESCE((
-              SELECT SUM(cov_spai.amount::numeric)
-                FROM sale_payment_allocatable_items cov_spai
-                JOIN sale_order_payments sop ON sop.id = cov_spai.sale_payment_id
-               WHERE cov_spai.sale_order_id = $1
+              SELECT SUM(cov_spir.amount::numeric)
+                FROM sale_payment_item_receipts cov_spir
+                JOIN sale_order_payments sop ON sop.id = cov_spir.sale_payment_id
+               WHERE cov_spir.sale_order_id = $1
                  AND sop.status = '已支付'
                  AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
-            ), 0) AS spai_total,
+            ), 0) AS receipt_positive_total,
             (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
     [saleOrderId],
   )
   const covRow = (covRes && covRes.rows && covRes.rows[0]) || {}
-  const spaiTotal = Number(covRow.spai_total || 0)
+  const receiptPositiveTotal = Number(covRow.receipt_positive_total || 0)
   const orderReceived = Number(covRow.order_received || 0)
-  if (spaiTotal > 0 && spaiTotal >= orderReceived - 0.01) {
-    await client.query(SALE_ITEMS_RECEIVED_FROM_SPAI_SQL, [saleOrderId])
+  // receipt_positive_total >= order_received（容差 0.01 处理浮点）→ receipt 完整覆盖，Branch A 安全
+  if (receiptPositiveTotal > 0 && receiptPositiveTotal >= orderReceived - 0.01) {
+    await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
+    // STEP 1.5：旧数据回退分支才按 note.items[].refundAmount 扣减；新 receipt 分支已含退款负数，不能重复扣。
+    await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   }
-  // STEP 1.5：从毛额扣逐项退款（note.items[].refundAmount）→ sale_items.received 变净额（被退项单独减少）
-  await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])
   // STEP 2.5：0 元 item 若已随退款全退，覆盖 paid_sessions=0（否则 sale_amount<=0 兜底会保留满次数）
@@ -253,7 +253,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
 module.exports = {
   computePaidSessionsForItem,
   SALE_ITEMS_RECEIVED_ALLOC_SQL,
-  SALE_ITEMS_RECEIVED_FROM_SPAI_SQL,
+  SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL,
   RECEIVED_REFUNDED_DEDUCT_SQL,
   PAID_SESSIONS_RECALC_SQL,
   FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,

@@ -96,7 +96,7 @@ export const batchSaveServiceCommissions = withPermission(
   }
 
   // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
-  // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成 sale_allocations，由 ALLOCATABLE_ORDER_TYPES 守卫）。
+  // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成，由 ALLOCATABLE_ORDER_TYPES 守卫）。
   const [svcRemark] = await db
     .select({ remark: serviceOrders.remark })
     .from(serviceOrders)

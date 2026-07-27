@@ -147,7 +147,7 @@ describe('computePaidSessionsForItem 公式边界（行级）', () => {
 
 describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
   test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {
-    // 2026-06-28 重构：received 已由 STEP1（spai/瀑布）+ STEP1.5（逐项退款净额）前置算好，
+    // received 已由 STEP1（receipt/瀑布）+ STEP1.5（逐项退款净额）前置算好，
     // 本 SQL 不再下分订单级 refund，直接用净 received × session_count / sale_amount。
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count,\s*FLOOR\(sale_items\.received::numeric\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/)
   })

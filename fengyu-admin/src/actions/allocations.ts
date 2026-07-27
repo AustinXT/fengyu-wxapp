@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
-import { saleAllocations, saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments, salePaymentItemAllocations } from '@db/order'
 import { clientWechatUsers } from '@db/user'
 import { eq, sql, and, or, inArray, desc, ilike, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -10,7 +10,7 @@ import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
-import { hasPendingRefund, hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
+import { hasPendingRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
@@ -125,37 +125,23 @@ export const getOrderAllocations = withPermission(
     return []
   }
 
-  // 尝试含 role_type 的查询，迁移未执行时回退到不含该列的查询
-  let rows: any[]
-  try {
-    rows = await db.execute(sql`
-      SELECT
-        sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
-        sa.role_type, sa.total_amount, sa.commission_rate, sa.commission_amount,
-        sa.sale_payment_id, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name,
-        si.product_name AS sale_item_name
-      FROM sale_allocations sa
-      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
-      LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
-      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
-      ORDER BY sa.sale_payment_id DESC NULLS LAST, sa.created_at DESC
-    `) as any[]
-  } catch {
-    rows = await db.execute(sql`
-      SELECT
-        sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
-        sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
-        swu.name AS employee_name, orn.name AS department_name,
-        si.product_name AS sale_item_name
-      FROM sale_allocations sa
-      JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
-      LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
-      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE si.sale_order_id = ${saleOrderId} AND sa.is_void = false
-    `) as any[]
-  }
+  const rows = await db.execute(sql`
+    SELECT
+      spia.id, spir.sale_item_id, spia.employee_id, spia.allocation_ratio,
+      spia.role_type, spia.allocated_amount AS total_amount,
+      spia.commission_rate, spia.commission_amount, spir.sale_payment_id,
+      spia.is_void, spia.created_at, spia.updated_at,
+      swu.name AS employee_name,
+      COALESCE(spia.department_name, orn.name) AS department_name,
+      si.product_name AS sale_item_name
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
+    LEFT JOIN staff_wechat_users swu ON spia.employee_id = swu.employee_id
+    LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
+    WHERE spir.sale_order_id = ${saleOrderId} AND spia.is_void = false
+    ORDER BY spir.sale_payment_id DESC, spia.created_at DESC
+  `) as any[]
 
   return (rows as any[]).map((r: any) => ({
     id: Number(r.id),
@@ -190,89 +176,45 @@ export const saveAllocation = withPermission(
       departmentName?: string
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // 校验 saleItemId 对应的订单在 scope 内
   if (!(await verifySaleItemScope(data.saleItemId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
   }
-
-  // role_type 兜底：缺省时按员工 skills[1] 派生（与 payNotify / staffApi 一致），
-  // 仍缺则回退 '美容师'（与 backfill-allocations-roletype.js 兜底一致）。
-  let resolvedRoleType: string = data.roleType || ''
-  if (!resolvedRoleType) {
-    const [staff] = await db.execute<{ skills: string[] | null }>(sql`
-      SELECT skills FROM staff_wechat_users WHERE employee_id = ${data.employeeId} LIMIT 1
-    `) as unknown as Array<{ skills: string[] | null }>
-    const skills = Array.isArray(staff?.skills) ? staff.skills : []
-    resolvedRoleType = skills[0] || '美容师'
-  }
-
-  // 销售提成固化快照：从 commission_rate_matrix 命中费率，提成额 = 份额 × 费率
-  const [itemRow] = (await db.execute(sql`
-    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${data.saleItemId} LIMIT 1
-  `)) as any[]
-  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配。两端镜像 staff allocation.js
-  if (itemRow?.sale_order_id && (await hasPendingRefund(db, itemRow.sale_order_id as string))) {
-    return { success: false, message: '该订单退款审批中，暂不可修改分配' }
-  }
-  const { marketName, orderTotalReceived, salesCategoryByItem } = await loadOrderCommissionContext(
-    itemRow?.sale_order_id as string,
-  )
-  const rateLookup = await buildSalesRateLookup(marketName)
-  const salesCategory = salesCategoryByItem.get(data.saleItemId) || '自销自耗'
-  const commissionRate = rateLookup(resolvedRoleType, salesCategory, orderTotalReceived)
-  const commissionAmount = (Number(data.totalAmount) * commissionRate).toFixed(2)
-
-  await db.insert(saleAllocations).values({
-    saleItemId: data.saleItemId,
-    employeeId: data.employeeId,
-    roleType: resolvedRoleType,
-    allocationRatio: data.allocationRatio,
-    totalAmount: data.totalAmount,
-    commissionRate: commissionRate.toFixed(4),
-    commissionAmount,
-    departmentName: data.departmentName || null,
-  })
-
-  await logOperation(session, 'allocation.save', 'sale_allocation', data.saleItemId, {
-    employeeId: data.employeeId, totalAmount: data.totalAmount,
-  })
-
-  revalidatePath('/allocations')
-  return { success: true, message: '分配已保存' }
+  return { success: false, message: '订单级营业额分配已下线，请从回款详情保存分配' }
   },
 )
 
 export const deleteAllocation = withPermission(
   'allocation:save',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
-  // 先查出分配记录，校验存在性 + scope
-  const [alloc] = await db
-    .select({ saleItemId: saleAllocations.saleItemId, isVoid: saleAllocations.isVoid })
-    .from(saleAllocations)
-    .where(eq(saleAllocations.id, id))
-    .limit(1)
+  const [alloc] = (await db.execute(sql`
+    SELECT spir.sale_item_id, spia.is_void
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+     WHERE spia.id = ${id}
+     LIMIT 1
+  `)) as any[]
 
   if (!alloc) return { success: false, message: '分配记录不存在' }
-  if (alloc.isVoid) return { success: false, message: '分配记录已被删除' }
+  if (alloc.is_void) return { success: false, message: '分配记录已被删除' }
 
-  if (!(await verifySaleItemScope(alloc.saleItemId, session))) {
+  if (!(await verifySaleItemScope(alloc.sale_item_id, session))) {
     return { success: false, message: '无权操作该订单的分配' }
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
   const [delItemRow] = (await db.execute(sql`
-    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.saleItemId} LIMIT 1
+    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.sale_item_id} LIMIT 1
   `)) as any[]
   if (delItemRow?.sale_order_id && (await hasPendingRefund(db, delItemRow.sale_order_id as string))) {
     return { success: false, message: '该订单退款审批中，暂不可删除分配' }
   }
 
   await db
-    .update(saleAllocations)
+    .update(salePaymentItemAllocations)
     .set({ isVoid: true, voidedAt: nowTs() })
-    .where(eq(saleAllocations.id, id))
+    .where(eq(salePaymentItemAllocations.id, id))
 
-  await logOperation(session, 'allocation.delete', 'sale_allocation', String(id))
+  await logOperation(session, 'allocation.delete', 'sale_payment_item_allocation', String(id))
 
   revalidatePath('/allocations')
   return { success: true, message: '分配已删除' }
@@ -299,175 +241,11 @@ export const batchSaveAllocations = withPermission(
       departmentName?: string
     }>,
   ): Promise<{ success: boolean; message: string }> => {
-  // 校验订单 scope
   if (!(await verifyOrderScope(saleOrderId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
   }
-
-  // 营业额口径白名单：仅销售单/转换单参与营业额分配，拒绝寄存单/充值单/内部单
-  const [typeRow] = await db
-    .select({ saleOrderType: saleOrders.saleOrderType, legacySource: saleOrders.legacySource })
-    .from(saleOrders)
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
-    .limit(1)
-  if (!typeRow || !['销售单', '转换单'].includes(typeRow.saleOrderType)) {
-    return { success: false, message: '该订单类型不参与营业额分配' }
-  }
-  // 历史订单（WorkFine 核对补登）不参与营业额分配（无 sale_items 天然不可分，补显式拦截防绕过）
-  if (typeRow.legacySource === 'workfine') {
-    return { success: false, message: '历史订单不参与营业额分配' }
-  }
-  // 冻结闭环（Bug I）：退款审批中禁止改营业额分配。两端镜像 savePaymentAllocations
-  if (await hasPendingRefund(db, saleOrderId)) {
-    return { success: false, message: '该订单退款审批中，暂不可修改分配' }
-  }
-  // 退款后重分配守卫（2026-06-24）：订单已有「已支付」退款时禁止整单重保存——本路径会作废该单全部未作废分配行
-  // （含挂退款流水 id 的负数冲销行）再按满额重插正数行 → 退款冲销被抹除、营业额膨胀回退款前。
-  // 整单全作废重插必然触及被退 item，故用订单级守卫；回款级 savePaymentAllocations 用 hasSettledRefundForPayment。
-  if (await hasSettledRefund(db, saleOrderId)) {
-    return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
-  }
-
-  // 校验所有 saleItemId 属于该订单（防跨订单分配篡改）
-  let itemReceivedMap = new Map<string, number>()
-  if (allocations.length > 0) {
-    const saleItemIds = [...new Set(allocations.map((a) => a.saleItemId))]
-    const validItems = await db
-      .select({ saleItemId: saleItems.saleItemId, received: saleItems.received })
-      .from(saleItems)
-      .where(and(
-        inArray(saleItems.saleItemId, saleItemIds),
-        eq(saleItems.saleOrderId, saleOrderId),
-      ))
-    itemReceivedMap = new Map(validItems.map((i) => [i.saleItemId, Number(i.received)]))
-    const invalid = saleItemIds.find((id) => !itemReceivedMap.has(id))
-    if (invalid) {
-      return { success: false, message: '明细项不属于该订单，请刷新后重试' }
-    }
-
-    // 校验分配比例为 0~1 + 服务端重算 totalAmount（P2-14：忽略前端传入值防篡改）
-    const enriched = allocations.map((a) => {
-      const ratioStr = Number(a.allocationRatio).toFixed(3)
-      if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
-        return { ...a, totalAmount: '', _error: '分配比例必须为 0~1 之间（精度 0.001）' }
-      }
-      const received = itemReceivedMap.get(a.saleItemId) || 0
-      const totalAmount = (received * Number(ratioStr)).toFixed(2)
-      return { ...a, allocationRatio: ratioStr, totalAmount }
-    })
-    const ratioError = enriched.find((e) => (e as any)._error)
-    if (ratioError) {
-      return { success: false, message: (ratioError as any)._error }
-    }
-
-    // 按 (saleItemId, roleType) 分池校验（P2-14 Q5：三角色独立池）
-    const pools = new Map<string, typeof enriched>()
-    for (const a of enriched) {
-      const key = `${a.saleItemId}|${getPoolKey(a.roleType)}`
-      const pool = pools.get(key) || []
-      pool.push(a)
-      pools.set(key, pool)
-    }
-
-    for (const [, pool] of pools) {
-      // 每池最多 3 人
-      if (pool.length > 3) {
-        return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
-      }
-
-      // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）
-      const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
-      if (ratioSum > 1.0001) {
-        return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
-      }
-
-      // 同池内不能重复分配同一员工
-      const empIds = new Set<string>()
-      for (const a of pool) {
-        if (empIds.has(a.employeeId)) {
-          return { success: false, message: '同一商品同一技能标签不能重复分配同一员工' }
-        }
-        empIds.add(a.employeeId)
-      }
-    }
-  }
-
-  // 销售提成固化快照：加载订单市场 + 订单级 received 合计 + 各 item 销售类别，命中费率
-  const { marketName, orderTotalReceived, salesCategoryByItem } =
-    allocations.length > 0
-      ? await loadOrderCommissionContext(saleOrderId)
-      : { marketName: null, orderTotalReceived: 0, salesCategoryByItem: new Map<string, string>() }
-  const rateLookup = await buildSalesRateLookup(marketName)
-
-  // 构造 INSERT 用的 enriched 数组（allocations.length === 0 时为空，下面事务分支会处理）
-  const finalAllocations = allocations.length > 0
-    ? allocations.map((a) => {
-        const totalAmount = (itemReceivedMap.get(a.saleItemId) || 0) * Number(a.allocationRatio)
-        const salesCategory = salesCategoryByItem.get(a.saleItemId) || '自销自耗'
-        const commissionRate = rateLookup(a.roleType, salesCategory, orderTotalReceived)
-        return {
-          ...a,
-          totalAmount: totalAmount.toFixed(2),
-          commissionRate: commissionRate.toFixed(4),
-          commissionAmount: (totalAmount * commissionRate).toFixed(2),
-        }
-      })
-    : []
-
-  // 事务：作废旧分配 + 插入新分配 + 更新订单状态，原子提交
-  try {
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`
-        UPDATE sale_allocations SET is_void = true, voided_at = NOW()
-        WHERE sale_item_id IN (
-          SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
-        ) AND is_void = false
-      `)
-
-      if (finalAllocations.length > 0) {
-        await tx.insert(saleAllocations).values(
-          finalAllocations.map((a) => ({
-            saleItemId: a.saleItemId,
-            employeeId: a.employeeId,
-            roleType: a.roleType,
-            allocationRatio: a.allocationRatio,
-            totalAmount: a.totalAmount, // 服务端重算值（P2-14）
-            commissionRate: a.commissionRate, // 销售提成率快照
-            commissionAmount: a.commissionAmount, // 真实销售提成额
-            departmentName: a.departmentName || null,
-          }))
-        )
-      }
-
-      await tx
-        .update(saleOrders)
-        .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
-        .where(eq(saleOrders.saleOrderId, saleOrderId))
-
-      // 整单分配同步该订单回款行 allocation_status（修复转换单等无 spai 单据在「按回款」列表的可见性）；
-      // 仅动已参与分配的非 NULL 回款行，退款/储值卡抵扣从行等 NULL 行不受影响。
-      await tx
-        .update(saleOrderPayments)
-        .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
-        .where(and(
-          eq(saleOrderPayments.saleOrderId, saleOrderId),
-          sql`${saleOrderPayments.allocationStatus} IS NOT NULL`,
-        ))
-    })
-  } catch (err: any) {
-    // PG 外键违反（employeeId 不存在）
-    if (pgErrorCode(err) === '23503') {
-      return { success: false, message: '员工信息不存在，请检查后重试' }
-    }
-    throw err
-  }
-
-  await logOperation(session, 'allocation.batchSave', 'sale_order', saleOrderId, {
-    allocationCount: allocations.length,
-  })
-
-  revalidatePath('/allocations')
-  return { success: true, message: '分配保存成功' }
+  void allocations
+  return { success: false, message: '订单级营业额分配已下线，请按每笔回款保存分配' }
   },
 )
 
@@ -524,22 +302,19 @@ export const getPendingPayments = withPermission(
         ? sql`(
             EXISTS (
               SELECT 1
-                FROM sale_payment_allocatable_items spai
-                JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
-               WHERE spai.sale_payment_id = ${saleOrderPayments.id}
-                 AND GREATEST(COALESCE(si.received::numeric, 0), 0) > 0
+                FROM sale_payment_item_receipts spir
+               WHERE spir.sale_payment_id = ${saleOrderPayments.id}
+                 AND spir.amount::numeric <> 0
                  AND NOT EXISTS (
                    SELECT 1
-                     FROM sale_allocations sa
-                    WHERE sa.sale_payment_id = ${saleOrderPayments.id}
-                      AND sa.sale_item_id = spai.sale_item_id
-                      AND sa.is_void = false
-                      AND sa.total_amount::numeric > 0
+                     FROM sale_payment_item_allocations spia
+                    WHERE spia.sale_payment_item_receipt_id = spir.id
+                      AND spia.is_void = false
                  )
             )
             OR (
               NOT EXISTS (
-                SELECT 1 FROM sale_payment_allocatable_items spai WHERE spai.sale_payment_id = ${saleOrderPayments.id}
+                SELECT 1 FROM sale_payment_item_receipts spir WHERE spir.sale_payment_id = ${saleOrderPayments.id}
               )
               AND GREATEST(COALESCE(${saleOrders.received}::numeric, 0) - COALESCE(${saleOrders.refundedAmount}::numeric, 0), 0) > 0
             )
@@ -664,11 +439,11 @@ export const getPaymentAllocatables = withPermission(
     if (!['销售单', '转换单'].includes(pay.sale_order_type) || pay.legacy_source === 'workfine') return null
 
     const items = (await db.execute(sql`
-      SELECT spai.sale_item_id, spai.amount, spai.sales_category, si.product_name
-      FROM sale_payment_allocatable_items spai
-      JOIN sale_items si ON si.sale_item_id = spai.sale_item_id
-      WHERE spai.sale_payment_id = ${salePaymentId}
-      ORDER BY spai.sale_item_id
+      SELECT spir.id AS receipt_id, spir.sale_item_id, spir.amount, spir.sales_category, si.product_name
+      FROM sale_payment_item_receipts spir
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
+      WHERE spir.sale_payment_id = ${salePaymentId}
+      ORDER BY spir.sale_item_id
     `)) as any[]
     const eventAmount =
       Math.round(items.reduce((s: number, i: any) => s + (Number(i.amount) || 0), 0) * 100) / 100
@@ -676,12 +451,13 @@ export const getPaymentAllocatables = withPermission(
     const rateLookup = await buildSalesRateLookup(pay.market_name as string | null)
 
     const existing = (await db.execute(sql`
-      SELECT sa.id, sa.sale_item_id, sa.employee_id, sa.role_type, sa.allocation_ratio,
-             sa.total_amount, swu.name AS employee_name
-      FROM sale_allocations sa
-      LEFT JOIN staff_wechat_users swu ON swu.employee_id = sa.employee_id
-      WHERE sa.sale_payment_id = ${salePaymentId} AND sa.is_void = false
-      ORDER BY sa.sale_item_id
+      SELECT spia.id, spir.sale_item_id, spia.employee_id, spia.role_type, spia.allocation_ratio,
+             spia.allocated_amount AS total_amount, swu.name AS employee_name
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      LEFT JOIN staff_wechat_users swu ON swu.employee_id = spia.employee_id
+      WHERE spir.sale_payment_id = ${salePaymentId} AND spia.is_void = false
+      ORDER BY spir.sale_item_id
     `)) as any[]
 
     return {
@@ -766,10 +542,12 @@ export const savePaymentAllocations = withPermission(
 
     // 可分配额快照（基数 amount + 销售类别）
     const allocItems = (await db.execute(sql`
-      SELECT sale_item_id, amount, sales_category
-      FROM sale_payment_allocatable_items WHERE sale_payment_id = ${salePaymentId}
+      SELECT id AS receipt_id, sale_item_id, amount, sales_category
+      FROM sale_payment_item_receipts WHERE sale_payment_id = ${salePaymentId}
     `)) as any[]
-    const baseMap = new Map<string, number>(allocItems.map((i: any) => [i.sale_item_id, Number(i.amount) || 0]))
+    const baseMap = new Map<string, { receiptId: number; amount: number }>(
+      allocItems.map((i: any) => [i.sale_item_id, { receiptId: Number(i.receipt_id), amount: Number(i.amount) || 0 }]),
+    )
     const catMap = new Map<string, string>(
       allocItems.map((i: any) => [i.sale_item_id, i.sales_category || '自销自耗']),
     )
@@ -782,6 +560,7 @@ export const savePaymentAllocations = withPermission(
       saleItemId: string
       employeeId: string
       roleType: string
+      receiptId: number
       allocationRatio: string
       totalAmount: string
       commissionRate: string
@@ -800,8 +579,11 @@ export const savePaymentAllocations = withPermission(
       if (!(Number(ratioStr) > 0 && Number(ratioStr) <= 1)) {
         return { success: false, message: '分配比例必须为 0~1 之间（精度 0.001）' }
       }
-      const base = baseMap.get(a.saleItemId) || 0
-      const totalAmount = Math.round(base * Number(ratioStr) * 100) / 100
+      const base = baseMap.get(a.saleItemId)
+      if (!base) {
+        return { success: false, message: `分配项 ${a.saleItemId} 不属于该回款` }
+      }
+      const totalAmount = Math.round(base.amount * Number(ratioStr) * 100) / 100
       const salesCategory = catMap.get(a.saleItemId) || '自销自耗'
       const commissionRate = rateLookup(a.roleType, salesCategory, eventAmount)
       const commissionAmount = Math.round(totalAmount * commissionRate * 100) / 100
@@ -809,6 +591,7 @@ export const savePaymentAllocations = withPermission(
         saleItemId: a.saleItemId,
         employeeId: a.employeeId,
         roleType: a.roleType,
+        receiptId: base.receiptId,
         allocationRatio: ratioStr,
         totalAmount: totalAmount.toFixed(2),
         commissionRate: commissionRate.toFixed(4),
@@ -847,21 +630,24 @@ export const savePaymentAllocations = withPermission(
     try {
       await db.transaction(async (tx) => {
         await tx.execute(sql`
-          UPDATE sale_allocations SET is_void = true, voided_at = NOW(), updated_at = NOW()
-          WHERE sale_payment_id = ${salePaymentId} AND is_void = false
+          UPDATE sale_payment_item_allocations
+             SET is_void = true, voided_at = NOW(), updated_at = NOW()
+           WHERE sale_payment_item_receipt_id IN (
+             SELECT id FROM sale_payment_item_receipts WHERE sale_payment_id = ${salePaymentId}
+           )
+             AND is_void = false
         `)
         if (enriched.length > 0) {
-          await tx.insert(saleAllocations).values(
+          await tx.insert(salePaymentItemAllocations).values(
             enriched.map((a) => ({
-              saleItemId: a.saleItemId,
+              salePaymentItemReceiptId: a.receiptId,
               employeeId: a.employeeId,
               roleType: a.roleType,
               allocationRatio: a.allocationRatio,
-              totalAmount: a.totalAmount,
+              allocatedAmount: a.totalAmount,
               commissionRate: a.commissionRate,
               commissionAmount: a.commissionAmount,
               departmentName: a.departmentName,
-              salePaymentId: Number(salePaymentId),
             })),
           )
         }

@@ -1,7 +1,8 @@
 /**
  * 「按回款逐笔分配」真实库集成测试（capture 链路）
  *
- * 直连测试库（postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp）。
+ * 默认直连测试库（postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp）。
+ * 可通过 PAYMENT_ALLOCATABLE_INT_DATABASE_URL 覆盖到临时 PG 做迁移验证。
  * 全程 BEGIN ... ROLLBACK 包裹，绝不 COMMIT —— 不在库里留任何痕迹。
  *
  * 直接调用 utils/payment-allocatable 的 capturePaymentAllocatables /
@@ -22,7 +23,8 @@ const {
   refreshOrderAllocationRollup,
 } = require('../../utils/payment-allocatable')
 
-const CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const DEFAULT_CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const CONN = process.env.PAYMENT_ALLOCATABLE_INT_DATABASE_URL || DEFAULT_CONN
 
 // 唯一后缀，避免与并发数据撞主键（虽然全程 ROLLBACK，仍取唯一值更稳）
 const RUN = String(Date.now()).slice(-10)
@@ -37,15 +39,17 @@ let employeeId = null
 // 把 numeric/text 金额统一成 number 比较
 const num = (v) => Math.round(Number(v) * 100) / 100
 
-// 读取某回款主流水行落库的逐项可分配额，返回 { saleItemId: amount }
+// 读取某回款主流水行落库的逐项 receipt，返回 { saleItemId: amount }
 async function allocatableMap(salePaymentId) {
   const r = await client.query(
-    `SELECT sale_item_id, amount::numeric AS amount, sales_category
-       FROM sale_payment_allocatable_items WHERE sale_payment_id = $1`,
+    `SELECT id, sale_item_id, amount::numeric AS amount, sales_category
+       FROM sale_payment_item_receipts WHERE sale_payment_id = $1`,
     [salePaymentId],
   )
   const m = {}
-  for (const row of r.rows) m[row.sale_item_id] = { amount: num(row.amount), salesCategory: row.sales_category }
+  for (const row of r.rows) {
+    m[row.sale_item_id] = { id: row.id, amount: num(row.amount), salesCategory: row.sales_category }
+  }
   return m
 }
 
@@ -53,10 +57,13 @@ beforeAll(async () => {
   client = new Client({ connectionString: CONN })
   await client.connect()
 
-  // 守护：必须连在测试库 fengyu_wxapp（47.113.202.7），绝不连生产 IP 118.178.196.26
-  // （2026-07-17 起 dev/测试与 prod 均用 fengyu_wxapp 库名，仅靠 CONN 里的 IP 区分）
+  // 守护：绝不连生产 IP 118.178.196.26。
+  // 默认连接测试库时仍校验库名；覆盖到临时 PG 时允许其它库名。
+  if (CONN.includes('118.178.196.26')) {
+    throw new Error('拒绝运行：PAYMENT_ALLOCATABLE_INT_DATABASE_URL 指向生产库')
+  }
   const dbRes = await client.query('SELECT current_database() AS db')
-  if (dbRes.rows[0].db !== 'fengyu_wxapp') {
+  if (CONN === DEFAULT_CONN && dbRes.rows[0].db !== 'fengyu_wxapp') {
     throw new Error(`拒绝运行：期望测试库 fengyu_wxapp，实连 ${dbRes.rows[0].db}`)
   }
 
@@ -191,31 +198,34 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
     expect(m[ITEM_A].amount + m[ITEM_B].amount).toBe(400)
   })
 
-  it('步骤5：sale_allocations 唯一约束 uq_sale_alloc_item_emp_role_payment 同键活跃行 → 23505', async () => {
+  it('步骤5：sale_payment_item_allocations 唯一约束 uq_spia_receipt_emp_role 同 receipt/员工/角色活跃行 → 23505', async () => {
     if (!employeeId) {
       // 库内无员工则跳过该断言（FK employee_id 无可用值）
       console.warn('[skip] staff_wechat_users 为空，跳过唯一约束断言')
       return
     }
     const salePaymentId = globalThis.__firstPaymentId
+    const m = await allocatableMap(salePaymentId)
+    const receiptId = m[ITEM_A]?.id
+    expect(receiptId).toBeDefined()
 
-    // 首条活跃分配（item A / emp / 美容师 / 该回款）
+    // 首条活跃子分配（receipt A / emp / 美容师）
     await client.query(
-      `INSERT INTO sale_allocations
-         (sale_item_id, employee_id, allocation_ratio, role_type, total_amount, sale_payment_id, is_void)
-       VALUES ($1, $2, 1.00, '美容师', 180, $3, false)`,
-      [ITEM_A, employeeId, salePaymentId],
+      `INSERT INTO sale_payment_item_allocations
+         (sale_payment_item_receipt_id, employee_id, allocation_ratio, role_type, allocated_amount, is_void)
+       VALUES ($1, $2, 1.00, '美容师', 180, false)`,
+      [receiptId, employeeId],
     )
 
-    // 同 (item, emp, role, payment) 再插一条活跃行 → 唯一索引冲突 23505
+    // 同 (receipt, emp, role) 再插一条活跃行 → 唯一索引冲突 23505
     await client.query('SAVEPOINT dup_alloc')
     let dupErr = null
     try {
       await client.query(
-        `INSERT INTO sale_allocations
-           (sale_item_id, employee_id, allocation_ratio, role_type, total_amount, sale_payment_id, is_void)
-         VALUES ($1, $2, 1.00, '美容师', 180, $3, false)`,
-        [ITEM_A, employeeId, salePaymentId],
+        `INSERT INTO sale_payment_item_allocations
+           (sale_payment_item_receipt_id, employee_id, allocation_ratio, role_type, allocated_amount, is_void)
+         VALUES ($1, $2, 1.00, '美容师', 180, false)`,
+        [receiptId, employeeId],
       )
     } catch (err) {
       dupErr = err
@@ -223,13 +233,13 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
     }
     expect(dupErr).not.toBeNull()
     expect(dupErr.code).toBe('23505')
-    expect(String(dupErr.constraint || dupErr.message)).toContain('uq_sale_alloc_item_emp_role_payment')
+    expect(String(dupErr.constraint || dupErr.message)).toContain('uq_spia_receipt_emp_role')
   })
 })
 
 // 转换单（按回款逐笔分配）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
-// 旧逻辑：items.length===0 早返回，不产 spai、回款行状态靠回填补；新逻辑：按本笔净实收落 1 条 spai
-//         到「转入」行（业绩载体），与销售单一样支持按每笔回款逐笔分配。转出/转入行 received 不受
+// 旧逻辑：items.length===0 早返回，不产 receipt、回款行状态靠回填补；新逻辑：按转出/转入有符号净额
+//         落 receipt，与销售单一样支持按每笔回款逐笔分配。转出/转入行 received 不受
 //         recalc STEP1 影响（只看『购买』行）。
 describe('capture 转换单（无「购买」明细，业绩转移）', () => {
   const CONV_ORDER = `IT-PA-CONV-${RUN}`
@@ -265,7 +275,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(purchaseCount.rows[0].n).toBe(0)
   })
 
-  it('capture 落 1 条 spai 到转入行（amount=本笔净实收），回款行置「待分配」', async () => {
+  it('capture 落 signed receipt 到转出/转入行（净额=本笔实收），回款行置「待分配」', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -282,11 +292,15 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 转换单 → 落 1 条 spai 到转入行 CONV_IN，amount=789（本笔净实收，非转入行 received=1000）
-    expect(out).toEqual([{ saleItemId: CONV_IN, amount: 789, salesCategory: '自销自耗' }])
+    // 转换单 → 转出 -211、转入 +1000，净额 789（本笔实收）
+    const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
+    expect(num(retById[CONV_OUT].amount)).toBe(-211)
+    expect(num(retById[CONV_IN].amount)).toBe(1000)
+    expect(num(retById[CONV_OUT].amount) + num(retById[CONV_IN].amount)).toBe(789)
     const m = await allocatableMap(salePaymentId)
-    expect(Object.keys(m).length).toBe(1)
-    expect(m[CONV_IN].amount).toBe(789)
+    expect(Object.keys(m).length).toBe(2)
+    expect(m[CONV_OUT].amount).toBe(-211)
+    expect(m[CONV_IN].amount).toBe(1000)
     expect(m[CONV_IN].salesCategory).toBe('自销自耗')
 
     const ps = await client.query(
@@ -305,7 +319,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(o.rows[0].allocation_status).toBe('待分配')
   })
 
-  it('无转入行兜底：仅置回款行「待分配」，不产 spai', async () => {
+  it('净权重非正兜底：仅置回款行「待分配」，不产 receipt', async () => {
     const CONV_NOIN = `IT-PA-CONV-NOIN-${RUN}`
     const CONV_NOIN_OUT = `IT-PA-CONV-NOIN-OUT-${RUN}`
     await client.query(
@@ -337,7 +351,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 异常转换单（无转入行业绩载体）→ 兜底仅置回款行『待分配』，不产 spai
+    // 异常转换单（净权重非正）→ 兜底仅置回款行『待分配』，不产 receipt
     expect(out).toEqual([])
     const m = await allocatableMap(salePaymentId)
     expect(Object.keys(m).length).toBe(0)
@@ -349,10 +363,9 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
   })
 })
 
-// 转换单多转入行（异品类）：2026-07-20 修 #2 —— 旧码 LIMIT 1 把整笔 evt 全挂首转入行，致其余转入行
-// 得 0、提成全按首行品类率归因（异品类提成错）。新码按 sale_amount 比例摊 evt 到全部转入行，各行得
-// 对应品类 SPAI，下游提成按行品类率归因正确。
-describe('capture 转换单多转入行（异品类按 sale_amount 比例摊，修 #2）', () => {
+// 转换单多转入行（异品类）：新码按有符号 sale_amount 比例摊到全部转出/转入行，
+// 各转入行得到对应品类 receipt，下游提成按行品类率归因正确。
+describe('capture 转换单多转入行（异品类按 signed sale_amount 比例摊）', () => {
   const CONV_MULTI = `IT-PA-CM-${RUN}` // sale_order_id
   const CONV_MULTI_OUT = `IT-PA-CM-O-${RUN}` // 转出 -100
   const CONV_IN1 = `IT-PA-CM-A-${RUN}` // 转入 自销自耗 sale_amount=300
@@ -380,7 +393,7 @@ describe('capture 转换单多转入行（异品类按 sale_amount 比例摊，�
     await insDir(CONV_IN2, '转入', '他销自耗', 300, 300, 5)
   })
 
-  it('capture 按比例摊 evt=500 → 自销自耗 250 / 他销自耗 250（旧码 LIMIT 1 会全挂首行 500/0）', async () => {
+  it('capture 按 signed 比例摊 evt=500 → 转出 -100 / 自销自耗 300 / 他销自耗 300', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -398,17 +411,17 @@ describe('capture 转换单多转入行（异品类按 sale_amount 比例摊，�
     })
 
     const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
-    // 两行各 250（按 sale_amount 300:300 等比例摊 evt=500），Σ=500，各 ≤ sale_amount(300)；
-    // 旧码会 CONV_IN1=500（超其 sale_amount 300）、CONV_IN2=0（他销自耗品类率被忽略）。
-    expect(num(retById[CONV_IN1].amount)).toBe(250)
-    expect(num(retById[CONV_IN2].amount)).toBe(250)
+    expect(num(retById[CONV_MULTI_OUT].amount)).toBe(-100)
+    expect(num(retById[CONV_IN1].amount)).toBe(300)
+    expect(num(retById[CONV_IN2].amount)).toBe(300)
     expect(retById[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(retById[CONV_IN2].salesCategory).toBe('他销自耗')
-    expect(num(retById[CONV_IN1].amount) + num(retById[CONV_IN2].amount)).toBe(500)
+    expect(num(retById[CONV_MULTI_OUT].amount) + num(retById[CONV_IN1].amount) + num(retById[CONV_IN2].amount)).toBe(500)
 
     const m = await allocatableMap(salePaymentId)
-    expect(m[CONV_IN1].amount).toBe(250)
-    expect(m[CONV_IN2].amount).toBe(250)
+    expect(m[CONV_MULTI_OUT].amount).toBe(-100)
+    expect(m[CONV_IN1].amount).toBe(300)
+    expect(m[CONV_IN2].amount).toBe(300)
     expect(m[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(m[CONV_IN2].salesCategory).toBe('他销自耗')
   })
