@@ -11,7 +11,7 @@
  *   2. 持卡 sale_order_type IN ('销售单','转换单','寄存单')
  *   3. cycle CTE 链：daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan
  *   4. 达标日阈值（day_received >= threshold；getMemberThreshold）
- *   5. cycle 基础过滤 sale_order_type IN ('销售单','转换单') ∩ status='已支付'
+ *   5. cycle 基础过滤 sale_order_type IN ('销售单','转换单') ∩ 排除无效状态，不要求 status='已支付'
  *   6. 业绩 = SUM(received)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *
@@ -119,21 +119,33 @@ describe('品项板块两端口径一致性守护', () => {
     it('staff', () => {
       expect(staffCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
     })
-    it('两端 daily_agg 全历史下界（paid_at::date <= 区间末）', () => {
-      // admin: so.paid_at::date <= ${range.end}；staff: so.paid_at::date <= $2
-      expect(adminCode).toMatch(/so\.paid_at::date\s*<=\s*\$\{range\.end\}/)
-      expect(staffCode).toMatch(/so\.paid_at::date\s*<=\s*\$2/)
+    it('两端 daily_agg 全历史下界（purchase_date <= 区间末）', () => {
+      expect(adminCode).toMatch(/purchaseDateExpr\s*=\s*sql`COALESCE\(so\.sale_order_datetime,\s*so\.paid_at\)::date`/)
+      expect(adminCode).toMatch(/\$\{purchaseDateExpr\}\s*<=\s*\$\{range\.end\}/)
+      expect(staffCode).toMatch(/purchaseDateSql\s*=\s*'COALESCE\(so\.sale_order_datetime,\s*so\.paid_at\)::date'/)
+      expect(staffCode).toMatch(/\$\{purchaseDateSql\}\s*<=\s*\$2/)
     })
   })
 
-  describe('cycle 基础过滤 sale_order_type IN (销售单, 转换单) ∩ status=已支付', () => {
+  describe('cycle 基础过滤 sale_order_type IN (销售单, 转换单) ∩ 排除无效状态', () => {
     it('admin', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(adminCode).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(adminCode).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
     })
     it('staff', () => {
       expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(staffCode).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(staffCode).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
+    })
+  })
+
+  describe('复购 = 本期进入 cohort 在 entry_date 后区间内再次达标', () => {
+    it('admin', () => {
+      expect(adminCode).toMatch(/JOIN\s+xinzeng\s+x\s+ON\s+x\.client_user_id\s*=\s*q\.client_user_id\s+AND\s+x\.grp\s*=\s*q\.grp/)
+      expect(adminCode).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
+    })
+    it('staff', () => {
+      expect(staffCode).toMatch(/JOIN\s+xinzeng\s+x\s+ON\s+x\.client_user_id\s*=\s*q\.client_user_id\s+AND\s+x\.product_kind\s*=\s*q\.product_kind/)
+      expect(staffCode).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
     })
   })
 

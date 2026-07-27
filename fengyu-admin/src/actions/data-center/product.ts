@@ -12,18 +12,20 @@
  * 移植源（CloudBase 纯 JS 原生 SQL，禁止 import，照搬口径成 admin Drizzle raw SQL）：
  *   fengyu-staff/cloudfunctions/staffApi/routes/mgmt-product.js
  *     - cardHolders：持卡人数 + 占比（截面快照，不随 period 变化）
- *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴 paid_at）
+ *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴 sale_order_datetime，缺失时回退 paid_at）
  *
  * ★ 口径红线（consistency.product.test.ts 字面量守护，禁止偏离）：
  *   - 持卡 = si.paid_sessions > 0；DISTINCT client。不再按 product_type 过滤。
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
- *   - 达标日（qualifying day）= SUM(si.received) 在 (client_user_id, store_id, 分组键, paid_at::date)
- *     分组下 >= threshold（getMemberThreshold，默认 1980/1990）。
+ *   - 达标日（qualifying day）= SUM(si.received) 在 (client_user_id, store_id, 分组键, purchase_date)
+ *     分组下 >= threshold（getMemberThreshold，默认 1980）。
+ *   - purchase_date = COALESCE(so.sale_order_datetime, so.paid_at)::date。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
- *     复购 = 区间内有达标日（threshold 共用）；体验 = 区间内有购买但全历史无达标日。新增 ⊆ 复购。
- *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单') ∩ status='已支付'。
+ *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
+ *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单') ∩ 排除已关闭/已作废/未审核/待审批/支付失败；
+ *     不要求 status='已支付'，received 达标即计入。
  *   - scope 用 so.store_id；客户维度（memberCount）用 c.bound_store_id。
  *
  * ★ 一级/二级筛选（admin 独有，staff 仅一级 product_kind）：
@@ -31,7 +33,7 @@
  *   - 选到二级 → 分组键 = pc.category_name（WHERE pc.product_kind = $kind AND pc.category_name = $name）
  *   口径与一级完全同构，唯一差异是分组键（daily_agg/first_entry 的 GROUP BY 维度同步替换）。
  *
- * 性能：daily_agg 全历史扫描（paid_at <= endDate 无下界）；持卡截面 + cycle 区间分多查询。
+ * 性能：daily_agg 全历史扫描（purchase_date <= endDate 无下界）；持卡截面 + cycle 区间分多查询。
  */
 
 import { db } from '@/db'
@@ -156,9 +158,9 @@ async function queryMemberCount(session: AuthSession, scope: DataCenterScope): P
 }
 
 // =====================================================================
-// 体验 / 新增 / 复购（区间维度，时间轴 paid_at）
+// 体验 / 新增 / 复购（区间维度，时间轴 purchase_date）
 // 单标量 runner（供 withComparison 跑本期/上期/去年同期）。
-// 每个 range 自包含：daily_agg 用 paid_at <= range.end（全历史下界），period_agg 用 BETWEEN。
+// 每个 range 自包含：daily_agg 用 purchase_date <= range.end（全历史下界），period_agg 用 BETWEEN。
 // =====================================================================
 
 type CycleGroup = 'trial' | 'new' | 'repurchase'
@@ -178,12 +180,13 @@ async function queryCycle(
   metric: 'count' | 'revenue',
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const purchaseDateExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)::date`
   const rows = await db.execute(sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             so.paid_at::date AS purchase_date,
+             ${purchaseDateExpr} AS purchase_date,
              SUM(si.received::numeric) AS day_received
       FROM sale_items si
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -191,11 +194,12 @@ async function queryCycle(
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND so.paid_at::date <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, so.paid_at::date
+        AND ${purchaseDateExpr} <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, ${purchaseDateExpr}
+      HAVING SUM(si.received::numeric) > 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -213,15 +217,16 @@ async function queryCycle(
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
     ),
     xinzeng AS (
-      SELECT client_user_id, grp
+      SELECT client_user_id, grp, entry_date
       FROM first_entry
       WHERE entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp
       FROM qualifying_days q
-      JOIN first_entry f ON f.client_user_id = q.client_user_id AND f.grp = q.grp
+      JOIN xinzeng x ON x.client_user_id = q.client_user_id AND x.grp = q.grp
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
+        AND q.purchase_date > x.entry_date
     ),
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
@@ -347,12 +352,13 @@ async function queryCycleByStore(
   >
 > {
   const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const purchaseDateExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)::date`
   const rows = await db.execute(sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             so.paid_at::date AS purchase_date,
+             ${purchaseDateExpr} AS purchase_date,
              SUM(si.received::numeric) AS day_received
       FROM sale_items si
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -360,11 +366,12 @@ async function queryCycleByStore(
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND so.paid_at::date <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, so.paid_at::date
+        AND ${purchaseDateExpr} <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, ${purchaseDateExpr}
+      HAVING SUM(si.received::numeric) > 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -382,15 +389,16 @@ async function queryCycleByStore(
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
     ),
     xinzeng AS (
-      SELECT client_user_id, grp
+      SELECT client_user_id, grp, entry_date
       FROM first_entry
       WHERE entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp
       FROM qualifying_days q
-      JOIN first_entry f ON f.client_user_id = q.client_user_id AND f.grp = q.grp
+      JOIN xinzeng x ON x.client_user_id = q.client_user_id AND x.grp = q.grp
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
+        AND q.purchase_date > x.entry_date
     ),
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
@@ -476,7 +484,7 @@ function buildMetrics(agg: ProductStoreAgg, memberCount: number): Record<string,
     newAvgTicket: safeDiv(round2(agg.newRevenue), agg.newCount),
     repurchaseCount: agg.repurchaseCount,
     repurchaseRevenue: agg.repurchaseRevenue,
-    repurchaseRate: safeDiv(agg.repurchaseCount, agg.cardHolders),
+    repurchaseRate: safeDiv(agg.repurchaseCount, agg.newCount),
   }
 }
 
@@ -537,9 +545,9 @@ export const getProductBoard = withPermission(
       value: safeDiv(round2(repurchaseRevenue.value ?? 0), repurchaseCount.value ?? 0),
       unit: 'amount',
     }
-    // 复购率 = 复购人数 / 持卡人数（持卡为截面分母）
+    // 复购率 = 复购人数 / 品项进入人数
     const repurchaseRate: KpiCell = {
-      value: safeDiv(repurchaseCount.value ?? 0, cardHoldersTotal),
+      value: safeDiv(repurchaseCount.value ?? 0, newCount.value ?? 0),
       unit: 'percent',
     }
 
