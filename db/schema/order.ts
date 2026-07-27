@@ -35,8 +35,8 @@ import { clientWechatUsers, staffWechatUsers } from "./user";
 /**
  * 订单主表（四种单据统一模型）
  *
- * sale_orders + sale_items + sale_allocations 覆盖销售单、回款单、转换单、退款单，
- * 通过 sale_order_type 区分。回款/转换/退款通过 ref_sale_order_id 引用原销售单。
+ * sale_orders + sale_items + sale_order_payments 覆盖销售单、回款、转换、退款。
+ * 营业额分配由 sale_payment_item_receipts / sale_payment_item_allocations 按款项行实收承载。
  */
 export const saleOrders = pgTable(
   "sale_orders",
@@ -290,10 +290,10 @@ export const saleItems = pgTable(
 );
 
 /**
- * 营业额分配
+ * @deprecated 历史营业额分配表，仅作为旧数据迁移来源保留。
  *
- * 同时用于销售、回款、转换、退款四种单据的业绩分配。
- * 退款业绩 total_amount 为负数，转换/回款保持正数。
+ * 新运行时统一使用 sale_payment_item_receipts +
+ * sale_payment_item_allocations；不要在新业务代码中读写本表。
  */
 export const saleAllocations = pgTable(
   "sale_allocations",
@@ -323,11 +323,7 @@ export const saleAllocations = pgTable(
      * 绩效页「销售提成」/ 数据看板「员工收入」销售部分读此列（落地 staff.pr.spec §3.15 双维度模型）。
      */
     commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
-    /**
-     * 关联的回款事件主流水行（首次支付/回款现金行；纯储值卡回款则为储值卡抵扣行）。
-     * 按回款逐笔分配的归属键：同一 sale_item 的同一员工同一角色，可在不同回款各有一条分配。
-     * 与 sale_payment_allocatable_items 同源（同一 sale_payment_id 聚合一笔回款的逐项可分配额）。
-     */
+    /** 历史回款事件主流水行；新模型通过 sale_payment_item_receipts.sale_payment_id 关联。 */
     salePaymentId: bigint("sale_payment_id", { mode: "number" }).references(() => saleOrderPayments.id),
     isVoid: boolean("is_void").notNull().default(false),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
@@ -455,13 +451,10 @@ export const saleOrderPayments = pgTable(
 );
 
 /**
- * 回款逐项可分配额（营业额分配基数）
+ * @deprecated 历史回款逐项可分配额表，仅作为旧数据迁移来源保留。
  *
- * 每笔回款事件落账时（confirmOffline / createRepayment / recordPayment / payNotify）捕获：
- * 本次回款金额落到各 sale_item 的份额，作为按回款逐笔分配的可分配基数。
- *   - 定向回款（items[]）：按定向金额（现金+储值卡）逐项记；
- *   - 非定向回款：按各 item 剩余应付（sale_amount − Σ 已记可分配额）比例摊，Σ amount = 本次回款额。
- * sale_payment_id 指向回款事件主流水行（与 sale_allocations.sale_payment_id 同源）。
+ * 新运行时统一使用 sale_payment_item_receipts 记录每笔款项 × 商品子项的
+ * 有符号行实收金额。
  */
 export const salePaymentAllocatableItems = pgTable(
   "sale_payment_allocatable_items",
@@ -485,10 +478,85 @@ export const salePaymentAllocatableItems = pgTable(
   (table) => [
     uniqueIndex("uq_spai_payment_item").on(table.salePaymentId, table.saleItemId),
     index("idx_spai_order").on(table.saleOrderId),
-    // 加速 recalcPaidSessionsForOrder 分支 A 的相关子查询：
-    //   SELECT SUM(amount) FROM sale_payment_allocatable_items WHERE sale_order_id = $1 AND sale_item_id = si.sale_item_id
-    // (sale_order_id, sale_item_id) 复合索引使该 per-row 子查询走 index scan。
+    // 历史索引；新 paid_sessions 分支 A 走 sale_payment_item_receipts。
     index("idx_spai_order_item").on(table.saleOrderId, table.saleItemId),
+  ],
+);
+
+/**
+ * 款项商品子项实收明细（营业额分配事实父表）
+ *
+ * 一行 = 一笔款项 × 一个商品子项。amount 为有符号行实收：
+ *   - 首次支付 / 回款 / 储值卡抵扣：购买/转入为正，转换转出为负；
+ *   - 退款：按被退商品子项写负数。
+ *
+ * 员工营业额分配必须挂到本表 id，避免再次出现订单级分配。
+ */
+export const salePaymentItemReceipts = pgTable(
+  "sale_payment_item_receipts",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    salePaymentId: bigint("sale_payment_id", { mode: "number" })
+      .notNull()
+      .references(() => saleOrderPayments.id),
+    saleOrderId: varchar("sale_order_id", { length: 30 })
+      .notNull()
+      .references(() => saleOrders.saleOrderId),
+    saleItemId: varchar("sale_item_id", { length: 30 })
+      .notNull()
+      .references(() => saleItems.saleItemId),
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    salesCategory: salesCategoryEnum("sales_category"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_spir_payment_item").on(table.salePaymentId, table.saleItemId),
+    index("idx_spir_payment").on(table.salePaymentId),
+    index("idx_spir_order").on(table.saleOrderId),
+    index("idx_spir_order_item").on(table.saleOrderId, table.saleItemId),
+  ],
+);
+
+/**
+ * 款项商品子项营业额分配（营业额分配结果子表）
+ *
+ * 一行 = 一条 receipt × 一个员工 × 一个角色/技能标签。
+ * allocated_amount / commission_amount 均由后端按 receipt.amount 和当前比例重算。
+ */
+export const salePaymentItemAllocations = pgTable(
+  "sale_payment_item_allocations",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    salePaymentItemReceiptId: bigint("sale_payment_item_receipt_id", { mode: "number" })
+      .notNull()
+      .references(() => salePaymentItemReceipts.id),
+    employeeId: varchar("employee_id", { length: 30 })
+      .notNull()
+      .references(() => staffWechatUsers.employeeId),
+    roleType: varchar("role_type", { length: 20 }).notNull(),
+    departmentName: varchar("department_name", { length: 100 }),
+    allocationRatio: numeric("allocation_ratio", { precision: 5, scale: 3 }).notNull(),
+    allocatedAmount: numeric("allocated_amount", { precision: 10, scale: 2 }).notNull(),
+    commissionRate: numeric("commission_rate", { precision: 5, scale: 4 }),
+    commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
+    isVoid: boolean("is_void").notNull().default(false),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`NOW()`),
+  },
+  (table) => [
+    uniqueIndex("uq_spia_receipt_emp_role")
+      .on(table.salePaymentItemReceiptId, table.employeeId, table.roleType)
+      .where(sql`is_void = false`),
+    index("idx_spia_receipt").on(table.salePaymentItemReceiptId),
+    index("idx_spia_employee").on(table.employeeId),
+    check(
+      "chk_spia_ratio",
+      sql`${table.allocationRatio} > 0 AND ${table.allocationRatio} <= 1`,
+    ),
   ],
 );
 
@@ -502,3 +570,7 @@ export type SaleOrderPayment = typeof saleOrderPayments.$inferSelect;
 export type NewSaleOrderPayment = typeof saleOrderPayments.$inferInsert;
 export type SalePaymentAllocatableItem = typeof salePaymentAllocatableItems.$inferSelect;
 export type NewSalePaymentAllocatableItem = typeof salePaymentAllocatableItems.$inferInsert;
+export type SalePaymentItemReceipt = typeof salePaymentItemReceipts.$inferSelect;
+export type NewSalePaymentItemReceipt = typeof salePaymentItemReceipts.$inferInsert;
+export type SalePaymentItemAllocation = typeof salePaymentItemAllocations.$inferSelect;
+export type NewSalePaymentItemAllocation = typeof salePaymentItemAllocations.$inferInsert;
