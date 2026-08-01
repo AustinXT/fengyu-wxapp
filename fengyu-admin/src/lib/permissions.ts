@@ -37,7 +37,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
     // 业务数据（订单/明细/分配/服务/预约/顾客/疗程卡/提货/数据中心）
-    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:record_payment', 'sale_order:delete',
+    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:record_payment', 'sale_order:deposit_approve', 'sale_order:delete',
     'sale_item:list',
     'allocation:list', 'allocation:save',
     'service:list', 'service:create', 'service:update', 'service:delete',
@@ -92,7 +92,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'point_transaction:list',
     'product:list',
     'sale_item:list',
-    'sale_order:create', 'sale_order:delete', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
+    'sale_order:create', 'sale_order:delete', 'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
     'service:create', 'service:delete', 'service:list', 'service:update',
     'store:lakala_config', 'store:list',
     'store_unbind:approve', 'store_unbind:delete', 'store_unbind:list', 'store_unbind:reject',
@@ -118,7 +118,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'point_transaction:list',
     'product:list',
     'sale_item:list',
-    'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_create',
+    'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_create',
     'service:list',
     'store:list',
   ],
@@ -508,6 +508,19 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
  */
 export function hasPermission(session: AuthSession, action: string): boolean {
   return session.permissions.actions.includes(action)
+}
+
+/**
+ * 寄存单审批硬规则。
+ *
+ * 权限矩阵只控制入口动作；总部限定不能只靠 sale_order:deposit_approve，
+ * 因为 manager/finance 可存在市场或门店 scope。
+ */
+export function isDepositOrderApprover(session: AuthSession): boolean {
+  return session.roles.some((role) => (
+    role.role === 'admin' ||
+    ((role.role === 'manager' || role.role === 'finance') && role.scopeType === '总部')
+  ))
 }
 
 /**

@@ -599,6 +599,16 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
       expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
     })
+    test('两端必须把 OVERPAY 余数在通道 1 映射回真实 item receipt', () => {
+      for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {
+        expect(src, `${name} 缺 overpay 判定`).toMatch(/isOverpayRefundItem/)
+        expect(src, `${name} 缺 receipt 构建 helper`).toMatch(/buildReceiptRefundItems/)
+        expect(src, `${name} 缺 OVERPAY 哨兵识别`).toMatch(/saleItemId === 'OVERPAY'/)
+        expect(src, `${name} 缺正向 receipt 残留计算`).toMatch(/prior_refund_amount/)
+        expect(src, `${name} 缺按残留分配 overpay`).toMatch(/allocateCentsByWeight/)
+        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = await buildReceiptRefundItems/)
+      }
+    })
     test('两端通道 1 不再软删原分配行（保留正数行，报表 SUM 自动净额化）', () => {
       expect(staffSrc).not.toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
       expect(adminSrc).not.toMatch(/UPDATE\s+sale_allocations[\s\S]*?SET[\s\S]*?is_void\s*=\s*true/i)
@@ -1538,7 +1548,8 @@ describe('寄存退款单跳过提成写入 跨端控制流守护（staff / clie
 //        （实付=0 置 0，如实反映未收款）。
 //   staff: routes/order.js DEPOSIT_REAL_PRICE_RECALC_SQL（pg）
 //   admin: actions/orders.ts recomputeDepositRealPrice 内 sql`...`（Drizzle）
-//   仅这两端有寄存单创建路径（client/payNotify 无），故不纳入四端 paid-sessions 守护。
+//   staff 仅提交待审批寄存单；admin 审批通过后才激活 paid_sessions 并重算实际单价。
+//   client/payNotify 无寄存单路径，故不纳入四端 paid-sessions 守护。
 //   ⚠️ 调用顺序（必须在 recalcPaidSessionsForOrder 之后）由 e2e smoke 守护：若提前跑，
 //      received 仍为 0 → 全部回落标价 → smoke 断言 unit_real_price=80 会失败。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1581,12 +1592,12 @@ describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
   })
 
   describe('触发点防回归（定义了 SQL 却没接线即形同虚设）', () => {
-    // updateDepositReceived 已停用（寄存单建单后实收不可改）→ 仅 createDeposit 一处调用
-    test('staff createDeposit 调用 DEPOSIT_REAL_PRICE_RECALC_SQL（恰 1 处；updateDepositReceived 已停用）', () => {
+    // updateDepositReceived 已停用；staff 创建只提交审批，不得提前激活实际单价。
+    test('staff createDeposit 不调用 DEPOSIT_REAL_PRICE_RECALC_SQL（审批由 admin 完成）', () => {
       const calls = staffSrc.match(/tx\.query\(\s*DEPOSIT_REAL_PRICE_RECALC_SQL\s*,\s*\[/g) || []
-      expect(calls.length).toBe(1)
+      expect(calls.length).toBe(0)
     })
-    test('admin createDepositOrder 调用 recomputeDepositRealPrice（恰 1 处；updateDepositReceived 已停用）', () => {
+    test('admin approveDepositOrder 调用 recomputeDepositRealPrice（恰 1 处；updateDepositReceived 已停用）', () => {
       const calls = adminSrc.match(/await\s+recomputeDepositRealPrice\(\s*tx\s*,/g) || []
       expect(calls.length).toBe(1)
     })

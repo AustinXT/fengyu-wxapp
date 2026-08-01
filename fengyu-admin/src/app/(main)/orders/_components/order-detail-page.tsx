@@ -2,6 +2,8 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, Badge } from "@/components/ui/badge";
@@ -12,7 +14,8 @@ import { RefundForm } from "@/components/orders/refund-form";
 import { formatDateTime as fmtDateTime, formatDate } from "@/lib/utils";
 import { maskPhone } from "@/lib/pii";
 import { DangerZoneDelete } from "@/components/delete-action";
-import { deleteOrder } from "@/actions/orders";
+import { actionErrorMessage } from "@/lib/action-error";
+import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -51,6 +54,12 @@ const orderTypeColorMap: Record<string, string> = {
   充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
 
+const operationActionLabelMap: Record<string, string> = {
+  "order.createDeposit": "寄存单初始化",
+  "order.approveDeposit": "审批寄存单通过",
+  "order.rejectDeposit": "驳回寄存单",
+};
+
 function formatDateTime(dt: string | null) {
   if (!dt) return "—";
   return fmtDateTime(dt);
@@ -67,6 +76,7 @@ export default function OrderDetailPageClient({
   cardBalance = null,
   canListAllocations = true,
   canDelete = false,
+  canApproveDeposit = false,
 }: {
   order: SaleOrder;
   allocations: SaleAllocation[];
@@ -87,7 +97,10 @@ export default function OrderDetailPageClient({
   canListAllocations?: boolean;
   /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
   canDelete?: boolean;
+  /** 是否展示寄存单审批入口（系统管理员 / 总部店长 / 总部财务） */
+  canApproveDeposit?: boolean;
 }) {
+  const router = useRouter();
   const items = order.items || [];
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0");
   const paidAmount = Number(order.received ?? "0");
@@ -126,6 +139,7 @@ export default function OrderDetailPageClient({
   const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false);
   const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false);
   const [refundFormOpen, setRefundFormOpen] = useState(false);
+  const [depositApprovalPending, setDepositApprovalPending] = useState<"approve" | "reject" | null>(null);
 
   // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
@@ -134,6 +148,45 @@ export default function OrderDetailPageClient({
     order.saleOrderType === "销售单" &&
     order.legacySource !== "workfine" &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
+
+  const canShowDepositApproval =
+    canApproveDeposit &&
+    order.saleOrderType === "寄存单" &&
+    order.status === "待审批";
+
+  const handleApproveDeposit = async () => {
+    if (!window.confirm("确认审批通过该寄存单？")) return;
+    setDepositApprovalPending("approve");
+    try {
+      const res = await approveDepositOrder(order.saleOrderId);
+      toast.success(res.message);
+      router.refresh();
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "寄存单审批失败"));
+    } finally {
+      setDepositApprovalPending(null);
+    }
+  };
+
+  const handleRejectDeposit = async () => {
+    const reason = window.prompt("请输入驳回原因");
+    if (reason === null) return;
+    const auditReason = reason.trim();
+    if (!auditReason) {
+      toast.error("请输入驳回原因");
+      return;
+    }
+    setDepositApprovalPending("reject");
+    try {
+      const res = await rejectDepositOrder(order.saleOrderId, auditReason);
+      toast.success(res.message);
+      router.refresh();
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "寄存单驳回失败"));
+    } finally {
+      setDepositApprovalPending(null);
+    }
+  };
 
   // 是否存在待审批中的退款（payments 中有 change_type='退款' status∈{'待审批','待支付'}）
   // 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 新增 '待审批'；兼容旧数据保留 '待支付' 检测
@@ -195,6 +248,23 @@ export default function OrderDetailPageClient({
           <h1 className="text-2xl font-bold text-[var(--foreground)]">订单详情</h1>
         </div>
         <div className="flex items-center gap-2">
+          {canShowDepositApproval && (
+            <>
+              <Button
+                variant="outline"
+                onClick={handleRejectDeposit}
+                disabled={depositApprovalPending !== null}
+              >
+                {depositApprovalPending === "reject" ? "驳回中..." : "驳回"}
+              </Button>
+              <Button
+                onClick={handleApproveDeposit}
+                disabled={depositApprovalPending !== null}
+              >
+                {depositApprovalPending === "approve" ? "审批中..." : "审批通过"}
+              </Button>
+            </>
+          )}
           {canShowRefund && !hasPendingRefund && (
             <Button variant="outline" onClick={() => setRefundFormOpen(true)}>
               创建退款
@@ -218,7 +288,11 @@ export default function OrderDetailPageClient({
         <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280] flex items-center justify-between gap-3">
           <span>
             此订单为剩余次数寄存单，不收款、不计入营业额分成 /
-            客单价（服务单提成正常参与分配）；可正常生成服务单核销次数。历史实收金额仅作账目记录，建单后不可修改。若填错且该卡从未被核销，系统管理员可在此页底部「危险操作」物理删除。
+            客单价（服务单提成正常参与分配）；
+            {order.status === "待审批"
+              ? "审批通过后可生成服务单核销次数。"
+              : "可正常生成服务单核销次数。"}
+            历史实收金额仅作账目记录，建单后不可修改。若填错且该卡从未被核销，系统管理员可在此页底部「危险操作」物理删除。
           </span>
         </div>
       )}
@@ -323,6 +397,32 @@ export default function OrderDetailPageClient({
               <span className="text-[#999999]">支付时间</span>
               <p className="font-medium mt-1">{formatDateTime(order.paidAt)}</p>
             </div>
+            {order.saleOrderType === "寄存单" && (
+              <div>
+                <span className="text-[#999999]">审批状态</span>
+                <p className="font-medium mt-1">
+                  {order.status === "待审批"
+                    ? "待审批"
+                    : order.status === "已支付"
+                      ? "已通过"
+                      : order.status === "已作废"
+                        ? "已驳回"
+                        : order.status}
+                </p>
+              </div>
+            )}
+            {(order.auditedByName || order.auditedBy) && (
+              <div>
+                <span className="text-[#999999]">审批人</span>
+                <p className="font-medium mt-1">{order.auditedByName || order.auditedBy}</p>
+              </div>
+            )}
+            {order.auditedAt && (
+              <div>
+                <span className="text-[#999999]">审批时间</span>
+                <p className="font-medium mt-1">{formatDateTime(order.auditedAt)}</p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">支付方式</span>
               <p className="font-medium mt-1">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</p>
@@ -639,7 +739,7 @@ export default function OrderDetailPageClient({
                   </div>
                   <div className="pb-4">
                     <p className="text-sm font-medium text-[var(--foreground)]">
-                      {log.operatorName} - {log.action}
+                      {log.operatorName} - {operationActionLabelMap[log.action] || log.action}
                     </p>
                     <p className="text-xs text-[#999999] mt-1">{formatDateTime(log.createdAt)}</p>
                     {log.detail && (

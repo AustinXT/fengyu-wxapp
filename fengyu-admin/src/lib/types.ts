@@ -377,6 +377,10 @@ export interface SaleOrder {
   openedBy: string | null
   preferredEmployeeId: string | null
   paidAt: string | null
+  /** 审批时间（audited_at；寄存单审批 / 历史单核对共用） */
+  auditedAt?: string | null
+  /** 审批人 ID（audited_by；订单详情页填充） */
+  auditedBy?: string | null
   /** 线下确认收款时间（offline_confirmed_at；订单详情页填充，列表查询不取） */
   offlineConfirmedAt?: string | null
   allocationStatus: AllocationStatus | null
@@ -399,6 +403,8 @@ export interface SaleOrder {
   preferredEmployeeName?: string
   /** 线下确认人姓名（offline_confirmed_by → staff_wechat_users.name） */
   offlineConfirmedByName?: string
+  /** 审批人姓名（audited_by → staff_wechat_users.name） */
+  auditedByName?: string
   items?: SaleItem[]
   /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
   allocatable?: boolean

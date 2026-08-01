@@ -1914,7 +1914,7 @@ Page({
     if (submitting) return;
     this.setData({ submitting: true });
     try {
-      const res = await callStaffApi<{ saleOrderId: string; itemCount: number; status: string }>(
+      const res = await callStaffApi<{ saleOrderId: string; itemCount: number; status: string; message?: string }>(
         'order.createDeposit',
         {
           clientUserId: customerInfo.clientUserId,
@@ -1934,7 +1934,7 @@ Page({
         depositReceivedMap: {},
       });
       wx.showToast({
-        title: `寄存单已创建（${res.itemCount} 项）`,
+        title: res.message || `寄存单已提交审批（${res.itemCount} 项）`,
         icon: 'success',
         duration: 2000,
       });

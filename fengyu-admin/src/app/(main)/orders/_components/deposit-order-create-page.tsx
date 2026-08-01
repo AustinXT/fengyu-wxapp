@@ -208,7 +208,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
 
       {/* B5 提示 banner */}
       <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280]">
-        寄存单用于把 WorkFine 上顾客的剩余次数初始化到小程序，不收款、不计入营业额分成 / 客单价统计（服务单提成正常参与分配）；可正常生成服务单核销次数。
+        寄存单用于把 WorkFine 上顾客的剩余次数初始化到小程序，不收款、不计入营业额分成 / 客单价统计（服务单提成正常参与分配）；提交后需审批通过才可生成服务单核销次数。
         <br />
         <span className="text-xs">商品范围仅限"普通商品"；禁用：优惠券 / 储值卡 / 行级改价 / 体验卡 / 充值卡 / 组合套餐。</span>
       </div>
@@ -386,7 +386,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
                 <Button variant="outline">取消</Button>
               </Link>
               <Button onClick={handleSubmit} disabled={submitting}>
-                {submitting ? "提交中…" : "确认寄存"}
+                {submitting ? "提交中…" : "提交审批"}
               </Button>
             </div>
           </CardContent>

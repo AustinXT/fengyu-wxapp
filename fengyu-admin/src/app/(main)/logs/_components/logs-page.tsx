@@ -66,6 +66,7 @@ const actionLabels: Record<string, string> = {
   "order.approveRefund": "审批退款通过", "order.rejectRefund": "驳回退款",
   "order.createRepayment": "订单回款", "order.createConversion": "创建转换单",
   "order.createPickup": "家居产品提货", "order.createDeposit": "寄存单初始化",
+  "order.approveDeposit": "审批寄存单通过", "order.rejectDeposit": "驳回寄存单",
   "service.confirm": "确认完成服务", "serviceCommission.save": "保存服务提成",
   "card.recharge": "充值卡开单", "card.createRefund": "发起充值卡退款",
   "card.approveRefund": "审批充值卡退款", "card.rejectRefund": "驳回充值卡退款",

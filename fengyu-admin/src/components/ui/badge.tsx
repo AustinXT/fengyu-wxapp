@@ -40,10 +40,14 @@ function Badge({ className, variant, ...props }: BadgeProps) {
 export const STATUS_BADGE_MAP: Record<string, string> = {
   // 订单状态
   '待支付':       'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
+  '待审批':       'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
   '已支付':       'border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]',
+  '部分支付':     'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
   '已完成':       'border-[#888888] text-[#888888] bg-[#F5F5F5]',
+  '未审核':       'border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]',
   '支付失败':     'border-[#D94040] text-[#D94040] bg-[#FFF0F0]',
   '已关闭':       'border-[#888888] text-[#888888] bg-[#F5F5F5]',
+  '已作废':       'border-[#888888] text-[#888888] bg-[#F5F5F5]',
   // 服务单状态
   '待服务':       'border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]',
   '服务中':       'border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]',

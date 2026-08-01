@@ -2135,6 +2135,7 @@ describe('order.close', () => {
     const clientQueryMock = vi.fn()
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 2 }) // UPDATE sale_payment_item_allocations
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE sale_order_payments allocation_status
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE user_coupons
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -2147,6 +2148,11 @@ describe('order.close', () => {
     expect(clientQueryMock).toHaveBeenCalledWith(
       expect.stringContaining('sale_payment_item_allocations'),
       expect.arrayContaining(['FY-001'])
+    )
+    // 验证 payment 级待分配状态被清空
+    expect(clientQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('sale_order_payments'),
+      ['FY-001']
     )
     // 验证 user_coupons 被释放
     expect(clientQueryMock).toHaveBeenCalledWith(
@@ -4662,6 +4668,61 @@ describe('order.createConversion', () => {
 
 describe('order.createDeposit', () => {
   beforeEach(() => { vi.clearAllMocks() })
+
+  test('成功提交寄存单 → 订单和历史实收流水均为待审批，创建时不激活 paid_sessions', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      items: [{ skuId: 'sku-001', quantity: 2, received: 888.88 }],
+      remark: '老系统剩余次数录入',
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001',
+        phone: '13800001111',
+        name: '顾客甲',
+        customer_type: '会员客',
+        bound_store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_type: '疗程卡',
+        spec_name: '水光卡',
+        price: '1000.00',
+        special_price: null,
+        session_count: 10,
+        service_fee: '0',
+        is_shengmei: false,
+        is_experience: false,
+        sales_category: '自销自耗',
+        product_kind: '护理项目',
+      }])
+
+    const txCalls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          txCalls.push({ sql, params })
+          return defaultQueryResult(sql)
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.createDeposit(ctx)
+
+    expect(ctx.result.status).toBe('待审批')
+    expect(ctx.result.message).toBe('寄存单已提交审批')
+    const orderInsert = txCalls.find(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.sql).toContain("'待审批'")
+    expect(orderInsert.sql).not.toContain("'已支付', '寄存单'")
+    const paymentInsert = txCalls.find(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_order_payments'))
+    expect(paymentInsert.sql).toContain("'待审批'")
+    expect(paymentInsert.sql).toMatch(/\$6,\s*NULL\)/)
+    expect(paymentInsert.params[1]).toBe(888.88)
+    const allSql = txCalls.map(c => c.sql).join('\n')
+    expect(allSql).not.toContain('DEPOSIT_REAL_PRICE')
+    expect(allSql).not.toMatch(/paid_sessions\s*=/i)
+  })
 
   test('非本店顾客拒绝开寄存单', async () => {
     const ctx = createManagerCtx({

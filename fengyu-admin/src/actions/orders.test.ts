@@ -29,6 +29,8 @@ vi.mock('@db/order', () => ({
     clientPhone: 'client_phone',
     clientUserId: 'client_user_id',
     paidAt: 'paid_at',
+    auditedAt: 'audited_at',
+    auditedBy: 'audited_by',
     paymentMethod: 'payment_method',
     prepaidCardAmount: 'prepaid_card_amount',
     payableAmount: 'payable_amount',
@@ -210,6 +212,7 @@ vi.mock('@/lib/permissions', () => ({
   requireAnyPermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(),
+  isDepositOrderApprover: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -1601,10 +1604,10 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         execute: vi.fn().mockResolvedValue({}),
       }
       const result = await fn(tx)
-      // 2026-04 closeOrder: tx.update 调用两次（saleOrders 关单 + userCoupons 归还核销券），
-      // tx.execute 调用一次（作废营业额子分配）
+      // closeOrder: tx.update 调用两次（saleOrders 关单 + userCoupons 归还核销券），
+      // tx.execute 调用两次（作废营业额子分配 + 清空 payment 级分配状态）
       expect(tx.update).toHaveBeenCalledTimes(2)
-      expect(tx.execute).toHaveBeenCalledOnce() // 作废分配
+      expect(tx.execute).toHaveBeenCalledTimes(2)
       return result
     })
 

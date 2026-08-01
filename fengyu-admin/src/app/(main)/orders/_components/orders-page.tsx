@@ -359,7 +359,7 @@ export default function OrdersPageClient({
           <div className="flex flex-wrap gap-3">
             <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
-              {(["待支付", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
+              {(["待支付", "待审批", "已支付", "部分支付", "已完成", "未审核", "支付失败", "已关闭", "已作废"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>

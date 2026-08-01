@@ -17,9 +17,9 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
@@ -42,6 +42,7 @@ const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWecha
 // 订单详情：指定美容师 / 线下确认人 各自 JOIN staff_wechat_users 取姓名
 const preferredStaff = alias(staffWechatUsers, 'preferredStaff') as unknown as typeof staffWechatUsers
 const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown as typeof staffWechatUsers
+const auditor = alias(staffWechatUsers, 'auditor') as unknown as typeof staffWechatUsers
 
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
@@ -101,6 +102,12 @@ async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Pr
           updated_at = NOW()
       WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买' AND product_type = '疗程卡'
       -- DEPOSIT_REAL_PRICE`)
+}
+
+function assertCanApproveDepositOrder(session: AuthSession): void {
+  if (!isDepositOrderApprover(session)) {
+    throw new ApiError('PERMISSION_DENIED', '仅系统管理员、总部店长或总部财务可审批寄存单')
+  }
 }
 
 /**
@@ -1154,6 +1161,7 @@ export const getOrderById = withAnyPermission(
       openedByName: opener.name,
       preferredEmployeeName: preferredStaff.name,
       offlineConfirmedByName: offlineConfirmer.name,
+      auditedByName: auditor.name,
       custName: clientWechatUsers.name,
       custPhone: clientWechatUsers.phone,
     })
@@ -1162,6 +1170,7 @@ export const getOrderById = withAnyPermission(
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(preferredStaff, eq(saleOrders.preferredEmployeeId, preferredStaff.employeeId))
     .leftJoin(offlineConfirmer, eq(saleOrders.offlineConfirmedBy, offlineConfirmer.employeeId))
+    .leftJoin(auditor, eq(saleOrders.auditedBy, auditor.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
@@ -1227,6 +1236,8 @@ export const getOrderById = withAnyPermission(
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
     paidAt: r.order.paidAt?.toISOString() ?? null,
+    auditedAt: r.order.auditedAt?.toISOString() ?? null,
+    auditedBy: r.order.auditedBy,
     allocationStatus: r.order.allocationStatus as SaleOrder['allocationStatus'],
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
@@ -1238,6 +1249,7 @@ export const getOrderById = withAnyPermission(
     openedByName: r.openedByName ?? undefined,
     preferredEmployeeName: r.preferredEmployeeName ?? undefined,
     offlineConfirmedByName: r.offlineConfirmedByName ?? undefined,
+    auditedByName: r.auditedByName ?? undefined,
     offlineConfirmedAt: r.order.offlineConfirmedAt?.toISOString() ?? null,
     // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocations.ts 白名单一致），控制详情页分配入口显隐
     allocatable: ['销售单', '转换单'].includes(r.order.saleOrderType) && r.order.legacySource !== 'workfine',
@@ -1578,7 +1590,7 @@ export const closeOrder = withPermission(
     const txResult = await db.transaction(async (tx) => {
       const result = await tx
         .update(saleOrders)
-        .set({ status: '已关闭' })
+        .set({ status: '已关闭', allocationStatus: null })
         .where(and(
           eq(saleOrders.saleOrderId, saleOrderId),
           or(eq(saleOrders.status, '待支付'), eq(saleOrders.status, '支付失败')),
@@ -1597,6 +1609,13 @@ export const closeOrder = withPermission(
            SELECT id FROM sale_payment_item_receipts WHERE sale_order_id = ${saleOrderId}
          )
            AND is_void = false
+      `)
+
+      await tx.execute(sql`
+        UPDATE sale_order_payments
+           SET allocation_status = NULL
+         WHERE sale_order_id = ${saleOrderId}
+           AND allocation_status IS NOT NULL
       `)
 
       // 归还优惠券（订单关闭时释放已核销的券）
@@ -3188,7 +3207,8 @@ export const createConversionOrder = withPermission(
  *
  * 与 staffApi.order.createDeposit 语义对齐：
  *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
- *   - 不收钱：received=0 / payable=0 / total=0 / payment_method='无' / status='已支付'
+ *   - 提交审批：received=0 / payable=0 / total=0 / payment_method='无' / status='待审批'
+ *   - 审批通过后才落 paid_at、激活 paid_sessions，并按历史实收重算疗程卡实际单价
  *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
  *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
  *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
@@ -3302,7 +3322,7 @@ export const createDepositOrder = withPermission(
         const now = new Date()
         await tx.insert(saleOrders).values({
           saleOrderId: id,
-          status: '已支付',
+          status: '待审批',
           saleOrderType: '寄存单',
           documentType: '售后',
           marketName: data.marketName,
@@ -3322,7 +3342,6 @@ export const createDepositOrder = withPermission(
           couponId: null,
           couponDiscount: '0',
           remark: data.remark || null,
-          paidAt: nowTs(),
           allocationStatus: '待分配',
         })
 
@@ -3380,10 +3399,8 @@ export const createDepositOrder = withPermission(
           })
         }
 
-        // 历史实收录入：对 received>0 的行写一条 '回款'(线下) 流水（ref=该行，targeted）
-        // 并把 sale_orders.received 设为合计。total_amount 仍保持 0：
-        //   → paid_sessions 走 recalc STEP2 的 total_amount<=0 兜底 = session_count（次数全开）
-        //   → dashboard 按 sale_order_type 排除寄存单，received 不进统计
+        // 历史实收录入：对 received>0 的行写一条待审批 '回款'(线下) 流水（ref=该行，targeted）。
+        // 审批通过前不计入 sale_orders.received、不落 paid_sessions，避免未审批寄存单可被核销。
         if (receiptRows.length > 0) {
           for (const r of receiptRows) {
             await tx.insert(saleOrderPayments).values({
@@ -3392,27 +3409,14 @@ export const createDepositOrder = withPermission(
               amount: r.received.toFixed(2),
               paymentMethod: '线下',
               externalTxnId: null,
-              status: '已支付',
+              status: '待审批',
               sourceEnd: 'admin',
-              paidAt: nowTs(),
               operatorEmployeeId: session.employeeId,
               refSaleItemId: r.saleItemId,
               note: DEPOSIT_RECEIPT_NOTE,
             })
           }
-          const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
-          await tx
-            .update(saleOrders)
-            .set({ received: totalReceived.toFixed(2), updatedAt: nowTs() })
-            .where(eq(saleOrders.saleOrderId, id))
         }
-
-        // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0 → 兜底全付 = session_count
-        // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
-        await recalcPaidSessionsForOrder(tx, id)
-
-        // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 置 0）。必须在 recalc 之后。
-        await recomputeDepositRealPrice(tx, id)
 
         return id
       })
@@ -3431,6 +3435,7 @@ export const createDepositOrder = withPermission(
       {
         _v: 1,
         clientUserId: data.clientUserId,
+        status: '待审批',
         itemCount: data.items.length,
         totalSessionCount: data.items.reduce((acc, it) => {
           const sku = skuMap.get(it.skuId)
@@ -3445,10 +3450,178 @@ export const createDepositOrder = withPermission(
     revalidatePath('/orders')
     return {
       success: true,
-      message: `寄存单已创建（${data.items.length} 项）`,
+      message: `寄存单已提交审批（${data.items.length} 项）`,
       saleOrderId,
       itemCount: data.items.length,
     }
+  },
+)
+
+export const approveDepositOrder = withPermission(
+  'sale_order:deposit_approve',
+  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
+    assertCanApproveDepositOrder(session)
+    if (!saleOrderId) {
+      throw new ApiError('INVALID_PARAMS', '缺少寄存单 ID')
+    }
+
+    let approvedReceived = '0'
+    await db.transaction(async (tx) => {
+      const lockedRows = await tx.execute(sql`
+        SELECT sale_order_id, status, sale_order_type, store_id
+        FROM sale_orders
+        WHERE sale_order_id = ${saleOrderId}
+        FOR UPDATE
+      `)
+      const order = (lockedRows as unknown as Array<{
+        sale_order_id: string
+        status: string
+        sale_order_type: string
+        store_id: string
+      }>)[0]
+      if (!order) {
+        throw new ApiError('NOT_FOUND', '寄存单不存在')
+      }
+      if (order.sale_order_type !== '寄存单') {
+        throw new ApiError('INVALID_STATE', '只有寄存单需要审批')
+      }
+      if (order.status !== '待审批') {
+        throw new ApiError('INVALID_STATE', `当前状态"${order.status}"不允许审批`)
+      }
+      if (!isInScope(session, order.store_id)) {
+        throw new ApiError('PERMISSION_DENIED', '无权审批该门店寄存单')
+      }
+
+      const approvedAt = nowTs()
+      await tx.execute(sql`
+        UPDATE sale_order_payments
+        SET status = '已支付',
+            paid_at = ${approvedAt},
+            audit_employee_id = ${session.employeeId},
+            audit_at = ${approvedAt}
+        WHERE sale_order_id = ${saleOrderId}
+          AND change_type = '回款'
+          AND note = ${DEPOSIT_RECEIPT_NOTE}
+          AND status = '待审批'
+      `)
+
+      const updatedRows = await tx.execute(sql`
+        UPDATE sale_orders
+        SET status = '已支付',
+            paid_at = ${approvedAt},
+            audited_at = ${approvedAt},
+            audited_by = ${session.employeeId},
+            received = (
+              SELECT COALESCE(SUM(amount), 0)::numeric(10, 2)
+              FROM sale_order_payments
+              WHERE sale_order_id = ${saleOrderId}
+                AND change_type IN ('首次支付', '回款', '储值卡抵扣')
+                AND status = '已支付'
+            ),
+            updated_at = NOW()
+        WHERE sale_order_id = ${saleOrderId}
+          AND status = '待审批'
+        RETURNING received
+      `)
+      const updated = (updatedRows as unknown as Array<{ received: string }>)[0]
+      if (!updated) {
+        throw new ApiError('CONFLICT', '寄存单状态已变化，请刷新后重试')
+      }
+      approvedReceived = updated.received ?? '0'
+
+      // 审批通过后才激活寄存单次数与实际单价。
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
+      await recomputeDepositRealPrice(tx, saleOrderId)
+    })
+
+    await logTransition(session, 'order.approveDeposit', 'sale_order', saleOrderId, '待审批', '已支付', {
+      received: approvedReceived,
+    })
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${saleOrderId}`)
+    return { success: true, message: '寄存单审批通过' }
+  },
+)
+
+export const rejectDepositOrder = withPermission(
+  'sale_order:deposit_approve',
+  async (
+    session,
+    saleOrderId: string,
+    reason: string,
+  ): Promise<{ success: boolean; message: string }> => {
+    assertCanApproveDepositOrder(session)
+    if (!saleOrderId) {
+      throw new ApiError('INVALID_PARAMS', '缺少寄存单 ID')
+    }
+    const auditReason = String(reason || '').trim()
+    if (!auditReason) {
+      throw new ApiError('INVALID_PARAMS', '请输入驳回原因')
+    }
+    if (auditReason.length > 500) {
+      throw new ApiError('INVALID_PARAMS', '驳回原因不能超过 500 字')
+    }
+
+    await db.transaction(async (tx) => {
+      const lockedRows = await tx.execute(sql`
+        SELECT sale_order_id, status, sale_order_type, store_id
+        FROM sale_orders
+        WHERE sale_order_id = ${saleOrderId}
+        FOR UPDATE
+      `)
+      const order = (lockedRows as unknown as Array<{
+        sale_order_id: string
+        status: string
+        sale_order_type: string
+        store_id: string
+      }>)[0]
+      if (!order) {
+        throw new ApiError('NOT_FOUND', '寄存单不存在')
+      }
+      if (order.sale_order_type !== '寄存单') {
+        throw new ApiError('INVALID_STATE', '只有寄存单需要审批')
+      }
+      if (order.status !== '待审批') {
+        throw new ApiError('INVALID_STATE', `当前状态"${order.status}"不允许驳回`)
+      }
+      if (!isInScope(session, order.store_id)) {
+        throw new ApiError('PERMISSION_DENIED', '无权审批该门店寄存单')
+      }
+
+      const rejectedAt = nowTs()
+      await tx.execute(sql`
+        UPDATE sale_order_payments
+        SET status = '已作废',
+            audit_employee_id = ${session.employeeId},
+            audit_at = ${rejectedAt},
+            audit_remark = ${auditReason}
+        WHERE sale_order_id = ${saleOrderId}
+          AND change_type = '回款'
+          AND note = ${DEPOSIT_RECEIPT_NOTE}
+          AND status = '待审批'
+      `)
+
+      const updatedRows = await tx.execute(sql`
+        UPDATE sale_orders
+        SET status = '已作废',
+            audited_at = ${rejectedAt},
+            audited_by = ${session.employeeId},
+            updated_at = NOW()
+        WHERE sale_order_id = ${saleOrderId}
+          AND status = '待审批'
+        RETURNING sale_order_id
+      `)
+      if ((updatedRows as unknown as Array<{ sale_order_id: string }>).length === 0) {
+        throw new ApiError('CONFLICT', '寄存单状态已变化，请刷新后重试')
+      }
+    })
+
+    await logTransition(session, 'order.rejectDeposit', 'sale_order', saleOrderId, '待审批', '已作废', {
+      reason: auditReason,
+    })
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${saleOrderId}`)
+    return { success: true, message: '寄存单已驳回' }
   },
 )
 

@@ -52,9 +52,10 @@ const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
 // 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
-// ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
+// ⚠️ 仅作为跨端 SQL 副本守护；staff 创建寄存单只提交审批，不在本端调用。
+// admin 审批通过后必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
 //   - 通用 recalc 对所有订单类型生效，普通欠款单 received<sale_amount 是常态，
-//     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在 deposit 函数内调用，勿 DRY 进 helper。
+//     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在寄存单审批函数内调用，勿 DRY 进 helper。
 //   - INSERT 时 received 写死 0，真实 per-row received 由 recalc STEP1 定向落定后才存在；提前跑会让每行误命中 ELSE。
 // 与 admin actions/orders.ts recomputeDepositRealPrice 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
 const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
@@ -1784,7 +1785,7 @@ async function close(ctx) {
 
   await pg.transaction(async (client) => {
     const updateResult = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
+      "UPDATE sale_orders SET status = '已关闭', allocation_status = NULL, updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
       [now, saleOrderId, order.status]
     )
     if (updateResult.rowCount === 0) {
@@ -1799,6 +1800,13 @@ async function close(ctx) {
         )
           AND is_void = false`,
       [now, saleOrderId],
+    )
+    await client.query(
+      `UPDATE sale_order_payments
+          SET allocation_status = NULL
+        WHERE sale_order_id = $1
+          AND allocation_status IS NOT NULL`,
+      [saleOrderId],
     )
     // 释放关联的优惠券
     await client.query(
@@ -2516,6 +2524,7 @@ async function approveRefund(ctx) {
           sessionCount: it.quantity,
           refundAmount: it.refundAmount ?? null,
           isFullItemRefund: !!it.isFullItemRefund,
+          isOverpay: it.isOverpay === true,
         }))
         cascadeWholeOrder = !!noteObj.isWholeOrderRefund
       }
@@ -4179,7 +4188,8 @@ async function refundDetail(ctx) {
  *
  * 寄存单是把"顾客在 WorkFine 上的剩余次数"初始化到小程序的特殊订单：
  *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
- *   - 不收钱：received=0 / payable_amount=0 / total_amount=0 / payment_method='无' / status='已支付'
+ *   - 提交审批：received=0 / payable_amount=0 / total_amount=0 / payment_method='无' / status='待审批'
+ *   - 审批通过前不写 paid_at / paid_sessions，不允许生成服务单核销次数
  *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
  *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
  *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
@@ -4317,7 +4327,7 @@ async function createDeposit(ctx) {
     // document_type：寄存单是把老顾客剩余次数初始化进来，固定 '售后'
     const documentType = '售后'
 
-    // INSERT sale_orders —— 寄存单核心：金额全 0、status 直接已支付、payment_method='无'
+    // INSERT sale_orders —— 寄存单核心：金额全 0、status 待审批、payment_method='无'
     await tx.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
@@ -4326,8 +4336,8 @@ async function createDeposit(ctx) {
         preferred_employee_id, coupon_id, coupon_discount, remark,
         prepaid_card_amount, received, payable_amount, paid_at,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
-                NULL, NULL, 0, $10, 0, 0, 0, $5,
+      ) VALUES ($1, '待审批', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
+                NULL, NULL, 0, $10, 0, 0, 0, NULL,
                 '待分配', $5, $5)`,
       [
         saleOrderId, documentType, marketName, storeId, now,
@@ -4381,40 +4391,25 @@ async function createDeposit(ctx) {
       )
     }
 
-    // 历史实收录入：对 received>0 的行写 '回款'(线下) 流水（ref=该行，targeted），
-    // 并把 sale_orders.received 设为合计。total_amount 仍保持 0：
-    //   → paid_sessions 走 recalc 兜底 = session_count（次数全开）
-    //   → dashboard 按 sale_order_type 排除寄存单，received 不进统计
+    // 历史实收录入：对 received>0 的行写待审批 '回款'(线下) 流水（ref=该行，targeted）。
+    // 审批通过前不计入 sale_orders.received、不落 paid_sessions，避免未审批寄存单可被核销。
     if (receiptRows.length > 0) {
       for (const r of receiptRows) {
         await tx.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method, external_txn_id,
             status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-          ) VALUES ($1, '回款', $2, '线下', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
+          ) VALUES ($1, '回款', $2, '线下', NULL, '待审批', 'staff', $3, $4, $5, $6, NULL)`,
           [saleOrderId, r.received, ctx.auth.staffWfId, r.saleItemId, DEPOSIT_RECEIPT_NOTE, now]
         )
       }
-      const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
-      await tx.query(
-        `UPDATE sale_orders SET received = $1, updated_at = NOW() WHERE sale_order_id = $2`,
-        [totalReceived, saleOrderId]
-      )
     }
-
-    // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0，公式走 op.total_amount <= 0
-    // → paid_sessions = session_count（全付兜底），与"WorkFine 剩余次数初始化"语义一致
-    // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
-    await recalcPaidSessionsForOrder(tx, saleOrderId)
-
-    // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 置 0）。
-    // 必须在 recalc 之后（STEP1 落定各行 received 后才能算）。
-    await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
 
     // 审计日志
     await logOperation(tx, ctx, 'order.createDeposit', 'sale_order', saleOrderId, {
-      _v: 3,
+      _v: 4,
       clientUserId,
+      status: '待审批',
       itemCount: itemDataList.length,
       totalSessionCount: itemDataList.reduce(
         (acc, it) => acc + (it.sessionCount != null ? it.sessionCount : 0),
@@ -4425,9 +4420,9 @@ async function createDeposit(ctx) {
 
   ctx.result = {
     saleOrderId,
-    status: '已支付',
+    status: '待审批',
     itemCount: itemDataList.length,
-    message: '寄存单已创建',
+    message: '寄存单已提交审批',
   }
 }
 

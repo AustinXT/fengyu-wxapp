@@ -26,7 +26,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, expandScopeDeptNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, expandScopeDeptNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
@@ -105,6 +105,7 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('card_transaction:list')
     // 2026-06-24 对齐生产的敏感扩权（守护：勿误删）
     expect(actions).toContain('sale_order:delete')
+    expect(actions).toContain('sale_order:deposit_approve')
     expect(actions).toContain('employee:create')
     expect(actions).toContain('store:lakala_config')
     expect(actions).toContain('merchant:list')
@@ -112,6 +113,7 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
 
   it('finance 对账只读 + 商户/提成矩阵维护（2026-06-24 对齐生产）', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.finance
+    expect(actions).toContain('sale_order:deposit_approve')
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
     expect(actions).toContain('sale_item:list')
@@ -160,6 +162,20 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
 
   it('staff 无权限（不可登录管理后台）', () => {
     expect(DEFAULT_PERMISSION_MATRIX.staff).toEqual([])
+  })
+})
+
+describe('deposit_approve 寄存单审批硬规则', () => {
+  it.each([
+    ['admin 总部', [{ role: 'admin' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
+    ['总部店长', [{ role: 'manager' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
+    ['总部财务', [{ role: 'finance' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
+    ['市场店长', [{ role: 'manager' as const, scopeId: 'm1', scopeType: '市场' as const }], false],
+    ['门店店长', [{ role: 'manager' as const, scopeId: 's1', scopeType: '门店' as const }], false],
+    ['市场财务', [{ role: 'finance' as const, scopeId: 'm1', scopeType: '市场' as const }], false],
+  ])('%s', (_label, roles, expected) => {
+    const session = makeSession(roles, ['sale_order:deposit_approve'])
+    expect(isDepositOrderApprover(session)).toBe(expected)
   })
 })
 

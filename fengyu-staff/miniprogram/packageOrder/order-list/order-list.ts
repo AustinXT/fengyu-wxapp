@@ -5,7 +5,7 @@ import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-type OrderStatus = '全部' | '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭';
+type OrderStatus = '全部' | '待支付' | '待审批' | '已支付' | '部分支付' | '已完成' | '未审核' | '支付失败' | '已关闭' | '已作废';
 
 interface OrderItem {
   id: string;
@@ -49,10 +49,14 @@ interface OrderListResponse {
 
 const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
+  '待审批': 'pending',
   '已支付': 'success',
+  '部分支付': 'pending',
   '已完成': 'done',
+  '未审核': 'pending',
   '支付失败': 'error',
   '已关闭': 'done',
+  '已作废': 'done',
 };
 
 Page({
