@@ -33,6 +33,88 @@
  * @param {string} params.refundReason               - 退款原因（写入 voided_reason）
  * @returns {Promise<object>} cascade 结果摘要
  */
+function isOverpayRefundItem(it) {
+  return it && (it.saleItemId === 'OVERPAY' || it.isOverpay === true)
+}
+
+function addRefundCents(map, saleItemId, cents) {
+  if (!saleItemId || cents <= 0) return
+  map.set(saleItemId, (map.get(saleItemId) || 0) + cents)
+}
+
+function allocateCentsByWeight(totalCents, rows) {
+  const weightTotal = rows.reduce((s, r) => s + r.weightCents, 0)
+  const cappedTotal = Math.min(totalCents, weightTotal)
+  if (cappedTotal <= 0 || rows.length === 0) return []
+  const parts = rows.map((r) => {
+    const exact = (cappedTotal * r.weightCents) / weightTotal
+    const cents = Math.floor(exact)
+    return { saleItemId: r.saleItemId, cents, frac: exact - cents }
+  })
+  const rem = cappedTotal - parts.reduce((s, p) => s + p.cents, 0)
+  parts.sort((a, b) => b.frac - a.frac || a.saleItemId.localeCompare(b.saleItemId))
+  for (let i = 0; i < rem; i += 1) parts[i].cents += 1
+  return parts.filter((p) => p.cents > 0)
+}
+
+async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, effItems) {
+  const refundCentsByItem = new Map()
+  let overpayCents = 0
+  for (const it of effItems) {
+    const cents = Math.round(Number(it.refundAmount || 0) * 100)
+    if (cents <= 0) continue
+    if (isOverpayRefundItem(it)) {
+      overpayCents += cents
+    } else {
+      addRefundCents(refundCentsByItem, it.saleItemId, cents)
+    }
+  }
+
+  if (overpayCents > 0) {
+    const residualRows = await client.query(
+      `SELECT si.sale_item_id,
+              COALESCE(SUM(CASE
+                WHEN sop.status = '已支付'
+                 AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+                THEN spir.amount::numeric ELSE 0 END), 0) AS positive_amount,
+              COALESCE(ABS(SUM(CASE
+                WHEN sop.status = '已支付'
+                 AND sop.change_type = '退款'
+                 AND spir.sale_payment_id IS DISTINCT FROM $2
+                THEN spir.amount::numeric ELSE 0 END)), 0) AS prior_refund_amount
+         FROM sale_items si
+         LEFT JOIN sale_payment_item_receipts spir
+           ON spir.sale_order_id = si.sale_order_id
+          AND spir.sale_item_id = si.sale_item_id
+         LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE si.sale_order_id = $1
+          AND si.item_direction = '购买'
+        GROUP BY si.sale_item_id
+        ORDER BY si.sale_item_id`,
+      [saleOrderId, refundPaymentId],
+    )
+    const candidates = residualRows.rows
+      .map((r) => {
+        const positiveCents = Math.round(Number(r.positive_amount || 0) * 100)
+        const priorRefundCents = Math.round(Number(r.prior_refund_amount || 0) * 100)
+        const samePaymentRealRefundCents = refundCentsByItem.get(r.sale_item_id) || 0
+        return {
+          saleItemId: r.sale_item_id,
+          weightCents: Math.max(0, positiveCents - priorRefundCents - samePaymentRealRefundCents),
+        }
+      })
+      .filter((r) => r.weightCents > 0)
+    for (const part of allocateCentsByWeight(overpayCents, candidates)) {
+      addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
+    }
+  }
+
+  return Array.from(refundCentsByItem.entries()).map(([saleItemId, cents]) => ({
+    saleItemId,
+    refundAmount: cents / 100,
+  }))
+}
+
 async function cascadeRefund(client, params) {
   const { saleOrderId, refundPaymentId, items, isWholeOrderRefund, refundReason } = params || {}
   if (!saleOrderId) {
@@ -66,10 +148,12 @@ async function cascadeRefund(client, params) {
 
   // ========== 通道 1: receipt + sale_payment_item_allocations 记负数冲销 ==========
   // 先为被退 item 写负数 receipt，确保 sale_items.received / paid_sessions 可按净额重算。
+  // OVERPAY 是订单级哨兵，不触发其它级联；在本通道按正向 receipt 残留映射回真实 item。
   // 仅当该 item 有原正向子分配时，才按原 (employee, role) 权重生成负数子分配；无原正向则不生成赤字分配。
   let voidedAllocations = 0
   let refundAllocatedCents = 0
-  for (const it of effItems) {
+  const receiptRefundItems = await buildReceiptRefundItems(client, saleOrderId, refundPaymentId, effItems)
+  for (const it of receiptRefundItems) {
     const refundAmt = Number(it.refundAmount || 0)
     if (refundAmt <= 0) continue
     const itemRows = await client.query(

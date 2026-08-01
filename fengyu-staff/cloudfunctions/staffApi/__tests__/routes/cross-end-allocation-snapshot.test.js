@@ -43,6 +43,18 @@ const FILES = {
     __dirname,
     '../../../../../db/migrations/0084_clear_full_refund_allocation_status.sql',
   ),
+  refundReceiptExistingBackfill0085Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0085_refund_receipt_existing_backfill.sql',
+  ),
+  overpayReceiptItemBackfill0086Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0086_overpay_receipt_item_backfill.sql',
+  ),
+  refundAllocationMirrorBackfill0087Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0087_refund_allocation_mirror_backfill.sql',
+  ),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
@@ -249,7 +261,7 @@ describe('断言5：退款审批后重算 paid_sessions，再收敛营业额分�
       expect(src, `${end} 缺子分配存在性判断`).toMatch(/FROM sale_payment_item_allocations spia/)
       expect(src, `${end} 缺非零 receipt 门控`).toMatch(/spir\.amount::numeric <> 0/)
       expect(src, `${end} 缺待分配收敛为已分配`).toMatch(/SET allocation_status = '已分配'/)
-      expect(src, `${end} 缺全额退款无分配明细时清空 payment allocation_status`).toMatch(/full_refund_without_alloc[\s\S]{0,760}SET allocation_status = NULL/)
+      expect(src, `${end} 缺全额退款净实收为 0 时清空 payment allocation_status`).toMatch(/full_refund_zero_net[\s\S]{0,420}SET allocation_status = NULL/)
       expect(src, `${end} 缺全额退款净实收判断`).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) <= 0\.01/)
       expect(src, `${end} 缺订单 rollup 无回款状态时归 NULL`).toMatch(/ELSE NULL::allocation_status END/)
     }
@@ -315,12 +327,15 @@ describe('断言6：0082 退款 receipt backfill 使用 note.items[].refundAmoun
 // 断言 7：0082 正向 receipt 按实际 payment.amount 重建逐笔归属
 // ─────────────────────────────────────────────────────────────────────────────
 describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () => {
-  let src, incrementalSrc, clearFullRefundSrc
+  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, refundAllocationMirrorSrc
 
   beforeAll(() => {
     src = readFile(FILES.receiptMigration0082Sql)
     incrementalSrc = readFile(FILES.positiveReceiptRebuild0083Sql)
     clearFullRefundSrc = readFile(FILES.clearFullRefundStatus0084Sql)
+    refundReceiptRepairSrc = readFile(FILES.refundReceiptExistingBackfill0085Sql)
+    overpayReceiptRepairSrc = readFile(FILES.overpayReceiptItemBackfill0086Sql)
+    refundAllocationMirrorSrc = readFile(FILES.refundAllocationMirrorBackfill0087Sql)
   })
 
   test('仅重建无旧分配/无新子分配且逐笔金额不一致的原生销售/转换单', () => {
@@ -362,5 +377,51 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(clearFullRefundSrc).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) <= 0\.01/)
     expect(clearFullRefundSrc).toMatch(/UPDATE sale_order_payments sop[\s\S]{0,140}SET allocation_status = NULL/)
     expect(clearFullRefundSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = NULL/)
+  })
+
+  test('0085 覆盖已执行旧 0082 的数据库：补退款 receipt 并排除 WorkFine 历史单', () => {
+    expect(refundReceiptRepairSrc).toMatch(/WITH note_refund_items AS \(/)
+    expect(refundReceiptRepairSrc).toMatch(/elem ->> 'refSaleItemId' AS sale_item_id/)
+    expect(refundReceiptRepairSrc).toMatch(/COALESCE\(\(elem ->> 'refundAmount'\)::numeric, 0\)/)
+    expect(refundReceiptRepairSrc).toMatch(/sop\.change_type = '退款'[\s\S]{0,120}sop\.status = '已支付'/)
+    expect(refundReceiptRepairSrc).toMatch(/so\.sale_order_type IN \('销售单','转换单'\)/)
+    expect(refundReceiptRepairSrc).toMatch(/so\.legacy_source IS DISTINCT FROM 'workfine'/)
+    expect(refundReceiptRepairSrc).toMatch(/elem ->> 'refSaleItemId' <> 'OVERPAY'/)
+    expect(refundReceiptRepairSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/)
+  })
+
+  test('0085 清理无 payment 但 order 残留待分配的零实收/全退单', () => {
+    expect(refundReceiptRepairSrc).toMatch(/WITH full_refund_without_alloc AS \(/)
+    expect(refundReceiptRepairSrc).toMatch(/so\.allocation_status IS NOT NULL/)
+    expect(refundReceiptRepairSrc).toMatch(/OR EXISTS \([\s\S]{0,180}sop\.allocation_status IS NOT NULL/)
+    expect(refundReceiptRepairSrc).toMatch(/UPDATE sale_order_payments sop[\s\S]{0,140}SET allocation_status = NULL/)
+    expect(refundReceiptRepairSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = NULL/)
+  })
+
+  test('0086 把 OVERPAY 余数退款映射到真实 item receipt 并重算 paid_sessions', () => {
+    expect(overpayReceiptRepairSrc).toMatch(/_0086_overpay_receipt_mappings/)
+    expect(overpayReceiptRepairSrc).toMatch(/elem ->> 'refSaleItemId' = 'OVERPAY'/)
+    expect(overpayReceiptRepairSrc).toMatch(/LOWER\(COALESCE\(elem ->> 'isOverpay', 'false'\)\) = 'true'/)
+    expect(overpayReceiptRepairSrc).toMatch(/so\.legacy_source IS DISTINCT FROM 'workfine'/)
+    expect(overpayReceiptRepairSrc).toMatch(/prior_refund_amount/)
+    expect(overpayReceiptRepairSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/)
+    expect(overpayReceiptRepairSrc).toMatch(/UPDATE sale_items si[\s\S]{0,360}FROM sale_payment_item_receipts spir/)
+    expect(overpayReceiptRepairSrc).toMatch(/SET paid_sessions = CASE/)
+    expect(overpayReceiptRepairSrc).toMatch(/datafix\.overpayItemReceiptBackfill/)
+  })
+
+  test('0087 为退款 receipt 补负数营业额子分配并清空全退单分配状态', () => {
+    expect(refundAllocationMirrorSrc).toMatch(/_0087_refund_allocation_targets/)
+    expect(refundAllocationMirrorSrc).toMatch(/sop\.change_type = '退款'[\s\S]{0,120}sop\.status = '已支付'/)
+    expect(refundAllocationMirrorSrc).toMatch(/so\.sale_order_type IN \('销售单','转换单'\)/)
+    expect(refundAllocationMirrorSrc).toMatch(/so\.legacy_source IS DISTINCT FROM 'workfine'/)
+    expect(refundAllocationMirrorSrc).toMatch(/JOIN sale_payment_item_allocations spia[\s\S]{0,180}spia\.allocated_amount::numeric > 0/)
+    expect(refundAllocationMirrorSrc).toMatch(/other_negative_total_cents/)
+    expect(refundAllocationMirrorSrc).toMatch(/ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false[\s\S]{0,220}DO UPDATE SET/)
+    expect(refundAllocationMirrorSrc).toMatch(/RAISE EXCEPTION '0087 refund allocation mirror backfill left nonzero full-refund allocation net'/)
+    expect(refundAllocationMirrorSrc).toMatch(/UPDATE sale_order_payments sop[\s\S]{0,120}SET allocation_status = NULL/)
+    expect(refundAllocationMirrorSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = NULL/)
+    expect(refundAllocationMirrorSrc).toMatch(/datafix\.refundAllocationMirrorBackfill/)
+    expect(refundAllocationMirrorSrc).toMatch(/datafix\.fullRefundAllocationStatusClear/)
   })
 })

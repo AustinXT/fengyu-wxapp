@@ -140,6 +140,8 @@ export interface CascadeRefundItem {
   refundAmount: number | null
   /** 该 item 本次是否零消费全退（控制通道 2 服务提成门控 + 通道 3 整单券判定；通道 1 不再依赖） */
   isFullItemRefund: boolean
+  /** 多收余数退款哨兵行；也可由 saleItemId === 'OVERPAY' 判定 */
+  isOverpay?: boolean
 }
 
 export interface CascadeRefundParams {
@@ -162,6 +164,92 @@ export interface CascadeRefundResult {
   revokedShareGiftCoupons: number
   reversedPoints: number
   rolledBackPickups: number
+}
+
+function isOverpayRefundItem(it: CascadeRefundItem): boolean {
+  return it.saleItemId === 'OVERPAY' || it.isOverpay === true
+}
+
+function addRefundCents(map: Map<string, number>, saleItemId: string, cents: number): void {
+  if (!saleItemId || cents <= 0) return
+  map.set(saleItemId, (map.get(saleItemId) ?? 0) + cents)
+}
+
+function allocateCentsByWeight(totalCents: number, rows: Array<{ saleItemId: string; weightCents: number }>): Array<{ saleItemId: string; cents: number }> {
+  const weightTotal = rows.reduce((s, r) => s + r.weightCents, 0)
+  const cappedTotal = Math.min(totalCents, weightTotal)
+  if (cappedTotal <= 0 || rows.length === 0) return []
+  const parts = rows.map((r) => {
+    const exact = (cappedTotal * r.weightCents) / weightTotal
+    const cents = Math.floor(exact)
+    return { saleItemId: r.saleItemId, cents, frac: exact - cents }
+  })
+  const rem = cappedTotal - parts.reduce((s, p) => s + p.cents, 0)
+  parts.sort((a, b) => b.frac - a.frac || a.saleItemId.localeCompare(b.saleItemId))
+  for (let i = 0; i < rem; i += 1) parts[i].cents += 1
+  return parts.filter((p) => p.cents > 0).map((p) => ({ saleItemId: p.saleItemId, cents: p.cents }))
+}
+
+async function buildReceiptRefundItems(
+  tx: TransactionLike,
+  saleOrderId: string,
+  refundPaymentId: number,
+  effItems: CascadeRefundItem[],
+): Promise<Array<{ saleItemId: string; refundAmount: number }>> {
+  const refundCentsByItem = new Map<string, number>()
+  let overpayCents = 0
+  for (const it of effItems) {
+    const cents = Math.round(Number(it.refundAmount || 0) * 100)
+    if (cents <= 0) continue
+    if (isOverpayRefundItem(it)) {
+      overpayCents += cents
+    } else {
+      addRefundCents(refundCentsByItem, it.saleItemId, cents)
+    }
+  }
+
+  if (overpayCents > 0) {
+    const residualRows = (await tx.execute(sql`
+      SELECT si.sale_item_id,
+             COALESCE(SUM(CASE
+               WHEN sop.status = '已支付'
+                AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+               THEN spir.amount::numeric ELSE 0 END), 0) AS positive_amount,
+             COALESCE(ABS(SUM(CASE
+               WHEN sop.status = '已支付'
+                AND sop.change_type = '退款'
+                AND spir.sale_payment_id IS DISTINCT FROM ${refundPaymentId}
+               THEN spir.amount::numeric ELSE 0 END)), 0) AS prior_refund_amount
+        FROM sale_items si
+        LEFT JOIN sale_payment_item_receipts spir
+          ON spir.sale_order_id = si.sale_order_id
+         AND spir.sale_item_id = si.sale_item_id
+        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+       WHERE si.sale_order_id = ${saleOrderId}
+         AND si.item_direction = '购买'
+       GROUP BY si.sale_item_id
+       ORDER BY si.sale_item_id
+    `)) as unknown as Array<{ sale_item_id: string; positive_amount: string; prior_refund_amount: string }>
+    const candidates = residualRows
+      .map((r) => {
+        const positiveCents = Math.round(Number(r.positive_amount || 0) * 100)
+        const priorRefundCents = Math.round(Number(r.prior_refund_amount || 0) * 100)
+        const samePaymentRealRefundCents = refundCentsByItem.get(r.sale_item_id) ?? 0
+        return {
+          saleItemId: r.sale_item_id,
+          weightCents: Math.max(0, positiveCents - priorRefundCents - samePaymentRealRefundCents),
+        }
+      })
+      .filter((r) => r.weightCents > 0)
+    for (const part of allocateCentsByWeight(overpayCents, candidates)) {
+      addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
+    }
+  }
+
+  return Array.from(refundCentsByItem.entries()).map(([saleItemId, cents]) => ({
+    saleItemId,
+    refundAmount: cents / 100,
+  }))
 }
 
 export async function cascadeRefund(
@@ -193,10 +281,12 @@ export async function cascadeRefund(
 
   // ── 1) receipt + sale_payment_item_allocations 记负数冲销（销售提成）───────────
   // 先为被退 item 写负数 receipt，确保 sale_items.received / paid_sessions 可按净额重算。
+  // OVERPAY 是订单级哨兵，不触发其它级联；在本通道按正向 receipt 残留映射回真实 item。
   // 仅当该 item 有原正向子分配时，才按原 (employee, role) 权重生成负数子分配；无原正向则不生成赤字分配。
   let voidedAllocations = 0
   let refundAllocatedCents = 0
-  for (const it of effItems) {
+  const receiptRefundItems = await buildReceiptRefundItems(tx, saleOrderId, refundPaymentId, effItems)
+  for (const it of receiptRefundItems) {
     const refundAmt = Number(it.refundAmount || 0)
     if (refundAmt <= 0) continue
     const itemRows = (await tx.execute(sql`

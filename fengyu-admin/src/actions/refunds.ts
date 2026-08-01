@@ -994,17 +994,18 @@ export const approveRefund = withPermission(
       const sessionCount = pre.payment.sessionCount ?? null
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
-      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean }> = []
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean; isOverpay?: boolean }> = []
       let cascadeWholeOrder = false
       try {
         const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
         if (noteObj && Array.isArray(noteObj.items)) {
           cascadeItems = noteObj.items.map(
-            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean }) => ({
+            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean; isOverpay?: boolean }) => ({
               saleItemId: it.refSaleItemId,
               sessionCount: it.quantity,
               refundAmount: it.refundAmount ?? null,
               isFullItemRefund: !!it.isFullItemRefund,
+              isOverpay: it.isOverpay === true,
             }),
           )
           cascadeWholeOrder = !!noteObj.isWholeOrderRefund

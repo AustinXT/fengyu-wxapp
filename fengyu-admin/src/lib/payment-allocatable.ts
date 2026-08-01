@@ -256,25 +256,17 @@ export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: str
 
 export async function reconcileAllocationStatusAfterRefund(tx: AdminTx, saleOrderId: string): Promise<void> {
   await tx.execute(sql`
-    WITH full_refund_without_alloc AS (
+    WITH full_refund_zero_net AS (
       SELECT so.sale_order_id
         FROM sale_orders so
        WHERE so.sale_order_id = ${saleOrderId}
          AND GREATEST(COALESCE(so.received::numeric, 0) - COALESCE(so.refunded_amount::numeric, 0), 0) <= 0.01
-         AND NOT EXISTS (
-           SELECT 1
-             FROM sale_payment_item_receipts spir
-             JOIN sale_payment_item_allocations spia
-               ON spia.sale_payment_item_receipt_id = spir.id
-              AND spia.is_void = false
-            WHERE spir.sale_order_id = so.sale_order_id
-         )
     )
     UPDATE sale_order_payments p
        SET allocation_status = NULL
      WHERE p.sale_order_id = ${saleOrderId}
        AND p.allocation_status IS NOT NULL
-       AND EXISTS (SELECT 1 FROM full_refund_without_alloc)
+       AND EXISTS (SELECT 1 FROM full_refund_zero_net)
   `)
   await tx.execute(sql`
     WITH needs_allocation AS (
