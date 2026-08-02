@@ -6,6 +6,7 @@
     <van-tab name="待审批" title="待审批" />
     <van-tab name="已支付" title="已支付" />
     <van-tab name="已完成" title="已完成" />
+    <van-tab name="已退款" title="已退款" />
     <van-tab name="支付失败" title="支付失败" />
     <van-tab name="已关闭" title="已关闭" />
   </van-tabs>
