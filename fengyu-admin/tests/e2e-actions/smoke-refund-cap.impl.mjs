@@ -15,8 +15,10 @@
  *   sale_item：疗程卡 session_count=10 / remaining=10 / unit_real_price=100 / sale_amount=1000
  *   订单 received=200（仅付 200），payments 净额=200 → refundCap=200
  *
- * 断言：整卡全退（refundQuantity=10，整卡值 1000 > 净已收 200）→ 成功，
- *   finalRefundAmount 截断到 200、流水 amount=-200 待审批、note 作废整卡(quantity=10)、note item refundAmount 缩到 200。
+ * 断言：
+ *   1. 整卡全退（refundQuantity=10，整卡值 1000 > 净已收 200）→ 成功，
+ *      finalRefundAmount 截断到 200、流水 amount=-200 待审批、note 作废整卡(quantity=10)、note item refundAmount 缩到 200。
+ *   2. 券全额抵扣项目（unit_real_price=0）→ 成功创建 amount=0 待审批退款，审批后 paid_sessions=0。
  */
 import path from 'node:path'
 
@@ -51,10 +53,13 @@ process.env.TEST_ADMIN_EMP_ID = TEST_MANAGER_EMP_ID
 
 const ORDER_ID = `${NS}_REFCAP`
 const ITEM_ID = `${ORDER_ID}_I1`
+const ZERO_ORDER_ID = `${NS}_REFCAP_ZERO`
+const ZERO_ITEM_ID = `${ZERO_ORDER_ID}_I1`
 const SALE_AMOUNT = 1000 // 疗程卡 10 次 × 单次 100
 const RECEIVED = 200 // 仅付 200（部分支付）；净已收 = refundCap = 200
 const UNIT_REAL_PRICE = 100
 const SESSION_COUNT = 10
+const ZERO_SESSION_COUNT = 5
 
 const pool = getPool()
 const q = (sql, params) => pool.query(sql, params)
@@ -114,6 +119,48 @@ async function seedPartialPaidOrder() {
   }
 }
 
+/** 构造券全额抵扣订单：有疗程次数，现金实退为 0 */
+async function seedZeroCashOrder() {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(
+      `INSERT INTO sale_orders (
+         sale_order_id, status, sale_order_type, market_name, store_id,
+         sale_order_datetime, client_user_id, client_phone, customer_name,
+         total_amount, prepaid_card_amount, payable_amount, received, coupon_discount,
+         payment_method, opened_by, allocation_status, paid_at
+       )
+       VALUES ($1, '已支付'::order_status, '销售单'::sale_order_type, $2, $3,
+               NOW(), $4, $5, $6,
+               500, 0, 0, 0, 500,
+               '无'::payment_method, $7, '待分配'::allocation_status, NOW())`,
+      [ZERO_ORDER_ID, `${NS}_市场`, TEST_STORE_ID, TEST_CLIENT_USER_ID, TEST_CLIENT_PHONE, `${NS}_顾客`, TEST_MANAGER_EMP_ID],
+    )
+    await client.query(
+      `INSERT INTO sale_items (
+         sale_item_id, sale_order_id, store_id, item_direction,
+         sku_id, product_name, product_type,
+         session_count, remaining_sessions, paid_sessions,
+         unit_price, quantity, unit_real_price, sale_amount, received,
+         is_experience
+       )
+       VALUES ($1, $2, $3, '购买'::item_direction,
+               NULL, $4, '疗程卡'::product_type,
+               $5, $5, $5,
+               100, 1, 0, 0, 0,
+               false)`,
+      [ZERO_ITEM_ID, ZERO_ORDER_ID, TEST_STORE_ID, `${NS}_券抵疗程卡`, ZERO_SESSION_COUNT],
+    )
+    await client.query('COMMIT')
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
 let pass = false
 let exitCode = 1
 
@@ -125,6 +172,7 @@ async function main() {
   await createTestStaff()
   await createTestClient({ pointsBalance: 0 })
   await seedPartialPaidOrder()
+  await seedZeroCashOrder()
   console.log(`  ✓ fixtures ready: order=${ORDER_ID} 部分支付 sale_amount=${SALE_AMOUNT} received=${RECEIVED} → refundCap=${RECEIVED}`)
   console.log(`    疗程卡 ${SESSION_COUNT} 次全在, 单次退款额 unit_real_price=${UNIT_REAL_PRICE}（全退 ${UNIT_REAL_PRICE * SESSION_COUNT} > 净已收 ${RECEIVED}）`)
 
@@ -178,6 +226,52 @@ async function main() {
     }
   }
 
+  // ===== 券全额抵扣订单：允许 0 元退项扣次数 =====
+  const zeroRes = await refundsMod.createRefund({
+    refSaleOrderId: ZERO_ORDER_ID,
+    items: [{ saleItemId: ZERO_ITEM_ID, refundQuantity: ZERO_SESSION_COUNT }],
+    refundReason: 'e2e 0 元退项扣次数',
+    applyOverdraftDeduction: false,
+  })
+  console.log(`  0 元退项: ${JSON.stringify(zeroRes)}`)
+  if (!zeroRes.success) {
+    errors.push(`[0元退项] createRefund 应成功，实际 ${JSON.stringify(zeroRes.error)}`)
+  } else {
+    if (Number(zeroRes.data.finalRefundAmount) !== 0) {
+      errors.push(`[0元退项] finalRefundAmount 应=0，实际=${zeroRes.data.finalRefundAmount}`)
+    }
+    const rowRes = await q(
+      `SELECT id, amount::numeric AS amt, status, note FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '退款' ORDER BY id DESC LIMIT 1`,
+      [ZERO_ORDER_ID],
+    )
+    const zeroRow = rowRes.rows[0]
+    if (!zeroRow) {
+      errors.push(`[0元退项] 应写 1 条退款流水`)
+    } else {
+      if (Number(zeroRow.amt) !== 0) errors.push(`[0元退项] 退款流水 amount 应=0，实际=${zeroRow.amt}`)
+      if (zeroRow.status !== '待审批') errors.push(`[0元退项] 退款流水 status 应=待审批，实际=${zeroRow.status}`)
+      const note = JSON.parse(zeroRow.note || '{}')
+      if (!note.items?.[0]?.isFullItemRefund) errors.push(`[0元退项] note.items[0].isFullItemRefund 应=true`)
+
+      const approved = await refundsMod.approveRefund(zeroRow.id)
+      if (!approved.success) {
+        errors.push(`[0元退项] approveRefund 应成功，实际 ${JSON.stringify(approved.error)}`)
+      } else {
+        const state = await q(
+          `SELECT so.refunded_amount, so.status, si.paid_sessions
+             FROM sale_orders so
+             JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+            WHERE so.sale_order_id = $1`,
+          [ZERO_ORDER_ID],
+        )
+        if (Number(state.rows[0]?.refunded_amount) !== 0) errors.push(`[0元退项] refunded_amount 应=0，实际=${state.rows[0]?.refunded_amount}`)
+        if (Number(state.rows[0]?.paid_sessions) !== 0) errors.push(`[0元退项] paid_sessions 应=0，实际=${state.rows[0]?.paid_sessions}`)
+        if (state.rows[0]?.status !== '已退款') errors.push(`[0元退项] 订单状态应=已退款，实际=${state.rows[0]?.status}`)
+        console.log(`  ✓ 0 元退项创建并审批：流水 amount=0、paid_sessions=0、refunded_amount=0`)
+      }
+    }
+  }
+
   if (errors.length) {
     console.log(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) console.log(`    - ${e}`)
@@ -185,7 +279,7 @@ async function main() {
   }
   pass = true
   exitCode = 0
-  console.log(`  ✅ PASS — 部分支付疗程卡整卡全退：退款额截断到净已收、作废整卡`)
+  console.log(`  ✅ PASS — 部分支付疗程卡截断 + 0 元退项扣次数`)
 }
 
 try {

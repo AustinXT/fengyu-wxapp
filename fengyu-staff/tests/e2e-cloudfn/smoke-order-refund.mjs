@@ -12,7 +12,9 @@
  *     5. 另一张销售单 createRefund → rejectRefund → status: 待审批 → 已作废
  *     6. sale_orders.refunded_amount 不变
  *   C 路径 — 超净已收防护（P2）：
- *     7. 部分支付单（received=200、次数全在）退全额 800 > 可退余额 → INVALID_STATE 被拒
+ *     7. 部分支付单（received=200、次数全在）退全额 800 > 可退余额 → 截断到 200 待审批
+ *   D 路径 — 0 元退项：
+ *     8. 券全额抵扣疗程卡 createRefund(amount=0) → approveRefund → paid_sessions=0
  */
 import './setup.mjs'
 import {
@@ -218,7 +220,80 @@ async function main() {
     rec(`  ✓ createRefund C: 超净已收(200) 整卡退 800 → 截断到 ${finalC} — paymentId=${refC.data.paymentId}`)
   }
 
-  // ─── D. customer.refundHistory — 复用 A(已通过) + B(已作废) 的 fixture ───
+  // ─── D. 0 元退项：券全额抵扣项目只扣次数，不产生现金退款 ───
+  const orderD = `${NS}_RFD_D_ZERO`
+  await createTestSaleOrder({
+    saleOrderId: orderD,
+    clientUserId: TEST_CLIENT_USER_ID,
+    productName: `${NS}_券抵疗程卡`,
+    productType: '疗程卡',
+    quantity: 1,
+    sessionCount: 5,
+    totalAmount: 500,
+    status: '已支付',
+    salesCategory: '他销自耗',
+  })
+  await pgQuery(
+    `UPDATE sale_orders
+        SET total_amount = 500, payable_amount = 0, received = 0, coupon_discount = 500
+      WHERE sale_order_id = $1`,
+    [orderD],
+  )
+  await pgQuery(
+    `UPDATE sale_items
+        SET unit_price = 100, unit_real_price = 0, sale_amount = 0, received = 0, paid_sessions = 5
+      WHERE sale_order_id = $1`,
+    [orderD],
+  )
+  const dItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderD])
+  const itemD = dItems[0].sale_item_id
+  const refD = await invokeStaffApi('order.createRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: orderD,
+    items: [{ saleItemId: itemD, refundQuantity: 5 }],
+    refundReason: 'e2e_refund_D_zero_cash',
+  })
+  if (refD.code !== 0) {
+    errors.push(`D.0 元退项 createRefund 应成功，实际 code=${refD.code} msg=${refD.message}`)
+  } else {
+    if (Number(refD.data.finalRefundAmount) !== 0) {
+      errors.push(`D.finalRefundAmount 应=0，实际=${refD.data.finalRefundAmount}`)
+    }
+    const sopD = await pgQuery(
+      `SELECT status, amount, note FROM sale_order_payments WHERE id = $1`,
+      [refD.data.paymentId],
+    )
+    if (sopD.length !== 1) {
+      errors.push(`D.payments 应=1 行`)
+    } else {
+      if (sopD[0].status !== '待审批') errors.push(`D.status 应='待审批'，实际='${sopD[0].status}'`)
+      if (Number(sopD[0].amount) !== 0) errors.push(`D.amount 应=0，实际=${sopD[0].amount}`)
+      const noteD = JSON.parse(sopD[0].note || '{}')
+      if (!noteD.items?.[0]?.isFullItemRefund) errors.push(`D.note.items[0].isFullItemRefund 应=true`)
+    }
+    const aprD = await invokeStaffApi('order.approveRefund', {
+      _testOpenid: TEST_MANAGER_OPENID,
+      paymentId: refD.data.paymentId,
+      auditRemark: 'e2e_zero_cash_approve',
+    })
+    if (aprD.code !== 0) {
+      errors.push(`D.0 元退项 approveRefund 应成功，实际 code=${aprD.code} msg=${aprD.message}`)
+    } else {
+      const dState = await pgQuery(
+        `SELECT so.refunded_amount, so.status, si.paid_sessions
+           FROM sale_orders so
+           JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+          WHERE so.sale_order_id = $1`,
+        [orderD],
+      )
+      if (Number(dState[0]?.refunded_amount) !== 0) errors.push(`D.refunded_amount 应=0，实际=${dState[0]?.refunded_amount}`)
+      if (Number(dState[0]?.paid_sessions) !== 0) errors.push(`D.paid_sessions 应=0，实际=${dState[0]?.paid_sessions}`)
+      if (dState[0]?.status !== '已退款') errors.push(`D.order.status 应='已退款'，实际='${dState[0]?.status}'`)
+      rec(`  ✓ create+approveRefund D: 0 元退项 amount=0 / paid_sessions=0 / refunded_amount=0`)
+    }
+  }
+
+  // ─── E. customer.refundHistory — 复用 A(已通过) + B(已作废) 的 fixture ───
   // refundHistory 返回扁平数组（routes/customer.js:963 [...refunds, ...conversions]），每行 type='退款' 或 '转换单'
   const histR = await invokeStaffApi('customer.refundHistory', {
     _testOpenid: TEST_MANAGER_OPENID,

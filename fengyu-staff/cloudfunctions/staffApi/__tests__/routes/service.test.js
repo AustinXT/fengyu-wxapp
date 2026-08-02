@@ -63,6 +63,69 @@ describe('service.create', () => {
     expect(pg.transaction).toHaveBeenCalled()
   })
 
+  test('创建服务单时持久化自定义备注并写入备注审计摘要', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      assignedStaffWfId: 'emp-beautician-001',
+      remark: '顾客要求手法轻柔',
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001',
+        session_count: 10,
+        remaining_sessions: 10,
+        paid_sessions: 10,
+        unit_real_price: '100',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: 'client-001',
+        client_phone: '138',
+        has_pending_refund: false,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+
+    let txClient
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      txClient = {
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && sql.includes('SELECT si.unit_real_price')) {
+            return { rows: [{ unit_real_price: '100', is_shengmei: false, sales_category: '自销自耗' }], rowCount: 1 }
+          }
+          if (typeof sql === 'string' && sql.includes('SELECT EXISTS')) {
+            return { rows: [{ has_deposit: false }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(txClient)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    const insertServiceOrderCall = txClient.query.mock.calls.find(c =>
+      typeof c[0] === 'string' && c[0].includes('INSERT INTO service_orders'))
+    expect(insertServiceOrderCall).toBeDefined()
+    expect(insertServiceOrderCall[1][6]).toBe('顾客要求手法轻柔')
+
+    const opLogCall = txClient.query.mock.calls.find(c =>
+      typeof c[0] === 'string' && c[0].includes('INSERT INTO operation_logs'))
+    expect(opLogCall).toBeDefined()
+    const detail = JSON.parse(opLogCall[1][8])
+    expect(detail.remarkPresent).toBe(true)
+    expect(detail.remarkLength).toBe(8)
+    expect(detail.remark).toBeUndefined()
+  })
+
   test('美容师为自己创建服务单（权限 happy path）', async () => {
     const ctx = createBeauticianCtx({
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
