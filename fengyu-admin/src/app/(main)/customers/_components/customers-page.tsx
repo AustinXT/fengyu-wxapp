@@ -108,6 +108,7 @@ export default function CustomersPage({
   const [creating, setCreating] = useState(false)
   const [newPhone, setNewPhone] = useState("")
   const [newName, setNewName] = useState("")
+  const [newBoundStoreId, setNewBoundStoreId] = useState("")
 
   async function handleCreate() {
     if (!newPhone.trim()) {
@@ -124,6 +125,7 @@ export default function CustomersPage({
       const result = await createCustomer({
         phone: newPhone.trim(),
         name: newName.trim(),
+        boundStoreId: newBoundStoreId || null,
       })
       if (!result.success) {
         toast.error(result.message)
@@ -133,6 +135,7 @@ export default function CustomersPage({
       setDialogOpen(false)
       setNewPhone("")
       setNewName("")
+      setNewBoundStoreId("")
       router.refresh()
     } catch (err) {
       toast.error(actionErrorMessage(err, "创建失败，请稍后重试"))
@@ -399,6 +402,21 @@ export default function CustomersPage({
               onChange={(e) => setNewName(e.target.value)}
               placeholder="请输入姓名"
             />
+          </div>
+          <div>
+            <label className="text-sm text-[#999999]">绑定门店</label>
+            <Select
+              className="mt-1"
+              value={newBoundStoreId}
+              onChange={(e) => setNewBoundStoreId(e.target.value)}
+            >
+              <option value="">暂不绑定门店</option>
+              {stores.map((store) => (
+                <option key={store.storeId} value={store.storeId}>
+                  {store.storeName}
+                </option>
+              ))}
+            </Select>
           </div>
         </div>
         <DialogFooter>

@@ -513,13 +513,13 @@ export function hasPermission(session: AuthSession, action: string): boolean {
 /**
  * 寄存单审批硬规则。
  *
- * 权限矩阵只控制入口动作；总部限定不能只靠 sale_order:deposit_approve，
- * 因为 manager/finance 可存在市场或门店 scope。
+ * 权限矩阵只控制入口动作；寄存单审批额外限定为总部/市场层级，
+ * 因为 manager/finance 也可能存在门店 scope。
  */
 export function isDepositOrderApprover(session: AuthSession): boolean {
   return session.roles.some((role) => (
     role.role === 'admin' ||
-    ((role.role === 'manager' || role.role === 'finance') && role.scopeType === '总部')
+    ((role.role === 'manager' || role.role === 'finance') && ['总部', '市场'].includes(role.scopeType))
   ))
 }
 

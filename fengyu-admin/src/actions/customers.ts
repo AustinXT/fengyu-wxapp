@@ -849,7 +849,6 @@ export const updateCustomer = withPermission(
     wellnessPreference: string | null
     notes: string | null
     promoterEmployeeId: string | null
-    boundStoreId: string | null
     boundEmployeeId: string | null
     /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
     isCrossStoreTemp: boolean
@@ -857,6 +856,10 @@ export const updateCustomer = withPermission(
     /** 乐观锁：提交时携带的 updated_at */
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
+  if (Object.prototype.hasOwnProperty.call(data, 'boundStoreId')) {
+    return { success: false, message: '绑定门店仅允许新增顾客时设置，请通过顾客转店/解绑流程处理' }
+  }
+
   // 服务端输入校验
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }

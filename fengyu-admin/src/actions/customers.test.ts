@@ -126,6 +126,15 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  it('boundStoreId 只允许新增时设置 → 编辑拒绝，不调用 DB', async () => {
+    const result = await updateCustomer('user-1', { boundStoreId: 'store-2' } as any)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('绑定门店仅允许新增顾客时设置')
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('手机号为 null → 跳过格式校验，进入 DB 更新', async () => {
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
