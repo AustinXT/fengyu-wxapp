@@ -14,6 +14,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { nowTs } from '@/lib/db-time'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { generateInventoryDocNo } from './doc-no'
 import type {
   InventoryItemDto,
@@ -99,6 +100,14 @@ export const listTransferOrders = withPermission(
         or(
           eq(inventoryTransferOrders.storeId, filters.storeId),
           eq(inventoryTransferOrders.counterpartStoreId, filters.storeId),
+        ),
+      )
+    }
+    if (filters.marketId) {
+      conditions.push(
+        or(
+          storeInMarketCondition(inventoryTransferOrders.storeId, filters.marketId),
+          storeInMarketCondition(inventoryTransferOrders.counterpartStoreId, filters.marketId),
         ),
       )
     }

@@ -5,6 +5,7 @@ import { ApiError } from '@/lib/api-error'
 import { nowTs } from '@/lib/db-time'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { hasPermission, isInScope, scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { stores } from '@db/org'
@@ -407,6 +408,7 @@ export const listInventoryStocks = withPermission(
   async (
     session,
     filters: {
+      marketId?: string
       storeId?: string
       skuId?: string
       keyword?: string
@@ -423,6 +425,7 @@ export const listInventoryStocks = withPermission(
     const conditions: (SQL | undefined)[] = [
       scopeCondition(session, storeInventoryStocks.storeId),
     ]
+    if (filters.marketId) conditions.push(storeInMarketCondition(storeInventoryStocks.storeId, filters.marketId))
     if (filters.storeId) conditions.push(eq(storeInventoryStocks.storeId, filters.storeId))
     if (filters.skuId) conditions.push(eq(storeInventoryStocks.skuId, filters.skuId))
     if (filters.onlyPositive) conditions.push(sql`${storeInventoryStocks.quantityOnHand} > 0`)
@@ -475,6 +478,7 @@ export const exportInventoryStocks = withPermission(
     const conditions: (SQL | undefined)[] = [
       scopeCondition(session, storeInventoryStocks.storeId),
     ]
+    if (params.marketId) conditions.push(storeInMarketCondition(storeInventoryStocks.storeId, params.marketId))
     if (params.storeId) conditions.push(eq(storeInventoryStocks.storeId, params.storeId))
     if (params.skuId) conditions.push(eq(storeInventoryStocks.skuId, params.skuId))
     if (params.onlyPositive === '1') conditions.push(sql`${storeInventoryStocks.quantityOnHand} > 0`)

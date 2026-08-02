@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
-import type { Customer, OrgNode, Store } from '@/lib/types'
+import type { Customer, Store } from '@/lib/types'
+import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 
 const mockRefresh = vi.fn()
 vi.mock('next/navigation', () => ({
@@ -72,7 +73,17 @@ const stores: Store[] = [
   },
 ]
 
-const orgNodes: OrgNode[] = []
+const filterOptions: MarketStoreFilterOptions = {
+  markets: [{ marketId: 'market-1', marketName: '南昌市场' }],
+  stores: [
+    {
+      storeId: 'store-1',
+      storeName: '南昌旗舰店',
+      marketId: 'market-1',
+      marketName: '南昌市场',
+    },
+  ],
+}
 const customers: Customer[] = []
 
 function renderPage() {
@@ -80,7 +91,7 @@ function renderPage() {
     <CustomersPage
       customers={customers}
       stores={stores}
-      orgNodes={orgNodes}
+      filterOptions={filterOptions}
       total={0}
     />,
   )

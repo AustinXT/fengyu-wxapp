@@ -1,8 +1,7 @@
 import { Suspense } from 'react'
 import { getCustomersPaginated } from '@/actions/customers'
 import { parseCustomerFilters } from '@/lib/list-filters'
-import { getStores } from '@/actions/stores'
-import { getOrgNodes } from '@/actions/org'
+import { getMarketStoreFilterOptions, getStores } from '@/actions/stores'
 import CustomersPageClient from './_components/customers-page'
 
 export const dynamic = 'force-dynamic'
@@ -14,15 +13,15 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: customers, total }, stores, orgNodes] = await Promise.all([
+  const [{ data: customers, total }, stores, filterOptions] = await Promise.all([
     getCustomersPaginated(parseCustomerFilters(params)),
     getStores(),
-    getOrgNodes(),
+    getMarketStoreFilterOptions(),
   ])
 
   return (
     <Suspense>
-      <CustomersPageClient customers={customers} stores={stores} orgNodes={orgNodes} total={total} />
+      <CustomersPageClient customers={customers} stores={stores} filterOptions={filterOptions} total={total} />
     </Suspense>
   )
 }

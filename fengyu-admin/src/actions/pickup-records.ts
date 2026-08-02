@@ -17,6 +17,7 @@ import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { revalidatePath } from 'next/cache'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 export interface AdminPickupRecord {
   id: number
@@ -40,6 +41,7 @@ export interface AdminPickupRecord {
 }
 
 export interface PickupRecordFilters {
+  marketId?: string
   storeId?: string
   /** 搜索：saleItemId / 顾客姓名 / 员工姓名 / SKU 名称 */
   search?: string
@@ -191,9 +193,8 @@ export const getPickupRecordsPaginated = withPermission(
     scopeCondition(session, pickupRecords.storeId),
   ]
 
-  if (filters.storeId) {
-    conditions.push(eq(pickupRecords.storeId, filters.storeId))
-  }
+  if (filters.marketId) conditions.push(storeInMarketCondition(pickupRecords.storeId, filters.marketId))
+  if (filters.storeId) conditions.push(eq(pickupRecords.storeId, filters.storeId))
   if (filters.search) {
     const escaped = filters.search.replace(/[%_]/g, '\\$&')
     const pattern = `%${escaped}%`

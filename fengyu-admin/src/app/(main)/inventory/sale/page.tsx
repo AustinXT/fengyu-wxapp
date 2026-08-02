@@ -4,7 +4,7 @@ import {
   createSaleOrder,
   deleteSaleOrder,
 } from '@/actions/inventory/sale'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import InventoryListView from '../_components/inventory-list-view'
@@ -18,8 +18,9 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data, total }, stores, session] = await Promise.all([
+  const [{ data, total }, filterOptions, session] = await Promise.all([
     listSaleOrders({
+      marketId: params.market,
       storeId: params.store,
       docSubtype: params.subtype,
       status: params.status as '草稿' | '已完成' | '已取消' | undefined,
@@ -29,7 +30,7 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
+    getMarketStoreFilterOptions(),
     getSession(),
   ])
 
@@ -44,7 +45,7 @@ export default async function Page({
           title="销售出库（销售出库 / 顾客退货）"
           rows={data}
           total={total}
-          stores={stores.map((s) => ({ storeId: s.storeId, storeName: s.storeName }))}
+          filterOptions={filterOptions}
           canCreate={canCreate}
           canDelete={canDelete}
           onCreate={createSaleOrder}

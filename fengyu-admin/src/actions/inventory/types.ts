@@ -38,6 +38,7 @@ export interface InventoryItemDto {
 
 /** 列表筛选公共结构 */
 export interface InventoryListFilters {
+  marketId?: string
   storeId?: string
   docSubtype?: string
   status?: InventoryDocStatus

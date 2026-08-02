@@ -33,6 +33,7 @@ import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
@@ -411,6 +412,7 @@ export const getOrders = withPermission(
 export interface OrderFilters {
   status?: string
   type?: string
+  marketId?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
@@ -444,6 +446,9 @@ function buildOrderConditions(
   }
   if (filters.type) {
     conditions.push(eq(saleOrders.saleOrderType, filters.type as typeof saleOrders.saleOrderType.enumValues[number]))
+  }
+  if (filters.marketId) {
+    conditions.push(storeInMarketCondition(saleOrders.storeId, filters.marketId))
   }
   if (filters.storeId) {
     conditions.push(eq(saleOrders.storeId, filters.storeId))

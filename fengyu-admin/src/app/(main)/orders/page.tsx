@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { getOrdersPaginated } from '@/actions/orders'
 import { parseOrderFilters } from '@/lib/list-filters'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import OrdersPageClient from './_components/orders-page'
@@ -17,18 +17,18 @@ export default async function Page({
   const session = await getSession()
   const canCreateOrder = !!(session && hasPermission(session, 'sale_order:create'))
 
-  const [{ data: orders, total }, stores] = await Promise.all([
+  const [{ data: orders, total }, filterOptions] = await Promise.all([
     getOrdersPaginated({
       ...parseOrderFilters(params),
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
+    getMarketStoreFilterOptions(),
   ])
 
   return (
     <Suspense>
-      <OrdersPageClient orders={orders} stores={stores} total={total} canCreateOrder={canCreateOrder} />
+      <OrdersPageClient orders={orders} filterOptions={filterOptions} total={total} canCreateOrder={canCreateOrder} />
     </Suspense>
   )
 }

@@ -13,6 +13,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { lakalaMerchants } from '@db/lakala'
+import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -62,6 +63,40 @@ export const getStores = withPermission('store:list', async (session): Promise<S
 
   return rows.map(rowToStore)
 })
+
+export const getMarketStoreFilterOptions = withPermission(
+  'store:list',
+  async (session): Promise<MarketStoreFilterOptions> => {
+    const rows = await db
+      .select({
+        storeId: stores.storeId,
+        storeName: stores.storeName,
+        marketId: marketNode.id,
+        marketName: marketNode.name,
+      })
+      .from(stores)
+      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+      .where(scopeCondition(session, stores.storeId))
+      .orderBy(asc(marketNode.name), asc(stores.storeName))
+      .limit(500)
+
+    const marketMap = new Map<string, string>()
+    for (const row of rows) {
+      if (row.marketId && row.marketName) marketMap.set(row.marketId, row.marketName)
+    }
+
+    return {
+      markets: [...marketMap.entries()].map(([marketId, marketName]) => ({ marketId, marketName })),
+      stores: rows.map((row) => ({
+        storeId: row.storeId,
+        storeName: row.storeName,
+        marketId: row.marketId,
+        marketName: row.marketName,
+      })),
+    }
+  },
+)
 
 export const getStoreById = withPermission(
   'store:list',

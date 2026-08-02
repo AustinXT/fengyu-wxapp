@@ -22,6 +22,7 @@ import { pgErrorCode } from '@/lib/pg-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { settleServiceCommissions } from '@/lib/service-commission-settle'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { nowTs } from '@/lib/db-time'
 
 function serializeServiceOrder(r: {
@@ -77,6 +78,7 @@ export const getServiceOrders = withPermission(
 /** 服务单列表筛选参数 */
 export interface ServiceOrderFilters {
   status?: string
+  marketId?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
@@ -98,6 +100,9 @@ function buildServiceOrderConditions(
 
   if (filters.status) {
     conditions.push(eq(serviceOrders.status, filters.status as typeof serviceOrders.status.enumValues[number]))
+  }
+  if (filters.marketId) {
+    conditions.push(storeInMarketCondition(serviceOrders.storeId, filters.marketId))
   }
   if (filters.storeId) {
     conditions.push(eq(serviceOrders.storeId, filters.storeId))

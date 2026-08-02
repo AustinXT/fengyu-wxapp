@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -8,7 +8,8 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import { exportCards, type AdminCard } from "@/actions/cards";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
-import type { Store, OrgNode } from "@/lib/types";
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
+import MarketStoreFilter from "@/components/market-store-filter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -26,8 +27,7 @@ type CardStatusValue = "" | "active" | "exhausted" | "expired";
 
 interface Props {
 	cards: AdminCard[];
-	stores: Store[];
-	orgNodes: OrgNode[];
+	filterOptions: MarketStoreFilterOptions;
 	total: number;
 }
 
@@ -37,7 +37,7 @@ interface Props {
  * 卡包定义：sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
  * 类型徽章：session_count=1 → 单次卡；>=2 → 疗程卡
  */
-export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
+export default function CardsPage({ cards, filterOptions, total }: Props) {
 	const { get, set, setMany } = useUrlFilters();
 	const setFilter = useCallback(
 		(key: string, value: string) => {
@@ -52,18 +52,6 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 	const statusFilter = (get("status") as CardStatusValue) || "";
 	const currentPage = Math.max(1, Number(get("page", "1")) || 1);
 	const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
-
-	// 市场列表
-	const markets = useMemo(() => orgNodes.filter((n) => n.type === "市场" && n.isActive), [orgNodes]);
-
-	// 根据市场级联过滤门店
-	const filteredStores = useMemo(() => {
-		if (!marketFilter) return stores;
-		const storeNodeIds = new Set(
-			orgNodes.filter((n) => n.parentId === marketFilter && n.type === "门店").map((n) => n.id),
-		);
-		return stores.filter((s) => s.orgNodeId && storeNodeIds.has(s.orgNodeId));
-	}, [stores, orgNodes, marketFilter]);
 
 	// 搜索防抖 300ms
 	const [searchInput, setSearchInput] = useState(get("q"));
@@ -233,26 +221,13 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			<Card>
 				<CardContent className="p-4">
 					<div className="flex flex-wrap items-center gap-3">
-						<Select
-							value={marketFilter}
-							onChange={(e) => setMany({ market: e.target.value, store: "", page: "" })}
-							className="w-32"
-						>
-							<option value="">全部市场</option>
-							{markets.map((m) => (
-								<option key={m.id} value={m.id}>
-									{m.name}
-								</option>
-							))}
-						</Select>
-						<Select value={storeFilter} onChange={(e) => setFilter("store", e.target.value)} className="w-40">
-							<option value="">全部门店</option>
-							{filteredStores.map((s) => (
-								<option key={s.storeId} value={s.storeId}>
-									{s.storeName}
-								</option>
-							))}
-						</Select>
+						<MarketStoreFilter
+							options={filterOptions}
+							marketValue={marketFilter}
+							storeValue={storeFilter}
+							onMarketChange={(value) => setMany({ market: value, store: "", page: "" })}
+							onStoreChange={(value) => setFilter("store", value)}
+						/>
 
 						{/* Segmented: 卡类型 */}
 						<div className="flex rounded-md border border-[var(--border)] bg-white p-0.5 text-sm">

@@ -10,6 +10,8 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Pagination } from '@/components/ui/pagination'
 import { Dialog, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Plus, Trash2 } from 'lucide-react'
+import MarketStoreFilter from '@/components/market-store-filter'
+import type { MarketStoreFilterOptions, StoreFilterOption } from '@/lib/market-store-filter-types'
 import type {
   InventoryOrderRow,
   InventoryItemDto,
@@ -31,17 +33,12 @@ function formatDate(d: string | null | undefined) {
   return d.slice(0, 10)
 }
 
-interface Store {
-  storeId: string
-  storeName: string
-}
-
 interface Props {
   category: DocCategory
   title: string
   rows: InventoryOrderRow[]
   total: number
-  stores: Store[]
+  filterOptions: MarketStoreFilterOptions
   canCreate: boolean
   canDelete: boolean
   /** Server Action 包装：createXxxOrder({...}) — 跨 4 模块共享，参数为各自的 *CreateInput，统一收 any */
@@ -55,7 +52,7 @@ export default function InventoryListView({
   title,
   rows,
   total,
-  stores,
+  filterOptions,
   canCreate,
   canDelete,
   onCreate,
@@ -66,6 +63,7 @@ export default function InventoryListView({
   const [, startTransition] = useTransition()
 
   const storeFilter = get('store')
+  const marketFilter = get('market')
   const subtypeFilter = get('subtype')
   const statusFilter = get('status')
   const dateFrom = get('from')
@@ -218,21 +216,14 @@ export default function InventoryListView({
       </div>
 
       <div className="bg-white border border-[var(--border)] rounded-md p-3 flex flex-wrap gap-3 items-end">
-        <div className="flex flex-col gap-1">
-          <span className="text-xs text-[#666666]">门店</span>
-          <Select
-            value={storeFilter || ''}
-            onChange={(e) => setFilter('store', e.target.value)}
-            className="w-40"
-          >
-            <option value="">全部门店</option>
-            {stores.map((s) => (
-              <option key={s.storeId} value={s.storeId}>
-                {s.storeName}
-              </option>
-            ))}
-          </Select>
-        </div>
+        <MarketStoreFilter
+          options={filterOptions}
+          marketValue={marketFilter}
+          storeValue={storeFilter}
+          onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+          onStoreChange={(value) => setFilter('store', value)}
+          withLabels
+        />
 
         {SUBTYPES_BY_CATEGORY[category].length > 0 && (
           <div className="flex flex-col gap-1">
@@ -315,7 +306,7 @@ export default function InventoryListView({
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         category={category}
-        stores={stores}
+        stores={filterOptions.stores}
         onCreate={onCreate}
         onSuccess={() => {
           setCreateOpen(false)
@@ -332,7 +323,7 @@ interface CreateDialogProps {
   open: boolean
   onClose: () => void
   category: DocCategory
-  stores: Store[]
+  stores: StoreFilterOption[]
   onCreate: (input: unknown) => Promise<{ id: string }>
   onSuccess: () => void
 }

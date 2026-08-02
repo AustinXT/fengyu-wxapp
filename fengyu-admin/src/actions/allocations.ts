@@ -14,6 +14,7 @@ import { hasPendingRefund, hasSettledRefundForPayment } from '@/lib/refund-casca
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -264,6 +265,7 @@ export const getPendingPayments = withPermission(
       allocationStatus?: '待分配' | '已分配'
       page?: number
       pageSize?: number
+      marketId?: string
       storeId?: string
       search?: string
       /** 按下单日期（sale_order_datetime）过滤的日期区间，'YYYY-MM-DD' 串；匹配 UI『下单日期』标签，与导出 buildOrderConditions 同口径 */
@@ -325,6 +327,7 @@ export const getPendingPayments = withPermission(
       isAdminScope(session)
         ? undefined
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
+      params.marketId ? storeInMarketCondition(saleOrders.storeId, params.marketId) : undefined,
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
       // 按下单日期过滤（匹配 UI「下单日期」标签；与导出 buildOrderConditions 用 sale_order_datetime 同口径）
       params.dateFrom

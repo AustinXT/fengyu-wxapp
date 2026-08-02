@@ -16,7 +16,9 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { exportAllocationOrders } from "@/actions/orders"
 import { exportAllocationServiceOrders } from "@/actions/services"
 import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate, fmtPercent } from "@/lib/export-xlsx"
-import type { ServiceOrder, Store } from "@/lib/types"
+import type { ServiceOrder } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -56,14 +58,14 @@ function formatDate(dt: string | null | undefined) {
  */
 export default function AllocationsPageClient({
   tab,
-  stores = [],
+  filterOptions,
   payments = [],
   saleTotal = 0,
   serviceOrders = [],
   serviceTotal = 0,
 }: {
   tab: 'sale' | 'service'
-  stores?: Store[]
+  filterOptions: MarketStoreFilterOptions
   payments?: PaymentAllocationRow[]
   saleTotal?: number
   serviceOrders?: ServiceOrder[]
@@ -86,6 +88,7 @@ export default function AllocationsPageClient({
   )
 
   const allocStatus = get("allocStatus")
+  const marketFilter = get("market")
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
@@ -230,18 +233,13 @@ export default function AllocationsPageClient({
               <option value="待分配">待分配</option>
               <option value="已分配">已分配</option>
             </Select>
-            <Select
-              className="w-40"
-              value={storeFilter}
-              onChange={(e) => setFilter("store", e.target.value)}
-            >
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>
-                  {s.storeName}
-                </option>
-              ))}
-            </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => startTransition(() => setMany({ market: value, store: '', page: '' }))}
+              onStoreChange={(value) => setFilter("store", value)}
+            />
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">
                 {tab === 'service' ? '服务日期' : '下单日期'}

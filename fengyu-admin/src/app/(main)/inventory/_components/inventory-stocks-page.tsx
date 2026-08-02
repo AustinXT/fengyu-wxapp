@@ -8,8 +8,10 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { ExportButton } from '@/components/ui/export-button'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
+import MarketStoreFilter from '@/components/market-store-filter'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { exportToXlsx } from '@/lib/export-xlsx'
+import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -20,11 +22,13 @@ function formatDate(v: string | null | undefined) {
 export default function InventoryStocksPage({
   rows,
   total,
+  filterOptions,
   canViewPrice,
   canExport,
 }: {
   rows: StoreInventoryStockRow[]
   total: number
+  filterOptions: MarketStoreFilterOptions
   canViewPrice: boolean
   canExport: boolean
 }) {
@@ -36,6 +40,8 @@ export default function InventoryStocksPage({
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20
+  const marketFilter = get('market')
+  const storeFilter = get('store')
 
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
@@ -46,6 +52,8 @@ export default function InventoryStocksPage({
   const handleExport = useCallback(async () => {
     const { rows: exportRows } = await exportInventoryStocks({
       keyword: get('q') || undefined,
+      marketId: get('market') || undefined,
+      storeId: get('store') || undefined,
     })
     await exportToXlsx({
       filename: '门店库存',
@@ -69,6 +77,11 @@ export default function InventoryStocksPage({
       ],
     })
   }, [canViewPrice, get])
+
+  const handleReset = useCallback(() => {
+    setSearchInput('')
+    setMany({ market: '', store: '', q: '', page: '' })
+  }, [setMany])
 
   const columns: Column<StoreInventoryStockRow>[] = [
     { key: 'storeName', header: '门店', cell: (r) => r.storeName ?? r.storeId },
@@ -122,15 +135,30 @@ export default function InventoryStocksPage({
           <Boxes className="size-5 text-[var(--primary)]" />
           <h1 className="text-xl font-medium">门店库存表</h1>
         </div>
-        <div className="flex items-center gap-2">
+      </div>
+
+      <div className="bg-white border border-[var(--border)] rounded-md p-3 flex flex-wrap gap-3 items-end">
+        <MarketStoreFilter
+          options={filterOptions}
+          marketValue={marketFilter}
+          storeValue={storeFilter}
+          onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+          onStoreChange={(value) => setMany({ store: value, page: '' })}
+          withLabels
+        />
+
+        <div className="flex min-w-[220px] flex-1 flex-col gap-1">
+          <span className="text-xs text-[#666666]">搜索</span>
           <Input
-            className="w-72"
             placeholder="搜索 SKU / 产品 / 批号"
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
           />
+        </div>
+
+        <div className="flex items-center gap-2">
           {canExport && <ExportButton onExport={handleExport} disabled={total === 0} />}
-          <Button variant="outline" onClick={() => setMany({ q: '', page: '' })}>
+          <Button variant="outline" onClick={handleReset}>
             重置
           </Button>
         </div>

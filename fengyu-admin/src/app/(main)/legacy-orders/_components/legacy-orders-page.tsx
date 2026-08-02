@@ -30,6 +30,8 @@ import {
   type LegacyOrderRow,
 } from "@/actions/legacy-orders"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import MarketStoreFilter from "@/components/market-store-filter"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import PullWorkfineDialog from "./pull-workfine-dialog"
@@ -43,11 +45,11 @@ function formatDateTime(dt: string | null | undefined) {
 interface Props {
   orders: LegacyOrderRow[]
   total: number
-  stores: Array<{ storeId: string; storeName: string }>
+  filterOptions: MarketStoreFilterOptions
   canPull?: boolean
 }
 
-export default function LegacyOrdersPageClient({ orders, total, stores, canPull = false }: Props) {
+export default function LegacyOrdersPageClient({ orders, total, filterOptions, canPull = false }: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const [, startTransition] = useTransition()
@@ -232,18 +234,15 @@ export default function LegacyOrdersPageClient({ orders, total, stores, canPull 
                 }
               }}
             />
-            <select
-              className="h-9 rounded-md border border-[var(--border)] bg-white px-3 text-sm"
-              value={get("store")}
-              onChange={(e) => setMany({ store: e.target.value, page: "" })}
-            >
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>
-                  {s.storeName}
-                </option>
-              ))}
-            </select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={get("market")}
+              storeValue={get("store")}
+              onMarketChange={(value) => setMany({ market: value, store: "", page: "" })}
+              onStoreChange={(value) => setMany({ store: value, page: "" })}
+              marketClassName="h-9 w-full"
+              storeClassName="h-9 w-full"
+            />
             <Input
               type="date"
               defaultValue={get("from")}

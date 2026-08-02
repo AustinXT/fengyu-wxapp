@@ -24,7 +24,9 @@ import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
+import type { SaleOrder, OrderStatus, SaleOrderType } from "@/lib/types";
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
+import MarketStoreFilter from "@/components/market-store-filter";
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
@@ -239,12 +241,12 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
  */
 export default function OrdersPageClient({
   orders,
-  stores,
+  filterOptions,
   total,
   canCreateOrder,
 }: {
   orders: SaleOrder[];
-  stores: Store[];
+  filterOptions: MarketStoreFilterOptions;
   total: number;
   canCreateOrder: boolean;
 }) {
@@ -325,6 +327,7 @@ export default function OrdersPageClient({
 
   const statusFilter = get("status");
   const typeFilter = get("type");
+  const marketFilter = get("market");
   const storeFilter = get("store");
   const dateFrom = get("from");
   const dateTo = get("to");
@@ -375,14 +378,13 @@ export default function OrdersPageClient({
                 </option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>
-                  {s.storeName}
-                </option>
-              ))}
-            </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => setMany({ market: value, store: "", page: "" })}
+              onStoreChange={(value) => setFilter("store", value)}
+            />
             <Select
               className="w-40"
               value={paymentMethodFilter}

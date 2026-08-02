@@ -1,7 +1,6 @@
 import { Suspense } from 'react'
 import { getCardTransactionsPaginated } from '@/actions/card-transactions'
-import { getStores } from '@/actions/stores'
-import { getOrgNodes } from '@/actions/org'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import CardTransactionsPageClient from './_components/card-transactions-page'
 
 export const dynamic = 'force-dynamic'
@@ -15,7 +14,7 @@ export default async function Page({
 
   const type = params.type === '充值' || params.type === '扣款' ? params.type : undefined
 
-  const [{ data, total, summary }, stores, orgNodes] = await Promise.all([
+  const [{ data, total, summary }, filterOptions] = await Promise.all([
     getCardTransactionsPaginated({
       marketId: params.market,
       storeId: params.store,
@@ -26,8 +25,7 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
-    getOrgNodes(),
+    getMarketStoreFilterOptions(),
   ])
 
   return (
@@ -36,8 +34,7 @@ export default async function Page({
         transactions={data}
         total={total}
         summary={summary}
-        stores={stores}
-        orgNodes={orgNodes}
+        filterOptions={filterOptions}
       />
     </Suspense>
   )

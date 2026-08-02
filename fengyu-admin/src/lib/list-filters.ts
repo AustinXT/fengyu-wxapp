@@ -16,6 +16,7 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
   return {
     status: params.status,
     type: params.type,
+    marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
@@ -29,6 +30,7 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
 export function parseServiceOrderFilters(params: Record<string, string | undefined>): ServiceOrderFilters {
   return {
     status: params.status,
+    marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
@@ -44,6 +46,7 @@ export function parseServiceOrderFilters(params: Record<string, string | undefin
 export function parseAllocationOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
     status: '已支付',
+    marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
@@ -62,6 +65,7 @@ export function parseAllocationOrderFilters(params: Record<string, string | unde
 export function parseAllocationServiceFilters(params: Record<string, string | undefined>): ServiceOrderFilters {
   return {
     status: '已完成',
+    marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,

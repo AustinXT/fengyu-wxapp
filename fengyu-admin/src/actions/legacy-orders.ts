@@ -23,6 +23,7 @@ import {
   type WorkfineCustomer,
   type WorkfineOrder,
 } from '@/lib/workfine-mssql'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 /**
  * 业务错误：把可读 message 同时写入 `digest`。
@@ -41,6 +42,7 @@ class LegacyOrderError extends Error {
 
 export interface LegacyOrderFilters {
   phone?: string
+  marketId?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
@@ -98,6 +100,9 @@ export const listLegacyOrders = withPermission(
       conditions.push(
         or(ilike(saleOrders.clientPhone, pattern), ilike(saleOrders.customerName, pattern)),
       )
+    }
+    if (filters.marketId) {
+      conditions.push(storeInMarketCondition(saleOrders.storeId, filters.marketId))
     }
     if (filters.storeId) {
       conditions.push(eq(saleOrders.storeId, filters.storeId))

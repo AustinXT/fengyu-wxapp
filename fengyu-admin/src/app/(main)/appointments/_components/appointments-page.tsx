@@ -14,7 +14,9 @@ import { confirmAppointment, checkinAppointment, cancelAppointment, deleteAppoin
 import { RowDeleteMenu } from "@/components/delete-action"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { actionErrorMessage } from "@/lib/action-error"
-import type { Appointment, Store } from "@/lib/types"
+import type { Appointment } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -41,14 +43,14 @@ type TabValue = typeof TAB_OPTIONS[number]['value']
  */
 export default function AppointmentsPageClient({
   appointments,
-  stores,
+  filterOptions,
   total,
   pendingCount,
   confirmedCount,
   canDelete = false,
 }: {
   appointments: Appointment[]
-  stores: Store[]
+  filterOptions: MarketStoreFilterOptions
   total: number
   pendingCount: number
   confirmedCount: number
@@ -73,6 +75,7 @@ export default function AppointmentsPageClient({
   }, [setFilter, debounceRef])
 
   const activeTab = (get("tab") || "pending") as TabValue
+  const marketFilter = get("market")
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
@@ -135,12 +138,13 @@ export default function AppointmentsPageClient({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
-              ))}
-            </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+              onStoreChange={(value) => setFilter("store", value)}
+            />
             <div className="flex items-center gap-2">
               <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
               <span className="text-[#999999]">-</span>

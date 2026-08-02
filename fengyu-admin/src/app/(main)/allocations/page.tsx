@@ -1,6 +1,6 @@
 import { getPendingPayments } from '@/actions/allocations'
 import { getServiceOrdersPaginated } from '@/actions/services'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import AllocationsPageClient from './_components/allocations-page'
 
 export const dynamic = 'force-dynamic'
@@ -16,17 +16,19 @@ export default async function Page({
   const pageSize = params.size ? Number(params.size) : undefined
 
   const allocStatus = params.allocStatus || undefined
+  const marketId = params.market || undefined
   const storeId = params.store || undefined
   const dateFrom = params.from || undefined
   const dateTo = params.to || undefined
   const search = params.q || undefined
 
-  const stores = await getStores()
+  const filterOptions = await getMarketStoreFilterOptions()
 
   if (tab === 'service') {
     const { data: serviceOrders, total } = await getServiceOrdersPaginated({
       status: '已完成',
       commissionStatus: allocStatus,
+      marketId,
       storeId,
       dateFrom,
       dateTo,
@@ -37,7 +39,7 @@ export default async function Page({
     return (
       <AllocationsPageClient
         tab="service"
-        stores={stores}
+        filterOptions={filterOptions}
         serviceOrders={serviceOrders}
         serviceTotal={total}
       />
@@ -49,6 +51,7 @@ export default async function Page({
   const { data: payments, total } = await getPendingPayments({
     allocationStatus:
       allocStatus === '已分配' ? '已分配' : allocStatus === '待分配' ? '待分配' : undefined,
+    marketId,
     storeId,
     dateFrom,
     dateTo,
@@ -59,7 +62,7 @@ export default async function Page({
   return (
     <AllocationsPageClient
       tab="sale"
-      stores={stores}
+      filterOptions={filterOptions}
       payments={payments}
       saleTotal={total}
     />
