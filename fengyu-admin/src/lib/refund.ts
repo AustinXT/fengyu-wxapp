@@ -59,6 +59,7 @@ export interface RefundDetail {
   unitPrice: number
   quantity: number
   unitRealPrice: number
+  saleAmount: number | null
   refundAmount: number
   salesCategory: SalesCategory | null
   serviceFee: number
@@ -221,6 +222,7 @@ export function buildRefundDetails(
       unitPrice: Number(orig.unit_price),
       quantity: requested,
       unitRealPrice,
+      saleAmount: orig.sale_amount == null ? null : Number(orig.sale_amount),
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
@@ -233,6 +235,36 @@ export function buildRefundDetails(
     refundDetails,
     totalRefund: roundMoney(totalRefund),
   }
+}
+
+/**
+ * 0 元退项仅允许现有审批重算能真正扣减权益的场景：
+ * 0 元疗程卡、零消费全退、且 sale_amount<=0 会命中 paid_sessions=0 覆盖。
+ */
+export function isZeroCashPaidSessionRefund(
+  refundDetails: Array<{
+    isOverpay?: boolean
+    quantity?: number
+    productType?: ProductType | null
+    sessionCount?: number | null
+    saleAmount?: string | number | null
+    isFullItemRefund?: boolean
+  }>,
+  handlingFee: number,
+  totalRefund: number,
+): boolean {
+  const fee = Math.max(0, Number(handlingFee) || 0)
+  const total = Math.round((Number(totalRefund) || 0) * 100) / 100
+  if (fee !== 0 || total !== 0) return false
+
+  const itemRefunds = refundDetails.filter((d) => !d.isOverpay && Number(d.quantity || 0) > 0)
+  return itemRefunds.length > 0 && itemRefunds.every((d) =>
+    d.productType === '疗程卡' &&
+    Number(d.sessionCount || 0) > 0 &&
+    d.saleAmount != null &&
+    Number(d.saleAmount) <= 0 &&
+    d.isFullItemRefund === true,
+  )
 }
 
 /**

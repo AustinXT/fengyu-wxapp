@@ -17,6 +17,7 @@ const {
   computeOverpayRemainder,
   calculateUnusedQuantity,
   isHandlingFeeInvalidForRefund,
+  isZeroCashPaidSessionRefund,
   OVERPAY_SENTINEL,
 } = require('../../utils/refund')
 
@@ -179,6 +180,71 @@ describe('buildRefundDetails 行级多收余数', () => {
     expect(refundDetails[0].refundAmount).toBe(50)
     expect(refundDetails[0].isFullItemRefund).toBe(false)
     expect(totalRefund).toBe(50)
+  })
+
+  test('券全额抵扣疗程卡：保留退项数量，现金退款额为 0', () => {
+    const a = card({
+      sale_item_id: 'SI-ZERO',
+      session_count: 5,
+      remaining_sessions: 5,
+      paid_sessions: 5,
+      unit_real_price: 0,
+      sale_amount: 0,
+      received: 0,
+    })
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+    expect(refundDetails[0].quantity).toBe(5)
+    expect(refundDetails[0].unitRealPrice).toBe(0)
+    expect(refundDetails[0].saleAmount).toBe(0)
+    expect(refundDetails[0].refundAmount).toBe(0)
+    expect(refundDetails[0].isFullItemRefund).toBe(true)
+    expect(totalRefund).toBe(0)
+  })
+})
+
+describe('isZeroCashPaidSessionRefund', () => {
+  const freeCard = (overrides = {}) => ({
+    sale_item_id: 'SI-ZERO',
+    sku_id: 'SKU-ZERO',
+    product_name: '赠送护理卡',
+    product_type: '疗程卡',
+    session_count: 5,
+    remaining_sessions: 5,
+    paid_sessions: 5,
+    unit_price: 0,
+    quantity: 1,
+    unit_real_price: 0,
+    sale_amount: 0,
+    received: 0,
+    picked_up_quantity: null,
+    sales_category: null,
+    service_fee: 0,
+    ...overrides,
+  })
+
+  test('0 元疗程卡零消费全退允许走 0 元退项', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard()],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+
+    expect(refundDetails[0].isFullItemRefund).toBe(true)
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(true)
+  })
+
+  test('0 元疗程卡已消费部分次数时拒绝 0 元退项豁免', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard({ session_count: 5, remaining_sessions: 3, paid_sessions: 5 })],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+
+    expect(refundDetails[0].quantity).toBe(3)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(false)
   })
 })
 
