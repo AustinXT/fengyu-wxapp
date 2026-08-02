@@ -51,6 +51,10 @@ const FILES = {
     __dirname,
     '../../../../../db/migrations/0086_overpay_receipt_item_backfill.sql',
   ),
+  overpayReceiptItemRemap0090Sql: path.resolve(
+    __dirname,
+    '../../../../../db/migrations/0090_remap_overpay_receipts_by_item_excess.sql',
+  ),
   refundAllocationMirrorBackfill0087Sql: path.resolve(
     __dirname,
     '../../../../../db/migrations/0087_refund_allocation_mirror_backfill.sql',
@@ -327,7 +331,7 @@ describe('断言6：0082 退款 receipt backfill 使用 note.items[].refundAmoun
 // 断言 7：0082 正向 receipt 按实际 payment.amount 重建逐笔归属
 // ─────────────────────────────────────────────────────────────────────────────
 describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () => {
-  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, refundAllocationMirrorSrc
+  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, overpayReceiptRemapSrc, refundAllocationMirrorSrc
 
   beforeAll(() => {
     src = readFile(FILES.receiptMigration0082Sql)
@@ -335,6 +339,7 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     clearFullRefundSrc = readFile(FILES.clearFullRefundStatus0084Sql)
     refundReceiptRepairSrc = readFile(FILES.refundReceiptExistingBackfill0085Sql)
     overpayReceiptRepairSrc = readFile(FILES.overpayReceiptItemBackfill0086Sql)
+    overpayReceiptRemapSrc = readFile(FILES.overpayReceiptItemRemap0090Sql)
     refundAllocationMirrorSrc = readFile(FILES.refundAllocationMirrorBackfill0087Sql)
   })
 
@@ -408,6 +413,24 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(overpayReceiptRepairSrc).toMatch(/UPDATE sale_items si[\s\S]{0,360}FROM sale_payment_item_receipts spir/)
     expect(overpayReceiptRepairSrc).toMatch(/SET paid_sessions = CASE/)
     expect(overpayReceiptRepairSrc).toMatch(/datafix\.overpayItemReceiptBackfill/)
+  })
+
+  test('0090 按行级超额容量重映射 OVERPAY receipt 并删除错误子项', () => {
+    expect(overpayReceiptRemapSrc).toMatch(/_0090_overpay_receipt_targets/)
+    expect(overpayReceiptRemapSrc).toMatch(/elem ->> 'refSaleItemId' = 'OVERPAY'/)
+    expect(overpayReceiptRemapSrc).toMatch(/LOWER\(COALESCE\(elem ->> 'isOverpay', 'false'\)\) = 'true'/)
+    expect(overpayReceiptRemapSrc).toMatch(/overpay_capacity_cents/)
+    expect(overpayReceiptRemapSrc).toMatch(/COALESCE\(si\.session_count, 0\) - COALESCE\(si\.remaining_sessions, 0\)/)
+    expect(overpayReceiptRemapSrc).toMatch(/COALESCE\(si\.paid_sessions, 0\) - GREATEST/)
+    expect(overpayReceiptRemapSrc).toMatch(/DELETE FROM sale_payment_item_receipts spir/)
+    expect(overpayReceiptRemapSrc).toMatch(/NOT EXISTS \([\s\S]{0,160}_0090_overpay_receipt_targets/)
+    expect(overpayReceiptRemapSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/)
+    expect(overpayReceiptRemapSrc).toMatch(/_0090_refund_allocation_targets/)
+    expect(overpayReceiptRemapSrc).toMatch(/DELETE FROM sale_payment_item_allocations spia/)
+    expect(overpayReceiptRemapSrc).toMatch(/INSERT INTO sale_payment_item_allocations/)
+    expect(overpayReceiptRemapSrc).toMatch(/ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false/)
+    expect(overpayReceiptRemapSrc).toMatch(/SET paid_sessions = CASE/)
+    expect(overpayReceiptRemapSrc).toMatch(/datafix\.overpayReceiptItemRemap/)
   })
 
   test('0087 为退款 receipt 补负数营业额子分配并清空全退单分配状态', () => {

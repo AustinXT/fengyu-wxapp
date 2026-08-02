@@ -11,11 +11,10 @@
  *   家居产品：quantity − picked_up_quantity
  *
  * 多收余数（overpay，2026-07-18 ticket FY-XSD-WX-2607150028）：
- *   部分支付单 received 不能被单次价整除时，差额是订单级孤儿（不落任何品项 received），
- *   按整次×单价逐项求和永远够不到它。补一条订单级纯现金退款（哨兵行 OVERPAY_SENTINEL）：
- *     overpayRefundable = max(0, (received − refunded − 已消耗价值) − Σ(未用整次×单价))
- *   不挂品项、不退次数、不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
- *   两端镜像 staffApi utils/refund.js。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
+ *   余数归属具体 sale_item：overpayRefundable(item) =
+ *     max(0, item.received − 已消耗价值 − 当前可退整次/数量价值)
+ *   发起退款时把该行余数并入同一个退款明细，不再创建新的订单级 OVERPAY 分摊行。
+ *   OVERPAY_SENTINEL 仅保留用于历史 note 兼容。两端镜像 staffApi utils/refund.js。
  */
 
 import type { PaymentMethod, ProductType, SalesCategory } from './types'
@@ -36,6 +35,8 @@ export interface RefundSourceItem {
   unit_price: string | number
   quantity: number
   unit_real_price: string | number
+  sale_amount?: string | number | null
+  received?: string | number | null
   picked_up_quantity: number | null
   sales_category: SalesCategory | null
   service_fee: string | number | null
@@ -45,6 +46,8 @@ export interface RefundSourceItem {
 export interface RefundRequestItem {
   saleItemId: string
   refundQuantity?: number
+  /** 是否把该 sale_item 自己的多收余数并入本次退款 */
+  includeOverpay?: boolean
 }
 
 export interface RefundDetail {
@@ -61,8 +64,14 @@ export interface RefundDetail {
   serviceFee: number
   /** 本次是否全退该明细（退款数量 >= 当前可退数量）→ 控制 cascade 是否作废其分配/提成（Bug M） */
   isFullItemRefund: boolean
-  /** 多收余数退款哨兵行（不挂品项/不退次数/不触发级联）；真实品项明细恒为 false */
+  /** 本明细并入的该 sale_item 行级多收余数 */
+  overpayAmount?: number
+  /** 历史多收余数退款哨兵行；新退款不再生成，仅用于旧 note 兼容 */
   isOverpay?: boolean
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100
 }
 
 /**
@@ -85,16 +94,44 @@ export function calculateUnusedQuantity(item: RefundSourceItem | null | undefine
 }
 
 /**
- * 计算订单级「多收余数」可退额（overpay）。两端镜像 staff utils/refund.js（JS 无 snapshot 守护，字段按各端约定）。
+ * 计算每个 sale_item 自己的「多收余数」可退额（overpay）。两端镜像 staff utils/refund.js。
  *
- * 部分支付单 received 不能被单次价整除时，超出 Σ(整次×单价) 的零头是订单级孤儿，逐项整次退款够不到它：
- *   overpay = max(0, netReceived − 已消耗价值 − Σ(未用整次×单价))
- * 其中 netReceived = received − refundedAmount（订单仍持有的实收）。
+ * 余数归属具体商品子项，退款某个子项时只能动该子项的 receipt：
+ *   itemOverpay = max(0, item.received − 已消费价值 − 当前可退整次/数量价值)
+ */
+export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map<string, number> {
+  const result = new Map<string, number>()
+  for (const it of origItems || []) {
+    const received = Number(it.received ?? 0) || 0
+    if (received <= 0) {
+      result.set(it.sale_item_id, 0)
+      continue
+    }
+    const unitRealPrice = Number(it.unit_real_price) || 0
+    const consumedQty =
+      it.product_type === '疗程卡'
+        ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
+        : Math.max(0, Number(it.picked_up_quantity || 0))
+    const consumedValue = consumedQty * unitRealPrice
+    const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
+    result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
+  }
+  return result
+}
+
+/**
+ * 计算行级 overpay 合计。无行级 received 的旧单元测试/历史调用回退到旧订单级口径。
  */
 export function computeOverpayRemainder(
   order: { received: string | number; refundedAmount?: string | number } | null | undefined,
   origItems: RefundSourceItem[],
 ): number {
+  if (origItems.length > 0 && origItems.some((it) => it.received != null)) {
+    let total = 0
+    for (const amount of computeItemOverpayRemainders(origItems).values()) total += amount
+    return roundMoney(total)
+  }
+
   const netReceived = Math.max(
     0,
     (Number(order?.received) || 0) - (Number(order?.refundedAmount) || 0),
@@ -112,9 +149,9 @@ export function computeOverpayRemainder(
     }
     maxSessionRefundable += calculateUnusedQuantity(it) * urp
   }
-  consumedValue = Math.round(consumedValue * 100) / 100
-  maxSessionRefundable = Math.round(maxSessionRefundable * 100) / 100
-  return Math.max(0, Math.round((netReceived - consumedValue - maxSessionRefundable) * 100) / 100)
+  consumedValue = roundMoney(consumedValue)
+  maxSessionRefundable = roundMoney(maxSessionRefundable)
+  return Math.max(0, roundMoney(netReceived - consumedValue - maxSessionRefundable))
 }
 
 /**
@@ -129,6 +166,7 @@ export function buildRefundDetails(
   const itemMap: Record<string, RefundSourceItem> = {}
   for (const i of origItems) itemMap[i.sale_item_id] = i
 
+  const overpayByItem = computeItemOverpayRemainders(origItems)
   const refundDetails: RefundDetail[] = []
   let totalRefund = 0
 
@@ -137,12 +175,20 @@ export function buildRefundDetails(
     if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
 
     const maxUnused = calculateUnusedQuantity(orig)
+    const overpayAmount = req.includeOverpay === true
+      ? Math.max(0, Number(overpayByItem.get(req.saleItemId) || 0))
+      : 0
     // 疗程卡必须整卡全退（不支持部分退次数）：强制 requested = maxUnused，忽略前端传入的部分数量；
     // 家居产品仍可按未提货数量部分退。两端镜像 staff utils/refund.js。
-    const requested =
-      orig.product_type === '疗程卡' ? maxUnused : (Number(req.refundQuantity) || maxUnused)
+    const requestedRaw = req.refundQuantity == null ? NaN : Number(req.refundQuantity)
+    const wantsOverpayOnly = requestedRaw === 0 && overpayAmount > 0
+    const requested = wantsOverpayOnly
+      ? 0
+      : orig.product_type === '疗程卡'
+        ? maxUnused
+        : (Number.isFinite(requestedRaw) && requestedRaw > 0 ? requestedRaw : maxUnused)
 
-    if (requested <= 0) {
+    if (requested <= 0 && overpayAmount <= 0) {
       throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`)
     }
     if (requested > maxUnused) {
@@ -150,13 +196,13 @@ export function buildRefundDetails(
     }
 
     const unitRealPrice = Number(orig.unit_real_price)
-    const refundAmount = Math.round(unitRealPrice * requested * 100) / 100
+    const refundAmount = roundMoney(unitRealPrice * requested + overpayAmount)
     totalRefund += refundAmount
 
     // 退款行 service_fee 按比例扣减（原 service_fee 占比 × 退款数量占比）
     const origServiceFee = Number(orig.service_fee || 0)
     const origQty = Number(orig.quantity) || 1
-    const refundServiceFee = -Math.round((origServiceFee * requested) / origQty * 100) / 100
+    const refundServiceFee = -roundMoney((origServiceFee * requested) / origQty)
 
     // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
     // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
@@ -178,13 +224,14 @@ export function buildRefundDetails(
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
+      overpayAmount,
       isFullItemRefund: requested >= maxUnused && consumedQty <= 0,
     })
   }
 
   return {
     refundDetails,
-    totalRefund: Math.round(totalRefund * 100) / 100,
+    totalRefund: roundMoney(totalRefund),
   }
 }
 

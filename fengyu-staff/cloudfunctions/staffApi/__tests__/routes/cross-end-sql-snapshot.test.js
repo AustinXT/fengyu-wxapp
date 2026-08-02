@@ -599,13 +599,15 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
       expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
     })
-    test('两端必须把 OVERPAY 余数在通道 1 映射回真实 item receipt', () => {
+    test('两端必须只按行级超额容量映射历史 OVERPAY 哨兵 receipt', () => {
       for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {
-        expect(src, `${name} 缺 overpay 判定`).toMatch(/isOverpayRefundItem/)
+        expect(src, `${name} 缺历史 OVERPAY 哨兵判定`).toMatch(/isLegacyOverpaySentinel/)
         expect(src, `${name} 缺 receipt 构建 helper`).toMatch(/buildReceiptRefundItems/)
         expect(src, `${name} 缺 OVERPAY 哨兵识别`).toMatch(/saleItemId === 'OVERPAY'/)
         expect(src, `${name} 缺正向 receipt 残留计算`).toMatch(/prior_refund_amount/)
-        expect(src, `${name} 缺按残留分配 overpay`).toMatch(/allocateCentsByWeight/)
+        expect(src, `${name} 缺行级已消费价值扣减`).toMatch(/consumed_value/)
+        expect(src, `${name} 缺行级可退价值扣减`).toMatch(/refundable_value/)
+        expect(src, `${name} 缺按超额容量分配 overpay`).toMatch(/allocateCentsByWeight/)
         expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = await buildReceiptRefundItems/)
       }
     })

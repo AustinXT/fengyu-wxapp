@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildRefundDetails,
   capRefundAmounts,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
   OVERPAY_SENTINEL,
@@ -134,6 +135,70 @@ describe('buildRefundDetails', () => {
     expect(refundDetails[0].quantity).toBe(2)
     expect(refundDetails[0].refundAmount).toBe(100) // 2 × 50
     expect(totalRefund).toBe(100)
+  })
+
+  it('行级余数只并入所属商品子项，退款 A 不影响 B', () => {
+    const a = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-A',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '150',
+    }
+    const b = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-B',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '100',
+    }
+
+    const overpayByItem = computeItemOverpayRemainders([a, b])
+    expect(overpayByItem.get('SI-A')).toBe(50)
+    expect(overpayByItem.get('SI-B')).toBe(0)
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a, b],
+      [{ saleItemId: 'SI-A', includeOverpay: true }],
+    )
+    expect(refundDetails).toHaveLength(1)
+    expect(refundDetails[0].refSaleItemId).toBe('SI-A')
+    expect(refundDetails[0].quantity).toBe(1)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(150)
+    expect(totalRefund).toBe(150)
+  })
+
+  it('显式 refundQuantity=0 且 includeOverpay=true 时允许只退该行余数', () => {
+    const a = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-A',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '150',
+    }
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a],
+      [{ saleItemId: 'SI-A', refundQuantity: 0, includeOverpay: true }],
+    )
+    expect(refundDetails[0].quantity).toBe(0)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(50)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    expect(totalRefund).toBe(50)
   })
 })
 

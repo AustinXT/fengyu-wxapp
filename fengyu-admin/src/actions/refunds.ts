@@ -22,9 +22,9 @@ import {
   buildRefundDetails,
   calculateUnusedQuantity,
   capRefundAmounts,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
-  OVERPAY_SENTINEL,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
   type RefundSourceItem,
@@ -61,6 +61,7 @@ export interface RefundableItem {
   unitRealPrice: number
   unusedQuantity: number
   refundableAmount: number
+  overpayRefundable: number
   quantity: number
   sessionCount: number | null
   remainingSessions: number | null
@@ -74,7 +75,7 @@ export interface GetRefundableResult {
   origPaymentMethod: PaymentMethod
   /** 原订单顾客 ID；用于退款表单调用 estimateRefundOverdraft */
   clientUserId: string | null
-  /** 订单级多收余数可退额（部分支付单 received 不能被单次价整除时的孤儿零头，可作纯现金退还） */
+  /** 行级多收余数合计；具体归属见 items[].overpayRefundable */
   overpayRefundable: number
   /** 净已收 = received − refundedAmount，前端展示「已收上限」用 */
   netReceived: number
@@ -192,6 +193,93 @@ export interface EstimateOverdraftResult {
   }
 }
 
+type RefundTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string): Promise<void> {
+  await tx.execute(sql`
+    WITH receipt_refunds AS (
+      SELECT spir.sale_item_id,
+             COALESCE(ABS(SUM(spir.amount::numeric)), 0) AS refunded
+        FROM sale_payment_item_receipts spir
+        JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+       WHERE spir.sale_order_id = ${saleOrderId}
+         AND sop.sale_order_id = ${saleOrderId}
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND spir.amount::numeric < 0
+       GROUP BY spir.sale_item_id
+    ),
+    full_refunds AS (
+      SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+             BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+        FROM sale_order_payments sop
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN sop.note LIKE '{%'
+               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                         THEN (sop.note)::jsonb -> 'items'
+                         ELSE '[]'::jsonb END
+               ELSE '[]'::jsonb END
+        ) AS elem
+       WHERE sop.sale_order_id = ${saleOrderId}
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' IS NOT NULL
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       GROUP BY elem ->> 'refSaleItemId'
+    ),
+    item_states AS (
+      SELECT si.sale_item_id,
+             si.received::numeric AS received,
+             COALESCE(si.sale_amount::numeric, 0) AS sale_amount,
+             COALESCE(rr.refunded, 0) AS refunded,
+             COALESCE(fr.full_refund, false) AS full_refund,
+             CASE WHEN si.product_type = '疗程卡'
+               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+             END AS consumed_value
+        FROM sale_items si
+        LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
+        LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+       WHERE si.sale_order_id = ${saleOrderId}
+         AND si.item_direction = '购买'
+    ),
+    classified AS (
+      SELECT *,
+             GREATEST(consumed_value, sale_amount - refunded, 0) AS retained_value,
+             (
+               full_refund
+               OR (sale_amount > 0 AND refunded >= sale_amount - 0.01)
+               OR (refunded > 0 AND received <= 0.01 AND GREATEST(consumed_value, sale_amount - refunded, 0) <= 0.01)
+             ) AS item_refunded
+        FROM item_states
+    ),
+    agg AS (
+      SELECT COUNT(*) AS item_count,
+             COUNT(*) FILTER (WHERE item_refunded) AS refunded_count,
+             COUNT(*) FILTER (WHERE NOT item_refunded AND received + 0.01 < retained_value) AS partial_count
+        FROM classified
+    ),
+    target AS (
+      SELECT CASE
+               WHEN item_count = 0 THEN NULL
+               WHEN refunded_count = item_count THEN '已退款'::order_status
+               WHEN partial_count = 0 THEN '已支付'::order_status
+               ELSE '部分支付'::order_status
+             END AS status
+        FROM agg
+    )
+    UPDATE sale_orders so
+       SET status = target.status,
+           paid_at = CASE WHEN target.status = '已支付'::order_status AND so.paid_at IS NULL THEN NOW() ELSE so.paid_at END,
+           updated_at = NOW()
+      FROM target
+     WHERE so.sale_order_id = ${saleOrderId}
+       AND target.status IS NOT NULL
+       AND so.status IN ('已支付', '已完成', '部分支付', '已退款')
+       AND so.status IS DISTINCT FROM target.status
+  `)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // getRefundable：查询原单可退明细
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,15 +331,19 @@ export const getRefundable = withAnyPermission(
     unit_price: r.unitPrice,
     quantity: r.quantity,
     unit_real_price: r.unitRealPrice,
+    sale_amount: r.saleAmount,
+    received: r.received,
     picked_up_quantity: r.pickedUpQuantity,
     sales_category: r.salesCategory as SalesCategory | null,
     service_fee: r.serviceFee,
   }))
 
+  const itemOverpayById = computeItemOverpayRemainders(srcItems)
   const items: RefundableItem[] = srcItems.map((src) => {
     const unused = calculateUnusedQuantity(src)
     const unitRealPrice = Number(src.unit_real_price)
     const refundableAmount = Math.round(unitRealPrice * unused * 100) / 100
+    const overpayRefundable = Math.max(0, Number(itemOverpayById.get(src.sale_item_id) || 0))
 
     return {
       saleItemId: src.sale_item_id,
@@ -260,6 +352,7 @@ export const getRefundable = withAnyPermission(
       unitRealPrice,
       unusedQuantity: unused,
       refundableAmount,
+      overpayRefundable,
       quantity: src.quantity,
       sessionCount: src.session_count,
       remainingSessions: src.remaining_sessions,
@@ -267,7 +360,7 @@ export const getRefundable = withAnyPermission(
     }
   })
 
-  // 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，前端据此展示「多收可退余数」。
+  // 多收余数（overpay）：按 sale_item 行级 received 归属，汇总字段只供老前端展示。
   const overpayRefundable = computeOverpayRemainder(
     { received: order.received, refundedAmount: order.refundedAmount },
     srcItems,
@@ -524,12 +617,12 @@ export const createRefund = withPermission(
     session,
     input: {
   refSaleOrderId: string
-  items: Array<{ saleItemId: string; refundQuantity: number }>
+  items: Array<{ saleItemId: string; refundQuantity?: number; includeOverpay?: boolean }>
   refundReason: string
   handlingFee?: number
   /** 若 true，则按建议扣除超额权益；默认 true */
   applyOverdraftDeduction?: boolean
-  /** 多收余数退款：true 时把订单级孤儿零头（received 不能被单次价整除的部分）作为纯现金并入退款 */
+  /** 兼容旧前端：true 时把所选真实明细自身的行级余数并入退款；新前端应使用 items[].includeOverpay */
   includeOverpay?: boolean
     },
   ): Promise<CreateRefundResult> => {
@@ -625,15 +718,51 @@ export const createRefund = withPermission(
     unit_price: r.unitPrice,
     quantity: r.quantity,
     unit_real_price: r.unitRealPrice,
+    sale_amount: r.saleAmount,
+    received: r.received,
     picked_up_quantity: r.pickedUpQuantity,
     sales_category: r.salesCategory as SalesCategory | null,
     service_fee: r.serviceFee,
   }))
 
+  const itemOverpayById = computeItemOverpayRemainders(sourceItems)
+  const requestItems = input.items.map((it) => ({
+    saleItemId: String(it.saleItemId || ''),
+    refundQuantity: it.refundQuantity,
+    includeOverpay: it.includeOverpay === true,
+  }))
+  if (input.includeOverpay) {
+    if (requestItems.length === 0) {
+      const candidates = sourceItems
+        .filter((it) => Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0)) > 0)
+      if (candidates.length === 1) {
+        requestItems.push({
+          saleItemId: candidates[0].sale_item_id,
+          refundQuantity: 0,
+          includeOverpay: true,
+        })
+      } else if (candidates.length > 1) {
+        return {
+          success: false,
+          error: { code: 'INVALID_PARAMS', message: '多收余数需选择所属商品子项后退款' },
+        }
+      }
+    } else {
+      for (const it of requestItems) {
+        if (Math.max(0, Number(itemOverpayById.get(it.saleItemId) || 0)) > 0) {
+          it.includeOverpay = true
+        }
+      }
+    }
+  }
+  if (requestItems.length === 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '退款明细不能为空' } }
+  }
+
   let refundDetails: ReturnType<typeof buildRefundDetails>['refundDetails']
   let totalRefund: number
   try {
-    const built = buildRefundDetails(sourceItems, input.items)
+    const built = buildRefundDetails(sourceItems, requestItems)
     refundDetails = built.refundDetails
     totalRefund = built.totalRefund
   } catch (err: unknown) {
@@ -645,33 +774,6 @@ export const createRefund = withPermission(
       return { success: false, error: { code: 'INVALID_STATE', message: msg.replace(/^INVALID_STATE:\s*/, '') } }
     }
     return { success: false, error: { code: 'UNKNOWN', message: msg } }
-  }
-
-  // 多收余数（overpay，2026-07-18 FY-XSD-WX-2607150028）：includeOverpay=true 时把订单级孤儿零头
-  // 作为哨兵行（OVERPAY_SENTINEL，不挂品项/不退次数/不触发级联）并入退款。两端镜像 staff order.js。
-  const overpayRefundable = computeOverpayRemainder(
-    { received: origOrder.received, refundedAmount: origOrder.refundedAmount },
-    sourceItems,
-  )
-  let overpayAmount = 0
-  if (input.includeOverpay && overpayRefundable > 0) {
-    overpayAmount = overpayRefundable
-    refundDetails.push({
-      refSaleItemId: OVERPAY_SENTINEL,
-      skuId: null,
-      productName: '多收余数退款',
-      productType: null,
-      sessionCount: null,
-      unitPrice: 0,
-      quantity: 0,
-      unitRealPrice: 0,
-      refundAmount: overpayAmount,
-      salesCategory: null,
-      serviceFee: 0,
-      isFullItemRefund: false,
-      isOverpay: true,
-    })
-    totalRefund = Math.round((totalRefund + overpayAmount) * 100) / 100
   }
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
@@ -721,6 +823,13 @@ export const createRefund = withPermission(
     }
   }
 
+  const overpayAmount = Math.round(
+    Math.min(
+      totalRefund,
+      refundDetails.reduce((sum, d) => sum + Math.max(0, Number(d.overpayAmount || 0)), 0),
+    ) * 100,
+  ) / 100
+
   const applyOverdraft = input.applyOverdraftDeduction !== false
   let overdraftDeduction = 0
   if (applyOverdraft && origOrder.clientUserId) {
@@ -749,8 +858,8 @@ export const createRefund = withPermission(
 
   const refundPaymentMethod = resolveRefundPaymentMethod(origOrder.paymentMethod)
 
-  // 部分退款时关联具体 sale_item（多行退款时取首行；整单退款保留 null）
-  // overpay 哨兵行不计入（refSaleItemId='OVERPAY' 非真实品项，写入会违反 FK）。两端镜像 staff order.js。
+  // 部分退款时关联具体 sale_item（多行退款时取首行；整单退款保留 null）。
+  // 历史 overpay 哨兵行不计入（refSaleItemId='OVERPAY' 非真实品项，写入会违反 FK）。
   const realDetails = refundDetails.filter((d) => !d.isOverpay)
   const primaryRefSaleItemId = realDetails.length === 1 ? realDetails[0].refSaleItemId : null
   const primarySessionCount =
@@ -774,6 +883,7 @@ export const createRefund = withPermission(
       refundAmount: d.refundAmount,
       productType: d.productType,
       isFullItemRefund: d.isFullItemRefund,
+      overpayAmount: d.overpayAmount || 0,
       isOverpay: d.isOverpay === true,
     })),
   })
@@ -1029,6 +1139,7 @@ export const approveRefund = withPermission(
       // 若新 paid_sessions < 已消费次数，抛 CONFLICT 阻止退款
       await recalcPaidSessionsForOrder(tx, refSaleOrderId)
       await reconcileAllocationStatusAfterRefund(tx, refSaleOrderId)
+      await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
 
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {

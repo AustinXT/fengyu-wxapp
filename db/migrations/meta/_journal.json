@@ -624,6 +624,20 @@
       "when": 1785590400000,
       "tag": "0088_deposit_order_approval_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1785686400000,
+      "tag": "0089_add_refunded_order_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1785686500000,
+      "tag": "0090_remap_overpay_receipts_by_item_excess",
+      "breakpoints": true
     }
   ]
 }

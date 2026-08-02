@@ -140,7 +140,6 @@ export type CommissionRateInput = z.infer<typeof commissionRateSchema>
 export const customerSchema = z.object({
   name: z.string().optional().nullable(),
   gender: z.string().optional().nullable(),
-  boundStoreId: z.string().optional().nullable(),
   boundEmployeeId: z.string().optional().nullable(),
   memberLevel: z.string().optional().nullable(),
   customerSource: z.string().optional().nullable(),

@@ -31,9 +31,9 @@ const { getPerItemRefundedMap } = require('../utils/per-item-refund')
 const {
   buildRefundDetails,
   capRefundAmounts,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
-  OVERPAY_SENTINEL,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
@@ -2116,9 +2116,13 @@ async function detail(ctx) {
     cardBalance = balRows.length > 0 ? Number(balRows[0].balance) : 0
   }
 
-  // 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，可作纯现金退还。
-  // 仅销售单/转换单非历史单有意义（与可退口径一致）；前端退款弹层据此展示「多收可退余数」。
+  // 多收余数（overpay）：按 sale_item 行级 received 归属，汇总字段只供老前端展示。
+  // 仅销售单/转换单非历史单有意义（与可退口径一致）。
   const purchaseItems = items.filter((it) => it.item_direction === '购买')
+  const itemOverpayById = computeItemOverpayRemainders(purchaseItems)
+  for (const it of purchaseItems) {
+    it.overpay_refundable = Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0))
+  }
   const overpayRefundable =
     ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine'
       ? computeOverpayRemainder(order, purchaseItems)
@@ -2153,6 +2157,92 @@ async function detail(ctx) {
 //           + UPDATE details(audit_employee_id/audit_at/audit_remark)
 //   - DB partial unique uq_sop_status_audit 兜底同原单 in-flight 退款唯一性
 const { cascadeRefund } = require('../helpers/refund-cascade')
+
+async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
+  await client.query(
+    `WITH receipt_refunds AS (
+       SELECT spir.sale_item_id,
+              COALESCE(ABS(SUM(spir.amount::numeric)), 0) AS refunded
+         FROM sale_payment_item_receipts spir
+         JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE spir.sale_order_id = $1
+          AND sop.sale_order_id = $1
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND spir.amount::numeric < 0
+        GROUP BY spir.sale_item_id
+     ),
+     full_refunds AS (
+       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+              BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+         FROM sale_order_payments sop
+         CROSS JOIN LATERAL jsonb_array_elements(
+           CASE WHEN sop.note LIKE '{%'
+                THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                          THEN (sop.note)::jsonb -> 'items'
+                          ELSE '[]'::jsonb END
+                ELSE '[]'::jsonb END
+         ) AS elem
+        WHERE sop.sale_order_id = $1
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND elem ->> 'refSaleItemId' IS NOT NULL
+          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+        GROUP BY elem ->> 'refSaleItemId'
+     ),
+     item_states AS (
+       SELECT si.sale_item_id,
+              si.received::numeric AS received,
+              COALESCE(si.sale_amount::numeric, 0) AS sale_amount,
+              COALESCE(rr.refunded, 0) AS refunded,
+              COALESCE(fr.full_refund, false) AS full_refund,
+              CASE WHEN si.product_type = '疗程卡'
+                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+              END AS consumed_value
+         FROM sale_items si
+         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
+         LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+        WHERE si.sale_order_id = $1
+          AND si.item_direction = '购买'
+     ),
+     classified AS (
+       SELECT *,
+              GREATEST(consumed_value, sale_amount - refunded, 0) AS retained_value,
+              (
+                full_refund
+                OR (sale_amount > 0 AND refunded >= sale_amount - 0.01)
+                OR (refunded > 0 AND received <= 0.01 AND GREATEST(consumed_value, sale_amount - refunded, 0) <= 0.01)
+              ) AS item_refunded
+         FROM item_states
+     ),
+     agg AS (
+       SELECT COUNT(*) AS item_count,
+              COUNT(*) FILTER (WHERE item_refunded) AS refunded_count,
+              COUNT(*) FILTER (WHERE NOT item_refunded AND received + 0.01 < retained_value) AS partial_count
+         FROM classified
+     ),
+     target AS (
+       SELECT CASE
+                WHEN item_count = 0 THEN NULL
+                WHEN refunded_count = item_count THEN '已退款'::order_status
+                WHEN partial_count = 0 THEN '已支付'::order_status
+                ELSE '部分支付'::order_status
+              END AS status
+         FROM agg
+     )
+     UPDATE sale_orders so
+        SET status = target.status,
+            paid_at = CASE WHEN target.status = '已支付'::order_status AND so.paid_at IS NULL THEN NOW() ELSE so.paid_at END,
+            updated_at = NOW()
+       FROM target
+      WHERE so.sale_order_id = $1
+        AND target.status IS NOT NULL
+        AND so.status IN ('已支付', '已完成', '部分支付', '已退款')
+        AND so.status IS DISTINCT FROM target.status`,
+    [saleOrderId],
+  )
+}
 
 /**
  * 创建退款（店长专用）
@@ -2234,36 +2324,39 @@ async function createRefund(ctx) {
     [refSaleOrderId]
   )
 
-  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
-  let { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
-
-  // 多收余数（overpay，2026-07-18 FY-XSD-WX-2607150028）：部分支付单 received 不能被单次价整除时，
-  // 订单级孤儿零头按整次×单价逐项求和够不到。includeOverpay=true 时把这笔作为哨兵行并入退款：
-  //   refSaleItemId=OVERPAY_SENTINEL（非空！null 会触发 refund-cascade 空明细兜底误全退），
-  //   不挂品项/不退次数/不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
-  // 前端在「整单退」或「仅退余数」场景置 includeOverpay=true。overpayRefundable 已 ≤ 净已收，与 refundCap 自洽。
-  // 两端镜像 admin refunds.ts。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
-  const overpayRefundable = computeOverpayRemainder(origOrder, origItems)
-  let overpayAmount = 0
-  if (includeOverpay && overpayRefundable > 0) {
-    overpayAmount = overpayRefundable
-    refundDetails.push({
-      refSaleItemId: OVERPAY_SENTINEL,
-      skuId: null,
-      productName: '多收余数退款',
-      productType: '多收余数',
-      sessionCount: null,
-      unitPrice: 0,
-      quantity: 0,
-      unitRealPrice: 0,
-      refundAmount: overpayAmount,
-      salesCategory: null,
-      serviceFee: 0,
-      isFullItemRefund: false,
-      isOverpay: true,
-    })
-    totalRefund = Math.round((totalRefund + overpayAmount) * 100) / 100
+  const itemOverpayById = computeItemOverpayRemainders(origItems)
+  const requestItems = items.map((it) => ({
+    saleItemId: String(it.saleItemId || ''),
+    refundQuantity: it.refundQuantity,
+    includeOverpay: it.includeOverpay === true,
+  }))
+  if (includeOverpay) {
+    if (requestItems.length === 0) {
+      const candidates = origItems
+        .filter((it) => Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0)) > 0)
+      if (candidates.length === 1) {
+        requestItems.push({
+          saleItemId: candidates[0].sale_item_id,
+          refundQuantity: 0,
+          includeOverpay: true,
+        })
+      } else if (candidates.length > 1) {
+        throw new Error('INVALID_PARAMS: 多收余数需选择所属商品子项后退款')
+      }
+    } else {
+      for (const it of requestItems) {
+        if (Math.max(0, Number(itemOverpayById.get(it.saleItemId) || 0)) > 0) {
+          it.includeOverpay = true
+        }
+      }
+    }
   }
+  if (requestItems.length === 0) {
+    throw new Error('INVALID_PARAMS: 退款明细不能为空')
+  }
+
+  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
+  let { refundDetails, totalRefund } = buildRefundDetails(origItems, requestItems)
 
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
@@ -2311,6 +2404,13 @@ async function createRefund(ctx) {
     }
   }
 
+  const overpayAmount = Math.round(
+    Math.min(
+      totalRefund,
+      refundDetails.reduce((sum, d) => sum + Math.max(0, Number(d.overpayAmount || 0)), 0),
+    ) * 100,
+  ) / 100
+
   // 储值卡 vs 原路径拆分（按原单储值卡占比）
   const origPrepaidCardAmount = Number(origOrder.prepaid_card_amount || 0)
   const origTotalAmount = Number(origOrder.total_amount || 0)
@@ -2346,6 +2446,7 @@ async function createRefund(ctx) {
       refundAmount: d.refundAmount,
       productType: d.productType,
       isFullItemRefund: d.isFullItemRefund,
+      overpayAmount: d.overpayAmount || 0,
       isOverpay: d.isOverpay === true,
     })),
     overpayAmount,
@@ -2545,6 +2646,7 @@ async function approveRefund(ctx) {
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
     await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
+    await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
 
     // 5. 重算顾客消费档位 + 顾客类型
     if (sopRow.client_user_id) {

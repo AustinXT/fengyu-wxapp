@@ -12,6 +12,8 @@
  */
 
 const {
+  buildRefundDetails,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   calculateUnusedQuantity,
   isHandlingFeeInvalidForRefund,
@@ -122,6 +124,61 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const order = { received: 3000, refunded_amount: 0 }
     const items = [...Array.from({ length: 7 }, () => card()), partialItem]
     expect(computeOverpayRemainder(order, items)).toBe(214)
+  })
+})
+
+describe('buildRefundDetails 行级多收余数', () => {
+  const card = (overrides = {}) => ({
+    sale_item_id: 'SI',
+    sku_id: null,
+    product_name: '面部护理卡',
+    product_type: '疗程卡',
+    session_count: 1,
+    remaining_sessions: 1,
+    paid_sessions: 1,
+    unit_price: 100,
+    quantity: 1,
+    unit_real_price: 100,
+    picked_up_quantity: null,
+    sales_category: null,
+    service_fee: 0,
+    sale_amount: 100,
+    received: 100,
+    ...overrides,
+  })
+
+  test('行级余数只并入所属商品子项，退款 A 不影响 B', () => {
+    const a = card({ sale_item_id: 'SI-A', received: 150 })
+    const b = card({ sale_item_id: 'SI-B', received: 100 })
+
+    const overpayByItem = computeItemOverpayRemainders([a, b])
+    expect(overpayByItem.get('SI-A')).toBe(50)
+    expect(overpayByItem.get('SI-B')).toBe(0)
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a, b],
+      [{ saleItemId: 'SI-A', includeOverpay: true }],
+    )
+    expect(refundDetails).toHaveLength(1)
+    expect(refundDetails[0].refSaleItemId).toBe('SI-A')
+    expect(refundDetails[0].quantity).toBe(1)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(150)
+    expect(totalRefund).toBe(150)
+  })
+
+  test('显式 refundQuantity=0 且 includeOverpay=true 时允许只退该行余数', () => {
+    const a = card({ sale_item_id: 'SI-A', received: 150 })
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a],
+      [{ saleItemId: 'SI-A', refundQuantity: 0, includeOverpay: true }],
+    )
+    expect(refundDetails[0].quantity).toBe(0)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(50)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    expect(totalRefund).toBe(50)
   })
 })
 

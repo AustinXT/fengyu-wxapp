@@ -106,7 +106,7 @@ async function recomputeDepositRealPrice(tx: DepositTx, saleOrderId: string): Pr
 
 function assertCanApproveDepositOrder(session: AuthSession): void {
   if (!isDepositOrderApprover(session)) {
-    throw new ApiError('PERMISSION_DENIED', '仅系统管理员、总部店长或总部财务可审批寄存单')
+    throw new ApiError('PERMISSION_DENIED', '仅系统管理员、总部/市场店长或总部/市场财务可审批寄存单')
   }
 }
 

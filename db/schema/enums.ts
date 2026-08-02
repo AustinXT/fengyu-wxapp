@@ -17,6 +17,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "待支付",
   "已支付",
   "已完成",
+  "已退款",
   "支付失败",
   "已关闭",
   "待审批",

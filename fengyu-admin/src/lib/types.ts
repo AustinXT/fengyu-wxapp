@@ -200,7 +200,7 @@ export type ProductType = '疗程卡' | '家居产品'
  * 与 db/schema/enums.ts 的 orderStatusEnum 同源；'未审核' / '已作废' 为 WorkFine 历史单
  * 专用态（legacy_source='workfine'），原生订单不会出现。改枚举须同步 db/schema/enums.ts。
  */
-export type OrderStatus = '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付' | '未审核' | '已作废'
+export type OrderStatus = '待支付' | '已支付' | '已完成' | '已退款' | '支付失败' | '已关闭' | '待审批' | '部分支付' | '未审核' | '已作废'
 /**
  * 销售单据类型（saleOrders.sale_order_type）
  *
