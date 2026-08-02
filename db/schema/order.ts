@@ -433,11 +433,11 @@ export const saleOrderPayments = pgTable(
     uniqueIndex("uq_sop_first_payment")
       .on(table.saleOrderId)
       .where(sql`change_type = '首次支付' AND status = '已支付'`),
-    /** 符号一致性：首次支付/回款/储值卡抵扣正数，退款负数 */
+    /** 符号一致性：首次支付/回款/储值卡抵扣正数，退款允许 0 或负数（0 元退项扣次数） */
     check(
       "chk_sop_amount_sign",
       sql`(${table.changeType} IN ('首次支付','回款','储值卡抵扣') AND ${table.amount} > 0)
-          OR (${table.changeType} = '退款' AND ${table.amount} < 0)`,
+          OR (${table.changeType} = '退款' AND ${table.amount} <= 0)`,
     ),
     /**
      * 线上支付必须携带 external_txn_id。
