@@ -21,6 +21,27 @@ interface PickupItem {
   storeName: string | null
 }
 
+function normalizeSpecName(productName?: string | null, specName?: string | null): string | null {
+  const name = (productName || '').trim()
+  const spec = (specName || '').trim()
+  return spec && spec !== name ? spec : null
+}
+
+function formatProductName(productName?: string | null, specName?: string | null): string {
+  const name = (productName || '').trim()
+  const spec = normalizeSpecName(name, specName)
+  if (!name && !spec) return '商品'
+  if (!name) return spec || '商品'
+  return spec ? `${name} ${spec}` : name
+}
+
+function normalizePickupItem(item: PickupItem): PickupItem {
+  return {
+    ...item,
+    specName: normalizeSpecName(item.productName, item.specName),
+  }
+}
+
 Page({
   data: {
     keyword: '',
@@ -73,7 +94,7 @@ Page({
       const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {
         clientUserId: customer.clientUserId,
       })
-      this.setData({ items: items || [], loadingItems: false })
+      this.setData({ items: (items || []).map(normalizePickupItem), loadingItems: false })
     } catch (err: any) {
       this.setData({ loadingItems: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
@@ -92,7 +113,7 @@ Page({
       pickupDialog: {
         visible: true,
         saleItemId: item.saleItemId,
-        productName: [item.productName, item.specName].filter(Boolean).join(' ') || '商品',
+        productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         quantity: 1,
         remark: '',

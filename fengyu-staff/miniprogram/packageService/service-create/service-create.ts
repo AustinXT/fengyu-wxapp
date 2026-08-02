@@ -334,7 +334,7 @@ Page({
   preventBubble() {},
 
   onRemarkChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ remark: e.detail.value });
+    this.setData({ remark: (e.detail as unknown as string) ?? '' });
   },
 
   // ===== 备注预设下拉（van-picker） =====

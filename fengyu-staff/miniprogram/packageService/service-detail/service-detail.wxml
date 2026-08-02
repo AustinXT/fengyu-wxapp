@@ -34,7 +34,7 @@
             <text class="item-name">{{item.itemName}}</text>
           </view>
           <view class="item-meta">
-            <text class="item-spec">{{item.spec}}</text>
+            <text wx:if="{{item.spec}}" class="item-spec">{{item.spec}}</text>
             <text class="item-sessions" wx:if="{{item.totalSessions > 1}}">
               本次核销 {{item.sessionCount}} 次 · 剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} 次
             </text>

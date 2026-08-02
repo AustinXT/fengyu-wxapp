@@ -45,6 +45,7 @@ async function create(ctx) {
     employeeId: item.employeeId,
     serviceDuration: item.serviceDuration || null,
   }))
+  const normalizedRemark = typeof remark === 'string' ? remark : ''
 
   const resolvedServiceDate = serviceDate || shanghaiDateStr()
   const resolvedStaffWfId = assignedStaffWfId || ctx.auth.staffWfId
@@ -241,7 +242,7 @@ async function create(ctx) {
           ctx.auth.effectiveStoreId,
           resolvedServiceDate,
           resolvedStaffWfId,
-          remark || '',
+          normalizedRemark,
           resolvedClientUserId,
           appointmentId || null,
           now
@@ -312,7 +313,7 @@ async function create(ctx) {
       [serviceOrderId]
     )
     const hasDeposit = depositCheck.rows[0]?.has_deposit === true
-    const isDepositRefund = remark === DEPOSIT_REFUND_REMARK
+    const isDepositRefund = normalizedRemark === DEPOSIT_REFUND_REMARK
     if (isDepositRefund && !hasDeposit) {
       throw new Error('INVALID_PARAMS: 非寄存卡不可标记为寄存单退款')
     }
@@ -326,6 +327,8 @@ async function create(ctx) {
       assignedEmployeeId: resolvedStaffWfId,
       itemCount: normalizedItems.length,
       appointmentId: appointmentId || null,
+      remarkPresent: normalizedRemark.trim().length > 0,
+      remarkLength: normalizedRemark.trim().length,
     })
   })
 
@@ -770,7 +773,7 @@ async function list(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.product_name || '',
+      spec: '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
       paidSessions: i.paid_sessions,
@@ -983,7 +986,7 @@ async function detail(ctx) {
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       itemName: i.product_name || '',
-      spec: i.product_name || '',
+      spec: '',
       sessionCount: i.session_used,
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,

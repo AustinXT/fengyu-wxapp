@@ -184,6 +184,7 @@ Page({
     _saleOrderId: '',
     // P2: 退款
     showRefundDialog: false,
+    refundDialogScrollable: false,
     refundReason: '',
     // 退款明细多选（可选订单内若干项；疗程卡整卡退、不支持部分退次数）
     refundItemOptions: [] as Array<{ saleItemId: string; label: string; includeOverpay: boolean }>,
@@ -239,7 +240,7 @@ Page({
         return {
           saleItemId: it.sale_item_id,
           itemName: it.product_name || '—',
-          spec: it.product_name || '',
+          spec: '',
           totalPrice: it.received || '0',
           saleAmount: saleAmt.toFixed(2),
           received: recv.toFixed(2),
@@ -493,6 +494,7 @@ Page({
       }));
     this.setData({
       showRefundDialog: true,
+      refundDialogScrollable: options.length > 8,
       refundReason: '',
       refundItemOptions: options,
       refundSelectedIds: options.map((x) => x.saleItemId), // 默认全选
@@ -533,7 +535,7 @@ Page({
         items,
         refundReason: refundReason.trim(),
       });
-      this.setData({ showRefundDialog: false });
+      this.setData({ showRefundDialog: false, refundDialogScrollable: false });
       wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });
       this.loadDetail(this.data._saleOrderId);
     } catch (err: unknown) {
@@ -545,7 +547,13 @@ Page({
   },
 
   onCancelRefund() {
-    this.setData({ showRefundDialog: false });
+    this.setData({
+      showRefundDialog: false,
+      refundDialogScrollable: false,
+      refundReason: '',
+      refundItemOptions: [],
+      refundSelectedIds: [],
+    });
   },
 
   // 退款审批已收口到 refund-list/refund-detail 页；原 onApproveRefund/onRejectRefund 传 saleOrderId（后端需 paymentId）

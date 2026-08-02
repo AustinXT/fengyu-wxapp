@@ -12,6 +12,25 @@
         <text class="confirm-item-label">价格</text>
         <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.priceLine}}</text>
       </view>
+      <view class="confirm-item-row">
+        <text class="confirm-item-label">应付金额</text>
+        <view
+          wx:if="{{item.isManagerSpecial && !item.refBundleId && item.productType !== '组合套餐'}}"
+          class="confirm-discount-input-wrap"
+        >
+          <text class="confirm-special-badge">店长特价</text>
+          <text class="confirm-discount-prefix">¥</text>
+          <input
+            class="confirm-discount-input"
+            type="digit"
+            value="{{item.saleAmount}}"
+            placeholder="0"
+            data-sku-id="{{item.skuId}}"
+            bindblur="onSaleAmountChange"
+          />
+        </view>
+        <text wx:else class="confirm-item-receivable">¥{{item.saleAmount}}</text>
+      </view>
       <!-- 疗程卡规定次数（仅次数卡展示） -->
       <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
         <text class="confirm-item-label">规定次数</text>

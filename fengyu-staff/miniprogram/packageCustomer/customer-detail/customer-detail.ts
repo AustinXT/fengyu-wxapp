@@ -636,7 +636,11 @@ Page({
     const id = this._clientId();
     if (!id) return;
     try {
-      const rows = (await callStaffApi<PhoneChangeRecord[]>('customer.phoneChangeLogs', id) || [])
+      const rows = (await callStaffApi<PhoneChangeRecord[]>('customer.phoneChangeLogs', {
+        clientUserId: id,
+        page: 1,
+        pageSize: 50,
+      }) || [])
         .map(r => ({
           ...r,
           createdAt: r.createdAt ? formatDateTime(r.createdAt) : '',

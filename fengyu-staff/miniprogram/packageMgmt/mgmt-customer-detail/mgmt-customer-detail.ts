@@ -175,6 +175,12 @@ interface GiftData {
   giftItems: GiftItem[];
 }
 
+function normalizeSpecName(productName?: string | null, specName?: string | null): string {
+  const name = (productName || '').trim();
+  const spec = (specName || '').trim();
+  return spec && spec !== name ? spec : '';
+}
+
 // Tab 5: 服务记录
 interface ServiceRecord {
   serviceOrderId: string;
@@ -524,7 +530,11 @@ Page({
             const gt = Number(gi.sessionCount || 0);
             const grm = Number(gi.remainingSessions || 0);
             const gpr = gi.paidSessions;
-            return { ...gi, paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)) };
+            return {
+              ...gi,
+              specName: normalizeSpecName(gi.productName, gi.specName),
+              paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)),
+            };
           }),
         })),
         giftItems: (data?.giftItems || []).map(g => {
@@ -533,6 +543,7 @@ Page({
           const fpr = g.paidSessions;
           return {
             ...g,
+            specName: normalizeSpecName(g.productName, g.specName),
             paidUnusedSessions: fpr == null ? frm : Math.max(0, Number(fpr) - Math.max(ft - frm, 0)),
             createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt,
           };

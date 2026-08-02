@@ -1,4 +1,4 @@
-import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc'
+import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc'
 
 describe('calcCartTotal — 原价合计（行 price × qty 之和）', () => {
   test('多商品合计', () => {
@@ -52,6 +52,16 @@ describe('calcHalfPriceTotal — 内部单半价合计', () => {
     expect(
       calcHalfPriceTotal([{ price: 180, listPrice: 200, quantity: 1 }])
     ).toBe('100.00')
+  })
+})
+
+describe('calcTierLineAmount — 疗程卡阶梯价行金额', () => {
+  test('按总价比例落分，不用圆整后的单次价回乘', () => {
+    expect(calcTierLineAmount(8800, 30, 60)).toBe(17600)
+  })
+
+  test('当前行等于阶梯总次数时返回阶梯总价', () => {
+    expect(calcTierLineAmount(8800, 30, 30)).toBe(8800)
   })
 })
 

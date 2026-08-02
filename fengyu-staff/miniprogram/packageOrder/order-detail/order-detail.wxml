@@ -46,7 +46,7 @@
       <view class="order-item" wx:for="{{order.items}}" wx:key="saleItemId">
         <view class="item-name-row">
           <text class="item-name">{{item.itemName || '—'}}</text>
-          <text class="item-spec">{{item.spec || '—'}}</text>
+          <text wx:if="{{item.spec}}" class="item-spec">{{item.spec}}</text>
         </view>
         <view class="item-price-row">
           <text class="item-price">实收 ¥{{item.totalPrice}}</text>
@@ -193,38 +193,63 @@
     </view>
   </block>
 
-  <!-- P2: 退款原因对话框 -->
-  <van-dialog
-    use-slot
-    title="申请退款"
+  <!-- P2: 退款原因弹层 -->
+  <van-popup
     show="{{showRefundDialog}}"
-    show-cancel-button
-    confirm-button-color="#C0322A"
-    bind:confirm="onConfirmRefund"
-    bind:cancel="onCancelRefund"
-    confirm-button-text="提交"
+    position="bottom"
+    round
+    closeable
+    safe-area-inset-bottom="{{false}}"
+    custom-style="max-height: 86vh;"
+    bind:close="onCancelRefund"
   >
-    <view style="padding: 16rpx 24rpx;">
-      <view wx:if="{{order.status === '部分支付'}}" style="font-size: 26rpx; color: #C0322A; margin-bottom: 12rpx;">本单为部分支付，退款按「已付未用次数 × 单价」计算（已选子项的金额余数一并退还），不超过已收金额 ¥{{order.paidAmount}}，最终以店长审批为准。</view>
-      <view style="font-size: 26rpx; color: #969799; margin-bottom: 12rpx;">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
-      <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
-        <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" style="padding: 12rpx 0;">
-          <van-checkbox name="{{item.saleItemId}}" checked-color="#C0322A">{{item.label}}</van-checkbox>
+    <view class="refund-popup">
+      <view class="refund-popup__title">申请退款</view>
+      <view wx:if="{{order.status === '部分支付'}}" class="refund-popup__notice">
+        本单为部分支付，退款按「已付未用次数 × 单价」计算（已选子项的金额余数一并退还），不超过已收金额 ¥{{order.paidAmount}}，最终以店长审批为准。
+      </view>
+      <view class="refund-popup__hint">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
+
+      <scroll-view
+        scroll-y
+        class="refund-popup__body {{refundDialogScrollable ? 'refund-popup__body--scrollable' : ''}}"
+      >
+        <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
+          <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" class="refund-option">
+            <van-checkbox
+              name="{{item.saleItemId}}"
+              checked-color="#C0322A"
+              custom-class="refund-option__checkbox"
+              label-class="refund-option__label"
+            >{{item.label}}</van-checkbox>
+          </view>
+        </van-checkbox-group>
+        <view class="refund-reason">
+          <van-field
+            label="退款原因"
+            placeholder="请填写退款原因"
+            type="textarea"
+            maxlength="200"
+            autosize
+            value="{{refundReason}}"
+            bind:change="onRefundReasonChange"
+          />
         </view>
-      </van-checkbox-group>
-      <view style="margin-top: 16rpx;">
-        <van-field
-          label="退款原因"
-          placeholder="请填写退款原因"
-          type="textarea"
-          maxlength="200"
-          autosize
-          value="{{refundReason}}"
-          bind:change="onRefundReasonChange"
-        />
+      </scroll-view>
+
+      <view class="refund-popup__actions">
+        <van-button block plain type="default" bind:click="onCancelRefund">取消</van-button>
+        <van-button
+          block
+          type="danger"
+          loading="{{submitting}}"
+          disabled="{{submitting}}"
+          custom-style="border-radius:48rpx;"
+          bind:click="onConfirmRefund"
+        >提交</van-button>
       </view>
     </view>
-  </van-dialog>
+  </van-popup>
 
   <!-- Ticket 2 PR-A：发起回款弹层 -->
   <van-popup

@@ -641,7 +641,7 @@ async function paidOrders(ctx) {
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
       itemName: item.product_name || "",
-      spec: item.product_name || "",
+      spec: "",
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
@@ -744,7 +744,7 @@ async function orderHistory(ctx) {
     itemsByOrder[item.sale_order_id].push({
       saleItemId: item.sale_item_id,
       itemName: item.product_name || "",
-      spec: item.product_name || "",
+      spec: "",
       productType: item.product_type || "",
     });
   }
@@ -829,7 +829,7 @@ async function serviceHistory(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = [];
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.product_name || "",
+      spec: "",
     });
   }
 
@@ -1145,7 +1145,7 @@ async function refundHistory(ctx) {
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       received: Number(i.received),
     })
@@ -1369,10 +1369,13 @@ async function appointments(ctx) {
 async function phoneChangeLogs(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  const { clientUserId, clientPhone, page = 1, pageSize = 50 } = ctx.event.payload || {}
   if (!clientUserId && !clientPhone) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
+  const safePage = Math.max(1, Number(page) || 1)
+  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
+  const offset = (safePage - 1) * safePageSize
 
   // 手机号变更日志按 client_user_id 关联，先解析 user_id
   let cuid = clientUserId
@@ -1397,8 +1400,8 @@ async function phoneChangeLogs(ctx) {
           AND (detail -> 'changes' ? 'phone'))
     )
     ORDER BY created_at DESC
-    LIMIT 200
-  `, [cuid])
+    LIMIT $2 OFFSET $3
+  `, [cuid, safePageSize, offset])
 
   ctx.result = rows.map(r => {
     const detail = r.detail || {}

@@ -361,9 +361,10 @@
         <block wx:if="{{saleOrderType === '转换单'}}">
           <conversion-panel
             clientUserId="{{customerInfo.clientUserId}}"
-            convertInAmount="{{cartTotal}}"
+            convertInAmount="{{payableTotal}}"
             cardBalance="{{customerCardBalance}}"
             cartItems="{{cart}}"
+            bind:amountchange="onConversionSaleAmountChange"
             bind:change="onConversionPanelChange"
           />
         </block>

@@ -1,7 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getCurrentStoreId } from '../../utils/role';
-import { calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
+import { calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
 import { formatDate } from '../../utils/formatters';
@@ -56,7 +56,7 @@ interface CartItem {
   halfPriceSaleAmount: string;
   /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
   received: string;
-  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单可改应付 */
+  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单/转换单可改应付 */
   isManagerSpecial?: boolean;
   /** 体验卡 capability（product_skus.is_experience）：体验卡不参与同名疗程阶梯价 */
   isExperience?: boolean;
@@ -339,10 +339,11 @@ function buildTreatmentTierLineMap(cart: CartItem[], skus: SkuItem[], isMember: 
     const tier = candidates[0];
     if (!tier || !tier.sessionCount || tier.sessionCount <= 1) continue;
 
-    const tierUnit = roundMoney(resolveSkuUnitPrice(tier, isMember) / Number(tier.sessionCount));
+    const tierAmount = resolveSkuUnitPrice(tier, isMember);
+    const tierSessions = Number(tier.sessionCount);
     for (const item of groupedItems) {
       const lineSessions = (Number(item.sessionCount) || 0) * (Number(item.quantity) || 1);
-      result.set(item.skuId, roundMoney(tierUnit * lineSessions));
+      result.set(item.skuId, calcTierLineAmount(tierAmount, tierSessions, lineSessions));
     }
   }
 
@@ -1010,20 +1011,20 @@ Page({
   },
 
   /**
-   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单 + 普通商品）。
+   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单/转换单 + 普通商品）。
    * - 区间 0 ≤ 应付 ≤ price×quantity（向下调，不许涨价）
    * - 空字符串等同于默认（=标准价线 price×quantity）
    * - 改应付后实付默认回归新应付（不保留旧实付，避免实付>应付）
    */
-  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
-    const skuId = e.currentTarget.dataset.skuId as string;
-    const raw = (e.detail?.value ?? '') as string;
+  applySaleAmountOverride(skuId: string, raw: string) {
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx < 0) return;
     const row = cart[idx];
-    // 仅店长特价行 + 销售单 + 普通商品放行（组合套餐不适用）
-    if (this.data.saleOrderType !== '销售单' || !row.isManagerSpecial
+    // 仅店长特价行 + 销售单/转换单 + 普通商品放行（组合套餐不适用）
+    const supportsManagerSpecial =
+      this.data.saleOrderType === '销售单' || this.data.saleOrderType === '转换单';
+    if (!supportsManagerSpecial || !row.isManagerSpecial
         || row.refBundleId || row.productType === '组合套餐') {
       return;
     }
@@ -1037,6 +1038,18 @@ Page({
     }
     // 改应付后实付回归默认（=新应付），避免残留旧实付超过新应付
     this.updateCart(cart);
+  },
+
+  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = (e.detail?.value ?? '') as string;
+    this.applySaleAmountOverride(skuId, raw);
+  },
+
+  onConversionSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const detail = (e.detail || {}) as { skuId?: string; value?: string };
+    if (!detail.skuId) return;
+    this.applySaleAmountOverride(detail.skuId, String(detail.value ?? ''));
   },
 
   /** 寄存单历史实收输入（独立于 cart.received，避免和销售单实付逻辑纠缠） */
@@ -1059,17 +1072,19 @@ Page({
    * - 否则 received 全部回归默认值（= 当前订单类型下的应付）
    */
   updateCart(cart: CartItem[], opts?: { preserveReceived?: boolean }) {
-    const isInternal = this.data.saleOrderType === '内部单';
-    const isSales = this.data.saleOrderType === '销售单';
+    const saleOrderType = this.data.saleOrderType;
+    const isInternal = saleOrderType === '内部单';
+    const isSales = saleOrderType === '销售单';
+    const supportsManagerSpecial = isSales || saleOrderType === '转换单';
     const tierLineMap = isSales
       ? buildTreatmentTierLineMap(cart, this._allSkus, this.data.buyerIsMember)
       : new Map<string, number>();
-    // 店长特别优惠（仅销售单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
+    // 店长特别优惠（销售单/转换单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
     // 钳制到 [0, price×qty]（向下调，不许涨价）；未改时回退标准价线 price×qty。
     const effBase = cart.map(c => {
       const stdLine = c.price * c.quantity;
       const tierLine = tierLineMap.get(c.skuId);
-      const editable = isSales && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+      const editable = supportsManagerSpecial && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
       if (editable && c.saleAmountOverride != null && c.saleAmountOverride !== '') {
         const v = parseFloat(c.saleAmountOverride);
         if (!Number.isNaN(v)) return Math.max(0, Math.min(v, stdLine));
@@ -1843,7 +1858,25 @@ Page({
       }>('order.createConversion', {
         clientUserId: customerInfo.clientUserId,
         convertOutSaleItemIds: conversionSelectedSaleItemIds,
-        convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
+        convertInItems: cart.map(c => {
+          const editable = !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+          const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
+          const effSale = hasOv
+            ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
+            : (parseFloat(c.saleAmount) || c.price * c.quantity);
+          const effUnit = c.quantity > 0 ? effSale / c.quantity : effSale;
+          const item: Record<string, unknown> = {
+            skuId: c.skuId,
+            quantity: c.quantity,
+          };
+          if (hasOv) {
+            item.unitPrice = ((c.listPrice ?? c.price) || 0).toFixed(2);
+            item.unitRealPrice = effUnit.toFixed(2);
+            item.saleAmount = effSale.toFixed(2);
+            item.manualSaleAmountOverride = true;
+          }
+          return item;
+        }),
         paymentMethod,
         prepaidCardAmount: conversionPrepaidCardAmount > 0 ? conversionPrepaidCardAmount : undefined,
         isActivity: this.data.conversionIsActivity,

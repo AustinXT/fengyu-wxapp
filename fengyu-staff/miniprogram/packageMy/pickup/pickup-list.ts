@@ -18,6 +18,12 @@ interface PickupRow {
   createdAt: string
 }
 
+function normalizeSpecName(productName?: string | null, specName?: string | null): string | null {
+  const name = (productName || '').trim()
+  const spec = (specName || '').trim()
+  return spec && spec !== name ? spec : null
+}
+
 Page({
   data: {
     items: [] as PickupRow[],
@@ -52,7 +58,11 @@ Page({
         startDate: this.data.startDate || undefined,
         endDate: this.data.endDate || undefined,
       })
-      const fresh = (res.items || []).map(r => ({ ...r, createdAt: formatDateTime(r.createdAt) }))
+      const fresh = (res.items || []).map(r => ({
+        ...r,
+        specName: normalizeSpecName(r.productName, r.specName),
+        createdAt: formatDateTime(r.createdAt),
+      }))
       const merged = [...this.data.items, ...fresh]
       this.setData({
         items: merged,

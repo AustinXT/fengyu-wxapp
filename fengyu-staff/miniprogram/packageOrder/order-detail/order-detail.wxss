@@ -206,6 +206,74 @@
 }
 .repay-actions > van-button { flex: 1; }
 
+/* 退款弹层：长退款项列表在弹层内部滚动，底部操作按钮始终可达 */
+.refund-popup {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+  padding: 28rpx 0 calc(24rpx + env(safe-area-inset-bottom));
+  background: #FFFFFF;
+}
+.refund-popup__title {
+  flex-shrink: 0;
+  padding: 0 80rpx 18rpx;
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #2D2017;
+}
+.refund-popup__notice {
+  flex-shrink: 0;
+  margin: 0 32rpx 12rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: #C0322A;
+}
+.refund-popup__hint {
+  flex-shrink: 0;
+  margin: 0 32rpx 12rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: #969799;
+}
+.refund-popup__body {
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 0 32rpx;
+}
+.refund-popup__body--scrollable {
+  height: 54vh;
+}
+.refund-option {
+  padding: 14rpx 0;
+}
+.refund-option__checkbox {
+  align-items: flex-start !important;
+}
+.refund-option__label {
+  min-width: 0;
+  line-height: 1.45 !important;
+  white-space: normal;
+  word-break: break-all;
+}
+.refund-reason {
+  margin-top: 16rpx;
+  overflow: hidden;
+  border: 1rpx solid #F0EDE9;
+  border-radius: 12rpx;
+}
+.refund-popup__actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 24rpx;
+  padding: 24rpx 32rpx 0;
+  background: #FFFFFF;
+}
+.refund-popup__actions > van-button {
+  flex: 1;
+}
+
 /* 按回款逐笔分配入口（款项流水行内） */
 .pay-alloc-btn {
   margin-top: 8rpx;

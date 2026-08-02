@@ -459,6 +459,7 @@ Page({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
       empPopupVisible: false,
     });
+    this.computeSummary();
   },
 
   closeEmpPopup() {

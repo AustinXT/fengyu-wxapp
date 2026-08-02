@@ -648,7 +648,7 @@ async function paidOrders(ctx) {
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
       itemName: item.product_name || '',
-      spec: item.product_name || '',
+      spec: '',
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
@@ -731,7 +731,7 @@ async function orderHistory(ctx) {
     itemsByOrder[item.sale_order_id].push({
       saleItemId: item.sale_item_id,
       itemName: item.product_name || '',
-      spec: item.product_name || '',
+      spec: '',
       productType: item.product_type || '',
     })
   }
@@ -800,7 +800,7 @@ async function serviceHistory(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.product_name || '',
+      spec: '',
     })
   }
 
@@ -895,7 +895,7 @@ async function giftHistory(ctx) {
     if (!promoItemsByOrder[i.sale_order_id]) promoItemsByOrder[i.sale_order_id] = []
     promoItemsByOrder[i.sale_order_id].push({
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -919,7 +919,7 @@ async function giftHistory(ctx) {
       saleItemId: i.sale_item_id,
       saleOrderId: i.sale_order_id,
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -1008,7 +1008,7 @@ async function refundHistory(ctx) {
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       received: Number(i.received),
     })

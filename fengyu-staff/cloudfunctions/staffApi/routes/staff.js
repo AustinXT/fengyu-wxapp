@@ -720,7 +720,7 @@ async function performanceDetail(ctx) {
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
-    specName: r.product_name,
+    specName: null,
     salesCategory: r.sales_category,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
     allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
@@ -737,7 +737,7 @@ async function performanceDetail(ctx) {
   const serviceItems = svcRows.map(r => ({
     type: 'service',
     productName: r.product_name,
-    specName: r.product_name,
+    specName: null,
     salesCategory: r.sales_category,
     roleType: r.role_type,
     amount: Number(r.commission_amount),

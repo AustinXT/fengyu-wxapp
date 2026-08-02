@@ -328,6 +328,7 @@ Page({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: { ...line, staffWfId, staffName },
       empPopupVisible: false,
     });
+    this.computeSummary();
   },
 
   closeEmpPopup() {
