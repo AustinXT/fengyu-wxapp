@@ -97,6 +97,7 @@ const STATUS_CLASS: Record<string, string> = {
   '部分支付':   'status-partial',
   '已支付':     'status-paid',
   '已完成':     'status-completed',
+  '已退款':     'status-refunded',
   '支付失败':   'status-failed',
   '已关闭':     'status-closed',
 };

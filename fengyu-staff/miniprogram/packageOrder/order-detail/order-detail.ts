@@ -57,6 +57,7 @@ interface RawOrderItem {
   paid_sessions?: number | null;
   unit_price?: string;
   unit_real_price?: string;
+  overpay_refundable?: string | number | null;
   expire_date?: string;
   sales_category?: string;
   picked_up_quantity?: number;
@@ -116,6 +117,8 @@ interface DisplayOrderItem {
   usedSessions: number;
   /** 已付未用次数 = max(paidSessions - usedSessions, 0) */
   paidUnusedSessions: number;
+  /** 该商品子项自己的多收余数 */
+  overpayRefundable: number;
   /** 三段进度条百分比（用于 WXML 内联 style） */
   remainPct: number;
   paidUnusedPct: number;
@@ -169,10 +172,6 @@ interface DisplayOrder {
   overpayRefundable: string;
 }
 
-// 多收余数退款选项哨兵 id（与云函数 OVERPAY_SENTINEL 一致）：退款弹层勾选该项 →
-// createRefund 带 includeOverpay=true，云函数把订单级孤儿零头作纯现金并入退款（不挂品项/不退次数/不触发级联）。
-const OVERPAY_OPTION_ID = 'OVERPAY';
-
 Page({
   data: {
     loading: false,
@@ -187,7 +186,7 @@ Page({
     showRefundDialog: false,
     refundReason: '',
     // 退款明细多选（可选订单内若干项；疗程卡整卡退、不支持部分退次数）
-    refundItemOptions: [] as Array<{ saleItemId: string; label: string }>,
+    refundItemOptions: [] as Array<{ saleItemId: string; label: string; includeOverpay: boolean }>,
     refundSelectedIds: [] as string[],
     submitting: false,
     // Ticket 2026-05-21 按子项回款弹层（2026-06-24 重构：储值卡改独立抵扣勾选）
@@ -234,6 +233,7 @@ Page({
         const saleAmt = Number(it.sale_amount || 0);
         const recv = Number(it.received || 0);
         const refunded = Number(it.refunded_amount || 0);
+        const overpayRefundable = Math.max(0, Number(it.overpay_refundable || 0));
         // 已退行不可回款（行级口径，与 client/admin 一致）；received 为净额
         const repayable = refunded > 0 ? 0 : Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
@@ -251,6 +251,7 @@ Page({
           paidSessions: it.paid_sessions == null ? undefined : Number(it.paid_sessions),
           usedSessions: used,
           paidUnusedSessions: paidUnused,
+          overpayRefundable,
           remainPct: pct(remain),
           paidUnusedPct: pct(paidUnused),
           unpaidPct: pct(unpaid),
@@ -344,7 +345,7 @@ Page({
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
         // 退款后状态角标（Bug B）：按 refunded_amount 派生「已退款/部分退款」，订单主状态不变（对齐 admin）
-        refundBadge: refundedAmount > 0
+        refundBadge: refundedAmount > 0 && o.status !== '已退款'
           ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
           : '',
         hasPendingRefund,
@@ -476,26 +477,20 @@ Page({
   onCreateRefund() {
     const o = this.data.order;
     if (!o) return;
-    // 可退项：疗程卡按「已付未用次数」(paidUnusedSessions>0) 可退；家居（无 session_count）默认列出，后端校验可退量。
+    // 可退项：疗程卡按「已付未用次数」可退；行级多收余数随所属子项一起退，不再作为独立订单级选项。
     // 疗程卡整卡全退（不支持部分退次数），label 标注可退次数。
     const options = o.items
-      .filter((it) => (it.sessionCount == null ? true : it.paidUnusedSessions > 0))
+      .filter((it) => (it.sessionCount == null ? true : it.paidUnusedSessions > 0) || it.overpayRefundable > 0)
       .map((it) => ({
         saleItemId: it.saleItemId,
-        label:
+        label: [
           it.sessionCount == null
             ? it.itemName
-            : `${it.itemName}（整卡退 ${it.paidUnusedSessions} 次）`,
+            : `${it.itemName}（${it.paidUnusedSessions > 0 ? `整卡退 ${it.paidUnusedSessions} 次` : '不退次数'}）`,
+          it.overpayRefundable > 0 ? `含余数 ¥${it.overpayRefundable.toFixed(2)}` : '',
+        ].filter(Boolean).join('，'),
+        includeOverpay: it.overpayRefundable > 0,
       }));
-    // 多收余数（overpay）：部分支付单实收不能被单次价整除时的零头，作为独立可勾选项追加。
-    // 全选品项时一并勾选 → 整单退全额；7 项已退完只剩零头时它是唯一项 → 余数单独退。
-    const overpay = Number(o.overpayRefundable || 0);
-    if (overpay > 0) {
-      options.push({
-        saleItemId: OVERPAY_OPTION_ID,
-        label: `多收余数退款 ¥${overpay.toFixed(2)}`,
-      });
-    }
     this.setData({
       showRefundDialog: true,
       refundReason: '',
@@ -519,12 +514,14 @@ Page({
       wx.showToast({ title: '请填写退款原因', icon: 'none' });
       return;
     }
-    // 拆分：真实品项 vs 多收余数哨兵。余数单独退时 items 可空（云函数 includeOverpay 兜底放行）。
-    const includeOverpay = refundSelectedIds.includes(OVERPAY_OPTION_ID);
+    const optionById: Record<string, { includeOverpay: boolean }> = {};
+    for (const opt of this.data.refundItemOptions) optionById[opt.saleItemId] = opt;
     const items = refundSelectedIds
-      .filter((id) => id !== OVERPAY_OPTION_ID)
-      .map((saleItemId) => ({ saleItemId }));
-    if (!items.length && !includeOverpay) {
+      .map((saleItemId) => ({
+        saleItemId,
+        includeOverpay: !!optionById[saleItemId]?.includeOverpay,
+      }));
+    if (!items.length) {
       wx.showToast({ title: '请至少选择一个退款项', icon: 'none' });
       return;
     }
@@ -535,7 +532,6 @@ Page({
         refSaleOrderId: order.saleOrderId,
         items,
         refundReason: refundReason.trim(),
-        includeOverpay,
       });
       this.setData({ showRefundDialog: false });
       wx.showToast({ title: '退款申请已提交，等待审批', icon: 'success' });

@@ -205,7 +205,7 @@
     confirm-button-text="提交"
   >
     <view style="padding: 16rpx 24rpx;">
-      <view wx:if="{{order.status === '部分支付'}}" style="font-size: 26rpx; color: #C0322A; margin-bottom: 12rpx;">本单为部分支付，退款按「已付未用次数 × 单价」计算（金额余数一并退还），不超过已收金额 ¥{{order.paidAmount}}，最终以店长审批为准。</view>
+      <view wx:if="{{order.status === '部分支付'}}" style="font-size: 26rpx; color: #C0322A; margin-bottom: 12rpx;">本单为部分支付，退款按「已付未用次数 × 单价」计算（已选子项的金额余数一并退还），不超过已收金额 ¥{{order.paidAmount}}，最终以店长审批为准。</view>
       <view style="font-size: 26rpx; color: #969799; margin-bottom: 12rpx;">选择退款项（疗程卡整卡退，不支持部分退次数）</view>
       <van-checkbox-group value="{{refundSelectedIds}}" bind:change="onRefundItemsChange">
         <view wx:for="{{refundItemOptions}}" wx:key="saleItemId" style="padding: 12rpx 0;">

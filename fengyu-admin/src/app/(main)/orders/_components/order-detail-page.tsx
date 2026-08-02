@@ -97,7 +97,7 @@ export default function OrderDetailPageClient({
   canListAllocations?: boolean;
   /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
   canDelete?: boolean;
-  /** 是否展示寄存单审批入口（系统管理员 / 总部店长 / 总部财务） */
+  /** 是否展示寄存单审批入口（系统管理员 / 总部或市场店长 / 总部或市场财务） */
   canApproveDeposit?: boolean;
 }) {
   const router = useRouter();
@@ -107,7 +107,7 @@ export default function OrderDetailPageClient({
   const refundedAmount = Number(order.refundedAmount ?? "0");
   const hasPrepaidDeduction = prepaidCardAmount > 0;
   // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
-  const hasRefund = refundedAmount > 0;
+  const hasRefund = refundedAmount > 0 && order.status !== "已退款";
   const couponDiscount = Number(order.couponDiscount ?? "0");
   // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
   const isLegacy = order.legacySource === "workfine";

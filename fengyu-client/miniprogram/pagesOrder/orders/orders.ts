@@ -85,7 +85,7 @@ Page({
       // 2026-04-26 sale-order-domain-refactor:
       //   - 已退款标签由 refunded_amount > 0 推导
       //   - 后端列表接口已返回 received / refunded_amount
-      const hasRefund = Number(item.refunded_amount || 0) > 0;
+      const hasRefund = Number(item.refunded_amount || 0) > 0 && item.status !== '已退款';
       // 列表项三段次数展示（ticket 2026-05-19）
       const mappedItems = (item.items || []).map((i: any) => {
         const total = Number(i.session_count ?? 0);

@@ -28,6 +28,7 @@ import { actionErrorMessage } from "@/lib/action-error"
 interface LineState {
   checked: boolean
   refundQuantity: string
+  includeOverpay: boolean
 }
 
 export function RefundForm({
@@ -51,9 +52,6 @@ export function RefundForm({
   const [overdraft, setOverdraft] = useState<EstimateOverdraftResult | null>(null)
   const [overdraftLoading, setOverdraftLoading] = useState(false)
   const [applyOverdraft, setApplyOverdraft] = useState(true)
-  /** 多收余数可退额（部分支付单 received 不能被单次价整除时的订单级孤儿零头，0=无） */
-  const [overpayRefundable, setOverpayRefundable] = useState(0)
-  const [includeOverpay, setIncludeOverpay] = useState(true)
 
   useEffect(() => {
     if (!open) return
@@ -63,14 +61,13 @@ export function RefundForm({
       .then((res) => {
         setItems(res.items)
         setClientUserId(res.clientUserId)
-        const ov = Math.max(0, Number(res.overpayRefundable || 0))
-        setOverpayRefundable(ov)
-        setIncludeOverpay(ov > 0)
         const defaults: Record<string, LineState> = {}
         for (const it of res.items) {
+          const overpay = Math.max(0, Number(it.overpayRefundable || 0))
           defaults[it.saleItemId] = {
-            checked: it.unusedQuantity > 0,
+            checked: it.unusedQuantity > 0 || overpay > 0,
             refundQuantity: String(it.unusedQuantity),
+            includeOverpay: overpay > 0,
           }
         }
         setLineStates(defaults)
@@ -81,22 +78,29 @@ export function RefundForm({
       .finally(() => setLoading(false))
   }, [open, saleOrderId])
 
+  const hasRefundableItem = useMemo(
+    () => items.some((it) => it.unusedQuantity > 0 || Math.max(0, Number(it.overpayRefundable || 0)) > 0),
+    [items],
+  )
+
   const previewTotals = useMemo(() => {
     let subtotal = 0
+    let overpay = 0
     for (const it of items) {
       const ls = lineStates[it.saleItemId]
       if (!ls?.checked) continue
       const qty = Number(ls.refundQuantity) || 0
-      if (qty <= 0) continue
-      subtotal += Math.round(it.unitRealPrice * qty * 100) / 100
+      const lineOverpay = ls.includeOverpay ? Math.max(0, Number(it.overpayRefundable || 0)) : 0
+      if (qty <= 0 && lineOverpay <= 0) continue
+      subtotal += Math.round((it.unitRealPrice * qty + lineOverpay) * 100) / 100
+      overpay += lineOverpay
     }
-    // 多收余数（纯现金，不挂品项）并入小计
-    const overpay = includeOverpay ? Math.max(0, overpayRefundable) : 0
-    subtotal = Math.round((subtotal + overpay) * 100) / 100
+    overpay = Math.round(overpay * 100) / 100
+    subtotal = Math.round(subtotal * 100) / 100
     const fee = Math.max(0, Number(handlingFee) || 0)
     const final = Math.max(0, Math.round((subtotal - fee) * 100) / 100)
     return { subtotal: Math.round(subtotal * 100) / 100, fee, final, overpay }
-  }, [items, lineStates, handlingFee, includeOverpay, overpayRefundable])
+  }, [items, lineStates, handlingFee])
 
   // 预判等级跌档 + 超额权益扣除（500ms 防抖）
   useEffect(() => {
@@ -133,20 +137,20 @@ export function RefundForm({
       toast.error("请填写退款原因")
       return
     }
-    const payload: Array<{ saleItemId: string; refundQuantity: number }> = []
+    const payload: Array<{ saleItemId: string; refundQuantity: number; includeOverpay?: boolean }> = []
     for (const it of items) {
       const ls = lineStates[it.saleItemId]
       if (!ls?.checked) continue
       const qty = Number(ls.refundQuantity) || 0
-      if (qty <= 0) continue
+      const includeLineOverpay = ls.includeOverpay && Math.max(0, Number(it.overpayRefundable || 0)) > 0
+      if (qty <= 0 && !includeLineOverpay) continue
       if (qty > it.unusedQuantity) {
         toast.error(`${it.productName} 退款数量超过可退数量 ${it.unusedQuantity}`)
         return
       }
-      payload.push({ saleItemId: it.saleItemId, refundQuantity: qty })
+      payload.push({ saleItemId: it.saleItemId, refundQuantity: qty, includeOverpay: includeLineOverpay })
     }
-    const wantOverpay = includeOverpay && overpayRefundable > 0
-    if (payload.length === 0 && !wantOverpay) {
+    if (payload.length === 0) {
       toast.error("请至少勾选一项退款明细")
       return
     }
@@ -162,7 +166,6 @@ export function RefundForm({
         refundReason: refundReason.trim(),
         handlingFee: previewTotals.fee,
         applyOverdraftDeduction: applyOverdraft,
-        includeOverpay: wantOverpay,
       })
       if (res.success) {
         toast.success(`退款单已创建（流水 #${res.data.refundPaymentId}），等待审批`)
@@ -188,7 +191,7 @@ export function RefundForm({
         <div className="py-10 text-center text-[#999999]">加载可退明细…</div>
       ) : loadError ? (
         <div className="py-6 text-center text-[#C62828]">{loadError}</div>
-      ) : items.length === 0 && overpayRefundable <= 0 ? (
+      ) : !hasRefundableItem ? (
         <div className="py-6 text-center text-[#999999]">该订单没有可退明细</div>
       ) : (
         <div className="space-y-4 mt-4">
@@ -201,18 +204,21 @@ export function RefundForm({
                   <th className="px-3 py-2 text-left font-medium text-gray-500">名称</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">单次价</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">可退</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-500">余数</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500 w-28">退款数量</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">小计</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {items.map((it) => {
-                  const ls = lineStates[it.saleItemId] ?? { checked: false, refundQuantity: "0" }
+                  const ls = lineStates[it.saleItemId] ?? { checked: false, refundQuantity: "0", includeOverpay: false }
                   const qty = Number(ls.refundQuantity) || 0
+                  const lineOverpay = ls.includeOverpay ? Math.max(0, Number(it.overpayRefundable || 0)) : 0
                   const rowSubtotal = ls.checked
-                    ? Math.round(it.unitRealPrice * qty * 100) / 100
+                    ? Math.round((it.unitRealPrice * qty + lineOverpay) * 100) / 100
                     : 0
-                  const disabled = it.unusedQuantity <= 0
+                  const lineHasOverpay = Math.max(0, Number(it.overpayRefundable || 0)) > 0
+                  const disabled = it.unusedQuantity <= 0 && !lineHasOverpay
                   return (
                     <tr key={it.saleItemId} className={disabled ? "opacity-50" : ""}>
                       <td className="px-3 py-2">
@@ -231,11 +237,31 @@ export function RefundForm({
                       <td className="px-3 py-2">{it.productName}</td>
                       <td className="px-3 py-2 text-right">¥{it.unitRealPrice.toFixed(2)}</td>
                       <td className="px-3 py-2 text-right">{it.unusedQuantity}</td>
+                      <td className="px-3 py-2 text-right">
+                        {lineHasOverpay ? (
+                          <label className="inline-flex items-center justify-end gap-1">
+                            <input
+                              type="checkbox"
+                              checked={ls.includeOverpay}
+                              disabled={disabled || !ls.checked}
+                              onChange={(e) => {
+                                setLineStates((prev) => ({
+                                  ...prev,
+                                  [it.saleItemId]: { ...ls, includeOverpay: e.target.checked },
+                                }))
+                              }}
+                            />
+                            <span>¥{Number(it.overpayRefundable || 0).toFixed(2)}</span>
+                          </label>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="px-3 py-2">
-                        {it.productType === '疗程卡' ? (
+                        {it.productType === '疗程卡' || it.unusedQuantity <= 0 ? (
                           // 疗程卡必须整卡全退（不支持部分退次数）：锁定退款数量 = 全部可退次数
                           <div className="h-8 leading-8 text-right text-xs text-[#999]">
-                            整卡退 {it.unusedQuantity} 次
+                            {it.unusedQuantity > 0 ? `整卡退 ${it.unusedQuantity} 次` : "不退数量"}
                           </div>
                         ) : (
                           <Input
@@ -264,20 +290,6 @@ export function RefundForm({
               </tbody>
             </table>
           </div>
-
-          {/* 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，纯现金退、不挂品项 */}
-          {overpayRefundable > 0 && (
-            <label className="flex items-center gap-2 rounded-[var(--radius)] border border-[#F3C77E] bg-[#FFF7E6] px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={includeOverpay}
-                onChange={(e) => setIncludeOverpay(e.target.checked)}
-              />
-              <span>
-                多收余数退款（实收超出整次合计的零头）：<span className="font-medium">¥{overpayRefundable.toFixed(2)}</span>
-              </span>
-            </label>
-          )}
 
           {/* 手续费 + 原因 */}
           <div className="grid grid-cols-2 gap-4">
@@ -397,7 +409,7 @@ export function RefundForm({
         <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
           取消
         </Button>
-        <Button onClick={handleSubmit} disabled={pending || loading || (items.length === 0 && overpayRefundable <= 0)}>
+        <Button onClick={handleSubmit} disabled={pending || loading || !hasRefundableItem}>
           {pending ? "提交中…" : "提交退款申请"}
         </Button>
       </DialogFooter>

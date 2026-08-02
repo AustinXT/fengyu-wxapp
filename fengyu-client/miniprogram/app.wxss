@@ -82,6 +82,7 @@ page {
 .status-confirm    { color: var(--color-status-confirm); }
 .status-paid       { color: var(--color-status-paid); }
 .status-completed  { color: var(--color-status-done); }
+.status-refunded   { color: var(--color-status-failed); }
 .status-failed     { color: var(--color-status-failed); }
 .status-closed     { color: var(--color-status-done); }
 .status-serving    { color: var(--color-status-serving); }
