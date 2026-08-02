@@ -496,7 +496,7 @@ describe('product.shopInit', () => {
     expect(welfareGroup.items).toHaveLength(1)
   })
 
-  test('experienceSkus：全量返回 is_experience=true SKU，与分类 EXISTS 过滤无关', async () => {
+  test('experienceSkus：返回当前门店市场可见的 is_experience=true SKU，与分类 EXISTS 过滤无关', async () => {
     const ctx = createCtx()
     // 1) _queryCategoryRows
     pg.query.mockResolvedValueOnce([])
@@ -534,7 +534,35 @@ describe('product.shopInit', () => {
     const expSql = pg.query.mock.calls[2][0]
     expect(expSql).toMatch(/sk\.is_experience = true/)
     expect(expSql).toMatch(/sk\.is_enabled = true/)
+    expect(expSql).toContain('sk.market_scope')
+    expect(expSql).toContain('FROM stores s')
+    expect(expSql).toContain('pm.id = ANY')
     expect(expSql).not.toMatch(/category_id = ANY/)
+    expect(pg.query.mock.calls[2][1]).toEqual([['store-001']])
+  })
+
+  test('experienceSkus：无可定位门店时只返回全局可见 SKU', async () => {
+    const ctx = createCtx({
+      auth: {
+        storeId: null,
+        effectiveStoreId: null,
+        currentStoreId: null,
+        scopeStoreIds: [],
+        marketName: null,
+      },
+    })
+
+    pg.query.mockResolvedValueOnce([]) // _queryCategoryRows
+    pg.query.mockResolvedValueOnce([]) // _queryMallBundleGroups
+    pg.query.mockResolvedValueOnce([]) // _queryExperienceSkus
+
+    await productRoutes.shopInit(ctx)
+
+    const expSql = pg.query.mock.calls[2][0]
+    expect(expSql).toContain('sk.market_scope IS NULL')
+    expect(expSql).toContain('btrim(sk.market_scope) =')
+    expect(expSql).not.toContain('FROM stores s')
+    expect(pg.query.mock.calls[2][1]).toEqual([])
   })
 })
 
@@ -646,4 +674,3 @@ describe('product.promotionPlans', () => {
     expect(ctx.result).toEqual([])
   })
 })
-

@@ -79,6 +79,7 @@ export async function createTestProduct({
   price = '100.00',
   isBundle = false,
   isVisible = true,
+  sortOrder = 0,
 } = {}) {
   await ensureTestCategories()
   await pgQuery(
@@ -86,11 +87,12 @@ export async function createTestProduct({
        product_id, category_id, name, price, is_bundle,
        sort_order, is_visible
      )
-     VALUES ($1, $2, $3, $4::numeric, $5, 0, $6)
+     VALUES ($1, $2, $3, $4::numeric, $5, $6, $7)
      ON CONFLICT (product_id) DO UPDATE
        SET name = EXCLUDED.name, price = EXCLUDED.price,
+           sort_order = EXCLUDED.sort_order,
            is_visible = EXCLUDED.is_visible`,
-    [productId, TEST_MALL_CATEGORY_ID, name, price, isBundle, isVisible]
+    [productId, TEST_MALL_CATEGORY_ID, name, price, isBundle, sortOrder, isVisible]
   )
   return { productId }
 }
@@ -105,6 +107,7 @@ export async function createTestProduct({
  * @param {number?} opts.sessionCount - 疗程次数（疗程卡 ≥ 2）
  * @param {boolean} opts.isExperience
  * @param {boolean} opts.linkToProduct - 是否插入 mall_product_skus 关联（默认 true）
+ * @param {number} opts.productSortOrder - 关联商城商品排序，仅用于需要命中 hotList LIMIT 的用例
  */
 export async function createTestSku({
   skuId = TEST_SKU_NORMAL_ID,
@@ -115,6 +118,7 @@ export async function createTestSku({
   sessionCount = null,
   isExperience = false,
   linkToProduct = true,
+  productSortOrder = 0,
 } = {}) {
   await ensureTestCategories()
   await pgQuery(
@@ -135,7 +139,7 @@ export async function createTestSku({
   )
 
   if (linkToProduct) {
-    await createTestProduct({ productId })
+    await createTestProduct({ productId, sortOrder: productSortOrder })
     await pgQuery(
       `INSERT INTO mall_product_skus (product_id, sku_id, sort_order)
        VALUES ($1, $2, 0)

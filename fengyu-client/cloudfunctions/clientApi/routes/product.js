@@ -14,6 +14,51 @@ const pg = require('../db/pg')
 const PRODUCT_VALID_FILTER = `p.deleted_at IS NULL AND p.is_visible = true`
 const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT sk.is_experience`
 
+function marketScopeValues(scopeExpr) {
+  return `string_to_array(replace(${scopeExpr}, ' ', ''), ',')`
+}
+
+/**
+ * SKU 可见范围过滤（product_skus.market_scope）。
+ *
+ * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
+ * 顾客端只有 boundStoreId / boundMarketName，因此优先用门店反查市场 id/name，
+ * 同时兼容旧的名称匹配。未绑门店时只允许全局可见 SKU。
+ */
+function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
+  const scopeExpr = `${skuAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `(${scopeExpr} IS NULL OR btrim(${scopeExpr}) = '')`
+  const storeId = auth?.boundStoreId || null
+  const marketName = auth?.boundMarketName || null
+
+  if (storeId) {
+    params.push([storeId])
+    const storeParam = `$${params.length}`
+    return `AND (
+      ${globalExpr}
+      OR EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ANY(${storeParam})
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR replace(pm.name, ' ', '') = ANY(${valuesExpr})
+          )
+      )
+    )`
+  }
+
+  if (marketName) {
+    params.push(marketName)
+    return `AND (${globalExpr} OR replace($${params.length}, ' ', '') = ANY(${valuesExpr}))`
+  }
+
+  return `AND ${globalExpr}`
+}
+
 /**
  * 计算 SPU 列表展示价（priceFrom / listPriceFrom）
  *
@@ -43,7 +88,8 @@ function computeListPriceFrom(product, skus) {
  * 内部函数：获取商品分类列表（mall_categories）
  * 仅返回含有效商品的分类
  */
-async function getCategoriesList(marketName) {
+async function getCategoriesList(auth) {
+  const marketName = auth?.boundMarketName || null
   const params = []
   let marketFilter
 
@@ -53,6 +99,8 @@ async function getCategoriesList(marketName) {
   } else {
     marketFilter = 'AND p.market_scope IS NULL'
   }
+
+  const skuMarketScopeFilter = buildSkuMarketScopeFilter(auth, params)
 
   const sql = `
     SELECT
@@ -68,6 +116,7 @@ async function getCategoriesList(marketName) {
         WHERE p.category_id = mc.category_id
           AND ${PRODUCT_VALID_FILTER}
           AND ${SKU_VALID_FILTER}
+          ${skuMarketScopeFilter}
           ${marketFilter}
       )
     ORDER BY mc.sort_order ASC
@@ -80,7 +129,8 @@ async function getCategoriesList(marketName) {
  * 内部函数：获取一级分组列表（category_group IS NULL）
  * 仅返回下属二级分类中含有效商品的分组
  */
-async function getCategoryGroups(marketName) {
+async function getCategoryGroups(auth) {
+  const marketName = auth?.boundMarketName || null
   const params = []
   let marketFilter
 
@@ -90,6 +140,8 @@ async function getCategoryGroups(marketName) {
   } else {
     marketFilter = 'AND p.market_scope IS NULL'
   }
+
+  const skuMarketScopeFilter = buildSkuMarketScopeFilter(auth, params)
 
   const sql = `
     SELECT
@@ -108,6 +160,7 @@ async function getCategoryGroups(marketName) {
             WHERE p.category_id = mc.category_id
               AND ${PRODUCT_VALID_FILTER}
               AND ${SKU_VALID_FILTER}
+              ${skuMarketScopeFilter}
               ${marketFilter}
           )
       )
@@ -121,15 +174,15 @@ async function getCategoryGroups(marketName) {
  * 商品分类列表
  */
 async function categories(ctx) {
-  const marketName = ctx.auth?.boundMarketName || null
-  const categoriesList = await getCategoriesList(marketName)
+  const categoriesList = await getCategoriesList(ctx.auth)
   ctx.result = { categories: categoriesList }
 }
 
 /**
  * 内部函数：按分类获取商城商品列表（含 SKU）
  */
-async function getProductListByCategory({ categoryId, marketName, keyword }) {
+async function getProductListByCategory({ categoryId, auth, keyword }) {
+  const marketName = auth?.boundMarketName || null
   const params = []
 
   let marketFilter
@@ -154,11 +207,13 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
   }
 
   // 仅返回有有效 SKU 的商品
+  const existsSkuMarketScopeFilter = buildSkuMarketScopeFilter(auth, params)
   whereClause += ` AND EXISTS (
     SELECT 1 FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
     WHERE mps.product_id = p.product_id
       AND ${SKU_VALID_FILTER}
+      ${existsSkuMarketScopeFilter}
   )`
 
   const productRows = await pg.query(`
@@ -179,6 +234,8 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
   const productIds = productRows.map(p => p.product_id)
   let allSkus = []
   if (productIds.length > 0) {
+    const skuParams = [productIds]
+    const skuMarketScopeFilter = buildSkuMarketScopeFilter(auth, skuParams)
     allSkus = await pg.query(`
       SELECT
         mps.product_id, sk.sku_id, sk.product_type, sk.spec_name,
@@ -197,8 +254,9 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
       LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
       WHERE mps.product_id = ANY($1)
         AND ${SKU_VALID_FILTER}
+        ${skuMarketScopeFilter}
       ORDER BY mps.sort_order ASC
-    `, [productIds])
+    `, skuParams)
   }
 
   const skuByProduct = {}
@@ -224,8 +282,7 @@ async function getProductListByCategory({ categoryId, marketName, keyword }) {
  */
 async function spuList(ctx) {
   const { categoryId } = ctx.event.payload || {}
-  const marketName = ctx.auth?.boundMarketName || null
-  const result = await getProductListByCategory({ categoryId, marketName })
+  const result = await getProductListByCategory({ categoryId, auth: ctx.auth })
   ctx.result = { spuList: result }
 }
 
@@ -240,8 +297,7 @@ async function search(ctx) {
     ctx.result = { spuList: [] }
     return
   }
-  const marketName = ctx.auth?.boundMarketName || null
-  const result = await getProductListByCategory({ marketName, keyword: kw })
+  const result = await getProductListByCategory({ auth: ctx.auth, keyword: kw })
   ctx.result = { spuList: result }
 }
 
@@ -249,11 +305,9 @@ async function search(ctx) {
  * Shop 页初始化接口（合并 categories + 第一个分类的商品列表）
  */
 async function shopInit(ctx) {
-  const marketName = ctx.auth?.boundMarketName || null
-
   const [groups, categoriesList] = await Promise.all([
-    getCategoryGroups(marketName),
-    getCategoriesList(marketName),
+    getCategoryGroups(ctx.auth),
+    getCategoriesList(ctx.auth),
   ])
 
   // 找第一个 group 下的第一个二级分类，加载其商品
@@ -261,11 +315,11 @@ async function shopInit(ctx) {
   if (groups.length > 0 && categoriesList.length > 0) {
     const firstChild = categoriesList.find(c => c.category_group === groups[0].category_name)
     if (firstChild) {
-      firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, marketName })
+      firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, auth: ctx.auth })
     }
   } else if (categoriesList.length > 0) {
     // 降级：无分组时取第一个分类
-    firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, marketName })
+    firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, auth: ctx.auth })
   }
 
   ctx.result = {
@@ -280,6 +334,8 @@ async function shopInit(ctx) {
  */
 async function skuDetail(ctx) {
   const { skuId, productId } = ctx.event.payload || {}
+  const params = [skuId, productId || null]
+  const marketScopeFilter = buildSkuMarketScopeFilter(ctx.auth, params)
 
   if (!skuId) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')
@@ -303,7 +359,8 @@ async function skuDetail(ctx) {
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = $1 AND sk.deleted_at IS NULL
-  `, [skuId, productId || null])
+      ${marketScopeFilter}
+  `, params)
 
   if (rows.length === 0) {
     throw new Error('INVALID_PARAMS: 商品不存在')
@@ -327,6 +384,7 @@ async function hotList(ctx) {
   } else {
     marketFilter = 'AND p.market_scope IS NULL'
   }
+  const existsSkuMarketScopeFilter = buildSkuMarketScopeFilter(ctx.auth, params)
 
   const productRows = await pg.query(`
     SELECT
@@ -341,7 +399,9 @@ async function hotList(ctx) {
       AND EXISTS (
         SELECT 1 FROM mall_product_skus mps
         JOIN product_skus sk ON mps.sku_id = sk.sku_id
-        WHERE mps.product_id = p.product_id AND ${SKU_VALID_FILTER}
+        WHERE mps.product_id = p.product_id
+          AND ${SKU_VALID_FILTER}
+          ${existsSkuMarketScopeFilter}
       )
     ORDER BY p.sort_order ASC
     LIMIT $1
@@ -351,13 +411,17 @@ async function hotList(ctx) {
   const productIds = productRows.map(p => p.product_id)
   let allSkus = []
   if (productIds.length > 0) {
+    const skuParams = [productIds]
+    const skuMarketScopeFilter = buildSkuMarketScopeFilter(ctx.auth, skuParams)
     allSkus = await pg.query(`
       SELECT mps.product_id, sk.sku_id, sk.price, sk.special_price, mps.bundle_price
       FROM mall_product_skus mps
       JOIN product_skus sk ON mps.sku_id = sk.sku_id
-      WHERE mps.product_id = ANY($1) AND ${SKU_VALID_FILTER}
+      WHERE mps.product_id = ANY($1)
+        AND ${SKU_VALID_FILTER}
+        ${skuMarketScopeFilter}
       ORDER BY mps.sort_order ASC
-    `, [productIds])
+    `, skuParams)
   }
 
   const skuByProduct = {}
@@ -418,6 +482,8 @@ async function spuDetail(ctx) {
   const product = productRows[0]
 
   // PR-D：JOIN product_categories pc → parent_pc，带出 product_kind + kind_display_color
+  const skuParams = [productId]
+  const skuMarketScopeFilter = buildSkuMarketScopeFilter(ctx.auth, skuParams)
   const skuList = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -437,8 +503,9 @@ async function spuDetail(ctx) {
     LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
       AND ${SKU_VALID_FILTER}
+      ${skuMarketScopeFilter}
     ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
-  `, [productId])
+  `, skuParams)
 
   // 构建分组信息（套餐商品）
   let bundleGroups = null
@@ -481,9 +548,12 @@ async function spuDetail(ctx) {
  * 返回顺序按 sortOrder ASC（admin 配置项 C5），同 sortOrder 时按 sku_id 兜底稳定排序。
  * 一并返回所属商品名 / 封面图（mall_product_skus → products JOIN），便于列表卡片直接渲染。
  *
- * 不做 marketName 过滤：体验卡是拉新工具，所有市场可见（如未来需限制可加 p.market_scope 校验）。
+ * 按 product_skus.market_scope 过滤：null/空=全部市场，否则只对当前绑定门店所属市场可见。
  */
 async function experienceCardList(ctx) {
+  const params = []
+  const marketScopeFilter = buildSkuMarketScopeFilter(ctx.auth, params)
+
   const rows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -497,8 +567,9 @@ async function experienceCardList(ctx) {
     WHERE sk.is_experience = true
       AND sk.is_enabled = true
       AND sk.deleted_at IS NULL
+      ${marketScopeFilter}
     ORDER BY sk.sort_order ASC, sk.sku_id ASC
-  `)
+  `, params)
 
   ctx.result = { skuList: rows }
 }

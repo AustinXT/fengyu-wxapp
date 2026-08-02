@@ -71,7 +71,7 @@ async function caseSpuDetailLegacySpuId() {
 }
 
 async function caseHotList() {
-  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID, productSortOrder: -10000 })
   const res = await invokePublic('product.hotList', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const list = res.data?.spuList || []

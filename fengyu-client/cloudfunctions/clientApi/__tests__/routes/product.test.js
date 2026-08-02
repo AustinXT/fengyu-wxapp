@@ -42,8 +42,10 @@ describe('product.categories', () => {
     const ctx = createBoundCtx({}, { boundMarketName: '华东市场' })
     await routes.categories(ctx)
 
-    expect(pg.query.mock.calls[0][0]).toContain('market_scope')
-    expect(pg.query.mock.calls[0][1]).toEqual(['华东市场'])
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain('market_scope')
+    expect(calledSql).toContain('FROM stores s')
+    expect(params).toEqual(['华东市场', ['store-001']])
   })
 })
 
@@ -82,6 +84,31 @@ describe('product.spuList', () => {
     expect(ctx.result.spuList[0].listPriceFrom).toBe(599)
   })
 
+  test('商品存在性与下发 SKU 列表同步按绑定门店所属市场过滤', async () => {
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p1', name: '美白护理', category_id: 'cat-1', category_name: '护理', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p1', sku_id: 'sku-1', price: 100, special_price: 80, sort_order: 1 },
+    ])
+
+    const ctx = createBoundCtx(
+      { categoryId: 'cat-1' },
+      { boundStoreId: 'store-nanchang', boundMarketName: '南昌凤御' }
+    )
+    await routes.spuList(ctx)
+
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('sk.market_scope')
+    expect(productSql).toContain('FROM stores s')
+    expect(productParams).toEqual(['南昌凤御', 'cat-1', ['store-nanchang']])
+
+    const [skuSql, skuParams] = pg.query.mock.calls[1]
+    expect(skuSql).toContain('sk.market_scope')
+    expect(skuSql).toContain('FROM stores s')
+    expect(skuParams).toEqual([['p1'], ['store-nanchang']])
+  })
+
   test('无商品时返回空列表', async () => {
     pg.query.mockResolvedValueOnce([])
 
@@ -108,6 +135,27 @@ describe('product.skuDetail', () => {
     expect(ctx.result.sku.sku_id).toBe('sku-1')
     expect(ctx.result.sku.spec_name).toBe('10次卡')
     expect(ctx.result.sku.category_name).toBe('护理项目')
+  })
+
+  test('按绑定门店所属市场过滤 SKU 可见范围', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sku_id: 'sku-1', product_type: '疗程卡',
+      spec_name: '10次卡', price: 1000, special_price: 800,
+      session_count: 10, service_fee: 0, sort_order: 1, is_shengmei: false,
+      category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目', sales_category: null,
+    }])
+
+    const ctx = createBoundCtx(
+      { skuId: 'sku-1' },
+      { boundStoreId: 'store-nanchang', boundMarketName: '南昌凤御' }
+    )
+    await routes.skuDetail(ctx)
+
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain('sk.market_scope')
+    expect(calledSql).toContain('FROM stores s')
+    expect(calledSql).toContain('pm.id = ANY')
+    expect(params).toEqual(['sku-1', null, ['store-nanchang']])
   })
 
   test('缺少 skuId → INVALID_PARAMS', async () => {
@@ -144,6 +192,28 @@ describe('product.spuDetail', () => {
     expect(ctx.result.spu.priceFrom).toBe(80)
   })
 
+  test('商品详情下发 SKU 列表同步按绑定门店所属市场过滤', async () => {
+    pg.query.mockResolvedValueOnce([{
+      product_id: 'p1', name: '美白护理', category_id: 'cat-1',
+      category_name: '护理', cover_image: '', description: '', sort_order: 1,
+      price: 100, special_price: 80, is_bundle: false,
+    }])
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-1', price: 100, special_price: 80, sort_order: 1 },
+    ])
+
+    const ctx = createBoundCtx(
+      { productId: 'p1' },
+      { boundStoreId: 'store-nanchang', boundMarketName: '南昌凤御' }
+    )
+    await routes.spuDetail(ctx)
+
+    const [skuSql, skuParams] = pg.query.mock.calls[1]
+    expect(skuSql).toContain('sk.market_scope')
+    expect(skuSql).toContain('FROM stores s')
+    expect(skuParams).toEqual(['p1', ['store-nanchang']])
+  })
+
   test('缺少 productId → INVALID_PARAMS', async () => {
     const ctx = createCtx({ payload: {} })
     await expect(routes.spuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*productId/)
@@ -170,6 +240,16 @@ describe('product.hotList', () => {
 
     expect(ctx.result.spuList).toHaveLength(1)
     expect(ctx.result.spuList[0].priceFrom).toBe(80)
+
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('sk.market_scope')
+    expect(productSql).toContain('FROM stores s')
+    expect(productParams).toEqual([3, '华东市场', ['store-001']])
+
+    const [skuSql, skuParams] = pg.query.mock.calls[1]
+    expect(skuSql).toContain('sk.market_scope')
+    expect(skuSql).toContain('FROM stores s')
+    expect(skuParams).toEqual([['p1'], ['store-001']])
   })
 })
 
@@ -202,6 +282,11 @@ describe('product.shopInit', () => {
     expect(ctx.result.categories).toHaveLength(1)
     expect(ctx.result.spuList).toHaveLength(1)
     expect(ctx.result.spuList[0].product_id).toBe('p1')
+
+    const [skuSql, skuParams] = pg.query.mock.calls[3]
+    expect(skuSql).toContain('sk.market_scope')
+    expect(skuSql).toContain('FROM stores s')
+    expect(skuParams).toEqual([['p1'], ['store-001']])
   })
 
   test('无分类时返回空列表', async () => {
@@ -233,7 +318,38 @@ describe('product.experienceCardList', () => {
     const calledSql = pg.query.mock.calls[0][0]
     expect(calledSql).toMatch(/is_experience\s*=\s*true/)
     expect(calledSql).toMatch(/is_enabled\s*=\s*true/)
+    expect(calledSql).toContain('sk.market_scope')
+    expect(calledSql).toContain('FROM stores s')
     expect(calledSql).toMatch(/ORDER BY sk\.sort_order ASC/)
+  })
+
+  test('有绑定门店时按门店所属市场过滤 SKU 可见范围', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx(
+      {},
+      { boundStoreId: 'store-jiujiang', boundMarketName: '九江凤御' }
+    )
+    await routes.experienceCardList(ctx)
+
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain('sk.market_scope')
+    expect(calledSql).toContain('JOIN org_nodes pm')
+    expect(calledSql).toContain('pm.id = ANY')
+    expect(params).toEqual([['store-jiujiang']])
+  })
+
+  test('未绑定门店时只返回全局可见体验卡', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createNewUserCtx()
+    await routes.experienceCardList(ctx)
+
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain('sk.market_scope IS NULL')
+    expect(calledSql).toContain('btrim(sk.market_scope) =')
+    expect(calledSql).not.toContain('FROM stores s')
+    expect(params).toEqual([])
   })
 
   test('SQL 不能用 SKU_VALID_FILTER（会反向过滤掉所有体验卡）', async () => {

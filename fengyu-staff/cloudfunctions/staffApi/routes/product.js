@@ -14,6 +14,60 @@ const { requireStaffBound } = require('../middleware/auth')
 
 // ===== 公共查询辅助 =====
 
+function marketScopeValues(scopeExpr) {
+  return `string_to_array(replace(${scopeExpr}, ' ', ''), ',')`
+}
+
+/**
+ * SKU 可见范围过滤（product_skus.market_scope）。
+ *
+ * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
+ * staff 门店模式优先使用 effectiveStoreId；管理层模式用 scopeStoreIds 展开的门店集合。
+ */
+function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
+  const scopeExpr = `${skuAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `(${scopeExpr} IS NULL OR btrim(${scopeExpr}) = '')`
+  const storeIds = []
+
+  if (auth?.effectiveStoreId) {
+    storeIds.push(auth.effectiveStoreId)
+  } else if (Array.isArray(auth?.scopeStoreIds)) {
+    storeIds.push(...auth.scopeStoreIds.filter(Boolean))
+  } else if (auth?.storeId) {
+    storeIds.push(auth.storeId)
+  }
+
+  const uniqueStoreIds = [...new Set(storeIds)]
+  const marketName = auth?.marketName || null
+
+  if (uniqueStoreIds.length > 0) {
+    params.push(uniqueStoreIds)
+    const storeParam = `$${params.length}`
+    return `AND (
+      ${globalExpr}
+      OR EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ANY(${storeParam})
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR replace(pm.name, ' ', '') = ANY(${valuesExpr})
+          )
+      )
+    )`
+  }
+
+  if (marketName) {
+    params.push(marketName)
+    return `AND (${globalExpr} OR replace($${params.length}, ' ', '') = ANY(${valuesExpr}))`
+  }
+
+  return `AND ${globalExpr}`
+}
+
 /**
  * 查询品项分类列表
  *
@@ -192,7 +246,10 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
  *
  * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
  */
-async function _queryExperienceSkus() {
+async function _queryExperienceSkus(auth) {
+  const params = []
+  const marketScopeFilter = buildSkuMarketScopeFilter(auth, params)
+
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
@@ -205,8 +262,9 @@ async function _queryExperienceSkus() {
     WHERE sk.is_experience = true
       AND sk.is_enabled = true
       AND sk.deleted_at IS NULL
+      ${marketScopeFilter}
     ORDER BY sk.sort_order ASC
-  `)
+  `, params)
   return rows.map(_formatSkuRow)
 }
 
@@ -364,7 +422,7 @@ async function shopInit(ctx) {
 
   // 体验卡 Tab 走扁平 SKU 列表，不依赖分类元数据；
   // 与 admin getProductsByKind('体验卡') 用 SKU 级 capability 判定保持一致。
-  const experienceSkus = await _queryExperienceSkus()
+  const experienceSkus = await _queryExperienceSkus(ctx.auth)
 
   ctx.result = { categories, groupedCategories, skuList, mallBundleGroups, experienceSkus }
 }
