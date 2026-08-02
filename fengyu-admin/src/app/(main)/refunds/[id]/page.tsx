@@ -88,7 +88,9 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div>
               <span className="text-[#999]">退款金额</span>
-              <p className="font-bold text-lg mt-1 text-[#C62828]">-¥{refundAmount.toFixed(2)}</p>
+              <p className={`font-bold text-lg mt-1 ${refundAmount > 0 ? 'text-[#C62828]' : 'text-[#666]'}`}>
+                {refundAmount > 0 ? `-¥${refundAmount.toFixed(2)}` : '退项不退款'}
+              </p>
             </div>
             <div>
               <span className="text-[#999]">支付通道</span>
@@ -206,13 +208,14 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
               <tbody className="divide-y divide-gray-200">
                 {payments.map((p) => {
                   const amt = Number(p.amount)
+                  const cashAmount = Math.abs(amt)
                   return (
                     <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 whitespace-nowrap">
                         {formatDateTime(p.paidAt || p.createdAt)}
                       </td>
-                      <td className="px-4 py-3 text-right font-medium text-[#C62828]">
-                        ¥{amt.toLocaleString()}
+                      <td className={`px-4 py-3 text-right font-medium ${cashAmount > 0 ? 'text-[#C62828]' : 'text-[#666]'}`}>
+                        {cashAmount > 0 ? `-¥${cashAmount.toLocaleString()}` : '退项不退款'}
                       </td>
                       <td className="px-4 py-3">{p.paymentMethod}</td>
                       <td className="px-4 py-3">

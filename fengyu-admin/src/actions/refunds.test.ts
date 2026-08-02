@@ -122,7 +122,7 @@ describe('estimateRefundOverdraft', () => {
 
   it('保级期内 → willDowngrade=false 即便消费跌至低档', async () => {
     const upgradedAt = new Date('2026-03-01T00:00:00Z')
-    const lockedUntil = new Date('2026-07-29T00:00:00Z') // 150d 后，尚在保级期（today=04-24）
+    const lockedUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
     mockUserRow({
       memberLevel: '星钻',
       memberLevelUpgradedAt: upgradedAt,

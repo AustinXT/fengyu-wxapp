@@ -86,11 +86,13 @@ export function RefundForm({
   const previewTotals = useMemo(() => {
     let subtotal = 0
     let overpay = 0
+    let hasItemQuantity = false
     for (const it of items) {
       const ls = lineStates[it.saleItemId]
       if (!ls?.checked) continue
       const qty = Number(ls.refundQuantity) || 0
       const lineOverpay = ls.includeOverpay ? Math.max(0, Number(it.overpayRefundable || 0)) : 0
+      if (qty > 0) hasItemQuantity = true
       if (qty <= 0 && lineOverpay <= 0) continue
       subtotal += Math.round((it.unitRealPrice * qty + lineOverpay) * 100) / 100
       overpay += lineOverpay
@@ -99,8 +101,14 @@ export function RefundForm({
     subtotal = Math.round(subtotal * 100) / 100
     const fee = Math.max(0, Number(handlingFee) || 0)
     const final = Math.max(0, Math.round((subtotal - fee) * 100) / 100)
-    return { subtotal: Math.round(subtotal * 100) / 100, fee, final, overpay }
+    return { subtotal: Math.round(subtotal * 100) / 100, fee, final, overpay, hasItemQuantity }
   }, [items, lineStates, handlingFee])
+
+  useEffect(() => {
+    if (open && previewTotals.subtotal <= 0 && handlingFee !== "0.00") {
+      setHandlingFee("0.00")
+    }
+  }, [open, previewTotals.subtotal, handlingFee])
 
   // 预判等级跌档 + 超额权益扣除（500ms 防抖）
   useEffect(() => {
@@ -131,6 +139,29 @@ export function RefundForm({
     0,
     Math.round((previewTotals.final - effectiveDeduction) * 100) / 100,
   )
+  const isZeroCashItemRefund = useMemo(() => {
+    if (previewTotals.subtotal !== 0 || previewTotals.fee !== 0) return false
+
+    const itemRefunds = items
+      .map((it) => ({
+        it,
+        checked: lineStates[it.saleItemId]?.checked,
+        qty: Number(lineStates[it.saleItemId]?.refundQuantity) || 0,
+      }))
+      .filter(({ checked, qty }) => checked && qty > 0)
+
+    return itemRefunds.length > 0 && itemRefunds.every(({ it, qty }) => {
+      const consumed = it.productType === '疗程卡'
+        ? Number(it.sessionCount || 0) - Number(it.remainingSessions || 0)
+        : Number(it.pickedUpQuantity || 0)
+
+      return it.productType === '疗程卡' &&
+        Number(it.sessionCount || 0) > 0 &&
+        Number(it.saleAmount || 0) <= 0 &&
+        qty >= it.unusedQuantity &&
+        consumed <= 0
+    })
+  }, [items, lineStates, previewTotals.fee, previewTotals.subtotal])
 
   const handleSubmit = () => {
     if (!refundReason.trim()) {
@@ -154,7 +185,11 @@ export function RefundForm({
       toast.error("请至少勾选一项退款明细")
       return
     }
-    if (previewTotals.final <= 0) {
+    if (previewTotals.subtotal <= 0 && previewTotals.fee > 0) {
+      toast.error("0 元退项不能填写手续费")
+      return
+    }
+    if (previewTotals.final <= 0 && !isZeroCashItemRefund) {
       toast.error("退款金额为 0，无法提交")
       return
     }
@@ -168,7 +203,11 @@ export function RefundForm({
         applyOverdraftDeduction: applyOverdraft,
       })
       if (res.success) {
-        toast.success(`退款单已创建（流水 #${res.data.refundPaymentId}），等待审批`)
+        toast.success(
+          res.data.finalRefundAmount === 0
+            ? `退项申请已创建（流水 #${res.data.refundPaymentId}），等待审批`
+            : `退款单已创建（流水 #${res.data.refundPaymentId}），等待审批`,
+        )
         onOpenChange(false)
         router.refresh()
       } else {
@@ -302,8 +341,13 @@ export function RefundForm({
                 value={handlingFee}
                 onChange={(e) => setHandlingFee(e.target.value)}
                 placeholder="0.00"
+                disabled={previewTotals.subtotal <= 0}
               />
-              <p className="text-xs text-[#999] mt-1">从退款总额中扣除，不退给顾客</p>
+              <p className="text-xs text-[#999] mt-1">
+                {previewTotals.subtotal <= 0 && previewTotals.hasItemQuantity
+                  ? "0 元退项不收手续费"
+                  : "从退款总额中扣除，不退给顾客"}
+              </p>
             </div>
             <div className="rounded-[var(--radius)] bg-[#FFF7E6] border border-[#F3C77E] px-3 py-2 text-sm">
               <div className="flex justify-between">

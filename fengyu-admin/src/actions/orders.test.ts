@@ -251,7 +251,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -965,6 +965,34 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     }
   })
 
+  it('5次卡 ×3，应付 500/张，实付 1350 → pendingReceived=500/500/350', async () => {
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518104')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-5x',
+        productName: '5次面部护理',
+        productType: '疗程卡' as const,
+        sessionCount: 5,
+        unitPrice: '500.00',
+        unitRealPrice: '500.00',
+        quantity: 3,
+        saleAmount: '1500.00',
+        received: '1350.00',
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(3)
+    expect(saleItemInserts.map((c) => Number(c.values.saleAmount))).toEqual([500, 500, 500])
+    expect(saleItemInserts.map((c) => Number(c.values.received))).toEqual([0, 0, 0])
+    expect(saleItemInserts.map((c) => Number(c.values.pendingReceived))).toEqual([500, 500, 350])
+  })
+
   it('家居产品 ×10（productType=家居产品）→ 写入 1 行 sale_items（quantity=10，合行不拆）', async () => {
     const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518103')
     const result = await createOrder({
@@ -988,6 +1016,113 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
+  })
+})
+
+function mockDepositOrderReads(skuRows: any[]) {
+  ;(db.select as any)
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            userId: 'user-1',
+            phone: '13812345678',
+            name: '顾客甲',
+            boundStoreId: 'store-1',
+          }]),
+        }),
+      }),
+    })
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(skuRows),
+        }),
+      }),
+    })
+}
+
+describe('createDepositOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('5次卡 ×3 → 写入 3 行 sale_items，历史实收=500/500/350', async () => {
+    mockDepositOrderReads([{
+      skuId: 'sku-deposit',
+      productType: '疗程卡',
+      specName: '水光卡',
+      price: '500.00',
+      specialPrice: null,
+      sessionCount: 5,
+      isShengmei: false,
+      isExperience: false,
+      salesCategory: '自销自耗',
+      productKind: '护理项目',
+    }])
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518201')
+
+    const result = await createDepositOrder({
+      storeId: 'store-1',
+      marketName: '市场A',
+      clientUserId: 'user-1',
+      remark: '老系统剩余次数录入',
+      items: [{ skuId: 'sku-deposit', quantity: 3, received: 1350 }],
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.itemCount).toBe(3)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(3)
+    for (const c of saleItemInserts) {
+      expect(c.values.quantity).toBe(1)
+      expect(c.values.sessionCount).toBe(5)
+      expect(c.values.remainingSessions).toBe(5)
+      expect(c.values.saleAmount).toBe('500.00')
+    }
+
+    const paymentInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'refSaleItemId' in c.values
+    )
+    expect(paymentInserts).toHaveLength(3)
+    expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 500, 350])
+  })
+
+  it('家居产品 ×3 → 写入 1 行 sale_items（quantity=3）', async () => {
+    mockDepositOrderReads([{
+      skuId: 'sku-home',
+      productType: '家居产品',
+      specName: '精华液',
+      price: '300.00',
+      specialPrice: null,
+      sessionCount: null,
+      isShengmei: false,
+      isExperience: false,
+      salesCategory: '自销自耗',
+      productKind: '家居产品',
+    }])
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518202')
+
+    const result = await createDepositOrder({
+      storeId: 'store-1',
+      marketName: '市场A',
+      clientUserId: 'user-1',
+      items: [{ skuId: 'sku-home', quantity: 3, received: 0 }],
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.itemCount).toBe(1)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(1)
+    expect(saleItemInserts[0].values.quantity).toBe(3)
+    expect(saleItemInserts[0].values.sessionCount).toBeNull()
+    expect(saleItemInserts[0].values.remainingSessions).toBeNull()
   })
 })
 
@@ -1614,6 +1749,42 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     const result = await closeOrder('order-1')
     expect(result.success).toBe(true)
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('关闭待支付转换单 → 恢复源卡次数并作废转换权益', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      expect(sqlTexts.some((text: string) =>
+        text.includes('locked_source') &&
+        text.includes('ref_sale_item_id') &&
+        text.includes('restore_sessions'),
+      )).toBe(true)
+      expect(sqlTexts.some((text: string) =>
+        text.includes("item_direction IN ('转出', '转入')") &&
+        text.includes('paid_sessions'),
+      )).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
   })
 
   it('事务异常 → 返回友好错误', async () => {
@@ -2427,6 +2598,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     updateCount?: number
     upsertCardId?: string
     onInsertOrder?: (v: any) => void
+    onInsertItem?: (v: any) => void
   }) {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       let execCall = 0
@@ -2449,6 +2621,9 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           values: vi.fn().mockImplementation((v: any) => {
             if (v && 'saleOrderId' in v && 'saleOrderType' in v) {
               opts.onInsertOrder?.(v)
+            }
+            if (v && 'saleItemId' in v && 'itemDirection' in v) {
+              opts.onInsertItem?.(v)
             }
             return Promise.resolve({})
           }),
@@ -2513,6 +2688,45 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.priceDiff).toBe(0)
     expect(capturedOrder.totalAmount).toBe('0.00')
     expect(capturedOrder.status).toBe('已支付')
+  })
+
+  it('转换单转入支持店长特价：按手填应付计价并保留标价/成交价快照', async () => {
+    const insertedItems: any[] = []
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', specialPrice: null, serviceFee: '0', sessionCount: 5,
+        productType: '疗程卡', salesCategory: '自销自耗', isManagerSpecial: true,
+      }],
+      onInsertItem: (v) => { insertedItems.push(v) },
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      convertInItems: [{
+        ...baseConvData.convertInItems[0],
+        unitRealPrice: '300.00',
+        saleAmount: '300.00',
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.totalIn).toBe(300)
+    expect(result.priceDiff).toBe(200)
+
+    const inItem = insertedItems.find((item) => item.itemDirection === '转入')
+    expect(inItem).toBeDefined()
+    expect(inItem.unitPrice).toBe('100.00')
+    expect(inItem.unitRealPrice).toBe('60.00')
+    expect(inItem.saleAmount).toBe('300.00')
+    expect(inItem.isManagerSpecial).toBe(true)
   })
 
   it('priceDiff > 0：补现，total_amount=差额，status=待支付（线下走 confirmOffline 入账）', async () => {
@@ -3868,16 +4082,16 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
 })
 
 describe('exportAllocationOrders — 销售提成三态导出（已分配明细 + 待分配占位行）', () => {
-  // 自引用 chain：from/innerJoin/leftJoin/where/orderBy 均返回同一对象，limit 收口 resolve rows，抗 JOIN 增减
+  // 自引用 chain：支持直接 await orderBy(...) 与旧的 .limit() 收口，抗 JOIN 增减
   function makeChain(rows: any[]) {
-    const chain: any = {
+    const chain: any = Object.assign(Promise.resolve(rows), {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
       orderBy: vi.fn(() => chain),
       limit: vi.fn().mockResolvedValue(rows),
-    }
+    })
     return chain
   }
 
@@ -4005,7 +4219,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     expect(rows[0].isMembershipUpgrade).toBe(true)
   })
 
-  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({
       saleOrderId: `FY-${i}`, isActivity: false, sortDatetime: new Date(),
     }))
@@ -4013,8 +4227,8 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
 
     const { rows, truncated } = await exportAllocationOrders({ allocStatus: '已分配' })
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(10001)
   })
 })
 
@@ -4025,9 +4239,9 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
  * 不分摊 sale_allations；订单基础字段在每条 item 行重复，行级字段（商品类型/品质/次数/单价）按 item 各填。
  */
 describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
-  // sale_items 为起点的链式 mock：from → innerJoin → 5 个 leftJoin → where(与) → orderBy(双参) → limit 收口
+  // sale_items 为起点的链式 mock：支持直接 await orderBy(...) 与旧的 .limit() 收口
   function makeChain(rows: any[]) {
-    const chain: any = {
+    const chain: any = Object.assign(Promise.resolve(rows), {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
@@ -4039,7 +4253,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       offset: vi.fn(() => chain),
       groupBy: vi.fn(() => chain),
       having: vi.fn(() => chain),
-    }
+    })
     return chain
   }
 
@@ -4204,7 +4418,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].unitRealPrice).toBe(158.5)
   })
 
-  it('超过 LIMIT 100000 → truncated=true 且按 item 截断到 100000', async () => {
+  it('超过旧 item 上限也返回全量且不标记截断', async () => {
     const row = {
       marketName: 'M', storeName: 'S', saleOrderId: 'FY-X', saleOrderType: '销售单',
       documentType: null, status: '已支付', custName: null, custPhone: null,
@@ -4222,11 +4436,11 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
 
     const { rows, truncated } = await exportOrders({})
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(100000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(100001)
   })
 
-  it('混合来源合并后超过 LIMIT 100000 → truncated=true 且截断到 100000', async () => {
+  it('混合来源合并后超过旧上限也返回全量且不标记截断', async () => {
     const item = {
       marketName: 'M', storeName: 'S', saleOrderId: 'FY-ITEM', saleOrderType: '销售单',
       documentType: null, status: '已支付', custName: null, custPhone: null,
@@ -4256,8 +4470,8 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
 
     const { rows, truncated } = await exportOrders({})
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(100000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(100001)
   })
 
   it('费用列（totalAmount/received/refundedAmount）：prepaidCardAmount 等缺失 fallback 0', async () => {

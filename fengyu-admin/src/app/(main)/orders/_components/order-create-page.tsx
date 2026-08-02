@@ -538,10 +538,10 @@ export default function OrderCreatePageClient({
     ? Number(selectedCouponForCalc.discountAmount)
     : 0
 
-  // 店长特别优惠：仅销售单 + SKU 标记 + 非套餐行（套餐 sku 带 bundlePrice/bundleGroupId）时
+  // 店长特别优惠：销售单/转换单 + SKU 标记 + 非套餐行（套餐 sku 带 bundlePrice/bundleGroupId）时
   // 允许店长在 Step3 手动修改应付金额（最低 0，不超过标价）。
   const canEditSaleAmount = (item: CartItem) =>
-    !isInternal && !isConversion &&
+    !isInternal &&
     item.sku.isManagerSpecial === true &&
     item.sku.bundlePrice == null && item.sku.bundleGroupId == null
 
@@ -1194,21 +1194,103 @@ export default function OrderCreatePageClient({
 
             <Separator />
 
-            {/* 商品清单 — 转换单走 ConversionPanel；销售/内部单走原表单 */}
+            {/* 商品清单 — 转换单展示转入明细 + ConversionPanel；销售/内部单走原表单 */}
             {isConversion ? (
-              <ConversionPanel
-                loading={heldCardsLoading}
-                heldCards={heldCards}
-                selectedIds={selectedHeldCardIds}
-                onChange={setSelectedHeldCardIds}
-                totalIn={totalSaleAmount}
-                cardBalance={customerCardBalance}
-                useCard={useCard}
-                cardAmountInput={cardAmountInput}
-                cardAmount={conversionCardAmount}
-                onToggleCard={setUseCard}
-                onCardAmountChange={setCardAmountInput}
-              />
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold mb-3">转入商品</h3>
+                  <div className="grid grid-cols-10 gap-2 text-xs text-[#999999] px-3 mb-1">
+                    <span className="col-span-3">商品规格</span>
+                    <span className="col-span-1 text-center">数量</span>
+                    <span className="col-span-2 text-right">价格</span>
+                    <span className="col-span-2 text-right">应付金额</span>
+                    <span className="col-span-2 text-center">操作</span>
+                  </div>
+                  <div className="space-y-2">
+                    {cart.map((item, idx) => {
+                      const a = perItemAmounts[idx]
+                      if (!a) return null
+                      const override = priceOverrides[item.sku.skuId]
+                      const canEditSale = canEditSaleAmount(item)
+                      const hasSaleOverride = canEditSale && override?.saleAmount != null && override.saleAmount !== ''
+                      const defaultSale = a.defaultUnitPrice * item.quantity
+
+                      return (
+                        <div key={item.sku.skuId} className="grid grid-cols-10 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
+                          <span className="col-span-3 truncate" title={`${item.product.name} - ${item.sku.specName}`}>
+                            {item.product.name} - {item.sku.specName}
+                          </span>
+                          <span className="col-span-1 text-center">{item.quantity}</span>
+                          <span className="col-span-2 text-right text-[#999999]">
+                            {!a.isBundleItem && a.defaultUnitPrice < a.listUnitPrice ? (
+                              <>
+                                <span className="text-[var(--primary)]">¥{a.priceLine.toFixed(2)}</span>
+                                <span className="line-through text-[#999999] text-xs ml-1">¥{(a.listUnitPrice * item.quantity).toFixed(2)}</span>
+                              </>
+                            ) : (
+                              <>¥{a.priceLine.toFixed(2)}</>
+                            )}
+                          </span>
+                          {canEditSale ? (
+                            <div className="col-span-2">
+                              <Input
+                                type="number"
+                                min="0"
+                                max={defaultSale}
+                                step="0.01"
+                                title="店长特别优惠：可向下调应付金额（最低 0）"
+                                className="h-8 text-sm text-right border-[var(--primary)]"
+                                value={hasSaleOverride ? (override!.saleAmount as string) : defaultSale.toFixed(2)}
+                                onChange={(e) => {
+                                  setPriceOverrides(prev => ({
+                                    ...prev,
+                                    [item.sku.skuId]: {
+                                      saleAmount: e.target.value,
+                                      received: prev[item.sku.skuId]?.received ?? null,
+                                      receivedTouched: prev[item.sku.skuId]?.receivedTouched ?? false,
+                                    }
+                                  }))
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <span className="col-span-2 text-right">¥{a.saleAmount.toFixed(2)}</span>
+                          )}
+                          <div className="col-span-2 flex justify-center">
+                            {hasSaleOverride && (
+                              <button
+                                className="text-xs text-[#5E8BB3] hover:underline"
+                                onClick={() => {
+                                  setPriceOverrides(prev => {
+                                    const next = { ...prev }
+                                    delete next[item.sku.skuId]
+                                    return next
+                                  })
+                                }}
+                              >
+                                重置
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+                <ConversionPanel
+                  loading={heldCardsLoading}
+                  heldCards={heldCards}
+                  selectedIds={selectedHeldCardIds}
+                  onChange={setSelectedHeldCardIds}
+                  totalIn={totalSaleAmount}
+                  cardBalance={customerCardBalance}
+                  useCard={useCard}
+                  cardAmountInput={cardAmountInput}
+                  cardAmount={conversionCardAmount}
+                  onToggleCard={setUseCard}
+                  onCardAmountChange={setCardAmountInput}
+                />
+              </div>
             ) : (
               <div>
                 <h3 className="text-sm font-semibold mb-3">商品清单</h3>
@@ -1444,14 +1526,20 @@ export default function OrderCreatePageClient({
                       preferredEmployeeId: selectedEmployeeId || undefined,
                       remark: remark.trim() || null,
                       convertOutSaleItemIds: selectedHeldCardIds,
-                      convertInItems: cart.map((item) => ({
-                        skuId: item.sku.skuId,
-                        productName: item.product.name,
-                        productType: item.sku.productType as '疗程卡' | '家居产品',
-                        sessionCount: item.sku.sessionCount,
-                        unitPrice: item.sku.price,
-                        quantity: item.quantity,
-                      })),
+                      convertInItems: cart.map((item) => {
+                        const override = priceOverrides[item.sku.skuId]
+                        const amounts = getItemAmounts(item, override, { buyerIsMember })
+                        return {
+                          skuId: item.sku.skuId,
+                          productName: item.product.name,
+                          productType: item.sku.productType as '疗程卡' | '家居产品',
+                          sessionCount: item.sku.sessionCount,
+                          unitPrice: item.sku.price,
+                          unitRealPrice: (amounts.saleAmount / item.quantity).toFixed(2),
+                          saleAmount: amounts.saleAmount.toFixed(2),
+                          quantity: item.quantity,
+                        }
+                      }),
                       prepaidCardAmount: conversionCardAmount > 0 ? conversionCardAmount : undefined,
                     })
                     if (res.success && res.saleOrderId) {

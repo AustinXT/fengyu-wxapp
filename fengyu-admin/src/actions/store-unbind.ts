@@ -47,7 +47,6 @@ export const getUnbindRequests = withPermission(
     .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
     // 默认排序：最近审批/更新的解绑申请浮顶（admin.sys.spec.md §5）
     .orderBy(desc(storeUnbindRequests.updatedAt), desc(storeUnbindRequests.createdAt))
-    .limit(500)
 
   return rows.map((r) => ({
     requestId: r.request.requestId,

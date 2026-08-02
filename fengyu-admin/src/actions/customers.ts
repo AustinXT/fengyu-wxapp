@@ -158,7 +158,6 @@ export const getCustomers = withPermission(
     .where(scopeCondition(session, clientWechatUsers.boundStoreId))
     // 例外：picker 字母序
     .orderBy(asc(clientWechatUsers.name))
-    .limit(500)
 
   return rows.map(serializeCustomer)
   },
@@ -293,7 +292,7 @@ export interface ExportCustomerRow {
 }
 
 /**
- * 导出顾客（全部筛选命中，跨分页）。LIMIT 10000 防 OOM。
+ * 导出顾客（全部筛选命中，跨分页）。
  *
  * 累计消费口径 = refresh-spending-tier.ts 的 spending_tier 分桶原值：
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
@@ -306,7 +305,6 @@ export const exportCustomers = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportCustomerRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
     const filters = parseCustomerFilters(params)
     const whereClause = and(...buildCustomerConditions(session, filters))
 
@@ -316,11 +314,8 @@ export const exportCustomers = withPermission(
       .where(whereClause)
       // 例外：picker 字母序（与列表一致）
       .orderBy(asc(clientWechatUsers.name))
-      .limit(LIMIT + 1)
 
-    const truncated = dataRows.length > LIMIT
-    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
-    const userIds = page.map((r) => r.userId)
+    const userIds = dataRows.map((r) => r.userId)
 
     // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
     const spendMap = new Map<string, string>()
@@ -339,7 +334,7 @@ export const exportCustomers = withPermission(
       }
     }
 
-    const rows: ExportCustomerRow[] = page.map((r) => ({
+    const rows: ExportCustomerRow[] = dataRows.map((r) => ({
       name: r.name,
       phone: r.phone,
       storeName: r.storeName,
@@ -354,7 +349,7 @@ export const exportCustomers = withPermission(
       birthday: r.birthday ? fmtDate(r.birthday) : null,
     }))
 
-    return { rows, truncated }
+    return { rows, truncated: false }
   },
 )
 
@@ -1126,7 +1121,6 @@ export const getCustomerPhoneChangeLogs = withPermission(
     )
     // 例外：流水型表无 updatedAt 列（operation_logs）
     .orderBy(desc(operationLogs.createdAt))
-    .limit(200)
 
   return rows.map((r) => {
     if (r.action === 'customer.update') {

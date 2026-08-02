@@ -56,7 +56,6 @@ export const getRates = withPermission(
     .leftJoin(orgNodes, eq(commissionRateMatrix.orgId, orgNodes.id))
     // 默认排序：最近编辑过的规则浮顶（admin.sys.spec.md §5）
     .orderBy(desc(commissionRateMatrix.updatedAt), desc(commissionRateMatrix.id))
-    .limit(1000)
 
   return rows.map((r) => ({
     id: r.id,

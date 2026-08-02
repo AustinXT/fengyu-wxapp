@@ -670,9 +670,9 @@ describe('getCardTransactions — 划卡明细', () => {
 // exportCards tests（疗程卡导出）
 // ============================================================================
 
-/** mock exportCards 单查链：.from.leftJoin×5.where.orderBy.limit → Promise<rows> */
+/** mock exportCards 单查链：支持直接 await orderBy(...) 与旧的 .limit() 收口 */
 function mockExportChain(rows: any[]) {
-  const chain: any = {}
+  const chain: any = Object.assign(Promise.resolve(rows), {})
   chain.from = vi.fn().mockReturnValue(chain)
   chain.leftJoin = vi.fn().mockReturnValue(chain)
   chain.where = vi.fn().mockReturnValue(chain)
@@ -784,13 +784,13 @@ describe('exportCards — 疗程卡导出', () => {
     expect(truncated).toBe(false)
   })
 
-  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({ ...mockExportRow, saleOrderId: `FY-${i}` }))
     mockExportChain(many)
 
     const { rows, truncated } = await exportCards({})
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(10001)
   })
 })

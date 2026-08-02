@@ -25,6 +25,7 @@ import {
   computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
+  isZeroCashPaidSessionRefund,
   resolveRefundPaymentMethod,
   splitRefundByOriginalPayment,
   type RefundSourceItem,
@@ -59,6 +60,7 @@ export interface RefundableItem {
   productName: string
   productType: ProductType | null
   unitRealPrice: number
+  saleAmount: number
   unusedQuantity: number
   refundableAmount: number
   overpayRefundable: number
@@ -350,6 +352,7 @@ export const getRefundable = withAnyPermission(
       productName: src.product_name || '-',
       productType: src.product_type,
       unitRealPrice,
+      saleAmount: Number(src.sale_amount || 0),
       unusedQuantity: unused,
       refundableAmount,
       overpayRefundable,
@@ -782,8 +785,9 @@ export const createRefund = withPermission(
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
-  if (finalRefundAmount <= 0) {
+  if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
@@ -818,7 +822,7 @@ export const createRefund = withPermission(
     const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
     totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
     finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
-    if (finalRefundAmount <= 0) {
+    if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
       return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
     }
   }
@@ -832,7 +836,7 @@ export const createRefund = withPermission(
 
   const applyOverdraft = input.applyOverdraftDeduction !== false
   let overdraftDeduction = 0
-  if (applyOverdraft && origOrder.clientUserId) {
+  if (finalRefundAmount > 0 && applyOverdraft && origOrder.clientUserId) {
     const estimate = await estimateRefundOverdraft({
       userId: origOrder.clientUserId,
       refundAmount: finalRefundAmount,
@@ -882,6 +886,7 @@ export const createRefund = withPermission(
       quantity: d.quantity,
       refundAmount: d.refundAmount,
       productType: d.productType,
+      saleAmount: d.saleAmount,
       isFullItemRefund: d.isFullItemRefund,
       overpayAmount: d.overpayAmount || 0,
       isOverpay: d.isOverpay === true,
@@ -892,7 +897,7 @@ export const createRefund = withPermission(
   try {
     refundPaymentId = await db.transaction(async (tx) => {
       // 主流水：按整笔金额写一行 status='待审批'，approveRefund 时按拆分（储值卡+原通道）做实际扣减。
-      // chk_sop_amount_sign 要求 amount<0；paymentMethod 取储值卡（如全额）或原通道兜底
+      // chk_sop_amount_sign 要求退款 amount<=0；0 元退项也走同一审批流水。
       const totalAmountSign = -adjustedRefundAmount
 
       const [paymentRow] = await tx

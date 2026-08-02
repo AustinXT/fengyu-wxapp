@@ -248,11 +248,12 @@ function formatDateTime(dt: string | null | undefined) {
 
 interface Props {
   logs: OperationLog[]
+  total: number
   /** 是否展示行内删除入口（仅系统管理员 operation_log:delete） */
   canDelete?: boolean
 }
 
-export default function LogsPage({ logs, canDelete = false }: Props) {
+export default function LogsPage({ logs, total, canDelete = false }: Props) {
   const { get, set, setMany } = useUrlFilters()
 
   /** 筛选变更时重置到第 1 页 */
@@ -280,39 +281,15 @@ export default function LogsPage({ logs, canDelete = false }: Props) {
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const uniqueActions = useMemo(() => {
-    return Array.from(new Set(logs.map((l) => l.action)))
+    return Array.from(new Set([...Object.keys(actionLabels), ...logs.map((l) => l.action)])).sort()
   }, [logs])
 
   const uniqueTargetTypes = useMemo(() => {
-    return Array.from(new Set(logs.map((l) => l.targetType)))
+    return Array.from(new Set([...Object.keys(targetTypeLabels), ...logs.map((l) => l.targetType)])).sort()
   }, [logs])
 
-  const filtered = useMemo(() => {
-    return logs.filter((log) => {
-      if (operatorSearch) {
-        const q = operatorSearch.toLowerCase()
-        const name = (log.operatorName ?? '').toLowerCase()
-        const empId = (log.operatorEmployeeId ?? '').toLowerCase()
-        if (!name.includes(q) && !empId.includes(q)) return false
-      }
-      if (actionFilter && log.action !== actionFilter) return false
-      if (targetTypeFilter && log.targetType !== targetTypeFilter) return false
-      if (dateFrom) {
-        const from = new Date(dateFrom)
-        if (new Date(log.createdAt) < from) return false
-      }
-      if (dateTo) {
-        const to = new Date(dateTo + "T23:59:59")
-        if (new Date(log.createdAt) > to) return false
-      }
-      return true
-    })
-    // 服务端已按 desc(createdAt) 排序，无需客户端重排
-  }, [operatorSearch, actionFilter, targetTypeFilter, dateFrom, dateTo, logs])
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const safePage = Math.min(currentPage, totalPages)
-  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   return (
     <div className="space-y-4">
@@ -375,7 +352,7 @@ export default function LogsPage({ logs, canDelete = false }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {paged.map((log) => (
+                {logs.map((log) => (
                   <Fragment key={log.id}>
                     <tr className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 text-[#999999] whitespace-nowrap">{formatDateTime(log.createdAt)}</td>
@@ -429,10 +406,10 @@ export default function LogsPage({ logs, canDelete = false }: Props) {
                     )}
                   </Fragment>
                 ))}
-                {paged.length === 0 && (
+                {logs.length === 0 && (
                   <tr>
                     <td colSpan={canDelete ? 6 : 5} className="px-4 py-12 text-center text-[#999999]">
-                      {filtered.length === 0 ? "暂无日志数据" : "未找到匹配结果，请调整筛选条件"}
+                      暂无日志数据
                     </td>
                   </tr>
                 )}
@@ -443,7 +420,7 @@ export default function LogsPage({ logs, canDelete = false }: Props) {
       </Card>
 
       <Pagination
-        total={filtered.length}
+        total={total}
         pageSize={pageSize}
         page={safePage}
         onPageChange={(p) => set("page", p === 1 ? "" : String(p))}

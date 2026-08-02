@@ -316,14 +316,13 @@ const numOrNull = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
-/** 导出疗程卡（当前筛选命中，跨分页）。LIMIT 10000 防 OOM。 */
+/** 导出疗程卡（当前筛选命中，跨分页）。 */
 export const exportCards = withPermission(
   'sale_item:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportCardRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
     const filters = parseCardFilters(params)
     const whereClause = and(...buildCardConditions(session, filters))
 
@@ -367,12 +366,8 @@ export const exportCards = withPermission(
       .where(whereClause)
       // 例外：业务时间优先（支付时间优于"最近编辑"），与列表排序一致
       .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
-      .limit(LIMIT + 1)
 
-    const truncated = raw.length > LIMIT
-    const page = truncated ? raw.slice(0, LIMIT) : raw
-
-    const rows: ExportCardRow[] = page.map((r) => {
+    const rows: ExportCardRow[] = raw.map((r) => {
       const sessionCount = r.sessionCount ?? 0
       return {
         clientName: r.clientName || r.fallbackName || '',
@@ -395,7 +390,7 @@ export const exportCards = withPermission(
       }
     })
 
-    return { rows, truncated }
+    return { rows, truncated: false }
   },
 )
 

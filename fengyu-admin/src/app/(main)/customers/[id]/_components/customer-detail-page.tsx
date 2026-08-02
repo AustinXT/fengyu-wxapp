@@ -50,6 +50,13 @@ interface CustomerDetailPageProps {
   canDelete?: boolean
 }
 
+function formatDistinctSkuName(row: Pick<SaleItem, "productName" | "skuName">): string {
+  const productName = (row.productName ?? "").trim()
+  const skuName = (row.skuName ?? "").trim()
+  if (!skuName || skuName === productName) return "—"
+  return skuName
+}
+
 export default function CustomerDetailPage({
   customer,
   orders,
@@ -357,7 +364,7 @@ export default function CustomerDetailPage({
     {
       key: "skuName",
       header: "规格",
-      cell: (row) => <span>{row.skuName ?? "—"}</span>,
+      cell: (row) => <span>{formatDistinctSkuName(row)}</span>,
     },
     {
       // ticket 2026-05-19 D10=A：合并展示「已用 / 已付 / 共」三段次数

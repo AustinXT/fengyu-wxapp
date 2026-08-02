@@ -53,7 +53,8 @@ const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
-type DepositTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+type OrderTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+type DepositTx = OrderTx
 
 type SkuPurchaseLimitRow = {
   skuId: string
@@ -109,6 +110,58 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
   if (!isDepositOrderApprover(session)) {
     throw new ApiError('PERMISSION_DENIED', '仅系统管理员、总部/市场店长或总部/市场财务可审批寄存单')
   }
+}
+
+/**
+ * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更。
+ * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
+ */
+async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string, storeId: string): Promise<void> {
+  await tx.execute(sql`
+    WITH restore AS (
+      SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND item_direction = '转出'
+         AND product_type = '疗程卡'
+         AND ref_sale_item_id IS NOT NULL
+       GROUP BY ref_sale_item_id
+    ),
+    locked_source AS (
+      SELECT src.sale_item_id,
+             src.session_count,
+             src.remaining_sessions,
+             restore.restore_sessions
+        FROM sale_items src
+        JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       WHERE src.store_id = ${storeId}
+       FOR UPDATE OF src
+    )
+    UPDATE sale_items src
+       SET remaining_sessions = LEAST(
+             COALESCE(src.session_count, src.remaining_sessions, 0),
+             COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
+           ),
+           updated_at = NOW()
+      FROM locked_source
+     WHERE src.sale_item_id = locked_source.sale_item_id
+  `)
+
+  await tx.execute(sql`
+    UPDATE sale_items
+       SET received = 0,
+           remaining_sessions = CASE
+             WHEN session_count IS NULL THEN remaining_sessions
+             ELSE session_count
+           END,
+           paid_sessions = CASE
+             WHEN session_count IS NULL THEN NULL
+             ELSE 0
+           END,
+           updated_at = NOW()
+     WHERE sale_order_id = ${saleOrderId}
+       AND item_direction IN ('转出', '转入')
+  `)
 }
 
 /**
@@ -371,7 +424,6 @@ export const getOrders = withPermission(
     .where(scopeCondition(session, saleOrders.storeId))
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
     .orderBy(desc(saleOrders.saleOrderDatetime))
-    .limit(500)
 
   return rows.map((r) => ({
     saleOrderId: r.order.saleOrderId,
@@ -647,32 +699,15 @@ export interface ExportOrderRow {
   remark: string | null
 }
 
-/** 导出订单（明细级，一行一 sale_items 行；LIMIT 10000 按 item 计数防 OOM）。 */
+/** 导出订单（明细级，一行一 sale_items 行；按筛选条件导出全量）。 */
 export const exportOrders = withPermission(
   'sale_order:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 100000
-    const PAGE_SIZE = 5000
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
-    const fetchPaged = async <T>(
-      fetchPage: (pageSize: number, offset: number) => Promise<T[]>,
-    ): Promise<T[]> => {
-      const maxRows = LIMIT + 1
-      const rows: T[] = []
-      for (let offset = 0; rows.length < maxRows; offset += PAGE_SIZE) {
-        const remaining = maxRows - rows.length
-        const pageSize = Math.min(PAGE_SIZE, remaining)
-        const page = await fetchPage(pageSize, offset)
-        if (page.length === 0) break
-        rows.push(...page.slice(0, remaining))
-        if (page.length !== pageSize || page.length >= remaining) break
-      }
-      return rows
-    }
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
@@ -681,9 +716,8 @@ export const exportOrders = withPermission(
     //   两行一并纳入，完整展示「从哪转出 → 转入什么」。转出负/转入正照实行级口径展示，金额列不留空
     //   （转换单 totalAmount 为真实转换额，非寄存单 total=0 那种特例）。
     //   充值单不写 sale_items，由下方 rechargeOrders 单独查订单级再造一行。
-    const itemRows = await fetchPaged(async (pageSize, offset) => (
-      db
-        .select({
+    const itemRows = await db
+      .select({
           // 订单级
           marketName: saleOrders.marketName,
           storeName: saleOrders.storeName,
@@ -716,36 +750,32 @@ export const exportOrders = withPermission(
           unitRealPrice: saleItems.unitRealPrice,
           categoryL1: productCategories.productKind,
           categoryL2: productCategories.categoryName,
-        })
-        .from(saleItems)
-        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
-        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-        .where(and(
-          whereClause,
-          or(
-            eq(saleItems.itemDirection, '购买'),
-            and(
-              eq(saleOrders.saleOrderType, '转换单'),
-              inArray(saleItems.itemDirection, ['转出', '转入']),
-            ),
+      })
+      .from(saleItems)
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .where(and(
+        whereClause,
+        or(
+          eq(saleItems.itemDirection, '购买'),
+          and(
+            eq(saleOrders.saleOrderType, '转换单'),
+            inArray(saleItems.itemDirection, ['转出', '转入']),
           ),
-        ))
-        .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
-        .offset(offset)
-        .limit(pageSize)
-    ))
+        ),
+      ))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
     // 充值单不写 sale_items，无法走上面的明细 JOIN；按订单级单独查后造一行纳入导出。
     // 金额取订单级：total_amount=面额、received=实付（反映充值档位）；item 级列留空，productName 标「储值卡充值」。
-    const rechargeOrders = await fetchPaged(async (pageSize, offset) => (
-      db
-        .select({
+    const rechargeOrders = await db
+      .select({
           marketName: saleOrders.marketName,
           storeName: saleOrders.storeName,
           saleOrderId: saleOrders.saleOrderId,
@@ -768,19 +798,16 @@ export const exportOrders = withPermission(
           saleOrderDatetime: saleOrders.saleOrderDatetime,
           createdAt: saleOrders.createdAt,
           remark: saleOrders.remark,
-        })
-        .from(saleOrders)
-        .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
-        .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-        .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-        .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
-        .orderBy(desc(saleOrders.saleOrderDatetime))
-        .offset(offset)
-        .limit(pageSize)
-    ))
+      })
+      .from(saleOrders)
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
+      .orderBy(desc(saleOrders.saleOrderDatetime))
 
     // 合并 item 行（销售/内部/寄存购买行 + 转换单转出/转入行）与充值单造行；
-    // 两侧各自分页按订单时间 desc 拉到 LIMIT+1，合并后再整体排序，按明细行总数截断 LIMIT。
+    // 导出按筛选条件返回全量，合并后仅做整体排序。
     const combined: ExportOrderRow[] = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
@@ -856,10 +883,7 @@ export const exportOrders = withPermission(
       a.saleOrderDatetime < b.saleOrderDatetime ? 1 : a.saleOrderDatetime > b.saleOrderDatetime ? -1 : 0,
     )
 
-    const truncated = combined.length > LIMIT
-    const rows = combined.slice(0, LIMIT)
-
-    return { rows, truncated }
+    return { rows: combined, truncated: false }
   },
 )
 
@@ -907,7 +931,7 @@ export interface ExportAllocationOrderRow {
 }
 
 /**
- * 导出营业额分配「销售提成」（allocStatus 三态分流，合并后按下单时间 desc 截断 LIMIT 10000）：
+ * 导出营业额分配「销售提成」（allocStatus 三态分流，合并后按下单时间 desc 返回全量）：
  * - 全部：已分配明细（sale_payment_item_allocations 主链，每被分配员工一行）∪ 待分配占位行（回款 × receipt item）；
  * - 已分配：仅明细段；待分配：仅占位段（分配/提成列留空，allocation_status=待分配）。
  * 已分配段 allocation → receipt → sale_items → sale_orders；待分配段 sale_order_payments(待分配) →
@@ -925,8 +949,6 @@ export const exportAllocationOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-
     // 复用 list-filters 的 URL→filters 映射；覆盖两处：
     // status：不锁「已支付」（部分支付订单的已分配回款也要导出）；
     // allocationStatus：订单级状态不二次过滤，按回款级 allocation_status 在两段查询里各自控制。
@@ -1000,7 +1022,6 @@ export const exportAllocationOrders = withPermission(
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(whereClause)
         .orderBy(desc(saleOrders.saleOrderDatetime), salePaymentItemAllocations.id)
-        .limit(LIMIT + 1)
 
       for (const r of raw as any[]) {
         merged.push({
@@ -1100,7 +1121,6 @@ export const exportAllocationOrders = withPermission(
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(whereClause)
         .orderBy(desc(saleOrders.saleOrderDatetime), saleOrderPayments.id)
-        .limit(LIMIT + 1)
 
       for (const r of raw as any[]) {
         merged.push({
@@ -1145,11 +1165,10 @@ export const exportAllocationOrders = withPermission(
       }
     }
 
-    // 统一按下单时间 desc 排序（与原已分配段排序键一致），截断 LIMIT
+    // 统一按下单时间 desc 排序（与原已分配段排序键一致）
     merged.sort((a, b) => b.sort - a.sort)
-    const truncated = merged.length > LIMIT
-    const rows = (truncated ? merged.slice(0, LIMIT) : merged).map((m) => m.row)
-    return { rows, truncated }
+    const rows = merged.map((m) => m.row)
+    return { rows, truncated: false }
   },
 )
 
@@ -1585,7 +1604,13 @@ export const closeOrder = withPermission(
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [orderCtx] = await db
-    .select({ status: saleOrders.status, customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .select({
+      status: saleOrders.status,
+      customerName: saleOrders.customerName,
+      totalAmount: saleOrders.totalAmount,
+      saleOrderType: saleOrders.saleOrderType,
+      storeId: saleOrders.storeId,
+    })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
@@ -1604,6 +1629,10 @@ export const closeOrder = withPermission(
 
       if ((result as any).count === 0) {
         return { matched: false }
+      }
+
+      if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
+        await rollbackPendingConversionOnClose(tx, saleOrderId, orderCtx.storeId)
       }
 
       // 作废关联的营业额子分配（规范：订单关闭时作废分配）
@@ -2679,7 +2708,7 @@ export const createOrder = withPermission(
  * 1. 锁住 convertOutSaleItemIds 对应 sale_items 行（FOR UPDATE），校验 store_id / item_direction / 状态
  * 2. 计算转出折抵金额 totalOut = sum(unit_real_price × remaining_sessions)
  *    - 仅疗程卡可折抵（含原"体验卡单品"=1 次卡）；放开后不再要求 is_experience
- * 3. 计算转入应付金额 totalIn = sum(sku.price × quantity)
+ * 3. 计算转入应付金额 totalIn = sum(适用价 × quantity)，店长特价 SKU 可向下改应付
  * 4. priceDiff = totalIn - totalOut
  *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'
  *    - priceDiff = 0：不收款，status='已支付'
@@ -2709,6 +2738,9 @@ export const createConversionOrder = withPermission(
     productType: '疗程卡' | '家居产品'
     sessionCount: number | null
     unitPrice: string
+    unitRealPrice?: string
+    /** 店长特价行手填应付金额（转换单同销售单，后端按 DB is_manager_special 采纳） */
+    saleAmount?: string
     quantity: number
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
@@ -2746,6 +2778,7 @@ export const createConversionOrder = withPermission(
       phone: clientWechatUsers.phone,
       name: clientWechatUsers.name,
       customerType: clientWechatUsers.customerType,
+      memberLevel: clientWechatUsers.memberLevel,
     })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
@@ -2873,17 +2906,19 @@ export const createConversionOrder = withPermission(
         })
       }
 
-      // 2. 加载转入 SKU 详情（price / service_fee / session_count / sales_category / is_experience）
+      // 2. 加载转入 SKU 详情（price / special_price / service_fee / session_count / sales_category / capability）
       const inSkuIds = data.convertInItems.map((i) => i.skuId)
       const skuRows = await tx
         .select({
           skuId: productSkus.skuId,
           specName: productSkus.specName,
           price: productSkus.price,
+          specialPrice: productSkus.specialPrice,
           serviceFee: productSkus.serviceFee,
           sessionCount: productSkus.sessionCount,
           productType: productSkus.productType,
           isExperience: productSkus.isExperience,
+          isManagerSpecial: productSkus.isManagerSpecial,
           isShengmei: productSkus.isShengmei,
           salesCategory: productCategories.salesCategory,
           purchaseLimit: productSkus.purchaseLimit,
@@ -2902,15 +2937,38 @@ export const createConversionOrder = withPermission(
         item: (typeof data.convertInItems)[number]
         sku: typeof skuRows[number]
         amount: number
+        unitPrice: string
+        unitRealPrice: string
         serviceFee: number
       }> = []
+      const buyerIsMember = isMember(client.customerType, client.memberLevel)
       for (const inItem of data.convertInItems) {
         const sku = skuMap.get(inItem.skuId)
         if (!sku) throw new ApiError('NOT_FOUND', `SKU_NOT_FOUND: 转入商品不存在 (${inItem.skuId})`)
-        const amount = Math.round(Number(sku.price) * inItem.quantity * 100) / 100
+        const quantity = inItem.quantity || 1
+        const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(
+          { price: sku.price, specialPrice: sku.specialPrice, isExperience: sku.isExperience },
+          buyerIsMember,
+        )
+        let amount = Math.round(applicableUnit * quantity * 100) / 100
+        if (sku.isManagerSpecial === true && (inItem.saleAmount != null || inItem.unitRealPrice != null)) {
+          const inputAmount = inItem.saleAmount != null
+            ? Number(inItem.saleAmount)
+            : Number(inItem.unitRealPrice) * quantity
+          if (!Number.isFinite(inputAmount) || inputAmount < 0 || inputAmount > amount + 0.005) {
+            throw new ApiError('INVALID_PARAMS', 'CONVERSION_MANAGER_SPECIAL_AMOUNT_INVALID: 转入项目应付金额不能高于该顾客适用价或为非法值')
+          }
+          amount = Math.round(inputAmount * 100) / 100
+        }
         totalIn += amount
-        const serviceFee = Math.round(Number(sku.serviceFee ?? 0) * inItem.quantity * 100) / 100
-        inItems.push({ item: inItem, sku, amount, serviceFee })
+        const serviceFee = Math.round(Number(sku.serviceFee ?? 0) * quantity * 100) / 100
+        const skuSessionCount = sku.sessionCount ?? inItem.sessionCount
+        const sessionCount = skuSessionCount != null ? skuSessionCount * quantity : null
+        const inDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : quantity
+        const listAmount = Math.round(listUnit * quantity * 100) / 100
+        const unitPrice = inDenom > 0 ? (listAmount / inDenom).toFixed(2) : listAmount.toFixed(2)
+        const unitRealPrice = inDenom > 0 ? (amount / inDenom).toFixed(2) : amount.toFixed(2)
+        inItems.push({ item: inItem, sku, amount, unitPrice, unitRealPrice, serviceFee })
       }
 
       const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
@@ -3035,9 +3093,6 @@ export const createConversionOrder = withPermission(
         // 同 createOrder：sale_items.session_count 是行总次数维度，需 × quantity。
         const skuSessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * inRow.item.quantity : null
-        // per-session 单价（转入无折扣：unit_price = unit_real_price = amount/总次数；非卡 = amount/qty）
-        const inDenom = (sessionCount != null && sessionCount > 0) ? sessionCount : inRow.item.quantity
-        const unitPrice = inDenom > 0 ? (inRow.amount / inDenom).toFixed(2) : Number(inRow.sku.price).toFixed(2)
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId,
@@ -3048,9 +3103,9 @@ export const createConversionOrder = withPermission(
           productType: inRow.item.productType,
           sessionCount,
           remainingSessions: sessionCount,
-          unitPrice,
+          unitPrice: inRow.unitPrice,
           quantity: inRow.item.quantity,
-          unitRealPrice: unitPrice,
+          unitRealPrice: inRow.unitRealPrice,
           saleAmount: inRow.amount.toFixed(2),
           received: inRow.amount.toFixed(2),
           salesCategory:
@@ -3061,6 +3116,7 @@ export const createConversionOrder = withPermission(
           // 转入行从 product_skus 快照写入 is_experience / is_shengmei
           isExperience: inRow.sku.isExperience === true,
           isShengmei: inRow.sku.isShengmei ?? null,
+          isManagerSpecial: inRow.sku.isManagerSpecial === true,
         })
       }
 
@@ -3302,6 +3358,59 @@ export const createDepositOrder = withPermission(
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 
+    // B2：寄存单也按"每张疗程卡一行"落 sale_items，避免 5 次卡 ×2 合成 1 张 10 次卡。
+    // 历史实收是原购物车行总额，按每张卡 saleAmount 贪心填满，避免 1350/3 均分成 450/450/450。
+    const depositItems = data.items.flatMap((item) => {
+      const sku = skuMap.get(item.skuId)!
+      const basePrice = Number(sku.specialPrice || sku.price)
+      const quantity = item.quantity
+      const itemReceived = Math.round((Number(item.received) || 0) * 100) / 100
+      const sessionCount = sku.productType === '家居产品'
+        ? null
+        : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
+      const totalSaleCents = Math.round(basePrice * quantity * 100)
+      const totalReceivedCents = Math.round(itemReceived * 100)
+
+      const buildRow = (rowQuantity: number, rowSessionCount: number | null, saleCents: number, receivedCents: number) => {
+        const saleAmount = Math.round(saleCents) / 100
+        const denom = (rowSessionCount != null && rowSessionCount > 0) ? rowSessionCount : rowQuantity
+        const depUnit = denom > 0 ? (saleAmount / denom).toFixed(2) : saleAmount.toFixed(2)
+        return {
+          sku,
+          quantity: rowQuantity,
+          sessionCount: rowSessionCount,
+          saleAmount: saleAmount.toFixed(2),
+          received: Math.round(receivedCents) / 100,
+          unitPrice: depUnit,
+          unitRealPrice: depUnit,
+        }
+      }
+
+      if (sku.productType !== '疗程卡' || quantity <= 1) {
+        return [buildRow(quantity, sessionCount, totalSaleCents, totalReceivedCents)]
+      }
+
+      const perSession = sessionCount != null ? Math.round(sessionCount / quantity) : null
+      const perSaleCents = Math.round(totalSaleCents / quantity)
+      let remainingReceivedCents = totalReceivedCents
+      return Array.from({ length: quantity }, (_, index) => {
+        const isLast = index === quantity - 1
+        const saleCents = isLast ? totalSaleCents - perSaleCents * (quantity - 1) : perSaleCents
+        let receivedCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
+        remainingReceivedCents -= receivedCents
+        if (isLast && remainingReceivedCents > 0) {
+          receivedCents += remainingReceivedCents
+          remainingReceivedCents = 0
+        }
+        return buildRow(
+          1,
+          perSession,
+          saleCents,
+          receivedCents,
+        )
+      })
+    })
+
     // 在事务内生成订单号 + 写 sale_orders + sale_items
     let saleOrderId: string
     try {
@@ -3365,22 +3474,11 @@ export const createDepositOrder = withPermission(
 
         // 收集需要写实收流水的行（received>0），循环后统一 INSERT sale_order_payments + 更新 received
         const receiptRows: Array<{ saleItemId: string; received: number }> = []
-        for (let i = 0; i < data.items.length; i++) {
-          const item = data.items[i]
-          const sku = skuMap.get(item.skuId)!
+        for (let i = 0; i < depositItems.length; i++) {
+          const item = depositItems[i]
+          const sku = item.sku
           const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
-          const basePrice = Number(sku.specialPrice || sku.price)
-          const quantity = item.quantity
-          const itemReceived = Math.round((Number(item.received) || 0) * 100) / 100
-          if (itemReceived > 0) receiptRows.push({ saleItemId, received: itemReceived })
-          // 次数 × 数量；家居产品不带次数
-          const sc = sku.productType === '家居产品'
-            ? null
-            : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
-          const depSaleAmount = (Math.round(basePrice * quantity * 100) / 100).toFixed(2)
-          // per-session 单价：卡 = sale_amount/总次数；非卡 = sale_amount/quantity（per-unit 退化）
-          const depDenom = (sc != null && sc > 0) ? sc : quantity
-          const depUnit = depDenom > 0 ? (Number(depSaleAmount) / depDenom).toFixed(2) : depSaleAmount
+          if (item.received > 0) receiptRows.push({ saleItemId, received: item.received })
 
           await tx.insert(saleItems).values({
             saleItemId,
@@ -3390,12 +3488,12 @@ export const createDepositOrder = withPermission(
             skuId: sku.skuId,
             productName: sku.specName,
             productType: sku.productType,
-            sessionCount: sc,
-            remainingSessions: sc,
-            unitPrice: depUnit,
-            quantity,
-            unitRealPrice: depUnit,
-            saleAmount: depSaleAmount,
+            sessionCount: item.sessionCount,
+            remainingSessions: item.sessionCount,
+            unitPrice: item.unitPrice,
+            quantity: item.quantity,
+            unitRealPrice: item.unitRealPrice,
+            saleAmount: item.saleAmount,
             received: '0',
             salesCategory: sku.salesCategory ?? null,
             serviceFee: '0',
@@ -3441,23 +3539,17 @@ export const createDepositOrder = withPermission(
         _v: 1,
         clientUserId: data.clientUserId,
         status: '待审批',
-        itemCount: data.items.length,
-        totalSessionCount: data.items.reduce((acc, it) => {
-          const sku = skuMap.get(it.skuId)
-          const sc = sku && sku.sessionCount != null
-            ? Number(sku.sessionCount) * it.quantity
-            : 0
-          return acc + sc
-        }, 0),
+        itemCount: depositItems.length,
+        totalSessionCount: depositItems.reduce((acc, it) => acc + (it.sessionCount ?? 0), 0),
       },
     )
 
     revalidatePath('/orders')
     return {
       success: true,
-      message: `寄存单已提交审批（${data.items.length} 项）`,
+      message: `寄存单已提交审批（${depositItems.length} 项）`,
       saleOrderId,
-      itemCount: data.items.length,
+      itemCount: depositItems.length,
     }
   },
 )

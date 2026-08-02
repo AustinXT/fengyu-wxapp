@@ -59,7 +59,6 @@ export const getStores = withPermission('store:list', async (session): Promise<S
     .where(scopeCondition(session, stores.storeId))
     // 例外：选择器场景占主导（本 action 同时用作 /stores 主列表与 15+ 处筛选下拉），门店是低变更频率实体，字母序对下拉选择更稳定
     .orderBy(asc(stores.storeName))
-    .limit(200)
 
   return rows.map(rowToStore)
 })
@@ -79,7 +78,6 @@ export const getMarketStoreFilterOptions = withPermission(
       .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(scopeCondition(session, stores.storeId))
       .orderBy(asc(marketNode.name), asc(stores.storeName))
-      .limit(500)
 
     const marketMap = new Map<string, string>()
     for (const row of rows) {

@@ -45,7 +45,6 @@ export const getRoles = withPermission(
     .where(whereCondition)
     // 默认排序：最近分配/修改的角色浮顶（admin.sys.spec.md §5）
     .orderBy(desc(permissionRoles.updatedAt), desc(permissionRoles.createdAt), desc(permissionRoles.id))
-    .limit(500)
 
   return rows.map((r) => ({
     id: r.id,

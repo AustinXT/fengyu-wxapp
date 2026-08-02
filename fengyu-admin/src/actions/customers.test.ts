@@ -581,13 +581,14 @@ const mockFullRow = {
   marketName: '南昌市场',
 }
 
-/** mock: select(customerColumns) → from → where → orderBy → limit */
+/** mock: select(customerColumns) → from → where → orderBy，兼容旧 .limit 收口 */
 function mockFullSelectChain(rows: any[]) {
-  const limit = vi.fn().mockResolvedValue(rows)
-  const orderBy = vi.fn().mockReturnValue({ limit })
-  const where = vi.fn().mockReturnValue({ orderBy, limit })
-  const from = vi.fn().mockReturnValue({ where })
-  ;(db.select as any).mockReturnValue({ from })
+  const chain: any = Object.assign(Promise.resolve(rows), {})
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  ;(db.select as any).mockReturnValue(chain)
 }
 
 describe('getCustomers — 全量列表（旧接口）', () => {
@@ -942,12 +943,12 @@ describe('getCustomerPrepaidBalance — 账户级、未绑定放行', () => {
 describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计消费）', () => {
   /**
    * mock 两次 db.select：
-   *   1) 主查询 .from().where().orderBy().limit() → customerRows
+   *   1) 主查询 .from().where().orderBy() → customerRows
    *   2) 消费补查 .from().where().groupBy() → spendRows（仅 customerRows 非空时触发）
    * spendRows=null 表示不挂第二次 mock（空结果用例）。
    */
   function mockExportChains(customerRows: any[], spendRows: any[] | null) {
-    const mainChain: any = {}
+    const mainChain: any = Object.assign(Promise.resolve(customerRows), {})
     mainChain.from = vi.fn().mockReturnValue(mainChain)
     mainChain.where = vi.fn().mockReturnValue(mainChain)
     mainChain.orderBy = vi.fn().mockReturnValue(mainChain)
@@ -1001,7 +1002,7 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
     expect(rows[1].birthday).toBeNull()
   })
 
-  it('超过 LIMIT(10000) → truncated=true 且截断到 10000 行', async () => {
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const customerRows = Array.from({ length: 10001 }, (_, i) => ({
       userId: `u${i}`, name: `顾客${i}`, phone: null, storeName: null,
       customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
@@ -1011,8 +1012,8 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
 
     const { rows, truncated } = await exportCustomers({})
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(10001)
   })
 
   it('空结果 → rows=[] truncated=false，不触发消费补查（db.select 仅 1 次）', async () => {

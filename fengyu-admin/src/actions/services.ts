@@ -69,7 +69,6 @@ export const getServiceOrders = withPermission(
     .where(scopeCondition(session, serviceOrders.storeId))
     // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
     .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
-    .limit(500)
 
   return rows.map(serializeServiceOrder)
   },
@@ -244,12 +243,11 @@ export interface ExportServiceOrderItemRow {
  * 服务单消耗项目主表导出查询（一行 = 一个 service_item × 其服务单）。
  * 主链 service_items → service_orders，9 表 JOIN（无 service_commissions / 负责美容师）。
  * WHERE 强制 status='已完成'（消耗明细只含已扣减次数的服务单）+ 复用 buildServiceOrderConditions
- * （搜索「美容师」走 serviceOrders.assignedEmployeeId EXISTS，不依赖提成链）。LIMIT 10000 防 OOM。
+ * （搜索「美容师」走 serviceOrders.assignedEmployeeId EXISTS，不依赖提成链）。导出按筛选条件返回全量。
  */
 async function selectServiceOrderItemExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-  limit = 10000,
 ): Promise<{ rows: ExportServiceOrderItemRow[]; truncated: boolean }> {
   // 导出「消耗明细」强制 status='已完成'：service_items 在服务单创建时即落库、sessionUsed 为
   // 计划值；只有待客户确认→已完成（原子扣次数 + 计提成 + 关预约）后才是已实现消耗。否则
@@ -304,12 +302,9 @@ async function selectServiceOrderItemExportRows(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId)
-    .limit(limit + 1)
 
-  const truncated = raw.length > limit
-  const page = truncated ? raw.slice(0, limit) : raw
   const round2 = (n: number) => Math.round(n * 100) / 100
-  const rows: ExportServiceOrderItemRow[] = page.map((r) => {
+  const rows: ExportServiceOrderItemRow[] = raw.map((r) => {
     const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
     const sessions = r.sessionUsed ?? null
     const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
@@ -341,7 +336,7 @@ async function selectServiceOrderItemExportRows(
     }
   })
 
-  return { rows, truncated }
+  return { rows, truncated: false }
 }
 
 /**
@@ -386,12 +381,11 @@ export interface ExportAllocationServiceRow {
  * 服务单提成分配明细导出查询（一行 = 一条有效 service_commissions）。
  * 主链 service_commissions → service_items → service_orders，12 表 JOIN。
  * 服务单管理页(exportServiceOrders) 与 营业额分配-服务提成(exportAllocationServiceOrders) 共用，
- * 仅入参 filters 的 parser 不同（列表筛选 vs 锁定已完成 + allocStatus）。LIMIT 10000 防 OOM。
+ * 仅入参 filters 的 parser 不同（列表筛选 vs 锁定已完成 + allocStatus）。导出按筛选条件返回全量。
  */
 async function selectServiceCommissionExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-  limit = 10000,
 ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
   // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
   const whereClause = and(
@@ -449,18 +443,12 @@ async function selectServiceCommissionExportRows(
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
-    // 段内 orderBy 主键须为 createdAt：exportAllocationServiceOrders 合并层按 createdAt desc 截断 LIMIT 10000，
-    // 段内 slice(0,limit) 必须保留 createdAt-top 才与合并层同口径——若主键是 updatedAt，单段 >10000 时段内
-    // 会保留 updatedAt-top（最近被改过的老单），合并后返回的并非真实 createdAt-top-10000，污染提成/财务导出。
+    // 段内 orderBy 主键须为 createdAt：exportAllocationServiceOrders 合并层按 createdAt desc 做全量合并排序。
     // 本 helper 与 exportServiceOrders（服务单管理页导出）共用，导出以 createdAt 为自然序同样合理。
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id)
-    .limit(limit + 1)
-
-  const truncated = raw.length > limit
-  const page = truncated ? raw.slice(0, limit) : raw
 
   const round2 = (n: number) => Math.round(n * 100) / 100
-  const rows: ExportAllocationServiceRow[] = page.map((r) => {
+  const rows: ExportAllocationServiceRow[] = raw.map((r) => {
     const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
     const sessions = r.sessionUsed ?? null
     const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
@@ -501,7 +489,7 @@ async function selectServiceCommissionExportRows(
     }
   })
 
-  return { rows, truncated }
+  return { rows, truncated: false }
 }
 
 /**
@@ -512,7 +500,6 @@ async function selectServiceCommissionExportRows(
 async function selectPendingServiceCommissionExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-  limit = 10000,
 ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
   const whereClause = and(
     eq(serviceOrders.commissionStatus, '待分配'),
@@ -558,14 +545,11 @@ async function selectPendingServiceCommissionExportRows(
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
-    // 同 selectServiceCommissionExportRows：主键 createdAt，与 exportAllocationServiceOrders 合并层截断键一致
+    // 同 selectServiceCommissionExportRows：主键 createdAt，与 exportAllocationServiceOrders 合并层排序键一致
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt))
-    .limit(limit + 1)
 
-  const truncated = raw.length > limit
-  const page = truncated ? raw.slice(0, limit) : raw
   const round2 = (n: number) => Math.round(n * 100) / 100
-  const rows: ExportAllocationServiceRow[] = page.map((r) => {
+  const rows: ExportAllocationServiceRow[] = raw.map((r) => {
     const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
     const sessions = r.sessionUsed ?? null
     const consumeMoney = unit == null || sessions == null ? null : round2(unit * sessions)
@@ -604,14 +588,123 @@ async function selectPendingServiceCommissionExportRows(
     }
   })
 
-  return { rows, truncated }
+  return { rows, truncated: false }
 }
 
 /**
- * 导出营业额分配「服务提成」（allocStatus 三态分流，合并后按 createdAt desc 截断 LIMIT 10000）：
- * - 全部：已分配明细（service_commissions 主链）∪ 待分配占位行（已完成但 commission_status='待分配' 的服务单 × item）；
- * - 已分配：仅明细段；待分配：仅占位段（分配/提成/评价列留空）。
- * 列表筛选 parseAllocationServiceFilters 锁定 status='已完成'；导出两段按 commission_status 各自控制，
+ * 已分配服务单缺失有效提成明细时的占位段（一行 = 一个没有 active service_commissions 的 service_item）。
+ * 典型场景：寄存单退款专用服务单会真扣次数但不计业绩，确认时仍置 commission_status='已分配'。
+ */
+async function selectMissingAllocatedServiceCommissionExportRows(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: ServiceOrderFilters,
+): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  const whereClause = and(
+    eq(serviceOrders.commissionStatus, '已分配'),
+    eq(serviceOrders.status, '已完成'),
+    sql`NOT EXISTS (
+      SELECT 1
+        FROM service_commissions sc_active
+       WHERE sc_active.service_item_id = ${serviceItems.serviceItemId}
+         AND sc_active.is_void = false
+    )`,
+    ...buildServiceOrderConditions(session, { ...filters, commissionStatus: undefined }),
+  )
+
+  const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
+
+  const raw = await db
+    .select({
+      market: serviceOrders.marketName,
+      storeName: stores.storeName,
+      serviceOrderId: serviceOrders.serviceOrderId,
+      saleOrderType: saleOrders.saleOrderType,
+      serviceOrderType: serviceOrders.serviceOrderType,
+      customerName: clientWechatUsers.name,
+      customerPhone: clientWechatUsers.phone,
+      fallbackPhone: saleOrders.clientPhone,
+      productType: saleItems.productType,
+      categoryL1: productCategories.productKind,
+      categoryL2: productCategories.categoryName,
+      productName: saleItems.productName,
+      sessionUsed: serviceItems.sessionUsed,
+      unitRealPrice: serviceItems.unitRealPrice,
+      status: serviceOrders.status,
+      employeeName: staffWechatUsers.name,
+      positionName: staffWechatUsers.positionName,
+      rating: serviceReviews.rating,
+      reviewComment: serviceReviews.comment,
+      salesCategory: serviceItems.salesCategory,
+      customerType: clientWechatUsers.customerType,
+      openedByName: openedByStaff.name,
+      sourceSaleOrderId: saleItems.saleOrderId,
+      serviceDate: serviceOrders.serviceDate,
+      createdAt: serviceOrders.createdAt,
+      remark: serviceOrders.remark,
+    })
+    .from(serviceOrders)
+    .innerJoin(serviceItems, eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId))
+    .leftJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+    .leftJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(staffWechatUsers, eq(serviceItems.employeeId, staffWechatUsers.employeeId))
+    .leftJoin(openedByStaff, eq(saleOrders.openedBy, openedByStaff.employeeId))
+    .leftJoin(serviceReviews, eq(serviceOrders.serviceOrderId, serviceReviews.serviceOrderId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(whereClause)
+    .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId)
+
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const rows: ExportAllocationServiceRow[] = raw.map((r) => {
+    const unit = r.unitRealPrice == null ? null : Number(r.unitRealPrice)
+    const sessions = r.sessionUsed ?? null
+    const isDepositRefund = r.remark === DEPOSIT_REFUND_REMARK
+    const consumeMoney =
+      isDepositRefund ? 0 : unit == null || sessions == null ? null : round2(unit * sessions)
+    return {
+      market: r.market,
+      storeName: r.storeName,
+      serviceOrderId: r.serviceOrderId,
+      saleOrderType: r.saleOrderType,
+      serviceOrderType: r.serviceOrderType,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+      productType: r.productType,
+      categoryL1: r.categoryL1,
+      categoryL2: r.categoryL2,
+      productName: r.productName,
+      sessionUsed: sessions,
+      consumeMoney,
+      unitRealPrice: unit,
+      status: r.status,
+      employeeName: r.employeeName,
+      positionName: r.positionName,
+      allocationRatio: null,
+      allocationAmount: null,
+      commissionRate: null,
+      commissionAmount: null,
+      rating: r.rating ?? null,
+      reviewComment: r.reviewComment,
+      salesCategory: r.salesCategory,
+      customerType: r.customerType,
+      openedByName: r.openedByName,
+      sourceSaleOrderId: r.sourceSaleOrderId,
+      serviceDate: r.serviceDate,
+      createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+      remark: r.remark,
+    }
+  })
+
+  return { rows, truncated: false }
+}
+
+/**
+ * 导出营业额分配「服务提成」（allocStatus 三态分流，合并后按 createdAt desc 返回全量）：
+ * - 全部：已分配明细（service_commissions 主链）∪ 已分配缺明细占位 ∪ 待分配占位；
+ * - 已分配：明细段 + 缺明细占位；待分配：仅占位段（分配/提成列留空）。
+ * 列表筛选 parseAllocationServiceFilters 锁定 status='已完成'；导出各段按 commission_status 各自控制，
  * 不依赖 buildServiceOrderConditions 的 commissionStatus 分支（该分支仍服务列表侧）。
  */
 export const exportAllocationServiceOrders = withPermission(
@@ -620,34 +713,36 @@ export const exportAllocationServiceOrders = withPermission(
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
-    const filters = parseAllocationServiceFilters(params)
-    const commissionStatus = filters.commissionStatus
-    filters.commissionStatus = undefined
+    const parsedFilters = parseAllocationServiceFilters(params)
+    const commissionStatus = parsedFilters.commissionStatus
+    const baseFilters = { ...parsedFilters, commissionStatus: undefined }
     const merged: Array<{ row: ExportAllocationServiceRow; sort: number }> = []
 
-    // selectServiceCommissionExportRows / selectPending 各自 limit+1 内部截断；
-    // 合并层需 OR 两段的 truncated 标志（否则单段 10001 被内部截到 10000，合并 length 不超 LIMIT 漏报）。
-    let overflow = false
     if (commissionStatus !== '待分配') {
-      const result = await selectServiceCommissionExportRows(session, filters, LIMIT)
-      overflow = overflow || result.truncated
+      const allocatedFilters = {
+        ...baseFilters,
+        commissionStatus: commissionStatus === '已分配' ? '已分配' : undefined,
+      }
+      const result = await selectServiceCommissionExportRows(session, allocatedFilters)
       for (const r of result.rows) {
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+      }
+
+      const missingResult = await selectMissingAllocatedServiceCommissionExportRows(session, baseFilters)
+      for (const r of missingResult.rows) {
         merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
       }
     }
     if (commissionStatus !== '已分配') {
-      const result = await selectPendingServiceCommissionExportRows(session, filters, LIMIT)
-      overflow = overflow || result.truncated
+      const result = await selectPendingServiceCommissionExportRows(session, baseFilters)
       for (const r of result.rows) {
         merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
       }
     }
 
     merged.sort((a, b) => b.sort - a.sort)
-    const truncated = overflow || merged.length > LIMIT
-    const rows = (merged.length > LIMIT ? merged.slice(0, LIMIT) : merged).map((m) => m.row)
-    return { rows, truncated }
+    const rows = merged.map((m) => m.row)
+    return { rows, truncated: false }
   },
 )
 
@@ -706,7 +801,7 @@ export const getServiceItems = withPermission(
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
-      sli.product_name AS sku_name,
+      NULL::text AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
       sli.session_count,
@@ -726,7 +821,7 @@ export const getServiceItems = withPermission(
     employeeName: r.employee_name,
     employeeId: r.employee_id,
     productName: r.product_name,
-    skuName: r.sku_name,
+    skuName: r.sku_name ?? null,
     salesCategory: r.sales_category ?? null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,

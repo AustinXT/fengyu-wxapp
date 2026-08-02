@@ -474,7 +474,6 @@ export const exportInventoryStocks = withPermission(
     session,
     params: Record<string, string | undefined> = {},
   ): Promise<{ rows: StoreInventoryStockRow[]; truncated: boolean; canViewPrice: boolean }> => {
-    const LIMIT = 10000
     const conditions: (SQL | undefined)[] = [
       scopeCondition(session, storeInventoryStocks.storeId),
     ]
@@ -503,12 +502,10 @@ export const exportInventoryStocks = withPermission(
       .leftJoin(productSkus, eq(storeInventoryStocks.skuId, productSkus.skuId))
       .where(and(...conditions))
       .orderBy(asc(stores.storeName), asc(storeInventoryStocks.skuName), asc(storeInventoryStocks.batchNo))
-      .limit(LIMIT + 1)
-    const truncated = rows.length > LIMIT
     const priceVisible = canViewPrice(session)
     return {
-      rows: rows.slice(0, LIMIT).map((row) => rowToStock(row, priceVisible)),
-      truncated,
+      rows: rows.map((row) => rowToStock(row, priceVisible)),
+      truncated: false,
       canViewPrice: priceVisible,
     }
   },

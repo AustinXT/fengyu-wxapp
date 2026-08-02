@@ -629,10 +629,10 @@ export default function OrderDetailPageClient({
                       <td className="px-4 py-3">{paymentChangeTypeLabelMap[p.changeType] ?? p.changeType}</td>
                       <td
                         className={`px-4 py-3 text-right font-medium ${
-                          isRefund ? "text-[#C62828]" : "text-[var(--foreground)]"
+                          isRefund ? (amt === 0 ? "text-[#666666]" : "text-[#C62828]") : "text-[var(--foreground)]"
                         }`}
                       >
-                        {isRefund ? "" : "+"}¥{amt.toLocaleString()}
+                        {isRefund && amt === 0 ? "退项不退款" : `${isRefund ? "" : "+"}¥${amt.toLocaleString()}`}
                       </td>
                       <td className="px-4 py-3">{p.paymentMethod}</td>
                       <td className="px-4 py-3">

@@ -67,10 +67,10 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 
 	const searchParams = useSearchParams();
 
-	/** 导出当前筛选命中的全部疗程卡（跨分页，最多 10000 条） */
+	/** 导出当前筛选命中的全部疗程卡（跨分页） */
 	const handleExport = useCallback(async () => {
 		const raw = Object.fromEntries(searchParams.entries());
-		const { rows, truncated } = await exportCards(raw);
+		const { rows } = await exportCards(raw);
 		if (rows.length === 0) {
 			toast.info("当前筛选无数据可导出");
 			return;
@@ -98,7 +98,6 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 			],
 			rows,
 		});
-		if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
 	}, [searchParams]);
 
 	const columns: Column<AdminCard>[] = [

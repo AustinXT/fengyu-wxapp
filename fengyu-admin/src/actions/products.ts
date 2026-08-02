@@ -489,7 +489,6 @@ export const getAllSkus = withPermission(
       .where(isNull(productSkus.deletedAt))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(productSkus.sortOrder))
-      .limit(1000)
 
     return rows.map((r) => ({
       skuId: r.sku.skuId,
@@ -1410,7 +1409,6 @@ export const getProducts = withPermission(
       .where(isNull(products.deletedAt))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
-      .limit(500)
 
     return rows.map((r) => ({
       productId: r.product.productId,

@@ -256,7 +256,7 @@ export default function OrdersPageClient({
   /** 导出当前筛选命中的全部订单（明细级，一行一 sale_items；订单级字段按行重复） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
-    const { rows, truncated } = await exportOrders(raw);
+    const { rows } = await exportOrders(raw);
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出");
       return;
@@ -301,7 +301,6 @@ export default function OrdersPageClient({
       ],
       rows,
     });
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条明细（按商品行计数），请缩小筛选范围");
   }, [searchParams]);
 
   /** 筛选变更时重置到第 1 页 */
