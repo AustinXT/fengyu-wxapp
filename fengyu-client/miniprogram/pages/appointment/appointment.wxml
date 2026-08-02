@@ -40,14 +40,26 @@
       wx:key="appointment_id"
       class="appt-card"
     >
-      <!-- 卡片头：服务名 + 状态 -->
+      <!-- 卡片头：标题 + 状态 -->
       <view class="appt-card__header">
-        <text class="appt-service">{{item.service_name || '—'}}</text>
+        <text class="appt-service">预约项目</text>
         <van-tag
           type="{{item.statusType}}"
           color="{{item.statusColor}}"
           text-color="{{item.statusTextColor}}"
         >{{item.status_label}}</van-tag>
+      </view>
+
+      <view class="appt-items">
+        <view
+          wx:for="{{item.serviceItems}}"
+          wx:for-item="svcItem"
+          wx:key="itemKey"
+          class="appt-service-item"
+        >
+          <view class="appt-service-name">{{svcItem.productName || '到店预约'}}</view>
+          <view wx:if="{{svcItem.sessionText}}" class="appt-service-sessions">{{svcItem.sessionText}}</view>
+        </view>
       </view>
 
       <!-- 详情行 -->

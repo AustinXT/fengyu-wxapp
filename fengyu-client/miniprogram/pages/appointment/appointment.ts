@@ -22,6 +22,12 @@ const TAB_STATUS_MAP: Record<string, string> = {
   'cancelled': '已取消',
 };
 
+interface AppointmentServiceItem {
+  itemKey: string;
+  productName: string;
+  sessionText: string;
+}
+
 Page({
   data: {
     activeTab: 'all',
@@ -75,6 +81,7 @@ Page({
         statusColor:      meta.color,
         statusTextColor:  meta.textColor,
         appointment_time_fmt: formatAppointmentTime(rawTime),
+        serviceItems: buildAppointmentServiceItems(item),
       };
     });
   },
@@ -172,3 +179,31 @@ Page({
     return { title: '凤御预约', path: `/pages/home/home${invSuffix}` };
   },
 });
+
+function buildAppointmentServiceItems(item: any): AppointmentServiceItem[] {
+  const productName = item.service_name || '到店预约';
+  return [{
+    itemKey: item.sale_item_id || item.appointment_id || productName,
+    productName,
+    sessionText: formatAppointmentSessions(item),
+  }];
+}
+
+function formatAppointmentSessions(item: any): string {
+  if (!item.sale_item_id) return '';
+
+  const remaining = toNumberOrNull(item.remaining_sessions);
+  const total = toNumberOrNull(item.session_count);
+  const paid = toNumberOrNull(item.paid_sessions);
+  const metrics: string[] = [];
+  if (remaining !== null) metrics.push(`剩余 ${remaining}`);
+  if (Object.prototype.hasOwnProperty.call(item, 'paid_sessions')) metrics.push(`已付 ${paid === null ? '—' : paid}`);
+  if (total !== null) metrics.push(`共 ${total} 次`);
+  return metrics.join(' / ');
+}
+
+function toNumberOrNull(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}

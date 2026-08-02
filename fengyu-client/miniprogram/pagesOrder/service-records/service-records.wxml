@@ -40,8 +40,20 @@
         <text class="record-date">{{item.dateFmt}}</text>
       </view>
 
-      <!-- 项目名称 -->
-      <view class="record-title">{{item.itemSummary || '服务项目'}}</view>
+      <!-- 核销项目 -->
+      <view wx:if="{{item.items && item.items.length}}" class="record-items">
+        <view
+          wx:for="{{item.items}}"
+          wx:for-item="svcItem"
+          wx:key="service_item_id"
+          class="record-service-item"
+        >
+          <view class="record-service-name">{{svcItem.product_name || '服务项目'}}</view>
+          <view wx:if="{{svcItem.sessionText}}" class="record-service-sessions">{{svcItem.sessionText}}</view>
+          <view wx:if="{{svcItem.sale_item_id}}" class="record-service-flow">流水号：{{svcItem.sale_item_id}}</view>
+        </view>
+      </view>
+      <view wx:else class="record-title">{{item.itemSummary || '服务项目'}}</view>
 
       <!-- 详情行 -->
       <view class="record-details">

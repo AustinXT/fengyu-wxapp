@@ -703,7 +703,7 @@ async function create(ctx) {
   // 浮点 round 兜底（与 staff order.js L446 聚合点 round 对齐；行级 + 累加后双 round）
   // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md
   let totalAmount = 0
-  const itemsData = items.map(item => {
+  const rawItemsData = items.map(item => {
     const sku = skuMap[item.skuId]
     // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
     const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
@@ -716,7 +716,7 @@ async function create(ctx) {
       ? Number(bundleEntry.salePrice)
       : resolved.realUnit
     const quantity = item.quantity || 1
-    // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
+    // 先按购物车行计算总次数；疗程卡 quantity>1 会在下方拆成独立卡实体。
     const sessionCount = sku.session_count != null ? Number(sku.session_count) * quantity : null
     const saleAmount = Math.round(basePrice * quantity * 100) / 100   // 行应付总额（权威）
     const listTotal = Math.round(listUnit * quantity * 100) / 100     // 行标价总额
@@ -741,7 +741,47 @@ async function create(ctx) {
       isExperience: !!sku.is_experience
     }
   })
-  totalAmount = Math.round(totalAmount * 100) / 100
+
+  // B2：疗程卡 quantity>1 必须按"每张卡"拆成 N 行 sale_items。
+  // 前端购物车继续按 SKU 合并 quantity；后端落库保持每张卡独立，避免 5 次卡 ×2 变成 1 张 10 次卡。
+  const itemsData = []
+  for (const d of rawItemsData) {
+    if (d.productType === '疗程卡' && d.quantity > 1) {
+      const n = d.quantity
+      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
+      const totalSaleCents = Math.round(Number(d.saleAmount || 0) * 100)
+      const perSaleCents = Math.round(totalSaleCents / n)
+      const totalReceivedCents = Math.round(Number(d.received || 0) * 100)
+      const perReceivedCents = Math.round(totalReceivedCents / n)
+
+      for (let i = 0; i < n; i++) {
+        const isLast = i === n - 1
+        const saleCents = isLast
+          ? totalSaleCents - perSaleCents * (n - 1)
+          : perSaleCents
+        const receivedCents = isLast
+          ? totalReceivedCents - perReceivedCents * (n - 1)
+          : perReceivedCents
+        const saleAmount = Math.round(saleCents) / 100
+        const received = Math.round(receivedCents) / 100
+        const denom = (perSession != null && perSession > 0) ? perSession : 1
+        const listTotalRow = Math.round(Number(d.listUnit || 0) * 100) / 100
+        itemsData.push({
+          ...d,
+          sessionCount: perSession,
+          remainingSessions: perSession,
+          quantity: 1,
+          saleAmount,
+          received,
+          unitRealPrice: denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount,
+          unitPrice: denom > 0 ? Math.round((listTotalRow / denom) * 100) / 100 : listTotalRow,
+        })
+      }
+    } else {
+      itemsData.push(d)
+    }
+  }
+  totalAmount = Math.round(itemsData.reduce((s, d) => s + d.saleAmount, 0) * 100) / 100
 
   // 充值卡剥离 SKU 化（2026-05-20）后，order.create 不会有充值卡 SKU 入参，
   // D4 混单守卫已无意义（migration 0043 同步拆触发器）。

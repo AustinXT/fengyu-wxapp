@@ -45,6 +45,47 @@
   line-height: 1.4;
 }
 
+.record-items {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 20rpx;
+}
+
+.record-service-item {
+  padding: 14rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.record-service-item:first-child {
+  padding-top: 0;
+}
+
+.record-service-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.record-service-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.record-service-sessions {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  line-height: 1.45;
+}
+
+.record-service-flow {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  line-height: 1.4;
+}
+
 /* ===== 详情行 ===== */
 .record-details {
   display: flex;
