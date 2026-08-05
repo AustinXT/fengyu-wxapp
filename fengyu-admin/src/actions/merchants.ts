@@ -44,6 +44,8 @@ export interface MerchantFilters {
   enabled?: MerchantEnabledFilter
   /** 市场筛选：org_nodes type='市场' 节点 id */
   marketId?: string
+  /** 门店筛选：stores.store_id（通过 lakala_merchant_id 反向过滤商户）*/
+  storeId?: string
   page?: number
   pageSize?: number
 }
@@ -69,7 +71,15 @@ export interface PaginatedMerchants {
 
 /**
  * 服务端分页商户列表 + 关联门店数。
- * 权限：merchant:list（admin + finance）。无门店 scope 过滤（见文件顶部注释）。
+ * 权限：merchant:list（admin + finance + manager）。
+ *
+ * scope 过滤：
+ * - admin 全开
+ * - 非 admin：仅看 scope 内市场的商户（通过 market_org_node_id）
+ * - 市场为空或 scope 外的商户对非 admin 隐藏
+ *
+ * 门店筛选（前端传入，所有角色）：
+ * - 通过 stores.lakala_merchant_id 反向过滤，只显示该门店关联的商户
  */
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
@@ -107,6 +117,20 @@ export const getMerchantsPaginated = withPermission(
     }
     // 市场筛选（所有角色含 admin）
     if (filters.marketId) conditions.push(eq(lakalaMerchants.marketOrgNodeId, filters.marketId))
+
+    // 门店筛选（所有角色含 admin）：通过 stores.lakala_merchant_id 反向过滤
+    if (filters.storeId) {
+      const [store] = await db
+        .select({ lakalaMerchantId: stores.lakalaMerchantId })
+        .from(stores)
+        .where(eq(stores.storeId, filters.storeId))
+        .limit(1)
+      if (!store || !store.lakalaMerchantId) {
+        // 门店不存在或未关联商户，返回空
+        return { data: [], total: 0 }
+      }
+      conditions.push(eq(lakalaMerchants.id, store.lakalaMerchantId))
+    }
 
     const whereClause = conditions.length ? and(...conditions) : undefined
 

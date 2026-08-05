@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { AdminMerchant, MerchantMarketOption } from "@/actions/merchants"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectOption } from "@/components/ui/select"
@@ -12,6 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatDateTime } from "@/lib/utils"
+import MarketStoreFilter from "@/components/market-store-filter"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -20,11 +22,13 @@ export default function MerchantsPage({
   total,
   markets,
   canCreate,
+  filterOptions,
 }: {
   merchants: AdminMerchant[]
   total: number
   markets: MerchantMarketOption[]
   canCreate: boolean
+  filterOptions: MarketStoreFilterOptions
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -33,6 +37,7 @@ export default function MerchantsPage({
 
   const enabledFilter = get("enabled")
   const marketFilter = get("market")
+  const storeFilter = get("store")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
@@ -121,18 +126,17 @@ export default function MerchantsPage({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="w-56"
         />
-        <Select
-          value={marketFilter}
-          onChange={(e) => setMany({ market: e.target.value, page: "" })}
-          className="w-40"
-        >
-          <SelectOption value="">全部市场</SelectOption>
-          {markets.map((m) => (
-            <SelectOption key={m.id} value={m.id}>
-              {m.name}
-            </SelectOption>
-          ))}
-        </Select>
+        <MarketStoreFilter
+          options={filterOptions}
+          marketValue={marketFilter}
+          storeValue={storeFilter}
+          onMarketChange={(value) => {
+            setMany({ market: value, store: '', page: '' })
+          }}
+          onStoreChange={(value) => setMany({ store: value, page: '' })}
+          marketClassName="w-40"
+          storeClassName="w-48"
+        />
         <Select
           value={enabledFilter}
           onChange={(e) => setMany({ enabled: e.target.value, page: "" })}

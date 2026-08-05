@@ -39,6 +39,7 @@ vi.mock('@db/user', () => ({
   staffWechatUsers: {
     employeeId: 'employee_id',
     name: 'name',
+    storeId: 'staff_store_id',
   },
 }))
 
@@ -66,6 +67,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  isAdminScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -100,6 +102,7 @@ vi.mock('drizzle-orm/pg-core', () => ({
 
 import {
   batchSendMessages,
+  getMessagesPaginated,
   getCustomersForBatchMessage,
   getOrgNodesForBatchMessage,
   deleteMessage,
@@ -107,6 +110,8 @@ import {
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
+import { eq } from 'drizzle-orm'
+import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -460,6 +465,32 @@ describe('getCustomersForBatchMessage', () => {
     const result = await getCustomersForBatchMessage({ orgNodeId: 'ghost' })
     expect(result.total).toBe(0)
     expect(result.data).toEqual([])
+  })
+})
+
+// ── getMessagesPaginated — 门店范围 ──────────────────────────────────
+
+describe('getMessagesPaginated — 门店范围', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('使用已展开的 scopeStoreIds，并同时限制客户和员工接收人', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
+      permissions: { actions: ['message:list'], scopeStoreIds: ['store-allowed'] },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+    enqueueSelect([
+      { terminal: 'where', rows: [{ count: 0 }] },
+      { terminal: 'offset', rows: [] },
+    ])
+
+    await getMessagesPaginated({ page: 1 })
+
+    expect(eq).toHaveBeenCalledWith('bound_store_id', 'store-allowed')
+    expect(eq).toHaveBeenCalledWith('staff_store_id', 'store-allowed')
   })
 })
 

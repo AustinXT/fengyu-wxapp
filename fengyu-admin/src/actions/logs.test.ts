@@ -21,6 +21,18 @@ vi.mock('@db/operation-log', () => ({
   },
 }))
 
+vi.mock('@db/org', () => ({
+  stores: {
+    storeId: 'store_id',
+    orgNodeId: 'store_org_node_id',
+  },
+  orgNodes: {
+    id: 'org_node_id',
+    type: 'type',
+    parentId: 'parent_id',
+  },
+}))
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
@@ -28,6 +40,7 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   like: vi.fn((a, b) => ({ type: 'like', a, b })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   sql: vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })),
 }))
 
@@ -46,6 +59,7 @@ vi.mock('next/cache', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   requireAdmin: vi.fn(),
+  isAdminScope: vi.fn((session: any) => session.roles.some((role: any) => role.role === 'admin')),
   requireAnyPermission: vi.fn((session: any, actions: string[]) => {
     if (!session) throw new Error('NO_SESSION')
     const has = actions.some((a: string) => session.permissions?.actions?.includes(a))
@@ -57,7 +71,8 @@ import { getLogs, getLogsPaginated, getOrderLogs, deleteOperationLog } from './l
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
-import { eq, like, gte, lte } from 'drizzle-orm'
+import { eq, inArray, like, gte, lte } from 'drizzle-orm'
+import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -221,6 +236,29 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(result.data).toHaveLength(1)
     expect(dataChain.limit).toHaveBeenCalledWith(20)
     expect(dataChain.offset).toHaveBeenCalledWith(40)
+  })
+
+  it('非 admin 使用已展开的 scopeStoreIds 查询门店节点', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
+      permissions: { actions: ['operation_log:list'], scopeStoreIds: ['store-allowed'] },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+
+    const scopeChain: any = {
+      from: vi.fn(),
+      where: vi.fn(),
+    }
+    scopeChain.from.mockReturnValue(scopeChain)
+    scopeChain.where.mockResolvedValue([{ orgNodeId: 'store-node-allowed' }])
+    ;(db.select as any).mockReturnValueOnce(scopeChain)
+    mockLogChain([])
+
+    await getLogs()
+
+    expect(inArray).toHaveBeenCalledWith('store_id', ['store-allowed'])
+    expect(eq).toHaveBeenCalledWith('org_node_id', 'store-node-allowed')
   })
 })
 

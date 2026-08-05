@@ -8,9 +8,11 @@ import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 import { RowDeleteMenu } from "@/components/delete-action"
 import { deleteOperationLog } from "@/actions/logs"
+import MarketStoreFilter from "@/components/market-store-filter"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
@@ -251,9 +253,10 @@ interface Props {
   total: number
   /** 是否展示行内删除入口（仅系统管理员 operation_log:delete） */
   canDelete?: boolean
+  filterOptions: MarketStoreFilterOptions
 }
 
-export default function LogsPage({ logs, total, canDelete = false }: Props) {
+export default function LogsPage({ logs, total, canDelete = false, filterOptions }: Props) {
   const { get, set, setMany } = useUrlFilters()
 
   /** 筛选变更时重置到第 1 页 */
@@ -274,6 +277,8 @@ export default function LogsPage({ logs, total, canDelete = false }: Props) {
   const operatorSearch = get("q")
   const actionFilter = get("action")
   const targetTypeFilter = get("target")
+  const marketFilter = get("market")
+  const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
@@ -317,6 +322,17 @@ export default function LogsPage({ logs, total, canDelete = false }: Props) {
                 <option key={t} value={t}>{targetTypeLabels[t] || t}</option>
               ))}
             </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => {
+                setMany({ market: value, store: '', page: '' })
+              }}
+              onStoreChange={(value) => setFilter("store", value)}
+              marketClassName="w-32"
+              storeClassName="w-40"
+            />
             <div className="flex items-center gap-2">
               <Input
                 type="date"

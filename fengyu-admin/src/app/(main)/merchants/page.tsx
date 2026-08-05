@@ -4,6 +4,7 @@ import {
   getMerchantMarketOptions,
   type MerchantEnabledFilter,
 } from "@/actions/merchants"
+import { getMarketStoreFilterOptions } from "@/actions/stores"
 import { getSession } from "@/lib/auth"
 import { hasPermission } from "@/lib/permissions"
 import MerchantsPageClient from "./_components/merchants-page"
@@ -21,15 +22,17 @@ export default async function Page({
   const session = await getSession()
   const canCreate = !!(session && hasPermission(session, "merchant:create"))
 
-  const [{ data, total }, markets] = await Promise.all([
+  const [{ data, total }, markets, filterOptions] = await Promise.all([
     getMerchantsPaginated({
       search: params.q,
       enabled: enabled === "enabled" || enabled === "disabled" ? enabled : undefined,
       marketId: params.market,
+      storeId: params.store,
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getMerchantMarketOptions(),
+    getMarketStoreFilterOptions(),
   ])
 
   return (
@@ -39,6 +42,7 @@ export default async function Page({
         total={total}
         markets={markets}
         canCreate={canCreate}
+        filterOptions={filterOptions}
       />
     </Suspense>
   )

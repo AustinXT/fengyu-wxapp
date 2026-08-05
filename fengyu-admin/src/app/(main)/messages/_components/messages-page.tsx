@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import type { AdminMessage } from '@/actions/messages'
+import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 import {
   batchSendMessages,
   deleteMessage,
@@ -24,6 +25,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Pagination } from '@/components/ui/pagination'
 import { OrgTreeSelect } from '@/components/ui/org-tree-select'
+import MarketStoreFilter from '@/components/market-store-filter'
 import {
   Dialog,
   DialogClose,
@@ -75,14 +77,15 @@ interface Props {
   messageTypes: string[]
   total: number
   canSend: boolean
+  filterOptions: MarketStoreFilterOptions
 }
 
 /**
  * 消息中心管理页 — 服务端分页
  *
- * messages 表无 store 维度，仅 admin 可访问（菜单+权限矩阵双重控制）。
+ * 2026-08-05 改：添加市场-门店筛选 + scope 过滤（通过接收人的门店关联）。
  */
-export default function MessagesPage({ messages, messageTypes, total, canSend }: Props) {
+export default function MessagesPage({ messages, messageTypes, total, canSend, filterOptions }: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
@@ -95,6 +98,8 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
   const rtypeFilter = get('rtype')
   const typeFilter = get('type')
   const readFilter = get('read')
+  const marketFilter = get('market')
+  const storeFilter = get('store')
   const dateFrom = get('from')
   const dateTo = get('to')
   const currentPage = Math.max(1, Number(get('page', '1')) || 1)
@@ -444,6 +449,17 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
               <option value="unread">未读</option>
               <option value="read">已读</option>
             </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => {
+                setMany({ market: value, store: '', page: '' })
+              }}
+              onStoreChange={(value) => setFilter('store', value)}
+              marketClassName="w-32"
+              storeClassName="w-40"
+            />
             <div className="flex items-center gap-2">
               <Input
                 type="date"
