@@ -150,16 +150,25 @@ export function RefundForm({
       }))
       .filter(({ checked, qty }) => checked && qty > 0)
 
+    // 允许 0 元退项的场景：
+    // 1. 疗程卡：寄存单、优惠券全额抵扣的疗程卡（未消费可退）
+    // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price = 0）
     return itemRefunds.length > 0 && itemRefunds.every(({ it, qty }) => {
       const consumed = it.productType === '疗程卡'
         ? Number(it.sessionCount || 0) - Number(it.remainingSessions || 0)
         : Number(it.pickedUpQuantity || 0)
 
-      return it.productType === '疗程卡' &&
+      // 通用条件：单次价为 0（优惠券全额抵扣）且未消费
+      const isUnconsumedZeroPrice = it.unitRealPrice === 0 && consumed <= 0 && qty >= it.unusedQuantity
+
+      // 疗程卡专属条件：寄存单（sale_amount <= 0）
+      const isCourseCardDeposit = it.productType === '疗程卡' &&
         Number(it.sessionCount || 0) > 0 &&
         Number(it.saleAmount || 0) <= 0 &&
         qty >= it.unusedQuantity &&
         consumed <= 0
+
+      return isUnconsumedZeroPrice || isCourseCardDeposit
     })
   }, [items, lineStates, previewTotals.fee, previewTotals.subtotal])
 
@@ -356,7 +365,7 @@ export function RefundForm({
               </div>
               <div className="flex justify-between mt-1">
                 <span className="text-[#666]">手续费</span>
-                <span>-¥{previewTotals.fee.toFixed(2)}</span>
+                <span>{previewTotals.fee === 0 ? '¥0.00' : `-¥${previewTotals.fee.toFixed(2)}`}</span>
               </div>
               {effectiveDeduction > 0 && (
                 <div className="flex justify-between mt-1">
