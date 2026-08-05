@@ -525,28 +525,47 @@ describe('service.start', () => {
       assigned_employee_id: 'emp-001',
       store_id: 'store-001',
     }])
-    // UPDATE + 审计日志走事务 client
-    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    const clientQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM service_items sit')) {
+        return { rows: [{ sale_item_id: 'item-001', session_used: 1 }], rowCount: 1 }
+      }
+      if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 2, session_count: 2, paid_sessions: 2, product_type: '疗程卡' }], rowCount: 1 }
+      }
+      if (sql.includes('GROUP BY sale_item_id')) return { rows: [], rowCount: 0 }
+      return { rows: [], rowCount: 1 }
+    })
     pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
 
     await serviceRoutes.start(ctx)
 
     expect(ctx.result.status).toBe('服务中')
-    const updateSql = clientQuery.mock.calls[0][0]
+    const updateSql = clientQuery.mock.calls.find((call) => call[0].includes('UPDATE service_orders'))[0]
     expect(updateSql).toContain("AND status = '待服务'")
+    expect(clientQuery.mock.calls.some((call) => call[0].includes('FOR UPDATE'))).toBe(true)
+    expect(clientQuery.mock.calls.some((call) => call[0].includes('SET reserved_at = $1'))).toBe(true)
   })
 
   test('并发竞态：start UPDATE rowCount=0 时报错', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        service_order_id: 'HLD-001',
-        status: '待服务',
-        assigned_employee_id: 'emp-001',
-        store_id: 'store-001',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待服务',
+      assigned_employee_id: 'emp-001',
+      store_id: 'store-001',
+    }])
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({
+      query: vi.fn(async (sql) => {
+        if (sql.includes('FROM service_items sit')) return { rows: [{ sale_item_id: 'item-001', session_used: 1 }], rowCount: 1 }
+        if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 1, session_count: 1, paid_sessions: 1, product_type: '疗程卡' }], rowCount: 1 }
+        }
+        if (sql.includes('GROUP BY sale_item_id')) return { rows: [], rowCount: 0 }
+        if (sql.includes('UPDATE service_orders')) return { rows: [], rowCount: 0 }
+        return { rows: [], rowCount: 1 }
+      }),
+    }))
 
     await expect(serviceRoutes.start(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
@@ -805,6 +824,9 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn()
+          // sale_items 行锁 + 服务单状态 CAS
+          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-001' }], rowCount: 1 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // rowCount = 0 → 原子扣减失败
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           // probe: 同店（store_id 一致）但次数不足

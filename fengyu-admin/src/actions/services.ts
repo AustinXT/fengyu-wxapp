@@ -955,22 +955,112 @@ export const startServiceOrder = withPermission(
     .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     .limit(1)
 
-  let result: any
+  type StartOutcome =
+    | { kind: 'started' }
+    | { kind: 'state_changed' }
+    | { kind: 'insufficient_balance'; message: string }
+
+  let outcome: StartOutcome
   try {
-    result = await db
-      .update(serviceOrders)
-      .set({ status: '服务中', startedAt: nowTs() })
-      .where(and(
-        eq(serviceOrders.serviceOrderId, serviceOrderId),
-        eq(serviceOrders.status, '待服务'),
-        scopeCondition(session, serviceOrders.storeId),
-      ))
+    outcome = await db.transaction(async (tx) => {
+      // 与转换单争用同一批 sale_items 行锁，按 sale_item_id 固定顺序避免多卡服务死锁。
+      // 预扣聚合排除本服务单，保证重试/历史脏数据不会重复计算自身次数。
+      const lockRows = await tx.execute(sql`
+        SELECT
+          sit.service_item_id,
+          sit.sale_item_id,
+          sit.session_used,
+          si.remaining_sessions,
+          si.session_count,
+          si.paid_sessions,
+          si.product_type,
+          COALESCE((
+            SELECT SUM(other_sit.session_used)
+            FROM service_items other_sit
+            WHERE other_sit.sale_item_id = si.sale_item_id
+              AND other_sit.reserved_at IS NOT NULL
+              AND other_sit.service_order_id <> ${serviceOrderId}
+          ), 0) AS total_reserved
+        FROM service_items sit
+        INNER JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+        WHERE sit.service_order_id = ${serviceOrderId}
+        ORDER BY si.sale_item_id, sit.service_item_id
+        FOR UPDATE OF si
+      `)
+
+      const cards = new Map<string, {
+        remaining: number
+        sessionCount: number | null
+        paidSessions: number | null
+        productType: string | null
+        totalReserved: number
+        requested: number
+      }>()
+      for (const row of Array.from(lockRows as unknown as Iterable<Record<string, unknown>>)) {
+        const saleItemId = String(row.sale_item_id)
+        const existing = cards.get(saleItemId)
+        if (existing) {
+          existing.requested += Number(row.session_used ?? 0)
+          continue
+        }
+        cards.set(saleItemId, {
+          remaining: Number(row.remaining_sessions ?? 0),
+          sessionCount: row.session_count === null ? null : Number(row.session_count),
+          paidSessions: row.paid_sessions === null ? null : Number(row.paid_sessions),
+          productType: (row.product_type as string | null) ?? null,
+          totalReserved: Number(row.total_reserved ?? 0),
+          requested: Number(row.session_used ?? 0),
+        })
+      }
+
+      for (const [saleItemId, card] of cards) {
+        if (card.productType !== '疗程卡') continue
+        const remainingAvailable = card.remaining - card.totalReserved
+        const paidAvailable = card.sessionCount === null
+          ? Number.POSITIVE_INFINITY
+          : (card.paidSessions ?? card.sessionCount)
+            - (card.sessionCount - card.remaining)
+            - card.totalReserved
+        const available = Math.min(remainingAvailable, paidAvailable)
+        if (available < card.requested) {
+          return {
+            kind: 'insufficient_balance' as const,
+            message: `订单行 ${saleItemId} 可用次数不足（剩余 ${card.remaining}，已预留 ${card.totalReserved}，本次需 ${card.requested}）`,
+          }
+        }
+      }
+
+      const startedAt = nowTs()
+      const result = await tx
+        .update(serviceOrders)
+        .set({ status: '服务中', startedAt })
+        .where(and(
+          eq(serviceOrders.serviceOrderId, serviceOrderId),
+          eq(serviceOrders.status, '待服务'),
+          scopeCondition(session, serviceOrders.storeId),
+        ))
+      if ((result as any).count === 0) {
+        return { kind: 'state_changed' as const }
+      }
+
+      // 仅在状态 CAS 成功后写预扣；若状态已被其它端推进，整个事务不会释放/覆盖其预扣。
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = ${startedAt}, updated_at = ${startedAt}
+        WHERE service_order_id = ${serviceOrderId}
+          AND reserved_at IS NULL
+      `)
+      return { kind: 'started' as const }
+    })
   } catch {
     return { success: false, message: '开始服务失败，请稍后重试' }
   }
 
-  if ((result as any).count === 0) {
+  if (outcome.kind === 'state_changed') {
     return { success: false, message: '服务单状态已变更，无法开始' }
+  }
+  if (outcome.kind === 'insufficient_balance') {
+    return { success: false, message: outcome.message }
   }
 
   await logTransition(session, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中', {
@@ -1079,15 +1169,18 @@ export const confirmServiceOrder = withPermission(
   // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
   // 服务提成写入（settleServiceCommissions）镜像 staff/client finalizeServiceOrder：
   //   三端 confirm/finalize 都应产出 service_commissions + commission_status='已分配'。
-  // 2026-08-06 预扣机制：在扣减前清除 reserved_at，防止转换单查询时重复计入本服务单的预扣。
-  let outcome: { kind: 'ok' } | { kind: 'status_changed' } | { kind: 'insufficient_paid' }
+  // 预扣在扣减和状态推进全部成功前始终保留；这样转换单拿到 sale_items 锁时只会使用未预扣的次数。
+  let outcome: { kind: 'ok' } | { kind: 'status_changed' }
   try {
     outcome = await db.transaction(async (tx) => {
-      // 0. 清除预扣标记（必须在扣减前执行）
+      // 按稳定顺序先锁卡行，和 service.start / conversion 共用同一把锁。
       await tx.execute(sql`
-        UPDATE service_items
-        SET reserved_at = NULL, updated_at = NOW()
-        WHERE service_order_id = ${serviceOrderId}
+        SELECT si.sale_item_id
+        FROM sale_items si
+        INNER JOIN service_items sit ON sit.sale_item_id = si.sale_item_id
+        WHERE sit.service_order_id = ${serviceOrderId}
+        ORDER BY si.sale_item_id
+        FOR UPDATE OF si
       `)
 
       const result = await tx.execute(sql`
@@ -1123,8 +1216,15 @@ export const confirmServiceOrder = withPermission(
       }
       // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
       if (Number(row.items_deducted) < Number(row.items_total)) {
-        return { kind: 'insufficient_paid' as const }
+        // 事务必须回滚状态推进和任何已成功的行扣减，不能留下“已完成但未扣净”的服务单。
+        throw new ApiError('INSUFFICIENT_BALANCE', 'SERVICE_ITEMS_INSUFFICIENT_PAID')
       }
+      // 扣减与状态 CAS 都成功后才释放预扣，避免转换单在两步之间取得本次服务的次数。
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = NULL, updated_at = NOW()
+        WHERE service_order_id = ${serviceOrderId}
+      `)
       // 扣减 + 置已完成均成功 → 写服务提成 + commission_status='已分配'（镜像 staff/client finalize）
       await settleServiceCommissions(tx, serviceOrderId, {
         employeeId: session.employeeId,
@@ -1133,17 +1233,16 @@ export const confirmServiceOrder = withPermission(
       })
       return { kind: 'ok' as const }
     })
-  } catch {
+  } catch (err) {
+    if (err instanceof ApiError && err.message.includes('SERVICE_ITEMS_INSUFFICIENT_PAID')) {
+      return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
+    }
     return { success: false, message: '确认服务失败，请稍后重试' }
   }
 
   if (outcome.kind === 'status_changed') {
     return { success: false, message: '服务单状态已变更，无法确认' }
   }
-  if (outcome.kind === 'insufficient_paid') {
-    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
-  }
-
   await logTransition(session, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
     employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
   })

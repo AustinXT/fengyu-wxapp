@@ -4283,6 +4283,7 @@ describe('order.createConversion', () => {
               client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
             }], rowCount: 1,
           })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           // 转入 SKU 查询（quantity=10 → totalIn=15000）
           .mockResolvedValueOnce({
             rows: [{
@@ -4365,6 +4366,7 @@ describe('order.createConversion', () => {
               product_kind: '护理项目',
             }], rowCount: 1,
           })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           .mockResolvedValueOnce({
             rows: [{
               sku_id: 'sku-special-new',
@@ -4490,6 +4492,7 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-eq-new', product_type: '疗程卡', spec_name: '同价款',
@@ -4542,6 +4545,7 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-neg-new', product_type: '疗程卡', spec_name: '低价款',
@@ -4682,6 +4686,7 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-x', product_type: '疗程卡', spec_name: '新款',
@@ -4732,6 +4737,7 @@ describe('order.createConversion', () => {
           is_recharge_card: false, is_experience: true,
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-new', product_type: '疗程卡', spec_name: '升级款',
@@ -4741,7 +4747,7 @@ describe('order.createConversion', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
-      // UPDATE 疗程卡 remaining_sessions=0
+      // UPDATE 疗程卡 remaining_sessions
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转入行
     pg.transaction.mockImplementationOnce(async (cb) => cb({ query: txQuery }))
@@ -4754,10 +4760,10 @@ describe('order.createConversion', () => {
     expect(ctx.result.priceDiff).toBe(400)
     expect(ctx.result.status).toBe('待支付') // priceDiff>0 + 线下
 
-    // 验证走疗程卡分支：UPDATE 语句包含 SET remaining_sessions = 0，不含 picked_up_quantity = quantity
-    const updateCall = txQuery.mock.calls.find(c => /SET remaining_sessions = 0/.test(c[0]))
+    // 验证走疗程卡分支：只扣转换次数，不触及取货数量。
+    const updateCall = txQuery.mock.calls.find(c => /SET remaining_sessions = remaining_sessions - \$4/.test(c[0]))
     expect(updateCall).toBeDefined()
-    expect(updateCall[0]).toMatch(/SET remaining_sessions = 0/)
+    expect(updateCall[0]).toMatch(/SET remaining_sessions = remaining_sessions - \$4/)
     expect(updateCall[0]).not.toMatch(/picked_up_quantity = quantity/)
     // 参数 $4 = 折抵数量（剩余 3）
     expect(updateCall[1][3]).toBe(3)
