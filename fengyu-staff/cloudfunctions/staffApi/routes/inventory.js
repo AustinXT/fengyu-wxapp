@@ -10,6 +10,10 @@ const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 const cloud = require('wx-server-sdk')
 
+const INVENTORY_WRITE_ROLES = ['admin', 'manager', 'product']
+const INVENTORY_APPROVER_ROLES = ['admin', 'finance']
+const VALID_STORE_SCOPE_TYPES = new Set(['总部', '市场', '门店'])
+
 const CATEGORY_CONFIG = {
   procurement: {
     master: 'inventory_procurement_orders',
@@ -117,9 +121,9 @@ function requireStoreInScope(auth, storeId) {
   if (!ids.includes(storeId)) throw new Error('PERMISSION_DENIED: 无权操作该门店库存')
 }
 
-function resolveStoreId(ctx, payload) {
+async function resolveInventoryWriteStoreId(ctx, payload) {
   const storeId = payload.storeId || ctx.auth.effectiveStoreId
-  requireStoreInScope(ctx.auth, storeId)
+  await assertInventoryWriteStoreScope(pg, ctx.auth, storeId)
   return storeId
 }
 
@@ -139,11 +143,86 @@ function approvalMovementDirection(docType) {
   return ['院退货', '院产品报损'].includes(docType) ? '出库' : null
 }
 
+function roleBindingsFor(auth, roles) {
+  const allowed = new Set(roles)
+  return (auth.roleBindings || []).filter((rb) => (
+    rb
+    && allowed.has(rb.role)
+    && VALID_STORE_SCOPE_TYPES.has(rb.scopeType)
+    && rb.scopeId
+  ))
+}
+
+async function assertStoreCoveredByBindings(client, bindings, storeId, message) {
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店')
+  if (!Array.isArray(bindings) || bindings.length === 0) {
+    throw new Error(message)
+  }
+  if (bindings.some((rb) => rb.scopeType === '总部')) return
+
+  const marketIds = bindings
+    .filter((rb) => rb.scopeType === '市场')
+    .map((rb) => rb.scopeId)
+  const storeNodeIds = bindings
+    .filter((rb) => rb.scopeType === '门店')
+    .map((rb) => rb.scopeId)
+
+  if (marketIds.length === 0 && storeNodeIds.length === 0) {
+    throw new Error(message)
+  }
+
+  const conditions = []
+  const params = [storeId]
+  let idx = 2
+  if (marketIds.length > 0) {
+    conditions.push(`(o.parent_id = ANY($${idx}::text[]) AND o.type = '门店')`)
+    params.push(marketIds)
+    idx++
+  }
+  if (storeNodeIds.length > 0) {
+    conditions.push(`s.org_node_id = ANY($${idx}::text[])`)
+    params.push(storeNodeIds)
+  }
+
+  const result = await client.query(
+    `SELECT 1
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.org_node_id
+      WHERE s.store_id = $1
+        AND (${conditions.join(' OR ')})
+      LIMIT 1`,
+    params,
+  )
+  if (rowsOf(result).length === 0) throw new Error(message)
+}
+
+async function assertInventoryWriteStoreScope(client, auth, storeId) {
+  const bindings = roleBindingsFor(auth, INVENTORY_WRITE_ROLES)
+  if (bindings.length === 0) {
+    throw new Error('PERMISSION_DENIED: 无库存写入权限')
+  }
+  await assertStoreCoveredByBindings(
+    client,
+    bindings,
+    storeId,
+    'PERMISSION_DENIED: 无权操作该门店库存',
+  )
+}
+
 function assertApprover(ctx) {
-  const roles = ctx.auth.roles || []
-  if (!roles.includes('admin') && !roles.includes('finance')) {
+  const bindings = roleBindingsFor(ctx.auth, INVENTORY_APPROVER_ROLES)
+  if (bindings.length === 0) {
     throw new Error('PERMISSION_DENIED: 仅市场财务或管理员可审批库存单据')
   }
+}
+
+async function assertApproverStoreScope(client, auth, storeId) {
+  await assertStoreCoveredByBindings(
+    client,
+    roleBindingsFor(auth, INVENTORY_APPROVER_ROLES),
+    storeId,
+    'PERMISSION_DENIED: 无权审批该门店库存单据',
+  )
 }
 
 async function generateDocNo(client, docType) {
@@ -786,8 +865,8 @@ async function createDoc(ctx) {
   const { docType, items = [] } = payload
   if (!isValidDocType(docType)) throw new Error('INVALID_PARAMS: 无效库存单据类型')
   if (!Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 至少需要一条明细')
-  const storeId = resolveStoreId(ctx, payload)
-  const status = payload.status || defaultDocStatus(docType)
+  const storeId = await resolveInventoryWriteStoreId(ctx, payload)
+  const status = defaultDocStatus(docType)
   const totalQuantity = items.reduce((acc, item) => acc + assertQty(item.quantity), 0)
   let docId
 
@@ -885,7 +964,7 @@ async function approveDoc(ctx) {
     )
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 单据不存在')
-    requireStoreInScope(ctx.auth, head.store_id)
+    await assertApproverStoreScope(client, ctx.auth, head.store_id)
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
     const direction = approvalMovementDirection(head.doc_type)
     if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
@@ -931,24 +1010,29 @@ async function rejectDoc(ctx) {
   assertApprover(ctx)
   const { id, auditRemark } = ctx.event.payload || {}
   if (!id) throw new Error('INVALID_PARAMS: 缺少单据号')
-  const rows = await pg.query(
-    `SELECT store_id, status FROM store_inventory_docs WHERE id = $1 LIMIT 1`,
-    [id],
-  )
-  const doc = rows[0]
-  if (!doc) throw new Error('NOT_FOUND: 单据不存在')
-  requireStoreInScope(ctx.auth, doc.store_id)
-  if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
-  await pg.query(
-    `UPDATE store_inventory_docs
-        SET status = '已驳回',
-            rejected_by = $2,
-            rejected_at = NOW(),
-            audit_remark = $3,
-            updated_at = NOW()
-      WHERE id = $1`,
-    [id, ctx.auth.staffWfId, auditRemark || null],
-  )
+  await pg.transaction(async (client) => {
+    const headRes = await client.query(
+      `SELECT store_id, status
+         FROM store_inventory_docs
+        WHERE id = $1
+        FOR UPDATE`,
+      [id],
+    )
+    const doc = headRes.rows[0]
+    if (!doc) throw new Error('NOT_FOUND: 单据不存在')
+    await assertApproverStoreScope(client, ctx.auth, doc.store_id)
+    if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
+    await client.query(
+      `UPDATE store_inventory_docs
+          SET status = '已驳回',
+              rejected_by = $2,
+              rejected_at = NOW(),
+              audit_remark = $3,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [id, ctx.auth.staffWfId, auditRemark || null],
+    )
+  })
   ctx.result = { message: '已驳回' }
   return ctx.result
 }
@@ -969,7 +1053,8 @@ async function confirmReceive(ctx) {
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 调拨出库单不存在')
     if (head.status !== '待收货') throw new Error('INVALID_STATE: 该调拨单不是待收货状态')
-    requireStoreInScope(ctx.auth, head.counterpart_store_id)
+    if (!head.counterpart_store_id) throw new Error('INVALID_STATE: 调拨单缺少接收门店')
+    await assertInventoryWriteStoreScope(client, ctx.auth, head.counterpart_store_id)
     inboundDocId = await generateDocNo(client, '分院调货入库')
     await client.query(
       `INSERT INTO store_inventory_docs (
@@ -1055,7 +1140,7 @@ async function uploadReceipt(ctx) {
     [id],
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 单据不存在')
-  requireStoreInScope(ctx.auth, rows[0].store_id)
+  await assertInventoryWriteStoreScope(pg, ctx.auth, rows[0].store_id)
   const safeExt = String(ext).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'jpg'
   const buffer = Buffer.from(String(fileBase64).replace(/^data:image\/\w+;base64,/, ''), 'base64')
   const upload = await cloud.uploadFile({
