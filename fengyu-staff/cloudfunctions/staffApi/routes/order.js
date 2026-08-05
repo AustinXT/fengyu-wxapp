@@ -108,7 +108,8 @@ function treatmentTierGroupKey(row) {
 }
 
 function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrderType) {
-  if (saleOrderType !== '销售单') return
+  // 销售单 + 转换单均需计算疗程卡梯度累加价（寄存单/内部单不计算）
+  if (saleOrderType !== '销售单' && saleOrderType !== '转换单') return
 
   const groups = new Map()
   for (const item of rawItems || []) {
@@ -3290,7 +3291,8 @@ async function createConversion(ctx) {
     // 生成 convOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))）
     convOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
-    // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
+    // 1. 锁候选卡。预扣汇总必须在独立查询中执行：PostgreSQL 不允许同层
+    // GROUP BY/聚合查询使用 FOR UPDATE，也必须先取得此行锁才能与 service.start 串行。
     const heldResult = await tx.query(
       `SELECT si.sale_item_id,
               si.sale_order_id,
@@ -3327,8 +3329,7 @@ async function createConversion(ctx) {
       throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
     }
 
-    let totalOut = 0
-    const outItems = []
+    // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
       // 归属校验
       if (row.store_id !== storeId) {
@@ -3345,15 +3346,38 @@ async function createConversion(ctx) {
       }
       // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵转换（转换会置 remaining_sessions=0，与在途退款冲突）
       await assertNoPendingRefund(tx, row.sale_order_id)
+    }
 
+    // sale_items 行锁已持有后再汇总预扣。service.start 使用同一把行锁，因而不会在
+    // 此快照之后插入新的预扣；转换扣减与预扣校验构成同一事务临界区。
+    const reservedResult = await tx.query(
+      `SELECT sit.sale_item_id,
+              COALESCE(SUM(sit.session_used) FILTER (WHERE sit.reserved_at IS NOT NULL), 0) AS total_reserved
+         FROM service_items sit
+        WHERE sit.sale_item_id = ANY($1)
+        GROUP BY sit.sale_item_id`,
+      [convertOutSaleItemIds]
+    )
+    const reservedBySaleItemId = new Map(
+      reservedResult.rows.map((row) => [row.sale_item_id, Number(row.total_reserved || 0)])
+    )
+
+    let totalOut = 0
+    const outItems = []
+    for (const row of held) {
       const unit = Number(row.unit_real_price)
       const productType = row.product_type
       // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+      // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
       let qty = 0
       if (productType === '疗程卡') {
         const rem = Number(row.remaining_sessions || 0)
-        if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
-        qty = rem
+        const reserved = reservedBySaleItemId.get(row.sale_item_id) || 0
+        const available = rem - reserved
+        if (available <= 0) {
+          throw new Error('INVALID_PARAMS: 部分卡可用次数不足（存在服务中预留）')
+        }
+        qty = available  // 折抵数量改为可用次数（扣除预扣）
       } else {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
@@ -3384,14 +3408,13 @@ async function createConversion(ctx) {
     }
 
     // 2. 转入项目 — 按 SKU 查询计价；店长特价 SKU 可沿用销售单的手填应付金额
-    let totalIn = 0
     const inItems = []
     const buyerIsMember = isMember(client.customer_type, client.member_level)
     for (const req of convertInItems) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count, s.service_fee,
-                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, pc.sales_category
+                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.category_id, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -3402,7 +3425,9 @@ async function createConversion(ctx) {
       const qty = Number(req.quantity) || 1
       const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(sku, buyerIsMember)
       let amount = Math.round(applicableUnit * qty * 100) / 100
-      if (sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)) {
+      // 店长特价手填金额（manualSaleAmountOverride 标记，用于梯度累加过滤）
+      const manualSaleAmountOverride = sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)
+      if (manualSaleAmountOverride) {
         const inputAmount = req.saleAmount != null
           ? Number(req.saleAmount)
           : Number(req.unitRealPrice) * qty
@@ -3412,7 +3437,6 @@ async function createConversion(ctx) {
         }
         amount = Math.round(inputAmount * 100) / 100
       }
-      totalIn += amount
       const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
       // 同 create：session_count 是"次"维度，需 × qty
       const inSessionCount = sku.session_count != null ? Number(sku.session_count) * qty : null
@@ -3423,6 +3447,7 @@ async function createConversion(ctx) {
       const inRealPerSessionUnit = inDenom > 0 ? Math.round((amount / inDenom) * 100) / 100 : amount
       inItems.push({
         skuId: sku.sku_id,
+        categoryId: sku.category_id,
         productName: sku.spec_name,
         productType: sku.product_type,
         sessionCount: inSessionCount,
@@ -3430,13 +3455,43 @@ async function createConversion(ctx) {
         unitRealPrice: inRealPerSessionUnit,
         quantity: qty,
         amount,
+        saleAmount: amount,
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
         isManagerSpecial: sku.is_manager_special === true,
+        manualSaleAmountOverride,
         purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
+    }
+
+    // 2.5. 转入项目应用疗程卡梯度累加价（与销售单对齐）
+    // 查询所有可能用于梯度计算的 SKU（同分类+同名称的所有疗程卡规格）
+    const tierSkuIds = new Set()
+    for (const item of inItems) {
+      if (item.productType === '疗程卡' && item.categoryId && !item.isExperience && !item.manualSaleAmountOverride) {
+        tierSkuIds.add(item.categoryId + '::' + item.productName)
+      }
+    }
+    let tierSkuRows = []
+    if (tierSkuIds.size > 0) {
+      const categoryIds = [...new Set(inItems.map(i => i.categoryId).filter(Boolean))]
+      const tierSkuRes = await tx.query(
+        `SELECT s.sku_id, s.category_id, s.spec_name, s.product_type, s.price, s.special_price,
+                s.session_count, s.is_experience, s.is_manager_special
+         FROM product_skus s
+         WHERE s.category_id = ANY($1) AND s.product_type = '疗程卡' AND s.deleted_at IS NULL`,
+        [categoryIds]
+      )
+      tierSkuRows = tierSkuRes.rows
+    }
+    applyTreatmentTierPricing(inItems, tierSkuRows, buyerIsMember, '转换单')
+
+    // 重新计算 totalIn（梯度累加可能改变了 amount / saleAmount）
+    let totalIn = 0
+    for (const item of inItems) {
+      totalIn += Number(item.saleAmount) || Number(item.amount) || 0
     }
 
     const purchaseLimitViolation = findPurchaseLimitViolation(convertInItems, inItems)
@@ -3503,7 +3558,8 @@ async function createConversion(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 6. 转出行 × N + 原子标记耗尽（疗程卡 remaining_sessions=0；单品已合并入疗程卡）
+    // 6. 转出行 × N + 原子扣减可转换次数。服务中的预扣次数必须留在源卡上，
+    // 后续 confirm 才会从这部分次数扣减。
     for (const d of outItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
@@ -3526,12 +3582,12 @@ async function createConversion(ctx) {
           d.isExperience === true,
         ]
       )
-      // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
-      // 单品合并后转出行恒为疗程卡，统一置 remaining_sessions=0
+      // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）。这里不能置 0：
+      // d.quantity 是扣除服务预扣后的可转次数，预扣次数仍需留给服务确认核销。
       if (d.productType === '疗程卡') {
         const upd = await tx.query(
           `UPDATE sale_items
-             SET remaining_sessions = 0, updated_at = $1
+             SET remaining_sessions = remaining_sessions - $4, updated_at = $1
            WHERE sale_item_id = $2
              AND store_id = $3
              AND COALESCE(remaining_sessions, 0) >= $4`,

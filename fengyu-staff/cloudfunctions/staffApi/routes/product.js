@@ -23,11 +23,16 @@ function marketScopeValues(scopeExpr) {
  *
  * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
  * staff 门店模式优先使用 effectiveStoreId；管理层模式用 scopeStoreIds 展开的门店集合。
+ *
+ * 语义约定（2026-08-06 修复）：
+ * - NULL = 全部市场可见
+ * - '' (空字符串) = 不可见于任何市场
+ * - 'id1,id2' = 仅指定市场可见
  */
 function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   const scopeExpr = `${skuAlias}.market_scope`
   const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `(${scopeExpr} IS NULL OR btrim(${scopeExpr}) = '')`
+  const globalExpr = `${scopeExpr} IS NULL`
   const storeIds = []
 
   if (auth?.effectiveStoreId) {
@@ -174,16 +179,10 @@ function _formatSkuRow(sk) {
     isShengmei: sk.is_shengmei,
     isExperience: !!sk.is_experience,
     isManagerSpecial: !!sk.is_manager_special,
-    isBundle: !!sk.is_bundle,
   }
 }
 
 /** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories）
- *
- * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
- * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
- * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
- *
  * 卡类 capability 列下发：is_experience 透传给前端，"普通商品"过滤按 SKU capability 判定。
  * 充值卡已剥离 SKU 化（2026-05-20），不再用 is_recharge_card 过滤。
  *
@@ -221,13 +220,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
-           pc.category_name, pc.product_kind, pc.sales_category,
-           COALESCE((
-             SELECT bool_or(p.is_bundle)
-             FROM mall_product_skus mps
-             JOIN products p ON mps.product_id = p.product_id
-             WHERE mps.sku_id = sk.sku_id
-           ), false) AS is_bundle
+           pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     ${whereClause}
@@ -244,7 +237,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
  * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT is_experience
  * EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
  *
- * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
+ * 体验卡按业务约定不会出现在 bundle 组合里。
  */
 async function _queryExperienceSkus(auth) {
   const params = []
@@ -255,8 +248,7 @@ async function _queryExperienceSkus(auth) {
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
-           pc.category_name, pc.product_kind, pc.sales_category,
-           false AS is_bundle
+           pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.is_experience = true

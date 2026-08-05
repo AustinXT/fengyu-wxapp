@@ -94,10 +94,32 @@ export function getElapsedTime(startTime: string | null, now?: Date): string {
   return `进行中 ${h}小时${min > 0 ? min + '分钟' : ''}`
 }
 
-/** 优惠券折扣展示：折扣券→"8折"，现金券/品项券→"¥10"（镜像 client utils/format.ts） */
+/** 优惠券面值展示：折扣券→"8.5折"，现金券/品项券→"¥10"（镜像 client utils/format.ts） */
 export function formatDiscount(coupon: { couponType: string; discountValue: number | string }): string {
   if (coupon.couponType === '折扣券') {
-    return `${Math.round(Number(coupon.discountValue) * 10)}折`
+    return `${(Math.round(Number(coupon.discountValue) * 100) / 10).toFixed(1).replace(/\.0$/, '')}折`
   }
-  return `¥${Number(coupon.discountValue).toFixed(0)}`
+  return `¥${Number(coupon.discountValue).toFixed(2).replace(/\.?0+$/, '')}`
+}
+
+/**
+ * 结算页可用券的展示字段。折扣券只显示折数；金额型券在本单抵扣被截断时才显示实际可用金额。
+ */
+export function buildCouponDisplay(coupon: {
+  couponType?: string;
+  discountValue?: number | string;
+  faceValue?: number | string;
+  discount?: number | string;
+}): { discountLabel: string; availableAmountLabel: string } {
+  const couponType = coupon.couponType || ''
+  const faceValue = Number(coupon.faceValue ?? coupon.discountValue)
+  const discount = Number(coupon.discount)
+  const isAmountCoupon = couponType === '现金券' || couponType === '品项券'
+
+  return {
+    discountLabel: formatDiscount({ couponType, discountValue: coupon.discountValue ?? coupon.faceValue ?? 0 }),
+    availableAmountLabel: isAmountCoupon && Number.isFinite(faceValue) && Number.isFinite(discount) && discount < faceValue
+      ? `本单可用 ${formatDiscount({ couponType, discountValue: discount })}`
+      : '',
+  }
 }

@@ -47,7 +47,7 @@ describe('product.categories', () => {
 // product.skuList
 // ============================================================
 describe('product.skuList', () => {
-  test('返回扁平 SKU 列表（含分类信息、isBundle 标记）', async () => {
+  test('返回扁平 SKU 列表（含分类信息）', async () => {
     const ctx = createCtx({ payload: { categoryId: 'cat-1' } })
 
     // PR-C 重构后：单次 JOIN 查询直接返回 SKU 行
@@ -57,14 +57,12 @@ describe('product.skuList', () => {
         spec_name: '基础款', price: '300', special_price: '200',
         session_count: 10, sort_order: 1, service_fee: '0', is_shengmei: false,
         category_name: '护理项目', product_kind: '护理项目', sales_category: null,
-        is_bundle: false,
       },
       {
         sku_id: 'sku-2', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '高级款', price: '500', special_price: null,
         session_count: 20, sort_order: 2, service_fee: '0', is_shengmei: false,
         category_name: '护理项目', product_kind: '护理项目', sales_category: null,
-        is_bundle: false,
       },
     ])
 
@@ -76,7 +74,7 @@ describe('product.skuList', () => {
     expect(ctx.result[0].price).toBe(300)
     expect(ctx.result[0].specialPrice).toBe(200)
     expect(ctx.result[0].sessionCount).toBe(10)
-    expect(ctx.result[0].isBundle).toBe(false)
+    expect(ctx.result[0]).not.toHaveProperty('isBundle')
     expect(ctx.result[1].skuId).toBe('sku-2')
     expect(ctx.result[1].specialPrice).toBeNull()
   })
@@ -111,7 +109,6 @@ describe('product.skuList', () => {
         session_count: 10, sort_order: 1, service_fee: '0', is_shengmei: false,
         is_experience: true,
         category_name: '体验项目', product_kind: '体验卡', sales_category: null,
-        is_bundle: false,
       },
       {
         sku_id: 'sku-normal', category_id: 'cat-card', product_type: '疗程卡',
@@ -119,7 +116,6 @@ describe('product.skuList', () => {
         session_count: null, sort_order: 2, service_fee: '0', is_shengmei: false,
         is_experience: false,
         category_name: '护理', product_kind: '护理项目', sales_category: null,
-        is_bundle: false,
       },
     ])
 
@@ -278,8 +274,7 @@ describe('product.shopInit', () => {
     expect(ctx.result.experienceSkus).toEqual([])
   })
 
-  // ===== D2.6 isBundle 字段 + mallBundleGroups 聚合 =====
-  test('skuList 透传 is_bundle：true/false 行分别映射到 isBundle', async () => {
+  test('shopInit 的 SKU 列表不从产品层派生 isBundle', async () => {
     const ctx = createCtx()
 
     // _queryCategoryRows
@@ -295,14 +290,12 @@ describe('product.shopInit', () => {
         spec_name: '套餐SKU', price: '800', special_price: null,
         session_count: 5, sort_order: 1, service_fee: '0', is_shengmei: false,
         category_name: '面部护理', product_kind: '护理项目', sales_category: '自销自耗',
-        is_bundle: true,
       },
       {
         sku_id: 'sku-normal-2', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '普通SKU', price: '300', special_price: null,
         session_count: 10, sort_order: 2, service_fee: '0', is_shengmei: false,
         category_name: '面部护理', product_kind: '护理项目', sales_category: '自销自耗',
-        is_bundle: false,
       },
     ])
     // _queryMallBundleGroups → productRows（无 bundle 产品，早返回）
@@ -314,9 +307,12 @@ describe('product.shopInit', () => {
 
     expect(ctx.result.skuList).toHaveLength(2)
     expect(ctx.result.skuList[0].skuId).toBe('sku-bundle-1')
-    expect(ctx.result.skuList[0].isBundle).toBe(true)
+    expect(ctx.result.skuList[0]).not.toHaveProperty('isBundle')
     expect(ctx.result.skuList[1].skuId).toBe('sku-normal-2')
-    expect(ctx.result.skuList[1].isBundle).toBe(false)
+    expect(ctx.result.skuList[1]).not.toHaveProperty('isBundle')
+    const skuListSql = pg.query.mock.calls[2][0]
+    expect(skuListSql).not.toContain('mall_product_skus')
+    expect(skuListSql).not.toContain('is_bundle')
   })
 
   test('mallBundleGroups 聚合：bundle 商品关联分组 + pickCount + 内嵌 skus 详情', async () => {

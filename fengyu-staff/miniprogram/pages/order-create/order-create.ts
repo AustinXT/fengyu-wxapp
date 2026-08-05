@@ -4,7 +4,8 @@ import { isManager, getCurrentStoreId } from '../../utils/role';
 import { calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
-import { formatDate } from '../../utils/formatters';
+import { buildCouponDisplay, formatDate } from '../../utils/formatters';
+import { on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
 
@@ -91,8 +92,6 @@ interface SkuItem {
   isExperience?: boolean;
   /** 店长特别优惠 capability（product_skus.is_manager_special） */
   isManagerSpecial?: boolean;
-  /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
-  isBundle?: boolean;
 }
 
 /** 套餐分组（PR-A 云函数 product.shopInit 返回 mallBundleGroups[]） */
@@ -142,7 +141,6 @@ interface DisplayItem {
   productType: string;
   sessionCount: number | null;
   purchaseLimit?: number | null;
-  isBundle?: boolean;
   /** 店长特别优惠 capability（仅普通商品开单时放开应付编辑） */
   isManagerSpecial?: boolean;
   /** 体验卡 capability */
@@ -182,6 +180,15 @@ interface CouponInfo {
   description?: string;
   /** 券有效期（后端返回原始 timestamp，前端格式化为 YYYY-MM-DD 供「有效期至」展示） */
   expireAt?: string;
+  /** 券面值（真实属性，不受订单金额限制） */
+  faceValue?: number;
+  /** 券类型（现金券/折扣券/品项券） */
+  couponType?: string;
+  /** 券配置值：折扣券为折率，金额型券为面值 */
+  discountValue?: number | string;
+  /** 预计算券面值与本单可用金额文案，供 WXML 直接绑定 */
+  discountLabel?: string;
+  availableAmountLabel?: string;
 }
 
 /** 侧边栏分组（"普通商品"模式，按 productKind 聚合） */
@@ -250,7 +257,6 @@ function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
     productType: sku.productType,
     sessionCount: sku.sessionCount,
     purchaseLimit: sku.purchaseLimit ?? null,
-    isBundle: !!sku.isBundle,
     isManagerSpecial: !!sku.isManagerSpecial,
     isExperience: !!sku.isExperience,
   }
@@ -324,7 +330,6 @@ function buildTreatmentTierLineMap(cart: CartItem[], skus: SkuItem[], isMember: 
         s.productType === '疗程卡' &&
         !s.isExperience &&
         !s.isManagerSpecial &&
-        !s.isBundle &&
         s.sessionCount != null &&
         Number(s.sessionCount) > 1 &&
         Number(s.sessionCount) <= totalSessions
@@ -497,6 +502,21 @@ Page({
   _spuCache: {} as Record<string, DisplayItem[]>,
   /** 普通商品搜索防抖计时器 */
   _kwTimer: null as ReturnType<typeof setTimeout> | null,
+
+  onLoad() {
+    // 订阅门店切换事件：切换门店时强制刷新商品目录
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, (storeId: string) => {
+      console.log('[order-create] 门店已切换:', storeId, '→ 清空商品缓存 + 购物车');
+      this.onStoreChanged();
+    });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
+    if (this._kwTimer) clearTimeout(this._kwTimer);
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -1075,8 +1095,10 @@ Page({
     const saleOrderType = this.data.saleOrderType;
     const isInternal = saleOrderType === '内部单';
     const isSales = saleOrderType === '销售单';
-    const supportsManagerSpecial = isSales || saleOrderType === '转换单';
-    const tierLineMap = isSales
+    const isConversion = saleOrderType === '转换单';
+    const supportsManagerSpecial = isSales || isConversion;
+    // 销售单 + 转换单均需计算疗程卡梯度累加价（寄存单/内部单不计算）
+    const tierLineMap = (isSales || isConversion)
       ? buildTreatmentTierLineMap(cart, this._allSkus, this.data.buyerIsMember)
       : new Map<string, number>();
     // 店长特别优惠（销售单/转换单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
@@ -1277,6 +1299,40 @@ Page({
     // 商品类型回到「普通商品」后刷新侧边栏 + spuList；
     // _allCategories 为空时 applyKindChoice 安全设空，随后 loadShopInit 回来会再次填充。
     this.applyKindChoice('普通商品');
+  },
+
+  /**
+   * 门店切换后的清理与刷新（2026-08-06 新增）
+   *
+   * 切换门店时需要完全重置的数据：
+   * 1. 商品目录缓存（不同门店的商品/分类/SKU 不同，必须重新加载）
+   * 2. 购物车（防止跨门店混单，避免下单不属于当前市场的商品）
+   * 3. 已选顾客（顾客可能不属于新门店，需重新搜索确认）
+   * 4. 优惠券（券与顾客/门店绑定，切换后失效）
+   * 5. 结算表单的所有临时状态
+   *
+   * 由 EVENT_STORE_CHANGED 事件触发，确保用户切换门店后不会残留旧门店数据。
+   */
+  onStoreChanged() {
+    // 1. 清空商品目录缓存（强制重新从云端拉取新门店的商品数据）
+    this._allCategories = [];
+    this._allGroupedCategories = [];
+    this._allSkus = [];
+    this._experienceSkus = [];
+    this._spuCache = {};
+
+    // 2. 完全重置开单状态（购物车 + 结算表单 + 商品类型 Tab）
+    this.resetOrderState();
+
+    // 3. 重新加载新门店的商品目录
+    this.loadShopInit();
+
+    // 4. Toast 提示用户（避免用户困惑为何购物车清空）
+    wx.showToast({
+      title: '已切换门店，购物车已清空',
+      icon: 'none',
+      duration: 2000,
+    });
   },
 
   // Step 0: 选顾客
@@ -1584,7 +1640,11 @@ Page({
         items,
       });
       // expireAt 为原始 timestamp（序列化成 UTC 串），格式化为 YYYY-MM-DD 供「有效期至」展示
-      const coupons = (data?.coupons || []).map(c => ({ ...c, expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt }));
+      const coupons = (data?.coupons || []).map(c => ({
+        ...c,
+        expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt,
+        ...buildCouponDisplay(c),
+      }));
       this.setData({ availableCoupons: coupons });
     } catch {
       this.setData({ availableCoupons: [] });

@@ -658,12 +658,13 @@
           data-discount="{{item.discount}}"
         >
           <view class="coupon-popup__item-left">
-            <text class="coupon-popup__item-discount">¥{{item.discount}}</text>
+            <text class="coupon-popup__item-discount">{{item.discountLabel}}</text>
             <text class="coupon-popup__item-type">{{item.couponType}}</text>
           </view>
           <view class="coupon-popup__item-right">
             <text class="coupon-popup__item-name">{{item.name}}</text>
             <text class="coupon-popup__item-expire">有效期至 {{item.expireAt}}</text>
+            <text wx:if="{{item.availableAmountLabel}}" class="coupon-popup__item-available">{{item.availableAmountLabel}}</text>
           </view>
           <van-icon wx:if="{{selectedCoupon && selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
         </view>
