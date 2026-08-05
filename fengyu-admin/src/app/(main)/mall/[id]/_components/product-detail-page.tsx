@@ -62,9 +62,9 @@ export default function MallProductDetailPageClient({
   const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? []);
 
   const [isBundle, setIsBundle] = useState(product.isBundle);
-  const [allMarkets, setAllMarkets] = useState(!product.marketScope);
+  const [allMarkets, setAllMarkets] = useState(product.marketScope === null);
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
-    product.marketScope ? product.marketScope.split(",") : [],
+    product.marketScope && product.marketScope !== "" ? product.marketScope.split(",") : [],
   );
 
   // Mall category groups for grouped select
@@ -196,7 +196,7 @@ export default function MallProductDetailPageClient({
           isBundle,
           ...(isBundle ? {} : { price, specialPrice }),
           manageScope: manageScope.scopeId,
-          marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
+          marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : "",
           sortOrder,
           isVisible,
         },

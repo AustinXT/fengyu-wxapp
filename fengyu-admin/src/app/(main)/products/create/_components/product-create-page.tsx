@@ -105,7 +105,7 @@ export default function SkuCreatePageClient({
         isExperience,
         isManagerSpecial,
         projectSeriesId,
-        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
+        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : ""),
         isEnabled,
       })
       if (!result.success) {

@@ -102,11 +102,15 @@ export const serviceItems = pgTable(
       .references(() => staffWechatUsers.employeeId),
     /** 服务时长（分钟） */
     serviceDuration: integer('service_duration'),
+    /** 预扣时间戳（服务开始时记录，用于防止服务期间疗程卡被转换单/退款消耗；NULL=未预扣，NOT NULL=已预扣） */
+    reservedAt: timestamp('reserved_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`NOW()`),
   },
   (table) => [
     index('idx_svc_items_order_id').on(table.serviceOrderId),
+    /** 转换单/退款查询预扣统计时需要；WHERE 过滤减少索引大小（已完成服务单的 reserved_at 会被清除为 NULL） */
+    index('idx_svc_items_sale_item_reserved').on(table.saleItemId).where(sql`${table.reservedAt} IS NOT NULL`),
   ],
 )
 

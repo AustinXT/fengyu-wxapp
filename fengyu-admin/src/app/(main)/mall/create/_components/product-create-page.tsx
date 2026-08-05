@@ -92,7 +92,7 @@ export default function MallProductCreatePageClient({
         price: isBundle ? '0' : price,
         specialPrice: isBundle ? null : specialPrice,
         manageScope: manageScope.scopeId,
-        marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
+        marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : "",
         sortOrder,
         isVisible,
       });

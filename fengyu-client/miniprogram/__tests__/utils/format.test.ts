@@ -5,6 +5,7 @@ import {
   maskPhone,
   formatDate,
   formatDiscount,
+  buildCouponDisplay,
   calculateProgress,
   cleanErrorMessage,
   calculateTotal,
@@ -54,8 +55,11 @@ describe('formatDiscount', () => {
   test('折扣券：0.8 → "8折"', () => {
     expect(formatDiscount({ couponType: '折扣券', discountValue: 0.8 })).toBe('8折')
   })
-  test('折扣券：0.75 → "8折"（四舍五入）', () => {
-    expect(formatDiscount({ couponType: '折扣券', discountValue: 0.75 })).toBe('8折')
+  test('折扣券：0.85 → "8.5折"', () => {
+    expect(formatDiscount({ couponType: '折扣券', discountValue: 0.85 })).toBe('8.5折')
+  })
+  test('折扣券：0.75 → "7.5折"', () => {
+    expect(formatDiscount({ couponType: '折扣券', discountValue: 0.75 })).toBe('7.5折')
   })
   test('现金券：10 → "¥10"', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: 10 })).toBe('¥10')
@@ -65,6 +69,20 @@ describe('formatDiscount', () => {
   })
   test('字符串数值', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: '20' })).toBe('¥20')
+  })
+})
+
+describe('buildCouponDisplay', () => {
+  test('金额型券被订单金额截断时显示本单可用金额', () => {
+    expect(buildCouponDisplay({ couponType: '现金券', discountValue: 100, faceValue: 100, discount: 35 }))
+      .toEqual({ discountLabel: '¥100', availableAmountLabel: '本单可用 ¥35' })
+  })
+
+  test('金额型券足额抵扣及折扣券不显示本单可用金额', () => {
+    expect(buildCouponDisplay({ couponType: '品项券', discountValue: 50, faceValue: 50, discount: 50 }))
+      .toEqual({ discountLabel: '¥50', availableAmountLabel: '' })
+    expect(buildCouponDisplay({ couponType: '折扣券', discountValue: 0.85, faceValue: 0.85, discount: 15 }))
+      .toEqual({ discountLabel: '8.5折', availableAmountLabel: '' })
   })
 })
 

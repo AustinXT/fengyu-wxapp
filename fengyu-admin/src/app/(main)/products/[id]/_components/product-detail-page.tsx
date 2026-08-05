@@ -48,9 +48,9 @@ export default function SkuDetailPageClient({
   const [isShengmei, setIsShengmei] = useState<boolean>(sku.isShengmei ?? false)
   const [isExperience, setIsExperience] = useState<boolean>(sku.isExperience ?? false)
   const [isManagerSpecial, setIsManagerSpecial] = useState<boolean>(sku.isManagerSpecial ?? false)
-  const [allMarkets, setAllMarkets] = useState(!sku.marketScope)
+  const [allMarkets, setAllMarkets] = useState(sku.marketScope === null)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
-    sku.marketScope ? sku.marketScope.split(',') : []
+    sku.marketScope && sku.marketScope !== "" ? sku.marketScope.split(',') : []
   )
 
   // Delete dialog state
@@ -118,7 +118,7 @@ export default function SkuDetailPageClient({
         isExperience,
         isManagerSpecial,
         projectSeriesId,
-        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
+        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : ""),
         isEnabled,
       }, sku.updatedAt)
       if (!result.success) {

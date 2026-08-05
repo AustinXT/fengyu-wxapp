@@ -1079,9 +1079,17 @@ export const confirmServiceOrder = withPermission(
   // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
   // 服务提成写入（settleServiceCommissions）镜像 staff/client finalizeServiceOrder：
   //   三端 confirm/finalize 都应产出 service_commissions + commission_status='已分配'。
+  // 2026-08-06 预扣机制：在扣减前清除 reserved_at，防止转换单查询时重复计入本服务单的预扣。
   let outcome: { kind: 'ok' } | { kind: 'status_changed' } | { kind: 'insufficient_paid' }
   try {
     outcome = await db.transaction(async (tx) => {
+      // 0. 清除预扣标记（必须在扣减前执行）
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = NULL, updated_at = NOW()
+        WHERE service_order_id = ${serviceOrderId}
+      `)
+
       const result = await tx.execute(sql`
         WITH status_check AS (
           UPDATE service_orders
@@ -1176,14 +1184,23 @@ export const cancelServiceOrder = withPermission(
 
   let cancelResult: any
   try {
-    cancelResult = await db
-      .update(serviceOrders)
-      .set({ status: '已取消' })
-      .where(and(
-        eq(serviceOrders.serviceOrderId, serviceOrderId),
-        eq(serviceOrders.status, svc.status),
-        scopeCondition(session, serviceOrders.storeId),
-      ))
+    cancelResult = await db.transaction(async (tx) => {
+      // 释放预扣（清除 reserved_at）
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = NULL, updated_at = NOW()
+        WHERE service_order_id = ${serviceOrderId}
+      `)
+
+      return await tx
+        .update(serviceOrders)
+        .set({ status: '已取消' })
+        .where(and(
+          eq(serviceOrders.serviceOrderId, serviceOrderId),
+          eq(serviceOrders.status, svc.status),
+          scopeCondition(session, serviceOrders.storeId),
+        ))
+    })
   } catch {
     return { success: false, message: '取消服务失败，请稍后重试' }
   }

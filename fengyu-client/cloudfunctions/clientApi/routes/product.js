@@ -24,11 +24,16 @@ function marketScopeValues(scopeExpr) {
  * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
  * 顾客端只有 boundStoreId / boundMarketName，因此优先用门店反查市场 id/name，
  * 同时兼容旧的名称匹配。未绑门店时只允许全局可见 SKU。
+ *
+ * 语义约定（2026-08-06 修复）：
+ * - NULL = 全部市场可见
+ * - '' (空字符串) = 不可见于任何市场
+ * - 'id1,id2' = 仅指定市场可见
  */
 function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   const scopeExpr = `${skuAlias}.market_scope`
   const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `(${scopeExpr} IS NULL OR btrim(${scopeExpr}) = '')`
+  const globalExpr = `${scopeExpr} IS NULL`
   const storeId = auth?.boundStoreId || null
   const marketName = auth?.boundMarketName || null
 

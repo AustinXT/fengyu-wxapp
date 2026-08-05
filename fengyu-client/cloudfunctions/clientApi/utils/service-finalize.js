@@ -39,7 +39,16 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, now) {
   const serviceOrderId = so.service_order_id
 
-  // 原子扣减每条订单行的剩余次数。
+  // 0. 清除预扣标记（确认前，防止转换单查询时重复计入本服务单的 session_used）
+  // 注：必须在扣减前清除，否则转换单的 available 计算会错误地减去本服务单即将释放的预扣
+  await client.query(
+    `UPDATE service_items
+     SET reserved_at = NULL, updated_at = $1
+     WHERE service_order_id = $2`,
+    [now, serviceOrderId]
+  )
+
+  // 1. 原子扣减每条订单行的剩余次数。
   // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：

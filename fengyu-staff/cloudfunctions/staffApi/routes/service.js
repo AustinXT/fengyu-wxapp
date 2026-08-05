@@ -341,6 +341,9 @@ async function create(ctx) {
 
 /**
  * 开始服务（待服务 → 服务中）
+ *
+ * 预扣机制：服务开始时校验可用次数（扣除其他服务单预扣）+ 标记本服务单预扣（reserved_at），
+ * 防止服务期间疗程卡被转换单/退款消耗。
  */
 async function start(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -372,6 +375,91 @@ async function start(ctx) {
 
   const now = new Date()
   await pg.transaction(async (client) => {
+    // 1. 锁定本服务单关联的订单行。转换单在持有同一 sale_items 行锁后才会
+    // 汇总预扣，因此二者不会通过各自过期的可用次数校验而超售。
+    const items = await client.query(
+      `SELECT sit.service_item_id,
+              sit.sale_item_id,
+              sit.session_used,
+              sit.reserved_at,
+              si.remaining_sessions,
+              si.session_count,
+              si.paid_sessions,
+              si.product_type
+         FROM service_items sit
+         JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+       WHERE sit.service_order_id = $1`,
+      [serviceOrderId]
+    )
+
+    const saleItemIds = [...new Set(items.rows.map((item) => item.sale_item_id))]
+    if (saleItemIds.length === 0) {
+      throw new Error('INVALID_PARAMS: 服务单缺少服务明细')
+    }
+
+    const lockedItems = await client.query(
+      `SELECT sale_item_id, remaining_sessions, session_count, paid_sessions, product_type
+         FROM sale_items
+        WHERE sale_item_id = ANY($1)
+        ORDER BY sale_item_id
+        FOR UPDATE`,
+      [saleItemIds]
+    )
+    if (lockedItems.rows.length !== saleItemIds.length) {
+      throw new Error('INVALID_PARAMS: 部分订单行不存在')
+    }
+    const lockedBySaleItemId = new Map(lockedItems.rows.map((row) => [row.sale_item_id, row]))
+
+    // 2. 在行锁持有期间汇总其他服务单已预扣的次数；当前服务单的多条明细要合并校验。
+    const reservedRows = await client.query(
+      `SELECT sale_item_id,
+              COALESCE(SUM(session_used) FILTER (
+                WHERE reserved_at IS NOT NULL AND service_order_id != $2
+              ), 0) AS total_reserved
+         FROM service_items
+        WHERE sale_item_id = ANY($1)
+        GROUP BY sale_item_id`,
+      [saleItemIds, serviceOrderId]
+    )
+    const reservedBySaleItemId = new Map(
+      reservedRows.rows.map((row) => [row.sale_item_id, Number(row.total_reserved || 0)])
+    )
+    const requestedBySaleItemId = new Map()
+    for (const item of items.rows) {
+      requestedBySaleItemId.set(
+        item.sale_item_id,
+        (requestedBySaleItemId.get(item.sale_item_id) || 0) + Number(item.session_used || 0)
+      )
+    }
+
+    for (const [saleItemId, requested] of requestedBySaleItemId) {
+      const row = lockedBySaleItemId.get(saleItemId)
+
+      // 家居产品跳过次数校验
+      if (row.product_type !== '疗程卡') continue
+
+      const reserved = reservedBySaleItemId.get(saleItemId) || 0
+      const remainingAvailable = Number(row.remaining_sessions || 0) - reserved
+      if (remainingAvailable < requested) {
+        throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${saleItemId} 可用次数不足（剩余 ${row.remaining_sessions}，已预留 ${reserved}，本次需 ${requested}）`)
+      }
+
+      // paid_sessions 限额校验（与 finalizeServiceOrder 一致）
+      if (row.session_count != null) {
+        const paid = row.paid_sessions == null ? Number(row.session_count) : Number(row.paid_sessions)
+        if (paid <= 0) {
+          throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${saleItemId} 尚未支付，无可用次数，请先完成付款`)
+        }
+        const usedNow = Number(row.session_count) - Number(row.remaining_sessions)
+        // 已预扣的服务同样占用已支付额度，不能只按已核销次数判断。
+        const paidAvailable = paid - usedNow - reserved
+        if (paidAvailable < requested) {
+          throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${saleItemId} 已支付可用次数不足（已付 ${paid}/${row.session_count}，已核销 ${usedNow}，已预留 ${reserved}，本次需 ${requested}），请先完成付款`)
+        }
+      }
+    }
+
+    // 3. 更新服务单状态
     const result = await client.query(
       "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '待服务'",
       [now, serviceOrderId]
@@ -379,6 +467,15 @@ async function start(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
     }
+
+    // 4. 标记预扣（幂等：ON CONFLICT DO NOTHING 或直接 UPDATE）
+    await client.query(
+      `UPDATE service_items
+       SET reserved_at = $1, updated_at = $1
+       WHERE service_order_id = $2 AND reserved_at IS NULL`,
+      [now, serviceOrderId]
+    )
+
     // 审计日志
     await logTransition(client, ctx, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中')
   })
@@ -415,9 +512,10 @@ async function loadServiceItems(serviceOrderId) {
  * 由 cross-end-sql-snapshot.test.js 守护。改一端必同步其它端。
  *
  * 在外层事务内执行：
- *   1. 原子扣减每条 sale_items 的剩余次数（叠加 paid_sessions 限额 + 门店一致校验）+ 归零关预约
- *   2. 计算并写入服务提成（service_commissions，双字段模型 + 缺率写 operation_logs）
- *   3. 状态 待客户确认 → 已完成（WHERE 锁定防并发）+ commission_status='已分配' + 关联预约置已完成
+ *   0. 按稳定顺序锁定关联 sale_items，与转换单/service.start 共用临界区
+ *   1. 状态 待客户确认 → 已完成（CAS）后原子扣减每条 sale_items 的剩余次数
+ *   2. 扣减成功后清除预扣标记（reserved_at = NULL）+ 归零关预约
+ *   3. 计算并写入服务提成（service_commissions，双字段模型 + 缺率写 operation_logs）
  *
  * @param client 外层事务 pg client
  * @param so     服务单行
@@ -429,7 +527,33 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, ctx, now) {
   const serviceOrderId = so.service_order_id
 
-  // 原子扣减每条订单行的剩余次数。
+  // 0. 先锁卡，禁止转换单在预扣释放和实际扣次之间取得可转次数。
+  const saleItemIds = [...new Set(items.map((item) => item.sale_item_id))].sort()
+  if (saleItemIds.length === 0) {
+    throw new Error('INVALID_PARAMS: 服务单缺少服务明细')
+  }
+  const lockedItems = await client.query(
+    `SELECT sale_item_id
+       FROM sale_items
+      WHERE sale_item_id = ANY($1)
+      ORDER BY sale_item_id
+      FOR UPDATE`,
+    [saleItemIds]
+  )
+  if (lockedItems.rows.length !== saleItemIds.length) {
+    throw new Error('INVALID_PARAMS: 部分订单行不存在')
+  }
+
+  // 1. 状态 CAS 必须在扣次前完成；失败时不释放预扣，由已胜出的确认事务负责。
+  const soUpdateResult = await client.query(
+    "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '待客户确认'",
+    [now, serviceOrderId]
+  )
+  if (soUpdateResult.rowCount === 0) {
+    return false
+  }
+
+  // 2. 原子扣减每条订单行的剩余次数。
   // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
@@ -481,6 +605,15 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       )
     }
   }
+
+  // 预扣仅在状态 CAS 与所有扣次均成功后释放。事务提交前 sale_items 行锁始终持有，
+  // 转换单无法看见“预扣已清除但剩余次数尚未扣减”的中间状态。
+  await client.query(
+    `UPDATE service_items
+     SET reserved_at = NULL, updated_at = $1
+     WHERE service_order_id = $2`,
+    [now, serviceOrderId]
+  )
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
@@ -560,15 +693,6 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
         consumeAmount,
       ]
     )
-  }
-
-  // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）+ 同步 commission_status
-  const soUpdateResult = await client.query(
-    "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '待客户确认'",
-    [now, serviceOrderId]
-  )
-  if (soUpdateResult.rowCount === 0) {
-    return false
   }
 
   // 如关联预约，将预约状态更新为已完成
@@ -1037,6 +1161,15 @@ async function cancel(ctx) {
     if (result.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
     }
+
+    // 释放预扣（清除 reserved_at）
+    await client.query(
+      `UPDATE service_items
+       SET reserved_at = NULL, updated_at = $1
+       WHERE service_order_id = $2`,
+      [now, serviceOrderId]
+    )
+
     // 审计日志
     await logTransition(client, ctx, 'service.cancel', 'service_order', serviceOrderId, so.status, '已取消')
   })
