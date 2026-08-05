@@ -140,7 +140,7 @@ export function RefundForm({
     Math.round((previewTotals.final - effectiveDeduction) * 100) / 100,
   )
   const isZeroCashItemRefund = useMemo(() => {
-    if (previewTotals.subtotal !== 0 || previewTotals.fee !== 0) return false
+    if (Math.abs(previewTotals.subtotal) >= 0.001 || Math.abs(previewTotals.fee) >= 0.001) return false
 
     const itemRefunds = items
       .map((it) => ({
@@ -159,7 +159,7 @@ export function RefundForm({
         : Number(it.pickedUpQuantity || 0)
 
       // 通用条件：单次价为 0（优惠券全额抵扣）且未消费
-      const isUnconsumedZeroPrice = it.unitRealPrice === 0 && consumed <= 0 && qty >= it.unusedQuantity
+      const isUnconsumedZeroPrice = Math.abs(it.unitRealPrice) < 0.001 && consumed <= 0 && qty >= it.unusedQuantity
 
       // 疗程卡专属条件：寄存单（sale_amount <= 0）
       const isCourseCardDeposit = it.productType === '疗程卡' &&
@@ -365,7 +365,7 @@ export function RefundForm({
               </div>
               <div className="flex justify-between mt-1">
                 <span className="text-[#666]">手续费</span>
-                <span>{previewTotals.fee === 0 ? '¥0.00' : `-¥${previewTotals.fee.toFixed(2)}`}</span>
+                <span>{Math.abs(previewTotals.fee) < 0.001 ? '¥0.00' : `-¥${previewTotals.fee.toFixed(2)}`}</span>
               </div>
               {effectiveDeduction > 0 && (
                 <div className="flex justify-between mt-1">

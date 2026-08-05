@@ -2799,7 +2799,7 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 锁住转出候选行（FOR UPDATE）
+      // 1. 锁住转出候选行。预扣统计使用标量子查询，不能与 FOR UPDATE 放在聚合查询中。
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -2821,7 +2821,13 @@ export const createConversionOrder = withPermission(
           si.is_experience,
           so.client_user_id,
           so.status AS order_status,
-          pc.product_kind
+          pc.product_kind,
+          COALESCE((
+            SELECT SUM(sit.session_used)
+            FROM service_items sit
+            WHERE sit.sale_item_id = si.sale_item_id
+              AND sit.reserved_at IS NOT NULL
+          ), 0) AS total_reserved
         FROM sale_items si
         INNER JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
         LEFT JOIN product_skus psk ON psk.sku_id = si.sku_id
@@ -2873,11 +2879,19 @@ export const createConversionOrder = withPermission(
         const productType = row.product_type as string
 
         // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+        // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
-          if (rem <= 0) throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
-          qty = rem
+          const reserved = Number(row.total_reserved ?? 0)
+          if (rem <= 0) {
+            throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
+          }
+          const available = rem - reserved
+          if (available <= 0) {
+            throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选卡可用次数不足（存在服务中预留）')
+          }
+          qty = available  // 折抵数量改为可用次数（扣除预扣）
         } else {
           throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
@@ -3067,11 +3081,11 @@ export const createConversionOrder = withPermission(
           isShengmei: out.isShengmei,
         })
 
-        // 原子标记耗尽：疗程卡 remaining_sessions=0（单品合并后转出行恒为疗程卡）
+        // 原子扣减本次实际折抵的次数；服务中预扣仍留在源卡，供后续确认核销。
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
-            .set({ remainingSessions: 0 })
+            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),

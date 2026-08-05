@@ -577,6 +577,8 @@ export interface AvailableCoupon {
   expireAt: string
   /** 针对当前订单金额计算出的实际优惠金额 */
   discountAmount: string
+  /** 券面值（真实属性，不受订单金额限制） */
+  faceValue: number
 }
 
 /** 批量发券时的顾客选择项 */
