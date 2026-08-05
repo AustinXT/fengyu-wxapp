@@ -560,9 +560,12 @@ describe('customer.detail', () => {
     expect(ctx.result.yearConsumption).toBe(4000)
     expect(ctx.result.visitFrequency).toBe('一月一次')  // 3 visits in 90d
     expect(ctx.result.topProductName).toBe('精油SPA')
-    // 验证 getConsumptionStats 使用 CASE WHEN
+    // 验证 getConsumptionStats 使用 CASE WHEN 且支持历史订单（无 sale_items 明细）
     const consumptionCall = pg.query.mock.calls[1]
-    expect(consumptionCall[0]).toContain('CASE WHEN')
+    const sql = consumptionCall[0]
+    expect(sql).toMatch(/CASE[\s\S]*WHEN/)
+    expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     // 5 次 pg.query: detail + consumption + visitInfo + topProduct + legacyCount(phone 非空触发)
     expect(pg.query).toHaveBeenCalledTimes(5)
   })

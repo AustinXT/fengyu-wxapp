@@ -516,6 +516,12 @@ async function getTopProduct(clientUserId) {
 
 /**
  * 查询消费统计（单次查询同时计算累计 + 年度）
+ *
+ * 兼容历史订单（WorkFine 同步订单无 sale_items 明细）：
+ * - 有明细的订单：汇总 sale_items.received（精确到品项）
+ * - 无明细的历史订单：使用 sale_orders.received（订单级汇总）
+ *
+ * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）
  */
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 };
@@ -523,11 +529,26 @@ async function getConsumptionStats(clientUserId) {
   const yearStart = new Date(new Date().getFullYear(), 0, 1);
   const rows = await pg.query(
     `SELECT
-       COALESCE(SUM(si.received::numeric), 0) AS total,
-       COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
+       COALESCE(SUM(
+         CASE
+           WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+           THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+           ELSE o.received::numeric
+         END
+       ), 0) AS total,
+       COALESCE(SUM(
+         CASE
+           WHEN o.paid_at >= $2 THEN
+             CASE
+               WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+               THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+               ELSE o.received::numeric
+             END
+           ELSE 0
+         END
+       ), 0) AS year_total
      FROM sale_orders o
-     JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-     WHERE o.status = '已支付' AND o.client_user_id = $1`,
+     WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1`,
     [clientUserId, yearStart],
   );
   return {
