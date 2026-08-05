@@ -244,6 +244,7 @@ export const getAvailableCoupons = withPermission(
         applicableCategoryIds: r.applicableCategoryIds ?? null,
         expireAt: r.expireAt.toISOString(),
         discountAmount: discount.toFixed(2),
+        faceValue: parseFloat(r.discountValue), // 券面值（真实属性）
       }]
     })
   },
