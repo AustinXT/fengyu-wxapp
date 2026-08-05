@@ -119,7 +119,7 @@ if [ "${SKIP_CONFIRM:-0}" != "1" ]; then
   [ "$ANSWER" = "yes" ] || { echo "已取消，dev 未改动。"; exit 0; }
 fi
 
-# --- [3/4] restore（先断开 dev 活跃连接，避免 --clean drop 时卡锁） ---
+# --- [3/4] restore（先断开 dev 活跃连接，避免 schema 重建时卡锁） ---
 echo "${GRN}[3/4] 覆盖 dev（pg_restore --clean --no-owner --no-acl）${RST}"
 echo "${DIM}    断开 dev 其它活跃连接...${RST}"
 run_untainted psql "$DEV_CS" -tAc "
@@ -127,13 +127,20 @@ run_untainted psql "$DEV_CS" -tAc "
   WHERE datname=current_database() AND pid<>pg_backend_pid();" >/dev/null 2>&1 \
   || echo "${DIM}    (terminate 跳过：权限不足或无其它连接)${RST}"
 
+echo "${DIM}    重建 dev 业务 schema（public、drizzle）...${RST}"
+run_untainted psql "$DEV_CS" -v ON_ERROR_STOP=1 -c '
+  DROP SCHEMA IF EXISTS drizzle CASCADE;
+  DROP SCHEMA public CASCADE;
+  CREATE SCHEMA public;
+' >/dev/null
+
 RESTORE_LOG="$(mktemp)"
 set +e
 run_untainted "$PG_RESTORE_BIN" --clean --if-exists --no-owner --no-acl -d "$DEV_CS" "$OUT" >"$RESTORE_LOG" 2>&1
 RC=$?
 set -e
 if [ $RC -ne 0 ]; then
-  echo "${YEL}    pg_restore 退出码 $RC（--clean 常伴非致命 warning，以行数校验为准）${RST}"
+  echo "${YEL}    pg_restore 退出码 ${RC}（--clean 常伴非致命 warning，以行数校验为准）${RST}"
   grep -iE 'error|fatal' "$RESTORE_LOG" | grep -ivE 'errors ignored|does not exist|already exists' \
     | head -15 | sed 's/^/      /' || true
 fi
