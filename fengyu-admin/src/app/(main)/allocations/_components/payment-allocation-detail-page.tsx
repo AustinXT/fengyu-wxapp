@@ -236,38 +236,38 @@ export default function PaymentAllocationDetailPageClient({
   }
 
   const updateEntry = (
-    saleItemId: string,
+    groupId: string,
     entryId: number,
     field: 'skillTag' | 'employeeId' | 'ratioPercent',
     value: string,
   ) => {
-    setItemAllocs((prev) => {
-      const item = items.find((i) => i.saleItemId === saleItemId)
-      const allocatable = item ? Number(item.received) : 0
-      const entries = prev[saleItemId] || []
+    setGroupAllocs((prev) => {
+      const group = groups.find((entry) => entry.groupId === groupId)
+      const entries = prev[groupId] || []
+      if (!group) return prev
 
       return {
         ...prev,
-        [saleItemId]: entries.map((e) => {
+        [groupId]: entries.map((e) => {
           if (e.id !== entryId) return e
           const updated = { ...e, [field]: value }
 
           // 切换 skillTag → 清空员工（因为员工列表变了）、重查提成比例（基准 eventAmount）
           if (field === 'skillTag') {
             updated.employeeId = ''
-            const rateRef = findMatchingRate(commissionRates, marketName, value, item?.salesCategory ?? null, eventAmount)
+            const rateRef = findMatchingRate(commissionRates, marketName, value, group.salesCategory, eventAmount)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
           // 选择员工时也重查提成比例
           if (field === 'employeeId' && updated.skillTag) {
-            const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, item?.salesCategory ?? null, eventAmount)
+            const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, group.salesCategory, eventAmount)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
-          // 重算金额和提成
-          updated.amount = calcAmount(updated.ratioPercent, allocatable)
-          updated.commissionAmount = (Number(updated.amount) * updated.commissionRate).toFixed(2)
+          const amounts = calculateEntryAmounts(group, updated.ratioPercent, updated.commissionRate)
+          updated.amount = amounts.amount
+          updated.commissionAmount = amounts.commissionAmount
 
           return updated
         }),
@@ -275,10 +275,10 @@ export default function PaymentAllocationDetailPageClient({
     })
   }
 
-  const removeEntry = (saleItemId: string, entryId: number) => {
-    setItemAllocs((prev) => ({
+  const removeEntry = (groupId: string, entryId: number) => {
+    setGroupAllocs((prev) => ({
       ...prev,
-      [saleItemId]: (prev[saleItemId] || []).filter((e) => e.id !== entryId),
+      [groupId]: (prev[groupId] || []).filter((e) => e.id !== entryId),
     }))
   }
 
@@ -331,12 +331,12 @@ export default function PaymentAllocationDetailPageClient({
       </Card>
 
       {/* 逐 SKU 分配卡片（基数 = 本笔回款各项可分配额） */}
-      {items.length > 0 ? (
-        items.map((item) => (
+      {groups.length > 0 ? (
+        groups.map((item) => (
           <ItemAllocationCard
-            key={item.saleItemId}
+            key={item.groupId}
             item={item}
-            entries={itemAllocs[item.saleItemId] || []}
+            entries={groupAllocs[item.groupId] || []}
             getFilteredEmployees={getFilteredEmployees}
             skillTagNames={skillTagNames}
             readOnly={isRefundAllocation}
@@ -365,7 +365,7 @@ export default function PaymentAllocationDetailPageClient({
       ) : (
         <Card>
           <CardContent className="pt-6">
-            <SaveButton salePaymentId={payment.salePaymentId} items={items} itemAllocs={itemAllocs} />
+            <SaveButton salePaymentId={payment.salePaymentId} groups={groups} groupAllocs={groupAllocs} />
           </CardContent>
         </Card>
       )}
@@ -385,14 +385,14 @@ function ItemAllocationCard({
   onUpdate,
   onRemove,
 }: {
-  item: PaymentItem
+  item: PaymentAllocationGroup
   entries: AllocationEntry[]
   getFilteredEmployees: (skillTag: string) => Employee[]
   skillTagNames: string[]
   readOnly?: boolean
-  onAdd: (saleItemId: string) => void
-  onUpdate: (saleItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
-  onRemove: (saleItemId: string, entryId: number) => void
+  onAdd: (groupId: string) => void
+  onUpdate: (groupId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
+  onRemove: (groupId: string, entryId: number) => void
 }) {
   const allocatable = Number(item.received)
 
@@ -413,6 +413,11 @@ function ItemAllocationCard({
             {item.salesCategory && (
               <span className="ml-2 text-xs font-normal text-[#999999] bg-gray-100 px-2 py-0.5 rounded">
                 {item.salesCategory}
+              </span>
+            )}
+            {item.sourceCount > 1 && (
+              <span className="ml-2 text-xs font-normal text-[#3D8A5A] bg-[#F0F9F2] px-2 py-0.5 rounded">
+                已合并 {item.sourceCount} 条明细
               </span>
             )}
           </CardTitle>
@@ -437,7 +442,7 @@ function ItemAllocationCard({
                   <label className="text-[10px] text-[#999999]">技能标签</label>
                   <Select
                     value={entry.skillTag}
-                    onChange={(e) => onUpdate(item.saleItemId, entry.id, 'skillTag', e.target.value)}
+                    onChange={(e) => onUpdate(item.groupId, entry.id, 'skillTag', e.target.value)}
                     disabled={readOnly}
                   >
                     <option value="">选择</option>
@@ -452,7 +457,7 @@ function ItemAllocationCard({
                   <label className="text-[10px] text-[#999999]">员工</label>
                   <Select
                     value={entry.employeeId}
-                    onChange={(e) => onUpdate(item.saleItemId, entry.id, 'employeeId', e.target.value)}
+                    onChange={(e) => onUpdate(item.groupId, entry.id, 'employeeId', e.target.value)}
                     disabled={readOnly || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
@@ -482,7 +487,7 @@ function ItemAllocationCard({
                   <div className="flex items-center gap-1">
                     <Select
                       value={ratioSelectValue}
-                      onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
+                      onChange={(e) => onUpdate(item.groupId, entry.id, 'ratioPercent', e.target.value)}
                       className="w-[104px]"
                       disabled={readOnly}
                     >
@@ -500,7 +505,7 @@ function ItemAllocationCard({
                         max={100}
                         inputMode="decimal"
                         value={entry.ratioPercent === '__custom' ? '' : entry.ratioPercent}
-                        onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
+                        onChange={(e) => onUpdate(item.groupId, entry.id, 'ratioPercent', e.target.value)}
                         className="w-[88px]"
                         placeholder="%"
                         disabled={readOnly}
@@ -523,7 +528,7 @@ function ItemAllocationCard({
 
                 {/* 删除 */}
                 {!readOnly && (
-                  <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
+                  <Button size="sm" variant="ghost" onClick={() => onRemove(item.groupId, entry.id)} className="text-[#D94040] shrink-0 px-1">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   </Button>
                 )}
@@ -548,7 +553,7 @@ function ItemAllocationCard({
             ))}
           </div>
           {!readOnly && (
-            <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
+            <Button size="sm" variant="outline" onClick={() => onAdd(item.groupId)}>
               + 添加分配
             </Button>
           )}
@@ -562,12 +567,12 @@ function ItemAllocationCard({
 
 function SaveButton({
   salePaymentId,
-  items,
-  itemAllocs,
+  groups,
+  groupAllocs,
 }: {
   salePaymentId: number
-  items: PaymentItem[]
-  itemAllocs: Record<string, AllocationEntry[]>
+  groups: PaymentAllocationGroup[]
+  groupAllocs: Record<string, AllocationEntry[]>
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
@@ -578,11 +583,10 @@ function SaveButton({
       employeeId: string
       roleType: string
       allocationRatio: string
-      totalAmount: string
     }> = []
 
-    for (const item of items) {
-      const entries = (itemAllocs[item.saleItemId] || []).filter((e) => e.skillTag || e.employeeId || e.ratioPercent)
+    for (const item of groups) {
+      const entries = (groupAllocs[item.groupId] || []).filter((e) => e.skillTag || e.employeeId || e.ratioPercent)
 
       for (const e of entries) {
         if (!e.skillTag || !e.employeeId || !e.ratioPercent || e.ratioPercent === '__custom') {
@@ -621,15 +625,14 @@ function SaveButton({
         }
       }
 
-      for (const e of entries) {
-        flatAllocations.push({
-          saleItemId: item.saleItemId,
-          employeeId: e.employeeId,
-          roleType: e.skillTag,
-          allocationRatio: (Number(e.ratioPercent) / 100).toFixed(3),
-          totalAmount: e.amount,
-        })
-      }
+      // The API remains receipt-level. Expand each grouped edit back to every
+      // independent sale item before submitting it.
+      flatAllocations.push(...expandGroupedAllocationLines(entries.map((entry) => ({
+        saleItemIds: item.saleItemIds,
+        employeeId: entry.employeeId,
+        roleType: entry.skillTag,
+        allocationRatio: (Number(entry.ratioPercent) / 100).toFixed(3),
+      }))))
     }
 
     startTransition(async () => {
