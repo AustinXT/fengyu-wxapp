@@ -1,11 +1,11 @@
 // pages/order-list/order-list.ts — 订单列表
 import { callStaffApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/formatters';
+import { STATUS_CLASS, formatDateTime } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-type OrderStatus = '全部' | '待支付' | '已支付' | '已完成' | '支付失败' | '已关闭';
+type OrderStatus = '全部' | '待支付' | '待审批' | '已支付' | '部分支付' | '已完成' | '已退款' | '未审核' | '支付失败' | '已关闭' | '已作废';
 
 interface OrderItem {
   id: string;
@@ -46,14 +46,6 @@ interface OrderListResponse {
   page: number;
   pageSize: number;
 }
-
-const STATUS_CLASS: Record<string, string> = {
-  '待支付': 'pending',
-  '已支付': 'success',
-  '已完成': 'done',
-  '支付失败': 'error',
-  '已关闭': 'done',
-};
 
 Page({
   data: {

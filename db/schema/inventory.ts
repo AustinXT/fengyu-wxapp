@@ -1,4 +1,5 @@
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -17,10 +18,15 @@ import {
   inventoryProcurementSubtypeEnum,
   inventorySaleSubtypeEnum,
   inventoryTransferSubtypeEnum,
+  productTypeEnum,
+  storeInventoryDocStatusEnum,
+  storeInventoryDocTypeEnum,
+  storeInventoryMovementDirectionEnum,
 } from './enums'
 import { stores } from './org'
+import { productSkus } from './product'
 import { clientWechatUsers, staffWechatUsers } from './user'
-import { saleOrders } from './order'
+import { saleItems, saleOrders } from './order'
 
 /**
  * 门店库存域 v1（2026-05-19 落地）
@@ -384,3 +390,208 @@ export type InventoryScrapOrder = typeof inventoryScrapOrders.$inferSelect
 export type NewInventoryScrapOrder = typeof inventoryScrapOrders.$inferInsert
 export type InventoryScrapOrderItem = typeof inventoryScrapOrderItems.$inferSelect
 export type NewInventoryScrapOrderItem = typeof inventoryScrapOrderItems.$inferInsert
+
+// ──────────────────────────────────────────────────────────────────────
+// 门店库存域 v2（2026-07-24 会议改造）
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * 门店库存表：库存模块的中心事实表。
+ *
+ * 所有填报单据都必须从本表的一行库存出发，或先由 SKU 初始化/入库生成库存行。
+ * 明细表只记录本次操作快照，当前余额以本表为准；store_inventory_movements 保存可审计流水。
+ */
+export const storeInventoryStocks = pgTable(
+  'store_inventory_stocks',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.storeId),
+    skuId: text('sku_id')
+      .notNull()
+      .references(() => productSkus.skuId),
+    skuName: text('sku_name').notNull(),
+    productType: productTypeEnum('product_type').notNull().default('家居产品'),
+    batchNo: text('batch_no').notNull().default(''),
+    expiryDate: date('expiry_date'),
+    /** NULL 无法参与唯一约束等值，应用层用空串归一化唯一键。 */
+    expiryDateKey: text('expiry_date_key').notNull().default(''),
+    quantityOnHand: numeric('quantity_on_hand', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    lastUnitPrice: numeric('last_unit_price', { precision: 12, scale: 2 }),
+    lastAmount: numeric('last_amount', { precision: 12, scale: 2 }),
+    remark: text('remark'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`NOW()`),
+  },
+  (table) => [
+    uniqueIndex('uq_store_inventory_stock').on(
+      table.storeId,
+      table.skuId,
+      table.batchNo,
+      table.expiryDateKey,
+    ),
+    index('idx_store_inventory_stock_store').on(table.storeId),
+    index('idx_store_inventory_stock_sku').on(table.skuId),
+    check('chk_store_inventory_stock_qty', sql`${table.quantityOnHand} >= 0`),
+  ],
+)
+
+export const storeInventoryDocs = pgTable(
+  'store_inventory_docs',
+  {
+    id: text('id').primaryKey(),
+    docType: storeInventoryDocTypeEnum('doc_type').notNull(),
+    status: storeInventoryDocStatusEnum('status').notNull().default('草稿'),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.storeId),
+    counterpartStoreId: text('counterpart_store_id').references(() => stores.storeId),
+    docDate: date('doc_date').notNull(),
+    totalQuantity: numeric('total_quantity', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    requestDocId: text('request_doc_id').references((): any => storeInventoryDocs.id),
+    relatedSaleOrderId: varchar('related_sale_order_id', { length: 30 }).references(
+      () => saleOrders.saleOrderId,
+    ),
+    clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
+    customerName: varchar('customer_name', { length: 50 }),
+    receiptAttachmentUrl: text('receipt_attachment_url'),
+    remark: text('remark'),
+    createdBy: varchar('created_by', { length: 30 })
+      .notNull()
+      .references(() => staffWechatUsers.employeeId),
+    confirmedBy: varchar('confirmed_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    approvedBy: varchar('approved_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    rejectedBy: varchar('rejected_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    rejectedAt: timestamp('rejected_at', { withTimezone: true }),
+    auditRemark: text('audit_remark'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`NOW()`),
+  },
+  (table) => [
+    index('idx_store_inventory_docs_store_date').on(table.storeId, table.docDate),
+    index('idx_store_inventory_docs_type').on(table.docType),
+    index('idx_store_inventory_docs_status').on(table.status),
+    index('idx_store_inventory_docs_request').on(table.requestDocId),
+    index('idx_store_inventory_docs_sale_order').on(table.relatedSaleOrderId),
+    index('idx_store_inventory_docs_client').on(table.clientUserId),
+    check(
+      'chk_store_inventory_docs_transfer_store',
+      sql`${table.counterpartStoreId} IS NULL OR ${table.storeId} <> ${table.counterpartStoreId}`,
+    ),
+  ],
+)
+
+export const storeInventoryDocItems = pgTable(
+  'store_inventory_doc_items',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    docId: text('doc_id')
+      .notNull()
+      .references(() => storeInventoryDocs.id, { onDelete: 'cascade' }),
+    stockId: bigint('stock_id', { mode: 'number' }).references(
+      () => storeInventoryStocks.id,
+    ),
+    skuId: text('sku_id')
+      .notNull()
+      .references(() => productSkus.skuId),
+    saleItemId: varchar('sale_item_id', { length: 30 }).references(
+      () => saleItems.saleItemId,
+    ),
+    skuName: text('sku_name').notNull(),
+    batchNo: text('batch_no').notNull().default(''),
+    expiryDate: date('expiry_date'),
+    quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull(),
+    stockSnapshot: numeric('stock_snapshot', { precision: 12, scale: 2 }),
+    unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
+    amount: numeric('amount', { precision: 12, scale: 2 }),
+    requestQuantity: numeric('request_quantity', { precision: 12, scale: 2 }),
+    fulfilledQuantity: numeric('fulfilled_quantity', { precision: 12, scale: 2 }),
+    scrapReason: text('scrap_reason'),
+    itemUsage: text('item_usage'),
+    remark: text('remark'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_store_inventory_doc_items_doc').on(table.docId),
+    index('idx_store_inventory_doc_items_stock').on(table.stockId),
+    index('idx_store_inventory_doc_items_sku').on(table.skuId),
+    index('idx_store_inventory_doc_items_sale_item').on(table.saleItemId),
+    check('chk_store_inventory_doc_items_qty', sql`${table.quantity} > 0`),
+  ],
+)
+
+export const storeInventoryMovements = pgTable(
+  'store_inventory_movements',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    movementKey: text('movement_key').notNull(),
+    stockId: bigint('stock_id', { mode: 'number' })
+      .notNull()
+      .references(() => storeInventoryStocks.id),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.storeId),
+    skuId: text('sku_id')
+      .notNull()
+      .references(() => productSkus.skuId),
+    docId: text('doc_id').references(() => storeInventoryDocs.id),
+    docItemId: bigint('doc_item_id', { mode: 'number' }).references(
+      () => storeInventoryDocItems.id,
+    ),
+    saleOrderId: varchar('sale_order_id', { length: 30 }).references(
+      () => saleOrders.saleOrderId,
+    ),
+    saleItemId: varchar('sale_item_id', { length: 30 }).references(
+      () => saleItems.saleItemId,
+    ),
+    direction: storeInventoryMovementDirectionEnum('direction').notNull(),
+    quantityDelta: numeric('quantity_delta', { precision: 12, scale: 2 }).notNull(),
+    quantityBefore: numeric('quantity_before', { precision: 12, scale: 2 }).notNull(),
+    quantityAfter: numeric('quantity_after', { precision: 12, scale: 2 }).notNull(),
+    createdBy: varchar('created_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    remark: text('remark'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('uq_store_inventory_movement_key').on(table.movementKey),
+    index('idx_store_inventory_movements_stock').on(table.stockId),
+    index('idx_store_inventory_movements_store_created').on(
+      table.storeId,
+      table.createdAt,
+    ),
+    index('idx_store_inventory_movements_doc').on(table.docId),
+    index('idx_store_inventory_movements_sale_item').on(table.saleItemId),
+    check('chk_store_inventory_movement_delta', sql`${table.quantityDelta} <> 0`),
+    check('chk_store_inventory_movement_after', sql`${table.quantityAfter} >= 0`),
+  ],
+)
+
+export type StoreInventoryStock = typeof storeInventoryStocks.$inferSelect
+export type NewStoreInventoryStock = typeof storeInventoryStocks.$inferInsert
+export type StoreInventoryDoc = typeof storeInventoryDocs.$inferSelect
+export type NewStoreInventoryDoc = typeof storeInventoryDocs.$inferInsert
+export type StoreInventoryDocItem = typeof storeInventoryDocItems.$inferSelect
+export type NewStoreInventoryDocItem = typeof storeInventoryDocItems.$inferInsert
+export type StoreInventoryMovement = typeof storeInventoryMovements.$inferSelect
+export type NewStoreInventoryMovement = typeof storeInventoryMovements.$inferInsert

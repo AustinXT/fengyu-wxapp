@@ -200,6 +200,7 @@ export default function PaymentAllocationDetailPageClient({
   const marketName = payment.marketName ?? ''
   const eventAmount = payment.eventAmount
   const statusInfo = allocationStatusMap[payment.allocationStatus || "待分配"] || allocationStatusMap.待分配
+  const isRefundAllocation = payment.changeType === '退款'
 
   const [itemAllocs, setItemAllocs] = useState<Record<string, AllocationEntry[]>>(() =>
     initAllocations(items, payment.existingAllocations, employees, commissionRates, marketName, eventAmount)
@@ -276,16 +277,16 @@ export default function PaymentAllocationDetailPageClient({
         <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
         </Link>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">营业额分配（回款）</h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">{isRefundAllocation ? '营业额分配（退款赤字）' : '营业额分配'}</h1>
       </div>
 
-      {/* 回款摘要 */}
+      {/* 回款/退款摘要 */}
       <Card>
-        <CardHeader><CardTitle>回款信息</CardTitle></CardHeader>
+        <CardHeader><CardTitle>{isRefundAllocation ? '退款信息' : '回款信息'}</CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <span className="text-[#999999]">回款类型</span>
+              <span className="text-[#999999]">{isRefundAllocation ? '退款类型' : '回款类型'}</span>
               <p className="font-medium mt-1">{payment.changeType}</p>
             </div>
             <div>
@@ -301,8 +302,8 @@ export default function PaymentAllocationDetailPageClient({
               </p>
             </div>
             <div>
-              <span className="text-[#999999]">本次回款额</span>
-              <p className="font-bold text-lg mt-1 text-[var(--primary)]">¥{eventAmount.toLocaleString()}</p>
+              <span className="text-[#999999]">{isRefundAllocation ? '本次退款额' : '本次回款额'}</span>
+              <p className={`font-bold text-lg mt-1 ${isRefundAllocation ? 'text-[#C0322A]' : 'text-[var(--primary)]'}`}>¥{eventAmount.toLocaleString()}</p>
             </div>
             <div>
               <span className="text-[#999999]">支付方式</span>
@@ -327,6 +328,7 @@ export default function PaymentAllocationDetailPageClient({
             entries={itemAllocs[item.saleItemId] || []}
             getFilteredEmployees={getFilteredEmployees}
             skillTagNames={skillTagNames}
+            readOnly={isRefundAllocation}
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
@@ -343,12 +345,19 @@ export default function PaymentAllocationDetailPageClient({
         </Card>
       )}
 
-      {/* 保存 */}
-      <Card>
-        <CardContent className="pt-6">
-          <SaveButton salePaymentId={payment.salePaymentId} items={items} itemAllocs={itemAllocs} />
-        </CardContent>
-      </Card>
+      {isRefundAllocation ? (
+        <div className="flex justify-end">
+          <Link href="/allocations">
+            <Button variant="outline">返回</Button>
+          </Link>
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="pt-6">
+            <SaveButton salePaymentId={payment.salePaymentId} items={items} itemAllocs={itemAllocs} />
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
@@ -360,6 +369,7 @@ function ItemAllocationCard({
   entries,
   getFilteredEmployees,
   skillTagNames,
+  readOnly = false,
   onAdd,
   onUpdate,
   onRemove,
@@ -368,6 +378,7 @@ function ItemAllocationCard({
   entries: AllocationEntry[]
   getFilteredEmployees: (skillTag: string) => Employee[]
   skillTagNames: string[]
+  readOnly?: boolean
   onAdd: (saleItemId: string) => void
   onUpdate: (saleItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (saleItemId: string, entryId: number) => void
@@ -396,7 +407,7 @@ function ItemAllocationCard({
           </CardTitle>
           <span className="text-lg font-bold text-[var(--primary)]">¥{allocatable.toLocaleString()}</span>
         </div>
-        <p className="text-xs text-[#999999] mt-1">本次回款可分配额 ¥{allocatable.toLocaleString()}</p>
+        <p className="text-xs text-[#999999] mt-1">{readOnly ? '本次退款赤字分配基数' : '本次回款可分配额'} ¥{allocatable.toLocaleString()}</p>
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -416,6 +427,7 @@ function ItemAllocationCard({
                   <Select
                     value={entry.skillTag}
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'skillTag', e.target.value)}
+                    disabled={readOnly}
                   >
                     <option value="">选择</option>
                     {skillTagNames.map((tag) => (
@@ -430,7 +442,7 @@ function ItemAllocationCard({
                   <Select
                     value={entry.employeeId}
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'employeeId', e.target.value)}
-                    disabled={!entry.skillTag}
+                    disabled={readOnly || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
                     {filteredEmployees.map((emp) => (
@@ -454,13 +466,14 @@ function ItemAllocationCard({
                 </div>
 
                 {/* 分配比例（档位快选 + 自定义） */}
-                <div className="shrink-0">
+                <div className="w-[204px] shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
                   <div className="flex items-center gap-1">
                     <Select
                       value={ratioSelectValue}
                       onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
-                      className="w-[68px]"
+                      className="w-[104px]"
+                      disabled={readOnly}
                     >
                       <option value="">-</option>
                       {PERCENTAGE_OPTIONS.map((p) => (
@@ -477,8 +490,9 @@ function ItemAllocationCard({
                         inputMode="decimal"
                         value={entry.ratioPercent === '__custom' ? '' : entry.ratioPercent}
                         onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
-                        className="w-[60px]"
+                        className="w-[88px]"
                         placeholder="%"
+                        disabled={readOnly}
                       />
                     )}
                   </div>
@@ -497,14 +511,16 @@ function ItemAllocationCard({
                 </div>
 
                 {/* 删除 */}
-                <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </Button>
+                {!readOnly && (
+                  <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </Button>
+                )}
               </div>
             )
           })
         ) : (
-          <p className="text-xs text-[#999999] py-2">暂无分配，点击"添加分配"开始</p>
+          <p className="text-xs text-[#999999] py-2">{readOnly ? '该退款暂无赤字分配' : '暂无分配，点击"添加分配"开始'}</p>
         )}
 
         {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}
@@ -520,9 +536,11 @@ function ItemAllocationCard({
               </span>
             ))}
           </div>
-          <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
-            + 添加分配
-          </Button>
+          {!readOnly && (
+            <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
+              + 添加分配
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

@@ -2,7 +2,8 @@
  * STEP 6 — role_type NULL 行回归监控
  *
  * 背景：
- *   `sale_allocations.role_type` 历史曾积累 156k+ NULL（详见
+ *   `sale_payment_item_allocations.role_type` 沿用销售分配角色字段（旧
+ *   `sale_allocations.role_type` 历史曾积累 156k+ NULL，详见
  *   `notes/tickets/2026-04-25-role-type-not-null-guard.md`），通过一次性 backfill
  *   清零；`service_commissions.role_type` 同源问题，已配套 backfill。
  *   schema 同步加了 `.notNull()`（migration 落库后由 PG 兜底），但在 migration
@@ -16,7 +17,7 @@
  *
  * 监控 SQL（只读）：
  *   SELECT
- *     (SELECT COUNT(*) FROM sale_allocations    WHERE role_type IS NULL) AS sale_alloc_null,
+ *     (SELECT COUNT(*) FROM sale_payment_item_allocations WHERE role_type IS NULL) AS sale_alloc_null,
  *     (SELECT COUNT(*) FROM service_commissions WHERE role_type IS NULL) AS svc_comm_null;
  *
  * 当前项目无企微 webhook / SMS / 邮件等告警通道，最小可行版本：
@@ -40,15 +41,15 @@ export interface RoleTypeNullsAuditResult {
 }
 
 const CHECKS: ReadonlyArray<{ table: string; column: string }> = [
-  { table: 'sale_allocations', column: 'role_type' },
+  { table: 'sale_payment_item_allocations', column: 'role_type' },
   { table: 'service_commissions', column: 'role_type' },
 ] as const
 
 export async function auditRoleTypeNulls(db: Db): Promise<RoleTypeNullsAuditResult> {
   const rows = (await db.execute(sql`
     SELECT
-      (SELECT COUNT(*)::bigint FROM sale_allocations    WHERE role_type IS NULL) AS sale_alloc_null,
-      (SELECT COUNT(*)::bigint FROM service_commissions WHERE role_type IS NULL) AS svc_comm_null
+      (SELECT COUNT(*)::bigint FROM sale_payment_item_allocations WHERE role_type IS NULL) AS sale_alloc_null,
+      (SELECT COUNT(*)::bigint FROM service_commissions              WHERE role_type IS NULL) AS svc_comm_null
   `)) as Array<{ sale_alloc_null: number | string; svc_comm_null: number | string }>
 
   const row = rows[0] ?? { sale_alloc_null: 0, svc_comm_null: 0 }

@@ -223,7 +223,7 @@
               wx:if="{{!item.refBundleId}}"
               value="{{item.quantity}}"
               min="1"
-              max="99"
+              max="{{item.purchaseLimit || 99}}"
               data-sku-id="{{item.skuId}}"
               bind:change="onCartQtyChange"
             />
@@ -361,9 +361,10 @@
         <block wx:if="{{saleOrderType === '转换单'}}">
           <conversion-panel
             clientUserId="{{customerInfo.clientUserId}}"
-            convertInAmount="{{cartTotal}}"
+            convertInAmount="{{payableTotal}}"
             cardBalance="{{customerCardBalance}}"
             cartItems="{{cart}}"
+            bind:amountchange="onConversionSaleAmountChange"
             bind:change="onConversionPanelChange"
           />
         </block>
@@ -371,7 +372,7 @@
         <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数；可录入历史实收（仅记账） -->
         <block wx:elif="{{saleOrderType === '寄存单'}}">
           <view class="deposit-banner">
-            <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
+            <text>寄存单：不收款，仅初始化剩余次数到小程序，审批通过后可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
           </view>
           <view class="confirm-items">
             <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
@@ -608,7 +609,7 @@
             custom-class="btn-primary-brand"
             custom-style="border-radius:40rpx;"
             bind:click="onSubmitOrder"
-          >{{saleOrderType === '寄存单' ? '确认寄存' : '生成付款码'}}</van-button>
+          >{{saleOrderType === '寄存单' ? '提交审批' : '生成付款码'}}</van-button>
         </view>
       </view>
     </view>

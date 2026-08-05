@@ -6,19 +6,18 @@
  *           不需要分别测 client / staff / payNotify 三份。
  *
  * 验证矩阵：
- *   11.1  数值 clamp 中间档：paidAmount=200 × 15% = 30
- *   11.2  上界 clamp：paidAmount=10000 × 15% = 1500 → clamp 到 max=500
- *   11.3  下界 clamp：paidAmount=20 × 15% = 3 → clamp 到 min=10
- *   11.4  paidAmount=0 → granted=false, reason='no_paid_amount'
+ *   11.1  数值 clamp 中间档：首次支付=200 × 15% = 30
+ *   11.2  上界 clamp：首次支付=10000 × 15% = 1500 → clamp 到 max=500
+ *   11.3  下界 clamp：首次支付=20 × 15% = 3 → clamp 到 min=10
+ *   11.4  无首次支付 → granted=false, reason='no_paid_amount'
  *   11.5  配置缺失 → no_config
  *   11.6  配置 disabled → disabled
- *   11.7  配置 bad json → bad_config（PG jsonb 列约束，本仓库实际无法插入坏 JSON，标 skip）
- *   11.8  不是首单 → not_first_order
- *   11.9  no_inviter → no_inviter
- *   11.10 双幂等：同 saleOrderId 触发 2 次 → 第二次 0 新增 user_coupons
- *   11.11 有效期 days 模式：template.validity_mode='days', days=90 → expire ~+90d
- *   11.12 有效期 fixed 模式：template.valid_to=固定日期 → expire=该固定日
- *   11.13 退款不撤销（已知问题 audit-19 P0-19-04，test.fixme 等修复）
+ *   11.7  不是首单 → not_first_order
+ *   11.8  no_inviter → no_inviter
+ *   11.9  双幂等：同 saleOrderId 触发 2 次 → 第二次 0 新增 user_coupons
+ *   11.10 有效期 days 模式：template.validity_mode='days', days=90 → expire ~+90d
+ *   11.11 有效期 fixed 模式：template.valid_to=固定日期 → expire=该固定日
+ *   11.12 全额退款撤销未使用分享礼券
  */
 
 import { test, expect } from '@playwright/test'
@@ -37,9 +36,23 @@ import { psql } from './_helpers/cron-runner'
 const shareGift: {
   grantShareGift: (
     client: Client,
-    order: { saleOrderId: string; clientUserId: string; paidAmount: number; source?: string },
+    order: { saleOrderId: string; clientUserId: string; paidAmount?: number; source?: string },
   ) => Promise<{ granted: boolean; reason?: string; value?: number; inviter?: string }>
 } = require('../../../fengyu-client/cloudfunctions/clientApi/share-gift.js')
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const refundCascade: {
+  cascadeRefund: (
+    client: Client,
+    params: {
+      saleOrderId: string
+      refundPaymentId: number
+      items: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean }>
+      isWholeOrderRefund: boolean
+      refundReason: string
+    },
+  ) => Promise<{ revokedShareGiftCoupons?: number }>
+} = require('../../../fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js')
 
 const PG_URL = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
@@ -55,16 +68,47 @@ async function callShareGift(
   saleOrderId: string,
   clientUserId: string,
   paidAmount: number,
-): Promise<ReturnType<typeof shareGift.grantShareGift>> {
+): Promise<Awaited<ReturnType<typeof shareGift.grantShareGift>>> {
   const c = new Client({ connectionString: PG_URL })
   await c.connect()
   try {
     await c.query('BEGIN')
+    await c.query(
+      `INSERT INTO sale_order_payments
+         (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at, created_at)
+       SELECT sale_order_id, '首次支付', received, '线下', '已支付', 'admin', paid_at, NOW()
+         FROM sale_orders
+        WHERE sale_order_id = $1 AND received > 0
+       ON CONFLICT DO NOTHING`,
+      [saleOrderId],
+    )
     const result = await shareGift.grantShareGift(c as never, {
       saleOrderId,
       clientUserId,
       paidAmount,
       source: 'cron-11-e2e',
+    })
+    await c.query('COMMIT')
+    return result
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {})
+    throw e
+  } finally {
+    await c.end()
+  }
+}
+
+async function callCascadeRefund(saleOrderId: string): Promise<Awaited<ReturnType<typeof refundCascade.cascadeRefund>>> {
+  const c = new Client({ connectionString: PG_URL })
+  await c.connect()
+  try {
+    await c.query('BEGIN')
+    const result = await refundCascade.cascadeRefund(c as never, {
+      saleOrderId,
+      refundPaymentId: 999999,
+      items: [],
+      isWholeOrderRefund: true,
+      refundReason: 'cron-11 share-gift refund',
     })
     await c.query('COMMIT')
     return result
@@ -98,6 +142,15 @@ function getShareCouponExpireYmd(saleOrderId: string, role: 'inviter' | 'invitee
   return out || null
 }
 
+function getShareCouponStatuses(saleOrderId: string): string[] {
+  const out = psql(
+    `SELECT string_agg(status, ',' ORDER BY coupon_id)
+       FROM user_coupons
+      WHERE coupon_id IN ('sg-inviter-${saleOrderId}', 'sg-invitee-${saleOrderId}')`,
+  )
+  return out ? out.split(',') : []
+}
+
 test.describe.serial('cron-11 share-gift（分享礼）', () => {
   test.beforeAll(() => {
     cleanupCronE2E()
@@ -108,7 +161,7 @@ test.describe.serial('cron-11 share-gift（分享礼）', () => {
     cleanupCronE2E()
   })
 
-  test('11.1 数值 clamp 中间：paidAmount=200×0.15=30，face=30，邀请/被邀各 1 张券', async () => {
+  test('11.1 数值 clamp 中间：首次支付=200×0.15=30，face=30，邀请/被邀各 1 张券', async () => {
     backupAndSetConfig('share_gift_config', {
       enabled: true,
       couponTemplateId: 'FY-FIX-CT-DISCOUNT',
@@ -138,7 +191,7 @@ test.describe.serial('cron-11 share-gift（分享礼）', () => {
     expect(getShareCouponValue(soid, 'invitee')).toBe(30)
   })
 
-  test('11.2 上界 clamp：paidAmount=10000 → raw=1500 → clamp 到 max=500', async () => {
+  test('11.2 上界 clamp：首次支付=10000 → raw=1500 → clamp 到 max=500', async () => {
     backupAndSetConfig('share_gift_config', {
       enabled: true,
       couponTemplateId: 'FY-FIX-CT-DISCOUNT',
@@ -164,7 +217,7 @@ test.describe.serial('cron-11 share-gift（分享礼）', () => {
     expect(r.value).toBe(500)
   })
 
-  test('11.3 下界 clamp：paidAmount=20 → raw=3 → clamp 到 min=10', async () => {
+  test('11.3 下界 clamp：首次支付=20 → raw=3 → clamp 到 min=10', async () => {
     backupAndSetConfig('share_gift_config', {
       enabled: true,
       couponTemplateId: 'FY-FIX-CT-DISCOUNT',
@@ -190,7 +243,7 @@ test.describe.serial('cron-11 share-gift（分享礼）', () => {
     expect(r.value).toBe(10)
   })
 
-  test('11.4 paidAmount=0 → no_paid_amount，不入主流程', async () => {
+  test('11.4 无首次支付 → no_paid_amount，不入主流程', async () => {
     const inviter = upsertClient('SG_114_INV', { customerType: '会员客' })
     const invitee = upsertClient('SG_114_INVE', {
       customerType: '会员客',
@@ -386,11 +439,34 @@ test.describe.serial('cron-11 share-gift（分享礼）', () => {
     expect(expireYmd).toBe('2026-01-01')
   })
 
-  // 11.12 退款不撤销（已知 bug audit-19 P0-19-04）—— 不在本次范围内，等专项修复 ticket
-  // 此处仅占位提醒
-  test.fixme('11.12 退款不撤销（audit-19 P0-19-04 already known）', () => {
-    // 触发 share-gift → 退款 sale_order → 期望 sg-* 券撤销，但当前实现不撤销
-    // 待修复后启用此测试
+  test('11.12 全额退款撤销未使用分享礼券', async () => {
+    backupAndSetConfig('share_gift_config', {
+      enabled: true,
+      couponTemplateId: 'FY-FIX-CT-DISCOUNT',
+      percent: 0.15,
+      minFaceValue: 1,
+      maxFaceValue: 500,
+      messageInviterTitle: 'X',
+      messageInviteeTitle: 'X',
+    })
+    const inviter = upsertClient('SG_1112_INV', { customerType: '会员客' })
+    const invitee = upsertClient('SG_1112_INVE', {
+      customerType: '会员客',
+      inviterUserId: inviter,
+    })
+    const soid = insertSaleOrder('SG_1112', {
+      storeId: STORE_ID,
+      clientUserId: invitee,
+      received: 200,
+      paidAt: '2026-11-20 10:00:00',
+    })
+    const r = await callShareGift(soid, invitee, 200)
+    expect(r.granted).toBe(true)
+    expect(getShareCouponStatuses(soid)).toEqual(['未使用', '未使用'])
+
+    const cascade = await callCascadeRefund(soid)
+    expect(cascade.revokedShareGiftCoupons).toBe(2)
+    expect(getShareCouponStatuses(soid)).toEqual(['已过期', '已过期'])
   })
 
   test('cleanup 后置 sanity', () => {

@@ -17,9 +17,15 @@ interface ServiceRecord {
   review_rating: number | null;
   review_comment: string | null;
   items: Array<{
+    service_item_id: string;
+    sale_item_id: string;
     product_name: string;
     session_used: number;
     service_duration: number;
+    session_count: number | null;
+    remaining_sessions: number | null;
+    paid_sessions: number | null;
+    sessionText: string;
   }>;
   // 格式化后的字段
   dateFmt: string;
@@ -68,6 +74,11 @@ Page({
       dateFmt: formatDate(r.service_date),
       statusColor: getStatusColor(r.status),
       durationFmt: calcDuration(r),
+      items: (r.items || []).map((i: any) => ({
+        ...i,
+        product_name: i.product_name || '服务项目',
+        sessionText: formatServiceItemSessions(i),
+      })),
       itemSummary: (r.items || []).map((i: any) => i.product_name || '未知项目').join('、'),
     }));
   },
@@ -229,4 +240,29 @@ function calcDuration(record: any): string {
   const items = record.items || [];
   const total = items.reduce((sum: number, i: any) => sum + (i.service_duration || 0), 0);
   return total > 0 ? `${total}分钟` : '';
+}
+
+function formatServiceItemSessions(item: any): string {
+  const parts: string[] = [];
+  const used = toNumberOrNull(item.session_used);
+  if (used !== null && used > 0) {
+    parts.push(`本次核销 ${used} 次`);
+  }
+
+  const remaining = toNumberOrNull(item.remaining_sessions);
+  const total = toNumberOrNull(item.session_count);
+  const paid = toNumberOrNull(item.paid_sessions);
+  const metrics: string[] = [];
+  if (remaining !== null) metrics.push(`剩余 ${remaining}`);
+  if (Object.prototype.hasOwnProperty.call(item, 'paid_sessions')) metrics.push(`已付 ${paid === null ? '—' : paid}`);
+  if (total !== null) metrics.push(`共 ${total} 次`);
+  if (metrics.length > 0) parts.push(metrics.join(' / '));
+
+  return parts.join(' · ');
+}
+
+function toNumberOrNull(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }

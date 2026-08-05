@@ -29,7 +29,7 @@
         <view class="customer-name">{{item.name || '未命名'}}</view>
         <view class="customer-meta">
           <text>{{item.phone || '无手机号'}}</text>
-          <text wx:if="{{item.memberLevel}}" class="member-level">{{item.memberLevel}}</text>
+          <text wx:if="{{item.memberLevel}}" class="member-level-badge {{item.memberLevelBadgeClass}}">{{item.memberLevel}}</text>
         </view>
       </view>
       <view wx:if="{{customers.length === 0 && keyword}}" class="empty">

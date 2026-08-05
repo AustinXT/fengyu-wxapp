@@ -1,6 +1,6 @@
 /**
  * 认证路由测试
- * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全/首绑守卫）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
+ * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/重复授权幂等/历史补全/首绑守卫）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -99,6 +99,54 @@ describe('auth.bindPhone', () => {
     expect(ctx.result.phone).toBe('13900009999')
   })
 
+  test('分享礼：walk-in 新客携带合法 inviterUserId → 写入邀请关系', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'new-invitee-openid' })
+    pg.query.mockResolvedValueOnce([])                  // byOpenid
+    pg.query.mockResolvedValueOnce([])                  // byPhone
+    pg.query.mockResolvedValueOnce([])                  // INSERT
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })     // inviter UPDATE
+    pg.query.mockResolvedValueOnce({ rowCount: 0 })     // 订单回填
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])        // legacy count
+
+    const ctx = createCtx({
+      payload: {
+        phoneNumber: '13900008888',
+        inviterUserId: 'FYGK-20260424-00001',
+      },
+    })
+    await routes.bindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    const inviterCall = pg.query.mock.calls[3]
+    expect(inviterCall[0]).toContain('inviter_user_id = $1')
+    expect(inviterCall[0]).toContain('invited_at = $2')
+    expect(inviterCall[0]).toContain('EXISTS')
+    expect(inviterCall[1][0]).toBe('FYGK-20260424-00001')
+    expect(inviterCall[1][2]).toBe(ctx.result.userId)
+  })
+
+  test('分享礼：已有手机号档案回流携带 inviterUserId → 不写邀请关系', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
+    pg.query.mockResolvedValueOnce([])                  // byOpenid
+    pg.query.mockResolvedValueOnce([{ user_id: 'WF-CUST-9', openid: null }]) // byPhone
+    pg.query.mockResolvedValueOnce([])                  // attach UPDATE
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })     // 订单回填
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])        // legacy count
+
+    const ctx = createCtx({
+      payload: {
+        phoneNumber: '13800001111',
+        inviterUserId: 'FYGK-20260424-00001',
+      },
+    })
+    await routes.bindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.userId).toBe('WF-CUST-9')
+    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
+    expect(allSql).not.toContain('inviter_user_id')
+  })
+
   test('孤儿档案回流：按 phone 命中 openid 为 NULL 的行 → attach openid（复用 user_id）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bind-openid' })
     pg.query.mockResolvedValueOnce([])                  // byOpenid: 无行
@@ -151,7 +199,26 @@ describe('auth.bindPhone', () => {
       .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
   })
 
-  test('首绑守卫：openid 已绑定手机号 → INVALID_PARAMS（提示联系门店）', async () => {
+  test('手机号授权登录：openid 已绑定同一手机号 → 幂等成功', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { phoneNumber: '13800001111' } })
+    await routes.bindPhone(ctx)
+
+    expect(ctx.result).toEqual({
+      success: true,
+      userId: 'user-001',
+      phone: '13800001111',
+      updatedOrdersCount: 0,
+    })
+    expect(pg.query).toHaveBeenCalledTimes(2)
+    expect(pg.query.mock.calls[1][0]).toContain('UPDATE client_wechat_users')
+    expect(pg.query.mock.calls[1][1][1]).toBe('user-001')
+  })
+
+  test('首绑守卫：openid 已绑定其他手机号 → INVALID_PARAMS（提示联系门店）', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
     // byOpenid 返回 phone 已有值
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
@@ -219,9 +286,7 @@ describe('auth.bindStore', () => {
       .rejects.toThrow(/PHONE_REQUIRED/)
   })
 
-  // ===== 分享礼：inviterUserId 一次性绑定 =====
-
-  test('分享礼：不传 inviterUserId → 不触发 inviter UPDATE', async () => {
+  test('分享礼：bindStore 即使传 inviterUserId 也不补写邀请关系', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-0' })
     pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00001', phone: '138' }])
     pg.query.mockResolvedValueOnce([{
@@ -231,126 +296,15 @@ describe('auth.bindStore', () => {
     }])
     pg.query.mockResolvedValueOnce([])  // 主 UPDATE
 
-    const ctx = createCtx({ payload: { storeId: 'store-001' } })
-    await routes.bindStore(ctx)
-
-    expect(ctx.result.success).toBe(true)
-    // 仅 3 次查询：SELECT user / SELECT store / UPDATE 主绑店；无 inviter UPDATE
-    expect(pg.query).toHaveBeenCalledTimes(3)
-    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
-    expect(allSql).not.toContain('inviter_user_id')
-  })
-
-  test('分享礼：inviter = 自身 userId → 不触发 inviter UPDATE（业务层拒绝）', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-1' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00001', phone: '138' }])
-    pg.query.mockResolvedValueOnce([{
-      store_id: 'store-001',
-      store_name: '凤御测试店',
-      market_name: '华东市场',
-    }])
-    pg.query.mockResolvedValueOnce([])  // 主 UPDATE
-
-    const ctx = createCtx({
-      payload: { storeId: 'store-001', inviterUserId: 'FYGK-20260424-00001' },
-    })
-    await routes.bindStore(ctx)
-
-    expect(ctx.result.success).toBe(true)
-    // 仅 3 次：自邀被业务层 if 拦截，不发 inviter UPDATE
-    expect(pg.query).toHaveBeenCalledTimes(3)
-    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
-    expect(allSql).not.toContain('inviter_user_id')
-  })
-
-  test('分享礼：首次传入合法 inviter → 触发 inviter UPDATE（WHERE inviter_user_id IS NULL + EXISTS 兜底）', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-2' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00002', phone: '138' }])
-    pg.query.mockResolvedValueOnce([{
-      store_id: 'store-001',
-      store_name: '凤御测试店',
-      market_name: '华东市场',
-    }])
-    pg.query.mockResolvedValueOnce([])  // 主 UPDATE
-    pg.query.mockResolvedValueOnce({ rowCount: 1 })  // inviter UPDATE 成功影响 1 行
-
-    const ctx = createCtx({
-      payload: { storeId: 'store-001', inviterUserId: 'FYGK-20260424-00001' },
-    })
-    await routes.bindStore(ctx)
-
-    expect(ctx.result.success).toBe(true)
-    expect(pg.query).toHaveBeenCalledTimes(4)
-
-    // 校验 inviter UPDATE SQL 内容
-    const inviterCall = pg.query.mock.calls[3]
-    expect(inviterCall[0]).toContain('inviter_user_id = $1')
-    expect(inviterCall[0]).toContain('inviter_user_id IS NULL')
-    expect(inviterCall[0]).toContain('EXISTS')
-    expect(inviterCall[1]).toEqual(['FYGK-20260424-00001', 'FYGK-20260424-00002'])
-  })
-
-  test('分享礼：重复传入 inviter（已有值）→ WHERE 保护不覆盖（SQL 仍发，但 rowCount=0）', async () => {
-    // 模拟 DB 中 inviter_user_id 已有值：UPDATE 发出但因 WHERE 条件影响 0 行
-    cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-3' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00003', phone: '138' }])
-    pg.query.mockResolvedValueOnce([{
-      store_id: 'store-001',
-      store_name: '凤御测试店',
-      market_name: '华东市场',
-    }])
-    pg.query.mockResolvedValueOnce([])  // 主 UPDATE
-    pg.query.mockResolvedValueOnce({ rowCount: 0 })  // inviter UPDATE 影响 0 行（WHERE 保护）
-
     const ctx = createCtx({
       payload: { storeId: 'store-001', inviterUserId: 'FYGK-20260424-99999' },
     })
     await routes.bindStore(ctx)
 
     expect(ctx.result.success).toBe(true)
-    // 代码不关心 rowCount，不报错；SQL 的 WHERE inviter_user_id IS NULL 兜底保证不覆盖
-    const inviterCall = pg.query.mock.calls[3]
-    expect(inviterCall[0]).toContain('inviter_user_id IS NULL')
-  })
-
-  test('分享礼：inviter 前缀非法（非 FYGK- 开头）→ 不触发 inviter UPDATE', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-4' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00004', phone: '138' }])
-    pg.query.mockResolvedValueOnce([{
-      store_id: 'store-001',
-      store_name: '凤御测试店',
-      market_name: '华东市场',
-    }])
-    pg.query.mockResolvedValueOnce([])
-
-    const ctx = createCtx({
-      payload: { storeId: 'store-001', inviterUserId: 'XXXX-invalid-prefix' },
-    })
-    await routes.bindStore(ctx)
-
-    expect(ctx.result.success).toBe(true)
     expect(pg.query).toHaveBeenCalledTimes(3)
-  })
-
-  test('分享礼：inviter UPDATE 失败 → 非致命（不影响主绑店）', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'inv-openid-5' })
-    pg.query.mockResolvedValueOnce([{ user_id: 'FYGK-20260424-00005', phone: '138' }])
-    pg.query.mockResolvedValueOnce([{
-      store_id: 'store-001',
-      store_name: '凤御测试店',
-      market_name: '华东市场',
-    }])
-    pg.query.mockResolvedValueOnce([])  // 主 UPDATE 成功
-    pg.query.mockRejectedValueOnce(new Error('FK violation'))  // inviter UPDATE 失败
-
-    const ctx = createCtx({
-      payload: { storeId: 'store-001', inviterUserId: 'FYGK-20260424-99999' },
-    })
-    // 主绑店不应因 inviter 失败而失败
-    await routes.bindStore(ctx)
-
-    expect(ctx.result.success).toBe(true)
-    expect(ctx.result.boundStoreId).toBe('store-001')
+    const allSql = pg.query.mock.calls.map(c => c[0]).join('\n')
+    expect(allSql).not.toContain('inviter_user_id')
   })
 })
 

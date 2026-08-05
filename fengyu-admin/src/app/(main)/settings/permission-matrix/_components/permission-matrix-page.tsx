@@ -68,6 +68,7 @@ const VERB_LABELS: Record<string, string> = {
   pull: '拉取',
   config: '配置',
   dashboard: '看板',
+  deposit_approve: '审批寄存单',
   record_payment: '记录收款',
   refund_create: '发起退款',
   refund_approve: '审批退款',

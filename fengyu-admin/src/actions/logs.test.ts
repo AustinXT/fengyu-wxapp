@@ -53,7 +53,7 @@ vi.mock('@/lib/permissions', () => ({
   }),
 }))
 
-import { getLogs, getOrderLogs, deleteOperationLog } from './logs'
+import { getLogs, getLogsPaginated, getOrderLogs, deleteOperationLog } from './logs'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
@@ -80,13 +80,14 @@ const mockLogRow = {
   createdAt: new Date('2026-03-15T10:00:00Z'),
 }
 
-/** mock select chain: select → from → where → orderBy → limit */
+/** mock select chain: select → from → where → orderBy，兼容旧 .limit 收口 */
 function mockLogChain(rows: any[]) {
-  const limit = vi.fn().mockResolvedValue(rows)
-  const orderBy = vi.fn().mockReturnValue({ limit })
-  const where = vi.fn().mockReturnValue({ orderBy })
-  const from = vi.fn().mockReturnValue({ where })
-  ;(db.select as any).mockReturnValue({ from })
+  const chain: any = Object.assign(Promise.resolve(rows), {})
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  ;(db.select as any).mockReturnValue(chain)
 }
 
 /** mock select chain without limit: select → from → where → orderBy */
@@ -199,6 +200,27 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     const result = await getLogs()
 
     expect(result[0].detail).toBeNull()
+  })
+
+  it('分页查询 → count + limit/offset', async () => {
+    const countChain: any = {}
+    countChain.from = vi.fn().mockReturnValue(countChain)
+    countChain.where = vi.fn().mockResolvedValue([{ count: 42 }])
+
+    const dataChain: any = {}
+    dataChain.from = vi.fn().mockReturnValue(dataChain)
+    dataChain.where = vi.fn().mockReturnValue(dataChain)
+    dataChain.orderBy = vi.fn().mockReturnValue(dataChain)
+    dataChain.limit = vi.fn().mockReturnValue(dataChain)
+    dataChain.offset = vi.fn().mockResolvedValue([mockLogRow])
+    ;(db.select as any).mockReturnValueOnce(countChain).mockReturnValueOnce(dataChain)
+
+    const result = await getLogsPaginated({ page: 3, pageSize: 20 })
+
+    expect(result.total).toBe(42)
+    expect(result.data).toHaveLength(1)
+    expect(dataChain.limit).toHaveBeenCalledWith(20)
+    expect(dataChain.offset).toHaveBeenCalledWith(40)
   })
 })
 

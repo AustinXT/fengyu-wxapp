@@ -69,6 +69,15 @@ function calcAmount(ratioPercent: string, received: number): string {
   return ((ratio / 100) * received).toFixed(2)
 }
 
+function formatSaleItemName(item: Pick<SaleItem, 'productName' | 'skuName'>): string {
+  const productName = (item.productName ?? '').trim()
+  const skuName = (item.skuName ?? '').trim()
+  if (!productName && !skuName) return '—'
+  if (!productName) return skuName
+  if (!skuName || skuName === productName) return productName
+  return `${productName} - ${skuName}`
+}
+
 // --------------- 初始化状态 ---------------
 
 function initAllocations(
@@ -323,8 +332,7 @@ function ItemAllocationCard({
       <CardHeader className="pb-3">
         <div className="flex items-baseline justify-between">
           <CardTitle className="text-base">
-            {item.productName || '—'}
-            {item.skuName ? ` - ${item.skuName}` : ''}
+            {formatSaleItemName(item)}
             {item.salesCategory && (
               <span className="ml-2 text-xs font-normal text-[#999999] bg-gray-100 px-2 py-0.5 rounded">
                 {item.salesCategory}
@@ -393,13 +401,13 @@ function ItemAllocationCard({
                 </div>
 
                 {/* 分配比例（档位快选 + 自定义） */}
-                <div className="shrink-0">
+                <div className="w-[204px] shrink-0">
                   <label className="text-[10px] text-[#999999]">分配</label>
                   <div className="flex items-center gap-1">
                     <Select
                       value={ratioSelectValue}
                       onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
-                      className="w-[68px]"
+                      className="w-[104px]"
                     >
                       <option value="">-</option>
                       {PERCENTAGE_OPTIONS.map((p) => (
@@ -416,7 +424,7 @@ function ItemAllocationCard({
                         inputMode="decimal"
                         value={entry.ratioPercent === '__custom' ? '' : entry.ratioPercent}
                         onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
-                        className="w-[60px]"
+                        className="w-[88px]"
                         placeholder="%"
                       />
                     )}

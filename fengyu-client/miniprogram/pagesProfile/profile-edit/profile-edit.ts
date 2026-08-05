@@ -10,32 +10,47 @@ Page({
     userId: '',
     boundStoreName: '',
     avatarUrl: '',
+    isLoggedOut: false,
     isEditing: false,
     editName: '',
     submitting: false,
   },
 
   onLoad() {
-    const app = getApp<IAppOption>();
-    this.setData({
-      userName: wx.getStorageSync('userName') || '',
-      maskedPhone: maskPhone(wx.getStorageSync('phone') || ''),
-      userId: wx.getStorageSync('userId') || '',
-      boundStoreName: app.globalData.boundStoreName || '',
-      avatarUrl: wx.getStorageSync('avatarUrl') || '',
-    });
+    this.refreshData();
   },
 
   onShow() {
+    this.refreshData();
+  },
+
+  refreshData() {
     const app = getApp<IAppOption>();
-    this.setData({ boundStoreName: app.globalData.boundStoreName || '' });
+    const isLoggedOut = app.isLoggedOut();
+    this.setData({
+      userName: isLoggedOut ? '' : (wx.getStorageSync('userName') || ''),
+      maskedPhone: isLoggedOut ? '' : maskPhone(wx.getStorageSync('phone') || ''),
+      userId: isLoggedOut ? '' : (wx.getStorageSync('userId') || ''),
+      boundStoreName: isLoggedOut ? '' : (app.globalData.boundStoreName || ''),
+      avatarUrl: isLoggedOut ? '' : (wx.getStorageSync('avatarUrl') || ''),
+      isLoggedOut,
+      isEditing: isLoggedOut ? false : this.data.isEditing,
+    });
   },
 
   onSwitchStore() {
+    if (this.data.isLoggedOut) {
+      Toast.fail('请先授权手机号登录');
+      return;
+    }
     wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
   },
 
   async onChooseAvatar() {
+    if (this.data.isLoggedOut) {
+      Toast.fail('请先授权手机号登录');
+      return;
+    }
     try {
       const res = await wx.chooseMedia({
         count: 1,
@@ -85,6 +100,10 @@ Page({
   },
 
   onEditName() {
+    if (this.data.isLoggedOut) {
+      Toast.fail('请先授权手机号登录');
+      return;
+    }
     this.setData({
       isEditing: true,
       editName: this.data.userName,
@@ -125,7 +144,7 @@ Page({
   },
 
   /**
-   * 微信手机号授权回调（仅用于首绑场景）
+   * 微信手机号授权回调（首次绑定或退出后重新授权）
    * 已绑定用户的换绑由管理后台操作，前端不再提供入口
    */
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
@@ -142,15 +161,18 @@ Page({
 
     const app = getApp<IAppOption>();
 
+    const wasLoggedOut = this.data.isLoggedOut;
     try {
       const { phone } = await bindPhoneWithCloudID(cloudID as string);
+      await app.syncLoginState();
       const newMasked = maskPhone(phone);
       wx.setStorageSync('phone', phone);
       if (app.globalData.userInfo) {
         (app.globalData.userInfo as any).phone = phone;
       }
+      this.refreshData();
       this.setData({ maskedPhone: newMasked });
-      Toast.success('绑定成功');
+      Toast.success(wasLoggedOut ? '登录成功' : '绑定成功');
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败');
     }

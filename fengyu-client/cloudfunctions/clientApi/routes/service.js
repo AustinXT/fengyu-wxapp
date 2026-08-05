@@ -117,10 +117,14 @@ async function list(ctx) {
       SELECT
         si.service_order_id,
         si.service_item_id,
+        si.sale_item_id,
         si.session_used,
         si.service_duration,
         si.unit_real_price,
-        sal.product_name
+        sal.product_name,
+        sal.session_count,
+        sal.remaining_sessions,
+        sal.paid_sessions
       FROM service_items si
       LEFT JOIN sale_items sal ON si.sale_item_id = sal.sale_item_id
       WHERE si.service_order_id = ANY($1)

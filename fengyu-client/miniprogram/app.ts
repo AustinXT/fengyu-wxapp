@@ -2,6 +2,17 @@
 import { callClientApi } from './utils/cloud';
 import { getCloudEnv } from './utils/cloud-env';
 
+const LOGGED_OUT_KEY = 'clientLoggedOut';
+const LOGIN_STORAGE_KEYS = [
+  'userId',
+  'phone',
+  'userName',
+  'avatarUrl',
+  'boundStoreId',
+  'boundStoreName',
+  'boundMarketName',
+];
+
 App<IAppOption>({
   globalData: {
     userInfo: null as WechatMiniprogram.UserInfo | null,
@@ -15,7 +26,7 @@ App<IAppOption>({
     logoHeight: 26,
     // Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关（默认开启；如需灰度下发可改为从 config 读）
     continuePayEnabled: true,
-    // Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId，绑定门店时一次性写入并清空
+    // Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId，手机号新注册时一次性写入并清空
     pendingInviter: undefined,
   },
 
@@ -63,6 +74,12 @@ App<IAppOption>({
   },
 
   restoreFromCache() {
+    const cachedInviter = wx.getStorageSync('pendingInviter');
+    if (!this.globalData.pendingInviter && cachedInviter) {
+      this.globalData.pendingInviter = cachedInviter as string;
+    }
+    if (this.isLoggedOut()) return;
+
     const userId = wx.getStorageSync('userId');
     const boundStoreId = wx.getStorageSync('boundStoreId');
     const boundStoreName = wx.getStorageSync('boundStoreName');
@@ -79,19 +96,18 @@ App<IAppOption>({
     if (boundMarketName) {
       this.globalData.boundMarketName = boundMarketName;
     }
-    const cachedInviter = wx.getStorageSync('pendingInviter');
-    if (!this.globalData.pendingInviter && cachedInviter) {
-      this.globalData.pendingInviter = cachedInviter as string;
-    }
   },
 
-  async syncLoginState() {
+  async syncLoginState(force = false) {
+    if (this.isLoggedOut() && !force) return;
+
     try {
       const data = await callClientApi<{
         userId: string; phone: string; name: string; avatarUrl: string;
         memberLevel: string; customerType?: string; isMember?: boolean;
         boundStoreId: string; boundStoreName: string; boundMarketName: string;
       }>('auth.login', {});
+      wx.removeStorageSync(LOGGED_OUT_KEY);
       if (data.userId) {
         this.globalData.userId = data.userId;
         wx.setStorageSync('userId', data.userId);
@@ -118,6 +134,21 @@ App<IAppOption>({
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
     }
+  },
+
+  isLoggedOut() {
+    return wx.getStorageSync(LOGGED_OUT_KEY) === true;
+  },
+
+  clearLoginState() {
+    wx.setStorageSync(LOGGED_OUT_KEY, true);
+    LOGIN_STORAGE_KEYS.forEach((key) => wx.removeStorageSync(key));
+    this.clearMemberFlag();
+    this.globalData.userInfo = null;
+    this.globalData.userId = '';
+    this.globalData.boundStoreId = '';
+    this.globalData.boundStoreName = '';
+    this.globalData.boundMarketName = '';
   },
 
   /**
@@ -147,6 +178,7 @@ App<IAppOption>({
   },
 
   setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }) {
+    wx.removeStorageSync(LOGGED_OUT_KEY);
     this.globalData.userId = info.userId;
     wx.setStorageSync('userId', info.userId);
     if (info.boundStoreId) {
@@ -160,6 +192,7 @@ App<IAppOption>({
   },
 
   setStore(storeId: string, storeName: string, marketName?: string) {
+    wx.removeStorageSync(LOGGED_OUT_KEY);
     this.globalData.boundStoreId = storeId;
     wx.setStorageSync('boundStoreId', storeId);
     this.globalData.boundStoreName = storeName;

@@ -25,7 +25,7 @@
           <view class="profile-main">
             <view class="profile-name-row">
               <text class="profile-name">{{customer.name}}</text>
-              <view wx:if="{{customer.memberLevel}}" class="vip-badge">{{customer.memberLevel}}</view>
+              <view wx:if="{{customer.memberLevel}}" class="member-level-badge {{customer.memberLevelBadgeClass}}">{{customer.memberLevel}}</view>
             </view>
             <text class="profile-phone">{{customer.phone}}</text>
           </view>
@@ -187,7 +187,7 @@
                   </view>
                   <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
                     <text class="gift-item-name">{{gi.productName}}</text>
-                    <text class="gift-item-spec">{{gi.specName}}</text>
+                    <text wx:if="{{gi.specName}}" class="gift-item-spec">{{gi.specName}}</text>
                     <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.paidUnusedSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}}</text>
                   </view>
                   <text class="gift-card-time">{{item.paidAt}}</text>
@@ -199,7 +199,7 @@
                 <view class="gift-card" wx:for="{{giftData.giftItems}}" wx:key="saleItemId">
                   <view class="gift-item-row">
                     <text class="gift-item-name">{{item.productName}}</text>
-                    <text class="gift-item-spec">{{item.specName}}</text>
+                    <text wx:if="{{item.specName}}" class="gift-item-spec">{{item.specName}}</text>
                   </view>
                   <view wx:if="{{item.sessionCount}}" class="gift-item-row">
                     <text class="gift-item-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>

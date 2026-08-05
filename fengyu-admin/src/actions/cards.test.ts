@@ -25,6 +25,7 @@ vi.mock('@db/order', () => ({
   },
   saleOrders: {
     saleOrderId: 'sale_order_id',
+    saleOrderType: 'sale_order_type',
     clientUserId: 'client_user_id',
     paidAt: 'paid_at',
     status: 'status',
@@ -166,7 +167,7 @@ describe('getCardsPaginated — 服务端分页', () => {
     ;(getSession as any).mockResolvedValue(mockCardsPaginatedSession)
   })
 
-  it('无筛选 → 应用基础条件：购买方向 + 疗程卡 + 余次不为空', async () => {
+  it('无筛选 → 应用基础条件：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空', async () => {
     mockPaginatedChain(1, [mockCardRow])
 
     const result = await getCardsPaginated()
@@ -181,6 +182,9 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(result.data[0].paidUnusedSessions).toBe(7)
     // 基础条件
     expect(eq).toHaveBeenCalledWith('item_direction', '购买')
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
+    expect(eq).toHaveBeenCalledWith('item_direction', '转入')
+    expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
     expect(eq).toHaveBeenCalledWith('product_type', '疗程卡')
     expect(isNotNull).toHaveBeenCalledWith('remaining_sessions')
   })
@@ -561,8 +565,11 @@ describe('getCardById — 卡详情', () => {
     expect(result!.orderCreatedAt).toBe('2026-04-01T09:55:00.000Z')
     expect(result!.orderStatus).toBe('已支付')
     expect(result!.expireDate).toBe('2026-12-31')
-    // 强制 item_direction='购买'
+    // 强制权益方向：购买行 + 转换单转入行
     expect(eq).toHaveBeenCalledWith('item_direction', '购买')
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
+    expect(eq).toHaveBeenCalledWith('item_direction', '转入')
+    expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
     // saleItemId 锁定
     expect(eq).toHaveBeenCalledWith('sale_item_id', 'SI-001')
   })
@@ -663,9 +670,9 @@ describe('getCardTransactions — 划卡明细', () => {
 // exportCards tests（疗程卡导出）
 // ============================================================================
 
-/** mock exportCards 单查链：.from.leftJoin×5.where.orderBy.limit → Promise<rows> */
+/** mock exportCards 单查链：支持直接 await orderBy(...) 与旧的 .limit() 收口 */
 function mockExportChain(rows: any[]) {
-  const chain: any = {}
+  const chain: any = Object.assign(Promise.resolve(rows), {})
   chain.from = vi.fn().mockReturnValue(chain)
   chain.leftJoin = vi.fn().mockReturnValue(chain)
   chain.where = vi.fn().mockReturnValue(chain)
@@ -730,6 +737,24 @@ describe('exportCards — 疗程卡导出', () => {
     expect(r.paidAt).toBe('2026-04-01T10:00:00.000Z')
   })
 
+  it('查询条件支持转换单转入权益卡，并限定有效订单状态', async () => {
+    mockExportChain([{
+      ...mockExportRow,
+      saleOrderId: 'FY-XSD-WX-2607250060',
+      productName: '面部三重维养',
+      paidUnusedSessions: 10,
+    }])
+
+    const { rows } = await exportCards({})
+
+    expect(rows[0].saleOrderId).toBe('FY-XSD-WX-2607250060')
+    expect(rows[0].productSpec).toBe('面部三重维养')
+    expect(rows[0].remaining).toBe(10)
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
+    expect(eq).toHaveBeenCalledWith('item_direction', '转入')
+    expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
+  })
+
   it('单次卡 → cardType=单次卡；顾客主档 / productName 缺失时回退订单快照与 specName', async () => {
     mockExportChain([{
       ...mockExportRow,
@@ -759,13 +784,13 @@ describe('exportCards — 疗程卡导出', () => {
     expect(truncated).toBe(false)
   })
 
-  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({ ...mockExportRow, saleOrderId: `FY-${i}` }))
     mockExportChain(many)
 
     const { rows, truncated } = await exportCards({})
 
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(10001)
   })
 })

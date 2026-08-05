@@ -105,6 +105,7 @@ describe('callClientApi 网络错误防护', () => {
   const origCloud = (globalThis as any).wx?.cloud
 
   beforeEach(() => {
+    ;(globalThis as any).wx?.__resetStorage?.()
     // 模拟 wx.cloud
     ;(globalThis as any).wx = {
       ...(globalThis as any).wx,
@@ -173,6 +174,34 @@ describe('callClientApi 网络错误防护', () => {
 
     const data = await callClientApi<{ orders: any[] }>('order.list', {})
     expect(data.orders).toHaveLength(1)
+  })
+
+  test('退出态阻断私有 action，不调用 clientApi', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+
+    await expect(callClientApi('coupon.list', {})).rejects.toMatchObject({
+      code: -403,
+      errorType: 'PHONE_REQUIRED',
+      data: null,
+    })
+    expect((globalThis as any).wx.cloud.callFunction).not.toHaveBeenCalled()
+  })
+
+  test('退出态允许公开浏览 action', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: 0, message: 'success', data: { spuList: [] } },
+    })
+
+    const data = await callClientApi<{ spuList: any[] }>('product.shopInit', {})
+    expect(data.spuList).toEqual([])
+    expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
+      name: 'clientApi',
+      data: {
+        action: 'product.shopInit',
+        payload: expect.objectContaining({ _appVersion: expect.any(String) }),
+      },
+    })
   })
 
   // ===== errorType 透传：白名单业务错误信任后端文案，跳过 sanitize =====

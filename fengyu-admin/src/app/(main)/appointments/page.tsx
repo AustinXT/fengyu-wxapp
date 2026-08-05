@@ -1,5 +1,5 @@
 import { getAppointmentsPaginated } from '@/actions/appointments'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
 import AppointmentsPageClient from './_components/appointments-page'
@@ -15,9 +15,10 @@ export default async function Page({
 
   const tab = (params.tab || 'pending') as 'pending' | 'confirmed' | 'today' | 'all'
 
-  const [result, stores, session] = await Promise.all([
+  const [result, filterOptions, session] = await Promise.all([
     getAppointmentsPaginated({
       tab,
+      marketId: params.market,
       storeId: params.store,
       dateFrom: params.from,
       dateTo: params.to,
@@ -25,7 +26,7 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
+    getMarketStoreFilterOptions(),
     getSession(),
   ])
 
@@ -34,7 +35,7 @@ export default async function Page({
   return (
     <AppointmentsPageClient
       appointments={result.data}
-      stores={stores}
+      filterOptions={filterOptions}
       total={result.total}
       pendingCount={result.pendingCount}
       confirmedCount={result.confirmedCount}

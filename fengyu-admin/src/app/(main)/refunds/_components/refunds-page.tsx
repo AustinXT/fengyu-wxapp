@@ -99,8 +99,8 @@ export default function RefundsPageClient({
                         ) : '—'}
                       </td>
                       <td className="px-4 py-3">{r.customerName || '—'}</td>
-                      <td className="px-4 py-3 text-right font-medium text-[#C62828]">
-                        -¥{amount.toFixed(2)}
+                      <td className={`px-4 py-3 text-right font-medium ${amount > 0 ? "text-[#C62828]" : "text-[#666]"}`}>
+                        {amount > 0 ? `-¥${amount.toFixed(2)}` : "退项不退款"}
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={r.status} />

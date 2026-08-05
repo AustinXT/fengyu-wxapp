@@ -3,7 +3,7 @@ import { getOrderById, getOrderPayments } from '@/actions/orders'
 import { getOrderAllocations } from '@/actions/allocations'
 import { getOrderLogs } from '@/actions/logs'
 import { getSession } from '@/lib/auth'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission, isAdminScope, isDepositOrderApprover } from '@/lib/permissions'
 import { db } from '@/db'
 import { prepaidCards } from '@db/prepaid-card'
 import { eq } from 'drizzle-orm'
@@ -45,6 +45,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canRefund = !!(session && hasPermission(session, 'sale_order:refund_create'))
   // 物理删除订单：仅系统管理员（sale_order:delete）
   const canDelete = !!(session && isAdminScope(session))
+  const canApproveDeposit = !!(
+    session &&
+    hasPermission(session, 'sale_order:deposit_approve') &&
+    isDepositOrderApprover(session)
+  )
   let cardBalance: number | null = null
   if ((canRecordPayment || canConfirmOffline) && order.clientUserId) {
     const [row] = await db
@@ -67,6 +72,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       cardBalance={cardBalance}
       canListAllocations={canListAllocations}
       canDelete={canDelete}
+      canApproveDeposit={canApproveDeposit}
     />
   )
 }

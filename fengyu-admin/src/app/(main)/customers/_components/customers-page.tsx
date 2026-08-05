@@ -1,15 +1,18 @@
 "use client"
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import type { Customer, Store, OrgNode } from "@/lib/types"
+import type { Customer, Store } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import MarketStoreFilter from "@/components/market-store-filter"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
@@ -20,14 +23,6 @@ import { exportToXlsx } from "@/lib/export-xlsx"
 import { createCustomer, exportCustomers } from "@/actions/customers"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
-
-const MEMBER_LEVEL_COLORS: Record<string, string> = {
-  "黑钻": "border-[#333333] text-[#333333] bg-[#F0F0F0]",
-  "金钻": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "粉钻": "border-[#C06088] text-[#C06088] bg-[#FDF0F5]",
-  "星钻": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
-  "初钻": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
-}
 
 const MEMBER_LEVELS = ["黑钻", "金钻", "粉钻", "星钻", "初钻"]
 
@@ -61,12 +56,12 @@ const CUSTOMER_STATUS_COLORS: Record<string, string> = {
 export default function CustomersPage({
   customers,
   stores,
-  orgNodes,
+  filterOptions,
   total,
 }: {
   customers: Customer[]
   stores: Store[]
-  orgNodes: OrgNode[]
+  filterOptions: MarketStoreFilterOptions
   total: number
 }) {
   const router = useRouter()
@@ -86,21 +81,6 @@ export default function CustomersPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  // 市场列表
-  const markets = useMemo(() =>
-    orgNodes.filter(n => n.type === '市场' && n.isActive),
-    [orgNodes]
-  )
-
-  // 根据选中市场过滤门店列表
-  const filteredStores = useMemo(() => {
-    if (!marketFilter) return stores
-    const storeNodeIds = new Set(
-      orgNodes.filter(n => n.parentId === marketFilter && n.type === '门店').map(n => n.id)
-    )
-    return stores.filter(s => s.orgNodeId && storeNodeIds.has(s.orgNodeId))
-  }, [stores, orgNodes, marketFilter])
-
   // 搜索防抖
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
@@ -115,6 +95,7 @@ export default function CustomersPage({
   const [creating, setCreating] = useState(false)
   const [newPhone, setNewPhone] = useState("")
   const [newName, setNewName] = useState("")
+  const [newBoundStoreId, setNewBoundStoreId] = useState("")
 
   async function handleCreate() {
     if (!newPhone.trim()) {
@@ -131,6 +112,7 @@ export default function CustomersPage({
       const result = await createCustomer({
         phone: newPhone.trim(),
         name: newName.trim(),
+        boundStoreId: newBoundStoreId || null,
       })
       if (!result.success) {
         toast.error(result.message)
@@ -140,6 +122,7 @@ export default function CustomersPage({
       setDialogOpen(false)
       setNewPhone("")
       setNewName("")
+      setNewBoundStoreId("")
       router.refresh()
     } catch (err) {
       toast.error(actionErrorMessage(err, "创建失败，请稍后重试"))
@@ -151,7 +134,7 @@ export default function CustomersPage({
   /** 导出当前筛选命中的全部顾客（跨分页，12 列含累计消费/推荐人等扩展字段） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
-    const { rows, truncated } = await exportCustomers(raw)
+    const { rows } = await exportCustomers(raw)
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出")
       return
@@ -175,7 +158,6 @@ export default function CustomersPage({
       ],
       rows,
     })
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
   }, [searchParams])
 
   const columns: Column<Customer>[] = [
@@ -211,12 +193,7 @@ export default function CustomersPage({
       header: "会员等级",
       cell: (row) =>
         row.memberLevel ? (
-          <Badge
-            variant="outline"
-            className={MEMBER_LEVEL_COLORS[row.memberLevel] ?? ""}
-          >
-            {row.memberLevel}
-          </Badge>
+          <MemberLevelBadge level={row.memberLevel} />
         ) : (
           "—"
         ),
@@ -267,30 +244,13 @@ export default function CustomersPage({
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Select
-          value={marketFilter}
-          onChange={(e) => setMany({ market: e.target.value, store: '', page: '' })}
-          className="w-32"
-        >
-          <option value="">全部市场</option>
-          {markets.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </Select>
-        <Select
-          value={storeFilter}
-          onChange={(e) => setFilter("store", e.target.value)}
-          className="w-40"
-        >
-          <option value="">全部门店</option>
-          {filteredStores.map((s) => (
-            <option key={s.storeId} value={s.storeId}>
-              {s.storeName}
-            </option>
-          ))}
-        </Select>
+        <MarketStoreFilter
+          options={filterOptions}
+          marketValue={marketFilter}
+          storeValue={storeFilter}
+          onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+          onStoreChange={(value) => setFilter("store", value)}
+        />
         <Select
           value={levelFilter}
           onChange={(e) => setFilter("level", e.target.value)}
@@ -411,6 +371,21 @@ export default function CustomersPage({
               onChange={(e) => setNewName(e.target.value)}
               placeholder="请输入姓名"
             />
+          </div>
+          <div>
+            <label className="text-sm text-[#999999]">绑定门店</label>
+            <Select
+              className="mt-1"
+              value={newBoundStoreId}
+              onChange={(e) => setNewBoundStoreId(e.target.value)}
+            >
+              <option value="">暂不绑定门店</option>
+              {stores.map((store) => (
+                <option key={store.storeId} value={store.storeId}>
+                  {store.storeName}
+                </option>
+              ))}
+            </Select>
           </div>
         </div>
         <DialogFooter>

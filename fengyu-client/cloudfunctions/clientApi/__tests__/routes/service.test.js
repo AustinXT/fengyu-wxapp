@@ -68,8 +68,9 @@ describe('service.list', () => {
     // 第二次查询：批量 service_items
     pg.query.mockResolvedValueOnce([
       {
-        service_order_id: 'SVC-001', service_item_id: 'SVI-001',
+        service_order_id: 'SVC-001', service_item_id: 'SVI-001', sale_item_id: 'SI-001',
         session_used: 1, service_duration: 90,
+        session_count: 10, remaining_sessions: 9, paid_sessions: 10,
         product_name: '深层清洁护理',
       },
     ])
@@ -83,6 +84,13 @@ describe('service.list', () => {
     expect(ctx.result.records[0].employee_name).toBe('李梅')
     expect(ctx.result.records[0].items).toHaveLength(1)
     expect(ctx.result.records[0].items[0].product_name).toBe('深层清洁护理')
+    expect(ctx.result.records[0].items[0]).toMatchObject({
+      sale_item_id: 'SI-001',
+      session_used: 1,
+      session_count: 10,
+      remaining_sessions: 9,
+      paid_sessions: 10,
+    })
   })
 
   test('空列表时不执行第二次查询', async () => {

@@ -59,6 +59,20 @@ function postJson(urlStr, body, headers) {
   })
 }
 
+function paidAllocationWindow(paymentAlias, orderAlias, startIdx, endIdx) {
+  return `(
+    (${paymentAlias}.id IS NOT NULL
+      AND ${paymentAlias}.status = '已支付'
+      AND ${paymentAlias}.paid_at >= $${startIdx}
+      AND ${paymentAlias}.paid_at < $${endIdx})
+    OR
+    (${paymentAlias}.id IS NULL
+      AND ${orderAlias}.status = '已支付'
+      AND ${orderAlias}.paid_at >= $${startIdx}
+      AND ${orderAlias}.paid_at < $${endIdx})
+  )`
+}
+
 /**
  * 员工列表
  */
@@ -226,7 +240,7 @@ async function departments(ctx) {
 /**
  * 今日分成
  *
- * 口径约定（勿误改）：首卡「今日分成（营业额）」金额 = SUM(sale_allocations.total_amount)
+ * 口径约定（勿误改）：首卡「今日分成（营业额）」金额 = SUM(sale_payment_item_allocations.allocated_amount)
  *   = 员工分到的【销售营业额份额】（= 实收 × 分账比例，见 allocation.js），是【业绩】而非提成；
  *   服务在卡上只做计数（serviceCount），不并入金额。
  *   本口径与 mgmt-dashboard.staffRankingRevenue（员工业绩排行）一致，spec 标题即「今日分成（营业额）」。
@@ -248,16 +262,16 @@ async function todayCommission(ctx) {
   // 今日分成金额 + 订单数
   const commissionRows = await pg.query(`
     SELECT
-      COALESCE(SUM(sa.total_amount::numeric), 0) AS today_amount,
+      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS today_amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    WHERE spia.employee_id = $1
+      AND spia.is_void = false
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, todayStart, todayEnd])
 
   // 今日服务单数
@@ -275,16 +289,16 @@ async function todayCommission(ctx) {
   // 本月分成金额 + 订单数（个人口径）
   const thisMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(sa.total_amount::numeric), 0) AS amount,
+      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    WHERE spia.employee_id = $1
+      AND spia.is_void = false
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, thisMonthStart, thisMonthEnd])
 
   // 本月服务单数（个人口径）
@@ -303,16 +317,16 @@ async function todayCommission(ctx) {
   // 上月分成金额 + 订单数
   const lastMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(sa.total_amount::numeric), 0) AS amount,
+      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    WHERE spia.employee_id = $1
+      AND spia.is_void = false
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
   `, [staffWfId, lastMonthStart, lastMonthEnd])
 
   // 上月服务单数
@@ -570,7 +584,7 @@ async function bindStore(ctx) {
  * payload: { startDate, endDate, employeeId? (店长可查他人), salesCategory?, page, pageSize }
  *
  * 口径约定（2026-05-26 落地 staff.pr.spec §3.15 双维度提成模型，勿误改）：
- *   totalSalesAlloc       = SUM(sale_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
+ *   totalSalesAlloc       = SUM(sale_payment_item_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
  *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
  *   totalCommission（合计）= 两者相加 —— 销售/服务两侧均为真实提成收入。
  *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 营业额份额（total_amount）；
@@ -600,7 +614,7 @@ async function performanceDetail(ctx) {
   const end = new Date(endDate.replace(/-/g, '/'))
   end.setDate(end.getDate() + 1)
 
-  // 销售提成明细（基于 sale_allocations）
+  // 销售提成明细（基于 sale_payment_item_allocations）
   const allocParams = [targetEmployeeId, start, end]
   let allocWhere = ''
   if (salesCategory) {
@@ -610,11 +624,11 @@ async function performanceDetail(ctx) {
 
   const allocRows = await pg.query(`
     SELECT
-      sa.total_amount AS alloc_amount,
-      COALESCE(sa.commission_amount, 0) AS commission_amount,
-      sa.commission_rate,
-      sa.allocation_ratio,
-      sa.department_name,
+      spia.allocated_amount AS alloc_amount,
+      COALESCE(spia.commission_amount, 0) AS commission_amount,
+      spia.commission_rate,
+      spia.allocation_ratio,
+      spia.department_name,
       si.product_name,
       si.sales_category,
       si.unit_real_price,
@@ -622,18 +636,18 @@ async function performanceDetail(ctx) {
       o.sale_order_id,
       o.customer_name,
       o.client_phone,
-      o.paid_at,
+      COALESCE(sop.paid_at, o.paid_at) AS paid_at,
       o.store_id
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE sa.employee_id = $1
-      AND sa.is_void = false
-      AND o.status = '已支付'
-      AND o.paid_at >= $2
-      AND o.paid_at < $3
+    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    WHERE spia.employee_id = $1
+      AND spia.is_void = false
+      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
       ${allocWhere}
-    ORDER BY o.paid_at DESC
+    ORDER BY COALESCE(sop.paid_at, o.paid_at) DESC
   `, allocParams)
 
   // 服务提成明细（基于 service_commissions 表）
@@ -706,7 +720,7 @@ async function performanceDetail(ctx) {
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
-    specName: r.product_name,
+    specName: null,
     salesCategory: r.sales_category,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
     allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
@@ -723,7 +737,7 @@ async function performanceDetail(ctx) {
   const serviceItems = svcRows.map(r => ({
     type: 'service',
     productName: r.product_name,
-    specName: r.product_name,
+    specName: null,
     salesCategory: r.sales_category,
     roleType: r.role_type,
     amount: Number(r.commission_amount),

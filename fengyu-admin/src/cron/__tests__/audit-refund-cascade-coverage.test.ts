@@ -105,8 +105,12 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     await auditRefundCascadeCoverage(mockDb as never)
 
     const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
-    // C1 sale_allocations
-    expect(sqlTexts.some((s) => s.includes('sale_allocations') && s.includes('is_void'))).toBe(true)
+    // C1 receipt 子分配
+    expect(sqlTexts.some((s) =>
+      s.includes('sale_payment_item_receipts') &&
+      s.includes('sale_payment_item_allocations') &&
+      s.includes('allocated_amount < 0'),
+    )).toBe(true)
     // C2 service_commissions
     expect(sqlTexts.some((s) => s.includes('service_commissions') && s.includes('voided_at'))).toBe(true)
     // C3 user_coupons + paid_at（关键易错列名 — 不是 updated_at）

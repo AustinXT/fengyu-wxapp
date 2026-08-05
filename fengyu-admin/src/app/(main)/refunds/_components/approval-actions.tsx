@@ -28,7 +28,9 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
       const res = await approveRefund(refundPaymentId);
       if (res.success) {
         toast.success(
-          `退款已通过 — 储值卡回冲 ¥${res.data.refundByCard.toFixed(2)} + 原路径 ¥${res.data.refundByOrigin.toFixed(2)}`,
+          res.data.refundByOrigin > 0
+            ? `退款已通过，线下退款金额 ¥${res.data.refundByOrigin.toFixed(2)}`
+            : "退项已通过，不产生线下退款",
         );
         setApproveOpen(false);
         router.refresh();
@@ -76,7 +78,7 @@ export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }
             <li>退款流水翻 待审批 → 已支付，回写审批人/时间</li>
             <li>重算原销售单已退金额；净收入 = 实收 − 已退金额</li>
             <li>重算疗程卡已支付次数：退款后该卡可消费次数相应减少</li>
-            <li>按储值卡比例回冲顾客账户余额</li>
+            <li>如有现金退款，由门店线下处理；0 元退项不产生现金退款</li>
             <li>5 通道级联：营业额分配/ 服务提成软删；优惠券恢复未使用；积分反向流水；家居产品已提货数量反向恢复</li>
             <li>顾客累计消费档位重算</li>
           </ul>

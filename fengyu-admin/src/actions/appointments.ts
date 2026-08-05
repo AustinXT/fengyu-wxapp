@@ -12,6 +12,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logTransition, logOperation } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -49,7 +50,6 @@ export const getAppointments = withPermission(
     .where(scopeCondition(session, appointments.storeId))
     // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
     .orderBy(desc(appointments.appointmentTime))
-    .limit(500)
 
   return rows.map(serializeAppointment)
   },
@@ -58,6 +58,7 @@ export const getAppointments = withPermission(
 /** 预约列表筛选参数 */
 export interface AppointmentFilters {
   tab?: 'pending' | 'confirmed' | 'today' | 'all'
+  marketId?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
@@ -108,9 +109,8 @@ export const getAppointmentsPaginated = withPermission(
   }
   // 'all' → 无 tab 过滤
 
-  if (filters.storeId) {
-    conditions.push(eq(appointments.storeId, filters.storeId))
-  }
+  if (filters.marketId) conditions.push(storeInMarketCondition(appointments.storeId, filters.marketId))
+  if (filters.storeId) conditions.push(eq(appointments.storeId, filters.storeId))
   if (filters.dateFrom) {
     // 日期串拼北京字面 timestamp（appointment_time 库存北京字面）；不经 new Date（date-only 串 UTC 午夜解析→+8h）。
     conditions.push(gte(appointments.appointmentTime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))

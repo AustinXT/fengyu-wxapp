@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { MemberLevelBadge } from '@/components/ui/member-level-badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Pagination } from '@/components/ui/pagination'
@@ -729,7 +730,9 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
                             <td className="px-3 py-2 font-medium">{c.name || '—'}</td>
                             <td className="px-3 py-2 font-mono">{formatPhoneSafe(c.phone)}</td>
                             <td className="px-3 py-2">{c.storeName || '—'}</td>
-                            <td className="px-3 py-2">{c.memberLevel || '—'}</td>
+                            <td className="px-3 py-2">
+                              <MemberLevelBadge level={c.memberLevel} fallback="—" />
+                            </td>
                           </tr>
                         ))
                       )}

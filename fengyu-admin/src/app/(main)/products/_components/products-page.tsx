@@ -113,6 +113,7 @@ export default function ProductsPageClient({
         { header: "标价", accessor: (r) => (r.price != null ? Number(r.price) : "") },
         { header: "会员价", accessor: (r) => (r.specialPrice != null ? Number(r.specialPrice) : "") },
         { header: "次数", accessor: (r) => r.sessionCount ?? "" },
+        { header: "限购次数", accessor: (r) => r.purchaseLimit ?? "" },
         { header: "手工费", accessor: (r) => (r.serviceFee != null ? Number(r.serviceFee) : "") },
         { header: "状态", width: 10, accessor: (r) => (r.isEnabled ? "启用" : "停用") },
       ],
@@ -168,6 +169,11 @@ export default function ProductsPageClient({
       key: "sessionCount",
       header: "次数",
       cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
+    },
+    {
+      key: "purchaseLimit",
+      header: "限购",
+      cell: (row) => <span>{row.purchaseLimit ?? "不限"}</span>,
     },
     {
       key: "serviceFee",

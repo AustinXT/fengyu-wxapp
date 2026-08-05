@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDate } from '../../utils/formatters';
+import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
 // lastServiceDate 为后端原始 pg date（序列化成 UTC 串会偏移日期），统一格式化为 YYYY-MM-DD
 function fmtCustomerDates<T extends { lastServiceDate: string | null }>(list: T[]): T[] {
@@ -52,7 +53,7 @@ const CUSTOMER_STATUS_OPTIONS = [
   { label: '休眠', value: '休眠' },
 ];
 
-interface CustomerListItem {
+interface CustomerListItem extends MemberLevelBadgeData {
   id: string | null;
   clientUserId: string | null;
   name: string;
@@ -172,7 +173,7 @@ Page({
       if (monthlyActivity) params.monthlyActivity = monthlyActivity;
       if (customerStatus) params.customerStatus = customerStatus;
       const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
-      this.setData({ results: fmtCustomerDates(data || []), searched: false });
+      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])), searched: false });
     } catch (_) {
       this.setData({ results: [] });
     } finally {
@@ -197,7 +198,7 @@ Page({
     this.setData({ loading: true, searched: true, activeTag: '' });
     try {
       const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
-      this.setData({ results: fmtCustomerDates(data || []) });
+      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '搜索失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -262,7 +263,8 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: 20 });
-      const newResults = reset ? fmtCustomerDates(data.customers || []) : [...this.data.results, ...fmtCustomerDates(data.customers || [])];
+      const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
+      const newResults = reset ? customers : [...this.data.results, ...customers];
       this.setData({
         results: newResults,
         tagPage: page,

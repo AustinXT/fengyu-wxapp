@@ -25,17 +25,17 @@
  *   staff 端 ranking 用 timeWindowPeriod(col, period)（固定 month/lastMonth/year 锚 NOW()）。
  *   本板块改吃 TimeRange 区间：所有 ranking 子查询的时间过滤改成
  *   `col::date BETWEEN ${cur.start} AND ${cur.end}`，跟随顶部 today/week/month/year/custom。
- *   其余口径（归属字段、role_type、is_void、assignRanks 并列跳号）原样移植。
+ *   其余口径（归属字段、is_void、assignRanks 并列跳号）原样移植。
  *   排名榜不算同比环比。
  *
  * ★ 口径红线（consistency.efficiency.test.ts 字面量守护，禁止偏离）：
- *   - 业绩(员工) = SUM(sale_allocations.total_amount) 归 employee_id ∩
- *     role_type IN ('美容师','养生师') ∩ is_void=FALSE ∩ 销售单/转换单 ∩ status='已支付'
+ *   - 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
+ *     is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断
  *   - 实耗(员工) = SUM(service_items.unit_real_price * session_used) 归 employee_id ∩ 已完成
- *   - 收入 = 销售提成 SUM(sale_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
+ *   - 收入 = 销售提成 SUM(sale_payment_item_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
  *   - 新会员 = became_member_at 归 bound_employee_id；项目数 sales_category IN ('自销自耗','他销自耗')
  *   - 产能员工 producer_employees：hired_at/resigned_at 历史化（2026-05-20 起不再用 skills 过滤，
- *     以 role_type 自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
+ *     以已归属业绩自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
  *
  * ⚠️ 偏离 metrics.md 说明：
  *   - 「店长人数 managerCount」「技师人数 technicianCount」是本 admin 人效板块新增的 byMarket 头数指标，
@@ -81,6 +81,23 @@ function ratio(num: number | null, den: number | null): number | null {
   return num / den
 }
 
+function paidAllocationDateBetween(
+  paymentAlias: string,
+  orderAlias: string,
+  start: string,
+  end: string,
+) {
+  return sql`(
+    (${sql.raw(`${paymentAlias}.id`)} IS NOT NULL
+      AND ${sql.raw(`${paymentAlias}.status`)} = '已支付'
+      AND ${sql.raw(`${paymentAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
+    OR
+    (${sql.raw(`${paymentAlias}.id`)} IS NULL
+      AND ${sql.raw(`${orderAlias}.status`)} = '已支付'
+      AND ${sql.raw(`${orderAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
+  )`
+}
+
 /** 行表 → store_id → value 映射 */
 function toMap(rows: unknown): Map<string, number> {
   const m = new Map<string, number>()
@@ -117,18 +134,18 @@ export const getEfficiencyBoard = withPermission(
     //  Part A — 全局聚合标量（KPI 分子/分母用，单一区间，不算同比环比）
     // ═══════════════════════════════════════════════════════════════════
 
-    /** 业绩（员工归属，全局合计）= SUM(sale_allocations.total_amount) */
+    /** 业绩（员工归属，全局合计）= SUM(sale_payment_item_allocations.allocated_amount) */
     const qRevenueTotal = db.execute(sql`
-      SELECT COALESCE(SUM(sa.total_amount::numeric), 0) AS v
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      SELECT COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND sa.is_void = FALSE
-        AND sa.role_type IN ('美容师', '养生师')
+        AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
     `)
 
     /** 实耗（员工归属，全局合计）= SUM(unit_real_price * session_used) ∩ 已完成 */
@@ -142,17 +159,18 @@ export const getEfficiencyBoard = withPermission(
         AND ${excludeDepositRefundSql('so')}
     `)
 
-    /** 销售提成（全局合计）= SUM(sale_allocations.commission_amount) */
+    /** 销售提成（全局合计）= SUM(sale_payment_item_allocations.commission_amount) */
     const qSalesCommTotal = db.execute(sql`
-      SELECT COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      SELECT COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND sa.is_void = FALSE
+        AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
     `)
 
     /** 服务提成（全局合计）= SUM(service_commissions.commission_amount) */
@@ -263,16 +281,16 @@ export const getEfficiencyBoard = withPermission(
 
     /** 业绩 by store（员工归属 total_amount） */
     const qRevenueByStore = db.execute(sql`
-      SELECT so.store_id, COALESCE(SUM(sa.total_amount::numeric), 0) AS v
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      SELECT so.store_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND sa.is_void = FALSE
-        AND sa.role_type IN ('美容师', '养生师')
+        AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -303,15 +321,16 @@ export const getEfficiencyBoard = withPermission(
 
     /** 销售提成 by store */
     const qSalesCommByStore = db.execute(sql`
-      SELECT so.store_id, COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
-      FROM sale_allocations sa
-      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      SELECT so.store_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND sa.is_void = FALSE
+        AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -479,16 +498,16 @@ export const getEfficiencyBoard = withPermission(
     const qStaffRankRevenue = db.execute(sql`
       ${producerCte},
       revenue_by_emp AS (
-        SELECT sa.employee_id, COALESCE(SUM(sa.total_amount::numeric), 0) AS v
-        FROM sale_allocations sa
-        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+        SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+        FROM sale_payment_item_allocations spia
+        JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        WHERE sa.is_void = FALSE
-          AND sa.role_type IN ('美容师', '养生师')
+        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
-        GROUP BY sa.employee_id
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        GROUP BY spia.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
         COALESCE(r.v, 0)::numeric AS value
@@ -558,15 +577,16 @@ export const getEfficiencyBoard = withPermission(
     const qStaffRankIncome = db.execute(sql`
       ${producerCte},
       sales_comm AS (
-        SELECT sa.employee_id, COALESCE(SUM(sa.commission_amount::numeric), 0) AS v
-        FROM sale_allocations sa
-        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+        SELECT spia.employee_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
+        FROM sale_payment_item_allocations spia
+        JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        WHERE sa.is_void = FALSE
+        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
-        GROUP BY sa.employee_id
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        GROUP BY spia.employee_id
       ),
       service_comm AS (
         SELECT sc.employee_id, COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
@@ -596,25 +616,25 @@ export const getEfficiencyBoard = withPermission(
     // ⚠️ 员工维度口径：实耗不做 sales_category 排除（metrics.md「他销他耗/生态合作不
     //    计本店实耗」是门店口径，技师实际服务即计入其个人实耗）。
     //    项目数沿用员工榜口径（仅自销自耗+他销自耗，受一致性测试守护）。
-    // 销售额 4 列之和 = 当月业绩 revenue（同一 sale_allocations 口径，仅拆分维度不同）。
+    // 销售额 4 列之和 = 当月业绩 revenue（同一 receipt 子分配口径，仅拆分维度不同）。
     const qStaffDetail = db.execute(sql`
       ${producerCte},
       revenue_by_emp_cat AS (
-        SELECT sa.employee_id,
-          COALESCE(SUM(sa.total_amount::numeric), 0) AS total,
-          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
-          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
-          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
-          COALESCE(SUM(sa.total_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
-        FROM sale_allocations sa
-        JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+        SELECT spia.employee_id,
+          COALESCE(SUM(spia.allocated_amount::numeric), 0) AS total,
+          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
+          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
+          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
+          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
+        FROM sale_payment_item_allocations spia
+        JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        WHERE sa.is_void = FALSE
-          AND sa.role_type IN ('美容师', '养生师')
+        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
-        GROUP BY sa.employee_id
+          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        GROUP BY spia.employee_id
       ),
       consume_by_emp_cat AS (
         SELECT sit.employee_id,

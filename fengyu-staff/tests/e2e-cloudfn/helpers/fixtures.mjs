@@ -444,6 +444,8 @@ export async function createTestClient({
  *
  * @param {object} opts
  * @param {string} opts.suffix - 唯一后缀，用于生成 categoryId/skuId（默认 '1'）
+ * @param {string} opts.categoryId - 指定二级分类 ID；默认按 suffix 生成
+ * @param {string} opts.specName - 指定 SKU 商品名称；默认按 suffix 生成
  * @param {string} opts.productKind - 一级品项类型（如 '护理项目' / '充值卡' / '体验卡' / '家居产品'）
  * @param {string} opts.productType - SKU 产品类型枚举值（'疗程卡' / '家居产品'，2026-05-21 '单品' 并入 '疗程卡'）
  * @param {string} opts.salesCategory - 销售分类（'自销自耗' / '他销自耗' / '他销他耗' / '生态合作'）
@@ -457,6 +459,8 @@ export async function createTestClient({
  */
 export async function createTestProduct({
   suffix = '1',
+  categoryId = null,
+  specName: inputSpecName = null,
   productKind = '护理项目',
   productType = '疗程卡',
   salesCategory = '他销他耗',
@@ -471,7 +475,7 @@ export async function createTestProduct({
   // 不再 INSERT 测试级 level-1 行，避免与生产同名 category_name 触发 LEFT JOIN 重复
   // （createConversion 的 held query 通过 si.is_experience capability 列识别"体验单品卡"）。
   // 二级分类（product_kind=该一级名，sales_category 决定提成）
-  const subCatId = `${NS}_CAT_${suffix}`
+  const subCatId = categoryId || `${NS}_CAT_${suffix}`
   await pgQuery(
     `INSERT INTO product_categories (
        category_id, category_name, product_kind, sales_category, sort_order, is_valid
@@ -484,7 +488,7 @@ export async function createTestProduct({
   )
 
   const skuId = `${NS}_SKU_${suffix}`
-  const specName = `${NS}_商品_${suffix}`
+  const specName = inputSpecName || `${NS}_商品_${suffix}`
   await pgQuery(
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
@@ -1017,6 +1021,18 @@ export async function cleanupTestData(prefix = NS) {
          WHERE operator_employee_id IN (SELECT employee_id FROM staff_wechat_users WHERE employee_id LIKE $1)`,
       [like],
     ],
+    [
+      `DELETE FROM messages
+         WHERE recipient_id LIKE $1
+            OR ref_entity_id IN (
+              SELECT id::text FROM sale_order_payments
+               WHERE sale_order_id IN (
+                 SELECT sale_order_id FROM sale_orders WHERE sale_order_id LIKE $1
+                    OR client_user_id LIKE $1 OR opened_by LIKE $1
+               )
+            )`,
+      [like],
+    ],
 
     // ─── 3) card_transactions（必须先于 prepaid_cards 和 sale_orders）───
     [`DELETE FROM card_transactions WHERE ref_order_id LIKE $1`, [like]],
@@ -1055,6 +1071,35 @@ export async function cleanupTestData(prefix = NS) {
          )`,
       [like],
     ],
+
+    // ─── 4.4) store_inventory v2（FK → stores/product_skus/sale_orders/sale_items）───
+    [
+      `DELETE FROM store_inventory_movements
+        WHERE store_id LIKE $1
+           OR sale_order_id LIKE $1
+           OR sale_item_id LIKE $1
+           OR doc_id LIKE $1`,
+      [like],
+    ],
+    [
+      `DELETE FROM store_inventory_doc_items
+        WHERE doc_id LIKE $1
+           OR sale_item_id LIKE $1
+           OR sku_id LIKE $1
+           OR stock_id IN (SELECT id FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1)`,
+      [like],
+    ],
+    [
+      `DELETE FROM store_inventory_docs
+        WHERE id LIKE $1
+           OR store_id LIKE $1
+           OR counterpart_store_id LIKE $1
+           OR related_sale_order_id LIKE $1
+           OR client_user_id LIKE $1
+           OR created_by LIKE $1`,
+      [like],
+    ],
+    [`DELETE FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1`, [like]],
 
     // ─── 4.5) sale_payment_allocatable_items（回款级分配子表，FK→sale_order_payments + sale_items）───
     // 必须先于 sale_order_payments（§5）和 sale_items（§7）删除，否则 FK 阻断父表删除，

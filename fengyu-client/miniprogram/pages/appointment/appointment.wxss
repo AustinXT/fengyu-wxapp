@@ -53,6 +53,34 @@
   white-space: nowrap;
 }
 
+.appt-items {
+  padding: 8rpx 28rpx 20rpx;
+}
+
+.appt-service-item {
+  padding: 14rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.appt-service-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.appt-service-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.appt-service-sessions {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  line-height: 1.45;
+}
+
 .appt-card__actions {
   display: flex;
   justify-content: flex-end;

@@ -5,6 +5,7 @@ import { callClientApi } from '../../utils/cloud';
 import { formatAppointmentTime } from '../../utils/format';
 
 const PAGE_SIZE = 20;
+const app = getApp<IAppOption>();
 
 const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
   '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
@@ -21,6 +22,12 @@ const TAB_STATUS_MAP: Record<string, string> = {
   'cancelled': '已取消',
 };
 
+interface AppointmentServiceItem {
+  itemKey: string;
+  productName: string;
+  sessionText: string;
+}
+
 Page({
   data: {
     activeTab: 'all',
@@ -29,15 +36,26 @@ Page({
     loadingMore: false,
     loadError: false,
     hasMore: true,
+    isLoggedOut: false,
   },
 
   _page: 1,
 
   onShow() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
+    this.setData({ isLoggedOut: false });
     this.loadList();
   },
 
   onPullDownRefresh() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      wx.stopPullDownRefresh();
+      return;
+    }
     this.loadList().finally(() => wx.stopPullDownRefresh());
   },
 
@@ -63,11 +81,28 @@ Page({
         statusColor:      meta.color,
         statusTextColor:  meta.textColor,
         appointment_time_fmt: formatAppointmentTime(rawTime),
+        serviceItems: buildAppointmentServiceItems(item),
       };
     });
   },
 
+  clearPrivateData() {
+    this._page = 1;
+    this.setData({
+      list: [],
+      isLoading: false,
+      loadingMore: false,
+      loadError: false,
+      hasMore: false,
+      isLoggedOut: true,
+    });
+  },
+
   async loadList() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
@@ -89,6 +124,10 @@ Page({
   },
 
   async loadMore() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
     this._page += 1;
     this.setData({ loadingMore: true });
     try {
@@ -110,6 +149,10 @@ Page({
   },
 
   onCreateAppointment() {
+    if (app.isLoggedOut()) {
+      wx.navigateTo({ url: '/pagesProfile/profile-edit/profile-edit' });
+      return;
+    }
     wx.navigateTo({ url: '/pagesAppointment/appointment-create/appointment-create' });
   },
 
@@ -136,3 +179,31 @@ Page({
     return { title: '凤御预约', path: `/pages/home/home${invSuffix}` };
   },
 });
+
+function buildAppointmentServiceItems(item: any): AppointmentServiceItem[] {
+  const productName = item.service_name || '到店预约';
+  return [{
+    itemKey: item.sale_item_id || item.appointment_id || productName,
+    productName,
+    sessionText: formatAppointmentSessions(item),
+  }];
+}
+
+function formatAppointmentSessions(item: any): string {
+  if (!item.sale_item_id) return '';
+
+  const remaining = toNumberOrNull(item.remaining_sessions);
+  const total = toNumberOrNull(item.session_count);
+  const paid = toNumberOrNull(item.paid_sessions);
+  const metrics: string[] = [];
+  if (remaining !== null) metrics.push(`剩余 ${remaining}`);
+  if (Object.prototype.hasOwnProperty.call(item, 'paid_sessions')) metrics.push(`已付 ${paid === null ? '—' : paid}`);
+  if (total !== null) metrics.push(`共 ${total} 次`);
+  return metrics.join(' / ');
+}
+
+function toNumberOrNull(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}

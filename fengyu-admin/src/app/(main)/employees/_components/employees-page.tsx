@@ -62,7 +62,7 @@ export default function EmployeesPage({
       const valid = filterValidSkillValues(rawSkills, validSkillNames);
       raw.skill = valid?.length ? valid.join(",") : "";
     }
-    const { rows, truncated } = await exportEmployees(raw);
+    const { rows } = await exportEmployees(raw);
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出");
       return;
@@ -87,7 +87,6 @@ export default function EmployeesPage({
       ],
       rows,
     });
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围");
   }, [searchParams, orgNodes, validSkillNames]);
 
   /** 筛选变更时重置到第 1 页 */

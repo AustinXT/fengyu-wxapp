@@ -60,6 +60,16 @@ export function sanitizeErrorMessage(msg: string, fallback: string = '请求失�
  * 开发期：localStorage `__devTestOpenid` 存在则注入 `_testOpenid`，便于切换测试员工身份
  *        （远端云函数需 ALLOW_TEST_OPENID=true 才生效；生产关闭后自动失效）
  */
+async function waitForLoginReady(action: string): Promise<void> {
+  if (action === 'auth.login' || action === 'auth.bindPhone') return
+  try {
+    const ready = getApp<IAppOption>()?._loginReady
+    if (ready && typeof ready.then === 'function') await ready
+  } catch {
+    // getApp may be unavailable in isolated test contexts.
+  }
+}
+
 function withAuthContext(payload: Record<string, any>): Record<string, any> {
   const next: Record<string, any> = { ...payload }
   // 版本号注入不依赖 getApp，故置于 try 之外，确保 getApp 异常时仍带上 _appVersion
@@ -67,12 +77,25 @@ function withAuthContext(payload: Record<string, any>): Record<string, any> {
     next._appVersion = APP_VERSION
   }
   try {
-    const g = getApp<IAppOption>()?.globalData
-    if (g?.loginLevel && next._loginLevel === undefined) {
-      next._loginLevel = g.loginLevel
+    const app = getApp<IAppOption>()
+    const g = app?.globalData
+    if (next._loginLevel === undefined) {
+      const levels = Array.isArray(g?.availableLoginLevels) ? g.availableLoginLevels : []
+      let loginLevel = g?.loginLevel || null
+      if (loginLevel && levels.length > 0 && !levels.includes(loginLevel)) {
+        loginLevel = levels[0] || null
+        if (loginLevel) app.setLoginLevel(loginLevel)
+      }
+      if (loginLevel) next._loginLevel = loginLevel
     }
-    if (g?.currentStoreId && next._currentStoreId === undefined) {
-      next._currentStoreId = g.currentStoreId
+    if (next._currentStoreId === undefined) {
+      const scopedStores = Array.isArray(g?.scopedStores) ? g.scopedStores : []
+      let currentStoreId = g?.currentStoreId || ''
+      if (currentStoreId && scopedStores.length > 0 && !scopedStores.some((s) => s.storeId === currentStoreId)) {
+        currentStoreId = scopedStores[0]?.storeId || ''
+        app.setCurrentStoreId(currentStoreId)
+      }
+      if (currentStoreId) next._currentStoreId = currentStoreId
     }
     if (next._testOpenid === undefined) {
       const devOpenid = wx.getStorageSync('__devTestOpenid')
@@ -88,6 +111,7 @@ export async function callStaffApi<T = any>(
   action: string,
   payload: Record<string, any> = {}
 ): Promise<T> {
+  await waitForLoginReady(action)
   const enriched = withAuthContext(payload)
   // Mock 拦截（MOCK_ENABLED = false 时零开销）
   const mockResult = await mockCallApi(action, enriched)

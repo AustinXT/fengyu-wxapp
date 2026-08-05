@@ -11,6 +11,7 @@ interface BundleGroupSku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
+  purchaseLimit?: number | null;
   productType: string;
   isShengmei: boolean;
   /** 套餐成交价（mall_product_skus.bundle_price = 组会员价 ?? 标价）→ 落 unit_real_price */
@@ -45,6 +46,7 @@ interface CartItemOut {
   price: number;
   /** 套餐标价单价（mall_product_skus.bundle_list_price）→ 落 unit_price 划线；与成交价 price 区分 */
   listPrice: number;
+  purchaseLimit?: number | null;
   quantity: number;
   discount: number;
   sessionCount: number;
@@ -63,6 +65,7 @@ interface DisplaySku {
   sessionCount: number | null;
   bundlePrice: number;
   listPrice: number;
+  purchaseLimit?: number | null;
   /** 全选组：是否勾选 */
   selected: boolean;
   /** 选N项组：当前数量 */
@@ -88,6 +91,25 @@ interface SelectedBundleView {
   name: string;
   displayPrice: number;
   groups: DisplayGroup[];
+}
+
+function purchaseLimitMessage(sku: { specName: string; purchaseLimit?: number | null }): string {
+  return `${sku.specName}每单最多可购买 ${sku.purchaseLimit} 件`;
+}
+
+function findCartPurchaseLimitViolation(cartItems: CartItemOut[]): CartItemOut | null {
+  const totals = new Map<string, { item: CartItemOut; quantity: number }>();
+  for (const item of cartItems) {
+    const current = totals.get(item.skuId);
+    totals.set(item.skuId, {
+      item,
+      quantity: (current?.quantity || 0) + item.quantity,
+    });
+  }
+  for (const row of totals.values()) {
+    if (row.item.purchaseLimit != null && row.quantity > row.item.purchaseLimit) return row.item;
+  }
+  return null;
 }
 
 Component({
@@ -199,8 +221,14 @@ Component({
       const cur = { ...(selections[group.id] || {}) };
       const prevQty = cur[skuId] || 0;
       const otherTotal = Object.entries(cur).reduce((s, [k, v]) => s + (k === skuId ? 0 : v), 0);
-      const allowed = group.pickCount - otherTotal; // 该 SKU 可达上限
+      const sku = group.skus.find(s => s.skuId === skuId);
+      const limit = sku?.purchaseLimit != null ? Number(sku.purchaseLimit) : null;
+      const allowedByGroup = group.pickCount - otherTotal;
+      const allowed = limit != null ? Math.min(allowedByGroup, limit) : allowedByGroup; // 该 SKU 可达上限
       const raw = parseInt(e.detail as unknown as string) || 0;
+      if (sku && limit != null && raw > limit) {
+        wx.showToast({ title: purchaseLimitMessage(sku), icon: 'none' });
+      }
       const next = Math.max(0, Math.min(raw, allowed));
       // van-stepper 初始化会触发一次 change；值未变则不重渲染（避免无谓 setData）
       if (next === prevQty) return;
@@ -231,6 +259,7 @@ Component({
             specName: sku.specName,
             price: sku.bundlePrice,
             listPrice: sku.listPrice,
+            purchaseLimit: sku.purchaseLimit ?? null,
             quantity: qty,
             discount: 0,
             sessionCount: sku.sessionCount || 0,
@@ -243,6 +272,11 @@ Component({
         }
       }
       if (cartItems.length === 0) return;
+      const violation = findCartPurchaseLimitViolation(cartItems);
+      if (violation) {
+        wx.showToast({ title: purchaseLimitMessage(violation), icon: 'none' });
+        return;
+      }
 
       this.triggerEvent('select', { cartItems, bundleName: bundle.name });
     },
@@ -286,16 +320,19 @@ Component({
             : `${total} 选 ${g.pickCount}（已选 ${groupTotal}）`,
           skus: g.skus.map(s => {
             const qty = picked[s.skuId] || 0;
+            const groupMaxQty = isPick ? qty + ((g.pickCount as number) - groupTotal) : 1;
+            const limit = s.purchaseLimit != null ? Number(s.purchaseLimit) : null;
             return {
               skuId: s.skuId,
               specName: s.specName,
               sessionCount: s.sessionCount,
               bundlePrice: s.bundlePrice,
               listPrice: s.listPrice,
+              purchaseLimit: s.purchaseLimit ?? null,
               selected: qty > 0,
               qty,
               // 选N项步进器上限 = 当前数量 + 组内剩余可选额度
-              maxQty: isPick ? qty + ((g.pickCount as number) - groupTotal) : 1,
+              maxQty: limit != null ? Math.min(groupMaxQty, limit) : groupMaxQty,
             };
           }),
         };

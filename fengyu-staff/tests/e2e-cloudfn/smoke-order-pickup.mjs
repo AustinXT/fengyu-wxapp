@@ -9,13 +9,12 @@
  *
  * 业务语义（关键）：
  *   "提货" = 家居产品（product_type='家居产品'）按数量分次自提，不涉及储值卡/次数/服务单，
- *   也不动 inventory_* 库存域（那是门店进销存）。提货只在 sale_items 上累加 picked_up_quantity，
- *   并往 pickup_records 追加一条记录。可提数量 = quantity - picked_up_quantity。
+ *   同时从 store_inventory_stocks 扣减对应 SKU 库存，并写入统一库存单和库存流水。
+ *   可提数量 = sale_items.quantity - sale_items.picked_up_quantity；实际提货还必须满足门店库存足量。
  *
  *   前置数据：必须有一张"已支付"销售单，含 1 行 product_type='家居产品' 的购买明细
  *   （item_direction='购买'、store_id=本店、quantity>picked_up_quantity）。
- *   本 smoke 用 createTestSaleOrder({status:'已支付', productType:'家居产品', quantity:3}) 直接造出
- *   —— 无需 admin 端先入库（提货不依赖 inventory_* 库存余量，只看 sale_items 行）。
+ *   本 smoke 会额外种一条 store_inventory_stocks 库存，验证提货时按购买 SKU 扣减库存。
  *
  * 验证点：
  *   1. availablePickupItems（提货前）→ 列出该家居明细，remaining=quantity=3
@@ -43,7 +42,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, cleanupTestData, invalidateStaffAuthCache,
+  createTestProduct, createTestSaleOrder, cleanupTestData, invalidateStaffAuthCache,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -75,6 +74,24 @@ async function main() {
   await createTestStaff()        // manager，openid=TEST_MANAGER_OPENID
   await createTestClient()
   await invalidateStaffAuthCache(TEST_MANAGER_OPENID)
+  const product = await createTestProduct({
+    suffix: 'PICKUP_HOME',
+    productKind: '家居产品',
+    productType: '家居产品',
+    specName: `${NS}_家居产品`,
+    price: 200,
+    sessionCount: null,
+    isShengmei: null,
+  })
+  await pgQuery(
+    `INSERT INTO store_inventory_stocks (
+       store_id, sku_id, sku_name, product_type, batch_no, expiry_date_key, quantity_on_hand
+     )
+     VALUES ($1, $2, $3, '家居产品', '', '', 3)
+     ON CONFLICT (store_id, sku_id, batch_no, expiry_date_key)
+     DO UPDATE SET quantity_on_hand = 3, sku_name = EXCLUDED.sku_name, updated_at = NOW()`,
+    [TEST_STORE_ID, product.skuId, product.specName],
+  )
 
   // 前置：一张"已支付"销售单 + 1 行家居产品（quantity=3，sessionCount=null）
   await createTestSaleOrder({
@@ -83,6 +100,7 @@ async function main() {
     storeId: TEST_STORE_ID,
     status: '已支付',
     paymentMethod: '线下',
+    skuId: product.skuId,
     productType: '家居产品',
     productName: `${NS}_家居产品`,
     quantity: 3,
@@ -152,6 +170,14 @@ async function main() {
     if (r.confirmed_by !== TEST_MANAGER_EMP_ID) errors.push(`pickup_records.confirmed_by 应=${TEST_MANAGER_EMP_ID}，实际=${r.confirmed_by}`)
   }
   rec(`  ✓ createPickup(提2): picked_up_quantity=${si1[0]?.picked_up_quantity} / 记录=${pr1.length} 行`)
+
+  const stock1 = await pgQuery(
+    `SELECT quantity_on_hand FROM store_inventory_stocks WHERE store_id = $1 AND sku_id = $2`,
+    [TEST_STORE_ID, product.skuId],
+  )
+  if (Number(stock1[0]?.quantity_on_hand) !== 1) {
+    errors.push(`提2后中心库存应=1，实际=${stock1[0]?.quantity_on_hand}`)
+  }
 
   // ─── 3. availablePickupItems（提 2 后仍可见，remaining=1）───
   const avail2 = await invokeStaffApi('order.availablePickupItems', {

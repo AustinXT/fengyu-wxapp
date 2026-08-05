@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip } from "@/components/ui/tooltip"
@@ -917,7 +918,9 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                           <td className="px-3 py-2 font-medium">{c.name || "—"}</td>
                           <td className="px-3 py-2 font-mono">{formatPhoneSafe(c.phone)}</td>
                           <td className="px-3 py-2">{c.storeName || "—"}</td>
-                          <td className="px-3 py-2">{c.memberLevel || "—"}</td>
+                          <td className="px-3 py-2">
+                            <MemberLevelBadge level={c.memberLevel} fallback="—" />
+                          </td>
                         </tr>
                       ))
                     )}

@@ -47,7 +47,7 @@ await pg.query(sql, params)                    // 查询
 await pg.transaction(async (client) => {...})  // 事务（支持 advisory lock）
 ```
 
-运行时 100% PostgreSQL，零 MSSQL 依赖。主要涉及表：client_wechat_users、staff_wechat_users、products、product_skus、product_categories、sale_orders、sale_items、sale_allocations、service_orders、service_items、appointments、stores、org_nodes、coupon_templates、user_coupons、store_unbind_requests。
+运行时 100% PostgreSQL，零 MSSQL 依赖。主要涉及表：client_wechat_users、staff_wechat_users、products、product_skus、product_categories、sale_orders、sale_items、sale_payment_item_receipts、sale_payment_item_allocations、service_orders、service_items、appointments、stores、org_nodes、coupon_templates、user_coupons、store_unbind_requests。
 
 ## 关键业务流程
 

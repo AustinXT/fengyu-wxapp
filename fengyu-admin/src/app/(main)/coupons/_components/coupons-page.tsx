@@ -91,6 +91,7 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
 
   const search = get("q")
   const marketFilter = get("market")
+  const statusFilter = get("status", "enabled")
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
@@ -107,8 +108,13 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
         t.applicableMarketIds?.includes(marketFilter)
       )
     }
+    if (statusFilter === "disabled") {
+      list = list.filter((t) => !t.isActive)
+    } else if (statusFilter !== "all") {
+      list = list.filter((t) => t.isActive)
+    }
     return list
-  }, [templates, search, marketFilter])
+  }, [templates, search, marketFilter, statusFilter])
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -260,6 +266,15 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
           {markets.map((m) => (
             <option key={m.id} value={m.id}>{m.name}</option>
           ))}
+        </Select>
+        <Select
+          value={statusFilter}
+          onChange={(e) => setFilter("status", e.target.value)}
+          className="w-32"
+        >
+          <option value="enabled">启用</option>
+          <option value="disabled">停用</option>
+          <option value="all">全部</option>
         </Select>
         <ExportButton onExport={handleExport} />
       </div>

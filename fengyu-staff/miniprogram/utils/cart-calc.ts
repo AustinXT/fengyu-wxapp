@@ -30,6 +30,24 @@ export function calcHalfPriceTotal(cart: CartItem[]): string {
 }
 
 /**
+ * 疗程卡阶梯价按总价反推单行金额。
+ * - tierAmount = 阶梯 SKU 总价
+ * - tierSessions = 阶梯 SKU 总次数
+ * - lineSessions = 当前行总次数
+ *
+ * 不先圆整单次价，避免 8800 / 30 这类金额回乘后丢分。
+ */
+export function calcTierLineAmount(tierAmount: number, tierSessions: number, lineSessions: number): number {
+  const amount = Math.max(0, Number(tierAmount) || 0)
+  const sessions = Math.max(0, Number(tierSessions) || 0)
+  const line = Math.max(0, Number(lineSessions) || 0)
+  if (amount <= 0 || sessions <= 0 || line <= 0) {
+    return 0
+  }
+  return Math.round((amount * line * 100) / sessions) / 100
+}
+
+/**
  * 按行应付比例分摊订单级优惠券折扣。
  * - 入参 priceLines = 各行 价格×数量（已含内部单半价处理）
  * - 出参 shares[i] = 摊到 i 行的券折扣（元，2 位精度）

@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   buildRefundDetails,
   capRefundAmounts,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
+  isZeroCashPaidSessionRefund,
   OVERPAY_SENTINEL,
   type RefundSourceItem,
 } from '../refund'
@@ -111,6 +113,25 @@ describe('buildRefundDetails', () => {
     expect(totalRefund).toBe(1000)
   })
 
+  it('券全额抵扣疗程卡：保留退项数量，现金退款额为 0', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [{
+        ...courseCardItem(),
+        unit_real_price: '0',
+        sale_amount: '0',
+        received: '0',
+      }],
+      [{ saleItemId: 'SI-CARD-1' }],
+    )
+
+    expect(refundDetails[0].quantity).toBe(10)
+    expect(refundDetails[0].unitRealPrice).toBe(0)
+    expect(refundDetails[0].saleAmount).toBe(0)
+    expect(refundDetails[0].refundAmount).toBe(0)
+    expect(refundDetails[0].isFullItemRefund).toBe(true)
+    expect(totalRefund).toBe(0)
+  })
+
   it('家居产品：refundQuantity 生效（部分退）', () => {
     const homeItem: RefundSourceItem = {
       sale_item_id: 'SI-HOME-1',
@@ -134,6 +155,112 @@ describe('buildRefundDetails', () => {
     expect(refundDetails[0].quantity).toBe(2)
     expect(refundDetails[0].refundAmount).toBe(100) // 2 × 50
     expect(totalRefund).toBe(100)
+  })
+
+  it('行级余数只并入所属商品子项，退款 A 不影响 B', () => {
+    const a = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-A',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '150',
+    }
+    const b = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-B',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '100',
+    }
+
+    const overpayByItem = computeItemOverpayRemainders([a, b])
+    expect(overpayByItem.get('SI-A')).toBe(50)
+    expect(overpayByItem.get('SI-B')).toBe(0)
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a, b],
+      [{ saleItemId: 'SI-A', includeOverpay: true }],
+    )
+    expect(refundDetails).toHaveLength(1)
+    expect(refundDetails[0].refSaleItemId).toBe('SI-A')
+    expect(refundDetails[0].quantity).toBe(1)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(150)
+    expect(totalRefund).toBe(150)
+  })
+
+  it('显式 refundQuantity=0 且 includeOverpay=true 时允许只退该行余数', () => {
+    const a = {
+      ...courseCardItem(),
+      sale_item_id: 'SI-A',
+      session_count: 1,
+      remaining_sessions: 1,
+      paid_sessions: 1,
+      unit_real_price: '100',
+      unit_price: '100',
+      sale_amount: '100',
+      received: '150',
+    }
+
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [a],
+      [{ saleItemId: 'SI-A', refundQuantity: 0, includeOverpay: true }],
+    )
+    expect(refundDetails[0].quantity).toBe(0)
+    expect(refundDetails[0].overpayAmount).toBe(50)
+    expect(refundDetails[0].refundAmount).toBe(50)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    expect(totalRefund).toBe(50)
+  })
+})
+
+describe('isZeroCashPaidSessionRefund', () => {
+  const freeCard = (overrides: Partial<RefundSourceItem> = {}): RefundSourceItem => ({
+    sale_item_id: 'SI-ZERO',
+    sku_id: 'SKU-ZERO',
+    product_name: '赠送护理卡',
+    product_type: '疗程卡',
+    session_count: 5,
+    remaining_sessions: 5,
+    paid_sessions: 5,
+    unit_price: '0',
+    quantity: 1,
+    unit_real_price: '0',
+    sale_amount: '0',
+    received: '0',
+    picked_up_quantity: null,
+    sales_category: null,
+    service_fee: 0,
+    ...overrides,
+  })
+
+  it('0 元疗程卡零消费全退允许走 0 元退项', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard()],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+
+    expect(refundDetails[0].isFullItemRefund).toBe(true)
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(true)
+  })
+
+  it('0 元疗程卡已消费部分次数时拒绝 0 元退项豁免', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard({ session_count: 5, remaining_sessions: 3, paid_sessions: 5 })],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+
+    expect(refundDetails[0].quantity).toBe(3)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(false)
   })
 })
 

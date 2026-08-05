@@ -5,16 +5,22 @@ export const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
   '待确认收款': 'pending',
   '已支付': 'success',
+  '部分支付': 'pending',
   '已完成': 'done',
+  '已退款': 'error',
+  '未审核': 'pending',
   '支付失败': 'error',
   '已关闭': 'done',
   '待审批': 'pending',
+  '已作废': 'done',
 }
 
 export const ORDER_TYPE_LABEL: Record<string, string> = {
   销售单: '销售单',
   内部单: '内部单',
   转换单: '转换单',
+  回款单: '回款单',
+  退款单: '退款单',
   充值单: '充值卡',
   寄存单: '寄存单',
 }

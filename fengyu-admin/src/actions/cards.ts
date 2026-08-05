@@ -25,6 +25,8 @@ export type CardTypeFilter = 'all' | '疗程卡' | '单次卡'
 /** 状态（UI 下拉） */
 export type CardStatusFilter = 'active' | 'exhausted' | 'expired'
 
+const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成'] as const
+
 /** 卡包列表筛选参数 */
 export interface CardFilters {
   marketId?: string
@@ -77,11 +79,13 @@ export interface PaginatedCards {
 /**
  * 服务端分页卡包列表
  *
- * "卡包" = sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
+ * "卡包" = sale_items WHERE product_type='疗程卡'
+ *   AND (item_direction='购买' OR sale_order_type='转换单' AND item_direction='转入')
+ *   AND remaining_sessions IS NOT NULL
  *   - session_count = 1  → UI 标记为"单次卡"
  *   - session_count >= 2 → UI 标记为"疗程卡"
  *
- * scope 基于 sale_items.store_id（购买门店），与 PR-A 新增的 store_id 列绑定。
+ * scope 基于 sale_items.store_id（权益归属门店），与 PR-A 新增的 store_id 列绑定。
  *
  * 状态判定：
  *   - active:    remaining_sessions > 0 AND (expire_date IS NULL OR expire_date >= CURRENT_DATE)
@@ -92,18 +96,22 @@ export interface PaginatedCards {
 // paidUnusedSessionsExpr（已付未用 = 可用次数 派生）已提升为 admin 共享单源（@/lib/paid-sessions），
 // 卡包列表/详情 + 订单/营业额分配导出复用同一表达式；NULL 退回物理剩余、clamp 等口径细节见该文件注释。
 
-/**
- * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
- * 基础过滤：购买方向 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
- * market 分支用子查询（不预查节点类型），故为同步函数。
- */
-function buildCardConditions(
-  session: Parameters<typeof scopeCondition>[0],
-  filters: CardFilters,
-): (SQL | undefined)[] {
-  // 基础过滤：仅购买方向的疗程卡（含余次追踪）
-  const conditions: (SQL | undefined)[] = [
+function cardEntitlementDirectionCondition() {
+  return or(
     eq(saleItems.itemDirection, '购买'),
+    and(
+      eq(saleOrders.saleOrderType, '转换单'),
+      eq(saleItems.itemDirection, '转入'),
+    ),
+  )
+}
+
+function buildCardBaseConditions(
+  session: Parameters<typeof scopeCondition>[0],
+): (SQL | undefined)[] {
+  return [
+    cardEntitlementDirectionCondition(),
+    inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
     // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
@@ -112,6 +120,18 @@ function buildCardConditions(
     // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
     scopeCondition(session, saleItems.storeId),
   ]
+}
+
+/**
+ * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
+ * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
+ * market 分支用子查询（不预查节点类型），故为同步函数。
+ */
+function buildCardConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: CardFilters,
+): (SQL | undefined)[] {
+  const conditions = buildCardBaseConditions(session)
 
   // 市场筛选（subquery：orgNodes.parentId = marketId 下的所有门店节点 → stores）
   if (filters.marketId) {
@@ -296,14 +316,13 @@ const numOrNull = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
-/** 导出疗程卡（当前筛选命中，跨分页）。LIMIT 10000 防 OOM。 */
+/** 导出疗程卡（当前筛选命中，跨分页）。 */
 export const exportCards = withPermission(
   'sale_item:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportCardRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
     const filters = parseCardFilters(params)
     const whereClause = and(...buildCardConditions(session, filters))
 
@@ -347,12 +366,8 @@ export const exportCards = withPermission(
       .where(whereClause)
       // 例外：业务时间优先（支付时间优于"最近编辑"），与列表排序一致
       .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
-      .limit(LIMIT + 1)
 
-    const truncated = raw.length > LIMIT
-    const page = truncated ? raw.slice(0, LIMIT) : raw
-
-    const rows: ExportCardRow[] = page.map((r) => {
+    const rows: ExportCardRow[] = raw.map((r) => {
       const sessionCount = r.sessionCount ?? 0
       return {
         clientName: r.clientName || r.fallbackName || '',
@@ -375,7 +390,7 @@ export const exportCards = withPermission(
       }
     })
 
-    return { rows, truncated }
+    return { rows, truncated: false }
   },
 )
 
@@ -384,7 +399,7 @@ export const exportCards = withPermission(
 //
 // 权限：sale_item:list（admin/manager/finance/customer_mgr 均默认持有）。
 //   - scope 由 saleItems.storeId 约束，非 admin 角色跨门店 saleItemId 直接返回 null。
-//   - 强制 item_direction='购买'：转换出/退款出的 sale_item 是流水副本不是卡，详情入口不展示。
+//   - 强制权益方向：购买行，或转换单转入行；转换出/退款出的 sale_item 是流水副本不是卡，详情入口不展示。
 // ============================================================================
 
 export interface CardDetail {
@@ -465,8 +480,7 @@ export const getCardById = withPermission(
       .where(
         and(
           eq(saleItems.saleItemId, saleItemId),
-          eq(saleItems.itemDirection, '购买'),
-          scopeCondition(session, saleItems.storeId),
+          ...buildCardBaseConditions(session),
         ),
       )
       .limit(1)

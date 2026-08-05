@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // 退款前置检查（services.ts confirmServiceOrder 等调 hasPendingRefundByServiceOrder）：
@@ -114,6 +115,7 @@ import {
   confirmServiceOrder,
   cancelServiceOrder,
   createServiceOrder,
+  getAvailableSaleItems,
   getServiceOrdersPaginated,
   deleteServiceOrder,
   getServiceOrderById,
@@ -125,6 +127,7 @@ import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
 import { eq, ilike, gte, lte, desc } from 'drizzle-orm'
 import { serviceOrders } from '@db/service'
+import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -463,6 +466,43 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
 })
 
 // ── createServiceOrder ────────────────────────────────────────────────────────
+
+describe('getAvailableSaleItems — 疗程卡权益列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('SQL 守卫：有效权益订单包含已支付、部分支付、已完成，并按已付未用过滤', () => {
+    const source = readFileSync('src/actions/services.ts', 'utf8')
+    const fnSource = source.slice(source.indexOf('export const getAvailableSaleItems'), source.indexOf('/** C4: 开始服务'))
+
+    expect(fnSource).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(fnSource).toContain("si.paid_sessions IS NULL")
+    expect(fnSource).toContain("si.paid_sessions > (si.session_count - si.remaining_sessions)")
+  })
+
+  it('转换单转入卡作为可用权益返回，已付未用按 paid_sessions 派生', async () => {
+    ;(db.execute as any).mockResolvedValue([{
+      sale_item_id: 'FY-XSD-WX-2607250060-02',
+      sale_order_id: 'FY-XSD-WX-2607250060',
+      product_name: '面部三重维养',
+      product_type: '疗程卡',
+      session_count: 10,
+      remaining_sessions: 10,
+      paid_sessions: 10,
+      unit_real_price: '200.00',
+      expire_date: null,
+    }])
+
+    const rows = await getAvailableSaleItems('FYGK-20260711-00026')
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].saleItemId).toBe('FY-XSD-WX-2607250060-02')
+    expect(rows[0].productName).toBe('面部三重维养')
+    expect(rows[0].paidUnusedSessions).toBe(10)
+  })
+})
 
 describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () => {
   beforeEach(() => {
@@ -931,7 +971,7 @@ describe('getServiceOrderById — 读取不限 scope + readOnly 标记', () => {
 })
 
 // ── exportAllocationServiceOrders — 服务提成三态导出（已分配明细 + 待分配占位行） ──
-describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', () => {
+describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返回', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -967,12 +1007,29 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
     serviceDate: '2026-07-10', createdAt: new Date('2026-07-10T10:00:00.000Z'), remark: null,
   }
 
-  it('「已分配」→ 只查已分配段，字段映射 + 派生列（消耗金额/分配额）+ 顾客手机回退', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([allocatedRaw]))
+  // 已分配但无有效 service_commissions 的占位段 raw（如寄存单退款专用服务单）
+  const missingAllocatedRaw = {
+    market: '南昌', storeName: '南昌蓝莱店', serviceOrderId: 'SO3',
+    saleOrderType: '销售单', serviceOrderType: '售后',
+    customerName: '宗女士', customerPhone: null, fallbackPhone: '13900000000',
+    productType: '疗程卡', categoryL1: '护理项目', categoryL2: '美体',
+    productName: '美体护理', sessionUsed: 9, unitRealPrice: '298.00',
+    status: '已完成',
+    employeeName: '吁慧', positionName: '门店经理',
+    rating: null, reviewComment: null,
+    salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
+    sourceSaleOrderId: 'FY-XSD-WX-2607160014',
+    serviceDate: '2026-07-17',
+    createdAt: new Date('2026-07-17T08:43:43.699Z'),
+    remark: DEPOSIT_REFUND_REMARK,
+  }
+
+  it('「已分配」→ 查明细段 + 缺明细占位，字段映射 + 派生列 + 顾客手机回退', async () => {
+    ;(db.select as any).mockImplementation(makeSelectSequence([allocatedRaw], []))
     const { rows } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
 
     expect(rows).toHaveLength(1)
-    expect(db.select).toHaveBeenCalledTimes(1)
+    expect(db.select).toHaveBeenCalledTimes(2)
     const r = rows[0]
     expect(r.serviceOrderId).toBe('SO1')
     expect(r.customerPhone).toBe('13151094335') // 回退来源销售单 client_phone
@@ -984,6 +1041,25 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
     expect(r.commissionRate).toBe('0.1500')
     expect(r.rating).toBe(5)
     expect(r.createdAt).toBe('2026-06-08T15:26:32.000Z')
+  })
+
+  it('「已分配」但缺有效提成明细 → 返回服务项目占位行，避免页面有而导出缺失', async () => {
+    ;(db.select as any).mockImplementation(makeSelectSequence([], [missingAllocatedRaw]))
+    const { rows, truncated } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
+
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(1)
+    expect(db.select).toHaveBeenCalledTimes(2)
+    const r = rows[0]
+    expect(r.serviceOrderId).toBe('SO3')
+    expect(r.employeeName).toBe('吁慧')
+    expect(r.positionName).toBe('门店经理')
+    expect(r.consumeMoney).toBe(0)
+    expect(r.unitRealPrice).toBe(298)
+    expect(r.allocationRatio).toBeNull()
+    expect(r.commissionRate).toBeNull()
+    expect(r.commissionAmount).toBeNull()
+    expect(r.remark).toBe(DEPOSIT_REFUND_REMARK)
   })
 
   it('「待分配」→ 只查待分配段，占位行（分配/提成/评价列 null，派生消耗金额仍算）', async () => {
@@ -1007,20 +1083,20 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
     expect(r.productName).toBe('【王牌】疼痛管理')
   })
 
-  it('「全部」(缺省) → 两段都查，按 createdAt desc 合并（待分配 07-10 在前，已分配 06-08 在后）', async () => {
-    ;(db.select as any).mockImplementation(makeSelectSequence([allocatedRaw], [pendingRaw]))
+  it('「全部」(缺省) → 三段都查，按 createdAt desc 合并（待分配 07-10 在前，已分配 06-08 在后）', async () => {
+    ;(db.select as any).mockImplementation(makeSelectSequence([allocatedRaw], [], [pendingRaw]))
     const { rows, truncated } = await exportAllocationServiceOrders({})
 
     expect(truncated).toBe(false)
     expect(rows).toHaveLength(2)
-    expect(db.select).toHaveBeenCalledTimes(2)
+    expect(db.select).toHaveBeenCalledTimes(3)
     expect(rows[0].serviceOrderId).toBe('SO2') // 待分配（07-10）在前
     expect(rows[0].employeeName).toBeNull()
     expect(rows[1].serviceOrderId).toBe('SO1') // 已分配（06-08）
     expect(rows[1].employeeName).toBe('王雯馨')
   })
 
-  it('超过 LIMIT → truncated=true 且截断到 10000 行', async () => {
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const many = Array.from({ length: 10001 }, (_, i) => ({
       serviceOrderId: `SO${i}`, sessionUsed: 1, unitRealPrice: '100.00',
       allocationRatio: '1.00', commissionAmount: '10.00',
@@ -1028,15 +1104,14 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 截断', 
     }))
     ;(db.select as any).mockImplementation(makeSelectChain(many))
     const { rows, truncated } = await exportAllocationServiceOrders({ allocStatus: '已分配' })
-    expect(truncated).toBe(true)
-    expect(rows).toHaveLength(10000)
+    expect(truncated).toBe(false)
+    expect(rows).toHaveLength(20002)
   })
 
-  it('段内 orderBy 主键=createdAt（与合并层 sort 同键，防段内截断键漂移）', async () => {
-    // 回归守护：合并层按 createdAt desc 截断 LIMIT，段内 orderBy 主键也必须是 createdAt，
-    // 否则单段 >10000 时段内 slice 会保留 updatedAt-top（被改过的老单）而非 createdAt-top，
-    // 合并后返回非真实 createdAt-top-10000。db.select 被 mock 使 orderBy 在测试里是 no-op，
-    // 故直接查 desc mock 的调用序列：断言 createdAt 紧邻在 updatedAt 之前（即主键在前）。
+  it('段内 orderBy 主键=createdAt（与合并层 sort 同键）', async () => {
+    // 回归守护：合并层按 createdAt desc 做全量合并排序，段内 orderBy 主键也保持 createdAt。
+    // db.select 被 mock 使 orderBy 在测试里是 no-op，故直接查 desc mock 的调用序列：
+    // 断言 createdAt 紧邻在 updatedAt 之前（即主键在前）。
     ;(db.select as any).mockImplementation(makeSelectChain([allocatedRaw]))
     await exportAllocationServiceOrders({ allocStatus: '已分配' })
 

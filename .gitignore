@@ -37,6 +37,8 @@ docker/.env
 postgres_data/
 .env
 .env.local
+*.key
+*.pem
 
 # CloudBase
 cloudbaserc.json

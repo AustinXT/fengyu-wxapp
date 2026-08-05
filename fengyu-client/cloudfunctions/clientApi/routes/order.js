@@ -164,7 +164,7 @@ async function recalcCustomerType(client, clientUserId) {
  *      → recalcMemberLevel → settlePointsSafe → grantShareGift（SAVEPOINT 隔离，非致命）。
  * clientApi 三处支付完成点（zeroPayable / confirmPrepaidFull / repay 纯卡）共用此入口，
  * 与 staffApi / payNotify / admin recordPayment 同口径。paid_sessions 由各调用点的
- * recalcPaidSessionsForOrder 负责，此处不重复。paidAmount=0 时 grantShareGift 内部早退。
+ * recalcPaidSessionsForOrder 负责，此处不重复。无首笔「首次支付」流水时 grantShareGift 内部早退。
  * @param {object} client - pg 事务客户端
  * @param {{saleOrderId:string, clientUserId:string, paidAmount:number, source:string}} args
  */
@@ -703,7 +703,7 @@ async function create(ctx) {
   // 浮点 round 兜底（与 staff order.js L446 聚合点 round 对齐；行级 + 累加后双 round）
   // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md
   let totalAmount = 0
-  const itemsData = items.map(item => {
+  const rawItemsData = items.map(item => {
     const sku = skuMap[item.skuId]
     // 套餐场景：标价单价/成交价取 mall_product_skus 下沉副本（bundle_list_price / bundle_price）
     const bundleEntry = bundlePriceMap ? bundlePriceMap.get(item.skuId) : null
@@ -716,7 +716,7 @@ async function create(ctx) {
       ? Number(bundleEntry.salePrice)
       : resolved.realUnit
     const quantity = item.quantity || 1
-    // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
+    // 先按购物车行计算总次数；疗程卡 quantity>1 会在下方拆成独立卡实体。
     const sessionCount = sku.session_count != null ? Number(sku.session_count) * quantity : null
     const saleAmount = Math.round(basePrice * quantity * 100) / 100   // 行应付总额（权威）
     const listTotal = Math.round(listUnit * quantity * 100) / 100     // 行标价总额
@@ -741,7 +741,47 @@ async function create(ctx) {
       isExperience: !!sku.is_experience
     }
   })
-  totalAmount = Math.round(totalAmount * 100) / 100
+
+  // B2：疗程卡 quantity>1 必须按"每张卡"拆成 N 行 sale_items。
+  // 前端购物车继续按 SKU 合并 quantity；后端落库保持每张卡独立，避免 5 次卡 ×2 变成 1 张 10 次卡。
+  const itemsData = []
+  for (const d of rawItemsData) {
+    if (d.productType === '疗程卡' && d.quantity > 1) {
+      const n = d.quantity
+      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
+      const totalSaleCents = Math.round(Number(d.saleAmount || 0) * 100)
+      const perSaleCents = Math.round(totalSaleCents / n)
+      const totalReceivedCents = Math.round(Number(d.received || 0) * 100)
+      const perReceivedCents = Math.round(totalReceivedCents / n)
+
+      for (let i = 0; i < n; i++) {
+        const isLast = i === n - 1
+        const saleCents = isLast
+          ? totalSaleCents - perSaleCents * (n - 1)
+          : perSaleCents
+        const receivedCents = isLast
+          ? totalReceivedCents - perReceivedCents * (n - 1)
+          : perReceivedCents
+        const saleAmount = Math.round(saleCents) / 100
+        const received = Math.round(receivedCents) / 100
+        const denom = (perSession != null && perSession > 0) ? perSession : 1
+        const listTotalRow = Math.round(Number(d.listUnit || 0) * 100) / 100
+        itemsData.push({
+          ...d,
+          sessionCount: perSession,
+          remainingSessions: perSession,
+          quantity: 1,
+          saleAmount,
+          received,
+          unitRealPrice: denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount,
+          unitPrice: denom > 0 ? Math.round((listTotalRow / denom) * 100) / 100 : listTotalRow,
+        })
+      }
+    } else {
+      itemsData.push(d)
+    }
+  }
+  totalAmount = Math.round(itemsData.reduce((s, d) => s + d.saleAmount, 0) * 100) / 100
 
   // 充值卡剥离 SKU 化（2026-05-20）后，order.create 不会有充值卡 SKU 入参，
   // D4 混单守卫已无意义（migration 0043 同步拆触发器）。
@@ -1104,7 +1144,7 @@ async function create(ctx) {
 
     // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
     // 客户端 create 通常 received=0（待支付，等微信回调），paid_sessions=0 → service.create 时受 D6 限额阻塞
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, orderNo)
 
     // 零应付单（券/卡全额抵扣）补结算：积分链净额差值法（幂等）+ 会员等级即时重算。
@@ -1773,7 +1813,12 @@ async function appointableItems(ctx) {
 
   const activeFilter = includeInactive
     ? ''
-    : 'AND si.remaining_sessions > 0 AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)'
+    : `AND si.remaining_sessions > 0
+      AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+      AND (
+        si.paid_sessions IS NULL
+        OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+      )`
 
   const items = await pg.query(`
     SELECT
@@ -1798,16 +1843,20 @@ async function appointableItems(ctx) {
     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
-      AND o.status IN ('已支付', '部分支付')
+      AND o.status IN ('已支付', '部分支付', '已完成')
       ${activeFilter}
       AND si.product_type = '疗程卡'
+      AND (
+        si.item_direction = '购买'
+        OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+      )
       -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
       AND NOT EXISTS (
         SELECT 1 FROM sale_order_payments sop
         WHERE sop.sale_order_id = o.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+      -- includeInactive=true 的疗程卡历史列表保留已用完/已失效卡；存在已审批退款时仍隐藏已退完的卡。
       AND (
         NOT EXISTS (
           SELECT 1 FROM sale_order_payments sop
@@ -2268,7 +2317,7 @@ async function confirmPrepaidFull(ctx) {
 
     // paid_sessions 重算（ticket 2026-05-19）：全额储值卡抵扣后 settled = total_amount
     // → 公式 floor(min(1, settled/total) × session_count) 退化为 session_count
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
@@ -2553,7 +2602,7 @@ async function repay(ctx) {
       }
       // paid_sessions 重算（ticket 2026-05-19）：纯卡回款 received 增长 → settled 上升
       // → 按 floor(settled/total × session_count) 自动解锁更多可消费次数
-      // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+      // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(client, saleOrderId)
       // 五件套：积分 + 消费档位 + 客户分类跃迁（became_member_at + is_membership_upgrade 打标）+ 分享礼
       // 纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发

@@ -263,7 +263,6 @@ export const listActiveCouponTemplates = withPermission(
     SELECT template_id, name FROM coupon_templates
     WHERE is_active = true
     ORDER BY created_at DESC
-    LIMIT 200
   `)
   return (rows as any[]).map((r) => ({ templateId: r.template_id, name: r.name }))
   },

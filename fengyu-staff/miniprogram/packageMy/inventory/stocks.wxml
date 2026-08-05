@@ -1,0 +1,40 @@
+<!-- packageMy/inventory/stocks.wxml -->
+<view class="container">
+  <view class="filters">
+    <view class="search-row">
+      <input
+        class="search-input"
+        placeholder="搜索 SKU / 产品 / 批号"
+        value="{{keyword}}"
+        bindinput="onSearchInput"
+        confirm-type="search"
+        bindconfirm="onSearchConfirm"
+      />
+    </view>
+  </view>
+
+  <view class="list">
+    <view class="item" wx:for="{{items}}" wx:key="id">
+      <view class="item-head">
+        <text class="item-id">{{item.skuName}}</text>
+        <text class="stock-qty">{{item.quantityOnHand}}</text>
+      </view>
+      <view class="item-meta">
+        <text class="meta-tag">{{item.productType}}</text>
+        <text class="meta-text">{{item.skuId}}</text>
+      </view>
+      <view class="item-body">
+        <text class="store">{{item.storeName || item.storeId}}</text>
+        <text wx:if="{{item.batchNo}}" class="counterpart">批号：{{item.batchNo}}</text>
+        <text wx:if="{{item.expiryDate}}" class="customer">效期：{{item.expiryDate}}</text>
+      </view>
+      <view class="item-foot" wx:if="{{item.remark}}">
+        <text>{{item.remark}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{!loading && items.length === 0}}" class="empty">暂无库存</view>
+    <view wx:if="{{loading}}" class="loading">加载中...</view>
+    <view wx:if="{{!hasMore && items.length > 0}}" class="no-more">没有更多数据</view>
+  </view>
+</view>

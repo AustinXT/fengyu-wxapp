@@ -58,6 +58,7 @@
       "name": "我的子页",
       "pages": [
         "inventory/inventory",
+        "inventory/stocks",
         "inventory/list",
         "inventory/detail",
         "pickup/pickup-by-customer",

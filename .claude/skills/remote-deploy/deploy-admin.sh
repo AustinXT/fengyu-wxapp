@@ -9,7 +9,7 @@
 # 参数：
 #   $1 (required) — dev / prod
 #   $2 (optional) — SSH host，默认按 env 自动选择（prod=fengyu-prod / dev=ali-demo），可被 SSH_HOST 环境变量覆盖
-#   $3 (optional) — 远程 docker/ 目录绝对路径，默认 /root/proj.xt.com/fengyu-wxapp/docker（ali-demo；fengyu-prod 上路径若不同须显式传入）
+#   $3 (optional) — 远程 docker/ 目录绝对路径，默认 dev=/root/proj.xt.com/fengyu-wxapp/docker，prod=/www/wwwroot/fengyu-admin/docker
 
 set -e
 
@@ -23,8 +23,9 @@ ENV="$1"
 # SSH host 按环境自动路由（prod→fengyu-prod / dev→ali-demo）；可被第 2 参数或 SSH_HOST 环境变量覆盖
 SSH_HOST_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "fengyu-prod" || echo "ali-demo")
 SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
-# 远程 docker/ 目录；可被第 3 参数或 REMOTE_DIR 环境变量覆盖（fengyu-prod 上路径可能不同，首跑确认）
-REMOTE_DIR="${REMOTE_DIR:-${3:-/root/proj.xt.com/fengyu-wxapp/docker}}"
+# 远程 docker/ 目录；可被第 3 参数或 REMOTE_DIR 环境变量覆盖
+REMOTE_DIR_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "/www/wwwroot/fengyu-admin/docker" || echo "/root/proj.xt.com/fengyu-wxapp/docker")
+REMOTE_DIR="${REMOTE_DIR:-${3:-$REMOTE_DIR_DEFAULT}}"
 # 期望的远程 admin DB host（部署后断言用）：prod=118.178.196.26 / dev=47.113.202.7（两端均 5433/fengyu_wxapp，仅 IP 区分）
 EXPECT_PG_HOST=$([[ "$ENV" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
 

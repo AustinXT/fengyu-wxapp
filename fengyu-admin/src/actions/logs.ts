@@ -16,6 +16,8 @@ export interface LogFilter {
   targetType?: string
   startDate?: string  // YYYY-MM-DD
   endDate?: string    // YYYY-MM-DD
+  page?: number
+  pageSize?: number
 }
 
 function serializeLog(r: typeof operationLogs.$inferSelect): OperationLog {
@@ -35,9 +37,7 @@ function serializeLog(r: typeof operationLogs.$inferSelect): OperationLog {
   }
 }
 
-export const getLogs = withPermission(
-  'operation_log:list',
-  async (_session, filter?: LogFilter): Promise<OperationLog[]> => {
+function buildLogConditions(filter?: LogFilter) {
   const conditions = []
 
   if (filter?.operatorName) {
@@ -65,15 +65,57 @@ export const getLogs = withPermission(
     conditions.push(lte(operationLogs.createdAt, beijingBoundaryTs(filter.endDate, '23:59:59')))
   }
 
+  return conditions
+}
+
+export const getLogs = withPermission(
+  'operation_log:list',
+  async (_session, filter?: LogFilter): Promise<OperationLog[]> => {
+  const conditions = buildLogConditions(filter)
+
   const rows = await db
     .select()
     .from(operationLogs)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     // 例外：日志型表无 updatedAt 列
     .orderBy(desc(operationLogs.createdAt))
-    .limit(500)
 
   return rows.map(serializeLog)
+  },
+)
+
+export interface PaginatedLogs {
+  data: OperationLog[]
+  total: number
+}
+
+export const getLogsPaginated = withPermission(
+  'operation_log:list',
+  async (_session, filter: LogFilter = {}): Promise<PaginatedLogs> => {
+    const page = Math.max(1, filter.page || 1)
+    const pageSize = [20, 50, 100].includes(filter.pageSize ?? 0) ? filter.pageSize! : 20
+    const offset = (page - 1) * pageSize
+    const conditions = buildLogConditions(filter)
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+
+    const [countRow] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(operationLogs)
+      .where(whereClause)
+
+    const rows = await db
+      .select()
+      .from(operationLogs)
+      .where(whereClause)
+      // 例外：日志型表无 updatedAt 列
+      .orderBy(desc(operationLogs.createdAt))
+      .limit(pageSize)
+      .offset(offset)
+
+    return {
+      data: rows.map(serializeLog),
+      total: countRow?.count ?? 0,
+    }
   },
 )
 

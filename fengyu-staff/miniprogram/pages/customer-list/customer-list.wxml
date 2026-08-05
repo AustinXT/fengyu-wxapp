@@ -140,7 +140,7 @@
       <view class="customer-info">
         <view class="customer-name-row">
           <text class="customer-name">{{item.name || '未知'}}</text>
-          <text wx:if="{{item.memberLevel}}" class="vip-badge">{{item.memberLevel}}</text>
+          <text wx:if="{{item.memberLevel}}" class="member-level-badge {{item.memberLevelBadgeClass}}">{{item.memberLevel}}</text>
         </view>
         <text class="customer-phone">{{item.phone}}</text>
         <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>

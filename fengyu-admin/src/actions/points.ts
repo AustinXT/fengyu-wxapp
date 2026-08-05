@@ -231,14 +231,13 @@ export interface ExportPointRow {
   refOrderId: string | null
 }
 
-/** 导出积分流水（全部筛选命中）。LIMIT 10000 防 OOM。 */
+/** 导出积分流水（全部筛选命中）。 */
 export const exportPointTransactions = withPermission(
   'point_transaction:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportPointRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
     const filters = parsePointFilters(params)
     const conditions = buildConditions(session, filters)
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
@@ -262,12 +261,8 @@ export const exportPointTransactions = withPermission(
       .innerJoin(clientWechatUsers, eq(pointTransactions.userId, clientWechatUsers.userId))
       .where(whereClause)
       .orderBy(desc(pointTransactions.createdAt))
-      .limit(LIMIT + 1)
 
-    const truncated = dataRows.length > LIMIT
-    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
-
-    const rows: ExportPointRow[] = page.map((r) => ({
+    const rows: ExportPointRow[] = dataRows.map((r) => ({
       createdAt: r.createdAt.toISOString(),
       customerName: r.customerName,
       customerPhone: r.customerPhone,
@@ -278,6 +273,6 @@ export const exportPointTransactions = withPermission(
       refOrderId: r.refOrderId,
     }))
 
-    return { rows, truncated }
+    return { rows, truncated: false }
   },
 )

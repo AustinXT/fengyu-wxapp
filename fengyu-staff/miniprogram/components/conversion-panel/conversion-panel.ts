@@ -2,12 +2,13 @@
 // PR-C §C3 — 转换单折抵面板
 // props:
 //   clientUserId: string（必填，由主页 Step 0 保证）
-//   convertInAmount: string | number（转入项金额 = cartTotal）
+//   convertInAmount: string | number（转入应付金额 = 父页面 payableTotal）
 // 行为:
 //   - observer(clientUserId) 首次有效 → 调 order.customerHeldCards 拉卡列表
 //   - 每张卡 checkbox 多选；底部显示差额 = 转入 − 已选折抵总额
-//   - 差额>0 时显示支付方式 picker（微信/线下）
+//   - 差额>0 时显示支付方式 picker（微信/支付宝/线下）
 //   - onChange 事件：{ selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod }
+//   - amountchange 事件：{ skuId, value }，父页面负责校验并重算 cart
 //
 // 不依赖父组件重渲染：props 变化由 observer 触发 loadCards
 
@@ -256,6 +257,16 @@ Component({
       if (this.data.remaining <= 0) return;
       this.setData({ paymentMethod: method as PaymentMethod });
       this._emitChange();
+    },
+
+    /** 转入项目店长特价输入：只上报父页面，金额重算由 order-create 统一处理 */
+    onSaleAmountChange(this: any, e: WechatMiniprogram.CustomEvent) {
+      const skuId = e.currentTarget.dataset.skuId as string;
+      if (!skuId) return;
+      this.triggerEvent('amountchange', {
+        skuId,
+        value: String(e.detail?.value ?? ''),
+      });
     },
 
     /** 活动勾选开关 */

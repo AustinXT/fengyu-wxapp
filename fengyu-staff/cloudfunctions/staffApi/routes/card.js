@@ -10,7 +10,7 @@
  *
  * 退款（仅退剩余余额，整笔退、不可拆、只能退 1 次）：
  *   1. card.createRefund — admin/staff 发起，写 sale_order_payments(change_type='退款', status='待审批')
- *   2. card.approveRefund — manager 审批通过：扣 balance + card_transactions(-faceVal) + status='已支付' + 调微信原路退款
+ *   2. card.approveRefund — manager 审批通过：扣 balance + card_transactions(-faceVal) + status='已支付'；退款金额统一线下处理
  *   3. card.rejectRefund — manager 拒绝：status='已作废'
  */
 
@@ -18,6 +18,7 @@ const pg = require('../db/pg')
 const { requireManager, requireStaffBound } = require('../middleware/auth')
 const { isStoreInScope } = require('../utils/scope')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
+const { notifyRefundCreated, notifyRefundResult } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
 
@@ -333,7 +334,7 @@ async function inflow(ctx) {
  * 发起充值卡退款（admin 或 staff 调用）
  *
  * 仅支持"退剩余余额"语义：refundFace = balance_now，整笔退，不可拆。
- * 实际原路退款金额 = round(refundFace * payable_amount / total_amount, 2)。
+ * 实际线下退款金额 = round(refundFace * payable_amount / total_amount, 2)。
  *
  * payload: { saleOrderId: string, reason?: string }
  * 返回: { paymentId, refundFace, refundPay }
@@ -347,12 +348,15 @@ async function createRefund(ctx) {
   // 校验订单存在 + 为充值单 + 已支付
   const orderRows = await pg.query(
     `SELECT sale_order_id, sale_order_type, status, total_amount, payable_amount,
-            client_user_id, payment_method, store_id
+            client_user_id, store_id, customer_name
      FROM sale_orders WHERE sale_order_id = $1`,
     [saleOrderId]
   )
   if (orderRows.length === 0) throw new Error('NOT_FOUND: 订单不存在')
   const order = orderRows[0]
+  if (!isStoreInScope(ctx.auth, order.store_id)) {
+    throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
+  }
   if (order.sale_order_type !== '充值单') {
     throw new Error('INVALID_STATE: 非充值单不可走充值卡退款流程')
   }
@@ -391,29 +395,24 @@ async function createRefund(ctx) {
   const refundFace = Math.min(totalAmount, balanceNow)
   const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
 
-  // 写 sale_order_payments：change_type='退款' status='待审批' amount=负
-  // external_txn_id 必填占位（chk_sop_method_txn 对 微信/支付宝 NOT NULL 强校验）；
-  // approveRefund 调微信退款 API 后会 UPDATE 为真实 refund_id。
-  // 占位串须每次唯一（uq_sop_txn）。
+  // 写 sale_order_payments：change_type='退款' status='待审批' amount=负。
+  // 退款金额统一线下处理，payment_method 固定为 '线下'，external_txn_id 保持 NULL。
   const sourceEnd = ctx.event.payload?._sourceEnd === 'admin' ? 'admin' : 'staff'
-  const placeholderTxnId = `refund-pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   let paymentId
   await pg.transaction(async (client) => {
     const inserted = await client.query(
       `INSERT INTO sale_order_payments (
          sale_order_id, change_type, amount, payment_method, status, source_end,
-         operator_employee_id, refund_reason, note, external_txn_id
-       ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7, $8)
+         operator_employee_id, refund_reason, note
+       ) VALUES ($1, '退款', $2, '线下', '待审批', $3, $4, $5, $6)
        RETURNING id`,
       [
         saleOrderId,
         -refundPay,
-        order.payment_method,
         sourceEnd,
         ctx.auth.staffWfId || null,
         reason || null,
         JSON.stringify({ refundFace, balanceAtRequest: balanceNow }),
-        placeholderTxnId,
       ]
     )
     paymentId = inserted.rows[0].id
@@ -424,6 +423,15 @@ async function createRefund(ctx) {
       refundFace,
       refundPay,
       reason: reason || null,
+    })
+
+    await notifyRefundCreated(client, {
+      paymentId,
+      saleOrderId,
+      storeId: order.store_id,
+      operatorId: ctx.auth.staffWfId,
+      amount: refundPay,
+      customerName: order.customer_name,
     })
   })
 
@@ -448,8 +456,9 @@ async function approveRefund(ctx) {
   await pg.transaction(async (client) => {
     // 锁定 sale_order_payments 行
     const payRows = await client.query(
-      `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.note,
-              so.client_user_id, so.total_amount, so.payable_amount, so.store_id
+      `SELECT sop.id, sop.sale_order_id, sop.change_type, sop.amount, sop.status, sop.note,
+              sop.operator_employee_id,
+              so.client_user_id, so.total_amount, so.payable_amount, so.store_id, so.sale_order_type
        FROM sale_order_payments sop
        JOIN sale_orders so ON sop.sale_order_id = so.sale_order_id
        WHERE sop.id = $1 FOR UPDATE OF sop`,
@@ -457,6 +466,12 @@ async function approveRefund(ctx) {
     )
     if (payRows.rows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
     const pay = payRows.rows[0]
+    if (pay.change_type !== '退款') {
+      throw new Error('INVALID_STATE: 该流水非退款类型')
+    }
+    if (pay.sale_order_type !== '充值单') {
+      throw new Error('INVALID_STATE: 非充值单不可走充值卡退款审批')
+    }
     if (pay.status !== '待审批') {
       throw new Error(`INVALID_STATE: 退款单当前状态 ${pay.status} 不可审批`)
     }
@@ -504,7 +519,8 @@ async function approveRefund(ctx) {
     // 翻 status='已支付' + 记审批人 + paid_at（CAS 守卫：仅 '待审批' → '已支付'，防并发重复审批）
     const casUpd = await client.query(
       `UPDATE sale_order_payments
-       SET status='已支付', audit_employee_id=$1, audit_at=NOW(), paid_at=NOW()
+       SET status='已支付', payment_method='线下', external_txn_id=NULL,
+           audit_employee_id=$1, audit_at=NOW(), paid_at=NOW()
        WHERE id=$2 AND status='待审批'`,
       [ctx.auth.staffWfId || null, paymentId]
     )
@@ -525,9 +541,17 @@ async function approveRefund(ctx) {
       refundFace,
       refundAmount: Math.abs(Number(pay.amount)),
     })
-  })
 
-  // TODO: 调微信原路退款 API（refundPay = |pay.amount|）—— 当前 mock 阶段先跳过
+    if (pay.operator_employee_id && pay.operator_employee_id !== ctx.auth.staffWfId) {
+      await notifyRefundResult(client, {
+        paymentId,
+        saleOrderId: pay.sale_order_id,
+        recipientEmployeeId: pay.operator_employee_id,
+        approved: true,
+        amount: Math.abs(Number(pay.amount)),
+      })
+    }
+  })
 
   ctx.result = { paymentId, status: '已支付' }
 }
@@ -543,33 +567,56 @@ async function rejectRefund(ctx) {
   if (!paymentId) throw new Error('INVALID_PARAMS: 缺少 paymentId')
 
   const payRows = await pg.query(
-    `SELECT sop.id, sop.status, sop.sale_order_id, so.store_id
+    `SELECT sop.id, sop.change_type, sop.status, sop.sale_order_id, sop.operator_employee_id,
+            so.store_id, so.sale_order_type
      FROM sale_order_payments sop
      JOIN sale_orders so ON sop.sale_order_id = so.sale_order_id
      WHERE sop.id = $1`,
     [paymentId]
   )
   if (payRows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
-  if (payRows[0].status !== '待审批') {
-    throw new Error(`INVALID_STATE: 退款单当前状态 ${payRows[0].status} 不可审批`)
+  const pay = payRows[0]
+  if (pay.change_type !== '退款') {
+    throw new Error('INVALID_STATE: 该流水非退款类型')
+  }
+  if (pay.sale_order_type !== '充值单') {
+    throw new Error('INVALID_STATE: 非充值单不可走充值卡退款审批')
+  }
+  if (pay.status !== '待审批') {
+    throw new Error(`INVALID_STATE: 退款单当前状态 ${pay.status} 不可审批`)
   }
   const scopeStoreIds = ctx.auth.scopeStoreIds || []
-  if (!scopeStoreIds.includes(payRows[0].store_id)) {
+  if (!scopeStoreIds.includes(pay.store_id)) {
     throw new Error('PERMISSION_DENIED: 当前店长无权审批该门店的退款')
   }
 
   await pg.transaction(async (client) => {
-    await client.query(
+    const upd = await client.query(
       `UPDATE sale_order_payments
        SET status='已作废', audit_employee_id=$1, audit_at=NOW(), audit_remark=$2
        WHERE id=$3 AND status='待审批'`,
       [ctx.auth.staffWfId || null, reason || null, paymentId]
     )
+    if (upd.rowCount !== 1) {
+      throw new Error('INVALID_STATE: 退款单状态已变更，请刷新后重试')
+    }
+
     // 审计日志
     await logTransition(client, ctx, 'card.rejectRefund', 'sale_order_payment', paymentId, '待审批', '已作废', {
-      saleOrderId: payRows[0].sale_order_id,
+      saleOrderId: pay.sale_order_id,
       reason: reason || null,
     })
+
+    if (pay.operator_employee_id && pay.operator_employee_id !== ctx.auth.staffWfId) {
+      await notifyRefundResult(client, {
+        paymentId,
+        saleOrderId: pay.sale_order_id,
+        recipientEmployeeId: pay.operator_employee_id,
+        approved: false,
+        reason: reason || null,
+        amount: 0,
+      })
+    }
   })
 
   ctx.result = { paymentId, status: '已作废' }

@@ -87,6 +87,7 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
     price: sku.price,
     specialPrice: sku.specialPrice,
     sessionCount: sku.sessionCount,
+    purchaseLimit: sku.purchaseLimit,
     sortOrder: sku.sortOrder,
     serviceFee: sku.serviceFee,
     isShengmei: null,
@@ -114,6 +115,7 @@ export function bundleSkuToProductSku(args: {
   /** 疗程卡次数：必须透传到 ProductSku → cart → 开单 payload，
    *  否则服务端写 sale_items 时 remaining_sessions 为 null 会导致该卡永远无法核销 */
   sessionCount: number | null
+  purchaseLimit: number | null
   price: string
   bundlePrice: string | null
   bundleGroupId: number | null
@@ -127,6 +129,7 @@ export function bundleSkuToProductSku(args: {
     price: args.price,
     specialPrice: args.bundlePrice,
     sessionCount: args.sessionCount,
+    purchaseLimit: args.purchaseLimit,
     sortOrder: args.sortOrder,
     serviceFee: '0',
     isShengmei: null,

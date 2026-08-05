@@ -344,14 +344,13 @@ export interface ExportEmployeeRow {
   resignationReason: string | null
 }
 
-/** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。LIMIT 10000 防 OOM。 */
+/** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。 */
 export const exportEmployees = withPermission(
   'employee:list',
   async (
     session,
     params: Record<string, string | undefined>,
   ): Promise<{ rows: ExportEmployeeRow[]; truncated: boolean }> => {
-    const LIMIT = 10000
     const parsed = parseEmployeeFilters(params)
     // 服务端兜底：剔除 URL ?skill= 中字典外（已删除）的标签名，防幽灵筛选。
     // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
@@ -372,12 +371,8 @@ export const exportEmployees = withPermission(
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
       .where(whereClause)
       .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
-      .limit(LIMIT + 1)
 
-    const truncated = dataRows.length > LIMIT
-    const page = truncated ? dataRows.slice(0, LIMIT) : dataRows
-
-    const rows: ExportEmployeeRow[] = page.map((row) => {
+    const rows: ExportEmployeeRow[] = dataRows.map((row) => {
       const e = row.staff_wechat_users
       return {
         employeeId: e.employeeId,
@@ -396,7 +391,7 @@ export const exportEmployees = withPermission(
       }
     })
 
-    return { rows, truncated }
+    return { rows, truncated: false }
   },
 )
 

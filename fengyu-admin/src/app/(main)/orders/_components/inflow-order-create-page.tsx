@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { searchCustomers } from "@/actions/customers"
 import { createPrepaidInflow } from "@/actions/orders"
 import { formatPhoneSafe } from "@/lib/format"
@@ -179,7 +180,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
                         </div>
                         <div className="text-xs text-[#999999]">
                           {c.storeName || "未绑定门店"}
-                          {c.memberLevel && <span className="ml-2">· {c.memberLevel}</span>}
+                          <MemberLevelBadge level={c.memberLevel} className="ml-2" />
                         </div>
                       </div>
                     </button>
@@ -193,9 +194,7 @@ export default function InflowOrderCreatePageClient({ stores }: { stores: Store[
                 <span className="font-medium">{selectedCustomer.name || "未命名"}</span>
                 <span className="ml-3 text-sm text-[#999999]">{formatPhoneSafe(selectedCustomer.phone)}</span>
                 <span className="ml-3 text-xs text-[#999999]">门店：{storeName || "未绑定"}</span>
-                {selectedCustomer.memberLevel && (
-                  <span className="ml-3 text-xs text-[#999999]">等级：{selectedCustomer.memberLevel}</span>
-                )}
+                <MemberLevelBadge level={selectedCustomer.memberLevel} className="ml-3" />
               </div>
               <Button variant="ghost" size="sm" onClick={clearCustomer}>
                 重新选择

@@ -1,18 +1,19 @@
 "use client"
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type {
   PointTransaction,
   PointTransactionSummary,
-  Store,
-  OrgNode,
 } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import MarketStoreFilter from "@/components/market-store-filter"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
@@ -22,14 +23,6 @@ import { exportPointTransactions } from "@/actions/points"
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
-
-const MEMBER_LEVEL_COLORS: Record<string, string> = {
-  "黑钻": "border-[#333333] text-[#333333] bg-[#F0F0F0]",
-  "金钻": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "粉钻": "border-[#C06088] text-[#C06088] bg-[#FDF0F5]",
-  "星钻": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
-  "初钻": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
-}
 
 function StatCard({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
   return (
@@ -53,15 +46,13 @@ export default function PointsPage({
   total,
   summary,
   distinctTypes,
-  stores,
-  orgNodes,
+  filterOptions,
 }: {
   transactions: PointTransaction[]
   total: number
   summary: PointTransactionSummary
   distinctTypes: string[]
-  stores: Store[]
-  orgNodes: OrgNode[]
+  filterOptions: MarketStoreFilterOptions
 }) {
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
@@ -72,7 +63,7 @@ export default function PointsPage({
   /** 导出当前筛选命中的全部积分流水（跨分页） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
-    const { rows, truncated } = await exportPointTransactions(raw)
+    const { rows } = await exportPointTransactions(raw)
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出")
       return
@@ -92,7 +83,6 @@ export default function PointsPage({
       ],
       rows,
     })
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条，请缩小筛选范围")
   }, [searchParams])
 
   const marketFilter = get("market")
@@ -102,21 +92,6 @@ export default function PointsPage({
   const endDate = get("end")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
-
-  // 市场列表
-  const markets = useMemo(() =>
-    orgNodes.filter(n => n.type === '市场' && n.isActive),
-    [orgNodes]
-  )
-
-  // 根据选中市场过滤门店列表
-  const filteredStores = useMemo(() => {
-    if (!marketFilter) return stores
-    const storeNodeIds = new Set(
-      orgNodes.filter(n => n.parentId === marketFilter && n.type === '门店').map(n => n.id)
-    )
-    return stores.filter(s => s.orgNodeId && storeNodeIds.has(s.orgNodeId))
-  }, [stores, orgNodes, marketFilter])
 
   // 搜索防抖
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -153,9 +128,7 @@ export default function PointsPage({
       header: "会员等级",
       cell: (row) =>
         row.memberLevel ? (
-          <Badge variant="outline" className={MEMBER_LEVEL_COLORS[row.memberLevel] ?? ""}>
-            {row.memberLevel}
-          </Badge>
+          <MemberLevelBadge level={row.memberLevel} />
         ) : (
           "—"
         ),
@@ -236,30 +209,13 @@ export default function PointsPage({
 
       {/* 筛选区 */}
       <div className="flex flex-wrap items-center gap-3">
-        <Select
-          value={marketFilter}
-          onChange={(e) => setMany({ market: e.target.value, store: '', page: '' })}
-          className="w-32"
-        >
-          <option value="">全部市场</option>
-          {markets.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </Select>
-        <Select
-          value={storeFilter}
-          onChange={(e) => setFilter("store", e.target.value)}
-          className="w-40"
-        >
-          <option value="">全部门店</option>
-          {filteredStores.map((s) => (
-            <option key={s.storeId} value={s.storeId}>
-              {s.storeName}
-            </option>
-          ))}
-        </Select>
+        <MarketStoreFilter
+          options={filterOptions}
+          marketValue={marketFilter}
+          storeValue={storeFilter}
+          onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+          onStoreChange={(value) => setFilter("store", value)}
+        />
         <Select
           value={typeFilter}
           onChange={(e) => setFilter("type", e.target.value)}

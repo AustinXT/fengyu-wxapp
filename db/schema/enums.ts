@@ -17,6 +17,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "待支付",
   "已支付",
   "已完成",
+  "已退款",
   "支付失败",
   "已关闭",
   "待审批",
@@ -49,7 +50,7 @@ export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝"
  *
  * 首次支付：订单创建那一刻的第一笔收款，至多 1 行/订单
  * 回款：订单存活期内多次补款
- * 退款：Ticket 3 写入，amount 为负
+ * 退款：Ticket 3 写入，amount 为负；0 元退项扣次数时允许 amount=0
  * 储值卡抵扣：下单时使用储值卡抵扣，与"首次支付"同事务并行写 1 行（PR-3 开始启用）
  *
  * 与 order.ts saleOrderPayments 的 chk_sop_amount_sign CHECK 保持一致。
@@ -66,7 +67,7 @@ export const paymentChangeTypeEnum = pgEnum("payment_change_type", [
  *
  * 待支付：线上支付已发起未到账
  * 待审批：退款已发起、待店长 / 财务审批（2026-04-26 sale-order-domain-refactor 新增）
- * 已支付：到账（线下/储值卡直接落此状态；退款审批通过亦置此并 amount<0）
+ * 已支付：到账（线下/储值卡直接落此状态；退款审批通过亦置此并 amount<=0）
  * 已作废：创建后被取消（如超时/手动关闭触发；退款被驳回亦置此）
  * 已退款：首次支付/回款行整笔退款时置此（仅原行）
  */
@@ -189,3 +190,34 @@ export const inventoryTransferSubtypeEnum = pgEnum(
   ["调拨出库", "调拨入库"],
 );
 
+/**
+ * 门店库存 v2 统一单据类型。
+ *
+ * 会议确认的 8 个业务流程在 UI 上保留，但底层不再拆 4 组主从表；
+ * 所有库存填报都围绕 store_inventory_stocks（门店库存表）生成统一单据和库存流水。
+ */
+export const storeInventoryDocTypeEnum = pgEnum("store_inventory_doc_type", [
+  "院报货",
+  "院入库",
+  "院顾客退货",
+  "院顾客产品出库",
+  "院退货",
+  "院产品报损",
+  "分院调货出库",
+  "分院调货入库",
+  "期初库存",
+]);
+
+export const storeInventoryDocStatusEnum = pgEnum("store_inventory_doc_status", [
+  "草稿",
+  "待审批",
+  "待收货",
+  "已完成",
+  "已驳回",
+  "已取消",
+]);
+
+export const storeInventoryMovementDirectionEnum = pgEnum(
+  "store_inventory_movement_direction",
+  ["入库", "出库", "调整"],
+);

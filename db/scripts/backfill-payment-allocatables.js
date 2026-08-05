@@ -95,8 +95,13 @@ async function capturePayment(client, salePaymentId, saleOrderId, eventAmount) {
   const catMap = new Map(items.map((i) => [i.saleItemId, i.salesCategory]))
 
   const priorRes = await client.query(
-    `SELECT sale_item_id, COALESCE(SUM(amount::numeric), 0) AS allocated
-       FROM sale_payment_allocatable_items WHERE sale_order_id = $1 GROUP BY sale_item_id`,
+    `SELECT spai.sale_item_id, COALESCE(SUM(spai.amount::numeric), 0) AS allocated
+       FROM sale_payment_allocatable_items spai
+       JOIN sale_order_payments sop ON sop.id = spai.sale_payment_id
+      WHERE spai.sale_order_id = $1
+        AND sop.status = '已支付'
+        AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+      GROUP BY spai.sale_item_id`,
     [saleOrderId],
   )
   const priorMap = new Map(priorRes.rows.map((r) => [r.sale_item_id, Number(r.allocated)]))

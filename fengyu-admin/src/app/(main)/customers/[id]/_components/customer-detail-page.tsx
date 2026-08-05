@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { StatusBadge } from "@/components/ui/badge"
@@ -30,6 +31,7 @@ import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
+import { getCustomerVisibleSaleItems } from "./customer-entitlement-items"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -46,6 +48,13 @@ interface CustomerDetailPageProps {
   canPullLegacy?: boolean
   /** 是否展示「危险操作」删除入口（仅系统管理员 customer:delete） */
   canDelete?: boolean
+}
+
+function formatDistinctSkuName(row: Pick<SaleItem, "productName" | "skuName">): string {
+  const productName = (row.productName ?? "").trim()
+  const skuName = (row.skuName ?? "").trim()
+  if (!skuName || skuName === productName) return "—"
+  return skuName
 }
 
 export default function CustomerDetailPage({
@@ -263,18 +272,7 @@ export default function CustomerDetailPage({
   }, [employees, customer.boundStoreId])
 
   const activeSaleItems = useMemo(() => {
-    const allItems: SaleItem[] = []
-    for (const order of orders) {
-      if (order.items) {
-        allItems.push(...order.items)
-      }
-    }
-    return allItems.filter(
-      (item) =>
-        item.itemDirection === "购买" &&
-        item.sessionCount !== null &&
-        (item.remainingSessions ?? 0) > 0
-    )
+    return getCustomerVisibleSaleItems(orders)
   }, [orders])
 
   // 顾客优惠券状态筛选（组件内 state 过滤，与详情页「全量预加载」模式一致）
@@ -366,7 +364,7 @@ export default function CustomerDetailPage({
     {
       key: "skuName",
       header: "规格",
-      cell: (row) => <span>{row.skuName ?? "—"}</span>,
+      cell: (row) => <span>{formatDistinctSkuName(row)}</span>,
     },
     {
       // ticket 2026-05-19 D10=A：合并展示「已用 / 已付 / 共」三段次数
@@ -417,11 +415,7 @@ export default function CustomerDetailPage({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">
           顾客详情 - {customer.name}
         </h1>
-        {customer.memberLevel && (
-          <Badge variant="outline" className="border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]">
-            {customer.memberLevel}
-          </Badge>
-        )}
+        <MemberLevelBadge level={customer.memberLevel} />
         <div className="ml-auto flex gap-2">
           {canPullLegacy && (
             <Button
@@ -461,7 +455,7 @@ export default function CustomerDetailPage({
                     <span className="mx-2">|</span>
                     <span>{o.name ?? '(无姓名)'}</span>
                     {o.customerId && <span className="ml-2 text-xs text-[var(--muted-foreground)]">customerId: {o.customerId}</span>}
-                    {o.memberLevel && <Badge variant="outline" className="ml-2">{o.memberLevel}</Badge>}
+                    <MemberLevelBadge level={o.memberLevel} className="ml-2" />
                     {o.pointsBalance > 0 && <span className="ml-2 text-xs">积分 {o.pointsBalance}</span>}
                   </div>
                   <Button

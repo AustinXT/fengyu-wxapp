@@ -577,7 +577,7 @@ async function calendar(ctx) {
 }
 
 // ====================================================================
-// paidOrders — 已支付/部分支付订单含明细（疗程卡 Tab 可核销卡数据源；按 sale_orders.store_id ∈ scope）
+// paidOrders — 有效收款订单含明细（疗程卡 Tab 可核销卡数据源；交易数据跟顾客走）
 // ====================================================================
 
 async function paidOrders(ctx) {
@@ -591,10 +591,10 @@ async function paidOrders(ctx) {
   validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
-  // 状态口径：已支付 + 部分支付（部分支付疗程卡按 paid_sessions 限额核销，与 service.create / customer.paidOrders 一致）
+  // 状态口径：有效收款订单（已支付 + 部分支付 + 已完成），部分支付疗程卡按 paid_sessions 限额核销。
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
   const params = [resolvedUserId]
-  const whereClause = `o.status IN ('已支付', '部分支付') AND o.client_user_id = $1`
+  const whereClause = `o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1`
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name, o.sale_order_type
@@ -624,10 +624,19 @@ async function paidOrders(ctx) {
        pc.category_name, pc.product_kind,
        COALESCE(pc_parent.display_color, pc.display_color) AS category_color
      FROM sale_items si
+     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
      LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
      LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE si.sale_order_id = ANY($1)
+       AND (
+         si.item_direction = '购买'
+         OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+       )
+       AND (
+         si.paid_sessions IS NULL
+         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
+       )
      ORDER BY si.sale_item_id`,
     [orderIds],
   )
@@ -639,7 +648,7 @@ async function paidOrders(ctx) {
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
       itemName: item.product_name || '',
-      spec: item.product_name || '',
+      spec: '',
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
@@ -722,7 +731,7 @@ async function orderHistory(ctx) {
     itemsByOrder[item.sale_order_id].push({
       saleItemId: item.sale_item_id,
       itemName: item.product_name || '',
-      spec: item.product_name || '',
+      spec: '',
       productType: item.product_type || '',
     })
   }
@@ -791,7 +800,7 @@ async function serviceHistory(ctx) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
       itemName: i.product_name,
-      spec: i.product_name || '',
+      spec: '',
     })
   }
 
@@ -886,7 +895,7 @@ async function giftHistory(ctx) {
     if (!promoItemsByOrder[i.sale_order_id]) promoItemsByOrder[i.sale_order_id] = []
     promoItemsByOrder[i.sale_order_id].push({
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -910,7 +919,7 @@ async function giftHistory(ctx) {
       saleItemId: i.sale_item_id,
       saleOrderId: i.sale_order_id,
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
@@ -999,7 +1008,7 @@ async function refundHistory(ctx) {
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
-      specName: i.product_name,
+      specName: null,
       quantity: i.quantity,
       received: Number(i.received),
     })

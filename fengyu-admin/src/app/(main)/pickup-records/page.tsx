@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { getPickupRecordsPaginated } from '@/actions/pickup-records'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import PickupRecordsPageClient from './_components/pickup-records-page'
@@ -14,8 +14,9 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: records, total }, stores, session] = await Promise.all([
+  const [{ data: records, total }, filterOptions, session] = await Promise.all([
     getPickupRecordsPaginated({
+      marketId: params.market,
       storeId: params.store,
       search: params.q,
       dateFrom: params.from,
@@ -23,7 +24,7 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
+    getMarketStoreFilterOptions(),
     getSession(),
   ])
 
@@ -34,7 +35,7 @@ export default async function Page({
     <Suspense>
       <PickupRecordsPageClient
         records={records}
-        stores={stores}
+        filterOptions={filterOptions}
         total={total}
         canCreate={canCreate}
         canDelete={canDelete}

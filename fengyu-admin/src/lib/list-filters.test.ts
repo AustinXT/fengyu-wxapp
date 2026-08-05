@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { parseEmployeeFilters, filterValidSkillValues } from './list-filters'
+import {
+  parseAllocationOrderFilters,
+  parseAllocationServiceFilters,
+  parseEmployeeFilters,
+  parseOrderFilters,
+  parseServiceOrderFilters,
+  filterValidSkillValues,
+} from './list-filters'
 
 /**
  * parseEmployeeFilters 回归测试 — URL searchParams → EmployeeFilters 单值真源。
@@ -69,6 +76,53 @@ describe('parseEmployeeFilters', () => {
       marketId: 'market-1',
       storeId: 'store-1',
       search: '张三',
+    })
+  })
+})
+
+describe('订单/服务单列表筛选解析', () => {
+  it('订单列表透传 market/store URL 参数', () => {
+    expect(parseOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
+      marketId: 'market-1',
+      storeId: 'store-1',
+    })
+  })
+
+  it('服务单列表透传 market/store URL 参数', () => {
+    expect(parseServiceOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
+      marketId: 'market-1',
+      storeId: 'store-1',
+    })
+  })
+
+  it('营业额分配销售提成透传 market/store 并锁定已支付订单', () => {
+    expect(
+      parseAllocationOrderFilters({
+        market: 'market-1',
+        store: 'store-1',
+        allocStatus: 'pending',
+      }),
+    ).toMatchObject({
+      status: '已支付',
+      marketId: 'market-1',
+      storeId: 'store-1',
+      allocationStatus: 'pending',
+      allocationEligibleOnly: true,
+    })
+  })
+
+  it('营业额分配服务提成透传 market/store 并锁定已完成服务单', () => {
+    expect(
+      parseAllocationServiceFilters({
+        market: 'market-1',
+        store: 'store-1',
+        allocStatus: 'pending',
+      }),
+    ).toMatchObject({
+      status: '已完成',
+      marketId: 'market-1',
+      storeId: 'store-1',
+      commissionStatus: 'pending',
     })
   })
 })

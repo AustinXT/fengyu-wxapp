@@ -4,18 +4,20 @@
  *
  * 契约（cloudfunctions/staffApi/routes/card.js）：
  *   - 仅「退剩余余额」语义：refundFace = prepaid_cards.balance_now（整笔退、不可拆、只退 1 次）；
- *     原路退款金额 refundPay = round(refundFace * payable_amount / total_amount, 2)。
+ *     线下退款金额 refundPay = round(refundFace * payable_amount / total_amount, 2)。
  *   - createRefund 要求订单 sale_order_type='充值单' 且 status='已支付'，否则 INVALID_STATE。
- *   - approveRefund：manager-only + scope 校验；扣 balance(-refundFace) + card_transactions(type='扣款',amount=-refundFace)
- *     + sale_order_payments.status '待审批'→'已支付' + sale_orders.refunded_amount += |amount|。
- *   - rejectRefund：manager-only + scope 校验；status '待审批'→'已作废'，balance 不变。
+ *   - approveRefund：manager-only + scope 校验 + 仅充值单退款；扣 balance(-refundFace)
+ *     + card_transactions(type='扣款',amount=-refundFace) + sale_order_payments.status '待审批'→'已支付'
+ *     + payment_method 固定 '线下' + sale_orders.refunded_amount += |amount|。
+ *   - rejectRefund：manager-only + scope 校验 + 仅充值单退款；status '待审批'→'已作废'，balance 不变。
  *
  * 验证：
  *   A 路径 — 同意退款：
  *     1. 充值单(已支付,total=1000/payable=900,余额 800) createRefund → 待审批；
  *        返回 refundFace=800、refundPay=round(800*900/1000)=720
- *     2. sale_order_payments 落一行：change_type='退款' status='待审批' amount=-720，note 含 refundFace
- *     3. operation_logs 写一条 action='card.createRefund'
+ *     2. sale_order_payments 落一行：change_type='退款' status='待审批' amount=-720，
+ *        payment_method='线下'，external_txn_id=NULL，note 含 refundFace
+ *     3. operation_logs 写一条 action='card.createRefund'，并通知店长待审批
  *     4. approveRefund → status 待审批→已支付；
  *        prepaid_cards.balance 800→0（扣 refundFace），card_transactions 落 type='扣款' amount=-800，
  *        sale_orders.refunded_amount += |amount|=720
@@ -25,20 +27,24 @@
  */
 import './setup.mjs'
 import {
-  NS,
+  NS, TEST_STORE_ID, TEST_STORE_ORG_ID,
   TEST_MANAGER_EMP_ID, TEST_MANAGER_OPENID, TEST_CLIENT_USER_ID,
   pgQuery, closePool,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, createTestPrepaidCard, cleanupTestData,
+  createTestPermissionRole, createTestSaleOrder, createTestPrepaidCard, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
 let pass = false
 let exitCode = 1
 
 function rec(line) { console.log(line) }
+
+const TEST_REFUND_STAFF_EMP_ID = `${NS}_CARDREF_STAFF`
+const TEST_REFUND_STAFF_OPENID = `${NS}_CARDREF_STAFF_OPENID`
+const TEST_REFUND_STAFF_PHONE = '19999098015'
 
 /**
  * 建一张充值单（已支付，total/payable 可分离）。
@@ -71,6 +77,21 @@ async function main() {
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
+  await createTestStaff({
+    employeeId: TEST_REFUND_STAFF_EMP_ID,
+    openid: TEST_REFUND_STAFF_OPENID,
+    phone: TEST_REFUND_STAFF_PHONE,
+    name: `${NS}_退款发起员工`,
+    isManager: false,
+    positionName: '美容顾问',
+    storeId: TEST_STORE_ID,
+    orgNodeId: TEST_STORE_ORG_ID,
+  })
+  await createTestPermissionRole({
+    employeeId: TEST_REFUND_STAFF_EMP_ID,
+    role: 'staff',
+    scopeId: TEST_STORE_ORG_ID,
+  })
   await createTestClient()
 
   const errors = []
@@ -84,7 +105,7 @@ async function main() {
 
   // A1. createRefund
   const refA = await invokeStaffApi('card.createRefund', {
-    _testOpenid: TEST_MANAGER_OPENID,
+    _testOpenid: TEST_REFUND_STAFF_OPENID,
     saleOrderId: orderA,
     reason: 'e2e_card_refund_A',
   })
@@ -102,7 +123,8 @@ async function main() {
 
     // A2. PG: sale_order_payments 待审批行
     const sops = await pgQuery(
-      `SELECT change_type, status, amount, note FROM sale_order_payments WHERE id = $1`,
+      `SELECT change_type, status, amount, payment_method, external_txn_id, operator_employee_id, note
+         FROM sale_order_payments WHERE id = $1`,
       [paymentIdA]
     )
     if (sops.length !== 1) {
@@ -111,6 +133,9 @@ async function main() {
       if (sops[0].change_type !== '退款') errors.push(`A.change_type 应='退款'，实际='${sops[0].change_type}'`)
       if (sops[0].status !== '待审批') errors.push(`A.payments.status 应='待审批'，实际='${sops[0].status}'`)
       if (Number(sops[0].amount) !== -720) errors.push(`A.amount 应=-720，实际=${sops[0].amount}`)
+      if (sops[0].payment_method !== '线下') errors.push(`A.payment_method 应='线下'，实际='${sops[0].payment_method}'`)
+      if (sops[0].external_txn_id !== null) errors.push(`A.external_txn_id 应=NULL，实际='${sops[0].external_txn_id}'`)
+      if (sops[0].operator_employee_id !== TEST_REFUND_STAFF_EMP_ID) errors.push(`A.operator_employee_id 应=${TEST_REFUND_STAFF_EMP_ID}，实际=${sops[0].operator_employee_id}`)
       let note = {}
       try { note = JSON.parse(sops[0].note || '{}') } catch { /* ignore */ }
       if (Number(note.refundFace) !== 800) errors.push(`A.note.refundFace 应=800，实际=${note.refundFace}`)
@@ -122,6 +147,15 @@ async function main() {
       [String(paymentIdA)]
     )
     if (logs.length !== 1) errors.push(`A.operation_logs(card.createRefund) 应=1 行，实际=${logs.length}`)
+
+    const createdMsg = await pgQuery(
+      `SELECT recipient_id, title FROM messages WHERE idempotency_key = $1`,
+      [`refund-created-${paymentIdA}-${TEST_MANAGER_EMP_ID}`]
+    )
+    if (createdMsg.length !== 1) errors.push(`A.messages(refund-created) 应=1 行，实际=${createdMsg.length}`)
+    else if (createdMsg[0].recipient_id !== TEST_MANAGER_EMP_ID) {
+      errors.push(`A.refund-created recipient 应=${TEST_MANAGER_EMP_ID}，实际=${createdMsg[0].recipient_id}`)
+    }
   }
 
   // A4. approveRefund
@@ -138,10 +172,13 @@ async function main() {
 
       // payments 翻 '已支付' + 审批人
       const sopAfter = await pgQuery(
-        `SELECT status, audit_employee_id, audit_at FROM sale_order_payments WHERE id = $1`,
+        `SELECT status, payment_method, external_txn_id, audit_employee_id, audit_at
+           FROM sale_order_payments WHERE id = $1`,
         [paymentIdA]
       )
       if (sopAfter[0]?.status !== '已支付') errors.push(`A.payments.status 应='已支付'（审批通过），实际='${sopAfter[0]?.status}'`)
+      if (sopAfter[0]?.payment_method !== '线下') errors.push(`A.approve.payment_method 应='线下'，实际='${sopAfter[0]?.payment_method}'`)
+      if (sopAfter[0]?.external_txn_id !== null) errors.push(`A.approve.external_txn_id 应=NULL，实际='${sopAfter[0]?.external_txn_id}'`)
       if (sopAfter[0]?.audit_employee_id !== TEST_MANAGER_EMP_ID) errors.push(`A.audit_employee_id 应=${TEST_MANAGER_EMP_ID}，实际=${sopAfter[0]?.audit_employee_id}`)
       if (!sopAfter[0]?.audit_at) errors.push(`A.audit_at 应非 NULL`)
 
@@ -171,6 +208,15 @@ async function main() {
         [orderA]
       )
       if (Number(ord[0]?.refunded_amount) !== 720) errors.push(`A.sale_orders.refunded_amount 应=720，实际=${ord[0]?.refunded_amount}`)
+
+      const approvedMsg = await pgQuery(
+        `SELECT recipient_id, title FROM messages WHERE idempotency_key = $1`,
+        [`refund-approved-${paymentIdA}`]
+      )
+      if (approvedMsg.length !== 1) errors.push(`A.messages(refund-approved) 应=1 行，实际=${approvedMsg.length}`)
+      else if (approvedMsg[0].recipient_id !== TEST_REFUND_STAFF_EMP_ID) {
+        errors.push(`A.refund-approved recipient 应=${TEST_REFUND_STAFF_EMP_ID}，实际=${approvedMsg[0].recipient_id}`)
+      }
     }
   }
 
@@ -206,7 +252,7 @@ async function main() {
   rec(`  ✓ fixture B: ${orderB}(充值单/已支付 total=500) + 顾客B 储值卡余额 300`)
 
   const refB = await invokeStaffApi('card.createRefund', {
-    _testOpenid: TEST_MANAGER_OPENID,
+    _testOpenid: TEST_REFUND_STAFF_OPENID,
     saleOrderId: orderB,
     reason: 'e2e_card_refund_B',
   })
@@ -245,7 +291,54 @@ async function main() {
         `SELECT id FROM card_transactions WHERE card_id = $1 AND type = '扣款'`, [cardB.cardId]
       )
       if (txnB.length !== 0) errors.push(`B.card_transactions 扣款应=0 行（驳回不落账），实际=${txnB.length}`)
+
+      const rejectedMsg = await pgQuery(
+        `SELECT recipient_id, title FROM messages WHERE idempotency_key = $1`,
+        [`refund-rejected-${paymentIdB}`]
+      )
+      if (rejectedMsg.length !== 1) errors.push(`B.messages(refund-rejected) 应=1 行，实际=${rejectedMsg.length}`)
+      else if (rejectedMsg[0].recipient_id !== TEST_REFUND_STAFF_EMP_ID) {
+        errors.push(`B.refund-rejected recipient 应=${TEST_REFUND_STAFF_EMP_ID}，实际=${rejectedMsg[0].recipient_id}`)
+      }
     }
+  }
+
+  // ─── C 路径：销售单退款不能误走充值卡审批/驳回入口 ───
+  const orderC = `${NS}_CARDREF_C`
+  await createTestSaleOrder({
+    saleOrderId: orderC,
+    clientUserId: TEST_CLIENT_USER_ID,
+    saleOrderType: '销售单',
+    productName: `${NS}_销售单`,
+    productType: '疗程卡',
+    quantity: 1,
+    sessionCount: 1,
+    totalAmount: 100,
+    status: '已支付',
+    salesCategory: '他销自耗',
+  })
+  const badRows = await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, status, source_end, operator_employee_id, refund_reason
+     ) VALUES ($1, '退款', -10, '线下', '待审批', 'staff', $2, 'e2e_wrong_card_entry')
+     RETURNING id`,
+    [orderC, TEST_REFUND_STAFF_EMP_ID]
+  )
+  const badPaymentId = badRows[0]?.id
+  const badApprove = await invokeStaffApi('card.approveRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    paymentId: badPaymentId,
+  })
+  if (badApprove.code === 0 || !String(badApprove.message || '').includes('非充值单')) {
+    errors.push(`C.card.approveRefund 销售单退款应拒绝非充值单，实际 code=${badApprove.code} msg=${badApprove.message}`)
+  }
+  const badReject = await invokeStaffApi('card.rejectRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    paymentId: badPaymentId,
+    reason: 'wrong-entry',
+  })
+  if (badReject.code === 0 || !String(badReject.message || '').includes('非充值单')) {
+    errors.push(`C.card.rejectRefund 销售单退款应拒绝非充值单，实际 code=${badReject.code} msg=${badReject.message}`)
   }
 
   if (errors.length) {

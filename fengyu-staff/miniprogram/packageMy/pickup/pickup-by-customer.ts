@@ -1,7 +1,8 @@
 // packageMy/pickup/pickup-by-customer.ts — 提货：顾客视角 + 录入
 import { callStaffApi } from '../../utils/cloud'
+import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge'
 
-interface Customer {
+interface Customer extends MemberLevelBadgeData {
   clientUserId: string
   name: string
   phone: string
@@ -18,6 +19,27 @@ interface PickupItem {
   remaining: number
   storeId: string
   storeName: string | null
+}
+
+function normalizeSpecName(productName?: string | null, specName?: string | null): string | null {
+  const name = (productName || '').trim()
+  const spec = (specName || '').trim()
+  return spec && spec !== name ? spec : null
+}
+
+function formatProductName(productName?: string | null, specName?: string | null): string {
+  const name = (productName || '').trim()
+  const spec = normalizeSpecName(name, specName)
+  if (!name && !spec) return '商品'
+  if (!name) return spec || '商品'
+  return spec ? `${name} ${spec}` : name
+}
+
+function normalizePickupItem(item: PickupItem): PickupItem {
+  return {
+    ...item,
+    specName: normalizeSpecName(item.productName, item.specName),
+  }
 }
 
 Page({
@@ -53,11 +75,14 @@ Page({
       return
     }
     try {
+      // 提货选顾客：需支持临时跨店顾客，故传 crossStore=true 放宽搜索范围
+      // （后端返回 is_cross_store_temp 标记，业务层根据实际需要判断是否允许跨店提货）
       const res = await callStaffApi<Customer[]>('customer.search', {
         keyword: keyword.match(/^\d/) ? undefined : keyword,
         phone: keyword.match(/^\d{6,}$/) ? keyword : undefined,
+        crossStore: true,
       })
-      this.setData({ customers: res || [] })
+      this.setData({ customers: withMemberLevelBadgeClasses(res || []) })
     } catch (err: any) {
       wx.showToast({ title: err?.message || '搜索失败', icon: 'none' })
     }
@@ -72,7 +97,7 @@ Page({
       const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {
         clientUserId: customer.clientUserId,
       })
-      this.setData({ items: items || [], loadingItems: false })
+      this.setData({ items: (items || []).map(normalizePickupItem), loadingItems: false })
     } catch (err: any) {
       this.setData({ loadingItems: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
@@ -91,7 +116,7 @@ Page({
       pickupDialog: {
         visible: true,
         saleItemId: item.saleItemId,
-        productName: [item.productName, item.specName].filter(Boolean).join(' ') || '商品',
+        productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         quantity: 1,
         remark: '',

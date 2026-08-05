@@ -192,8 +192,8 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       >继续支付 ¥{{order.outstanding_fmt}}</van-button>
     </view>
 
-    <!-- 已支付：发起预约（有可预约项）+ 查看疗程卡 -->
-    <view wx:elif="{{order.status === '已支付'}}">
+    <!-- 有效收款状态：发起预约（有可预约项）+ 查看疗程卡 -->
+    <view wx:elif="{{order.status === '已支付' || order.status === '部分支付' || order.status === '已完成'}}">
       <view wx:if="{{hasAppointableItems}}" class="actions-row">
         <van-button
           type="primary"

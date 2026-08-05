@@ -30,6 +30,46 @@
   padding: 20rpx 0;
 }
 
+.confirm-discount-input-wrap {
+  display: flex;
+  align-items: center;
+  background: #FFFFFF;
+  border: 1rpx solid var(--color-border);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  width: 200rpx;
+}
+
+.confirm-discount-prefix {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-right: 4rpx;
+}
+
+.confirm-discount-input {
+  flex: 1;
+  font-size: 24rpx;
+  color: var(--color-text-primary);
+  height: 48rpx;
+  min-width: 0;
+}
+
+.confirm-special-badge {
+  font-size: 18rpx;
+  color: var(--color-primary);
+  background: rgba(192, 50, 42, 0.08);
+  border-radius: 4rpx;
+  padding: 0 6rpx;
+  margin-right: 6rpx;
+  white-space: nowrap;
+}
+
+.confirm-item-receivable {
+  font-size: 26rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
 /* ===== 卡列表 ===== */
 .conv-card-list {
   display: flex;

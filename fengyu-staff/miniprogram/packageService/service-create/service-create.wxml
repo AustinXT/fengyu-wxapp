@@ -116,7 +116,7 @@
     <text class="section-title">已选核销项目</text>
     <view class="selected-item" wx:for="{{selectedItems}}" wx:key="saleItemId">
       <van-icon name="success" size="28rpx" color="#3D8A5A" />
-      <text class="selected-item-name">{{item.itemName}} ({{item.spec}}) · 本次 {{item.sessionCount}} 次</text>
+      <text class="selected-item-name">{{item.itemName}}{{item.spec ? ' (' + item.spec + ')' : ''}} · 本次 {{item.sessionCount}} 次</text>
     </view>
   </view>
 

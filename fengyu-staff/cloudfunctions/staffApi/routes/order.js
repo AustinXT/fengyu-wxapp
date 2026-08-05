@@ -22,14 +22,19 @@ const { settlePointsSafe } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
-const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const {
+  capturePaymentAllocatables,
+  refreshOrderAllocationRollup,
+  reconcileAllocationStatusAfterRefund,
+} = require('../utils/payment-allocatable')
 const { getPerItemRefundedMap } = require('../utils/per-item-refund')
 const {
   buildRefundDetails,
   capRefundAmounts,
+  computeItemOverpayRemainders,
   computeOverpayRemainder,
   isHandlingFeeInvalidForRefund,
-  OVERPAY_SENTINEL,
+  isZeroCashPaidSessionRefund,
   splitRefundByOriginalPayment,
   resolveRefundPaymentMethod,
   assertNoPendingRefund,
@@ -37,7 +42,7 @@ const {
   notifyRefundResult,
 } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
-const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -48,9 +53,10 @@ const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
 
 // 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
-// ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
+// ⚠️ 仅作为跨端 SQL 副本守护；staff 创建寄存单只提交审批，不在本端调用。
+// admin 审批通过后必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后跑：
 //   - 通用 recalc 对所有订单类型生效，普通欠款单 received<sale_amount 是常态，
-//     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在 deposit 函数内调用，勿 DRY 进 helper。
+//     若把此式并进 recalc 会腰斩所有欠款单的 per-session 价（腐蚀提成/退款/转换）。务必只在寄存单审批函数内调用，勿 DRY 进 helper。
 //   - INSERT 时 received 写死 0，真实 per-row received 由 recalc STEP1 定向落定后才存在；提前跑会让每行误命中 ELSE。
 // 与 admin actions/orders.ts recomputeDepositRealPrice 字节同义，cross-end-sql-snapshot.test.js 守护。marker: DEPOSIT_REAL_PRICE
 const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
@@ -62,6 +68,105 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
           updated_at = NOW()
       WHERE sale_order_id = $1 AND item_direction = '购买' AND product_type = '疗程卡'
       -- DEPOSIT_REAL_PRICE`
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+function calcTierLineAmount(tierAmount, tierSessions, lineSessions) {
+  const amount = Math.max(0, Number(tierAmount) || 0)
+  const sessions = Math.max(0, Number(tierSessions) || 0)
+  const line = Math.max(0, Number(lineSessions) || 0)
+  if (amount <= 0 || sessions <= 0 || line <= 0) return 0
+  return Math.round((amount * line * 100) / sessions) / 100
+}
+
+function findPurchaseLimitViolation(items, skuRows) {
+  const rowMap = new Map((skuRows || []).map(row => [row.skuId || row.sku_id, row]))
+  const totals = new Map()
+  for (const item of items || []) {
+    if (!item || !item.skuId) continue
+    totals.set(item.skuId, (totals.get(item.skuId) || 0) + Number(item.quantity || 0))
+  }
+  for (const [skuId, quantity] of totals.entries()) {
+    const row = rowMap.get(skuId)
+    const limit = row && row.purchaseLimit != null ? row.purchaseLimit : row?.purchase_limit
+    if (limit != null && quantity > Number(limit)) return row
+  }
+  return null
+}
+
+function purchaseLimitExceededMessage(row) {
+  const name = row.specName || row.spec_name || row.productName || row.skuId || row.sku_id
+  const limit = row.purchaseLimit != null ? row.purchaseLimit : row.purchase_limit
+  return `商品「${name}」每单最多可购买 ${limit} 件`
+}
+
+function treatmentTierGroupKey(row) {
+  if (!row || !row.categoryId || !row.productName) return null
+  return `${row.categoryId}::${row.productName}`
+}
+
+function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrderType) {
+  if (saleOrderType !== '销售单') return
+
+  const groups = new Map()
+  for (const item of rawItems || []) {
+    const key = treatmentTierGroupKey(item)
+    if (
+      !key ||
+      item.productType !== '疗程卡' ||
+      item.isExperience ||
+      item.manualSaleAmountOverride ||
+      item.isManagerSpecial ||
+      item.isBundleLine ||
+      !item.sessionCount ||
+      item.sessionCount <= 0
+    ) {
+      continue
+    }
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(item)
+  }
+
+  for (const [key, groupedItems] of groups.entries()) {
+    const [categoryId, productName] = key.split('::')
+    const totalSessions = groupedItems.reduce((sum, item) => sum + (Number(item.sessionCount) || 0), 0)
+    if (totalSessions <= 1) continue
+
+    const candidates = (tierSkuRows || [])
+      .filter(s =>
+        s.category_id === categoryId &&
+        s.spec_name === productName &&
+        s.product_type === '疗程卡' &&
+        s.is_manager_special !== true &&
+        s.session_count != null &&
+        Number(s.session_count) > 1 &&
+        Number(s.session_count) <= totalSessions
+      )
+      .sort((a, b) => {
+        const sessionDelta = Number(b.session_count) - Number(a.session_count)
+        if (sessionDelta !== 0) return sessionDelta
+        const aUnit = resolveUnitPrice(a, buyerIsMember).realUnit / (Number(a.session_count) || 1)
+        const bUnit = resolveUnitPrice(b, buyerIsMember).realUnit / (Number(b.session_count) || 1)
+        return aUnit - bUnit
+      })
+
+    const tier = candidates[0]
+    if (!tier || !tier.session_count || Number(tier.session_count) <= 1) continue
+
+    const tierAmount = resolveUnitPrice(tier, buyerIsMember).realUnit
+    const tierSessions = Number(tier.session_count)
+    for (const item of groupedItems) {
+      const lineSessions = Number(item.sessionCount) || 0
+      const lineAmount = calcTierLineAmount(tierAmount, tierSessions, lineSessions)
+      item.unitRealPrice = lineSessions > 0 ? roundMoney(lineAmount / lineSessions) : lineAmount
+      item.saleAmount = lineAmount
+      item.priceLine = lineAmount
+      item.received = lineAmount
+    }
+  }
+}
 
 /**
  * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位
@@ -497,8 +602,9 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+                s.category_id,
                 s.service_fee, s.is_shengmei, s.is_experience, s.is_manager_special,
-                pc.sales_category, pc.product_kind
+                s.purchase_limit, pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -515,6 +621,7 @@ async function create(ctx) {
       const skuPriceCeil = Number(sku.price)
       // 该顾客对本 SKU 的适用成交单价（会员价分流：会员→会员价、非会员→标价；体验卡同口径，#6=B 不再豁免）
       const applicableUnit = resolveUnitPrice(sku, buyerIsMember).realUnit
+      const bundlePricing = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
 
       // 入参价格三件套
       let inputListUnit, inputRealUnit, useFrontendPrice
@@ -524,11 +631,10 @@ async function create(ctx) {
         inputRealUnit = Math.round(skuPriceCeil * 50) / 100
         useFrontendPrice = false
       } else {
-        const bp = bundleSkuPrices ? bundleSkuPrices.get(item.skuId) : null
-        if (bp) {
+        if (bundlePricing) {
           // 套餐子项：套餐价独立机制（本次不做会员分流）；上界/缺省用套餐下沉单价（标价/成交）
-          const bundleListUnit = bp.listPrice != null ? Number(bp.listPrice) : skuPriceCeil
-          const bundleSaleUnit = bp.salePrice != null ? Number(bp.salePrice) : bundleListUnit
+          const bundleListUnit = bundlePricing.listPrice != null ? Number(bundlePricing.listPrice) : skuPriceCeil
+          const bundleSaleUnit = bundlePricing.salePrice != null ? Number(bundlePricing.salePrice) : bundleListUnit
           inputListUnit = item.unitPrice != null ? Number(item.unitPrice) : bundleListUnit
           inputRealUnit = item.unitRealPrice != null ? Number(item.unitRealPrice) : bundleSaleUnit
           if (!Number.isFinite(inputListUnit) || !Number.isFinite(inputRealUnit)
@@ -596,6 +702,7 @@ async function create(ctx) {
       return {
         skuId: item.skuId,
         productName: sku.spec_name,
+        categoryId: sku.category_id,
         productType: sku.product_type,
         productKind: sku.product_kind,
         sessionCount,
@@ -615,11 +722,49 @@ async function create(ctx) {
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
+        manualSaleAmountOverride: item.manualSaleAmountOverride === true,
+        isBundleLine: !!bundlePricing,
         // 店长特别优惠行级快照（权威 = DB，不信前端）
         isManagerSpecial: sku.is_manager_special === true,
       }
     })
   )
+
+  const purchaseLimitViolation = findPurchaseLimitViolation(items, rawItemDataList)
+  if (purchaseLimitViolation) {
+    throw new Error(`INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
+  }
+
+  const tierBaseItems = rawItemDataList.filter(d =>
+    saleOrderType === '销售单' &&
+    d.productType === '疗程卡' &&
+    !d.isExperience &&
+    !d.manualSaleAmountOverride &&
+    !d.isManagerSpecial &&
+    !d.isBundleLine &&
+    d.categoryId &&
+    d.productName
+  )
+  if (tierBaseItems.length > 0) {
+    const categoryIds = [...new Set(tierBaseItems.map(d => d.categoryId))]
+    const productNames = [...new Set(tierBaseItems.map(d => d.productName))]
+    const tierSkuRows = await pg.query(
+      `SELECT sku_id, category_id, product_type, spec_name, price, special_price, session_count,
+              is_manager_special
+       FROM product_skus
+       WHERE deleted_at IS NULL
+         AND is_enabled = true
+         AND product_type = '疗程卡'
+         AND COALESCE(is_experience, false) = false
+         AND COALESCE(is_manager_special, false) = false
+         AND category_id = ANY($1)
+         AND spec_name = ANY($2)
+         AND session_count IS NOT NULL`,
+      [categoryIds, productNames]
+    )
+    applyTreatmentTierPricing(rawItemDataList, tierSkuRows, buyerIsMember, saleOrderType)
+  }
 
   // ========== B2 拆行：疗程卡 quantity>1 → N 行 quantity=1 ==========
   // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
@@ -1087,7 +1232,7 @@ async function create(ctx) {
     }
 
     // 按回款逐笔分配：全额储值卡抵扣即结清 → 捕获本次抵扣逐项可分配额 + 置待分配 + 汇总刷新（非定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     if (fullCardPaymentId && prepaidCardAmount > 0) {
       await capturePaymentAllocatables(client, {
         salePaymentId: fullCardPaymentId,
@@ -1098,7 +1243,7 @@ async function create(ctx) {
       await refreshOrderAllocationRollup(client, saleOrderId)
     }
 
-    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 spai 聚合 received → STEP2 floor）：
+    // paid_sessions 统一由 recalcPaidSessionsForOrder 派生（STEP1 从 receipt 聚合 received → STEP2 floor）：
     // - zeroPayable（券/卡全额抵扣）：received=prepaid 或 sale_amount<=0 兜底 → paid_sessions=session_count（创建即结清）
     // - 非 zeroPayable（待支付，received=0）：行级 received=0 → paid_sessions=0（杜绝未付款消费）
     // 不再按行级实付草稿 computePaidSessionsForItem 直算（与 admin createOrder 对齐修 P0；
@@ -1530,7 +1675,7 @@ async function confirmOffline(ctx) {
     }
 
     // 按回款逐笔分配：捕获本次线下收款逐项可分配额 + 置回款待分配 + 汇总刷新（confirmOffline 无定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     const cashThis = cashPaymentId ? confirmAmount : 0
     const cardThis = cardPaymentId ? prepaidAmount : 0
     const allocEventAmount = Math.round((cashThis + cardThis) * 100) / 100
@@ -1546,7 +1691,7 @@ async function confirmOffline(ctx) {
     }
 
     // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, saleOrderId)
 
     // 重算顾客历史消费档位
@@ -1608,6 +1753,61 @@ async function confirmOffline(ctx) {
 }
 
 /**
+ * 待支付/支付失败转换单被关闭时，撤销创建时的即时资产变更：
+ * - 恢复被转出的原卡 remaining_sessions；
+ * - 作废本转换单的转入/转出权益计数，避免详情和后续查询继续表现为已转。
+ */
+async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, now) {
+  await client.query(
+    `WITH restore AS (
+        SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
+          FROM sale_items
+         WHERE sale_order_id = $1
+           AND item_direction = '转出'
+           AND product_type = '疗程卡'
+           AND ref_sale_item_id IS NOT NULL
+         GROUP BY ref_sale_item_id
+      ),
+      locked_source AS (
+        SELECT src.sale_item_id,
+               src.session_count,
+               src.remaining_sessions,
+               restore.restore_sessions
+          FROM sale_items src
+          JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+         WHERE src.store_id = $2
+         FOR UPDATE OF src
+      )
+      UPDATE sale_items src
+         SET remaining_sessions = LEAST(
+               COALESCE(src.session_count, src.remaining_sessions, 0),
+               COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
+             ),
+             updated_at = $3
+        FROM locked_source
+       WHERE src.sale_item_id = locked_source.sale_item_id`,
+    [saleOrderId, storeId, now],
+  )
+
+  await client.query(
+    `UPDATE sale_items
+        SET received = 0,
+            remaining_sessions = CASE
+              WHEN session_count IS NULL THEN remaining_sessions
+              ELSE session_count
+            END,
+            paid_sessions = CASE
+              WHEN session_count IS NULL THEN NULL
+              ELSE 0
+            END,
+            updated_at = $2
+      WHERE sale_order_id = $1
+        AND item_direction IN ('转出', '转入')`,
+    [saleOrderId, now],
+  )
+}
+
+/**
  * 关闭订单
  */
 async function close(ctx) {
@@ -1651,24 +1851,32 @@ async function close(ctx) {
 
   await pg.transaction(async (client) => {
     const updateResult = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
+      "UPDATE sale_orders SET status = '已关闭', allocation_status = NULL, updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
       [now, saleOrderId, order.status]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
-    // 作废营业额分配
-    const saleItemIds = await client.query(
-      'SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1',
-      [saleOrderId]
-    )
-    if (saleItemIds.rows.length > 0) {
-      const ids = saleItemIds.rows.map(r => r.sale_item_id)
-      await client.query(
-        "UPDATE sale_allocations SET is_void = true, voided_at = $1, updated_at = $1 WHERE sale_item_id = ANY($2) AND is_void = false",
-        [now, ids]
-      )
+    if (order.sale_order_type === '转换单') {
+      await rollbackPendingConversionOnClose(client, saleOrderId, order.store_id, now)
     }
+    // 作废营业额子分配
+    await client.query(
+      `UPDATE sale_payment_item_allocations
+          SET is_void = true, voided_at = $1, updated_at = $1
+        WHERE sale_payment_item_receipt_id IN (
+          SELECT id FROM sale_payment_item_receipts WHERE sale_order_id = $2
+        )
+          AND is_void = false`,
+      [now, saleOrderId],
+    )
+    await client.query(
+      `UPDATE sale_order_payments
+          SET allocation_status = NULL
+        WHERE sale_order_id = $1
+          AND allocation_status IS NOT NULL`,
+      [saleOrderId],
+    )
     // 释放关联的优惠券
     await client.query(
       `UPDATE user_coupons
@@ -1916,19 +2124,22 @@ async function detail(ctx) {
     }
   }
 
-  // 营业额分配（sale_allocations 为扁平结构，每行一条分配）
+  // 营业额分配（receipt 子分配结构，每行一条员工/角色分配）
   const allocations = await pg.query(`
     SELECT
-      sa.id, sa.sale_item_id, sa.employee_id, sa.department_name,
-      sa.allocation_ratio, sa.total_amount, sa.is_void,
-      sa.role_type, sa.commission_rate, sa.commission_amount,
+      spia.id, spir.sale_item_id, spia.employee_id, spia.department_name,
+      spia.allocation_ratio, spia.allocated_amount AS total_amount, spia.is_void,
+      spia.role_type, spia.commission_rate, spia.commission_amount,
+      spir.sale_payment_id,
       si.product_name AS sale_item_name,
       sw.name AS employee_name
-    FROM sale_allocations sa
-    JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
-    LEFT JOIN staff_wechat_users sw ON sa.employee_id = sw.employee_id
-    WHERE si.sale_order_id = $1
-    ORDER BY sa.id
+    FROM sale_payment_item_allocations spia
+    JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_items si ON spir.sale_item_id = si.sale_item_id
+    LEFT JOIN staff_wechat_users sw ON spia.employee_id = sw.employee_id
+    WHERE spir.sale_order_id = $1
+      AND spia.is_void = false
+    ORDER BY spir.sale_payment_id DESC, spia.id
   `, [saleOrderId])
 
   // 查询券名称
@@ -1974,9 +2185,13 @@ async function detail(ctx) {
     cardBalance = balRows.length > 0 ? Number(balRows[0].balance) : 0
   }
 
-  // 多收余数（overpay）：部分支付单 received 不能被单次价整除时的订单级孤儿零头，可作纯现金退还。
-  // 仅销售单/转换单非历史单有意义（与可退口径一致）；前端退款弹层据此展示「多收可退余数」。
+  // 多收余数（overpay）：按 sale_item 行级 received 归属，汇总字段只供老前端展示。
+  // 仅销售单/转换单非历史单有意义（与可退口径一致）。
   const purchaseItems = items.filter((it) => it.item_direction === '购买')
+  const itemOverpayById = computeItemOverpayRemainders(purchaseItems)
+  for (const it of purchaseItems) {
+    it.overpay_refundable = Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0))
+  }
   const overpayRefundable =
     ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine'
       ? computeOverpayRemainder(order, purchaseItems)
@@ -2001,7 +2216,7 @@ async function detail(ctx) {
 //
 // 模型：
 //   - 不创建 sale_orders[type='退款单'] 行；退款全部承载在 sale_order_payments
-//   - 发起：INSERT sale_order_payments(change_type='退款', amount<0, status='待审批',
+//   - 发起：INSERT sale_order_payments(change_type='退款', amount<=0, status='待审批',
 //           source_end='staff', operator_employee_id, refund_reason, ref_sale_item_id, session_count)
 //   - 审批：CAS UPDATE sale_order_payments SET status='已支付' AND status='待审批'
 //           同一条 UPDATE 写 audit_employee_id / audit_at / audit_remark
@@ -2011,6 +2226,92 @@ async function detail(ctx) {
 //           + UPDATE details(audit_employee_id/audit_at/audit_remark)
 //   - DB partial unique uq_sop_status_audit 兜底同原单 in-flight 退款唯一性
 const { cascadeRefund } = require('../helpers/refund-cascade')
+
+async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
+  await client.query(
+    `WITH receipt_refunds AS (
+       SELECT spir.sale_item_id,
+              COALESCE(ABS(SUM(spir.amount::numeric)), 0) AS refunded
+         FROM sale_payment_item_receipts spir
+         JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        WHERE spir.sale_order_id = $1
+          AND sop.sale_order_id = $1
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND spir.amount::numeric < 0
+        GROUP BY spir.sale_item_id
+     ),
+     full_refunds AS (
+       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+              BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+         FROM sale_order_payments sop
+         CROSS JOIN LATERAL jsonb_array_elements(
+           CASE WHEN sop.note LIKE '{%'
+                THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                          THEN (sop.note)::jsonb -> 'items'
+                          ELSE '[]'::jsonb END
+                ELSE '[]'::jsonb END
+         ) AS elem
+        WHERE sop.sale_order_id = $1
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND elem ->> 'refSaleItemId' IS NOT NULL
+          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+        GROUP BY elem ->> 'refSaleItemId'
+     ),
+     item_states AS (
+       SELECT si.sale_item_id,
+              si.received::numeric AS received,
+              COALESCE(si.sale_amount::numeric, 0) AS sale_amount,
+              COALESCE(rr.refunded, 0) AS refunded,
+              COALESCE(fr.full_refund, false) AS full_refund,
+              CASE WHEN si.product_type = '疗程卡'
+                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+              END AS consumed_value
+         FROM sale_items si
+         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
+         LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+        WHERE si.sale_order_id = $1
+          AND si.item_direction = '购买'
+     ),
+     classified AS (
+       SELECT *,
+              GREATEST(consumed_value, sale_amount - refunded, 0) AS retained_value,
+              (
+                full_refund
+                OR (sale_amount > 0 AND refunded >= sale_amount - 0.01)
+                OR (refunded > 0 AND received <= 0.01 AND GREATEST(consumed_value, sale_amount - refunded, 0) <= 0.01)
+              ) AS item_refunded
+         FROM item_states
+     ),
+     agg AS (
+       SELECT COUNT(*) AS item_count,
+              COUNT(*) FILTER (WHERE item_refunded) AS refunded_count,
+              COUNT(*) FILTER (WHERE NOT item_refunded AND received + 0.01 < retained_value) AS partial_count
+         FROM classified
+     ),
+     target AS (
+       SELECT CASE
+                WHEN item_count = 0 THEN NULL
+                WHEN refunded_count = item_count THEN '已退款'::order_status
+                WHEN partial_count = 0 THEN '已支付'::order_status
+                ELSE '部分支付'::order_status
+              END AS status
+         FROM agg
+     )
+     UPDATE sale_orders so
+        SET status = target.status,
+            paid_at = CASE WHEN target.status = '已支付'::order_status AND so.paid_at IS NULL THEN NOW() ELSE so.paid_at END,
+            updated_at = NOW()
+       FROM target
+      WHERE so.sale_order_id = $1
+        AND target.status IS NOT NULL
+        AND so.status IN ('已支付', '已完成', '部分支付', '已退款')
+        AND so.status IS DISTINCT FROM target.status`,
+    [saleOrderId],
+  )
+}
 
 /**
  * 创建退款（店长专用）
@@ -2092,36 +2393,39 @@ async function createRefund(ctx) {
     [refSaleOrderId]
   )
 
-  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
-  let { refundDetails, totalRefund } = buildRefundDetails(origItems, items)
-
-  // 多收余数（overpay，2026-07-18 FY-XSD-WX-2607150028）：部分支付单 received 不能被单次价整除时，
-  // 订单级孤儿零头按整次×单价逐项求和够不到。includeOverpay=true 时把这笔作为哨兵行并入退款：
-  //   refSaleItemId=OVERPAY_SENTINEL（非空！null 会触发 refund-cascade 空明细兜底误全退），
-  //   不挂品项/不退次数/不触发作废级联（5 通道按 sale_item_id 匹配哨兵均落空，仅积分通道订单级按比例冲销）。
-  // 前端在「整单退」或「仅退余数」场景置 includeOverpay=true。overpayRefundable 已 ≤ 净已收，与 refundCap 自洽。
-  // 两端镜像 admin refunds.ts。详见 plan fy-xsd-wx-2607150028-3000-2786-idempotent-goose。
-  const overpayRefundable = computeOverpayRemainder(origOrder, origItems)
-  let overpayAmount = 0
-  if (includeOverpay && overpayRefundable > 0) {
-    overpayAmount = overpayRefundable
-    refundDetails.push({
-      refSaleItemId: OVERPAY_SENTINEL,
-      skuId: null,
-      productName: '多收余数退款',
-      productType: '多收余数',
-      sessionCount: null,
-      unitPrice: 0,
-      quantity: 0,
-      unitRealPrice: 0,
-      refundAmount: overpayAmount,
-      salesCategory: null,
-      serviceFee: 0,
-      isFullItemRefund: false,
-      isOverpay: true,
-    })
-    totalRefund = Math.round((totalRefund + overpayAmount) * 100) / 100
+  const itemOverpayById = computeItemOverpayRemainders(origItems)
+  const requestItems = items.map((it) => ({
+    saleItemId: String(it.saleItemId || ''),
+    refundQuantity: it.refundQuantity,
+    includeOverpay: it.includeOverpay === true,
+  }))
+  if (includeOverpay) {
+    if (requestItems.length === 0) {
+      const candidates = origItems
+        .filter((it) => Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0)) > 0)
+      if (candidates.length === 1) {
+        requestItems.push({
+          saleItemId: candidates[0].sale_item_id,
+          refundQuantity: 0,
+          includeOverpay: true,
+        })
+      } else if (candidates.length > 1) {
+        throw new Error('INVALID_PARAMS: 多收余数需选择所属商品子项后退款')
+      }
+    } else {
+      for (const it of requestItems) {
+        if (Math.max(0, Number(itemOverpayById.get(it.saleItemId) || 0)) > 0) {
+          it.includeOverpay = true
+        }
+      }
+    }
   }
+  if (requestItems.length === 0) {
+    throw new Error('INVALID_PARAMS: 退款明细不能为空')
+  }
+
+  // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
+  let { refundDetails, totalRefund } = buildRefundDetails(origItems, requestItems)
 
   const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
@@ -2130,8 +2434,9 @@ async function createRefund(ctx) {
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
-  if (finalRefundAmount <= 0) {
+  if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     throw new Error('INVALID_STATE: 无可退项')
   }
 
@@ -2164,10 +2469,17 @@ async function createRefund(ctx) {
     const targetGross = Math.max(0, Math.round((refundCap + fee) * 100) / 100)
     totalRefund = capRefundAmounts(refundDetails, totalRefund, targetGross)
     finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
-    if (finalRefundAmount <= 0) {
+    if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
       throw new Error('INVALID_STATE: 无可退项')
     }
   }
+
+  const overpayAmount = Math.round(
+    Math.min(
+      totalRefund,
+      refundDetails.reduce((sum, d) => sum + Math.max(0, Number(d.overpayAmount || 0)), 0),
+    ) * 100,
+  ) / 100
 
   // 储值卡 vs 原路径拆分（按原单储值卡占比）
   const origPrepaidCardAmount = Number(origOrder.prepaid_card_amount || 0)
@@ -2184,7 +2496,7 @@ async function createRefund(ctx) {
   const now = new Date()
   let paymentId
   // 单行模型：partial unique uq_sop_status_audit 限制每订单仅允许 1 行 (change_type='退款',
-  // status='待审批')。退款总额 = refundByCard + refundByOrigin 合计写入 amount=-finalRefundAmount，
+  // status='待审批')。退款总额 = refundByCard + refundByOrigin 合计写入 amount=-finalRefundAmount（0 元退项为 0），
   // payment_method 取原路径（refundPaymentMethod）；储值卡部分 vs 原路径部分的拆分以及 handling_fee
   // 等明细全部存入 note 字段（JSON）。审批通过时根据 payment_method 决定储值卡是否回冲。
   // 整单全退判定（Bug Q/M）：所有购买项都在本次退款且全退 → cascade 通道3（券）才回滚
@@ -2203,7 +2515,9 @@ async function createRefund(ctx) {
       quantity: d.quantity,
       refundAmount: d.refundAmount,
       productType: d.productType,
+      saleAmount: d.saleAmount,
       isFullItemRefund: d.isFullItemRefund,
+      overpayAmount: d.overpayAmount || 0,
       isOverpay: d.isOverpay === true,
     })),
     overpayAmount,
@@ -2382,6 +2696,7 @@ async function approveRefund(ctx) {
           sessionCount: it.quantity,
           refundAmount: it.refundAmount ?? null,
           isFullItemRefund: !!it.isFullItemRefund,
+          isOverpay: it.isOverpay === true,
         }))
         cascadeWholeOrder = !!noteObj.isWholeOrderRefund
       }
@@ -2401,6 +2716,8 @@ async function approveRefund(ctx) {
     // 4.1 paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
+    await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
+    await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
 
     // 5. 重算顾客消费档位 + 顾客类型
     if (sopRow.client_user_id) {
@@ -2711,7 +3028,7 @@ async function createRepayment(ctx) {
       }
     } else if (orderHasRefund) {
       // 整单回款（无 items[]）且订单有退款：非定向瀑布流会误充已退行（received 靠 STEP1.5 兜底，
-      // 但 spai/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
+      // 但 receipt/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
       throw new Error('INVALID_STATE: 本单存在已退款项目，请按子项回款未退款的项目')
     }
 
@@ -2841,7 +3158,7 @@ async function createRepayment(ctx) {
     }
 
     // 按回款逐笔分配：捕获本次回款逐项可分配额 + 置回款待分配 + 汇总刷新订单分配状态
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     const directedForCapture = repayItems
       ? repayItems.map((it) => ({
           saleItemId: it.saleItemId,
@@ -2857,7 +3174,7 @@ async function createRepayment(ctx) {
     await refreshOrderAllocationRollup(client, refSaleOrderId)
 
     // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
@@ -2913,8 +3230,8 @@ async function createRepayment(ctx) {
  * payload: {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
  *   convertOutSaleItemIds: string[],   // 整张卡折抵，不带 qty
- *   convertInItems: [{ skuId, quantity }],
- *   paymentMethod: '微信' | '线下',
+ *   convertInItems: [{ skuId, quantity, saleAmount?, unitRealPrice?, manualSaleAmountOverride? }],
+ *   paymentMethod: '微信' | '支付宝' | '线下',
  *   preferredStaffWfId?: string,
  *   remark?: string
  * }
@@ -2950,7 +3267,7 @@ async function createConversion(ctx) {
 
   // 查顾客快照信息（姓名 / phone）
   const clientRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type, bound_store_id
+    `SELECT user_id, phone, name, customer_type, member_level, bound_store_id
      FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
     [clientUserId]
   )
@@ -3066,14 +3383,15 @@ async function createConversion(ctx) {
       })
     }
 
-    // 2. 转入项目 — 按 SKU 查询计价
+    // 2. 转入项目 — 按 SKU 查询计价；店长特价 SKU 可沿用销售单的手填应付金额
     let totalIn = 0
     const inItems = []
+    const buyerIsMember = isMember(client.customer_type, client.member_level)
     for (const req of convertInItems) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
-        `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
-                s.is_shengmei, s.is_experience, pc.sales_category
+        `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count, s.service_fee,
+                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -3082,27 +3400,48 @@ async function createConversion(ctx) {
       if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在`)
       const sku = skuRes.rows[0]
       const qty = Number(req.quantity) || 1
-      const amount = Math.round(Number(sku.price) * qty * 100) / 100
+      const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(sku, buyerIsMember)
+      let amount = Math.round(applicableUnit * qty * 100) / 100
+      if (sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)) {
+        const inputAmount = req.saleAmount != null
+          ? Number(req.saleAmount)
+          : Number(req.unitRealPrice) * qty
+        if (!Number.isFinite(inputAmount) || inputAmount < 0
+            || inputAmount > amount + 0.005) {
+          throw new Error('INVALID_PARAMS: 转入项目应付金额不能高于该顾客适用价或为非法值')
+        }
+        amount = Math.round(inputAmount * 100) / 100
+      }
       totalIn += amount
       const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
       // 同 create：session_count 是"次"维度，需 × qty
       const inSessionCount = sku.session_count != null ? Number(sku.session_count) * qty : null
       const inDenom = (inSessionCount != null && inSessionCount > 0) ? inSessionCount : qty
-      // per-session 单价（转入无折扣：unit_price = unit_real_price = amount / 总次数；非卡 = amount/qty）
-      const inPerSessionUnit = inDenom > 0 ? Math.round((amount / inDenom) * 100) / 100 : amount
+      const inListAmount = Math.round(listUnit * qty * 100) / 100
+      // unit_price 保留标价快照；unit_real_price 使用成交价，店长特价时二者会分离。
+      const inListPerSessionUnit = inDenom > 0 ? Math.round((inListAmount / inDenom) * 100) / 100 : inListAmount
+      const inRealPerSessionUnit = inDenom > 0 ? Math.round((amount / inDenom) * 100) / 100 : amount
       inItems.push({
         skuId: sku.sku_id,
         productName: sku.spec_name,
         productType: sku.product_type,
         sessionCount: inSessionCount,
-        unitPrice: inPerSessionUnit,
+        unitPrice: inListPerSessionUnit,
+        unitRealPrice: inRealPerSessionUnit,
         quantity: qty,
         amount,
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        isManagerSpecial: sku.is_manager_special === true,
+        purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
+    }
+
+    const purchaseLimitViolation = findPurchaseLimitViolation(convertInItems, inItems)
+    if (purchaseLimitViolation) {
+      throw new Error(`INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
     }
 
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
@@ -3204,7 +3543,7 @@ async function createConversion(ctx) {
       }
     }
 
-    // 7. 转入行 × M（新卡；unit_real_price = unit_price = per-session 单价 = amount/总次数；无折扣两者相等）
+    // 7. 转入行 × M（新卡；unit_price=标价快照，unit_real_price=成交价；店长特价时二者分离）
     for (const d of inItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
@@ -3214,17 +3553,18 @@ async function createConversion(ctx) {
           sku_id, product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11, $12, $13, $14)`,
+          sales_category, service_fee, is_shengmei, is_experience, is_manager_special
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15, $16)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.productType,
           d.sessionCount,
-          d.unitPrice, d.quantity, d.amount,
+          d.unitPrice, d.quantity, d.unitRealPrice, d.amount,
           d.salesCategory, d.serviceFee,
           d.isShengmei ?? null,
           // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
           d.isExperience === true,
+          d.isManagerSpecial === true,
         ]
       )
     }
@@ -3271,7 +3611,7 @@ async function createConversion(ctx) {
     }
 
     // 按回款逐笔分配：转换单补差额全额抵扣即结清 → 捕获可分配额（非定向）
-    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 spai 聚合 received。
+    // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
     if (convFullCardPaymentId && card > 0) {
       await capturePaymentAllocatables(tx, {
         salePaymentId: convFullCardPaymentId,
@@ -3284,7 +3624,7 @@ async function createConversion(ctx) {
 
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
-    // 必须在 capture 之后：新 STEP1 从 spai 聚合 received
+    // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
     await recalcPaidSessionsForOrder(tx, convOrderId)
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。
@@ -3405,6 +3745,129 @@ async function customerHeldCards(ctx) {
 
 // ========== P2: 取货单 ==========
 
+async function generatePickupInventoryDocNo(client) {
+  const prefix = 'GCK'
+  const ymd = shanghaiYMD()
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+    `store_inventory_docs:${prefix}:${ymd}`,
+  ])
+  const rows = await client.query(
+    `SELECT id
+       FROM store_inventory_docs
+      WHERE id LIKE $1
+   ORDER BY id DESC
+      LIMIT 1`,
+    [`${prefix}-${ymd}-%`],
+  )
+  const latest = rows.rows[0]?.id
+  const seq = latest ? Number(String(latest).slice(-4)) + 1 : 1
+  return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
+}
+
+async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, customerName, pickupQuantity, remark, idempotencyKey) {
+  const stockRows = await client.query(
+    `SELECT id, store_id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
+       FROM store_inventory_stocks
+      WHERE store_id = $1
+        AND sku_id = $2
+        AND quantity_on_hand > 0
+   ORDER BY expiry_date NULLS LAST, id
+      FOR UPDATE`,
+    [ctx.auth.effectiveStoreId, updatedItem.sku_id],
+  )
+
+  let available = 0
+  for (const row of stockRows.rows) available += Number(row.quantity_on_hand)
+  if (available < Number(pickupQuantity)) {
+    throw new Error(`INVALID_STATE: 门店库存不足，当前可用 ${available}`)
+  }
+
+  const docId = await generatePickupInventoryDocNo(client)
+  await client.query(
+    `INSERT INTO store_inventory_docs (
+       id, doc_type, status, store_id, doc_date, total_quantity,
+       related_sale_order_id, client_user_id, customer_name,
+       remark, created_by, confirmed_by, confirmed_at
+     )
+     VALUES ($1, '院顾客产品出库', '已完成', $2, $3, $4,
+             $5, $6, $7, $8, $9, $9, NOW())`,
+    [
+      docId,
+      ctx.auth.effectiveStoreId,
+      shanghaiDateStr(),
+      pickupQuantity,
+      updatedItem.sale_order_id,
+      clientUserId,
+      customerName || null,
+      remark || null,
+      ctx.auth.staffWfId,
+    ],
+  )
+
+  let remaining = Number(pickupQuantity)
+  let itemSeq = 0
+  for (const stock of stockRows.rows) {
+    if (remaining <= 0) break
+    const before = Number(stock.quantity_on_hand)
+    const deduct = Math.min(before, remaining)
+    const after = before - deduct
+    const inserted = await client.query(
+      `INSERT INTO store_inventory_doc_items (
+         doc_id, stock_id, sku_id, sale_item_id, sku_name, batch_no, expiry_date,
+         quantity, stock_snapshot, remark
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id`,
+      [
+        docId,
+        stock.id,
+        stock.sku_id,
+        updatedItem.sale_item_id,
+        stock.sku_name || updatedItem.product_name || updatedItem.sku_id,
+        stock.batch_no || '',
+        stock.expiry_date || null,
+        deduct,
+        before,
+        remark || null,
+      ],
+    )
+    const docItemId = inserted.rows[0].id
+    await client.query(
+      `UPDATE store_inventory_stocks
+          SET quantity_on_hand = $1,
+              updated_at = NOW()
+        WHERE id = $2`,
+      [after, stock.id],
+    )
+    await client.query(
+      `INSERT INTO store_inventory_movements (
+         movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
+         sale_order_id, sale_item_id, direction, quantity_delta,
+         quantity_before, quantity_after, created_by, remark
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'出库',$9,$10,$11,$12,$13)`,
+      [
+        `pickup:${updatedItem.sale_item_id}:${idempotencyKey || docId}:${itemSeq++}`,
+        stock.id,
+        ctx.auth.effectiveStoreId,
+        stock.sku_id,
+        docId,
+        docItemId,
+        updatedItem.sale_order_id,
+        updatedItem.sale_item_id,
+        -deduct,
+        before,
+        after,
+        ctx.auth.staffWfId,
+        remark || null,
+      ],
+    )
+    remaining -= deduct
+  }
+
+  return docId
+}
+
 /**
  * 创建取货记录（家居产品提货）
  * payload: { saleItemId, pickupQuantity, remark? }
@@ -3455,7 +3918,7 @@ async function createPickup(ctx) {
          AND store_id = $3
          AND product_type = '家居产品'
          AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-       RETURNING sale_item_id, quantity, picked_up_quantity`,
+       RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity`,
       [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
     )
 
@@ -3479,14 +3942,29 @@ async function createPickup(ctx) {
 
     // 2) 查顾客信息
     const itemRows = await client.query(
-      `SELECT si.sale_order_id, o.client_user_id
+      `SELECT si.sale_order_id, o.client_user_id, o.customer_name
        FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        WHERE si.sale_item_id = $1`,
       [saleItemId]
     )
     const clientUserId = itemRows.rows.length > 0 ? itemRows.rows[0].client_user_id : null
+    const customerName = itemRows.rows.length > 0 ? itemRows.rows[0].customer_name : null
 
-    // 3) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE 重复累加）
+    updated = result.rows[0]
+
+    // 3) 写入统一库存单据 + 库存扣减流水。库存不足时回滚 picked_up_quantity。
+    const inventoryDocId = await createPickupInventoryDoc(
+      client,
+      ctx,
+      updated,
+      clientUserId,
+      customerName,
+      pickupQuantity,
+      remark,
+      idempotencyKey,
+    )
+
+    // 4) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE/库存重复扣减）
     try {
       await client.query(
         `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
@@ -3500,16 +3978,15 @@ async function createPickup(ctx) {
       throw err
     }
 
-    updated = result.rows[0]
-
     // 审计日志
     await logOperation(client, ctx, 'order.createPickup', 'sale_item', saleItemId, {
-      _v: 3,
+      _v: 4,
       pickupQuantity,
       clientUserId,
       storeId: ctx.auth.effectiveStoreId,
       pickedUp: updated.picked_up_quantity,
       total: updated.quantity,
+      inventoryDocId,
     })
   })
 
@@ -3537,7 +4014,7 @@ async function availablePickupItems(ctx) {
     `SELECT si.sale_item_id,
             si.sale_order_id,
             si.product_name,
-            si.product_name AS spec_name,
+            NULL::text AS spec_name,
             si.quantity,
             COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
             si.unit_real_price,
@@ -3641,7 +4118,7 @@ async function pickupRecordsList(ctx) {
            cw.phone AS client_phone,
            sw.name AS confirmed_by_name,
            si.product_name,
-           si.product_name AS spec_name,
+           NULL::text AS spec_name,
            si.quantity AS item_quantity,
            si.picked_up_quantity AS item_picked_up_quantity,
            si.sale_order_id
@@ -3836,7 +4313,7 @@ async function refundDetail(ctx) {
   const nameMap = {}
   if (itemIds.length > 0) {
     const siRows = await pg.query(
-      `SELECT sale_item_id, product_name, product_name AS spec_name, product_type
+      `SELECT sale_item_id, product_name, NULL::text AS spec_name, product_type
          FROM sale_items WHERE sale_item_id = ANY($1)`,
       [itemIds]
     )
@@ -3901,7 +4378,8 @@ async function refundDetail(ctx) {
  *
  * 寄存单是把"顾客在 WorkFine 上的剩余次数"初始化到小程序的特殊订单：
  *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
- *   - 不收钱：received=0 / payable_amount=0 / total_amount=0 / payment_method='无' / status='已支付'
+ *   - 提交审批：received=0 / payable_amount=0 / total_amount=0 / payment_method='无' / status='待审批'
+ *   - 审批通过前不写 paid_at / paid_sessions，不允许生成服务单核销次数
  *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
  *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
  *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
@@ -3973,7 +4451,7 @@ async function createDeposit(ctx) {
   }
 
   // 拉 SKU 信息（参考 createConversion 的 SKU JOIN 模式）
-  const itemDataList = await Promise.all(items.map(async (item) => {
+  const rawItemDataList = await Promise.all(items.map(async (item) => {
     if (!item || !item.skuId) {
       throw new Error('INVALID_PARAMS: items 缺少 skuId')
     }
@@ -4002,7 +4480,7 @@ async function createDeposit(ctx) {
     }
     // 原价快照（供审计），不入 received
     const basePrice = Number(sku.special_price || sku.price)
-    // session_count × quantity（与 order.create 一致）
+    // 先按输入行计算总次数；疗程卡 quantity>1 在下方拆为独立卡实体。
     const sessionCount = sku.session_count != null
       ? Number(sku.session_count) * quantity
       : null
@@ -4029,6 +4507,49 @@ async function createDeposit(ctx) {
     }
   }))
 
+  // B2：寄存单也必须保持"每张疗程卡一行"。
+  // 历史实收是原购物车行总额，按每张卡 saleAmount 贪心填满，避免 1350/3 均分成 450/450/450。
+  const itemDataList = []
+  for (const d of rawItemDataList) {
+    if (d.productType === '疗程卡' && d.quantity > 1) {
+      const n = d.quantity
+      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
+      const totalSaleCents = Math.round(Number(d.saleAmount || 0) * 100)
+      const perSaleCents = Math.round(totalSaleCents / n)
+      const totalReceivedCents = Math.round(Number(d.received || 0) * 100)
+      let remainingReceivedCents = totalReceivedCents
+
+      for (let i = 0; i < n; i++) {
+        const isLast = i === n - 1
+        const saleCents = isLast
+          ? totalSaleCents - perSaleCents * (n - 1)
+          : perSaleCents
+        let receivedCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
+        remainingReceivedCents -= receivedCents
+        if (isLast && remainingReceivedCents > 0) {
+          receivedCents += remainingReceivedCents
+          remainingReceivedCents = 0
+        }
+        const saleAmount = Math.round(saleCents) / 100
+        const received = Math.round(receivedCents) / 100
+        const denom = (perSession != null && perSession > 0) ? perSession : 1
+        const unit = denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount
+        itemDataList.push({
+          ...d,
+          sessionCount: perSession,
+          remainingSessions: perSession,
+          quantity: 1,
+          saleAmount,
+          received,
+          unitPrice: unit,
+          unitRealPrice: unit,
+        })
+      }
+    } else {
+      itemDataList.push(d)
+    }
+  }
+
   const now = new Date()
   let saleOrderId
 
@@ -4039,7 +4560,7 @@ async function createDeposit(ctx) {
     // document_type：寄存单是把老顾客剩余次数初始化进来，固定 '售后'
     const documentType = '售后'
 
-    // INSERT sale_orders —— 寄存单核心：金额全 0、status 直接已支付、payment_method='无'
+    // INSERT sale_orders —— 寄存单核心：金额全 0、status 待审批、payment_method='无'
     await tx.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
@@ -4048,8 +4569,8 @@ async function createDeposit(ctx) {
         preferred_employee_id, coupon_id, coupon_discount, remark,
         prepaid_card_amount, received, payable_amount, paid_at,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
-                NULL, NULL, 0, $10, 0, 0, 0, $5,
+      ) VALUES ($1, '待审批', '寄存单', $2, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $4), $3), $4, (SELECT store_name FROM stores WHERE store_id = $4), $5, 0, $6, $7, $8, '无', $9,
+                NULL, NULL, 0, $10, 0, 0, 0, NULL,
                 '待分配', $5, $5)`,
       [
         saleOrderId, documentType, marketName, storeId, now,
@@ -4103,40 +4624,25 @@ async function createDeposit(ctx) {
       )
     }
 
-    // 历史实收录入：对 received>0 的行写 '回款'(线下) 流水（ref=该行，targeted），
-    // 并把 sale_orders.received 设为合计。total_amount 仍保持 0：
-    //   → paid_sessions 走 recalc 兜底 = session_count（次数全开）
-    //   → dashboard 按 sale_order_type 排除寄存单，received 不进统计
+    // 历史实收录入：对 received>0 的行写待审批 '回款'(线下) 流水（ref=该行，targeted）。
+    // 审批通过前不计入 sale_orders.received、不落 paid_sessions，避免未审批寄存单可被核销。
     if (receiptRows.length > 0) {
       for (const r of receiptRows) {
         await tx.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method, external_txn_id,
             status, source_end, operator_employee_id, ref_sale_item_id, note, created_at, paid_at
-          ) VALUES ($1, '回款', $2, '线下', NULL, '已支付', 'staff', $3, $4, $5, $6, $6)`,
+          ) VALUES ($1, '回款', $2, '线下', NULL, '待审批', 'staff', $3, $4, $5, $6, NULL)`,
           [saleOrderId, r.received, ctx.auth.staffWfId, r.saleItemId, DEPOSIT_RECEIPT_NOTE, now]
         )
       }
-      const totalReceived = receiptRows.reduce((s, r) => s + r.received, 0)
-      await tx.query(
-        `UPDATE sale_orders SET received = $1, updated_at = NOW() WHERE sale_order_id = $2`,
-        [totalReceived, saleOrderId]
-      )
     }
-
-    // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0，公式走 op.total_amount <= 0
-    // → paid_sessions = session_count（全付兜底），与"WorkFine 剩余次数初始化"语义一致
-    // recalc STEP1 把上面的 targeted 流水精确落回各行 sale_items.received
-    await recalcPaidSessionsForOrder(tx, saleOrderId)
-
-    // 疗程卡实际单价按实付重算：unit_real_price = received/session_count（实付=0 置 0）。
-    // 必须在 recalc 之后（STEP1 落定各行 received 后才能算）。
-    await tx.query(DEPOSIT_REAL_PRICE_RECALC_SQL, [saleOrderId])
 
     // 审计日志
     await logOperation(tx, ctx, 'order.createDeposit', 'sale_order', saleOrderId, {
-      _v: 3,
+      _v: 4,
       clientUserId,
+      status: '待审批',
       itemCount: itemDataList.length,
       totalSessionCount: itemDataList.reduce(
         (acc, it) => acc + (it.sessionCount != null ? it.sessionCount : 0),
@@ -4147,9 +4653,9 @@ async function createDeposit(ctx) {
 
   ctx.result = {
     saleOrderId,
-    status: '已支付',
+    status: '待审批',
     itemCount: itemDataList.length,
-    message: '寄存单已创建',
+    message: '寄存单已提交审批',
   }
 }
 

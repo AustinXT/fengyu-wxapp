@@ -1135,15 +1135,16 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
 
   /**
    * mock 单次 db.select → exportEmployees 员工数据查询链路：
-   * select → from → leftJoin → where → orderBy → limit
+   * select → from → leftJoin → where → orderBy
    */
   function mockExportChain(rows: any[]) {
-    const limit = vi.fn().mockResolvedValue(rows)
-    const orderBy = vi.fn().mockReturnValue({ limit })
-    const where = vi.fn().mockReturnValue({ orderBy })
-    const leftJoin = vi.fn().mockReturnValue({ where })
-    const from = vi.fn().mockReturnValue({ leftJoin })
-    ;(db.select as any).mockReturnValue({ from })
+    const chain: any = Object.assign(Promise.resolve(rows), {})
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    ;(db.select as any).mockReturnValue(chain)
   }
 
   beforeEach(() => {
@@ -1206,8 +1207,7 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     expect((sql as any).join).not.toHaveBeenCalled()
   })
 
-  it('truncated 标记：返回 > LIMIT → truncated=true 且截断至 LIMIT', async () => {
-    // mock 超量返回（LIMIT + 1 行）以触发 truncated 逻辑
+  it('超过旧上限也返回全量且不标记截断', async () => {
     const overflow = Array.from({ length: 10001 }, (_, i) => ({
       staff_wechat_users: {
         employeeId: `FY-${String(i).padStart(5, '0')}`,
@@ -1229,7 +1229,7 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
 
     const result = await exportEmployees({})
 
-    expect(result.truncated).toBe(true)
-    expect(result.rows).toHaveLength(10000)
+    expect(result.truncated).toBe(false)
+    expect(result.rows).toHaveLength(10001)
   })
 })

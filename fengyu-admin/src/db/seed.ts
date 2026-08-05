@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm'
 import { orgNodes, stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productCategories, products, productSkus, mallCategories, mallProductSkus } from '@db/product'
-import { saleOrders, saleItems, saleAllocations } from '@db/order'
+import { saleOrders, saleItems } from '@db/order'
 import { appointments } from '@db/appointment'
 import { serviceOrders, serviceItems } from '@db/service'
 import { permissionRoles } from '@db/permission'
@@ -243,12 +243,6 @@ const SALE_ITEMS = [
   { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', productType: '疗程卡' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自销自耗' as const },
 ]
 
-const SALE_ALLOCATIONS = [
-  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0002', roleType: '美容师', allocationRatio: '0.80', totalAmount: '1440.00', isVoid: false },
-  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0004', roleType: '美容师', allocationRatio: '0.20', totalAmount: '360.00', isVoid: false },
-  { saleItemId: 'XSLSH-WX-202603100002', employeeId: 'FY-260101-0002', roleType: '美容师', allocationRatio: '1.00', totalAmount: '499.00', isVoid: false },
-]
-
 const APPOINTMENTS = [
   { appointmentId: 'appt-001', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'XSLSH-WX-202603100001', appointmentTime: new Date('2026-03-11T10:00:00Z'), checkinAt: new Date('2026-03-11T09:55:00Z'), notes: '蜜语嫩肤第1次' },
   { appointmentId: 'appt-002', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'XSLSH-WX-202603100001', appointmentTime: new Date('2026-03-12T14:00:00Z'), checkinAt: new Date('2026-03-12T13:50:00Z'), notes: '蜜语嫩肤第2次' },
@@ -371,10 +365,6 @@ async function seed() {
     // 9. sale_items
     console.log('  sale_items...')
     await tx.insert(saleItems).values(SALE_ITEMS).onConflictDoNothing()
-
-    // 10. sale_allocations
-    console.log('  sale_allocations...')
-    await tx.insert(saleAllocations).values(SALE_ALLOCATIONS).onConflictDoNothing()
 
     // 11. appointments
     console.log('  appointments...')

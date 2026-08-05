@@ -1,7 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getCurrentStoreId } from '../../utils/role';
-import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine } from '../../utils/cart-calc';
+import { calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
 import { formatDate } from '../../utils/formatters';
@@ -32,12 +32,16 @@ interface CartItem {
   skuId: string;
   spuName: string;
   specName: string;
+  categoryId?: string;
+  categoryName?: string;
   /** 单价（会员价优先 specialPrice，否则 price；由 skuToDisplay / SkuItem 决定） */
   price: number;
   /** 展示用：原始挂牌价（划线原价）。缺省时降级为单价显示 */
   listPrice?: number;
   /** 展示用：特价，null 表示无特价 */
   specialPrice?: number | null;
+  /** 每单限购次数；null/undefined=不限购 */
+  purchaseLimit?: number | null;
   quantity: number;
   sessionCount: number;
   productType: string;
@@ -52,8 +56,10 @@ interface CartItem {
   halfPriceSaleAmount: string;
   /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
   received: string;
-  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单可改应付 */
+  /** 店长特别优惠 capability（product_skus.is_manager_special）：true 时销售单/转换单可改应付 */
   isManagerSpecial?: boolean;
+  /** 体验卡 capability（product_skus.is_experience）：体验卡不参与同名疗程阶梯价 */
+  isExperience?: boolean;
   /** 店长手填的应付金额（仅店长特价行；undefined=未改，用 price×quantity） */
   saleAmountOverride?: string;
   /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
@@ -77,6 +83,7 @@ interface SkuItem {
   price: number;
   specialPrice: number | null;
   sessionCount: number | null;
+  purchaseLimit?: number | null;
   productType: string;
   serviceFee: number;
   isShengmei: boolean | null;
@@ -93,6 +100,7 @@ interface BundleGroupSku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
+  purchaseLimit?: number | null;
   productType: string;
   isShengmei: boolean;
   bundlePrice: number;
@@ -123,6 +131,8 @@ interface BundleSpu {
 interface DisplayItem {
   spuId: string;
   spuName: string;
+  categoryId: string;
+  categoryName: string;
   /** 生效价（specialPrice 优先，否则 price）；计费用 */
   price: number;
   /** 原始挂牌价 sku.price（展示划线用，price 折叠后保留此字段） */
@@ -131,9 +141,12 @@ interface DisplayItem {
   productKind: string;
   productType: string;
   sessionCount: number | null;
+  purchaseLimit?: number | null;
   isBundle?: boolean;
   /** 店长特别优惠 capability（仅普通商品开单时放开应付编辑） */
   isManagerSpecial?: boolean;
+  /** 体验卡 capability */
+  isExperience?: boolean;
 }
 
 interface CustomerInfo {
@@ -228,15 +241,113 @@ function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
   return {
     spuId: sku.skuId,
     spuName: sku.specName,
+    categoryId: sku.categoryId,
+    categoryName: sku.categoryName,
     price: useSpecial ? special : list,
     listPrice: list,
     specialPrice: hasSpecial ? special : null, // 展示：有会员价即双行（与会员身份解耦）
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,
+    purchaseLimit: sku.purchaseLimit ?? null,
     isBundle: !!sku.isBundle,
     isManagerSpecial: !!sku.isManagerSpecial,
+    isExperience: !!sku.isExperience,
   }
+}
+
+function purchaseLimitMessage(item: { specName?: string; spuName?: string; purchaseLimit?: number | null }): string {
+  return `${item.specName || item.spuName || '该商品'}每单最多可购买 ${item.purchaseLimit} 件`;
+}
+
+function findCartPurchaseLimitViolation(cart: CartItem[]): CartItem | null {
+  const totals = new Map<string, { item: CartItem; quantity: number }>();
+  for (const item of cart) {
+    const current = totals.get(item.skuId);
+    totals.set(item.skuId, {
+      item,
+      quantity: (current?.quantity || 0) + item.quantity,
+    });
+  }
+  for (const row of totals.values()) {
+    if (row.item.purchaseLimit != null && row.quantity > row.item.purchaseLimit) return row.item;
+  }
+  return null;
+}
+
+function roundMoney(value: number): number {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function resolveSkuUnitPrice(sku: { price: number; specialPrice?: number | null }, isMember: boolean): number {
+  const list = Number(sku.price) || 0;
+  const special = sku.specialPrice != null ? Number(sku.specialPrice) : null;
+  return isMember && special != null && special < list ? special : list;
+}
+
+function buildTreatmentTierLineMap(cart: CartItem[], skus: SkuItem[], isMember: boolean): Map<string, number> {
+  const result = new Map<string, number>();
+  const groups = new Map<string, CartItem[]>();
+
+  for (const item of cart) {
+    if (
+      item.productType !== '疗程卡' ||
+      item.refBundleId ||
+      item.isExperience ||
+      item.isManagerSpecial ||
+      item.saleAmountOverride != null ||
+      !item.categoryId ||
+      !item.specName ||
+      !item.sessionCount ||
+      item.sessionCount <= 0
+    ) {
+      continue;
+    }
+    const key = `${item.categoryId}::${item.specName}`;
+    const group = groups.get(key) || [];
+    group.push(item);
+    groups.set(key, group);
+  }
+
+  for (const [key, groupedItems] of groups.entries()) {
+    const [categoryId, specName] = key.split('::');
+    const totalSessions = groupedItems.reduce(
+      (sum, item) => sum + (Number(item.sessionCount) || 0) * (Number(item.quantity) || 1),
+      0,
+    );
+    if (totalSessions <= 1) continue;
+
+    const candidates = skus
+      .filter(s =>
+        s.categoryId === categoryId &&
+        s.specName === specName &&
+        s.productType === '疗程卡' &&
+        !s.isExperience &&
+        !s.isManagerSpecial &&
+        !s.isBundle &&
+        s.sessionCount != null &&
+        Number(s.sessionCount) > 1 &&
+        Number(s.sessionCount) <= totalSessions
+      )
+      .sort((a, b) => {
+        const sessionDelta = Number(b.sessionCount) - Number(a.sessionCount);
+        if (sessionDelta !== 0) return sessionDelta;
+        const aUnit = resolveSkuUnitPrice(a, isMember) / (Number(a.sessionCount) || 1);
+        const bUnit = resolveSkuUnitPrice(b, isMember) / (Number(b.sessionCount) || 1);
+        return aUnit - bUnit;
+      });
+    const tier = candidates[0];
+    if (!tier || !tier.sessionCount || tier.sessionCount <= 1) continue;
+
+    const tierAmount = resolveSkuUnitPrice(tier, isMember);
+    const tierSessions = Number(tier.sessionCount);
+    for (const item of groupedItems) {
+      const lineSessions = (Number(item.sessionCount) || 0) * (Number(item.quantity) || 1);
+      result.set(item.skuId, calcTierLineAmount(tierAmount, tierSessions, lineSessions));
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -743,6 +854,11 @@ Page({
   onBundlePickerSelect(e: WechatMiniprogram.CustomEvent) {
     const { cartItems } = (e.detail || {}) as { cartItems?: CartItem[]; bundleName?: string };
     if (!cartItems || cartItems.length === 0) return;
+    const violation = findCartPurchaseLimitViolation(cartItems);
+    if (violation) {
+      wx.showToast({ title: purchaseLimitMessage(violation), icon: 'none' });
+      return;
+    }
     this.updateCart(cartItems);
     // 与 admin 一致：选完直接弹结算面板（Step 0：选顾客）
     this.onOpenCheckout();
@@ -769,6 +885,10 @@ Page({
         wx.showToast({ title: '组合套餐项目不可修改数量', icon: 'none' });
         return;
       }
+      if (cart[existing].purchaseLimit != null && cart[existing].quantity + 1 > cart[existing].purchaseLimit) {
+        wx.showToast({ title: purchaseLimitMessage(cart[existing]), icon: 'none' });
+        return;
+      }
       cart[existing].quantity += 1;
     } else {
       cart.push({
@@ -776,14 +896,18 @@ Page({
         skuId: item.spuId,
         spuName: item.spuName,
         specName: item.spuName,
+        categoryId: item.categoryId,
+        categoryName: item.categoryName,
         price: item.price,
         listPrice: item.listPrice,
         specialPrice: item.specialPrice,
+        purchaseLimit: item.purchaseLimit ?? null,
         quantity: 1,
         sessionCount: item.sessionCount || 0,
-        productType: item.productKind || item.productType,
+        productType: item.productType,
         workfineItemId: '',
         isManagerSpecial: !!item.isManagerSpecial,
+        isExperience: !!item.isExperience,
         priceLine: '', couponShare: '0.00', saleAmount: '', halfPriceSaleAmount: '', received: '',
       });
     }
@@ -850,7 +974,12 @@ Page({
         wx.showToast({ title: '组合套餐项目不可修改数量', icon: 'none' });
         return;
       }
-      cart[idx].quantity = qty;
+      if (cart[idx].purchaseLimit != null && qty > cart[idx].purchaseLimit) {
+        wx.showToast({ title: purchaseLimitMessage(cart[idx]), icon: 'none' });
+        cart[idx].quantity = cart[idx].purchaseLimit;
+      } else {
+        cart[idx].quantity = qty;
+      }
     }
     this.updateCart(cart);
   },
@@ -882,20 +1011,20 @@ Page({
   },
 
   /**
-   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单 + 普通商品）。
+   * 行级「应付金额」编辑（仅店长特别优惠 SKU + 销售单/转换单 + 普通商品）。
    * - 区间 0 ≤ 应付 ≤ price×quantity（向下调，不许涨价）
    * - 空字符串等同于默认（=标准价线 price×quantity）
    * - 改应付后实付默认回归新应付（不保留旧实付，避免实付>应付）
    */
-  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
-    const skuId = e.currentTarget.dataset.skuId as string;
-    const raw = (e.detail?.value ?? '') as string;
+  applySaleAmountOverride(skuId: string, raw: string) {
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx < 0) return;
     const row = cart[idx];
-    // 仅店长特价行 + 销售单 + 普通商品放行（组合套餐不适用）
-    if (this.data.saleOrderType !== '销售单' || !row.isManagerSpecial
+    // 仅店长特价行 + 销售单/转换单 + 普通商品放行（组合套餐不适用）
+    const supportsManagerSpecial =
+      this.data.saleOrderType === '销售单' || this.data.saleOrderType === '转换单';
+    if (!supportsManagerSpecial || !row.isManagerSpecial
         || row.refBundleId || row.productType === '组合套餐') {
       return;
     }
@@ -909,6 +1038,18 @@ Page({
     }
     // 改应付后实付回归默认（=新应付），避免残留旧实付超过新应付
     this.updateCart(cart);
+  },
+
+  onSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = (e.detail?.value ?? '') as string;
+    this.applySaleAmountOverride(skuId, raw);
+  },
+
+  onConversionSaleAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const detail = (e.detail || {}) as { skuId?: string; value?: string };
+    if (!detail.skuId) return;
+    this.applySaleAmountOverride(detail.skuId, String(detail.value ?? ''));
   },
 
   /** 寄存单历史实收输入（独立于 cart.received，避免和销售单实付逻辑纠缠） */
@@ -931,22 +1072,31 @@ Page({
    * - 否则 received 全部回归默认值（= 当前订单类型下的应付）
    */
   updateCart(cart: CartItem[], opts?: { preserveReceived?: boolean }) {
-    const isInternal = this.data.saleOrderType === '内部单';
-    const isSales = this.data.saleOrderType === '销售单';
-    // 店长特别优惠（仅销售单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
+    const saleOrderType = this.data.saleOrderType;
+    const isInternal = saleOrderType === '内部单';
+    const isSales = saleOrderType === '销售单';
+    const supportsManagerSpecial = isSales || saleOrderType === '转换单';
+    const tierLineMap = isSales
+      ? buildTreatmentTierLineMap(cart, this._allSkus, this.data.buyerIsMember)
+      : new Map<string, number>();
+    // 店长特别优惠（销售单/转换单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
     // 钳制到 [0, price×qty]（向下调，不许涨价）；未改时回退标准价线 price×qty。
     const effBase = cart.map(c => {
       const stdLine = c.price * c.quantity;
-      const editable = isSales && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+      const tierLine = tierLineMap.get(c.skuId);
+      const editable = supportsManagerSpecial && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
       if (editable && c.saleAmountOverride != null && c.saleAmountOverride !== '') {
         const v = parseFloat(c.saleAmountOverride);
         if (!Number.isNaN(v)) return Math.max(0, Math.min(v, stdLine));
       }
+      if (tierLine != null) return tierLine;
       return stdLine;
     });
-    // 1) priceLine（"价格"列）= 标准价线（店长改应付不影响划线价展示）
-    for (const c of cart) {
-      c.priceLine = (c.price * c.quantity).toFixed(2);
+    // 1) priceLine（"价格"列）= 阶梯价/标准价 pre-coupon 基线；店长手动改价不影响价格列展示。
+    for (let i = 0; i < cart.length; i++) {
+      const c = cart[i];
+      const tierLine = tierLineMap.get(c.skuId);
+      c.priceLine = (tierLine != null ? tierLine : c.price * c.quantity).toFixed(2);
     }
     // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = 标价 listPrice × 0.5 × qty（不取会员价，与后端 order.js / admin orders.ts 一致）
     const baseLines = cart.map((c, i) => {
@@ -978,7 +1128,8 @@ Page({
         c.received = cap.toFixed(2);
       }
     }
-    const { count, total } = calcCartTotal(cart);
+    const count = cart.reduce((sum, c) => sum + c.quantity, 0);
+    const total = cart.reduce((sum, c) => sum + (parseFloat(c.priceLine) || 0), 0).toFixed(2);
     const halfPriceTotal = calcHalfPriceTotal(cart);
     // 应付合计 = Σ(行应付)；实付合计 = Σ(行实付)
     let payableSum = 0, receivedSum = 0;
@@ -1203,7 +1354,17 @@ Page({
       const sku = skuMap[c.skuId];
       if (!sku) return c;
       const disp = skuToDisplay(sku, buyerIsMember);
-      return { ...c, price: disp.price, listPrice: disp.listPrice, specialPrice: disp.specialPrice };
+      return {
+        ...c,
+        categoryId: disp.categoryId,
+        categoryName: disp.categoryName,
+        price: disp.price,
+        listPrice: disp.listPrice,
+        specialPrice: disp.specialPrice,
+        productType: disp.productType,
+        isManagerSpecial: !!disp.isManagerSpecial,
+        isExperience: !!disp.isExperience,
+      };
     });
     this.updateCart(cart);
   },
@@ -1590,13 +1751,14 @@ Page({
         saleOrderType,
         items: cart.map(c => {
           // 店长特别优惠（仅销售单 + 普通商品）：手填应付覆盖 pre-coupon 行小计与成交单价。
-          // 钳制 [0, price×qty]；未改时与原行为字节一致（unitRealPrice=c.price、saleAmount=c.priceLine）。
+          // 钳制 [0, price×qty]；未改时使用 priceLine（可能已由疗程阶梯价重算）。
           const editable = saleOrderType === '销售单' && !!c.isManagerSpecial
             && !c.refBundleId && c.productType !== '组合套餐';
           const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
           const effSale = hasOv
             ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
-            : c.price * c.quantity;
+            : (parseFloat(c.priceLine) || c.price * c.quantity);
+          const effUnit = c.quantity > 0 ? effSale / c.quantity : effSale;
           return {
             skuId: c.skuId,
             workfineItemId: c.workfineItemId,
@@ -1610,8 +1772,9 @@ Page({
             //                   ⚠️ 不是 c.saleAmount 那个已扣券值，避免后端摊券时双扣
             // 内部单后端会忽略价格字段强制 sku.price × 50% 重算
             unitPrice: ((c.listPrice ?? c.price) || 0).toFixed(2),
-            unitRealPrice: hasOv ? (effSale / c.quantity).toFixed(2) : (c.price || 0).toFixed(2),
-            saleAmount: hasOv ? effSale.toFixed(2) : c.priceLine,
+            unitRealPrice: effUnit.toFixed(2),
+            saleAmount: effSale.toFixed(2),
+            manualSaleAmountOverride: hasOv,
             // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
             received: parseFloat(c.received) || 0,
           };
@@ -1695,7 +1858,25 @@ Page({
       }>('order.createConversion', {
         clientUserId: customerInfo.clientUserId,
         convertOutSaleItemIds: conversionSelectedSaleItemIds,
-        convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
+        convertInItems: cart.map(c => {
+          const editable = !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+          const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
+          const effSale = hasOv
+            ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
+            : (parseFloat(c.saleAmount) || c.price * c.quantity);
+          const effUnit = c.quantity > 0 ? effSale / c.quantity : effSale;
+          const item: Record<string, unknown> = {
+            skuId: c.skuId,
+            quantity: c.quantity,
+          };
+          if (hasOv) {
+            item.unitPrice = ((c.listPrice ?? c.price) || 0).toFixed(2);
+            item.unitRealPrice = effUnit.toFixed(2);
+            item.saleAmount = effSale.toFixed(2);
+            item.manualSaleAmountOverride = true;
+          }
+          return item;
+        }),
         paymentMethod,
         prepaidCardAmount: conversionPrepaidCardAmount > 0 ? conversionPrepaidCardAmount : undefined,
         isActivity: this.data.conversionIsActivity,
@@ -1766,7 +1947,7 @@ Page({
     if (submitting) return;
     this.setData({ submitting: true });
     try {
-      const res = await callStaffApi<{ saleOrderId: string; itemCount: number; status: string }>(
+      const res = await callStaffApi<{ saleOrderId: string; itemCount: number; status: string; message?: string }>(
         'order.createDeposit',
         {
           clientUserId: customerInfo.clientUserId,
@@ -1786,7 +1967,7 @@ Page({
         depositReceivedMap: {},
       });
       wx.showToast({
-        title: `寄存单已创建（${res.itemCount} 项）`,
+        title: res.message || `寄存单已提交审批（${res.itemCount} 项）`,
         icon: 'success',
         duration: 2000,
       });

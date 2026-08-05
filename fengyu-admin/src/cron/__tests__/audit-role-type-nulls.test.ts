@@ -3,7 +3,7 @@
  *
  * 关键场景：
  *   A 双表 0 NULL → alertedCount=0，仅 1 次 SELECT
- *   B sale_allocations > 0 NULL → 写 1 条 operation_logs(action='dataIntegrity.roleTypeNull')
+ *   B sale_payment_item_allocations > 0 NULL → 写 1 条 operation_logs(action='dataIntegrity.roleTypeNull')
  *   C 双表都 > 0 NULL → 写 2 条
  *   D 永远不 UPDATE 业务表（只读审计）
  *   E source 字段写 'cronTask'（保留语义）
@@ -46,7 +46,7 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
 
     expect(result.alertedCount).toBe(0)
     expect(result.checks).toEqual([
-      { table: 'sale_allocations', column: 'role_type', nullCount: 0 },
+      { table: 'sale_payment_item_allocations', column: 'role_type', nullCount: 0 },
       { table: 'service_commissions', column: 'role_type', nullCount: 0 },
     ])
     // 只 1 次（SELECT），无 INSERT
@@ -56,7 +56,7 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     expect(notifyOpsMock).not.toHaveBeenCalled()
   })
 
-  it('B. sale_allocations > 0 NULL → 写 1 条 operation_logs', async () => {
+  it('B. sale_payment_item_allocations > 0 NULL → 写 1 条 operation_logs', async () => {
     mockExecute.mockResolvedValueOnce([{ sale_alloc_null: 5, svc_comm_null: 0 }])
     mockExecute.mockResolvedValueOnce([]) // INSERT log
 
@@ -72,19 +72,19 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     expect(insertCalls.length).toBe(1)
 
     const params = paramsOf(insertCalls[0][0])
-    expect(params).toContain('sale_allocations')
+    expect(params).toContain('sale_payment_item_allocations')
     const detailParam = params.find(
       (p): p is string => typeof p === 'string' && p.startsWith('{'),
     )
     expect(detailParam).toBeDefined()
-    expect(detailParam).toContain('"table":"sale_allocations"')
+    expect(detailParam).toContain('"table":"sale_payment_item_allocations"')
     expect(detailParam).toContain('"nullCount":5')
 
     // alertedCount > 0 → webhook 推送一次（无论命中几张表都合并 1 次）
     expect(notifyOpsMock).toHaveBeenCalledTimes(1)
     const msg = notifyOpsMock.mock.calls[0][0] as string
     expect(msg).toContain('dataIntegrity.roleTypeNull')
-    expect(msg).toContain('sale_allocations.role_type NULL 行数：5')
+    expect(msg).toContain('sale_payment_item_allocations.role_type NULL 行数：5')
   })
 
   it('C. 双表都 > 0 NULL → 写 2 条 operation_logs', async () => {
@@ -102,13 +102,13 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     expect(insertCalls.length).toBe(2)
 
     const allParams = insertCalls.flatMap((c) => paramsOf(c[0]))
-    expect(allParams).toContain('sale_allocations')
+    expect(allParams).toContain('sale_payment_item_allocations')
     expect(allParams).toContain('service_commissions')
 
     // 双表命中也只推一次 webhook，消息含两行明细
     expect(notifyOpsMock).toHaveBeenCalledTimes(1)
     const msg = notifyOpsMock.mock.calls[0][0] as string
-    expect(msg).toContain('sale_allocations.role_type NULL 行数：3')
+    expect(msg).toContain('sale_payment_item_allocations.role_type NULL 行数：3')
     expect(msg).toContain('service_commissions.role_type NULL 行数：7')
   })
 
@@ -122,7 +122,7 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     const updateCalls = mockExecute.mock.calls.filter((c) => {
       const s = sqlTextOf(c[0])
       return (
-        s.includes('UPDATE sale_allocations') ||
+        s.includes('UPDATE sale_payment_item_allocations') ||
         s.includes('UPDATE service_commissions')
       )
     })

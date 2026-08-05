@@ -11,7 +11,7 @@
  *   - UI 选中：market → 子查询展开该市场下门店；store → 直接等值
  * UI 越权（选了权限外的 market/store）由 actions 层 validateScope 提前拦截，SQL 层再兜底。
  *
- * 提成两表（sale_allocations / service_commissions）无 store_id，
+ * 提成两表（sale_payment_item_allocations / service_commissions）无 store_id，
  * 调用方须先 JOIN sale_items→sale_orders / service_items→service_orders 拿到 store_id 列再传入。
  */
 import { sql, type SQL } from 'drizzle-orm'

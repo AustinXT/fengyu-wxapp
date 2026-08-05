@@ -42,16 +42,6 @@
 
 .profile-name { font-size: 40rpx; font-weight: 700; color: var(--color-text-primary); }
 
-.vip-badge {
-  font-size: 20rpx;
-  font-weight: 600;
-  padding: 4rpx 12rpx;
-  border-radius: var(--radius-lg);
-  background: var(--color-primary-light);
-  color: var(--color-primary);
-  border: 1rpx solid rgba(192, 50, 42, 0.3);
-}
-
 .profile-phone { font-size: 26rpx; color: var(--color-text-secondary); }
 
 .profile-stats {

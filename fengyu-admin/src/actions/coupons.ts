@@ -282,7 +282,6 @@ export const getTemplates = withPermission(
       .from(couponTemplates)
       // 默认排序：最近编辑过的模板浮顶（admin.sys.spec.md §5）
       .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt))
-      .limit(500)
 
     // 聚合每个模板的已发放数量（不受 status 过滤，反映总发放量）
     const counts = await db
@@ -669,7 +668,6 @@ export const getIssuedCoupons = withPermission(
       .where(eq(userCoupons.templateId, templateId))
       // 例外：已发放流水，user_coupons 表无 updatedAt 列
       .orderBy(desc(userCoupons.createdAt))
-      .limit(500)
 
     return rows.map((r) => ({
       couponId: r.couponId,

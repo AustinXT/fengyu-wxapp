@@ -51,6 +51,7 @@ vi.mock('@db/product', () => ({
     price: 'price',
     specialPrice: 'special_price',
     sessionCount: 'session_count',
+    purchaseLimit: 'purchase_limit',
     serviceFee: 'service_fee',
     sortOrder: 'sort_order',
     isEnabled: 'is_enabled',

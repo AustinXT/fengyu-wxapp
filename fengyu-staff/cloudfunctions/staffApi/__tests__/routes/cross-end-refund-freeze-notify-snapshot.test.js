@@ -20,32 +20,38 @@ const read = (rel) => fs.readFileSync(path.resolve(__dirname, rel), 'utf8')
 const staffCascade = read('../../helpers/refund-cascade.js')
 const adminCascade = read('../../../../../fengyu-admin/src/lib/refund-cascade.ts')
 const staffRefundUtil = read('../../utils/refund.js')
+const staffCardRoute = read('../../routes/card.js')
 
 describe('退款级联守护（2026-06-24：通道1 记负数冲销逐被退 item + 通道2 仅全退 item 软删）', () => {
   test('staff cascade：通道1 逐被退 item INSERT 负数冲销（挂退款流水 id）+ 通道2 ANY($3) 仅全退 item', () => {
     // 仅「全退」item 进入 fullItemIds（通道2/3 门控）
     expect(staffCascade).toMatch(/fullItemIds\s*=\s*effItems\.filter\(\(it\)\s*=>\s*it\.isFullItemRefund\)/)
     expect(staffCascade).toMatch(/if\s*\(fullItemIds\.length\s*>\s*0\)/)
-    // 通道1（2026-06-24 重构）：sale_allocations 由软删改「记负数冲销」——逐被退 item（effItems）INSERT 负数行，
-    // 挂退款流水 sale_payment_id，幂等键含 sale_payment_id；不再整单/子集软删。
+    // 通道1：逐被退 item（effItems）写负数 receipt；若有原正向分配，再 INSERT 负数子分配。
     expect(staffCascade).toMatch(/for \(const it of effItems\)/)
-    expect(staffCascade).toMatch(/INSERT INTO sale_allocations[\s\S]{0,500}ON CONFLICT \(sale_item_id, employee_id, role_type, sale_payment_id\) WHERE is_void = false DO NOTHING/)
-    expect(staffCascade).toMatch(/\(-voidTotal\)\.toFixed\(2\)[\s\S]{0,80}refundPaymentId/)
+    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
+    expect(staffCascade).toMatch(/\(-refundAmt\)\.toFixed\(2\)/)
+    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(staffCascade).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
+    expect(staffCascade).toMatch(/refundPaymentId/)
     // 通道2 提成：经 service_items 子查询按 sale_item_id = ANY($3)（仅全退 item，保持软删）
     expect(staffCascade).toMatch(/service_commissions[\s\S]{0,260}sale_item_id = ANY\(\$3\)/)
     // 防回归：通道1 不得回退为整单作废（WHERE sale_order_id 直接清分配）
-    expect(staffCascade).not.toMatch(/UPDATE sale_allocations[\s\S]{0,200}WHERE sale_order_id/)
+    expect(staffCascade).not.toMatch(/UPDATE sale_payment_item_allocations[\s\S]{0,200}WHERE sale_order_id/)
   })
 
   test('admin cascade：通道1 逐被退 item INSERT 负数冲销 + 通道2 IN(fullItemIds) 仅全退 item', () => {
     expect(adminCascade).toMatch(/fullItemIds\s*=\s*effItems\.filter\(\(it\)\s*=>\s*it\.isFullItemRefund\)/)
     expect(adminCascade).toMatch(/if\s*\(fullItemIds\.length\s*>\s*0\)/)
     expect(adminCascade).toMatch(/for \(const it of effItems\)/)
-    expect(adminCascade).toMatch(/INSERT INTO sale_allocations[\s\S]{0,500}ON CONFLICT \(sale_item_id, employee_id, role_type, sale_payment_id\) WHERE is_void = false DO NOTHING/)
-    expect(adminCascade).toMatch(/\$\{\(-voidTotal\)\.toFixed\(2\)\}[\s\S]{0,120}\$\{refundPaymentId\}/)
+    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
+    expect(adminCascade).toMatch(/\$\{\(-refundAmt\)\.toFixed\(2\)\}/)
+    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(adminCascade).toMatch(/\$\{\(-voidTotal\)\.toFixed\(2\)\}/)
+    expect(adminCascade).toMatch(/refundPaymentId/)
     // 通道2：service_commissions 软删按 fullItemIds——admin 用 IN(sql.join) 规避 drizzle ANY(array) 42809
     expect(adminCascade).toMatch(/service_commissions[\s\S]{0,400}sale_item_id IN \(\$\{sql\.join\(fullItemIds/)
-    expect(adminCascade).not.toMatch(/UPDATE sale_allocations[\s\S]{0,200}WHERE sale_order_id/)
+    expect(adminCascade).not.toMatch(/UPDATE sale_payment_item_allocations[\s\S]{0,200}WHERE sale_order_id/)
   })
 })
 
@@ -89,5 +95,27 @@ describe('退款通知跨端镜像（店长解析 + 幂等键）', () => {
   test('两端自审降噪：operator 与收件店长相同时跳过', () => {
     expect(staffRefundUtil).toMatch(/employee_id === operatorId/)
     expect(adminCascade).toMatch(/employee_id === p\.operatorId/)
+  })
+})
+
+describe('充值卡退款旁路守护（scope + 充值单类型 + 线下退款 + 通知）', () => {
+  test('card.createRefund 必须校验订单 scope，且退款流水固定线下/无 external_txn_id', () => {
+    expect(staffCardRoute).toMatch(/isStoreInScope\(ctx\.auth, order\.store_id\)/)
+    expect(staffCardRoute).toMatch(/PERMISSION_DENIED: 订单不在当前门店范围内/)
+    expect(staffCardRoute).toMatch(/payment_method[\s\S]{0,160}VALUES[\s\S]{0,160}'线下'/)
+    expect(staffCardRoute).not.toMatch(/refund-pending-/)
+  })
+
+  test('card.approveRefund/rejectRefund 只能处理充值单退款流水', () => {
+    expect(staffCardRoute).toMatch(/pay\.change_type !== '退款'/)
+    expect(staffCardRoute).toMatch(/pay\.sale_order_type !== '充值单'/)
+    expect(staffCardRoute).toMatch(/非充值单不可走充值卡退款审批/)
+  })
+
+  test('card.create/approve/reject 复用退款消息通知', () => {
+    expect(staffCardRoute).toMatch(/notifyRefundCreated\(client/)
+    expect(staffCardRoute).toMatch(/notifyRefundResult\(client/)
+    expect(staffCardRoute).toMatch(/approved: true/)
+    expect(staffCardRoute).toMatch(/approved: false/)
   })
 })

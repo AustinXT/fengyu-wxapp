@@ -1,0 +1,7 @@
+@import "./list.wxss";
+
+.stock-qty {
+  color: #C0322A;
+  font-size: 34rpx;
+  font-weight: 600;
+}

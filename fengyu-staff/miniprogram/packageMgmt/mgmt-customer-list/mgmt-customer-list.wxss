@@ -101,17 +101,6 @@
   padding-top: 8rpx;
 }
 
-/* VIP 徽章 */
-.vip-badge {
-  font-size: 20rpx;
-  font-weight: 600;
-  padding: 4rpx 12rpx;
-  border-radius: var(--radius-lg);
-  background: var(--color-primary-light);
-  color: var(--color-primary);
-  border: 1rpx solid rgba(192, 50, 42, 0.3);
-}
-
 /* 分类徽章 — 三色由 pr.spec §3.14 强制规定，保留硬编码 */
 .tier-badge {
   font-size: 20rpx;

@@ -15,6 +15,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { nowTs } from '@/lib/db-time'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { generateInventoryDocNo } from './doc-no'
 import type {
   InventoryItemDto,
@@ -112,6 +113,9 @@ export const listProcurementOrders = withPermission(
     const conditions: (SQL | undefined)[] = [
       scopeCondition(session, inventoryProcurementOrders.storeId),
     ]
+    if (filters.marketId) {
+      conditions.push(storeInMarketCondition(inventoryProcurementOrders.storeId, filters.marketId))
+    }
     if (filters.storeId) {
       conditions.push(eq(inventoryProcurementOrders.storeId, filters.storeId))
     }

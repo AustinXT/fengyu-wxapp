@@ -192,7 +192,6 @@ Page({
         storeId,
         sourceChannel,
         promoterEmployeeId: promoterName || undefined,
-        inviterUserId: inviterUserId || undefined,
       });
       app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
       // 一次性消费邀请人，防止二次使用
@@ -226,7 +225,12 @@ Page({
       return;
     }
     try {
-      await bindPhoneWithCloudID(cloudID);
+      const inviterUserId = app.globalData.pendingInviter;
+      await bindPhoneWithCloudID(cloudID, inviterUserId ? { inviterUserId } : {});
+      if (inviterUserId) {
+        app.globalData.pendingInviter = undefined;
+        wx.removeStorageSync('pendingInviter');
+      }
       this.setData({ showPhoneBind: false });
       // 绑定手机号成功后自动重提交绑门店
       setTimeout(() => this.onConfirmBind(), 600);

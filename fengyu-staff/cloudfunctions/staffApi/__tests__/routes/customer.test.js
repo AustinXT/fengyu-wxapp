@@ -208,6 +208,37 @@ describe('customer.search', () => {
     expect(params[1]).toBe(20) // LIMIT，无门店参数占位
   })
 
+  test('crossStore=true 可搜索到临时跨店顾客（bound_store_id 为其他门店）', async () => {
+    const ctx = createManagerCtx({ keyword: '35960', crossStore: true })
+    pg.query
+      .mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          phone: '13800135960',
+          name: '李四',
+          customer_id: 'C035960',
+          member_level: null,
+          bound_store_id: 'store-002',  // 绑定其他门店
+          is_cross_store_temp: true,     // 临时跨店标记
+          store_name: '其他店'
+        },
+      ])
+      .mockResolvedValueOnce([])  // svcDateRows
+      .mockResolvedValueOnce([])  // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    // SQL 不按 bound_store_id 过滤，只按 keyword 匹配 → 能搜到绑定其他门店的临时跨店顾客
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.bound_store_id = ')
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    expect(params[0]).toBe('%35960%')
+    // 返回结果包含临时跨店标记，前端凭此判断是否允许操作
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].clientUserId).toBe('u1')
+    expect(ctx.result[0].isCrossStoreTemp).toBe(true)
+    expect(ctx.result[0].boundStoreId).toBe('store-002')
+    expect(ctx.result[0].storeName).toBe('其他店')
+  })
+
   test('精确手机号可定位已解绑（bound_store_id=NULL）顾客', async () => {
     const ctx = createManagerCtx({ phone: '13800001111' })
     pg.query
@@ -731,12 +762,37 @@ describe('customer.paidOrders', () => {
       },
     ])
     await customerRoutes.paidOrders(ctx)
+    const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /FROM\s+sale_orders\s+o/.test(sql) && /ORDER BY\s+o\.paid_at\s+DESC/.test(sql)
+    )
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-PARTIAL')
     expect(ctx.result[0].status).toBe('部分支付')
     expect(ctx.result[0].items[0].totalSessions).toBe(15)
     expect(ctx.result[0].items[0].paidSessions).toBe(10)
     expect(ctx.result[0].items[0].remainingSessions).toBe(15)
+  })
+
+  test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-conv' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-CONV', status: '已支付', paid_at: '2026-07-25T09:12:02Z' },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const itemSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
+    )
+    expect(itemSql).toContain("si.item_direction = '购买'")
+    expect(itemSql).toContain("o.sale_order_type = '转换单'")
+    expect(itemSql).toContain("si.item_direction = '转入'")
+    expect(itemSql).not.toContain("si.item_direction = '转出'")
+    expect(itemSql).toContain('si.paid_sessions IS NULL')
+    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 })
 

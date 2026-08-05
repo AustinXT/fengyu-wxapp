@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { listLegacyOrders } from '@/actions/legacy-orders'
-import { getStores } from '@/actions/stores'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import LegacyOrdersPageClient from './_components/legacy-orders-page'
@@ -17,9 +17,10 @@ export default async function Page({
   const matched =
     params.matched === 'matched' || params.matched === 'unmatched' ? params.matched : undefined
 
-  const [{ data: orders, total }, stores, session] = await Promise.all([
+  const [{ data: orders, total }, filterOptions, session] = await Promise.all([
     listLegacyOrders({
       phone: params.q,
+      marketId: params.market,
       storeId: params.store,
       dateFrom: params.from,
       dateTo: params.to,
@@ -27,7 +28,7 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
+    getMarketStoreFilterOptions(),
     getSession(),
   ])
 
@@ -38,7 +39,7 @@ export default async function Page({
       <LegacyOrdersPageClient
         orders={orders}
         total={total}
-        stores={stores.map((s) => ({ storeId: s.storeId, storeName: s.storeName }))}
+        filterOptions={filterOptions}
         canPull={canPull}
       />
     </Suspense>

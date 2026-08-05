@@ -7,12 +7,13 @@ import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 import { formatAmount, formatCount } from '../../utils/number';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
+import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 // ===== 数据接口 =====
 
 type ScopeType = 'all' | 'market' | 'store';
 
-interface CustomerDetail {
+interface CustomerDetail extends MemberLevelBadgeData {
   id: string | null;
   clientUserId: string | null;
   name: string;
@@ -174,6 +175,12 @@ interface GiftData {
   giftItems: GiftItem[];
 }
 
+function normalizeSpecName(productName?: string | null, specName?: string | null): string {
+  const name = (productName || '').trim();
+  const spec = (specName || '').trim();
+  return spec && spec !== name ? spec : '';
+}
+
 // Tab 5: 服务记录
 interface ServiceRecord {
   serviceOrderId: string;
@@ -287,7 +294,7 @@ Page({
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
       } as unknown as CustomerDetail;
-      this.setData({ customer });
+      this.setData({ customer: withMemberLevelBadgeClass(customer) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       // 优先按 errorType 路由（callStaffApi 已把 errorType 挂到 Error 实例），
@@ -523,7 +530,11 @@ Page({
             const gt = Number(gi.sessionCount || 0);
             const grm = Number(gi.remainingSessions || 0);
             const gpr = gi.paidSessions;
-            return { ...gi, paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)) };
+            return {
+              ...gi,
+              specName: normalizeSpecName(gi.productName, gi.specName),
+              paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)),
+            };
           }),
         })),
         giftItems: (data?.giftItems || []).map(g => {
@@ -532,6 +543,7 @@ Page({
           const fpr = g.paidSessions;
           return {
             ...g,
+            specName: normalizeSpecName(g.productName, g.specName),
             paidUnusedSessions: fpr == null ? frm : Math.max(0, Number(fpr) - Math.max(ft - frm, 0)),
             createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt,
           };

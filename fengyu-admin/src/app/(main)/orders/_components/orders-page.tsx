@@ -24,7 +24,9 @@ import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
+import type { SaleOrder, OrderStatus, SaleOrderType } from "@/lib/types";
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
+import MarketStoreFilter from "@/components/market-store-filter";
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
@@ -239,12 +241,12 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
  */
 export default function OrdersPageClient({
   orders,
-  stores,
+  filterOptions,
   total,
   canCreateOrder,
 }: {
   orders: SaleOrder[];
-  stores: Store[];
+  filterOptions: MarketStoreFilterOptions;
   total: number;
   canCreateOrder: boolean;
 }) {
@@ -254,7 +256,7 @@ export default function OrdersPageClient({
   /** 导出当前筛选命中的全部订单（明细级，一行一 sale_items；订单级字段按行重复） */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries());
-    const { rows, truncated } = await exportOrders(raw);
+    const { rows } = await exportOrders(raw);
     if (rows.length === 0) {
       toast.info("当前筛选无数据可导出");
       return;
@@ -299,7 +301,6 @@ export default function OrdersPageClient({
       ],
       rows,
     });
-    if (truncated) toast.warning("数据量过大，已导出前 10000 条明细（按商品行计数），请缩小筛选范围");
   }, [searchParams]);
 
   /** 筛选变更时重置到第 1 页 */
@@ -325,6 +326,7 @@ export default function OrdersPageClient({
 
   const statusFilter = get("status");
   const typeFilter = get("type");
+  const marketFilter = get("market");
   const storeFilter = get("store");
   const dateFrom = get("from");
   const dateTo = get("to");
@@ -359,7 +361,7 @@ export default function OrdersPageClient({
           <div className="flex flex-wrap gap-3">
             <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
-              {(["待支付", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
+              {(["待支付", "待审批", "已支付", "部分支付", "已完成", "已退款", "未审核", "支付失败", "已关闭", "已作废"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
@@ -375,14 +377,13 @@ export default function OrdersPageClient({
                 </option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>
-                  {s.storeName}
-                </option>
-              ))}
-            </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => setMany({ market: value, store: "", page: "" })}
+              onStoreChange={(value) => setFilter("store", value)}
+            />
             <Select
               className="w-40"
               value={paymentMethodFilter}

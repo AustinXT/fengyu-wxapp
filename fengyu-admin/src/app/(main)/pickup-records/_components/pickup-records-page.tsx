@@ -4,7 +4,8 @@ import { useCallback, useState } from 'react'
 import Link from 'next/link'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import type { AdminPickupRecord } from '@/actions/pickup-records'
-import type { Store } from '@/lib/types'
+import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
+import MarketStoreFilter from '@/components/market-store-filter'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
@@ -30,7 +31,7 @@ function formatDateTime(dt: string | null | undefined) {
 
 interface Props {
   records: AdminPickupRecord[]
-  stores: Store[]
+  filterOptions: MarketStoreFilterOptions
   total: number
   canCreate: boolean
   /** 是否展示行内删除入口（仅系统管理员 pickup_record:delete） */
@@ -43,7 +44,7 @@ interface Props {
  * scope 过滤基于 pickup_records.store_id，非 admin 角色仅看到 scopeStoreIds 内的门店记录。
  * canCreate=true 时（manager 角色）显示"新建提货记录"入口。
  */
-export default function PickupRecordsPage({ records, stores, total, canCreate, canDelete = false }: Props) {
+export default function PickupRecordsPage({ records, filterOptions, total, canCreate, canDelete = false }: Props) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
     (key: string, value: string) => {
@@ -53,6 +54,7 @@ export default function PickupRecordsPage({ records, stores, total, canCreate, c
   )
 
   const storeFilter = get('store')
+  const marketFilter = get('market')
   const dateFrom = get('from')
   const dateTo = get('to')
   const currentPage = Math.max(1, Number(get('page', '1')) || 1)
@@ -179,18 +181,13 @@ export default function PickupRecordsPage({ records, stores, total, canCreate, c
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select
-              className="w-40"
-              value={storeFilter}
-              onChange={(e) => setFilter('store', e.target.value)}
-            >
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.storeId} value={s.storeId}>
-                  {s.storeName}
-                </option>
-              ))}
-            </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => setMany({ market: value, store: '', page: '' })}
+              onStoreChange={(value) => setFilter('store', value)}
+            />
             <div className="flex items-center gap-2">
               <Input
                 type="date"

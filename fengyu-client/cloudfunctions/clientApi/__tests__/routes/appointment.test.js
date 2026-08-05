@@ -151,6 +151,9 @@ describe('appointment.list', () => {
       store_id: 's1', store_name: '测试店',
       appointment_time: '2025-03-20T10:00:00Z',
       service_name: '护理A',
+      session_count: 10,
+      remaining_sessions: 8,
+      paid_sessions: 10,
     }])
 
     const ctx = createBoundCtx({})
@@ -158,11 +161,20 @@ describe('appointment.list', () => {
 
     expect(ctx.result.appointments).toHaveLength(1)
     expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.appointments[0]).toMatchObject({
+      service_name: '护理A',
+      session_count: 10,
+      remaining_sessions: 8,
+      paid_sessions: 10,
+    })
 
     // 验证 SQL 包含 LIMIT/OFFSET
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain('LIMIT')
     expect(sql).toContain('OFFSET')
+    expect(sql).toContain('si.session_count')
+    expect(sql).toContain('si.remaining_sessions')
+    expect(sql).toContain('si.paid_sessions')
   })
 
   test('hasMore=true 当结果超过 pageSize', async () => {

@@ -87,6 +87,7 @@ const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '部分支付':   { icon: 'clock-o',   color: '#D48806' },
   '已支付':     { icon: 'passed',    color: '#52C41A' },
   '已完成':     { icon: 'success',   color: '#8C8C8C' },
+  '已退款':     { icon: 'close',     color: '#FF4D4F' },
   '支付失败':   { icon: 'close',     color: '#FF4D4F' },
   '已关闭':     { icon: 'close',     color: '#8C8C8C' },
 };
@@ -162,9 +163,10 @@ Page({
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
-      // 是否有可预约项目（已支付 + 至少一项"已付未用" > 0 + 非家居产品）
+      // 是否有可预约项目（有效收款状态 + 至少一项"已付未用" > 0 + 非家居产品）
       // ticket 2026-05-19 paid_sessions：可消费门槛升级为"还有已付未用的次数"
-      const hasAppointableItems = order.status === '已支付'
+      const appointableStatus = ['已支付', '部分支付', '已完成'].includes(order.status);
+      const hasAppointableItems = appointableStatus
         && items.some(i => {
             if (i.product_type === '家居产品') return false;
             const total = Number(i.session_count ?? 0);
@@ -238,7 +240,7 @@ Page({
       const outstanding = Math.round(outstandingSum * 100) / 100;
       const refundedAmount = Number(order.refunded_amount ?? 0);
       const refundedFmt = refundedAmount.toFixed(2);
-      const hasRefund = refundedAmount > 0;
+      const hasRefund = refundedAmount > 0 && order.status !== '已退款';
       // 可继续支付（回款）：部分支付 且 存在未退未付清的行
       const canContinuePay = order.status === '部分支付' && outstanding > 0;
 
