@@ -198,8 +198,16 @@ App<IAppOption>({
   },
 
   setCurrentStoreId(storeId) {
+    const oldStoreId = this.globalData.currentStoreId;
     this.globalData.currentStoreId = storeId || '';
     wx.setStorageSync('currentStoreId', storeId || '');
+
+    // 2026-08-06：切换门店时清除「最近顾客」缓存，防止跨门店顾客串用
+    // （镜像 switchLoginLevel 的缓存清理逻辑，但门店切换无需 reLaunch）
+    if (oldStoreId && oldStoreId !== storeId) {
+      wx.removeStorageSync('recentCustomers');
+      console.log('[setCurrentStoreId] 门店已切换，清除最近顾客缓存');
+    }
   },
 
   resetStaffInfo() {
