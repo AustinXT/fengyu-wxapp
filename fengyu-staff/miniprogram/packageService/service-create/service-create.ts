@@ -207,7 +207,9 @@ Page({
     }
     this.setData({ loading: true });
     try {
-      const results = await callStaffApi<CustomerSearchResult[]>('customer.search', { keyword });
+      // 服务单选顾客：需支持临时跨店顾客，故传 crossStore=true 放宽搜索范围
+      // （后端返回 is_cross_store_temp 标记，前端凭此判断是否允许跨店核销）
+      const results = await callStaffApi<CustomerSearchResult[]>('customer.search', { keyword, crossStore: true });
       this.setData({ customerResults: results || [] });
       if (!results || results.length === 0) {
         wx.showToast({ title: '未找到该顾客', icon: 'none' });

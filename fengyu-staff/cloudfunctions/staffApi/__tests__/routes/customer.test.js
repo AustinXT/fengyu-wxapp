@@ -208,6 +208,37 @@ describe('customer.search', () => {
     expect(params[1]).toBe(20) // LIMIT，无门店参数占位
   })
 
+  test('crossStore=true 可搜索到临时跨店顾客（bound_store_id 为其他门店）', async () => {
+    const ctx = createManagerCtx({ keyword: '35960', crossStore: true })
+    pg.query
+      .mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          phone: '13800135960',
+          name: '李四',
+          customer_id: 'C035960',
+          member_level: null,
+          bound_store_id: 'store-002',  // 绑定其他门店
+          is_cross_store_temp: true,     // 临时跨店标记
+          store_name: '其他店'
+        },
+      ])
+      .mockResolvedValueOnce([])  // svcDateRows
+      .mockResolvedValueOnce([])  // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    // SQL 不按 bound_store_id 过滤，只按 keyword 匹配 → 能搜到绑定其他门店的临时跨店顾客
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('c.bound_store_id = ')
+    expect(sql).toContain('(c.phone LIKE $1 OR c.name LIKE $1)')
+    expect(params[0]).toBe('%35960%')
+    // 返回结果包含临时跨店标记，前端凭此判断是否允许操作
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].clientUserId).toBe('u1')
+    expect(ctx.result[0].isCrossStoreTemp).toBe(true)
+    expect(ctx.result[0].boundStoreId).toBe('store-002')
+    expect(ctx.result[0].storeName).toBe('其他店')
+  })
+
   test('精确手机号可定位已解绑（bound_store_id=NULL）顾客', async () => {
     const ctx = createManagerCtx({ phone: '13800001111' })
     pg.query

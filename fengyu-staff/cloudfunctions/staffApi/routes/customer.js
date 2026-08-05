@@ -116,9 +116,11 @@ async function search(ctx) {
   } else if (keyword && keyword.trim()) {
     const kw = `%${keyword.trim()}%`;
     if (crossStore) {
-      // 跨门店模糊检索：开单 / 充值卡选顾客用（与 phone 精确分支同口径，
-      // 绑定任意门店即可见，含已解绑顾客——账户级资产不跟门店绑定）
+      // 跨门店模糊检索：开单 / 充值卡 / 服务单选顾客用（与 phone 精确分支同口径，
+      // 账户级资产不跟门店绑定——含已解绑顾客、其他门店顾客、临时跨店顾客）
       // is_cross_store_temp（需求21）随行返回，供前端判断「临时跨店顾客是否允许跨门店开单」
+      // ⚠️ 临时跨店顾客的 bound_store_id 可能是其他门店，故 crossStore 模式不按门店过滤，
+      //    只要手机号/姓名匹配即返回（前端凭 isCrossStoreTemp 标记判断是否允许操作）
       const fSql = renderProfileFilters(filters, 2);
       const limitIdx = 2 + filters.values.length;
       rows = await pg.query(

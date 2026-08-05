@@ -75,9 +75,12 @@ Page({
       return
     }
     try {
+      // 提货选顾客：需支持临时跨店顾客，故传 crossStore=true 放宽搜索范围
+      // （后端返回 is_cross_store_temp 标记，业务层根据实际需要判断是否允许跨店提货）
       const res = await callStaffApi<Customer[]>('customer.search', {
         keyword: keyword.match(/^\d/) ? undefined : keyword,
         phone: keyword.match(/^\d{6,}$/) ? keyword : undefined,
+        crossStore: true,
       })
       this.setData({ customers: withMemberLevelBadgeClasses(res || []) })
     } catch (err: any) {
