@@ -540,7 +540,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       FOR UPDATE`,
     [saleItemIds]
   )
-  if (lockedItems.rows.length !== saleItemIds.length) {
+  if (lockedItems.rowCount !== saleItemIds.length) {
     throw new Error('INVALID_PARAMS: 部分订单行不存在')
   }
 

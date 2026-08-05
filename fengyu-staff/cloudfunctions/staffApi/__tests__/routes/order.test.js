@@ -4397,6 +4397,54 @@ describe('order.createConversion', () => {
     expect(inInsert.params[15]).toBe(true)
   })
 
+  test('服务预扣次数不参与转换，源卡保留预扣次数', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-reserved'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        txCalls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-reserved', sale_order_id: 'order-old', store_id: 'store-001', item_direction: '购买',
+              sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
+              quantity: 1, unit_price: '100', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
+              client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+            }], rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit') && sql.includes('GROUP BY sit.sale_item_id')) {
+          return { rows: [{ sale_item_id: 'item-reserved', total_reserved: '2' }], rowCount: 1 }
+        }
+        if (sql.includes('FROM product_skus')) {
+          return { rows: [{ sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目', price: '500', session_count: 1, service_fee: '0', sales_category: '自销自耗' }], rowCount: 1 }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await orderRoutes.createConversion(ctx)
+
+    expect(ctx.result.totalOut).toBe(300)
+    const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
+    expect(heldLock.sql).not.toMatch(/GROUP BY|SUM\s*\(/)
+    const reservedQuery = txCalls.find((call) => call.sql.includes('GROUP BY sit.sale_item_id'))
+    expect(reservedQuery.sql).not.toMatch(/FOR UPDATE/)
+    const sourceUpdate = txCalls.find((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))
+    expect(sourceUpdate.params[3]).toBe(3)
+  })
+
   test('缺少 clientUserId 拒绝', async () => {
     const ctx = createManagerCtx({
       convertOutSaleItemIds: ['i1'],

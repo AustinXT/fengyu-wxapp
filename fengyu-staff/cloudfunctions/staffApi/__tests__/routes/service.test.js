@@ -571,6 +571,34 @@ describe('service.start', () => {
       .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
   })
 
+  test('预扣同时占用分期已付次数，重复 service_items 按订单行合并校验', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001', status: '待服务', assigned_employee_id: 'emp-001', store_id: 'store-001',
+    }])
+    const clientQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM service_items sit')) {
+        return { rows: [
+          { sale_item_id: 'item-001', session_used: 1 },
+          { sale_item_id: 'item-001', session_used: 1 },
+        ], rowCount: 2 }
+      }
+      if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 5, session_count: 5, paid_sessions: 3, product_type: '疗程卡' }], rowCount: 1 }
+      }
+      if (sql.includes('GROUP BY sale_item_id')) {
+        return { rows: [{ sale_item_id: 'item-001', total_reserved: '2' }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+    pg.transaction.mockImplementationOnce(async (cb) => cb({ query: clientQuery }))
+
+    await expect(serviceRoutes.start(ctx))
+      .rejects.toThrow(/INSUFFICIENT_BALANCE.*已支付可用次数不足/)
+    expect(clientQuery.mock.calls.some((call) => call[0].includes('UPDATE service_orders'))).toBe(false)
+    expect(clientQuery.mock.calls.some((call) => call[0].includes('SET reserved_at = $1'))).toBe(false)
+  })
+
   test('非待服务状态拒绝开始', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
@@ -754,15 +782,16 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
       ])
 
-    let callCount = 0
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async () => {
-          callCount++
-          // 第 1 次：原子扣减成功，第 2 次：查剩余次数，第 3 次：UPDATE service_orders 失败（已被并发确认）
-          if (callCount === 1) return { rows: [], rowCount: 1 }
-          if (callCount === 2) return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
-          return { rows: [], rowCount: 0 } // 并发竞态
+        query: vi.fn(async (sql) => {
+          if (sql.includes('FOR UPDATE')) {
+            return { rows: [{ sale_item_id: 'item-001' }], rowCount: 1 }
+          }
+          if (sql.includes("status = '已完成'")) {
+            return { rows: [], rowCount: 0 } // 并发确认已抢先完成状态 CAS
+          }
+          return { rows: [], rowCount: 1 }
         }),
       }
       return await cb(client)
@@ -771,6 +800,36 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
     // finalize 返回 false → confirm 幂等返回已完成，不报错
     await serviceRoutes.confirm(ctx)
     expect(ctx.result.status).toBe('已完成')
+  })
+
+  test('确认在扣次完成后才释放预扣', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+    pg.query
+      .mockResolvedValueOnce([{ service_order_id: 'HLD-001', status: '待客户确认', assigned_employee_id: 'emp-001', store_id: 'store-001', appointment_id: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1, unit_real_price: '100', service_fee: '0', sales_category: '自销自耗', employee_id: 'emp-001', skills: [] }])
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql) => {
+        calls.push(sql)
+        if (sql.includes('FOR UPDATE')) return { rows: [{ sale_item_id: 'item-001' }], rowCount: 1 }
+        if (sql.includes("UPDATE service_orders SET status = '已完成'")) return { rows: [], rowCount: 1 }
+        if (sql.includes('UPDATE sale_items')) return { rows: [], rowCount: 1 }
+        if (sql.includes('SELECT remaining_sessions')) return { rows: [{ remaining_sessions: 4 }], rowCount: 1 }
+        if (sql.includes('commission_rate_matrix')) return { rows: [], rowCount: 0 }
+        return { rows: [], rowCount: 1 }
+      }),
+    }))
+
+    await serviceRoutes.confirm(ctx)
+
+    const lockAt = calls.findIndex((sql) => sql.includes('FOR UPDATE'))
+    const statusAt = calls.findIndex((sql) => sql.includes("UPDATE service_orders SET status = '已完成'"))
+    const deductAt = calls.findIndex((sql) => sql.includes('UPDATE sale_items'))
+    const releaseAt = calls.findIndex((sql) => sql.includes('UPDATE service_items') && sql.includes('reserved_at = NULL'))
+    expect(lockAt).toBeLessThan(statusAt)
+    expect(statusAt).toBeLessThan(deductAt)
+    expect(deductAt).toBeLessThan(releaseAt)
   })
 
   test('幂等 — 已完成的服务单不重复扣减', async () => {
@@ -1326,6 +1385,9 @@ describe('service.cancel', () => {
     expect(clientQuery.mock.calls[0][1]).toContain('待服务')
     // 不扣次数：事务内无 remaining_sessions 扣减
     expect(clientQuery.mock.calls.filter((c) => /remaining_sessions/.test(c[0])).length).toBe(0)
+    const statusAt = clientQuery.mock.calls.findIndex((call) => call[0].includes('UPDATE service_orders'))
+    const releaseAt = clientQuery.mock.calls.findIndex((call) => call[0].includes('reserved_at = NULL'))
+    expect(statusAt).toBeLessThan(releaseAt)
   })
 
   test('并发竞态：cancel UPDATE rowCount=0 时报错', async () => {

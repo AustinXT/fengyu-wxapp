@@ -415,10 +415,13 @@ export const getPaymentAllocatables = withPermission(
     marketName: string | null
     items: Array<{
       saleItemId: string
+      skuId: string | null
       productName: string | null
+      productType: string | null
       allocatableAmount: number
       received: number
       salesCategory: string | null
+      itemDirection: string | null
       suggestedRate: number
     }>
     existingAllocations: Array<{
@@ -442,7 +445,8 @@ export const getPaymentAllocatables = withPermission(
     if (!['销售单', '转换单'].includes(pay.sale_order_type) || pay.legacy_source === 'workfine') return null
 
     const items = (await db.execute(sql`
-      SELECT spir.id AS receipt_id, spir.sale_item_id, spir.amount, spir.sales_category, si.product_name
+      SELECT spir.id AS receipt_id, spir.sale_item_id, spir.amount, spir.sales_category,
+             si.sku_id, si.product_name, si.product_type, si.item_direction
       FROM sale_payment_item_receipts spir
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       WHERE spir.sale_payment_id = ${salePaymentId}
@@ -474,10 +478,13 @@ export const getPaymentAllocatables = withPermission(
       marketName: pay.market_name ?? null,
       items: items.map((i: any) => ({
         saleItemId: i.sale_item_id,
+        skuId: i.sku_id ?? null,
         productName: i.product_name ?? null,
+        productType: i.product_type ?? null,
         allocatableAmount: Number(i.amount),
         received: Number(i.amount), // 别名：前端复用「实收×比例」算法的基数
         salesCategory: i.sales_category ?? null,
+        itemDirection: i.item_direction ?? null,
         suggestedRate: rateLookup('美容师', i.sales_category || '自销自耗', eventAmount),
       })),
       existingAllocations: existing.map((r: any) => ({

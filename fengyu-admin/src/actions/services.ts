@@ -1284,14 +1284,7 @@ export const cancelServiceOrder = withPermission(
   let cancelResult: any
   try {
     cancelResult = await db.transaction(async (tx) => {
-      // 释放预扣（清除 reserved_at）
-      await tx.execute(sql`
-        UPDATE service_items
-        SET reserved_at = NULL, updated_at = NOW()
-        WHERE service_order_id = ${serviceOrderId}
-      `)
-
-      return await tx
+      const result = await tx
         .update(serviceOrders)
         .set({ status: '已取消' })
         .where(and(
@@ -1299,6 +1292,15 @@ export const cancelServiceOrder = withPermission(
           eq(serviceOrders.status, svc.status),
           scopeCondition(session, serviceOrders.storeId),
         ))
+      // 只有状态 CAS 成功的服务单才能释放预扣，避免并发开始服务留下“服务中但无预扣”。
+      if ((result as any).count > 0) {
+        await tx.execute(sql`
+          UPDATE service_items
+          SET reserved_at = NULL, updated_at = NOW()
+          WHERE service_order_id = ${serviceOrderId}
+        `)
+      }
+      return result
     })
   } catch {
     return { success: false, message: '取消服务失败，请稍后重试' }

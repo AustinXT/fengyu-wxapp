@@ -141,6 +141,26 @@ function setupUpdate(count: number) {
   ;(db.update as any).mockReturnValue({ set })
 }
 
+function mockStartTx(count: number, lockRows: any[] = []) {
+  const execute = vi.fn()
+    .mockResolvedValueOnce(lockRows)
+    .mockResolvedValue([])
+  const where = vi.fn().mockResolvedValue({ count })
+  const set = vi.fn().mockReturnValue({ where })
+  const update = vi.fn().mockReturnValue({ set })
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ execute, update }))
+  return { execute, update }
+}
+
+function mockCancelTx(count: number) {
+  const execute = vi.fn().mockResolvedValue([])
+  const where = vi.fn().mockResolvedValue({ count })
+  const set = vi.fn().mockReturnValue({ where })
+  const update = vi.fn().mockReturnValue({ set })
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ execute, update }))
+  return { execute, update }
+}
+
 /** select chain: .from().leftJoin().innerJoin().where().limit() 或 .from().where()（直接 await） */
 function makeSelectChain(result: any[]) {
   const chain: any = Object.assign(Promise.resolve(result), {
@@ -194,7 +214,7 @@ describe('startServiceOrder — scope + 状态推进', () => {
   })
 
   it('rowCount=0（状态已变更或 scope 不符）→ 失败', async () => {
-    setupUpdate(0)
+    mockStartTx(0)
 
     const result = await startServiceOrder('svc-1')
 
@@ -203,18 +223,36 @@ describe('startServiceOrder — scope + 状态推进', () => {
   })
 
   it('rowCount=1 → 成功', async () => {
-    setupUpdate(1)
+    const tx = mockStartTx(1)
 
     const result = await startServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('服务已开始')
+    expect(tx.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('已有服务预扣占满次数时拒绝，不推进状态也不写入本单预扣', async () => {
+    const tx = mockStartTx(1, [{
+      sale_item_id: 'item-1',
+      session_used: 1,
+      remaining_sessions: 1,
+      session_count: 1,
+      paid_sessions: 1,
+      product_type: '疗程卡',
+      total_reserved: 1,
+    }])
+
+    const result = await startServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('可用次数不足')
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(tx.execute).toHaveBeenCalledOnce()
   })
 
   it('DB 异常 → 返回友好错误', async () => {
-    const where = vi.fn().mockRejectedValue(new Error('connection lost'))
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+    ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
     const result = await startServiceOrder('svc-1')
     expect(result.success).toBe(false)
@@ -232,17 +270,18 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
   })
 
   it('待服务 → 取消成功', async () => {
-    setupUpdate(1)
+    const tx = mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('服务已取消')
+    expect(tx.execute).toHaveBeenCalledOnce()
   })
 
   it('服务中 → 取消成功（口径对齐 staff 三态）', async () => {
     mockSelectBefore([{ status: '服务中', customerName: '李女士' }])
-    setupUpdate(1)
+    mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
@@ -252,7 +291,7 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
 
   it('待客户确认 → 取消成功（口径对齐 staff 三态）', async () => {
     mockSelectBefore([{ status: '待客户确认', customerName: '李女士' }])
-    setupUpdate(1)
+    mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
@@ -279,18 +318,17 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
   })
 
   it('rowCount=0（并发状态变更）→ 失败', async () => {
-    setupUpdate(0)
+    const tx = mockCancelTx(0)
 
     const result = await cancelServiceOrder('svc-1')
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('状态已变更')
+    expect(tx.execute).not.toHaveBeenCalled()
   })
 
   it('DB 异常 → 返回友好错误', async () => {
-    const where = vi.fn().mockRejectedValue(new Error('connection lost'))
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+    ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
     const result = await cancelServiceOrder('svc-1')
     expect(result.success).toBe(false)
@@ -404,7 +442,8 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
   function mockConfirmTx(cteRow: { status_updated: number; items_deducted: number; items_total: number }) {
     const spy = { execute: null as any }
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      spy.execute = vi.fn().mockResolvedValueOnce([cteRow]).mockResolvedValue([] as any)
+      // 先锁 sale_items，再执行 CTE；成功时第三次调用才释放 reserved_at。
+      spy.execute = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([cteRow]).mockResolvedValue([] as any)
       return fn({ execute: spy.execute })
     })
     return spy
