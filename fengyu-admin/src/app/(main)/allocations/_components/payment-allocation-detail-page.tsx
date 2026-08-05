@@ -11,6 +11,14 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { savePaymentAllocations } from "@/actions/allocations"
 import type { Employee, CommissionRate, SkillTag } from "@/lib/types"
+import {
+  calculateGroupedAmounts,
+  expandGroupedAllocationLines,
+  groupPaymentItems,
+  type PaymentAllocationGroup,
+  type PaymentAllocationItem,
+  type PaymentAllocationSignatureLine,
+} from "./payment-allocation-groups"
 
 // ============================================================================
 // 销售提成「回款维度」分配详情（2026-06 需求变更）：分配单元从订单下沉到一笔回款
@@ -31,22 +39,8 @@ const allocationStatusMap: Record<string, { label: string; className: string }> 
 
 // --------------- 类型（getPaymentAllocatables 返回结构的本地镜像） ---------------
 
-interface PaymentItem {
-  saleItemId: string
-  productName: string | null
-  allocatableAmount: number
-  /** allocatableAmount 别名：复用「实收×比例」算法的基数 */
-  received: number
-  salesCategory: string | null
-  suggestedRate: number
-}
-
-interface PaymentExistingAllocation {
+interface PaymentExistingAllocation extends PaymentAllocationSignatureLine {
   id: number
-  saleItemId: string
-  employeeId: string
-  roleType: string | null
-  allocationRatio: string
   totalAmount: string
   employeeName: string | null
 }
@@ -60,7 +54,7 @@ interface PaymentAllocatables {
   changeType: string
   allocationStatus: string | null
   marketName: string | null
-  items: PaymentItem[]
+  items: PaymentAllocationItem[]
   existingAllocations: PaymentExistingAllocation[]
 }
 
@@ -109,17 +103,23 @@ function sortByPosition(employees: Employee[]): Employee[] {
   )
 }
 
-/** 计算分配金额 = 比例 × 该项可分配额 */
-function calcAmount(ratioPercent: string, allocatable: number): string {
-  const ratio = Number(ratioPercent)
-  if (isNaN(ratio) || ratio <= 0) return '0.00'
-  return ((ratio / 100) * allocatable).toFixed(2)
+function calculateEntryAmounts(
+  group: PaymentAllocationGroup,
+  ratioPercent: string,
+  commissionRate: number,
+): { amount: string; commissionAmount: string } {
+  const { allocatedAmount, commissionAmount } = calculateGroupedAmounts(
+    group.sourceItems,
+    Number(ratioPercent) / 100,
+    commissionRate,
+  )
+  return { amount: allocatedAmount, commissionAmount }
 }
 
 // --------------- 初始化状态 ---------------
 
 function initAllocations(
-  items: PaymentItem[],
+  groups: PaymentAllocationGroup[],
   allocations: PaymentExistingAllocation[],
   employees: Employee[],
   commissionRates: CommissionRate[],
@@ -127,11 +127,18 @@ function initAllocations(
   eventAmount: number,
 ): Record<string, AllocationEntry[]> {
   const result: Record<string, AllocationEntry[]> = {}
-  for (const item of items) result[item.saleItemId] = []
+  for (const group of groups) result[group.groupId] = []
+
+  const groupsBySaleItem = new Map<string, PaymentAllocationGroup>()
+  for (const group of groups) {
+    for (const saleItemId of group.saleItemIds) groupsBySaleItem.set(saleItemId, group)
+  }
 
   for (const alloc of allocations) {
-    if (!result[alloc.saleItemId]) continue
-    const item = items.find((i) => i.saleItemId === alloc.saleItemId)
+    const group = groupsBySaleItem.get(alloc.saleItemId)
+    // A group represents one shared configuration. Read just its first source
+    // row; groups with differing historical configurations were split above.
+    if (!group || group.saleItemIds[0] !== alloc.saleItemId) continue
 
     const emp = employees.find((e) => e.employeeId === alloc.employeeId)
     let skillTag = alloc.roleType || ''
@@ -144,18 +151,18 @@ function initAllocations(
     skillTag = skillTag || '美容师'
 
     const ratioPercent = String(Number((Number(alloc.allocationRatio) * 100).toFixed(1)))
-    const amount = alloc.totalAmount
-    const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, eventAmount)
+    const rateRef = findMatchingRate(commissionRates, marketName, skillTag, group.salesCategory, eventAmount)
     const commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
+    const { amount, commissionAmount } = calculateEntryAmounts(group, ratioPercent, commissionRate)
 
-    result[alloc.saleItemId].push({
+    result[group.groupId].push({
       id: Date.now() + Math.random(),
       skillTag,
       employeeId: alloc.employeeId,
       ratioPercent,
       amount,
       commissionRate,
-      commissionAmount: (Number(amount) * commissionRate).toFixed(2),
+      commissionAmount,
     })
   }
 
@@ -197,20 +204,24 @@ export default function PaymentAllocationDetailPageClient({
   }
 
   const items = payment.items || []
+  const groups = useMemo(
+    () => groupPaymentItems(items, payment.existingAllocations),
+    [items, payment.existingAllocations],
+  )
   const marketName = payment.marketName ?? ''
   const eventAmount = payment.eventAmount
   const statusInfo = allocationStatusMap[payment.allocationStatus || "待分配"] || allocationStatusMap.待分配
   const isRefundAllocation = payment.changeType === '退款'
 
-  const [itemAllocs, setItemAllocs] = useState<Record<string, AllocationEntry[]>>(() =>
-    initAllocations(items, payment.existingAllocations, employees, commissionRates, marketName, eventAmount)
+  const [groupAllocs, setGroupAllocs] = useState<Record<string, AllocationEntry[]>>(() =>
+    initAllocations(groups, payment.existingAllocations, employees, commissionRates, marketName, eventAmount)
   )
 
-  const addEntry = (saleItemId: string) => {
-    setItemAllocs((prev) => ({
+  const addEntry = (groupId: string) => {
+    setGroupAllocs((prev) => ({
       ...prev,
-      [saleItemId]: [
-        ...(prev[saleItemId] || []),
+      [groupId]: [
+        ...(prev[groupId] || []),
         {
           id: Date.now() + Math.random(),
           skillTag: '',
