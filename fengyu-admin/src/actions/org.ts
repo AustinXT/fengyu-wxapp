@@ -15,6 +15,34 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
+/**
+ * 检查 targetId 是否是 nodeId 的子孙节点
+ */
+async function checkIsDescendant(nodeId: string, targetId: string): Promise<boolean> {
+  if (nodeId === targetId) return true
+
+  // BFS 查找所有子孙节点
+  const queue = [nodeId]
+  const visited = new Set<string>()
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (visited.has(current)) continue
+    visited.add(current)
+
+    if (current === targetId) return true
+
+    const children = await db
+      .select({ id: orgNodes.id })
+      .from(orgNodes)
+      .where(eq(orgNodes.parentId, current))
+
+    children.forEach((child) => queue.push(child.id))
+  }
+
+  return false
+}
+
 export const getOrgNodes = withPermission(
   'org:list',
   async (): Promise<OrgNode[]> => {
@@ -127,6 +155,52 @@ export const updateOrgNode = withPermission(
 
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+
+  // 如果修改了 parentId，需要额外校验
+  if (data.parentId !== undefined && data.parentId !== before?.parentId) {
+    // 不能将节点移动到自己或自己的子孙节点下（防止循环引用）
+    if (data.parentId) {
+      const isDescendant = await checkIsDescendant(id, data.parentId)
+      if (isDescendant) {
+        return { success: false, message: '不能将节点移动到自己的子节点下' }
+      }
+    }
+
+    // 校验新父节点的类型约束
+    if (data.parentId) {
+      const [newParent] = await db
+        .select({ type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, data.parentId))
+        .limit(1)
+      if (!newParent) {
+        return { success: false, message: '目标父节点不存在' }
+      }
+
+      const nodeType = data.type ?? before?.type
+      // 市场只能在总部下
+      if (nodeType === '市场' && newParent.type !== '总部') {
+        return { success: false, message: '市场节点只能在总部下' }
+      }
+      // 门店只能在市场下
+      if (nodeType === '门店' && newParent.type !== '市场') {
+        return { success: false, message: '门店节点只能在市场下' }
+      }
+      // 部门不能在部门下
+      if (nodeType === '部门' && newParent.type === '部门') {
+        return { success: false, message: '部门不能嵌套' }
+      }
+      // 门店下只能有部门
+      if (newParent.type === '门店' && nodeType !== '部门') {
+        return { success: false, message: '门店节点下只能创建部门' }
+      }
+
+      // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下
+      if (!(await isNodeInScope(session, data.parentId))) {
+        return { success: false, message: '无权将节点移动到该位置' }
+      }
+    }
+  }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
