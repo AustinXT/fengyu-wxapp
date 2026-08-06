@@ -12,6 +12,8 @@ export interface CartItem {
   sku: ProductSku
   product: Product
   quantity: number
+  /** 组合套餐主商品 ID；普通商品/体验卡不设置。 */
+  bundleProductId?: string
 }
 
 /** Step 3 的逐项手动改价记录 */
@@ -63,6 +65,7 @@ export interface NormalKindPickerProps extends PickerCommonProps {
  * 组合套餐走"一次性替换 cart"分支；普通/体验/充值走 addToCart 循环。
  */
 export interface BundleAddPayload {
+  bundleProductId: string
   product: Product
   items: { sku: ProductSku; quantity: number }[]
 }

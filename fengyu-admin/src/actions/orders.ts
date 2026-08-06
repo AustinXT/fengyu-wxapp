@@ -12,7 +12,7 @@ import {
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { productSkus, productCategories, mallProductSkus } from '@db/product'
+import { productSkus, productCategories, products, mallBundleGroups, mallProductSkus } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -37,6 +37,7 @@ import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
+import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -1892,6 +1893,107 @@ export const deleteOrder = withPermission(
   },
 )
 
+type BundleOrderItem = {
+  skuId: string
+  quantity: number
+  isBundle?: boolean
+}
+
+/**
+ * 管理后台组合套餐提交兜底：重查套餐主商品范围、SKU 归属与分组配额。
+ * 列表筛选只改善体验，真正的授权边界必须在提交时再次确认。
+ */
+async function validateBundleOrderForCustomer(
+  bundleProductId: string | null | undefined,
+  clientUserId: string,
+  items: BundleOrderItem[],
+): Promise<string | null> {
+  if (!bundleProductId) {
+    return items.some((item) => item.isBundle)
+      ? '套餐订单缺少套餐标识，请刷新页面后重试'
+      : null
+  }
+
+  if (items.length === 0) return '组合套餐商品明细不能为空'
+
+  const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
+  const [bundle] = await db
+    .select({ productId: products.productId })
+    .from(products)
+    .where(and(
+      eq(products.productId, bundleProductId),
+      eq(products.isBundle, true),
+      isNull(products.deletedAt),
+      bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+    ))
+    .limit(1)
+
+  if (!bundle) {
+    return '组合套餐不存在、已删除或不适用于该顾客绑定门店'
+  }
+
+  const [groupRows, bundleSkuRows] = await Promise.all([
+    db
+      .select({
+        id: mallBundleGroups.id,
+        groupName: mallBundleGroups.groupName,
+        pickCount: mallBundleGroups.pickCount,
+      })
+      .from(mallBundleGroups)
+      .where(eq(mallBundleGroups.productId, bundleProductId)),
+    db
+      .select({
+        skuId: mallProductSkus.skuId,
+        bundleGroupId: mallProductSkus.bundleGroupId,
+      })
+      .from(mallProductSkus)
+      .where(eq(mallProductSkus.productId, bundleProductId)),
+  ])
+
+  const skuToGroupId = new Map(bundleSkuRows.map((row) => [row.skuId, row.bundleGroupId]))
+  for (const item of items) {
+    if (!skuToGroupId.has(item.skuId)) {
+      return `SKU ${item.skuId} 不属于该组合套餐`
+    }
+  }
+
+  const pickedQtyByGroup = new Map<number, number>()
+  const pickedSkusByGroup = new Map<number, Set<string>>()
+  for (const item of items) {
+    const groupId = skuToGroupId.get(item.skuId)
+    if (groupId == null) continue
+    const quantity = Number(item.quantity) || 0
+    pickedQtyByGroup.set(groupId, (pickedQtyByGroup.get(groupId) ?? 0) + quantity)
+    const pickedSkus = pickedSkusByGroup.get(groupId) ?? new Set<string>()
+    pickedSkus.add(item.skuId)
+    pickedSkusByGroup.set(groupId, pickedSkus)
+  }
+
+  const totalSkusByGroup = new Map<number, number>()
+  for (const row of bundleSkuRows) {
+    if (row.bundleGroupId == null) continue
+    totalSkusByGroup.set(row.bundleGroupId, (totalSkusByGroup.get(row.bundleGroupId) ?? 0) + 1)
+  }
+
+  for (const group of groupRows) {
+    if (group.pickCount == null) {
+      const total = totalSkusByGroup.get(group.id) ?? 0
+      const picked = pickedSkusByGroup.get(group.id)?.size ?? 0
+      if (picked !== total) {
+        return `套餐分组「${group.groupName}」需全选 ${total} 项，实际 ${picked} 项`
+      }
+      continue
+    }
+
+    const picked = pickedQtyByGroup.get(group.id) ?? 0
+    if (picked !== group.pickCount) {
+      return `套餐分组「${group.groupName}」需选 ${group.pickCount} 件，实际 ${picked} 件`
+    }
+  }
+
+  return null
+}
+
 /** 管理后台开单 — source='admin' */
 export const createOrder = withPermission(
   'sale_order:create',
@@ -1932,6 +2034,8 @@ export const createOrder = withPermission(
   receivedAmount?: number
   /** 储值卡抵扣金额（> 0 时额外写 1 行 change_type='储值卡抵扣' payments 流水） */
   prepaidCardAmount?: number
+  /** 组合套餐主商品 ID；套餐子项必须全部归属该套餐。 */
+  bundleProductId?: string
   items: Array<{
     skuId: string
     productName: string
@@ -2002,6 +2106,15 @@ export const createOrder = withPermission(
   // service_fee（手工费）不受影响，仍按 SKU 快照。
   if (data.saleOrderType === '内部单' && data.couponId) {
     return { success: false, message: '内部单不允许叠加优惠券' }
+  }
+
+  const bundleValidationError = await validateBundleOrderForCustomer(
+    data.bundleProductId,
+    data.clientUserId,
+    data.items,
+  )
+  if (bundleValidationError) {
+    return { success: false, message: bundleValidationError }
   }
 
   // 取每个下单 SKU 的标价/会员价/体验卡/店长特价（权威 = DB，不信前端单价）
@@ -3363,7 +3476,7 @@ export const createDepositOrder = withPermission(
     }
 
     // 拉 SKU 信息（充值卡剥离 SKU 化后，寄存单输入只剩普通商品）
-    const skuIds = data.items.map(i => i.skuId)
+    const skuIds = [...new Set(data.items.map(i => i.skuId))]
     const skuRows = await db
       .select({
         skuId: productSkus.skuId,
@@ -3385,58 +3498,51 @@ export const createDepositOrder = withPermission(
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 
-    // B2：寄存单也按"每张疗程卡一行"落 sale_items，避免 5 次卡 ×2 合成 1 张 10 次卡。
-    // 历史实收是原购物车行总额，按每张卡 saleAmount 贪心填满，避免 1350/3 均分成 450/450/450。
-    const depositItems = data.items.flatMap((item) => {
-      const sku = skuMap.get(item.skuId)!
+    // 同一寄存单内相同疗程卡按 SKU 合并为一条销售明细；家居产品保持原输入行语义。
+    const buildDepositItem = (sku: (typeof skuRows)[number], quantity: number, received: number) => {
       const basePrice = Number(sku.specialPrice || sku.price)
-      const quantity = item.quantity
-      const itemReceived = Math.round((Number(item.received) || 0) * 100) / 100
       const sessionCount = sku.productType === '家居产品'
         ? null
         : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
       const totalSaleCents = Math.round(basePrice * quantity * 100)
-      const totalReceivedCents = Math.round(itemReceived * 100)
+      const saleAmount = Math.round(totalSaleCents) / 100
+      const denom = sessionCount != null && sessionCount > 0 ? sessionCount : quantity
+      const unitPrice = denom > 0 ? (saleAmount / denom).toFixed(2) : saleAmount.toFixed(2)
+      return {
+        sku,
+        quantity,
+        sessionCount,
+        saleAmount: saleAmount.toFixed(2),
+        received: Math.round(received * 100) / 100,
+        unitPrice,
+        unitRealPrice: unitPrice,
+      }
+    }
 
-      const buildRow = (rowQuantity: number, rowSessionCount: number | null, saleCents: number, receivedCents: number) => {
-        const saleAmount = Math.round(saleCents) / 100
-        const denom = (rowSessionCount != null && rowSessionCount > 0) ? rowSessionCount : rowQuantity
-        const depUnit = denom > 0 ? (saleAmount / denom).toFixed(2) : saleAmount.toFixed(2)
-        return {
-          sku,
-          quantity: rowQuantity,
-          sessionCount: rowSessionCount,
-          saleAmount: saleAmount.toFixed(2),
-          received: Math.round(receivedCents) / 100,
-          unitPrice: depUnit,
-          unitRealPrice: depUnit,
-        }
+    const depositItems: Array<ReturnType<typeof buildDepositItem>> = []
+    const treatmentCardItemIndex = new Map<string, number>()
+    for (const item of data.items) {
+      const sku = skuMap.get(item.skuId)!
+      const received = Math.round((Number(item.received) || 0) * 100) / 100
+      if (sku.productType !== '疗程卡') {
+        depositItems.push(buildDepositItem(sku, item.quantity, received))
+        continue
       }
 
-      if (sku.productType !== '疗程卡' || quantity <= 1) {
-        return [buildRow(quantity, sessionCount, totalSaleCents, totalReceivedCents)]
+      const existingIndex = treatmentCardItemIndex.get(item.skuId)
+      if (existingIndex == null) {
+        treatmentCardItemIndex.set(item.skuId, depositItems.length)
+        depositItems.push(buildDepositItem(sku, item.quantity, received))
+        continue
       }
 
-      const perSession = sessionCount != null ? Math.round(sessionCount / quantity) : null
-      const perSaleCents = Math.round(totalSaleCents / quantity)
-      let remainingReceivedCents = totalReceivedCents
-      return Array.from({ length: quantity }, (_, index) => {
-        const isLast = index === quantity - 1
-        const saleCents = isLast ? totalSaleCents - perSaleCents * (quantity - 1) : perSaleCents
-        let receivedCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
-        remainingReceivedCents -= receivedCents
-        if (isLast && remainingReceivedCents > 0) {
-          receivedCents += remainingReceivedCents
-          remainingReceivedCents = 0
-        }
-        return buildRow(
-          1,
-          perSession,
-          saleCents,
-          receivedCents,
-        )
-      })
-    })
+      const existing = depositItems[existingIndex]
+      depositItems[existingIndex] = buildDepositItem(
+        sku,
+        existing.quantity + item.quantity,
+        existing.received + received,
+      )
+    }
 
     // 在事务内生成订单号 + 写 sale_orders + sale_items
     let saleOrderId: string

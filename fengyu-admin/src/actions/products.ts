@@ -15,6 +15,7 @@ import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
+import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -1838,9 +1839,10 @@ export interface OrderPickerFlatResult {
 
 export const getProductsByKind = withPermission(
   'product:list',
-  async (_session, kind: ProductKindForOrder): Promise<OrderPickerResult> => {
+  async (_session, kind: ProductKindForOrder, clientUserId?: string): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
     // 套餐商品：products WHERE is_bundle AND deleted_at IS NULL（开单页无视 is_visible，与普通商品/体验卡口径一致）
+    const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1851,7 +1853,11 @@ export const getProductsByKind = withPermission(
         sortOrder: products.sortOrder,
       })
       .from(products)
-      .where(and(eq(products.isBundle, true), isNull(products.deletedAt)))
+      .where(and(
+        eq(products.isBundle, true),
+        isNull(products.deletedAt),
+        bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+      ))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
 

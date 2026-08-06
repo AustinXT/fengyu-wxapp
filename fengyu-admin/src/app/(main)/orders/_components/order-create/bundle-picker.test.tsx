@@ -109,6 +109,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
 
     expect(onBundleAdded).toHaveBeenCalledTimes(1)
     const payload = onBundleAdded.mock.calls[0][0]
+    expect(payload.bundleProductId).toBe('B-01')
     // 每个 SKU 聚合成一项，携带其数量（N 按数量统计，非种类数）
     expect(payload.items).toHaveLength(2)
     const byId = Object.fromEntries(

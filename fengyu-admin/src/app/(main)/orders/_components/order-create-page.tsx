@@ -63,6 +63,11 @@ function resolveBackendKind(choice: ProductKindChoice): ProductKindForOrder {
   return '体验卡'
 }
 
+/** 组合套餐受顾客绑定门店影响，不能与其他商品类型共用缓存项。 */
+function kindDataCacheKey(choice: ProductKindChoice, clientUserId?: string): string {
+  return choice === '组合套餐' ? `组合套餐:${clientUserId ?? ''}` : choice
+}
+
 /**
  * 单次选择缓存的数据形态：
  * - bundles：仅"组合套餐"分支有值
@@ -86,7 +91,7 @@ function getItemAmounts(
   // - 套餐子项（bundlePrice/bundleGroupId）：套餐价独立机制，沿用 specialPrice，不分流
   // - 普通商品/体验卡：会员价分流 —— 会员→会员价、非会员→标价（#6=B：体验卡不再豁免，同口径）
   const listUnit = Number(item.sku.price)
-  const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
+  const isBundleItem = !!item.bundleProductId || item.sku.bundlePrice != null || item.sku.bundleGroupId != null
   const defaultUnitPrice = opts?.isInternal
     ? listUnit
     : isBundleItem
@@ -204,12 +209,8 @@ export default function OrderCreatePageClient({
   const [orderType, setOrderType] = useState<OrderTypeChoice>('销售单')
   // PR-B: Step 1 商品类型 4 选 1（默认 普通商品），驱动 Step 2 数据源
   const [productKindChoice, setProductKindChoice] = useState<ProductKindChoice>('普通商品')
-  // PR-B: 内存缓存 — choice → 已预拉数据，避免 Step 2 切换 kind 时重复请求
-  const [kindDataCache, setKindDataCache] = useState<Partial<Record<ProductKindChoice, PrefetchedKindData | undefined>>>({
-    组合套餐: undefined,
-    普通商品: undefined,
-    体验卡: undefined,
-  })
+  // PR-B: 内存缓存。组合套餐的 key 含顾客 ID，避免 A 顾客的数据展示给 B 顾客。
+  const [kindDataCache, setKindDataCache] = useState<Partial<Record<string, PrefetchedKindData>>>({})
   const [prefetching, setPrefetching] = useState(false)
   // PR-C: 转换单候选卡（按顾客 + 门店动态加载）
   const [heldCards, setHeldCards] = useState<HeldCardCandidate[]>([])
@@ -290,13 +291,17 @@ export default function OrderCreatePageClient({
    * - 已缓存则直接返回；并发期间忽略重复触发。
    * - 失败仅静默 toast 提示，不阻断 Step 1 → Step 2 流程（Step 2 自己会兜底）。
    */
-  const prefetchKindData = useCallback(async (choice: ProductKindChoice) => {
+  const prefetchKindData = useCallback(async (choice: ProductKindChoice, clientUserId = selectedCustomer?.userId) => {
     // 充值卡无 SKU 数据，不走 getProductsByKind（Step 2 渲染 RechargePicker）
     if (choice === '充值卡') return
-    if (kindDataCache[choice]) return
+    const cacheKey = kindDataCacheKey(choice, clientUserId)
+    if (kindDataCache[cacheKey]) return
     setPrefetching(true)
     try {
-      const result = await getProductsByKind(resolveBackendKind(choice))
+      const result = await getProductsByKind(
+        resolveBackendKind(choice),
+        choice === '组合套餐' ? clientUserId : undefined,
+      )
       const data: PrefetchedKindData = {
         choice,
         bundles: [],
@@ -311,13 +316,13 @@ export default function OrderCreatePageClient({
       } else {
         data.flatCategories = result.categories
       }
-      setKindDataCache((prev) => ({ ...prev, [choice]: data }))
+      setKindDataCache((prev) => ({ ...prev, [cacheKey]: data }))
     } catch (err) {
       toast.error(actionErrorMessage(err, "加载商品数据失败，进入下一步后可重试"))
     } finally {
       setPrefetching(false)
     }
-  }, [kindDataCache])
+  }, [kindDataCache, selectedCustomer?.userId])
 
   const selectCustomer = (customer: Customer) => {
     setSelectedCustomer(customer)
@@ -328,7 +333,7 @@ export default function OrderCreatePageClient({
     if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned && e.skills?.includes('美容师'))) {
       setSelectedEmployeeId(customer.boundEmployeeId)
     }
-    void prefetchKindData(productKindChoice)
+    void prefetchKindData(productKindChoice, customer.userId)
     // 异步加载充值卡余额（开单页随时可用；含充值卡 SKU 时由 UI 锁灰，但状态仍保留以便切换时立即可用）
     if (customer.userId) {
       getCustomerCardBalance(customer.userId)
@@ -363,7 +368,7 @@ export default function OrderCreatePageClient({
     }
     setProductKindChoice(choice)
     if (selectedCustomer) {
-      void prefetchKindData(choice)
+      void prefetchKindData(choice, selectedCustomer.userId)
     }
   }
 
@@ -488,6 +493,7 @@ export default function OrderCreatePageClient({
       sku,
       product: payload.product,
       quantity,
+      bundleProductId: payload.bundleProductId,
     }))
     setCart(newCart)
     setPriceOverrides({})
@@ -784,8 +790,9 @@ export default function OrderCreatePageClient({
                   // PR-B B4：跨 kind 加购残留清理 — 进入 Step 2 前清空 cart + priceOverrides
                   setCart([])
                   setPriceOverrides({})
-                  if (!kindDataCache[productKindChoice]) {
-                    void prefetchKindData(productKindChoice)
+                  const cacheKey = kindDataCacheKey(productKindChoice, selectedCustomer?.userId)
+                  if (!kindDataCache[cacheKey]) {
+                    void prefetchKindData(productKindChoice, selectedCustomer?.userId)
                   }
                   setStep(1)
                 }}
@@ -819,7 +826,7 @@ export default function OrderCreatePageClient({
       {step === 1 && !isRecharge && (
         <div className="space-y-4">
           {(() => {
-            const data = kindDataCache[productKindChoice]
+            const data = kindDataCache[kindDataCacheKey(productKindChoice, selectedCustomer?.userId)]
             if (!data && prefetching) {
               return <Card><CardContent className="p-6 text-sm text-[#999999]">正在加载 {productKindChoice} 数据…</CardContent></Card>
             }
@@ -828,7 +835,7 @@ export default function OrderCreatePageClient({
                 <Card>
                   <CardContent className="p-6 text-sm text-[#999999] flex items-center gap-3">
                     <span>{productKindChoice} 数据未加载</span>
-                    <Button size="sm" variant="outline" onClick={() => void prefetchKindData(productKindChoice)}>
+                    <Button size="sm" variant="outline" onClick={() => void prefetchKindData(productKindChoice, selectedCustomer?.userId)}>
                       重试
                     </Button>
                   </CardContent>
@@ -1597,6 +1604,10 @@ export default function OrderCreatePageClient({
                     return;
                   }
                   const store = stores.find((s) => s.storeId === selectedStoreId)
+                  // BundlePicker 的兼容 onAdd 路径未携带 bundleProductId；此时回退到套餐占位 product。
+                  const bundleCartItem = cart.find((item) => item.bundleProductId || item.product.isBundle)
+                  const bundleProductId = bundleCartItem?.bundleProductId
+                    ?? (bundleCartItem?.product.isBundle ? bundleCartItem.product.productId : undefined)
                   const res = await createOrder({
                     storeId: selectedStoreId,
                     marketName: store?.marketName || "未知市场",
@@ -1611,10 +1622,11 @@ export default function OrderCreatePageClient({
                     couponId: !isInternal ? (selectedCouponId || null) : null,
                     receivedAmount: receivedAmountArg,
                     prepaidCardAmount: saleCardAmount > 0 ? saleCardAmount : undefined,
+                    bundleProductId,
                     items: cart.map((item) => {
                       // 后端为定价权威：普通商品按会员价分流重定价（忽略此处单价），店长特价钳制，
                       // 套餐(isBundle)维持现状；内部单后端按标价 ×0.5（前端传原价 saleAmount，不预先半价）。
-                      const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
+                      const isBundleItem = !!item.bundleProductId || item.sku.bundlePrice != null || item.sku.bundleGroupId != null
                       const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
                       const amounts = getItemAmounts(item, override, { buyerIsMember, isInternal })
                       return {

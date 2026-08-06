@@ -142,14 +142,18 @@ vi.mock('@db/coupon', () => ({
 }))
 
 vi.mock('@db/org', () => ({
-  stores: { storeId: 'store_id', storeName: 'store_name' },
+  stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
+  orgNodes: { id: 'id', name: 'name', type: 'type', parentId: 'parent_id' },
 }))
 
 vi.mock('@db/user', () => ({
   staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
   // 2026-07-08 修复 T1：orders.ts getOrders/getOrdersPaginated/getOrderById 读取 list 端点
   // 全部 left join clientWechatUsers.name / phone 做兜底，createOrder 也在事务内反查 name/phone 作为权威。
-  clientWechatUsers: { userId: 'user_id', customerType: 'customer_type', name: 'name', phone: 'phone' },
+  clientWechatUsers: {
+    userId: 'user_id', customerType: 'customer_type', name: 'name', phone: 'phone',
+    boundStoreId: 'bound_store_id', isCrossStoreTemp: 'is_cross_store_temp',
+  },
 }))
 
 vi.mock('@db/system-config', () => ({
@@ -158,9 +162,13 @@ vi.mock('@db/system-config', () => ({
 
 vi.mock('@db/product', () => ({
   productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', purchaseLimit: 'purchase_limit', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
-  products: { productId: 'product_id', name: 'name' },
+  products: {
+    productId: 'product_id', name: 'name', isBundle: 'is_bundle',
+    deletedAt: 'deleted_at', marketScope: 'market_scope',
+  },
   productCategories: { categoryId: 'category_id', productKind: 'product_kind', categoryName: 'category_name', salesCategory: 'sales_category' },
   // 2026-04-27 dfa4847: orders.ts createOrder 优惠券范围校验需查 mall_product_skus → product 的映射
+  mallBundleGroups: { id: 'id', productId: 'product_id', groupName: 'group_name', pickCount: 'pick_count' },
   mallProductSkus: { productId: 'product_id', skuId: 'sku_id', bundleGroupId: 'bundle_group_id', bundlePrice: 'bundle_price', sortOrder: 'sort_order' },
 }))
 
@@ -351,7 +359,11 @@ function mockSelectEmpty() {
 }
 
 function mockSelectFound(row: any) {
-  const where = makeThenableWhere([row])
+  return mockSelectRows([row])
+}
+
+function mockSelectRows(rows: any[]) {
+  const where = makeThenableWhere(rows)
   const chain: any = { where }
   chain.innerJoin = vi.fn().mockReturnValue(chain)
   chain.leftJoin = vi.fn().mockReturnValue(chain)
@@ -430,6 +442,56 @@ describe('createOrder — 顾客校验（顾客未注册守卫）', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('顾客未注册')
+  })
+})
+
+describe('createOrder — 组合套餐市场范围与归属校验', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('顾客绑定门店市场不匹配的套餐 → 拒绝且不进入事务', async () => {
+    ;(db.select as any)
+      .mockImplementationOnce(mockSelectFound({
+        isCrossStoreTemp: false,
+        marketId: 'market-a',
+        marketName: '市场A',
+      }))
+      .mockImplementationOnce(mockSelectEmpty())
+
+    const result = await createOrder({
+      ...baseOrderData,
+      bundleProductId: 'bundle-market-b',
+      items: [{ ...baseOrderData.items[0], isBundle: true }],
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不适用于该顾客绑定门店')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('套餐 SKU 不属于声明套餐 → 拒绝且不进入事务', async () => {
+    ;(db.select as any)
+      .mockImplementationOnce(mockSelectFound({
+        isCrossStoreTemp: false,
+        marketId: 'market-a',
+        marketName: '市场A',
+      }))
+      .mockImplementationOnce(mockSelectFound({ productId: 'bundle-a' }))
+      .mockImplementationOnce(mockSelectFound([]))
+      .mockImplementationOnce(mockSelectRows([{ skuId: 'other-sku', bundleGroupId: null }]))
+
+    const result = await createOrder({
+      ...baseOrderData,
+      bundleProductId: 'bundle-a',
+      items: [{ ...baseOrderData.items[0], isBundle: true }],
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不属于该组合套餐')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 })
 
@@ -1042,14 +1104,14 @@ function mockDepositOrderReads(skuRows: any[]) {
     })
 }
 
-describe('createDepositOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => {
+describe('createDepositOrder — 同 SKU 疗程卡合并', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isInScope as any).mockReturnValue(true)
   })
 
-  it('5次卡 ×3 → 写入 3 行 sale_items，历史实收=500/500/350', async () => {
+  it('相同 5 次卡累计为 1 行，历史实收汇总到同一回款流水', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-deposit',
       productType: '疗程卡',
@@ -1069,30 +1131,31 @@ describe('createDepositOrder — B2 拆行（疗程卡 quantity>1 → N 行）',
       marketName: '市场A',
       clientUserId: 'user-1',
       remark: '老系统剩余次数录入',
-      items: [{ skuId: 'sku-deposit', quantity: 3, received: 1350 }],
+      items: [
+        { skuId: 'sku-deposit', quantity: 1, received: 500 },
+        { skuId: 'sku-deposit', quantity: 2, received: 850 },
+      ],
     })
 
     expect(result.success).toBe(true)
-    expect(result.itemCount).toBe(3)
+    expect(result.itemCount).toBe(1)
     const saleItemInserts = inserts.filter((c) =>
       c.values && typeof c.values === 'object' && 'saleItemId' in c.values
     )
-    expect(saleItemInserts).toHaveLength(3)
-    for (const c of saleItemInserts) {
-      expect(c.values.quantity).toBe(1)
-      expect(c.values.sessionCount).toBe(5)
-      expect(c.values.remainingSessions).toBe(5)
-      expect(c.values.saleAmount).toBe('500.00')
-    }
+    expect(saleItemInserts).toHaveLength(1)
+    expect(saleItemInserts[0].values.quantity).toBe(3)
+    expect(saleItemInserts[0].values.sessionCount).toBe(15)
+    expect(saleItemInserts[0].values.remainingSessions).toBe(15)
+    expect(saleItemInserts[0].values.saleAmount).toBe('1500.00')
 
     const paymentInserts = inserts.filter((c) =>
       c.values && typeof c.values === 'object' && 'refSaleItemId' in c.values
     )
-    expect(paymentInserts).toHaveLength(3)
-    expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 500, 350])
+    expect(paymentInserts).toHaveLength(1)
+    expect(Number(paymentInserts[0].values.amount)).toBe(1350)
   })
 
-  it('家居产品 ×3 → 写入 1 行 sale_items（quantity=3）', async () => {
+  it('家居产品 ×3 维持 1 行 sale_items（quantity=3）', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-home',
       productType: '家居产品',
@@ -2513,10 +2576,20 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
   })
 
   it('套餐子项 isBundle → 维持现状，沿用前端套餐价不分流', async () => {
-    ;(db.select as any).mockImplementation(mockSelectFound(skuRow({ customerType: '会员客' })))
+    ;(db.select as any)
+      .mockImplementationOnce(mockSelectFound({
+        isCrossStoreTemp: false,
+        marketId: 'market-a',
+        marketName: '市场A',
+      }))
+      .mockImplementationOnce(mockSelectFound({ productId: 'bundle-a' }))
+      .mockImplementationOnce(mockSelectRows([{ id: 1, groupName: '默认组', pickCount: null }]))
+      .mockImplementationOnce(mockSelectRows([{ skuId: 'sku-001', bundleGroupId: 1 }]))
+      .mockImplementation(mockSelectFound(skuRow({ customerType: '会员客' })))
     const cap = mockCaptureTx()
     const result = await createOrder({
       ...baseOrderData,
+      bundleProductId: 'bundle-a',
       items: [{ ...baseOrderData.items[0], unitPrice: '200', unitRealPrice: '99', saleAmount: '99', quantity: 1, isBundle: true }],
     })
     expect(result.success).toBe(true)
