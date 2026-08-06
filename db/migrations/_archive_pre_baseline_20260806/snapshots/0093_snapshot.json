@@ -1,6 +1,6 @@
 {
-  "id": "516897bb-007a-4f4d-949b-e2f1e983906b",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "79ff72a6-95a7-4a69-a7da-78746cd1f267",
+  "prevId": "14e66423-4800-4962-9d1e-295294cde8fd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -74,9 +74,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_org_nodes_parent_id": {
           "name": "idx_org_nodes_parent_id",
@@ -89,35 +89,35 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "org_nodes_parent_id_org_nodes_id_fk": {
           "name": "org_nodes_parent_id_org_nodes_id_fk",
           "tableFrom": "org_nodes",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "parent_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "uq_org_nodes_parent_name": {
           "name": "uq_org_nodes_parent_name",
-          "nullsNotDistinct": false,
           "columns": [
             "parent_id",
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -270,9 +270,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_stores_lakala_merchant_id": {
           "name": "idx_stores_lakala_merchant_id",
@@ -285,54 +285,54 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "stores_org_node_id_org_nodes_id_fk": {
           "name": "stores_org_node_id_org_nodes_id_fk",
           "tableFrom": "stores",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "org_node_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "stores_lakala_merchant_id_lakala_merchants_id_fk": {
           "name": "stores_lakala_merchant_id_lakala_merchants_id_fk",
           "tableFrom": "stores",
-          "tableTo": "lakala_merchants",
           "columnsFrom": [
             "lakala_merchant_id"
           ],
+          "tableTo": "lakala_merchants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "cascade"
+          "onUpdate": "cascade",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "stores_store_name_unique": {
           "name": "stores_store_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "store_name"
-          ]
+          ],
+          "nullsNotDistinct": false
         },
         "stores_org_node_id_unique": {
           "name": "stores_org_node_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "org_node_id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -412,24 +412,24 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "mall_bundle_groups_product_id_products_product_id_fk": {
           "name": "mall_bundle_groups_product_id_products_product_id_fk",
           "tableFrom": "mall_bundle_groups",
-          "tableTo": "products",
           "columnsFrom": [
             "product_id"
           ],
+          "tableTo": "products",
           "columnsTo": [
             "product_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -570,9 +570,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_mall_product_sku": {
           "name": "uq_mall_product_sku",
@@ -591,50 +591,50 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "mall_product_skus_product_id_products_product_id_fk": {
           "name": "mall_product_skus_product_id_products_product_id_fk",
           "tableFrom": "mall_product_skus",
-          "tableTo": "products",
           "columnsFrom": [
             "product_id"
           ],
+          "tableTo": "products",
           "columnsTo": [
             "product_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "mall_product_skus_sku_id_product_skus_sku_id_fk": {
           "name": "mall_product_skus_sku_id_product_skus_sku_id_fk",
           "tableFrom": "mall_product_skus",
-          "tableTo": "product_skus",
           "columnsFrom": [
             "sku_id"
           ],
+          "tableTo": "product_skus",
           "columnsTo": [
             "sku_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "mall_product_skus_bundle_group_id_mall_bundle_groups_id_fk": {
           "name": "mall_product_skus_bundle_group_id_mall_bundle_groups_id_fk",
           "tableFrom": "mall_product_skus",
-          "tableTo": "mall_bundle_groups",
           "columnsFrom": [
             "bundle_group_id"
           ],
+          "tableTo": "mall_bundle_groups",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -860,9 +860,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_product_skus_is_experience": {
           "name": "idx_product_skus_is_experience",
@@ -875,10 +875,10 @@
             }
           ],
           "isUnique": false,
-          "where": "\"product_skus\".\"is_experience\" = true",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"product_skus\".\"is_experience\" = true",
+          "concurrently": false
         },
         "idx_product_skus_active": {
           "name": "idx_product_skus_active",
@@ -891,38 +891,38 @@
             }
           ],
           "isUnique": false,
-          "where": "deleted_at IS NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "deleted_at IS NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "product_skus_category_id_product_categories_category_id_fk": {
           "name": "product_skus_category_id_product_categories_category_id_fk",
           "tableFrom": "product_skus",
-          "tableTo": "product_categories",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "product_categories",
           "columnsTo": [
             "category_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "product_skus_project_series_id_project_series_lookup_id_fk": {
           "name": "product_skus_project_series_id_project_series_lookup_id_fk",
           "tableFrom": "product_skus",
-          "tableTo": "project_series_lookup",
           "columnsFrom": [
             "project_series_id"
           ],
+          "tableTo": "project_series_lookup",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1072,25 +1072,25 @@
             }
           ],
           "isUnique": false,
-          "where": "deleted_at IS NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "deleted_at IS NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "products_category_id_mall_categories_category_id_fk": {
           "name": "products_category_id_mall_categories_category_id_fk",
           "tableFrom": "products",
-          "tableTo": "mall_categories",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "mall_categories",
           "columnsTo": [
             "category_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1363,10 +1363,10 @@
             }
           ],
           "isUnique": true,
-          "where": "openid IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "openid IS NOT NULL",
+          "concurrently": false
         },
         "uq_client_users_phone": {
           "name": "uq_client_users_phone",
@@ -1379,10 +1379,10 @@
             }
           ],
           "isUnique": true,
-          "where": "phone IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "phone IS NOT NULL",
+          "concurrently": false
         },
         "uq_client_users_customer_id": {
           "name": "uq_client_users_customer_id",
@@ -1395,10 +1395,10 @@
             }
           ],
           "isUnique": true,
-          "where": "customer_id IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "customer_id IS NOT NULL",
+          "concurrently": false
         },
         "idx_client_users_bound_store_id": {
           "name": "idx_client_users_bound_store_id",
@@ -1411,9 +1411,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_client_users_inviter": {
           "name": "idx_client_users_inviter",
@@ -1426,51 +1426,51 @@
             }
           ],
           "isUnique": false,
-          "where": "inviter_user_id IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "inviter_user_id IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "client_wechat_users_bound_store_id_stores_store_id_fk": {
           "name": "client_wechat_users_bound_store_id_stores_store_id_fk",
           "tableFrom": "client_wechat_users",
-          "tableTo": "stores",
           "columnsFrom": [
             "bound_store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "client_wechat_users",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "promoter_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "client_wechat_users_inviter_user_id_client_wechat_users_user_id_fk": {
           "name": "client_wechat_users_inviter_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "client_wechat_users",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "inviter_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1654,10 +1654,10 @@
             }
           ],
           "isUnique": true,
-          "where": "openid IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "openid IS NOT NULL",
+          "concurrently": false
         },
         "uq_staff_users_phone": {
           "name": "uq_staff_users_phone",
@@ -1670,10 +1670,10 @@
             }
           ],
           "isUnique": true,
-          "where": "phone IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "phone IS NOT NULL",
+          "concurrently": false
         },
         "idx_staff_users_store_resigned": {
           "name": "idx_staff_users_store_resigned",
@@ -1692,37 +1692,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "staff_wechat_users_store_id_stores_store_id_fk": {
           "name": "staff_wechat_users_store_id_stores_store_id_fk",
           "tableFrom": "staff_wechat_users",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "staff_wechat_users_org_node_id_org_nodes_id_fk": {
           "name": "staff_wechat_users_org_node_id_org_nodes_id_fk",
           "tableFrom": "staff_wechat_users",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "org_node_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1862,10 +1862,10 @@
             }
           ],
           "isUnique": true,
-          "where": "is_void = false",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "is_void = false",
+          "concurrently": false
         },
         "idx_sale_alloc_employee_id": {
           "name": "idx_sale_alloc_employee_id",
@@ -1878,9 +1878,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_alloc_payment": {
           "name": "idx_sale_alloc_payment",
@@ -1893,50 +1893,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_allocations_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "sale_allocations_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "sale_allocations",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_allocations_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "sale_allocations_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_allocations",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_allocations_sale_payment_id_sale_order_payments_id_fk": {
           "name": "sale_allocations_sale_payment_id_sale_order_payments_id_fk",
           "tableFrom": "sale_allocations",
-          "tableTo": "sale_order_payments",
           "columnsFrom": [
             "sale_payment_id"
           ],
+          "tableTo": "sale_order_payments",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2141,9 +2141,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_items_sku_id": {
           "name": "idx_sale_items_sku_id",
@@ -2156,9 +2156,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_items_ref": {
           "name": "idx_sale_items_ref",
@@ -2171,9 +2171,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_items_store_order": {
           "name": "idx_sale_items_store_order",
@@ -2192,63 +2192,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_items_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "sale_items_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "sale_items",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_items_store_id_stores_store_id_fk": {
           "name": "sale_items_store_id_stores_store_id_fk",
           "tableFrom": "sale_items",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_items_ref_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "sale_items_ref_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "sale_items",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "ref_sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_items_sku_id_product_skus_sku_id_fk": {
           "name": "sale_items_sku_id_product_skus_sku_id_fk",
           "tableFrom": "sale_items",
-          "tableTo": "product_skus",
           "columnsFrom": [
             "sku_id"
           ],
+          "tableTo": "product_skus",
           "columnsTo": [
             "sku_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2425,9 +2425,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sop_alloc_status": {
           "name": "idx_sop_alloc_status",
@@ -2440,10 +2440,10 @@
             }
           ],
           "isUnique": false,
-          "where": "allocation_status IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "allocation_status IS NOT NULL",
+          "concurrently": false
         },
         "idx_sop_status_created": {
           "name": "idx_sop_status_created",
@@ -2462,9 +2462,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_sop_txn": {
           "name": "uq_sop_txn",
@@ -2489,10 +2489,10 @@
             }
           ],
           "isUnique": true,
-          "where": "external_txn_id IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "external_txn_id IS NOT NULL",
+          "concurrently": false
         },
         "uq_sop_status_audit": {
           "name": "uq_sop_status_audit",
@@ -2511,10 +2511,10 @@
             }
           ],
           "isUnique": true,
-          "where": "change_type = '退款' AND status = '待审批'",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "change_type = '退款' AND status = '待审批'",
+          "concurrently": false
         },
         "uq_sop_first_payment": {
           "name": "uq_sop_first_payment",
@@ -2527,64 +2527,64 @@
             }
           ],
           "isUnique": true,
-          "where": "change_type = '首次支付' AND status = '已支付'",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "change_type = '首次支付' AND status = '已支付'",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_order_payments_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "sale_order_payments_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "sale_order_payments",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "restrict"
         },
         "sale_order_payments_operator_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "sale_order_payments_operator_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_order_payments",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "operator_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_order_payments_ref_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "sale_order_payments_ref_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "sale_order_payments",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "ref_sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_order_payments_audit_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "sale_order_payments_audit_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_order_payments",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "audit_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2863,10 +2863,10 @@
             }
           ],
           "isUnique": true,
-          "where": "status = '待支付' AND client_user_id IS NOT NULL AND opened_by IS NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "status = '待支付' AND client_user_id IS NOT NULL AND opened_by IS NULL",
+          "concurrently": false
         },
         "uq_sale_orders_phone_pending": {
           "name": "uq_sale_orders_phone_pending",
@@ -2885,10 +2885,10 @@
             }
           ],
           "isUnique": true,
-          "where": "status = '待支付' AND client_user_id IS NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "status = '待支付' AND client_user_id IS NULL",
+          "concurrently": false
         },
         "idx_sale_orders_store_status": {
           "name": "idx_sale_orders_store_status",
@@ -2907,9 +2907,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_orders_ref": {
           "name": "idx_sale_orders_ref",
@@ -2922,9 +2922,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sale_orders_client_user_id": {
           "name": "idx_sale_orders_client_user_id",
@@ -2937,10 +2937,10 @@
             }
           ],
           "isUnique": false,
-          "where": "client_user_id IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "client_user_id IS NOT NULL",
+          "concurrently": false
         },
         "idx_legacy_source_phone": {
           "name": "idx_legacy_source_phone",
@@ -2959,10 +2959,10 @@
             }
           ],
           "isUnique": false,
-          "where": "legacy_source IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "legacy_source IS NOT NULL",
+          "concurrently": false
         },
         "idx_legacy_source_status": {
           "name": "idx_legacy_source_status",
@@ -2981,103 +2981,103 @@
             }
           ],
           "isUnique": false,
-          "where": "legacy_source IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "legacy_source IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_orders_ref_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "sale_orders_ref_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "ref_sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_store_id_stores_store_id_fk": {
           "name": "sale_orders_store_id_stores_store_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_client_user_id_client_wechat_users_user_id_fk": {
           "name": "sale_orders_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_opened_by_staff_wechat_users_employee_id_fk": {
           "name": "sale_orders_opened_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "opened_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_preferred_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "sale_orders_preferred_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "preferred_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_offline_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "sale_orders_offline_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "offline_confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_orders_audited_by_staff_wechat_users_employee_id_fk": {
           "name": "sale_orders_audited_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "audited_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3158,9 +3158,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spai_order": {
           "name": "idx_spai_order",
@@ -3173,9 +3173,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spai_order_item": {
           "name": "idx_spai_order_item",
@@ -3194,50 +3194,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_payment_allocatable_items_sale_payment_id_sale_order_payments_id_fk": {
           "name": "sale_payment_allocatable_items_sale_payment_id_sale_order_payments_id_fk",
           "tableFrom": "sale_payment_allocatable_items",
-          "tableTo": "sale_order_payments",
           "columnsFrom": [
             "sale_payment_id"
           ],
+          "tableTo": "sale_order_payments",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_payment_allocatable_items_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "sale_payment_allocatable_items_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "sale_payment_allocatable_items",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_payment_allocatable_items_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "sale_payment_allocatable_items_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "sale_payment_allocatable_items",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3356,10 +3356,10 @@
             }
           ],
           "isUnique": true,
-          "where": "is_void = false",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "is_void = false",
+          "concurrently": false
         },
         "idx_spia_receipt": {
           "name": "idx_spia_receipt",
@@ -3372,9 +3372,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spia_employee": {
           "name": "idx_spia_employee",
@@ -3387,37 +3387,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_payment_item_allocations_sale_payment_item_receipt_id_sale_payment_item_receipts_id_fk": {
           "name": "sale_payment_item_allocations_sale_payment_item_receipt_id_sale_payment_item_receipts_id_fk",
           "tableFrom": "sale_payment_item_allocations",
-          "tableTo": "sale_payment_item_receipts",
           "columnsFrom": [
             "sale_payment_item_receipt_id"
           ],
+          "tableTo": "sale_payment_item_receipts",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_payment_item_allocations_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "sale_payment_item_allocations_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_payment_item_allocations",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3498,9 +3498,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spir_payment": {
           "name": "idx_spir_payment",
@@ -3513,9 +3513,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spir_order": {
           "name": "idx_spir_order",
@@ -3528,9 +3528,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_spir_order_item": {
           "name": "idx_spir_order_item",
@@ -3549,50 +3549,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sale_payment_item_receipts_sale_payment_id_sale_order_payments_id_fk": {
           "name": "sale_payment_item_receipts_sale_payment_id_sale_order_payments_id_fk",
           "tableFrom": "sale_payment_item_receipts",
-          "tableTo": "sale_order_payments",
           "columnsFrom": [
             "sale_payment_id"
           ],
+          "tableTo": "sale_order_payments",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_payment_item_receipts_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "sale_payment_item_receipts_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "sale_payment_item_receipts",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "sale_payment_item_receipts_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "sale_payment_item_receipts_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "sale_payment_item_receipts",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3712,9 +3712,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_appts_client_user_id": {
           "name": "idx_appts_client_user_id",
@@ -3727,9 +3727,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_appts_employee_time": {
           "name": "idx_appts_employee_time",
@@ -3748,9 +3748,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_appt_sale_item_active": {
           "name": "uq_appt_sale_item_active",
@@ -3763,10 +3763,10 @@
             }
           ],
           "isUnique": true,
-          "where": "sale_item_id IS NOT NULL AND status IN ('待确认','已确认')",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "sale_item_id IS NOT NULL AND status IN ('待确认','已确认')",
+          "concurrently": false
         },
         "uq_appt_employee_time_active": {
           "name": "uq_appt_employee_time_active",
@@ -3785,64 +3785,64 @@
             }
           ],
           "isUnique": true,
-          "where": "employee_id IS NOT NULL AND status IN ('待确认','已确认')",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "employee_id IS NOT NULL AND status IN ('待确认','已确认')",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "appointments_store_id_stores_store_id_fk": {
           "name": "appointments_store_id_stores_store_id_fk",
           "tableFrom": "appointments",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "appointments_client_user_id_client_wechat_users_user_id_fk": {
           "name": "appointments_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "appointments",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "appointments_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "appointments_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "appointments",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "appointments_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "appointments_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "appointments",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3943,9 +3943,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_svc_items_sale_item_reserved": {
           "name": "idx_svc_items_sale_item_reserved",
@@ -3958,51 +3958,51 @@
             }
           ],
           "isUnique": false,
-          "where": "\"service_items\".\"reserved_at\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"service_items\".\"reserved_at\" IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "service_items_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "service_items_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "service_items",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_items_service_order_id_service_orders_service_order_id_fk": {
           "name": "service_items_service_order_id_service_orders_service_order_id_fk",
           "tableFrom": "service_items",
-          "tableTo": "service_orders",
           "columnsFrom": [
             "service_order_id"
           ],
+          "tableTo": "service_orders",
           "columnsTo": [
             "service_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_items_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "service_items_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "service_items",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4137,9 +4137,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_svc_orders_assigned_employee": {
           "name": "idx_svc_orders_assigned_employee",
@@ -4152,9 +4152,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_svc_orders_client_user_id": {
           "name": "idx_svc_orders_client_user_id",
@@ -4167,9 +4167,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_svc_orders_status_updated": {
           "name": "idx_svc_orders_status_updated",
@@ -4194,9 +4194,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_so_appointment": {
           "name": "uq_so_appointment",
@@ -4209,10 +4209,10 @@
             }
           ],
           "isUnique": true,
-          "where": "appointment_id IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "appointment_id IS NOT NULL",
+          "concurrently": false
         },
         "uq_so_client_active": {
           "name": "uq_so_client_active",
@@ -4225,64 +4225,64 @@
             }
           ],
           "isUnique": true,
-          "where": "status NOT IN ('已完成','已取消')",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "status NOT IN ('已完成','已取消')",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "service_orders_store_id_stores_store_id_fk": {
           "name": "service_orders_store_id_stores_store_id_fk",
           "tableFrom": "service_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_orders_assigned_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "service_orders_assigned_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "service_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "assigned_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_orders_appointment_id_appointments_appointment_id_fk": {
           "name": "service_orders_appointment_id_appointments_appointment_id_fk",
           "tableFrom": "service_orders",
-          "tableTo": "appointments",
           "columnsFrom": [
             "appointment_id"
           ],
+          "tableTo": "appointments",
           "columnsTo": [
             "appointment_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_orders_client_user_id_client_wechat_users_user_id_fk": {
           "name": "service_orders_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "service_orders",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4345,50 +4345,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "service_reviews_service_order_id_service_orders_service_order_id_fk": {
           "name": "service_reviews_service_order_id_service_orders_service_order_id_fk",
           "tableFrom": "service_reviews",
-          "tableTo": "service_orders",
           "columnsFrom": [
             "service_order_id"
           ],
+          "tableTo": "service_orders",
           "columnsTo": [
             "service_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_reviews_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "service_reviews_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "service_reviews",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_reviews_client_user_id_client_wechat_users_user_id_fk": {
           "name": "service_reviews_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "service_reviews",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4476,37 +4476,37 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "permission_roles_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "permission_roles_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "permission_roles",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "permission_roles_scope_id_org_nodes_id_fk": {
           "name": "permission_roles_scope_id_org_nodes_id_fk",
           "tableFrom": "permission_roles",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "scope_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4587,29 +4587,29 @@
         "commission_rate_matrix_org_id_org_nodes_id_fk": {
           "name": "commission_rate_matrix_org_id_org_nodes_id_fk",
           "tableFrom": "commission_rate_matrix",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "org_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "uq_commission_matrix": {
           "name": "uq_commission_matrix",
-          "nullsNotDistinct": false,
           "columns": [
             "org_id",
             "order_type",
             "role_type",
             "sales_category",
             "amount_tier_min"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -4703,64 +4703,64 @@
             }
           ],
           "isUnique": true,
-          "where": "status = '待处理'",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "status = '待处理'",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "store_unbind_requests_user_id_client_wechat_users_user_id_fk": {
           "name": "store_unbind_requests_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "store_unbind_requests",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_unbind_requests_from_store_id_stores_store_id_fk": {
           "name": "store_unbind_requests_from_store_id_stores_store_id_fk",
           "tableFrom": "store_unbind_requests",
-          "tableTo": "stores",
           "columnsFrom": [
             "from_store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_unbind_requests_to_store_id_stores_store_id_fk": {
           "name": "store_unbind_requests_to_store_id_stores_store_id_fk",
           "tableFrom": "store_unbind_requests",
-          "tableTo": "stores",
           "columnsFrom": [
             "to_store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_unbind_requests_reviewed_by_staff_wechat_users_employee_id_fk": {
           "name": "store_unbind_requests_reviewed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_unbind_requests",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "reviewed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4859,9 +4859,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_op_logs_target": {
           "name": "idx_op_logs_target",
@@ -4880,9 +4880,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_op_logs_action": {
           "name": "idx_op_logs_action",
@@ -4895,9 +4895,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_op_logs_created_at": {
           "name": "idx_op_logs_created_at",
@@ -4910,37 +4910,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "operation_logs",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "operator_employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "operation_logs_org_node_id_org_nodes_id_fk": {
           "name": "operation_logs_org_node_id_org_nodes_id_fk",
           "tableFrom": "operation_logs",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "org_node_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5175,9 +5175,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_user_coupons_used_order": {
           "name": "idx_user_coupons_used_order",
@@ -5190,9 +5190,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_user_coupons_expire": {
           "name": "idx_user_coupons_expire",
@@ -5205,9 +5205,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_user_coupons_external_ref": {
           "name": "uq_user_coupons_external_ref",
@@ -5220,51 +5220,51 @@
             }
           ],
           "isUnique": true,
-          "where": "external_ref IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "external_ref IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "user_coupons_template_id_coupon_templates_template_id_fk": {
           "name": "user_coupons_template_id_coupon_templates_template_id_fk",
           "tableFrom": "user_coupons",
-          "tableTo": "coupon_templates",
           "columnsFrom": [
             "template_id"
           ],
+          "tableTo": "coupon_templates",
           "columnsTo": [
             "template_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "user_coupons_user_id_client_wechat_users_user_id_fk": {
           "name": "user_coupons_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "user_coupons",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "user_coupons_used_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "user_coupons_used_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "user_coupons",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "used_sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5335,24 +5335,24 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "admin_passwords_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "admin_passwords_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "admin_passwords",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5417,9 +5417,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -5490,9 +5490,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_point_txns_external_ref": {
           "name": "uq_point_txns_external_ref",
@@ -5505,10 +5505,10 @@
             }
           ],
           "isUnique": true,
-          "where": "external_ref IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "external_ref IS NOT NULL",
+          "concurrently": false
         },
         "uq_point_txn_order_user_type": {
           "name": "uq_point_txn_order_user_type",
@@ -5533,38 +5533,38 @@
             }
           ],
           "isUnique": true,
-          "where": "ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "point_transactions_user_id_client_wechat_users_user_id_fk": {
           "name": "point_transactions_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "point_transactions",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "point_transactions_ref_order_id_sale_orders_sale_order_id_fk": {
           "name": "point_transactions_ref_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "point_transactions",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "ref_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5688,9 +5688,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_messages_idempotency_key": {
           "name": "uq_messages_idempotency_key",
@@ -5703,10 +5703,10 @@
             }
           ],
           "isUnique": true,
-          "where": "idempotency_key IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "idempotency_key IS NOT NULL",
+          "concurrently": false
         },
         "idx_messages_active": {
           "name": "idx_messages_active",
@@ -5719,10 +5719,10 @@
             }
           ],
           "isUnique": false,
-          "where": "deleted_at IS NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "deleted_at IS NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -5793,9 +5793,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_card_txn_external_ref": {
           "name": "uq_card_txn_external_ref",
@@ -5808,38 +5808,38 @@
             }
           ],
           "isUnique": true,
-          "where": "external_ref IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "external_ref IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "card_transactions_card_id_prepaid_cards_card_id_fk": {
           "name": "card_transactions_card_id_prepaid_cards_card_id_fk",
           "tableFrom": "card_transactions",
-          "tableTo": "prepaid_cards",
           "columnsFrom": [
             "card_id"
           ],
+          "tableTo": "prepaid_cards",
           "columnsTo": [
             "card_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "card_transactions_ref_order_id_sale_orders_sale_order_id_fk": {
           "name": "card_transactions_ref_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "card_transactions",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "ref_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5903,24 +5903,24 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "prepaid_cards_user_id_client_wechat_users_user_id_fk": {
           "name": "prepaid_cards_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "prepaid_cards",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -6052,10 +6052,10 @@
             }
           ],
           "isUnique": true,
-          "where": "is_void = false",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "is_void = false",
+          "concurrently": false
         },
         "idx_svc_comm_employee_id": {
           "name": "idx_svc_comm_employee_id",
@@ -6068,9 +6068,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_sc_voided_at": {
           "name": "idx_sc_voided_at",
@@ -6083,38 +6083,38 @@
             }
           ],
           "isUnique": false,
-          "where": "voided_at IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "voided_at IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "service_commissions_service_item_id_service_items_service_item_id_fk": {
           "name": "service_commissions_service_item_id_service_items_service_item_id_fk",
           "tableFrom": "service_commissions",
-          "tableTo": "service_items",
           "columnsFrom": [
             "service_item_id"
           ],
+          "tableTo": "service_items",
           "columnsTo": [
             "service_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "service_commissions_employee_id_staff_wechat_users_employee_id_fk": {
           "name": "service_commissions_employee_id_staff_wechat_users_employee_id_fk",
           "tableFrom": "service_commissions",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "employee_id"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -6216,9 +6216,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_pickup_records_client": {
           "name": "idx_pickup_records_client",
@@ -6231,9 +6231,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "uq_pickup_idempotency": {
           "name": "uq_pickup_idempotency",
@@ -6252,64 +6252,64 @@
             }
           ],
           "isUnique": true,
-          "where": "idempotency_key IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "idempotency_key IS NOT NULL",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "pickup_records_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "pickup_records_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "pickup_records",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "pickup_records_store_id_stores_store_id_fk": {
           "name": "pickup_records_store_id_stores_store_id_fk",
           "tableFrom": "pickup_records",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "pickup_records_client_user_id_client_wechat_users_user_id_fk": {
           "name": "pickup_records_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "pickup_records",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "pickup_records_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "pickup_records_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "pickup_records",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -6444,9 +6444,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_proc_items_product": {
           "name": "idx_inv_proc_items_product",
@@ -6459,9 +6459,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_proc_items_batch": {
           "name": "idx_inv_proc_items_batch",
@@ -6474,24 +6474,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_procurement_order_items_order_id_inventory_procurement_orders_id_fk": {
           "name": "inventory_procurement_order_items_order_id_inventory_procurement_orders_id_fk",
           "tableFrom": "inventory_procurement_order_items",
-          "tableTo": "inventory_procurement_orders",
           "columnsFrom": [
             "order_id"
           ],
+          "tableTo": "inventory_procurement_orders",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -6636,9 +6636,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_proc_subtype": {
           "name": "idx_inv_proc_subtype",
@@ -6651,50 +6651,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_procurement_orders_store_id_stores_store_id_fk": {
           "name": "inventory_procurement_orders_store_id_stores_store_id_fk",
           "tableFrom": "inventory_procurement_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_procurement_orders_created_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_procurement_orders_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_procurement_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_procurement_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_procurement_orders_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_procurement_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -6842,9 +6842,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_sale_items_product": {
           "name": "idx_inv_sale_items_product",
@@ -6857,9 +6857,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_sale_items_batch": {
           "name": "idx_inv_sale_items_batch",
@@ -6872,24 +6872,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_sale_order_items_order_id_inventory_sale_orders_id_fk": {
           "name": "inventory_sale_order_items_order_id_inventory_sale_orders_id_fk",
           "tableFrom": "inventory_sale_order_items",
-          "tableTo": "inventory_sale_orders",
           "columnsFrom": [
             "order_id"
           ],
+          "tableTo": "inventory_sale_orders",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -7021,9 +7021,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_sale_subtype": {
           "name": "idx_inv_sale_subtype",
@@ -7036,9 +7036,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_sale_client": {
           "name": "idx_inv_sale_client",
@@ -7051,76 +7051,76 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_sale_orders_store_id_stores_store_id_fk": {
           "name": "inventory_sale_orders_store_id_stores_store_id_fk",
           "tableFrom": "inventory_sale_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_sale_orders_client_user_id_client_wechat_users_user_id_fk": {
           "name": "inventory_sale_orders_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "inventory_sale_orders",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_sale_orders_related_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "inventory_sale_orders_related_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "inventory_sale_orders",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "related_sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_sale_orders_created_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_sale_orders_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_sale_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_sale_orders_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_sale_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -7256,9 +7256,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_scrap_items_product": {
           "name": "idx_inv_scrap_items_product",
@@ -7271,9 +7271,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_scrap_items_batch": {
           "name": "idx_inv_scrap_items_batch",
@@ -7286,24 +7286,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_scrap_order_items_order_id_inventory_scrap_orders_id_fk": {
           "name": "inventory_scrap_order_items_order_id_inventory_scrap_orders_id_fk",
           "tableFrom": "inventory_scrap_order_items",
-          "tableTo": "inventory_scrap_orders",
           "columnsFrom": [
             "order_id"
           ],
+          "tableTo": "inventory_scrap_orders",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -7410,50 +7410,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_scrap_orders_store_id_stores_store_id_fk": {
           "name": "inventory_scrap_orders_store_id_stores_store_id_fk",
           "tableFrom": "inventory_scrap_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_scrap_orders_created_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_scrap_orders_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_scrap_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_scrap_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_scrap_orders_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_scrap_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -7577,9 +7577,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_transfer_items_product": {
           "name": "idx_inv_transfer_items_product",
@@ -7592,9 +7592,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_transfer_items_batch": {
           "name": "idx_inv_transfer_items_batch",
@@ -7607,24 +7607,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_transfer_order_items_order_id_inventory_transfer_orders_id_fk": {
           "name": "inventory_transfer_order_items_order_id_inventory_transfer_orders_id_fk",
           "tableFrom": "inventory_transfer_order_items",
-          "tableTo": "inventory_transfer_orders",
           "columnsFrom": [
             "order_id"
           ],
+          "tableTo": "inventory_transfer_orders",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -7757,9 +7757,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_transfer_counterpart": {
           "name": "idx_inv_transfer_counterpart",
@@ -7772,9 +7772,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_inv_transfer_subtype": {
           "name": "idx_inv_transfer_subtype",
@@ -7787,63 +7787,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "inventory_transfer_orders_store_id_stores_store_id_fk": {
           "name": "inventory_transfer_orders_store_id_stores_store_id_fk",
           "tableFrom": "inventory_transfer_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_transfer_orders_counterpart_store_id_stores_store_id_fk": {
           "name": "inventory_transfer_orders_counterpart_store_id_stores_store_id_fk",
           "tableFrom": "inventory_transfer_orders",
-          "tableTo": "stores",
           "columnsFrom": [
             "counterpart_store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_transfer_orders_created_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_transfer_orders_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_transfer_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "inventory_transfer_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "inventory_transfer_orders_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "inventory_transfer_orders",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -7984,9 +7984,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_doc_items_stock": {
           "name": "idx_store_inventory_doc_items_stock",
@@ -7999,9 +7999,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_doc_items_sku": {
           "name": "idx_store_inventory_doc_items_sku",
@@ -8014,9 +8014,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_doc_items_sale_item": {
           "name": "idx_store_inventory_doc_items_sale_item",
@@ -8029,63 +8029,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "store_inventory_doc_items_doc_id_store_inventory_docs_id_fk": {
           "name": "store_inventory_doc_items_doc_id_store_inventory_docs_id_fk",
           "tableFrom": "store_inventory_doc_items",
-          "tableTo": "store_inventory_docs",
           "columnsFrom": [
             "doc_id"
           ],
+          "tableTo": "store_inventory_docs",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "store_inventory_doc_items_stock_id_store_inventory_stocks_id_fk": {
           "name": "store_inventory_doc_items_stock_id_store_inventory_stocks_id_fk",
           "tableFrom": "store_inventory_doc_items",
-          "tableTo": "store_inventory_stocks",
           "columnsFrom": [
             "stock_id"
           ],
+          "tableTo": "store_inventory_stocks",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_doc_items_sku_id_product_skus_sku_id_fk": {
           "name": "store_inventory_doc_items_sku_id_product_skus_sku_id_fk",
           "tableFrom": "store_inventory_doc_items",
-          "tableTo": "product_skus",
           "columnsFrom": [
             "sku_id"
           ],
+          "tableTo": "product_skus",
           "columnsTo": [
             "sku_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_doc_items_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "store_inventory_doc_items_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "store_inventory_doc_items",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -8266,9 +8266,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_docs_type": {
           "name": "idx_store_inventory_docs_type",
@@ -8281,9 +8281,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_docs_status": {
           "name": "idx_store_inventory_docs_status",
@@ -8296,9 +8296,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_docs_request": {
           "name": "idx_store_inventory_docs_request",
@@ -8311,9 +8311,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_docs_sale_order": {
           "name": "idx_store_inventory_docs_sale_order",
@@ -8326,9 +8326,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_docs_client": {
           "name": "idx_store_inventory_docs_client",
@@ -8341,128 +8341,128 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "store_inventory_docs_store_id_stores_store_id_fk": {
           "name": "store_inventory_docs_store_id_stores_store_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_counterpart_store_id_stores_store_id_fk": {
           "name": "store_inventory_docs_counterpart_store_id_stores_store_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "stores",
           "columnsFrom": [
             "counterpart_store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_request_doc_id_store_inventory_docs_id_fk": {
           "name": "store_inventory_docs_request_doc_id_store_inventory_docs_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "store_inventory_docs",
           "columnsFrom": [
             "request_doc_id"
           ],
+          "tableTo": "store_inventory_docs",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_related_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "store_inventory_docs_related_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "related_sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_client_user_id_client_wechat_users_user_id_fk": {
           "name": "store_inventory_docs_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "client_wechat_users",
           "columnsFrom": [
             "client_user_id"
           ],
+          "tableTo": "client_wechat_users",
           "columnsTo": [
             "user_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_created_by_staff_wechat_users_employee_id_fk": {
           "name": "store_inventory_docs_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_confirmed_by_staff_wechat_users_employee_id_fk": {
           "name": "store_inventory_docs_confirmed_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "confirmed_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_approved_by_staff_wechat_users_employee_id_fk": {
           "name": "store_inventory_docs_approved_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "approved_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_docs_rejected_by_staff_wechat_users_employee_id_fk": {
           "name": "store_inventory_docs_rejected_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_inventory_docs",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "rejected_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -8591,9 +8591,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_movements_stock": {
           "name": "idx_store_inventory_movements_stock",
@@ -8606,9 +8606,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_movements_store_created": {
           "name": "idx_store_inventory_movements_store_created",
@@ -8627,9 +8627,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_movements_doc": {
           "name": "idx_store_inventory_movements_doc",
@@ -8642,9 +8642,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_movements_sale_item": {
           "name": "idx_store_inventory_movements_sale_item",
@@ -8657,115 +8657,115 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "store_inventory_movements_stock_id_store_inventory_stocks_id_fk": {
           "name": "store_inventory_movements_stock_id_store_inventory_stocks_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "store_inventory_stocks",
           "columnsFrom": [
             "stock_id"
           ],
+          "tableTo": "store_inventory_stocks",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_store_id_stores_store_id_fk": {
           "name": "store_inventory_movements_store_id_stores_store_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_sku_id_product_skus_sku_id_fk": {
           "name": "store_inventory_movements_sku_id_product_skus_sku_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "product_skus",
           "columnsFrom": [
             "sku_id"
           ],
+          "tableTo": "product_skus",
           "columnsTo": [
             "sku_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_doc_id_store_inventory_docs_id_fk": {
           "name": "store_inventory_movements_doc_id_store_inventory_docs_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "store_inventory_docs",
           "columnsFrom": [
             "doc_id"
           ],
+          "tableTo": "store_inventory_docs",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_doc_item_id_store_inventory_doc_items_id_fk": {
           "name": "store_inventory_movements_doc_item_id_store_inventory_doc_items_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "store_inventory_doc_items",
           "columnsFrom": [
             "doc_item_id"
           ],
+          "tableTo": "store_inventory_doc_items",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_sale_order_id_sale_orders_sale_order_id_fk": {
           "name": "store_inventory_movements_sale_order_id_sale_orders_sale_order_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "sale_orders",
           "columnsFrom": [
             "sale_order_id"
           ],
+          "tableTo": "sale_orders",
           "columnsTo": [
             "sale_order_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_sale_item_id_sale_items_sale_item_id_fk": {
           "name": "store_inventory_movements_sale_item_id_sale_items_sale_item_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "sale_items",
           "columnsFrom": [
             "sale_item_id"
           ],
+          "tableTo": "sale_items",
           "columnsTo": [
             "sale_item_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_movements_created_by_staff_wechat_users_employee_id_fk": {
           "name": "store_inventory_movements_created_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "store_inventory_movements",
-          "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "created_by"
           ],
+          "tableTo": "staff_wechat_users",
           "columnsTo": [
             "employee_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -8909,9 +8909,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_stock_store": {
           "name": "idx_store_inventory_stock_store",
@@ -8924,9 +8924,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "idx_store_inventory_stock_sku": {
           "name": "idx_store_inventory_stock_sku",
@@ -8939,37 +8939,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "store_inventory_stocks_store_id_stores_store_id_fk": {
           "name": "store_inventory_stocks_store_id_stores_store_id_fk",
           "tableFrom": "store_inventory_stocks",
-          "tableTo": "stores",
           "columnsFrom": [
             "store_id"
           ],
+          "tableTo": "stores",
           "columnsTo": [
             "store_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "store_inventory_stocks_sku_id_product_skus_sku_id_fk": {
           "name": "store_inventory_stocks_sku_id_product_skus_sku_id_fk",
           "tableFrom": "store_inventory_stocks",
-          "tableTo": "product_skus",
           "columnsFrom": [
             "sku_id"
           ],
+          "tableTo": "product_skus",
           "columnsTo": [
             "sku_id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -9066,10 +9066,10 @@
       "uniqueConstraints": {
         "project_series_lookup_name_unique": {
           "name": "project_series_lookup_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -9127,10 +9127,10 @@
       "uniqueConstraints": {
         "skill_tags_name_unique": {
           "name": "skill_tags_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -9205,10 +9205,10 @@
             }
           ],
           "isUnique": true,
-          "where": "\"lakala_merchants\".\"merchant_no\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"lakala_merchants\".\"merchant_no\" IS NOT NULL",
+          "concurrently": false
         },
         "idx_lakala_merchants_market_org_node_id": {
           "name": "idx_lakala_merchants_market_org_node_id",
@@ -9221,24 +9221,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "lakala_merchants_market_org_node_id_org_nodes_id_fk": {
           "name": "lakala_merchants_market_org_node_id_org_nodes_id_fk",
           "tableFrom": "lakala_merchants",
-          "tableTo": "org_nodes",
           "columnsFrom": [
             "market_org_node_id"
           ],
+          "tableTo": "org_nodes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "cascade"
+          "onUpdate": "cascade",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -9587,10 +9587,10 @@
     }
   },
   "schemas": {},
+  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
-  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},
