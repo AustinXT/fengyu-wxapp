@@ -1,27 +1,27 @@
 # 服务期间疗程卡预扣锁定机制实施记录
 
 **日期**: 2026-08-06  
-**问题**: 服务单处于"服务中"或"待确认"状态时，疗程卡被转换单消耗，导致服务确认时报错"剩余次数不足"
+**问题**: 服务单处于"服务中"或"待客户确认"状态时，疗程卡可能被转换单消耗，导致服务确认时报错"剩余次数不足"
 
 ## 根本原因
 
 服务单状态流转与次数扣减时机错配导致的并发竞态条件：
 - 服务单从"待服务"→"服务中"→"待客户确认"期间，疗程卡的 `remaining_sessions` 未被锁定
-- 转换单创建时会原子置 `remaining_sessions=0`，与进行中的服务单冲突
+- 转换单与开始服务没有争用同一张 `sale_items` 行锁，可能基于过期的可用次数同时通过校验
 
 ## 解决方案
 
 实施两阶段预扣机制：
 1. **预扣阶段**：服务开始时（`service.start`），标记 `service_items.reserved_at`
-2. **确认阶段**：服务确认时（`service.confirm`），清除预扣标记 + 正式扣减次数
+2. **确认阶段**：服务确认时（`service.confirm`），锁定关联卡 → 状态 CAS → 正式扣减次数 → 清除预扣标记
 
 ## 实施的变更
 
 ### 1. 数据库 Schema (✅ 已完成)
 
-**文件**: `db/migrations/0079_add_service_items_reserved_at.sql`
+**文件**: `db/migrations/0092_lethal_frank_castle.sql`
 - 新增字段: `service_items.reserved_at timestamptz`
-- 新增索引: `idx_service_items_sale_item_reserved` (WHERE reserved_at IS NOT NULL)
+- 新增索引: `idx_svc_items_sale_item_reserved` (WHERE reserved_at IS NOT NULL)
 - 数据修复: 为现有"服务中"/"待客户确认"服务单补打预扣标记
 
 **文件**: `db/schema/service.ts`
@@ -35,11 +35,12 @@
 - 校验可用次数（`remaining_sessions - total_reserved`）
 - 考虑其他服务单的预扣，排除当前服务单（幂等支持）
 - 叠加 `paid_sessions` 限额校验
-- 标记预扣：`UPDATE service_items SET reserved_at = NOW() WHERE service_order_id = ?`
+- 先按 `sale_item_id` 锁定关联卡，再汇总预扣并标记：`UPDATE service_items SET reserved_at = NOW() WHERE service_order_id = ?`
 
-#### 2.2 `finalizeServiceOrder` - 清除预扣标记
-- 在扣减前清除预扣：`UPDATE service_items SET reserved_at = NULL WHERE service_order_id = ?`
-- 防止转换单查询时重复计入本服务单的预扣
+#### 2.2 `finalizeServiceOrder` - 成功扣次后清除预扣标记
+- 按稳定顺序锁定关联 `sale_items`
+- 状态 CAS 成功后扣减次数，全部成功才执行 `UPDATE service_items SET reserved_at = NULL WHERE service_order_id = ?`
+- 事务提交前持有卡行锁，转换单不会看到“预扣已释放但次数尚未扣减”的中间状态
 
 #### 2.3 `service.cancel` - 释放预扣
 - 清除预扣标记：`UPDATE service_items SET reserved_at = NULL WHERE service_order_id = ?`
@@ -47,7 +48,7 @@
 **文件**: `fengyu-staff/cloudfunctions/staffApi/routes/order.js`
 
 #### 2.4 `createConversion` - 转换单考虑预扣
-- 查询增加预扣统计：`LEFT JOIN service_items ... COALESCE(SUM(session_used) FILTER (WHERE reserved_at IS NOT NULL), 0) AS total_reserved`
+- 先按 `sale_item_id` 锁定源卡，再独立聚合 `service_items.reserved_at IS NOT NULL` 的预扣次数
 - 可用次数 = `remaining_sessions - total_reserved`
 - 折抵数量改为可用次数（而非全部剩余次数）
 
@@ -55,37 +56,31 @@
 
 **文件**: `fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js`
 
-#### 3.1 `finalizeServiceOrder` - 清除预扣标记
-- 同步 staffApi 的变更，在扣减前清除预扣标记
+#### 3.1 `finalizeServiceOrder` - 成功扣次后清除预扣标记
+- 同步 staffApi：锁卡 → 状态 CAS → 扣次 → 释放预扣
 
 ### 4. admin 后台 (✅ 已完成)
 
 **文件**: `fengyu-admin/src/actions/services.ts`
 
-#### 4.1 `confirmServiceOrder` - 清除预扣标记
-- 在事务内、扣减前清除预扣：
-  ```typescript
-  await tx.execute(sql`
-    UPDATE service_items
-    SET reserved_at = NULL, updated_at = NOW()
-    WHERE service_order_id = ${serviceOrderId}
-  `)
-  ```
+#### 4.1 `startServiceOrder` / `confirmServiceOrder` - 锁卡、汇总与释放预扣
+- 开始服务先锁关联卡，再独立聚合其他服务单预扣，状态 CAS 成功后写入预扣
+- 代确认按 `sale_item_id` 汇总同一卡的多条服务明细，状态 CAS 和全部扣次成功后才释放预扣
 
 #### 4.2 `cancelServiceOrder` - 释放预扣
-- 改为事务包裹，先释放预扣，再更新服务单状态
+- 改为事务包裹，状态 CAS 成功后才释放预扣
 
 **文件**: `fengyu-admin/src/actions/orders.ts`
 
 #### 4.3 `createConversionOrder` - 转换单考虑预扣
-- 查询增加预扣统计（LEFT JOIN service_items + GROUP BY）
+- 先按稳定顺序锁定源卡，再独立汇总预扣
 - 可用次数 = `remaining_sessions - total_reserved`
 - 错误消息优化：`CARD_RESERVED: 所选卡可用次数不足（存在服务中预留）`
 
 ## 跨端一致性
 
 ### SQL 副本守护
-- `finalizeServiceOrder` 的清除预扣 SQL 在三端保持字面量一致：
+- `finalizeServiceOrder` 的扣次、费率和提成 SQL 在三端保持字面量一致，且均在成功扣次后释放预扣：
   - `fengyu-staff/cloudfunctions/staffApi/routes/service.js`
   - `fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js`
   - `fengyu-admin/src/actions/services.ts`
@@ -100,21 +95,16 @@
 4. ✅ 两个服务单使用同一张卡 → 第一个开始服务 → 第二个尝试开始（应拒绝）
 
 ### 自动化测试
-- 待编写: `fengyu-staff/tests/e2e-cloudfn/service-reservation-conflict.spec.mjs`
-- 场景覆盖:
-  - 服务中创建转换单（应报错）
-  - 服务取消后转换单（应成功）
-  - 多个服务单并发预扣同一卡
+- staffApi `order.test.js` / `service.test.js`：锁顺序、预扣汇总、服务开始/确认/取消时序
+- clientApi `service-finalize.test.js`：CAS 失败不释放预扣、成功扣次后释放预扣
+- `cross-end-sql-snapshot.test.js`：三端 finalize SQL 一致性守护
 
 ## 部署清单
 
 ### Phase 1: 数据库迁移
-- [x] 本地环境：运行 `bun db:migrate` (迁移 0079)
-- [ ] Dev 环境：部署迁移到 47.113.202.7
+- [x] 开发/测试环境：运行 `npm run db:migrate`，已应用迁移 0092 到 47.113.202.7
 - [ ] Prod 环境：
-  - 备份数据库
-  - 运行数据修复脚本（补打预扣标记）
-  - 部署迁移 0079
+  - 按发布流程应用迁移 0092（迁移内含进行中服务单的预扣回填）
 
 ### Phase 2: 云函数部署
 - [ ] staffApi (dev/prod)
@@ -132,7 +122,7 @@
 
 ### 旧服务单
 - `reserved_at = NULL`：不影响已完成/已取消的服务单
-- 进行中服务单：升级后首次 `service.start` 会触发预扣逻辑
+- 进行中服务单：迁移将以 `COALESCE(started_at, created_at)` 回填预扣时间
 
 ### 数据修复
 - 迁移脚本自动为"服务中"/"待客户确认"的服务单补打 `reserved_at`
@@ -146,7 +136,7 @@
 3. **生产升级窗口**: 数据修复脚本确保现有服务单预扣状态正确
 
 ### 中风险
-1. **幂等性**: `service.start` 重入时排除当前服务单的预扣统计
+1. **并发锁序**: 开始服务、转换单和确认均按 `sale_item_id` 稳定顺序锁卡
 2. **事务边界**: 所有预扣操作都在事务内，保证原子性
 
 ## 后续优化（可选）
