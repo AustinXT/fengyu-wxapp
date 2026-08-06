@@ -502,6 +502,8 @@ Page({
   _spuCache: {} as Record<string, DisplayItem[]>,
   /** 普通商品搜索防抖计时器 */
   _kwTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 商品目录世代；切换门店后使仍在飞行中的旧请求失效。 */
+  _catalogGeneration: 0,
 
   onLoad() {
     // 订阅门店切换事件：切换门店时强制刷新商品目录
@@ -542,9 +544,12 @@ Page({
   // ===== 商品目录（三级导航 + 缓存） =====
 
   async loadShopInit() {
+    const catalogGeneration = this._catalogGeneration;
     this.setData({ catalogLoading: true });
     try {
       const data = await callStaffApi<ShopInitResponse>('product.shopInit');
+      if (catalogGeneration !== this._catalogGeneration) return;
+
       const categories: Category[] = data.categories || [];
       const groupedCategories: GroupedCategory[] = data.groupedCategories || [];
       const rawSkus: SkuItem[] = data.skuList || [];
@@ -562,6 +567,8 @@ Page({
       this.setData({ bundleSpus, catalogLoading: false });
       this.applyKindChoice(this.data.productKindChoice);
     } catch (err: unknown) {
+      if (catalogGeneration !== this._catalogGeneration) return;
+
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
       this.setData({ catalogLoading: false });
@@ -1314,6 +1321,9 @@ Page({
    * 由 EVENT_STORE_CHANGED 事件触发，确保用户切换门店后不会残留旧门店数据。
    */
   onStoreChanged() {
+    // 先失效旧门店的在途 shopInit；其成功/失败回调均不得再触碰当前目录状态。
+    this._catalogGeneration += 1;
+
     // 1. 清空商品目录缓存（强制重新从云端拉取新门店的商品数据）
     this._allCategories = [];
     this._allGroupedCategories = [];

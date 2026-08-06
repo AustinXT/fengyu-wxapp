@@ -3489,6 +3489,11 @@ async function createConversion(ctx) {
     }
     applyTreatmentTierPricing(inItems, tierSkuRows, buyerIsMember, '转换单')
 
+    // 转入明细写库时 amount 会同时落到 sale_amount 和 received，必须同步梯度成交价。
+    for (const item of inItems) {
+      item.amount = item.saleAmount
+    }
+
     // 重新计算 totalIn（梯度累加可能改变了 amount / saleAmount）
     let totalIn = 0
     for (const item of inItems) {
