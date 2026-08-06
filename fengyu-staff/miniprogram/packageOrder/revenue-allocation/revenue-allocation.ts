@@ -696,7 +696,6 @@ Page({
       employeeId: line.staffWfId,
       roleType: line.roleType,
       allocationRatio: line.ratioPercent / 100,
-      totalAmount: parseFloat(line.allocAmount) || 0,
     }));
 
     this.setData({ submitting: true });
