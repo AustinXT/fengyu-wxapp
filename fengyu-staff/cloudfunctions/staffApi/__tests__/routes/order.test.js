@@ -4439,6 +4439,7 @@ describe('order.createConversion', () => {
     expect(ctx.result.totalOut).toBe(300)
     const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
     expect(heldLock.sql).not.toMatch(/GROUP BY|SUM\s*\(/)
+    expect(heldLock.sql).toMatch(/ORDER BY si\.sale_item_id\s+FOR UPDATE OF si/)
     const reservedQuery = txCalls.find((call) => call.sql.includes('GROUP BY sit.sale_item_id'))
     expect(reservedQuery.sql).not.toMatch(/FOR UPDATE/)
     const sourceUpdate = txCalls.find((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))

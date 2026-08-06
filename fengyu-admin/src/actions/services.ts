@@ -964,7 +964,8 @@ export const startServiceOrder = withPermission(
   try {
     outcome = await db.transaction(async (tx) => {
       // 与转换单争用同一批 sale_items 行锁，按 sale_item_id 固定顺序避免多卡服务死锁。
-      // 预扣聚合排除本服务单，保证重试/历史脏数据不会重复计算自身次数。
+      // 必须先取得行锁，再单独汇总预扣；把汇总放进同一 SELECT 的标量子查询，
+      // 无法保证子查询一定在 FOR UPDATE 之后求值。
       const lockRows = await tx.execute(sql`
         SELECT
           sit.service_item_id,
@@ -973,20 +974,30 @@ export const startServiceOrder = withPermission(
           si.remaining_sessions,
           si.session_count,
           si.paid_sessions,
-          si.product_type,
-          COALESCE((
-            SELECT SUM(other_sit.session_used)
-            FROM service_items other_sit
-            WHERE other_sit.sale_item_id = si.sale_item_id
-              AND other_sit.reserved_at IS NOT NULL
-              AND other_sit.service_order_id <> ${serviceOrderId}
-          ), 0) AS total_reserved
+          si.product_type
         FROM service_items sit
         INNER JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
         WHERE sit.service_order_id = ${serviceOrderId}
         ORDER BY si.sale_item_id, sit.service_item_id
         FOR UPDATE OF si
       `)
+
+      const lockedRows = Array.from(lockRows as unknown as Iterable<Record<string, unknown>>)
+      const saleItemIds = [...new Set(lockedRows.map((row) => String(row.sale_item_id)))]
+      const reservedRows = saleItemIds.length === 0
+        ? []
+        : await tx.execute(sql`
+            SELECT sale_item_id, COALESCE(SUM(session_used), 0) AS total_reserved
+            FROM service_items
+            WHERE sale_item_id IN (${sql.join(saleItemIds.map((id) => sql`${id}`), sql`, `)})
+              AND reserved_at IS NOT NULL
+              AND service_order_id <> ${serviceOrderId}
+            GROUP BY sale_item_id
+          `)
+      const reservedBySaleItemId = new Map(
+        Array.from(reservedRows as unknown as Iterable<Record<string, unknown>>)
+          .map((row) => [String(row.sale_item_id), Number(row.total_reserved ?? 0)] as const),
+      )
 
       const cards = new Map<string, {
         remaining: number
@@ -996,7 +1007,7 @@ export const startServiceOrder = withPermission(
         totalReserved: number
         requested: number
       }>()
-      for (const row of Array.from(lockRows as unknown as Iterable<Record<string, unknown>>)) {
+      for (const row of lockedRows) {
         const saleItemId = String(row.sale_item_id)
         const existing = cards.get(saleItemId)
         if (existing) {
@@ -1008,7 +1019,7 @@ export const startServiceOrder = withPermission(
           sessionCount: row.session_count === null ? null : Number(row.session_count),
           paidSessions: row.paid_sessions === null ? null : Number(row.paid_sessions),
           productType: (row.product_type as string | null) ?? null,
-          totalReserved: Number(row.total_reserved ?? 0),
+          totalReserved: reservedBySaleItemId.get(saleItemId) ?? 0,
           requested: Number(row.session_used ?? 0),
         })
       }
@@ -1190,20 +1201,25 @@ export const confirmServiceOrder = withPermission(
           WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
           RETURNING service_order_id
         ),
+        service_totals AS (
+          SELECT sale_item_id, SUM(session_used) AS session_used
+          FROM service_items
+          WHERE service_order_id = ${serviceOrderId}
+          GROUP BY sale_item_id
+        ),
         deduct AS (
           UPDATE sale_items
-          SET remaining_sessions = remaining_sessions - si.session_used,
+          SET remaining_sessions = remaining_sessions - totals.session_used,
               updated_at = NOW()
-          FROM service_items si
-          WHERE sale_items.sale_item_id = si.sale_item_id
-            AND si.service_order_id = ${serviceOrderId}
-            AND sale_items.remaining_sessions >= si.session_used
-            AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
+          FROM service_totals totals
+          WHERE sale_items.sale_item_id = totals.sale_item_id
+            AND sale_items.remaining_sessions >= totals.session_used
+            AND (sale_items.session_count - sale_items.remaining_sessions + totals.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
             AND EXISTS (SELECT 1 FROM status_check)
           RETURNING sale_items.sale_item_id
         ),
         total_items AS (
-          SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
+          SELECT COUNT(*) AS n FROM service_totals
         )
         SELECT
           (SELECT COUNT(*) FROM status_check) AS status_updated,

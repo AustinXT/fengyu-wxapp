@@ -2799,7 +2799,7 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 锁住转出候选行。预扣统计使用标量子查询，不能与 FOR UPDATE 放在聚合查询中。
+      // 1. 先锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -2821,13 +2821,7 @@ export const createConversionOrder = withPermission(
           si.is_experience,
           so.client_user_id,
           so.status AS order_status,
-          pc.product_kind,
-          COALESCE((
-            SELECT SUM(sit.session_used)
-            FROM service_items sit
-            WHERE sit.sale_item_id = si.sale_item_id
-              AND sit.reserved_at IS NOT NULL
-          ), 0) AS total_reserved
+          pc.product_kind
         FROM sale_items si
         INNER JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
         LEFT JOIN product_skus psk ON psk.sku_id = si.sku_id
@@ -2836,12 +2830,30 @@ export const createConversionOrder = withPermission(
           data.convertOutSaleItemIds.map((id) => sql`${id}`),
           sql`, `,
         )})
+        ORDER BY si.sale_item_id
         FOR UPDATE OF si
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
       if (held.length !== data.convertOutSaleItemIds.length) {
         throw new ApiError('NOT_FOUND', 'CARD_NOT_FOUND: 部分卡不存在或已失效')
+      }
+
+      // sale_items 行锁已持有后再统计预扣，避免 service.start 在锁定与汇总之间新增预扣。
+      const reservedRows = await tx.execute(sql`
+        SELECT
+          sit.sale_item_id,
+          COALESCE(SUM(sit.session_used) FILTER (WHERE sit.reserved_at IS NOT NULL), 0) AS total_reserved
+        FROM service_items sit
+        WHERE sit.sale_item_id IN (${sql.join(
+          data.convertOutSaleItemIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})
+        GROUP BY sit.sale_item_id
+      `)
+      const reservedBySaleItemId = new Map<string, number>()
+      for (const row of Array.from(reservedRows as unknown as Iterable<Record<string, unknown>>)) {
+        reservedBySaleItemId.set(row.sale_item_id as string, Number(row.total_reserved ?? 0))
       }
 
       let totalOut = 0
@@ -2883,7 +2895,7 @@ export const createConversionOrder = withPermission(
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
-          const reserved = Number(row.total_reserved ?? 0)
+          const reserved = reservedBySaleItemId.get(row.sale_item_id as string) ?? 0
           if (rem <= 0) {
             throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
           }
@@ -3212,6 +3224,7 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行非购买行，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
+    if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }
     if (m?.includes('CARD_TYPE_INVALID')) return { success: false, message: '所选行类型不支持折抵' }
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }

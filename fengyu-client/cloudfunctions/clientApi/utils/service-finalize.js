@@ -39,16 +39,33 @@ async function loadServiceItems(serviceOrderId) {
 async function finalizeServiceOrder(client, so, items, now) {
   const serviceOrderId = so.service_order_id
 
-  // 0. 清除预扣标记（确认前，防止转换单查询时重复计入本服务单的 session_used）
-  // 注：必须在扣减前清除，否则转换单的 available 计算会错误地减去本服务单即将释放的预扣
-  await client.query(
-    `UPDATE service_items
-     SET reserved_at = NULL, updated_at = $1
-     WHERE service_order_id = $2`,
+  // 0. 先锁卡，禁止转换单在预扣释放和实际扣次之间取得可转次数。
+  const saleItemIds = [...new Set(items.map((item) => item.sale_item_id))].sort()
+  if (saleItemIds.length === 0) {
+    throw new Error('INVALID_PARAMS: 服务单缺少服务明细')
+  }
+  const lockedItems = await client.query(
+    `SELECT sale_item_id
+       FROM sale_items
+      WHERE sale_item_id = ANY($1)
+      ORDER BY sale_item_id
+      FOR UPDATE`,
+    [saleItemIds]
+  )
+  if (lockedItems.rowCount !== saleItemIds.length) {
+    throw new Error('INVALID_PARAMS: 部分订单行不存在')
+  }
+
+  // 1. 状态 CAS 必须在扣次前完成；失败时不释放预扣，由已胜出的确认事务负责。
+  const soUpdateResult = await client.query(
+    "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '待客户确认'",
     [now, serviceOrderId]
   )
+  if (soUpdateResult.rowCount === 0) {
+    return false
+  }
 
-  // 1. 原子扣减每条订单行的剩余次数。
+  // 2. 原子扣减每条订单行的剩余次数。
   // 可核销门店由 service.create 的「顾客绑定门店」校验把关，此处仅按 sale_item_id 扣减、不再比卡售出门店（卡跟顾客走）。
   for (const item of items) {
     // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
@@ -100,6 +117,15 @@ async function finalizeServiceOrder(client, so, items, now) {
       )
     }
   }
+
+  // 预扣仅在状态 CAS 与所有扣次均成功后释放。事务提交前 sale_items 行锁始终持有，
+  // 转换单无法看见“预扣已清除但剩余次数尚未扣减”的中间状态。
+  await client.query(
+    `UPDATE service_items
+     SET reserved_at = NULL, updated_at = $1
+     WHERE service_order_id = $2`,
+    [now, serviceOrderId]
+  )
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
@@ -174,15 +200,6 @@ async function finalizeServiceOrder(client, so, items, now) {
         consumeAmount,
       ]
     )
-  }
-
-  // 更新服务单状态（WHERE 锁定当前状态防止并发竞态）+ 同步 commission_status
-  const soUpdateResult = await client.query(
-    "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '待客户确认'",
-    [now, serviceOrderId]
-  )
-  if (soUpdateResult.rowCount === 0) {
-    return false
   }
 
   // 如关联预约，将预约状态更新为已完成

@@ -3321,6 +3321,7 @@ async function createConversion(ctx) {
        LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
        LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
        WHERE si.sale_item_id = ANY($1)
+       ORDER BY si.sale_item_id
        FOR UPDATE OF si`,
       [convertOutSaleItemIds]
     )

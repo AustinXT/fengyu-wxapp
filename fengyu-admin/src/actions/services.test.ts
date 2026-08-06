@@ -84,7 +84,7 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   notExists: vi.fn((subq) => ({ type: 'notExists', subq })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -141,9 +141,10 @@ function setupUpdate(count: number) {
   ;(db.update as any).mockReturnValue({ set })
 }
 
-function mockStartTx(count: number, lockRows: any[] = []) {
+function mockStartTx(count: number, lockRows: any[] = [], reservedRows: any[] = []) {
   const execute = vi.fn()
     .mockResolvedValueOnce(lockRows)
+    .mockResolvedValueOnce(reservedRows)
     .mockResolvedValue([])
   const where = vi.fn().mockResolvedValue({ count })
   const set = vi.fn().mockReturnValue({ where })
@@ -240,15 +241,14 @@ describe('startServiceOrder — scope + 状态推进', () => {
       session_count: 1,
       paid_sessions: 1,
       product_type: '疗程卡',
-      total_reserved: 1,
-    }])
+    }], [{ sale_item_id: 'item-1', total_reserved: 1 }])
 
     const result = await startServiceOrder('svc-1')
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('可用次数不足')
     expect(tx.update).not.toHaveBeenCalled()
-    expect(tx.execute).toHaveBeenCalledOnce()
+    expect(tx.execute).toHaveBeenCalledTimes(2)
   })
 
   it('DB 异常 → 返回友好错误', async () => {
@@ -477,6 +477,18 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('已支付次数不足')
+  })
+
+  it('同一卡多条服务明细按 sale_item_id 汇总后只扣减一次', () => {
+    const source = readFileSync('src/actions/services.ts', 'utf8')
+    const fnSource = source.slice(source.indexOf('export const confirmServiceOrder'), source.indexOf('/** C4: 取消服务'))
+
+    expect(fnSource).toContain('service_totals AS')
+    expect(fnSource).toContain('SUM(session_used) AS session_used')
+    expect(fnSource).toContain('GROUP BY sale_item_id')
+    expect(fnSource).toContain('FROM service_totals totals')
+    expect(fnSource).toContain('remaining_sessions = remaining_sessions - totals.session_used')
+    expect(fnSource).toContain('SELECT COUNT(*) AS n FROM service_totals')
   })
 
   it('全部行成功扣减（items_deducted = items_total）→ 确认完成 + 事务内写服务提成（M1）', async () => {

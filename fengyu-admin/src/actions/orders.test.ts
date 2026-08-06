@@ -2594,20 +2594,24 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
   function mockConvTx(opts: {
     heldRows: any[]
     skuRows: any[]
+    reservedRows?: any[]
     orderId?: string
     updateCount?: number
     upsertCardId?: string
     onInsertOrder?: (v: any) => void
     onInsertItem?: (v: any) => void
   }) {
+    const executeSql: string[] = []
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       let execCall = 0
       const tx = {
-        execute: vi.fn().mockImplementation(async () => {
+        execute: vi.fn().mockImplementation(async (sqlArg: any) => {
           execCall++
+          executeSql.push(sqlArg?.__sqlText ?? '')
           if (execCall === 1) return opts.heldRows
-          if (execCall === 2) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
-          if (execCall === 3) return [{ card_id: opts.upsertCardId || 'card-new-1' }]
+          if (execCall === 2) return opts.reservedRows ?? []
+          if (execCall === 3) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
+          if (execCall === 4) return [{ card_id: opts.upsertCardId || 'card-new-1' }]
           return []
         }),
         select: vi.fn().mockReturnValue({
@@ -2636,6 +2640,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       }
       return fn(tx)
     })
+    return { executeSql }
   }
 
   beforeEach(() => {
@@ -2688,6 +2693,61 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.priceDiff).toBe(0)
     expect(capturedOrder.totalAmount).toBe('0.00')
     expect(capturedOrder.status).toBe('已支付')
+  })
+
+  it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {
+    const insertedItems: any[] = []
+    const captured = mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
+        quantity: 1, picked_up_quantity: 0, unit_price: '1000.00',
+        unit_real_price: '200.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      reservedRows: [{ sale_item_id: 'card-1', total_reserved: '2' }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '1000.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+      onInsertItem: (v) => { insertedItems.push(v) },
+    })
+
+    const result = await createConversionOrder(baseConvData)
+
+    expect(result.success).toBe(true)
+    expect(result.totalOut).toBe(600)
+    expect(insertedItems.find((item) => item.itemDirection === '转出')?.quantity).toBe(3)
+    const lockIndex = captured.executeSql.findIndex((text) => /FOR\s+UPDATE\s+OF\s+si/i.test(text))
+    const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
+    expect(lockIndex).toBeGreaterThanOrEqual(0)
+    expect(reservedIndex).toBe(lockIndex + 1)
+    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items|SUM\s*\(/i)
+    expect(captured.executeSql[lockIndex]).toMatch(/ORDER\s+BY\s+si\.sale_item_id\s+FOR\s+UPDATE/i)
+    expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
+  })
+
+  it('全部次数被服务预留 → CARD_RESERVED 透出中文业务提示', async () => {
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
+        quantity: 1, picked_up_quantity: 0, unit_price: '200.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      reservedRows: [{ sale_item_id: 'card-1', total_reserved: '2' }],
+      skuRows: [],
+    })
+
+    const result = await createConversionOrder(baseConvData)
+
+    expect(result).toEqual({
+      success: false,
+      message: '所选卡可用次数不足（存在服务中预留）',
+    })
   })
 
   it('转换单转入支持店长特价：按手填应付计价并保留标价/成交价快照', async () => {
@@ -2807,6 +2867,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           const text: string = sqlArg?.__sqlText ?? ''
           captured.execTexts.push(text)
           if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) return Promise.resolve(opts.heldRows)
+          if (/FROM\s+service_items\s+sit/i.test(text)) return Promise.resolve([])
           if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0001' }])
           if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
           if (/SELECT\s+card_id,\s*balance\s+FROM\s+prepaid_cards/i.test(text)) {
@@ -2999,6 +3060,7 @@ describe('createConversionOrder — 异常路径', () => {
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
             product_name: 'xx', sales_category: '自销自耗',
           }]
+          if (execCall === 2) return []
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
         select: vi.fn().mockReturnValue({
