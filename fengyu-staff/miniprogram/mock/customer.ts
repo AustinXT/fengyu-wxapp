@@ -13,6 +13,8 @@ const MOCK_CUSTOMERS = [
     focusAreas: '色斑、细纹',
     totalConsumption: 128600,
     yearConsumption: 18500,
+    totalActualConsumption: 72600,
+    yearActualConsumption: 10600,
   },
   {
     id: 'client-002',
@@ -26,6 +28,8 @@ const MOCK_CUSTOMERS = [
     focusAreas: '毛孔、痘印',
     totalConsumption: 45200,
     yearConsumption: 8800,
+    totalActualConsumption: 26700,
+    yearActualConsumption: 5300,
   },
   {
     id: null,
@@ -39,6 +43,8 @@ const MOCK_CUSTOMERS = [
     focusAreas: '补水、嫩肤',
     totalConsumption: 12000,
     yearConsumption: 12000,
+    totalActualConsumption: 6400,
+    yearActualConsumption: 6400,
   },
 ]
 

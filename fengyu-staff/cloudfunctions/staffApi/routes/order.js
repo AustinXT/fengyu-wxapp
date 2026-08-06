@@ -410,16 +410,55 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
  * 开单时所有套餐（含未上架商城的）都应可见可售。client `_loadAndValidateBundle` 仍保留 is_visible 过滤，
  * 此处是有意分叉，勿强行对齐。
  */
-async function _loadAndValidateBundle(bundleProductId, items) {
+/**
+ * 组合套餐主商品范围过滤（products.market_scope）。
+ * 与 product.shopInit 保持同一语义，但 staffApi 路由不共享运行时代码。
+ */
+function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
+  const scopeExpr = `${productAlias}.market_scope`
+  const valuesExpr = `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return `AND ${globalExpr}`
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ${storeParam}
+          AND pm.type = '市场'
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+async function _loadAndValidateBundle(bundleProductId, items, auth) {
   if (!bundleProductId) return null
 
+  const productParams = [bundleProductId]
+  // 独立实现，避免 staffApi 跨模块共享运行时代码；与 product.shopInit 同一 SQL 语义。
+  const marketScopeFilter = buildBundleMarketScopeFilter(auth, productParams)
   const productRows = await pg.query(
-    `SELECT product_id, is_bundle FROM products
-     WHERE product_id = $1 AND deleted_at IS NULL`,
-    [bundleProductId]
+    `SELECT p.product_id, p.is_bundle FROM products p
+     WHERE p.product_id = $1 AND p.deleted_at IS NULL
+       ${marketScopeFilter}`,
+    productParams,
   )
   if (productRows.length === 0 || !productRows[0].is_bundle) {
-    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已删除')
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_AVAILABLE: 套餐不存在、已删除或不适用于当前门店')
   }
 
   const groupRows = await pg.query(
@@ -596,7 +635,7 @@ async function create(ctx) {
   if (clientUsers[0].name) clientName = clientUsers[0].name
 
   // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
-  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
+  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items, ctx.auth)
 
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const rawItemDataList = await Promise.all(
@@ -4569,46 +4608,42 @@ async function createDeposit(ctx) {
     }
   }))
 
-  // B2：寄存单也必须保持"每张疗程卡一行"。
-  // 历史实收是原购物车行总额，按每张卡 saleAmount 贪心填满，避免 1350/3 均分成 450/450/450。
+  // 寄存单内相同疗程卡按 SKU 合并为一条销售明细，累计张数、次数、标价与历史实收。
+  // 家居产品保持原输入行语义，不参与合并。
   const itemDataList = []
+  const treatmentCardItemIndex = new Map()
   for (const d of rawItemDataList) {
-    if (d.productType === '疗程卡' && d.quantity > 1) {
-      const n = d.quantity
-      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
-      const totalSaleCents = Math.round(Number(d.saleAmount || 0) * 100)
-      const perSaleCents = Math.round(totalSaleCents / n)
-      const totalReceivedCents = Math.round(Number(d.received || 0) * 100)
-      let remainingReceivedCents = totalReceivedCents
-
-      for (let i = 0; i < n; i++) {
-        const isLast = i === n - 1
-        const saleCents = isLast
-          ? totalSaleCents - perSaleCents * (n - 1)
-          : perSaleCents
-        let receivedCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
-        remainingReceivedCents -= receivedCents
-        if (isLast && remainingReceivedCents > 0) {
-          receivedCents += remainingReceivedCents
-          remainingReceivedCents = 0
-        }
-        const saleAmount = Math.round(saleCents) / 100
-        const received = Math.round(receivedCents) / 100
-        const denom = (perSession != null && perSession > 0) ? perSession : 1
-        const unit = denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount
-        itemDataList.push({
-          ...d,
-          sessionCount: perSession,
-          remainingSessions: perSession,
-          quantity: 1,
-          saleAmount,
-          received,
-          unitPrice: unit,
-          unitRealPrice: unit,
-        })
-      }
-    } else {
+    if (d.productType !== '疗程卡') {
       itemDataList.push(d)
+      continue
+    }
+
+    const existingIndex = treatmentCardItemIndex.get(d.skuId)
+    if (existingIndex == null) {
+      treatmentCardItemIndex.set(d.skuId, itemDataList.length)
+      itemDataList.push(d)
+      continue
+    }
+
+    const existing = itemDataList[existingIndex]
+    const quantity = existing.quantity + d.quantity
+    const sessionCount = existing.sessionCount != null && d.sessionCount != null
+      ? existing.sessionCount + d.sessionCount
+      : null
+    const saleAmount = roundMoney(existing.saleAmount + d.saleAmount)
+    const received = roundMoney(existing.received + d.received)
+    const denom = sessionCount != null && sessionCount > 0 ? sessionCount : quantity
+    const unit = denom > 0 ? roundMoney(saleAmount / denom) : saleAmount
+
+    itemDataList[existingIndex] = {
+      ...existing,
+      quantity,
+      sessionCount,
+      remainingSessions: sessionCount,
+      saleAmount,
+      received,
+      unitPrice: unit,
+      unitRealPrice: unit,
     }
   }
 
@@ -4742,3 +4777,9 @@ module.exports = {
   availablePickupItems,
   pickupRecordsList,
 }
+
+// 非枚举测试出口，避免路由完整性检查把内部 helper 误认作公开 action。
+Object.defineProperty(module.exports, '__testables__', {
+  enumerable: false,
+  value: { _loadAndValidateBundle },
+})

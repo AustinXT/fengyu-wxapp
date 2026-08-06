@@ -45,16 +45,17 @@
 .profile-phone { font-size: 26rpx; color: var(--color-text-secondary); }
 
 .profile-stats {
-  display: flex;
-  align-items: center;
+  display: block;
   background: var(--color-bg-page);
   border-radius: var(--radius-lg);
   padding: 20rpx;
 }
 
-.stat-item { flex: 1; text-align: center; }
+.profile-stats-row { display: flex; align-items: center; }
+.profile-stats-row + .profile-stats-row { margin-top: 16rpx; padding-top: 16rpx; border-top: 1rpx solid var(--color-border); }
+.stat-item { flex: 1; min-width: 0; text-align: center; }
 .stat-label { display: block; font-size: 22rpx; color: var(--color-text-hint); margin-bottom: 4rpx; }
-.stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
+.stat-value { display: block; font-size: 30rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; }
 .stat-divider { width: 1rpx; height: 48rpx; background: var(--color-border); }
 
 /* Tab 内容区 */

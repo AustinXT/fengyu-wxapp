@@ -619,7 +619,7 @@ describe('mgmtCustomer.detail 越权防护', () => {
 // ===================================================================
 
 describe('mgmtCustomer.detail 出数', () => {
-  test('累计/年消费按 scope 过滤；scope=store 时消费 SQL 含 o.store_id = $3', async () => {
+  test('累计/年消费和实耗按顾客聚合，不追加门店过滤', async () => {
     setupCommonMocks({
       detailRows: [
         {
@@ -638,13 +638,20 @@ describe('mgmtCustomer.detail 出数', () => {
           birthday: null,
         },
       ],
-      detailConsumptionRows: [{ total: 12345.67, year_total: 5000 }],
+      detailConsumptionRows: [{
+        total: 12345.67,
+        year_total: 5000,
+        total_actual_consumption: 6789.12,
+        year_actual_consumption: 2345.67,
+      }],
     })
     const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
     await detail(ctx)
 
     expect(ctx.result.totalConsumption).toBe(12345.67)
     expect(ctx.result.yearConsumption).toBe(5000)
+    expect(ctx.result.totalActualConsumption).toBe(6789.12)
+    expect(ctx.result.yearActualConsumption).toBe(2345.67)
 
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const consumptionSql = sqls.find(
@@ -652,8 +659,13 @@ describe('mgmtCustomer.detail 出数', () => {
         /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
         /year_total/.test(s),
     )
-    // 交易数据跟顾客走：detail 消费统计不再按门店过滤（顾客可见性由 assertCustomerInScope 守护）
-    expect(consumptionSql).not.toMatch(/o\.store_id/)
+    // 交易数据跟顾客走：详情统计不按门店过滤，顾客可见性由 assertCustomerInScope 守护。
+    expect(consumptionSql).not.toMatch(/(?:o|so)\.store_id/)
+    expect(consumptionSql).toContain('FROM service_orders so')
+    expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
+    expect(consumptionSql).toContain("so.status = '已完成'")
+    expect(consumptionSql).toContain('so.service_date >= $2::date')
+    expect(consumptionSql).toContain('so.remark IS DISTINCT FROM')
   })
 
   test('visitFrequency 与 topProductName 透传（消费统计不再按 scope 过滤，跟顾客走）', async () => {
@@ -1033,7 +1045,12 @@ describe('mgmtCustomer 出数完整路径', () => {
       staffRows: [{ name: '王美容师' }],
       detailVisitRows: [{ last_date: '2026-04-20', visit_count_90d: 8 }],
       detailTopProductRows: [{ product_name: '深层补水' }],
-      detailConsumptionRows: [{ total: 9999.5, year_total: 3000 }],
+      detailConsumptionRows: [{
+        total: 9999.5,
+        year_total: 3000,
+        total_actual_consumption: 5200,
+        year_actual_consumption: 1800,
+      }],
       customerInScope: true,
     })
     const ctx = makeMarketCtx({
@@ -1058,6 +1075,8 @@ describe('mgmtCustomer 出数完整路径', () => {
     expect(ctx.result.topProductName).toBe('深层补水')
     expect(ctx.result.totalConsumption).toBe(9999.5)
     expect(ctx.result.yearConsumption).toBe(3000)
+    expect(ctx.result.totalActualConsumption).toBe(5200)
+    expect(ctx.result.yearActualConsumption).toBe(1800)
     expect(ctx.result.birthday).toBe('1990-03-15')
     expect(ctx.result.source).toBe('both') // customer_id 非空
     expect(ctx.result.phone).toBe('13700137000') // market 不脱敏

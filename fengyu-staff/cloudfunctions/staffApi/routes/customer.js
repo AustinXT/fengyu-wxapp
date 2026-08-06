@@ -22,6 +22,7 @@ const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
+const { excludeDepositRefundSql } = require("../utils/consume-filter");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -425,7 +426,12 @@ async function detail(ctx) {
     if (staffRows.length > 0) preferredStaffName = staffRows[0].name || null;
   }
 
-  const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id);
+  const {
+    totalConsumption,
+    yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
+  } = await getConsumptionStats(pgUser.user_id);
 
   // 到店信息（上次到店 + 到店频率 + 常购商品），并行查询
   const clientUserId = pgUser.user_id;
@@ -461,6 +467,8 @@ async function detail(ctx) {
     topProductName: purchaseInfo,
     totalConsumption,
     yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
     source: pgUser.customer_id ? "both" : "miniprogram",
     legacyOrderCount,
   };
@@ -515,7 +523,7 @@ async function getTopProduct(clientUserId) {
 }
 
 /**
- * 查询消费统计（单次查询同时计算累计 + 年度）
+ * 查询顾客消费和实耗统计（单次查询同时计算累计 + 年度）
  *
  * 兼容历史订单（WorkFine 同步订单无 sale_items 明细）：
  * - 有明细的订单：汇总 sale_items.received（精确到品项）
@@ -524,11 +532,19 @@ async function getTopProduct(clientUserId) {
  * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）
  */
 async function getConsumptionStats(clientUserId) {
-  if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 };
+  if (!clientUserId) {
+    return {
+      totalConsumption: 0,
+      yearConsumption: 0,
+      totalActualConsumption: 0,
+      yearActualConsumption: 0,
+    };
+  }
 
   const yearStart = new Date(new Date().getFullYear(), 0, 1);
   const rows = await pg.query(
-    `SELECT
+    `WITH order_stats AS (
+       SELECT
        COALESCE(SUM(
          CASE
            WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
@@ -547,13 +563,31 @@ async function getConsumptionStats(clientUserId) {
            ELSE 0
          END
        ), 0) AS year_total
-     FROM sale_orders o
-     WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1`,
+       FROM sale_orders o
+       WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1
+     ), actual_stats AS (
+       SELECT
+         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
+         COALESCE(SUM(CASE WHEN so.service_date >= $2::date
+           THEN sit.unit_real_price::numeric * sit.session_used ELSE 0 END), 0) AS year_actual_consumption
+       FROM service_orders so
+       JOIN service_items sit ON sit.service_order_id = so.service_order_id
+       WHERE so.client_user_id = $1
+         AND so.status = '已完成'
+         AND ${excludeDepositRefundSql('so')}
+     )
+     SELECT order_stats.total, order_stats.year_total,
+            actual_stats.total_actual_consumption, actual_stats.year_actual_consumption
+       FROM order_stats
+       CROSS JOIN actual_stats`,
     [clientUserId, yearStart],
   );
+  const stats = rows[0] || {};
   return {
-    totalConsumption: Number(rows[0].total),
-    yearConsumption: Number(rows[0].year_total),
+    totalConsumption: Number(stats.total || 0),
+    yearConsumption: Number(stats.year_total || 0),
+    totalActualConsumption: Number(stats.total_actual_consumption || 0),
+    yearActualConsumption: Number(stats.year_actual_consumption || 0),
   };
 }
 

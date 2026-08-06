@@ -15,7 +15,7 @@ const { requireStaffBound } = require('../middleware/auth')
 // ===== 公共查询辅助 =====
 
 function marketScopeValues(scopeExpr) {
-  return `string_to_array(replace(${scopeExpr}, ' ', ''), ',')`
+  return `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
 }
 
 /**
@@ -71,6 +71,43 @@ function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   }
 
   return `AND ${globalExpr}`
+}
+
+/**
+ * 组合套餐主商品范围过滤（products.market_scope）。
+ *
+ * 开单页套餐必须按工作台当前选中的门店判断，不能在管理层模式回退到 scopeStoreIds；
+ * 没有 current/effective store 时仅保留全市场套餐，避免把受限套餐误展示出来。
+ */
+function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
+  const scopeExpr = `${productAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return `AND ${globalExpr}`
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ${storeParam}
+          AND pm.type = '市场'
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
 }
 
 /**
@@ -273,16 +310,19 @@ async function _queryExperienceSkus(auth) {
  * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
  * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
  */
-async function _queryMallBundleGroups() {
+async function _queryMallBundleGroups(auth) {
+  const params = []
+  const marketScopeFilter = buildBundleMarketScopeFilter(auth, params)
   const productRows = await pg.query(`
     SELECT p.product_id, p.name, p.cover_image, p.description,
            p.price, p.special_price, p.sort_order
     FROM products p
     WHERE p.is_bundle = true
       AND p.deleted_at IS NULL
+      ${marketScopeFilter}
       -- 开单页无视 is_visible（客户端展示开关只应影响 client 商城，开单端与普通商品/体验卡口径一致）
     ORDER BY p.sort_order ASC
-  `)
+  `, params)
 
   if (productRows.length === 0) return []
 
@@ -410,7 +450,7 @@ async function shopInit(ctx) {
     skuList = await _queryFormattedSkuList(categories[0].id, null, { excludeCards: true })
   }
 
-  const mallBundleGroups = await _queryMallBundleGroups()
+  const mallBundleGroups = await _queryMallBundleGroups(ctx.auth)
 
   // 体验卡 Tab 走扁平 SKU 列表，不依赖分类元数据；
   // 与 admin getProductsByKind('体验卡') 用 SKU 级 capability 判定保持一致。
@@ -494,5 +534,5 @@ module.exports = { shopInit, categories, skuList, skuDetail, promotionList, prom
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。
 Object.defineProperty(module.exports, '__testables__', {
   enumerable: false,
-  value: { _queryCategoryRows },
+  value: { _queryCategoryRows, _queryMallBundleGroups, buildBundleMarketScopeFilter },
 })

@@ -25,6 +25,8 @@ interface CustomerDetail extends MemberLevelBadgeData {
   preferredStaffName: string | null;
   totalConsumption: number;
   yearConsumption: number;
+  totalActualConsumption: number;
+  yearActualConsumption: number;
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;
@@ -287,12 +289,13 @@ Page({
         clientUserId: this._clientUserId,
         ...this._scopePayload(),
       });
-      // 金额字段就地格式化为「千分位 + 2 位小数」展示串
-      // （wxml 直接 ¥{{customer.totalConsumption}} / ¥{{customer.yearConsumption}}）
+      // 金额字段就地格式化为「千分位 + 2 位小数」展示串。
       const customer = {
         ...raw,
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
+        totalActualConsumption: formatAmount(raw.totalActualConsumption),
+        yearActualConsumption: formatAmount(raw.yearActualConsumption),
       } as unknown as CustomerDetail;
       this.setData({ customer: withMemberLevelBadgeClass(customer) });
     } catch (err: unknown) {

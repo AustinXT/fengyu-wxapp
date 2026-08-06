@@ -194,6 +194,23 @@ describe('product.skuDetail', () => {
 // product.shopInit
 // ============================================================
 describe('product.shopInit', () => {
+  test('组合套餐按当前工作台 effectiveStoreId 过滤市场范围', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.__testables__._queryMallBundleGroups({
+      effectiveStoreId: 'store-current',
+      scopeStoreIds: ['store-other'],
+      marketName: '不应参与套餐范围判断',
+    })
+
+    const [query, params] = pg.query.mock.calls[0]
+    expect(query).toContain('p.market_scope')
+    expect(query).toContain('s.store_id = $1')
+    expect(query).toContain("NULLIF(regexp_replace(p.market_scope, '[[:space:]]+', '', 'g'), '') IS NOT NULL")
+    expect(params).toEqual(['store-current'])
+    expect(query).not.toContain('scopeStoreIds')
+  })
+
   test('返回分类 + 第一个分类的扁平 SKU 列表 + bundleGroups', async () => {
     const ctx = createCtx()
 

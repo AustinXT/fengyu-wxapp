@@ -20,6 +20,8 @@ interface CustomerDetail extends MemberLevelBadgeData {
   preferredStaffName: string | null;
   totalConsumption: number;
   yearConsumption: number;
+  totalActualConsumption: number;
+  yearActualConsumption: number;
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;

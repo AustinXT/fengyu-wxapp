@@ -13,6 +13,7 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
+const { _loadAndValidateBundle } = orderRoutes.__testables__
 
 /**
  * 共享 helper：assertOrderInScope 在路由内会先 SELECT store_id FROM sale_orders WHERE sale_order_id = $1。
@@ -1532,6 +1533,23 @@ describe('order.create', () => {
     expect(orderInsertParams).not.toBeNull()
     // params[2] = documentType：会员客判「售后」
     expect(orderInsertParams[2]).toBe('售后')
+  })
+})
+
+describe('order._loadAndValidateBundle', () => {
+  test('当前工作台门店不匹配套餐市场范围时拒绝提交', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(_loadAndValidateBundle(
+      'bundle-other-market',
+      [{ skuId: 'sku-001', quantity: 1 }],
+      { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] },
+    )).rejects.toThrow(/BUNDLE_NOT_AVAILABLE/)
+
+    const [query, params] = pg.query.mock.calls[0]
+    expect(query).toContain('p.market_scope')
+    expect(query).toContain('s.store_id = $2')
+    expect(params).toEqual(['bundle-other-market', 'store-current'])
   })
 })
 
@@ -5130,10 +5148,13 @@ describe('order.createDeposit', () => {
     expect(allSql).not.toMatch(/paid_sessions\s*=/i)
   })
 
-  test('B2 拆行：寄存单 5次卡 ×3，应付 500/张，历史实收 1350 → 回款=500/500/350', async () => {
+  test('寄存单相同 5 次卡合并为 1 行，累计次数和历史实收', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
-      items: [{ skuId: 'sku-001', quantity: 3, received: 1350 }],
+      items: [
+        { skuId: 'sku-001', quantity: 1, received: 500 },
+        { skuId: 'sku-001', quantity: 2, received: 850 },
+      ],
       remark: '老系统剩余次数录入',
     })
     pg.query
@@ -5143,6 +5164,19 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_type: '疗程卡',
+        spec_name: '水光卡',
+        price: '500.00',
+        special_price: null,
+        session_count: 5,
+        service_fee: '0',
+        is_shengmei: false,
+        is_experience: false,
+        sales_category: '自销自耗',
+        product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -5172,21 +5206,19 @@ describe('order.createDeposit', () => {
     await orderRoutes.createDeposit(ctx)
 
     const itemInserts = txCalls.filter(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_items'))
-    expect(itemInserts).toHaveLength(3)
-    for (const call of itemInserts) {
-      expect(call.params[6]).toBe(5)
-      expect(call.params[7]).toBe(5)
-      expect(call.params[9]).toBe(1)
-      expect(Number(call.params[11])).toBe(500)
-    }
+    expect(itemInserts).toHaveLength(1)
+    expect(itemInserts[0].params[6]).toBe(15)
+    expect(itemInserts[0].params[7]).toBe(15)
+    expect(itemInserts[0].params[9]).toBe(3)
+    expect(Number(itemInserts[0].params[11])).toBe(1500)
 
     const paymentInserts = txCalls.filter(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_order_payments'))
-    expect(paymentInserts).toHaveLength(3)
-    expect(paymentInserts.map(c => Number(c.params[1]))).toEqual([500, 500, 350])
-    expect(ctx.result.itemCount).toBe(3)
+    expect(paymentInserts).toHaveLength(1)
+    expect(Number(paymentInserts[0].params[1])).toBe(1350)
+    expect(ctx.result.itemCount).toBe(1)
   })
 
-  test('B2 不拆：寄存单家居产品 ×3 → 1 行 sale_items（quantity=3）', async () => {
+  test('寄存单家居产品 ×3 维持 1 行 sale_items（quantity=3）', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       items: [{ skuId: 'sku-home', quantity: 3, received: 0 }],

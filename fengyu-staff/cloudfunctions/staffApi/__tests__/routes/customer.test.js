@@ -363,7 +363,12 @@ describe('customer.detail', () => {
         gender: '女', notes: '过敏体质', bound_store_id: 'store-001', store_name: '南昌旗舰店',
       }])
       .mockResolvedValueOnce([{ name: '李四' }])  // preferredStaffName
-      .mockResolvedValueOnce([{ total: '5000', year_total: '2000' }])  // getConsumptionStats
+      .mockResolvedValueOnce([{
+        total: '5000',
+        year_total: '2000',
+        total_actual_consumption: '3200',
+        year_actual_consumption: '1200',
+      }])  // getConsumptionStats
       .mockResolvedValueOnce([{ last_date: '2026-03-10', visit_count_90d: '8' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '蜜语生玑10次卡', cnt: '5' }])  // getTopProduct
     await customerRoutes.detail(ctx)
@@ -382,6 +387,8 @@ describe('customer.detail', () => {
     expect(ctx.result.topProductName).toBe('蜜语生玑10次卡')
     expect(ctx.result.totalConsumption).toBe(5000)
     expect(ctx.result.yearConsumption).toBe(2000)
+    expect(ctx.result.totalActualConsumption).toBe(3200)
+    expect(ctx.result.yearActualConsumption).toBe(1200)
     expect(ctx.result.source).toBe('both')
   })
 
@@ -541,7 +548,7 @@ describe('customer.detail', () => {
       .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
   })
 
-  test('getConsumptionStats 使用单次查询（含 CASE WHEN 年度过滤）', async () => {
+  test('getConsumptionStats 使用单次查询，同时计算消费和实耗年度统计', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
     pg.query
       .mockResolvedValueOnce([{
@@ -549,7 +556,12 @@ describe('customer.detail', () => {
         member_level: null, bound_employee_id: null, skin_type: null, improvement_focus: null,
         gender: null, notes: null, bound_store_id: null, store_name: null,
       }])
-      .mockResolvedValueOnce([{ total: '10000', year_total: '4000' }])  // single query
+      .mockResolvedValueOnce([{
+        total: '10000',
+        year_total: '4000',
+        total_actual_consumption: '3200',
+        year_actual_consumption: '1200',
+      }])  // single query
       .mockResolvedValueOnce([{ last_date: '2026-03-01', visit_count_90d: '3' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '精油SPA', cnt: '3' }])  // getTopProduct
       .mockResolvedValueOnce([{ cnt: 0 }])  // legacy 历史订单待核对数（phone 非空时触发）
@@ -558,14 +570,21 @@ describe('customer.detail', () => {
 
     expect(ctx.result.totalConsumption).toBe(10000)
     expect(ctx.result.yearConsumption).toBe(4000)
+    expect(ctx.result.totalActualConsumption).toBe(3200)
+    expect(ctx.result.yearActualConsumption).toBe(1200)
     expect(ctx.result.visitFrequency).toBe('一月一次')  // 3 visits in 90d
     expect(ctx.result.topProductName).toBe('精油SPA')
-    // 验证 getConsumptionStats 使用 CASE WHEN 且支持历史订单（无 sale_items 明细）
+    // 验证单次查询同时覆盖历史订单消费和服务单实耗。
     const consumptionCall = pg.query.mock.calls[1]
     const sql = consumptionCall[0]
     expect(sql).toMatch(/CASE[\s\S]*WHEN/)
     expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(sql).toContain('FROM service_orders so')
+    expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
+    expect(sql).toContain("so.status = '已完成'")
+    expect(sql).toContain('so.service_date >= $2::date')
+    expect(sql).toContain('so.remark IS DISTINCT FROM')
     // 5 次 pg.query: detail + consumption + visitInfo + topProduct + legacyCount(phone 非空触发)
     expect(pg.query).toHaveBeenCalledTimes(5)
   })

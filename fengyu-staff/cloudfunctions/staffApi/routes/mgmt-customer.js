@@ -23,6 +23,7 @@ const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { validateManagementScope, canAccessManagementLevel } = require('../utils/scope')
 const { maskPhone } = require('../utils/pii')
+const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -153,25 +154,51 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
 }
 
 /**
- * 消费统计（scope 过滤后的 累计 + 年度）
+ * 消费和实耗统计（交易数据跟顾客走，累计 + 年度）
  */
 async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
-  if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 }
+  if (!clientUserId) {
+    return {
+      totalConsumption: 0,
+      yearConsumption: 0,
+      totalActualConsumption: 0,
+      yearActualConsumption: 0,
+    }
+  }
   const yearStart = new Date(new Date().getFullYear(), 0, 1)
   // $1=clientUserId, $2=yearStart。交易数据跟顾客走：消费统计不按门店过滤
   const rows = await pg.query(
-    `SELECT
+    `WITH order_stats AS (
+       SELECT
        COALESCE(SUM(si.received::numeric), 0) AS total,
        COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
-     FROM sale_orders o
-     JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-     WHERE o.status = '已支付'
-       AND o.client_user_id = $1`,
+       FROM sale_orders o
+       JOIN sale_items si ON o.sale_order_id = si.sale_order_id
+       WHERE o.status = '已支付'
+         AND o.client_user_id = $1
+     ), actual_stats AS (
+       SELECT
+         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
+         COALESCE(SUM(CASE WHEN so.service_date >= $2::date
+           THEN sit.unit_real_price::numeric * sit.session_used ELSE 0 END), 0) AS year_actual_consumption
+       FROM service_orders so
+       JOIN service_items sit ON sit.service_order_id = so.service_order_id
+       WHERE so.client_user_id = $1
+         AND so.status = '已完成'
+         AND ${excludeDepositRefundSql('so')}
+     )
+     SELECT order_stats.total, order_stats.year_total,
+            actual_stats.total_actual_consumption, actual_stats.year_actual_consumption
+       FROM order_stats
+       CROSS JOIN actual_stats`,
     [clientUserId, yearStart],
   )
+  const stats = rows[0] || {}
   return {
-    totalConsumption: Number(rows[0]?.total || 0),
-    yearConsumption: Number(rows[0]?.year_total || 0),
+    totalConsumption: Number(stats.total || 0),
+    yearConsumption: Number(stats.year_total || 0),
+    totalActualConsumption: Number(stats.total_actual_consumption || 0),
+    yearActualConsumption: Number(stats.year_actual_consumption || 0),
   }
 }
 
@@ -463,7 +490,12 @@ async function detail(ctx) {
   }
 
   const clientUserId = pgUser.user_id
-  const { totalConsumption, yearConsumption } = await getConsumptionStatsScoped(
+  const {
+    totalConsumption,
+    yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
+  } = await getConsumptionStatsScoped(
     clientUserId,
     scopeType,
     scopeId,
@@ -491,6 +523,8 @@ async function detail(ctx) {
     topProductName: topProduct,
     totalConsumption,
     yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
     birthday: pgUser.birthday || null,
     source: pgUser.customer_id ? 'both' : 'miniprogram',
   }
