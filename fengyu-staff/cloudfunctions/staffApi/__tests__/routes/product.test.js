@@ -556,7 +556,7 @@ describe('product.shopInit', () => {
 
     const expSql = pg.query.mock.calls[2][0]
     expect(expSql).toContain('sk.market_scope IS NULL')
-    expect(expSql).toContain('btrim(sk.market_scope) =')
+    expect(expSql).not.toContain('btrim(sk.market_scope) =')
     expect(expSql).not.toContain('FROM stores s')
     expect(pg.query.mock.calls[2][1]).toEqual([])
   })

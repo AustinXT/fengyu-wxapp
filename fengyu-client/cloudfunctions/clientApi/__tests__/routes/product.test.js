@@ -347,7 +347,7 @@ describe('product.experienceCardList', () => {
 
     const [calledSql, params] = pg.query.mock.calls[0]
     expect(calledSql).toContain('sk.market_scope IS NULL')
-    expect(calledSql).toContain('btrim(sk.market_scope) =')
+    expect(calledSql).not.toContain('btrim(sk.market_scope) =')
     expect(calledSql).not.toContain('FROM stores s')
     expect(params).toEqual([])
   })
