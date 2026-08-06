@@ -238,7 +238,7 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(dataChain.offset).toHaveBeenCalledWith(40)
   })
 
-  it('非 admin 使用已展开的 scopeStoreIds 查询门店节点', async () => {
+  it('非 admin 合并已展开门店节点与角色市场 scope 节点', async () => {
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
       roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
@@ -258,7 +258,39 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     await getLogs()
 
     expect(inArray).toHaveBeenCalledWith('store_id', ['store-allowed'])
-    expect(eq).toHaveBeenCalledWith('org_node_id', 'store-node-allowed')
+    expect(inArray).toHaveBeenCalledWith('org_node_id', ['store-node-allowed', 'market-node-1'])
+  })
+
+  it('非 admin 无可见门店时仍保留全部角色的实际 scope 节点', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [
+        { role: 'manager', scopeId: 'market-node-1', scopeType: '市场' },
+        { role: 'finance', scopeId: 'hq-node-1', scopeType: '总部' },
+      ],
+      permissions: { actions: ['operation_log:list'], scopeStoreIds: [] },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+    mockLogChain([])
+
+    await getLogs()
+
+    expect(inArray).toHaveBeenCalledWith('org_node_id', ['market-node-1', 'hq-node-1'])
+  })
+
+  it('市场筛选同时包含市场节点日志与其门店节点日志', async () => {
+    const marketChain: any = {
+      from: vi.fn(),
+      where: vi.fn(),
+    }
+    marketChain.from.mockReturnValue(marketChain)
+    marketChain.where.mockResolvedValue([{ id: 'store-node-allowed' }])
+    ;(db.select as any).mockReturnValueOnce(marketChain)
+    mockLogChain([])
+
+    await getLogs({ marketId: 'market-node-1' })
+
+    expect(inArray).toHaveBeenCalledWith('org_node_id', ['market-node-1', 'store-node-allowed'])
   })
 })
 

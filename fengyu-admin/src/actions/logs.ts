@@ -69,28 +69,36 @@ async function buildLogConditions(session: AuthSession, filter?: LogFilter): Pro
     conditions.push(lte(operationLogs.createdAt, beijingBoundaryTs(filter.endDate, '23:59:59')))
   }
 
-  // scope 过滤：通过 org_node_id 关联门店，非 admin 仅看权限范围内门店的日志
+  // scope 过滤：日志记录的是写入者角色的 org_node_id。除可见门店外，还必须保留
+  // 当前账号每个角色的精确 scope 节点，避免市场/总部级操作日志被门店映射遗漏。
   if (!isAdminScope(session)) {
     const scopeStoreIds = session.permissions.scopeStoreIds
+    const visibleOrgNodeIds = new Set<string>()
 
-    if (scopeStoreIds.length === 0) {
-      // 无门店权限，过滤掉所有日志
-      conditions.push(sql`FALSE`)
-    } else {
-      // operation_logs.org_node_id 是门店的 org_node_id，通过 stores 表找到对应的 store_id
+    if (scopeStoreIds.length > 0) {
+      // operation_logs.org_node_id 是门店的 org_node_id，通过 stores 表找到对应的 store_id。
       const scopeOrgNodeIds = await db
         .select({ orgNodeId: stores.orgNodeId })
         .from(stores)
         .where(inArray(stores.storeId, scopeStoreIds))
-      const orgNodeIdList = scopeOrgNodeIds.map((r: { orgNodeId: string | null }) => r.orgNodeId).filter((id: string | null): id is string => id !== null)
-
-      if (orgNodeIdList.length === 0) {
-        conditions.push(sql`FALSE`)
-      } else if (orgNodeIdList.length === 1) {
-        conditions.push(eq(operationLogs.orgNodeId, orgNodeIdList[0]))
-      } else {
-        conditions.push(inArray(operationLogs.orgNodeId, orgNodeIdList))
+      for (const { orgNodeId } of scopeOrgNodeIds) {
+        if (orgNodeId) visibleOrgNodeIds.add(orgNodeId)
       }
+    }
+
+    // logOperation 当前取 roles[0] 写入，但纳入全部已授予角色的精确节点，以覆盖
+    // 多角色排序变化，同时不递归扩展到未授权的市场/总部节点。
+    for (const role of session.roles) {
+      if (role.scopeId) visibleOrgNodeIds.add(role.scopeId)
+    }
+
+    const orgNodeIdList = Array.from(visibleOrgNodeIds)
+    if (orgNodeIdList.length === 0) {
+      conditions.push(sql`FALSE`)
+    } else if (orgNodeIdList.length === 1) {
+      conditions.push(eq(operationLogs.orgNodeId, orgNodeIdList[0]))
+    } else {
+      conditions.push(inArray(operationLogs.orgNodeId, orgNodeIdList))
     }
   }
 
@@ -100,13 +108,9 @@ async function buildLogConditions(session: AuthSession, filter?: LogFilter): Pro
       .select({ id: orgNodes.id })
       .from(orgNodes)
       .where(and(eq(orgNodes.type, '门店'), eq(orgNodes.parentId, filter.marketId)))
-    const marketStoreOrgNodeIds = storeOrgNodes.map((r) => r.id)
-
-    if (marketStoreOrgNodeIds.length === 0) {
-      conditions.push(sql`FALSE`)
-    } else {
-      conditions.push(inArray(operationLogs.orgNodeId, marketStoreOrgNodeIds))
-    }
+    // 同时匹配市场节点本身：市场级账号写入的日志 org_node_id 不会落到任一门店节点。
+    const marketOrgNodeIds = Array.from(new Set([filter.marketId, ...storeOrgNodes.map((r) => r.id)]))
+    conditions.push(inArray(operationLogs.orgNodeId, marketOrgNodeIds))
   }
 
   // 门店筛选（前端传入的筛选条件，所有角色包括 admin）
