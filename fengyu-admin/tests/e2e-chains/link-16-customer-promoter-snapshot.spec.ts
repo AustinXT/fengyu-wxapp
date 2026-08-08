@@ -1,7 +1,7 @@
 /**
  * 链路 16：顾客重分配 / 顾问转移
  *
- * 主题：顾客的 promoter_employee_id 变更后，历史 sale_orders 不被回溯，新单按新归属。
+ * 主题：顾客的 promoter_employee_name 变更后，历史 sale_orders 不被回溯，新单按新归属。
  *
  * NOTE: README §1.B 写"sale_orders.consultant_employee_id"作为历史快照字段；
  *       实际 sale_orders 没有此列，相关字段是 opened_by（开单人）+ preferred_employee_id（指定美容师）。
@@ -18,9 +18,9 @@
  *   3. MGR 开一单历史订单（链路 1 流程） → 记 saleOrderId + updated_at
  *   4. CSM 进 /customers/FY-FIX-CLIENT-01 → 编辑 → 改 promoter A→B（FY-260101-0002 刘芳）→ 保存
  *   5. DB 验证：
- *      - client_wechat_users.promoter_employee_id = B
+ *      - client_wechat_users.promoter_employee_name = B 的姓名
  *      - 历史 sale_orders.updated_at 未被修改（零回溯）
- *      - operation_logs 含 customer.update detail.changes.promoterEmployeeId
+ *      - operation_logs 含 customer.update detail.changes.promoterEmployeeName
  *   6. 反例 SKIP：promoter 改为已离职员工（视 admin 实现是否校验，无强 server 校验则记 actual 而不 fail）
  *   7. 清理：还原 promoter → 原值，删历史订单
  */
@@ -159,12 +159,12 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
   const verdicts: Array<{ check: string; verdict: string; actual?: string | number }> = []
 
   // ── 前置：记录 fixture 顾客原 promoter ──
-  const origPromoter = psql(`SELECT COALESCE(promoter_employee_id,'NULL') FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
+  const origPromoter = psql(`SELECT COALESCE(promoter_employee_name,'NULL') FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
   console.log(`[链路16] fixture 原 promoter: ${origPromoter}`)
 
   // 把 promoter 临时设为 A 作为测试起点
-  psql(`UPDATE client_wechat_users SET promoter_employee_id='${EMPLOYEE_A}', updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
-  console.log(`[链路16] 已设置初始 promoter=${EMPLOYEE_A}`)
+  psql(`UPDATE client_wechat_users SET promoter_employee_name='${EMPLOYEE_A_NAME}', updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
+  console.log(`[链路16] 已设置初始 promoter=${EMPLOYEE_A_NAME}`)
 
   const cutoffStr = psql(`SELECT NOW()::text`)
   let historySaleOrderId = ''
@@ -209,13 +209,13 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
         await csmPage.waitForTimeout(500)
 
         // 尝试找 promoter / 推广人 / 销售员 label
-        const promoterInput = csmPage.locator('input[name="promoterEmployeeId"], select[name="promoterEmployeeId"]').first()
+        const promoterInput = csmPage.locator('input[name="promoterEmployeeName"], select[name="promoterEmployeeName"]').first()
         if (await promoterInput.count() > 0) {
           const tag = await promoterInput.evaluate((el) => el.tagName.toLowerCase())
           if (tag === 'select') {
-            await promoterInput.selectOption({ value: EMPLOYEE_B })
+            await promoterInput.selectOption({ value: EMPLOYEE_B_NAME })
           } else {
-            await promoterInput.fill(EMPLOYEE_B)
+            await promoterInput.fill(EMPLOYEE_B_NAME)
           }
           const saveBtn = csmPage.getByRole('button', { name: '保存' }).first()
           await saveBtn.click()
@@ -234,10 +234,10 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
     if (!uiPromoterChanged) {
       // SQL 等价 + 手写 operation_log 模拟 logUpdate
       psql(
-        `UPDATE client_wechat_users SET promoter_employee_id='${EMPLOYEE_B}', updated_at=NOW() ` +
+        `UPDATE client_wechat_users SET promoter_employee_name='${EMPLOYEE_B_NAME}', updated_at=NOW() ` +
           `WHERE user_id='${FIXTURE_USER_ID}'`,
       )
-      const detailJson = `{"_v":2,"_t":"update","changes":{"promoterEmployeeId":{"from":"${EMPLOYEE_A}","to":"${EMPLOYEE_B}"}}}`
+      const detailJson = `{"_v":2,"_t":"update","changes":{"promoterEmployeeName":{"from":"${EMPLOYEE_A_NAME}","to":"${EMPLOYEE_B_NAME}"}}}`
       psql(
         `INSERT INTO operation_logs (action, target_type, target_id, operator_employee_id, source, detail) ` +
           `VALUES ('customer.update', 'customer', '${FIXTURE_USER_ID}', 'FY-TEST-CSM', 'adminApi', '${detailJson}'::jsonb)`,
@@ -247,10 +247,10 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
 
     // ── Step 3: DB 校验 ──
     // 3.1 promoter 已更新为 B
-    const newPromoter = psql(`SELECT promoter_employee_id FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
+    const newPromoter = psql(`SELECT promoter_employee_name FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
     verdicts.push({
       check: 'promoter_updated_to_B',
-      verdict: newPromoter === EMPLOYEE_B ? 'PASS' : 'FAIL',
+      verdict: newPromoter === EMPLOYEE_B_NAME ? 'PASS' : 'FAIL',
       actual: newPromoter,
     })
 
@@ -270,13 +270,13 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
       actual: `pre=${itemsPreUpdatedAt} post=${itemsPostUpdatedAt}`,
     })
 
-    // 3.4 operation_logs 含 customer.update（detail 含 promoterEmployeeId from/to）
+    // 3.4 operation_logs 含 customer.update（detail 含 promoterEmployeeName from/to）
     const logRows = psql(
       `SELECT detail::text FROM operation_logs ` +
         `WHERE target_id='${FIXTURE_USER_ID}' AND action='customer.update' AND created_at > '${cutoffStr}'::timestamp ` +
         `ORDER BY created_at DESC LIMIT 1`,
     )
-    const hasPromoterChange = logRows.includes('promoterEmployeeId') && logRows.includes(EMPLOYEE_B)
+    const hasPromoterChange = logRows.includes('promoterEmployeeName') && logRows.includes(EMPLOYEE_B_NAME)
     verdicts.push({
       check: 'operation_log_promoter_change',
       verdict: hasPromoterChange ? 'PASS' : 'FAIL',
@@ -302,9 +302,9 @@ test('链路16：顾客 promoter 重分配 + 历史订单零回溯', async ({ br
     console.log('[链路16] Step 5: 清理 — 还原 promoter + 删历史单 + 删本测日志')
     try {
       if (origPromoter === 'NULL') {
-        psql(`UPDATE client_wechat_users SET promoter_employee_id=NULL, updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
+        psql(`UPDATE client_wechat_users SET promoter_employee_name=NULL, updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
       } else {
-        psql(`UPDATE client_wechat_users SET promoter_employee_id='${origPromoter}', updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
+        psql(`UPDATE client_wechat_users SET promoter_employee_name='${origPromoter}', updated_at=NOW() WHERE user_id='${FIXTURE_USER_ID}'`)
       }
       console.log(`[链路16] promoter 已还原为 ${origPromoter}`)
     } catch (e) {

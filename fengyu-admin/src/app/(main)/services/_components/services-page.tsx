@@ -69,7 +69,7 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
 
       <AlertDialog open={confirmDialog === 'cancel'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
         <AlertDialogTitle>确认取消服务单？</AlertDialogTitle>
-        <AlertDialogDescription>取消后服务单将标记为已取消，不扣减次数。此操作不可撤销。</AlertDialogDescription>
+        <AlertDialogDescription>取消后服务单将标记为已取消，不扣减服务额度。此操作不可撤销。</AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
           <AlertDialogAction onClick={() => handleAction(cancelServiceOrder)}>确认取消</AlertDialogAction>
@@ -78,7 +78,7 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
 
       <AlertDialog open={confirmDialog === 'complete'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
         <AlertDialogTitle>标记完成服务？</AlertDialogTitle>
-        <AlertDialogDescription>标记完成后服务单进入「待客户确认」，需顾客（或后台代）确认后才扣减次数、计提成。</AlertDialogDescription>
+        <AlertDialogDescription>标记完成后服务单进入「待客户确认」，需顾客（或后台代）确认后才扣减服务额度、计提成。</AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
           <AlertDialogAction onClick={() => handleAction(completeServiceOrder)}>标记完成</AlertDialogAction>
@@ -87,7 +87,7 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
 
       <AlertDialog open={confirmDialog === 'confirm'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
         <AlertDialogTitle>代客户确认服务完成？</AlertDialogTitle>
-        <AlertDialogDescription>确认后将扣减关联销售明细的剩余次数并完成服务单。此操作不可撤销，仅在顾客不便自行确认时使用。</AlertDialogDescription>
+        <AlertDialogDescription>确认后将扣减关联销售明细的剩余服务额度并完成服务单。此操作不可撤销，仅在顾客不便自行确认时使用。</AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
           <AlertDialogAction onClick={() => handleAction(confirmServiceOrder)}>确认完成</AlertDialogAction>
@@ -144,9 +144,9 @@ export default function ServicesPageClient({
         { header: "品项（一级）", width: 14, accessor: (r) => r.categoryL1 },
         { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
         { header: "商品明细", width: 24, accessor: (r) => r.productName },
-        { header: "消耗次数", width: 10, accessor: (r) => r.sessionUsed },
+        { header: "消耗数量", width: 10, accessor: (r) => r.sessionUsed == null ? "" : `${r.sessionUsed} ${r.unit}` },
         { header: "项目消耗金额", width: 12, accessor: (r) => r.consumeMoney },
-        { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
+        { header: "单位价", width: 12, accessor: (r) => r.unitRealPrice },
         { header: "状态", width: 12, accessor: (r) => r.status },
         { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
         { header: "顾客类型", width: 12, accessor: (r) => r.customerType },

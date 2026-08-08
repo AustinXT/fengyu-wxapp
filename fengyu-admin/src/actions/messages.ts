@@ -12,6 +12,7 @@ import { isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 
 export interface AdminMessage {
   id: number
@@ -111,13 +112,8 @@ export const getMessagesPaginated = withPermission(
   // 市场筛选：展开为门店 ID 列表
   let marketStoreIds: string[] | null = null
   if (filters.marketId) {
-    const storeRows = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(and(eq(orgNodes.type, '门店'), eq(orgNodes.parentId, filters.marketId)))
-    marketStoreIds = storeRows.map((r) => r.storeId)
-    if (marketStoreIds.length === 0) {
+    marketStoreIds = await resolveOrgNodeToStoreIds(filters.marketId)
+    if (marketStoreIds !== null && marketStoreIds.length === 0) {
       return { data: [], total: 0 }
     }
   }
@@ -345,44 +341,6 @@ export const deleteMessage = withPermission(
 
 /** 单次批量发送的最大接收人数 */
 const BATCH_SEND_MAX = 1000
-
-/**
- * 将组织节点 ID 解析为对应的 storeId 列表。
- * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
- *
- * 与 actions/coupons.ts 的同名内部函数逻辑一致，因处于不同文件且 admin-coding
- * 规范不鼓励为"小工具"新建 lib 模块，这里就地复制 30 行。
- */
-async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
-  const [node] = await db
-    .select({ type: orgNodes.type, parentId: orgNodes.parentId })
-    .from(orgNodes)
-    .where(eq(orgNodes.id, orgNodeId))
-    .limit(1)
-
-  if (!node) return null
-  if (node.type === '总部') return null
-
-  if (node.type === '门店') {
-    const [store] = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .where(eq(stores.orgNodeId, orgNodeId))
-      .limit(1)
-    return store ? [store.storeId] : []
-  }
-
-  if (node.type === '市场') {
-    const storeRows = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, orgNodeId))
-    return storeRows.map((r) => r.storeId)
-  }
-
-  return null
-}
 
 /**
  * 构造"批量发送消息"场景下的客户筛选 WHERE 条件。

@@ -175,8 +175,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
               )}
               {refund.sessionCount !== null && (
                 <div>
-                  <span className="text-[#999]">退回次数</span>
-                  <p className="font-medium mt-1">{refund.sessionCount} 次</p>
+                  <span className="text-[#999]">退回数量</span>
+                  <p className="font-medium mt-1">{refund.sessionCount} {refund.unit}</p>
                 </div>
               )}
               <div>

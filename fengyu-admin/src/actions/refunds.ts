@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { productSkus } from '@db/product'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { and, desc, asc, eq, sql } from 'drizzle-orm'
@@ -59,6 +60,8 @@ export interface RefundableItem {
   saleItemId: string
   productName: string
   productType: ProductType | null
+  /** 当前 SKU 的展示单位；SKU 删除或历史数据缺失时按商品类型回退。 */
+  unit: string
   unitRealPrice: number
   saleAmount: number
   unusedQuantity: number
@@ -140,6 +143,8 @@ export interface RefundListItem {
   refundReason: string | null
   refSaleItemId: string | null
   sessionCount: number | null
+  /** 当前退款关联 SKU 的展示单位。 */
+  unit: string
   /** 操作人（发起人） */
   operatorEmployeeId: string | null
   operatorName: string | null
@@ -317,31 +322,35 @@ export const getRefundable = withAnyPermission(
   }
 
   const rows = await db
-    .select()
+    .select({
+      item: saleItems,
+      skuUnit: productSkus.unit,
+    })
     .from(saleItems)
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map((r) => ({
-    sale_item_id: r.saleItemId,
-    sku_id: r.skuId,
-    product_name: r.productName,
-    product_type: r.productType as ProductType | null,
-    session_count: r.sessionCount,
-    remaining_sessions: r.remainingSessions,
-    paid_sessions: r.paidSessions,
-    unit_price: r.unitPrice,
-    quantity: r.quantity,
-    unit_real_price: r.unitRealPrice,
-    sale_amount: r.saleAmount,
-    received: r.received,
-    picked_up_quantity: r.pickedUpQuantity,
-    sales_category: r.salesCategory as SalesCategory | null,
-    service_fee: r.serviceFee,
+  const srcItems: RefundSourceItem[] = rows.map(({ item }) => ({
+    sale_item_id: item.saleItemId,
+    sku_id: item.skuId,
+    product_name: item.productName,
+    product_type: item.productType as ProductType | null,
+    session_count: item.sessionCount,
+    remaining_sessions: item.remainingSessions,
+    paid_sessions: item.paidSessions,
+    unit_price: item.unitPrice,
+    quantity: item.quantity,
+    unit_real_price: item.unitRealPrice,
+    sale_amount: item.saleAmount,
+    received: item.received,
+    picked_up_quantity: item.pickedUpQuantity,
+    sales_category: item.salesCategory as SalesCategory | null,
+    service_fee: item.serviceFee,
   }))
 
   const itemOverpayById = computeItemOverpayRemainders(srcItems)
-  const items: RefundableItem[] = srcItems.map((src) => {
+  const items: RefundableItem[] = srcItems.map((src, index) => {
     const unused = calculateUnusedQuantity(src)
     const unitRealPrice = Number(src.unit_real_price)
     const refundableAmount = Math.round(unitRealPrice * unused * 100) / 100
@@ -351,6 +360,7 @@ export const getRefundable = withAnyPermission(
       saleItemId: src.sale_item_id,
       productName: src.product_name || '-',
       productType: src.product_type,
+      unit: rows[index].skuUnit ?? (src.product_type === '家居产品' ? '盒' : '次'),
       unitRealPrice,
       saleAmount: Number(src.sale_amount || 0),
       unusedQuantity: unused,
@@ -1367,6 +1377,8 @@ export const listRefunds = withAnyPermission(
       auditorName: auditorAlias.name,
       custName: clientWechatUsers.name,
       custPhone: clientWechatUsers.phone,
+      skuUnit: productSkus.unit,
+      refundProductType: saleItems.productType,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -1374,6 +1386,8 @@ export const listRefunds = withAnyPermission(
     .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
     .leftJoin(auditorAlias, eq(saleOrderPayments.auditEmployeeId, auditorAlias.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(whereClause)
     .orderBy(desc(saleOrderPayments.createdAt))
     .limit(pageSize)
@@ -1406,6 +1420,8 @@ export const getRefundById = withAnyPermission(
       auditorName: auditorAlias.name,
       custName: clientWechatUsers.name,
       custPhone: clientWechatUsers.phone,
+      skuUnit: productSkus.unit,
+      refundProductType: saleItems.productType,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -1413,6 +1429,8 @@ export const getRefundById = withAnyPermission(
     .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
     .leftJoin(auditorAlias, eq(saleOrderPayments.auditEmployeeId, auditorAlias.employeeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+    .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(
       and(
         eq(saleOrderPayments.id, idNum),
@@ -1468,9 +1486,13 @@ export const getRefundById = withAnyPermission(
       .select({
         payment: saleOrderPayments,
         operatorName: operatorAlias.name,
+        skuUnit: productSkus.unit,
+        refundProductType: saleItems.productType,
       })
       .from(saleOrderPayments)
       .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
+      .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
       .where(
         and(
           eq(saleOrderPayments.saleOrderId, base.refSaleOrderId),
@@ -1496,6 +1518,7 @@ export const getRefundById = withAnyPermission(
       refundReason: r.payment.refundReason ?? null,
       refSaleItemId: r.payment.refSaleItemId ?? null,
       sessionCount: r.payment.sessionCount ?? null,
+      unit: r.skuUnit ?? (r.refundProductType === '家居产品' ? '盒' : '次'),
       auditEmployeeId: r.payment.auditEmployeeId ?? null,
       auditAt: r.payment.auditAt ? r.payment.auditAt.toISOString() : null,
       auditRemark: r.payment.auditRemark ?? null,
@@ -1522,6 +1545,8 @@ function mapRefundRow(r: {
   auditorName: string | null
   custName?: string | null
   custPhone?: string | null
+  skuUnit?: string | null
+  refundProductType?: string | null
 }): RefundListItem {
   return {
     refundPaymentId: r.payment.id,
@@ -1537,6 +1562,7 @@ function mapRefundRow(r: {
     refundReason: r.payment.refundReason ?? null,
     refSaleItemId: r.payment.refSaleItemId ?? null,
     sessionCount: r.payment.sessionCount ?? null,
+    unit: r.skuUnit ?? (r.refundProductType === '家居产品' ? '盒' : '次'),
     operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
     operatorName: r.operatorName,
     auditEmployeeId: r.payment.auditEmployeeId ?? null,

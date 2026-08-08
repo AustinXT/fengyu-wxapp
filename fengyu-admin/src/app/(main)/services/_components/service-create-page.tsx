@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
@@ -70,6 +70,9 @@ export default function ServiceCreatePageClient({
   const [availableItems, setAvailableItems] = useState<AvailableSaleItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
+  const [itemProductKind, setItemProductKind] = useState("")
+  const [itemCategoryId, setItemCategoryId] = useState("")
+  const [itemNameQuery, setItemNameQuery] = useState("")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
@@ -128,6 +131,9 @@ export default function ServiceCreatePageClient({
       const items = await getAvailableSaleItems(selectedCustomer.userId)
       setAvailableItems(items)
       setSelectedItems([])
+      setItemProductKind("")
+      setItemCategoryId("")
+      setItemNameQuery("")
       setStep(1)
     } catch (err) {
       toast.error(actionErrorMessage(err, "加载可用项目失败"))
@@ -162,6 +168,30 @@ export default function ServiceCreatePageClient({
   const filteredEmployees = employees.filter(
     e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')
   )
+
+  const itemProductKinds = useMemo(
+    () => Array.from(new Set(availableItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),
+    [availableItems],
+  )
+  const itemCategories = useMemo(
+    () => Array.from(
+      new Map(
+        availableItems
+          .filter((item) => item.categoryId && item.categoryName && (!itemProductKind || item.productKind === itemProductKind))
+          .map((item) => [item.categoryId!, { id: item.categoryId!, name: item.categoryName! }]),
+      ).values(),
+    ),
+    [availableItems, itemProductKind],
+  )
+  const filteredAvailableItems = useMemo(() => {
+    const query = itemNameQuery.trim().toLocaleLowerCase()
+    return availableItems.filter((item) => {
+      if (itemProductKind && item.productKind !== itemProductKind) return false
+      if (itemCategoryId && item.categoryId !== itemCategoryId) return false
+      return !query || (item.productName ?? "").toLocaleLowerCase().includes(query)
+    })
+  }, [availableItems, itemCategoryId, itemNameQuery, itemProductKind])
+  const hasItemFilters = Boolean(itemProductKind || itemCategoryId || itemNameQuery.trim())
 
   const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
 
@@ -290,8 +320,43 @@ export default function ServiceCreatePageClient({
                   <p className="text-xs mt-1">需先有已支付订单的疗程卡项目</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <>
+                  <div className="grid gap-2 sm:grid-cols-[10rem_10rem_minmax(14rem,1fr)]">
+                    <Select
+                      value={itemProductKind}
+                      onChange={(e) => {
+                        setItemProductKind(e.target.value)
+                        setItemCategoryId("")
+                      }}
+                    >
+                      <option value="">全部一级品项</option>
+                      {itemProductKinds.map((productKind) => (
+                        <option key={productKind} value={productKind}>{productKind}</option>
+                      ))}
+                    </Select>
+                    <Select
+                      value={itemCategoryId}
+                      onChange={(e) => setItemCategoryId(e.target.value)}
+                      disabled={!itemProductKind}
+                    >
+                      <option value="">{itemProductKind ? "全部二级品项" : "请先选择一级品项"}</option>
+                      {itemCategories.map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                    </Select>
+                    <Input
+                      value={itemNameQuery}
+                      onChange={(e) => setItemNameQuery(e.target.value)}
+                      placeholder="搜索疗程卡名称"
+                    />
+                  </div>
+                  {filteredAvailableItems.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-[#999999]">
+                      {hasItemFilters ? "未找到匹配的疗程卡" : "该顾客暂无可用服务项目"}
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-4 py-3 text-left font-medium text-gray-500 w-10"></th>
@@ -300,11 +365,11 @@ export default function ServiceCreatePageClient({
                         <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
                         <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">到期日</th>
-                        <th className="px-4 py-3 text-center font-medium text-gray-500">划卡次数</th>
+                        <th className="px-4 py-3 text-center font-medium text-gray-500">划卡数量</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {availableItems.map((item) => {
+                      {filteredAvailableItems.map((item) => {
                         const selected = isItemSelected(item.saleItemId)
                         return (
                           <tr
@@ -334,7 +399,7 @@ export default function ServiceCreatePageClient({
                             <td className="px-4 py-3 text-right">
                               {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
                               {item.sessionCount !== null
-                                ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount}`
+                                ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount} ${item.unit}`
                                 : "—"}
                             </td>
                             <td className="px-4 py-3 text-right">
@@ -357,8 +422,10 @@ export default function ServiceCreatePageClient({
                         )
                       })}
                     </tbody>
-                  </table>
-                </div>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
             </CardContent>
           </Card>
@@ -455,7 +522,7 @@ export default function ServiceCreatePageClient({
                   return (
                     <div key={si.saleItemId} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
                       <span>{item.productName} - {item.productType}</span>
-                      <span className="font-medium">划卡 {si.sessionUsed} 次</span>
+                      <span className="font-medium">划卡 {si.sessionUsed} {item.unit}</span>
                     </div>
                   )
                 })}

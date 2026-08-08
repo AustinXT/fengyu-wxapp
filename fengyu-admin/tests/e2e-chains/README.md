@@ -998,7 +998,7 @@ UPDATE commission_rate_matrix SET rate=0.05, updated_at=NOW() WHERE id=:matrix_i
 ### 链路 16：顾客重分配 / 顾问转移
 
 **spec**：`link-16-customer-promoter-snapshot.spec.ts`
-**主题**：顾客的 `promoter_employee_id` / `bound_store_id` 变更后，历史预约/服务单/订单**保持不变**（实际 sale_orders 表无 consultant 列，promoter 不被复制 → 天然零回溯）。
+**主题**：顾客的 `promoter_employee_name` / `bound_store_id` 变更后，历史预约/服务单/订单**保持不变**（实际 sale_orders 表无 consultant 列，promoter 不被复制 → 天然零回溯）。
 **角色**：FY-TEST-CSM（修改顾客归属）+ FY-TEST-MGR（开新单验证）
 **涉及页面**：`/customers/[uid]/edit` → `/orders/create`
 **关键不变量**：
@@ -1006,7 +1006,7 @@ UPDATE commission_rate_matrix SET rate=0.05, updated_at=NOW() WHERE id=:matrix_i
 sale_orders.client_user_id      不变（顾客身份）
 sale_orders.consultant_employee_id  保持下单时的快照
 service_orders.employee_id           保持开服务单时的快照
-client_wechat_users.promoter_employee_id  可被重新分配，仅影响后续单
+client_wechat_users.promoter_employee_name  可被重新分配，仅影响后续单
 ```
 
 #### 前置
@@ -1014,8 +1014,8 @@ client_wechat_users.promoter_employee_id  可被重新分配，仅影响后续�
 - 准备员工 B（同店、未离职）
 
 #### 步骤
-1. FY-TEST-CSM 进 `/customers/{uid}/edit`，把 promoter_employee_id 从 A 改为 B 保存
-2. 查 client_wechat_users.promoter_employee_id=B
+1. FY-TEST-CSM 进 `/customers/{uid}/edit`，把 promoter_employee_name 从 A 改为 B 保存
+2. 查 client_wechat_users.promoter_employee_name=B
 3. 查链路 1 历史订单：sale_orders.consultant_employee_id 仍=A（不动）
 4. FY-TEST-MGR 给该顾客开新单 → consultant_employee_id 默认 = B
 5. 反例：把 promoter 改成 is_resigned=true 的员工 → 应被拒绝
@@ -1024,14 +1024,14 @@ client_wechat_users.promoter_employee_id  可被重新分配，仅影响后续�
 #### 检查点
 | 类型 | 检查项 |
 |------|--------|
-| DB | client_wechat_users.promoter_employee_id=B，updated_at 已更新 |
+| DB | client_wechat_users.promoter_employee_name=B，updated_at 已更新 |
 | DB | 历史 sale_orders/service_orders.employee_id 不变 |
 | DB | 新订单 consultant_employee_id=B |
 | DB | operation_logs 含 `customer.update_promoter` 行 |
 
 #### 清理
 ```sql
-UPDATE client_wechat_users SET promoter_employee_id=:old_employee_id, updated_at=NOW()
+UPDATE client_wechat_users SET promoter_employee_name=:old_employee_name, updated_at=NOW()
   WHERE user_id=:uid;
 DELETE FROM operation_logs WHERE target_id=:uid AND action LIKE 'customer%';
 ```

@@ -41,7 +41,7 @@ interface PermissionsPageProps {
   roleCounts: Record<string, number>
   allEmployees: Employee[]
   orgNodes: OrgNode[]
-  /** 操作者可操作的 scope 节点 id；null = admin 全开，左侧树不置灰 */
+  /** 操作者可操作的节点（角色根节点自身及其后代）；null = admin 全开 */
   accessibleScopeIds: string[] | null
   /** 撤销角色按钮可见性：持有 permission:revoke 的角色（admin + hr） */
   canDelete: boolean
@@ -56,7 +56,7 @@ interface TreeNodeProps {
   selectedId: string | null
   expandedIds: Set<string>
   roleCounts: Record<string, number>
-  /** 操作者可操作的 scope 节点 id；null = admin 全开；非 null 时集合外节点置灰禁选 */
+  /** 操作者可操作的节点；null = admin 全开；非 null 时集合外节点置灰禁选 */
   accessibleIds: Set<string> | null
   onSelect: (id: string) => void
   onToggle: (id: string) => void
@@ -70,7 +70,7 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
   const isExpanded = expandedIds.has(node.id)
   const isSelected = selectedId === node.id
   const count = roleCounts[node.id] || 0
-  // 超出操作者 scope 的节点置灰禁选（展开三角仍可用，以露出下层可操作节点）
+  // 超出操作者子树的节点置灰禁选（展开三角仍可用，以露出下层可操作节点）
   const isDisabled = accessibleIds != null && !accessibleIds.has(node.id)
 
   return (
@@ -154,12 +154,14 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
         initial.add(child.id)
       }
     }
-    // 额外展开可操作节点的祖先链，保证非 admin 操作者的 scope 节点默认可见
+    // 额外展开可操作节点的祖先链，保证非 admin 操作者的子树默认可见。
     if (accessibleScopeIds) {
       const byId = new Map(permissionNodes.map(n => [n.id, n]))
       for (const id of accessibleScopeIds) {
         let cur = byId.get(id)
-        for (let i = 0; i < 5 && cur?.parentId; i++) {
+        const visited = new Set<string>()
+        while (cur?.parentId && !visited.has(cur.id)) {
+          visited.add(cur.id)
           initial.add(cur.parentId)
           cur = byId.get(cur.parentId)
         }
@@ -464,6 +466,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
               orgNodes={orgNodes}
               excludeTypes={["部门"]}
               allowedTypes={ROLE_SCOPE_TYPES[assignRoleValue]}
+              allowedNodeIds={accessibleScopeIds}
               value={assignScopeId}
               onChange={(id) => setAssignScopeId(id)}
               placeholder="选择组织节点"

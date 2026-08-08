@@ -15,12 +15,21 @@ import { logOperation } from '@/lib/operation-log'
 import { isScopeTypeValidForRole, type OrgNodeType } from '@/lib/role-scope-rules'
 import { countActiveAdmins } from '@/lib/admin-guard'
 
+/** 非 admin 可操作的组织节点：角色绑定节点自身及其全部后代。 */
+function permissionScopeIds(session: Parameters<typeof hasRole>[0]): string[] {
+  return Array.from(new Set(
+    session.permissions?.scopeOrgNodeIds
+      ?? session.permissions?.scopeDeptNodeIds
+      ?? session.roles.map((role) => role.scopeId),
+  ))
+}
+
 export const getRoles = withPermission(
   'permission:list',
   async (session): Promise<PermissionRole[]> => {
   // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
   const isAdmin = hasRole(session, 'admin')
-  const userScopeIds = session.roles.map(r => r.scopeId)
+  const userScopeIds = permissionScopeIds(session)
   if (!isAdmin && userScopeIds.length === 0) return []
 
   const whereCondition = isAdmin
@@ -66,7 +75,7 @@ export const getRolesByScope = withPermission(
   async (session, scopeId: string): Promise<PermissionRole[]> => {
   const isAdmin = hasRole(session, 'admin')
   if (!isAdmin) {
-    const userScopeIds = session.roles.map(r => r.scopeId)
+    const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(scopeId)) return []
   }
 
@@ -108,7 +117,7 @@ export const getRoleCountsByScope = withPermission(
   'permission:list',
   async (session): Promise<Record<string, number>> => {
   const isAdmin = hasRole(session, 'admin')
-  const userScopeIds = session.roles.map(r => r.scopeId)
+  const userScopeIds = permissionScopeIds(session)
   if (!isAdmin && userScopeIds.length === 0) return {}
 
   const whereCondition = isAdmin
@@ -186,7 +195,7 @@ export const assignRole = withAnyPermission(
 
   // 非 admin 用户不能分配超出自身 scope 的权限
   if (!hasRole(session, 'admin')) {
-    const userScopeIds = session.roles.map(r => r.scopeId)
+    const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(data.scopeId)) {
       return { success: false, message: '不能分配超出自身权限范围的角色' }
     }
@@ -290,7 +299,7 @@ export const revokeRole = withPermission(
 
   // 非 admin 用户不能撤销超出自身 scope 的角色
   if (!hasRole(session, 'admin')) {
-    const userScopeIds = session.roles.map(r => r.scopeId)
+    const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(target.scopeId)) {
       return { success: false, message: '不能撤销超出自身权限范围的角色' }
     }

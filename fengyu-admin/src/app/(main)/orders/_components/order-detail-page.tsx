@@ -502,7 +502,7 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-right font-medium text-gray-500">应收</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">约定实付</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">已确认实收</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态/次数（已用/已付/共）</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态/数量（已用/已付/共）</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -511,7 +511,7 @@ export default function OrderDetailPageClient({
                   // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
                   const sessionCell =
                     item.sessionCount !== null
-                      ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
+                      ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} ${item.unit}`
                       : "—";
                   return (
                     <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
@@ -601,7 +601,7 @@ export default function OrderDetailPageClient({
                   if (isRefund) {
                     if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`);
                     if (p.refSaleItemId) refundDetailParts.push(`关联明细 ${p.refSaleItemId}`);
-                    if (p.sessionCount != null) refundDetailParts.push(`次数：${p.sessionCount}`);
+                    if (p.sessionCount != null) refundDetailParts.push(`数量：${p.sessionCount} ${p.unit ?? '次'}`);
                     if (p.auditAt) {
                       refundDetailParts.push(
                         `审批：${formatDateTime(p.auditAt)}` + (p.auditRemark ? `（${p.auditRemark}）` : ""),

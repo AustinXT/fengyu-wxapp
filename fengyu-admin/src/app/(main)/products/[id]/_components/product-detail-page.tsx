@@ -43,6 +43,8 @@ export default function SkuDetailPageClient({
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
   const [categoryId, setCategoryId] = useState(sku.categoryId)
+  const [productType, setProductType] = useState<"疗程卡" | "家居产品">(sku.productType)
+  const [unit, setUnit] = useState(sku.unit)
   const [projectSeriesId, setProjectSeriesId] = useState<number | null>(sku.projectSeriesId ?? null)
 
   const [isShengmei, setIsShengmei] = useState<boolean>(sku.isShengmei ?? false)
@@ -64,14 +66,21 @@ export default function SkuDetailPageClient({
     setFormDirty(true)
   }
 
+  const handleProductTypeChange = (value: "疗程卡" | "家居产品") => {
+    setProductType(value)
+    setUnit(value === "家居产品" ? "盒" : "次")
+    setFormDirty(true)
+  }
+
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const form = e.currentTarget
     const fd = new FormData(form)
 
     const specName = (fd.get("specName") as string).trim()
-    const productType = fd.get("productType") as string
+    const submittedProductType = fd.get("productType") as string
     const price = (fd.get("price") as string).trim()
+    const unit = (fd.get("unit") as string).trim()
 
     if (!specName) {
       toast.error("请输入商品名称")
@@ -81,12 +90,16 @@ export default function SkuDetailPageClient({
       toast.error("请选择品项分类")
       return
     }
-    if (!productType) {
+    if (!submittedProductType) {
       toast.error("请选择产品类型")
       return
     }
     if (!price) {
       toast.error("请输入标价")
+      return
+    }
+    if (!unit) {
+      toast.error("请输入单位")
       return
     }
 
@@ -96,7 +109,7 @@ export default function SkuDetailPageClient({
     // 疗程卡默认 1 次（避免漏填导致 session_count=null）；家居产品保持 null
     const sessionCount = sessionCountRaw
       ? parseInt(sessionCountRaw)
-      : productType === '疗程卡' ? 1 : null
+      : submittedProductType === '疗程卡' ? 1 : null
     const purchaseLimitRaw = (fd.get("purchaseLimit") as string).trim()
     const purchaseLimit = purchaseLimitRaw ? Number(purchaseLimitRaw) : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
@@ -106,11 +119,12 @@ export default function SkuDetailPageClient({
     try {
       const result = await updateSku(sku.skuId, {
         categoryId,
-        productType,
+        productType: submittedProductType,
         specName,
         price,
         specialPrice,
         sessionCount,
+        unit,
         purchaseLimit,
         sortOrder,
         serviceFee,
@@ -197,7 +211,11 @@ export default function SkuDetailPageClient({
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">产品类型</label>
-                <Select name="productType" defaultValue={sku.productType}>
+                <Select
+                  name="productType"
+                  value={productType}
+                  onChange={(e) => handleProductTypeChange(e.target.value as "疗程卡" | "家居产品")}
+                >
                   <option value="" disabled>请选择</option>
                   <option value="疗程卡">疗程卡</option>
                   <option value="家居产品">家居产品</option>
@@ -271,21 +289,31 @@ export default function SkuDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 次数与排序 */}
+        {/* 疗程数量、单位与排序 */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">次数与排序</CardTitle>
+            <CardTitle className="text-base">疗程数量、单位与排序</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">次数</label>
+                <label className="text-sm font-medium">疗程数量</label>
                 <Input
                   name="sessionCount"
                   type="number"
                   min={1}
                   defaultValue={sku.sessionCount ?? ""}
-                  placeholder="疗程卡不填默认 1 次"
+                  placeholder={`疗程卡不填默认 1${unit || "次"}`}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">单位</label>
+                <Input
+                  name="unit"
+                  value={unit}
+                  maxLength={10}
+                  placeholder="选择产品类型后自动填写"
+                  onChange={(e) => setUnit(e.target.value)}
                 />
               </div>
               <div className="space-y-2">

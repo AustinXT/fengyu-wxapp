@@ -646,10 +646,10 @@ export const getOrdersPaginated = withPermission(
  *   - 充值单：不写 sale_items，按订单级造一行（productName='储值卡充值'，item 级列 null）
  * 订单号/状态/顾客/支付方式等订单级字段在每条明细行内重复；
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
- *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/已退因库内无行级字段，取整单
- *   sale_orders.prepaid_card_amount / refunded_amount（同单多行重复）。充值单取订单级 total_amount(面额)/received(实付)。
+ *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/现付为订单级已入账净额，
+ *   同单多行重复。充值单取订单级 total_amount(面额)/received(实付)。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
- * 寄存单 4 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
+ * 寄存单 5 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
  */
 export interface ExportOrderRow {
@@ -662,10 +662,14 @@ export interface ExportOrderRow {
   status: string
   customerName: string | null
   clientPhone: string | null
+  customerSource: string | null
+  promoterEmployeeName: string | null
   /** 订单金额：sale_items.sale_amount（行应付，行级；同单多行各不同，可正确求和） */
   totalAmount: string
-  /** 储值卡抵扣：sale_orders.prepaid_card_amount（订单级，库内无行级字段，同单多行重复） */
+  /** 储值卡抵扣：已入账的储值卡支付净额（订单级，同单多行重复） */
   prepaidCardAmount: string
+  /** 现付：已入账的微信/支付宝/线下支付净额（订单级，同单多行重复） */
+  cashAmount: string
   /** 实付：sale_items.received（行级净实收，已扣该行退款） */
   received: string
   /** 已退：sale_orders.refunded_amount（订单级，库内无行级字段，同单多行重复） */
@@ -690,11 +694,13 @@ export interface ExportOrderRow {
   categoryL2: string | null
   /** 商品明细：sale_items.product_name 行级商品名称快照（不再聚合多行） */
   productName: string | null
-  /** 总次数：sale_items.session_count；非次数卡（家居产品）为 NULL → 前端 fallback「—」 */
+  /** 总数量：sale_items.session_count；非疗程卡（家居产品）为 NULL → 前端 fallback「—」 */
   sessionCount: number | null
-  /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL（历史行/家居产品）退回物理剩余 */
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string | null
+  /** 可用数量（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL（历史行/家居产品）退回物理剩余 */
   paidUnusedSessions: number | null
-  /** 单次价格：sale_items.unit_real_price（优惠后价 → number 化便于 Excel 求和） */
+  /** 单位价格：sale_items.unit_real_price（优惠后价 → number 化便于 Excel 求和） */
   unitRealPrice: number | null
   /** 订单备注（按行重复） */
   remark: string | null
@@ -728,10 +734,13 @@ export const exportOrders = withPermission(
           status: saleOrders.status,
           custName: clientWechatUsers.name,
           custPhone: clientWechatUsers.phone,
+          customerSource: clientWechatUsers.customerSource,
+          promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
           fallbackName: saleOrders.customerName,
           fallbackPhone: saleOrders.clientPhone,
           totalAmount: saleItems.saleAmount,        // 行应付（商品行口径，与 exportAllocationOrders 对齐）
           prepaidCardAmount: saleOrders.prepaidCardAmount,
+          orderReceived: saleOrders.received,
           received: saleItems.received,             // 行级净实收（商品行口径）
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
@@ -747,6 +756,7 @@ export const exportOrders = withPermission(
           salesCategory: saleItems.salesCategory,
           productName: saleItems.productName,
           sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
           paidUnusedSessions: paidUnusedSessionsExpr,
           unitRealPrice: saleItems.unitRealPrice,
           categoryL1: productCategories.productKind,
@@ -785,10 +795,13 @@ export const exportOrders = withPermission(
           status: saleOrders.status,
           custName: clientWechatUsers.name,
           custPhone: clientWechatUsers.phone,
+          customerSource: clientWechatUsers.customerSource,
+          promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
           fallbackName: saleOrders.customerName,
           fallbackPhone: saleOrders.clientPhone,
           totalAmount: saleOrders.totalAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
+          orderReceived: saleOrders.received,
           received: saleOrders.received,
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
@@ -807,14 +820,100 @@ export const exportOrders = withPermission(
       .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
       .orderBy(desc(saleOrders.saleOrderDatetime))
 
+    // 储值卡抵扣、现付均是订单级字段。以已入账流水为权威源，退款按原支付通道作为负数冲减，
+    // 这样所有商品明细行的净实付之和可与「储值卡抵扣 + 现付」核对。
+    // 全量导出可能超过 PostgreSQL 参数上限，故按订单号分批，避免逐订单查询。
+    const orderIds = [...new Set([...itemRows, ...rechargeOrders].map((r) => r.saleOrderId))]
+    const settledPaymentsByOrderId = new Map<string, {
+      settledPaymentCount: number
+      settledPrepaidCardAmount: string
+      settledCashAmount: string
+    }>()
+    const paymentSummaryBatchSize = 5000
+    for (let start = 0; start < orderIds.length; start += paymentSummaryBatchSize) {
+      const paymentRows = await db
+        .select({
+          saleOrderId: saleOrderPayments.saleOrderId,
+          settledPaymentCount: sql<number>`COUNT(*)::int`,
+          settledPrepaidCardAmount: sql<string>`
+            COALESCE(SUM(CASE
+              WHEN ${saleOrderPayments.changeType} = '储值卡抵扣'
+                AND ${saleOrderPayments.paymentMethod} = '储值卡'
+                THEN ${saleOrderPayments.amount}
+              WHEN ${saleOrderPayments.changeType} = '退款'
+                AND ${saleOrderPayments.paymentMethod} = '储值卡'
+                THEN ${saleOrderPayments.amount}
+              ELSE 0
+            END), 0)
+          `,
+          settledCashAmount: sql<string>`
+            COALESCE(SUM(CASE
+              WHEN ${saleOrderPayments.changeType} IN ('首次支付', '回款')
+                AND ${saleOrderPayments.paymentMethod} IN ('微信', '支付宝', '线下')
+                THEN ${saleOrderPayments.amount}
+              WHEN ${saleOrderPayments.changeType} = '退款'
+                AND ${saleOrderPayments.paymentMethod} IN ('微信', '支付宝', '线下')
+                THEN ${saleOrderPayments.amount}
+              ELSE 0
+            END), 0)
+          `,
+        })
+        .from(saleOrderPayments)
+        .where(and(
+          eq(saleOrderPayments.status, '已支付'),
+          inArray(saleOrderPayments.saleOrderId, orderIds.slice(start, start + paymentSummaryBatchSize)),
+        ))
+        .groupBy(saleOrderPayments.saleOrderId)
+
+      for (const row of paymentRows) {
+        settledPaymentsByOrderId.set(row.saleOrderId, row)
+      }
+    }
+
+    const toAmount = (value: string | number | null | undefined) => {
+      const amount = Number(value ?? 0)
+      return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
+    }
+    const formatAmount = (amount: number) => amount.toFixed(2)
+    const resolveSettledAmounts = (order: {
+      saleOrderId: string
+      prepaidCardAmount: string | null
+      orderReceived: string | null
+      refundedAmount: string | null
+    }) => {
+      const settled = settledPaymentsByOrderId.get(order.saleOrderId)
+      if (settled && Number(settled.settledPaymentCount) > 0) {
+        return {
+          prepaidCardAmount: formatAmount(toAmount(settled.settledPrepaidCardAmount)),
+          cashAmount: formatAmount(toAmount(settled.settledCashAmount)),
+        }
+      }
+
+      // 历史订单可能没有 payment 流水。仅在已有实收时回退订单快照；待支付订单的
+      // prepaid_card_amount 是预选值，received=0 时必须导出 0，不能误报为已抵扣。
+      const orderReceived = toAmount(order.orderReceived)
+      if (orderReceived === 0) {
+        return { prepaidCardAmount: '0.00', cashAmount: '0.00' }
+      }
+      const prepaidCardAmount = Math.min(
+        Math.max(0, toAmount(order.prepaidCardAmount)),
+        Math.max(0, orderReceived),
+      )
+      return {
+        prepaidCardAmount: formatAmount(prepaidCardAmount),
+        cashAmount: formatAmount(orderReceived - prepaidCardAmount - toAmount(order.refundedAmount)),
+      }
+    }
+
     // 合并 item 行（销售/内部/寄存购买行 + 转换单转出/转入行）与充值单造行；
     // 导出按筛选条件返回全量，合并后仅做整体排序。
     const combined: ExportOrderRow[] = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
-        // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 4 列对寄存单留空；
+        // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 5 列对寄存单留空；
         // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
         const isDeposit = r.saleOrderType === '寄存单'
+        const settledAmounts = resolveSettledAmounts(r)
         return {
           // 订单级
           marketName: r.marketName,
@@ -825,8 +924,11 @@ export const exportOrders = withPermission(
           status: r.status,
           customerName: r.custName || r.fallbackName || null,
           clientPhone: r.custPhone || r.fallbackPhone || null,
+          customerSource: r.customerSource ?? null,
+          promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: isDeposit ? '' : r.totalAmount,
-          prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0'),
+          prepaidCardAmount: isDeposit ? '' : settledAmounts.prepaidCardAmount,
+          cashAmount: isDeposit ? '' : settledAmounts.cashAmount,
           received: isDeposit ? '' : (r.received ?? '0'),
           refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
           paymentMethod: r.paymentMethod,
@@ -843,43 +945,51 @@ export const exportOrders = withPermission(
           categoryL2: r.categoryL2,
           productName: r.productName,
           sessionCount: r.sessionCount ?? null,
+          unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
           paidUnusedSessions: r.paidUnusedSessions ?? null,
           unitRealPrice: num(r.unitRealPrice),
           remark: r.remark,
         }
       }),
-      ...rechargeOrders.map((r) => ({
-        // 订单级
-        marketName: r.marketName,
-        storeName: r.storeName,
-        saleOrderId: r.saleOrderId,
-        saleOrderType: r.saleOrderType,
-        documentType: r.documentType,
-        status: r.status,
-        customerName: r.custName || r.fallbackName || null,
-        clientPhone: r.custPhone || r.fallbackPhone || null,
-        totalAmount: r.totalAmount,
-        prepaidCardAmount: r.prepaidCardAmount ?? '0',
-        received: r.received ?? '0',
-        refundedAmount: r.refundedAmount ?? '0',
-        paymentMethod: r.paymentMethod,
-        isMembershipUpgrade: r.isMembershipUpgrade ?? false,
-        isActivity: r.isActivity ?? false,
-        salesCategory: null,
-        customerType: r.customerType,
-        openedByName: r.openedByName,
-        saleOrderDatetime: r.saleOrderDatetime.toISOString(),
-        createdAt: r.createdAt.toISOString(),
-        // item 级：充值单无商品明细
-        productType: null,
-        categoryL1: null,
-        categoryL2: null,
-        productName: '储值卡充值',
-        sessionCount: null,
-        paidUnusedSessions: null,
-        unitRealPrice: null,
-        remark: r.remark,
-      })),
+      ...rechargeOrders.map((r) => {
+        const settledAmounts = resolveSettledAmounts(r)
+        return {
+          // 订单级
+          marketName: r.marketName,
+          storeName: r.storeName,
+          saleOrderId: r.saleOrderId,
+          saleOrderType: r.saleOrderType,
+          documentType: r.documentType,
+          status: r.status,
+          customerName: r.custName || r.fallbackName || null,
+          clientPhone: r.custPhone || r.fallbackPhone || null,
+          customerSource: r.customerSource ?? null,
+          promoterEmployeeName: r.promoterEmployeeName ?? null,
+          totalAmount: r.totalAmount,
+          prepaidCardAmount: settledAmounts.prepaidCardAmount,
+          cashAmount: settledAmounts.cashAmount,
+          received: r.received ?? '0',
+          refundedAmount: r.refundedAmount ?? '0',
+          paymentMethod: r.paymentMethod,
+          isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+          isActivity: r.isActivity ?? false,
+          salesCategory: null,
+          customerType: r.customerType,
+          openedByName: r.openedByName,
+          saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+          createdAt: r.createdAt.toISOString(),
+          // item 级：充值单无商品明细
+          productType: null,
+          categoryL1: null,
+          categoryL2: null,
+          productName: '储值卡充值',
+          sessionCount: null,
+          unit: null,
+          paidUnusedSessions: null,
+          unitRealPrice: null,
+          remark: r.remark,
+        }
+      }),
     ].sort((a, b) =>
       a.saleOrderDatetime < b.saleOrderDatetime ? 1 : a.saleOrderDatetime > b.saleOrderDatetime ? -1 : 0,
     )
@@ -902,11 +1012,15 @@ export interface ExportAllocationOrderRow {
   documentType: string | null
   customerName: string | null
   customerPhone: string | null
+  customerSource: string | null
+  promoterEmployeeName: string | null
   productType: string | null
   categoryL1: string | null
   categoryL2: string | null
   productName: string | null
   sessionCount: number | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   /** 可用次数（已付未用）：paidUnusedSessionsExpr 派生；paid_sessions 为 NULL 退回物理剩余 */
   paidUnusedSessions: number | null
   saleAmount: number | null
@@ -975,6 +1089,8 @@ export const exportAllocationOrders = withPermission(
           documentType: saleOrders.documentType,
           customerName: clientWechatUsers.name,
           customerPhone: clientWechatUsers.phone,
+          customerSource: clientWechatUsers.customerSource,
+          promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
           fallbackName: saleOrders.customerName,
           fallbackPhone: saleOrders.clientPhone,
           productType: saleItems.productType,
@@ -982,6 +1098,7 @@ export const exportAllocationOrders = withPermission(
           categoryL2: productCategories.categoryName,
           productName: saleItems.productName,
           sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
           paidUnusedSessions: paidUnusedSessionsExpr,
           saleAmount: saleItems.saleAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
@@ -1034,11 +1151,14 @@ export const exportAllocationOrders = withPermission(
             documentType: r.documentType,
             customerName: r.customerName ?? r.fallbackName ?? null,
             customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+            customerSource: r.customerSource ?? null,
+            promoterEmployeeName: r.promoterEmployeeName ?? null,
             productType: r.productType,
             categoryL1: r.categoryL1,
             categoryL2: r.categoryL2,
             productName: r.productName,
             sessionCount: r.sessionCount ?? null,
+            unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
             paidUnusedSessions: r.paidUnusedSessions ?? null,
             saleAmount: num(r.saleAmount),
             prepaidCardAmount: num(r.prepaidCardAmount),
@@ -1082,6 +1202,8 @@ export const exportAllocationOrders = withPermission(
           documentType: saleOrders.documentType,
           customerName: clientWechatUsers.name,
           customerPhone: clientWechatUsers.phone,
+          customerSource: clientWechatUsers.customerSource,
+          promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
           fallbackName: saleOrders.customerName,
           fallbackPhone: saleOrders.clientPhone,
           productType: saleItems.productType,
@@ -1089,6 +1211,7 @@ export const exportAllocationOrders = withPermission(
           categoryL2: productCategories.categoryName,
           productName: saleItems.productName,
           sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
           paidUnusedSessions: paidUnusedSessionsExpr,
           saleAmount: saleItems.saleAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
@@ -1133,11 +1256,14 @@ export const exportAllocationOrders = withPermission(
             documentType: r.documentType,
             customerName: r.customerName ?? r.fallbackName ?? null,
             customerPhone: r.customerPhone ?? r.fallbackPhone ?? null,
+            customerSource: r.customerSource ?? null,
+            promoterEmployeeName: r.promoterEmployeeName ?? null,
             productType: r.productType,
             categoryL1: r.categoryL1,
             categoryL2: r.categoryL2,
             productName: r.productName,
             sessionCount: r.sessionCount ?? null,
+            unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
             paidUnusedSessions: r.paidUnusedSessions ?? null,
             saleAmount: num(r.saleAmount),
             prepaidCardAmount: num(r.prepaidCardAmount),
@@ -1209,6 +1335,7 @@ export const getOrderById = withAnyPermission(
     .select({
       item: saleItems,
       skuName: productSkus.specName,
+      unit: productSkus.unit,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
@@ -1220,6 +1347,7 @@ export const getOrderById = withAnyPermission(
     itemDirection: ir.item.itemDirection as SaleItem['itemDirection'],
     refSaleItemId: ir.item.refSaleItemId,
     skuId: ir.item.skuId,
+    unit: ir.unit ?? (ir.item.productType === '家居产品' ? '盒' : '次'),
     sessionCount: ir.item.sessionCount,
     remainingSessions: ir.item.remainingSessions,
     paidSessions: ir.item.paidSessions,
@@ -1308,9 +1436,13 @@ export const getOrderPayments = withAnyPermission(
     .select({
       payment: saleOrderPayments,
       operatorName: staffWechatUsers.name,
+      skuUnit: productSkus.unit,
+      refundProductType: saleItems.productType,
     })
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
+    .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
     // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
     .orderBy(asc(saleOrderPayments.createdAt))
@@ -1332,6 +1464,7 @@ export const getOrderPayments = withAnyPermission(
     refundReason: r.payment.refundReason ?? null,
     refSaleItemId: r.payment.refSaleItemId ?? null,
     sessionCount: r.payment.sessionCount ?? null,
+    unit: r.skuUnit ?? (r.refundProductType === '家居产品' ? '盒' : '次'),
     auditEmployeeId: r.payment.auditEmployeeId ?? null,
     auditAt: r.payment.auditAt?.toISOString() ?? null,
     auditRemark: r.payment.auditRemark ?? null,
@@ -2456,11 +2589,25 @@ export const createOrder = withPermission(
   const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100
 
   // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
-  // payable_amount = total_amount - prepaid_card_amount（冗余列，用于状态机决策和前端展示）
-  const prepaidCardAmount = Math.max(0, data.prepaidCardAmount ?? 0)
-  if (prepaidCardAmount > totalAmount + 0.005) {
-    return { success: false, message: '储值卡抵扣金额不能超过订单总额' }
+  // 充值卡从本次逐行实付中抵扣。欠款场景下，不能把未来待收部分提前拿来抵扣；
+  // 无欠款时 sumItemReceived === totalAmount，口径等价于订单应付总额。
+  const sumItemReceived = Math.round(data.items.reduce((sum, item) => {
+    const saleAmount = item.saleAmount !== undefined
+      ? Number(item.saleAmount)
+      : Number(item.unitRealPrice) * item.quantity
+    const received = item.received !== undefined ? Number(item.received) : saleAmount
+    return sum + received
+  }, 0) * 100) / 100
+  const requestedPrepaidCardAmount = Number(data.prepaidCardAmount ?? 0)
+  if (!Number.isFinite(requestedPrepaidCardAmount) || requestedPrepaidCardAmount < 0) {
+    return { success: false, message: '充值卡抵扣金额必须为非负数' }
   }
+  const prepaidCardAmount = Math.round(requestedPrepaidCardAmount * 100) / 100
+  const maxPrepayable = Math.min(totalAmount, sumItemReceived)
+  if (prepaidCardAmount > maxPrepayable + 0.005) {
+    return { success: false, message: '充值卡抵扣金额超过应抵上限' }
+  }
+  // payable_amount = total_amount - prepaid_card_amount（冗余列，用于状态机决策和前端展示）
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
 
   // 本次收款校验：
@@ -2610,6 +2757,20 @@ export const createOrder = withPermission(
           .limit(1)
         if (existing.length > 0) {
           throw new ApiError('CONFLICT', `该顾客已有待支付订单 ${existing[0].saleOrderId}，请先关闭后再创建新订单`)
+        }
+      }
+
+      // 部分抵扣只是预选，尚未扣减余额；仍须在同一事务内校验当前余额，
+      // 以防绕过前端上限。全额抵扣由下方 deductPrepaidCardAtCreation
+      // 使用 FOR UPDATE 再做一次原子校验并实际扣款。
+      if (prepaidCardAmount > 0 && !isFullCardCoverage) {
+        const balanceRows = await tx.execute(sql`
+          SELECT card_id, balance FROM prepaid_cards
+          WHERE user_id = ${data.clientUserId}
+        `)
+        const currentBalance = Number((balanceRows as unknown as Array<{ balance?: string | number }>)[0]?.balance)
+        if (!Number.isFinite(currentBalance) || currentBalance + 0.001 < prepaidCardAmount) {
+          throw new ApiError('INSUFFICIENT_BALANCE', '充值卡余额不足')
         }
       }
 
@@ -2857,7 +3018,7 @@ export const createConversionOrder = withPermission(
     quantity: number
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
-  /** 储值卡抵扣金额（仅补差额 priceDiff > 0 时有效；clamp 到 [0, priceDiff]） */
+  /** 充值卡抵扣金额（仅正补差额 priceDiff > 0 时有效） */
   prepaidCardAmount?: number
     },
   ): Promise<{
@@ -2868,7 +3029,7 @@ export const createConversionOrder = withPermission(
   totalOut?: number
   priceDiff?: number
   prepaidCardCredit?: number
-  /** 本单实际充值卡抵扣额（priceDiff > 0 时 = clamp 后的抵扣额） */
+  /** 本单实际充值卡抵扣额 */
   prepaidCardAmount?: number
   }> => {
   if (!isInScope(session, data.storeId)) {
@@ -3112,13 +3273,32 @@ export const createConversionOrder = withPermission(
 
       const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
 
-      // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
-      // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则创建事务内即时扣卡 + 结清。
-      const card = priceDiff > 0
-        ? Math.min(Math.max(0, Math.round((data.prepaidCardAmount ?? 0) * 100) / 100), priceDiff)
-        : 0
+      // 充值卡抵扣（仅正补差额 priceDiff > 0 时有效）：拒绝超额输入，不能静默截断。
+      // 前端钳制仅改善体验，服务端仍以补差额和当前余额为准。
+      const requestedCard = Number(data.prepaidCardAmount ?? 0)
+      if (!Number.isFinite(requestedCard) || requestedCard < 0) {
+        throw new ApiError('INVALID_PARAMS', '充值卡抵扣金额必须为非负数')
+      }
+      const card = Math.round(requestedCard * 100) / 100
+      const maxCard = Math.max(0, priceDiff)
+      if (card > maxCard + 0.005) {
+        throw new ApiError('INVALID_PARAMS', '充值卡抵扣金额超过补差额')
+      }
       const payable = Math.max(0, Math.round((Math.max(0, priceDiff) - card) * 100) / 100)
       const isFullCardCoverage = card > 0 && payable === 0
+
+      // 部分抵扣只写预选值，不扣余额；在事务中校验余额。
+      // 全额抵扣由下方 deductPrepaidCardAtCreation 持行锁再次校验并扣款。
+      if (card > 0 && !isFullCardCoverage) {
+        const balanceRows = await tx.execute(sql`
+          SELECT card_id, balance FROM prepaid_cards
+          WHERE user_id = ${data.clientUserId}
+        `)
+        const currentBalance = Number((balanceRows as unknown as Array<{ balance?: string | number }>)[0]?.balance)
+        if (!Number.isFinite(currentBalance) || currentBalance + 0.001 < card) {
+          throw new ApiError('INSUFFICIENT_BALANCE', '充值卡余额不足')
+        }
+      }
 
       // 3. 生成订单号（advisory lock + 当日序号）
       const idRows = await tx.execute(sql`
@@ -3352,6 +3532,10 @@ export const createConversionOrder = withPermission(
     if (m?.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = m.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
+    }
+    if (err instanceof ApiError) {
+      const parsed = parseErrorPrefix(err.message)
+      return { success: false, message: parsed?.displayMessage ?? err.message }
     }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (pgErrorCode(err) === '23503') {

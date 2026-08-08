@@ -225,6 +225,8 @@ export interface ExportServiceOrderItemRow {
   categoryL2: string | null
   productName: string | null
   sessionUsed: number | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   consumeMoney: number | null
   unitRealPrice: number | null
   status: string | null
@@ -278,6 +280,7 @@ async function selectServiceOrderItemExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       salesCategory: serviceItems.salesCategory,
@@ -321,6 +324,7 @@ async function selectServiceOrderItemExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -357,6 +361,8 @@ export interface ExportAllocationServiceRow {
   categoryL2: string | null
   productName: string | null
   sessionUsed: number | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   consumeMoney: number | null
   unitRealPrice: number | null
   status: string | null
@@ -412,6 +418,7 @@ async function selectServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       employeeName: staffWechatUsers.name,
@@ -468,6 +475,7 @@ async function selectServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -525,6 +533,7 @@ async function selectPendingServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       salesCategory: serviceItems.salesCategory,
@@ -566,6 +575,7 @@ async function selectPendingServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -628,6 +638,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       employeeName: staffWechatUsers.name,
@@ -676,6 +687,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -777,6 +789,8 @@ export interface ServiceItemDetail {
   serviceItemId: string
   saleItemId: string
   sessionUsed: number
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   unitRealPrice: string | null
   employeeName: string | null
   employeeId: string | null
@@ -801,6 +815,7 @@ export const getServiceItems = withPermission(
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
+      COALESCE(ps.unit, CASE WHEN sli.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       NULL::text AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
@@ -810,6 +825,7 @@ export const getServiceItems = withPermission(
     FROM service_items si
     LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
     LEFT JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+    LEFT JOIN product_skus ps ON ps.sku_id = sli.sku_id
     WHERE si.service_order_id = ${serviceOrderId}
   `)
 
@@ -817,6 +833,7 @@ export const getServiceItems = withPermission(
     serviceItemId: r.service_item_id,
     saleItemId: r.sale_item_id,
     sessionUsed: Number(r.session_used),
+    unit: r.unit ?? '次',
     unitRealPrice: r.unit_real_price,
     employeeName: r.employee_name,
     employeeId: r.employee_id,
@@ -865,6 +882,14 @@ export interface AvailableSaleItem {
   saleOrderId: string
   productName: string | null
   productType: string | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
+  /** 一级品项（历史无分类卡为 null） */
+  productKind: string | null
+  /** 二级品项 ID（历史无分类卡为 null） */
+  categoryId: string | null
+  /** 二级品项名称（历史无分类卡为 null） */
+  categoryName: string | null
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
@@ -887,9 +912,15 @@ export const getAvailableSaleItems = withPermission(
       si.remaining_sessions,
       si.paid_sessions,
       si.unit_real_price,
-      si.expire_date
+      si.expire_date,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+      ps.category_id,
+      pc.category_name,
+      pc.product_kind
     FROM sale_items si
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.client_user_id = ${clientUserId}
       AND o.status IN ('已支付', '部分支付', '已完成')
       AND (
@@ -926,6 +957,10 @@ export const getAvailableSaleItems = withPermission(
       saleOrderId: r.sale_order_id,
       productName: r.product_name,
       productType: r.product_type,
+      unit: r.unit ?? (r.product_type === '家居产品' ? '盒' : '次'),
+      productKind: r.product_kind ?? null,
+      categoryId: r.category_id ?? null,
+      categoryName: r.category_name ?? null,
       sessionCount: r.session_count !== null ? Number(r.session_count) : null,
       remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
       paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,

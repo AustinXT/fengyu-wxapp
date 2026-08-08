@@ -119,7 +119,7 @@ export default function ServiceDetailPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">划卡次数</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">划卡数量</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作人</th>
                 </tr>
@@ -131,7 +131,7 @@ export default function ServiceDetailPageClient({
                     ? item.sessionCount - (item.remainingSessions ?? 0)
                     : null
                   const sessionCell = item.sessionCount !== null
-                    ? `${used ?? 0}/${item.paidSessions ?? 0}/${item.sessionCount}`
+                    ? `${used ?? 0}/${item.paidSessions ?? 0}/${item.sessionCount} ${item.unit}`
                     : "-"
                   return (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
@@ -153,7 +153,7 @@ export default function ServiceDetailPageClient({
                         ? `¥${Number(item.unitRealPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                         : "-"}
                     </td>
-                    <td className="px-4 py-3 text-right">{item.sessionUsed}</td>
+                    <td className="px-4 py-3 text-right">{item.sessionUsed} {item.unit}</td>
                     <td className="px-4 py-3 text-right">{sessionCell}</td>
                     <td className="px-4 py-3">{item.employeeName || "—"}</td>
                   </tr>

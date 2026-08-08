@@ -71,7 +71,7 @@ import { getLogs, getLogsPaginated, getOrderLogs, deleteOperationLog } from './l
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
-import { eq, inArray, like, gte, lte } from 'drizzle-orm'
+import { eq, inArray, like, gte, lte, sql } from 'drizzle-orm'
 import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
@@ -238,27 +238,25 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(dataChain.offset).toHaveBeenCalledWith(40)
   })
 
-  it('非 admin 合并已展开门店节点与角色市场 scope 节点', async () => {
+  it('非 admin 使用会话中已展开的组织子树节点', async () => {
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
       roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
-      permissions: { actions: ['operation_log:list'], scopeStoreIds: ['store-allowed'] },
+      permissions: {
+        actions: ['operation_log:list'],
+        scopeStoreIds: ['store-allowed'],
+        scopeOrgNodeIds: ['market-node-1', 'store-node-allowed', 'store-node-deep'],
+      },
     })
     ;(isAdminScope as any).mockReturnValueOnce(false)
-
-    const scopeChain: any = {
-      from: vi.fn(),
-      where: vi.fn(),
-    }
-    scopeChain.from.mockReturnValue(scopeChain)
-    scopeChain.where.mockResolvedValue([{ orgNodeId: 'store-node-allowed' }])
-    ;(db.select as any).mockReturnValueOnce(scopeChain)
     mockLogChain([])
 
     await getLogs()
 
-    expect(inArray).toHaveBeenCalledWith('store_id', ['store-allowed'])
-    expect(inArray).toHaveBeenCalledWith('org_node_id', ['store-node-allowed', 'market-node-1'])
+    expect(inArray).toHaveBeenCalledWith(
+      'org_node_id',
+      ['market-node-1', 'store-node-allowed', 'store-node-deep'],
+    )
   })
 
   it('非 admin 无可见门店时仍保留全部角色的实际 scope 节点', async () => {
@@ -268,7 +266,11 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
         { role: 'manager', scopeId: 'market-node-1', scopeType: '市场' },
         { role: 'finance', scopeId: 'hq-node-1', scopeType: '总部' },
       ],
-      permissions: { actions: ['operation_log:list'], scopeStoreIds: [] },
+      permissions: {
+        actions: ['operation_log:list'],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['market-node-1', 'hq-node-1'],
+      },
     })
     ;(isAdminScope as any).mockReturnValueOnce(false)
     mockLogChain([])
@@ -278,19 +280,16 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(inArray).toHaveBeenCalledWith('org_node_id', ['market-node-1', 'hq-node-1'])
   })
 
-  it('市场筛选同时包含市场节点日志与其门店节点日志', async () => {
-    const marketChain: any = {
-      from: vi.fn(),
-      where: vi.fn(),
-    }
-    marketChain.from.mockReturnValue(marketChain)
-    marketChain.where.mockResolvedValue([{ id: 'store-node-allowed' }])
-    ;(db.select as any).mockReturnValueOnce(marketChain)
+  it('组织节点筛选使用递归子树条件覆盖任意层级日志', async () => {
     mockLogChain([])
 
     await getLogs({ marketId: 'market-node-1' })
 
-    expect(inArray).toHaveBeenCalledWith('org_node_id', ['market-node-1', 'store-node-allowed'])
+    const recursiveSql = (sql as any).mock.calls
+      .map((call: any[]) => Array.from(call[0] as TemplateStringsArray).join(''))
+      .find((text: string) => text.includes('WITH RECURSIVE descendants'))
+    expect(recursiveSql).toContain('child.parent_id = descendants.id')
+    expect(recursiveSql).toContain('NOT child.id = ANY(descendants.path)')
   })
 })
 

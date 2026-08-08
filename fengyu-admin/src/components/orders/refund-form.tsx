@@ -250,7 +250,7 @@ export function RefundForm({
                 <tr>
                   <th className="px-3 py-2 text-left font-medium text-gray-500 w-10">选</th>
                   <th className="px-3 py-2 text-left font-medium text-gray-500">名称</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-500">单次价</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-500">单位价</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">可退</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500">余数</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-500 w-28">退款数量</th>
@@ -284,7 +284,7 @@ export function RefundForm({
                       </td>
                       <td className="px-3 py-2">{it.productName}</td>
                       <td className="px-3 py-2 text-right">¥{it.unitRealPrice.toFixed(2)}</td>
-                      <td className="px-3 py-2 text-right">{it.unusedQuantity}</td>
+                      <td className="px-3 py-2 text-right">{it.unusedQuantity} {it.unit}</td>
                       <td className="px-3 py-2 text-right">
                         {lineHasOverpay ? (
                           <label className="inline-flex items-center justify-end gap-1">
@@ -309,7 +309,7 @@ export function RefundForm({
                         {it.productType === '疗程卡' || it.unusedQuantity <= 0 ? (
                           // 疗程卡必须整卡全退（不支持部分退次数）：锁定退款数量 = 全部可退次数
                           <div className="h-8 leading-8 text-right text-xs text-[#999]">
-                            {it.unusedQuantity > 0 ? `整卡退 ${it.unusedQuantity} 次` : "不退数量"}
+                            {it.unusedQuantity > 0 ? `整卡退 ${it.unusedQuantity} ${it.unit}` : "不退数量"}
                           </div>
                         ) : (
                           <Input

@@ -306,7 +306,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
                           <p className="font-medium">{it.sku.specName}</p>
                           <p className="text-xs text-[#999999]">
                             {it.sku.productType}
-                            {sessionCount != null && ` · 每件 ${sessionCount} 次`}
+                            {sessionCount != null && ` · 每件 ${sessionCount}${it.sku.unit}`}
                           </p>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -353,13 +353,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
                   })}
                 </div>
                 <p className="text-xs text-[#999999] mt-2">
-                  共 {cart.length} 个 SKU；总次数 ={" "}
-                  {cart.reduce(
-                    (acc, it) =>
-                      acc + (it.sku.sessionCount != null ? Number(it.sku.sessionCount) * it.quantity : 0),
-                    0,
-                  )}{" "}
-                  次；合计实收 ¥
+                  共 {cart.length} 个 SKU；合计实收 ¥
                   {cart
                     .reduce((acc, it) => acc + (Math.max(0, Number(receivedMap[it.sku.skuId]) || 0)), 0)
                     .toFixed(2)}

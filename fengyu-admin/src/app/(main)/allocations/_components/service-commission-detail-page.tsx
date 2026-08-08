@@ -384,7 +384,7 @@ function ServiceItemCard({
           <span className="text-lg font-bold text-[var(--primary)]">¥{base.toLocaleString()}</span>
         </div>
         <p className="text-xs text-[#999999] mt-1">
-          核销 {item.sessionUsed} 次 · 操作员: {item.employeeName || '—'}
+          核销 {item.sessionUsed} {item.unit} · 操作员: {item.employeeName || '—'}
         </p>
       </CardHeader>
 

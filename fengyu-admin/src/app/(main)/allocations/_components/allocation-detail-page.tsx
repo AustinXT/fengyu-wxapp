@@ -342,7 +342,7 @@ function ItemAllocationCard({
           <span className="text-lg font-bold text-[var(--primary)]">¥{received.toLocaleString()}</span>
         </div>
         <p className="text-xs text-[#999999] mt-1">
-          单次价 ¥{Number(item.unitRealPrice).toLocaleString()}（实收 ¥{received.toLocaleString()}）
+          单位价 ¥{Number(item.unitRealPrice).toLocaleString()}（实收 ¥{received.toLocaleString()}）
         </p>
       </CardHeader>
 

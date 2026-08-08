@@ -9,6 +9,7 @@ function makeItem(overrides: Partial<SaleItem> = {}): SaleItem {
     itemDirection: "购买",
     refSaleItemId: null,
     skuId: "SKU-1",
+    unit: "次",
     sessionCount: 1,
     remainingSessions: 1,
     paidSessions: 1,

@@ -72,12 +72,15 @@ describe('scopeFilterSql — UI 选中 scope 收窄', () => {
     expect(params).toContain('STORE-9')
   })
 
-  it('admin 下钻市场 → 子查询展开市场下门店（parent_id + type=门店）', () => {
+  it('admin 下钻市场 → 子查询展开该节点及任意层级下属门店', () => {
     const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
     const { sql, params } = render(scopeFilterSql(session, { type: 'market', id: 'MKT-1' }, 'so.store_id'))
-    expect(sql).toContain('select s.store_id from stores s join org_nodes o')
-    expect(sql).toContain("o.type = '门店'")
-    expect(params).toContain('MKT-1')
+    expect(sql).toContain('with recursive descendants')
+    expect(sql).toContain('join descendants on child.parent_id = descendants.id')
+    expect(sql).toContain('where not child.id = any(descendants.path)')
+    expect(sql).toContain('s.org_node_id in (')
+    expect(sql).toContain('select id from descendants')
+    expect(params).toEqual(['MKT-1', 'MKT-1'])
   })
 
   it('非 admin + 市场下钻 → 账号范围 AND 市场子查询（两段 AND）', () => {
@@ -85,7 +88,7 @@ describe('scopeFilterSql — UI 选中 scope 收窄', () => {
     const { sql, params } = render(scopeFilterSql(session, { type: 'market', id: 'MKT-1' }, 'so.store_id'))
     expect(sql).toContain('so.store_id in (')
     expect(sql).toContain(' and ')
-    expect(params).toEqual(['S1', 'S2', 'MKT-1'])
+    expect(params).toEqual(['S1', 'S2', 'MKT-1', 'MKT-1'])
   })
 
   it('支持自定义门店列（client 表 bound_store_id）', () => {

@@ -13,6 +13,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
 const storeName = sql<string | null>`(
@@ -52,7 +53,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
-    promoterEmployeeId: row.promoterEmployeeId,
+    promoterEmployeeName: row.promoterEmployeeName,
     customerType: row.customerType,
     spendingTier: row.spendingTier,
     monthlyActivity: row.monthlyActivity,
@@ -74,10 +75,8 @@ function serializeCustomer(row: CustomerRow): Customer {
   }
 }
 
-/** 推荐人姓名（promoter_employee_id → staff_wechat_users.name）— 导出专用标量子查询 */
-const promoterName = sql<string | null>`(
-  SELECT name FROM staff_wechat_users WHERE employee_id = ${clientWechatUsers.promoterEmployeeId}
-)`.as('promoter_name')
+/** 推荐人姓名快照（直接读取客户档案） */
+const promoterName = clientWechatUsers.promoterEmployeeName
 
 /** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
 const exportCustomerColumns = {
@@ -194,10 +193,7 @@ function buildCustomerConditions(
   ]
 
   if (filters.marketId) {
-    const sub = db.select({ storeId: stores.storeId }).from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, filters.marketId))
-    conditions.push(inArray(clientWechatUsers.boundStoreId, sub))
+    conditions.push(storeInMarketCondition(clientWechatUsers.boundStoreId, filters.marketId))
   }
   if (filters.storeId) {
     conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
@@ -297,7 +293,7 @@ export interface ExportCustomerRow {
  * 累计消费口径 = refresh-spending-tier.ts 的 spending_tier 分桶原值：
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
- * 推荐人 = promoter_employee_id 对应的员工姓名（标量子查询）。
+ * 推荐人 = client_wechat_users.promoter_employee_name 姓名快照。
  */
 export const exportCustomers = withPermission(
   'customer:list',
@@ -455,7 +451,7 @@ export const getCustomerOrders = withPermission(
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers, clientWechatUsers } = await import('@db/user')
-  const { productSkus } = await import('@db/product')
+  const { productSkus, productCategories } = await import('@db/product')
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
 
@@ -486,9 +482,14 @@ export const getCustomerOrders = withPermission(
         .select({
           item: saleItems,
           skuName: productSkus.specName,
+          skuUnit: productSkus.unit,
+          categoryId: productSkus.categoryId,
+          categoryName: productCategories.categoryName,
+          productKind: productCategories.productKind,
         })
         .from(saleItems)
         .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(inArray(saleItems.saleOrderId, orderIds))
     : []
 
@@ -540,6 +541,7 @@ export const getCustomerOrders = withPermission(
         itemDirection: ir.item.itemDirection as SaleItem['itemDirection'],
         refSaleItemId: ir.item.refSaleItemId,
         skuId: ir.item.skuId,
+        unit: ir.skuUnit ?? (ir.item.productType === '家居产品' ? '盒' : '次'),
         sessionCount: ir.item.sessionCount,
         remainingSessions: ir.item.remainingSessions,
         paidSessions: ir.item.paidSessions,
@@ -556,6 +558,9 @@ export const getCustomerOrders = withPermission(
         updatedAt: ir.item.updatedAt.toISOString(),
         skuName: ir.skuName ?? undefined,
         productName: ir.item.productName ?? undefined,
+        categoryId: ir.categoryId ?? null,
+        categoryName: ir.categoryName ?? null,
+        productKind: ir.productKind ?? null,
       })),
     })
   }
@@ -843,7 +848,7 @@ export const updateCustomer = withPermission(
     skinIssue: string | null
     wellnessPreference: string | null
     notes: string | null
-    promoterEmployeeId: string | null
+    promoterEmployeeName: string | null
     boundEmployeeId: string | null
     /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
     isCrossStoreTemp: boolean

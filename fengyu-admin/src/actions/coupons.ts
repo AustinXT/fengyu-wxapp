@@ -16,6 +16,7 @@ import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 import { beijingTs, nowTs } from '@/lib/db-time'
 import { fmtDate } from '@/lib/datetime'
+import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 
 /**
  * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
@@ -792,42 +793,6 @@ export const batchIssueCoupons = withPermission(
     return { success: true, message: `已成功向 ${uniquePhones.length} 位顾客批量发放优惠券` }
   },
 )
-
-/**
- * 将组织节点 ID 解析为对应的 storeId 列表。
- * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
- */
-async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
-  const [node] = await db
-    .select({ type: orgNodes.type, parentId: orgNodes.parentId })
-    .from(orgNodes)
-    .where(eq(orgNodes.id, orgNodeId))
-    .limit(1)
-
-  if (!node) return null
-
-  if (node.type === '总部') return null
-
-  if (node.type === '门店') {
-    const [store] = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .where(eq(stores.orgNodeId, orgNodeId))
-      .limit(1)
-    return store ? [store.storeId] : []
-  }
-
-  if (node.type === '市场') {
-    const storeRows = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, orgNodeId))
-    return storeRows.map((r) => r.storeId)
-  }
-
-  return null
-}
 
 /**
  * 批量发券时的顾客分页列表。

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import { exportCards, type AdminCard } from "@/actions/cards";
+import { exportCards, type AdminCard, type CardFilterOptions } from "@/actions/cards";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
@@ -28,6 +28,7 @@ type CardStatusValue = "" | "active" | "exhausted" | "expired";
 interface Props {
 	cards: AdminCard[];
 	filterOptions: MarketStoreFilterOptions;
+	cardFilterOptions: CardFilterOptions;
 	total: number;
 }
 
@@ -37,7 +38,7 @@ interface Props {
  * 卡包定义：sale_items WHERE product_type='疗程卡' AND item_direction='购买' AND remaining_sessions IS NOT NULL
  * 类型徽章：session_count=1 → 单次卡；>=2 → 疗程卡
  */
-export default function CardsPage({ cards, filterOptions, total }: Props) {
+export default function CardsPage({ cards, filterOptions, cardFilterOptions, total }: Props) {
 	const { get, set, setMany } = useUrlFilters();
 	const setFilter = useCallback(
 		(key: string, value: string) => {
@@ -50,8 +51,13 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 	const storeFilter = get("store");
 	const typeFilter = (get("type") as CardTypeValue) || "";
 	const statusFilter = (get("status") as CardStatusValue) || "";
+	const productKindFilter = get("productKind");
+	const categoryFilter = get("category");
 	const currentPage = Math.max(1, Number(get("page", "1")) || 1);
 	const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
+	const categoryOptions = cardFilterOptions.categories.filter(
+		(category) => !productKindFilter || category.productKind === productKindFilter,
+	);
 
 	// 搜索防抖 300ms
 	const [searchInput, setSearchInput] = useState(get("q"));
@@ -85,9 +91,9 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 				{ header: "二级品项", width: 14, accessor: (r) => r.categoryL2 },
 				{ header: "商品/规格", width: 28, accessor: (r) => r.productSpec },
 				{ header: "类型", accessor: (r) => r.cardType },
-				{ header: "剩余/总次数", width: 12, accessor: (r) => `${r.remaining} / ${r.totalSessions}` },
-				{ header: "单次标价", accessor: (r) => r.unitPrice },
-				{ header: "单次优惠后价", width: 14, accessor: (r) => r.unitRealPrice },
+				{ header: "剩余/总量", width: 12, accessor: (r) => `${r.remaining} / ${r.totalSessions} ${r.unit}` },
+				{ header: "单位标价", accessor: (r) => r.unitPrice },
+				{ header: "单位优惠后价", width: 14, accessor: (r) => r.unitRealPrice },
 				{ header: "行应付总额", width: 12, accessor: (r) => r.saleAmount },
 				{ header: "行实收", accessor: (r) => r.received },
 				{ header: "购买门店", width: 18, accessor: (r) => r.storeDisplay },
@@ -139,11 +145,12 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 				// 新行（修写入侧后）quantity 恒 = 1，labelKey 走"单次卡"分支即可
 				// ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
 				const sessionCount = row.sessionCount ?? 0;
+				const unit = row.unit || "次";
 				const labelKey = sessionCount === 1 ? "单次卡" : "疗程卡";
 				const label =
 					sessionCount === 1
-						? `单次卡${row.quantity > 1 ? ` ×${row.quantity}` : ""}`
-						: `${sessionCount}次卡`;
+						? `单${unit}卡${row.quantity > 1 ? ` ×${row.quantity}` : ""}`
+						: `${sessionCount}${unit}卡`;
 				return (
 					<Badge variant="outline" className={TYPE_BADGE_MAP[labelKey] ?? ""}>
 						{label}
@@ -153,7 +160,7 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 		},
 		{
 			key: "remaining",
-			header: "剩余 / 总次数",
+			header: "剩余 / 总量",
 			cell: (row) => {
 				const total = row.sessionCount ?? 0;
 				const remaining = row.paidUnusedSessions ?? 0;
@@ -162,7 +169,7 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 				return (
 					<div className="flex flex-col gap-1">
 						<span className="text-sm font-medium">
-							{remaining} / {total}
+							{remaining} / {total} {row.unit}
 						</span>
 						<div className="h-1 w-20 overflow-hidden rounded bg-[#F0F0F0]">
 							<div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%` }} />
@@ -251,15 +258,38 @@ export default function CardsPage({ cards, filterOptions, total }: Props) {
 							})}
 						</div>
 
-						<Select value={statusFilter} onChange={(e) => setFilter("status", e.target.value)} className="w-32">
-							<option value="">全部状态</option>
+							<Select value={statusFilter} onChange={(e) => setFilter("status", e.target.value)} className="w-32">
+								<option value="">全部状态</option>
 							<option value="active">有效</option>
 							<option value="exhausted">已耗尽</option>
 							<option value="expired">已过期</option>
-						</Select>
+							</Select>
 
-						<Input
-							placeholder="搜索姓名 / 手机号 / 订单号"
+							<Select
+								value={productKindFilter}
+								onChange={(e) => setMany({ productKind: e.target.value, category: "", page: "" })}
+								className="w-36"
+							>
+								<option value="">全部一级品项</option>
+								{cardFilterOptions.productKinds.map((productKind) => (
+									<option key={productKind} value={productKind}>{productKind}</option>
+								))}
+							</Select>
+
+							<Select
+								value={categoryFilter}
+								onChange={(e) => setFilter("category", e.target.value)}
+								className="w-36"
+								disabled={!productKindFilter}
+							>
+								<option value="">{productKindFilter ? "全部二级品项" : "请先选择一级品项"}</option>
+								{categoryOptions.map((category) => (
+									<option key={category.categoryId} value={category.categoryId}>{category.categoryName}</option>
+								))}
+							</Select>
+
+							<Input
+								placeholder="搜索疗程卡名称 / 姓名 / 手机号 / 订单号"
 							value={searchInput}
 							onChange={(e) => handleSearchChange(e.target.value)}
 							className="max-w-xs"

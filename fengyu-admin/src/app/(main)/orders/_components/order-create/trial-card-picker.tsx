@@ -58,7 +58,7 @@ export function TrialCardPicker({ categories, onAdd, buyerIsMember }: NormalKind
                   </div>
                   <Separator />
                   <div className="flex items-center justify-between text-xs text-[#999999]">
-                    <span>{sku.productType}{sku.sessionCount ? ` · ${sku.sessionCount}次` : ''}</span>
+                    <span>{sku.productType}{sku.sessionCount ? ` · ${sku.sessionCount}${sku.unit}` : ` · ${sku.unit}`}</span>
                     <Button
                       size="sm"
                       variant="outline"

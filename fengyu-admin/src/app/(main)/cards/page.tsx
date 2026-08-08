@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { getCardsPaginated } from '@/actions/cards'
+import { getCardFilterOptions, getCardsPaginated } from '@/actions/cards'
 import { parseCardFilters } from '@/lib/list-filters'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
 import CardsPageClient from './_components/cards-page'
@@ -13,14 +13,20 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: cards, total }, filterOptions] = await Promise.all([
+  const [{ data: cards, total }, filterOptions, cardFilterOptions] = await Promise.all([
     getCardsPaginated(parseCardFilters(params)),
     getMarketStoreFilterOptions(),
+    getCardFilterOptions(),
   ])
 
   return (
     <Suspense>
-      <CardsPageClient cards={cards} filterOptions={filterOptions} total={total} />
+      <CardsPageClient
+        cards={cards}
+        filterOptions={filterOptions}
+        cardFilterOptions={cardFilterOptions}
+        total={total}
+      />
     </Suspense>
   )
 }

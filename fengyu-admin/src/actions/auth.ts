@@ -10,7 +10,7 @@ import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, sql } from 'drizzle-orm'
-import { computeActions, expandScopeStoreIds, expandScopeDeptNodeIds, canAccessAdmin } from '@/lib/permissions'
+import { computeActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
 import { decryptPassword } from '@/lib/password-transit'
 import { JWT_SECRET } from '@/lib/jwt-secret'
 import { withPermission } from '@/lib/with-permission'
@@ -274,17 +274,14 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
 
     // 计算权限（computeActions 自 2026-05-18 起异步：从 DB 取权限矩阵 + 30s 缓存）
     const actions = await computeActions(roles)
-    const [scopeStoreIds, scopeDeptNodeIds] = await Promise.all([
-      expandScopeStoreIds(roles),
-      expandScopeDeptNodeIds(roles),
-    ])
+    const { storeIds: scopeStoreIds, orgNodeIds: scopeOrgNodeIds } = await expandRoleScope(roles)
 
     return {
       employeeId: staff.employeeId,
       name: staff.name ?? '未命名',
       phone: staff.phone ?? '',
       roles,
-      permissions: { actions, scopeStoreIds, scopeDeptNodeIds },
+      permissions: { actions, scopeStoreIds, scopeOrgNodeIds },
     }
   } catch {
     return null

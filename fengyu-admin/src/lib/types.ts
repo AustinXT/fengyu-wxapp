@@ -97,7 +97,7 @@ export interface Customer {
   /** 保级截止时间（ISO 字符串）；NULL 或 ≤now 表示保级期已过 */
   memberLevelLockedUntil: string | null
   customerSource: string | null
-  promoterEmployeeId: string | null
+  promoterEmployeeName: string | null
   customerType: string
   spendingTier: string
   monthlyActivity: string | null
@@ -282,6 +282,7 @@ export interface ProductSku {
   price: string
   specialPrice: string | null
   sessionCount: number | null
+  unit: string
   purchaseLimit: number | null
   sortOrder: number
   serviceFee: string
@@ -416,6 +417,8 @@ export interface SaleItem {
   itemDirection: ItemDirection
   refSaleItemId: string | null
   skuId: string | null
+  /** 当前 SKU 的展示单位；SKU 删除或历史数据缺失时按商品类型回退。 */
+  unit: string
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
@@ -436,6 +439,12 @@ export interface SaleItem {
   // joined
   skuName?: string
   productName?: string
+  /** SKU 所属二级品项 ID（历史无分类行为空） */
+  categoryId?: string | null
+  /** SKU 所属二级品项名称（历史无分类行为空） */
+  categoryName?: string | null
+  /** SKU 所属一级品项名称（历史无分类行为空） */
+  productKind?: string | null
 }
 
 export interface SaleAllocation {
@@ -655,12 +664,13 @@ export interface AuthSession {
     actions: string[]
     scopeStoreIds: string[]
     /**
-     * 员工专用 scope 维度：当前账号可见的「部门」org_node id 列表。
+     * 员工/组织授权专用 scope 维度：当前账号可见的组织节点集合。
      *
-     * 职能部门员工（养生部/推广部/品项公司…）store_id 为 NULL，靠 org_node_id 命中
-     * scope 内部门节点纳入（见 employeeScopeCondition）。可选：缺失时退化为仅按
-     * store_id 过滤（=旧行为，保守不暴露部门员工）。仅 staff_wechat_users 表用。
+     * 每个角色绑定节点自身与所有后代都会被展开。职能部门、市场级岗位等 store_id 为
+     * NULL 的员工靠 org_node_id 命中该集合纳入可见范围。
      */
+    scopeOrgNodeIds?: string[]
+    /** @deprecated 兼容旧测试/会话；新会话只写 scopeOrgNodeIds。 */
     scopeDeptNodeIds?: string[]
   }
 }
@@ -744,6 +754,8 @@ export interface SaleOrderPayment {
   refundReason?: string | null
   refSaleItemId?: string | null
   sessionCount?: number | null
+  /** 退款关联 SKU 的当前展示单位。 */
+  unit?: string | null
   auditEmployeeId?: string | null
   auditAt?: string | null
   auditRemark?: string | null

@@ -14,12 +14,16 @@ interface OrgTreeSelectProps {
   excludeTypes?: string[]
   /** 允许选择的节点类型；不传 = 全部可选。超出的节点置灰禁选（展开仍可用） */
   allowedTypes?: string[]
+  /** 允许选择的组织节点；null/不传 = 不按节点范围限制。 */
+  allowedNodeIds?: string[] | null
 }
 
 function getAncestorIds(nodeId: string, nodeMap: Map<string, OrgNode>): Set<string> {
   const ids = new Set<string>()
+  const visited = new Set<string>()
   let current = nodeMap.get(nodeId)
-  for (let i = 0; i < 5 && current?.parentId; i++) {
+  while (current?.parentId && !visited.has(current.id)) {
+    visited.add(current.id)
     ids.add(current.parentId)
     current = nodeMap.get(current.parentId)
   }
@@ -35,6 +39,7 @@ export function OrgTreeSelect({
   className,
   excludeTypes,
   allowedTypes,
+  allowedNodeIds,
 }: OrgTreeSelectProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -47,6 +52,10 @@ export function OrgTreeSelect({
     return nodes
   }, [orgNodes, excludeTypes])
   const nodeMap = useMemo(() => new Map(orgNodes.map((n) => [n.id, n])), [orgNodes])
+  const allowedNodeIdSet = useMemo(
+    () => (allowedNodeIds ? new Set(allowedNodeIds) : null),
+    [allowedNodeIds],
+  )
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const roots = activeNodes.filter((n) => !n.parentId)
@@ -115,7 +124,9 @@ export function OrgTreeSelect({
     const isExpanded = expandedIds.has(node.id)
     const isSelected = node.id === value
     // 展开三角独立于禁用按钮：置灰节点仍可展开以露出下层可选节点
-    const isNodeDisabled = !!allowedTypes && !allowedTypes.includes(node.type)
+    const hasInvalidType = !!allowedTypes && !allowedTypes.includes(node.type)
+    const isOutsideScope = allowedNodeIdSet !== null && !allowedNodeIdSet.has(node.id)
+    const isNodeDisabled = hasInvalidType || isOutsideScope
 
     return (
       <div key={node.id}>
@@ -136,7 +147,13 @@ export function OrgTreeSelect({
           <button
             type="button"
             disabled={isNodeDisabled}
-            title={isNodeDisabled ? "该角色不可绑定此类型节点" : undefined}
+            title={
+              hasInvalidType
+                ? "该角色不可绑定此类型节点"
+                : isOutsideScope
+                  ? "该节点不在您的可操作范围内"
+                  : undefined
+            }
             className={cn(
               "flex flex-1 min-w-0 items-center py-1.5 pr-3 text-left transition-colors",
               isNodeDisabled

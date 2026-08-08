@@ -18,6 +18,7 @@ import { sql, type SQL } from 'drizzle-orm'
 import { isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
 import type { DataCenterScope } from './types'
+import { orgNodeStoreIdsSubquery } from '@/lib/market-store-sql'
 
 /**
  * 构造 store_id 维度的 scope 过滤片段。
@@ -43,7 +44,7 @@ export function scopeFilterSql(
     parts.push(sql`${col} = ${scope.id}`)
   } else if (scope.type === 'market') {
     parts.push(
-      sql`${col} IN (SELECT s.store_id FROM stores s JOIN org_nodes o ON s.org_node_id = o.id WHERE o.parent_id = ${scope.id} AND o.type = '门店')`,
+      sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`,
     )
   }
 

@@ -14,7 +14,7 @@ import { recordPayment, getRepayable, generateOrderWxacode } from "@/actions/ord
  * 录入回款弹层（ticket 2026-05-21 按子项定向回款；2026-06-24 重构：储值卡改独立抵扣勾选）
  *
  * 交互：支付方式三选一（线下 / 微信 / 支付宝）；各子项填「实付金额」；
- *   储值卡作为独立勾选项，勾选后自动抵满 min(余额, 实付合计)，按子项实付比例摊分入账。
+ *   储值卡作为独立勾选项，店长手填抵扣额（默认 0，最多 min(余额, 实付合计)），按子项实付比例摊分入账。
  * 线下：即时记账（recordPayment paymentMethod='线下'，含储值卡抵扣）。
  * 微信 / 支付宝：储值卡部分先即时扣（paymentMethod='储值卡'），剩余生成 client 小程序码让顾客扫码在线付，
  *   payNotify 回调写 change_type='回款'（admin 不直接收线上钱）。
@@ -62,8 +62,9 @@ export function RecordPaymentDialog({
   const [cardBalance, setCardBalance] = useState<number | null>(cardBalanceProp)
   // 各子项实付金额（saleItemId → 金额字符串）
   const [lineReal, setLineReal] = useState<Record<string, string>>({})
-  // 是否用储值卡抵扣（勾选后自动抵满 min(余额, 实付合计)）
+  // 是否用储值卡抵扣；勾选后由店长填写金额，默认 0.00。
   const [useCard, setUseCard] = useState(false)
+  const [cardAmountInput, setCardAmountInput] = useState("0.00")
   const [paymentMethod, setPaymentMethod] = useState<PayMethod>("线下")
   const [note, setNote] = useState<string>("")
   // 在线收款码（微信/支付宝）：储值卡先扣后，生成 client 小程序码让顾客扫码付剩余
@@ -89,6 +90,7 @@ export function RecordPaymentDialog({
         for (const it of res.items) real[it.saleItemId] = it.remaining
         setLineReal(real)
         setUseCard(false)
+        setCardAmountInput("0.00")
         setPaymentMethod("线下")
         setNote("")
       })
@@ -102,8 +104,12 @@ export function RecordPaymentDialog({
   const round2 = (n: number) => Math.round(n * 100) / 100
   const isOnline = paymentMethod === "微信" || paymentMethod === "支付宝"
   const sumReal = round2(items.reduce((s, it) => s + (Number(lineReal[it.saleItemId] || 0) || 0), 0))
-  // 储值卡抵扣额：勾选后自动抵满 min(余额, 实付合计)，随实付响应式重算
-  const cardDeduct = useCard && cardBalance != null ? round2(Math.min(cardBalance, sumReal)) : 0
+  const cardMax = round2(Math.min(Math.max(0, cardBalance ?? 0), Math.max(0, sumReal)))
+  const requestedCard = Number(cardAmountInput)
+  // 储值卡抵扣额：手填值在 UI 和提交前都按当前上限钳制。
+  const cardDeduct = useCard && Number.isFinite(requestedCard)
+    ? round2(Math.min(Math.max(0, requestedCard), cardMax))
+    : 0
   // 剩余需用所选方式支付的金额（线下=现金 / 微信支付宝=顾客扫码）
   const needPay = round2(Math.max(0, sumReal - cardDeduct))
 
@@ -333,21 +339,41 @@ export function RecordPaymentDialog({
               </div>
             </div>
 
-            {/* 储值卡抵扣勾选（仅顾客有余额时可用） */}
+            {/* 储值卡抵扣（仅顾客有余额时可用） */}
             {cardBalance != null && cardBalance > 0 && (
-              <label className="flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius)] bg-[#F0FAF4] border border-[#BEE3CD] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4 accent-[#C0322A]"
-                  checked={useCard}
-                  onChange={(e) => setUseCard(e.target.checked)}
-                />
-                <span className="text-sm">使用储值卡抵扣</span>
-                <span className="ml-auto text-xs text-[#3D8A5A]">
-                  余额 ¥{cardBalance.toFixed(2)}
-                  {useCard ? ` · 本次抵扣 ¥${cardDeduct.toFixed(2)}` : ""}
-                </span>
-              </label>
+              <div className="px-3 py-2.5 rounded-[var(--radius)] bg-[#F0FAF4] border border-[#BEE3CD] space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 accent-[#C0322A]"
+                    checked={useCard}
+                    onChange={(e) => {
+                      setUseCard(e.target.checked)
+                      setCardAmountInput("0.00")
+                    }}
+                  />
+                  <span className="text-sm">使用储值卡抵扣</span>
+                  <span className="ml-auto text-xs text-[#3D8A5A]">余额 ¥{cardBalance.toFixed(2)}</span>
+                </label>
+                {useCard && (
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    <span className="text-xs text-[#666]">抵扣金额</span>
+                    <Input
+                      className="h-8 w-28 text-right"
+                      type="number"
+                      min="0"
+                      max={cardMax}
+                      step="0.01"
+                      placeholder="0.00"
+                      value={cardAmountInput}
+                      onChange={(e) => setCardAmountInput(e.target.value)}
+                      onBlur={(e) => setCardAmountInput(round2(Math.min(Math.max(0, Number(e.target.value) || 0), cardMax)).toFixed(2))}
+                    />
+                    <span className="text-xs text-[#666]">最多 ¥{cardMax.toFixed(2)}</span>
+                    <span className="text-xs text-[#3D8A5A]">实际抵扣 ¥{cardDeduct.toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
             )}
 
             {isOnline && (

@@ -1035,7 +1035,7 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返
     saleOrderType: '销售单', serviceOrderType: '售后',
     customerName: '王女士', customerPhone: null, fallbackPhone: '13151094335',
     productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
-    productName: '【王牌】疼痛管理', sessionUsed: 1, unitRealPrice: '300.00',
+    productName: '【王牌】疼痛管理', sessionUsed: 1, skuUnit: '疗程', unitRealPrice: '300.00',
     status: '已完成',
     employeeName: '王雯馨', positionName: '美容师',
     allocationRatio: '0.30', commissionRate: '0.1500', commissionAmount: '162.00',
@@ -1086,6 +1086,7 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返
     expect(r.customerPhone).toBe('13151094335') // 回退来源销售单 client_phone
     expect(r.consumeMoney).toBe(300) // 单次价 × 消耗次数
     expect(r.unitRealPrice).toBe(300)
+    expect(r.unit).toBe('疗程')
     expect(r.allocationAmount).toBe(90) // 消耗金额 × 分配占比
     expect(r.commissionAmount).toBe(162)
     expect(r.allocationRatio).toBe('0.30')
@@ -1180,7 +1181,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('产出 24 列消耗项目主表行 + 派生列 consumeMoney（无员工提成维度）', async () => {
+  it('产出 25 列消耗项目主表行 + 派生列 consumeMoney（无员工提成维度）', async () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([
         {
@@ -1197,6 +1198,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
           categoryL2: '圣源养心',
           productName: '【王牌】疼痛管理',
           sessionUsed: 1,
+          skuUnit: '次',
           unitRealPrice: '300.00',
           status: '已完成',
           rating: 5,
@@ -1219,6 +1221,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
     expect(r.market).toBe('九江')
     // 派生列：项目消耗金额 = 单次价 × 次数
     expect(r.consumeMoney).toBe(300)
+    expect(r.unit).toBe('次')
     // 主表已移除员工提成维度（提成分配明细改由 exportAllocationServiceOrders 承担）
     expect((r as any).employeeName).toBeUndefined()
     expect((r as any).allocationAmount).toBeUndefined()
@@ -1237,15 +1240,15 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
 
   // 回归守护：exportServiceOrders 为消耗项目主表（service_items 主链），不含员工提成维度列。
   // 若有人手贱加回提成列或回滚到 service_commissions 主链，下列断言失败。
-  it('回归守护：24 列消耗项目主表 shape（无员工提成维度，有 consumeMoney）', async () => {
+  it('回归守护：25 列消耗项目主表 shape（无员工提成维度，有 consumeMoney）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const { rows } = await exportServiceOrders({})
     expect(rows).toEqual([])
-    // 主表级列集合（24 列，与 services-page.tsx 导出列一一对应）
+    // 主表级列集合（25 列，与 services-page.tsx 导出列一一对应）
     const expectedColumns = [
       'market', 'storeName', 'serviceOrderId', 'saleOrderType', 'serviceOrderType',
       'customerName', 'customerPhone', 'productType', 'categoryL1', 'categoryL2',
-      'productName', 'sessionUsed', 'consumeMoney', 'unitRealPrice', 'status',
+      'productName', 'sessionUsed', 'unit', 'consumeMoney', 'unitRealPrice', 'status',
       'salesCategory', 'customerType', 'reviewComment', 'rating',
       'openedByName', 'sourceSaleOrderId', 'serviceDate', 'createdAt', 'remark',
     ]
@@ -1257,7 +1260,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
           market: null, storeName: null, serviceOrderId: 'SO1', saleOrderType: null, serviceOrderType: null,
           customerName: null, customerPhone: null, fallbackPhone: null,
           productType: null, categoryL1: null, categoryL2: null, productName: null,
-          sessionUsed: null, unitRealPrice: null, status: null,
+          sessionUsed: null, skuUnit: null, unitRealPrice: null, status: null,
           rating: null, reviewComment: null,
           salesCategory: null, customerType: null, openedByName: null,
           sourceSaleOrderId: null, serviceDate: null, createdAt: null, remark: null,

@@ -14,9 +14,11 @@
  * 本组件只负责选卡 + 计算差额并把 selectedIds 通过 onChange 回写父组件，
  * 实际提交（createConversionOrder）在父组件 Step 3 提交按钮触发。
  */
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import type { HeldCardCandidate } from "@/actions/cards"
 
 export interface ConversionPanelProps {
@@ -34,7 +36,7 @@ export interface ConversionPanelProps {
   cardBalance?: number
   /** 是否启用充值卡抵扣 */
   useCard?: boolean
-  /** 抵扣金额输入框值（受控；留空 = 全额抵扣到上限） */
+  /** 抵扣金额输入框值（受控；默认 0.00） */
   cardAmountInput?: string
   /** 实际生效抵扣额（父组件 clamp 后传入，用于"还需支付"展示） */
   cardAmount?: number
@@ -42,6 +44,8 @@ export interface ConversionPanelProps {
   onToggleCard?: (checked: boolean) => void
   /** 抵扣金额输入变化 */
   onCardAmountChange?: (v: string) => void
+  /** 抵扣金额失焦，由父组件按统一口径钳制并格式化 */
+  onCardAmountBlur?: () => void
 }
 
 export function ConversionPanel({
@@ -52,11 +56,16 @@ export function ConversionPanel({
   totalIn,
   cardBalance = 0,
   useCard = false,
-  cardAmountInput = "",
+  cardAmountInput = "0.00",
   cardAmount = 0,
   onToggleCard,
   onCardAmountChange,
+  onCardAmountBlur,
 }: ConversionPanelProps) {
+  const [productKindFilter, setProductKindFilter] = useState("")
+  const [categoryFilter, setCategoryFilter] = useState("")
+  const [nameQuery, setNameQuery] = useState("")
+
   // heldCards 变化时清掉不在新列表里的旧选择（如换顾客 / 换门店）
   useEffect(() => {
     const validIds = new Set(heldCards.map((c) => c.saleItemId))
@@ -66,6 +75,13 @@ export function ConversionPanel({
     }
   }, [heldCards, selectedIds, onChange])
 
+  // 顾客或门店变更后候选卡重新加载，避免上一位顾客遗留的筛选条件造成空列表。
+  useEffect(() => {
+    setProductKindFilter("")
+    setCategoryFilter("")
+    setNameQuery("")
+  }, [heldCards])
+
   const totalOut = useMemo(() => {
     let sum = 0
     const set = new Set(selectedIds)
@@ -74,6 +90,30 @@ export function ConversionPanel({
     }
     return Math.round(sum * 100) / 100
   }, [heldCards, selectedIds])
+
+  const productKinds = useMemo(
+    () => Array.from(new Set(heldCards.map((card) => card.productKind).filter((value): value is string => Boolean(value)))),
+    [heldCards],
+  )
+  const categories = useMemo(
+    () => Array.from(
+      new Map(
+        heldCards
+          .filter((card) => card.categoryId && card.categoryName && (!productKindFilter || card.productKind === productKindFilter))
+          .map((card) => [card.categoryId!, { id: card.categoryId!, name: card.categoryName! }]),
+      ).values(),
+    ),
+    [heldCards, productKindFilter],
+  )
+  const filteredHeldCards = useMemo(() => {
+    const query = nameQuery.trim().toLocaleLowerCase()
+    return heldCards.filter((card) => {
+      if (productKindFilter && card.productKind !== productKindFilter) return false
+      if (categoryFilter && card.categoryId !== categoryFilter) return false
+      return !query || (card.productName ?? "").toLocaleLowerCase().includes(query)
+    })
+  }, [categoryFilter, heldCards, nameQuery, productKindFilter])
+  const hasCardFilters = Boolean(productKindFilter || categoryFilter || nameQuery.trim())
 
   const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
 
@@ -94,19 +134,58 @@ export function ConversionPanel({
           {/* 左列：折抵卡列表 */}
           <div className="space-y-2">
             <p className="text-xs text-[#666666]">勾选折抵卡（整张全转）</p>
+            {!loading && heldCards.length > 0 && (
+              <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
+                <Select
+                  value={productKindFilter}
+                  onChange={(e) => {
+                    setProductKindFilter(e.target.value)
+                    setCategoryFilter("")
+                  }}
+                  className="h-8 text-xs"
+                >
+                  <option value="">全部一级品项</option>
+                  {productKinds.map((productKind) => (
+                    <option key={productKind} value={productKind}>{productKind}</option>
+                  ))}
+                </Select>
+                <Select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  disabled={!productKindFilter}
+                  className="h-8 text-xs"
+                >
+                  <option value="">{productKindFilter ? "全部二级品项" : "请先选择一级品项"}</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>{category.name}</option>
+                  ))}
+                </Select>
+                <Input
+                  value={nameQuery}
+                  onChange={(e) => setNameQuery(e.target.value)}
+                  placeholder="搜索疗程卡名称"
+                  className="h-8 text-xs sm:col-span-2"
+                />
+              </div>
+            )}
             {loading && (
               <p className="text-xs text-[#999999] py-4 text-center">正在加载候选卡…</p>
             )}
             {!loading && heldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵卡</p>
             )}
+            {!loading && heldCards.length > 0 && filteredHeldCards.length === 0 && (
+              <p className="text-xs text-[#999999] py-4 text-center">
+                {hasCardFilters ? "未找到匹配的疗程卡" : "该顾客在当前门店无可折抵卡"}
+              </p>
+            )}
             <div className="space-y-1 max-h-72 overflow-y-auto">
-              {heldCards.map((c) => {
+              {filteredHeldCards.map((c) => {
                 const checked = selectedIds.includes(c.saleItemId)
                 const remainLabel =
                   c.productType === '疗程卡'
-                    ? `剩 ${c.remainingSessions ?? 0} 次`
-                    : `剩 ${c.remainingQty ?? 0} 件`
+                    ? `剩 ${c.remainingSessions ?? 0} ${c.unit}`
+                    : `剩 ${c.remainingQty ?? 0} ${c.unit}`
                 return (
                   <label
                     key={c.saleItemId}
@@ -134,7 +213,7 @@ export function ConversionPanel({
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
-                        <span>单次价 ¥{c.unitRealPrice}</span>
+                        <span>单{c.unit}价 ¥{c.unitRealPrice}</span>
                       </div>
                     </div>
                   </label>
@@ -190,10 +269,12 @@ export function ConversionPanel({
                       max={Math.min(cardBalance, priceDiff)}
                       step="0.01"
                       className="h-8 text-sm w-32 border border-[var(--border)] rounded px-2"
-                      placeholder={`留空=¥${Math.min(cardBalance, priceDiff).toFixed(2)}`}
+                      placeholder="0.00"
                       value={cardAmountInput}
                       onChange={(e) => onCardAmountChange?.(e.target.value)}
+                      onBlur={onCardAmountBlur}
                     />
+                    <span className="text-xs text-[#999999]">最多可抵扣 ¥{Math.min(cardBalance, priceDiff).toFixed(2)}</span>
                     <span className="text-xs text-[#3D8A5A]">实际抵扣 ¥{cardAmount.toFixed(2)}</span>
                   </div>
                 )}

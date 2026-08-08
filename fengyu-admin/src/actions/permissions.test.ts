@@ -86,8 +86,7 @@ function makeRow(scopeId: string) {
 }
 
 function setupDbSelect(returnValue: any[]) {
-  const limit = vi.fn().mockResolvedValue(returnValue)
-  const orderBy = vi.fn().mockReturnValue({ limit })
+  const orderBy = vi.fn().mockResolvedValue(returnValue)
   const where = vi.fn().mockReturnValue({ orderBy })
   const leftJoin2 = vi.fn().mockReturnValue({ where })
   const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
@@ -115,20 +114,23 @@ describe('getRoles — scope filtering (AC-05)', () => {
     expect(inArray).not.toHaveBeenCalled()
   })
 
-  it('非 admin 用户：inArray 被调用，仅传入自身 scopeIds', async () => {
+  it('非 admin 用户：inArray 使用已展开的下属节点集合', async () => {
     ;(getSession as any).mockResolvedValue({
       employeeId: 'HR-001',
-      roles: [{ role: 'hr', scopeId: 'store-42' }],
+      roles: [{ role: 'hr', scopeId: 'market-42' }],
+      permissions: {
+        scopeOrgNodeIds: ['market-42', 'store-42', 'store-child-42'],
+      },
     })
     ;(hasRole as any).mockReturnValue(false)
-    setupDbSelect([makeRow('store-42')])
+    setupDbSelect([makeRow('store-42'), makeRow('store-child-42')])
 
     const result = await getRoles()
 
-    expect(result).toHaveLength(1)
+    expect(result).toHaveLength(2)
     expect(inArray).toHaveBeenCalledOnce()
     const [, scopeIds] = (inArray as any).mock.calls[0]
-    expect(scopeIds).toEqual(['store-42'])
+    expect(scopeIds).toEqual(['market-42', 'store-42', 'store-child-42'])
   })
 
   it('非 admin 用户 scopeIds 为空：直接返回空数组，不查 DB', async () => {
@@ -167,8 +169,7 @@ describe('getRoles — scope filtering (AC-05)', () => {
       roles: [{ role: 'admin', scopeId: 'hq-1' }],
     })
     ;(hasRole as any).mockReturnValue(true)
-    const limit = vi.fn().mockResolvedValue([])
-    const orderBy = vi.fn().mockReturnValue({ limit })
+    const orderBy = vi.fn().mockResolvedValue([])
     const where = vi.fn().mockReturnValue({ orderBy })
     const leftJoin2 = vi.fn().mockReturnValue({ where })
     const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
@@ -209,7 +210,10 @@ describe('assignRole — AC-09 & scope constraint', () => {
   const hrSession = {
     employeeId: 'HR-001',
     roles: [{ role: 'hr', scopeId: 'market-1' }],
-    permissions: { actions: ['permission:assign'] },
+    permissions: {
+      actions: ['permission:assign'],
+      scopeOrgNodeIds: ['market-1', 'store-fengyu', 'store-jincheng'],
+    },
   }
 
   beforeEach(() => {
@@ -279,6 +283,29 @@ describe('assignRole — AC-09 & scope constraint', () => {
     const result = await assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' })
 
     expect(result.success).toBe(true)
+  })
+
+  it('hr 可向下属门店分配角色', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '门店' })()
+      return mockSelectOnce(null)()
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({
+      employeeId: 'EMP-WU',
+      role: 'manager',
+      scopeId: 'store-jincheng',
+    })
+
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
   })
 
   it('hr 分配超出自身 scope 的角色 → 拒绝', async () => {
@@ -418,7 +445,10 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
   const hrSession = {
     employeeId: 'HR-001',
     roles: [{ role: 'hr', scopeId: 'market-1' }],
-    permissions: { actions: ['permission:revoke'] },
+    permissions: {
+      actions: ['permission:revoke'],
+      scopeOrgNodeIds: ['market-1', 'store-fengyu', 'store-jincheng'],
+    },
   }
 
   beforeEach(() => {
@@ -474,6 +504,17 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('不能撤销超出自身权限范围')
     expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('hr 可撤销下属门店的角色', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    setupRevokeDbCalls({ role: 'manager', scopeId: 'store-jincheng', employeeId: 'EMP-WU' })
+
+    const result = await revokeRole(31)
+
+    expect(result.success).toBe(true)
+    expect(db.delete).toHaveBeenCalledOnce()
   })
 
   it('角色不存在 → 拒绝', async () => {

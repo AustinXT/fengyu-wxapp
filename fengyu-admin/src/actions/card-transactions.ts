@@ -11,6 +11,7 @@ import type { AdminCardTransaction, CardTransactionSummary } from '@/lib/types'
 import type { AuthSession } from '@/lib/types'
 import { scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 /** 充值卡流水筛选参数 */
 export interface CardTransactionFilters {
@@ -49,14 +50,9 @@ function buildConditions(
   const scope = scopeCondition(session, clientWechatUsers.boundStoreId)
   if (scope) conditions.push(scope)
 
-  // 市场二级筛选：市场 → 该市场下所有门店
+  // 市场筛选：市场节点自身及任意层级下属节点关联的所有门店。
   if (filters.marketId) {
-    const sub = db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, filters.marketId))
-    conditions.push(inArray(clientWechatUsers.boundStoreId, sub))
+    conditions.push(storeInMarketCondition(clientWechatUsers.boundStoreId, filters.marketId))
   }
   // 门店筛选
   if (filters.storeId) {

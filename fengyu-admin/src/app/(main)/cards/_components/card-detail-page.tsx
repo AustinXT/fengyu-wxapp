@@ -25,15 +25,15 @@ function formatDateTimeOrDash(s: string | null | undefined): string {
 }
 
 /** 欠款提示：已付未用 < 物理剩余时，附「（物理剩余 N）」标记 */
-function physicalRemainingHint(paidUnused: number | null, remaining: number | null) {
+function physicalRemainingHint(paidUnused: number | null, remaining: number | null, unit: string) {
 	if (remaining === null || paidUnused === null || !(paidUnused < remaining)) return null;
-	return <span className="ml-1 text-xs font-normal text-[#D4820A]">（物理剩余{remaining}）</span>;
+	return <span className="ml-1 text-xs font-normal text-[#D4820A]">（物理剩余{remaining}{unit}）</span>;
 }
 
-function cardTypeLabel(sessionCount: number | null): "疗程卡" | "单次卡" | null {
+function cardTypeLabel(sessionCount: number | null, unit: string): { label: string; styleKey: "疗程卡" | "单次卡" } | null {
 	if (sessionCount === null) return null;
-	if (sessionCount === 1) return "单次卡";
-	return "疗程卡";
+	if (sessionCount === 1) return { label: `单${unit}卡`, styleKey: "单次卡" };
+	return { label: `${sessionCount}${unit}卡`, styleKey: "疗程卡" };
 }
 
 export default function CardDetailPageClient({
@@ -47,7 +47,7 @@ export default function CardDetailPageClient({
 }) {
 	const status = computeCardStatus(card);
 	const statusMeta = STATUS_LABEL_MAP[status];
-	const typeLabel = cardTypeLabel(card.sessionCount);
+	const typeLabel = cardTypeLabel(card.sessionCount, card.unit);
 	const used =
 		card.sessionCount !== null
 			? card.sessionCount - (card.remainingSessions ?? 0)
@@ -74,8 +74,8 @@ export default function CardDetailPageClient({
 					<CardTitle>卡基本信息</CardTitle>
 					<div className="flex items-center gap-2">
 						{typeLabel && (
-							<Badge variant="outline" className={TYPE_BADGE_MAP[typeLabel]}>
-								{typeLabel}
+							<Badge variant="outline" className={TYPE_BADGE_MAP[typeLabel.styleKey]}>
+								{typeLabel.label}
 							</Badge>
 						)}
 						<Badge variant="outline" className={statusMeta.className}>
@@ -98,27 +98,27 @@ export default function CardDetailPageClient({
 							<p className="font-medium mt-1">{card.productName || "—"}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">总次数</span>
-							<p className="font-medium mt-1">{card.sessionCount ?? "—"}</p>
+							<span className="text-[#999999]">总{card.unit}</span>
+							<p className="font-medium mt-1">{card.sessionCount ?? "—"} {card.unit}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">已用</span>
-							<p className="font-medium mt-1">{used ?? "—"}</p>
+							<span className="text-[#999999]">已用{card.unit}</span>
+							<p className="font-medium mt-1">{used ?? "—"} {card.unit}</p>
 						</div>
 						<div>
 							<span className="text-[#999999]">剩余（可用）</span>
-							<p className="font-medium mt-1">{card.paidUnusedSessions ?? "—"}{physicalRemainingHint(card.paidUnusedSessions, card.remainingSessions)}</p>
+							<p className="font-medium mt-1">{card.paidUnusedSessions ?? "—"} {card.unit}{physicalRemainingHint(card.paidUnusedSessions, card.remainingSessions, card.unit)}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">已支付次数</span>
-							<p className="font-medium mt-1">{card.paidSessions ?? "—"}</p>
+							<span className="text-[#999999]">已支付{card.unit}</span>
+							<p className="font-medium mt-1">{card.paidSessions ?? "—"} {card.unit}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">单次标价</span>
+							<span className="text-[#999999]">单{card.unit}标价</span>
 							<p className="font-medium mt-1">{formatMoney(card.unitPrice)}</p>
 						</div>
 						<div>
-							<span className="text-[#999999]">单次优惠后价</span>
+							<span className="text-[#999999]">单{card.unit}优惠后价</span>
 							<p className="font-medium mt-1">{formatMoney(card.unitRealPrice)}</p>
 						</div>
 						<div>
@@ -218,8 +218,8 @@ export default function CardDetailPageClient({
 									<th className="px-4 py-3 text-left font-medium text-gray-500">服务单号</th>
 									<th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
 									<th className="px-4 py-3 text-left font-medium text-gray-500">操作员工</th>
-									<th className="px-4 py-3 text-right font-medium text-gray-500">本次划次数</th>
-									<th className="px-4 py-3 text-right font-medium text-gray-500">单次价快照</th>
+									<th className="px-4 py-3 text-right font-medium text-gray-500">本次划卡数量</th>
+									<th className="px-4 py-3 text-right font-medium text-gray-500">单{card.unit}价快照</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-gray-200">
@@ -239,7 +239,7 @@ export default function CardDetailPageClient({
 												<StatusBadge status={t.serviceOrderStatus} />
 											</td>
 											<td className="px-4 py-3">{t.employeeName || "—"}</td>
-											<td className="px-4 py-3 text-right">{t.sessionUsed}</td>
+											<td className="px-4 py-3 text-right">{t.sessionUsed} {card.unit}</td>
 											<td className="px-4 py-3 text-right">{formatMoney(t.unitRealPriceSnapshot)}</td>
 										</tr>
 									))

@@ -125,7 +125,7 @@ const fieldLabels: Record<string, string> = {
   // 商品
   categoryName: "分类名称", productKind: "品项一级分类", salesCategory: "销售分类",
   categoryId: "分类", specName: "规格名称", price: "价格",
-  specialPrice: "特惠价", sessionCount: "次数", serviceFee: "服务费",
+  specialPrice: "特惠价", sessionCount: "次数", unit: "单位", serviceFee: "服务费",
   isShengmei: "是否生美", marketScope: "市场范围", productType: "商品类型",
   detailImages: "详情图", manageScope: "管理范围",
   // 套餐分组

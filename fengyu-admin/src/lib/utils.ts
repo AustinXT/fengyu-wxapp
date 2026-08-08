@@ -64,11 +64,13 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   if (!nodeId || orgNodes.length === 0) return ""
   const map = new Map(orgNodes.map((n) => [n.id, n]))
   const names: string[] = []
+  const visited = new Set<string>()
   let current = map.get(nodeId)
-  for (let i = 0; i < 5 && current; i++) {
-    if (i === 0 || current.type !== "总部") {
+  while (current && !visited.has(current.id)) {
+    if (names.length === 0 || current.type !== "总部") {
       names.unshift(current.name)
     }
+    visited.add(current.id)
     current = current.parentId ? map.get(current.parentId) : undefined
   }
   return names.join("/")
@@ -78,9 +80,11 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null
   const map = new Map(orgNodes.map((n) => [n.id, n]))
+  const visited = new Set<string>()
   let current = map.get(nodeId)
-  for (let i = 0; i < 5 && current; i++) {
+  while (current && !visited.has(current.id)) {
     if (current.type === "市场") return current.id
+    visited.add(current.id)
     current = current.parentId ? map.get(current.parentId) : undefined
   }
   return null
