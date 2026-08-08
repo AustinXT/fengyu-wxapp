@@ -39,6 +39,14 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function expectRecursiveDescendantScope(sql, rootParamIndex) {
+  expect(sql).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
+  expect(sql).toMatch(new RegExp('SELECT \\$' + rootParamIndex + '::text, ARRAY\\[\\$' + rootParamIndex + '::text\\]'))
+  expect(sql).toMatch(/JOIN descendants ON child\.parent_id = descendants\.id/)
+  expect(sql).toMatch(/WHERE NOT child\.id = ANY\(descendants\.path\)/)
+  expect(sql).toMatch(/JOIN descendants ON s\.org_node_id = descendants\.id/)
+}
+
 // ---- mock 工具 ----
 
 /**
@@ -187,7 +195,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(memberSql).not.toMatch(/bound_store_id\s*=\s*\$/)
   })
 
-  test('scopeType=market：持卡走 stores JOIN org_nodes；memberCount 走 bound_store_id IN (...)', async () => {
+  test('scopeType=market：持卡与会员数均走递归后代组织树', async () => {
     setupCardMocks({ cardRows: [], memberCount: 0 })
     const ctx = makeHqCtx({ scopeType: 'market', scopeId: 'mkt-A' })
     await cardHolders(ctx)
@@ -198,12 +206,11 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
       (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
     )
 
-    expect(cardSql).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(cardSql).toMatch(/o\.parent_id\s*=\s*\$1/)
-    expect(cardSql).toMatch(/o\.type\s*=\s*'门店'/)
+    expect(cardSql).toMatch(/so\.store_id\s+IN\s*\(/)
+    expectRecursiveDescendantScope(cardSql, 1)
 
-    expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(memberSql).toMatch(/o\.parent_id\s*=\s*\$1/)
+    expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+    expectRecursiveDescendantScope(memberSql, 1)
   })
 
   test('scopeType=store：持卡用 so.store_id = $1；memberCount 用 c.bound_store_id = $1', async () => {
@@ -475,15 +482,14 @@ describe('mgmtProduct.cycleStats scope 三档 SQL 形态', () => {
     expect(cycleCall[1].length).toBe(3)
   })
 
-  test('scopeType=market：daily_agg WHERE 含 store_id IN (SELECT ... org_nodes ...)，参数 params[3]=scopeId', async () => {
+  test('scopeType=market：daily_agg 通过递归组织树过滤，参数 params[3]=scopeId', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'market', scopeId: 'mkt-A' })
     await cycleStats(ctx)
 
     const sql = getCycleSql()
-    expect(sql).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(sql).toMatch(/o\.parent_id\s*=\s*\$4/)
-    expect(sql).toMatch(/o\.type\s*=\s*'门店'/)
+    expect(sql).toMatch(/so\.store_id\s+IN\s*\(/)
+    expectRecursiveDescendantScope(sql, 4)
 
     const cycleCall = pg.query.mock.calls.find((c) => /WITH\s+daily_agg\s+AS/.test(c[0]))
     expect(cycleCall[1][3]).toBe('mkt-A')

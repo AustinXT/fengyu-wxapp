@@ -17,6 +17,45 @@ const LEVEL_STORE_STAFF = 'store_staff'
 const MANAGEMENT_LEVELS = new Set([LEVEL_HEADQUARTERS, LEVEL_MARKET])
 const STORE_LEVELS = new Set([LEVEL_STORE_MANAGER, LEVEL_STORE_STAFF])
 
+function rowsOf(result) {
+  return Array.isArray(result) ? result : (result?.rows || [])
+}
+
+/** 多个根节点的递归后代 CTE，$n 指向 text[] 根节点参数。 */
+function descendantStoresSqlForRoots(column, startIndex) {
+  return `${column} IN (
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT root_id::text, ARRAY[root_id::text]
+      FROM unnest($${startIndex}::text[]) AS roots(root_id)
+      UNION ALL
+      SELECT child.id, descendants.path || child.id
+      FROM org_nodes child
+      JOIN descendants ON child.parent_id = descendants.id
+      WHERE NOT child.id = ANY(descendants.path)
+    )
+    SELECT DISTINCT s.store_id
+    FROM stores s
+    JOIN descendants ON s.org_node_id = descendants.id
+  )`
+}
+
+/** 单个根节点的递归后代 CTE，$n 指向 text 根节点参数。 */
+function descendantStoresSqlForRoot(column, startIndex) {
+  return `${column} IN (
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT $${startIndex}::text, ARRAY[$${startIndex}::text]
+      UNION ALL
+      SELECT child.id, descendants.path || child.id
+      FROM org_nodes child
+      JOIN descendants ON child.parent_id = descendants.id
+      WHERE NOT child.id = ANY(descendants.path)
+    )
+    SELECT DISTINCT s.store_id
+    FROM stores s
+    JOIN descendants ON s.org_node_id = descendants.id
+  )`
+}
+
 /**
  * 归并 roleBindings 到单一 staffLevel
  * @param {Array<{role: string, scopeType: string}>} roleBindings
@@ -90,8 +129,7 @@ function canAccessManagementLevel(staffLevel) {
  * 展开所有 scope 到可见门店列表（去重）
  * 规则：
  *  - 总部 scope → 全部 stores
- *  - 市场 scope → stores JOIN org_nodes, org_node 父为 marketId 且 type='门店'
- *  - 门店 scope → stores WHERE org_node_id = scopeId
+ *  - 市场/门店 scope → 绑定节点自身及任意层级后代关联的 stores
  *  - 部门 scope → 忽略
  *
  * @param {Array<{role: string, scopeId: string, scopeType: string}>} roleBindings
@@ -107,7 +145,7 @@ async function expandScopeStoreIds(roleBindings, pg) {
   // 优先处理总部：命中直接全量返回
   for (const rb of roleBindings) {
     if (rb.scopeType === '总部') {
-      const rows = await pg.query('SELECT store_id FROM stores')
+      const rows = rowsOf(await pg.query('SELECT store_id FROM stores'))
       for (const r of rows) store.add(r.store_id)
       hqExpanded = true
       break
@@ -116,33 +154,68 @@ async function expandScopeStoreIds(roleBindings, pg) {
 
   if (hqExpanded) return Array.from(store)
 
-  const marketIds = []
-  const storeNodeIds = []
+  const rootNodeIds = []
   for (const rb of roleBindings) {
-    if (rb.scopeType === '市场') marketIds.push(rb.scopeId)
-    else if (rb.scopeType === '门店') storeNodeIds.push(rb.scopeId)
+    if ((rb.scopeType === '市场' || rb.scopeType === '门店') && rb.scopeId) {
+      rootNodeIds.push(rb.scopeId)
+    }
   }
 
-  if (marketIds.length > 0) {
-    const rows = await pg.query(
-      `SELECT s.store_id
+  if (rootNodeIds.length > 0) {
+    const rows = rowsOf(await pg.query(
+      `SELECT DISTINCT s.store_id
        FROM stores s
-       JOIN org_nodes o ON s.org_node_id = o.id
-       WHERE o.parent_id = ANY($1::text[]) AND o.type = '门店'`,
-      [marketIds]
-    )
-    for (const r of rows) store.add(r.store_id)
-  }
-
-  if (storeNodeIds.length > 0) {
-    const rows = await pg.query(
-      `SELECT store_id FROM stores WHERE org_node_id = ANY($1::text[])`,
-      [storeNodeIds]
-    )
+       WHERE ${descendantStoresSqlForRoots('s.store_id', 1)}`,
+      [Array.from(new Set(rootNodeIds))],
+    ))
     for (const r of rows) store.add(r.store_id)
   }
 
   return Array.from(store)
+}
+
+/** 角色根节点自身及全部后代组织节点，供管理层二级市场校验和选项过滤使用。 */
+async function expandScopeOrgNodeIds(roleBindings, pg) {
+  if (!Array.isArray(roleBindings) || roleBindings.length === 0) return []
+  if (roleBindings.some((rb) => rb && rb.scopeType === '总部')) {
+    const rows = rowsOf(await pg.query('SELECT id FROM org_nodes'))
+    return Array.from(new Set(rows.map((row) => row.id)))
+  }
+
+  const roots = Array.from(new Set(roleBindings
+    .filter((rb) => rb && (rb.scopeType === '市场' || rb.scopeType === '门店') && rb.scopeId)
+    .map((rb) => rb.scopeId)))
+  if (roots.length === 0) return []
+
+  const rows = rowsOf(await pg.query(
+    `WITH RECURSIVE descendants(id, path) AS (
+       SELECT root_id::text, ARRAY[root_id::text]
+       FROM unnest($1::text[]) AS roots(root_id)
+       UNION ALL
+       SELECT child.id, descendants.path || child.id
+       FROM org_nodes child
+       JOIN descendants ON child.parent_id = descendants.id
+       WHERE NOT child.id = ANY(descendants.path)
+     )
+     SELECT DISTINCT id FROM descendants`,
+    [roots],
+  ))
+  return Array.from(new Set(rows.map((row) => row.id)))
+}
+
+/**
+ * 管理层显式选择 all/market/store 时的门店条件。
+ * 市场范围使用递归组织树，不允许通过“直属门店”绕过下属节点。
+ */
+function buildManagementStoreScope(scopeType, scopeId, column, startIndex = 1) {
+  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
+  if (scopeType === 'store') {
+    return { sql: `${column} = $${startIndex}`, params: [scopeId] }
+  }
+  return {
+    sql: descendantStoresSqlForRoot(column, startIndex),
+    params: [scopeId],
+  }
 }
 
 /**
@@ -183,7 +256,7 @@ function buildStoreScopeCondition(auth, column, startIndex = 1) {
  * 避免拷贝漂移（历史上 4 份都漏了 store_manager 分支，导致店长穿透无校验）。
  *
  * - headquarters：放行所有 scopeType
- * - market：禁 'all'；'market' 必须命中 roleBindings 的市场 scopeId；'store' 必须 ∈ scopeStoreIds
+ * - market：禁 'all'；'market' 必须在角色根节点子树内；'store' 必须 ∈ scopeStoreIds
  * - store_manager（门店店长）：仅允许 'store' 且 scopeId ∈ managerStoreIds；禁 'all'、禁 'market'。
  *   用 managerStoreIds（非 scopeStoreIds）——防 "manager@门店A + customer_mgr@门店B" 在 B 越权
  *   查看管理层数据（customer_mgr 角色不是店长，不应在管理层视图看 B 的汇总）。
@@ -211,9 +284,10 @@ function validateManagementScope(auth, scopeType, scopeId) {
       throw new Error('PERMISSION_DENIED: 市场账号不允许查看全部市场数据')
     }
     if (scopeType === 'market') {
-      const allowed = (auth.roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
+      const allowed = auth.scopeOrgNodeIds
+        ?? (auth.roleBindings || [])
+          .filter((rb) => rb && rb.scopeType === '市场')
+          .map((rb) => rb.scopeId)
       if (!allowed.includes(scopeId)) {
         throw new Error('PERMISSION_DENIED: 越权访问其他市场数据')
       }
@@ -389,6 +463,8 @@ module.exports = {
   deriveAvailableLoginLevels,
   canAccessManagementLevel,
   expandScopeStoreIds,
+  expandScopeOrgNodeIds,
+  buildManagementStoreScope,
   buildStoreScopeCondition,
   validateManagementScope,
   isStoreInScope,

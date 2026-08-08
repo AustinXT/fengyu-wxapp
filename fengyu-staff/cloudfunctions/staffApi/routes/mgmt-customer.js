@@ -21,7 +21,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope, canAccessManagementLevel } = require('../utils/scope')
+const { validateManagementScope, canAccessManagementLevel, buildManagementStoreScope } = require('../utils/scope')
 const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
@@ -34,34 +34,12 @@ const { excludeDepositRefundSql } = require('../utils/consume-filter')
  * 构造 sale/service 表的 store_id scope 过滤片段
  */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
 }
 
 /** client_wechat_users.bound_store_id scope */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.bound_store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.bound_store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
 }
 
 /**
@@ -219,13 +197,13 @@ async function assertCustomerInScope(boundStoreId, scopeType, scopeId) {
     }
     return
   }
-  // market：用一个 EXISTS 查询验证
+  // market：按递归组织树验证，覆盖任意层级下属门店。
+  const storeScope = buildManagementStoreScope('market', scopeId, 's.store_id', 2)
   const rows = await pg.query(
     `SELECT 1 FROM stores s
-       JOIN org_nodes o ON s.org_node_id = o.id
-      WHERE s.store_id = $1 AND o.parent_id = $2 AND o.type = '门店'
+      WHERE s.store_id = $1 AND ${storeScope.sql}
       LIMIT 1`,
-    [boundStoreId, scopeId],
+    [boundStoreId, ...storeScope.params],
   )
   if (rows.length === 0) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前 scope 范围内')
@@ -655,6 +633,8 @@ async function paidOrders(ctx) {
        si.session_count, si.remaining_sessions, si.paid_sessions,
        si.sku_id, si.product_type, si.product_name,
        si.unit_real_price,
+       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+       ps.category_id,
        pc.category_name, pc.product_kind,
        COALESCE(pc_parent.display_color, pc.display_color) AS category_color
      FROM sale_items si
@@ -688,7 +668,10 @@ async function paidOrders(ctx) {
       totalSessions: item.session_count,
       paidSessions: item.paid_sessions,
       productType: item.product_type || '',
+      unit: item.unit || (item.product_type === '家居产品' ? '盒' : '次'),
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
+      categoryId: item.category_id || '',
+      categoryName: item.category_name || '',
       category: item.category_name || '',
       categoryColor: item.category_color || '',
       productKind: item.product_kind || '',
@@ -900,9 +883,11 @@ async function giftHistory(ctx) {
   const giftItems = await pg.query(
     `SELECT si.sale_item_id, si.sale_order_id, si.product_name,
             si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions,
-            si.received, o.created_at, o.paid_at
+            si.received, o.created_at, o.paid_at,
+            COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
        FROM sale_items si
        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       WHERE ${whereClause}
         AND o.status IN ('已支付', '已完成')
         AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
@@ -918,8 +903,11 @@ async function giftHistory(ctx) {
   if (promoOrderIds.length > 0) {
     promoItems = await pg.query(
       `SELECT si.sale_order_id, si.sale_item_id, si.product_name,
-              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received
-         FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received,
+              COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
+         FROM sale_items si
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+        WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [promoOrderIds],
     )
   }
@@ -934,6 +922,7 @@ async function giftHistory(ctx) {
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
       paidSessions: i.paid_sessions,
+      unit: i.unit || '次',
     })
   }
 
@@ -958,6 +947,7 @@ async function giftHistory(ctx) {
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
       paidSessions: i.paid_sessions,
+      unit: i.unit || '次',
       createdAt: i.created_at,
     })),
   }

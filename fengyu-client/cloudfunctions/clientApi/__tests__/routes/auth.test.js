@@ -250,6 +250,87 @@ describe('auth.bindStore', () => {
     expect(ctx.result.boundStoreName).toBe('凤御测试店')
   })
 
+  test('推荐人姓名写入 promoter_employee_name', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])
+    pg.query.mockResolvedValueOnce([{
+      store_id: 'store-001',
+      store_name: '凤御测试店',
+      market_name: '华东市场',
+    }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { storeId: 'store-001', promoterEmployeeName: '王推荐' } })
+    await routes.bindStore(ctx)
+
+    const [updateSql, updateParams] = pg.query.mock.calls[2]
+    expect(updateSql).toContain('promoter_employee_name')
+    expect(updateSql).not.toContain('promoter_employee_id')
+    expect(updateParams).toContain('王推荐')
+  })
+
+  test('旧 promoterEmployeeId 参数按推荐人姓名写入新列', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])
+    pg.query.mockResolvedValueOnce([{
+      store_id: 'store-001',
+      store_name: '凤御测试店',
+      market_name: '华东市场',
+    }])
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createCtx({ payload: { storeId: 'store-001', promoterEmployeeId: '王旧版推荐' } })
+
+    await routes.bindStore(ctx)
+
+    const [updateSql, updateParams] = pg.query.mock.calls[2]
+    expect(updateSql).toContain('promoter_employee_name')
+    expect(updateSql).not.toContain('promoter_employee_id')
+    expect(updateParams).toContain('王旧版推荐')
+  })
+
+  test('旧 promoterEmployeeId 为空时不阻断绑店', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])
+    pg.query.mockResolvedValueOnce([{
+      store_id: 'store-001',
+      store_name: '凤御测试店',
+      market_name: '华东市场',
+    }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { storeId: 'store-001', promoterEmployeeId: undefined } })
+    await routes.bindStore(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(pg.query.mock.calls[2][0]).not.toContain('promoter_employee_name')
+  })
+
+  test('两个推荐人字段内容不一致 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    const ctx = createCtx({
+      payload: {
+        storeId: 'store-001',
+        promoterEmployeeName: '王新版推荐',
+        promoterEmployeeId: '李旧版推荐',
+      },
+    })
+
+    await expect(routes.bindStore(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*内容不一致/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('超过 50 个字符的推荐人姓名 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    const ctx = createCtx({
+      payload: { storeId: 'store-001', promoterEmployeeName: '推'.repeat(51) },
+    })
+
+    await expect(routes.bindStore(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不能超过50个字符/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
   test('无效门店 → INVALID_PARAMS', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])

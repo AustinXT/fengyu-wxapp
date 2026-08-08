@@ -8,6 +8,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
+const { expandScopeStoreIds } = require('../utils/scope')
 const cloud = require('wx-server-sdk')
 
 const INVENTORY_WRITE_ROLES = ['admin', 'manager', 'product']
@@ -158,42 +159,8 @@ async function assertStoreCoveredByBindings(client, bindings, storeId, message) 
   if (!Array.isArray(bindings) || bindings.length === 0) {
     throw new Error(message)
   }
-  if (bindings.some((rb) => rb.scopeType === '总部')) return
-
-  const marketIds = bindings
-    .filter((rb) => rb.scopeType === '市场')
-    .map((rb) => rb.scopeId)
-  const storeNodeIds = bindings
-    .filter((rb) => rb.scopeType === '门店')
-    .map((rb) => rb.scopeId)
-
-  if (marketIds.length === 0 && storeNodeIds.length === 0) {
-    throw new Error(message)
-  }
-
-  const conditions = []
-  const params = [storeId]
-  let idx = 2
-  if (marketIds.length > 0) {
-    conditions.push(`(o.parent_id = ANY($${idx}::text[]) AND o.type = '门店')`)
-    params.push(marketIds)
-    idx++
-  }
-  if (storeNodeIds.length > 0) {
-    conditions.push(`s.org_node_id = ANY($${idx}::text[])`)
-    params.push(storeNodeIds)
-  }
-
-  const result = await client.query(
-    `SELECT 1
-       FROM stores s
-       JOIN org_nodes o ON o.id = s.org_node_id
-      WHERE s.store_id = $1
-        AND (${conditions.join(' OR ')})
-      LIMIT 1`,
-    params,
-  )
-  if (rowsOf(result).length === 0) throw new Error(message)
+  const coveredStoreIds = await expandScopeStoreIds(bindings, client)
+  if (!coveredStoreIds.includes(storeId)) throw new Error(message)
 }
 
 async function assertInventoryWriteStoreScope(client, auth, storeId) {

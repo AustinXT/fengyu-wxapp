@@ -521,11 +521,13 @@ async function scanDetail(ctx) {
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
       si.sale_amount, si.session_count,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.product_name,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [targetOrderId])
@@ -571,6 +573,7 @@ async function scanDetail(ctx) {
       // sale_amount = 行应付总额（权威），前端按此展示；unitPrice/sessionCount 仅供"×N次/单价"辅助提示
       saleAmount: i.sale_amount,
       sessionCount: i.session_count,
+      unit: i.unit,
       received: i.received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
       coverImage: i.cover_image || ''
@@ -1525,12 +1528,14 @@ async function list(ctx) {
         si.session_count,
         si.remaining_sessions,
         si.paid_sessions,
+        COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
         si.product_name,
         si.product_type,
         (SELECT p.cover_image FROM mall_product_skus mps
          JOIN products p ON mps.product_id = p.product_id
          WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
       FROM sale_items si
+      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       WHERE si.sale_order_id = ANY($1)
       ORDER BY si.sale_item_id
     `, [orderIds])
@@ -1607,6 +1612,7 @@ async function detail(ctx) {
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.unit_price,
       si.unit_real_price,
       si.quantity,
@@ -1617,6 +1623,7 @@ async function detail(ctx) {
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])
@@ -1835,12 +1842,14 @@ async function appointableItems(ctx) {
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.unit_price,
       si.unit_real_price,
       si.sale_amount,
       si.expire_date
     FROM sale_orders o
     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
       AND o.status IN ('已支付', '部分支付', '已完成')
@@ -1893,6 +1902,7 @@ async function appointableItems(ctx) {
       productName: item.product_name,
       productType: item.product_type,
       sessionCount: item.session_count,
+      unit: item.unit,
       remainingSessions: item.remaining_sessions,
       paidSessions: item.paid_sessions,
       unitPrice: item.unit_price,

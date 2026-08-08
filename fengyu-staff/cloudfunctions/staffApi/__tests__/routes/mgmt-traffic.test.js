@@ -39,6 +39,18 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function expectRecursiveDescendantScope(sql, rootParamIndex) {
+  expect(sql).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
+  if (rootParamIndex == null) {
+    expect(sql).toMatch(/SELECT \$\d+::text, ARRAY\[\$\d+::text\]/)
+  } else {
+    expect(sql).toMatch(new RegExp('SELECT \\$' + rootParamIndex + '::text, ARRAY\\[\\$' + rootParamIndex + '::text\\]'))
+  }
+  expect(sql).toMatch(/JOIN descendants ON child\.parent_id = descendants\.id/)
+  expect(sql).toMatch(/WHERE NOT child\.id = ANY\(descendants\.path\)/)
+  expect(sql).toMatch(/JOIN descendants ON s\.org_node_id = descendants\.id/)
+}
+
 // ---- 默认 mock：根据 SQL 形态返回对应 shape ----
 function setupDefaultMocks({
   marketName = '华东市场',
@@ -460,7 +472,7 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     }
   })
 
-  test('scopeType=market：service/sale 类含 stores JOIN org_nodes 子查询；client 类含 bound_store_id IN', async () => {
+  test('scopeType=market：service/sale/client 类均通过递归后代组织树过滤', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
@@ -475,8 +487,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     )
     expect(saleServiceSqls.length).toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
-      expect(s).toMatch(/(so|o)\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-      expect(s).toContain("o.type = '门店'")
+      expect(s).toMatch(/(so|o)\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s)
     }
 
     // 纯 client_wechat_users SQL（注册情况、会员状态、激活、新会员 count）
@@ -489,6 +501,7 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     expect(pureClientSqls.length).toBeGreaterThan(0)
     for (const s of pureClientSqls) {
       expect(s).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s)
     }
   })
 

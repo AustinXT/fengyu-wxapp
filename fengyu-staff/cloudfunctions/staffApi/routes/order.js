@@ -1032,35 +1032,30 @@ async function create(ctx) {
   const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
 
   // ========== 充值卡预选（店长开单 = 预选，不扣卡；DB 字段 prepaid_card_amount 命名保持不变）==========
-  // 查询顾客当前余额（不加 FOR UPDATE，因为不写 balance）；仅店长预选为参考
+  // 仅显式输入抵扣金额时查询余额（不加 FOR UPDATE，因为开单预选不写 balance）。
+  // useCard=true 但未传金额按 0 处理，避免沿用旧版的自动抵满行为。
   let prepaidCardAmount = 0
-  if (useCard) {
-    const balanceRows = await pg.query(
-      'SELECT balance FROM prepaid_cards WHERE user_id = $1',
-      [clientUserId]
-    )
-    const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
-
+  if (useCard && inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
     // 预选额上限 = min(应付合计, 当下实付)：充值卡从「当下实付」里抵，欠款单不得抵超过当下实付
     // （无欠款时 sumItemReceived === totalAmount，等价旧口径）。与前端 recompute 基准 receivedTotal 对齐。
     const maxPrepayable = Math.min(totalAmount, sumItemReceived)
-
-    if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
-      const inputAmount = Number(inputPrepaidCardAmount)
-      if (!Number.isFinite(inputAmount) || inputAmount < 0) {
-        throw new Error('INVALID_PARAMS: 充值卡抵扣金额必须为非负数')
-      }
-      if (inputAmount > currentBalance) {
+    const inputAmount = Number(inputPrepaidCardAmount)
+    if (!Number.isFinite(inputAmount) || inputAmount < 0) {
+      throw new Error('INVALID_PARAMS: 充值卡抵扣金额必须为非负数')
+    }
+    prepaidCardAmount = Math.round(inputAmount * 100) / 100
+    if (prepaidCardAmount > maxPrepayable + 0.001) {
+      throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过应抵上限')
+    }
+    if (prepaidCardAmount > 0) {
+      const balanceRows = await pg.query(
+        'SELECT balance FROM prepaid_cards WHERE user_id = $1',
+        [clientUserId]
+      )
+      const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
+      if (currentBalance + 0.001 < prepaidCardAmount) {
         throw new Error('INSUFFICIENT_BALANCE: 充值卡余额不足')
       }
-      if (inputAmount > maxPrepayable) {
-        throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过应抵上限')
-      }
-      prepaidCardAmount = Math.round(inputAmount * 100) / 100
-    } else {
-      // 未显式传值：默认"能抵多少抵多少"
-      prepaidCardAmount = Math.min(currentBalance, maxPrepayable)
-      prepaidCardAmount = Math.round(prepaidCardAmount * 100) / 100
     }
   }
 
@@ -2150,8 +2145,10 @@ async function detail(ctx) {
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
       si.expire_date, si.remark, si.sales_category,
       si.product_name, si.product_type, si.picked_up_quantity,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.item_direction
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [saleOrderId])
@@ -3547,13 +3544,27 @@ async function createConversion(ctx) {
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
 
-    // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
+    // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：显式金额必须在 [0, min(补差额, 余额)] 内。
     // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则事务内即时扣卡 + 结清。
     let card = 0
-    if (priceDiff > 0 && inputPrepaidCardAmount != null) {
+    if (inputPrepaidCardAmount != null) {
       const v = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(v) || v < 0) throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
-      card = Math.min(Math.round(v * 100) / 100, priceDiff)
+      card = Math.round(v * 100) / 100
+      const maxCard = Math.max(0, priceDiff)
+      if (card > maxCard + 0.001) {
+        throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过补差额')
+      }
+      if (card > 0) {
+        const balanceRes = await tx.query(
+          'SELECT balance FROM prepaid_cards WHERE user_id = $1',
+          [clientUserId]
+        )
+        const currentBalance = balanceRes.rows.length > 0 ? Number(balanceRes.rows[0].balance) : 0
+        if (currentBalance + 0.001 < card) {
+          throw new Error('INSUFFICIENT_BALANCE: 充值卡余额不足')
+        }
+      }
     }
     const payable = Math.max(0, Math.round((orderTotal - card) * 100) / 100)
     const isFullCardCoverage = card > 0 && payable === 0
@@ -3797,6 +3808,10 @@ async function customerHeldCards(ctx) {
             si.remaining_sessions,
             (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
             si.unit_real_price,
+            COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+            ps.category_id,
+            pc.category_name,
+            pc.product_kind,
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
@@ -3804,6 +3819,8 @@ async function customerHeldCards(ctx) {
             END AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+     LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
      WHERE so.client_user_id = $1
        AND si.store_id = $2
        AND si.item_direction = '购买'
@@ -3836,10 +3853,14 @@ async function customerHeldCards(ctx) {
       sourceSaleOrderId: r.source_sale_order_id,
       productName: r.product_name,
       productType: r.product_type,
+      unit: r.unit || (r.product_type === '家居产品' ? '盒' : '次'),
       remainingSessions: r.remaining_sessions != null ? Number(r.remaining_sessions) : null,
       remainingQuantity: r.remaining_quantity != null ? Number(r.remaining_quantity) : null,
       unitRealPrice: String(r.unit_real_price),
       deductibleAmount: Number(r.deductible_amount).toFixed(2),
+      categoryId: r.category_id || '',
+      categoryName: r.category_name || '',
+      productKind: r.product_kind || '',
     }))
   }
 }
@@ -4414,8 +4435,11 @@ async function refundDetail(ctx) {
   const nameMap = {}
   if (itemIds.length > 0) {
     const siRows = await pg.query(
-      `SELECT sale_item_id, product_name, NULL::text AS spec_name, product_type
-         FROM sale_items WHERE sale_item_id = ANY($1)`,
+      `SELECT si.sale_item_id, si.product_name, NULL::text AS spec_name, si.product_type,
+              ps.unit AS sku_unit
+         FROM sale_items si
+         LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+         WHERE si.sale_item_id = ANY($1)`,
       [itemIds]
     )
     for (const si of siRows) {
@@ -4429,6 +4453,7 @@ async function refundDetail(ctx) {
       productName: si.product_name || null,
       specName: si.spec_name || null,
       productType: it.productType || si.product_type || null,
+      unit: si.sku_unit || ((it.productType || si.product_type) === '家居产品' ? '盒' : '次'),
       quantity: it.quantity,
       refundAmount: it.refundAmount,
     }

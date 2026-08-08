@@ -18,7 +18,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope } = require('../utils/scope')
+const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 /**
@@ -50,16 +50,24 @@ async function loadAllMarkets() {
   }
 
   const rows = await pg.query(`
+    WITH RECURSIVE market_descendants(market_id, node_id, path) AS (
+      SELECT m.id, m.id, ARRAY[m.id]
+      FROM org_nodes m
+      WHERE m.type = '市场'
+      UNION ALL
+      SELECT market_descendants.market_id, child.id, market_descendants.path || child.id
+      FROM org_nodes child
+      JOIN market_descendants ON child.parent_id = market_descendants.node_id
+      WHERE NOT child.id = ANY(market_descendants.path)
+    )
     SELECT
       m.id          AS market_id,
       m.name        AS market_name,
       s.store_id    AS store_id,
       s.store_name  AS store_name
     FROM org_nodes m
-    LEFT JOIN org_nodes so
-      ON so.parent_id = m.id AND so.type = '门店'
-    LEFT JOIN stores s
-      ON s.org_node_id = so.id AND s.is_closed = false
+    LEFT JOIN market_descendants d ON d.market_id = m.id
+    LEFT JOIN stores s ON s.org_node_id = d.node_id AND s.is_closed = false
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC
   `)
@@ -106,9 +114,10 @@ async function scopeOptions(ctx) {
   let visible = allMarkets
   if (staffLevel === 'market') {
     const allowedMarketIds = new Set(
-      (roleBindings || [])
-        .filter((rb) => rb && rb.scopeType === '市场')
-        .map((rb) => rb.scopeId)
+      ctx.auth.scopeOrgNodeIds
+        ?? (roleBindings || [])
+          .filter((rb) => rb && rb.scopeType === '市场')
+          .map((rb) => rb.scopeId),
     )
     visible = allMarkets.filter((m) => allowedMarketIds.has(m.id))
   } else if (staffLevel === 'store_manager') {
@@ -139,51 +148,17 @@ async function scopeOptions(ctx) {
  * @param {number} startIdx 起始 $n 下标
  */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
-  }
-  // market：走 stores JOIN org_nodes 子查询，与 scope.js 现有口径一致
-  return {
-    sql:
-      `${alias}.store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
 }
 
 /** client_wechat_users.bound_store_id scope */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.bound_store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.bound_store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
 }
 
 /** staff_wechat_users.store_id scope */
 function buildStaffScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
 }
 
 /**
@@ -482,16 +457,15 @@ async function queryStoreCount(scopeType, scopeId, date) {
     )
     return Number(rows[0]?.cnt || 0)
   }
+  const storeScope = buildManagementStoreScope('market', scopeId, 's.store_id', 1)
   const rows = await pg.query(
     `SELECT COUNT(*)::int AS cnt
        FROM stores s
-       JOIN org_nodes o ON s.org_node_id = o.id
-      WHERE o.type = '门店'
-        AND o.parent_id = $1
+      WHERE ${storeScope.sql}
         AND s.opening_date IS NOT NULL
         AND s.opening_date::date <= $2::date
         AND (s.closed_at IS NULL OR s.closed_at::date > $2::date)`,
-    [scopeId, date],
+    [...storeScope.params, date],
   )
   return Number(rows[0]?.cnt || 0)
 }

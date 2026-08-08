@@ -23,6 +23,11 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+const ARCHIVED_MIGRATIONS_DIR = path.resolve(
+  __dirname,
+  '../../../../../db/migrations/_archive_pre_baseline_20260806/sql',
+)
+
 const FILES = {
   staffCaptureJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientCaptureJs: path.resolve(
@@ -34,31 +39,13 @@ const FILES = {
     '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js',
   ),
   adminCaptureTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
-  receiptMigration0082Sql: path.resolve(__dirname, '../../../../../db/migrations/0082_harsh_firebird.sql'),
-  positiveReceiptRebuild0083Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0083_positive_receipt_rebuild.sql',
-  ),
-  clearFullRefundStatus0084Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0084_clear_full_refund_allocation_status.sql',
-  ),
-  refundReceiptExistingBackfill0085Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0085_refund_receipt_existing_backfill.sql',
-  ),
-  overpayReceiptItemBackfill0086Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0086_overpay_receipt_item_backfill.sql',
-  ),
-  overpayReceiptItemRemap0090Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0090_remap_overpay_receipts_by_item_excess.sql',
-  ),
-  refundAllocationMirrorBackfill0087Sql: path.resolve(
-    __dirname,
-    '../../../../../db/migrations/0087_refund_allocation_mirror_backfill.sql',
-  ),
+  receiptMigration0082Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0082_harsh_firebird.sql'),
+  positiveReceiptRebuild0083Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0083_positive_receipt_rebuild.sql'),
+  clearFullRefundStatus0084Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0084_clear_full_refund_allocation_status.sql'),
+  refundReceiptExistingBackfill0085Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0085_refund_receipt_existing_backfill.sql'),
+  overpayReceiptItemBackfill0086Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0086_overpay_receipt_item_backfill.sql'),
+  overpayReceiptItemRemap0090Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0090_remap_overpay_receipts_by_item_excess.sql'),
+  refundAllocationMirrorBackfill0087Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0087_refund_allocation_mirror_backfill.sql'),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),

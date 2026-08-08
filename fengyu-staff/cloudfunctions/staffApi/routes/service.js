@@ -885,9 +885,12 @@ async function list(ctx) {
         sli.remaining_sessions,
         sli.session_count,
         sli.paid_sessions,
+        sli.product_type,
+        COALESCE(ps.unit, CASE WHEN sli.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
         si.service_duration
       FROM service_items si
       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
+      LEFT JOIN product_skus ps ON ps.sku_id = sli.sku_id
       WHERE si.service_order_id = ANY($1)
     `, [soIds])
   }
@@ -901,6 +904,7 @@ async function list(ctx) {
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
       paidSessions: i.paid_sessions,
+      unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
     })
   }
 
@@ -1045,9 +1049,11 @@ async function detail(ctx) {
       sli.remaining_sessions,
       sli.paid_sessions,
       sli.product_type,
-      sli.product_name
+      sli.product_name,
+      COALESCE(ps.unit, CASE WHEN sli.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
     FROM service_items si
     LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
+    LEFT JOIN product_skus ps ON ps.sku_id = sli.sku_id
     WHERE si.service_order_id = $1
   `, [id])
 
@@ -1116,6 +1122,7 @@ async function detail(ctx) {
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
       paidSessions: i.paid_sessions,
+      unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
     }))
   }
 }

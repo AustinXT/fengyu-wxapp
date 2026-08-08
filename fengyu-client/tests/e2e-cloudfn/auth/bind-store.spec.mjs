@@ -43,6 +43,7 @@ async function seedLoggedInUser(openid = TEST_OPENID, userId = `${NS}_BS_USR`) {
            phone = EXCLUDED.phone,
            bound_store_id = NULL,
            customer_source = NULL,
+           promoter_employee_name = NULL,
            inviter_user_id = NULL,
            invited_at = NULL`,
     [userId, openid, phone]
@@ -130,6 +131,40 @@ async function caseSourceChannel() {
   }
 }
 
+async function casePromoterEmployeeName() {
+  await ensureTestStore()
+  await seedLoggedInUser()
+  const res = await invokeAs(TEST_OPENID, 'auth.bindStore', {
+    storeId: TEST_STORE_ID,
+    promoterEmployeeName: '王推荐',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const rows = await pgQuery(
+    'SELECT promoter_employee_name FROM client_wechat_users WHERE openid = $1',
+    [TEST_OPENID],
+  )
+  if (rows[0]?.promoter_employee_name !== '王推荐') {
+    throw new Error(`expect promoter_employee_name='王推荐', got '${rows[0]?.promoter_employee_name}'`)
+  }
+}
+
+async function caseLegacyPromoterFieldWritesName() {
+  await ensureTestStore()
+  await seedLoggedInUser()
+  const res = await invokeAs(TEST_OPENID, 'auth.bindStore', {
+    storeId: TEST_STORE_ID,
+    promoterEmployeeId: '王旧版推荐',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const rows = await pgQuery(
+    'SELECT promoter_employee_name FROM client_wechat_users WHERE openid = $1',
+    [TEST_OPENID],
+  )
+  if (rows[0]?.promoter_employee_name !== '王旧版推荐') {
+    throw new Error(`expect legacy promoterEmployeeId to write '王旧版推荐', got '${rows[0]?.promoter_employee_name}'`)
+  }
+}
+
 async function caseInviter() {
   await ensureTestStore()
   const userId = await seedLoggedInUser()
@@ -188,6 +223,8 @@ const CASES = [
   ['happy: bindStore writes bound_store_id + returns names', caseHappy],
   ['switch store A → B', caseSwitchStore],
   ['sourceChannel 抖音 → customer_source', caseSourceChannel],
+  ['promoterEmployeeName → promoter_employee_name', casePromoterEmployeeName],
+  ['legacy promoterEmployeeId → promoter_employee_name', caseLegacyPromoterFieldWritesName],
   ['inviter first bind sets, second bind keeps first', caseInviter],
   ['storeId not exist → INVALID_PARAMS', caseStoreNotExist],
   ['no phone bound → PHONE_REQUIRED', casePhoneRequired],

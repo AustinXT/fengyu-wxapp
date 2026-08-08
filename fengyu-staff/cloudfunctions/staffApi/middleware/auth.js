@@ -15,6 +15,7 @@ const {
   deriveAvailableLoginLevels,
   canAccessManagementLevel,
   expandScopeStoreIds,
+  expandScopeOrgNodeIds,
 } = require('../utils/scope')
 
 // 员工基础信息缓存（不含 loginLevel/currentStoreId 等动态字段）：OPENID → { data, ts }
@@ -90,6 +91,7 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
  *   roleBindings,            // [{role, scopeId, scopeType}]
  *   staffLevel,              // headquarters | market | store_manager | store_staff | null
  *   scopeStoreIds,           // string[] — 有权可见的全部 store_id（全角色并集）
+ *   scopeOrgNodeIds,         // string[] — 角色根节点自身及全部后代组织节点
  *   managerStoreIds,         // string[] — 仅 manager 角色绑定展开的门店；店长写操作授权用
  *   loginLevel,              // store | management | null
  *   currentStoreId,          // 门店模式下的当前门店
@@ -171,6 +173,7 @@ async function loadAuthBase(effectiveOpenid) {
   let staffLevel = null
   let scopeStoreIds = []
   let managerStoreIds = []
+  let scopeOrgNodeIds = []
 
   if (users.length === 0) {
     // 未注册员工
@@ -184,6 +187,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings: [],
       staffLevel: null,
       scopeStoreIds: [],
+      scopeOrgNodeIds: [],
       managerStoreIds: [],
       position: null,
       storeName: null,
@@ -210,7 +214,12 @@ async function loadAuthBase(effectiveOpenid) {
         scopeName: r.scope_name,
       }))
       staffLevel = deriveStaffLevel(roleBindings)
-      scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
+      const [allScopeStores, allScopeNodes] = await Promise.all([
+        expandScopeStoreIds(roleBindings, pg),
+        expandScopeOrgNodeIds(roleBindings, pg),
+      ])
+      scopeStoreIds = allScopeStores
+      scopeOrgNodeIds = allScopeNodes
       // 仅展开 manager 角色绑定 → 店长写操作可达的门店集（区别于全角色并集 scopeStoreIds）
       const managerBindings = roleBindings.filter((r) => r.role === 'manager')
       managerStoreIds = managerBindings.length > 0
@@ -230,6 +239,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings,
       staffLevel,
       scopeStoreIds,
+      scopeOrgNodeIds,
       managerStoreIds,
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,

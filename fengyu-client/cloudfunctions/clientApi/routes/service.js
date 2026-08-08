@@ -62,9 +62,11 @@ async function detail(ctx) {
       si_svc.employee_id,
       si_svc.service_duration,
       si_svc.unit_real_price,
-      si_sale.product_name
+      si_sale.product_name,
+      COALESCE(ps.unit, CASE WHEN si_sale.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
     FROM service_items si_svc
     LEFT JOIN sale_items si_sale ON si_svc.sale_item_id = si_sale.sale_item_id
+    LEFT JOIN product_skus ps ON si_sale.sku_id = ps.sku_id
     WHERE si_svc.service_order_id = $1
     ORDER BY si_svc.service_item_id
   `, [id])
@@ -124,9 +126,11 @@ async function list(ctx) {
         sal.product_name,
         sal.session_count,
         sal.remaining_sessions,
-        sal.paid_sessions
+        sal.paid_sessions,
+        COALESCE(ps.unit, CASE WHEN sal.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
       FROM service_items si
       LEFT JOIN sale_items sal ON si.sale_item_id = sal.sale_item_id
+      LEFT JOIN product_skus ps ON sal.sku_id = ps.sku_id
       WHERE si.service_order_id = ANY($1)
       ORDER BY si.service_item_id
     `, [orderIds])

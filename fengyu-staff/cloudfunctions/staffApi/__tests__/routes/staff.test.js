@@ -366,7 +366,7 @@ describe('staff.performanceDetail', () => {
     await staffRoutes.performanceDetail(ctx)
 
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('LEFT JOIN sale_order_payments sop ON sop.id = sa.sale_payment_id')
+    expect(allocSql).toContain('LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id')
     expect(allocSql).toContain("sop.status = '已支付'")
     expect(allocSql).toContain('sop.paid_at >= $2')
     expect(allocSql).toContain('sop.id IS NULL')
