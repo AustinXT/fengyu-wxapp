@@ -59,7 +59,7 @@ export const saleOrders = pgTable(
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
-    /** 订单总金额；商品价格之和，扣除优惠券 */
+    /** 订单总金额；商品价格之和，扣除优惠券和积分抵扣 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     /** 储值卡抵扣金额（抵扣项，不计入实付） */
     prepaidCardAmount: numeric("prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -110,6 +110,10 @@ export const saleOrders = pgTable(
     couponId: text("coupon_id"),
     /** 券抵扣总金额 */
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
+    /** 积分抵扣使用积分数 */
+    pointsUsed: bigint("points_used", { mode: "number" }).notNull().default(0),
+    /** 积分抵扣金额 */
+    pointsDiscount: numeric("points_discount", { precision: 10, scale: 2 }).notNull().default("0"),
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
