@@ -16,6 +16,31 @@
 
 ## 之后的规则
 
-新的活动迁移目录只保留从当前 `db/schema` 生成的 `0000_baseline`。两套业务库的 journal 会重置为该 baseline 的单条 hash；后续 schema 变更必须从此 baseline 继续用 `drizzle-kit generate` 产生增量 migration。
+当时活动迁移目录以从当前 `db/schema` 生成的 `0000_baseline` 重置。两套业务库的 journal 先重置为该 baseline 的单条 hash；后续变更必须从此 baseline 继续用 `drizzle-kit generate` 产生增量 migration。
 
 不要修改本目录中的文件。如需追溯旧迁移或恢复其中的备份表，请使用本次仓库外备份或按归档内容进行只读查证。
+
+## 已有业务库升级步骤
+
+旧 journal 的 hash 不会匹配新的 `0000_baseline`；因此对于已完整应用本归档链路的业务库，**不能先运行** `db:migrate`。必须分别对开发/测试库和生产库按以下顺序执行：
+
+1. 暂停该库的发布/迁移并完成常规备份。
+2. 先运行 dry-run，确认输出显示 94 条旧 journal 记录：
+
+   ```bash
+   DATABASE_URL="postgresql://..." npm --prefix db run db:baseline:reset
+   ```
+
+3. 对同一目标库执行 journal 重置：
+
+   ```bash
+   DATABASE_URL="postgresql://..." npm --prefix db run db:baseline:reset -- --yes
+   ```
+
+4. 最后才运行正常迁移，供今后的增量 migration 使用：
+
+   ```bash
+   DATABASE_URL="postgresql://..." npm --prefix db run db:migrate
+   ```
+
+`db:baseline:reset` 会拒绝空库、部分旧 journal，或已含 baseline 后续增量的库，避免把未验证的 schema 误标为已迁移。空库直接运行 `db:migrate`，它会创建 schema 并写入 `recharge.tiers`、`recharge.minAmount`、`recharge.maxAmount` 三项默认配置。

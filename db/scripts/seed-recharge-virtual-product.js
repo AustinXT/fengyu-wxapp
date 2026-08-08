@@ -94,29 +94,30 @@ async function main() {
 
     // 2. product_skus
     const skuExisting = await client.query(
-      'SELECT sku_id, is_enabled, product_type, is_recharge_card FROM product_skus WHERE sku_id = $1',
+      'SELECT sku_id, is_enabled, product_type, unit, is_recharge_card FROM product_skus WHERE sku_id = $1',
       [SKU_ID],
     )
     if (skuExisting.rows.length === 0) {
       await client.query(
         `INSERT INTO product_skus (
            sku_id, category_id, product_type, spec_name,
-           price, special_price, session_count, sort_order,
+           price, special_price, session_count, unit, sort_order,
            service_fee, is_shengmei, is_enabled, is_recharge_card,
            created_at, updated_at
-         ) VALUES ($1, $2, '家居产品', $3, 0, NULL, NULL, 0, 0, NULL, false, true, NOW(), NOW())`,
+         ) VALUES ($1, $2, '家居产品', $3, 0, NULL, NULL, '盒', 0, 0, NULL, false, true, NOW(), NOW())`,
         [SKU_ID, PRODUCT_CATEGORY_ID, '预付充值卡（虚拟）'],
       )
       console.log(`[seed] inserted product_skus.${SKU_ID} (is_recharge_card=true)`)
     } else {
       const row = skuExisting.rows[0]
       const needsUpdate =
-        row.is_enabled || row.product_type !== '家居产品' || row.is_recharge_card !== true
+        row.is_enabled || row.product_type !== '家居产品' || row.unit !== '盒' || row.is_recharge_card !== true
       if (needsUpdate) {
         await client.query(
           `UPDATE product_skus
            SET is_enabled = false,
                product_type = '家居产品',
+               unit = '盒',
                is_recharge_card = true,
                updated_at = NOW()
            WHERE sku_id = $1`,

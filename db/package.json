@@ -6,6 +6,7 @@
   "scripts": {
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:baseline:reset": "node scripts/reset-drizzle-journal.js",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push"
   },

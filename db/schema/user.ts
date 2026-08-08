@@ -43,8 +43,8 @@ export const clientWechatUsers = pgTable(
     /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
     oldMemberLevel: memberLevelEnum('old_member_level'),
     customerSource: customerSourceEnum('customer_source'),
-    /** 推荐人（美容师员工ID） */
-    promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
+    /** 推荐人姓名（写入时快照，不关联员工表） */
+    promoterEmployeeName: varchar('promoter_employee_name', { length: 50 }),
     /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
     inviterUserId: text('inviter_user_id').references((): any => clientWechatUsers.userId),
     /** 成为被邀请人的时间戳（审计） */

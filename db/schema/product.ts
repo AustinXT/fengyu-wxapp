@@ -66,6 +66,8 @@ export const productSkus = pgTable(
     specialPrice: numeric("special_price", { precision: 10, scale: 2 }),
     /** 疗程次数：疗程卡≥1（含原单次=1），家居产品=null */
     sessionCount: integer("session_count"),
+    /** 展示单位：疗程卡默认「次」，家居产品默认「盒」，可由运营修改 */
+    unit: text("unit").notNull().default("次"),
     sortOrder: integer("sort_order").notNull().default(0),
     serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),
     /** 是否生美（护理项目使用，其他为 null） */
