@@ -1,3 +1,4 @@
+// 仅供 pagesAppointment 分包使用，不能迁回主包 utils，否则会增加主包体积。
 export interface TreatmentCardGroup<T> {
   groupKey: string
   primary: T

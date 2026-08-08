@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatDate } from '../../utils/format';
-import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 

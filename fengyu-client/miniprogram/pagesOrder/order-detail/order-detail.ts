@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
-import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
 
 interface OrderDetailItem {
   sale_item_id: string;
