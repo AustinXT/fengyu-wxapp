@@ -39,9 +39,9 @@ let miniProgram = null;
 //   - manager:       前端 staffLevel='store_manager' → 5-tab 完整 + 店长按钮可见
 //   - beautician:    前端 staffLevel='store_staff' → 5-tab 完整 + 店长按钮隐藏
 //                    （等价于 finance/customer_mgr/hr/staff × 门店 scope 五类）
-//   - mgmt-market:   前端 staffLevel='market', availableLoginLevels=['store','management']
-//                    → 登录页"管理层"radio 可选 + canAccessManagement()=true
-//   - mgmt-hq:       前端 staffLevel='headquarters' → 同 market 但 scopeStoreIds 全量
+//   - mgmt-market:   运行时权限矩阵授予 data_center:dashboard，
+//                    availableLoginLevels=['store','management'] → 管理层 radio 可选
+//   - mgmt-hq:       同上，但 scopeStoreIds 全量
 const MATRIX = [
   // ---- workbench：店长专属区域（store_manager vs 其他）----
   // "门店今日营收" 在 <view class="store-revenue"> 顶层 view，DOM selector 可靠
@@ -72,8 +72,8 @@ const SEL = '.van-cell, .van-cell__title, .van-cell__value, .van-action-sheet__d
  * 覆写当前小程序运行时身份。
  * - manager:       staffLevel='store_manager' → isManager()=true
  * - beautician:    staffLevel='store_staff'   → isManager()=false (等价 finance/customer_mgr/hr/staff)
- * - mgmt-market:   staffLevel='market', availableLoginLevels=['store','management'] → canAccessManagement()=true
- * - mgmt-hq:       staffLevel='headquarters'，scopedStores=[A1,A2,B1] → canAccessManagement()=true
+ * - mgmt-market:   availableLoginLevels=['store','management']（矩阵含 data_center:dashboard）→ canAccessManagement()=true
+ * - mgmt-hq:       同上，scopedStores=[A1,A2,B1] → canAccessManagement()=true
  */
 async function setRole(role) {
   const config = {
@@ -160,13 +160,12 @@ async function runOne(entry, idx) {
     }
 
     if (entry.mode === 'canAccessManagement') {
-      // 验证当前身份是否能进入管理层模式（availableLoginLevels 含 'management' 或 staffLevel ∈ {hq, market}）
+      // 验证当前身份是否能进入管理层模式（唯一准入：availableLoginLevels 含 'management'）
       const actual = await miniProgram.evaluate(() => {
         const app = getApp();
-        const lv = app?.globalData?.staffLevel;
         const avail = app?.globalData?.availableLoginLevels || [];
         // 与 utils/role.ts:canAccessManagement() 同语义
-        return lv === 'headquarters' || lv === 'market' || avail.includes('management');
+        return avail.includes('management');
       });
       const expected = entry.expect === 'visible';
       if (actual !== expected) {

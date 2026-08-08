@@ -1,4 +1,4 @@
-// components/mgmt-scope-picker — 市场/门店二级筛选器（headquarters 含"全部市场"）
+// components/mgmt-scope-picker — scope 驱动的市场/门店二级筛选器
 import { callStaffApi } from '../../utils/cloud'
 
 type ScopeType = 'all' | 'market' | 'store'
@@ -21,7 +21,9 @@ interface StoreMini {
 }
 
 interface ScopeOptionsResp {
-  staffLevel: 'headquarters' | 'market' | 'store_manager'
+  staffLevel: string | null
+  allowAll: boolean
+  allowedMarketIds: string[]
   markets: Array<{ id: string; name: string; stores: StoreMini[] }>
 }
 
@@ -38,6 +40,9 @@ Component({
 
   data: {
     showPopup: false,
+    allowAll: false,
+    allowedMarketIds: [] as string[],
+    currentAllowsMarket: false,
     marketList: [] as MarketMini[],
     storeListByMarket: {} as Record<string, StoreMini[]>,
     current: { ...DEFAULT_ALL } as Scope,
@@ -56,6 +61,8 @@ Component({
     async loadOptions() {
       try {
         const res = await callStaffApi<ScopeOptionsResp>('mgmtDashboard.scopeOptions', {})
+        const allowAll = !!res.allowAll
+        const allowedMarketIds = res.allowedMarketIds || []
         const marketList: MarketMini[] = (res.markets || []).map(m => ({ id: m.id, name: m.name }))
         const storeListByMarket: Record<string, StoreMini[]> = {}
         ;(res.markets || []).forEach(m => {
@@ -70,8 +77,26 @@ Component({
           const m = marketList.find(x => x.id === applied.scopeId)
           if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
         }
+        if (nextApplied.scopeType === 'store' && !nextApplied.marketId && nextApplied.scopeId) {
+          const market = (res.markets || []).find((m) =>
+            (m.stores || []).some((store) => store.storeId === nextApplied.scopeId),
+          )
+          if (market) {
+            const store = (market.stores || []).find((item) => item.storeId === nextApplied.scopeId)
+            nextApplied = {
+              ...nextApplied,
+              marketId: market.id,
+              scopeName: nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`,
+            }
+          }
+        }
+        const currentAllowsMarket = !!nextApplied.marketId
+          && allowedMarketIds.includes(nextApplied.marketId)
 
         this.setData({
+          allowAll,
+          allowedMarketIds,
+          currentAllowsMarket,
           marketList,
           storeListByMarket,
           applied: nextApplied,
@@ -91,16 +116,26 @@ Component({
     },
 
     onOpen() {
-      this.setData({ showPopup: true, current: this.data.applied })
+      const applied = this.data.applied as Scope
+      this.setData({
+        showPopup: true,
+        current: applied,
+        currentAllowsMarket: this._allowsMarket(applied.marketId),
+      })
     },
 
     onCancel() {
-      this.setData({ showPopup: false, current: this.data.applied })
+      const applied = this.data.applied as Scope
+      this.setData({
+        showPopup: false,
+        current: applied,
+        currentAllowsMarket: this._allowsMarket(applied.marketId),
+      })
     },
 
     onPickAll() {
+      if (!this.data.allowAll) return
       const next: Scope = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
-      this.setData({ current: next })
       this._confirmAndEmit(next)
     },
 
@@ -108,13 +143,20 @@ Component({
       const marketId = e.currentTarget.dataset.marketId as string
       const market = (this.data.marketList as MarketMini[]).find(m => m.id === marketId)
       if (!market) return
-      const next: Scope = {
-        scopeType: 'market',
-        marketId,
-        scopeId: marketId,
-        scopeName: market.name,
-      }
-      this.setData({ current: next })
+      const currentAllowsMarket = this._allowsMarket(marketId)
+      const stores = (this.data.storeListByMarket as Record<string, StoreMini[]>)[marketId] || []
+      const firstStore = stores[0]
+      const next: Scope = currentAllowsMarket
+        ? { scopeType: 'market', marketId, scopeId: marketId, scopeName: market.name }
+        : firstStore
+          ? {
+            scopeType: 'store',
+            marketId,
+            scopeId: firstStore.storeId,
+            scopeName: `${market.name} · ${firstStore.storeName}`,
+          }
+          : this.data.current as Scope
+      this.setData({ current: next, currentAllowsMarket })
     },
 
     onPickStore(e: WechatMiniprogram.TouchEvent) {
@@ -126,6 +168,7 @@ Component({
 
       // "全部门店" → 立即以市场维度生效并关闭
       if (storeId === '') {
+        if (!this.data.currentAllowsMarket) return
         const next: Scope = {
           scopeType: 'market',
           marketId: cur.marketId,
@@ -155,12 +198,21 @@ Component({
 
     // 同步写入 applied + current，避免 loadOptions 异步回填时读到陈旧 current 覆盖选择
     _confirmAndEmit(scope: Scope) {
-      this.setData({ applied: scope, current: scope, showPopup: false })
+      this.setData({
+        applied: scope,
+        current: scope,
+        currentAllowsMarket: this._allowsMarket(scope.marketId),
+        showPopup: false,
+      })
       this.triggerEvent('change', {
         scopeType: scope.scopeType,
         scopeId: scope.scopeId,
         scopeName: scope.scopeName,
       })
+    },
+
+    _allowsMarket(marketId?: string) {
+      return !!marketId && (this.data.allowedMarketIds as string[]).includes(marketId)
     },
   },
 })
